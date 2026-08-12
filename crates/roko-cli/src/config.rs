@@ -2370,8 +2370,9 @@ fn interpolate_env_string(input: &str) -> Result<String> {
                 if let Some(fallback) = default_value {
                     fallback.to_string()
                 } else {
-                    eprintln!(
-                        "warning: ${{{var_name}}} referenced but {var_name} not set; using empty string"
+                    tracing::warn!(
+                        %var_name,
+                        "env var referenced but not set; using empty string"
                     );
                     String::new()
                 }
@@ -2950,9 +2951,10 @@ pub fn warn_dropped_toml_keys(text: &str, source_label: &str) {
     };
     for key in table.keys() {
         if !KNOWN_CONFIG_KEYS.contains(&key.as_str()) {
-            eprintln!(
-                "warning: roko config ({source_label}): unknown key `{key}` will be ignored; \
-                 check for typos or a schema change"
+            tracing::warn!(
+                %source_label,
+                %key,
+                "roko config: unknown key will be ignored; check for typos or schema change"
             );
         }
     }
@@ -3066,9 +3068,10 @@ pub fn load_resolved_config(workdir: &Path) -> Result<ResolvedConfig> {
 
     // Surface core validation diagnostics as warnings.
     for diagnostic in &core_validated.diagnostics {
-        eprintln!(
-            "warning: roko config ({}): {}",
-            diagnostic.key, diagnostic.message
+        tracing::warn!(
+            key = %diagnostic.key,
+            message = %diagnostic.message,
+            "roko config validation diagnostic"
         );
     }
 

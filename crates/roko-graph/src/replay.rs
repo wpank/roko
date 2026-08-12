@@ -40,7 +40,8 @@ pub struct RecordEntry {
     /// Tick index (0 for one-shot graphs; increments for Hot Graph ticks).
     pub tick: u64,
     /// Outputs produced by the node's cell execution.
-    pub engrams: Vec<roko_core::Engram>,
+    #[serde(alias = "engrams")]
+    pub signals: Vec<roko_core::Signal>,
 }
 
 /// Writes Activity node outputs to a JSONL file for later replay.
@@ -92,14 +93,14 @@ impl ActivityRecorder {
         graph_id: &str,
         node_id: &str,
         tick: u64,
-        engrams: Vec<roko_core::Engram>,
+        signals: Vec<roko_core::Signal>,
     ) -> std::io::Result<()> {
         let entry = RecordEntry {
             graph_id: graph_id.to_string(),
             run_id: self.run_id.clone(),
             node_id: node_id.to_string(),
             tick,
-            engrams,
+            signals,
         };
         let line = serde_json::to_string(&entry)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -115,8 +116,8 @@ impl ActivityRecorder {
 /// The key is `(node_id, tick)` — graph_id and run_id are stored in the entry
 /// but are not used for lookup (the replayer is already scoped to one file).
 pub struct ActivityReplayer {
-    /// Map from (node_id, tick) to the recorded output engrams.
-    entries: HashMap<(String, u64), Vec<roko_core::Engram>>,
+    /// Map from (node_id, tick) to the recorded output signals.
+    entries: HashMap<(String, u64), Vec<roko_core::Signal>>,
 }
 
 impl ActivityReplayer {
@@ -130,7 +131,7 @@ impl ActivityReplayer {
     pub fn load(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let file = File::open(path.as_ref())?;
         let reader = BufReader::new(file);
-        let mut entries: HashMap<(String, u64), Vec<roko_core::Engram>> = HashMap::new();
+        let mut entries: HashMap<(String, u64), Vec<roko_core::Signal>> = HashMap::new();
 
         for (line_num, line) in reader.lines().enumerate() {
             let line = line?;
@@ -140,7 +141,7 @@ impl ActivityReplayer {
             }
             match serde_json::from_str::<RecordEntry>(trimmed) {
                 Ok(entry) => {
-                    entries.insert((entry.node_id, entry.tick), entry.engrams);
+                    entries.insert((entry.node_id, entry.tick), entry.signals);
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -160,7 +161,7 @@ impl ActivityReplayer {
     /// Returns `None` if no matching entry exists, which signals the engine to
     /// fall back to live execution for this node.
     #[must_use]
-    pub fn lookup(&self, node_id: &str, tick: u64) -> Option<&Vec<roko_core::Engram>> {
+    pub fn lookup(&self, node_id: &str, tick: u64) -> Option<&Vec<roko_core::Signal>> {
         self.entries.get(&(node_id.to_string(), tick))
     }
 
@@ -174,11 +175,11 @@ impl ActivityReplayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roko_core::{Body, Engram, Kind};
+    use roko_core::{Body, Kind, Signal};
     use tempfile::NamedTempFile;
 
-    fn make_engram(text: &str) -> Engram {
-        Engram::builder(Kind::Task).body(Body::text(text)).build()
+    fn make_signal(text: &str) -> Signal {
+        Signal::builder(Kind::Task).body(Body::text(text)).build()
     }
 
     #[test]
@@ -188,9 +189,9 @@ mod tests {
 
         // Record two entries.
         let mut rec = ActivityRecorder::create("run-1", &path).unwrap();
-        rec.record("my-graph", "node-a", 0, vec![make_engram("hello")])
+        rec.record("my-graph", "node-a", 0, vec![make_signal("hello")])
             .unwrap();
-        rec.record("my-graph", "node-b", 0, vec![make_engram("world")])
+        rec.record("my-graph", "node-b", 0, vec![make_signal("world")])
             .unwrap();
         drop(rec);
 

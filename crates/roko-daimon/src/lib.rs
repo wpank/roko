@@ -2086,22 +2086,22 @@ impl DaimonState {
     /// When the definition changes, previously stored markers are discarded so
     /// incompatible domains do not silently share the same coordinate system.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `strategy_space` fails validation. Call
-    /// [`StrategySpaceDefinition::validate`] first when the input may be
-    /// malformed.
-    pub fn configure_strategy_space(&mut self, strategy_space: StrategySpaceDefinition) {
-        let strategy_space = strategy_space
-            .validate()
-            .expect("strategy space should be validated before configuring DaimonState");
+    /// Returns an error if `strategy_space` fails validation.
+    pub fn configure_strategy_space(
+        &mut self,
+        strategy_space: StrategySpaceDefinition,
+    ) -> Result<()> {
+        let strategy_space = strategy_space.validate()?;
         if self.strategy_space == strategy_space {
-            return;
+            return Ok(());
         }
 
         self.strategy_space = strategy_space;
         self.somatic_landscape = SomaticLandscape::new();
         self.autosave();
+        Ok(())
     }
 
     /// Query the somatic landscape for a strategy region.
@@ -3313,23 +3313,25 @@ mod tests {
             Utc::now(),
         );
 
-        state.configure_strategy_space(
-            StrategySpaceDefinition {
-                domain: "chain".to_string(),
-                dimensions: [
-                    "volatility".to_string(),
-                    "liquidity".to_string(),
-                    "correlation".to_string(),
-                    "leverage".to_string(),
-                    "time_horizon".to_string(),
-                    "concentration".to_string(),
-                    "counterparty_risk".to_string(),
-                    "regulatory_exposure".to_string(),
-                ],
-            }
-            .validate()
-            .unwrap(),
-        );
+        state
+            .configure_strategy_space(
+                StrategySpaceDefinition {
+                    domain: "chain".to_string(),
+                    dimensions: [
+                        "volatility".to_string(),
+                        "liquidity".to_string(),
+                        "correlation".to_string(),
+                        "leverage".to_string(),
+                        "time_horizon".to_string(),
+                        "concentration".to_string(),
+                        "counterparty_risk".to_string(),
+                        "regulatory_exposure".to_string(),
+                    ],
+                }
+                .validate()
+                .unwrap(),
+            )
+            .expect("configure_strategy_space should succeed");
 
         assert_eq!(state.strategy_space.domain, "chain");
         assert!(state.somatic_landscape.markers.is_empty());

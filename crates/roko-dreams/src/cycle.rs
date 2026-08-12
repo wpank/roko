@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use roko_agent::{Agent, AgentResult, nl_to_format::NlToFormatConverter};
-use roko_core::{Body, Context as RokoContext, Engram, Kind};
+use roko_core::{Body, Context as RokoContext, Kind, Signal};
 use roko_learn::{
     cfactor::{CFactor, CFactorRegression, detect_cfactor_regression},
     episode_logger::{Episode, EpisodeGateVerdict, EpisodeLogger, Usage},
@@ -49,13 +49,13 @@ const DREAMS_PERFORMANCE_STALL_MIN_PLANS: usize = 5;
 const DREAMS_PERFORMANCE_SUCCESS_IMPROVEMENT: f64 = 0.01;
 const DREAMS_PERFORMANCE_COST_IMPROVEMENT: f64 = 0.01;
 const DREAMS_PERFORMANCE_STALLED_NOTE: &str = "performance stalled — consider: changing decomposition strategy, adjusting model tier, reviewing failing patterns";
-const ENGRAMS_LOG_FILE: &str = "engrams.jsonl";
+const SIGNALS_LOG_FILE: &str = "engrams.jsonl";
 
 /// Agent hook used by the dream cycle to review a consolidation batch.
 #[async_trait]
 pub trait AgentDispatcher: Send + Sync {
     /// Dispatch a dream-review prompt through the configured agent.
-    async fn dispatch(&self, input: &Engram, ctx: &RokoContext) -> AgentResult;
+    async fn dispatch(&self, input: &Signal, ctx: &RokoContext) -> AgentResult;
 }
 
 #[async_trait]
@@ -63,7 +63,7 @@ impl<T> AgentDispatcher for T
 where
     T: Agent + Send + Sync,
 {
-    async fn dispatch(&self, input: &Engram, ctx: &RokoContext) -> AgentResult {
+    async fn dispatch(&self, input: &Signal, ctx: &RokoContext) -> AgentResult {
         self.run(input, ctx).await
     }
 }
@@ -833,7 +833,7 @@ impl DreamCycle {
             drop_fraction,
         };
 
-        let Some(path) = self.engrams_path() else {
+        let Some(path) = self.signals_path() else {
             return Ok(());
         };
 
@@ -842,7 +842,7 @@ impl DreamCycle {
                 .with_context(|| format!("create dream signal directory {}", parent.display()))?;
         }
 
-        let signal = Engram::builder(Kind::Custom("dreams:regression".to_string()))
+        let signal = Signal::builder(Kind::Custom("dreams:regression".to_string()))
             .body(Body::from_json(&payload).context("serialize dreams regression payload")?)
             .provenance(roko_core::Provenance::trusted("dreams"))
             .tag("historical_records", historical_records.to_string())
@@ -884,7 +884,7 @@ impl DreamCycle {
             return Ok(None);
         };
 
-        let Some(path) = self.engrams_path() else {
+        let Some(path) = self.signals_path() else {
             return Ok(Some(regression));
         };
 
@@ -893,7 +893,7 @@ impl DreamCycle {
                 .with_context(|| format!("create dream signal directory {}", parent.display()))?;
         }
 
-        let signal = Engram::builder(Kind::Custom("cfactor:regression".to_string()))
+        let signal = Signal::builder(Kind::Custom("cfactor:regression".to_string()))
             .body(Body::from_json(&regression).context("serialize cfactor regression payload")?)
             .provenance(roko_core::Provenance::trusted("dreams"))
             .tag("current", format!("{:.4}", regression.current))
@@ -998,13 +998,13 @@ impl DreamCycle {
         Some(root.join("learn").join("c-factor.jsonl"))
     }
 
-    fn engrams_path(&self) -> Option<PathBuf> {
+    fn signals_path(&self) -> Option<PathBuf> {
         let root = self
             .episode_store
             .path()
             .parent()
             .unwrap_or_else(|| Path::new("."));
-        Some(root.join(ENGRAMS_LOG_FILE))
+        Some(root.join(SIGNALS_LOG_FILE))
     }
 }
 
@@ -1167,7 +1167,7 @@ async fn process_cluster(
     };
 
     let prompt = build_cluster_prompt(cluster, started_at)?;
-    let signal = Engram::builder(Kind::Prompt)
+    let signal = Signal::builder(Kind::Prompt)
         .body(Body::text(prompt))
         .build();
     let response = dispatcher.dispatch(&signal, &RokoContext::now()).await;
@@ -2697,9 +2697,9 @@ mod tests {
 
     #[async_trait]
     impl AgentDispatcher for MockDispatcher {
-        async fn dispatch(&self, _input: &Engram, _ctx: &RokoContext) -> AgentResult {
+        async fn dispatch(&self, _input: &Signal, _ctx: &RokoContext) -> AgentResult {
             AgentResult::ok(
-                Engram::builder(Kind::Prompt)
+                Signal::builder(Kind::Prompt)
                     .body(Body::text(self.response.clone()))
                     .build(),
             )
@@ -2753,7 +2753,7 @@ mod tests {
         episode
     }
 
-    fn read_signals(path: &Path) -> Vec<Engram> {
+    fn read_signals(path: &Path) -> Vec<Signal> {
         let Ok(text) = std::fs::read_to_string(path) else {
             return Vec::new();
         };

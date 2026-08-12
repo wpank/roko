@@ -52,7 +52,7 @@ pub fn load_notes(notes_dir: &Path, tag_filter: Option<&str>) -> Vec<NoteEntry> 
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("warning: skipping {}: {e}", path.display());
+                tracing::warn!(path = %path.display(), %e, "skipping note file");
                 continue;
             }
         };

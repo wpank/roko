@@ -7,7 +7,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use roko_core::{Engram, ProtocolId, error::Result};
+use roko_core::{ProtocolId, Signal, error::Result};
 
 /// Semantic version tuple for Cell implementations.
 pub type CellVersion = (u32, u32, u32);
@@ -170,9 +170,9 @@ pub trait Cell: Send + Sync + 'static {
         None
     }
 
-    /// Execute this cell with the given input engrams, producing output engrams.
+    /// Execute this cell with the given input signals, producing output signals.
     ///
     /// The graph engine calls this in topological order, feeding outputs from
     /// upstream cells as inputs to downstream cells.
-    async fn execute(&self, input: Vec<Engram>, ctx: &CellContext) -> Result<Vec<Engram>>;
+    async fn execute(&self, input: Vec<Signal>, ctx: &CellContext) -> Result<Vec<Signal>>;
 }

@@ -229,7 +229,7 @@ pub fn report_readiness_issues(issues: &[ProviderReadinessIssue], config: &RokoC
     }
 
     for issue in issues {
-        eprintln!("warning: {}", issue.message);
+        tracing::warn!(provider = %issue.provider_name, "{}", issue.message);
     }
 
     // Check if ALL referenced providers are blocked.

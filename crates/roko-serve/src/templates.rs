@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use roko_agent::mcp::find_mcp_config;
-use roko_core::{Body, Engram};
+use roko_core::{Body, Signal};
 
 /// The expected output shape for an agent template.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -420,7 +420,7 @@ impl TemplateRegistry {
     pub fn render_prompt_with_signal(
         template: &AgentTemplate,
         params: &HashMap<String, String>,
-        signal: Option<&Engram>,
+        signal: Option<&Signal>,
     ) -> String {
         let mut values = params.clone();
         let variant = values.remove("variant").unwrap_or_default();
@@ -460,7 +460,7 @@ impl TemplateRegistry {
     }
 }
 
-fn signal_json_string(signal: &Engram, path: &[&str]) -> Option<String> {
+fn signal_json_string(signal: &Signal, path: &[&str]) -> Option<String> {
     let Body::Json(value) = &signal.body else {
         return None;
     };

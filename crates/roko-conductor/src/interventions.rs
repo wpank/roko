@@ -11,7 +11,7 @@
 //! warmup period.
 
 use parking_lot::Mutex;
-use roko_core::{ConductorDecision, Context, Engram};
+use roko_core::{ConductorDecision, Context, Signal};
 use roko_learn::conductor::{ConductorAction, ConductorBandit, ConductorState, ErrorPattern};
 use serde::{Deserialize, Serialize};
 
@@ -282,7 +282,7 @@ impl InterventionPolicy for BanditPolicy {
 }
 
 /// Convenience: convert a batch of `WatcherOutput`s into signals for emission.
-pub fn outputs_to_signals(outputs: &[WatcherOutput]) -> Vec<Engram> {
+pub fn outputs_to_signals(outputs: &[WatcherOutput]) -> Vec<Signal> {
     outputs
         .iter()
         .filter_map(|o| {
@@ -291,7 +291,7 @@ pub fn outputs_to_signals(outputs: &[WatcherOutput]) -> Vec<Engram> {
             }
             let body = roko_core::Body::from_json(o).ok()?;
             Some(
-                Engram::builder(roko_core::Kind::Custom(format!(
+                Signal::builder(roko_core::Kind::Custom(format!(
                     "conductor:alert:{}",
                     o.watcher
                 )))

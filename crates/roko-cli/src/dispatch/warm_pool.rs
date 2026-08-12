@@ -106,7 +106,7 @@ impl WarmPool {
             return Some(agent);
         }
         let role = role.into();
-        let mut guard = self.inner.lock().expect("poisoned");
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let queue = guard.pools.entry(role).or_default();
         let evicted = if queue.len() >= self.max_per_role {
             queue.pop_front()
@@ -120,7 +120,7 @@ impl WarmPool {
     /// Take the freshest non-expired agent for `role`.
     pub fn take(&self, role: &str) -> Option<WarmAgent> {
         let now = Instant::now();
-        let mut guard = self.inner.lock().expect("poisoned");
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let queue = guard.pools.get_mut(role)?;
         // Drop expired entries first (oldest first).
         while let Some(front) = queue.front() {
@@ -137,7 +137,7 @@ impl WarmPool {
     pub fn evict_expired(&self) -> Vec<String> {
         let now = Instant::now();
         let mut dropped = Vec::new();
-        let mut guard = self.inner.lock().expect("poisoned");
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         for queue in guard.pools.values_mut() {
             queue.retain(|agent| {
                 let alive = !agent.is_expired(now);
@@ -152,7 +152,7 @@ impl WarmPool {
 
     /// Snapshot the current pool size (sum across roles).
     pub fn stats(&self) -> WarmPoolStats {
-        let guard = self.inner.lock().expect("poisoned");
+        let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let size = guard.pools.values().map(VecDeque::len).sum();
         let roles_with_warm_agents = guard
             .pools

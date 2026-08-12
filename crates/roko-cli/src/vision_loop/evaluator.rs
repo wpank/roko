@@ -11,7 +11,7 @@ use roko_agent::{
 use roko_core::agent::resolve_model;
 use roko_core::chat_types::{ChatMessage, ContentBlock, ImageUrl, MessageContent};
 use roko_core::config::schema::RokoConfig;
-use roko_core::{Body, Engram, Kind};
+use roko_core::{Body, Kind, Signal};
 use roko_learn::model_call_feedback::{ModelCallFeedback, ModelCallFeedbackRecorder};
 
 use crate::learning_helpers::{capture_runtime_model_slugs, provider_id_for_model};
@@ -93,7 +93,7 @@ impl VisionEvaluator {
         let agent = create_agent_for_model(&self.config, &self.model_key, options)
             .map_err(|e| anyhow::anyhow!("failed to create vision agent: {e}"))?;
 
-        let input = Engram::builder(Kind::Prompt)
+        let input = Signal::builder(Kind::Prompt)
             .body(Body::text(&full_prompt))
             .build();
 

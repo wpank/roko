@@ -197,16 +197,12 @@ impl CellularSheaf {
     /// This is the simplest case: both oracles produce predictions in the
     /// same space and we compare them directly.
     pub fn add_identity_edge(&mut self, src: NodeId, tgt: NodeId) {
-        let src_dim = self
-            .stalk_dims
-            .get(&src)
-            .copied()
-            .expect("source vertex not found");
-        let tgt_dim = self
-            .stalk_dims
-            .get(&tgt)
-            .copied()
-            .expect("target vertex not found");
+        let Some(src_dim) = self.stalk_dims.get(&src).copied() else {
+            panic!("source vertex {src} not found");
+        };
+        let Some(tgt_dim) = self.stalk_dims.get(&tgt).copied() else {
+            panic!("target vertex {tgt} not found");
+        };
         assert_eq!(
             src_dim, tgt_dim,
             "identity edge requires equal stalk dimensions"

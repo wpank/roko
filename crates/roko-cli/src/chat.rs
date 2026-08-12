@@ -165,7 +165,7 @@ pub async fn run_chat_repl(agent_id: &str, serve_url: &str) -> Result<()> {
         let response = match client.post(&url).json(&body).send().await {
             Ok(resp) => resp,
             Err(err) => {
-                eprintln!("[connection error] {err}");
+                tracing::warn!(%err, "chat connection error");
                 match &backend {
                     ChatBackend::Sidecar(_) => {
                         eprintln!(
@@ -184,7 +184,7 @@ pub async fn run_chat_repl(agent_id: &str, serve_url: &str) -> Result<()> {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            eprintln!("[request failed: {status}] {body}");
+            tracing::warn!(%status, body = %body, "chat request failed");
             println!();
             continue;
         }
@@ -253,7 +253,7 @@ pub async fn run_direct_provider_chat(
     use crate::learning_helpers::capture_runtime_model_slugs;
     use roko_agent::provider::{AgentOptions, create_agent_for_model};
     use roko_core::agent::resolve_model;
-    use roko_core::{Body, Context, Engram, Kind};
+    use roko_core::{Body, Context, Kind, Signal};
     use roko_learn::model_call_feedback::{ModelCallFeedback, ModelCallFeedbackRecorder};
 
     let model_key = find_model_for_provider(config, provider_name).ok_or_else(|| {
@@ -312,7 +312,7 @@ pub async fn run_direct_provider_chat(
         }));
 
         let prompt_text = render_history_prompt(&history);
-        let engram = Engram::builder(Kind::Prompt)
+        let signal = Signal::builder(Kind::Prompt)
             .body(Body::text(&prompt_text))
             .build();
         let ctx = Context::now();
@@ -326,7 +326,7 @@ pub async fn run_direct_provider_chat(
         std::io::stdout().flush().context("flush indicator")?;
 
         let turn_started = Instant::now();
-        let result = agent.run(&engram, &ctx).await;
+        let result = agent.run(&signal, &ctx).await;
         let latency_ms = turn_started.elapsed().as_millis() as u64;
         total_tokens +=
             u64::from(result.usage.input_tokens) + u64::from(result.usage.output_tokens);
@@ -371,7 +371,7 @@ pub async fn run_direct_provider_chat(
         if result.success {
             println!("{text}");
         } else {
-            eprintln!("[agent error] {text}");
+            tracing::warn!(text = %text, "agent returned error");
         }
         println!();
     }
@@ -462,7 +462,7 @@ async fn resolve_backend(
         if probe_sidecar(client, &sidecar_url).await {
             return ChatBackend::Sidecar(sidecar_url);
         }
-        eprintln!("\u{26a0} Agent '{agent_id}' registered at {sidecar_url} but not reachable.");
+        tracing::warn!(agent_id, sidecar_url, "agent registered but not reachable");
     }
 
     // 2. Query roko-serve's agent registry for the sidecar URL.
@@ -479,10 +479,12 @@ async fn resolve_backend(
         return ChatBackend::Serve(serve_url.to_string());
     }
 
-    eprintln!("\u{26a0} Neither agent sidecar nor roko-serve is reachable.");
-    eprintln!("  Start the agent:  roko agent serve --agent-id {agent_id}");
-    eprintln!("  Or start serve:   roko serve");
-    eprintln!();
+    tracing::warn!(
+        agent_id,
+        "neither agent sidecar nor roko-serve is reachable; \
+         start the agent with `roko agent serve --agent-id {agent_id}` \
+         or start serve with `roko serve`"
+    );
 
     ChatBackend::Unreachable(serve_url.to_string())
 }

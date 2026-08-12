@@ -1,13 +1,13 @@
-//! The universal `Engram` type.
+//! The universal Signal type (defined as `Engram` for backward compatibility).
 //!
-//! An [`Engram`] is every event, every piece of data, every agent output, every
-//! gate verdict in the Roko system. Engrams are:
+//! A Signal is every event, every piece of data, every agent output, every
+//! gate verdict in the Roko system. Signals are:
 //!
 //! - **Addressable** — content-hashed via BLAKE3
-//! - **Decaying** — every engram has a decay function; weight fades over time
+//! - **Decaying** — every signal has a decay function; weight fades over time
 //! - **Scored** — multi-dimensional confidence/novelty/utility/reputation
-//! - **Traced** — lineage tracks which engrams this derived from
-//! - **Composable** — engrams combine into new engrams via [`Compose`]s
+//! - **Traced** — lineage tracks which signals this derived from
+//! - **Composable** — signals combine into new signals via [`Compose`]s
 
 use crate::{Attestation, Body, ContentHash, Decay, EmotionalTag, Kind, Provenance, Pulse, Score};
 use roko_primitives::HdcVector;
@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 // ─── SignalStatus ─────────────────────────────────────────────────────────────
 
-/// Lifecycle tier for a durable Signal (Engram).
+/// Lifecycle tier for a durable Signal.
 ///
 /// Graduation is **monotonic** — signals can only move forward through tiers,
 /// never backward. Each tier carries a different retention guarantee:
@@ -126,13 +126,13 @@ impl std::error::Error for GraduationError {}
 /// this version recorded so future re-encoders can invalidate stale fingerprints.
 pub const ENCODER_VERSION_TEXT_V1: u32 = 1;
 
-/// HDC fingerprint metadata stored alongside an [`Engram`].
+/// HDC fingerprint metadata stored alongside a Signal.
 ///
 /// The vector provides semantic similarity lookup, while `encoder_version`
 /// records which deterministic encoder produced it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HdcFingerprint {
-    /// The semantic fingerprint vector for this engram.
+    /// The semantic fingerprint vector for this signal.
     pub vector: HdcVector,
     /// Monotonic version of the encoder used to derive `vector`.
     pub encoder_version: u32,
@@ -151,22 +151,23 @@ impl HdcFingerprint {
 
 /// The universal datum of the Roko system.
 ///
-/// See [crate-level docs](crate) for the architectural role of Engram.
+/// See [crate-level docs](crate) for the architectural role of Signal.
+/// `Engram` is the canonical struct name; `Signal` is the preferred type alias.
 ///
 /// # Identity
 ///
-/// An engram's identity is its [`ContentHash`], computed from its kind, body,
+/// A signal's identity is its [`ContentHash`], computed from its kind, body,
 /// author, and tags (see [`Engram::content_hash`]). Score and decay are
 /// **excluded** from the hash — they can change without changing identity.
 ///
 /// # Construction
 ///
-/// Use [`Engram::builder`] for ergonomic construction:
+/// Use [`Engram::builder`] (or equivalently `Signal::builder`) for ergonomic construction:
 ///
 /// ```
-/// use roko_core::{Body, Engram, Kind};
+/// use roko_core::{Body, Signal, Kind};
 ///
-/// let s = Engram::builder(Kind::Task)
+/// let s = Signal::builder(Kind::Task)
 ///     .body(Body::text("implement login"))
 ///     .tag("priority", "high")
 ///     .build();
@@ -221,18 +222,21 @@ pub struct Engram {
     pub demurrage_paid: f64,
 }
 
+/// Forward-compatible alias: `Signal` is the preferred name for [`Engram`].
+pub type Signal = Engram;
+
 impl Engram {
-    /// Begin building an engram.
+    /// Begin building a signal.
     #[must_use]
     pub fn builder(kind: Kind) -> EngramBuilder {
         EngramBuilder::new(kind)
     }
 
-    /// Compute the content hash of this engram's identity fields.
+    /// Compute the content hash of this signal's identity fields.
     ///
     /// The hash covers: kind, body, author, taint, lineage, and tags.
     /// It does NOT cover: score, decay, timestamp, attestation, or emotional
-    /// metadata — these can change without changing what the engram fundamentally is.
+    /// metadata — these can change without changing what the signal fundamentally is.
     #[must_use]
     pub fn content_hash(&self) -> ContentHash {
         let mut hasher = blake3::Hasher::new();
@@ -257,7 +261,7 @@ impl Engram {
         ContentHash(*hasher.finalize().as_bytes())
     }
 
-    /// The effective weight of this engram at the given current time.
+    /// The effective weight of this signal at the given current time.
     /// Combines score × decay.
     #[must_use]
     pub fn weight_at(&self, now_ms: i64) -> f32 {
@@ -265,7 +269,7 @@ impl Engram {
         self.score.effective() * self.decay.apply(age)
     }
 
-    /// Age of this engram in milliseconds relative to a reference time.
+    /// Age of this signal in milliseconds relative to a reference time.
     #[must_use]
     pub fn age_ms(&self, now_ms: i64) -> i64 {
         (now_ms - self.created_at_ms).max(0)
@@ -370,7 +374,7 @@ impl Engram {
 
     // ─── HDC fingerprinting ────────────────────────────────────────────────
 
-    /// Compute and set an HDC fingerprint from this engram's body content.
+    /// Compute and set an HDC fingerprint from this signal's body content.
     ///
     /// - [`Body::Text`] and [`Body::Json`] are encoded via [`HdcVector::from_seed`]
     ///   using the body's canonical byte representation as the seed.
@@ -389,7 +393,7 @@ impl Engram {
         self.fingerprint = Some(HdcFingerprint::new(vector, ENCODER_VERSION_TEXT_V1));
     }
 
-    /// Ensure this engram has an HDC fingerprint, computing one if absent.
+    /// Ensure this signal has an HDC fingerprint, computing one if absent.
     ///
     /// Idempotent — if `self.fingerprint` is already `Some`, this is a no-op.
     /// For [`Body::Bytes`], this is always a no-op (binary bodies are not fingerprinted).
@@ -435,14 +439,14 @@ impl Engram {
         self.tags.get(key).map(String::as_str)
     }
 
-    /// Check if this engram's kind matches the given kind.
+    /// Check if this signal's kind matches the given kind.
     #[must_use]
     pub fn is(&self, kind: &Kind) -> bool {
         &self.kind == kind
     }
 
-    /// Emit a derived engram — new kind/body, but tracks this engram as lineage.
-    /// Useful when a gate/composer/policy produces a new engram from an input.
+    /// Emit a derived signal — new kind/body, but tracks this signal as lineage.
+    /// Useful when a gate/composer/policy produces a new signal from an input.
     pub fn derive(&self, kind: Kind, body: Body) -> EngramBuilder {
         EngramBuilder::new(kind)
             .body(body)
@@ -450,7 +454,7 @@ impl Engram {
             .provenance(Provenance::agent("derived"))
     }
 
-    /// Emit a derived gate verdict engram with explicit verdict defaults.
+    /// Emit a derived gate verdict signal with explicit verdict defaults.
     ///
     /// Unlike [`Engram::derive`], this preserves the parent's visible tag set,
     /// carries forward the full known lineage chain, and applies the
@@ -471,7 +475,7 @@ impl Engram {
 
     /// Promote a single [`Pulse`] to a synthetic [`Engram`].
     ///
-    /// The resulting engram carries the pulse's kind, body, tags, and timestamp.
+    /// The resulting signal carries the pulse's kind, body, tags, and timestamp.
     /// Provenance is marked `"pulse_promotion"` and decay is `None`.
     #[must_use]
     pub fn from_pulse_synthetic(p: &Pulse) -> Self {
@@ -544,13 +548,13 @@ impl Engram {
         builder.build()
     }
 
-    /// Bind this engram to another in HDC space when both fingerprints exist.
+    /// Bind this signal to another in HDC space when both fingerprints exist.
     #[must_use]
     pub fn bind(&self, other: &Engram) -> Option<HdcVector> {
         Some(self.fingerprint?.vector.bind(&other.fingerprint?.vector))
     }
 
-    /// Bundle the fingerprints of several engrams into one consensus vector.
+    /// Bundle the fingerprints of several signals into one consensus vector.
     #[must_use]
     pub fn bundle(engrams: &[Engram]) -> Option<HdcVector> {
         let mut vectors = Vec::with_capacity(engrams.len());
@@ -561,7 +565,7 @@ impl Engram {
         Some(HdcVector::bundle(&refs))
     }
 
-    /// Permute this engram's fingerprint into a positional binding slot.
+    /// Permute this signal's fingerprint into a positional binding slot.
     #[must_use]
     pub fn at_position(&self, position: usize) -> Option<HdcVector> {
         Some(self.fingerprint?.vector.permute(position))
@@ -580,7 +584,7 @@ impl Engram {
 
 // ─── Builder ───────────────────────────────────────────────────────────────
 
-/// Ergonomic builder for [`Engram`]s.
+/// Ergonomic builder for Signals.
 ///
 /// Fills in sensible defaults: current time, neutral score, no decay, trusted
 /// roko provenance, empty lineage and tags.
@@ -601,8 +605,11 @@ pub struct EngramBuilder {
     access_count: u32,
 }
 
+/// Forward-compatible alias: `SignalBuilder` is the preferred name for [`EngramBuilder`].
+pub type SignalBuilder = EngramBuilder;
+
 impl EngramBuilder {
-    /// Start building an engram of the given kind.
+    /// Start building a signal of the given kind.
     #[must_use]
     pub fn new(kind: Kind) -> Self {
         Self {
@@ -623,42 +630,42 @@ impl EngramBuilder {
         }
     }
 
-    /// Set the engram's body (payload).
+    /// Set the signal's body (payload).
     #[must_use]
     pub fn body(mut self, body: Body) -> Self {
         self.body = body;
         self
     }
 
-    /// Set the engram's decay function.
+    /// Set the signal's decay function.
     #[must_use]
     pub const fn decay(mut self, decay: Decay) -> Self {
         self.decay = decay;
         self
     }
 
-    /// Set the engram's provenance (author + trust).
+    /// Set the signal's provenance (author + trust).
     #[must_use]
     pub fn provenance(mut self, provenance: Provenance) -> Self {
         self.provenance = provenance;
         self
     }
 
-    /// Set the engram's score.
+    /// Set the signal's score.
     #[must_use]
     pub const fn score(mut self, score: Score) -> Self {
         self.score = score;
         self
     }
 
-    /// Pin the engram's creation time (mostly useful for tests).
+    /// Pin the signal's creation time (mostly useful for tests).
     #[must_use]
     pub const fn created_at_ms(mut self, t: i64) -> Self {
         self.created_at_ms = Some(t);
         self
     }
 
-    /// Add content-hashes of parent engrams to the lineage chain.
+    /// Add content-hashes of parent signals to the lineage chain.
     #[must_use]
     pub fn lineage(mut self, hashes: impl IntoIterator<Item = ContentHash>) -> Self {
         self.lineage.extend(hashes);
@@ -672,7 +679,7 @@ impl EngramBuilder {
         self
     }
 
-    /// Stage fingerprint metadata for this engram.
+    /// Stage fingerprint metadata for this signal.
     ///
     /// Most callers leave this unset and allow `Store::put()` to populate
     /// it using the active encoder registry.
@@ -717,7 +724,7 @@ impl EngramBuilder {
         self
     }
 
-    /// Finalize the engram, computing its content hash.
+    /// Finalize the signal, computing its content hash.
     #[must_use]
     pub fn build(self) -> Engram {
         let created_at_ms = self.created_at_ms.unwrap_or_else(current_time_ms);
@@ -744,7 +751,7 @@ impl EngramBuilder {
     }
 }
 
-/// Default demurrage balance for new or deserialized engrams.
+/// Default demurrage balance for new or deserialized signals.
 fn default_balance() -> f64 {
     1.0
 }

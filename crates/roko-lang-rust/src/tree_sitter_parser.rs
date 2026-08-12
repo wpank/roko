@@ -50,9 +50,9 @@ impl LanguageProvider for TreeSitterRustProvider {
 fn parse_source(source: &str) -> Option<tree_sitter::Tree> {
     let mut parser = tree_sitter::Parser::new();
     let language = tree_sitter_rust::LANGUAGE;
-    parser
-        .set_language(&language.into())
-        .expect("tree-sitter-rust grammar should load");
+    if parser.set_language(&language.into()).is_err() {
+        return None;
+    }
     parser.parse(source, None)
 }
 

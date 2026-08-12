@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use roko_core::{Body, Context, Engram, Kind, React};
+use roko_core::{Body, Context, Kind, React, Signal};
 
 /// Minimum increase in test failures required to fire.
 pub const MIN_FAILURE_INCREASE: u32 = 1;
@@ -66,7 +66,7 @@ impl roko_core::Cell for TestFailureBudgetWatcher {
 }
 
 impl React for TestFailureBudgetWatcher {
-    fn decide(&self, stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
+    fn decide(&self, stream: &[Signal], _ctx: &Context) -> Vec<Signal> {
         let mut baselines: HashMap<String, u32> = HashMap::new();
         let mut latest: HashMap<String, u32> = HashMap::new();
 
@@ -109,7 +109,7 @@ impl React for TestFailureBudgetWatcher {
 
             let delta = current_failed.saturating_sub(baseline_failed);
             signals.push(
-                Engram::builder(Kind::Custom("conductor.intervention".into()))
+                Signal::builder(Kind::Custom("conductor.intervention".into()))
                     .body(Body::text(format!(
                         "test failures increased for {plan_id}: {baseline_failed} -> {current_failed}"
                     )))
@@ -135,8 +135,8 @@ impl React for TestFailureBudgetWatcher {
 mod tests {
     use super::*;
 
-    fn test_signal(plan_id: &str, failed: u32) -> Engram {
-        Engram::builder(Kind::GateVerdict)
+    fn test_signal(plan_id: &str, failed: u32) -> Signal {
+        Signal::builder(Kind::GateVerdict)
             .body(Body::Json(serde_json::json!({
                 PLAN_ID_FIELD: plan_id,
                 GATE_FIELD: "test",

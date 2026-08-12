@@ -128,7 +128,7 @@ pub(crate) async fn cmd_up(cli: &Cli, workdir: PathBuf) -> Result<i32> {
     // Stop all started agents.
     for name in &started_agents {
         if let Err(e) = run_agent_stop(name, false, Some(&workdir)) {
-            eprintln!("warning: failed to stop agent '{}': {}", name, e);
+            tracing::warn!(agent = %name, %e, "failed to stop agent");
         }
     }
 
@@ -136,8 +136,8 @@ pub(crate) async fn cmd_up(cli: &Cli, workdir: PathBuf) -> Result<i32> {
     serve_state.cancel.cancel();
     match serve_handle.await {
         Ok(Ok(())) => {}
-        Ok(Err(e)) => eprintln!("warning: roko-serve shutdown error: {e}"),
-        Err(e) => eprintln!("warning: roko-serve task panicked: {e}"),
+        Ok(Err(e)) => tracing::warn!(%e, "roko-serve shutdown error"),
+        Err(e) => tracing::error!(%e, "roko-serve task panicked"),
     }
 
     println!("All services stopped.");

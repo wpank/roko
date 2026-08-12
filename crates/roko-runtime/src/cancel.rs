@@ -137,7 +137,7 @@ impl CancelToken {
                     // For deeper chains, just poll the root + self.
                     // Cancellation always propagates through notify_waiters.
                     let self_notify = notifies[0].notified();
-                    let root_notify = notifies.last().expect("non-empty").notified();
+                    let root_notify = notifies[notifies.len() - 1].notified();
                     tokio::select! {
                         () = self_notify => {}
                         () = root_notify => {}

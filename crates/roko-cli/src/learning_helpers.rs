@@ -11,7 +11,7 @@ use roko_agent::model_call_service::ModelCallService;
 use roko_core::agent::resolve_model;
 use roko_core::config::schema::RokoConfig;
 use roko_core::foundation::ModelCaller;
-use roko_core::{AgentRole, Body, Engram, Kind};
+use roko_core::{AgentRole, Body, Kind, Signal};
 use roko_learn::anomaly::AnomalyDetector;
 use roko_learn::efficiency::AgentEfficiencyEvent;
 use roko_learn::events::{AgentEvent, EventBus as LearningEventBus};
@@ -202,7 +202,7 @@ fn drain_turn_learning_events(
 // ─── Efficiency signals ──────────────────────────────────────────────────
 
 /// Convert the latest efficiency entries into the signals expected by the conductor.
-pub(crate) fn build_efficiency_signals(text: &str, budget_usd: Option<f64>) -> Vec<Engram> {
+pub(crate) fn build_efficiency_signals(text: &str, budget_usd: Option<f64>) -> Vec<Signal> {
     let mut signals = Vec::new();
 
     if let Some(budget_usd) = budget_usd.filter(|budget| *budget > 0.0) {
@@ -238,18 +238,18 @@ pub(crate) fn latest_efficiency_cost(text: &str) -> Option<f64> {
     (seen > 0).then_some(total)
 }
 
-pub(crate) fn build_cost_overrun_signals(text: &str, budget_usd: f64) -> Vec<Engram> {
+pub(crate) fn build_cost_overrun_signals(text: &str, budget_usd: f64) -> Vec<Signal> {
     let Some(cost_usd) = latest_efficiency_cost(text) else {
         return Vec::new();
     };
 
     vec![
-        Engram::builder(Kind::Metric)
+        Signal::builder(Kind::Metric)
             .body(Body::text("plan cost"))
             .tag("name", "plan_cost")
             .tag("value", format!("{cost_usd:.6}"))
             .build(),
-        Engram::builder(Kind::Metric)
+        Signal::builder(Kind::Metric)
             .body(Body::text("plan budget"))
             .tag("name", "plan_budget")
             .tag("value", format!("{budget_usd:.6}"))
@@ -257,7 +257,7 @@ pub(crate) fn build_cost_overrun_signals(text: &str, budget_usd: f64) -> Vec<Eng
     ]
 }
 
-pub(crate) fn build_context_window_pressure_signal(text: &str) -> Option<Engram> {
+pub(crate) fn build_context_window_pressure_signal(text: &str) -> Option<Signal> {
     let event = latest_efficiency_event(text)?;
     let body = Body::from_json(&event).unwrap_or_else(|_| {
         Body::text(format!(
@@ -267,7 +267,7 @@ pub(crate) fn build_context_window_pressure_signal(text: &str) -> Option<Engram>
     });
 
     Some(
-        Engram::builder(Kind::TokenUsage)
+        Signal::builder(Kind::TokenUsage)
             .body(body)
             .tag("plan_id", event.plan_id)
             .tag("task_id", event.task_id)
@@ -297,7 +297,7 @@ pub(crate) fn latest_efficiency_event(text: &str) -> Option<AgentEfficiencyEvent
 pub(crate) async fn load_recent_signals(
     path: &Path,
     tail_len: usize,
-) -> std::io::Result<Vec<Engram>> {
+) -> std::io::Result<Vec<Signal>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -310,7 +310,7 @@ pub(crate) async fn load_recent_signals(
     let start = lines.len().saturating_sub(tail_len);
     let mut signals = Vec::with_capacity(lines.len().saturating_sub(start));
     for line in &lines[start..] {
-        if let Ok(signal) = serde_json::from_str::<Engram>(line) {
+        if let Ok(signal) = serde_json::from_str::<Signal>(line) {
             signals.push(signal);
         }
     }
@@ -321,7 +321,7 @@ pub(crate) async fn load_recent_signals(
 pub(crate) async fn load_efficiency_cost_signals(
     path: &Path,
     budget_usd: Option<f64>,
-) -> std::io::Result<Vec<Engram>> {
+) -> std::io::Result<Vec<Signal>> {
     let Some(budget_usd) = budget_usd.filter(|budget| *budget > 0.0) else {
         return Ok(Vec::new());
     };
@@ -334,7 +334,7 @@ pub(crate) async fn load_efficiency_cost_signals(
 pub(crate) fn load_efficiency_signals_sync(
     path: &Path,
     budget_usd: Option<f64>,
-) -> std::io::Result<Vec<Engram>> {
+) -> std::io::Result<Vec<Signal>> {
     let text = std::fs::read_to_string(path)?;
     Ok(build_efficiency_signals(&text, budget_usd))
 }

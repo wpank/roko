@@ -65,7 +65,7 @@ pub(crate) fn render(
     theme: &Theme,
 ) {
     match view_state.sub_tab {
-        1 => render_engram_dag(frame, area, tui_state, view_state, theme),
+        1 => render_signal_dag(frame, area, tui_state, view_state, theme),
         2 => render_episode_replay(frame, area, tui_state, view_state, theme),
         3 => render_knowledge_browse(frame, area, tui_state, view_state, theme),
         _ => {
@@ -727,22 +727,22 @@ fn render_alerts_and_health(
 }
 
 // ---------------------------------------------------------------------------
-// Sub-view: Engram DAG (sub_tab == 1)
+// Sub-view: Signal DAG (sub_tab == 1)
 // ---------------------------------------------------------------------------
 
-fn render_engram_dag(
+fn render_signal_dag(
     frame: &mut Frame<'_>,
     area: Rect,
     tui_state: &TuiState,
     view_state: &ViewState,
     theme: &Theme,
 ) {
-    let block = Block::bordered().title(Span::styled(" Engram DAG ", theme.accent()));
+    let block = Block::bordered().title(Span::styled(" Signal DAG ", theme.accent()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     if tui_state.recent_signals.is_empty() {
-        let empty = Paragraph::new("no signals -- run agents to populate engram DAG")
+        let empty = Paragraph::new("no signals -- run agents to populate signal DAG")
             .style(theme.muted())
             .wrap(Wrap { trim: false });
         frame.render_widget(empty, inner);
@@ -765,7 +765,7 @@ fn render_engram_dag(
         .skip(scroll)
         .take(visible_height)
         .map(|(idx, sig)| {
-            let depth = engram_depth(sig);
+            let depth = signal_depth(sig);
             let connector = if depth == 0 {
                 "\u{2500} "
             } else {
@@ -988,7 +988,7 @@ fn selected_in_window(selected: usize, scroll: usize, visible_height: usize) -> 
     }
 }
 
-fn engram_depth(signal: &crate::tui::dashboard::SignalSummary) -> usize {
+fn signal_depth(signal: &crate::tui::dashboard::SignalSummary) -> usize {
     if signal.lineage.is_empty() {
         usize::from(signal.parent_hash.is_some())
     } else {
@@ -1098,12 +1098,12 @@ mod tests {
     }
 
     #[test]
-    fn engram_depth_prefers_lineage_then_parent() {
-        assert_eq!(engram_depth(&signal(None, &[])), 0);
-        assert_eq!(engram_depth(&signal(Some("parent"), &[])), 1);
-        assert_eq!(engram_depth(&signal(Some("parent"), &["a", "b", "c"])), 3);
+    fn signal_depth_prefers_lineage_then_parent() {
+        assert_eq!(signal_depth(&signal(None, &[])), 0);
+        assert_eq!(signal_depth(&signal(Some("parent"), &[])), 1);
+        assert_eq!(signal_depth(&signal(Some("parent"), &["a", "b", "c"])), 3);
         assert_eq!(
-            engram_depth(&signal(Some("parent"), &["a", "b", "c", "d", "e"])),
+            signal_depth(&signal(Some("parent"), &["a", "b", "c", "d", "e"])),
             4
         );
     }

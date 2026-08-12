@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use roko_core::{
-    ContentHash, Context, Engram, ProtocolId, Query, Store,
+    ContentHash, Context, Engram as Signal, ProtocolId, Query, Store,
     error::{Result, RokoError},
 };
 use std::collections::{HashMap, HashSet};
@@ -23,8 +23,8 @@ const HDC_TAG: &str = "hdc_fingerprint";
 pub struct FileSubstrate {
     /// Directory containing `engrams.jsonl`.
     root: PathBuf,
-    /// In-memory index: `ContentHash` → `Engram`.
-    index: RwLock<HashMap<ContentHash, Engram>>,
+    /// In-memory index: `ContentHash` → `Signal`.
+    index: RwLock<HashMap<ContentHash, Signal>>,
     /// Serializes writes to the log file.
     log_writer: Mutex<File>,
     /// Human-readable name (kept for Debug / logging).
@@ -78,7 +78,7 @@ impl FileSubstrate {
         &self.root
     }
 
-    /// Remove specific engrams from the in-memory index by their content hash.
+    /// Remove specific signals from the in-memory index by their content hash.
     ///
     /// Returns the number of entries actually removed. This does **not**
     /// rewrite the log file — call [`compact`](Self::compact) afterwards to
@@ -102,7 +102,7 @@ impl FileSubstrate {
     ///
     /// Returns an error if the temp-file swap fails.
     pub async fn compact(&self) -> Result<()> {
-        let snapshot: Vec<Engram> = self.index.read().values().cloned().collect();
+        let snapshot: Vec<Signal> = self.index.read().values().cloned().collect();
         let log_path = self.log_path();
         let tmp_path = self.root.join("engrams.jsonl.tmp");
 
@@ -150,10 +150,10 @@ impl FileSubstrate {
     /// Returns an error if serialization or I/O fails. On error, partial
     /// writes may have occurred - the caller should not retry the same
     /// signals without first checking the index.
-    pub async fn put_batch(&self, signals: Vec<Engram>) -> Result<Vec<ContentHash>> {
+    pub async fn put_batch(&self, signals: Vec<Signal>) -> Result<Vec<ContentHash>> {
         let mut ids = Vec::with_capacity(signals.len());
         let mut lines = String::new();
-        let mut to_index: Vec<Engram> = Vec::new();
+        let mut to_index: Vec<Signal> = Vec::new();
         let mut seen_ids = HashSet::with_capacity(signals.len());
 
         // Phase 1: deduplicate and serialize without holding the write lock.
@@ -194,7 +194,7 @@ impl FileSubstrate {
     }
 }
 
-async fn replay_log(log_path: &Path) -> Result<HashMap<ContentHash, Engram>> {
+async fn replay_log(log_path: &Path) -> Result<HashMap<ContentHash, Signal>> {
     let mut index = HashMap::new();
     if !log_path.exists() {
         return Ok(index);
@@ -208,7 +208,7 @@ async fn replay_log(log_path: &Path) -> Result<HashMap<ContentHash, Engram>> {
         if line.trim().is_empty() {
             continue;
         }
-        match serde_json::from_str::<Engram>(&line) {
+        match serde_json::from_str::<Signal>(&line) {
             Ok(sig) => {
                 index.insert(sig.id, sig);
             }
@@ -229,7 +229,7 @@ fn tracing_line_error(_path: &Path, _line: usize, _err: &serde_json::Error) {
     // since roko-fs doesn't depend on tracing.
 }
 
-fn matches_query(signal: &Engram, q: &Query, ctx: &Context) -> bool {
+fn matches_query(signal: &Signal, q: &Query, ctx: &Context) -> bool {
     if let Some(kinds) = &q.kinds {
         if !kinds.contains(&signal.kind) {
             return false;
@@ -284,7 +284,7 @@ impl roko_core::Cell for FileSubstrate {
 
 #[async_trait]
 impl Store for FileSubstrate {
-    async fn put(&self, signal: Engram) -> Result<ContentHash> {
+    async fn put(&self, signal: Signal) -> Result<ContentHash> {
         // Dedupe: skip write if already present.
         if self.index.read().contains_key(&signal.id) {
             return Ok(signal.id);
@@ -307,12 +307,12 @@ impl Store for FileSubstrate {
         Ok(id)
     }
 
-    async fn get(&self, id: &ContentHash) -> Result<Option<Engram>> {
+    async fn get(&self, id: &ContentHash) -> Result<Option<Signal>> {
         Ok(self.index.read().get(id).cloned())
     }
 
-    async fn query(&self, q: &Query, ctx: &Context) -> Result<Vec<Engram>> {
-        let mut matching: Vec<Engram> = self
+    async fn query(&self, q: &Query, ctx: &Context) -> Result<Vec<Signal>> {
+        let mut matching: Vec<Signal> = self
             .index
             .read()
             .values()
@@ -356,7 +356,7 @@ impl Store for FileSubstrate {
 /// already carry the tag are returned unchanged. Fingerprinting never
 /// fails: if anything goes wrong the signal is returned as-is.
 #[cfg(feature = "hdc")]
-fn attach_hdc_fingerprint(mut signal: Engram) -> Engram {
+fn attach_hdc_fingerprint(mut signal: Signal) -> Signal {
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD as BASE64;
 
@@ -373,7 +373,7 @@ fn attach_hdc_fingerprint(mut signal: Engram) -> Engram {
 }
 
 #[cfg(not(feature = "hdc"))]
-const fn attach_hdc_fingerprint(signal: Engram) -> Engram {
+const fn attach_hdc_fingerprint(signal: Signal) -> Signal {
     signal
 }
 
@@ -383,8 +383,8 @@ mod tests {
     use roko_core::{Body, Decay, Kind, Score};
     use tempfile::TempDir;
 
-    fn sig(kind: Kind, body: &str, t: i64) -> Engram {
-        Engram::builder(kind)
+    fn sig(kind: Kind, body: &str, t: i64) -> Signal {
+        Signal::builder(kind)
             .body(Body::text(body))
             .created_at_ms(t)
             .build()
@@ -437,7 +437,7 @@ mod tests {
         let contents = fs::read_to_string(sub.log_path()).await.unwrap();
         let stored_bodies: Vec<String> = contents
             .lines()
-            .map(|line| serde_json::from_str::<Engram>(line).unwrap())
+            .map(|line| serde_json::from_str::<Signal>(line).unwrap())
             .map(|sig| sig.body.as_text().unwrap_or("").to_string())
             .collect();
         assert_eq!(stored_bodies, vec!["existing", "second", "third"]);
@@ -507,7 +507,7 @@ mod tests {
         let sub = FileSubstrate::open(tmp.path()).await.unwrap();
 
         sub.put(
-            Engram::builder(Kind::Pheromone)
+            Signal::builder(Kind::Pheromone)
                 .body(Body::text("transient"))
                 .score(Score::new(1.0, 0.0, 0.0, 1.0))
                 .decay(Decay::HalfLife { half_life_ms: 100 })
@@ -517,7 +517,7 @@ mod tests {
         .await
         .unwrap();
         sub.put(
-            Engram::builder(Kind::Task)
+            Signal::builder(Kind::Task)
                 .body(Body::text("eternal"))
                 .score(Score::new(1.0, 0.0, 0.0, 1.0))
                 .decay(Decay::None)

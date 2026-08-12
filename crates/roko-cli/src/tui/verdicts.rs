@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use chrono::{DateTime, TimeZone, Utc};
-use roko_core::{ContentHash, Context, Engram, FailureEntry, Kind, Query, Store, TrendBuckets};
+use roko_core::{ContentHash, Context, FailureEntry, Kind, Query, Signal, Store, TrendBuckets};
 use roko_fs::FileSubstrate;
 use tokio::runtime::{Builder, Runtime};
 
@@ -29,7 +29,7 @@ impl SubstrateCursor {
         )
     }
 
-    fn should_visit(&self, signal: &Engram) -> bool {
+    fn should_visit(&self, signal: &Signal) -> bool {
         match self.since_ms {
             None => true,
             Some(lower_bound) if signal.created_at_ms > lower_bound => true,
@@ -40,7 +40,7 @@ impl SubstrateCursor {
         }
     }
 
-    fn mark_seen(&mut self, signal: &Engram) {
+    fn mark_seen(&mut self, signal: &Signal) {
         match self.since_ms {
             None => {
                 self.since_ms = Some(signal.created_at_ms);
@@ -60,7 +60,7 @@ impl SubstrateCursor {
     }
 }
 
-/// Rolling per-gate statistics derived from persisted verdict engrams.
+/// Rolling per-gate statistics derived from persisted verdict signals.
 #[derive(Debug, Clone, Default)]
 pub struct GateStats {
     /// Verify name.
@@ -250,7 +250,7 @@ impl VerdictsAggregator {
             .expect("verdict aggregator runtime is present until drop")
     }
 
-    fn ingest(&mut self, signal: Engram, now: DateTime<Utc>) {
+    fn ingest(&mut self, signal: Signal, now: DateTime<Utc>) {
         let Some(gate) = extract_gate_name(&signal) else {
             self.cursor.mark_seen(&signal);
             return;
@@ -306,41 +306,41 @@ fn push_bounded<T>(queue: &mut VecDeque<T>, item: T, cap: usize) {
     queue.push_back(item);
 }
 
-fn extract_gate_name(signal: &Engram) -> Option<String> {
+fn extract_gate_name(signal: &Signal) -> Option<String> {
     signal
         .tag("gate")
         .map(ToOwned::to_owned)
         .or_else(|| extract_json_string(signal, "gate"))
 }
 
-fn extract_gate_passed(signal: &Engram) -> Option<bool> {
+fn extract_gate_passed(signal: &Signal) -> Option<bool> {
     signal
         .tag("passed")
         .and_then(parse_bool)
         .or_else(|| extract_json_bool(signal, "passed"))
 }
 
-fn extract_plan_id(signal: &Engram) -> Option<String> {
+fn extract_plan_id(signal: &Signal) -> Option<String> {
     signal
         .tag("plan_id")
         .map(ToOwned::to_owned)
         .or_else(|| extract_json_string(signal, "plan_id"))
 }
 
-fn extract_task_id(signal: &Engram) -> Option<String> {
+fn extract_task_id(signal: &Signal) -> Option<String> {
     signal
         .tag("task_id")
         .map(ToOwned::to_owned)
         .or_else(|| extract_json_string(signal, "task_id"))
 }
 
-fn extract_summary(signal: &Engram) -> Option<String> {
+fn extract_summary(signal: &Signal) -> Option<String> {
     extract_json_string(signal, "error_digest")
         .or_else(|| extract_json_string(signal, "reason"))
         .or_else(|| extract_json_string(signal, "detail"))
 }
 
-fn extract_artifact_path(signal: &Engram) -> Option<PathBuf> {
+fn extract_artifact_path(signal: &Signal) -> Option<PathBuf> {
     signal
         .tag("artifact")
         .map(PathBuf::from)
@@ -349,7 +349,7 @@ fn extract_artifact_path(signal: &Engram) -> Option<PathBuf> {
         .or_else(|| extract_json_string(signal, "artifacts").map(PathBuf::from))
 }
 
-fn extract_json_string(signal: &Engram, key: &str) -> Option<String> {
+fn extract_json_string(signal: &Signal, key: &str) -> Option<String> {
     let roko_core::Body::Json(value) = &signal.body else {
         return None;
     };
@@ -360,7 +360,7 @@ fn extract_json_string(signal: &Engram, key: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn extract_json_bool(signal: &Engram, key: &str) -> Option<bool> {
+fn extract_json_bool(signal: &Signal, key: &str) -> Option<bool> {
     let roko_core::Body::Json(value) = &signal.body else {
         return None;
     };

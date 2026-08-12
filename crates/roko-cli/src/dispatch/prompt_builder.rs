@@ -519,7 +519,7 @@ fn generate_cfactor_context(workdir: &Path) -> String {
         top_negative_contributors: top_negative,
     };
 
-    // Use CFactorPolicy to generate engrams, then extract their text bodies.
+    // Use CFactorPolicy to generate signals, then extract their text bodies.
     #[derive(Clone)]
     struct StaticSource(Option<roko_core::CFactorSummary>);
     impl CFactorSource for StaticSource {
@@ -530,15 +530,15 @@ fn generate_cfactor_context(workdir: &Path) -> String {
 
     let source: Arc<dyn CFactorSource> = Arc::new(StaticSource(Some(summary)));
     let policy = CFactorPolicy::new(source).with_min_episode_count(6);
-    let engrams = policy.decide(&[], &Context::now());
+    let signals = policy.decide(&[], &Context::now());
 
-    if engrams.is_empty() {
+    if signals.is_empty() {
         return String::new();
     }
 
     let mut out = String::from("# Collective calibration\n");
-    for engram in &engrams {
-        if let Ok(text) = engram.body.as_text() {
+    for signal in &signals {
+        if let Ok(text) = signal.body.as_text() {
             let text = text.trim();
             if !text.is_empty() {
                 out.push_str(text);

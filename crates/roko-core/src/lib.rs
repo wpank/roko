@@ -1,22 +1,22 @@
-//! Roko kernel — the universal Engram type and six traits that compose to express
+//! Roko kernel — the universal Signal type and six traits that compose to express
 //! every capability in the Roko orchestration system.
 //!
 //! # Architecture
 //!
-//! The entire Roko system is built from **one noun** ([`Engram`]) and **six verbs**:
+//! The entire Roko system is built from **one noun** ([`Signal`]) and **six verbs**:
 //!
 //! | Trait | Purpose |
 //! |---|---|
-//! | [`Store`] | Store and query engrams |
-//! | [`Score`](traits::Score) | Rate engrams along multi-dimensional axes |
-//! | [`Verify`] | Verify engrams against ground truth |
-//! | [`Route`] | Select one engram from many candidates |
-//! | [`Compose`] | Combine engrams into a new engram under a budget |
-//! | [`React`] | Watch engram streams and emit new engrams (interventions) |
+//! | [`Store`] | Store and query signals |
+//! | [`Score`](traits::Score) | Rate signals along multi-dimensional axes |
+//! | [`Verify`] | Verify signals against ground truth |
+//! | [`Route`] | Select one signal from many candidates |
+//! | [`Compose`] | Combine signals into a new signal under a budget |
+//! | [`React`] | Watch signal streams and emit new signals (interventions) |
 //!
 //! Every capability — coding-agent spawning, verification gates, context assembly,
 //! model routing, memory retrieval, chain participation, bounty markets, HDC search
-//! — is one of these six verbs operating on Engrams.
+//! — is one of these six verbs operating on Signals.
 //!
 //! # The Universal Loop
 //!
@@ -165,7 +165,7 @@ pub mod runtime_event;
 pub mod score;
 pub mod secrets;
 pub mod shutdown;
-/// Signal — forward-compatible alias for `Engram` (Phase 1 prep).
+/// Signal — the primary type name (re-exports from `engram` module).
 pub mod signal;
 pub mod signal_kinds;
 pub mod task;

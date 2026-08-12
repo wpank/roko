@@ -282,7 +282,10 @@ pub fn start_workspace_registration(
     Some(tokio::spawn(async move {
         // Convert relay WS URL to HTTP base (scheme + authority only).
         let relay_http = normalize_ws_to_http_base(&relay_url);
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_default();
 
         // Register workspace.
         let register_url = format!("{relay_http}/relay/workspaces/register");

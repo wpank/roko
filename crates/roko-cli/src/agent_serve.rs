@@ -24,7 +24,7 @@ use roko_agent_server::{
     AgentRegistration, AgentServer, DispatchError, DispatchLike, RelayClientConfig,
 };
 use roko_cli::agent_spawn::{SpawnAgentSpec, spawn_agent_scoped};
-use roko_core::{Body, Context, Engram, Kind, MessageContent};
+use roko_core::{Body, Context, Kind, MessageContent, Signal};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -570,7 +570,7 @@ struct ServingAgentDispatcher {
 impl DispatchLike for ServingAgentDispatcher {
     async fn dispatch(&self, request: ChatRequest) -> Result<ChatResponse, DispatchError> {
         let prompt = extract_prompt(&request).ok_or(DispatchError::NotConfigured)?;
-        let input = Engram::builder(Kind::Prompt)
+        let input = Signal::builder(Kind::Prompt)
             .body(Body::text(prompt.clone()))
             .build();
         let result = self
@@ -688,11 +688,11 @@ pub async fn run(cmd: AgentCmd) -> Result<()> {
                     Ok(resp) => {
                         let status = resp.status();
                         let text = resp.text().await.unwrap_or_default();
-                        eprintln!("warning: serve registration failed ({status}): {text}");
+                        tracing::warn!(%status, %text, "serve registration failed");
                     }
                     Err(err) => {
-                        eprintln!("warning: could not reach serve at {register_url}: {err}");
-                        eprintln!("  (the agent was created locally; register manually later)");
+                        tracing::warn!(%register_url, %err, "could not reach serve for agent registration");
+                        tracing::info!("the agent was created locally; register manually later");
                     }
                 }
             }

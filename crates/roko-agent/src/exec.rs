@@ -212,11 +212,11 @@ impl Agent for ExecAgent {
             drop(stdin);
         }
 
-        eprintln!(
-            "[{}] agent started (pid {}, timeout {}s)",
-            self.name,
-            pid.unwrap_or(0),
-            self.timeout_ms / 1000
+        tracing::info!(
+            agent = %self.name,
+            pid = pid.unwrap_or(0),
+            timeout_s = self.timeout_ms / 1000,
+            "agent started"
         );
 
         let has_activity = Arc::new(AtomicBool::new(false));
@@ -239,9 +239,10 @@ impl Agent for ExecAgent {
                         stdout_activity.store(true, Ordering::Relaxed);
                         // Report progress every ~4KB.
                         if collected.len() - last_report >= 4096 || last_report == 0 {
-                            eprintln!(
-                                "[{stdout_name}] receiving output... ({} bytes so far)",
-                                collected.len()
+                            tracing::debug!(
+                                agent = %stdout_name,
+                                bytes = collected.len(),
+                                "receiving output"
                             );
                             last_report = collected.len();
                         }
@@ -265,7 +266,7 @@ impl Agent for ExecAgent {
             while let Ok(Some(line)) = lines.next_line().await {
                 if !line.trim().is_empty() {
                     stderr_activity.store(true, Ordering::Relaxed);
-                    eprintln!("[{stderr_name}] {line}");
+                    tracing::debug!(agent = %stderr_name, "{line}");
                 }
                 collected.push_str(&line);
                 collected.push('\n');
@@ -284,7 +285,7 @@ impl Agent for ExecAgent {
                 interval.tick().await;
                 if !heartbeat_activity.swap(false, Ordering::Relaxed) {
                     let elapsed = heartbeat_started.elapsed().as_secs();
-                    eprintln!("[{heartbeat_name}] waiting for response... ({elapsed}s elapsed)");
+                    tracing::debug!(agent = %heartbeat_name, elapsed_s = elapsed, "waiting for response");
                 }
             }
         });
@@ -333,7 +334,7 @@ impl Agent for ExecAgent {
             let code = status
                 .code()
                 .map_or_else(|| "signal".into(), |c| c.to_string());
-            eprintln!("[{}] failed (exit {code}) after {elapsed_secs}s", self.name);
+            tracing::warn!(agent = %self.name, exit_code = %code, elapsed_s = elapsed_secs, "agent failed");
             return self.failure_signal(
                 input,
                 &format!("exit {code}: {}", first_line(&stderr)),
@@ -352,10 +353,11 @@ impl Agent for ExecAgent {
             );
         }
 
-        eprintln!(
-            "[{}] completed successfully ({elapsed_secs}s, {} bytes)",
-            self.name,
-            stdout.len()
+        tracing::info!(
+            agent = %self.name,
+            elapsed_s = elapsed_secs,
+            bytes = stdout.len(),
+            "agent completed successfully"
         );
 
         let out_signal = derived_output(input, Kind::AgentOutput, Body::text(stdout.clone()))
@@ -421,7 +423,7 @@ const fn track_pids() -> bool {
 fn maybe_warn_and_filter_benign(name: &str, line: &str) -> bool {
     if let Some(benign) = classify_benign_stderr(line) {
         if benign_stderr_warn_once(benign.key) {
-            eprintln!("[{name}] {}", benign.summary);
+            tracing::warn!(agent = %name, "{}", benign.summary);
         }
         return true;
     }

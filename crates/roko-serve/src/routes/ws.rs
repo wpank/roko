@@ -220,9 +220,10 @@ async fn handle_ws(state: Arc<AppState>, socket: WebSocket) {
 /// Filter strings support two forms:
 ///   1. **Plain type match** — the filter string is matched against the event's
 ///      serde `type` tag (substring match, backward-compatible).
-///   2. **Channel prefix** — `projection:<name>`, `topic:<pattern>`, or
-///      `engram-stream:<name>`.  These are matched against the serialized event's
-///      type using glob-like semantics where `*` matches any suffix.
+///   2. **Channel prefix** — `projection:<name>`, `topic:<pattern>`,
+///      `signal-stream:<name>`, or legacy `engram-stream:<name>`.  These are
+///      matched against the serialized event's type using glob-like semantics
+///      where `*` matches any suffix.
 ///
 /// An empty filter accepts all events.
 fn matches_filter(event: &crate::events::ServerEvent, filter: &[String]) -> bool {
@@ -249,6 +250,7 @@ fn matches_filter(event: &crate::events::ServerEvent, filter: &[String]) -> bool
         if let Some(pattern) = f
             .strip_prefix("projection:")
             .or_else(|| f.strip_prefix("topic:"))
+            .or_else(|| f.strip_prefix("signal-stream:"))
             .or_else(|| f.strip_prefix("engram-stream:"))
         {
             return channel_pattern_matches(&event_types, pattern);

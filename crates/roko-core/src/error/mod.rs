@@ -48,7 +48,7 @@ pub enum RokoError {
     #[error("substrate error: {0}")]
     Store(String),
 
-    /// Engram not found in the queried substrate.
+    /// Signal not found in the queried substrate.
     #[error("signal not found: {0}")]
     NotFound(crate::ContentHash),
 

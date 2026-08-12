@@ -59,7 +59,7 @@ pub enum EntityKind {
     Agent,
     /// Recorded episode (agent turn + gate result).
     Episode,
-    /// Persisted signal / engram.
+    /// Persisted signal.
     Signal,
     /// Verify check result.
     GateResult,

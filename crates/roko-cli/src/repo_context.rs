@@ -385,8 +385,8 @@ pub async fn build_repo_context(
     extend_do_not_create(&mut do_not_create, &workdir);
 
     if !timed_out && start.elapsed() >= time_budget {
-        eprintln!(
-            "warning: repo context build exceeded the 10-second budget; returning partial results"
+        tracing::warn!(
+            "repo context build exceeded the 10-second budget; returning partial results"
         );
     }
 
@@ -446,9 +446,7 @@ where
     F: FnOnce() -> T + Send + 'static,
 {
     if start.elapsed() >= time_budget {
-        eprintln!(
-            "warning: repo context build timed out before collecting {task_name}; returning partial results"
-        );
+        tracing::warn!(%task_name, "repo context build timed out before collecting task; returning partial results");
         return None;
     }
 
@@ -458,7 +456,7 @@ where
             return match handle.await {
                 Ok(value) => Some(value),
                 Err(err) => {
-                    eprintln!("warning: repo context {task_name} task failed: {err}");
+                    tracing::warn!(%task_name, %err, "repo context task failed");
                     None
                 }
             };
@@ -466,9 +464,7 @@ where
 
         if start.elapsed() >= time_budget {
             handle.abort();
-            eprintln!(
-                "warning: repo context build timed out while collecting {task_name}; returning partial results"
-            );
+            tracing::warn!(%task_name, "repo context build timed out while collecting task; returning partial results");
             return None;
         }
 
@@ -764,9 +760,11 @@ fn push_go_member_name(names: &mut Vec<String>, path: &str) {
 }
 
 fn warn_manifest_error(path_kind: &str, path: &Path, err: impl fmt::Display) {
-    eprintln!(
-        "warning: failed to read {path_kind} at {}: {err}",
-        path.display()
+    tracing::warn!(
+        path_kind,
+        path = %path.display(),
+        %err,
+        "failed to read manifest"
     );
 }
 

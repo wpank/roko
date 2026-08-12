@@ -22,7 +22,7 @@ use cron::Schedule;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use notify::{EventKind, RecursiveMode, Watcher, recommended_watcher};
 use roko_core::config::{SchedulerConfig, SchedulerCronConfig, WatcherConfig, WatcherPathConfig};
-use roko_core::{Body, Engram, FS_CREATED, FS_DELETED, FS_MODIFIED, Kind, Result, RokoError};
+use roko_core::{Body, FS_CREATED, FS_DELETED, FS_MODIFIED, Kind, Result, RokoError, Signal};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -32,14 +32,14 @@ use tokio::sync::mpsc::{self, Sender};
 use tokio_util::sync::CancellationToken;
 
 /// Cloneable bounded sender used by event sources to publish signals into Roko.
-pub type SignalSender = Sender<Engram>;
+pub type SignalSender = Sender<Signal>;
 
 /// Sender half used to inject GitHub webhook signals into [`GitHubEventSource`].
 ///
 /// The webhook route calls `sender.try_send(signal)` after verifying and parsing
 /// the payload. Dropping all senders causes the event source's `start` loop to
 /// exit cleanly.
-pub type GitHubEventSender = mpsc::Sender<Engram>;
+pub type GitHubEventSender = mpsc::Sender<Signal>;
 
 /// Outcome reported by a feedback collector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,14 +93,14 @@ pub enum EventSourceKind {
 /// deliveries without back-pressure.
 const GITHUB_CHANNEL_CAPACITY: usize = 256;
 
-/// A push-based event source that relays GitHub webhook payloads as [`Engram`]
+/// A push-based event source that relays GitHub webhook payloads as [`Signal`]
 /// signals into the Roko signal ingest pipeline.
 ///
 /// # Design
 ///
 /// Rather than opening a separate HTTP listener, `GitHubEventSource` bridges the
 /// existing `/webhooks/github` ingress route.  The webhook handler verifies the
-/// HMAC signature, converts the raw payload to a typed [`Engram`], and then
+/// HMAC signature, converts the raw payload to a typed [`Signal`], and then
 /// forwards it via a [`GitHubEventSender`] that is stored on [`AppState`].
 ///
 /// `start` drains the receiver side until either the sender is dropped or the
@@ -116,7 +116,7 @@ const GITHUB_CHANNEL_CAPACITY: usize = 256;
 /// template that should run the plan.
 pub struct GitHubEventSource {
     /// Receiver half of the webhook bridge channel.
-    receiver: tokio::sync::Mutex<mpsc::Receiver<Engram>>,
+    receiver: tokio::sync::Mutex<mpsc::Receiver<Signal>>,
 }
 
 impl std::fmt::Debug for GitHubEventSource {
@@ -199,7 +199,7 @@ impl FileWatchEventSource {
 /// An asynchronous source of signals.
 ///
 /// Implementors are expected to run until `cancel` fires, publishing
-/// [`Engram`]s via `sender`. The trait is object-safe, so sources can be
+/// [`Signal`]s via `sender`. The trait is object-safe, so sources can be
 /// stored and driven as `Box<dyn EventSource>`.
 #[async_trait]
 pub trait EventSource: Send + Sync + 'static {
@@ -226,7 +226,7 @@ pub struct CronScheduleStatus {
     pub name: String,
     /// Standard cron expression.
     pub expression: String,
-    /// Engram kind emitted when the schedule fires.
+    /// Signal kind emitted when the schedule fires.
     pub signal_kind: String,
     /// Next scheduled fire time in UTC, if any.
     pub next_fire: Option<DateTime<Utc>>,
@@ -239,7 +239,7 @@ struct CronSchedule {
     name: String,
     /// Standard cron expression.
     expression: String,
-    /// Engram kind emitted when the schedule fires.
+    /// Signal kind emitted when the schedule fires.
     signal_kind: String,
     /// Extra structured metadata included in the emitted signal body.
     #[serde(default)]
@@ -453,7 +453,7 @@ impl EventSource for GitHubEventSource {
 
     /// Relay GitHub webhook signals until the sender is dropped or `cancel` fires.
     ///
-    /// The webhook route injects pre-verified, pre-parsed [`Engram`] values via
+    /// The webhook route injects pre-verified, pre-parsed [`Signal`] values via
     /// the [`GitHubEventSender`] returned from [`GitHubEventSource::new`].  This
     /// method drains those signals and forwards them to the signal ingest loop
     /// (which persists them and publishes a `WebhookReceived` bus event).
@@ -476,8 +476,8 @@ impl EventSource for GitHubEventSource {
     }
 }
 
-fn cron_signal(schedule: &CronSchedule, fired_at: DateTime<Utc>) -> Engram {
-    Engram::builder(Kind::Custom(schedule.signal_kind.clone()))
+fn cron_signal(schedule: &CronSchedule, fired_at: DateTime<Utc>) -> Signal {
+    Signal::builder(Kind::Custom(schedule.signal_kind.clone()))
         .body(Body::Json(serde_json::json!({
             "name": schedule.name.clone(),
             "expression": schedule.expression.clone(),
@@ -607,8 +607,8 @@ fn watch_path_is_enabled(path: &Path, watch_root: &Path, filters: &CompiledFileW
         .any(|candidate| filters.exclude.is_match(candidate))
 }
 
-fn file_watch_signal(path: &Path, signal_kind: &str, event_kind: &str) -> Engram {
-    Engram::builder(Kind::Custom(signal_kind.to_string()))
+fn file_watch_signal(path: &Path, signal_kind: &str, event_kind: &str) -> Signal {
+    Signal::builder(Kind::Custom(signal_kind.to_string()))
         .body(Body::Json(serde_json::json!({
             "path": path.to_string_lossy().into_owned(),
             "event_kind": event_kind,
@@ -787,7 +787,7 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use notify::event::{CreateKind, ModifyKind, RemoveKind};
-    use roko_core::{Body, Engram, Kind};
+    use roko_core::{Body, Kind, Signal};
     use serde_json::json;
     use tokio::time::{sleep, timeout};
 
@@ -805,7 +805,7 @@ mod tests {
         }
 
         async fn start(&self, sender: SignalSender, cancel: CancellationToken) -> Result<()> {
-            let signal = Engram::builder(Kind::Task)
+            let signal = Signal::builder(Kind::Task)
                 .body(Body::text("hello"))
                 .build();
             sender.send(signal).await.expect("signal should be sent");
@@ -1127,7 +1127,7 @@ mod tests {
     }
 
     async fn wait_for_watch_event(
-        receiver: &mut tokio::sync::mpsc::Receiver<Engram>,
+        receiver: &mut tokio::sync::mpsc::Receiver<Signal>,
         expected_path: &str,
         expected_signal_kind: &str,
         expected_event_kind: &str,

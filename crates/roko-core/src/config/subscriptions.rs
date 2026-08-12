@@ -59,7 +59,7 @@ where
 pub struct SubscriptionConfig {
     /// Agent template name associated with this subscription.
     pub template: String,
-    /// Engram kind glob used to match webhook signals.
+    /// Signal kind glob used to match webhook signals.
     pub trigger: String,
     /// Typed trigger configuration (cron schedule, file-watch paths, or webhook URL).
     ///

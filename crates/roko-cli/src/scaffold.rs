@@ -88,10 +88,10 @@ fn scaffold_gate(name: &str, output_dir: &Path) -> Result<Vec<PathBuf>> {
         r#"//! {struct_name} — custom gate implementation.
 
 use async_trait::async_trait;
-use roko_core::{{Body, Context, Engram, Kind, Result}};
+use roko_core::{{Body, Context, Signal, Kind, Result}};
 use roko_core::traits::Verify;
 
-/// {struct_name} validates engrams against custom criteria.
+/// {struct_name} validates signals against custom criteria.
 pub struct {struct_name} {{
     /// Minimum score threshold for passing the gate.
     pub threshold: f32,
@@ -106,11 +106,11 @@ impl {struct_name} {{
 
 #[async_trait]
 impl Verify for {struct_name} {{
-    async fn check(&self, engram: &Engram, ctx: &Context) -> Result<bool> {{
+    async fn check(&self, signal: &Signal, ctx: &Context) -> Result<bool> {{
         // TODO: implement your gate logic here.
         // Return true if the engram passes, false if it should be rejected.
         let _ = ctx;
-        Ok(engram.score >= self.threshold)
+        Ok(signal.score >= self.threshold)
     }}
 
     fn name(&self) -> &'static str {{
@@ -121,13 +121,13 @@ impl Verify for {struct_name} {{
 #[cfg(test)]
 mod tests {{
     use super::*;
-    use roko_core::{{Body, ContentHash, Engram, Kind, Provenance}};
+    use roko_core::{{Body, ContentHash, Signal, Kind, Provenance}};
 
-    fn test_engram(score: f32) -> Engram {{
-        Engram {{
+    fn test_signal(score: f32) -> Signal {{
+        Signal {{
             hash: ContentHash::from_bytes(b"test"),
             kind: Kind::Signal,
-            body: Body::Text("test engram".into()),
+            body: Body::Text("test signal".into()),
             score,
             provenance: Provenance::default(),
             parents: vec![],
@@ -143,14 +143,14 @@ mod tests {{
     async fn passes_above_threshold() {{
         let gate = {struct_name}::new(0.5);
         let engram = test_engram(0.8);
-        assert!(gate.check(&engram, &test_ctx()).await.unwrap());
+        assert!(gate.check(&signal, &test_ctx()).await.unwrap());
     }}
 
     #[tokio::test]
     async fn rejects_below_threshold() {{
         let gate = {struct_name}::new(0.5);
         let engram = test_engram(0.2);
-        assert!(!gate.check(&engram, &test_ctx()).await.unwrap());
+        assert!(!gate.check(&signal, &test_ctx()).await.unwrap());
     }}
 }}
 "#
@@ -169,19 +169,19 @@ fn scaffold_scorer(name: &str, output_dir: &Path) -> Result<Vec<PathBuf>> {
         r#"//! {struct_name} — custom scorer implementation.
 
 use async_trait::async_trait;
-use roko_core::{{Context, Engram, Result}};
+use roko_core::{{Context, Signal, Result}};
 use roko_core::traits::Score as ScoreFn;
 
-/// {struct_name} assigns relevance scores to engrams.
+/// {struct_name} assigns relevance scores to signals.
 pub struct {struct_name};
 
 #[async_trait]
 impl ScoreFn for {struct_name} {{
-    async fn score(&self, engram: &Engram, ctx: &Context) -> Result<f32> {{
+    async fn score(&self, signal: &Signal, ctx: &Context) -> Result<f32> {{
         // TODO: implement your scoring logic here.
         // Return a value in [0.0, 1.0] indicating relevance.
         let _ = ctx;
-        Ok(engram.score)
+        Ok(signal.score)
     }}
 
     fn name(&self) -> &'static str {{
@@ -192,13 +192,13 @@ impl ScoreFn for {struct_name} {{
 #[cfg(test)]
 mod tests {{
     use super::*;
-    use roko_core::{{Body, ContentHash, Engram, Kind, Provenance}};
+    use roko_core::{{Body, ContentHash, Signal, Kind, Provenance}};
 
-    fn test_engram(score: f32) -> Engram {{
-        Engram {{
+    fn test_signal(score: f32) -> Signal {{
+        Signal {{
             hash: ContentHash::from_bytes(b"test"),
             kind: Kind::Signal,
-            body: Body::Text("test engram".into()),
+            body: Body::Text("test signal".into()),
             score,
             provenance: Provenance::default(),
             parents: vec![],
@@ -207,10 +207,10 @@ mod tests {{
     }}
 
     #[tokio::test]
-    async fn scores_engram() {{
+    async fn scores_signal() {{
         let scorer = {struct_name};
         let engram = test_engram(0.75);
-        let score = scorer.score(&engram, &Context::default()).await.unwrap();
+        let score = scorer.score(&signal, &Context::default()).await.unwrap();
         assert!((score - 0.75).abs() < f32::EPSILON);
     }}
 }}
@@ -230,10 +230,10 @@ fn scaffold_router(name: &str, output_dir: &Path) -> Result<Vec<PathBuf>> {
         r#"//! {struct_name} — custom router implementation.
 
 use async_trait::async_trait;
-use roko_core::{{Context, Engram, Result}};
+use roko_core::{{Context, Signal, Result}};
 use roko_core::traits::Route;
 
-/// {struct_name} routes engrams to appropriate handlers.
+/// {struct_name} routes signals to appropriate handlers.
 pub struct {struct_name} {{
     /// Default route label when no specific route matches.
     pub default_route: String,
@@ -248,10 +248,10 @@ impl {struct_name} {{
 
 #[async_trait]
 impl Route for {struct_name} {{
-    async fn route(&self, engram: &Engram, ctx: &Context) -> Result<String> {{
+    async fn route(&self, signal: &Signal, ctx: &Context) -> Result<String> {{
         // TODO: implement your routing logic here.
         // Return a route label string identifying the target handler.
-        let _ = (engram, ctx);
+        let _ = (signal, ctx);
         Ok(self.default_route.clone())
     }}
 
@@ -263,13 +263,13 @@ impl Route for {struct_name} {{
 #[cfg(test)]
 mod tests {{
     use super::*;
-    use roko_core::{{Body, ContentHash, Engram, Kind, Provenance}};
+    use roko_core::{{Body, ContentHash, Signal, Kind, Provenance}};
 
-    fn test_engram() -> Engram {{
-        Engram {{
+    fn test_signal() -> Signal {{
+        Signal {{
             hash: ContentHash::from_bytes(b"test"),
             kind: Kind::Signal,
-            body: Body::Text("test engram".into()),
+            body: Body::Text("test signal".into()),
             score: 1.0,
             provenance: Provenance::default(),
             parents: vec![],
@@ -300,7 +300,7 @@ fn scaffold_policy(name: &str, output_dir: &Path) -> Result<Vec<PathBuf>> {
         r#"//! {struct_name} — custom policy implementation.
 
 use async_trait::async_trait;
-use roko_core::{{Context, Engram, Result}};
+use roko_core::{{Context, Signal, Result}};
 use roko_core::traits::React;
 
 /// {struct_name} decides whether an action should proceed.
@@ -308,10 +308,10 @@ pub struct {struct_name};
 
 #[async_trait]
 impl React for {struct_name} {{
-    async fn evaluate(&self, engram: &Engram, ctx: &Context) -> Result<bool> {{
+    async fn evaluate(&self, signal: &Signal, ctx: &Context) -> Result<bool> {{
         // TODO: implement your policy logic here.
         // Return true to permit the action, false to deny.
-        let _ = (engram, ctx);
+        let _ = (signal, ctx);
         Ok(true)
     }}
 
@@ -323,13 +323,13 @@ impl React for {struct_name} {{
 #[cfg(test)]
 mod tests {{
     use super::*;
-    use roko_core::{{Body, ContentHash, Engram, Kind, Provenance}};
+    use roko_core::{{Body, ContentHash, Signal, Kind, Provenance}};
 
-    fn test_engram() -> Engram {{
-        Engram {{
+    fn test_signal() -> Signal {{
+        Signal {{
             hash: ContentHash::from_bytes(b"test"),
             kind: Kind::Signal,
-            body: Body::Text("test engram".into()),
+            body: Body::Text("test signal".into()),
             score: 1.0,
             provenance: Provenance::default(),
             parents: vec![],
@@ -362,12 +362,12 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use roko_core::{{Body, ContentHash, Context, Engram, Kind, Query, Result}};
+use roko_core::{{Body, ContentHash, Context, Signal, Kind, Query, Result}};
 use roko_core::traits::Store;
 
-/// {struct_name} stores engrams in memory.
+/// {struct_name} stores signals in memory.
 pub struct {struct_name} {{
-    store: Mutex<HashMap<ContentHash, Engram>>,
+    store: Mutex<HashMap<ContentHash, Signal>>,
 }}
 
 impl {struct_name} {{
@@ -387,17 +387,17 @@ impl Default for {struct_name} {{
 
 #[async_trait]
 impl Store for {struct_name} {{
-    async fn put(&self, engram: Engram) -> Result<ContentHash> {{
+    async fn put(&self, signal: Signal) -> Result<ContentHash> {{
         let hash = engram.hash.clone();
         self.store.lock().unwrap().insert(hash.clone(), engram);
         Ok(hash)
     }}
 
-    async fn get(&self, id: &ContentHash) -> Result<Option<Engram>> {{
+    async fn get(&self, id: &ContentHash) -> Result<Option<Signal>> {{
         Ok(self.store.lock().unwrap().get(id).cloned())
     }}
 
-    async fn query(&self, _q: &Query, _ctx: &Context) -> Result<Vec<Engram>> {{
+    async fn query(&self, _q: &Query, _ctx: &Context) -> Result<Vec<Signal>> {{
         // TODO: implement query filtering logic.
         Ok(self.store.lock().unwrap().values().cloned().collect())
     }}
@@ -423,11 +423,11 @@ mod tests {{
     use super::*;
     use roko_core::Provenance;
 
-    fn test_engram() -> Engram {{
-        Engram {{
+    fn test_signal() -> Signal {{
+        Signal {{
             hash: ContentHash::from_bytes(b"test"),
             kind: Kind::Signal,
-            body: Body::Text("test engram".into()),
+            body: Body::Text("test signal".into()),
             score: 1.0,
             provenance: Provenance::default(),
             parents: vec![],
@@ -466,19 +466,19 @@ fn scaffold_composer(name: &str, output_dir: &Path) -> Result<Vec<PathBuf>> {
         r#"//! {struct_name} — custom composer implementation.
 
 use async_trait::async_trait;
-use roko_core::{{Context, Engram, Result}};
+use roko_core::{{Context, Signal, Result}};
 use roko_core::traits::Compose;
 
-/// {struct_name} assembles context from engram history.
+/// {struct_name} assembles context from signal history.
 pub struct {struct_name};
 
 #[async_trait]
 impl Compose for {struct_name} {{
-    async fn compose(&self, engrams: &[Engram], ctx: &Context) -> Result<String> {{
+    async fn compose(&self, signals: &[Signal], ctx: &Context) -> Result<String> {{
         // TODO: implement your composition logic here.
-        // Combine the engrams into a prompt string for the model.
+        // Combine the signals into a prompt string for the model.
         let _ = ctx;
-        let parts: Vec<&str> = engrams
+        let parts: Vec<&str> = signals
             .iter()
             .filter_map(|e| e.body.as_text())
             .collect();
@@ -493,11 +493,11 @@ impl Compose for {struct_name} {{
 #[cfg(test)]
 mod tests {{
     use super::*;
-    use roko_core::{{Body, ContentHash, Engram, Kind, Provenance}};
+    use roko_core::{{Body, ContentHash, Signal, Kind, Provenance}};
 
-    fn test_engrams() -> Vec<Engram> {{
+    fn test_signals() -> Vec<Signal> {{
         vec![
-            Engram {{
+            Signal {{
                 hash: ContentHash::from_bytes(b"a"),
                 kind: Kind::Signal,
                 body: Body::Text("first".into()),
@@ -506,7 +506,7 @@ mod tests {{
                 parents: vec![],
                 created_ms: 0,
             }},
-            Engram {{
+            Signal {{
                 hash: ContentHash::from_bytes(b"b"),
                 kind: Kind::Signal,
                 body: Body::Text("second".into()),
@@ -519,9 +519,9 @@ mod tests {{
     }}
 
     #[tokio::test]
-    async fn composes_engrams() {{
+    async fn composes_signals() {{
         let composer = {struct_name};
-        let result = composer.compose(&test_engrams(), &Context::default()).await.unwrap();
+        let result = composer.compose(&test_signals(), &Context::default()).await.unwrap();
         assert!(result.contains("first"));
         assert!(result.contains("second"));
     }}
@@ -566,7 +566,7 @@ pub const DOMAIN_NAME: &str = "{snake}";
         r#"//! {pascal} domain gate.
 
 use async_trait::async_trait;
-use roko_core::{{Context, Engram, Result}};
+use roko_core::{{Context, Signal, Result}};
 use roko_core::traits::Verify;
 
 /// Verify for the {pascal} domain.
@@ -574,8 +574,8 @@ pub struct {pascal}Verify;
 
 #[async_trait]
 impl Verify for {pascal}Verify {{
-    async fn check(&self, engram: &Engram, _ctx: &Context) -> Result<bool> {{
-        Ok(engram.score > 0.0)
+    async fn check(&self, signal: &Signal, _ctx: &Context) -> Result<bool> {{
+        Ok(signal.score > 0.0)
     }}
 
     fn name(&self) -> &'static str {{
@@ -586,12 +586,12 @@ impl Verify for {pascal}Verify {{
 #[cfg(test)]
 mod tests {{
     use super::*;
-    use roko_core::{{Body, ContentHash, Engram, Kind, Provenance}};
+    use roko_core::{{Body, ContentHash, Signal, Kind, Provenance}};
 
     #[tokio::test]
     async fn gate_passes_positive_score() {{
         let gate = {pascal}Verify;
-        let engram = Engram {{
+        let engram = Signal {{
             hash: ContentHash::from_bytes(b"test"),
             kind: Kind::Signal,
             body: Body::Text("test".into()),
@@ -600,7 +600,7 @@ mod tests {{
             parents: vec![],
             created_ms: 0,
         }};
-        assert!(gate.check(&engram, &Context::default()).await.unwrap());
+        assert!(gate.check(&signal, &Context::default()).await.unwrap());
     }}
 }}
 "#

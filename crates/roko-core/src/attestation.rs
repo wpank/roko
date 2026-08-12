@@ -1,15 +1,15 @@
-//! Cryptographic attestation metadata for [`crate::Engram`].
+//! Cryptographic attestation metadata for [`crate::Signal`].
 //!
-//! Attestations are optional proofs of origin layered on top of an Engram's
+//! Attestations are optional proofs of origin layered on top of a Signal's
 //! content identity. They are intentionally excluded from the content hash so
-//! the same Engram can be attested after creation without changing its ID.
+//! the same Signal can be attested after creation without changing its ID.
 
 use crate::{ContentHash, Engram};
 pub use ed25519_dalek::SigningKey;
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// A 64-byte Ed25519 signature over an Engram's [`crate::ContentHash`].
+/// A 64-byte Ed25519 signature over a Signal's [`crate::ContentHash`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Ed25519Signature(pub [u8; 64]);
 

@@ -17,7 +17,7 @@ use roko_primitives::HdcVector;
 
 // ─── Store ────────────────────────────────────────────────────────────────
 
-/// Stores and queries [`Engram`]s.
+/// Stores and queries Signals.
 ///
 /// All storage backends implement this trait: `MemorySubstrate` (testing),
 /// `FileSubstrate` (.roko/ persistence), `HdcSubstrate` (semantic search),
@@ -35,13 +35,13 @@ use roko_primitives::HdcVector;
 /// Stores are `Send + Sync`. Impls must handle concurrent access internally.
 #[async_trait]
 pub trait Store: Send + Sync {
-    /// Store an engram. Returns its content hash. Idempotent on content.
-    async fn put(&self, engram: Engram) -> Result<ContentHash>;
+    /// Store a signal. Returns its content hash. Idempotent on content.
+    async fn put(&self, signal: Engram) -> Result<ContentHash>;
 
-    /// Retrieve an engram by content hash. Does not apply decay.
+    /// Retrieve a signal by content hash. Does not apply decay.
     async fn get(&self, id: &ContentHash) -> Result<Option<Engram>>;
 
-    /// Query for engrams matching the given filter. Impls may apply decay
+    /// Query for signals matching the given filter. Impls may apply decay
     /// when evaluating `min_weight` and when ordering results.
     async fn query(&self, q: &Query, ctx: &Context) -> Result<Vec<Engram>>;
 
@@ -59,11 +59,11 @@ pub trait Store: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// Remove engrams whose effective weight (score × decay) has fallen
-    /// below `threshold` at `ctx.now_ms`. Returns count of pruned engrams.
+    /// Remove signals whose effective weight (score x decay) has fallen
+    /// below `threshold` at `ctx.now_ms`. Returns count of pruned signals.
     async fn prune(&self, threshold: f32, ctx: &Context) -> Result<usize>;
 
-    /// Optional: total count of stored engrams (for metrics/health checks).
+    /// Optional: total count of stored signals (for metrics/health checks).
     async fn len(&self) -> Result<usize> {
         Ok(0)
     }
@@ -81,11 +81,11 @@ pub trait Store: Send + Sync {
 
 // ─── ColdStore ───────────────────────────────────────────────────────────
 
-/// Archival store for aged-out engrams that no longer need hot-path access.
+/// Archival store for aged-out signals that no longer need hot-path access.
 ///
-/// While a [`Store`] keeps engrams in-memory or on fast storage for
+/// While a [`Store`] keeps signals in-memory or on fast storage for
 /// real-time queries, a `ColdStore` stores them in compressed, append-only
-/// archives for durability and audit trails. Engrams are migrated from hot to
+/// archives for durability and audit trails. Signals are migrated from hot to
 /// cold when they age out (e.g., low decay weight, old epoch, pruned).
 ///
 /// # Migration flow
@@ -100,34 +100,34 @@ pub trait Store: Send + Sync {
 /// - `ArchiveColdSubstrate` (roko-fs) — compressed JSONL archive files
 #[async_trait]
 pub trait ColdStore: Send + Sync {
-    /// Archive an engram into cold storage. Returns its content hash.
+    /// Archive a signal into cold storage. Returns its content hash.
     ///
-    /// The engram is removed from the hot substrate by the caller after
+    /// The signal is removed from the hot substrate by the caller after
     /// successful archival.
-    async fn archive(&self, engram: Engram) -> Result<ContentHash>;
+    async fn archive(&self, signal: Engram) -> Result<ContentHash>;
 
-    /// Archive a batch of engrams. Returns the count of successfully archived.
-    async fn archive_batch(&self, engrams: Vec<Engram>) -> Result<usize> {
+    /// Archive a batch of signals. Returns the count of successfully archived.
+    async fn archive_batch(&self, signals: Vec<Engram>) -> Result<usize> {
         let mut count = 0;
-        for e in engrams {
+        for e in signals {
             self.archive(e).await?;
             count += 1;
         }
         Ok(count)
     }
 
-    /// Retrieve an engram from cold storage by content hash.
+    /// Retrieve a signal from cold storage by content hash.
     ///
-    /// Returns `None` if the engram was never archived or has been purged.
+    /// Returns `None` if the signal was never archived or has been purged.
     /// This is a potentially slow operation (decompression, disk reads).
     async fn thaw(&self, id: &ContentHash) -> Result<Option<Engram>>;
 
-    /// Check whether an engram exists in cold storage without fully loading it.
+    /// Check whether a signal exists in cold storage without fully loading it.
     async fn contains(&self, id: &ContentHash) -> Result<bool> {
         Ok(self.thaw(id).await?.is_some())
     }
 
-    /// Total count of archived engrams.
+    /// Total count of archived signals.
     async fn archived_count(&self) -> Result<usize> {
         Ok(0)
     }
@@ -137,8 +137,8 @@ pub trait ColdStore: Send + Sync {
         Ok(0)
     }
 
-    /// Purge engrams older than the given epoch (millis since UNIX epoch).
-    /// Returns count of purged engrams.
+    /// Purge signals older than the given epoch (millis since UNIX epoch).
+    /// Returns count of purged signals.
     async fn purge_before(&self, epoch_ms: i64) -> Result<usize> {
         let _ = epoch_ms;
         Ok(0)
@@ -152,38 +152,38 @@ pub trait ColdStore: Send + Sync {
 
 // ─── Score ───────────────────────────────────────────────────────────────
 
-/// Rates an engram along multi-dimensional axes.
+/// Rates a signal along multi-dimensional axes.
 ///
-/// Score implementations are pure functions of `(engram, context)`. They
-/// compose freely: use `CompositeScorer` to combine several scorers via +/×
+/// Score implementations are pure functions of `(signal, context)`. They
+/// compose freely: use `CompositeScorer` to combine several scorers via +/x
 /// operations.
 ///
 /// # Examples of Score implementations
 ///
-/// - `RelevanceScorer`: how well does this engram match the current goal?
-/// - `RecencyScorer`: how recent is this engram?
+/// - `RelevanceScorer`: how well does this signal match the current goal?
+/// - `RecencyScorer`: how recent is this signal?
 /// - `ReputationScorer`: how trustworthy is its author?
-/// - `CatalyticScorer`: how many downstream engrams does this enable?
+/// - `CatalyticScorer`: how many downstream signals does this enable?
 pub trait Score: crate::cell::Cell + Send + Sync {
-    /// Score an engram in the given context.
+    /// Score a signal in the given context.
     ///
     /// This is the implementor hook — override this in your scorer impl.
-    fn score(&self, engram: &Engram, ctx: &Context) -> ScoreValue;
+    fn score(&self, signal: &Engram, ctx: &Context) -> ScoreValue;
 
-    /// Alias for [`score`](Self::score) — score a persisted engram.
+    /// Alias for [`score`](Self::score) — score a persisted signal.
     ///
     /// Provided so callers can be explicit about the input type.
     fn score_engram(&self, engram: &Engram, ctx: &Context) -> ScoreValue {
         self.score(engram, ctx)
     }
 
-    /// Score an ephemeral pulse by promoting it to a synthetic engram.
+    /// Score an ephemeral pulse by promoting it to a synthetic signal.
     fn score_pulse(&self, p: &Pulse, ctx: &Context) -> ScoreValue {
         let synthetic = Engram::from_pulse_synthetic(p);
         self.score(&synthetic, ctx)
     }
 
-    /// Score either an engram or a pulse via [`Datum`] dispatch.
+    /// Score either a signal or a pulse via [`Datum`] dispatch.
     fn score_datum(&self, datum: Datum<'_>, ctx: &Context) -> ScoreValue {
         match datum {
             Datum::Engram(e) => self.score(e, ctx),
@@ -199,11 +199,11 @@ pub trait Score: crate::cell::Cell + Send + Sync {
 
 // ─── Verify ──────────────────────────────────────────────────────────────────
 
-/// Verifies an engram against ground truth, producing a [`Verdict`].
+/// Verifies a signal against ground truth, producing a [`Verdict`].
 ///
 /// Gates are the bridge to external reality: compile, run tests, simulate
 /// transactions, check balances, validate schemas. A gate that returns
-/// `passed = true` is a claim that the engram is correct in some domain.
+/// `passed = true` is a claim that the signal is correct in some domain.
 ///
 /// # Async by default
 ///

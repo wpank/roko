@@ -56,7 +56,7 @@ async fn run_acp_server_inner(config: AcpConfig) -> Result<()> {
     let roko_dir = workdir.join(".roko");
     if let Err(e) = std::fs::create_dir_all(&roko_dir) {
         // Non-fatal — we'll fall back to /tmp for logging.
-        eprintln!("warning: cannot create .roko/: {e}");
+        warn!("cannot create .roko/: {e}");
     }
 
     let _guard = setup_file_logging(config.log_file())
@@ -64,7 +64,7 @@ async fn run_acp_server_inner(config: AcpConfig) -> Result<()> {
             // Fallback: log to /tmp if .roko/ is unavailable.
             let fallback =
                 std::env::temp_dir().join(format!("roko-acp-{}.log", std::process::id()));
-            eprintln!("warning: {e}, falling back to {}", fallback.display());
+            warn!("{e}, falling back to {}", fallback.display());
             setup_file_logging(&fallback)
         })
         .with_context(|| "failed to initialize ACP logging")?;

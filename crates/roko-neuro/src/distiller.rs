@@ -15,7 +15,7 @@ use chrono::Utc;
 use roko_agent::Agent;
 use roko_agent::claude_agent::ClaudeAgent;
 use roko_agent::nl_to_format::NlToFormatConverter;
-use roko_core::{Body, Context as RokoContext, EmotionalTag, Engram, Kind, PadVector, Provenance};
+use roko_core::{Body, Context as RokoContext, EmotionalTag, Kind, PadVector, Provenance, Signal};
 use roko_learn::episode_logger::Episode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -118,7 +118,7 @@ impl ClaudeDistillationBackend {
 #[async_trait]
 impl DistillationBackend for ClaudeDistillationBackend {
     async fn complete(&self, prompt: &str) -> Result<String> {
-        let signal = Engram::builder(Kind::Prompt)
+        let signal = Signal::builder(Kind::Prompt)
             .body(Body::text(prompt))
             .provenance(Provenance::agent("roko-neuro:distiller"))
             .build();

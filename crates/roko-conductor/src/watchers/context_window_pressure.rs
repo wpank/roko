@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 
-use roko_core::{Body, Context, Engram, Kind, React};
+use roko_core::{Body, Context, Kind, React, Signal};
 use roko_learn::efficiency::AgentEfficiencyEvent;
 
 /// Maximum context window utilization ratio (0.0 to 1.0) before firing.
@@ -109,12 +109,12 @@ impl roko_core::Cell for ContextWindowPressureWatcher {
 }
 
 impl React for ContextWindowPressureWatcher {
-    fn decide(&self, stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
+    fn decide(&self, stream: &[Signal], _ctx: &Context) -> Vec<Signal> {
         // Collect the last PRESSURE_LOOKBACK TokenUsage signals and compute
         // the maximum utilization ratio across them. This prevents alternating
         // high/low usage from firing repeatedly -- any recent high-pressure
         // state triggers once.
-        let recent: Vec<&Engram> = stream
+        let recent: Vec<&Signal> = stream
             .iter()
             .rev()
             .filter(|s| s.kind == Kind::TokenUsage)
@@ -150,7 +150,7 @@ impl React for ContextWindowPressureWatcher {
 
         if max_ratio > self.max_ratio {
             vec![
-                Engram::builder(Kind::Custom("conductor.intervention".into()))
+                Signal::builder(Kind::Custom("conductor.intervention".into()))
                     .body(Body::text(format!(
                         "context window {:.0}% full ({max_used:.0}/{max_total:.0} tokens)",
                         max_ratio * 100.0
@@ -171,7 +171,7 @@ impl React for ContextWindowPressureWatcher {
 }
 
 impl ContextWindowPressureWatcher {
-    fn extract_usage(&self, signal: &Engram) -> Option<(f64, f64)> {
+    fn extract_usage(&self, signal: &Signal) -> Option<(f64, f64)> {
         if let Ok(event) = signal.body.as_json::<AgentEfficiencyEvent>() {
             if let Some(total) = self.context_window_tokens(&event.model) {
                 return Some((event.total_prompt_tokens as f64, total as f64));
@@ -225,7 +225,7 @@ mod tests {
     use roko_learn::efficiency::AgentEfficiencyEvent;
     use std::collections::HashMap;
 
-    fn efficiency_event_signal(model: &str, prompt_tokens: u64) -> Engram {
+    fn efficiency_event_signal(model: &str, prompt_tokens: u64) -> Signal {
         let event = AgentEfficiencyEvent {
             agent_id: "agent-1".into(),
             role: "Implementer".into(),
@@ -261,7 +261,7 @@ mod tests {
             timestamp: "2026-04-09T00:00:00Z".into(),
         };
 
-        Engram::builder(Kind::TokenUsage)
+        Signal::builder(Kind::TokenUsage)
             .body(Body::from_json(&event).expect("serialize event"))
             .build()
     }
@@ -341,7 +341,7 @@ mod tests {
     fn zero_total_no_fire() {
         let w = ContextWindowPressureWatcher::default();
         let stream = vec![
-            Engram::builder(Kind::TokenUsage)
+            Signal::builder(Kind::TokenUsage)
                 .body(Body::text("usage"))
                 .tag(TOKENS_USED_TAG, "0")
                 .tag(MODEL_TAG, "mystery-model")
@@ -367,7 +367,7 @@ mod tests {
 
         // 85% of 100k = 85_000 used -- above threshold
         let stream = vec![
-            Engram::builder(Kind::TokenUsage)
+            Signal::builder(Kind::TokenUsage)
                 .body(Body::text("usage"))
                 .tag(TOKENS_USED_TAG, "85000")
                 .tag(MODEL_TAG, "gemini-2.5-flash")
@@ -383,7 +383,7 @@ mod tests {
         // A model not in hardcoded or configured list returns None for total.
         let w = ContextWindowPressureWatcher::default();
         let stream = vec![
-            Engram::builder(Kind::TokenUsage)
+            Signal::builder(Kind::TokenUsage)
                 .body(Body::text("usage"))
                 .tag(TOKENS_USED_TAG, "50000")
                 .tag(MODEL_TAG, "mystery-model-v99")

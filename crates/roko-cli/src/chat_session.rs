@@ -29,7 +29,7 @@ use roko_core::foundation::{
     CachePolicy, ChatMessage, FeedbackSink, MessageRole, ModelCallRequest, ModelCaller,
     ModelStreamEvent, TokenUsage, caller,
 };
-use roko_core::{Body, Context, Engram, Kind, OperatingFrequency};
+use roko_core::{Body, Context, Kind, OperatingFrequency, Signal};
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::feedback_service::FeedbackService;
 use serde_yaml_ng as serde_yaml;
@@ -983,16 +983,16 @@ impl ChatAgentSession {
         Ok(agent)
     }
 
-    /// Build the input engram for a user prompt.
-    pub fn build_engram(&self, prompt: &str) -> Engram {
-        Engram::builder(Kind::Prompt)
+    /// Build the input signal for a user prompt.
+    pub fn build_signal(&self, prompt: &str) -> Signal {
+        Signal::builder(Kind::Prompt)
             .body(Body::text(prompt))
             .build()
     }
 
     /// Convert an `AgentResult` into a `TurnResult`.
     ///
-    /// Extracts text from the output `Engram` and token counts from `Usage`.
+    /// Extracts text from the output `Signal` and token counts from `Usage`.
     /// `session_id` is always `None` for the non-streaming path.
     fn process_result(&self, result: AgentResult, start: Instant) -> TurnResult {
         let text = result
@@ -1038,7 +1038,7 @@ impl ChatAgentSession {
 
         let started = Instant::now();
         let agent = self.build_agent()?;
-        let input = self.build_engram(prompt);
+        let input = self.build_signal(prompt);
         let ctx = Context::default();
         let timeout_duration = self.timeout.unwrap_or(Duration::from_secs(300));
 

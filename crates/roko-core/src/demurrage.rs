@@ -76,7 +76,7 @@ fn default_novelty_bonus() -> f64 {
     0.1
 }
 
-/// Apply a novelty-weighted demurrage tick to an [`Engram`].
+/// Apply a novelty-weighted demurrage tick to a Signal.
 ///
 /// Implements the 3-term rate law from the v2 spec (01-SIGNAL.md section 6):
 ///

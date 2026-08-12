@@ -179,7 +179,10 @@ async fn test_provider_key(namespace: &str, key: &str, secret: &str) -> (String,
 }
 
 async fn test_anthropic(key: &str) -> (String, String) {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
     match client
         .get("https://api.anthropic.com/v1/models")
         .header("x-api-key", key)
@@ -203,7 +206,10 @@ async fn test_anthropic(key: &str) -> (String, String) {
 }
 
 async fn test_openai(key: &str) -> (String, String) {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
     match client
         .get("https://api.openai.com/v1/models")
         .bearer_auth(key)
@@ -225,7 +231,10 @@ async fn test_openai(key: &str) -> (String, String) {
 }
 
 async fn test_gemini(key: &str) -> (String, String) {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
     let url = format!("https://generativelanguage.googleapis.com/v1beta/models?key={key}");
     match client.get(&url).send().await {
         Ok(resp) if resp.status().is_success() => {
@@ -244,7 +253,10 @@ async fn test_gemini(key: &str) -> (String, String) {
 }
 
 async fn test_perplexity(key: &str) -> (String, String) {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
     match client
         .get("https://api.perplexity.ai/models")
         .bearer_auth(key)

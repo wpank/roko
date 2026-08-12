@@ -658,7 +658,7 @@ pub fn full_inventory() -> Vec<SurfaceEntry> {
         "archive",
         SurfaceStatus::Wired,
         "roko-fs",
-        "Moves old engrams to cold storage; supports --older-than, --batch-size, --dry-run",
+        "Moves old signals to cold storage; supports --older-than, --batch-size, --dry-run",
     ));
 
     // ── TUI tabs ────────────────────────────────────────────────────────
@@ -834,7 +834,7 @@ pub fn full_inventory() -> Vec<SurfaceEntry> {
 
     // F7 Inspect sub-views
     v.push(SurfaceEntry::subview(
-        "EngramDag",
+        "SignalDag",
         SurfaceStatus::Wired,
         "StateHub recent_signals",
         "Indented ASCII tree of signal lineage. Scrollable, color-coded by kind.",
@@ -1282,7 +1282,7 @@ pub fn tui_parity_inventory() -> Vec<TuiParityDetail> {
     });
     v.push(TuiParityDetail {
         tab: "F7 Inspect".into(),
-        subview: Some("EngramDag".into()),
+        subview: Some("SignalDag".into()),
         dashboard_equivalent: None,
         cli_equivalent: Some("roko replay".into()),
         data_source: DataSourceKind::PushBased,

@@ -198,10 +198,7 @@ impl AuthAuditLog {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
         Ok(Self {
             writer: Mutex::new(BufWriter::new(file)),
             path,
@@ -423,8 +420,14 @@ mod tests {
         let event = sample_event(AuthAuditAction::RoleChanged, AuthOutcome::Success)
             .with_meta("from_role", "member")
             .with_meta("to_role", "admin");
-        assert_eq!(event.metadata.get("from_role").map(|s| s.as_str()), Some("member"));
-        assert_eq!(event.metadata.get("to_role").map(|s| s.as_str()), Some("admin"));
+        assert_eq!(
+            event.metadata.get("from_role").map(|s| s.as_str()),
+            Some("member")
+        );
+        assert_eq!(
+            event.metadata.get("to_role").map(|s| s.as_str()),
+            Some("admin")
+        );
     }
 
     // ── AuthAuditLog round-trip ───────────────────────────────────────────────
@@ -456,8 +459,14 @@ mod tests {
         let log = open_audit_log(dir.path()).unwrap();
 
         log.append(&sample_event(AuthAuditAction::Login, AuthOutcome::Success));
-        log.append(&sample_event(AuthAuditAction::KeyRotated, AuthOutcome::Success));
-        log.append(&sample_event(AuthAuditAction::PermissionDenied, AuthOutcome::Denied));
+        log.append(&sample_event(
+            AuthAuditAction::KeyRotated,
+            AuthOutcome::Success,
+        ));
+        log.append(&sample_event(
+            AuthAuditAction::PermissionDenied,
+            AuthOutcome::Denied,
+        ));
 
         let results = log.query(None, None, None, None).unwrap();
         assert_eq!(results.len(), 3);
@@ -494,10 +503,18 @@ mod tests {
         let log = open_audit_log(dir.path()).unwrap();
 
         log.append(&sample_event(AuthAuditAction::Login, AuthOutcome::Success));
-        log.append(&sample_event(AuthAuditAction::TokenIssued, AuthOutcome::Success));
-        log.append(&sample_event(AuthAuditAction::PermissionDenied, AuthOutcome::Denied));
+        log.append(&sample_event(
+            AuthAuditAction::TokenIssued,
+            AuthOutcome::Success,
+        ));
+        log.append(&sample_event(
+            AuthAuditAction::PermissionDenied,
+            AuthOutcome::Denied,
+        ));
 
-        let results = log.query(None, None, None, Some(&AuthAuditAction::PermissionDenied)).unwrap();
+        let results = log
+            .query(None, None, None, Some(&AuthAuditAction::PermissionDenied))
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].action, AuthAuditAction::PermissionDenied);
     }
@@ -551,10 +568,16 @@ mod tests {
         let log = open_audit_log(dir.path()).unwrap();
 
         log.append(&sample_event(AuthAuditAction::Login, AuthOutcome::Success));
-        log.append(&sample_event(AuthAuditAction::TokenIssued, AuthOutcome::Success));
+        log.append(&sample_event(
+            AuthAuditAction::TokenIssued,
+            AuthOutcome::Success,
+        ));
 
         let removed = log.sweep_old_entries().unwrap();
-        assert_eq!(removed, 0, "no entries should be removed when all are recent");
+        assert_eq!(
+            removed, 0,
+            "no entries should be removed when all are recent"
+        );
 
         let results = log.query(None, None, None, None).unwrap();
         assert_eq!(results.len(), 2);
@@ -565,7 +588,10 @@ mod tests {
     #[test]
     fn action_as_str_matches_serde_rename() {
         assert_eq!(AuthAuditAction::Login.as_str(), "Login");
-        assert_eq!(AuthAuditAction::PermissionDenied.as_str(), "PermissionDenied");
+        assert_eq!(
+            AuthAuditAction::PermissionDenied.as_str(),
+            "PermissionDenied"
+        );
         assert_eq!(AuthAuditAction::KeyExpired.as_str(), "KeyExpired");
         assert_eq!(AuthAuditAction::RoleChanged.as_str(), "RoleChanged");
     }

@@ -18,7 +18,7 @@ use crate::learning_helpers::{
 use anyhow::{Context as _, Result};
 use roko_core::agent::ProviderKind;
 use roko_core::agent::resolve_model;
-use roko_core::{Body, Context, Engram, Kind};
+use roko_core::{Body, Context, Kind, Signal};
 use roko_learn::runtime_feedback::{CompletedRunInput, LearningRuntime};
 
 /// Options for agent execution.
@@ -155,7 +155,7 @@ async fn run_agent_capture_impl(
         format!("create agent for model {model}"),
     )?;
 
-    let prompt = Engram::builder(Kind::Prompt)
+    let prompt = Signal::builder(Kind::Prompt)
         .body(Body::text(opts.prompt))
         .build();
     tracing::info!(

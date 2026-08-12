@@ -179,6 +179,15 @@ pub struct RunState {
     /// the runner can skip the strategist phase and dispatch directly
     /// to the implementer with the structured issues as context.
     pub express_mode: bool,
+
+    // ─── Post-gate Reflection ────────────────────────────────────────
+    /// Cumulative USD cost charged to the reflection cost guard.
+    ///
+    /// Each post-gate reflection observation records a nominal token cost.
+    /// Once this exceeds `REFLECTION_COST_GUARD_USD` in event_loop.rs,
+    /// new reflections are skipped for the remainder of the run to cap the
+    /// overhead of the reflection loop.
+    pub cumulative_reflection_cost_usd: f64,
 }
 
 impl RunState {
@@ -240,6 +249,7 @@ impl RunState {
             current_task_role: String::new(),
             parsed_review_verdict: None,
             express_mode: false,
+            cumulative_reflection_cost_usd: 0.0,
         }
     }
 

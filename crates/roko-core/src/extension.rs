@@ -19,7 +19,306 @@
 //! Extensions are loaded from `roko.toml` under `[agent.extensions]` and
 //! `[agent.roles.<role>.extensions]`.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+
+// ── CaMeL IFC types (E30-T01) ─────────────────────────────────────────
+
+/// Security trust tier for CaMeL information-flow control.
+///
+/// Ordered from most trusted to least: `Trusted < Local < External < Untrusted`.
+/// A tag's taint level never decreases as data flows through handlers.
+///
+/// Distinct from [`crate::TaintLevel`] (Public/Internal/Confidential/Secret
+/// classification). `CamelTaintLevel` tracks the *trust origin* of capability-
+/// bearing data flowing through extension hooks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CamelTaintLevel {
+    /// In-tree, fully audited code paths.
+    Trusted = 0,
+    /// Local user config or local-disk extensions.
+    Local = 1,
+    /// Network APIs or remote agents.
+    External = 2,
+    /// Untrusted third-party input (e.g. tool output, user data).
+    Untrusted = 3,
+}
+
+impl Default for CamelTaintLevel {
+    fn default() -> Self {
+        Self::Trusted
+    }
+}
+
+impl std::fmt::Display for CamelTaintLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Trusted => write!(f, "trusted"),
+            Self::Local => write!(f, "local"),
+            Self::External => write!(f, "external"),
+            Self::Untrusted => write!(f, "untrusted"),
+        }
+    }
+}
+
+/// How a handler transformed the data flowing through it.
+///
+/// Recorded in each [`ProvenanceEntry`] so consumers can reconstruct the full
+/// transformation history of a [`CamelTag`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TagOperation {
+    /// Data passed through unchanged.
+    Passthrough,
+    /// Data was modified or enriched by this handler.
+    Transform,
+    /// Data was merged from multiple upstream tags.
+    Merge,
+}
+
+impl std::fmt::Display for TagOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Passthrough => write!(f, "passthrough"),
+            Self::Transform => write!(f, "transform"),
+            Self::Merge => write!(f, "merge"),
+        }
+    }
+}
+
+/// A single entry in a [`CamelTag`]'s chain of custody.
+///
+/// Records which handler touched the data, when, and what it did to it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProvenanceEntry {
+    /// Name of the handler (extension name or internal subsystem).
+    pub handler: String,
+    /// Wall-clock time at which this handler processed the data.
+    pub timestamp: DateTime<Utc>,
+    /// What the handler did to the data.
+    pub operation: TagOperation,
+}
+
+impl ProvenanceEntry {
+    /// Construct a new entry stamped with the current UTC time.
+    pub fn now(handler: impl Into<String>, operation: TagOperation) -> Self {
+        Self {
+            handler: handler.into(),
+            timestamp: Utc::now(),
+            operation,
+        }
+    }
+}
+
+impl std::fmt::Display for ProvenanceEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}@{}({})",
+            self.handler,
+            self.timestamp.format("%Y-%m-%dT%H:%M:%SZ"),
+            self.operation,
+        )
+    }
+}
+
+/// A set of capability strings granted to a data flow.
+///
+/// `intersection` implements the conservative CaMeL rule: when data flows
+/// through a handler, only capabilities held by *both* parties survive.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilitySet {
+    /// Capability strings (e.g. `"read_disk"`, `"call_llm"`).
+    pub capabilities: HashSet<String>,
+}
+
+impl CapabilitySet {
+    /// Construct an empty capability set.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Construct from an iterator of strings.
+    pub fn from_strings<I>(iter: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Into<String>,
+    {
+        Self {
+            capabilities: iter.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    /// Capabilities present in *both* sets (conservative propagation).
+    #[must_use]
+    pub fn intersection(&self, other: &Self) -> Self {
+        Self {
+            capabilities: self
+                .capabilities
+                .intersection(&other.capabilities)
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// Capabilities present in *either* set.
+    #[must_use]
+    pub fn union(&self, other: &Self) -> Self {
+        Self {
+            capabilities: self
+                .capabilities
+                .union(&other.capabilities)
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// Number of capabilities.
+    pub fn len(&self) -> usize {
+        self.capabilities.len()
+    }
+
+    /// Whether the set is empty.
+    pub fn is_empty(&self) -> bool {
+        self.capabilities.is_empty()
+    }
+}
+
+impl std::fmt::Display for CapabilitySet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut caps: Vec<&str> = self.capabilities.iter().map(String::as_str).collect();
+        caps.sort_unstable();
+        write!(f, "{{{}}}", caps.join(", "))
+    }
+}
+
+/// CaMeL information-flow control tag.
+///
+/// Tracks the capability provenance of values flowing through extension hooks:
+///
+/// - **capabilities**: what operations this data grants/requires.
+/// - **provenance**: ordered chain of handlers that have processed this tag.
+/// - **taint_level**: trust origin — can only *increase* (trust can only *decrease*).
+///
+/// The no-elevation rule: untrusted data cannot be laundered into trusted data
+/// by passing it through an intermediate handler.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CamelTag {
+    /// Capabilities associated with this data flow.
+    pub capabilities: CapabilitySet,
+    /// Ordered chain of handlers that have processed this tag.
+    pub provenance: Vec<ProvenanceEntry>,
+    /// Trust classification — can only increase (worsen) over time.
+    pub taint_level: CamelTaintLevel,
+}
+
+impl CamelTag {
+    /// Construct a fresh tag with no provenance history.
+    pub fn new<I>(capabilities: I, taint_level: CamelTaintLevel) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Into<String>,
+    {
+        Self {
+            capabilities: CapabilitySet::from_strings(capabilities),
+            provenance: Vec::new(),
+            taint_level,
+        }
+    }
+
+    /// Construct a fully trusted tag with the given capabilities.
+    pub fn trusted<I>(capabilities: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Into<String>,
+    {
+        Self::new(capabilities, CamelTaintLevel::Trusted)
+    }
+
+    /// Propagate this tag through `handler`, appending a provenance entry.
+    ///
+    /// The taint level is never decreased. Returns a new `CamelTag`; the
+    /// original is unchanged.
+    #[must_use]
+    pub fn propagate(&self, handler: &str, operation: TagOperation) -> CamelTag {
+        let mut provenance = self.provenance.clone();
+        provenance.push(ProvenanceEntry::now(handler, operation));
+        CamelTag {
+            capabilities: self.capabilities.clone(),
+            provenance,
+            taint_level: self.taint_level,
+        }
+    }
+
+    /// Merge multiple tags into one.
+    ///
+    /// - **Capabilities**: intersection of all inputs (conservative).
+    /// - **Taint level**: maximum (worst) of all inputs.
+    /// - **Provenance**: concatenation in input order.
+    ///
+    /// An empty slice returns a fully-trusted, empty-capability tag.
+    #[must_use]
+    pub fn merge(tags: &[&CamelTag]) -> CamelTag {
+        if tags.is_empty() {
+            return CamelTag {
+                capabilities: CapabilitySet::empty(),
+                provenance: Vec::new(),
+                taint_level: CamelTaintLevel::Trusted,
+            };
+        }
+
+        let capabilities = tags
+            .iter()
+            .map(|t| t.capabilities.clone())
+            .reduce(|acc, c| acc.intersection(&c))
+            .unwrap_or_default();
+
+        let taint_level = tags
+            .iter()
+            .map(|t| t.taint_level)
+            .max()
+            .unwrap_or(CamelTaintLevel::Trusted);
+
+        let provenance = tags
+            .iter()
+            .flat_map(|t| t.provenance.iter().cloned())
+            .collect();
+
+        CamelTag {
+            capabilities,
+            provenance,
+            taint_level,
+        }
+    }
+}
+
+impl Default for CamelTag {
+    fn default() -> Self {
+        Self {
+            capabilities: CapabilitySet::empty(),
+            provenance: Vec::new(),
+            taint_level: CamelTaintLevel::Trusted,
+        }
+    }
+}
+
+impl std::fmt::Display for CamelTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "CamelTag(taint={}, caps={}, provenance=[{}])",
+            self.taint_level,
+            self.capabilities,
+            self.provenance
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+        )
+    }
+}
 
 // ── Typed hook parameter structs (C2) ─────────────────────────────────
 
@@ -240,9 +539,14 @@ pub struct ExtensionMeta {
     /// Whether failure in this extension is fatal.
     #[serde(default)]
     pub optional: bool,
-    /// Dependencies (other extension names that must load first).
+    /// Hard dependencies: other extension names that must load first.
+    /// Cross-layer references are silently ignored — layer order handles them.
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// Soft dependencies: extensions to order before this one if present,
+    /// but whose absence does not cause an error or affect ordering.
+    #[serde(default)]
+    pub soft_depends_on: Vec<String>,
     /// Extension version.
     #[serde(default)]
     pub version: String,
@@ -336,6 +640,7 @@ pub trait Extension: Send + Sync {
             layer: self.layer(),
             optional: false,
             depends_on: Vec::new(),
+            soft_depends_on: Vec::new(),
             version: String::new(),
         }
     }
@@ -907,4 +1212,152 @@ mod tests {
         chain.run_on_gate(&mut event).await.unwrap();
         assert!(event.passed);
     }
+    // ── CaMeL IFC tests (E30-T01) ──────────────────────────────────────
+
+    #[test]
+    fn camel_taint_level_ordering() {
+        assert!(CamelTaintLevel::Trusted < CamelTaintLevel::Local);
+        assert!(CamelTaintLevel::Local < CamelTaintLevel::External);
+        assert!(CamelTaintLevel::External < CamelTaintLevel::Untrusted);
+    }
+
+    #[test]
+    fn camel_taint_level_display() {
+        assert_eq!(CamelTaintLevel::Trusted.to_string(), "trusted");
+        assert_eq!(CamelTaintLevel::Local.to_string(), "local");
+        assert_eq!(CamelTaintLevel::External.to_string(), "external");
+        assert_eq!(CamelTaintLevel::Untrusted.to_string(), "untrusted");
+    }
+
+    #[test]
+    fn tag_operation_display() {
+        assert_eq!(TagOperation::Passthrough.to_string(), "passthrough");
+        assert_eq!(TagOperation::Transform.to_string(), "transform");
+        assert_eq!(TagOperation::Merge.to_string(), "merge");
+    }
+
+    #[test]
+    fn capability_set_intersection() {
+        let a = CapabilitySet::from_strings(["read_disk", "call_llm", "write_disk"]);
+        let b = CapabilitySet::from_strings(["read_disk", "call_llm"]);
+        let result = a.intersection(&b);
+        assert!(result.capabilities.contains("read_disk"));
+        assert!(result.capabilities.contains("call_llm"));
+        assert!(!result.capabilities.contains("write_disk"));
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn capability_set_union() {
+        let a = CapabilitySet::from_strings(["read_disk"]);
+        let b = CapabilitySet::from_strings(["call_llm"]);
+        let result = a.union(&b);
+        assert_eq!(result.len(), 2);
+        assert!(result.capabilities.contains("read_disk"));
+        assert!(result.capabilities.contains("call_llm"));
+    }
+
+    #[test]
+    fn camel_tag_new_and_trusted() {
+        let tag = CamelTag::new(["read_disk".to_string()], CamelTaintLevel::Local);
+        assert_eq!(tag.taint_level, CamelTaintLevel::Local);
+        assert!(tag.capabilities.capabilities.contains("read_disk"));
+        assert!(tag.provenance.is_empty());
+
+        let trusted = CamelTag::trusted(["call_llm".to_string()]);
+        assert_eq!(trusted.taint_level, CamelTaintLevel::Trusted);
+    }
+
+    #[test]
+    fn camel_tag_propagate_appends_provenance() {
+        let tag = CamelTag::new(["read_disk".to_string()], CamelTaintLevel::Trusted);
+        let after = tag.propagate("my-extension", TagOperation::Passthrough);
+
+        assert!(tag.provenance.is_empty());
+        assert_eq!(after.provenance.len(), 1);
+        assert_eq!(after.provenance[0].handler, "my-extension");
+        assert_eq!(after.provenance[0].operation, TagOperation::Passthrough);
+        assert_eq!(after.taint_level, CamelTaintLevel::Trusted);
+        assert!(after.capabilities.capabilities.contains("read_disk"));
+    }
+
+    #[test]
+    fn camel_tag_propagate_chaining() {
+        let tag = CamelTag::trusted(["cap-a".to_string()]);
+        let a1 = tag.propagate("handler-1", TagOperation::Passthrough);
+        let a2 = a1.propagate("handler-2", TagOperation::Transform);
+
+        assert_eq!(a2.provenance.len(), 2);
+        assert_eq!(a2.provenance[0].handler, "handler-1");
+        assert_eq!(a2.provenance[1].handler, "handler-2");
+        assert_eq!(a2.provenance[1].operation, TagOperation::Transform);
+    }
+
+    #[test]
+    fn camel_tag_merge_empty() {
+        let result = CamelTag::merge(&[]);
+        assert_eq!(result.taint_level, CamelTaintLevel::Trusted);
+        assert!(result.capabilities.is_empty());
+        assert!(result.provenance.is_empty());
+    }
+
+    #[test]
+    fn camel_tag_merge_intersects_capabilities() {
+        let a = CamelTag::new(
+            ["cap-a".to_string(), "cap-b".to_string()],
+            CamelTaintLevel::Trusted,
+        );
+        let b = CamelTag::new(
+            ["cap-b".to_string(), "cap-c".to_string()],
+            CamelTaintLevel::Local,
+        );
+
+        let merged = CamelTag::merge(&[&a, &b]);
+        assert_eq!(merged.capabilities.len(), 1);
+        assert!(merged.capabilities.capabilities.contains("cap-b"));
+        assert_eq!(merged.taint_level, CamelTaintLevel::Local);
+    }
+
+    #[test]
+    fn camel_tag_merge_worst_taint_wins() {
+        let trusted = CamelTag::trusted(["c".to_string()]);
+        let untrusted = CamelTag::new(["c".to_string()], CamelTaintLevel::Untrusted);
+        let external = CamelTag::new(["c".to_string()], CamelTaintLevel::External);
+
+        let merged = CamelTag::merge(&[&trusted, &external, &untrusted]);
+        assert_eq!(merged.taint_level, CamelTaintLevel::Untrusted);
+    }
+
+    #[test]
+    fn camel_tag_merge_concatenates_provenance() {
+        let mut a = CamelTag::trusted(["c".to_string()]);
+        a.provenance.push(ProvenanceEntry::now("handler-a", TagOperation::Passthrough));
+
+        let mut b = CamelTag::trusted(["c".to_string()]);
+        b.provenance.push(ProvenanceEntry::now("handler-b", TagOperation::Transform));
+
+        let merged = CamelTag::merge(&[&a, &b]);
+        assert_eq!(merged.provenance.len(), 2);
+        assert_eq!(merged.provenance[0].handler, "handler-a");
+        assert_eq!(merged.provenance[1].handler, "handler-b");
+    }
+
+    #[test]
+    fn camel_tag_serde_roundtrip() {
+        let tag = CamelTag::new(["read_disk".to_string()], CamelTaintLevel::External);
+        let json = serde_json::to_string(&tag).unwrap();
+        let decoded: CamelTag = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.taint_level, CamelTaintLevel::External);
+        assert!(decoded.capabilities.capabilities.contains("read_disk"));
+    }
+
+    #[test]
+    fn camel_taint_level_serde() {
+        let json = serde_json::to_string(&CamelTaintLevel::External).unwrap();
+        assert_eq!(json, r#""external""#);
+        let decoded: CamelTaintLevel = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, CamelTaintLevel::External);
+    }
+
+
 }

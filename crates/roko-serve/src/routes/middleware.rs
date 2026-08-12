@@ -895,6 +895,18 @@ pub async fn require_scope(req: Request<Body>, next: Next) -> Result<Response, A
         .unwrap_or_else(|| "read".to_string());
 
     if !is_scope_sufficient(&has_scope, required) {
+        let actor = req
+            .extensions()
+            .get::<AuthContext>()
+            .and_then(|ctx| ctx.user_id.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        tracing::warn!(
+            actor = %actor,
+            scope_has = %has_scope,
+            scope_required = %required,
+            route = %format!("{method} {path}"),
+            "auth_audit: permission denied",
+        );
         return Err(ApiError {
             status: axum::http::StatusCode::FORBIDDEN,
             code: "insufficient_scope".into(),

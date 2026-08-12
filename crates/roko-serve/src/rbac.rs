@@ -242,6 +242,13 @@ pub fn enforce_permission(role: Role, required: Permission) -> Result<(), ApiErr
     if check_permission(role, required) {
         Ok(())
     } else {
+        // Emit a structured warning so deny events appear in the trace even
+        // when the caller does not wire up file-based audit logging.
+        tracing::warn!(
+            role = %role.as_str(),
+            permission = %required.as_str(),
+            "auth_audit: permission denied",
+        );
         Err(ApiError::forbidden(format!(
             "role '{}' does not have permission '{}'",
             role.as_str(),

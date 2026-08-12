@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::auth_audit::{AuthAuditAction, AuthAuditEvent, AuthAuditLog, AuthOutcome};
+use crate::auth_audit::{AuthAuditAction, AuthAuditEvent, AuthOutcome};
 
 use super::middleware::hash_api_key;
 use crate::error::ApiError;
@@ -747,6 +747,18 @@ async fn issue_agent_token(
     tokens.push(token);
     save_agent_tokens(&state.workdir, &tokens)?;
 
+    // Audit: TokenIssued (agent token)
+    append_audit_event(
+        &state.workdir,
+        AuthAuditEvent::new(
+            req.agent_id.clone(),
+            AuthAuditAction::TokenIssued,
+            token_id.clone(),
+            AuthOutcome::Success,
+        )
+        .with_meta("expires_at", &expires_at.to_rfc3339()),
+    );
+
     Ok((
         StatusCode::CREATED,
         Json(IssueAgentTokenResponse {
@@ -790,8 +802,22 @@ async fn revoke_agent_token(
         .iter_mut()
         .find(|t| t.token_id == token_id)
         .ok_or_else(|| ApiError::not_found(format!("agent token '{token_id}' not found")))?;
+    // Capture agent_id before mutable borrow ends.
+    let agent_id = token.agent_id.clone();
     token.revoked = true;
     save_agent_tokens(&state.workdir, &tokens)?;
+
+    // Audit: TokenRevoked
+    append_audit_event(
+        &state.workdir,
+        AuthAuditEvent::new(
+            agent_id,
+            AuthAuditAction::TokenRevoked,
+            token_id.clone(),
+            AuthOutcome::Success,
+        ),
+    );
+
     Ok(StatusCode::NO_CONTENT)
 }
 

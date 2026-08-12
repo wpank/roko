@@ -65,6 +65,7 @@ pub mod state_hub {
 }
 
 pub mod adapters;
+pub mod auth_audit;
 pub mod bench;
 pub mod command_events;
 pub mod config_watcher;
@@ -119,7 +120,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info, warn};
 
-use roko_core::Engram;
+use roko_core::Signal;
 use roko_core::config::schema::RokoConfig;
 use roko_core::connector::{ConnectorHealth, ConnectorInfo, ConnectorKind, ConnectorStatus};
 use roko_core::dashboard_snapshot::DashboardEvent;
@@ -1110,7 +1111,7 @@ fn build_app_state(
 /// - **neuro-store**: the durable knowledge store (`Database` kind)
 ///
 /// Feeds registered:
-/// - **engrams**: `.roko/engrams.jsonl` — raw signal/engram log (`Raw` kind)
+/// - **engrams**: `.roko/engrams.jsonl` — raw signal log (`Raw` kind)
 /// - **episodes**: `.roko/episodes.jsonl` — agent turn episodes (`Raw` kind)
 /// - **efficiency**: `.roko/learn/efficiency.jsonl` — per-turn metrics (`Derived` kind)
 /// - **knowledge**: neuro knowledge store entries (`Composite` kind)
@@ -1176,7 +1177,7 @@ fn seed_default_registries_inner(state: &AppState) {
         kind: FeedKind::Raw,
         access: FeedAccess::Public,
         agent_id: "system".to_string(),
-        description: "Raw signal/engram log (.roko/engrams.jsonl)".to_string(),
+        description: "Raw signal log (.roko/engrams.jsonl)".to_string(),
         schema: None,
         created_at: now,
     });
@@ -1934,7 +1935,7 @@ pub(crate) fn start_event_source_group(
         cancel_for_shutdown.cancel();
     });
 
-    let (signal_tx, signal_rx) = mpsc::channel::<Engram>(256);
+    let (signal_tx, signal_rx) = mpsc::channel::<Signal>(256);
     tokio::spawn(signal_ingest_loop(
         Arc::clone(&state),
         signal_rx,
@@ -2188,14 +2189,14 @@ fn start_demurrage_timer(state: Arc<AppState>) -> JoinHandle<()> {
     })
 }
 
-/// Periodic cold archival: migrates aged-out engrams from the hot substrate
+/// Periodic cold archival: migrates aged-out signals from the hot substrate
 /// (`.roko/engrams.jsonl` / `FileSubstrate`) to compressed monthly JSONL
 /// archives in `.roko/cold/`.
 ///
 /// Runs every hour (default) or at the interval specified in the
 /// `archival_interval_secs` field. Each tick:
 ///  1. Opens the hot `FileSubstrate`.
-///  2. Queries for engrams older than 7 days (default).
+///  2. Queries for signals older than 7 days (default).
 ///  3. Batch-archives them to `ArchiveColdSubstrate`.
 ///  4. Applies retention compaction on observability artifacts.
 ///
@@ -2237,14 +2238,14 @@ fn start_cold_archival_timer(state: Arc<AppState>) -> JoinHandle<()> {
                 continue;
             }
 
-            // -- Phase 1: cold-archive aged-out engrams ----------------------
+            // -- Phase 1: cold-archive aged-out signals ----------------------
             match run_cold_archival_tick(&roko_dir, max_age_ms, batch_size).await {
                 Ok(0) => {
-                    debug!("cold archival tick: no engrams to archive");
+                    debug!("cold archival tick: no signals to archive");
                 }
                 Ok(n) => {
                     info!(
-                        "cold archival tick: archived {n} engram(s) to {}",
+                        "cold archival tick: archived {n} signal(s) to {}",
                         roko_dir.join("cold").display()
                     );
                 }
@@ -2266,11 +2267,11 @@ fn start_cold_archival_timer(state: Arc<AppState>) -> JoinHandle<()> {
     })
 }
 
-/// Execute a single cold-archival tick: query old engrams from the hot
+/// Execute a single cold-archival tick: query old signals from the hot
 /// substrate, archive them to `.roko/cold/`, then prune them from the hot
 /// store so they are not re-archived on the next tick.
 ///
-/// Returns the number of engrams archived, or an error.
+/// Returns the number of signals archived, or an error.
 async fn run_cold_archival_tick(
     roko_dir: &std::path::Path,
     max_age_ms: i64,
@@ -2971,7 +2972,7 @@ fn start_builtin_event_sources(state: Arc<AppState>, roko_config: RokoConfig) {
 
 async fn signal_ingest_loop(
     state: Arc<AppState>,
-    mut receiver: mpsc::Receiver<Engram>,
+    mut receiver: mpsc::Receiver<Signal>,
     cancel: CancellationToken,
 ) {
     loop {

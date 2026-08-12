@@ -103,6 +103,142 @@ impl CascadeModel {
     }
 }
 
+// ─── FallbackChain ──────────────────────────────────────────────────────────
+
+/// Default maximum fallback depth when not specified by the caller.
+pub const DEFAULT_MAX_FALLBACK_DEPTH: usize = 3;
+
+/// A stateful cursor over an ordered list of fallback models.
+///
+/// Built from a [`CascadeModel`] at the call site when a rate-limit error is
+/// detected. The chain walks the fallback list in priority order, respecting
+/// `max_fallback_depth` so dispatch never loops unboundedly.
+///
+/// # Fallback ordering for rate-limit errors
+///
+/// The chain prefers models on a **different backend** first (different provider
+/// = different rate-limit bucket) before falling back to same-backend models.
+/// This mirrors [`CascadeModel::fallback_for_error`] but maintains position so
+/// successive exhausted fallbacks keep advancing rather than re-trying the same
+/// model.
+///
+/// # Learning integration
+///
+/// After dispatch, callers should call [`CascadeRouter::record_fallback_outcome`]
+/// with the [`FallbackEvent`] returned by [`FallbackChain::advance`] so the
+/// cascade bandit learns which fallbacks succeed.
+#[derive(Debug, Clone)]
+pub struct FallbackChain {
+    /// Model that was originally rate-limited (primary or a previous fallback).
+    pub rate_limited_slug: String,
+    /// Ordered candidates to try in sequence (already filtered for depth).
+    candidates: Vec<ModelSpec>,
+    /// Index of the next candidate to vend.
+    cursor: usize,
+    /// Maximum number of fallback hops this chain will attempt.
+    pub max_fallback_depth: usize,
+}
+
+impl FallbackChain {
+    /// Build a `FallbackChain` from a [`CascadeModel`] for a given rate-limited
+    /// primary slug.
+    ///
+    /// The list is reordered so that models on a different backend (different
+    /// provider) come first, matching the intuition that a different provider
+    /// has an independent rate-limit quota.
+    ///
+    /// `max_fallback_depth` caps the total number of models tried.  Pass `None`
+    /// to use [`DEFAULT_MAX_FALLBACK_DEPTH`].
+    #[must_use]
+    pub fn new(
+        cascade: &CascadeModel,
+        rate_limited_slug: &str,
+        max_fallback_depth: Option<usize>,
+    ) -> Self {
+        let depth = max_fallback_depth.unwrap_or(DEFAULT_MAX_FALLBACK_DEPTH);
+
+        // Partition the fallback list: different-backend first, then same-backend.
+        let (mut different_backend, same_backend): (Vec<_>, Vec<_>) = cascade
+            .fallback_chain
+            .iter()
+            .filter(|m| m.slug != rate_limited_slug)
+            .cloned()
+            .partition(|m| m.backend != cascade.primary.backend);
+
+        // Stable merge: different-backend candidates first, then same-backend.
+        different_backend.extend(same_backend);
+
+        // Apply depth cap.
+        let candidates: Vec<ModelSpec> = different_backend.into_iter().take(depth).collect();
+
+        Self {
+            rate_limited_slug: rate_limited_slug.to_string(),
+            candidates,
+            cursor: 0,
+            max_fallback_depth: depth,
+        }
+    }
+
+    /// Return the next fallback model to try, or `None` when exhausted.
+    ///
+    /// Returns `(ModelSpec, FallbackEvent)` — the cloned model spec to dispatch
+    /// and the event to pass to [`CascadeRouter::record_fallback_outcome`] after
+    /// dispatch completes.
+    #[must_use]
+    pub fn advance(&mut self) -> Option<(ModelSpec, FallbackEvent)> {
+        let cursor = self.cursor;
+        let model = self.candidates.get(cursor)?.clone();
+        let event = FallbackEvent {
+            rate_limited_slug: self.rate_limited_slug.clone(),
+            fallback_slug: model.slug.clone(),
+            depth: cursor + 1,
+        };
+        self.cursor = cursor + 1;
+        Some((model, event))
+    }
+
+    /// `true` when all fallback candidates have been exhausted.
+    #[must_use]
+    pub fn is_exhausted(&self) -> bool {
+        self.cursor >= self.candidates.len()
+    }
+
+    /// Number of remaining candidates.
+    #[must_use]
+    pub fn remaining(&self) -> usize {
+        self.candidates.len().saturating_sub(self.cursor)
+    }
+
+    /// Total candidates in the chain (may be less than `max_fallback_depth`
+    /// when the cascade has fewer fallbacks available).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.candidates.len()
+    }
+
+    /// `true` when the chain was built with no candidates.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.candidates.is_empty()
+    }
+}
+
+/// Telemetry event emitted when a fallback model is tried after a rate limit.
+///
+/// Pass this to [`CascadeRouter::record_fallback_outcome`] after dispatch so
+/// the cascade router can learn from the result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FallbackEvent {
+    /// The model that was rate-limited (triggering the fallback).
+    pub rate_limited_slug: String,
+    /// The fallback model that was selected.
+    pub fallback_slug: String,
+    /// How many fallback hops have been taken (1 = first fallback, 2 = second, …).
+    pub depth: usize,
+}
+
+// ─── CascadeSelection ───────────────────────────────────────────────────────
+
 /// Selection result for raw-context routing.
 #[derive(Debug, Clone)]
 pub struct CascadeSelection {

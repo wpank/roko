@@ -1,6 +1,8 @@
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
+# Default target is "runtime" (full Railway image with sidecars).
+# Set RAILWAY_DOCKERFILE_TARGET=distroless for the minimal roko-cli-only image.
 watchPatterns = [
   "apps/**",
   "crates/**",
@@ -13,7 +15,10 @@ watchPatterns = [
 ]
 
 [deploy]
-healthcheckPath = "/health"
+# /api/health is the canonical health endpoint registered in roko-serve.
+# Railway probes this path before marking a deployment active.
+healthcheckPath = "/api/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
+startCommand = "/usr/local/bin/start-railway"

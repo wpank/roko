@@ -42,19 +42,40 @@ mapping and equivalent-or-stronger acceptance. It never means “we chose not to
 
 ### Batch audit 2026-08-10
 
-Updated 2026-08-12 (batch 6 integrated)
+Updated 2026-08-12 (batch 7 integrated)
 
-Batches 1-6: 27 audit + 20 implementation + 27 mixed + 15 + 15 + 14 partial
+Batches 1-7: 27 audit + 20 implementation + 27 mixed + 15 + 15 + 14 partial + 30 impl
 agents. All changes integrated and pushed to `status-quo/batch-2026-08-10`.
-Key findings:
+
+Batch 7 summary (30 agents, 23 with code changes, ~5,900 LOC):
+
+| Plan/Issue | Progress | Batch 7 additions |
+|---|---|---|
+| P19 (cascade ACP) | 6/6 done | T2-T6: cascade_select_model wired, DaimonState, episode metadata |
+| P21 (ACP streaming) | 3/5 | T1-T3: slash command streaming |
+| P28 (image support) | 3/5 | T2-T3: inject_image_parts helper, image placeholder |
+| E45 (agent quality) | 7/10 | T01: review verdict, T02: gate auto-fix, T03: error sharing, T05: context scoping, T06: warm pool, T08: provider metrics, T10: A-MAC gate |
+| E43 (ops hardening) | 5/8 | T01: brain export, T03: daemon lifecycle, T06: secrets rotation, T07: deployment tier, T08: Dockerfiles |
+| E47 (resource mgmt) | 7/11 | T02: disk monitor, T05: target cleanup, T08: disk pressure watcher, T10: doctor disk checks |
+| E48 (cost control) | 5/12 | T03-T04: rate limiter + budget guardrail, T05-T06: token estimator + cost projection |
+| E46 (GitHub) | 3/12 | T01-T02: webhook handler + signal routing |
+| E34 (safety/IFC) | 5/8 | T03-T04: capabilities module + IFC check |
+| E33 (observability) | 7/9 | T04-T05: lens registry + telemetry observe |
+| E30 (plugin system) | 4/9 | T03-T04: extension lifecycle + tick hooks |
+| E32 (tool registry) | 3/8 | T01-T02: DynamicToolRegistry (20 tests) |
+| E35 (auth/tokens) | 3/8 | T01-T02: AgentToken + key rotation |
+| P17 (CLI output) | 6/6 done | T4-T6: confirmed already implemented |
+
+Cross-wave ledger: ~85 confirmed done, ~20 partial, ~15 greenfield remaining in active plans.
+
+Prior findings:
 
 | Finding | Detail |
 |---|---|
 | Build health | `cargo build --workspace` passes. Nightly fmt applied, clippy clean. |
 | Stale TOML metadata | P08 (4/4), P09 (3/3), P23 (6/6), e2e-smoke (2/2), E16 (2/2), E07-T07, E07-T09, E09-T09, E05-T05, E18-T07 all show `done = 0` in their tasks.toml but are fully implemented in code. |
 | E04 security | 18/19 done (was reported as 12/19). T13 fixed; only T14 (fail-closed tool permission) remains. |
-| Cross-wave ledger | 120 external tasks: ~60 confirmed done, ~15 partial, ~45 greenfield. Batch 6: P17 3/6, P24 4/4, P25 4/4, E33 ~5/9, E34 ~3/8, E47 3/11, E30 ~2/9, E31 ~1/8, E46 signal kinds added. |
-| Waves 10-13 | Essentially all greenfield (hundreds of tasks at 0). Best foundations: E30 (extension system), E34 (TaintLevel/QuarantineVault), E33 (Lens trait). |
+| Waves 10-13 | Most now have foundations from batch 7 agents. Best coverage: E45, E47, E48. |
 | Issues 60-67 | COVERAGE.md stops at 59; 8 issues entirely absent from coverage tracking. Issue 66 (secret scrubber false-positive) fixed. |
 | E12 dead code | 7/9 done (T01,T03,T04,T05,T07,T08,T09), 1/9 partial (T06), 1/9 blocked (T02 — roko-gate genuine runtime dep). T09: plugin webhook scopes wired. |
 | GcEngine | Wired into runner (E47): `roko-fs` GcEngine now called from event loop. |

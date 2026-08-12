@@ -42,18 +42,18 @@ mapping and equivalent-or-stronger acceptance. It never means “we chose not to
 
 ### Batch audit 2026-08-10
 
-Updated 2026-08-11 (batch 3 integrated)
+Updated 2026-08-12 (batch 6 integrated)
 
-Batch 1: 27 audit agents assessed all waves. Batch 2: 20 implementation agents.
-Batch 3: 27 agents (17 implementation + 10 audit). All changes integrated and
-pushed to `status-quo/batch-2026-08-10`. Key findings:
+Batches 1-6: 27 audit + 20 implementation + 27 mixed + 15 + 15 + 14 partial
+agents. All changes integrated and pushed to `status-quo/batch-2026-08-10`.
+Key findings:
 
 | Finding | Detail |
 |---|---|
 | Build health | `cargo build --workspace` passes. Nightly fmt applied, clippy clean. |
 | Stale TOML metadata | P08 (4/4), P09 (3/3), P23 (6/6), e2e-smoke (2/2), E16 (2/2), E07-T07, E07-T09, E09-T09, E05-T05, E18-T07 all show `done = 0` in their tasks.toml but are fully implemented in code. |
 | E04 security | 18/19 done (was reported as 12/19). T13 fixed; only T14 (fail-closed tool permission) remains. |
-| Cross-wave ledger | 120 external tasks: ~55 confirmed done, ~10 partial, ~55 greenfield. Batch 5: P13 4/4, P17 2/6, P18 5/5, P19 1/6, P20 5/5, P22 5/5, P25 3/4, P31 3/3, P32 2/2, E12-T09 done, E47-T01 done. |
+| Cross-wave ledger | 120 external tasks: ~60 confirmed done, ~15 partial, ~45 greenfield. Batch 6: P17 3/6, P24 4/4, P25 4/4, E33 ~5/9, E34 ~3/8, E47 3/11, E30 ~2/9, E31 ~1/8, E46 signal kinds added. |
 | Waves 10-13 | Essentially all greenfield (hundreds of tasks at 0). Best foundations: E30 (extension system), E34 (TaintLevel/QuarantineVault), E33 (Lens trait). |
 | Issues 60-67 | COVERAGE.md stops at 59; 8 issues entirely absent from coverage tracking. Issue 66 (secret scrubber false-positive) fixed. |
 | E12 dead code | 7/9 done (T01,T03,T04,T05,T07,T08,T09), 1/9 partial (T06), 1/9 blocked (T02 — roko-gate genuine runtime dep). T09: plugin webhook scopes wired. |
@@ -597,15 +597,15 @@ hint; Wave 0 may correct it from actual file/dependency evidence.
 - [x] P14-gate-rung-fix (3/3 done) — plans/P14-gate-rung-fix/tasks.toml; Wave 8/E05. T1,T2,T3 all done. T3 `complex_pipeline_has_seven_canonical_rungs` test added.
 - [x] P15-error-recovery-wiring (5/5 done) — plans/P15-error-recovery-wiring/tasks.toml; Waves 2/7 SH02/E01. T1 done (classify_agent_crash), T2 done (crash classification in do_cmd plan-gen errors), T3 done (config parse warnings logged instead of silently swallowed), T4 done (task_crash_class ledger entry), T5 done (enriched agent exit handler).
 - [x] P16-safety-contracts (5/5 done) — plans/P16-safety-contracts/tasks.toml; Wave 7/E04. T1 done (contract load in event_loop), T2 done (disallowed_tools field on CliDispatchRequest + --disallowed-tools flags), T3 done (forbidden_tool_names()), T4 done (AgentSpawnConfig.disallowed_tools passthrough), T5 done (bridge advisory log for non-CLI dispatch).
-- [ ] P17-cli-output-format (2/6) — plans/P17-cli-output-format/tasks.toml; Waves 4/9 SH04/E10. T1 done (`CliOutput` struct), T2 done (do_cmd.rs eprintln migration). T3-T6 remaining.
+- [ ] P17-cli-output-format (3/6) — plans/P17-cli-output-format/tasks.toml; Waves 4/9 SH04/E10. T1 done (`CliOutput` struct), T2 done (do_cmd.rs eprintln migration), T3 done (10 unit tests). T4-T6 remaining.
 - [x] P18-tui-agent-data (5/5) — plans/P18-tui-agent-data/tasks.toml; Waves 4/9 SH04/E10. All 5 acceptance roll-ups verified: structured attribution, token accumulation, error classification, gate diagnosis, TUI bridge. 6 agent_events tests added.
 - [ ] P19-cascade-router-acp (1/6) — plans/P19-cascade-router-acp/tasks.toml; Wave 10/E17. T1 done (cascade_select_model env-gated). T2-T6 remaining: wire call site, model key fix, DaimonState loading.
 - [x] P20-zero-config (5/5) — plans/P20-zero-config/tasks.toml; Wave 8/E15/E18. T1 done (auto-detect provider), T2 done (default roko.toml), T3 done (skip provider validation), T4 done (use_max_completion_tokens), T5 done (resolve_model builtin path + 3 tests).
 - [ ] P21-acp-streaming (0/5) — plans/P21-acp-streaming/tasks.toml; Wave 10/E17. All 5 unimplemented: `run_slash_command` still buffers output, `AcpProgressSink` exists but not wired.
 - [x] P22-acp-tool-permission (5/5 done) — plans/P22-acp-tool-permission/tasks.toml; Wave 7/E04/E17. T1 merged, T2 done (denied/allowed enforcement), T3 done (session fields), T4 done (5 unit tests), T5 done (audit logging with session_id).
 - [x] P23-prd-pipeline-fix (6/6 done) — plans/P23-prd-pipeline-fix/tasks.toml; Wave 8/E16. All 6 tasks implemented: T1 read-only tools, T2 prompt update, T3 validation-blocks-write, T4 plan-to-PRD slug linking, T5 path-based status inference, T6 `source_prd` field. TOML `done = 0` is stale.
-- [ ] P24-workspace-paths (3/4) — plans/P24-workspace-paths/tasks.toml; Waves 8/10 E18/E43. T1 resolve_plans_dir swap, T3 orphaned .tmp check, T4 plans dir conflict check done. Remaining: T2 doc updates.
-- [ ] P25-mcp-acp-passthrough (3/4) — plans/P25-mcp-acp-passthrough/tasks.toml; Wave 10/E17. T1,T2,T3 done (MCP auto-discovery in AcpSession). T4 remaining.
+- [x] P24-workspace-paths (4/4) — plans/P24-workspace-paths/tasks.toml; Waves 8/10 E18/E43. T1 resolve_plans_dir swap, T2 doc updates (`.roko/plans/`→`./plans/` in API refs, layer overview, enrichment docs), T3 orphaned .tmp check, T4 plans dir conflict check done.
+- [x] P25-mcp-acp-passthrough (4/4) — plans/P25-mcp-acp-passthrough/tasks.toml; Wave 10/E17. T1,T2,T3 done (MCP auto-discovery in AcpSession). T4 done (mcp_config_path passthrough to OpenAI-compat dispatch).
 - [x] P26-hdc-similarity-lookup (4/4) — plans/P26-hdc-similarity-lookup/tasks.toml; Waves 9/10 E07/E24. query_similar_episodes + test + event_loop wiring + format section all done.
 - [x] P27-provider-error-ux (4/4 done) — plans/P27-provider-error-ux/tasks.toml; Wave 8/E14. T1-T4 done: structured provider key checks in doctor, multi-provider setup instructions, state layout audit, MCP allowlist check.
 - [ ] P28-image-support (0/5) — plans/P28-image-support/tasks.toml; Wave 10/E17.
@@ -824,11 +824,11 @@ Run only after the named parents are DONE:
 - [ ] E27-feeds-system — 0/10, all greenfield. After E19/E20. No feed types exist.
 - [ ] E28-groups-coordination — 0/8, all greenfield. After E20. No group coordination types exist.
 - [ ] E29-connectivity-relay — 0/9, all greenfield. After E04. Data types exist in `roko-core` but no relay protocol.
-- [ ] E30-extension-system — 0/9, all greenfield but best foundation. After E20. `PluginManifestFile`, `discover_plugins`, `LoadedPlugin`, `DeclarativeTool` all exist.
-- [ ] E31-trigger-system — 0/8, all greenfield. After E08. Only `TriggerDef` (3 manifest variants) exists; no protocol types.
+- [ ] E30-extension-system — ~2/9 partial. After E20. `PluginManifestFile`, `discover_plugins`, `LoadedPlugin`, `DeclarativeTool` exist. SignalMatch/Manual trigger variants added to TriggerDef.
+- [ ] E31-trigger-system — ~1/8 partial. After E08. `TriggerDef` now has 5 manifest variants (Cron, Webhook, SignalMatch, Manual + stub). trigger_protocol module with TriggerEnvelope/TriggerOutcome types added.
 - [ ] E32-tool-plugin-ecosystem — ~1/8 partial. After E14/E15. `PluginTier` (5 tiers) exists + `PluginCmd::Audit` basic tier inference. No `DynamicToolRegistry`, `SandboxConfig`, version resolution.
-- [ ] E33-telemetry-lens — ~2/9 partial. After E09/E10. `Lens` trait, `LensScope`, `LensSnapshot`, `CollectorLens` exist. No `TelemetryObserve` trait, `LensRegistry`, circuit breaker.
-- [ ] E34-security-ifc — ~2/8 partial. After E04. `TaintLevel` enum exists but variant names diverge from spec (Public/Internal/Confidential/Secret vs Trusted/Local/External/Untrusted). `QuarantineVault` exists. No corrigibility, capabilities module, ImmunePipeline.
+- [ ] E33-telemetry-lens — ~5/9 partial. After E09/E10. `Lens` trait, `LensScope`, `LensSnapshot`, `CollectorLens` exist. T03 done: `TokenUsageLens`, `LatencyLens`, `CostLens` domain lenses with tests. No `TelemetryObserve` trait, `LensRegistry`, circuit breaker.
+- [ ] E34-security-ifc — ~3/8 partial. After E04. `TaintLevel` enum exists but variant names diverge from spec. `QuarantineVault` exists. `propagate_taint` lattice join implemented with 5 tests. No corrigibility, capabilities module, ImmunePipeline.
 - [ ] E35-auth-protocol — ~1/8 partial. After E04. `expires_at` field exists on `ApiKeyEntry` but not enforced. No RBAC module, AgentToken, relay tokens, JWKS hardening, audit trail.
 - [ ] E42-config-evolution — 0/8, all greenfield. After E19. Hot-reload watcher exists but no `ConfigMigrator`, `FieldProvenance`, `DomainProfile`.
 - [ ] E44-cross-cut-functors — 0/8, all greenfield, architecturally novel. After E19/E20. `CrossCutFunctor` trait doesn't exist anywhere.
@@ -841,8 +841,8 @@ Run only after the named parents are DONE:
 
 Operational epics with corrected real dependencies:
 
-- [ ] E46-github-workflow-integration — 12 tasks after E01/E04/E15. All greenfield.
-- [ ] E47-resource-disk-management — 11 tasks after E01/E02. (1/11 done: T03 GcEngine wired into event_loop pre/post-run hooks. Remaining: T01,T02,T04-T11 greenfield.)
+- [ ] E46-github-workflow-integration — 12 tasks after E01/E04/E15. Signal kind constants added (workflow_run, check_suite, create, delete). Rest greenfield.
+- [ ] E47-resource-disk-management — 11 tasks after E01/E02. (3/11 done: T01 ResourcesConfig, T03 GcEngine wired, post-run worktree+target cleanup. Remaining: T02,T04-T11.)
 - [ ] E48-rate-limit-budgeting — 12 tasks after E14/E26. T01 retry-with-backoff done. Rest greenfield.
 - [ ] Operational overlap has one implementation owner and no duplicate mechanisms.
 

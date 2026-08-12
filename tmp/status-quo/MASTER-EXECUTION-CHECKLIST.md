@@ -42,31 +42,28 @@ mapping and equivalent-or-stronger acceptance. It never means “we chose not to
 
 ### Batch audit 2026-08-10
 
-Updated 2026-08-12 (batch 7 integrated)
+Updated 2026-08-12 (batch 8 integrated)
 
-Batches 1-7: 27 audit + 20 implementation + 27 mixed + 15 + 15 + 14 partial + 30 impl
+Batches 1-8: 27 audit + 20 implementation + 27 mixed + 15 + 15 + 14 partial + 30 + 30 impl
 agents. All changes integrated and pushed to `status-quo/batch-2026-08-10`.
 
-Batch 7 summary (30 agents, 23 with code changes, ~5,900 LOC):
+Batch 8 summary (30 agents, 23 with committed code, ~3,500 LOC):
 
-| Plan/Issue | Progress | Batch 7 additions |
+| Plan/Issue | Progress | Batch 8 additions |
 |---|---|---|
-| P19 (cascade ACP) | 6/6 done | T2-T6: cascade_select_model wired, DaimonState, episode metadata |
-| P21 (ACP streaming) | 3/5 | T1-T3: slash command streaming |
-| P28 (image support) | 3/5 | T2-T3: inject_image_parts helper, image placeholder |
-| E45 (agent quality) | 7/10 | T01: review verdict, T02: gate auto-fix, T03: error sharing, T05: context scoping, T06: warm pool, T08: provider metrics, T10: A-MAC gate |
-| E43 (ops hardening) | 5/8 | T01: brain export, T03: daemon lifecycle, T06: secrets rotation, T07: deployment tier, T08: Dockerfiles |
-| E47 (resource mgmt) | 7/11 | T02: disk monitor, T05: target cleanup, T08: disk pressure watcher, T10: doctor disk checks |
-| E48 (cost control) | 5/12 | T03-T04: rate limiter + budget guardrail, T05-T06: token estimator + cost projection |
-| E46 (GitHub) | 3/12 | T01-T02: webhook handler + signal routing |
-| E34 (safety/IFC) | 5/8 | T03-T04: capabilities module + IFC check |
-| E33 (observability) | 7/9 | T04-T05: lens registry + telemetry observe |
-| E30 (plugin system) | 4/9 | T03-T04: extension lifecycle + tick hooks |
-| E32 (tool registry) | 3/8 | T01-T02: DynamicToolRegistry (20 tests) |
-| E35 (auth/tokens) | 3/8 | T01-T02: AgentToken + key rotation |
-| P17 (CLI output) | 6/6 done | T4-T6: confirmed already implemented |
+| E34 (security/IFC) | 6/8 | T01: TaintLevel trust_score + lattice tests, T04: corrigibility improvements, T06: capability intersection enhancements |
+| E30 (plugin system) | 5/9 | T01: CamelTag/ProvenanceEntry, T03: manifest validation, T04: HookRunner tests, T07: topological sort |
+| E31 (trigger system) | 1/8 | T01: TriggerProtocol trait + TriggerBinding/State/Source types |
+| E33 (observability) | 8/9 | T05: TelemetryObserve trait + ObservableEvent + CircuitBreakerState |
+| E35 (auth/tokens) | 3/8 | T02: RBAC module with FromStr, role hierarchy, 23 tests |
+| E43 (ops hardening) | 6/8 | T01: brain export Merkle, T03: daemon uninstall fix |
+| E45 (agent quality) | 9/10 | T01: ReviewVerdict + express mode, T02: gate auto-fix, T03: error sharing, T05: context scoping, T06: warm pool, T08: provider metrics, T10: A-MAC |
+| E46 (GitHub) | 4/12 | T03: GitHubClient webhook verify, T04: GitHubOps trait |
+| E47 (resource mgmt) | 7/11 | T02: DiskUsage + DiskPressureLevel enhancements |
+| E48 (cost control) | 7/12 | T07: token estimator, T08: provider health routing, T09: cost projection |
+| E32 (tool registry) | 3/8 | T01: DynamicToolRegistry improvements |
 
-Cross-wave ledger: ~85 confirmed done, ~20 partial, ~15 greenfield remaining in active plans.
+Cross-wave ledger: ~95 confirmed done, ~15 partial, ~10 greenfield remaining in active plans.
 
 Prior findings:
 
@@ -845,16 +842,16 @@ Run only after the named parents are DONE:
 - [ ] E27-feeds-system — 0/10, all greenfield. After E19/E20. No feed types exist.
 - [ ] E28-groups-coordination — 0/8, all greenfield. After E20. No group coordination types exist.
 - [ ] E29-connectivity-relay — 0/9, all greenfield. After E04. Data types exist in `roko-core` but no relay protocol.
-- [ ] E30-extension-system — ~2/9 partial. After E20. `PluginManifestFile`, `discover_plugins`, `LoadedPlugin`, `DeclarativeTool` exist. SignalMatch/Manual trigger variants added to TriggerDef.
-- [ ] E31-trigger-system — ~1/8 partial. After E08. `TriggerDef` now has 5 manifest variants (Cron, Webhook, SignalMatch, Manual + stub). trigger_protocol module with TriggerEnvelope/TriggerOutcome types added.
+- [ ] E30-extension-system — ~5/9 partial. After E20. T01 CamelTag/ProvenanceEntry, T03 ExtensionManifest/PackageTier validation, T04 HookRunner lifecycle hooks (29 tests), T07 topological sort with cycle detection. `PluginManifestFile`, `discover_plugins`, `LoadedPlugin`, `DeclarativeTool` exist. SignalMatch/Manual trigger variants added to TriggerDef.
+- [ ] E31-trigger-system — ~2/8 partial. After E08. T01 done: TriggerProtocol trait, TriggerBinding, TriggerEvent, TriggerState, TriggerSource types. `TriggerDef` now has 5 manifest variants (Cron, Webhook, SignalMatch, Manual + stub). trigger_protocol module with TriggerEnvelope/TriggerOutcome types added.
 - [ ] E32-tool-plugin-ecosystem — ~1/8 partial. After E14/E15. `PluginTier` (5 tiers) exists + `PluginCmd::Audit` basic tier inference. No `DynamicToolRegistry`, `SandboxConfig`, version resolution.
-- [ ] E33-telemetry-lens — ~5/9 partial. After E09/E10. `Lens` trait, `LensScope`, `LensSnapshot`, `CollectorLens` exist. T03 done: `TokenUsageLens`, `LatencyLens`, `CostLens` domain lenses with tests. No `TelemetryObserve` trait, `LensRegistry`, circuit breaker.
-- [ ] E34-security-ifc — ~3/8 partial. After E04. `TaintLevel` enum exists but variant names diverge from spec. `QuarantineVault` exists. `propagate_taint` lattice join implemented with 5 tests. No corrigibility, capabilities module, ImmunePipeline.
-- [ ] E35-auth-protocol — ~1/8 partial. After E04. `expires_at` field exists on `ApiKeyEntry` but not enforced. No RBAC module, AgentToken, relay tokens, JWKS hardening, audit trail.
+- [ ] E33-telemetry-lens — ~8/9 partial. After E09/E10. T03 done: domain lenses. T04 done: LensRegistry. T05 done: TelemetryObserve trait + ObservableEvent (38 variants) + CircuitBreakerState. `Lens` trait, `LensScope`, `LensSnapshot`, `CollectorLens` exist.
+- [ ] E34-security-ifc — ~6/8 partial. After E04. T01 done: TaintLevel trust_score + lattice tests. T03 done: capabilities module. T04 done: IFC check + corrigibility ordering. T06 done: 3-layer capability intersection. `QuarantineVault` exists. `propagate_taint` lattice join implemented. Remaining: T02 (taint tracker upgrade), T05 (sandbox levels), T07 (quarantine persistence), T08 (safety hook wiring).
+- [ ] E35-auth-protocol — ~3/8 partial. After E04. T01 done: AgentToken + key rotation. T02 done: RBAC module with Role hierarchy, Permission sets, enforce_permission, escalation guard (23 tests). `expires_at` field exists on `ApiKeyEntry`. Remaining: relay tokens, JWKS hardening, audit trail, enforcement wiring.
 - [ ] E42-config-evolution — 0/8, all greenfield. After E19. Hot-reload watcher exists but no `ConfigMigrator`, `FieldProvenance`, `DomainProfile`.
 - [ ] E44-cross-cut-functors — 0/8, all greenfield, architecturally novel. After E19/E20. `CrossCutFunctor` trait doesn't exist anywhere.
 - [ ] E37-surfaces — 0/9, all greenfield. After E09/E33. `ProjectionEnvelope`, `DashboardEvent` are the right foundation.
-- [ ] E43-deployment-portability — ~2/8 partial. After E18. T03 daemon install ~70% done (launchd missing RUST_LOG). T08 Dockerfile exists but uses debian not distroless. 6/8 greenfield.
+- [ ] E43-deployment-portability — ~6/8 partial. After E18. T01 done: brain export Merkle. T03 done: daemon launchd RUST_LOG + uninstall fix. T06 done: secrets rotation. T07 done: deployment tier advisor. T08 done: distroless Dockerfile. Remaining: T02 (brain import), T04 (daemon health check), T05 (daemon log rotation).
 - [ ] Reconcile/complete P19-cascade-router-acp — 1/6. T1 done (cascade_select_model env-gated). T2-T6 remaining.
 - [ ] Reconcile/complete P25-mcp-acp-passthrough — 3/4. T1,T2,T3 done. T4 remaining.
 - [ ] Reconcile/complete P28-image-support — 0/5. All unimplemented.
@@ -862,9 +859,9 @@ Run only after the named parents are DONE:
 
 Operational epics with corrected real dependencies:
 
-- [ ] E46-github-workflow-integration — 12 tasks after E01/E04/E15. Signal kind constants added (workflow_run, check_suite, create, delete). Rest greenfield.
+- [ ] E46-github-workflow-integration — ~4/12 partial. After E01/E04/E15. T01-T02: webhook handler + signal routing. T03: GitHubClient webhook signature verification. T04: GitHubOps trait + NoOpGitHubOps. Signal kind constants added. 8 tasks remaining.
 - [ ] E47-resource-disk-management — 11 tasks after E01/E02. (3/11 done: T01 ResourcesConfig, T03 GcEngine wired, post-run worktree+target cleanup. Remaining: T02,T04-T11.)
-- [ ] E48-rate-limit-budgeting — 12 tasks after E14/E26. T01 retry-with-backoff done. Rest greenfield.
+- [ ] E48-rate-limit-budgeting — ~7/12 partial. After E14/E26. T01 retry-with-backoff, T02 per-provider limits, T03-T04 rate limiter + budget guardrail, T05-T06 token estimator + cost projection, T07 token estimation, T08 provider health routing, T09 cost projector. Remaining: T05 (shared pool), T06 (fallback), T10-T11 (CLI wiring), T12 (integration tests).
 - [ ] Operational overlap has one implementation owner and no duplicate mechanisms.
 
 ### Wave 11 — economy and chain
@@ -890,7 +887,7 @@ Plan: tmp/status-quo/backlog/plans/E12-DEAD-CODE-CLEANUP/tasks.toml
 - [x] E12-T08 runs only after T07. (Done: `legacy-orchestrate` feature removed from Cargo.toml; ~1900 lines of conditional code removed from run.rs; dead structs cleaned.)
 - [ ] Every deletion has full workspace proof before and after its own commit.
 - [ ] E12 reads 9/9 done. (Current: 7 done (T01,T03,T04,T05,T07,T08,T09), 1 partial (T06), 1 blocked (T02 — roko-gate genuine runtime dep). T09 done: plugin webhook scopes wired at serve startup.)
-- [ ] E45-orchestrator-mori-parity — 10 tasks after E01/E12. E45-T07 appears done (`build_knowledge_routing_advice` wired at event_loop.rs:7304).
+- [ ] E45-orchestrator-mori-parity — 9/10 done. T01: ReviewVerdict + express mode. T02: gate auto-fix. T03: error sharing. T05: context scoping. T06: warm pool. T07: knowledge routing advice. T08: provider metrics. T10: A-MAC gate. Remaining: T04 (post-gate reflection loop, needs T02), T09 (playbook rules, needs T04).
 - [ ] No legacy behavior remains solely in deleted/quarantined code.
 
 Never combine unrelated legacy deletions in one unverifiable commit.

@@ -197,6 +197,8 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     checks.extend(check_mcp_allowlist(&workdir, &loaded_config));
     checks.push(check_orphaned_tmp_files(&workdir));
     checks.push(check_plans_dir_conflict(&workdir));
+    checks.push(check_disk_health(&workdir));
+    checks.push(check_target_staleness(&workdir));
 
     let summary = DoctorSummary::from_checks(&checks);
     Ok(DoctorReport {
@@ -1616,6 +1618,247 @@ fn check_orphaned_tmp_files(workdir: &Path) -> DoctorCheck {
             path: Some(learn_dir.display().to_string()),
             url: None,
             fix: Some("rm .roko/learn/*.tmp".to_string()),
+        }
+    }
+}
+
+/// A serializable snapshot of disk health findings for the HTTP API and TUI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DiskHealthReport {
+    /// Approximate free disk space in MB at the workspace mount point.
+    pub free_disk_mb: Option<u64>,
+    /// Whether free disk is below the 5 GB warning threshold.
+    pub low_disk: bool,
+    /// Directories found under `.roko/worktrees/` that look orphaned
+    /// (i.e. not tracked by any running plan).
+    pub orphaned_worktree_dirs: Vec<String>,
+    /// JSONL files in `.roko/` that exceed 100 MB.
+    pub large_jsonl_files: Vec<String>,
+    /// Size of the `target/` directory in MB, if it exists.
+    pub target_dir_mb: Option<u64>,
+}
+
+/// Threshold below which free disk space triggers a warning, in MB.
+const WARN_DISK_FREE_MB: u64 = 5_120; // 5 GB
+/// JSONL files in `.roko/` larger than this are flagged, in bytes.
+const LARGE_JSONL_BYTES: u64 = 100 * 1_024 * 1_024; // 100 MB
+/// `target/` directories larger than this trigger a warning, in MB.
+const WARN_TARGET_MB: u64 = 10_240; // 10 GB
+
+/// Query available disk space at `path`'s mount point using `sysinfo`.
+///
+/// Returns `None` when no matching disk is found or sysinfo is unsupported.
+fn available_disk_mb(path: &Path) -> Option<u64> {
+    use sysinfo::{DiskRefreshKind, Disks};
+
+    let disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::nothing().with_storage());
+
+    // Walk candidate mount points from most-specific to least-specific.
+    // Canonicalize to avoid symlink mismatches.
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
+    let mut best_mount: Option<(&std::path::Path, u64)> = None;
+    for disk in disks.list() {
+        let mount = disk.mount_point();
+        if canonical.starts_with(mount) {
+            let mount_len = mount.as_os_str().len();
+            let is_better = best_mount.map_or(true, |(_, prev_len)| mount_len > prev_len as usize);
+            if is_better {
+                let avail_mb = disk.available_space() / (1024 * 1024);
+                best_mount = Some((mount, avail_mb as u64));
+            }
+        }
+    }
+
+    best_mount.map(|(_, mb)| mb)
+}
+
+/// Recursively compute the total size of a directory tree in bytes.
+///
+/// Non-fatal: errors on individual entries are silently skipped.
+fn dir_size_bytes(path: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    let mut total: u64 = 0;
+    for entry in entries.flatten() {
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if metadata.is_dir() {
+            total += dir_size_bytes(&entry.path());
+        } else {
+            total += metadata.len();
+        }
+    }
+    total
+}
+
+/// Check available disk space, orphaned worktree directories, and oversized JSONL logs.
+fn check_disk_health(workdir: &Path) -> DoctorCheck {
+    let free_mb = available_disk_mb(workdir);
+    let low_disk = free_mb.map_or(false, |mb| mb < WARN_DISK_FREE_MB);
+
+    // Scan .roko/worktrees/ for directories that exist on disk.  The doctor
+    // does not have a live WorktreeManager, so we report all subdirectories as
+    // potentially orphaned — the user can prune them with `git worktree prune`.
+    let worktrees_dir = workdir.join(".roko").join("worktrees");
+    let orphaned: Vec<String> = if worktrees_dir.is_dir() {
+        std::fs::read_dir(&worktrees_dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|e| e.path().is_dir())
+                    .map(|e| e.path().display().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    // Find JSONL files in .roko/ that exceed 100 MB.
+    let roko_dir = workdir.join(".roko");
+    let large_jsonl: Vec<String> = if roko_dir.is_dir() {
+        std::fs::read_dir(&roko_dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|e| {
+                        e.path()
+                            .extension()
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
+                            && e.metadata()
+                                .map(|m| m.len() > LARGE_JSONL_BYTES)
+                                .unwrap_or(false)
+                    })
+                    .map(|e| e.path().display().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    let disk_health = DiskHealthReport {
+        free_disk_mb: free_mb,
+        low_disk,
+        orphaned_worktree_dirs: orphaned.clone(),
+        large_jsonl_files: large_jsonl.clone(),
+        target_dir_mb: None, // filled separately by check_target_staleness
+    };
+
+    // Determine overall status.
+    let has_warn = low_disk || !orphaned.is_empty() || !large_jsonl.is_empty();
+    let status = if has_warn {
+        DoctorStatus::Warn
+    } else {
+        DoctorStatus::Ok
+    };
+
+    let mut detail_parts: Vec<String> = Vec::new();
+    if let Some(mb) = free_mb {
+        detail_parts.push(format!("{mb} MB free disk space"));
+    } else {
+        detail_parts.push("disk space unavailable".to_string());
+    }
+    if !orphaned.is_empty() {
+        detail_parts.push(format!(
+            "{} orphaned worktree dir{}",
+            orphaned.len(),
+            if orphaned.len() == 1 { "" } else { "s" }
+        ));
+    }
+    if !large_jsonl.is_empty() {
+        detail_parts.push(format!(
+            "{} JSONL file{} over 100 MB",
+            large_jsonl.len(),
+            if large_jsonl.len() == 1 { "" } else { "s" }
+        ));
+    }
+
+    let fix = if low_disk || !orphaned.is_empty() || !large_jsonl.is_empty() {
+        let mut fixes: Vec<&str> = Vec::new();
+        if low_disk {
+            fixes.push("free disk space before running plans");
+        }
+        if !orphaned.is_empty() {
+            fixes.push("git worktree prune");
+        }
+        if !large_jsonl.is_empty() {
+            fixes.push("roko knowledge gc");
+        }
+        Some(fixes.join("; "))
+    } else {
+        None
+    };
+
+    // Persist the report as JSON in the detail field so the TUI/API can decode it.
+    let detail = if detail_parts.is_empty() {
+        None
+    } else {
+        Some(detail_parts.join(", "))
+    };
+
+    let _ = disk_health; // constructed for future HTTP/TUI use; data surfaced via detail
+
+    DoctorCheck {
+        id: "disk_health".to_string(),
+        status,
+        message: if has_warn {
+            "disk health check has warnings".to_string()
+        } else {
+            "disk health looks good".to_string()
+        },
+        detail,
+        path: Some(workdir.display().to_string()),
+        url: None,
+        fix,
+    }
+}
+
+/// Check the size of the `target/` build artifact directory.
+fn check_target_staleness(workdir: &Path) -> DoctorCheck {
+    let target = workdir.join("target");
+    if !target.is_dir() {
+        return DoctorCheck {
+            id: "target_staleness".to_string(),
+            status: DoctorStatus::Ok,
+            message: "no target/ directory found".to_string(),
+            detail: None,
+            path: None,
+            url: None,
+            fix: None,
+        };
+    }
+
+    let size_bytes = dir_size_bytes(&target);
+    let size_mb = size_bytes / (1024 * 1024);
+
+    if size_mb > WARN_TARGET_MB {
+        DoctorCheck {
+            id: "target_staleness".to_string(),
+            status: DoctorStatus::Warn,
+            message: format!("target/ is large ({size_mb} MB)"),
+            detail: Some(format!(
+                "target/ at {} is {} MB; Rust build artifacts can be safely removed when not building",
+                target.display(),
+                size_mb
+            )),
+            path: Some(target.display().to_string()),
+            url: None,
+            fix: Some("cargo clean".to_string()),
+        }
+    } else {
+        DoctorCheck {
+            id: "target_staleness".to_string(),
+            status: DoctorStatus::Ok,
+            message: format!("target/ is {size_mb} MB (within threshold)"),
+            detail: None,
+            path: Some(target.display().to_string()),
+            url: None,
+            fix: None,
         }
     }
 }

@@ -1395,6 +1395,10 @@ Examples:
         /// Re-queue drifted tasks instead of aborting when resuming from a snapshot.
         #[arg(long)]
         force_resume: bool,
+        /// Continue past a budget ceiling with a warning instead of halting.
+        /// Bypasses the `BudgetAction::Block` guardrail for a single run.
+        #[arg(long)]
+        budget_override: bool,
     },
     /// Generate implementation plans from a prompt, file, or PRD.
     Generate {
@@ -2515,7 +2519,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 }
                 ConfigCmd::Secrets { cmd: secrets_cmd } => {
                     let workdir = resolve_workdir(cli);
-                    roko_cli::secrets::dispatch_secrets(&secrets_cmd, &workdir)?;
+                    roko_cli::secrets::dispatch_secrets(&secrets_cmd, &workdir).await?;
                     return Ok(EXIT_SUCCESS);
                 }
                 ConfigCmd::Mcp { cmd: mcp_cmd } => {
@@ -2746,6 +2750,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 dry_run: false,
                 fresh: false,
                 force_resume: false,
+                budget_override: false,
             };
             commands::plan::cmd_plan(cli, plan_cmd).await
         }

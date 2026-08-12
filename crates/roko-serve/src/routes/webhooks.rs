@@ -1061,12 +1061,27 @@ mod tests {
 
     #[test]
     fn deployment_state_from_str_maps_all_known_states() {
-        assert_eq!(DeploymentState::from_str("pending"), DeploymentState::Pending);
-        assert_eq!(DeploymentState::from_str("in_progress"), DeploymentState::InProgress);
-        assert_eq!(DeploymentState::from_str("success"), DeploymentState::Success);
-        assert_eq!(DeploymentState::from_str("failure"), DeploymentState::Failure);
+        assert_eq!(
+            DeploymentState::from_str("pending"),
+            DeploymentState::Pending
+        );
+        assert_eq!(
+            DeploymentState::from_str("in_progress"),
+            DeploymentState::InProgress
+        );
+        assert_eq!(
+            DeploymentState::from_str("success"),
+            DeploymentState::Success
+        );
+        assert_eq!(
+            DeploymentState::from_str("failure"),
+            DeploymentState::Failure
+        );
         assert_eq!(DeploymentState::from_str("error"), DeploymentState::Error);
-        assert_eq!(DeploymentState::from_str("inactive"), DeploymentState::Inactive);
+        assert_eq!(
+            DeploymentState::from_str("inactive"),
+            DeploymentState::Inactive
+        );
         assert_eq!(
             DeploymentState::from_str("queued"),
             DeploymentState::Unknown("queued".to_owned())
@@ -1075,15 +1090,30 @@ mod tests {
 
     #[test]
     fn deployment_state_signal_kind_returns_correct_constants() {
-        assert_eq!(DeploymentState::Pending.signal_kind(), signal_kinds::GITHUB_DEPLOYMENT_PENDING);
+        assert_eq!(
+            DeploymentState::Pending.signal_kind(),
+            signal_kinds::GITHUB_DEPLOYMENT_PENDING
+        );
         assert_eq!(
             DeploymentState::InProgress.signal_kind(),
             signal_kinds::GITHUB_DEPLOYMENT_IN_PROGRESS
         );
-        assert_eq!(DeploymentState::Success.signal_kind(), signal_kinds::GITHUB_DEPLOYMENT_SUCCESS);
-        assert_eq!(DeploymentState::Failure.signal_kind(), signal_kinds::GITHUB_DEPLOYMENT_FAILURE);
-        assert_eq!(DeploymentState::Error.signal_kind(), signal_kinds::GITHUB_DEPLOYMENT_ERROR);
-        assert_eq!(DeploymentState::Inactive.signal_kind(), signal_kinds::GITHUB_DEPLOYMENT_INACTIVE);
+        assert_eq!(
+            DeploymentState::Success.signal_kind(),
+            signal_kinds::GITHUB_DEPLOYMENT_SUCCESS
+        );
+        assert_eq!(
+            DeploymentState::Failure.signal_kind(),
+            signal_kinds::GITHUB_DEPLOYMENT_FAILURE
+        );
+        assert_eq!(
+            DeploymentState::Error.signal_kind(),
+            signal_kinds::GITHUB_DEPLOYMENT_ERROR
+        );
+        assert_eq!(
+            DeploymentState::Inactive.signal_kind(),
+            signal_kinds::GITHUB_DEPLOYMENT_INACTIVE
+        );
         // Unknown falls back to the generic deployment signal kind.
         assert_eq!(
             DeploymentState::Unknown("whatever".to_owned()).signal_kind(),
@@ -1173,10 +1203,12 @@ mod tests {
                 "log_url": ""
             }
         });
-        let ev = DeploymentEvent::from_deployment_status_payload(&payload)
-            .expect("parse");
+        let ev = DeploymentEvent::from_deployment_status_payload(&payload).expect("parse");
         let signal = ev.into_signal(payload);
-        assert_eq!(signal.kind.as_str(), signal_kinds::GITHUB_DEPLOYMENT_FAILURE);
+        assert_eq!(
+            signal.kind.as_str(),
+            signal_kinds::GITHUB_DEPLOYMENT_FAILURE
+        );
         assert_eq!(signal.provenance.author, "github:webhook");
     }
 
@@ -1190,8 +1222,7 @@ mod tests {
                 "sha": "11223344"
             }
         });
-        let ev = DeploymentEvent::from_deployment_payload(&payload)
-            .expect("parse");
+        let ev = DeploymentEvent::from_deployment_payload(&payload).expect("parse");
         let signal = ev.into_signal(payload);
         assert_eq!(signal.kind.as_str(), signal_kinds::GITHUB_DEPLOYMENT);
     }
@@ -1285,13 +1316,16 @@ mod tests {
         // Missing required "deployment" key.
         let payload = serde_json::json!({ "action": "created" });
         let kind = github_signal_kind("deployment", &payload);
-        assert!(kind.is_none(), "invalid deployment payload should return None");
+        assert!(
+            kind.is_none(),
+            "invalid deployment payload should return None"
+        );
     }
 
     #[test]
     fn deployment_state_serializes_to_snake_case() {
-        let json = serde_json::to_string(&DeploymentState::InProgress)
-            .expect("serialize DeploymentState");
+        let json =
+            serde_json::to_string(&DeploymentState::InProgress).expect("serialize DeploymentState");
         assert_eq!(json, r#""in_progress""#);
     }
 
@@ -1345,10 +1379,7 @@ mod tests {
 
     #[test]
     fn maps_issue_comment_created_to_github_issue_commented() {
-        let kind = github_signal_kind(
-            "issue_comment",
-            &serde_json::json!({ "action": "created" }),
-        );
+        let kind = github_signal_kind("issue_comment", &serde_json::json!({ "action": "created" }));
         assert!(
             matches!(
                 kind.as_ref().map(Kind::as_str),
@@ -1366,8 +1397,7 @@ mod tests {
 
     #[test]
     fn unknown_issue_comment_action_returns_none() {
-        let kind =
-            github_signal_kind("issue_comment", &serde_json::json!({ "action": "deleted" }));
+        let kind = github_signal_kind("issue_comment", &serde_json::json!({ "action": "deleted" }));
         assert!(
             kind.is_none(),
             "issue_comment deleted should return None (not handled)"
@@ -1478,8 +1508,7 @@ mod tests {
 
     #[test]
     fn check_suite_event_parses_action_required_conclusion() {
-        let payload =
-            check_suite_payload("completed", "sha6", None, None, Some("action_required"));
+        let payload = check_suite_payload("completed", "sha6", None, None, Some("action_required"));
         let evt = CheckSuiteEvent::from_payload(&payload).expect("should parse");
         assert_eq!(evt.conclusion, Some(CheckSuiteConclusion::ActionRequired));
         assert!(evt.conclusion.as_ref().unwrap().is_failing());
@@ -1497,13 +1526,15 @@ mod tests {
     fn check_suite_event_parses_unknown_action_as_other() {
         let payload = check_suite_payload("unknown_action", "sha8", None, None, None);
         let evt = CheckSuiteEvent::from_payload(&payload).expect("should parse");
-        assert_eq!(evt.action, CheckSuiteAction::Other("unknown_action".to_string()));
+        assert_eq!(
+            evt.action,
+            CheckSuiteAction::Other("unknown_action".to_string())
+        );
     }
 
     #[test]
     fn check_suite_event_parses_unknown_conclusion_as_other() {
-        let payload =
-            check_suite_payload("completed", "sha9", None, None, Some("skipped_custom"));
+        let payload = check_suite_payload("completed", "sha9", None, None, Some("skipped_custom"));
         let evt = CheckSuiteEvent::from_payload(&payload).expect("should parse");
         assert_eq!(
             evt.conclusion,
@@ -1535,10 +1566,12 @@ mod tests {
 
     #[test]
     fn check_suite_event_to_signal_kind_completed() {
-        let payload =
-            check_suite_payload("completed", "sha", Some("main"), None, Some("success"));
+        let payload = check_suite_payload("completed", "sha", Some("main"), None, Some("success"));
         let evt = CheckSuiteEvent::from_payload(&payload).expect("parse");
-        assert_eq!(evt.to_signal_kind(), signal_kinds::GITHUB_CHECK_SUITE_COMPLETED);
+        assert_eq!(
+            evt.to_signal_kind(),
+            signal_kinds::GITHUB_CHECK_SUITE_COMPLETED
+        );
     }
 
     #[test]

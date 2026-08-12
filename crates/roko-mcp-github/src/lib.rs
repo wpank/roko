@@ -334,6 +334,282 @@ impl GitHubClient {
     }
 }
 
+// ─── GitHub issue webhook event parsing ────────────────────────────────────
+
+/// The action field of a GitHub `issues` or `issue_comment` webhook event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IssueAction {
+    /// A new issue was created.
+    Opened,
+    /// An issue was closed.
+    Closed,
+    /// A previously closed issue was reopened.
+    Reopened,
+    /// A label was added to the issue.
+    Labeled,
+    /// A user was assigned to the issue.
+    Assigned,
+    /// A comment was posted on the issue (from `issue_comment` events).
+    Commented,
+    /// Any other action not explicitly handled.
+    Other(String),
+}
+
+impl IssueAction {
+    /// Parse an action string from a GitHub webhook payload.
+    #[must_use]
+    pub fn parse_action(s: &str) -> Self {
+        match s {
+            "opened" => Self::Opened,
+            "closed" => Self::Closed,
+            "reopened" => Self::Reopened,
+            "labeled" => Self::Labeled,
+            "assigned" => Self::Assigned,
+            "created" => Self::Commented,
+            other => Self::Other(other.to_string()),
+        }
+    }
+
+    /// The canonical signal kind string for this action.
+    ///
+    /// Returns `None` for [`IssueAction::Other`] (unknown / unhandled actions).
+    #[must_use]
+    pub fn signal_kind(&self) -> Option<&'static str> {
+        match self {
+            Self::Opened => Some("github:issues:opened"),
+            Self::Closed => Some("github:issues:closed"),
+            Self::Reopened => Some("github:issues:reopened"),
+            Self::Labeled => Some("github:issues:labeled"),
+            Self::Assigned => Some("github:issues:assigned"),
+            Self::Commented => Some("github:issue_comment:created"),
+            Self::Other(_) => None,
+        }
+    }
+}
+
+/// A label attached to a GitHub issue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssueLabel {
+    /// The label name (e.g. `"bug"`, `"roko/task-failure"`).
+    pub name: String,
+    /// The six-digit hex colour string (without `#`), e.g. `"d73a4a"`.
+    pub color: String,
+}
+
+/// A GitHub user (author, assignee, etc.).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHubUser {
+    /// The user's login handle.
+    pub login: String,
+    /// The numeric GitHub user ID.
+    pub id: u64,
+}
+
+/// Parsed representation of a GitHub `issues` or `issue_comment` webhook event.
+///
+/// Call [`issue_event_from_payload`] to parse a raw `serde_json::Value`, then
+/// use [`issue_event_to_signal`] to obtain the signal kind string and a
+/// normalised JSON body suitable for passing to the Roko signal store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHubIssueEvent {
+    /// What happened (opened, closed, labeled, …).
+    pub action: IssueAction,
+    /// GitHub issue number.
+    pub number: u64,
+    /// Issue title.
+    pub title: String,
+    /// Issue body text (may be empty).
+    pub body: String,
+    /// User who opened the issue.
+    pub author: GitHubUser,
+    /// Labels currently on the issue.
+    pub labels: Vec<IssueLabel>,
+    /// Users assigned to the issue.
+    pub assignees: Vec<GitHubUser>,
+    /// Milestone title, if any.
+    pub milestone: Option<String>,
+    /// HTML URL of the issue.
+    pub html_url: String,
+    /// Repository owner/name (e.g. `"octo/roko"`).
+    pub repo_full_name: String,
+    /// The comment body when `action == Commented`, otherwise empty.
+    pub comment_body: String,
+}
+
+/// Parse a raw GitHub webhook JSON payload into a [`GitHubIssueEvent`].
+///
+/// Works for both `issues` events (action = opened/closed/reopened/labeled/assigned)
+/// and `issue_comment` events (action = created).
+///
+/// Returns `None` if the payload does not contain the expected fields.
+#[must_use]
+pub fn issue_event_from_payload(payload: &Value) -> Option<GitHubIssueEvent> {
+    let action_str = payload.get("action").and_then(Value::as_str)?;
+    let action = IssueAction::parse_action(action_str);
+
+    let issue = payload.get("issue")?;
+
+    let number = issue.get("number").and_then(Value::as_u64)?;
+    let title = issue
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let body = issue
+        .get("body")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let html_url = issue
+        .get("html_url")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
+    let author = {
+        let user = issue.get("user")?;
+        GitHubUser {
+            login: user
+                .get("login")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            id: user.get("id").and_then(Value::as_u64).unwrap_or(0),
+        }
+    };
+
+    let labels = issue
+        .get("labels")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|l| {
+                    Some(IssueLabel {
+                        name: l.get("name").and_then(Value::as_str)?.to_string(),
+                        color: l
+                            .get("color")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let assignees = issue
+        .get("assignees")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|u| {
+                    Some(GitHubUser {
+                        login: u.get("login").and_then(Value::as_str)?.to_string(),
+                        id: u.get("id").and_then(Value::as_u64).unwrap_or(0),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let milestone = issue
+        .get("milestone")
+        .and_then(|m| m.get("title"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let repo_full_name = payload
+        .get("repository")
+        .and_then(|r| r.get("full_name"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
+    let comment_body = payload
+        .get("comment")
+        .and_then(|c| c.get("body"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
+    Some(GitHubIssueEvent {
+        action,
+        number,
+        title,
+        body,
+        author,
+        labels,
+        assignees,
+        milestone,
+        html_url,
+        repo_full_name,
+        comment_body,
+    })
+}
+
+/// Convert a [`GitHubIssueEvent`] into a `(kind, payload)` pair.
+///
+/// Returns `None` when the event's action does not map to a known signal kind
+/// (i.e. [`IssueAction::Other`]).
+///
+/// The returned `Value` is a normalised JSON object with the following fields:
+///
+/// | Field | Description |
+/// |---|---|
+/// | `action` | The action string (e.g. `"opened"`) |
+/// | `number` | Issue number |
+/// | `title` | Issue title |
+/// | `body` | Issue body text |
+/// | `author` | `{ login, id }` |
+/// | `labels` | Array of `{ name, color }` |
+/// | `assignees` | Array of `{ login, id }` |
+/// | `milestone` | Milestone title or `null` |
+/// | `html_url` | Issue HTML URL |
+/// | `repo` | Repository full name |
+/// | `comment_body` | Comment body (non-empty for `Commented` events only) |
+///
+/// The kind string is one of the `github:issues:*` / `github:issue_comment:*`
+/// constants from `roko_core::signal_kinds`.
+#[must_use]
+pub fn issue_event_to_signal(event: &GitHubIssueEvent) -> Option<(&'static str, Value)> {
+    let kind = event.action.signal_kind()?;
+
+    let action_str = match &event.action {
+        IssueAction::Opened => "opened",
+        IssueAction::Closed => "closed",
+        IssueAction::Reopened => "reopened",
+        IssueAction::Labeled => "labeled",
+        IssueAction::Assigned => "assigned",
+        IssueAction::Commented => "created",
+        IssueAction::Other(s) => s.as_str(),
+    };
+
+    let payload = serde_json::json!({
+        "action": action_str,
+        "number": event.number,
+        "title": event.title,
+        "body": event.body,
+        "author": {
+            "login": event.author.login,
+            "id": event.author.id,
+        },
+        "labels": event.labels.iter().map(|l| serde_json::json!({
+            "name": l.name,
+            "color": l.color,
+        })).collect::<Vec<_>>(),
+        "assignees": event.assignees.iter().map(|u| serde_json::json!({
+            "login": u.login,
+            "id": u.id,
+        })).collect::<Vec<_>>(),
+        "milestone": event.milestone,
+        "html_url": event.html_url,
+        "repo": event.repo_full_name,
+        "comment_body": event.comment_body,
+    });
+
+    Some((kind, payload))
+}
+
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -597,5 +873,189 @@ mod tests {
         let client = test_client(addr);
         client.close_issue("octo", "roko", 7).expect("close_issue");
         server.join().expect("server thread");
+    }
+
+    // ── issue_event parsing tests ──────────────────────────────────────────
+
+    /// Build a minimal but complete GitHub `issues` webhook payload for testing.
+    fn make_issue_payload(action: &str) -> serde_json::Value {
+        serde_json::json!({
+            "action": action,
+            "issue": {
+                "number": 42,
+                "title": "Something broke",
+                "body": "Detailed description of the breakage.",
+                "html_url": "https://github.com/octo/roko/issues/42",
+                "user": { "login": "alice", "id": 1 },
+                "labels": [
+                    { "name": "bug", "color": "d73a4a" },
+                    { "name": "roko/task-failure", "color": "0075ca" }
+                ],
+                "assignees": [
+                    { "login": "bob", "id": 2 }
+                ],
+                "milestone": { "title": "v1.0" }
+            },
+            "repository": { "full_name": "octo/roko" }
+        })
+    }
+
+    /// Build a minimal GitHub `issue_comment` webhook payload for testing.
+    fn make_comment_payload() -> serde_json::Value {
+        serde_json::json!({
+            "action": "created",
+            "issue": {
+                "number": 7,
+                "title": "Gate failure",
+                "body": "",
+                "html_url": "https://github.com/octo/roko/issues/7",
+                "user": { "login": "ci-bot", "id": 99 },
+                "labels": [],
+                "assignees": [],
+                "milestone": null
+            },
+            "comment": {
+                "body": "Gate rung 3 failed: clippy reported 2 errors."
+            },
+            "repository": { "full_name": "octo/roko" }
+        })
+    }
+
+    #[test]
+    fn issue_event_opened_parses_metadata() {
+        let payload = make_issue_payload("opened");
+        let event = issue_event_from_payload(&payload).expect("parse opened event");
+
+        assert_eq!(event.action, IssueAction::Opened);
+        assert_eq!(event.number, 42);
+        assert_eq!(event.title, "Something broke");
+        assert_eq!(event.body, "Detailed description of the breakage.");
+        assert_eq!(event.author.login, "alice");
+        assert_eq!(event.author.id, 1);
+        assert_eq!(event.labels.len(), 2);
+        assert_eq!(event.labels[0].name, "bug");
+        assert_eq!(event.labels[0].color, "d73a4a");
+        assert_eq!(event.assignees.len(), 1);
+        assert_eq!(event.assignees[0].login, "bob");
+        assert_eq!(event.milestone.as_deref(), Some("v1.0"));
+        assert_eq!(event.html_url, "https://github.com/octo/roko/issues/42");
+        assert_eq!(event.repo_full_name, "octo/roko");
+    }
+
+    #[test]
+    fn issue_event_to_signal_opened_returns_correct_kind() {
+        let payload = make_issue_payload("opened");
+        let event = issue_event_from_payload(&payload).expect("parse");
+        let (kind, body) = issue_event_to_signal(&event).expect("signal");
+
+        assert_eq!(kind, "github:issues:opened");
+        assert_eq!(body["action"], "opened");
+        assert_eq!(body["number"], 42);
+        assert_eq!(body["title"], "Something broke");
+        assert_eq!(body["author"]["login"], "alice");
+        assert_eq!(body["repo"], "octo/roko");
+    }
+
+    #[test]
+    fn issue_event_to_signal_closed_returns_correct_kind() {
+        let payload = make_issue_payload("closed");
+        let event = issue_event_from_payload(&payload).expect("parse");
+        let (kind, body) = issue_event_to_signal(&event).expect("signal");
+
+        assert_eq!(kind, "github:issues:closed");
+        assert_eq!(body["action"], "closed");
+    }
+
+    #[test]
+    fn issue_event_to_signal_reopened_returns_correct_kind() {
+        let payload = make_issue_payload("reopened");
+        let event = issue_event_from_payload(&payload).expect("parse");
+        let (kind, _) = issue_event_to_signal(&event).expect("signal");
+        assert_eq!(kind, "github:issues:reopened");
+    }
+
+    #[test]
+    fn issue_event_to_signal_labeled_returns_correct_kind() {
+        let payload = make_issue_payload("labeled");
+        let event = issue_event_from_payload(&payload).expect("parse");
+        let (kind, body) = issue_event_to_signal(&event).expect("signal");
+
+        assert_eq!(kind, "github:issues:labeled");
+        assert_eq!(body["labels"][0]["name"], "bug");
+    }
+
+    #[test]
+    fn issue_event_to_signal_assigned_returns_correct_kind() {
+        let payload = make_issue_payload("assigned");
+        let event = issue_event_from_payload(&payload).expect("parse");
+        let (kind, body) = issue_event_to_signal(&event).expect("signal");
+
+        assert_eq!(kind, "github:issues:assigned");
+        assert_eq!(body["assignees"][0]["login"], "bob");
+    }
+
+    #[test]
+    fn issue_event_to_signal_commented_returns_correct_kind() {
+        let payload = make_comment_payload();
+        let event = issue_event_from_payload(&payload).expect("parse");
+        let (kind, body) = issue_event_to_signal(&event).expect("signal");
+
+        assert_eq!(kind, "github:issue_comment:created");
+        assert_eq!(body["action"], "created");
+        assert_eq!(body["number"], 7);
+        assert_eq!(
+            body["comment_body"],
+            "Gate rung 3 failed: clippy reported 2 errors."
+        );
+    }
+
+    #[test]
+    fn issue_event_other_action_returns_none_from_signal() {
+        let payload = serde_json::json!({
+            "action": "pinned",
+            "issue": {
+                "number": 1,
+                "title": "Test",
+                "body": "",
+                "html_url": "https://github.com/x/y/issues/1",
+                "user": { "login": "user", "id": 5 },
+                "labels": [],
+                "assignees": [],
+                "milestone": null
+            },
+            "repository": { "full_name": "x/y" }
+        });
+        let event = issue_event_from_payload(&payload).expect("parse");
+        // IssueAction::Other — no signal kind mapping
+        assert!(issue_event_to_signal(&event).is_none());
+    }
+
+    #[test]
+    fn issue_event_missing_issue_field_returns_none() {
+        let payload = serde_json::json!({ "action": "opened" });
+        assert!(issue_event_from_payload(&payload).is_none());
+    }
+
+    #[test]
+    fn issue_event_no_milestone_is_none() {
+        let mut payload = make_issue_payload("opened");
+        payload["issue"]["milestone"] = serde_json::Value::Null;
+        let event = issue_event_from_payload(&payload).expect("parse");
+        assert!(event.milestone.is_none());
+    }
+
+    #[test]
+    fn issue_event_labels_and_assignees_in_signal_body() {
+        let payload = make_issue_payload("labeled");
+        let event = issue_event_from_payload(&payload).expect("parse");
+        let (_, body) = issue_event_to_signal(&event).expect("signal");
+
+        let labels = body["labels"].as_array().expect("labels array");
+        assert_eq!(labels.len(), 2);
+        assert_eq!(labels[1]["name"], "roko/task-failure");
+
+        let assignees = body["assignees"].as_array().expect("assignees array");
+        assert_eq!(assignees.len(), 1);
+        assert_eq!(assignees[0]["id"], 2);
     }
 }

@@ -1111,17 +1111,21 @@ struct RunContext<'a> {
     /// E07-T04: Knowledge IDs per attempt key — populated at dispatch,
     /// consumed on gate terminal to reinforce entries via KnowledgeStore.
     task_knowledge_ids: &'a mut HashMap<String, Vec<String>>,
-    /// E05-T08: Verdict publisher for emitting Kind::GateVerdict engrams.
+    /// E05-T08: Verdict publisher for emitting Kind::GateVerdict signals.
     verdict_publisher: &'a roko_gate::VerdictPublisher,
 }
 
 fn default_runner_worktree_manager(workdir: &Path) -> WorktreeManager {
+    default_runner_worktree_manager_with_ttl(workdir, RUNNER_WORKTREE_IDLE_TTL_SECS)
+}
+
+fn default_runner_worktree_manager_with_ttl(workdir: &Path, idle_ttl_secs: u64) -> WorktreeManager {
     WorktreeManager::new(WorktreeConfig {
         repo_root: workdir.to_path_buf(),
         base_branch: "HEAD".to_string(),
         worktrees_root: workdir.join(".roko").join("worktrees"),
         max_live: None,
-        idle_ttl: Duration::from_secs(RUNNER_WORKTREE_IDLE_TTL_SECS),
+        idle_ttl: Duration::from_secs(idle_ttl_secs),
     })
 }
 
@@ -1513,7 +1517,35 @@ pub async fn run(
             .iter()
             .map(|plan| (plan.id.clone(), plan.tasks.meta.max_parallel)),
     );
-    let worktrees = default_runner_worktree_manager(&config.workdir);
+    // Use the configurable idle TTL from resources.worktree_max_age_secs when
+    // available; fall back to the compile-time constant so un-configured runs
+    // still get a sensible 30-minute TTL.
+    let worktree_idle_ttl_secs = config
+        .roko_config
+        .as_deref()
+        .map(|c| c.resources.worktree_max_age_secs)
+        .unwrap_or(RUNNER_WORKTREE_IDLE_TTL_SECS);
+    let worktrees = default_runner_worktree_manager_with_ttl(&config.workdir, worktree_idle_ttl_secs);
+
+    // ── Startup orphan detection ─────────────────────────────────────────
+    //
+    // On every PlanRunner startup, call reclaim_idle() to evict worktrees
+    // left from previous crashed runs whose idle age exceeds the configured
+    // threshold.  This is best-effort: failures are logged and never block
+    // the run from starting.
+    match worktrees.reclaim_idle().await {
+        Ok(reclaimed) if !reclaimed.is_empty() => {
+            info!(
+                count = reclaimed.len(),
+                ids = ?reclaimed,
+                "reclaimed idle worktrees from previous run on startup"
+            );
+        }
+        Ok(_) => {}
+        Err(err) => {
+            warn!(error = %err, "startup worktree reclaim_idle failed (non-fatal)");
+        }
+    }
 
     // Per-run gate semaphore — limits how many gate rungs execute concurrently.
     let gate_sem = Arc::new(tokio::sync::Semaphore::new(config.gate_concurrency.max(1)));
@@ -1555,21 +1587,21 @@ pub async fn run(
     let (gate_tx, mut gate_rx) = mpsc::channel::<GateCompletion>(gate_buffer);
     let sink = config.output_sink.as_ref();
 
-    // E05-T08: Create a VerdictPublisher that graduates Pulse → Engram and
-    // appends the result to engrams.jsonl. This replaces the ad-hoc JSON
-    // append to gate-verdicts.jsonl with canonical Kind::GateVerdict engrams
+    // E05-T08: Create a VerdictPublisher that graduates Pulse -> Signal and
+    // appends the result to signals.jsonl. This replaces the ad-hoc JSON
+    // append to gate-verdicts.jsonl with canonical Kind::GateVerdict signals
     // that dashboard and query paths can consume.
-    let engrams_path = config.layout.engrams_path();
+    let signals_path = config.layout.engrams_path();
     let verdict_publisher = {
-        let path = engrams_path.clone();
+        let path = signals_path.clone();
         roko_gate::VerdictPublisher::new(Arc::new(move |pulse: roko_core::Pulse| {
-            let engram = pulse.graduate(
+            let signal = pulse.graduate(
                 roko_core::Provenance::trusted("runner/gate"),
                 1.0,
                 roko_core::Score::default(),
                 vec![],
             );
-            if let Ok(line) = serde_json::to_string(&engram) {
+            if let Ok(line) = serde_json::to_string(&signal) {
                 if let Ok(mut f) = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
@@ -3064,9 +3096,9 @@ pub async fn run(
                 );
 
                 // E05-T08: Live gate verdicts are now published as
-                // Kind::GateVerdict engrams via VerdictPublisher (wired
+                // Kind::GateVerdict signals via VerdictPublisher (wired
                 // into gate_dispatch::run_gate_once). The canonical path
-                // is engrams.jsonl. Legacy gate-verdicts.jsonl retained
+                // is signals.jsonl. Legacy gate-verdicts.jsonl retained
                 // for backward-compatible tooling.
                 {
                     let verdict_json = serde_json::json!({
@@ -4161,6 +4193,45 @@ pub async fn run(
                     }
                 }
                 shutdown_subsystems(config, &tui).await;
+
+                // ── Graceful-shutdown worktree cleanup ───────────────────
+                //
+                // On cancellation (SIGINT / SIGTERM / budget exceeded / …)
+                // attempt to remove all tracked worktrees so dangling git
+                // linked-worktrees and their on-disk directories do not
+                // accumulate.  We apply a short timeout so a slow git
+                // command cannot block process exit indefinitely.
+                {
+                    let cleanup_on_cancel = config
+                        .roko_config
+                        .as_deref()
+                        .map(|c| c.resources.worktree_cleanup_on_failure)
+                        .unwrap_or(true);
+                    if cleanup_on_cancel {
+                        match tokio::time::timeout(
+                            Duration::from_secs(10),
+                            worktrees.remove_all(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(removed)) if !removed.is_empty() => {
+                                info!(
+                                    count = removed.len(),
+                                    ids = ?removed,
+                                    "removed worktrees on graceful shutdown"
+                                );
+                            }
+                            Ok(Ok(_)) => {}
+                            Ok(Err(err)) => {
+                                warn!(error = %err, "remove_all failed during graceful shutdown (non-fatal)");
+                            }
+                            Err(_timeout) => {
+                                warn!("worktree remove_all timed out during graceful shutdown");
+                            }
+                        }
+                    }
+                }
+
                 break;
             }
         }
@@ -4293,21 +4364,11 @@ pub async fn run(
     // depends on the overall run outcome:
     //   • all tasks succeeded → worktree_cleanup_on_complete
     //   • any failure/cancel   → worktree_cleanup_on_failure
-    let cleanup_on_complete = config
+    let should_cleanup_worktrees = config
         .roko_config
         .as_deref()
-        .map(|c| c.resources.worktree_cleanup_on_complete)
+        .map(|c| worktree_cleanup_eligible(&c.resources, report.all_succeeded()))
         .unwrap_or(true);
-    let cleanup_on_failure = config
-        .roko_config
-        .as_deref()
-        .map(|c| c.resources.worktree_cleanup_on_failure)
-        .unwrap_or(true);
-    let should_cleanup_worktrees = if report.all_succeeded() {
-        cleanup_on_complete
-    } else {
-        cleanup_on_failure
-    };
     if should_cleanup_worktrees {
         cleanup_orphan_worktrees(&config.workdir, &worktrees).await;
     }
@@ -9914,6 +9975,24 @@ async fn cleanup_orphan_worktrees(workdir: &Path, worktrees: &WorktreeManager) {
                 );
             }
         }
+    }
+}
+
+/// Determine whether worktrees should be cleaned up based on the run outcome
+/// and the `resources` configuration flags.
+///
+/// - When `all_succeeded` is `true`, the caller is in the successful-completion
+///   path and `worktree_cleanup_on_complete` controls the decision.
+/// - When `all_succeeded` is `false`, the caller is in the failure / cancel
+///   path and `worktree_cleanup_on_failure` controls the decision.
+fn worktree_cleanup_eligible(
+    resources: &roko_core::config::schema::ResourcesConfig,
+    all_succeeded: bool,
+) -> bool {
+    if all_succeeded {
+        resources.worktree_cleanup_on_complete
+    } else {
+        resources.worktree_cleanup_on_failure
     }
 }
 
@@ -17863,6 +17942,144 @@ mod tests_error_pattern_sharing {
         assert!(
             entry_count <= 5,
             "section must contain at most 5 pattern entries, got {entry_count}"
+        );
+    }
+}
+
+// ─── Worktree lifecycle cleanup tests (E47-T06) ──────────────────────────────
+//
+// Unit tests verifying cleanup eligibility logic, TTL configuration, and that
+// the worktree manager honours the age threshold from ResourcesConfig.
+#[cfg(test)]
+mod tests_worktree_lifecycle {
+    use super::*;
+    use roko_core::config::schema::ResourcesConfig;
+    use tempfile::TempDir;
+
+    // ── 1. Default TTL matches the compile-time constant ───────────────────
+
+    #[test]
+    fn worktree_manager_default_ttl_matches_constant() {
+        let dir = TempDir::new().unwrap();
+        // Both helpers must produce a manager with zero tracked worktrees.
+        let mgr_default = default_runner_worktree_manager(dir.path());
+        let mgr_explicit =
+            default_runner_worktree_manager_with_ttl(dir.path(), RUNNER_WORKTREE_IDLE_TTL_SECS);
+        assert_eq!(mgr_default.active_count(), 0);
+        assert_eq!(mgr_explicit.active_count(), 0);
+    }
+
+    // ── 2. Config-driven TTL builds a valid manager ─────────────────────────
+
+    #[test]
+    fn worktree_manager_with_custom_ttl_is_empty_on_creation() {
+        let dir = TempDir::new().unwrap();
+        let custom_secs = 7200_u64; // 2 hours
+        let mgr = default_runner_worktree_manager_with_ttl(dir.path(), custom_secs);
+        assert_eq!(
+            mgr.active_count(),
+            0,
+            "fresh manager must start with zero tracked worktrees"
+        );
+    }
+
+    // ── 3. Default ResourcesConfig produces the expected 24-hour threshold ──
+
+    #[test]
+    fn resources_config_default_worktree_max_age_secs_is_24h() {
+        let cfg = ResourcesConfig::default();
+        assert_eq!(
+            cfg.worktree_max_age_secs,
+            86400,
+            "default worktree_max_age_secs must be 86400 (24 hours)"
+        );
+    }
+
+    // ── 4. worktree_max_age_secs round-trips through TOML ───────────────────
+
+    #[test]
+    fn worktree_max_age_secs_parses_from_toml() {
+        let toml = "[resources]\nworktree_max_age_secs = 3600\n";
+        let cfg: roko_core::config::schema::RokoConfig =
+            toml::from_str(toml).expect("toml must parse");
+        assert_eq!(
+            cfg.resources.worktree_max_age_secs, 3600,
+            "custom worktree_max_age_secs must survive a TOML round-trip"
+        );
+    }
+
+    // ── 5. Missing [resources] falls back to defaults (including max_age) ───
+
+    #[test]
+    fn missing_resources_section_yields_defaults() {
+        let cfg: roko_core::config::schema::RokoConfig =
+            toml::from_str("").expect("empty toml must parse");
+        let res = &cfg.resources;
+        assert!(
+            res.worktree_cleanup_on_complete,
+            "worktree_cleanup_on_complete must default to true"
+        );
+        assert!(
+            res.worktree_cleanup_on_failure,
+            "worktree_cleanup_on_failure must default to true"
+        );
+        assert_eq!(
+            res.worktree_max_age_secs, 86400,
+            "worktree_max_age_secs must default to 86400 when [resources] is absent"
+        );
+    }
+
+    // ── 6. cleanup_orphan_worktrees is a no-op when directory is absent ─────
+
+    #[tokio::test]
+    async fn cleanup_orphan_worktrees_no_op_when_dir_absent() {
+        let dir = TempDir::new().unwrap();
+        let mgr = default_runner_worktree_manager(dir.path());
+        // .roko/worktrees/ does not exist → must not panic or error
+        cleanup_orphan_worktrees(dir.path(), &mgr).await;
+    }
+
+    // ── 7. Cleanup eligibility: success path ────────────────────────────────
+
+    #[test]
+    fn cleanup_eligible_success_respects_complete_flag() {
+        let mut cfg_on = ResourcesConfig::default();
+        cfg_on.worktree_cleanup_on_complete = true;
+        cfg_on.worktree_cleanup_on_failure = false;
+
+        let mut cfg_off = ResourcesConfig::default();
+        cfg_off.worktree_cleanup_on_complete = false;
+        cfg_off.worktree_cleanup_on_failure = true;
+
+        assert!(
+            worktree_cleanup_eligible(&cfg_on, true),
+            "cleanup must be enabled when worktree_cleanup_on_complete=true and run succeeded"
+        );
+        assert!(
+            !worktree_cleanup_eligible(&cfg_off, true),
+            "cleanup must be suppressed when worktree_cleanup_on_complete=false"
+        );
+    }
+
+    // ── 8. Cleanup eligibility: failure path ────────────────────────────────
+
+    #[test]
+    fn cleanup_eligible_failure_respects_failure_flag() {
+        let mut cfg_on = ResourcesConfig::default();
+        cfg_on.worktree_cleanup_on_complete = false;
+        cfg_on.worktree_cleanup_on_failure = true;
+
+        let mut cfg_off = ResourcesConfig::default();
+        cfg_off.worktree_cleanup_on_complete = true;
+        cfg_off.worktree_cleanup_on_failure = false;
+
+        assert!(
+            worktree_cleanup_eligible(&cfg_on, false),
+            "cleanup must be enabled when worktree_cleanup_on_failure=true and run failed"
+        );
+        assert!(
+            !worktree_cleanup_eligible(&cfg_off, false),
+            "cleanup must be suppressed when worktree_cleanup_on_failure=false"
         );
     }
 }

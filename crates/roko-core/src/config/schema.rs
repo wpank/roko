@@ -1772,6 +1772,7 @@ impl Default for ColdStorageConfig {
 /// log_rotation_max_mb = 100
 /// worktree_cleanup_on_complete = true
 /// worktree_cleanup_on_failure = true
+/// worktree_max_age_secs = 86400
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResourcesConfig {
@@ -1851,6 +1852,15 @@ pub struct ResourcesConfig {
     /// retries exhausted, manual cancel, budget exceeded). Default: `true`.
     #[serde(default = "ResourcesConfig::default_worktree_cleanup_on_failure")]
     pub worktree_cleanup_on_failure: bool,
+
+    /// Maximum age in seconds before an idle worktree is reclaimed.
+    ///
+    /// Worktrees that have not been touched for longer than this threshold are
+    /// eligible for age-based cleanup via `reclaim_idle`.  Applies at both
+    /// startup (orphan detection) and during periodic TTL-based eviction.
+    /// Default: 86400 (24 hours).
+    #[serde(default = "ResourcesConfig::default_worktree_max_age_secs")]
+    pub worktree_max_age_secs: u64,
 }
 
 impl ResourcesConfig {
@@ -1893,6 +1903,10 @@ impl ResourcesConfig {
     const fn default_worktree_cleanup_on_failure() -> bool {
         true
     }
+
+    const fn default_worktree_max_age_secs() -> u64 {
+        86400 // 24 hours
+    }
 }
 
 impl Default for ResourcesConfig {
@@ -1909,6 +1923,7 @@ impl Default for ResourcesConfig {
             log_rotation_max_mb: Self::default_log_rotation_max_mb(),
             worktree_cleanup_on_complete: Self::default_worktree_cleanup_on_complete(),
             worktree_cleanup_on_failure: Self::default_worktree_cleanup_on_failure(),
+            worktree_max_age_secs: Self::default_worktree_max_age_secs(),
         }
     }
 }

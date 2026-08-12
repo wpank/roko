@@ -13,6 +13,7 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
+use serde::{Deserialize, Serialize};
 
 /// Webhook payloads are JSON envelopes from third-party providers (GitHub,
 /// Slack). 1 MiB is an order of magnitude larger than any legitimate event
@@ -30,6 +31,167 @@ use crate::events::ServerEvent;
 use crate::state::AppState;
 
 type HmacSha256 = Hmac<Sha256>;
+
+// ─── Deployment event types ─────────────────────────────────────────────────
+
+/// GitHub deployment state as reported by a `deployment_status` webhook event.
+///
+/// Maps the `state` field of GitHub's `deployment_status` payload to typed
+/// variants. Used by [`DeploymentEvent`] to carry the parsed status.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeploymentState {
+    /// The deployment has been queued but has not started yet.
+    Pending,
+    /// The deployment is actively being applied.
+    InProgress,
+    /// The deployment completed successfully.
+    Success,
+    /// The deployment failed.
+    Failure,
+    /// The deployment encountered an unrecoverable error.
+    Error,
+    /// The deployment was superseded or rolled back and is no longer active.
+    Inactive,
+    /// An unrecognised state string from the GitHub payload.
+    Unknown(String),
+}
+
+impl DeploymentState {
+    /// Parse the `state` field from a GitHub `deployment_status` payload.
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "pending" => Self::Pending,
+            "in_progress" => Self::InProgress,
+            "success" => Self::Success,
+            "failure" => Self::Failure,
+            "error" => Self::Error,
+            "inactive" => Self::Inactive,
+            other => Self::Unknown(other.to_owned()),
+        }
+    }
+
+    /// Return the signal kind constant for this deployment state.
+    pub fn signal_kind(&self) -> &'static str {
+        match self {
+            Self::Pending => signal_kinds::GITHUB_DEPLOYMENT_PENDING,
+            Self::InProgress => signal_kinds::GITHUB_DEPLOYMENT_IN_PROGRESS,
+            Self::Success => signal_kinds::GITHUB_DEPLOYMENT_SUCCESS,
+            Self::Failure => signal_kinds::GITHUB_DEPLOYMENT_FAILURE,
+            Self::Error => signal_kinds::GITHUB_DEPLOYMENT_ERROR,
+            Self::Inactive => signal_kinds::GITHUB_DEPLOYMENT_INACTIVE,
+            // Unknown states fall back to the generic deployment signal kind so
+            // they are still ingested and routable rather than silently dropped.
+            Self::Unknown(_) => signal_kinds::GITHUB_DEPLOYMENT,
+        }
+    }
+}
+
+/// Typed representation of a GitHub `deployment` or `deployment_status`
+/// webhook event.
+///
+/// Parsed from the raw JSON payload and used by [`github_signal_kind`] to
+/// select the correct signal kind. Callers that need the full metadata can
+/// extract it from the `Body::Json` of the resulting [`Engram`].
+///
+/// # Signal conversion
+///
+/// Call [`DeploymentEvent::into_signal`] to convert the event directly into a
+/// ready-to-persist [`Engram`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeploymentEvent {
+    /// Numeric GitHub deployment ID.
+    pub deployment_id: u64,
+    /// Target deployment environment (e.g. `"production"`, `"staging"`).
+    pub environment: String,
+    /// The git ref (branch name or tag) being deployed.
+    pub git_ref: String,
+    /// The resolved commit SHA being deployed.
+    pub sha: String,
+    /// Human-readable description attached to the deployment, if any.
+    pub description: Option<String>,
+    /// Login of the user or bot that created the deployment.
+    pub creator: Option<String>,
+    /// Deployment state, only present for `deployment_status` events.
+    pub state: Option<DeploymentState>,
+    /// URL to the deployment log, only present for `deployment_status` events.
+    pub log_url: Option<String>,
+}
+
+impl DeploymentEvent {
+    /// Parse a `deployment` event payload.
+    ///
+    /// Returns `None` if required fields (`id`, `environment`, `ref`, `sha`)
+    /// are absent.
+    pub fn from_deployment_payload(payload: &Value) -> Option<Self> {
+        let dep = payload.get("deployment")?;
+        Some(Self {
+            deployment_id: dep.get("id")?.as_u64()?,
+            environment: dep.get("environment")?.as_str()?.to_owned(),
+            git_ref: dep.get("ref")?.as_str()?.to_owned(),
+            sha: dep.get("sha")?.as_str()?.to_owned(),
+            description: dep
+                .get("description")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+            creator: dep
+                .get("creator")
+                .and_then(|c| c.get("login"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            state: None,
+            log_url: None,
+        })
+    }
+
+    /// Parse a `deployment_status` event payload.
+    ///
+    /// Returns `None` if required fields are absent.
+    pub fn from_deployment_status_payload(payload: &Value) -> Option<Self> {
+        let dep = payload.get("deployment")?;
+        let status = payload.get("deployment_status")?;
+        let state_str = status.get("state")?.as_str()?;
+        Some(Self {
+            deployment_id: dep.get("id")?.as_u64()?,
+            environment: dep.get("environment")?.as_str()?.to_owned(),
+            git_ref: dep.get("ref")?.as_str()?.to_owned(),
+            sha: dep.get("sha")?.as_str()?.to_owned(),
+            description: status
+                .get("description")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+            creator: dep
+                .get("creator")
+                .and_then(|c| c.get("login"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            state: Some(DeploymentState::from_str(state_str)),
+            log_url: status
+                .get("log_url")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+        })
+    }
+
+    /// Convert this event into a signal-ready [`Engram`].
+    ///
+    /// The signal kind is derived from [`DeploymentState::signal_kind`] for
+    /// `deployment_status` events, or [`signal_kinds::GITHUB_DEPLOYMENT`] for
+    /// plain `deployment` events.
+    pub fn into_signal(self, raw_payload: Value) -> Engram {
+        let kind_str = match &self.state {
+            Some(state) => state.signal_kind(),
+            None => signal_kinds::GITHUB_DEPLOYMENT,
+        };
+        Engram::builder(Kind::Custom(kind_str.into()))
+            .body(Body::Json(raw_payload))
+            .provenance(Provenance::external("github:webhook"))
+            .build()
+    }
+}
 
 /// Public webhook ingress (providers verify signatures themselves).
 pub fn public_routes() -> Router<Arc<AppState>> {
@@ -265,6 +427,24 @@ fn github_signal_kind(event_type: &str, payload: &Value) -> Option<Kind> {
             }
         }
         "workflow_run" => Some(Kind::Custom(signal_kinds::GITHUB_WORKFLOW_RUN.into())),
+        "deployment" => {
+            // Plain deployment event — use the generic deployment signal kind.
+            // The environment/ref/sha metadata lives in the signal body.
+            if DeploymentEvent::from_deployment_payload(payload).is_some() {
+                Some(Kind::Custom(signal_kinds::GITHUB_DEPLOYMENT.into()))
+            } else {
+                None
+            }
+        }
+        "deployment_status" => {
+            // Deployment status event — pick the state-specific signal kind so
+            // subscribers can react to individual transitions (pending → success,
+            // failure, etc.) without inspecting the payload themselves.
+            DeploymentEvent::from_deployment_status_payload(payload)
+                .as_ref()
+                .and_then(|ev| ev.state.as_ref())
+                .map(|state| Kind::Custom(state.signal_kind().into()))
+        }
         _ => None,
     }
 }
@@ -680,5 +860,243 @@ mod tests {
             let _ = write!(&mut out, "{byte:02x}");
         }
         out
+    }
+
+    // ── Deployment event tests ────────────────────────────────────────────────
+
+    #[test]
+    fn deployment_state_from_str_maps_all_known_states() {
+        assert_eq!(DeploymentState::from_str("pending"), DeploymentState::Pending);
+        assert_eq!(DeploymentState::from_str("in_progress"), DeploymentState::InProgress);
+        assert_eq!(DeploymentState::from_str("success"), DeploymentState::Success);
+        assert_eq!(DeploymentState::from_str("failure"), DeploymentState::Failure);
+        assert_eq!(DeploymentState::from_str("error"), DeploymentState::Error);
+        assert_eq!(DeploymentState::from_str("inactive"), DeploymentState::Inactive);
+        assert_eq!(
+            DeploymentState::from_str("queued"),
+            DeploymentState::Unknown("queued".to_owned())
+        );
+    }
+
+    #[test]
+    fn deployment_state_signal_kind_returns_correct_constants() {
+        assert_eq!(DeploymentState::Pending.signal_kind(), signal_kinds::GITHUB_DEPLOYMENT_PENDING);
+        assert_eq!(
+            DeploymentState::InProgress.signal_kind(),
+            signal_kinds::GITHUB_DEPLOYMENT_IN_PROGRESS
+        );
+        assert_eq!(DeploymentState::Success.signal_kind(), signal_kinds::GITHUB_DEPLOYMENT_SUCCESS);
+        assert_eq!(DeploymentState::Failure.signal_kind(), signal_kinds::GITHUB_DEPLOYMENT_FAILURE);
+        assert_eq!(DeploymentState::Error.signal_kind(), signal_kinds::GITHUB_DEPLOYMENT_ERROR);
+        assert_eq!(DeploymentState::Inactive.signal_kind(), signal_kinds::GITHUB_DEPLOYMENT_INACTIVE);
+        // Unknown falls back to the generic deployment signal kind.
+        assert_eq!(
+            DeploymentState::Unknown("whatever".to_owned()).signal_kind(),
+            signal_kinds::GITHUB_DEPLOYMENT
+        );
+    }
+
+    #[test]
+    fn deployment_event_from_deployment_payload_extracts_fields() {
+        let payload = serde_json::json!({
+            "action": "created",
+            "deployment": {
+                "id": 12345,
+                "environment": "production",
+                "ref": "main",
+                "sha": "abc123def456",
+                "description": "Deploy v1.2.3",
+                "creator": { "login": "will" }
+            }
+        });
+        let ev = DeploymentEvent::from_deployment_payload(&payload)
+            .expect("should parse deployment payload");
+        assert_eq!(ev.deployment_id, 12345);
+        assert_eq!(ev.environment, "production");
+        assert_eq!(ev.git_ref, "main");
+        assert_eq!(ev.sha, "abc123def456");
+        assert_eq!(ev.description.as_deref(), Some("Deploy v1.2.3"));
+        assert_eq!(ev.creator.as_deref(), Some("will"));
+        assert!(ev.state.is_none(), "plain deployment events have no state");
+        assert!(ev.log_url.is_none());
+    }
+
+    #[test]
+    fn deployment_event_from_deployment_payload_returns_none_on_missing_fields() {
+        // Missing "deployment" key entirely.
+        let payload = serde_json::json!({ "action": "created" });
+        assert!(DeploymentEvent::from_deployment_payload(&payload).is_none());
+
+        // Missing required "sha" field inside deployment.
+        let payload = serde_json::json!({
+            "deployment": {
+                "id": 1,
+                "environment": "staging",
+                "ref": "main"
+            }
+        });
+        assert!(DeploymentEvent::from_deployment_payload(&payload).is_none());
+    }
+
+    #[test]
+    fn deployment_event_from_deployment_status_payload_extracts_state() {
+        let payload = serde_json::json!({
+            "deployment": {
+                "id": 99,
+                "environment": "staging",
+                "ref": "feat/new-ui",
+                "sha": "deadbeef",
+                "creator": { "login": "bot" }
+            },
+            "deployment_status": {
+                "state": "success",
+                "description": "All checks passed",
+                "log_url": "https://logs.example.com/99"
+            }
+        });
+        let ev = DeploymentEvent::from_deployment_status_payload(&payload)
+            .expect("should parse deployment_status payload");
+        assert_eq!(ev.deployment_id, 99);
+        assert_eq!(ev.environment, "staging");
+        assert_eq!(ev.state, Some(DeploymentState::Success));
+        assert_eq!(ev.log_url.as_deref(), Some("https://logs.example.com/99"));
+        assert_eq!(ev.description.as_deref(), Some("All checks passed"));
+    }
+
+    #[test]
+    fn deployment_event_into_signal_uses_correct_kind_for_status() {
+        let payload = serde_json::json!({
+            "deployment": {
+                "id": 7,
+                "environment": "prod",
+                "ref": "main",
+                "sha": "cafebabe"
+            },
+            "deployment_status": {
+                "state": "failure",
+                "description": "",
+                "log_url": ""
+            }
+        });
+        let ev = DeploymentEvent::from_deployment_status_payload(&payload)
+            .expect("parse");
+        let signal = ev.into_signal(payload);
+        assert_eq!(signal.kind.as_str(), signal_kinds::GITHUB_DEPLOYMENT_FAILURE);
+        assert_eq!(signal.provenance.author, "github:webhook");
+    }
+
+    #[test]
+    fn deployment_event_into_signal_uses_generic_kind_for_plain_deployment() {
+        let payload = serde_json::json!({
+            "deployment": {
+                "id": 3,
+                "environment": "preview",
+                "ref": "feat/wip",
+                "sha": "11223344"
+            }
+        });
+        let ev = DeploymentEvent::from_deployment_payload(&payload)
+            .expect("parse");
+        let signal = ev.into_signal(payload);
+        assert_eq!(signal.kind.as_str(), signal_kinds::GITHUB_DEPLOYMENT);
+    }
+
+    #[test]
+    fn github_signal_kind_maps_deployment_event() {
+        let payload = serde_json::json!({
+            "action": "created",
+            "deployment": {
+                "id": 1,
+                "environment": "production",
+                "ref": "main",
+                "sha": "abc"
+            }
+        });
+        let kind = github_signal_kind("deployment", &payload);
+        assert!(
+            matches!(kind.as_ref().map(Kind::as_str), Some(k) if k == signal_kinds::GITHUB_DEPLOYMENT),
+            "deployment event should map to GITHUB_DEPLOYMENT"
+        );
+    }
+
+    #[test]
+    fn github_signal_kind_maps_deployment_status_success() {
+        let payload = serde_json::json!({
+            "deployment": {
+                "id": 2,
+                "environment": "production",
+                "ref": "main",
+                "sha": "abc"
+            },
+            "deployment_status": {
+                "state": "success",
+                "description": "Done",
+                "log_url": ""
+            }
+        });
+        let kind = github_signal_kind("deployment_status", &payload);
+        assert!(
+            matches!(kind.as_ref().map(Kind::as_str), Some(k) if k == signal_kinds::GITHUB_DEPLOYMENT_SUCCESS),
+            "deployment_status success should map to GITHUB_DEPLOYMENT_SUCCESS"
+        );
+    }
+
+    #[test]
+    fn github_signal_kind_maps_deployment_status_failure() {
+        let payload = serde_json::json!({
+            "deployment": {
+                "id": 3,
+                "environment": "staging",
+                "ref": "main",
+                "sha": "def"
+            },
+            "deployment_status": {
+                "state": "failure",
+                "description": "",
+                "log_url": ""
+            }
+        });
+        let kind = github_signal_kind("deployment_status", &payload);
+        assert!(
+            matches!(kind.as_ref().map(Kind::as_str), Some(k) if k == signal_kinds::GITHUB_DEPLOYMENT_FAILURE),
+            "deployment_status failure should map to GITHUB_DEPLOYMENT_FAILURE"
+        );
+    }
+
+    #[test]
+    fn github_signal_kind_maps_deployment_status_in_progress() {
+        let payload = serde_json::json!({
+            "deployment": {
+                "id": 4,
+                "environment": "staging",
+                "ref": "main",
+                "sha": "fde"
+            },
+            "deployment_status": {
+                "state": "in_progress",
+                "description": "",
+                "log_url": ""
+            }
+        });
+        let kind = github_signal_kind("deployment_status", &payload);
+        assert!(
+            matches!(kind.as_ref().map(Kind::as_str), Some(k) if k == signal_kinds::GITHUB_DEPLOYMENT_IN_PROGRESS),
+            "deployment_status in_progress should map to GITHUB_DEPLOYMENT_IN_PROGRESS"
+        );
+    }
+
+    #[test]
+    fn github_signal_kind_returns_none_for_invalid_deployment_payload() {
+        // Missing required "deployment" key.
+        let payload = serde_json::json!({ "action": "created" });
+        let kind = github_signal_kind("deployment", &payload);
+        assert!(kind.is_none(), "invalid deployment payload should return None");
+    }
+
+    #[test]
+    fn deployment_state_serializes_to_snake_case() {
+        let json = serde_json::to_string(&DeploymentState::InProgress)
+            .expect("serialize DeploymentState");
+        assert_eq!(json, r#""in_progress""#);
     }
 }

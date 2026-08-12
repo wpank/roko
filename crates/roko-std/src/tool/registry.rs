@@ -6,12 +6,15 @@
 //! extensions (MCP tools, role overrides) layer on top through a
 //! separate compound registry (shipped in a later phase).
 
+use std::collections::HashMap;
+
 use roko_core::error::{Result, RokoError};
 use roko_core::tool::{ToolDef, ToolRegistry};
 #[allow(unused_imports)]
 use tracing;
 
 use super::builtin::ROKO_BUILTIN_TOOLS;
+use super::sandbox_config::SandboxConfig;
 
 /// Registry of the built-in Roko tools (§36.b).
 ///
@@ -70,6 +73,13 @@ impl ToolRegistry for StaticToolRegistry {
 /// that [`ToolRegistry::get`] and [`ToolRegistry::all`] can return references
 /// with the struct's own lifetime.
 ///
+/// # Sandbox inheritance
+///
+/// Plugin tools registered via [`Self::register_plugin`] automatically inherit
+/// the plugin's [`SandboxConfig`]. The config is stored in a side-map keyed by
+/// plugin name and is accessible via [`Self::sandbox_for`] and
+/// [`Self::sandbox_for_tool`].
+///
 /// # Thread-safety
 ///
 /// `DynamicToolRegistry` itself is `Send + Sync`. For shared mutable access
@@ -83,6 +93,11 @@ impl ToolRegistry for StaticToolRegistry {
 pub struct DynamicToolRegistry {
     /// All tools: built-in snapshot + plugin-registered, deduplicated by name.
     tools: Vec<ToolDef>,
+    /// Sandbox configuration per plugin name.
+    ///
+    /// Built-in tools have no entry here; lookups for built-in tools via
+    /// [`Self::sandbox_for_tool`] return `None`.
+    sandbox_configs: HashMap<String, SandboxConfig>,
 }
 
 impl DynamicToolRegistry {
@@ -92,6 +107,7 @@ impl DynamicToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: ROKO_BUILTIN_TOOLS.to_vec(),
+            sandbox_configs: HashMap::new(),
         }
     }
 
@@ -99,7 +115,10 @@ impl DynamicToolRegistry {
     /// Does **not** include the built-ins automatically. Useful for tests.
     #[must_use]
     pub fn from_tools(tools: Vec<ToolDef>) -> Self {
-        Self { tools }
+        Self {
+            tools,
+            sandbox_configs: HashMap::new(),
+        }
     }
 
     /// Register a new tool at runtime.
@@ -134,6 +153,25 @@ impl DynamicToolRegistry {
 
     /// Register multiple tools at once.
     pub fn register_all(&mut self, tools: impl IntoIterator<Item = ToolDef>) {
+        for tool in tools {
+            self.register(tool);
+        }
+    }
+
+    /// Register a batch of plugin-declared tools with an associated
+    /// [`SandboxConfig`] that all tools in the batch will inherit.
+    ///
+    /// The `plugin_name` is stored in the sandbox map so that
+    /// [`Self::sandbox_for`] and [`Self::sandbox_for_tool`] can retrieve it
+    /// later. Tools are registered individually via [`Self::register`] so the
+    /// usual deduplication and safety-critical warnings apply.
+    pub fn register_plugin(
+        &mut self,
+        plugin_name: &str,
+        tools: Vec<ToolDef>,
+        sandbox: SandboxConfig,
+    ) {
+        self.sandbox_configs.insert(plugin_name.to_string(), sandbox);
         for tool in tools {
             self.register(tool);
         }
@@ -183,6 +221,42 @@ impl DynamicToolRegistry {
     #[must_use]
     pub fn contains(&self, name: &str) -> bool {
         self.tools.iter().any(|t| t.name == name)
+    }
+
+    // ── Sandbox config accessors ──────────────────────────────────────
+
+    /// Return the [`SandboxConfig`] registered for `plugin_name`, if any.
+    ///
+    /// Returns `None` for built-in tools or plugins that were registered
+    /// without an explicit sandbox config via [`Self::register`] /
+    /// [`Self::register_all`] (i.e., not via [`Self::register_plugin`]).
+    #[must_use]
+    pub fn sandbox_for(&self, plugin_name: &str) -> Option<&SandboxConfig> {
+        self.sandbox_configs.get(plugin_name)
+    }
+
+    /// Return the [`SandboxConfig`] that applies to a tool identified by
+    /// `tool_name`.
+    ///
+    /// If the tool's source is `ToolSource::Plugin { name }` and that plugin
+    /// has a registered sandbox config, that config is returned. Otherwise
+    /// `None` is returned (built-ins, MCP tools, and plugin tools without
+    /// an explicit sandbox are all unconstrained at the registry layer).
+    #[must_use]
+    pub fn sandbox_for_tool(&self, tool_name: &str) -> Option<&SandboxConfig> {
+        use roko_core::tool::ToolSource;
+        let tool = self.tools.iter().find(|t| t.name == tool_name)?;
+        if let ToolSource::Plugin { name } = &tool.source {
+            self.sandbox_configs.get(name)
+        } else {
+            None
+        }
+    }
+
+    /// Return the number of plugins that have a registered [`SandboxConfig`].
+    #[must_use]
+    pub fn sandbox_count(&self) -> usize {
+        self.sandbox_configs.len()
     }
 }
 
@@ -472,5 +546,133 @@ mod tests {
                 "read tool '{name}' must have permission.write = false"
             );
         }
+    }
+
+    // ── DynamicToolRegistry sandbox inheritance tests ─────────────────
+
+    use roko_core::tool::{ToolCategory, ToolPermission, ToolSource};
+
+    fn plugin_tool(name: &str, plugin: &str) -> ToolDef {
+        let mut t =
+            ToolDef::new(name, "a plugin tool", ToolCategory::Exec, ToolPermission::executes());
+        t.source = ToolSource::Plugin { name: plugin.to_string() };
+        t
+    }
+
+    #[test]
+    fn sandbox_register_plugin_stores_config() {
+        let mut reg = DynamicToolRegistry::from_tools(vec![]);
+        let sandbox = SandboxConfig::for_tier_level(2);
+        reg.register_plugin(
+            "myplugin",
+            vec![plugin_tool("myplugin.lint", "myplugin")],
+            sandbox.clone(),
+        );
+        assert_eq!(reg.sandbox_count(), 1);
+        let stored = reg.sandbox_for("myplugin").expect("must have sandbox");
+        assert_eq!(*stored, sandbox);
+    }
+
+    #[test]
+    fn sandbox_for_tool_resolves_via_source() {
+        let mut reg = DynamicToolRegistry::from_tools(vec![]);
+        let sandbox = SandboxConfig::for_tier_level(3);
+        reg.register_plugin(
+            "myplugin",
+            vec![plugin_tool("myplugin.format", "myplugin")],
+            sandbox.clone(),
+        );
+        let resolved = reg.sandbox_for_tool("myplugin.format").expect("must resolve");
+        assert_eq!(*resolved, sandbox);
+    }
+
+    #[test]
+    fn sandbox_for_tool_returns_none_for_builtins() {
+        let reg = DynamicToolRegistry::new();
+        // Built-in tools have no plugin sandbox config.
+        assert!(reg.sandbox_for_tool("bash").is_none());
+        assert!(reg.sandbox_for_tool("read_file").is_none());
+    }
+
+    #[test]
+    fn sandbox_for_unknown_plugin_returns_none() {
+        let reg = DynamicToolRegistry::new();
+        assert!(reg.sandbox_for("nonexistent_plugin").is_none());
+    }
+
+    #[test]
+    fn sandbox_for_tool_returns_none_for_unknown_tool() {
+        let reg = DynamicToolRegistry::new();
+        assert!(reg.sandbox_for_tool("no_such_tool").is_none());
+    }
+
+    #[test]
+    fn sandbox_register_plugin_registers_tools() {
+        let mut reg = DynamicToolRegistry::from_tools(vec![]);
+        let sandbox = SandboxConfig::for_tier_level(2);
+        reg.register_plugin(
+            "myplugin",
+            vec![
+                plugin_tool("myplugin.lint", "myplugin"),
+                plugin_tool("myplugin.format", "myplugin"),
+            ],
+            sandbox,
+        );
+        assert!(reg.get("myplugin.lint").is_some());
+        assert!(reg.get("myplugin.format").is_some());
+        assert_eq!(reg.len(), 2);
+    }
+
+    #[test]
+    fn sandbox_multiple_plugins_independent_configs() {
+        let mut reg = DynamicToolRegistry::from_tools(vec![]);
+        let sandbox_a = SandboxConfig::for_tier_level(2);
+        let sandbox_b = SandboxConfig::for_tier_level(4);
+
+        reg.register_plugin(
+            "plugin_a",
+            vec![plugin_tool("plugin_a.run", "plugin_a")],
+            sandbox_a.clone(),
+        );
+        reg.register_plugin(
+            "plugin_b",
+            vec![plugin_tool("plugin_b.run", "plugin_b")],
+            sandbox_b.clone(),
+        );
+
+        assert_eq!(reg.sandbox_count(), 2);
+        assert_eq!(*reg.sandbox_for("plugin_a").unwrap(), sandbox_a);
+        assert_eq!(*reg.sandbox_for("plugin_b").unwrap(), sandbox_b);
+        // Cross-check that tool lookup resolves to the right sandbox.
+        assert!(!reg.sandbox_for_tool("plugin_a.run").unwrap().network_access);
+        assert!(reg.sandbox_for_tool("plugin_b.run").unwrap().network_access);
+    }
+
+    #[test]
+    fn sandbox_tier1_is_most_restricted_in_registry() {
+        let mut reg = DynamicToolRegistry::from_tools(vec![]);
+        let sandbox = SandboxConfig::for_tier_level(1);
+        reg.register_plugin(
+            "untrusted",
+            vec![plugin_tool("untrusted.op", "untrusted")],
+            sandbox,
+        );
+        let cfg = reg.sandbox_for("untrusted").unwrap();
+        assert!(cfg.allowed_paths.is_empty(), "tier 1 must allow no paths");
+        assert!(!cfg.network_access, "tier 1 must block network");
+    }
+
+    #[test]
+    fn sandbox_tier5_is_unrestricted_in_registry() {
+        let mut reg = DynamicToolRegistry::from_tools(vec![]);
+        let sandbox = SandboxConfig::for_tier_level(5);
+        reg.register_plugin(
+            "kernel_ext",
+            vec![plugin_tool("kernel_ext.op", "kernel_ext")],
+            sandbox,
+        );
+        let cfg = reg.sandbox_for("kernel_ext").unwrap();
+        assert!(cfg.network_access, "tier 5 must allow network");
+        assert_eq!(cfg.max_memory_mb, 0, "tier 5 must have no memory cap");
     }
 }

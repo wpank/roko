@@ -350,6 +350,81 @@ impl Lens for CostLens {
     }
 }
 
+// ─── LensRegistry ─────────────────────────────────────────────────────────
+
+/// A named registry of [`Lens`] instances (E33-T05).
+///
+/// `LensRegistry` owns a collection of boxed [`Lens`] objects, each keyed by
+/// a stable string name.  The
+/// [`PeriodicObserver`](super::telemetry_observe::PeriodicObserver)
+/// holds a `LensRegistry` and snapshots all registered lenses on each
+/// observation cycle.
+#[derive(Default)]
+pub struct LensRegistry {
+    lenses: Vec<(String, Box<dyn Lens>)>,
+}
+
+impl LensRegistry {
+    /// Construct an empty registry.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a lens under `name`, replacing any previous entry with the
+    /// same name.
+    pub fn register(&mut self, name: impl Into<String>, lens: Box<dyn Lens>) {
+        let name = name.into();
+        if let Some(slot) = self.lenses.iter_mut().find(|(n, _)| *n == name) {
+            slot.1 = lens;
+        } else {
+            self.lenses.push((name, lens));
+        }
+    }
+
+    /// Snapshot all registered lenses.
+    ///
+    /// Returns `(name, snapshot)` pairs in registration order.
+    #[must_use]
+    pub fn snapshot_all(&self) -> Vec<(String, LensSnapshot)> {
+        self.lenses
+            .iter()
+            .map(|(name, lens)| (name.clone(), lens.snapshot()))
+            .collect()
+    }
+
+    /// Number of registered lenses.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.lenses.len()
+    }
+
+    /// Returns `true` when no lenses are registered.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.lenses.is_empty()
+    }
+}
+
+/// Construct the default [`LensRegistry`] with the three canonical domain
+/// lenses pre-registered: `"token-usage"`, `"latency"`, and `"cost"`.
+pub fn default_registry(metrics: Arc<MetricRegistry>) -> LensRegistry {
+    let mut registry = LensRegistry::new();
+    registry.register(
+        "token-usage",
+        Box::new(TokenUsageLens::new(Arc::clone(&metrics), LensScope::Global)),
+    );
+    registry.register(
+        "latency",
+        Box::new(LatencyLens::new(Arc::clone(&metrics), LensScope::Global)),
+    );
+    registry.register(
+        "cost",
+        Box::new(CostLens::new(Arc::clone(&metrics), LensScope::Global)),
+    );
+    registry
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

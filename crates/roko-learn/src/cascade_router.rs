@@ -794,9 +794,7 @@ impl CascadeRouter {
 
         if available.is_empty() {
             // All providers are circuit-open — route anyway so we don't stall.
-            tracing::warn!(
-                "all known providers are circuit-open; routing without health filter"
-            );
+            tracing::warn!("all known providers are circuit-open; routing without health filter");
             return self.route(ctx);
         }
 
@@ -863,15 +861,15 @@ impl CascadeRouter {
 
         // Extend the fallback chain with any still-available candidates that
         // weren't in the preferred set (latency-degraded but reachable).
-        let extra_fallbacks: Vec<ModelSpec> = latency_degraded
+        let existing_slugs: std::collections::HashSet<&str> = route
+            .fallback_chain
+            .iter()
+            .map(|m| m.slug.as_str())
+            .collect();
+        let extra_fallbacks: Vec<roko_core::agent::ModelSpec> = latency_degraded
             .into_iter()
-            .filter(|slug| {
-                !route
-                    .fallback_chain
-                    .iter()
-                    .any(|m| m.slug == *slug)
-            })
-            .map(|slug| ModelSpec::from_slug(&slug))
+            .filter(|slug| !existing_slugs.contains(slug.as_str()))
+            .map(|slug| roko_core::agent::ModelSpec::from_slug(&slug))
             .collect();
         route.fallback_chain.extend(extra_fallbacks);
 

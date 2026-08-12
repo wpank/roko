@@ -544,6 +544,57 @@ impl ModelCallService {
         format!("{}:{seq}:{cache_key:016x}", self.run_id)
     }
 
+    /// Look up the context window (in tokens) for `model` from configuration,
+    /// falling back to the heuristic table in [`crate::token_estimator`].
+    ///
+    /// Returns 0 when the context window is unknown; the pre-dispatch check
+    /// skips the comparison in that case to avoid false rejections.
+    fn context_window_for_model(&self, model: &str) -> u64 {
+        let models = self.config.effective_models();
+        let from_config = models
+            .get(model)
+            .or_else(|| models.values().find(|p| p.slug == model))
+            .map(|p| p.context_window)
+            .filter(|&cw| cw > 0);
+
+        if let Some(cw) = from_config {
+            return cw;
+        }
+
+        // Fall back to the static heuristic table.
+        crate::token_estimator::context_window_for_slug(model).unwrap_or(0)
+    }
+
+    /// Emit a context-overflow metric counter when a pre-dispatch check fires.
+    ///
+    /// The counter is labeled `{provider, model, status}` where `status` is
+    /// either `"warning"` (80–95% utilization) or `"rejected"` (>= 95%).
+    fn emit_context_overflow_metric(&self, model: &str, status: &str) {
+        use roko_core::obs::metrics::LabelSet;
+        use roko_core::obs::schema;
+
+        let Some(registry) = &self.metrics else {
+            return;
+        };
+
+        let provider = self.provider_for_model(model);
+        let labels = LabelSet::from_pairs(&[
+            (
+                schema::LABEL_PROVIDER,
+                provider.as_deref().unwrap_or("unknown"),
+            ),
+            (schema::LABEL_MODEL, model),
+            (schema::LABEL_STATUS, status),
+        ]);
+        registry
+            .register_counter(
+                "roko_context_overflow_checks_total",
+                "Pre-dispatch context-window checks that fired a warning or rejection",
+                labels,
+            )
+            .inc();
+    }
+
     fn provider_for_model(&self, model: &str) -> Option<String> {
         let models = self.config.effective_models();
         models
@@ -1967,6 +2018,62 @@ impl ModelCaller for ModelCallService {
             }
         }
 
+        // ── Pre-dispatch context-window check (E48-T07) ──────────────────────
+        // Estimate prompt tokens and compare against the model's configured
+        // context window before touching the network.
+        //
+        // Rules:
+        //   < 50% utilization  → skip (fast path, no overhead)
+        //   50%–80%            → Ok
+        //   80%–95%            → warn; dispatch still proceeds
+        //   >= 95%             → reject; return an error before dispatch
+        {
+            let estimate = self.cost_predict(&req);
+            let cw = self.context_window_for_model(&model);
+
+            if let Some(status) = crate::token_estimator::check_context_window(
+                estimate.estimated_input_tokens,
+                cw,
+                &model,
+            ) {
+                match &status {
+                    crate::token_estimator::ContextWindowStatus::Warning {
+                        estimated_tokens,
+                        context_window,
+                        utilization,
+                    } => {
+                        tracing::warn!(
+                            model = %model,
+                            estimated_tokens,
+                            context_window,
+                            utilization = format!("{:.1}%", utilization * 100.0),
+                            "pre-dispatch: prompt is above 80% of context window; \
+                             dispatch will proceed but may approach provider limit"
+                        );
+                        self.emit_context_overflow_metric(&model, "warning");
+                    }
+                    crate::token_estimator::ContextWindowStatus::Rejected {
+                        estimated_tokens,
+                        context_window,
+                        utilization,
+                        reason,
+                    } => {
+                        tracing::warn!(
+                            model = %model,
+                            estimated_tokens,
+                            context_window,
+                            utilization = format!("{:.1}%", utilization * 100.0),
+                            reason,
+                            "pre-dispatch: prompt exceeds 95% of context window; rejecting"
+                        );
+                        self.emit_context_overflow_metric(&model, "rejected");
+                        return Err(RokoError::invalid(reason.clone()));
+                    }
+                    crate::token_estimator::ContextWindowStatus::Ok { .. } => {}
+                }
+            }
+        }
+
         let (message_system, user_content) = request_prompt(&req.messages);
         let system_prompt = append_knowledge_to_system_prompt(
             req.system.clone().or(message_system),
@@ -3097,5 +3204,88 @@ mod tests {
         // TPM tracking works.
         let tpm = limiter.record_tokens("test-provider", 500).await;
         assert!(tpm > 0, "TPM should be non-zero after recording tokens");
+    }
+
+    // ── context_window_for_model (E48-T07) ───────────────────────────────────
+
+    /// `context_window_for_model` returns the configured context window from
+    /// `ModelProfile` when the model key is present in `RokoConfig`.
+    #[test]
+    fn token_context_window_from_config_model_profile() {
+        use roko_core::config::schema::{ModelProfile, RokoConfig};
+
+        let mut config = RokoConfig::default();
+        config.models.insert(
+            "my-model".to_string(),
+            ModelProfile {
+                provider: "test".to_string(),
+                slug: "my-model".to_string(),
+                context_window: 32_000,
+                ..Default::default()
+            },
+        );
+
+        let svc = ModelCallService::new("my-model".into()).with_config(config);
+        assert_eq!(
+            svc.context_window_for_model("my-model"),
+            32_000,
+            "should read context_window from ModelProfile"
+        );
+    }
+
+    /// `context_window_for_model` falls back to the heuristic table when the
+    /// model is not present in configuration.
+    #[test]
+    fn token_context_window_falls_back_to_heuristic() {
+        let svc = ModelCallService::new("claude-sonnet-4-6".into());
+        // No config: should use heuristic → 200K for sonnet
+        let cw = svc.context_window_for_model("claude-sonnet-4-6");
+        assert_eq!(
+            cw, 200_000,
+            "heuristic should return 200K for claude-sonnet slug"
+        );
+    }
+
+    /// `context_window_for_model` returns 0 for a completely unknown model.
+    #[test]
+    fn token_context_window_unknown_model_returns_zero() {
+        let svc = ModelCallService::new("default".into());
+        let cw = svc.context_window_for_model("my-custom-model-v99");
+        assert_eq!(cw, 0, "unknown model should return 0 so the check is skipped");
+    }
+
+    /// `cost_predict` estimated_input_tokens agrees with the 4-chars/token
+    /// heuristic on a known-size input.
+    #[test]
+    fn token_cost_estimate_matches_heuristic() {
+        let svc = ModelCallService::new("test-model".into());
+        // 400 chars / 4 chars-per-token = 100 tokens expected
+        let req = ModelCallRequest {
+            model: "test-model".into(),
+            system: Some("x".repeat(200)),
+            messages: vec![ChatMessage {
+                role: MessageRole::User,
+                content: "x".repeat(200),
+            }],
+            max_tokens: None,
+            temperature: None,
+            role: None,
+            caller: None,
+            run_id: None,
+            prompt_section_ids: Vec::new(),
+            knowledge_ids: Vec::new(),
+            budget: None,
+            budget_remaining: None,
+            routing_hints: Vec::new(),
+            cache_policy: roko_core::foundation::CachePolicy::Default,
+            tools: Vec::new(),
+        };
+
+        let estimate = svc.cost_predict(&req);
+        // System = 200 chars → 50 tokens; message = 200 chars → 50 tokens; total = 100
+        assert_eq!(
+            estimate.estimated_input_tokens, 100,
+            "4 chars/token heuristic: 400 chars = 100 tokens"
+        );
     }
 }

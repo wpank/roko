@@ -7,6 +7,14 @@ license.workspace = true
 authors.workspace = true
 description = "MCP server exposing GitHub API as tools for roko agents"
 
+[lib]
+name = "roko_mcp_github"
+path = "src/lib.rs"
+
+[[bin]]
+name = "roko-mcp-github"
+path = "src/main.rs"
+
 [lints]
 workspace = true
 

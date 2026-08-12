@@ -27,8 +27,40 @@
 //! ```
 
 use parking_lot::Mutex;
-use roko_core::{ContentHash, Signal, TaintInfo};
+use roko_core::{ContentHash, Signal, TaintInfo, TaintLevel};
 use std::collections::HashMap;
+
+// ─── propagate_taint ─────────────────────────────────────────────────────────
+
+/// Compute the output [`TaintLevel`] for a derived signal given its input
+/// levels.
+///
+/// A derived signal inherits the **highest** (most restrictive) classification
+/// of all its inputs, implementing the *no-read-up* rule of the IFC lattice: if
+/// any input is `Confidential`, the output must be at least `Confidential`.
+///
+/// An empty input slice returns [`TaintLevel::Public`] — a signal with no
+/// inputs has no inherited classification.
+///
+/// # Examples
+///
+/// ```
+/// use roko_core::TaintLevel;
+/// use roko_orchestrator::safety::taint_propagation::propagate_taint;
+///
+/// assert_eq!(
+///     propagate_taint(&[TaintLevel::Public, TaintLevel::Confidential]),
+///     TaintLevel::Confidential,
+/// );
+/// assert_eq!(propagate_taint(&[]), TaintLevel::Public);
+/// ```
+#[must_use]
+pub fn propagate_taint(inputs: &[TaintLevel]) -> TaintLevel {
+    inputs
+        .iter()
+        .copied()
+        .fold(TaintLevel::Public, TaintLevel::join)
+}
 
 /// Why a particular [`ContentHash`] is considered tainted.
 ///
@@ -479,5 +511,53 @@ mod tests {
         assert_eq!(TaintReason::user_input("x").category, "user_input");
         assert_eq!(TaintReason::propagated("x").category, "propagated");
         assert_eq!(TaintReason::new("custom", "x").category, "custom");
+    }
+
+    // ─── propagate_taint tests ────────────────────────────────────────────────
+
+    #[test]
+    fn propagate_taint_empty_inputs_returns_public() {
+        assert_eq!(propagate_taint(&[]), TaintLevel::Public);
+    }
+
+    #[test]
+    fn propagate_taint_single_input_passes_through() {
+        assert_eq!(propagate_taint(&[TaintLevel::Internal]), TaintLevel::Internal);
+        assert_eq!(
+            propagate_taint(&[TaintLevel::Confidential]),
+            TaintLevel::Confidential
+        );
+        assert_eq!(propagate_taint(&[TaintLevel::Secret]), TaintLevel::Secret);
+    }
+
+    #[test]
+    fn propagate_taint_inherits_highest_level() {
+        assert_eq!(
+            propagate_taint(&[TaintLevel::Public, TaintLevel::Confidential]),
+            TaintLevel::Confidential,
+        );
+        assert_eq!(
+            propagate_taint(&[
+                TaintLevel::Internal,
+                TaintLevel::Secret,
+                TaintLevel::Public
+            ]),
+            TaintLevel::Secret,
+        );
+    }
+
+    #[test]
+    fn propagate_taint_all_public_stays_public() {
+        assert_eq!(
+            propagate_taint(&[TaintLevel::Public, TaintLevel::Public]),
+            TaintLevel::Public,
+        );
+    }
+
+    #[test]
+    fn propagate_taint_is_commutative() {
+        let a = &[TaintLevel::Internal, TaintLevel::Confidential];
+        let b = &[TaintLevel::Confidential, TaintLevel::Internal];
+        assert_eq!(propagate_taint(a), propagate_taint(b));
     }
 }

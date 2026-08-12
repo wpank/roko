@@ -133,7 +133,9 @@ pub mod obs {
         ReadinessStatus,
     };
     pub use histograms::{Histogram, HistogramSnapshot, LLM_LATENCY_BUCKETS};
-    pub use lens::{CollectorLens, Lens, LensScope, LensSnapshot};
+    pub use lens::{
+        CollectorLens, CostLens, LatencyLens, Lens, LensScope, LensSnapshot, TokenUsageLens,
+    };
     pub use metrics::{
         Counter, Gauge, LabelSet, MetricKind, MetricRegistry, MetricSnapshot, MetricValue,
         STANDARD_METRICS, register_standard_metrics,

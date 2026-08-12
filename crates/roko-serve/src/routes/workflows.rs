@@ -345,11 +345,13 @@ fn workflow_sse(
                     return Some((Ok(event), st));
                 }
                 received = async {
-                    let rx = st.rx.as_mut().expect("workflow sse receiver initialized");
-                    rx.recv().await
+                    let Some(rx) = st.rx.as_mut() else {
+                        return None;
+                    };
+                    Some(rx.recv().await)
                 } => {
                     match received {
-                        Ok(envelope) => {
+                        Some(Ok(envelope)) => {
                             if !dashboard_event_matches_workflow(&envelope.payload, st.workflow_id.as_deref()) {
                                 continue;
                             }
@@ -367,11 +369,11 @@ fn workflow_sse(
                                 .data(payload);
                             return Some((Ok(event), st));
                         }
-                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        Some(Err(broadcast::error::RecvError::Lagged(skipped))) => {
                             warn!(skipped, "workflow sse client lagged");
                             continue;
                         }
-                        Err(broadcast::error::RecvError::Closed) => return None,
+                        Some(Err(broadcast::error::RecvError::Closed)) | None => return None,
                     }
                 }
             }

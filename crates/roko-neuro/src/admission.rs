@@ -1198,6 +1198,12 @@ pub struct AdmissionResult {
     pub score: f64,
     /// Per-factor breakdown.
     pub factors: AdmissionFactors,
+    /// Human-readable reason for rejection when `admitted == false`.
+    ///
+    /// Always `Some(_)` on rejection; `None` when the candidate is admitted.
+    /// Log this for debugging rejected entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reject_reason: Option<String>,
 }
 
 /// The A-MAC (Admission-MAC) 5-factor gate for the durable knowledge store.
@@ -1216,14 +1222,26 @@ pub struct AdmissionResult {
 /// 5. **Confidence** — the candidate's own confidence field, source-weighted
 ///    via [`KnowledgeEvidenceSource::trust_weight`].
 ///
-/// The combined score is a weighted average of factors 2–5. A candidate is
-/// admitted when `score >= 0.5` and `similarity < 0.95`.
+/// The combined score is a normalised weighted average of factors 2–5, so
+/// weights do not need to sum to 1.0. A candidate is admitted when
+/// `score >= admission_threshold` and `similarity < duplicate_threshold`.
+///
+/// All weight fields are configurable. Use [`AmacGate::default`] for the
+/// tuned production values. Serialises to/from JSON for learning-config storage.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct AmacGate {
     /// Similarity threshold above which a candidate is rejected as a duplicate.
     pub duplicate_threshold: f64,
     /// Minimum combined score required for admission.
     pub admission_threshold: f64,
+    /// Weight for the novelty factor (`1.0 - max_similarity`). Default `0.30`.
+    pub weight_novelty: f64,
+    /// Weight for the contradiction factor (1.0 = no contradiction). Default `0.20`.
+    pub weight_contradiction: f64,
+    /// Weight for the relevance factor (recency × tag richness). Default `0.25`.
+    pub weight_relevance: f64,
+    /// Weight for the confidence factor (candidate confidence). Default `0.25`.
+    pub weight_confidence: f64,
 }
 
 impl Default for AmacGate {
@@ -1231,6 +1249,117 @@ impl Default for AmacGate {
         Self {
             duplicate_threshold: AMAC_DUPLICATE_REJECT_THRESHOLD,
             admission_threshold: AMAC_ADMISSION_THRESHOLD,
+            weight_novelty: AMAC_WEIGHT_NOVELTY,
+            weight_contradiction: AMAC_WEIGHT_CONTRADICTION,
+            weight_relevance: AMAC_WEIGHT_RELEVANCE,
+            weight_confidence: AMAC_WEIGHT_CONFIDENCE,
+        }
+    }
+}
+
+impl AmacGate {
+    /// Evaluate `candidate` against the gate using the configured factor weights.
+    ///
+    /// Does not mutate any store; callers integrate the result with their
+    /// ingestion path. For the common case with default weights, prefer the
+    /// free function [`evaluate_admission`].
+    #[must_use]
+    pub fn evaluate(
+        &self,
+        candidate: &KnowledgeEntry,
+        existing: &[KnowledgeEntry],
+    ) -> AdmissionResult {
+        // Factor 1 & 2: Similarity and Novelty.
+        let max_similarity = existing
+            .iter()
+            .map(|e| entry_overlap_similarity(candidate, e))
+            .fold(0.0_f64, f64::max);
+        let novelty = (1.0 - max_similarity).clamp(0.0, 1.0);
+
+        // Reject immediately as duplicate before computing other factors.
+        if max_similarity >= self.duplicate_threshold {
+            let reason = format!(
+                "Duplicate: similarity {max_similarity:.3} >= threshold {:.3}",
+                self.duplicate_threshold
+            );
+            tracing::debug!(
+                candidate_id = %candidate.id,
+                similarity = max_similarity,
+                reason = %reason,
+                "A-MAC admission rejected"
+            );
+            return AdmissionResult {
+                admitted: false,
+                score: 0.0,
+                factors: AdmissionFactors {
+                    similarity: max_similarity,
+                    novelty,
+                    contradiction: 1.0, // Not evaluated — rejected for duplication.
+                    relevance: compute_relevance(candidate),
+                    confidence: candidate.confidence.clamp(0.0, 1.0),
+                },
+                reject_reason: Some(reason),
+            };
+        }
+
+        // Factor 3: Contradiction.
+        let contradiction = compute_contradiction(candidate, existing);
+
+        // Factor 4: Relevance.
+        let relevance = compute_relevance(candidate);
+
+        // Factor 5: Confidence.
+        let confidence = candidate.confidence.clamp(0.0, 1.0);
+
+        // Normalised weighted score so caller-supplied weights don't need to
+        // sum to 1.0.
+        let weight_sum = self.weight_novelty
+            + self.weight_contradiction
+            + self.weight_relevance
+            + self.weight_confidence;
+        let score = if weight_sum <= 0.0 {
+            0.0
+        } else {
+            ((self.weight_novelty * novelty
+                + self.weight_contradiction * contradiction
+                + self.weight_relevance * relevance
+                + self.weight_confidence * confidence)
+                / weight_sum)
+                .clamp(0.0, 1.0)
+        };
+
+        let admitted = score >= self.admission_threshold;
+        let reject_reason = if admitted {
+            None
+        } else {
+            Some(format!(
+                "Score {score:.3} < threshold {:.3} (novelty={novelty:.3}, \
+                 contradiction={contradiction:.3}, relevance={relevance:.3}, \
+                 confidence={confidence:.3})",
+                self.admission_threshold
+            ))
+        };
+
+        if let Some(ref reason) = reject_reason {
+            tracing::debug!(
+                candidate_id = %candidate.id,
+                score,
+                reason = %reason,
+                "A-MAC admission rejected"
+            );
+        }
+
+        AdmissionResult {
+            admitted,
+            score,
+            factors: AdmissionFactors {
+                similarity: max_similarity,
+                novelty,
+                contradiction,
+                relevance,
+                confidence,
+            },
+            reject_reason,
         }
     }
 }
@@ -1337,10 +1466,10 @@ fn compute_relevance(candidate: &KnowledgeEntry) -> f64 {
 }
 
 /// Evaluate a candidate [`KnowledgeEntry`] against the `existing` store using
-/// the A-MAC 5-factor gate.
+/// the A-MAC 5-factor gate with default weights.
 ///
-/// This function is the public entry point for the admission gate. It does not
-/// mutate any store; callers integrate the result with their ingestion path.
+/// For custom factor weights, construct an [`AmacGate`] with the desired
+/// `weight_*` fields and call [`AmacGate::evaluate`] directly.
 ///
 /// # Arguments
 ///
@@ -1349,90 +1478,14 @@ fn compute_relevance(candidate: &KnowledgeEntry) -> f64 {
 ///
 /// # Returns
 ///
-/// An [`AdmissionResult`] describing the decision, combined score, and
-/// per-factor breakdown. Log `admitted == false` with `score` and `factors`
-/// for debugging rejected entries.
+/// An [`AdmissionResult`] with `admitted`, `score`, `factors`, and, on
+/// rejection, a `reject_reason` string for debugging.
 #[must_use]
 pub fn evaluate_admission(
     candidate: &KnowledgeEntry,
     existing: &[KnowledgeEntry],
 ) -> AdmissionResult {
-    let gate = AmacGate::default();
-
-    // Factor 1 & 2: Similarity and Novelty.
-    let max_similarity = existing
-        .iter()
-        .map(|e| entry_overlap_similarity(candidate, e))
-        .fold(0.0_f64, f64::max);
-    let novelty = (1.0 - max_similarity).clamp(0.0, 1.0);
-
-    // Reject immediately as duplicate before computing other factors.
-    if max_similarity >= gate.duplicate_threshold {
-        let factors = AdmissionFactors {
-            similarity: max_similarity,
-            novelty,
-            contradiction: 1.0, // Not evaluated — rejected for duplication.
-            relevance: compute_relevance(candidate),
-            confidence: candidate.confidence.clamp(0.0, 1.0),
-        };
-        let score = 0.0;
-        tracing::debug!(
-            candidate_id = %candidate.id,
-            similarity = max_similarity,
-            reason = "Reject: duplicate (similarity >= 0.95)",
-            "A-MAC admission rejected"
-        );
-        return AdmissionResult {
-            admitted: false,
-            score,
-            factors,
-        };
-    }
-
-    // Factor 3: Contradiction.
-    let contradiction = compute_contradiction(candidate, existing);
-
-    // Factor 4: Relevance.
-    let relevance = compute_relevance(candidate);
-
-    // Factor 5: Confidence (source-weighted if source tag is parseable).
-    let confidence = candidate.confidence.clamp(0.0, 1.0);
-
-    // Combined weighted score.
-    let score = (AMAC_WEIGHT_NOVELTY * novelty
-        + AMAC_WEIGHT_CONTRADICTION * contradiction
-        + AMAC_WEIGHT_RELEVANCE * relevance
-        + AMAC_WEIGHT_CONFIDENCE * confidence)
-        .clamp(0.0, 1.0);
-
-    let admitted = score >= gate.admission_threshold;
-
-    if !admitted {
-        tracing::debug!(
-            candidate_id = %candidate.id,
-            score,
-            novelty,
-            contradiction,
-            relevance,
-            confidence,
-            reason = "Reject: score below threshold",
-            "A-MAC admission rejected"
-        );
-    }
-
-    let factors = AdmissionFactors {
-        similarity: max_similarity,
-        novelty,
-        contradiction,
-        relevance,
-        confidence,
-    };
-
-    AdmissionResult {
-        admitted,
-        score,
-        factors,
-    }
+    AmacGate::default().evaluate(candidate, existing)
 }
 
 #[cfg(test)]
@@ -1778,5 +1831,339 @@ mod tests {
             gate.evaluate(1.0, 0.0, trust),
             "ExternalObservation (trust={trust}) should pass default gate"
         );
+    }
+
+    // ─── E45-T10: A-MAC 5-factor gate unit tests ─────────────────────────
+
+    fn amac_entry(id: &str, content: &str, tags: &[&str], confidence: f64) -> KnowledgeEntry {
+        KnowledgeEntry {
+            id: id.to_string(),
+            kind: KnowledgeKind::Insight,
+            source: Some("test".to_string()),
+            content: content.to_string(),
+            confidence,
+            confidence_weight: confidence,
+            refuted_insight_id: None,
+            refutation_evidence: None,
+            source_episodes: vec!["ep-1".to_string()],
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            source_model: None,
+            model_generality: 1.0,
+            created_at: Utc::now(),
+            half_life_days: 30.0,
+            tier: KnowledgeTier::Working,
+            emotional_tag: None,
+            emotional_provenance: None,
+            hdc_vector: None,
+            confirmation_count: 0,
+            distinct_contexts: Vec::new(),
+            deprecated: false,
+            balance: 1.0,
+            frozen: false,
+            catalytic_score: 0,
+        }
+    }
+
+    // ── Factor 1 & 2: Similarity / Novelty ───────────────────────────────
+
+    /// A novel entry with an empty store scores maximum novelty and is admitted.
+    #[test]
+    fn amac_factor_novelty_novel_entry_admitted() {
+        let candidate = amac_entry(
+            "novel",
+            "Unique insight about async Rust runtimes and tokio spawn tasks lifecycle",
+            &["async", "runtime"],
+            0.8,
+        );
+        let result = evaluate_admission(&candidate, &[]);
+        assert!(result.admitted, "Novel entry with empty store should be admitted");
+        assert!(
+            (result.factors.novelty - 1.0).abs() < 1e-9,
+            "novelty should be 1.0 for empty existing store, got {}",
+            result.factors.novelty
+        );
+        assert!(result.reject_reason.is_none(), "admitted entries must not have reject_reason");
+    }
+
+    /// An exact copy of an existing entry is rejected as a near-duplicate.
+    #[test]
+    fn amac_factor_similarity_near_duplicate_rejected() {
+        let content = "Use connection pooling to reduce database latency for Rust services";
+        let tags = &["database", "performance", "rust"];
+        let existing = amac_entry("existing", content, tags, 0.9);
+        let candidate = amac_entry("duplicate", content, tags, 0.9);
+        let result = evaluate_admission(&candidate, &[existing]);
+        assert!(!result.admitted, "Near-duplicate should be rejected");
+        assert!(
+            result.factors.similarity >= AMAC_DUPLICATE_REJECT_THRESHOLD,
+            "similarity {} should exceed dedup threshold {}",
+            result.factors.similarity,
+            AMAC_DUPLICATE_REJECT_THRESHOLD
+        );
+        assert!(result.reject_reason.is_some(), "reject_reason must be set on rejection");
+        let reason = result.reject_reason.as_deref().unwrap_or("");
+        assert!(
+            reason.contains("Duplicate") || reason.contains("similarity"),
+            "reason should mention similarity: {reason}"
+        );
+    }
+
+    /// Partial overlap produces lower novelty than a fully unrelated entry.
+    #[test]
+    fn amac_factor_novelty_partial_overlap_lowers_novelty() {
+        let existing = amac_entry(
+            "existing",
+            "Connection pooling reduces latency in Rust database clients",
+            &["database", "rust"],
+            0.9,
+        );
+        let partial = amac_entry(
+            "partial",
+            "Async Rust with Tokio improves throughput for database services",
+            &["database", "rust", "async"],
+            0.8,
+        );
+        let unrelated = amac_entry(
+            "unrelated",
+            "Fibonacci sequence computation in purely functional Haskell programs",
+            &["haskell", "functional"],
+            0.8,
+        );
+        let r_partial = evaluate_admission(&partial, &[existing.clone()]);
+        let r_unrelated = evaluate_admission(&unrelated, &[existing]);
+        assert!(
+            r_partial.factors.novelty < r_unrelated.factors.novelty,
+            "partial overlap (novelty={}) should produce lower novelty than unrelated (novelty={})",
+            r_partial.factors.novelty,
+            r_unrelated.factors.novelty
+        );
+    }
+
+    // ── Factor 3: Contradiction ───────────────────────────────────────────
+
+    /// A candidate that overlaps with a high-confidence AntiKnowledge entry
+    /// gets a contradiction score below 1.0.
+    #[test]
+    fn amac_factor_contradiction_anti_knowledge_detected() {
+        let mut anti = amac_entry(
+            "anti-1",
+            "Do not inject dashboard context for roko-neuro kernel tasks performance",
+            &["context", "dashboard", "performance"],
+            0.9,
+        );
+        anti.kind = KnowledgeKind::AntiKnowledge;
+
+        let candidate = amac_entry(
+            "contradicted",
+            "Inject dashboard context for roko-neuro kernel performance tasks optimization",
+            &["context", "dashboard", "performance"],
+            0.9,
+        );
+
+        // Isolate the contradiction factor.
+        let gate = AmacGate {
+            weight_novelty: 0.0,
+            weight_contradiction: 1.0,
+            weight_relevance: 0.0,
+            weight_confidence: 0.0,
+            ..AmacGate::default()
+        };
+        let result = gate.evaluate(&candidate, &[anti]);
+        assert!(
+            result.factors.contradiction < 1.0,
+            "contradiction factor should be < 1.0 when AntiKnowledge overlaps, got {}",
+            result.factors.contradiction
+        );
+    }
+
+    /// Without AntiKnowledge entries the contradiction factor is 1.0.
+    #[test]
+    fn amac_factor_contradiction_no_anti_knowledge_is_full() {
+        let existing = amac_entry("e1", "Use retry for transient failures in services", &["retry"], 0.8);
+        let candidate = amac_entry("c1", "Retry with backoff improves resilience for systems", &["retry"], 0.8);
+        let result = evaluate_admission(&candidate, &[existing]);
+        assert!(
+            (result.factors.contradiction - 1.0).abs() < 1e-9,
+            "no AntiKnowledge implies contradiction=1.0, got {}",
+            result.factors.contradiction
+        );
+    }
+
+    // ── Factor 4: Relevance ───────────────────────────────────────────────
+
+    /// A fresh entry scores higher relevance than one aged past its half-life.
+    #[test]
+    fn amac_factor_relevance_fresh_entry_scores_higher() {
+        let mut old_entry = amac_entry(
+            "old",
+            "Use caching for expensive computations in distributed Rust systems",
+            &["caching", "distributed"],
+            0.8,
+        );
+        old_entry.created_at = Utc::now() - chrono::Duration::days(60);
+
+        let fresh_entry = amac_entry(
+            "fresh",
+            "Use caching for expensive computations in distributed Rust systems",
+            &["caching", "distributed"],
+            0.8,
+        );
+
+        let old_relevance = compute_relevance(&old_entry);
+        let fresh_relevance = compute_relevance(&fresh_entry);
+        assert!(
+            fresh_relevance > old_relevance,
+            "fresh entry (relevance={fresh_relevance:.3}) should outscore old entry \
+             (relevance={old_relevance:.3})"
+        );
+    }
+
+    /// A well-tagged entry scores higher relevance than an untagged one.
+    #[test]
+    fn amac_factor_relevance_rich_tags_lift_score() {
+        let sparse = amac_entry("sparse", "Retry with exponential backoff for resilient systems", &[], 0.8);
+        let rich = amac_entry(
+            "rich",
+            "Retry with exponential backoff for resilient systems",
+            &["retry", "backoff", "resilience", "networking", "distributed"],
+            0.8,
+        );
+        assert!(
+            compute_relevance(&rich) > compute_relevance(&sparse),
+            "rich tags (relevance={:.3}) should outscore sparse (relevance={:.3})",
+            compute_relevance(&rich),
+            compute_relevance(&sparse)
+        );
+    }
+
+    // ── Factor 5: Confidence ─────────────────────────────────────────────
+
+    /// A low-confidence candidate is rejected when confidence is the sole factor.
+    #[test]
+    fn amac_factor_confidence_low_value_rejected() {
+        let candidate = amac_entry(
+            "low-conf",
+            "Speculative claim about async performance with no evidence at all",
+            &["async"],
+            0.05,
+        );
+        let gate = AmacGate {
+            weight_novelty: 0.0,
+            weight_contradiction: 0.0,
+            weight_relevance: 0.0,
+            weight_confidence: 1.0,
+            admission_threshold: 0.5,
+            ..AmacGate::default()
+        };
+        let result = gate.evaluate(&candidate, &[]);
+        assert!(!result.admitted, "low confidence (0.05) should be rejected when confidence is the only factor");
+        assert!(result.reject_reason.is_some(), "reject_reason must be set on rejection");
+    }
+
+    /// A high-confidence candidate passes when confidence is the sole factor.
+    #[test]
+    fn amac_factor_confidence_high_value_passes() {
+        let candidate = amac_entry(
+            "high-conf",
+            "Use connection pools for Postgres to avoid TCP handshake overhead in services",
+            &["postgres", "performance"],
+            0.95,
+        );
+        let gate = AmacGate {
+            weight_novelty: 0.0,
+            weight_contradiction: 0.0,
+            weight_relevance: 0.0,
+            weight_confidence: 1.0,
+            admission_threshold: 0.5,
+            ..AmacGate::default()
+        };
+        let result = gate.evaluate(&candidate, &[]);
+        assert!(result.admitted, "high confidence (0.95) should be admitted when confidence is the only factor");
+        assert!(result.reject_reason.is_none(), "admitted entries must not have reject_reason");
+    }
+
+    // ── Combined score and config ─────────────────────────────────────────
+
+    /// A high-quality novel contradiction-free candidate is admitted.
+    #[test]
+    fn amac_combined_high_quality_candidate_admitted() {
+        let candidate = amac_entry(
+            "quality",
+            "Prefer bounded channels over unbounded in async Rust to apply back-pressure",
+            &["async", "rust", "channels", "backpressure"],
+            0.9,
+        );
+        let result = evaluate_admission(&candidate, &[]);
+        assert!(result.admitted, "high-quality novel candidate should be admitted");
+        assert!(result.score >= 0.5, "combined score >= 0.5, got {}", result.score);
+        assert!(result.reject_reason.is_none());
+    }
+
+    /// Custom weights alter which candidates are admitted.
+    #[test]
+    fn amac_custom_weights_alter_admission_outcome() {
+        let candidate = amac_entry(
+            "low-conf-novel",
+            "Quantum entanglement distributed coordination primitive agent network systems",
+            &["quantum", "distributed"],
+            0.1,
+        );
+        let default_result = evaluate_admission(&candidate, &[]);
+        let novelty_gate = AmacGate {
+            weight_novelty: 1.0,
+            weight_contradiction: 0.0,
+            weight_relevance: 0.0,
+            weight_confidence: 0.0,
+            admission_threshold: 0.5,
+            ..AmacGate::default()
+        };
+        let custom_result = novelty_gate.evaluate(&candidate, &[]);
+        // With no existing entries, novelty=1.0 → score=1.0 → admitted.
+        assert!(custom_result.admitted, "novelty-only gate should admit a novel entry (score={})", custom_result.score);
+        // Novelty factor is gate-independent.
+        assert!(
+            (default_result.factors.novelty - custom_result.factors.novelty).abs() < 1e-9,
+            "novelty factor should be identical across gate configurations"
+        );
+    }
+
+    /// `AmacGate` with configurable weights serialises and deserialises.
+    #[test]
+    fn amac_gate_config_serde_roundtrip() {
+        let gate = AmacGate {
+            duplicate_threshold: 0.90,
+            admission_threshold: 0.45,
+            weight_novelty: 0.40,
+            weight_contradiction: 0.15,
+            weight_relevance: 0.20,
+            weight_confidence: 0.25,
+        };
+        let json = serde_json::to_string(&gate).expect("serialise AmacGate");
+        let restored: AmacGate = serde_json::from_str(&json).expect("deserialise AmacGate");
+        assert_eq!(gate, restored, "AmacGate should roundtrip through JSON");
+    }
+
+    /// Admitted entries have `reject_reason == None`; rejected entries have
+    /// `reject_reason == Some(_)`.
+    #[test]
+    fn amac_reject_reason_invariant() {
+        let admitted = amac_entry(
+            "admit",
+            "Strongly typed domain models prevent invalid state in Rust service layer",
+            &["rust", "domain", "types"],
+            0.9,
+        );
+        let admit_result = evaluate_admission(&admitted, &[]);
+        assert!(admit_result.reject_reason.is_none(), "admitted entries must not have reject_reason");
+
+        // Exact duplicate of the admitted entry should be rejected.
+        let dup = amac_entry(
+            "dup",
+            "Strongly typed domain models prevent invalid state in Rust service layer",
+            &["rust", "domain", "types"],
+            0.9,
+        );
+        let reject_result = evaluate_admission(&dup, &[admitted]);
+        assert!(reject_result.reject_reason.is_some(), "rejected entries must have reject_reason");
     }
 }

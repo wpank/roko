@@ -1940,6 +1940,21 @@ pub struct CoreRunnerConfig {
     /// connection timeout). Defaults to 5.
     #[serde(default = "CoreRunnerConfig::default_dispatch_max_retries")]
     pub dispatch_max_retries: u32,
+    /// Maximum number of warm (pre-spawned) agent slots per role.
+    ///
+    /// The warm pool keeps pre-spawned agent handles alive so the next
+    /// phase's agent can be promoted in <100 ms instead of a cold 5-15 s
+    /// subprocess spawn. Setting this to 0 disables warm-pool pre-spawning.
+    /// Defaults to 2 (one reviewer slot + one implementer slot).
+    #[serde(default = "CoreRunnerConfig::default_warm_pool_size")]
+    pub warm_pool_size: usize,
+    /// Maximum idle lifetime for a pre-spawned warm agent, in seconds.
+    ///
+    /// Agents that have been sitting in the pool longer than this are evicted
+    /// on the next housekeeping tick. Prevents stale processes from lingering
+    /// between long inter-task gaps. Defaults to 300 s (5 minutes).
+    #[serde(default = "CoreRunnerConfig::default_warm_pool_idle_timeout_secs")]
+    pub warm_pool_idle_timeout_secs: u64,
 }
 
 impl CoreRunnerConfig {
@@ -1959,6 +1974,16 @@ impl CoreRunnerConfig {
     const fn default_dispatch_max_retries() -> u32 {
         DEFAULT_RATE_LIMIT_RETRY_ATTEMPTS
     }
+
+    /// Default warm pool capacity: 2 slots per role.
+    pub const fn default_warm_pool_size() -> usize {
+        2
+    }
+
+    /// Default warm pool idle timeout: 300 s (5 minutes).
+    pub const fn default_warm_pool_idle_timeout_secs() -> u64 {
+        300
+    }
 }
 
 impl Default for CoreRunnerConfig {
@@ -1969,6 +1994,8 @@ impl Default for CoreRunnerConfig {
             plan_timeout_secs: Self::default_plan_timeout_secs(),
             dangerously_skip_permissions: Self::default_dangerously_skip_permissions(),
             dispatch_max_retries: Self::default_dispatch_max_retries(),
+            warm_pool_size: Self::default_warm_pool_size(),
+            warm_pool_idle_timeout_secs: Self::default_warm_pool_idle_timeout_secs(),
         }
     }
 }

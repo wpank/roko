@@ -15,6 +15,7 @@
 //! | Social | 5 | `on_message_send`, `on_message_receive` | Inter-agent |
 //! | Meta | 6 | `on_reflect`, `on_cost_update` | Self-monitoring |
 //! | Recovery | 7 | `on_error` | Fault handling |
+//! | Cross-cutting | — | `on_tick_start`, `on_tick_end`, `on_slot_assigned`, `on_slot_completed` | All layers |
 //!
 //! Extensions are loaded from `roko.toml` under `[agent.extensions]` and
 //! `[agent.roles.<role>.extensions]`.
@@ -690,7 +691,9 @@ fn is_valid_semver(v: &str) -> bool {
     if parts.len() != 3 {
         return false;
     }
-    parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    parts
+        .iter()
+        .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
 }
 
 // ── Extension trait (async + typed parameters) ────────────────────────
@@ -1161,7 +1164,11 @@ pub struct HookError {
 impl std::fmt::Display for HookError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.timed_out {
-            write!(f, "extension '{}' timed out: {}", self.extension, self.message)
+            write!(
+                f,
+                "extension '{}' timed out: {}",
+                self.extension, self.message
+            )
         } else {
             write!(f, "extension '{}' error: {}", self.extension, self.message)
         }
@@ -1214,7 +1221,11 @@ impl HookRunner {
                 Ok(Err(e)) => {
                     tracing::warn!(extension = %name, error = %e,
                         "on_tick_start returned error (isolated, continuing)");
-                    errors.push(HookError { extension: name, message: e.to_string(), timed_out: false });
+                    errors.push(HookError {
+                        extension: name,
+                        message: e.to_string(),
+                        timed_out: false,
+                    });
                 }
                 Err(_) => {
                     tracing::warn!(extension = %name, timeout_ms = self.timeout.as_millis(),
@@ -1240,7 +1251,11 @@ impl HookRunner {
                 Ok(Err(e)) => {
                     tracing::warn!(extension = %name, error = %e,
                         "on_tick_end returned error (isolated, continuing)");
-                    errors.push(HookError { extension: name, message: e.to_string(), timed_out: false });
+                    errors.push(HookError {
+                        extension: name,
+                        message: e.to_string(),
+                        timed_out: false,
+                    });
                 }
                 Err(_) => {
                     tracing::warn!(extension = %name, timeout_ms = self.timeout.as_millis(),
@@ -1270,7 +1285,11 @@ impl HookRunner {
                 Ok(Err(e)) => {
                     tracing::warn!(extension = %name, error = %e,
                         "on_slot_assigned returned error (isolated, continuing)");
-                    errors.push(HookError { extension: name, message: e.to_string(), timed_out: false });
+                    errors.push(HookError {
+                        extension: name,
+                        message: e.to_string(),
+                        timed_out: false,
+                    });
                 }
                 Err(_) => {
                     tracing::warn!(extension = %name, timeout_ms = self.timeout.as_millis(),
@@ -1300,7 +1319,11 @@ impl HookRunner {
                 Ok(Err(e)) => {
                     tracing::warn!(extension = %name, error = %e,
                         "on_slot_completed returned error (isolated, continuing)");
-                    errors.push(HookError { extension: name, message: e.to_string(), timed_out: false });
+                    errors.push(HookError {
+                        extension: name,
+                        message: e.to_string(),
+                        timed_out: false,
+                    });
                 }
                 Err(_) => {
                     tracing::warn!(extension = %name, timeout_ms = self.timeout.as_millis(),
@@ -1592,10 +1615,12 @@ mod tests {
     #[test]
     fn camel_tag_merge_concatenates_provenance() {
         let mut a = CamelTag::trusted(["c".to_string()]);
-        a.provenance.push(ProvenanceEntry::now("handler-a", TagOperation::Passthrough));
+        a.provenance
+            .push(ProvenanceEntry::now("handler-a", TagOperation::Passthrough));
 
         let mut b = CamelTag::trusted(["c".to_string()]);
-        b.provenance.push(ProvenanceEntry::now("handler-b", TagOperation::Transform));
+        b.provenance
+            .push(ProvenanceEntry::now("handler-b", TagOperation::Transform));
 
         let merged = CamelTag::merge(&[&a, &b]);
         assert_eq!(merged.provenance.len(), 2);
@@ -1620,5 +1645,385 @@ mod tests {
         assert_eq!(decoded, CamelTaintLevel::External);
     }
 
+    // ── Cross-cutting hook tests via ExtensionChain (E30-T04) ─────────
 
+    #[tokio::test]
+    async fn chain_run_on_tick_start_empty() {
+        let chain = ExtensionChain::new();
+        chain.run_on_tick_start(0).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn chain_run_on_tick_end_empty() {
+        let chain = ExtensionChain::new();
+        chain.run_on_tick_end(0).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn chain_run_on_slot_assigned_empty() {
+        let chain = ExtensionChain::new();
+        chain
+            .run_on_slot_assigned("slot-1", &serde_json::json!({}))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn chain_run_on_slot_completed_empty() {
+        let chain = ExtensionChain::new();
+        chain
+            .run_on_slot_completed("slot-1", &serde_json::json!({"status": "ok"}))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn chain_cross_cutting_hooks_visit_all_layers() {
+        // Extensions from different layers should all receive cross-cutting hooks.
+        let mut chain = ExtensionChain::new();
+        chain.add(Box::new(TestExtension {
+            name: "foundation-ext".into(),
+            layer: ExtensionLayer::Foundation,
+        }));
+        chain.add(Box::new(TestExtension {
+            name: "action-ext".into(),
+            layer: ExtensionLayer::Action,
+        }));
+        chain.add(Box::new(TestExtension {
+            name: "recovery-ext".into(),
+            layer: ExtensionLayer::Recovery,
+        }));
+        // All no-op, should not error.
+        chain.run_on_tick_start(42).await.unwrap();
+        chain.run_on_tick_end(42).await.unwrap();
+        chain
+            .run_on_slot_assigned("t1", &serde_json::json!({}))
+            .await
+            .unwrap();
+        chain
+            .run_on_slot_completed("t1", &serde_json::json!({}))
+            .await
+            .unwrap();
+    }
+
+    // ── HookRunner tests (E30-T04) ────────────────────────────────────
+
+    /// Extension whose cross-cutting hooks always return an error.
+    struct FailingExtension {
+        name: String,
+        layer: ExtensionLayer,
+    }
+
+    #[async_trait::async_trait]
+    impl Extension for FailingExtension {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn layer(&self) -> ExtensionLayer {
+            self.layer
+        }
+        async fn on_tick_start(
+            &self,
+            _tick: u64,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            Err("tick start failed".into())
+        }
+        async fn on_tick_end(
+            &self,
+            _tick: u64,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            Err("tick end failed".into())
+        }
+        async fn on_slot_assigned(
+            &self,
+            _slot: &str,
+            _task: &serde_json::Value,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            Err("slot assigned failed".into())
+        }
+        async fn on_slot_completed(
+            &self,
+            _slot: &str,
+            _result: &serde_json::Value,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            Err("slot completed failed".into())
+        }
+    }
+
+    /// Extension whose on_tick_start sleeps longer than the configured timeout.
+    struct SlowExtension {
+        name: String,
+        layer: ExtensionLayer,
+        delay_ms: u64,
+    }
+
+    #[async_trait::async_trait]
+    impl Extension for SlowExtension {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn layer(&self) -> ExtensionLayer {
+            self.layer
+        }
+        async fn on_tick_start(
+            &self,
+            _tick: u64,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn hook_runner_empty_chain_no_errors() {
+        let chain = ExtensionChain::new();
+        let runner = HookRunner::with_default_timeout(chain);
+        let errors = runner.dispatch_tick_start(0).await;
+        assert!(errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hook_runner_tick_start_success_all_extensions() {
+        let mut chain = ExtensionChain::new();
+        chain.add(Box::new(TestExtension {
+            name: "a".into(),
+            layer: ExtensionLayer::Foundation,
+        }));
+        chain.add(Box::new(TestExtension {
+            name: "b".into(),
+            layer: ExtensionLayer::Cognition,
+        }));
+        let runner = HookRunner::with_default_timeout(chain);
+        // TestExtension::on_tick_start returns Ok, so no errors expected.
+        let errors = runner.dispatch_tick_start(42).await;
+        assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    }
+
+    #[tokio::test]
+    async fn hook_runner_tick_end_success() {
+        let mut chain = ExtensionChain::new();
+        chain.add(Box::new(TestExtension {
+            name: "a".into(),
+            layer: ExtensionLayer::Foundation,
+        }));
+        let runner = HookRunner::with_default_timeout(chain);
+        let errors = runner.dispatch_tick_end(1).await;
+        assert!(errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hook_runner_slot_assigned_success() {
+        let mut chain = ExtensionChain::new();
+        chain.add(Box::new(TestExtension {
+            name: "obs-ext".into(),
+            layer: ExtensionLayer::Meta,
+        }));
+        let runner = HookRunner::with_default_timeout(chain);
+        let task = serde_json::json!({"id": "task-1", "title": "Do work"});
+        let errors = runner.dispatch_slot_assigned("slot-1", &task).await;
+        assert!(errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hook_runner_slot_completed_success() {
+        let mut chain = ExtensionChain::new();
+        chain.add(Box::new(TestExtension {
+            name: "obs-ext".into(),
+            layer: ExtensionLayer::Meta,
+        }));
+        let runner = HookRunner::with_default_timeout(chain);
+        let result = serde_json::json!({"status": "ok"});
+        let errors = runner.dispatch_slot_completed("slot-1", &result).await;
+        assert!(errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hook_runner_isolates_single_failing_extension() {
+        let mut chain = ExtensionChain::new();
+        chain.add(Box::new(FailingExtension {
+            name: "fail-ext".into(),
+            layer: ExtensionLayer::Foundation,
+        }));
+        chain.add(Box::new(TestExtension {
+            name: "ok-ext".into(),
+            layer: ExtensionLayer::Cognition,
+        }));
+        let runner = HookRunner::with_default_timeout(chain);
+        let errors = runner.dispatch_tick_start(0).await;
+        assert_eq!(errors.len(), 1, "expected exactly one error");
+        assert_eq!(errors[0].extension, "fail-ext");
+        assert!(
+            !errors[0].timed_out,
+            "error should not be flagged as timeout"
+        );
+        assert!(
+            errors[0].message.contains("tick start failed"),
+            "unexpected message: {}",
+            errors[0].message
+        );
+    }
+
+    #[tokio::test]
+    async fn hook_runner_error_isolation_slot_assigned() {
+        let mut chain = ExtensionChain::new();
+        chain.add(Box::new(FailingExtension {
+            name: "bad-ext".into(),
+            layer: ExtensionLayer::Recovery,
+        }));
+        chain.add(Box::new(TestExtension {
+            name: "good-ext".into(),
+            layer: ExtensionLayer::Action,
+        }));
+        let runner = HookRunner::with_default_timeout(chain);
+        let task = serde_json::json!({});
+        let errors = runner.dispatch_slot_assigned("slot-x", &task).await;
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].extension, "bad-ext");
+        assert!(!errors[0].timed_out);
+    }
+
+    #[tokio::test]
+    async fn hook_runner_error_isolation_slot_completed() {
+        let mut chain = ExtensionChain::new();
+        chain.add(Box::new(FailingExtension {
+            name: "bad-ext".into(),
+            layer: ExtensionLayer::Meta,
+        }));
+        chain.add(Box::new(TestExtension {
+            name: "ok-ext".into(),
+            layer: ExtensionLayer::Social,
+        }));
+        let runner = HookRunner::with_default_timeout(chain);
+        let result = serde_json::json!({"status": "failed"});
+        let errors = runner.dispatch_slot_completed("slot-y", &result).await;
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].extension, "bad-ext");
+    }
+
+    #[tokio::test]
+    async fn hook_runner_tick_end_error_isolation() {
+        let mut chain = ExtensionChain::new();
+        chain.add(Box::new(FailingExtension {
+            name: "bad-ext".into(),
+            layer: ExtensionLayer::Foundation,
+        }));
+        chain.add(Box::new(TestExtension {
+            name: "ok-ext".into(),
+            layer: ExtensionLayer::Recovery,
+        }));
+        let runner = HookRunner::with_default_timeout(chain);
+        let errors = runner.dispatch_tick_end(7).await;
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].extension, "bad-ext");
+        assert!(errors[0].message.contains("tick end failed"));
+    }
+
+    #[tokio::test]
+    async fn hook_runner_timeout_detected() {
+        // SlowExtension sleeps 200ms but our timeout is 10ms.
+        let mut chain = ExtensionChain::new();
+        chain.add(Box::new(SlowExtension {
+            name: "slow-ext".into(),
+            layer: ExtensionLayer::Meta,
+            delay_ms: 200,
+        }));
+        let runner = HookRunner::new(chain, std::time::Duration::from_millis(10));
+        let errors = runner.dispatch_tick_start(0).await;
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].extension, "slow-ext");
+        assert!(errors[0].timed_out, "expected timed_out=true, got false");
+        assert!(
+            errors[0].message.contains("timed out after"),
+            "unexpected message: {}",
+            errors[0].message
+        );
+    }
+
+    #[tokio::test]
+    async fn hook_runner_timeout_does_not_block_next_extension() {
+        let mut chain = ExtensionChain::new();
+        chain.add(Box::new(SlowExtension {
+            name: "slow-ext".into(),
+            layer: ExtensionLayer::Foundation,
+            delay_ms: 200,
+        }));
+        chain.add(Box::new(TestExtension {
+            name: "fast-ext".into(),
+            layer: ExtensionLayer::Cognition,
+        }));
+        let runner = HookRunner::new(chain, std::time::Duration::from_millis(10));
+        let errors = runner.dispatch_tick_start(0).await;
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected 1 error (slow-ext timeout), got {:?}",
+            errors
+        );
+        assert_eq!(errors[0].extension, "slow-ext");
+    }
+
+    #[tokio::test]
+    async fn hook_runner_hook_error_display_non_timeout() {
+        let err = HookError {
+            extension: "my-ext".into(),
+            message: "boom".into(),
+            timed_out: false,
+        };
+        let s = err.to_string();
+        assert!(s.contains("my-ext"), "expected extension name in: {s}");
+        assert!(s.contains("boom"), "expected message in: {s}");
+        assert!(s.contains("error"), "expected 'error' in: {s}");
+    }
+
+    #[tokio::test]
+    async fn hook_runner_hook_error_display_timeout() {
+        let err = HookError {
+            extension: "slow-ext".into(),
+            message: "timed out after 5000ms".into(),
+            timed_out: true,
+        };
+        let s = err.to_string();
+        assert!(s.contains("slow-ext"), "expected extension name in: {s}");
+        assert!(s.contains("timed out"), "expected 'timed out' in: {s}");
+    }
+
+    #[tokio::test]
+    async fn hook_runner_multiple_failing_extensions_all_collected() {
+        let mut chain = ExtensionChain::new();
+        chain.add(Box::new(FailingExtension {
+            name: "fail-1".into(),
+            layer: ExtensionLayer::Foundation,
+        }));
+        chain.add(Box::new(FailingExtension {
+            name: "fail-2".into(),
+            layer: ExtensionLayer::Cognition,
+        }));
+        chain.add(Box::new(TestExtension {
+            name: "ok-ext".into(),
+            layer: ExtensionLayer::Recovery,
+        }));
+        let runner = HookRunner::with_default_timeout(chain);
+        let errors = runner.dispatch_tick_end(5).await;
+        assert_eq!(
+            errors.len(),
+            2,
+            "both failing extensions should be reported"
+        );
+        let names: Vec<&str> = errors.iter().map(|e| e.extension.as_str()).collect();
+        assert!(names.contains(&"fail-1"), "missing fail-1 in {:?}", names);
+        assert!(names.contains(&"fail-2"), "missing fail-2 in {:?}", names);
+    }
+
+    #[tokio::test]
+    async fn hook_runner_chain_mut_allows_late_add() {
+        let chain = ExtensionChain::new();
+        let mut runner = HookRunner::with_default_timeout(chain);
+        runner.chain_mut().add(Box::new(TestExtension {
+            name: "late-ext".into(),
+            layer: ExtensionLayer::Social,
+        }));
+        let errors = runner.dispatch_tick_start(0).await;
+        assert!(errors.is_empty(), "late-added extension should work fine");
+        assert_eq!(runner.chain().len(), 1);
+    }
 }

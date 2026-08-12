@@ -78,11 +78,11 @@ pub mod chat_types;
 pub mod cognitive_workspace;
 pub mod conductor;
 pub mod config;
-/// Five-head lexicographic corrigibility ordering (Nayebi 2024).
-pub mod corrigibility;
 /// Connector trait for external system I/O (MCP, API, Database, Blockchain, Feed, Custom).
 pub mod connector;
 pub mod context;
+/// Five-head lexicographic corrigibility ordering (Nayebi 2024).
+pub mod corrigibility;
 pub mod dashboard_snapshot;
 pub mod datum;
 pub mod decay;
@@ -313,13 +313,6 @@ pub use namespace::{
     Channel, ChannelDirection, CognitiveNamespace, NamespaceAcl, NamespaceRegistry, RateLimitConfig,
 };
 pub use temperament::Temperament;
-pub use trigger::{
-    Author, BusTrigger, ChainEventTrigger, ConcurrencyPolicy, CronTrigger, Expr, FileWatchEvent,
-    FileWatchTrigger, GraphRef, InputFieldMapping, RateLimit, RateLimitAction, SecretRef, SignalRef,
-    SignalPatternTrigger, SpaceId, TraceId as TriggerTraceId, TriggerAuth, TriggerBinding,
-    TriggerEvent, TriggerFilter, TriggerHandle, TriggerInputMapping, TriggerId, TriggerKind,
-    TriggerProtocol, TriggerSource, TriggerState, WebhookTrigger,
-};
 pub use tool::{
     ArmEntry, Artifact, AuditSink, BanditKey, CancelSource, CancelToken, EpsilonGreedyBandit,
     FailureTrace, FormatBandit, KeywordOverlapScorer, MemoryPointer, MetricsKey, MetricsSink,
@@ -331,6 +324,13 @@ pub use tool::{
 };
 pub use traits::{
     Bus, ColdStore, Compose, Connect, Observe, React, Route, Store, Substrate, Trigger, Verify,
+};
+pub use trigger::{
+    Author, BusTrigger, ChainEventTrigger, ConcurrencyPolicy, CronTrigger, Expr, FileWatchEvent,
+    FileWatchTrigger, GraphRef, InputFieldMapping, RateLimit, RateLimitAction, SecretRef,
+    SignalPatternTrigger, SignalRef, SpaceId, TraceId as TriggerTraceId, TriggerAuth,
+    TriggerBinding, TriggerEvent, TriggerFilter, TriggerHandle, TriggerId, TriggerInputMapping,
+    TriggerKind, TriggerProtocol, TriggerSource, TriggerState, WebhookTrigger,
 };
 // Note: The `Score` protocol trait (formerly `Scorer`) is NOT re-exported at
 // the crate root to avoid colliding with the `Score` value struct. Access it

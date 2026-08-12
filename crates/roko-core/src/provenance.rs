@@ -65,6 +65,19 @@ impl TaintLevel {
     pub fn can_flow_to(self, target: TaintLevel) -> bool {
         self <= target
     }
+
+    /// Approximate `f32` trust score corresponding to this level.
+    ///
+    /// Mirrors the trust values used by [`Provenance`] constructors.
+    #[must_use]
+    pub fn trust_score(self) -> f32 {
+        match self {
+            Self::Public => 1.0,
+            Self::Internal => 0.75,
+            Self::Confidential => 0.1,
+            Self::Secret => 0.0,
+        }
+    }
 }
 
 /// Typed taint classification for provenance records.
@@ -442,6 +455,39 @@ impl Provenance {
         self
     }
 
+    /// Override the IFC taint level classification.
+    ///
+    /// Use this builder when you need to explicitly set the lattice level
+    /// independently from the constructor default. The level can only be set
+    /// (not joined) here -- use [`TaintLevel::join`] if you need to accumulate
+    /// levels from multiple sources.
+    #[must_use]
+    pub fn with_taint_level(mut self, level: TaintLevel) -> Self {
+        self.taint_level = level;
+        self
+    }
+
+    /// Derive an effective trust decision from the combination of the [`Taint`]
+    /// variant and the [`TaintLevel`] lattice classification.
+    ///
+    /// Returns the lattice level that best represents the combined trust:
+    /// - `Taint::Clean` defers fully to `taint_level`
+    /// - `Taint::UserInput` or `Taint::Propagated` implies at least `Internal`
+    /// - Any other taint variant implies at least `Confidential`
+    ///
+    /// The result is the join (max) of the `taint_level` field and the level
+    /// implied by the `Taint` variant, ensuring that an explicit high `taint_level`
+    /// is never downgraded by a clean taint variant.
+    #[must_use]
+    pub fn effective_taint(&self) -> TaintLevel {
+        let implied = match &self.taint {
+            Taint::Clean => TaintLevel::Public,
+            Taint::UserInput { .. } | Taint::Propagated { .. } => TaintLevel::Internal,
+            _ => TaintLevel::Confidential,
+        };
+        self.taint_level.join(implied)
+    }
+
     /// Returns `true` when this provenance carries active taint.
     #[must_use]
     pub fn is_tainted(&self) -> bool {
@@ -598,5 +644,172 @@ mod tests {
         assert!(p.is_tainted());
         assert!(matches!(p.taint, Taint::UnverifiedSource { .. }));
         assert!(p.taint_info.is_some());
+    }
+
+    // ── TaintLevel lattice property tests (E34-T01) ───────────────────
+
+    #[test]
+    fn taint_level_join_is_idempotent() {
+        for level in [
+            TaintLevel::Public,
+            TaintLevel::Internal,
+            TaintLevel::Confidential,
+            TaintLevel::Secret,
+        ] {
+            assert_eq!(
+                level.join(level),
+                level,
+                "join({level:?}, {level:?}) should be idempotent"
+            );
+        }
+    }
+
+    #[test]
+    fn taint_level_join_is_commutative() {
+        let levels = [
+            TaintLevel::Public,
+            TaintLevel::Internal,
+            TaintLevel::Confidential,
+            TaintLevel::Secret,
+        ];
+        for &a in &levels {
+            for &b in &levels {
+                assert_eq!(
+                    a.join(b),
+                    b.join(a),
+                    "join({a:?}, {b:?}) must equal join({b:?}, {a:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn taint_level_join_is_monotone() {
+        let levels = [
+            TaintLevel::Public,
+            TaintLevel::Internal,
+            TaintLevel::Confidential,
+            TaintLevel::Secret,
+        ];
+        for &a in &levels {
+            for &b in &levels {
+                let j = a.join(b);
+                assert!(j >= a, "join({a:?},{b:?})={j:?} must be >= {a:?}");
+                assert!(j >= b, "join({a:?},{b:?})={j:?} must be >= {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn taint_level_join_is_associative() {
+        let levels = [
+            TaintLevel::Public,
+            TaintLevel::Internal,
+            TaintLevel::Confidential,
+            TaintLevel::Secret,
+        ];
+        for &a in &levels {
+            for &b in &levels {
+                for &c in &levels {
+                    assert_eq!(
+                        a.join(b).join(c),
+                        a.join(b.join(c)),
+                        "join must be associative for ({a:?}, {b:?}, {c:?})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn taint_level_join_returns_max() {
+        assert_eq!(
+            TaintLevel::Public.join(TaintLevel::Secret),
+            TaintLevel::Secret
+        );
+        assert_eq!(
+            TaintLevel::Confidential.join(TaintLevel::Internal),
+            TaintLevel::Confidential
+        );
+        assert_eq!(
+            TaintLevel::Public.join(TaintLevel::Public),
+            TaintLevel::Public
+        );
+    }
+
+    #[test]
+    fn taint_level_can_flow_to_enforces_monotonicity() {
+        assert!(TaintLevel::Public.can_flow_to(TaintLevel::Public));
+        assert!(TaintLevel::Public.can_flow_to(TaintLevel::Internal));
+        assert!(TaintLevel::Public.can_flow_to(TaintLevel::Confidential));
+        assert!(TaintLevel::Public.can_flow_to(TaintLevel::Secret));
+
+        assert!(!TaintLevel::Internal.can_flow_to(TaintLevel::Public));
+        assert!(TaintLevel::Internal.can_flow_to(TaintLevel::Internal));
+        assert!(TaintLevel::Internal.can_flow_to(TaintLevel::Confidential));
+        assert!(TaintLevel::Internal.can_flow_to(TaintLevel::Secret));
+
+        assert!(!TaintLevel::Confidential.can_flow_to(TaintLevel::Public));
+        assert!(!TaintLevel::Confidential.can_flow_to(TaintLevel::Internal));
+        assert!(TaintLevel::Confidential.can_flow_to(TaintLevel::Confidential));
+        assert!(TaintLevel::Confidential.can_flow_to(TaintLevel::Secret));
+
+        assert!(!TaintLevel::Secret.can_flow_to(TaintLevel::Public));
+        assert!(!TaintLevel::Secret.can_flow_to(TaintLevel::Internal));
+        assert!(!TaintLevel::Secret.can_flow_to(TaintLevel::Confidential));
+        assert!(TaintLevel::Secret.can_flow_to(TaintLevel::Secret));
+    }
+
+    #[test]
+    fn taint_level_default_is_public() {
+        assert_eq!(TaintLevel::default(), TaintLevel::Public);
+    }
+
+    #[test]
+    fn with_taint_level_builder_overrides_default() {
+        let p = Provenance::trusted("gate").with_taint_level(TaintLevel::Secret);
+        assert_eq!(p.taint_level, TaintLevel::Secret);
+    }
+
+    #[test]
+    fn effective_taint_clean_provenance_defers_to_taint_level() {
+        // Clean Taint + Public level -> Public
+        let p = Provenance::trusted("gate");
+        assert_eq!(p.effective_taint(), TaintLevel::Public);
+
+        // Clean Taint + explicit Confidential level -> Confidential
+        let p = Provenance::trusted("gate").with_taint_level(TaintLevel::Confidential);
+        assert_eq!(p.effective_taint(), TaintLevel::Confidential);
+    }
+
+    #[test]
+    fn effective_taint_user_input_is_at_least_internal() {
+        let p = Provenance::user("alice");
+        assert!(p.effective_taint() >= TaintLevel::Internal);
+    }
+
+    #[test]
+    fn effective_taint_external_source_is_at_least_confidential() {
+        let p = Provenance::external("webhook");
+        assert!(p.effective_taint() >= TaintLevel::Confidential);
+    }
+
+    #[test]
+    fn effective_taint_joins_taint_variant_and_level() {
+        // Explicit Secret level + any Taint variant -> Secret (join is max)
+        let p = Provenance::trusted("gate").with_taint_level(TaintLevel::Secret);
+        assert_eq!(p.effective_taint(), TaintLevel::Secret);
+
+        // External taint variant + Public level -> Confidential (variant wins)
+        let p = Provenance::external("api").with_taint_level(TaintLevel::Public);
+        assert_eq!(p.effective_taint(), TaintLevel::Confidential);
+    }
+
+    #[test]
+    fn trust_score_matches_constructors() {
+        assert!((TaintLevel::Public.trust_score() - 1.0).abs() < f32::EPSILON);
+        assert!((TaintLevel::Internal.trust_score() - 0.75).abs() < f32::EPSILON);
+        assert!((TaintLevel::Confidential.trust_score() - 0.1).abs() < f32::EPSILON);
+        assert!((TaintLevel::Secret.trust_score() - 0.0).abs() < f32::EPSILON);
     }
 }

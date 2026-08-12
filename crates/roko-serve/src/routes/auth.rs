@@ -432,12 +432,17 @@ async fn query_auth_audit(
         }
     };
 
-    let from = params.from.as_deref().and_then(|s| s.parse::<DateTime<Utc>>().ok());
-    let to = params.to.as_deref().and_then(|s| s.parse::<DateTime<Utc>>().ok());
-    let action = params
-        .action
+    let from = params
+        .from
         .as_deref()
-        .and_then(|s| serde_json::from_value::<AuthAuditAction>(serde_json::Value::String(s.to_string())).ok());
+        .and_then(|s| s.parse::<DateTime<Utc>>().ok());
+    let to = params
+        .to
+        .as_deref()
+        .and_then(|s| s.parse::<DateTime<Utc>>().ok());
+    let action = params.action.as_deref().and_then(|s| {
+        serde_json::from_value::<AuthAuditAction>(serde_json::Value::String(s.to_string())).ok()
+    });
 
     let events = log
         .query(from, to, params.actor.as_deref(), action.as_ref())
@@ -756,7 +761,7 @@ async fn issue_agent_token(
             token_id.clone(),
             AuthOutcome::Success,
         )
-        .with_meta("expires_at", &expires_at.to_rfc3339()),
+        .with_meta("expires_at", expires_at.to_rfc3339()),
     );
 
     Ok((
@@ -893,9 +898,13 @@ mod tests {
     #[test]
     fn relay_token_issuance_returns_roko_relay_prefix() {
         let dir = tmp_workdir();
-        let (token, plaintext) =
-            issue_relay_token(dir.path(), "agent-1", "inference", DEFAULT_RELAY_TOKEN_TTL_SECS)
-                .expect("issue should succeed");
+        let (token, plaintext) = issue_relay_token(
+            dir.path(),
+            "agent-1",
+            "inference",
+            DEFAULT_RELAY_TOKEN_TTL_SECS,
+        )
+        .expect("issue should succeed");
 
         assert!(
             plaintext.starts_with("roko_relay_"),
@@ -904,16 +913,23 @@ mod tests {
         assert!(!token.used, "freshly issued token must not be used");
         assert_eq!(token.issuer_agent_id, "agent-1");
         assert_eq!(token.target_scope, "inference");
-        assert_ne!(token.token_hash, plaintext, "hash must differ from plaintext");
+        assert_ne!(
+            token.token_hash, plaintext,
+            "hash must differ from plaintext"
+        );
         assert_eq!(token.token_hash.len(), 64, "SHA-256 hex must be 64 chars");
     }
 
     #[test]
     fn relay_token_issuance_persists_to_disk() {
         let dir = tmp_workdir();
-        let _ =
-            issue_relay_token(dir.path(), "agent-2", "store:read", DEFAULT_RELAY_TOKEN_TTL_SECS)
-                .expect("issue should succeed");
+        let _ = issue_relay_token(
+            dir.path(),
+            "agent-2",
+            "store:read",
+            DEFAULT_RELAY_TOKEN_TTL_SECS,
+        )
+        .expect("issue should succeed");
 
         let path = relay_tokens_path(dir.path());
         assert!(path.exists(), "relay-tokens.json must be created on disk");
@@ -926,9 +942,13 @@ mod tests {
     #[test]
     fn relay_token_validation_succeeds_and_marks_used() {
         let dir = tmp_workdir();
-        let (_token, plaintext) =
-            issue_relay_token(dir.path(), "agent-3", "store:write", DEFAULT_RELAY_TOKEN_TTL_SECS)
-                .expect("issue should succeed");
+        let (_token, plaintext) = issue_relay_token(
+            dir.path(),
+            "agent-3",
+            "store:write",
+            DEFAULT_RELAY_TOKEN_TTL_SECS,
+        )
+        .expect("issue should succeed");
 
         let claims = validate_relay_token(dir.path(), &plaintext, "store:write")
             .expect("validation should succeed");
@@ -943,9 +963,13 @@ mod tests {
     #[test]
     fn relay_token_single_use_rejects_second_call() {
         let dir = tmp_workdir();
-        let (_token, plaintext) =
-            issue_relay_token(dir.path(), "agent-4", "inference", DEFAULT_RELAY_TOKEN_TTL_SECS)
-                .expect("issue should succeed");
+        let (_token, plaintext) = issue_relay_token(
+            dir.path(),
+            "agent-4",
+            "inference",
+            DEFAULT_RELAY_TOKEN_TTL_SECS,
+        )
+        .expect("issue should succeed");
 
         assert!(
             validate_relay_token(dir.path(), &plaintext, "inference").is_ok(),
@@ -964,9 +988,13 @@ mod tests {
     #[test]
     fn relay_token_scope_restriction_rejects_wrong_scope() {
         let dir = tmp_workdir();
-        let (_token, plaintext) =
-            issue_relay_token(dir.path(), "agent-5", "inference", DEFAULT_RELAY_TOKEN_TTL_SECS)
-                .expect("issue should succeed");
+        let (_token, plaintext) = issue_relay_token(
+            dir.path(),
+            "agent-5",
+            "inference",
+            DEFAULT_RELAY_TOKEN_TTL_SECS,
+        )
+        .expect("issue should succeed");
 
         let err = validate_relay_token(dir.path(), &plaintext, "store:write")
             .expect_err("wrong scope must be rejected");

@@ -15,13 +15,15 @@ use std::time::Instant;
 use anyhow::{Context as _, Result as AnyhowResult};
 use roko_agent::AgentRuntimeEvent;
 use roko_agent::StreamChunk;
+use roko_agent::model_call_service::ProviderOutcomeRecorder;
 use roko_agent::provider::{AgentOptions, ProviderSemaphores};
 use roko_agent::rate_limit::ProviderRateLimiter;
 use roko_agent::{Agent, AgentResult, create_agent_for_model};
 use roko_core::agent::{ProviderKind, resolve_model};
 use roko_core::config::schema::{ModelProfile, ProviderConfig, RokoConfig};
-use roko_core::{Body, Context, Engram, Kind};
+use roko_core::{Body, Context, Kind, Signal};
 use roko_learn::model_call_feedback::{ModelCallFeedback, ModelCallFeedbackRecorder};
+use roko_learn::provider_health::ProviderHealthRegistry;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -738,6 +740,15 @@ pub struct AgentDispatcherV2 {
     /// When present, threaded into `AgentOptions.rate_limiter` so HTTP-backed
     /// provider adapters call `acquire(provider_id)` before each LLM request.
     rate_limiter: Option<Arc<ProviderRateLimiter>>,
+    /// Runtime-scoped shared provider health registry (E48-T05).
+    ///
+    /// When present, every live provider attempt records its outcome
+    /// (`record_success` / `record_failure`) immediately after the
+    /// provider call completes and before any gate verdict is applied.
+    /// The same `Arc` is shared with `CascadeRouter` routing calls so
+    /// circuit-state changes are immediately visible to the next routing
+    /// decision.
+    health_registry: Option<Arc<ProviderHealthRegistry>>,
 }
 
 impl AgentDispatcherV2 {
@@ -751,6 +762,7 @@ impl AgentDispatcherV2 {
             resolver,
             semaphores,
             rate_limiter: None,
+            health_registry: None,
         }
     }
 
@@ -765,6 +777,7 @@ impl AgentDispatcherV2 {
             resolver,
             semaphores,
             rate_limiter: None,
+            health_registry: None,
         }
     }
 
@@ -776,6 +789,17 @@ impl AgentDispatcherV2 {
     /// budget per provider rather than each maintaining independent counters.
     pub fn with_rate_limiter(mut self, limiter: Arc<ProviderRateLimiter>) -> Self {
         self.rate_limiter = Some(limiter);
+        self
+    }
+
+    /// Attach a runtime-scoped provider health registry (E48-T05).
+    ///
+    /// The same `Arc` must be shared with the `CascadeRouter` routing path
+    /// so that outcomes recorded here are immediately visible to the next
+    /// routing decision.  `SharedAgentFactory` constructs the registry once
+    /// and threads it through both paths.
+    pub fn with_health_registry(mut self, registry: Arc<ProviderHealthRegistry>) -> Self {
+        self.health_registry = Some(registry);
         self
     }
 
@@ -826,13 +850,31 @@ impl AgentDispatcherV2 {
         request: AgentDispatchRequest,
     ) -> Result<AgentResultDispatch, DispatchV2Error> {
         let created = self.create_agent(&request)?;
-        let input = Engram::builder(Kind::Prompt)
+        let input = Signal::builder(Kind::Prompt)
             .body(Body::text(request.prompt.clone()))
             .build();
         let started = Instant::now();
         let mut result = created.agent.run(&input, &Context::now()).await;
         let latency_ms = started.elapsed().as_millis() as u64;
         fill_cost_from_profile(&mut result, &created.target);
+
+        // Record provider outcome for the circuit breaker (E48-T05).
+        if let Some(registry) = &self.health_registry {
+            let provider_id = &created.target.provider_id;
+            if result.success {
+                registry.record_provider_success(provider_id);
+            } else {
+                let output_text = result
+                    .output
+                    .body
+                    .as_text()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                registry
+                    .record_provider_failure(provider_id, classify_provider_error(&output_text));
+            }
+        }
+
         record_agent_dispatch_feedback(
             &self.config,
             &request,
@@ -884,7 +926,7 @@ impl AgentDispatcherV2 {
             }
         });
 
-        let input = Engram::builder(Kind::Prompt)
+        let input = Signal::builder(Kind::Prompt)
             .body(Body::text(request.prompt.clone()))
             .build();
         let started = Instant::now();
@@ -977,13 +1019,34 @@ impl AgentDispatcherV2 {
                 }
             })?;
 
-        let input = Engram::builder(Kind::Prompt)
+        let input = Signal::builder(Kind::Prompt)
             .body(Body::text(request.prompt.clone()))
             .build();
         let started = Instant::now();
         let mut result = agent.run(&input, &Context::now()).await;
         let latency_ms = started.elapsed().as_millis() as u64;
         fill_cost_from_profile(&mut result, &target);
+
+        // Record provider outcome for the circuit breaker (E48-T05).
+        // This must happen before any gate verdict is applied so a provider
+        // success followed by a failing code/test gate remains a provider
+        // success in the health registry.
+        if let Some(registry) = &self.health_registry {
+            let provider_id = &target.provider_id;
+            if result.success {
+                registry.record_provider_success(provider_id);
+            } else {
+                let output_text = result
+                    .output
+                    .body
+                    .as_text()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                registry
+                    .record_provider_failure(provider_id, classify_provider_error(&output_text));
+            }
+        }
+
         record_agent_dispatch_feedback(&self.config, &request, &target, &result, latency_ms).await;
         let events = dispatch_events_from_result(&request, &target, &result);
         Ok(AgentResultDispatch {
@@ -1017,6 +1080,28 @@ impl AgentDispatcherV2 {
             rate_limiter: self.rate_limiter.clone(),
             ..Default::default()
         }
+    }
+}
+
+/// Classify a provider error from output text into an error kind string
+/// suitable for [`ProviderHealthRegistry::record_provider_failure`].
+fn classify_provider_error(output_text_lower: &str) -> &'static str {
+    if output_text_lower.contains("rate limit")
+        || output_text_lower.contains("rate_limit")
+        || output_text_lower.contains("429")
+        || output_text_lower.contains("too many requests")
+    {
+        "rate_limit"
+    } else if output_text_lower.contains("timeout") || output_text_lower.contains("timed out") {
+        "timeout"
+    } else if output_text_lower.contains("503")
+        || output_text_lower.contains("502")
+        || output_text_lower.contains("server error")
+        || output_text_lower.contains("temporarily unavailable")
+    {
+        "server_error"
+    } else {
+        "unknown"
     }
 }
 

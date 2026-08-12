@@ -345,9 +345,7 @@ fn workflow_sse(
                     return Some((Ok(event), st));
                 }
                 received = async {
-                    let Some(rx) = st.rx.as_mut() else {
-                        return None;
-                    };
+                    let rx = st.rx.as_mut()?;
                     Some(rx.recv().await)
                 } => {
                     match received {

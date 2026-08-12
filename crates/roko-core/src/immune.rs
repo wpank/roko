@@ -1,19 +1,19 @@
 //! Cognitive immune system -- detecting and quarantining compromised knowledge.
 //!
 //! This module provides the core quarantine mechanism for the Roko immune system.
-//! Engrams that fail validation (anomalous outputs, hallucinated data, tainted
+//! Signals that fail validation (anomalous outputs, hallucinated data, tainted
 //! sources) are quarantined instead of being immediately rejected or accepted.
 //!
 //! # Architecture
 //!
 //! ```text
-//! Engram ──check()──► AnomalyDetector ──score()──► QuarantineDecision
+//! Signal ──check()──► AnomalyDetector ──score()──► QuarantineDecision
 //!                                                       │
 //!                          ┌──── Accept (score < threshold)
 //!                          ├──── Quarantine (score >= threshold)
 //!                          └──── Reject (auto_reject && score >= threshold)
 //!
-//! QuarantineVault ───── stores quarantined engrams for review
+//! QuarantineVault ───── stores quarantined signals for review
 //! IncidentLink ──────── connects related taint incidents
 //! ImmuneResponse ────── recovery action after quarantine review
 //! ```
@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ContentHash, Taint};
 
-/// An anomaly score computed for an engram during immune screening.
+/// An anomaly score computed for a signal during immune screening.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AnomalyScore {
     /// Overall anomaly score in [0, 1]. Higher = more anomalous.

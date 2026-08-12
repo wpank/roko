@@ -1441,8 +1441,7 @@ impl CascadeRouter {
 
         // Record the rate-limited model as a failure so the router learns to
         // prefer alternatives when this provider is under quota pressure.
-        let rate_limited_recorded =
-            self.record_confidence_outcome(&event.rate_limited_slug, false);
+        let rate_limited_recorded = self.record_confidence_outcome(&event.rate_limited_slug, false);
 
         // Record the fallback model with the actual outcome.
         let fallback_recorded =
@@ -3532,7 +3531,11 @@ mod fallback_tests {
             ],
         );
         let chain = FallbackChain::new(&cascade, "claude-sonnet-4-6", None);
-        assert_eq!(chain.len(), 1, "rate-limited slug must be excluded from candidates");
+        assert_eq!(
+            chain.len(),
+            1,
+            "rate-limited slug must be excluded from candidates"
+        );
         let slugs: Vec<_> = {
             let mut c = chain;
             let mut out = vec![];
@@ -3553,9 +3556,18 @@ mod fallback_tests {
             vec![google("gemini-2.5-flash")],
         );
         let mut chain = FallbackChain::new(&cascade, "claude-sonnet-4-6", None);
-        assert!(chain.advance().is_some(), "first advance must return a model");
-        assert!(chain.is_exhausted(), "chain must be exhausted after last model");
-        assert!(chain.advance().is_none(), "advance past exhaustion must return None");
+        assert!(
+            chain.advance().is_some(),
+            "first advance must return a model"
+        );
+        assert!(
+            chain.is_exhausted(),
+            "chain must be exhausted after last model"
+        );
+        assert!(
+            chain.advance().is_none(),
+            "advance past exhaustion must return None"
+        );
     }
 
     #[test]
@@ -3639,7 +3651,10 @@ mod fallback_tests {
         let snap = router.confidence_snapshot();
         let (fb_trials, fb_successes) = snap["gemini-2.5-flash"];
         assert_eq!(fb_trials, 1);
-        assert_eq!(fb_successes, 0, "fallback failure must not increment successes");
+        assert_eq!(
+            fb_successes, 0,
+            "fallback failure must not increment successes"
+        );
     }
 
     #[test]
@@ -3680,11 +3695,17 @@ mod fallback_tests {
 
         let snap = router.confidence_snapshot();
         let (rl_trials, rl_successes) = snap["claude-sonnet-4-6"];
-        assert_eq!(rl_trials, 2, "two rate-limit failures = 2 trials for primary");
+        assert_eq!(
+            rl_trials, 2,
+            "two rate-limit failures = 2 trials for primary"
+        );
         assert_eq!(rl_successes, 0);
 
         let (fb_trials, fb_successes) = snap["gemini-2.5-flash"];
-        assert_eq!(fb_trials, 2, "two fallback attempts = 2 trials for fallback model");
+        assert_eq!(
+            fb_trials, 2,
+            "two fallback attempts = 2 trials for fallback model"
+        );
         assert_eq!(fb_successes, 1, "only first fallback succeeded");
     }
 }

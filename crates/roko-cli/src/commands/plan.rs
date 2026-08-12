@@ -228,6 +228,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             dry_run,
             fresh,
             force_resume,
+            budget_override,
         } => {
             let t_total = std::time::Instant::now();
             let t_setup = std::time::Instant::now();
@@ -543,6 +544,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         .unwrap_or_else(|| std::path::PathBuf::from("claude")),
                     max_plan_usd: f64::from(roko_config.budget.max_plan_usd),
                     max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
+                    budget_override,
                     clippy_enabled: roko_config.gates.clippy_enabled,
                     skip_tests: roko_config.gates.skip_tests,
                     safety_layer: Some(roko_agent::SafetyLayer::from_config(&roko_config)),

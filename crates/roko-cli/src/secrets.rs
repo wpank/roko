@@ -4,11 +4,16 @@
 //! into the `roko-core` secret store backends.
 
 use anyhow::{Context as _, Result};
+use chrono::Utc;
 use clap::Subcommand;
 use roko_core::secrets::namespace::Namespace;
 use roko_core::secrets::{FileStore, SecretStore};
-use std::io::Read;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::io::{Read, Write};
 use std::path::Path;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixStream;
 
 /// `roko secrets` subcommands.
 #[derive(Debug, Subcommand)]
@@ -42,7 +47,7 @@ pub enum SecretsCmd {
 }
 
 /// Execute a secrets subcommand against the store at `workdir/.roko/secrets.toml`.
-pub fn dispatch_secrets(cmd: &SecretsCmd, workdir: &Path) -> Result<()> {
+pub async fn dispatch_secrets(cmd: &SecretsCmd, workdir: &Path) -> Result<()> {
     let secrets_path = workdir.join(".roko").join("secrets.toml");
     let store = FileStore::open(&secrets_path)
         .with_context(|| format!("open secrets store at {}", secrets_path.display()))?;
@@ -50,7 +55,7 @@ pub fn dispatch_secrets(cmd: &SecretsCmd, workdir: &Path) -> Result<()> {
         SecretsCmd::Set { namespace, key } => cmd_set(&store, namespace, key),
         SecretsCmd::Get { namespace, key } => cmd_get(&store, namespace, key),
         SecretsCmd::List { namespace } => cmd_list(&store, namespace.as_deref(), &secrets_path),
-        SecretsCmd::Rotate { namespace, key } => cmd_rotate(&store, namespace, key),
+        SecretsCmd::Rotate { namespace, key } => cmd_rotate(&store, namespace, key).await,
     }
 }
 
@@ -122,13 +127,20 @@ fn cmd_list(store: &FileStore, namespace: Option<&str>, secrets_path: &Path) -> 
     Ok(())
 }
 
-fn cmd_rotate(store: &FileStore, namespace: &str, key: &Option<String>) -> Result<()> {
+async fn cmd_rotate(store: &FileStore, namespace: &str, key: &Option<String>) -> Result<()> {
     let (namespace, key) = secret_name_parts(namespace, key.as_deref())?;
     let new_value = read_value_from_stdin()?;
     let ns = Namespace::new(&namespace, &key);
     store
         .rotate(&ns, new_value)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Log rotation event to audit log
+    log_rotation_event(&namespace, &key)?;
+
+    // Send hot-swap signal to running daemon
+    send_reload_signal_to_daemon().await.ok();
+
     println!("secret {namespace}.{key} rotated");
     Ok(())
 }
@@ -158,6 +170,107 @@ fn read_value_from_stdin() -> Result<String> {
         .read_to_string(&mut buf)
         .context("read secret value from stdin")?;
     Ok(buf.trim_end().to_string())
+}
+
+/// Audit log entry for secret rotation events.
+#[derive(Debug, Serialize, Deserialize)]
+struct SecretRotationAuditEntry {
+    /// The key name (namespace.key format)
+    key_name: String,
+    /// ISO 8601 timestamp of rotation
+    rotated_at: String,
+    /// User who rotated the secret (from env or "unknown")
+    rotated_by: String,
+}
+
+/// Append a rotation event to ~/.roko/secrets/audit.jsonl
+fn log_rotation_event(namespace: &str, key: &str) -> Result<()> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let audit_dir = Path::new(&home).join(".roko").join("secrets");
+    fs::create_dir_all(&audit_dir)
+        .with_context(|| format!("create audit directory {}", audit_dir.display()))?;
+
+    let audit_path = audit_dir.join("audit.jsonl");
+    let rotated_by = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
+    let rotated_at = Utc::now().to_rfc3339();
+    let key_name = format!("{namespace}.{key}");
+
+    let entry = SecretRotationAuditEntry {
+        key_name,
+        rotated_at,
+        rotated_by,
+    };
+
+    let line = serde_json::to_string(&entry).context("serialize rotation audit entry")?;
+    let log_line = format!("{}\n", line);
+
+    // Append atomically to audit log
+    let file_mode = if audit_path.exists() {
+        fs::OpenOptions::new().append(true).open(&audit_path)
+    } else {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .mode(0o600)
+                .open(&audit_path)
+        }
+        #[cfg(not(unix))]
+        {
+            fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .open(&audit_path)
+        }
+    };
+
+    let mut file =
+        file_mode.with_context(|| format!("open audit log at {}", audit_path.display()))?;
+    file.write_all(log_line.as_bytes())
+        .with_context(|| format!("write audit log at {}", audit_path.display()))?;
+
+    Ok(())
+}
+
+/// Send a hot-swap reload signal to the running daemon via IPC.
+///
+/// This allows the daemon to re-establish provider connections with the new
+/// secret key without requiring a restart. If the daemon is not running,
+/// this silently succeeds.
+async fn send_reload_signal_to_daemon() -> Result<()> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let socket_path = Path::new(&home).join(".roko").join("daemon.sock");
+
+    // If socket doesn't exist, daemon isn't running — that's fine.
+    if !socket_path.exists() {
+        return Ok(());
+    }
+
+    let mut stream = match UnixStream::connect(&socket_path).await {
+        Ok(s) => s,
+        Err(_) => {
+            // Daemon not running or socket not accessible — this is fine.
+            return Ok(());
+        }
+    };
+
+    // Send "reload" command (plain text, matching daemon_reload pattern in daemon.rs)
+    stream
+        .write_all(b"reload")
+        .await
+        .context("send daemon reload request")?;
+    stream
+        .shutdown()
+        .await
+        .context("close daemon reload request")?;
+
+    // Read response to confirm receipt
+    let mut buf = Vec::new();
+    let _ = stream.read_to_end(&mut buf).await;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -274,8 +387,8 @@ mod tests {
         assert_eq!(key, "api_key");
     }
 
-    #[test]
-    fn dispatch_get_on_empty_store() {
+    #[tokio::test]
+    async fn dispatch_get_on_empty_store() {
         let dir = tempfile::tempdir().unwrap();
         let workdir = dir.path();
         std::fs::create_dir_all(workdir.join(".roko")).unwrap();
@@ -284,17 +397,17 @@ mod tests {
             key: Some("anthropic".into()),
         };
         // Should succeed (prints "(not set)"), not panic.
-        let result = dispatch_secrets(&cmd, workdir);
+        let result = dispatch_secrets(&cmd, workdir).await;
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn dispatch_list_empty_store() {
+    #[tokio::test]
+    async fn dispatch_list_empty_store() {
         let dir = tempfile::tempdir().unwrap();
         let workdir = dir.path();
         std::fs::create_dir_all(workdir.join(".roko")).unwrap();
         let cmd = SecretsCmd::List { namespace: None };
-        let result = dispatch_secrets(&cmd, workdir);
+        let result = dispatch_secrets(&cmd, workdir).await;
         assert!(result.is_ok());
     }
 }

@@ -325,7 +325,7 @@ For a typical 20-plan run with 80 agent spawns:
 Enrichment artifacts are persisted as files on disk, not in-memory Signals. This is a practical choice that maps cleanly to the Store protocol:
 
 ```
-.roko/plans/<plan-slug>/
+./plans/<plan-slug>/
   prd-extract.md
   brief.md
   tasks.toml

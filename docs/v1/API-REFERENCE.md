@@ -182,7 +182,7 @@ Check the status of a background operation.
 
 ### `GET /api/plans`
 
-List all plans from `.roko/plans/`.
+List all plans from `./plans/` (or `.roko/plans/` as fallback).
 
 **Response:**
 ```json
@@ -270,7 +270,7 @@ Check execution status for an active plan run.
 ```json
 {
   "id": "run-uuid",
-  "plan_dir": "/path/.roko/plans",
+  "plan_dir": "/path/plans",
   "status": "Running",
   "finished": false
 }

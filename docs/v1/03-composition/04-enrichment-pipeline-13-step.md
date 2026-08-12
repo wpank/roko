@@ -294,7 +294,7 @@ The step selection mechanism is the practical application of Self-RAG (Asai et a
 Enrichment artifacts are stored on disk under the plan directory:
 
 ```
-.roko/plans/<plan-slug>/
+./plans/<plan-slug>/
 ├── prd-extract.md
 ├── brief.md
 ├── tasks.toml

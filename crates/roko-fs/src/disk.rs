@@ -29,6 +29,54 @@ use sysinfo::Disks;
 use tokio::sync::watch;
 use tracing::{debug, warn};
 
+/// Disk usage statistics for a given path's mount point.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiskUsage {
+    /// Total capacity of the mount point, in MB.
+    pub total_mb: u64,
+    /// Used space on the mount point, in MB.
+    pub used_mb: u64,
+    /// Available (free) space on the mount point, in MB.
+    pub available_mb: u64,
+    /// Usage as a percentage of total capacity (0–100), rounded.
+    pub percentage: u8,
+}
+
+/// Pressure severity level for disk space, with four distinct bands.
+///
+/// Maps to the bands used by [`DiskMonitor`] and the conductor
+/// `DiskPressureWatcher` (E47-T08):
+///
+/// | Level      | Condition                       |
+/// |------------|---------------------------------|
+/// | `Normal`   | free ≥ `warn_mb`                |
+/// | `Warning`  | `min_mb` ≤ free < `warn_mb`     |
+/// | `Critical` | `min_mb/2` ≤ free < `min_mb`   |
+/// | `Emergency`| free < `min_mb / 2`             |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiskPressureLevel {
+    /// Free space is above the warning threshold — all clear.
+    Normal,
+    /// Free space is below the warning threshold — operator should act soon.
+    Warning,
+    /// Free space is below the minimum threshold — plan runs will be refused.
+    Critical,
+    /// Free space is below half the minimum threshold — recommend aborting.
+    Emergency,
+}
+
+impl std::fmt::Display for DiskPressureLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Normal => write!(f, "normal"),
+            Self::Warning => write!(f, "warning"),
+            Self::Critical => write!(f, "critical"),
+            Self::Emergency => write!(f, "emergency"),
+        }
+    }
+}
+
 /// Return available disk space at the mount point containing `path`, in MB.
 ///
 /// Finds the sysinfo disk whose mount point is the longest prefix of `path`,
@@ -45,6 +93,46 @@ pub fn available_disk_mb(path: &Path) -> io::Result<u64> {
     let best = best_disk_for(&disks, &canonical)?;
     let bytes = best.available_space();
     Ok(bytes / (1024 * 1024))
+}
+
+/// Return full disk usage statistics for the mount point containing `path`.
+///
+/// Computes total, used, and available space in MB, plus a rounded usage
+/// percentage. Uses the same mount-point selection logic as [`available_disk_mb`].
+///
+/// # Errors
+///
+/// Returns `io::Error(ErrorKind::Unsupported)` when no mount point can be
+/// found for the given path.
+pub fn get_disk_usage(path: &Path) -> io::Result<DiskUsage> {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+    let disks = Disks::new_with_refreshed_list();
+    let disk = best_disk_for(&disks, &canonical)?;
+
+    let total_bytes = disk.total_space();
+    let available_bytes = disk.available_space();
+    let used_bytes = total_bytes.saturating_sub(available_bytes);
+
+    let total_mb = total_bytes / (1024 * 1024);
+    let used_mb = used_bytes / (1024 * 1024);
+    let available_mb = available_bytes / (1024 * 1024);
+
+    let percentage = if total_bytes == 0 {
+        0
+    } else {
+        // Clamp to [0, 100] in case of rounding artefacts.
+        ((used_bytes as f64 / total_bytes as f64) * 100.0)
+            .round()
+            .clamp(0.0, 100.0) as u8
+    };
+
+    Ok(DiskUsage {
+        total_mb,
+        used_mb,
+        available_mb,
+        percentage,
+    })
 }
 
 /// Find the disk whose mount point is the longest prefix of `path`.
@@ -485,5 +573,83 @@ mod tests {
         let json = serde_json::to_string(&e).expect("serialize");
         let back: DiskError = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(e, back);
+    }
+
+    // ── get_disk_usage ───────────────────────────────────────────────────
+
+    #[test]
+    fn get_disk_usage_returns_valid_values() {
+        let usage = get_disk_usage(&workdir()).expect("get_disk_usage should succeed");
+        assert!(usage.total_mb > 0, "total_mb should be > 0");
+        assert!(
+            usage.available_mb <= usage.total_mb,
+            "available_mb should not exceed total_mb"
+        );
+        assert!(
+            usage.used_mb <= usage.total_mb,
+            "used_mb should not exceed total_mb"
+        );
+        assert!(usage.percentage <= 100, "percentage should be 0-100");
+    }
+
+    #[test]
+    fn get_disk_usage_consistency() {
+        // available + used should approximately equal total (within 1 MB rounding).
+        let usage = get_disk_usage(&workdir()).expect("get_disk_usage should succeed");
+        let sum = usage.available_mb.saturating_add(usage.used_mb);
+        // Allow 1 MB slack for MB rounding of bytes.
+        assert!(
+            sum.abs_diff(usage.total_mb) <= 1,
+            "used_mb ({}) + available_mb ({}) should equal total_mb ({}) ±1",
+            usage.used_mb,
+            usage.available_mb,
+            usage.total_mb,
+        );
+    }
+
+    #[test]
+    fn disk_usage_serde_roundtrip() {
+        let u = DiskUsage {
+            total_mb: 512_000,
+            used_mb: 256_000,
+            available_mb: 256_000,
+            percentage: 50,
+        };
+        let json = serde_json::to_string(&u).expect("serialize");
+        let back: DiskUsage = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(u, back);
+    }
+
+    // ── DiskPressureLevel ────────────────────────────────────────────────
+
+    #[test]
+    fn disk_pressure_level_ordering() {
+        // Levels are ordered from least to most severe.
+        assert!(DiskPressureLevel::Normal < DiskPressureLevel::Warning);
+        assert!(DiskPressureLevel::Warning < DiskPressureLevel::Critical);
+        assert!(DiskPressureLevel::Critical < DiskPressureLevel::Emergency);
+    }
+
+    #[test]
+    fn disk_pressure_level_display() {
+        assert_eq!(DiskPressureLevel::Normal.to_string(), "normal");
+        assert_eq!(DiskPressureLevel::Warning.to_string(), "warning");
+        assert_eq!(DiskPressureLevel::Critical.to_string(), "critical");
+        assert_eq!(DiskPressureLevel::Emergency.to_string(), "emergency");
+    }
+
+    #[test]
+    fn disk_pressure_level_serde_roundtrip() {
+        let levels = [
+            DiskPressureLevel::Normal,
+            DiskPressureLevel::Warning,
+            DiskPressureLevel::Critical,
+            DiskPressureLevel::Emergency,
+        ];
+        for level in levels {
+            let json = serde_json::to_string(&level).expect("serialize");
+            let back: DiskPressureLevel = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(level, back);
+        }
     }
 }

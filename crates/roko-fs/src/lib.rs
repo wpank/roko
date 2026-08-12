@@ -51,7 +51,10 @@ pub use archive::{ArchiveEntry, ArchiveKind, ArchiveStats, Archiver};
 pub use atomic::{atomic_write_bytes, atomic_write_json};
 pub use bandit::{ArmSnapshot, BanditStore};
 pub use cold_substrate::{ArchiveColdSubstrate, SubstrateMigrator};
-pub use disk::{DiskError, DiskMonitor, DiskStatus, DiskWarning, available_disk_mb};
+pub use disk::{
+    DiskError, DiskMonitor, DiskPressureLevel, DiskStatus, DiskUsage, DiskWarning,
+    available_disk_mb, get_disk_usage,
+};
 pub use file_substrate::FileSubstrate;
 pub use gc::{FsRetentionPolicy, GcCandidate, GcEngine, GcReport};
 pub use layout::{LayoutVersion, RokoLayout};

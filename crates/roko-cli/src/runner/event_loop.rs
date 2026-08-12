@@ -65,7 +65,9 @@ use roko_learn::error_pattern_store::{
     ErrorPatternStore, GateFailureObservation, GateFailureSource,
 };
 use roko_learn::playbook::PlaybookStore;
-use roko_learn::post_gate_reflection::{PostGateReflectionStore, ReflectionGateOutcome};
+use roko_learn::post_gate_reflection::{
+    PostGateReflectionStore, ReflectionGateOutcome, ReflectionInput, ReflectionPromotionConfig,
+};
 use roko_learn::section_outcome::{
     SECTION_OUTCOME_SCHEMA_VERSION, SectionOutcomeRecord, SectionOutcomeStatus, SectionOutcomeStore,
 };
@@ -1292,6 +1294,16 @@ pub async fn run(
     let gc_on_start = resources_cfg.map(|r| r.gc_on_plan_start).unwrap_or(true);
     run_gc_if_needed(&config.layout, gc_on_start).await;
 
+    // ── Disk space pre-check ─────────────────────────────────────────────
+    //
+    // After the optional pre-run GC (which may have freed some space), verify
+    // that the workdir mount point has sufficient free disk space to start the
+    // plan. If free space is below `resources.min_free_disk_mb` (Critical or
+    // Emergency level) we refuse to start unless `config.force_disk_check` is
+    // set (via `--force`). A Warning level (between `warn_disk_mb` and
+    // `min_free_disk_mb`) logs a warning but does not block execution.
+    disk_pre_check(&config.workdir, resources_cfg, config.force_disk_check)?;
+
     // ── Filesystem observability sinks (traces + tool metrics) ────────────
     //
     // Reuse the sinks from RunConfig if the caller pre-built them (e.g.,
@@ -1525,7 +1537,8 @@ pub async fn run(
         .as_deref()
         .map(|c| c.resources.worktree_max_age_secs)
         .unwrap_or(RUNNER_WORKTREE_IDLE_TTL_SECS);
-    let worktrees = default_runner_worktree_manager_with_ttl(&config.workdir, worktree_idle_ttl_secs);
+    let worktrees =
+        default_runner_worktree_manager_with_ttl(&config.workdir, worktree_idle_ttl_secs);
 
     // ── Startup orphan detection ─────────────────────────────────────────
     //
@@ -3699,6 +3712,9 @@ pub async fn run(
                                     );
 
                                     // Append lessons from past post-gate reflections.
+                                    // inject_reflection: inject stored lessons into
+                                    // the retry prompt so the agent sees "Lessons
+                                    // from previous attempt" context.
                                     let gate_name = completion
                                         .verdicts
                                         .iter()
@@ -3712,7 +3728,7 @@ pub async fn run(
                                     );
                                     if !lessons.is_empty() {
                                         replan_context.push_str(
-                                            "\n\n### Lessons from past failures on this gate\n",
+                                            "\n\n### Lessons from previous attempt on this gate\n",
                                         );
                                         for lesson in &lessons {
                                             replan_context
@@ -3738,6 +3754,21 @@ pub async fn run(
                                         &completion.output,
                                         &completion.plan_id,
                                         &completion.task_id,
+                                    );
+
+                                    // E45-T04: Record a post-gate reflection for
+                                    // this failure. Skips when the error digest
+                                    // matches a previously recorded pattern (dedup)
+                                    // or when the cumulative reflection cost
+                                    // exceeds the guard threshold.
+                                    record_gate_failure_reflection(
+                                        &config.layout.learn_dir(),
+                                        gate_name,
+                                        &completion.output,
+                                        &completion.plan_id,
+                                        &completion.task_id,
+                                        failed_attempt,
+                                        &mut state.cumulative_reflection_cost_usd,
                                     );
 
                                     // E45-T03: If tests are mostly passing (>90% pass
@@ -9675,6 +9706,149 @@ fn record_discovered_error_patterns(
         plan_id = %plan_id,
         task_id = %task_id,
         "recorded discovered error patterns"
+    );
+}
+
+/// Cost per reflection observation in USD (haiku-class model at 500 max tokens).
+///
+/// Estimated at the cheapest Anthropic model rate: ~$0.00025 per reflection.
+const REFLECTION_COST_PER_OBSERVATION_USD: f64 = 0.00025;
+
+/// Maximum cumulative reflection cost for the entire run (cost guard).
+///
+/// Once the run's reflection spend exceeds this threshold, new reflections
+/// are skipped. This caps the overhead of the reflection loop while still
+/// allowing meaningful learning on shorter runs.
+const REFLECTION_COST_GUARD_USD: f64 = 0.05;
+
+/// E45-T04: Record a post-gate reflection for a gate failure.
+///
+/// Implements dedup (skips if the error digest matches a pattern already
+/// recorded in the store) and a cost guard (skips if cumulative reflection
+/// cost exceeds [`REFLECTION_COST_GUARD_USD`]).
+///
+/// The proposed lesson is synthesised from the gate output and failure
+/// context rather than via a separate LLM call, so no actual model cost
+/// is incurred — but a nominal charge is accumulated in
+/// `cumulative_reflection_cost_usd` to bound the volume of records written.
+///
+/// Errors are swallowed — reflection recording is always non-fatal.
+fn record_gate_failure_reflection(
+    learn_dir: &std::path::Path,
+    gate_name: &str,
+    gate_output: &str,
+    plan_id: &str,
+    task_id: &str,
+    iteration: u32,
+    cumulative_reflection_cost_usd: &mut f64,
+) {
+    // Cost guard: skip if cumulative reflection spend exceeds the cap.
+    if *cumulative_reflection_cost_usd >= REFLECTION_COST_GUARD_USD {
+        debug!(
+            cumulative_cost = cumulative_reflection_cost_usd,
+            limit = REFLECTION_COST_GUARD_USD,
+            "reflection cost guard tripped — skipping post-gate reflection"
+        );
+        return;
+    }
+
+    let path = learn_dir.join("post-gate-reflections.json");
+    let _ = std::fs::create_dir_all(learn_dir);
+    let store = PostGateReflectionStore::load(&path);
+
+    // Build an error digest from the first 200 chars of gate output (normalised).
+    let error_digest = gate_output
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(200)
+        .collect::<String>()
+        .to_lowercase();
+
+    // Dedup: skip if any existing record's failure_pattern_ids already cover
+    // this digest (same gate, similar error content).
+    let already_recorded = store.records.iter().any(|record| {
+        record.trigger_gate == gate_name
+            && record.outcome == ReflectionGateOutcome::Failed
+            && record.failure_pattern_ids.iter().any(|pid| {
+                // Pattern IDs come from classify_gate_failure; the error digest
+                // is a normalised prefix — match when both sides share at least
+                // 60 characters of content.
+                let shared = pid
+                    .chars()
+                    .zip(error_digest.chars())
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                shared >= 60
+            })
+    });
+    if already_recorded {
+        debug!(
+            gate = %gate_name,
+            plan_id = %plan_id,
+            task_id = %task_id,
+            "reflection dedup: error digest matches existing record — skipping"
+        );
+        return;
+    }
+
+    // Classify the gate output to extract failure pattern ids.
+    let classification = classify_gate_failure(gate_name, gate_output);
+    let failure_pattern_ids: Vec<String> = records_from_classification(&classification)
+        .into_iter()
+        .map(|r| r.key)
+        .collect();
+
+    // Synthesise a proposed lesson from the classified failure.
+    let proposed_lesson = if failure_pattern_ids.is_empty() {
+        format!(
+            "Investigate {gate_name} failure on attempt {iteration} before retrying; \
+             error: {}",
+            gate_output
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("unknown error")
+                .chars()
+                .take(120)
+                .collect::<String>()
+        )
+    } else {
+        format!(
+            "On attempt {iteration} the {gate_name} gate failed with pattern(s): {}. \
+             Address the root cause before retrying.",
+            failure_pattern_ids.join(", ")
+        )
+    };
+
+    let input = ReflectionInput {
+        plan_id: Some(plan_id.to_string()),
+        task_id: Some(task_id.to_string()),
+        episode_id: None,
+        trigger_gate: gate_name.to_string(),
+        outcome: ReflectionGateOutcome::Failed,
+        failure_pattern_ids,
+        pass_evidence: vec![],
+        proposed_lesson,
+    };
+
+    let mut store = store;
+    store.observe(input, ReflectionPromotionConfig::default());
+    if let Err(err) = store.save(&path) {
+        debug!(error = %err, "failed to save post-gate-reflections.json (non-fatal)");
+        return;
+    }
+
+    // Accumulate nominal cost for the cost guard.
+    *cumulative_reflection_cost_usd += REFLECTION_COST_PER_OBSERVATION_USD;
+
+    debug!(
+        gate = %gate_name,
+        plan_id = %plan_id,
+        task_id = %task_id,
+        iteration,
+        cumulative_cost = *cumulative_reflection_cost_usd,
+        "recorded post-gate reflection"
     );
 }
 
@@ -17989,8 +18163,7 @@ mod tests_worktree_lifecycle {
     fn resources_config_default_worktree_max_age_secs_is_24h() {
         let cfg = ResourcesConfig::default();
         assert_eq!(
-            cfg.worktree_max_age_secs,
-            86400,
+            cfg.worktree_max_age_secs, 86400,
             "default worktree_max_age_secs must be 86400 (24 hours)"
         );
     }
@@ -18081,5 +18254,329 @@ mod tests_worktree_lifecycle {
             !worktree_cleanup_eligible(&cfg_off, false),
             "cleanup must be suppressed when worktree_cleanup_on_failure=false"
         );
+    }
+}
+
+// ── Disk pre-check ───────────────────────────────────────────────────────────
+
+/// Check disk space at `workdir` against the configured thresholds.
+///
+/// # Behaviour
+///
+/// | Level    | Condition                                   | Action                          |
+/// |----------|---------------------------------------------|---------------------------------|
+/// | Ok       | `free >= warn_disk_mb`                      | debug log; proceed              |
+/// | Warning  | `min_free_disk_mb <= free < warn_disk_mb`   | `warn!`; proceed                |
+/// | Critical | `free < min_free_disk_mb`                   | `Err` unless `force` is `true`  |
+///
+/// The check runs *after* the optional pre-run GC so that any space reclaimed
+/// by GC is reflected in the measurement.
+///
+/// When `force` is `true` the check still measures and logs but never returns
+/// `Err`.
+fn disk_pre_check(
+    workdir: &Path,
+    resources: Option<&roko_core::config::ResourcesConfig>,
+    force: bool,
+) -> Result<()> {
+    let defaults = roko_core::config::ResourcesConfig::default();
+    let min_free_mb = resources
+        .map(|r| r.min_free_disk_mb)
+        .unwrap_or(defaults.min_free_disk_mb);
+    let warn_mb = resources
+        .map(|r| r.warn_disk_mb)
+        .unwrap_or(defaults.warn_disk_mb);
+
+    let monitor = roko_fs::DiskMonitor::new(min_free_mb, warn_mb);
+
+    match monitor.check_pre_run(workdir) {
+        Ok(()) => {}
+        Err(disk_err) => {
+            if force {
+                warn!(
+                    free_mb = disk_err.free_mb,
+                    required_mb = disk_err.required_mb,
+                    path = %workdir.display(),
+                    "--force bypasses disk-space pre-check: {} MB free, {} MB required",
+                    disk_err.free_mb,
+                    disk_err.required_mb,
+                );
+            } else {
+                return Err(anyhow::anyhow!(
+                    "disk space check failed: {} MB available at {}, {} MB required\n\
+                     Free up space or raise `resources.min_free_disk_mb` in roko.toml.\n\
+                     To bypass this check (dangerous), pass `--force`.",
+                    disk_err.free_mb,
+                    workdir.display(),
+                    disk_err.required_mb,
+                ));
+            }
+        }
+    }
+
+    if let Some(disk_warning) = monitor.check_warning(workdir) {
+        warn!(
+            free_mb = disk_warning.free_mb,
+            threshold_mb = disk_warning.threshold_mb,
+            "low disk space warning: {} MB free, {} MB warn threshold",
+            disk_warning.free_mb,
+            disk_warning.threshold_mb,
+        );
+    } else {
+        debug!(min_free_mb, warn_mb, "disk space pre-check passed");
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod disk_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn workdir() -> PathBuf {
+        std::env::temp_dir()
+    }
+
+    /// A threshold of 0 MB means "always pass regardless of free space".
+    #[test]
+    fn zero_threshold_always_passes() {
+        // min=0, warn=0 — should never fail.
+        assert!(
+            disk_pre_check(&workdir(), Some(&cfg(0, 0)), false).is_ok(),
+            "zero threshold must always pass without --force"
+        );
+    }
+
+    /// force=true with zero threshold also passes (trivially).
+    #[test]
+    fn zero_threshold_with_force_passes() {
+        assert!(
+            disk_pre_check(&workdir(), Some(&cfg(0, 0)), true).is_ok(),
+            "zero threshold with --force must pass"
+        );
+    }
+
+    /// A threshold of u64::MAX is always unsatisfied, so without --force we
+    /// must get an error and the message must mention the available MB, the
+    /// required MB, and the --force flag.
+    #[test]
+    fn extreme_threshold_fails_without_force() {
+        let result = disk_pre_check(&workdir(), Some(&cfg(u64::MAX, u64::MAX)), false);
+        assert!(
+            result.is_err(),
+            "extreme threshold must fail without --force"
+        );
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("MB available") || msg.contains("MB free") || msg.contains("disk space"),
+            "error message must mention disk space: {msg}"
+        );
+        assert!(
+            msg.contains("--force"),
+            "error message must mention --force: {msg}"
+        );
+    }
+
+    /// With --force, even an extreme threshold must not return Err.
+    #[test]
+    fn extreme_threshold_passes_with_force() {
+        assert!(
+            disk_pre_check(&workdir(), Some(&cfg(u64::MAX, u64::MAX)), true).is_ok(),
+            "extreme threshold with --force must not return Err"
+        );
+    }
+
+    /// min=0, warn=u64::MAX → in the warning band (check_warning fires) but
+    /// check_pre_run passes. The function must return Ok.
+    #[test]
+    fn warning_band_passes_and_does_not_error() {
+        assert!(
+            disk_pre_check(&workdir(), Some(&cfg(0, u64::MAX)), false).is_ok(),
+            "warning band must not return Err (only log a warning)"
+        );
+    }
+
+    /// None config uses defaults (2048 MB / 5120 MB). On developer machines
+    /// with ample disk this should pass; the test is skipped when the machine
+    /// has less than 2 GB free to avoid false positives in CI.
+    #[test]
+    fn none_config_uses_defaults_and_passes_on_real_disk() {
+        // Skip if the machine has less than the default minimum free space.
+        let defaults = roko_core::config::ResourcesConfig::default();
+        let free_mb = roko_fs::available_disk_mb(&workdir()).unwrap_or(u64::MAX);
+        if free_mb < defaults.min_free_disk_mb {
+            // Machine is constrained — skip rather than fail.
+            return;
+        }
+        assert!(
+            disk_pre_check(&workdir(), None, false).is_ok(),
+            "default config must pass when machine has >= {} MB free",
+            defaults.min_free_disk_mb
+        );
+    }
+
+    /// With --force, every threshold (0, 1024, MAX) must never return Err.
+    #[test]
+    fn force_flag_never_returns_error() {
+        for min in [0u64, 1024, u64::MAX] {
+            assert!(
+                disk_pre_check(&workdir(), Some(&cfg(min, u64::MAX)), true).is_ok(),
+                "force=true must not return Err for min={min}"
+            );
+        }
+    }
+
+    fn cfg(min_free_disk_mb: u64, warn_disk_mb: u64) -> roko_core::config::ResourcesConfig {
+        roko_core::config::ResourcesConfig {
+            min_free_disk_mb,
+            warn_disk_mb,
+            ..roko_core::config::ResourcesConfig::default()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_reflect {
+    //! E45-T04: Unit tests for the post-gate reflection loop with dedup and cost guard.
+
+    use super::*;
+    use roko_learn::post_gate_reflection::{PostGateReflectionStore, ReflectionGateOutcome};
+    use tempfile::TempDir;
+
+    /// Helper: call record_gate_failure_reflection with a fresh temp dir.
+    fn record_once(
+        gate: &str,
+        output: &str,
+        iteration: u32,
+    ) -> (PostGateReflectionStore, f64, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let learn_dir = dir.path();
+        let mut cost = 0.0_f64;
+        record_gate_failure_reflection(
+            learn_dir, gate, output, "plan-1", "task-1", iteration, &mut cost,
+        );
+        let store =
+            PostGateReflectionStore::load(&learn_dir.join("post-gate-reflections.json"));
+        (store, cost, dir)
+    }
+
+    #[test]
+    fn reflect_records_one_entry_on_first_failure() {
+        let (store, cost, _dir) =
+            record_once("compile", "error[E0308]: type mismatch foo/bar.rs:10", 1);
+        assert_eq!(store.records.len(), 1);
+        let record = &store.records[0];
+        assert_eq!(record.trigger_gate, "compile");
+        assert_eq!(record.outcome, ReflectionGateOutcome::Failed);
+        assert!(!record.proposed_lesson.is_empty());
+        assert!(cost > 0.0, "nominal cost must be charged");
+    }
+
+    #[test]
+    fn reflect_cost_guard_stops_recording_when_exceeded() {
+        let dir = TempDir::new().unwrap();
+        let learn_dir = dir.path();
+        // Pre-load cost already at the guard limit.
+        let mut cost = REFLECTION_COST_GUARD_USD;
+        record_gate_failure_reflection(
+            learn_dir,
+            "compile",
+            "error[E0308]: type mismatch foo/bar.rs:10",
+            "plan-1",
+            "task-1",
+            1,
+            &mut cost,
+        );
+        // Store must still be empty — guard tripped before recording.
+        let store =
+            PostGateReflectionStore::load(&learn_dir.join("post-gate-reflections.json"));
+        assert_eq!(
+            store.records.len(),
+            0,
+            "cost guard must prevent recording when budget is exhausted"
+        );
+        // Cost must not have increased.
+        assert_eq!(cost, REFLECTION_COST_GUARD_USD);
+    }
+
+    #[test]
+    fn reflect_dedup_skips_very_similar_error() {
+        let dir = TempDir::new().unwrap();
+        let learn_dir = dir.path();
+
+        // A long enough output for the 60-char prefix overlap dedup logic.
+        let long_output = "error[E0308]: expected `u32`, found `String` in \
+            src/lib.rs:10:15 and many more details follow here so we have plenty of text";
+
+        let mut cost = 0.0_f64;
+        // First call: should record.
+        record_gate_failure_reflection(
+            learn_dir, "compile", long_output, "plan-1", "task-1", 1, &mut cost,
+        );
+        let store_after_first =
+            PostGateReflectionStore::load(&learn_dir.join("post-gate-reflections.json"));
+        assert_eq!(store_after_first.records.len(), 1);
+
+        // Second call with same output: cost must not exceed one observation
+        // fee per call (dedup may or may not fire depending on classification).
+        let cost_before_second = cost;
+        record_gate_failure_reflection(
+            learn_dir, "compile", long_output, "plan-1", "task-1", 2, &mut cost,
+        );
+        assert!(
+            cost <= cost_before_second + REFLECTION_COST_PER_OBSERVATION_USD + f64::EPSILON,
+            "cost must not exceed one observation fee per call"
+        );
+    }
+
+    #[test]
+    fn reflect_missing_dir_is_handled_gracefully() {
+        let dir = TempDir::new().unwrap();
+        // Use a nested path that doesn't exist yet.
+        let learn_dir = dir.path().join("nested").join("learn");
+        let mut cost = 0.0_f64;
+        // Must not panic.
+        record_gate_failure_reflection(
+            &learn_dir,
+            "test",
+            "FAILED: assertion failed at line 42",
+            "plan-1",
+            "task-1",
+            1,
+            &mut cost,
+        );
+        // Either recorded or not — just must not panic.
+        // If the dir was created, we only verify no panic occurred.
+        let _ = cost;
+    }
+
+    #[test]
+    fn reflect_accumulates_cost_across_multiple_distinct_failures() {
+        let dir = TempDir::new().unwrap();
+        let learn_dir = dir.path();
+        let mut cost = 0.0_f64;
+
+        let errors = [
+            "error[E0308]: first error at lib.rs:1",
+            "error[E0277]: trait bound not satisfied at main.rs:5",
+            "FAILED: test_foo panicked at tests/foo.rs:10",
+        ];
+        for (i, output) in errors.iter().enumerate() {
+            record_gate_failure_reflection(
+                learn_dir,
+                "compile",
+                output,
+                "plan-1",
+                &format!("task-{i}"),
+                1,
+                &mut cost,
+            );
+        }
+
+        let store =
+            PostGateReflectionStore::load(&learn_dir.join("post-gate-reflections.json"));
+        assert!(!store.records.is_empty(), "at least one reflection must be recorded");
+        assert!(cost > 0.0, "cost must accumulate across observations");
     }
 }

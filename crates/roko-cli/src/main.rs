@@ -819,7 +819,7 @@ Examples:
     },
     /// Walk the lineage DAG rooted at a signal hash and print it.
     Replay {
-        /// Engram hash (64 hex chars) to walk.
+        /// Signal hash (64 hex chars) to walk.
         hash: String,
         /// Directory containing `.roko/` (default: cwd).
         #[arg(long)]
@@ -1395,10 +1395,25 @@ Examples:
         /// Re-queue drifted tasks instead of aborting when resuming from a snapshot.
         #[arg(long)]
         force_resume: bool,
-        /// Continue past a budget ceiling with a warning instead of halting.
-        /// Bypasses the `BudgetAction::Block` guardrail for a single run.
+        /// Override the plan cost ceiling for this run.
+        ///
+        /// `--budget-override 50.0` sets the per-plan USD ceiling to $50.00,
+        /// replacing whatever is configured in roko.toml.  The guardrail still
+        /// logs a warning when the ceiling is hit, but execution continues.
+        /// Use `--budget-override 0` or `--no-budget` to disable the ceiling.
+        #[arg(long, value_name = "AMOUNT")]
+        budget_override: Option<f64>,
+        /// Disable budget enforcement entirely for this run.
+        ///
+        /// Equivalent to `--budget-override 0`: sets the per-plan ceiling to
+        /// unlimited (0.0) so `BudgetAction::Block` is never triggered.
+        #[arg(long, conflicts_with = "budget_override")]
+        no_budget: bool,
+        /// Skip the disk-space pre-check and start the plan even when free disk
+        /// is below `resources.min_free_disk_mb`. Use with caution: the plan
+        /// may fail mid-run if disk space is exhausted.
         #[arg(long)]
-        budget_override: bool,
+        force: bool,
     },
     /// Generate implementation plans from a prompt, file, or PRD.
     Generate {
@@ -1977,7 +1992,7 @@ enum ConfigSubscriptionCmd {
         /// Agent template name to invoke.
         #[arg(long)]
         template: String,
-        /// Engram trigger glob to match.
+        /// Signal trigger glob to match.
         #[arg(long)]
         trigger: String,
     },
@@ -2060,10 +2075,16 @@ fn main() {
             global_config_path: global_config.clone(),
             log_file: log_file.clone(),
         };
-        let runtime = tokio::runtime::Builder::new_multi_thread()
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
-            .expect("failed to build Tokio runtime for ACP");
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                tracing::error!(%e, "failed to build Tokio runtime for ACP");
+                std::process::exit(EXIT_FAILURE);
+            }
+        };
         let code = runtime.block_on(async {
             match roko_acp::run_acp_server(acp_config).await {
                 Ok(()) => EXIT_SUCCESS,
@@ -2176,10 +2197,16 @@ fn main() {
         .with(filter)
         .init();
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .expect("failed to build Tokio runtime");
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            tracing::error!(%e, "failed to build Tokio runtime");
+            std::process::exit(EXIT_FAILURE);
+        }
+    };
     let shutdown = setup_graceful_shutdown();
     install_sigterm_handler(&runtime, shutdown.clone());
 
@@ -2606,8 +2633,8 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 state.cancel.cancel();
                 match server_handle.await {
                     Ok(Ok(())) => {}
-                    Ok(Err(e)) => eprintln!("server error on shutdown: {e}"),
-                    Err(e) => eprintln!("server task panicked: {e}"),
+                    Ok(Err(e)) => tracing::error!(%e, "server error on shutdown"),
+                    Err(e) => tracing::error!(%e, "server task panicked"),
                 }
                 tui_result
             } else {
@@ -2750,7 +2777,9 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 dry_run: false,
                 fresh: false,
                 force_resume: false,
-                budget_override: false,
+                budget_override: None,
+                no_budget: false,
+                force: false,
             };
             commands::plan::cmd_plan(cli, plan_cmd).await
         }
@@ -3109,7 +3138,7 @@ fn apply_resume_session_override(config: &mut Config, resume: Option<String>) {
 fn prepare_runtime_hooks(workdir: &Path, quiet: bool) {
     if let Err(err) = bootstrap_observability_dirs(workdir) {
         if !quiet {
-            eprintln!("warning: observability bootstrap failed: {err}");
+            tracing::warn!(%err, "observability bootstrap failed");
         }
     }
     run_process_lifecycle_hooks(workdir, quiet);
@@ -3177,7 +3206,7 @@ fn run_process_lifecycle_hooks(workdir: &Path, quiet: bool) {
     cleanup_orphaned_agents();
     let reaped = reap_orphaned_children();
     if reaped > 0 && !quiet {
-        eprintln!("reaped {reaped} orphaned agent process(es)");
+        tracing::info!(reaped, "reaped orphaned agent processes");
     }
 }
 

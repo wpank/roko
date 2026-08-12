@@ -1,7 +1,7 @@
 //! Webhook ingress endpoints.
 //!
 //! GitHub and Slack webhooks are verified, converted into typed
-//! [`roko_core::Engram`]s, persisted through `.roko/engrams.jsonl`, and
+//! [`roko_core::Signal`]s, persisted through `.roko/signals.jsonl`, and
 //! published onto the shared event bus.
 
 use std::sync::Arc;
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) const WEBHOOK_BODY_LIMIT_BYTES: usize = 1024 * 1024;
 use hmac::{Hmac, Mac};
 use roko_core::signal_kinds;
-use roko_core::{Body, Engram, Kind, Provenance};
+use roko_core::{Body, Kind, Provenance, Signal};
 use serde_json::{Value, json};
 use sha2::Sha256;
 
@@ -92,12 +92,12 @@ impl DeploymentState {
 ///
 /// Parsed from the raw JSON payload and used by [`github_signal_kind`] to
 /// select the correct signal kind. Callers that need the full metadata can
-/// extract it from the `Body::Json` of the resulting [`Engram`].
+/// extract it from the `Body::Json` of the resulting [`Signal`].
 ///
 /// # Signal conversion
 ///
 /// Call [`DeploymentEvent::into_signal`] to convert the event directly into a
-/// ready-to-persist [`Engram`].
+/// ready-to-persist [`Signal`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DeploymentEvent {
     /// Numeric GitHub deployment ID.
@@ -176,20 +176,202 @@ impl DeploymentEvent {
         })
     }
 
-    /// Convert this event into a signal-ready [`Engram`].
+    /// Convert this event into a signal-ready [`Signal`].
     ///
     /// The signal kind is derived from [`DeploymentState::signal_kind`] for
     /// `deployment_status` events, or [`signal_kinds::GITHUB_DEPLOYMENT`] for
     /// plain `deployment` events.
-    pub fn into_signal(self, raw_payload: Value) -> Engram {
+    pub fn into_signal(self, raw_payload: Value) -> Signal {
         let kind_str = match &self.state {
             Some(state) => state.signal_kind(),
             None => signal_kinds::GITHUB_DEPLOYMENT,
         };
-        Engram::builder(Kind::Custom(kind_str.into()))
+        Signal::builder(Kind::Custom(kind_str.into()))
             .body(Body::Json(raw_payload))
             .provenance(Provenance::external("github:webhook"))
             .build()
+    }
+}
+
+// ─── CheckSuiteEvent ─────────────────────────────────────────────────────────
+
+/// The action field of a GitHub `check_suite` webhook event.
+///
+/// GitHub documents three action values for check_suite events.
+/// Unrecognised values are preserved as `Other`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckSuiteAction {
+    /// A new check suite was requested (push or PR sync).
+    Requested,
+    /// A check suite was re-requested by a user.
+    Rerequested,
+    /// All checks in the suite have finished.
+    Completed,
+    /// Any other action value not yet modelled.
+    Other(String),
+}
+
+impl CheckSuiteAction {
+    fn from_str(s: &str) -> Self {
+        match s {
+            "requested" => Self::Requested,
+            "rerequested" => Self::Rerequested,
+            "completed" => Self::Completed,
+            other => Self::Other(other.to_string()),
+        }
+    }
+
+    /// Return the canonical string for this action.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Requested => "requested",
+            Self::Rerequested => "rerequested",
+            Self::Completed => "completed",
+            Self::Other(s) => s.as_str(),
+        }
+    }
+}
+
+/// Conclusion of a completed GitHub check suite.
+///
+/// Only present on `action=completed` events. Maps GitHub's documented
+/// conclusion strings to typed variants; unknown values are `Other`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckSuiteConclusion {
+    Success,
+    Failure,
+    Neutral,
+    Cancelled,
+    TimedOut,
+    ActionRequired,
+    Stale,
+    /// Any conclusion string not yet modelled above.
+    Other(String),
+}
+
+impl CheckSuiteConclusion {
+    fn from_str(s: &str) -> Self {
+        match s {
+            "success" => Self::Success,
+            "failure" => Self::Failure,
+            "neutral" => Self::Neutral,
+            "cancelled" => Self::Cancelled,
+            "timed_out" => Self::TimedOut,
+            "action_required" => Self::ActionRequired,
+            "stale" => Self::Stale,
+            other => Self::Other(other.to_string()),
+        }
+    }
+
+    /// Return the canonical string for this conclusion.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Success => "success",
+            Self::Failure => "failure",
+            Self::Neutral => "neutral",
+            Self::Cancelled => "cancelled",
+            Self::TimedOut => "timed_out",
+            Self::ActionRequired => "action_required",
+            Self::Stale => "stale",
+            Self::Other(s) => s.as_str(),
+        }
+    }
+
+    /// Return true when this conclusion indicates that one or more checks
+    /// did not pass (i.e. the suite should be treated as non-green).
+    pub fn is_failing(&self) -> bool {
+        matches!(
+            self,
+            Self::Failure | Self::TimedOut | Self::Cancelled | Self::ActionRequired
+        )
+    }
+}
+
+/// GitHub App metadata embedded in a check_suite event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckSuiteApp {
+    /// Numeric GitHub App ID.
+    pub id: u64,
+    /// Human-readable display name of the app.
+    pub name: String,
+    /// URL-safe slug used in GitHub URLs.
+    pub slug: String,
+}
+
+/// A parsed GitHub `check_suite` webhook event.
+///
+/// Extract one of these from the raw JSON payload via [`CheckSuiteEvent::from_payload`].
+/// The struct exposes typed fields for the attributes that the runner cares about
+/// and a [`to_signal_kind`](CheckSuiteEvent::to_signal_kind) method so callers
+/// can route the event to the appropriate signal kind without re-parsing the JSON.
+#[derive(Debug, Clone)]
+pub struct CheckSuiteEvent {
+    /// The lifecycle action that triggered the event.
+    pub action: CheckSuiteAction,
+    /// The HEAD commit SHA associated with this check suite.
+    pub head_sha: String,
+    /// The HEAD branch associated with this check suite (may be `None` for
+    /// detached-HEAD / tag pushes where GitHub sends an empty string).
+    pub head_branch: Option<String>,
+    /// The GitHub App that created this check suite.
+    pub app: Option<CheckSuiteApp>,
+    /// Conclusion is only set when `action == Completed`.
+    pub conclusion: Option<CheckSuiteConclusion>,
+}
+
+impl CheckSuiteEvent {
+    /// Parse a `check_suite` webhook payload into a typed event.
+    ///
+    /// Returns `None` if the mandatory `action` field is missing.
+    pub fn from_payload(payload: &Value) -> Option<Self> {
+        let action_str = payload.get("action").and_then(Value::as_str)?;
+        let action = CheckSuiteAction::from_str(action_str);
+
+        let suite = payload.get("check_suite");
+
+        let head_sha = suite
+            .and_then(|s| s.get("head_sha"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+
+        let head_branch = suite
+            .and_then(|s| s.get("head_branch"))
+            .and_then(Value::as_str)
+            .filter(|b| !b.is_empty())
+            .map(str::to_string);
+
+        let app = suite.and_then(|s| s.get("app")).and_then(|a| {
+            let id = a.get("id").and_then(Value::as_u64)?;
+            let name = a.get("name").and_then(Value::as_str)?.to_string();
+            let slug = a.get("slug").and_then(Value::as_str)?.to_string();
+            Some(CheckSuiteApp { id, name, slug })
+        });
+
+        let conclusion = suite
+            .and_then(|s| s.get("conclusion"))
+            .and_then(Value::as_str)
+            .filter(|c| !c.is_empty())
+            .map(CheckSuiteConclusion::from_str);
+
+        Some(Self {
+            action,
+            head_sha,
+            head_branch,
+            app,
+            conclusion,
+        })
+    }
+
+    /// Map this event to the appropriate signal kind string.
+    ///
+    /// - `Completed` → [`signal_kinds::GITHUB_CHECK_SUITE_COMPLETED`]
+    /// - All other actions → [`signal_kinds::GITHUB_CHECK_SUITE`]
+    pub fn to_signal_kind(&self) -> &'static str {
+        match &self.action {
+            CheckSuiteAction::Completed => signal_kinds::GITHUB_CHECK_SUITE_COMPLETED,
+            _ => signal_kinds::GITHUB_CHECK_SUITE,
+        }
     }
 }
 
@@ -209,7 +391,7 @@ pub fn authenticated_routes() -> Router<Arc<AppState>> {
 }
 
 /// `POST /webhooks/github` — verify the GitHub signature, convert the payload
-/// into a `Engram`, persist it, and publish it to the server event bus.
+/// into a `Signal`, persist it, and publish it to the server event bus.
 async fn github_webhook(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -247,7 +429,7 @@ async fn github_webhook(
         .ok_or_else(|| ApiError::bad_request(format!("unsupported github event: {event_type}")))?;
 
     let signal = attach_hdc_fingerprint(
-        Engram::builder(kind)
+        Signal::builder(kind)
             .body(Body::Json(payload))
             .provenance(Provenance::external("github:webhook"))
             .build(),
@@ -259,7 +441,7 @@ async fn github_webhook(
 }
 
 /// `POST /webhooks/slack` — verify the Slack signature, handle URL
-/// verification challenges, convert supported events into a `Engram`, persist
+/// verification challenges, convert supported events into a `Signal`, persist
 /// them, and publish them to the server event bus.
 async fn slack_webhook(
     State(state): State<Arc<AppState>>,
@@ -316,7 +498,7 @@ async fn slack_webhook(
         .ok_or_else(|| ApiError::bad_request(format!("unsupported slack event: {event_type}")))?;
 
     let signal = attach_hdc_fingerprint(
-        Engram::builder(kind)
+        Signal::builder(kind)
             .body(Body::Json(payload))
             .provenance(Provenance::external("slack:webhook"))
             .build(),
@@ -328,7 +510,7 @@ async fn slack_webhook(
 }
 
 /// `POST /api/webhooks/generic` — accept arbitrary JSON, convert it into a
-/// `Engram`, persist it, and publish it to the server event bus. This endpoint skips
+/// `Signal`, persist it, and publish it to the server event bus. This endpoint skips
 /// signature verification and requires API authentication when auth is enabled.
 async fn generic_webhook(
     State(state): State<Arc<AppState>>,
@@ -343,15 +525,15 @@ async fn generic_webhook(
     Ok(StatusCode::OK)
 }
 
-fn generic_webhook_signal(payload: Value) -> Engram {
-    Engram::builder(Kind::Custom("webhook:generic".into()))
+fn generic_webhook_signal(payload: Value) -> Signal {
+    Signal::builder(Kind::Custom("webhook:generic".into()))
         .body(Body::Json(payload))
         .provenance(Provenance::external("webhook:generic"))
         .build()
 }
 
 #[cfg(feature = "hdc")]
-fn attach_hdc_fingerprint(mut signal: Engram) -> Engram {
+fn attach_hdc_fingerprint(mut signal: Signal) -> Signal {
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD as BASE64;
 
@@ -365,11 +547,11 @@ fn attach_hdc_fingerprint(mut signal: Engram) -> Engram {
 }
 
 #[cfg(not(feature = "hdc"))]
-fn attach_hdc_fingerprint(signal: Engram) -> Engram {
+fn attach_hdc_fingerprint(signal: Signal) -> Signal {
     signal
 }
 
-async fn persist_webhook_signal(state: &AppState, signal: Engram) -> Result<(), ApiError> {
+async fn persist_webhook_signal(state: &AppState, signal: Signal) -> Result<(), ApiError> {
     state
         .signal_store
         .put(signal.clone())
@@ -1189,6 +1371,237 @@ mod tests {
         assert!(
             kind.is_none(),
             "issue_comment deleted should return None (not handled)"
+        );
+    }
+
+    // ── CheckSuiteEvent tests ────────────────────────────────────────────────
+
+    /// Builds the JSON envelope that GitHub sends for a check_suite event.
+    fn check_suite_payload(
+        action: &str,
+        head_sha: &str,
+        head_branch: Option<&str>,
+        app_name: Option<&str>,
+        conclusion: Option<&str>,
+    ) -> serde_json::Value {
+        let mut suite = serde_json::json!({
+            "head_sha": head_sha,
+        });
+        if let Some(b) = head_branch {
+            suite["head_branch"] = serde_json::json!(b);
+        }
+        if let Some(c) = conclusion {
+            suite["conclusion"] = serde_json::json!(c);
+        }
+        if let Some(name) = app_name {
+            suite["app"] = serde_json::json!({
+                "id": 12345,
+                "name": name,
+                "slug": name.to_lowercase().replace(' ', "-"),
+            });
+        }
+        serde_json::json!({
+            "action": action,
+            "check_suite": suite,
+        })
+    }
+
+    #[test]
+    fn check_suite_event_parses_requested_action() {
+        let payload = check_suite_payload("requested", "abc123", Some("main"), None, None);
+        let evt = CheckSuiteEvent::from_payload(&payload).expect("should parse");
+        assert_eq!(evt.action, CheckSuiteAction::Requested);
+        assert_eq!(evt.head_sha, "abc123");
+        assert_eq!(evt.head_branch.as_deref(), Some("main"));
+        assert!(evt.conclusion.is_none());
+    }
+
+    #[test]
+    fn check_suite_event_parses_rerequested_action() {
+        let payload = check_suite_payload("rerequested", "def456", Some("feat/x"), None, None);
+        let evt = CheckSuiteEvent::from_payload(&payload).expect("should parse");
+        assert_eq!(evt.action, CheckSuiteAction::Rerequested);
+        assert_eq!(evt.head_sha, "def456");
+        assert_eq!(evt.head_branch.as_deref(), Some("feat/x"));
+    }
+
+    #[test]
+    fn check_suite_event_parses_completed_with_success_conclusion() {
+        let payload = check_suite_payload(
+            "completed",
+            "sha1",
+            Some("main"),
+            Some("GitHub Actions"),
+            Some("success"),
+        );
+        let evt = CheckSuiteEvent::from_payload(&payload).expect("should parse");
+        assert_eq!(evt.action, CheckSuiteAction::Completed);
+        assert_eq!(
+            evt.conclusion,
+            Some(CheckSuiteConclusion::Success),
+            "expected Success conclusion"
+        );
+        assert!(!evt.conclusion.as_ref().unwrap().is_failing());
+    }
+
+    #[test]
+    fn check_suite_event_parses_completed_with_failure_conclusion() {
+        let payload = check_suite_payload("completed", "sha2", Some("main"), None, Some("failure"));
+        let evt = CheckSuiteEvent::from_payload(&payload).expect("should parse");
+        assert_eq!(evt.conclusion, Some(CheckSuiteConclusion::Failure));
+        assert!(evt.conclusion.as_ref().unwrap().is_failing());
+    }
+
+    #[test]
+    fn check_suite_event_parses_neutral_conclusion() {
+        let payload = check_suite_payload("completed", "sha3", None, None, Some("neutral"));
+        let evt = CheckSuiteEvent::from_payload(&payload).expect("should parse");
+        assert_eq!(evt.conclusion, Some(CheckSuiteConclusion::Neutral));
+        assert!(!evt.conclusion.as_ref().unwrap().is_failing());
+    }
+
+    #[test]
+    fn check_suite_event_parses_cancelled_conclusion() {
+        let payload = check_suite_payload("completed", "sha4", None, None, Some("cancelled"));
+        let evt = CheckSuiteEvent::from_payload(&payload).expect("should parse");
+        assert_eq!(evt.conclusion, Some(CheckSuiteConclusion::Cancelled));
+        assert!(evt.conclusion.as_ref().unwrap().is_failing());
+    }
+
+    #[test]
+    fn check_suite_event_parses_timed_out_conclusion() {
+        let payload = check_suite_payload("completed", "sha5", None, None, Some("timed_out"));
+        let evt = CheckSuiteEvent::from_payload(&payload).expect("should parse");
+        assert_eq!(evt.conclusion, Some(CheckSuiteConclusion::TimedOut));
+        assert!(evt.conclusion.as_ref().unwrap().is_failing());
+    }
+
+    #[test]
+    fn check_suite_event_parses_action_required_conclusion() {
+        let payload =
+            check_suite_payload("completed", "sha6", None, None, Some("action_required"));
+        let evt = CheckSuiteEvent::from_payload(&payload).expect("should parse");
+        assert_eq!(evt.conclusion, Some(CheckSuiteConclusion::ActionRequired));
+        assert!(evt.conclusion.as_ref().unwrap().is_failing());
+    }
+
+    #[test]
+    fn check_suite_event_parses_stale_conclusion() {
+        let payload = check_suite_payload("completed", "sha7", None, None, Some("stale"));
+        let evt = CheckSuiteEvent::from_payload(&payload).expect("should parse");
+        assert_eq!(evt.conclusion, Some(CheckSuiteConclusion::Stale));
+        assert!(!evt.conclusion.as_ref().unwrap().is_failing());
+    }
+
+    #[test]
+    fn check_suite_event_parses_unknown_action_as_other() {
+        let payload = check_suite_payload("unknown_action", "sha8", None, None, None);
+        let evt = CheckSuiteEvent::from_payload(&payload).expect("should parse");
+        assert_eq!(evt.action, CheckSuiteAction::Other("unknown_action".to_string()));
+    }
+
+    #[test]
+    fn check_suite_event_parses_unknown_conclusion_as_other() {
+        let payload =
+            check_suite_payload("completed", "sha9", None, None, Some("skipped_custom"));
+        let evt = CheckSuiteEvent::from_payload(&payload).expect("should parse");
+        assert_eq!(
+            evt.conclusion,
+            Some(CheckSuiteConclusion::Other("skipped_custom".to_string()))
+        );
+    }
+
+    #[test]
+    fn check_suite_event_extracts_app_metadata() {
+        let payload = check_suite_payload(
+            "completed",
+            "sha10",
+            Some("main"),
+            Some("GitHub Actions"),
+            Some("success"),
+        );
+        let evt = CheckSuiteEvent::from_payload(&payload).expect("should parse");
+        let app = evt.app.expect("app should be present");
+        assert_eq!(app.id, 12345);
+        assert_eq!(app.name, "GitHub Actions");
+        assert_eq!(app.slug, "github-actions");
+    }
+
+    #[test]
+    fn check_suite_event_none_when_action_missing() {
+        let payload = serde_json::json!({ "check_suite": { "head_sha": "abc" } });
+        assert!(CheckSuiteEvent::from_payload(&payload).is_none());
+    }
+
+    #[test]
+    fn check_suite_event_to_signal_kind_completed() {
+        let payload =
+            check_suite_payload("completed", "sha", Some("main"), None, Some("success"));
+        let evt = CheckSuiteEvent::from_payload(&payload).expect("parse");
+        assert_eq!(evt.to_signal_kind(), signal_kinds::GITHUB_CHECK_SUITE_COMPLETED);
+    }
+
+    #[test]
+    fn check_suite_event_to_signal_kind_requested() {
+        let payload = check_suite_payload("requested", "sha", Some("main"), None, None);
+        let evt = CheckSuiteEvent::from_payload(&payload).expect("parse");
+        assert_eq!(evt.to_signal_kind(), signal_kinds::GITHUB_CHECK_SUITE);
+    }
+
+    #[test]
+    fn check_suite_event_to_signal_kind_rerequested() {
+        let payload = check_suite_payload("rerequested", "sha", None, None, None);
+        let evt = CheckSuiteEvent::from_payload(&payload).expect("parse");
+        assert_eq!(evt.to_signal_kind(), signal_kinds::GITHUB_CHECK_SUITE);
+    }
+
+    #[test]
+    fn check_suite_action_as_str_roundtrip() {
+        let cases = [
+            (CheckSuiteAction::Requested, "requested"),
+            (CheckSuiteAction::Rerequested, "rerequested"),
+            (CheckSuiteAction::Completed, "completed"),
+            (CheckSuiteAction::Other("foo".into()), "foo"),
+        ];
+        for (action, expected) in cases {
+            assert_eq!(action.as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn check_suite_conclusion_as_str_roundtrip() {
+        let cases = [
+            (CheckSuiteConclusion::Success, "success"),
+            (CheckSuiteConclusion::Failure, "failure"),
+            (CheckSuiteConclusion::Neutral, "neutral"),
+            (CheckSuiteConclusion::Cancelled, "cancelled"),
+            (CheckSuiteConclusion::TimedOut, "timed_out"),
+            (CheckSuiteConclusion::ActionRequired, "action_required"),
+            (CheckSuiteConclusion::Stale, "stale"),
+            (CheckSuiteConclusion::Other("bar".into()), "bar"),
+        ];
+        for (conclusion, expected) in cases {
+            assert_eq!(conclusion.as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn check_suite_head_branch_none_when_empty_string() {
+        // GitHub sometimes sends `"head_branch": ""` for tag pushes.
+        let payload = serde_json::json!({
+            "action": "completed",
+            "check_suite": {
+                "head_sha": "abc",
+                "head_branch": "",
+                "conclusion": "success",
+            }
+        });
+        let evt = CheckSuiteEvent::from_payload(&payload).expect("parse");
+        // An empty string head_branch should be normalised to None.
+        assert!(
+            evt.head_branch.is_none(),
+            "empty head_branch string should be None, got {:?}",
+            evt.head_branch
         );
     }
 }

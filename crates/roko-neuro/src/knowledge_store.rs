@@ -17,9 +17,9 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::admission::evaluate_admission;
 #[cfg(feature = "hdc")]
 use crate::hdc::KnowledgeHdcEncoder;
-use crate::admission::evaluate_admission;
 use crate::{KnowledgeEntry, KnowledgeKind, KnowledgeTier, NeuroStore};
 
 /// Default garbage-collection threshold for knowledge entries.
@@ -388,21 +388,57 @@ fn entry_contains_secret(entry: &KnowledgeEntry) -> bool {
     false
 }
 
-/// Compute a SHA-256 Merkle root over the given entry IDs.
+/// Compute a Merkle root over a sorted list of entry IDs.
 ///
-/// Entry IDs are sorted lexicographically so the result is deterministic
-/// regardless of the order entries appear in the store. The SHA-256 is
-/// computed by feeding each sorted ID as a fixed-length chunk into a single
-/// hasher, yielding a hex-encoded 64-character digest.
-fn compute_merkle_root(entries: &[KnowledgeEntry]) -> String {
-    let mut ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
-    ids.sort_unstable();
-    let mut hasher = Sha256::new();
-    for id in ids {
-        hasher.update(id.as_bytes());
-        hasher.update(b"\n");
+/// The IDs are first sorted lexicographically so that the root is
+/// deterministic regardless of export order. Each leaf is the SHA-256 hash
+/// of the UTF-8 entry ID. The tree is built bottom-up by hashing pairs of
+/// adjacent nodes; an odd node is promoted unchanged (a "lone sibling" carry).
+/// Returns the hex-encoded root hash, or an empty string for an empty set.
+pub(crate) fn compute_merkle_root(ids: &[String]) -> String {
+    if ids.is_empty() {
+        return String::new();
     }
-    format!("{:x}", hasher.finalize())
+    // Sort IDs for deterministic ordering.
+    let mut sorted = ids.to_vec();
+    sorted.sort();
+
+    // Build leaves: SHA-256 of each entry ID.
+    let mut layer: Vec<[u8; 32]> = sorted
+        .iter()
+        .map(|id| {
+            let mut h = Sha256::new();
+            h.update(id.as_bytes());
+            h.finalize().into()
+        })
+        .collect();
+
+    // Reduce pairs until one node remains.
+    while layer.len() > 1 {
+        let mut next: Vec<[u8; 32]> = Vec::with_capacity(layer.len().div_ceil(2));
+        let mut i = 0;
+        while i < layer.len() {
+            if i + 1 < layer.len() {
+                let mut h = Sha256::new();
+                h.update(layer[i]);
+                h.update(layer[i + 1]);
+                next.push(h.finalize().into());
+                i += 2;
+            } else {
+                // Odd node: promote as-is.
+                next.push(layer[i]);
+                i += 1;
+            }
+        }
+        layer = next;
+    }
+
+    // Encode the single root as lowercase hex.
+    layer[0].iter().fold(String::new(), |mut out, b| {
+        use std::fmt::Write;
+        let _ = write!(out, "{b:02x}");
+        out
+    })
 }
 
 /// Options for [`KnowledgeStore::import`].
@@ -1026,18 +1062,21 @@ impl KnowledgeStore {
         });
 
         let count = filtered.len();
-        let merkle_root = compute_merkle_root(&filtered);
 
         if let Some(parent) = output.parent() {
             fs::create_dir_all(parent).context("create export directory")?;
         }
+
+        // Compute Merkle root over entry IDs for integrity verification.
+        let ids: Vec<String> = filtered.iter().map(|e| e.id.clone()).collect();
+        let merkle_root = compute_merkle_root(&ids);
 
         let header = BackupHeader {
             version: 1,
             created_at: Utc::now(),
             entry_count: count,
             source_path: self.path.display().to_string(),
-            merkle_root: merkle_root.clone(),
+            merkle_root,
         };
 
         let mut file = OpenOptions::new()
@@ -1089,7 +1128,8 @@ impl KnowledgeStore {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        let merkle_root = compute_merkle_root(&filtered);
+        let ids: Vec<String> = filtered.iter().map(|e| e.id.clone()).collect();
+        let merkle_root = compute_merkle_root(&ids);
         Ok(ExportBundle {
             entries: filtered,
             merkle_root,
@@ -4499,6 +4539,7 @@ mod tests {
             created_at: Utc::now(),
             entry_count: 0,
             source_path: "test".to_owned(),
+            merkle_root: String::new(),
         };
         std::fs::write(&bad_backup, serde_json::to_string(&header).unwrap() + "\n").unwrap();
 
@@ -5076,5 +5117,173 @@ mod anti_pattern_tests {
         assert!(!results.is_empty());
         assert_eq!(results[0].kind, KnowledgeKind::AntiKnowledge);
         assert!(results[0].content.contains("E0277"));
+    }
+
+    // ── Merkle root tests (E43-T01) ───────────────────────────────────
+
+    #[test]
+    fn export_includes_merkle_root_in_header() {
+        let tmp = TempDir::new().expect("tempdir");
+        let store = KnowledgeStore::new(tmp.path().join("neuro").join("knowledge.jsonl"));
+        let now = Utc::now();
+
+        store
+            .add(entry(
+                KnowledgeKind::Insight,
+                "k1",
+                "first entry",
+                &["rust"],
+                0.8,
+                &["ep-a"],
+                now,
+            ))
+            .expect("add");
+        store
+            .add(entry(
+                KnowledgeKind::Heuristic,
+                "k2",
+                "second entry",
+                &["tooling"],
+                0.6,
+                &["ep-b"],
+                now,
+            ))
+            .expect("add");
+
+        let backup_path = tmp.path().join("merkle.jsonl");
+        let count = store
+            .export(&backup_path, &ExportFilter::default())
+            .expect("export");
+        assert_eq!(count, 2);
+
+        // Parse the header line and verify merkle_root is non-empty.
+        let content = std::fs::read_to_string(&backup_path).expect("read");
+        let header_line = content.lines().next().expect("header line");
+        let header: BackupHeader = serde_json::from_str(header_line).expect("parse header");
+        assert!(
+            !header.merkle_root.is_empty(),
+            "merkle_root must be non-empty for non-empty export"
+        );
+        // Must be a 64-char lowercase hex SHA-256.
+        assert_eq!(
+            header.merkle_root.len(),
+            64,
+            "merkle_root must be 64 hex chars (SHA-256)"
+        );
+        assert!(
+            header.merkle_root.chars().all(|c| c.is_ascii_hexdigit()),
+            "merkle_root must be hex"
+        );
+    }
+
+    #[test]
+    fn export_merkle_root_is_deterministic() {
+        let tmp = TempDir::new().expect("tempdir");
+        let now = Utc::now();
+
+        let store_a = KnowledgeStore::new(tmp.path().join("a").join("knowledge.jsonl"));
+        store_a
+            .add(entry(
+                KnowledgeKind::Insight,
+                "id-1",
+                "alpha",
+                &["x"],
+                0.9,
+                &[],
+                now,
+            ))
+            .expect("add");
+        store_a
+            .add(entry(
+                KnowledgeKind::Insight,
+                "id-2",
+                "beta",
+                &["y"],
+                0.7,
+                &[],
+                now,
+            ))
+            .expect("add");
+
+        let store_b = KnowledgeStore::new(tmp.path().join("b").join("knowledge.jsonl"));
+        // Insert in reverse order.
+        store_b
+            .add(entry(
+                KnowledgeKind::Insight,
+                "id-2",
+                "beta",
+                &["y"],
+                0.7,
+                &[],
+                now,
+            ))
+            .expect("add");
+        store_b
+            .add(entry(
+                KnowledgeKind::Insight,
+                "id-1",
+                "alpha",
+                &["x"],
+                0.9,
+                &[],
+                now,
+            ))
+            .expect("add");
+
+        let path_a = tmp.path().join("out_a.jsonl");
+        let path_b = tmp.path().join("out_b.jsonl");
+        store_a
+            .export(&path_a, &ExportFilter::default())
+            .expect("export a");
+        store_b
+            .export(&path_b, &ExportFilter::default())
+            .expect("export b");
+
+        let header_a: BackupHeader = serde_json::from_str(
+            std::fs::read_to_string(&path_a)
+                .expect("read a")
+                .lines()
+                .next()
+                .expect("line"),
+        )
+        .expect("parse a");
+        let header_b: BackupHeader = serde_json::from_str(
+            std::fs::read_to_string(&path_b)
+                .expect("read b")
+                .lines()
+                .next()
+                .expect("line"),
+        )
+        .expect("parse b");
+
+        assert_eq!(
+            header_a.merkle_root, header_b.merkle_root,
+            "merkle root must be deterministic regardless of insertion order"
+        );
+    }
+
+    #[test]
+    fn compute_merkle_root_empty_returns_empty_string() {
+        assert_eq!(compute_merkle_root(&[]), "");
+    }
+
+    #[test]
+    fn compute_merkle_root_single_entry() {
+        let root = compute_merkle_root(&["only-entry".to_owned()]);
+        // Single leaf: root = SHA-256("only-entry") as hex.
+        assert_eq!(root.len(), 64);
+        assert!(root.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn compute_merkle_root_order_independent() {
+        let ids_a = vec!["alpha".to_owned(), "beta".to_owned(), "gamma".to_owned()];
+        let mut ids_b = ids_a.clone();
+        ids_b.reverse();
+        assert_eq!(
+            compute_merkle_root(&ids_a),
+            compute_merkle_root(&ids_b),
+            "Merkle root must be order-independent (IDs are sorted internally)"
+        );
     }
 }

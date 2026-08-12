@@ -1876,13 +1876,19 @@ mod tests {
             0.8,
         );
         let result = evaluate_admission(&candidate, &[]);
-        assert!(result.admitted, "Novel entry with empty store should be admitted");
+        assert!(
+            result.admitted,
+            "Novel entry with empty store should be admitted"
+        );
         assert!(
             (result.factors.novelty - 1.0).abs() < 1e-9,
             "novelty should be 1.0 for empty existing store, got {}",
             result.factors.novelty
         );
-        assert!(result.reject_reason.is_none(), "admitted entries must not have reject_reason");
+        assert!(
+            result.reject_reason.is_none(),
+            "admitted entries must not have reject_reason"
+        );
     }
 
     /// An exact copy of an existing entry is rejected as a near-duplicate.
@@ -1900,7 +1906,10 @@ mod tests {
             result.factors.similarity,
             AMAC_DUPLICATE_REJECT_THRESHOLD
         );
-        assert!(result.reject_reason.is_some(), "reject_reason must be set on rejection");
+        assert!(
+            result.reject_reason.is_some(),
+            "reject_reason must be set on rejection"
+        );
         let reason = result.reject_reason.as_deref().unwrap_or("");
         assert!(
             reason.contains("Duplicate") || reason.contains("similarity"),
@@ -1979,8 +1988,18 @@ mod tests {
     /// Without AntiKnowledge entries the contradiction factor is 1.0.
     #[test]
     fn amac_factor_contradiction_no_anti_knowledge_is_full() {
-        let existing = amac_entry("e1", "Use retry for transient failures in services", &["retry"], 0.8);
-        let candidate = amac_entry("c1", "Retry with backoff improves resilience for systems", &["retry"], 0.8);
+        let existing = amac_entry(
+            "e1",
+            "Use retry for transient failures in services",
+            &["retry"],
+            0.8,
+        );
+        let candidate = amac_entry(
+            "c1",
+            "Retry with backoff improves resilience for systems",
+            &["retry"],
+            0.8,
+        );
         let result = evaluate_admission(&candidate, &[existing]);
         assert!(
             (result.factors.contradiction - 1.0).abs() < 1e-9,
@@ -2021,11 +2040,22 @@ mod tests {
     /// A well-tagged entry scores higher relevance than an untagged one.
     #[test]
     fn amac_factor_relevance_rich_tags_lift_score() {
-        let sparse = amac_entry("sparse", "Retry with exponential backoff for resilient systems", &[], 0.8);
+        let sparse = amac_entry(
+            "sparse",
+            "Retry with exponential backoff for resilient systems",
+            &[],
+            0.8,
+        );
         let rich = amac_entry(
             "rich",
             "Retry with exponential backoff for resilient systems",
-            &["retry", "backoff", "resilience", "networking", "distributed"],
+            &[
+                "retry",
+                "backoff",
+                "resilience",
+                "networking",
+                "distributed",
+            ],
             0.8,
         );
         assert!(
@@ -2056,8 +2086,14 @@ mod tests {
             ..AmacGate::default()
         };
         let result = gate.evaluate(&candidate, &[]);
-        assert!(!result.admitted, "low confidence (0.05) should be rejected when confidence is the only factor");
-        assert!(result.reject_reason.is_some(), "reject_reason must be set on rejection");
+        assert!(
+            !result.admitted,
+            "low confidence (0.05) should be rejected when confidence is the only factor"
+        );
+        assert!(
+            result.reject_reason.is_some(),
+            "reject_reason must be set on rejection"
+        );
     }
 
     /// A high-confidence candidate passes when confidence is the sole factor.
@@ -2078,8 +2114,14 @@ mod tests {
             ..AmacGate::default()
         };
         let result = gate.evaluate(&candidate, &[]);
-        assert!(result.admitted, "high confidence (0.95) should be admitted when confidence is the only factor");
-        assert!(result.reject_reason.is_none(), "admitted entries must not have reject_reason");
+        assert!(
+            result.admitted,
+            "high confidence (0.95) should be admitted when confidence is the only factor"
+        );
+        assert!(
+            result.reject_reason.is_none(),
+            "admitted entries must not have reject_reason"
+        );
     }
 
     // ── Combined score and config ─────────────────────────────────────────
@@ -2094,8 +2136,15 @@ mod tests {
             0.9,
         );
         let result = evaluate_admission(&candidate, &[]);
-        assert!(result.admitted, "high-quality novel candidate should be admitted");
-        assert!(result.score >= 0.5, "combined score >= 0.5, got {}", result.score);
+        assert!(
+            result.admitted,
+            "high-quality novel candidate should be admitted"
+        );
+        assert!(
+            result.score >= 0.5,
+            "combined score >= 0.5, got {}",
+            result.score
+        );
         assert!(result.reject_reason.is_none());
     }
 
@@ -2119,7 +2168,11 @@ mod tests {
         };
         let custom_result = novelty_gate.evaluate(&candidate, &[]);
         // With no existing entries, novelty=1.0 → score=1.0 → admitted.
-        assert!(custom_result.admitted, "novelty-only gate should admit a novel entry (score={})", custom_result.score);
+        assert!(
+            custom_result.admitted,
+            "novelty-only gate should admit a novel entry (score={})",
+            custom_result.score
+        );
         // Novelty factor is gate-independent.
         assert!(
             (default_result.factors.novelty - custom_result.factors.novelty).abs() < 1e-9,
@@ -2154,7 +2207,10 @@ mod tests {
             0.9,
         );
         let admit_result = evaluate_admission(&admitted, &[]);
-        assert!(admit_result.reject_reason.is_none(), "admitted entries must not have reject_reason");
+        assert!(
+            admit_result.reject_reason.is_none(),
+            "admitted entries must not have reject_reason"
+        );
 
         // Exact duplicate of the admitted entry should be rejected.
         let dup = amac_entry(
@@ -2164,6 +2220,9 @@ mod tests {
             0.9,
         );
         let reject_result = evaluate_admission(&dup, &[admitted]);
-        assert!(reject_result.reject_reason.is_some(), "rejected entries must have reject_reason");
+        assert!(
+            reject_result.reject_reason.is_some(),
+            "rejected entries must have reject_reason"
+        );
     }
 }

@@ -35,6 +35,7 @@ pub mod coordination;
 pub mod dag;
 pub mod event_log;
 pub mod executor;
+pub mod github_ops;
 pub mod merge_queue;
 /// WebSocket relay for mesh-scope pheromone synchronization.
 pub mod mesh_relay;

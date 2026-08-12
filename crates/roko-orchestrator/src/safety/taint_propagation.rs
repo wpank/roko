@@ -780,11 +780,7 @@ mod tests {
     fn mark_tainted_with_level_stores_level() {
         let tracker = TaintTracker::new();
         let id = h(b"sensitive");
-        tracker.mark_tainted_with_level(
-            id,
-            TaintReason::external("api"),
-            TaintLevel::Confidential,
-        );
+        tracker.mark_tainted_with_level(id, TaintReason::external("api"), TaintLevel::Confidential);
         assert!(tracker.is_tainted(&id));
         assert_eq!(tracker.get_level(&id), Some(TaintLevel::Confidential));
     }
@@ -796,7 +792,10 @@ mod tests {
         let id = h(b"basic");
         tracker.mark_tainted(id, TaintReason::user_input("stdin"));
         let level = tracker.get_level(&id).expect("level must be set");
-        assert!(level >= TaintLevel::Internal, "default level must be >= Internal");
+        assert!(
+            level >= TaintLevel::Internal,
+            "default level must be >= Internal"
+        );
     }
 
     #[test]
@@ -863,11 +862,7 @@ mod tests {
         let parent = h(b"parent");
         let child = h(b"child");
 
-        tracker.mark_tainted_with_level(
-            parent,
-            TaintReason::external("api"),
-            TaintLevel::Internal,
-        );
+        tracker.mark_tainted_with_level(parent, TaintReason::external("api"), TaintLevel::Internal);
         tracker.mark_tainted_with_level(
             child,
             TaintReason::user_input("direct"),
@@ -876,7 +871,9 @@ mod tests {
 
         tracker.propagate(&[parent], child);
 
-        let child_level = tracker.get_level(&child).expect("child must still be tainted");
+        let child_level = tracker
+            .get_level(&child)
+            .expect("child must still be tainted");
         assert!(
             child_level >= TaintLevel::Confidential,
             "level must not decrease: got {child_level:?}"
@@ -897,8 +894,7 @@ mod tests {
             TaintLevel::Confidential,
         );
 
-        let final_level =
-            tracker.propagate_through_pipeline(&[input], &[stage1, stage2, stage3]);
+        let final_level = tracker.propagate_through_pipeline(&[input], &[stage1, stage2, stage3]);
 
         assert!(
             final_level >= TaintLevel::Confidential,
@@ -957,9 +953,7 @@ mod tests {
 
         let signal = Signal::builder(Kind::AgentOutput)
             .body(Body::text("external"))
-            .provenance(
-                Provenance::external("webhook").with_taint_level(TaintLevel::Confidential),
-            )
+            .provenance(Provenance::external("webhook").with_taint_level(TaintLevel::Confidential))
             .build();
 
         let tracker = TaintTracker::new();

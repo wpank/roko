@@ -185,6 +185,14 @@ pub struct ProviderHealthRegistry {
     save_worker: Option<JoinHandle<()>>,
 }
 
+impl std::fmt::Debug for ProviderHealthRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderHealthRegistry")
+            .field("providers", &"<locked>")
+            .finish()
+    }
+}
+
 const HEALTH_SAVE_DEBOUNCE: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy)]
@@ -1865,5 +1873,169 @@ mod tests {
             !registry.is_available("q"),
             "circuit should open after 3 unknown-class failures"
         );
+    }
+
+    // ─── Shared rate limit pooling (Arc identity) — E48-T05 ──────────────────
+    //
+    // Tests verifying that routing (CascadeRouter health filter) and outcome
+    // recording (AgentDispatcherV2) share the *same* Arc<ProviderHealthRegistry>
+    // so outcomes recorded by dispatch are immediately visible to the next
+    // routing decision.
+    //
+    // `cargo test -p roko-learn --lib -- rate_limit` selects these tests.
+
+    /// A single `Arc<ProviderHealthRegistry>` shared between two logical
+    /// components sees outcomes recorded through one reference immediately
+    /// reflected in reads through the other.  This is the Arc-identity
+    /// invariant required by E48-T05.
+    #[test]
+    fn rate_limit_pool_arc_identity_outcomes_are_shared() {
+        let registry = Arc::new(ProviderHealthRegistry::new());
+
+        // Simulate "dispatch" component holds a clone of the shared Arc.
+        let dispatch_ref: Arc<ProviderHealthRegistry> = Arc::clone(&registry);
+        // Simulate "routing" component holds another clone of the same Arc.
+        let routing_ref: Arc<ProviderHealthRegistry> = Arc::clone(&registry);
+
+        // Assert Arc identity: both clones point to the same allocation.
+        assert!(
+            Arc::ptr_eq(&dispatch_ref, &routing_ref),
+            "dispatch_ref and routing_ref must share the same Arc allocation"
+        );
+        assert!(
+            Arc::ptr_eq(&registry, &dispatch_ref),
+            "factory registry and dispatch_ref must share the same Arc allocation"
+        );
+
+        // Record failures through the dispatch component.
+        dispatch_ref.record_failure("anthropic", ErrorClass::RateLimit);
+        dispatch_ref.record_failure("anthropic", ErrorClass::RateLimit);
+        dispatch_ref.record_failure("anthropic", ErrorClass::RateLimit);
+
+        // Routing component must immediately see the circuit as open.
+        assert!(
+            !routing_ref.is_available("anthropic"),
+            "routing_ref must see the open circuit recorded by dispatch_ref"
+        );
+
+        // Record success through routing ref → closes circuit regardless of
+        // current state (ProviderHealth::record_success behaviour).
+        routing_ref.record_success("anthropic");
+
+        // Now the original factory Arc should also reflect Closed state.
+        assert!(
+            registry.is_available("anthropic"),
+            "factory registry must see the success recorded by routing_ref"
+        );
+    }
+
+    /// Rate limit failures (`rate_limit` error kind via ProviderOutcomeRecorder)
+    /// must open the circuit after three consecutive failures (Closed → Open).
+    #[test]
+    fn rate_limit_failure_drives_closed_to_open_transition() {
+        use roko_agent::model_call_service::ProviderOutcomeRecorder;
+
+        let registry = Arc::new(ProviderHealthRegistry::new());
+
+        assert!(registry.is_available("openai"), "starts Closed/available");
+
+        registry.record_provider_failure("openai", "rate_limit");
+        registry.record_provider_failure("openai", "rate_limit");
+        // Two failures are below the threshold — still Closed.
+        assert!(
+            registry.is_available("openai"),
+            "still available after 2 rate-limit failures"
+        );
+
+        registry.record_provider_failure("openai", "rate_limit");
+        // Third failure trips to Open.
+        assert!(
+            !registry.is_available("openai"),
+            "circuit must be Open after 3 rate-limit failures"
+        );
+    }
+
+    /// After three timeout failures the circuit opens (Closed → Open);
+    /// a probe success drives it back to Closed.
+    #[test]
+    fn rate_limit_pool_halfopen_probe_success_closes_circuit() {
+        use roko_agent::model_call_service::ProviderOutcomeRecorder;
+
+        let registry = Arc::new(ProviderHealthRegistry::new());
+
+        // Trip to Open via three timeout failures.
+        registry.record_provider_failure("gemini", "timeout");
+        registry.record_provider_failure("gemini", "timeout");
+        registry.record_provider_failure("gemini", "timeout");
+        assert!(!registry.is_available("gemini"), "Open after 3 timeouts");
+
+        // record_provider_success closes the circuit back to Closed.
+        registry.record_provider_success("gemini");
+        assert!(
+            registry.is_available("gemini"),
+            "circuit closed after probe success"
+        );
+
+        // Verify snapshot reflects Closed state and cleared failures.
+        let snap = registry.snapshot();
+        let entry = snap.get("gemini").expect("gemini must be tracked");
+        assert_eq!(entry.state, CircuitState::Closed);
+        assert_eq!(entry.consecutive_failures, 0);
+    }
+
+    /// Per-provider isolation: failures on provider A must not affect
+    /// provider B within the shared registry.
+    #[test]
+    fn rate_limit_pool_per_provider_isolation() {
+        use roko_agent::model_call_service::ProviderOutcomeRecorder;
+
+        let registry = Arc::new(ProviderHealthRegistry::new());
+
+        // Trip provider A.
+        registry.record_provider_failure("anthropic", "rate_limit");
+        registry.record_provider_failure("anthropic", "rate_limit");
+        registry.record_provider_failure("anthropic", "rate_limit");
+
+        // Provider B must be unaffected.
+        assert!(!registry.is_available("anthropic"), "anthropic is Open");
+        assert!(
+            registry.is_available("openai"),
+            "openai must be unaffected by anthropic failures"
+        );
+        assert!(
+            registry.is_available("gemini"),
+            "gemini must be unaffected by anthropic failures"
+        );
+    }
+
+    /// Concurrent Arc clones all record into the same shared state.
+    /// 20 concurrent tasks each record a server_error failure; the total
+    /// must be visible through any clone.
+    #[tokio::test]
+    async fn rate_limit_pool_concurrent_arc_clones_observe_same_state() {
+        use roko_agent::model_call_service::ProviderOutcomeRecorder;
+
+        let registry = Arc::new(ProviderHealthRegistry::new());
+
+        let mut handles = Vec::new();
+        for _ in 0..20 {
+            let r = Arc::clone(&registry);
+            handles.push(tokio::spawn(async move {
+                r.record_provider_failure("parallel", "server_error");
+            }));
+        }
+        for h in handles {
+            h.await.expect("task panicked");
+        }
+
+        // All clones share the same state → 20 total_failures.
+        let snap = registry.snapshot();
+        let entry = snap.get("parallel").expect("parallel must be tracked");
+        assert_eq!(
+            entry.total_failures, 20,
+            "all 20 concurrent failures must be visible through any Arc clone"
+        );
+        // Circuit should be open (threshold is 3).
+        assert_eq!(entry.state, CircuitState::Open);
     }
 }

@@ -2149,7 +2149,10 @@ mod tests {
 
     #[test]
     fn daemon_health_state_stale_display() {
-        assert_eq!(DaemonHealthState::Stale.to_string(), "stopped (stale PID file cleaned)");
+        assert_eq!(
+            DaemonHealthState::Stale.to_string(),
+            "stopped (stale PID file cleaned)"
+        );
     }
 
     #[test]
@@ -2167,12 +2170,20 @@ mod tests {
     #[test]
     fn daemon_health_state_degraded_eq() {
         assert_eq!(
-            DaemonHealthState::Degraded { reason: "timeout".into() },
-            DaemonHealthState::Degraded { reason: "timeout".into() }
+            DaemonHealthState::Degraded {
+                reason: "timeout".into()
+            },
+            DaemonHealthState::Degraded {
+                reason: "timeout".into()
+            }
         );
         assert_ne!(
-            DaemonHealthState::Degraded { reason: "timeout".into() },
-            DaemonHealthState::Degraded { reason: "refused".into() }
+            DaemonHealthState::Degraded {
+                reason: "timeout".into()
+            },
+            DaemonHealthState::Degraded {
+                reason: "refused".into()
+            }
         );
     }
 
@@ -2208,7 +2219,7 @@ mod tests {
         std::fs::write(roko_dir.join("daemon.sock"), "").unwrap();
 
         let info = DaemonInfo {
-            pid: 0,  // PID 0 is never a real user process.
+            pid: 0, // PID 0 is never a real user process.
             port: 19999,
             session_id: "test".into(),
             started_at: chrono::Utc::now(),
@@ -2219,9 +2230,18 @@ mod tests {
         assert_eq!(health, DaemonHealthState::Stale);
 
         // Stale files must have been cleaned up.
-        assert!(!roko_dir.join("daemon.json").exists(), "daemon.json should be removed");
-        assert!(!roko_dir.join("daemon.pid").exists(), "daemon.pid should be removed");
-        assert!(!roko_dir.join("daemon.sock").exists(), "daemon.sock should be removed");
+        assert!(
+            !roko_dir.join("daemon.json").exists(),
+            "daemon.json should be removed"
+        );
+        assert!(
+            !roko_dir.join("daemon.pid").exists(),
+            "daemon.pid should be removed"
+        );
+        assert!(
+            !roko_dir.join("daemon.sock").exists(),
+            "daemon.sock should be removed"
+        );
     }
 
     /// Verify that a live PID with a non-listening port results in `Degraded`

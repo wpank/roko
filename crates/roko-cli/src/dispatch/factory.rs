@@ -16,6 +16,7 @@ use roko_agent::rate_limit::ProviderRateLimiter;
 use roko_compose::{AttentionBidder, LearningBidder};
 use roko_core::config::schema::RokoConfig;
 use roko_core::tool::ToolDef;
+use roko_learn::provider_health::ProviderHealthRegistry;
 use tokio::sync::mpsc;
 
 use crate::dispatch_v2::{
@@ -47,6 +48,15 @@ pub struct SharedAgentFactory {
     /// Passed to `AgentOptions.rate_limiter` so HTTP-backed provider adapters
     /// call `acquire(provider_id)` before each live LLM request.
     rate_limiter: Arc<ProviderRateLimiter>,
+    /// Runtime-scoped provider health registry shared across routing and outcome recording.
+    ///
+    /// The same `Arc` is used by:
+    /// - `AgentDispatcherV2` to record real LLM provider outcomes (success / typed failures).
+    /// - The learning event subscriber to persist health state across plan runs.
+    ///
+    /// Sharing one Arc guarantees that outcomes recorded by dispatch are immediately
+    /// visible to the next routing decision. (E48-T05 Arc identity invariant)
+    pub health_registry: Arc<ProviderHealthRegistry>,
 }
 
 impl SharedAgentFactory {
@@ -113,6 +123,14 @@ impl SharedAgentFactory {
             config.effective_providers().iter(),
         ));
 
+        // Build one shared provider health registry for the duration of this run.
+        // The same Arc is passed to:
+        //   - AgentDispatcherV2 outcome recording (updates circuit state after each call)
+        //   - The learning event subscriber (persists health state to disk)
+        // All components must share the identical Arc so outcomes are immediately visible
+        // to the next routing decision. (E48-T05 Arc identity invariant)
+        let health_registry = Arc::new(ProviderHealthRegistry::new());
+
         Self {
             config,
             semaphores,
@@ -120,6 +138,7 @@ impl SharedAgentFactory {
             dispatcher,
             resolver,
             rate_limiter,
+            health_registry,
         }
     }
 
@@ -188,10 +207,12 @@ impl SharedAgentFactory {
         let semaphores = Arc::clone(&self.semaphores);
         let mcp_tools = self.mcp_tools.clone();
         let rate_limiter = Arc::clone(&self.rate_limiter);
+        let health_registry = Arc::clone(&self.health_registry);
 
         tokio::spawn(async move {
-            let dispatcher =
-                AgentDispatcherV2::with_shared(config, semaphores).with_rate_limiter(rate_limiter);
+            let dispatcher = AgentDispatcherV2::with_shared(config, semaphores)
+                .with_rate_limiter(rate_limiter)
+                .with_health_registry(health_registry);
             match dispatcher
                 .run_agent_result_bridge_with_mcp(request, mcp_tools)
                 .await

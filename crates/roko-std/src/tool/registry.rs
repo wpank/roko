@@ -171,7 +171,8 @@ impl DynamicToolRegistry {
         tools: Vec<ToolDef>,
         sandbox: SandboxConfig,
     ) {
-        self.sandbox_configs.insert(plugin_name.to_string(), sandbox);
+        self.sandbox_configs
+            .insert(plugin_name.to_string(), sandbox);
         for tool in tools {
             self.register(tool);
         }
@@ -553,9 +554,15 @@ mod tests {
     use roko_core::tool::{ToolCategory, ToolPermission, ToolSource};
 
     fn plugin_tool(name: &str, plugin: &str) -> ToolDef {
-        let mut t =
-            ToolDef::new(name, "a plugin tool", ToolCategory::Exec, ToolPermission::executes());
-        t.source = ToolSource::Plugin { name: plugin.to_string() };
+        let mut t = ToolDef::new(
+            name,
+            "a plugin tool",
+            ToolCategory::Exec,
+            ToolPermission::executes(),
+        );
+        t.source = ToolSource::Plugin {
+            name: plugin.to_string(),
+        };
         t
     }
 
@@ -582,7 +589,9 @@ mod tests {
             vec![plugin_tool("myplugin.format", "myplugin")],
             sandbox.clone(),
         );
-        let resolved = reg.sandbox_for_tool("myplugin.format").expect("must resolve");
+        let resolved = reg
+            .sandbox_for_tool("myplugin.format")
+            .expect("must resolve");
         assert_eq!(*resolved, sandbox);
     }
 

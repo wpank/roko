@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 /// accidentally over-restrict. The per-tier constructors
 /// ([`SandboxConfig::for_tier_level`]) provide secure, opinionated starting
 /// points.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxConfig {
     /// Glob patterns (relative to the worktree) the tool may *read or write*.
     ///
@@ -227,11 +227,17 @@ impl SandboxConfig {
     /// without touching the filesystem.
     #[must_use]
     pub fn permits_path(&self, path_glob: &str) -> bool {
-        let allowed = self.allowed_paths.iter().any(|p| p == path_glob || p == "**");
+        let allowed = self
+            .allowed_paths
+            .iter()
+            .any(|p| p == path_glob || p == "**");
         if !allowed {
             return false;
         }
-        let denied = self.denied_paths.iter().any(|d| d == path_glob || d == "**");
+        let denied = self
+            .denied_paths
+            .iter()
+            .any(|d| d == path_glob || d == "**");
         !denied
     }
 }
@@ -247,7 +253,10 @@ mod tests {
     #[test]
     fn sandbox_tier1_is_most_restricted() {
         let cfg = SandboxConfig::for_tier_level(1);
-        assert!(cfg.allowed_paths.is_empty(), "tier 1 must not allow any paths");
+        assert!(
+            cfg.allowed_paths.is_empty(),
+            "tier 1 must not allow any paths"
+        );
         assert!(!cfg.network_access, "tier 1 must block network");
         assert!(cfg.max_memory_mb <= 128, "tier 1 must cap memory");
         assert!(cfg.max_cpu_seconds <= 30, "tier 1 must cap cpu");
@@ -256,7 +265,10 @@ mod tests {
     #[test]
     fn sandbox_tier2_allows_reads_denies_secrets() {
         let cfg = SandboxConfig::for_tier_level(2);
-        assert!(!cfg.allowed_paths.is_empty(), "tier 2 must allow some paths");
+        assert!(
+            !cfg.allowed_paths.is_empty(),
+            "tier 2 must allow some paths"
+        );
         assert!(!cfg.network_access, "tier 2 must block network");
         assert!(
             cfg.denied_paths.iter().any(|d| d.contains(".env")),
@@ -278,7 +290,10 @@ mod tests {
     fn sandbox_tier4_is_generous() {
         let cfg = SandboxConfig::for_tier_level(4);
         assert!(cfg.network_access, "tier 4 must allow network");
-        assert!(cfg.denied_paths.is_empty(), "tier 4 must not deny any paths");
+        assert!(
+            cfg.denied_paths.is_empty(),
+            "tier 4 must not deny any paths"
+        );
     }
 
     #[test]
@@ -327,7 +342,10 @@ mod tests {
     #[test]
     fn validate_clean_config_returns_empty() {
         let cfg = SandboxConfig::for_tier_level(2);
-        assert!(cfg.validate().is_empty(), "valid tier config must not produce violations");
+        assert!(
+            cfg.validate().is_empty(),
+            "valid tier config must not produce violations"
+        );
     }
 
     #[test]
@@ -387,7 +405,10 @@ mod tests {
             max_memory_mb: 128,
             max_cpu_seconds: 10,
         };
-        assert!(cfg.permits_path("src/main.rs"), "non-denied path under ** must be allowed");
+        assert!(
+            cfg.permits_path("src/main.rs"),
+            "non-denied path under ** must be allowed"
+        );
         assert!(
             !cfg.permits_path("secrets/**"),
             "explicitly denied path must be blocked"

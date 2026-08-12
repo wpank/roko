@@ -11,6 +11,7 @@ pub mod lens;
 pub mod metrics;
 pub mod schema;
 pub mod scrub;
+pub mod telemetry_observe;
 
 pub use health::{
     AlwaysUpProbe, DegradedReason, HealthStatus, NamedProbe, Probe, ProbeRegistry, ReadinessStatus,
@@ -27,6 +28,7 @@ pub use roko_runtime::heartbeat_probes::{
     BuildResult, EngineState, HeartbeatProbe, HeartbeatProbeRegistry, MacdSnapshot, ProbeDomain,
     ProbeResult, ProbeResults,
 };
-pub use lens::{CollectorLens, CostLens, LatencyLens, Lens, LensScope, LensSnapshot, TokenUsageLens};
+pub use lens::{CollectorLens, CostLens, LatencyLens, Lens, LensRegistry, LensScope, LensSnapshot, TokenUsageLens};
 pub use schema::{CanonicalMetricSchema, MetricDescriptor, MetricSchema, SCHEMA_VERSION};
 pub use scrub::{LogScrubber, REDACTED};
+pub use telemetry_observe::{PeriodicObserver, TelemetryObservation, TelemetryObserve};

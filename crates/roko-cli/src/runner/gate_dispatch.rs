@@ -346,14 +346,40 @@ fn failed_gate_completion(
     }
 }
 
+/// Outcome of a single `attempt_auto_fix` call — used for tracking and telemetry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutoFixOutcome {
+    /// Name of the gate that triggered the auto-fix attempt.
+    pub gate_name: String,
+    /// Whether the classifier judged the failure as a `cargo fix` candidate.
+    pub was_candidate: bool,
+    /// Whether `cargo fix` (or `cargo clippy --fix`) exited successfully.
+    pub fix_applied: bool,
+    /// Whether the gate was re-run after the fix and the retry passed.
+    pub gate_passed_after_fix: bool,
+    /// The fix command that was executed, e.g. `"cargo fix --allow-dirty"`.
+    pub command: Option<String>,
+}
+
+impl AutoFixOutcome {
+    /// Construct a "not a candidate" outcome — no fix was attempted.
+    fn not_candidate(gate_name: impl Into<String>) -> Self {
+        Self {
+            gate_name: gate_name.into(),
+            was_candidate: false,
+            fix_applied: false,
+            gate_passed_after_fix: false,
+            command: None,
+        }
+    }
+}
+
 /// Attempt to auto-fix compile or clippy gate failures using `cargo fix`.
 ///
 /// For "compile" gates: runs `cargo fix --allow-dirty` then `cargo fmt`.
 /// For "clippy" gates: runs `cargo clippy --fix --allow-dirty`.
 ///
-/// Returns `Ok(true)` if the fix command exited zero (fix was applied and
-/// the gate should be retried). Returns `Ok(false)` if the gate name is
-/// not auto-fixable or if `cargo_fix_candidate` is false. Returns `Err` only
+/// Returns `Ok(AutoFixOutcome)` describing what happened. Returns `Err` only
 /// on internal failures (spawn error, etc).
 ///
 /// Per spec: never use `--allow-staged`, only `--allow-dirty`.
@@ -361,10 +387,10 @@ pub async fn attempt_auto_fix(
     workdir: &Path,
     gate_name: &str,
     error_output: &str,
-) -> Result<bool, String> {
+) -> Result<AutoFixOutcome, String> {
     let classification = roko_gate::classify_gate_failure(gate_name, error_output);
     if !classification.cargo_fix_candidate {
-        return Ok(false);
+        return Ok(AutoFixOutcome::not_candidate(gate_name));
     }
 
     let raw = raw_gate_name(gate_name);
@@ -373,12 +399,14 @@ pub async fn attempt_auto_fix(
     } else if raw.starts_with("clippy") {
         ("cargo", &["clippy", "--fix", "--allow-dirty"])
     } else {
-        return Ok(false);
+        return Ok(AutoFixOutcome::not_candidate(gate_name));
     };
+
+    let command_str = format!("{program} {}", args.join(" "));
 
     info!(
         gate = %gate_name,
-        program,
+        command = %command_str,
         "attempting cargo auto-fix before agent retry"
     );
 
@@ -395,7 +423,13 @@ pub async fn attempt_auto_fix(
             exit_code = ?fix_status.status.code(),
             "cargo auto-fix exited non-zero — falling through to agent"
         );
-        return Ok(false);
+        return Ok(AutoFixOutcome {
+            gate_name: gate_name.to_string(),
+            was_candidate: true,
+            fix_applied: false,
+            gate_passed_after_fix: false,
+            command: Some(command_str),
+        });
     }
 
     // For compile fixes, also run cargo fmt to keep formatting clean.
@@ -408,7 +442,13 @@ pub async fn attempt_auto_fix(
     }
 
     info!(gate = %gate_name, "cargo auto-fix applied — will retry gate");
-    Ok(true)
+    Ok(AutoFixOutcome {
+        gate_name: gate_name.to_string(),
+        was_candidate: true,
+        fix_applied: true,
+        gate_passed_after_fix: false, // updated by caller after retry
+        command: Some(command_str),
+    })
 }
 
 /// Run a gate rung to completion and return its summary.
@@ -493,8 +533,9 @@ pub async fn run_gate_once(
         // E45-T02: If the first run produced any failures, attempt cargo auto-fix
         // before we finalise. If the fix applied cleanly, rerun the gate pipeline
         // once and replace the verdicts so the caller sees a pass instead.
+        // Gated on `gates_config.cargo_fix_enabled` (default: true).
         let first_run_failed = verdicts.iter().any(|v| !v.passed && !v.skipped);
-        if first_run_failed && before == after {
+        if first_run_failed && before == after && gates_config.cargo_fix_enabled {
             let first_output = render_output(&verdicts);
             // Find the first failing gate name to drive the fix heuristic.
             let failing_gate = verdicts
@@ -503,7 +544,7 @@ pub async fn run_gate_once(
                 .map(|v| v.gate.as_str())
                 .unwrap_or("compile");
             match attempt_auto_fix(&workdir, failing_gate, &first_output).await {
-                Ok(true) => {
+                Ok(mut outcome) if outcome.fix_applied => {
                     // Fix applied — rerun the pipeline with a fresh snapshot pair.
                     let before_retry = gate_input_snapshot(workdir.clone()).await?;
                     let inputs_retry =
@@ -531,11 +572,20 @@ pub async fn run_gate_once(
                     let after_retry = gate_input_snapshot(workdir.clone()).await?;
                     if before_retry == after_retry {
                         // Immutable input confirmed after retry — use retry verdicts.
+                        let retry_passed =
+                            retry_verdicts.iter().all(|v| v.passed || v.skipped);
+                        outcome.gate_passed_after_fix = retry_passed;
+                        info!(
+                            gate = %outcome.gate_name,
+                            command = ?outcome.command,
+                            gate_passed_after_fix = outcome.gate_passed_after_fix,
+                            "auto-fix retry complete"
+                        );
                         verdicts = retry_verdicts;
                     }
                 }
-                Ok(false) | Err(_) => {
-                    // No fix applied or fix failed — proceed with original verdicts.
+                Ok(_) | Err(_) => {
+                    // No fix applied, not a candidate, or fix failed — fall through to agent.
                 }
             }
         }
@@ -1793,5 +1843,85 @@ mod tests {
                 "published pulse must have gate.verdict.emitted topic"
             );
         }
+    }
+
+    // ── E45-T02: auto-fix path tests ─────────────────────────────────────────
+
+    /// Gate output that does NOT look like a cargo_fix_candidate should result
+    /// in `was_candidate = false` and no fix command attempted.
+    #[tokio::test]
+    async fn auto_fix_skips_non_candidate_output() {
+        let dir = tempfile::tempdir().unwrap();
+        // A plain test failure string — no compile errors, so cargo_fix_candidate = false.
+        let non_compile_output = "test result: FAILED. 2 passed; 1 failed; 0 ignored";
+        let outcome = attempt_auto_fix(dir.path(), "test", non_compile_output)
+            .await
+            .expect("attempt_auto_fix must not return Err for non-candidates");
+
+        assert!(!outcome.was_candidate, "test failures are not fix candidates");
+        assert!(!outcome.fix_applied);
+        assert!(!outcome.gate_passed_after_fix);
+        assert!(outcome.command.is_none());
+        assert_eq!(outcome.gate_name, "test");
+    }
+
+    /// A gate name that is neither "compile" nor "clippy" should produce a
+    /// not-candidate outcome even if the output looks fixable.
+    #[tokio::test]
+    async fn auto_fix_skips_unknown_gate_name() {
+        let dir = tempfile::tempdir().unwrap();
+        // Even with compile-looking output, an unrecognised gate name is not fixable.
+        let output = "error[E0433]: failed to resolve: use of undeclared crate `foo`";
+        let outcome = attempt_auto_fix(dir.path(), "docs", output)
+            .await
+            .expect("attempt_auto_fix must not error");
+
+        assert!(!outcome.fix_applied);
+        assert_eq!(outcome.gate_name, "docs");
+    }
+
+    /// `AutoFixOutcome` must accurately record the command string when a fix is attempted.
+    /// We cannot easily run real cargo fix in a unit test, but we can verify that when
+    /// `cargo_fix_candidate` is false, the command field stays None.
+    #[tokio::test]
+    async fn auto_fix_outcome_command_is_none_for_non_candidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = "nothing interesting here";
+        let outcome = attempt_auto_fix(dir.path(), "compile", output)
+            .await
+            .unwrap();
+
+        // classify_gate_failure("compile", ...) on empty/non-error output should
+        // set cargo_fix_candidate = false.
+        assert!(!outcome.fix_applied);
+        assert!(
+            outcome.command.is_none(),
+            "no command should be recorded when fix was not attempted"
+        );
+    }
+
+    /// `cargo_fix_enabled` defaults to `true` in `GatesConfig::default()`.
+    #[test]
+    fn gates_config_cargo_fix_enabled_default_is_true() {
+        let cfg = GatesConfig::default();
+        assert!(
+            cfg.cargo_fix_enabled,
+            "cargo_fix_enabled should default to true"
+        );
+    }
+
+    /// `cargo_fix_enabled = false` must round-trip through TOML deserialization.
+    #[test]
+    fn gates_config_cargo_fix_enabled_toml_roundtrip() {
+        use roko_core::config::schema::RokoConfig;
+        let toml = r#"
+[gates]
+cargo_fix_enabled = false
+"#;
+        let config = RokoConfig::from_toml(toml).expect("config must parse");
+        assert!(
+            !config.gates.cargo_fix_enabled,
+            "cargo_fix_enabled must deserialize to false"
+        );
     }
 }

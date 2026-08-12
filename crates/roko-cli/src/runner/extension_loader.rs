@@ -166,6 +166,7 @@ pub fn load_extensions(
                         .iter()
                         .map(|d| d.name.clone())
                         .collect(),
+                    soft_depends_on: Vec::new(),
                     version: plugin.manifest.plugin.version.clone(),
                 },
                 prompt_count: plugin.manifest.prompts.len(),

@@ -48,6 +48,14 @@ pub struct GatesConfig {
     /// Max gate retry iterations before giving up.
     #[serde(default = "default_max_iterations")]
     pub max_iterations: u32,
+    /// Whether `cargo fix --allow-dirty` (for compile gates) or
+    /// `cargo clippy --fix --allow-dirty` (for clippy gates) is attempted
+    /// automatically before falling back to agent retry.
+    ///
+    /// Defaults to `true`. Set to `false` to disable the auto-fix shortcut
+    /// and always hand failures directly to the agent.
+    #[serde(default = "default_true")]
+    pub cargo_fix_enabled: bool,
     /// Per-domain gate overrides. Keys are domain labels (e.g. "research", "docs"),
     /// values are shell commands to run as gates (e.g. `["shell:true"]`).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -67,6 +75,7 @@ impl Default for GatesConfig {
             clippy_enabled: default_true(),
             skip_tests: false,
             max_iterations: default_max_iterations(),
+            cargo_fix_enabled: true,
             domain_gates: HashMap::new(),
             custom_rungs: Vec::new(),
         }

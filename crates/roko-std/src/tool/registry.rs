@@ -8,6 +8,8 @@
 
 use roko_core::error::{Result, RokoError};
 use roko_core::tool::{ToolDef, ToolRegistry};
+#[allow(unused_imports)]
+use tracing;
 
 use super::builtin::ROKO_BUILTIN_TOOLS;
 
@@ -56,6 +58,155 @@ impl ToolRegistry for StaticToolRegistry {
         validate_against_schema(&def.parameters, args)
     }
 }
+
+// ─── DynamicToolRegistry ─────────────────────────────────────────────────
+
+/// A runtime-extensible registry that merges built-in tools with plugin-declared
+/// tools (§E32-T02).
+///
+/// The registry starts with a snapshot of [`ROKO_BUILTIN_TOOLS`] and allows
+/// additional [`ToolDef`]s to be registered at runtime via [`Self::register`].
+/// All tools (static + dynamic) are stored in a single owned `Vec<ToolDef>` so
+/// that [`ToolRegistry::get`] and [`ToolRegistry::all`] can return references
+/// with the struct's own lifetime.
+///
+/// # Thread-safety
+///
+/// `DynamicToolRegistry` itself is `Send + Sync`. For shared mutable access
+/// across threads, wrap it in `Arc<parking_lot::RwLock<_>>`.
+///
+/// # Deduplication
+///
+/// When a plugin tool shares a name with an existing entry, the new entry
+/// **replaces** the old one and a `tracing::warn` is emitted.
+#[derive(Debug, Clone)]
+pub struct DynamicToolRegistry {
+    /// All tools: built-in snapshot + plugin-registered, deduplicated by name.
+    tools: Vec<ToolDef>,
+}
+
+impl DynamicToolRegistry {
+    /// Construct a new `DynamicToolRegistry` pre-populated with every built-in
+    /// tool from [`ROKO_BUILTIN_TOOLS`].
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            tools: ROKO_BUILTIN_TOOLS.to_vec(),
+        }
+    }
+
+    /// Construct a `DynamicToolRegistry` from an explicit seed list of tools.
+    /// Does **not** include the built-ins automatically. Useful for tests.
+    #[must_use]
+    pub fn from_tools(tools: Vec<ToolDef>) -> Self {
+        Self { tools }
+    }
+
+    /// Register a new tool at runtime.
+    ///
+    /// If a tool with the same name already exists, the existing entry is
+    /// replaced and a warning is logged.
+    pub fn register(&mut self, tool: ToolDef) {
+        const SAFETY_CRITICAL: &[&str] = &["bash", "read_file", "write_file"];
+
+        if let Some(pos) = self.tools.iter().position(|t| t.name == tool.name) {
+            let old_source = &self.tools[pos].source;
+            if SAFETY_CRITICAL.contains(&tool.name.as_str()) {
+                tracing::warn!(
+                    tool = %tool.name,
+                    old_source = ?old_source,
+                    new_source = ?tool.source,
+                    "DynamicToolRegistry: overriding safety-critical built-in tool"
+                );
+            } else {
+                tracing::warn!(
+                    tool = %tool.name,
+                    old_source = ?old_source,
+                    new_source = ?tool.source,
+                    "DynamicToolRegistry: plugin tool overrides existing entry"
+                );
+            }
+            self.tools[pos] = tool;
+        } else {
+            self.tools.push(tool);
+        }
+    }
+
+    /// Register multiple tools at once.
+    pub fn register_all(&mut self, tools: impl IntoIterator<Item = ToolDef>) {
+        for tool in tools {
+            self.register(tool);
+        }
+    }
+
+    /// Remove a tool by name. Returns the removed [`ToolDef`] if it existed.
+    pub fn unregister(&mut self, name: &str) -> Option<ToolDef> {
+        if let Some(pos) = self.tools.iter().position(|t| t.name == name) {
+            Some(self.tools.swap_remove(pos))
+        } else {
+            None
+        }
+    }
+
+    /// Total number of registered tools (built-ins + plugin-declared).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.tools.len()
+    }
+
+    /// Returns `true` when no tools are registered.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
+    }
+
+    /// Return all tools whose source is a `Plugin { name }` matching `extension`.
+    #[must_use]
+    pub fn by_extension<'a>(&'a self, extension: &str) -> Vec<&'a ToolDef> {
+        use roko_core::tool::ToolSource;
+        self.tools
+            .iter()
+            .filter(|t| matches!(&t.source, ToolSource::Plugin { name } if name == extension))
+            .collect()
+    }
+
+    /// Return all tools in the given [`roko_core::tool::ToolCategory`].
+    #[must_use]
+    pub fn by_category(&self, category: roko_core::tool::ToolCategory) -> Vec<&ToolDef> {
+        self.tools.iter().filter(|t| t.category == category).collect()
+    }
+
+    /// Returns `true` if a tool with `name` is registered.
+    #[must_use]
+    pub fn contains(&self, name: &str) -> bool {
+        self.tools.iter().any(|t| t.name == name)
+    }
+}
+
+impl Default for DynamicToolRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ToolRegistry for DynamicToolRegistry {
+    fn get(&self, name: &str) -> Option<&ToolDef> {
+        self.tools.iter().find(|t| t.name == name)
+    }
+
+    fn all(&self) -> &[ToolDef] {
+        &self.tools
+    }
+
+    fn validate_args(&self, name: &str, args: &serde_json::Value) -> Result<()> {
+        let def = self
+            .get(name)
+            .ok_or_else(|| RokoError::invalid(format!("unknown tool: {name}")))?;
+        validate_against_schema(&def.parameters, args)
+    }
+}
+
+// ─── Internal helpers ─────────────────────────────────────────────────────
 
 /// Validate `args` against a tool's JSON schema.
 ///

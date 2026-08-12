@@ -78,6 +78,8 @@ pub mod chat_types;
 pub mod cognitive_workspace;
 pub mod conductor;
 pub mod config;
+/// Five-head lexicographic corrigibility ordering (Nayebi 2024).
+pub mod corrigibility;
 /// Connector trait for external system I/O (MCP, API, Database, Blockchain, Feed, Custom).
 pub mod connector;
 pub mod context;

@@ -4111,6 +4111,32 @@ pub async fn run(
         .unwrap_or(true);
     run_gc_if_needed(&config.layout, gc_on_end).await;
 
+    // ── Post-run orphan worktree cleanup ────────────────────────────
+    //
+    // Scan .roko/worktrees/ for directories left over from previous crashed
+    // runs or tasks that were never cleaned up. Which cleanup policy applies
+    // depends on the overall run outcome:
+    //   • all tasks succeeded → worktree_cleanup_on_complete
+    //   • any failure/cancel   → worktree_cleanup_on_failure
+    let cleanup_on_complete = config
+        .roko_config
+        .as_deref()
+        .map(|c| c.resources.worktree_cleanup_on_complete)
+        .unwrap_or(true);
+    let cleanup_on_failure = config
+        .roko_config
+        .as_deref()
+        .map(|c| c.resources.worktree_cleanup_on_failure)
+        .unwrap_or(true);
+    let should_cleanup_worktrees = if report.all_succeeded() {
+        cleanup_on_complete
+    } else {
+        cleanup_on_failure
+    };
+    if should_cleanup_worktrees {
+        cleanup_orphan_worktrees(&config.workdir, &worktrees).await;
+    }
+
     Ok(report)
 }
 
@@ -9346,6 +9372,108 @@ async fn run_gc_if_needed(layout: &RokoLayout, force: bool) {
         }
         Err(err) => {
             warn!(error = %err, "filesystem GC failed (best-effort)");
+        }
+    }
+}
+
+/// Scan `.roko/worktrees/` for directories not tracked by `worktrees` and
+/// remove them.
+///
+/// Orphan worktrees are directories that were created by a previous run but
+/// never cleaned up — typically because the process crashed or was killed
+/// before normal shutdown.  The function:
+///
+/// 1. Reads all entries under `<workdir>/.roko/worktrees/`.
+/// 2. Compares them against the set of IDs currently tracked in memory by the
+///    [`WorktreeManager`].
+/// 3. For each untracked directory, attempts a best-effort `remove_dir_all`.
+///    A warning is logged when removal fails (e.g. the directory is still
+///    open by another process).
+/// 4. For each tracked worktree whose task-run is complete (all tasks are at a
+///    terminal state), calls [`WorktreeManager::remove`] to perform an orderly
+///    git-worktree removal.  A warning is logged when removal fails (e.g. a
+///    dirty checkout).
+///
+/// All errors are logged but never propagated — worktree cleanup is
+/// best-effort housekeeping.
+async fn cleanup_orphan_worktrees(workdir: &Path, worktrees: &WorktreeManager) {
+    let worktrees_root = workdir.join(".roko").join("worktrees");
+
+    // Nothing to do if the directory doesn't exist yet.
+    if !worktrees_root.is_dir() {
+        return;
+    }
+
+    // Collect the IDs currently tracked in memory so we can identify orphans.
+    let tracked_ids: HashSet<String> = match worktrees.list() {
+        Ok(handles) => handles.into_iter().map(|h| h.id).collect(),
+        Err(err) => {
+            warn!(error = %err, "failed to list tracked worktrees — skipping orphan cleanup");
+            return;
+        }
+    };
+
+    // Read the on-disk directory entries.
+    let dir_entries = match std::fs::read_dir(&worktrees_root) {
+        Ok(entries) => entries,
+        Err(err) => {
+            warn!(
+                dir = %worktrees_root.display(),
+                error = %err,
+                "failed to read worktrees directory — skipping orphan cleanup"
+            );
+            return;
+        }
+    };
+
+    for entry in dir_entries.flatten() {
+        let path = entry.path();
+
+        // Only consider directories (each worktree is a checkout dir).
+        if !path.is_dir() {
+            continue;
+        }
+
+        let dir_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+
+        if tracked_ids.contains(&dir_name) {
+            // The worktree is still known to the manager — let the manager
+            // handle its lifecycle (e.g. via reclaim_idle or remove).
+            continue;
+        }
+
+        // The directory is not tracked: it is an orphan from a previous run.
+        info!(
+            worktree_dir = %path.display(),
+            "removing orphan worktree directory"
+        );
+        if let Err(err) = std::fs::remove_dir_all(&path) {
+            warn!(
+                worktree_dir = %path.display(),
+                error = %err,
+                "failed to remove orphan worktree directory (may be in use)"
+            );
+        }
+    }
+
+    // Also attempt to remove tracked worktrees via the manager so git's own
+    // worktree metadata is pruned correctly.  The manager's remove() refuses
+    // dirty checkouts, so failures here are expected and only logged.
+    for id in &tracked_ids {
+        match worktrees.remove(id).await {
+            Ok(()) => {
+                info!(worktree_id = %id, "removed tracked worktree after run");
+            }
+            Err(err) => {
+                warn!(
+                    worktree_id = %id,
+                    error = %err,
+                    "could not remove tracked worktree (may be dirty or in use)"
+                );
+            }
         }
     }
 }

@@ -6635,6 +6635,7 @@ dependencies = [
  "roko-primitives",
  "serde",
  "serde_json",
+ "sysinfo",
  "tempfile",
  "tokio",
  "tracing",
@@ -6827,9 +6828,39 @@ dependencies = [
  "roko-primitives",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "roko-orchestrator"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "chrono",
+ "parking_lot",
+ "rand 0.8.7",
+ "roko-agent",
+ "roko-compose",
+ "roko-conductor",
+ "roko-core",
+ "roko-daimon",
+ "roko-gate",
+ "roko-learn",
+ "roko-neuro",
+ "roko-runtime",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

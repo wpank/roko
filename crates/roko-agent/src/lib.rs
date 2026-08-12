@@ -86,6 +86,7 @@ pub mod session;
 pub mod streaming;
 pub mod task_runner;
 pub mod testutil;
+pub mod token_estimator;
 pub mod tool_loop;
 pub mod translate;
 pub mod usage;
@@ -178,6 +179,7 @@ pub use task_runner::{
     AgentEvent, Anomaly, AnomalyDetector, BudgetAction, BudgetGuardrail, ConductorAction,
     ConductorBandit, CostTable, EventBus, ModelPricing, TaskResult, TaskRunner, TaskRunnerError,
 };
+pub use token_estimator::{estimate_prompt_tokens, estimate_tokens};
 pub use tool_loop::{
     OnTurnCallback, StreamEvent, StreamEventKind, ToolLoopAgent, TurnConfig, TurnProgress,
     collect_stream_to_response, response_to_synthetic_stream,

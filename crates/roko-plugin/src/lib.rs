@@ -13,6 +13,7 @@
 )]
 
 pub mod manifest;
+pub mod tool_registry;
 pub mod trigger_protocol;
 
 use async_trait::async_trait;

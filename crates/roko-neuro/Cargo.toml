@@ -29,6 +29,7 @@ parking_lot = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
+sha2 = { workspace = true }
 roko-primitives = { path = "../roko-primitives", optional = true }
 
 [dev-dependencies]

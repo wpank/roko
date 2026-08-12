@@ -106,6 +106,14 @@ impl CapabilitySet {
     pub fn iter(&self) -> impl Iterator<Item = &Capability> {
         self.inner.iter()
     }
+
+    /// Return the intersection of `self` and `other` (most-restrictive wins).
+    #[must_use]
+    pub fn intersect(&self, other: &CapabilitySet) -> CapabilitySet {
+        CapabilitySet {
+            inner: self.inner.intersection(&other.inner).copied().collect(),
+        }
+    }
 }
 
 impl fmt::Display for CapabilitySet {
@@ -181,6 +189,155 @@ pub fn capabilities_for_taint(level: TaintLevel) -> CapabilitySet {
         ],
     };
     CapabilitySet::from(caps.iter().copied())
+}
+
+// ─── Three-layer intersection model (E34-T06) ────────────────────────────────
+
+/// What a Cell declares it needs (from the cell manifest).
+///
+/// The effective set is the intersection of cell, graph, and space layers;
+/// cells can only be narrowed by intersection, never widened.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CellCapabilities(pub CapabilitySet);
+
+/// What a Graph permits cells to do (from the graph configuration).
+///
+/// Cells operating within a graph can never exceed what the graph allows,
+/// even if the cell's manifest declares a wider set.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphAllowList(pub CapabilitySet);
+
+/// What the space operator has granted (from the workspace configuration).
+///
+/// This is the outermost boundary: the space grant constrains both the cell
+/// manifest and the graph config.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpaceGrant(pub CapabilitySet);
+
+/// Compute the effective [`CapabilitySet`] for a cell operating inside a graph
+/// inside a space.
+///
+/// The result is the intersection of all three layers (most-restrictive wins).
+/// This is the canonical entry point for capability enforcement.
+#[must_use]
+pub fn effective_capabilities(
+    cell: &CellCapabilities,
+    graph: &GraphAllowList,
+    space: &SpaceGrant,
+) -> CapabilitySet {
+    cell.0.intersect(&graph.0).intersect(&space.0)
+}
+
+/// Runtime enforcement interface for capability checks.
+///
+/// Implementors hold a cached [`CapabilitySet`] and expose a single check
+/// method. The trait is intentionally synchronous and pure — no I/O.
+pub trait CapabilityCheck {
+    /// Return the effective (pre-computed intersection) capability set.
+    fn effective(&self) -> &CapabilitySet;
+
+    /// Return `Ok(())` if `cap` is present in the effective set, or an
+    /// explanatory error string on denial.
+    fn require(&self, cap: Capability) -> Result<(), String> {
+        if self.effective().contains(cap) {
+            Ok(())
+        } else {
+            Err(format!(
+                "capability {cap:?} is not permitted in the effective set"
+            ))
+        }
+    }
+
+    /// Return `true` if `cap` is present in the effective set.
+    fn permits(&self, cap: Capability) -> bool {
+        self.effective().contains(cap)
+    }
+}
+
+/// A cached capability enforcer that stores the pre-computed intersection from
+/// the three layers at construction time.
+#[derive(Debug, Clone)]
+pub struct CachedCapabilityChecker {
+    effective: CapabilitySet,
+}
+
+impl CachedCapabilityChecker {
+    /// Compute and cache the effective capabilities from the three layers.
+    #[must_use]
+    pub fn new(cell: &CellCapabilities, graph: &GraphAllowList, space: &SpaceGrant) -> Self {
+        Self {
+            effective: effective_capabilities(cell, graph, space),
+        }
+    }
+}
+
+impl CapabilityCheck for CachedCapabilityChecker {
+    fn effective(&self) -> &CapabilitySet {
+        &self.effective
+    }
+}
+
+impl CellCapabilities {
+    /// Construct a `CellCapabilities` from a slice of capabilities.
+    #[must_use]
+    pub fn of(caps: &[Capability]) -> Self {
+        Self(CapabilitySet::from(caps.iter().copied()))
+    }
+
+    /// The full set — all capabilities granted.
+    #[must_use]
+    pub fn all() -> Self {
+        Self(CapabilitySet::from([
+            Capability::Read,
+            Capability::Write,
+            Capability::Execute,
+            Capability::Network,
+            Capability::FileSystem,
+            Capability::Secret,
+        ]))
+    }
+}
+
+impl GraphAllowList {
+    /// Construct a `GraphAllowList` from a slice of capabilities.
+    #[must_use]
+    pub fn of(caps: &[Capability]) -> Self {
+        Self(CapabilitySet::from(caps.iter().copied()))
+    }
+
+    /// The full allow-list — permits everything.
+    #[must_use]
+    pub fn all() -> Self {
+        Self(CapabilitySet::from([
+            Capability::Read,
+            Capability::Write,
+            Capability::Execute,
+            Capability::Network,
+            Capability::FileSystem,
+            Capability::Secret,
+        ]))
+    }
+}
+
+impl SpaceGrant {
+    /// Construct a `SpaceGrant` from a slice of capabilities.
+    #[must_use]
+    pub fn of(caps: &[Capability]) -> Self {
+        Self(CapabilitySet::from(caps.iter().copied()))
+    }
+
+    /// The full space grant — no operator restrictions.
+    #[must_use]
+    pub fn all() -> Self {
+        Self(CapabilitySet::from([
+            Capability::Read,
+            Capability::Write,
+            Capability::Execute,
+            Capability::Network,
+            Capability::FileSystem,
+            Capability::Secret,
+        ]))
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

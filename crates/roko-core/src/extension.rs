@@ -608,6 +608,91 @@ pub struct ExtensionManifest {
     pub config: serde_json::Value,
 }
 
+// ── ExtensionManifest validation ──────────────────────────────────────
+
+/// Error returned when an [`ExtensionManifest`] fails validation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManifestValidationError {
+    /// Human-readable description of what failed.
+    pub message: String,
+}
+
+impl std::fmt::Display for ManifestValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid extension manifest: {}", self.message)
+    }
+}
+
+impl std::error::Error for ManifestValidationError {}
+
+impl ExtensionManifest {
+    /// Validate the manifest, returning an error if any required field is
+    /// missing or has an invalid format.
+    ///
+    /// Validation rules:
+    /// - `name` must be non-empty and contain only alphanumeric chars, `-`, and `_`
+    /// - `version` must be non-empty and follow `MAJOR.MINOR.PATCH` semver format
+    pub fn validate(&self) -> Result<(), ManifestValidationError> {
+        if self.name.is_empty() {
+            return Err(ManifestValidationError {
+                message: "name must not be empty".to_string(),
+            });
+        }
+        if !self
+            .name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(ManifestValidationError {
+                message: format!(
+                    "name `{}` contains invalid characters \
+                     (only alphanumeric, '-', '_' are allowed)",
+                    self.name
+                ),
+            });
+        }
+
+        if self.version.is_empty() {
+            return Err(ManifestValidationError {
+                message: "version must not be empty".to_string(),
+            });
+        }
+        if !is_valid_semver(&self.version) {
+            return Err(ManifestValidationError {
+                message: format!(
+                    "version `{}` is not valid semver (expected MAJOR.MINOR.PATCH)",
+                    self.version
+                ),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Convert this manifest into an [`ExtensionMeta`] for use by the runtime.
+    pub fn into_meta(self) -> ExtensionMeta {
+        ExtensionMeta {
+            name: self.name,
+            layer: self.layer,
+            optional: self.optional,
+            depends_on: self.depends_on,
+            soft_depends_on: Vec::new(),
+            version: self.version,
+        }
+    }
+}
+
+/// Returns `true` if `v` is a valid semver string (`MAJOR.MINOR.PATCH`
+/// with an optional pre-release suffix separated by `-`).
+fn is_valid_semver(v: &str) -> bool {
+    let core = v.split('-').next().unwrap_or("");
+    let parts: Vec<&str> = core.split('.').collect();
+    if parts.len() != 3 {
+        return false;
+    }
+    parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+}
+
 // ── Extension trait (async + typed parameters) ────────────────────────
 
 /// Extension trait for composable agent behavior.
@@ -1053,6 +1138,182 @@ impl ExtensionChain {
 impl Default for ExtensionChain {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ── HookRunner ────────────────────────────────────────────────────────
+
+/// Error produced when a hook fails or times out during dispatch.
+///
+/// Individual `HookError`s are logged but do not abort the dispatch loop —
+/// the `HookRunner` isolates failures so one bad extension cannot prevent
+/// others from receiving the hook call.
+#[derive(Debug)]
+pub struct HookError {
+    /// Name of the extension that produced the error.
+    pub extension: String,
+    /// Human-readable description of the failure.
+    pub message: String,
+    /// Whether the failure was due to a timeout (vs. an `Err` from the hook).
+    pub timed_out: bool,
+}
+
+impl std::fmt::Display for HookError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.timed_out {
+            write!(f, "extension '{}' timed out: {}", self.extension, self.message)
+        } else {
+            write!(f, "extension '{}' error: {}", self.extension, self.message)
+        }
+    }
+}
+
+impl std::error::Error for HookError {}
+
+/// Dispatches cross-cutting lifecycle hooks to every registered extension
+/// with per-extension timeout and error isolation.
+///
+/// Unlike `ExtensionChain`'s `run_on_tick_*` / `run_on_slot_*` methods —
+/// which propagate the first error with `?` — `HookRunner` logs and
+/// continues on each extension failure, collecting all errors for the
+/// caller to inspect.
+pub struct HookRunner {
+    chain: ExtensionChain,
+    /// Per-hook call timeout. Applied independently to each extension.
+    timeout: std::time::Duration,
+}
+
+impl HookRunner {
+    /// Create a new `HookRunner` wrapping `chain` with the given per-hook `timeout`.
+    pub fn new(chain: ExtensionChain, timeout: std::time::Duration) -> Self {
+        Self { chain, timeout }
+    }
+
+    /// Create a `HookRunner` with the default 5-second timeout.
+    pub fn with_default_timeout(chain: ExtensionChain) -> Self {
+        Self::new(chain, std::time::Duration::from_secs(5))
+    }
+
+    /// Access the inner chain mutably.
+    pub fn chain_mut(&mut self) -> &mut ExtensionChain {
+        &mut self.chain
+    }
+
+    /// Access the inner chain immutably.
+    pub fn chain(&self) -> &ExtensionChain {
+        &self.chain
+    }
+
+    /// Dispatch `on_tick_start` to every extension with fault isolation.
+    pub async fn dispatch_tick_start(&self, tick: u64) -> Vec<HookError> {
+        let mut errors = Vec::new();
+        for ext in &self.chain.extensions {
+            let name = ext.name().to_string();
+            match tokio::time::timeout(self.timeout, ext.on_tick_start(tick)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(extension = %name, error = %e,
+                        "on_tick_start returned error (isolated, continuing)");
+                    errors.push(HookError { extension: name, message: e.to_string(), timed_out: false });
+                }
+                Err(_) => {
+                    tracing::warn!(extension = %name, timeout_ms = self.timeout.as_millis(),
+                        "on_tick_start timed out (isolated, continuing)");
+                    errors.push(HookError {
+                        extension: name,
+                        message: format!("timed out after {}ms", self.timeout.as_millis()),
+                        timed_out: true,
+                    });
+                }
+            }
+        }
+        errors
+    }
+
+    /// Dispatch `on_tick_end` to every extension with fault isolation.
+    pub async fn dispatch_tick_end(&self, tick: u64) -> Vec<HookError> {
+        let mut errors = Vec::new();
+        for ext in &self.chain.extensions {
+            let name = ext.name().to_string();
+            match tokio::time::timeout(self.timeout, ext.on_tick_end(tick)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(extension = %name, error = %e,
+                        "on_tick_end returned error (isolated, continuing)");
+                    errors.push(HookError { extension: name, message: e.to_string(), timed_out: false });
+                }
+                Err(_) => {
+                    tracing::warn!(extension = %name, timeout_ms = self.timeout.as_millis(),
+                        "on_tick_end timed out (isolated, continuing)");
+                    errors.push(HookError {
+                        extension: name,
+                        message: format!("timed out after {}ms", self.timeout.as_millis()),
+                        timed_out: true,
+                    });
+                }
+            }
+        }
+        errors
+    }
+
+    /// Dispatch `on_slot_assigned` to every extension with fault isolation.
+    pub async fn dispatch_slot_assigned(
+        &self,
+        slot: &str,
+        task: &serde_json::Value,
+    ) -> Vec<HookError> {
+        let mut errors = Vec::new();
+        for ext in &self.chain.extensions {
+            let name = ext.name().to_string();
+            match tokio::time::timeout(self.timeout, ext.on_slot_assigned(slot, task)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(extension = %name, error = %e,
+                        "on_slot_assigned returned error (isolated, continuing)");
+                    errors.push(HookError { extension: name, message: e.to_string(), timed_out: false });
+                }
+                Err(_) => {
+                    tracing::warn!(extension = %name, timeout_ms = self.timeout.as_millis(),
+                        "on_slot_assigned timed out (isolated, continuing)");
+                    errors.push(HookError {
+                        extension: name,
+                        message: format!("timed out after {}ms", self.timeout.as_millis()),
+                        timed_out: true,
+                    });
+                }
+            }
+        }
+        errors
+    }
+
+    /// Dispatch `on_slot_completed` to every extension with fault isolation.
+    pub async fn dispatch_slot_completed(
+        &self,
+        slot: &str,
+        result: &serde_json::Value,
+    ) -> Vec<HookError> {
+        let mut errors = Vec::new();
+        for ext in &self.chain.extensions {
+            let name = ext.name().to_string();
+            match tokio::time::timeout(self.timeout, ext.on_slot_completed(slot, result)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(extension = %name, error = %e,
+                        "on_slot_completed returned error (isolated, continuing)");
+                    errors.push(HookError { extension: name, message: e.to_string(), timed_out: false });
+                }
+                Err(_) => {
+                    tracing::warn!(extension = %name, timeout_ms = self.timeout.as_millis(),
+                        "on_slot_completed timed out (isolated, continuing)");
+                    errors.push(HookError {
+                        extension: name,
+                        message: format!("timed out after {}ms", self.timeout.as_millis()),
+                        timed_out: true,
+                    });
+                }
+            }
+        }
+        errors
     }
 }
 

@@ -1835,12 +1835,14 @@ mod tests {
             cost: 0.6,
             latency: 0.1,
             knowledge_bias: None,
+            provider_pass_rate_weight: None,
         };
         let quality_sensitive = RewardWeights {
             quality: 0.8,
             cost: 0.1,
             latency: 0.1,
             knowledge_bias: None,
+            provider_pass_rate_weight: None,
         };
 
         let cost_score = stats.scalarize(&cost_sensitive);
@@ -1921,6 +1923,7 @@ mod tests {
             cost: 0.6,
             latency: 0.1,
             knowledge_bias: None,
+            provider_pass_rate_weight: None,
         };
 
         router.update_with_metrics(&ctx, "claude-sonnet-4-5", 1.0, 0.2, 0.4, &weights);

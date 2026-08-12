@@ -757,6 +757,127 @@ impl CascadeRouter {
         }
     }
 
+    /// Route a context, excluding unavailable providers and demoting degraded ones.
+    ///
+    /// Providers in `Open` state (circuit tripped) are fully excluded from
+    /// candidate selection. Providers in `HalfOpen` state (recovering, one probe
+    /// allowed) are retained but demoted: their latency SLA is doubled to
+    /// signal reduced confidence. When every provider is unavailable the router
+    /// falls back to the plain unfiltered route so dispatch never hard-fails
+    /// due to health data alone.
+    ///
+    /// `latency_threshold_ms` is an optional per-provider p95 latency ceiling.
+    /// When a provider's tracked p95 latency exceeds this threshold its models
+    /// are demoted to the next-cheaper tier before selection.  Pass `None` to
+    /// skip latency-based demotion.
+    pub fn route_with_health_scored(
+        &self,
+        ctx: &RoutingContext,
+        health: &ProviderHealthRegistry,
+        model_providers: &HashMap<String, String>,
+        latency_registry: Option<&crate::latency::LatencyRegistry>,
+        latency_threshold_ms: Option<f64>,
+    ) -> CascadeModel {
+        // Partition candidates into available (Closed/HalfOpen) and
+        // unavailable (Open / hard-down).
+        let available: Vec<String> = self
+            .model_slugs
+            .iter()
+            .filter(|slug| {
+                model_providers
+                    .get(slug.as_str())
+                    .map(|provider_id| health.is_available(provider_id))
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect();
+
+        if available.is_empty() {
+            // All providers are circuit-open — route anyway so we don't stall.
+            tracing::warn!(
+                "all known providers are circuit-open; routing without health filter"
+            );
+            return self.route(ctx);
+        }
+
+        // Apply latency-based demotion: collect slugs whose provider p95
+        // exceeds the threshold so we can filter them out of the preferred
+        // set and fall back to the full available list.
+        let latency_degraded: std::collections::HashSet<String> =
+            if let (Some(registry), Some(threshold)) = (latency_registry, latency_threshold_ms) {
+                available
+                    .iter()
+                    .filter(|slug| {
+                        let provider = model_providers
+                            .get(slug.as_str())
+                            .map_or(slug.as_str(), String::as_str);
+                        let stats = registry.get_all_for_provider(provider);
+                        stats.observations >= 5 && stats.p95_ms() > threshold
+                    })
+                    .cloned()
+                    .collect()
+            } else {
+                std::collections::HashSet::new()
+            };
+
+        // Prefer candidates whose provider is fast; fall back to all available
+        // when latency demotion would remove everyone.
+        let preferred: Vec<String> = available
+            .iter()
+            .filter(|slug| !latency_degraded.contains(slug.as_str()))
+            .cloned()
+            .collect();
+
+        let candidates = if preferred.is_empty() {
+            tracing::debug!(
+                demoted = latency_degraded.len(),
+                "all available providers exceed latency threshold; using full available set"
+            );
+            &available
+        } else {
+            &preferred
+        };
+
+        // Route within the healthy candidate set.
+        let mut route = match self.current_stage() {
+            CascadeStage::Static => self.route_static_filtered(ctx, candidates),
+            CascadeStage::Confidence => self.route_confidence_filtered(ctx, candidates),
+            CascadeStage::Ucb => self.route_ucb_filtered(ctx, candidates),
+        };
+
+        // When the chosen provider is HalfOpen (recovering), widen the latency
+        // SLA to signal reduced confidence to the caller.
+        let primary_provider = model_providers
+            .get(route.primary.slug.as_str())
+            .map_or(route.primary.slug.as_str(), String::as_str);
+        let primary_health = health.get(primary_provider);
+        if primary_health.state == crate::provider_health::CircuitState::HalfOpen {
+            route.latency_sla_ms = route.latency_sla_ms.saturating_mul(2);
+            tracing::debug!(
+                provider = primary_provider,
+                model = %route.primary.slug,
+                latency_sla_ms = route.latency_sla_ms,
+                "selected HalfOpen provider — latency SLA doubled as recovery signal"
+            );
+        }
+
+        // Extend the fallback chain with any still-available candidates that
+        // weren't in the preferred set (latency-degraded but reachable).
+        let extra_fallbacks: Vec<ModelSpec> = latency_degraded
+            .into_iter()
+            .filter(|slug| {
+                !route
+                    .fallback_chain
+                    .iter()
+                    .any(|m| m.slug == *slug)
+            })
+            .map(|slug| ModelSpec::from_slug(&slug))
+            .collect();
+        route.fallback_chain.extend(extra_fallbacks);
+
+        route
+    }
+
     /// Remove candidates whose provider is currently unhealthy.
     #[must_use]
     pub fn filter_unhealthy(
@@ -2839,6 +2960,416 @@ mod cascade_router_tests {
         assert_eq!(
             pre_slug, post_slug,
             "routing the same context must yield the same primary slug after reload"
+        );
+    }
+
+    // ── Provider-health integration tests (E48-T08) ─────────────────────
+    //
+    // These tests prove that route_with_health_scored and filter_unhealthy
+    // integrate correctly with ProviderHealthRegistry:
+    //   1. Open-circuit providers are excluded from selection.
+    //   2. All-Open fallback routes without error.
+    //   3. filter_unhealthy returns healthy subset when available.
+    //   4. filter_unhealthy returns best-ranked candidate when all are unhealthy.
+    //   5. Auto-recovery: provider moves Open → Closed after success.
+
+    fn health_routing_ctx() -> RoutingContext {
+        RoutingContext::default()
+    }
+
+    fn two_provider_map() -> HashMap<String, String> {
+        let mut m = HashMap::new();
+        m.insert("claude-sonnet-4-5".into(), "anthropic".into());
+        m.insert("claude-haiku-4-5".into(), "anthropic".into());
+        m.insert("gemini-2.5-flash".into(), "google".into());
+        m
+    }
+
+    /// Open-circuit provider: its models must be excluded from the candidate
+    /// list so the router selects the other provider.
+    #[test]
+    fn cascade_health_excludes_open_circuit_provider() {
+        use crate::provider_health::ErrorClass;
+
+        let slugs = vec!["claude-sonnet-4-5".into(), "gemini-2.5-flash".into()];
+        let router = CascadeRouter::new(slugs);
+        let ctx = health_routing_ctx();
+
+        let health = crate::provider_health::ProviderHealthRegistry::new();
+        // Drive anthropic into Open state (3 consecutive failures).
+        health.record_failure("anthropic", ErrorClass::RateLimit);
+        health.record_failure("anthropic", ErrorClass::RateLimit);
+        health.record_failure("anthropic", ErrorClass::RateLimit);
+
+        let model_providers = two_provider_map();
+        let route = router.route_with_health_scored(&ctx, &health, &model_providers, None, None);
+
+        assert_eq!(
+            route.primary.slug, "gemini-2.5-flash",
+            "Open anthropic circuit must be excluded; gemini must be selected"
+        );
+    }
+
+    /// When all providers are Open the router must fall back to the unfiltered
+    /// route rather than returning an error.
+    #[test]
+    fn cascade_health_all_open_falls_back_gracefully() {
+        use crate::provider_health::ErrorClass;
+
+        let slugs = vec!["claude-sonnet-4-5".into(), "gemini-2.5-flash".into()];
+        let router = CascadeRouter::new(slugs);
+        let ctx = health_routing_ctx();
+
+        let health = crate::provider_health::ProviderHealthRegistry::new();
+        for _ in 0..3 {
+            health.record_failure("anthropic", ErrorClass::ServerError);
+            health.record_failure("google", ErrorClass::ServerError);
+        }
+
+        let model_providers = two_provider_map();
+        // Should not panic and must return a valid slug.
+        let route = router.route_with_health_scored(&ctx, &health, &model_providers, None, None);
+        assert!(
+            !route.primary.slug.is_empty(),
+            "fallback route must return a non-empty slug"
+        );
+    }
+
+    /// filter_unhealthy returns healthy candidates when available, and falls
+    /// back to the least-degraded candidate when all are unhealthy.
+    #[test]
+    fn filter_unhealthy_returns_healthy_subset() {
+        use crate::provider_health::ErrorClass;
+
+        let slugs = vec![
+            "claude-sonnet-4-5".into(),
+            "gemini-2.5-flash".into(),
+            "claude-haiku-4-5".into(),
+        ];
+        let router = CascadeRouter::new(slugs);
+
+        let health = crate::provider_health::ProviderHealthRegistry::new();
+        // anthropic: Open (3 failures)
+        for _ in 0..3 {
+            health.record_failure("anthropic", ErrorClass::RateLimit);
+        }
+        // google: Closed (healthy)
+        health.record_success("google");
+
+        let model_providers = two_provider_map();
+        let candidates = vec![
+            "claude-sonnet-4-5".into(),
+            "gemini-2.5-flash".into(),
+            "claude-haiku-4-5".into(),
+        ];
+        let filtered = router.filter_unhealthy(&candidates, &health, &model_providers);
+
+        // Only gemini maps to healthy google provider.
+        assert!(
+            filtered.contains(&"gemini-2.5-flash".to_string()),
+            "healthy google provider must be included"
+        );
+        assert!(
+            !filtered.contains(&"claude-sonnet-4-5".to_string()),
+            "Open anthropic must be excluded"
+        );
+        assert!(
+            !filtered.contains(&"claude-haiku-4-5".to_string()),
+            "Open anthropic (haiku) must be excluded"
+        );
+    }
+
+    /// filter_unhealthy returns the least-degraded candidate when all are
+    /// unhealthy, rather than an empty vec.
+    #[test]
+    fn filter_unhealthy_falls_back_to_best_candidate_when_all_unhealthy() {
+        use crate::provider_health::ErrorClass;
+
+        let slugs = vec!["claude-sonnet-4-5".into(), "claude-haiku-4-5".into()];
+        let router = CascadeRouter::new(slugs);
+
+        let health = crate::provider_health::ProviderHealthRegistry::new();
+        // Tip both into Open.
+        for _ in 0..3 {
+            health.record_failure("anthropic", ErrorClass::ServerError);
+        }
+
+        let model_providers = {
+            let mut m = HashMap::new();
+            m.insert("claude-sonnet-4-5".into(), "anthropic".into());
+            m.insert("claude-haiku-4-5".into(), "anthropic".into());
+            m
+        };
+        let candidates = vec!["claude-sonnet-4-5".into(), "claude-haiku-4-5".into()];
+        let filtered = router.filter_unhealthy(&candidates, &health, &model_providers);
+
+        assert_eq!(
+            filtered.len(),
+            1,
+            "must return exactly one candidate when all are unhealthy"
+        );
+        // The returned candidate is the least-degraded one (ranked by
+        // ProviderHealthSnapshotKey ordering).
+        assert!(
+            candidates.contains(&filtered[0]),
+            "returned candidate must be from the original list"
+        );
+    }
+
+    /// Auto-recovery: a provider that was Open returns to Closed after a
+    /// successful request is recorded, and subsequent routing includes it again.
+    #[test]
+    fn health_auto_recovery_after_success() {
+        use crate::provider_health::ErrorClass;
+
+        let slugs = vec!["claude-sonnet-4-5".into(), "gemini-2.5-flash".into()];
+        let router = CascadeRouter::new(slugs);
+        let ctx = health_routing_ctx();
+        let model_providers = two_provider_map();
+
+        let health = crate::provider_health::ProviderHealthRegistry::new();
+
+        // Step 1: trip anthropic to Open.
+        for _ in 0..3 {
+            health.record_failure("anthropic", ErrorClass::RateLimit);
+        }
+        assert!(
+            !health.is_healthy("anthropic"),
+            "must be Open after 3 failures"
+        );
+
+        // Verify gemini is chosen when anthropic is Open.
+        let route_during_outage =
+            router.route_with_health_scored(&ctx, &health, &model_providers, None, None);
+        assert_eq!(
+            route_during_outage.primary.slug, "gemini-2.5-flash",
+            "gemini must be selected while anthropic is Open"
+        );
+
+        // Step 2: record a success — closes the circuit.
+        health.record_success("anthropic");
+        assert!(
+            health.is_healthy("anthropic"),
+            "anthropic must be Closed again after success"
+        );
+
+        // Step 3: anthropic models are candidates again.
+        let available = router.filter_unhealthy(
+            &["claude-sonnet-4-5".into(), "gemini-2.5-flash".into()],
+            &health,
+            &model_providers,
+        );
+        assert!(
+            available.contains(&"claude-sonnet-4-5".to_string()),
+            "claude-sonnet-4-5 must be available again after recovery"
+        );
+    }
+
+    // ── Provider pass-rate scoring tests ────────────────────────────────
+    //
+    // These tests prove that provider pass-rate metrics are computed and
+    // applied correctly to model scores:
+    //   1. compute_provider_metrics excludes providers below min_calls.
+    //   2. ProviderMetrics::pass_rate returns 1.0 for zero-call providers.
+    //   3. apply_provider_pass_rate applies the lerp multiplier correctly.
+    //   4. apply_provider_pass_rate with weight=0.0 is a no-op.
+    //   5. route_with_provider_metrics in Confidence stage selects the model
+    //      backed by the higher-pass-rate provider.
+
+    /// compute_provider_metrics must exclude providers with fewer than min_calls
+    /// requests and include those at or above the threshold.
+    #[test]
+    fn compute_provider_metrics_excludes_below_min_calls() {
+        let health = ProviderHealthRegistry::new();
+
+        // "anthropic": 3 requests (below min_calls=5 → excluded).
+        health.record_success("anthropic");
+        health.record_success("anthropic");
+        health.record_failure("anthropic", crate::provider_health::ErrorClass::ServerError);
+
+        // "google": 6 requests, 1 failure → pass_rate = 5/6 ≈ 0.833.
+        for _ in 0..5 {
+            health.record_success("google");
+        }
+        health.record_failure("google", crate::provider_health::ErrorClass::RateLimit);
+
+        let metrics = compute_provider_metrics(&health, 5);
+
+        assert!(
+            !metrics.contains_key("anthropic"),
+            "anthropic (3 requests) must be excluded when min_calls=5"
+        );
+        assert!(
+            metrics.contains_key("google"),
+            "google (6 requests) must be included when min_calls=5"
+        );
+
+        let google = &metrics["google"];
+        assert_eq!(google.total_calls, 6, "total_calls must be 6");
+        assert_eq!(google.successful_calls, 5, "successful_calls must be 5");
+
+        let rate = google.pass_rate();
+        assert!(
+            (rate - 5.0 / 6.0).abs() < 1e-9,
+            "pass_rate must be 5/6 (got {rate})"
+        );
+    }
+
+    /// When a provider has no recorded calls, pass_rate returns 1.0 (optimistic default).
+    #[test]
+    fn provider_metrics_pass_rate_returns_one_when_no_calls() {
+        let m = ProviderMetrics {
+            total_calls: 0,
+            successful_calls: 0,
+        };
+        assert_eq!(
+            m.pass_rate(),
+            1.0,
+            "unknown provider must be treated optimistically (pass_rate=1.0)"
+        );
+    }
+
+    /// apply_provider_pass_rate must scale score by lerp(1.0, pass_rate, weight).
+    /// With weight=1.0 the score is multiplied directly by pass_rate.
+    /// Slugs with no matching provider entry must be left unchanged.
+    #[test]
+    fn apply_provider_pass_rate_multiplies_with_lerp() {
+        // Build a minimal provider_metrics map: "google" has pass_rate=0.6.
+        let mut provider_metrics = HashMap::new();
+        provider_metrics.insert(
+            "google".to_string(),
+            ProviderMetrics {
+                total_calls: 10,
+                successful_calls: 6,
+            },
+        );
+
+        // model_providers: gemini → google, sonnet → anthropic (not in metrics).
+        let mut model_providers = HashMap::new();
+        model_providers.insert("gemini-2.5-flash".to_string(), "google".to_string());
+        model_providers.insert("claude-sonnet-4-5".to_string(), "anthropic".to_string());
+
+        let mut scores = vec![
+            ("gemini-2.5-flash".to_string(), 1.0_f64),
+            ("claude-sonnet-4-5".to_string(), 1.0_f64),
+        ];
+
+        // weight = 1.0 → multiplier = pass_rate directly.
+        apply_provider_pass_rate(&mut scores, &provider_metrics, &model_providers, 1.0);
+
+        let gemini_score = scores
+            .iter()
+            .find(|(s, _)| s == "gemini-2.5-flash")
+            .map(|(_, s)| *s)
+            .expect("gemini must be present");
+        let sonnet_score = scores
+            .iter()
+            .find(|(s, _)| s == "claude-sonnet-4-5")
+            .map(|(_, s)| *s)
+            .expect("sonnet must be present");
+
+        // gemini: 1.0 * (1 - 1.0 + 1.0 * 0.6) = 0.6
+        assert!(
+            (gemini_score - 0.6).abs() < 1e-9,
+            "gemini score must be 0.6 with weight=1.0 and pass_rate=0.6 (got {gemini_score})"
+        );
+        // sonnet: provider not in metrics → unchanged at 1.0
+        assert!(
+            (sonnet_score - 1.0).abs() < 1e-9,
+            "sonnet score must be unchanged (no anthropic metrics) (got {sonnet_score})"
+        );
+    }
+
+    /// apply_provider_pass_rate with weight=0.0 must leave all scores unchanged.
+    #[test]
+    fn apply_provider_pass_rate_zero_weight_is_noop() {
+        let mut provider_metrics = HashMap::new();
+        provider_metrics.insert(
+            "anthropic".to_string(),
+            ProviderMetrics {
+                total_calls: 10,
+                successful_calls: 3,
+            },
+        );
+        let mut model_providers = HashMap::new();
+        model_providers.insert("claude-sonnet-4-5".to_string(), "anthropic".to_string());
+
+        let mut scores = vec![("claude-sonnet-4-5".to_string(), 0.9_f64)];
+        apply_provider_pass_rate(&mut scores, &provider_metrics, &model_providers, 0.0);
+
+        assert!(
+            (scores[0].1 - 0.9).abs() < 1e-9,
+            "weight=0 must leave score unchanged (got {})",
+            scores[0].1
+        );
+    }
+
+    /// route_with_provider_metrics must prefer the model backed by the higher-pass-rate
+    /// provider when both models have equal confidence-stage base scores.
+    ///
+    /// Setup: two models with equal observation count (30 each, all successful).
+    ///   - "gemini-2.5-flash" → provider "google" with pass_rate=0.9 (9/10 calls)
+    ///   - "claude-sonnet-4-5" → provider "anthropic" with pass_rate=0.5 (5/10 calls)
+    ///
+    /// With weight=1.0, google's multiplier (0.9) greatly exceeds anthropic's (0.5),
+    /// so route_with_provider_metrics must select gemini.
+    #[test]
+    fn route_with_provider_metrics_prefers_higher_pass_rate_provider() {
+        let slugs = vec!["claude-sonnet-4-5".into(), "gemini-2.5-flash".into()];
+        let router = CascadeRouter::new(slugs);
+
+        // Inject 60 observations (30 each) so both models have equal base scores
+        // and the router is in the Confidence stage (>= 50 observations).
+        let ctx_vec = vec![0.0; crate::model_router::CONTEXT_DIM];
+        for i in 0..60_usize {
+            router.replay_observation(
+                if i % 2 == 0 {
+                    "claude-sonnet-4-5"
+                } else {
+                    "gemini-2.5-flash"
+                },
+                &ctx_vec,
+                i % 2,
+                0.8,
+                true,
+            );
+        }
+        assert_eq!(
+            router.current_stage(),
+            CascadeStage::Confidence,
+            "router must be in Confidence stage for this test"
+        );
+
+        // google: 9/10 calls pass (0.9); anthropic: 5/10 calls pass (0.5).
+        let mut provider_metrics = HashMap::new();
+        provider_metrics.insert(
+            "google".to_string(),
+            ProviderMetrics {
+                total_calls: 10,
+                successful_calls: 9,
+            },
+        );
+        provider_metrics.insert(
+            "anthropic".to_string(),
+            ProviderMetrics {
+                total_calls: 10,
+                successful_calls: 5,
+            },
+        );
+
+        let mut model_providers = HashMap::new();
+        model_providers.insert("gemini-2.5-flash".to_string(), "google".to_string());
+        model_providers.insert("claude-sonnet-4-5".to_string(), "anthropic".to_string());
+
+        let ctx = RoutingContext::default();
+        // weight=1.0 → full pass-rate multiplier applied.
+        let route =
+            router.route_with_provider_metrics(&ctx, &provider_metrics, &model_providers, 1.0);
+
+        assert_eq!(
+            route.primary.slug, "gemini-2.5-flash",
+            "higher-pass-rate google provider must be preferred over anthropic; got {}",
+            route.primary.slug
         );
     }
 }

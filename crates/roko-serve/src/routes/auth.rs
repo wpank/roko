@@ -11,15 +11,20 @@
 //! - `GET    /api/agent-tokens`           — list active tokens (metadata only)
 //! - `DELETE /api/agent-tokens/:token_id` — revoke an agent token
 //!
+//! ## Relay token routes (E35-T03)
+//! - `POST   /api/relay-tokens`          — issue a short-lived, single-use relay token
+//! - `POST   /api/relay-tokens/validate` — validate a relay token (marks it consumed)
+//!
 //! Keys are stored as SHA-256 hashes in `.roko/api-keys.json`.
 //! Agent tokens are stored in `.roko/agent-tokens.json`.
+//! Relay tokens are stored in `.roko/relay-tokens.json`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use chrono::{DateTime, Duration, Utc};
@@ -27,6 +32,8 @@ use roko_core::config::ApiKeyEntry;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
+
+use crate::auth_audit::{AuthAuditAction, AuthAuditEvent, AuthAuditLog, AuthOutcome};
 
 use super::middleware::hash_api_key;
 use crate::error::ApiError;
@@ -152,6 +159,228 @@ pub struct AgentTokenSummary {
     pub revoked: bool,
 }
 
+// ─── Relay token types (E35-T03) ─────────────────────────────────────────────
+
+/// Default relay token TTL: 5 minutes.
+const DEFAULT_RELAY_TOKEN_TTL_SECS: i64 = 300;
+
+/// A short-lived, single-use token for relay/proxy requests.
+///
+/// Relay tokens are narrowly scoped to a `target_scope` string and expire after
+/// a short TTL (default 5 minutes). Each token is **single-use**: after the
+/// first successful `validate_relay_token` call the token is marked as used and
+/// subsequent calls are rejected.
+///
+/// Only the SHA-256 hash of the token secret is stored on disk — the plaintext
+/// is returned once at issuance and never persisted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayToken {
+    /// Unique identifier for this relay token (safe to log).
+    pub token_id: String,
+    /// The agent that issued this relay token.
+    pub issuer_agent_id: String,
+    /// The narrow scope this token is authorised for (e.g. `"inference"`, `"store:read"`).
+    pub target_scope: String,
+    /// Issuance timestamp.
+    pub issued_at: DateTime<Utc>,
+    /// Expiry timestamp (short TTL, default 5 minutes).
+    pub expires_at: DateTime<Utc>,
+    /// Whether the token has already been consumed (single-use).
+    pub used: bool,
+    /// SHA-256 hex hash of the plaintext token secret.
+    pub token_hash: String,
+}
+
+/// Claims extracted from a successfully validated relay token.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayTokenClaims {
+    /// Token identifier.
+    pub token_id: String,
+    /// The agent that issued the token.
+    pub issuer_agent_id: String,
+    /// The scope this token is authorised for.
+    pub target_scope: String,
+    /// Token issuance time.
+    pub issued_at: DateTime<Utc>,
+    /// Token expiry time.
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Request payload for issuing a relay token.
+#[derive(Debug, Deserialize)]
+pub struct IssueRelayTokenRequest {
+    /// The agent ID issuing the token.
+    pub agent_id: String,
+    /// Narrow scope the token is authorised for.
+    pub scope: String,
+    /// TTL in seconds (default: 300 = 5 minutes).
+    #[serde(default = "default_relay_ttl_secs")]
+    pub ttl_secs: i64,
+}
+
+fn default_relay_ttl_secs() -> i64 {
+    DEFAULT_RELAY_TOKEN_TTL_SECS
+}
+
+/// Response returned when a relay token is issued.
+/// The plaintext token secret is shown **once** and never stored.
+#[derive(Debug, Serialize)]
+pub struct IssueRelayTokenResponse {
+    /// Token identifier (safe to log).
+    pub token_id: String,
+    /// Plaintext token secret — shown only once.
+    pub token_secret: String,
+    /// The agent that issued the token.
+    pub issuer_agent_id: String,
+    /// Scope restriction.
+    pub target_scope: String,
+    /// ISO 8601 expiry timestamp.
+    pub expires_at: String,
+}
+
+/// Request payload for validating a relay token.
+#[derive(Debug, Deserialize)]
+pub struct ValidateRelayTokenRequest {
+    /// The plaintext token secret to validate.
+    pub token: String,
+    /// The scope the caller claims to be acting under (must match token scope).
+    pub scope: String,
+}
+
+// ─── Relay token storage helpers ─────────────────────────────────────────────
+
+fn relay_tokens_path(workdir: &Path) -> PathBuf {
+    workdir.join(".roko").join("relay-tokens.json")
+}
+
+fn load_relay_tokens(workdir: &Path) -> Vec<RelayToken> {
+    let path = relay_tokens_path(workdir);
+    match std::fs::read_to_string(&path) {
+        Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn save_relay_tokens(workdir: &Path, tokens: &[RelayToken]) -> Result<(), ApiError> {
+    let path = relay_tokens_path(workdir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            ApiError::internal(format!("failed to create relay-tokens directory: {e}"))
+        })?;
+    }
+    let data = serde_json::to_string_pretty(tokens)
+        .map_err(|e| ApiError::internal(format!("failed to serialize relay-tokens: {e}")))?;
+    std::fs::write(&path, data)
+        .map_err(|e| ApiError::internal(format!("failed to write relay-tokens.json: {e}")))?;
+    Ok(())
+}
+
+// ─── Relay token core logic ───────────────────────────────────────────────────
+
+/// Issue a new relay token for `agent_id` scoped to `scope` with the given TTL.
+///
+/// Returns `(RelayToken, plaintext_secret)`. The plaintext is returned once and
+/// should be forwarded to the requesting agent immediately. Only the SHA-256
+/// hash is persisted to `.roko/relay-tokens.json`.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] when inputs are invalid or persistence fails.
+pub fn issue_relay_token(
+    workdir: &Path,
+    agent_id: &str,
+    scope: &str,
+    ttl_secs: i64,
+) -> Result<(RelayToken, String), ApiError> {
+    if agent_id.is_empty() {
+        return Err(ApiError::bad_request("agent_id must not be empty"));
+    }
+    if scope.is_empty() {
+        return Err(ApiError::bad_request("scope must not be empty"));
+    }
+    if ttl_secs <= 0 {
+        return Err(ApiError::bad_request("ttl_secs must be positive"));
+    }
+
+    let token_id = Uuid::new_v4().to_string();
+    // Relay tokens use the `roko_relay_` prefix so middleware can identify them.
+    let plaintext = format!("roko_relay_{}", Uuid::new_v4().as_simple());
+    let token_hash = hash_api_key(&plaintext);
+    let now = Utc::now();
+    let expires_at = now + Duration::seconds(ttl_secs);
+
+    let relay_token = RelayToken {
+        token_id: token_id.clone(),
+        issuer_agent_id: agent_id.to_string(),
+        target_scope: scope.to_string(),
+        issued_at: now,
+        expires_at,
+        used: false,
+        token_hash,
+    };
+
+    let mut tokens = load_relay_tokens(workdir);
+    tokens.push(relay_token.clone());
+    save_relay_tokens(workdir, &tokens)?;
+
+    Ok((relay_token, plaintext))
+}
+
+/// Validate a relay token presented as a plaintext secret.
+///
+/// Enforces:
+/// - The token exists (SHA-256 hash match).
+/// - The token has not expired.
+/// - The token has not already been used (single-use).
+/// - The requested `scope` matches the token's `target_scope`.
+///
+/// On success the token is marked as used and the state is persisted.
+///
+/// # Errors
+///
+/// Returns [`ApiError::unauthorized`] for any validation failure. The error
+/// message is intentionally vague to avoid leaking token internals.
+pub fn validate_relay_token(
+    workdir: &Path,
+    plaintext: &str,
+    scope: &str,
+) -> Result<RelayTokenClaims, ApiError> {
+    let input_hash = hash_api_key(plaintext);
+    let mut tokens = load_relay_tokens(workdir);
+
+    let token = tokens
+        .iter_mut()
+        .find(|t| t.token_hash == input_hash)
+        .ok_or_else(|| ApiError::unauthorized("relay token not found or invalid"))?;
+
+    if token.expires_at <= Utc::now() {
+        return Err(ApiError::unauthorized("relay token has expired"));
+    }
+
+    if token.used {
+        return Err(ApiError::unauthorized("relay token has already been used"));
+    }
+
+    if token.target_scope != scope {
+        return Err(ApiError::unauthorized(
+            "relay token scope does not match the requested scope",
+        ));
+    }
+
+    // Mark as used (single-use enforcement).
+    token.used = true;
+    let claims = RelayTokenClaims {
+        token_id: token.token_id.clone(),
+        issuer_agent_id: token.issuer_agent_id.clone(),
+        target_scope: token.target_scope.clone(),
+        issued_at: token.issued_at,
+        expires_at: token.expires_at,
+    };
+
+    save_relay_tokens(workdir, &tokens)?;
+    Ok(claims)
+}
+
 // ─── Router ────────────────────────────────────────────────────────────────
 
 pub fn routes() -> Router<Arc<AppState>> {
@@ -166,6 +395,67 @@ pub fn routes() -> Router<Arc<AppState>> {
             get(list_agent_tokens).post(issue_agent_token),
         )
         .route("/agent-tokens/{token_id}", delete(revoke_agent_token))
+        // Relay token routes (E35-T03)
+        .route("/relay-tokens", post(issue_relay_token_handler))
+        .route("/relay-tokens/validate", post(validate_relay_token_handler))
+        // Audit log query (E35-T04)
+        .route("/auth/audit", get(query_auth_audit))
+}
+
+// ─── Audit helpers (E35-T04) ────────────────────────────────────────────────
+
+/// Query parameters for `GET /api/auth/audit`.
+#[derive(Debug, Deserialize)]
+pub struct AuditQueryParams {
+    /// ISO-8601 lower bound for the event timestamp (inclusive).
+    pub from: Option<String>,
+    /// ISO-8601 upper bound for the event timestamp (inclusive).
+    pub to: Option<String>,
+    /// Filter by actor identifier (exact match).
+    pub actor: Option<String>,
+    /// Filter by action name (case-sensitive serialised form, e.g. `"TokenIssued"`).
+    pub action: Option<String>,
+}
+
+/// `GET /api/auth/audit` — query auth audit log entries.
+async fn query_auth_audit(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<AuditQueryParams>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let log = match crate::auth_audit::open_audit_log(&state.workdir) {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Json(json!({ "events": [], "count": 0 })));
+        }
+        Err(e) => {
+            return Err(ApiError::internal(format!("failed to open audit log: {e}")));
+        }
+    };
+
+    let from = params.from.as_deref().and_then(|s| s.parse::<DateTime<Utc>>().ok());
+    let to = params.to.as_deref().and_then(|s| s.parse::<DateTime<Utc>>().ok());
+    let action = params
+        .action
+        .as_deref()
+        .and_then(|s| serde_json::from_value::<AuthAuditAction>(serde_json::Value::String(s.to_string())).ok());
+
+    let events = log
+        .query(from, to, params.actor.as_deref(), action.as_ref())
+        .map_err(|e| ApiError::internal(format!("failed to query audit log: {e}")))?;
+
+    let count = events.len();
+    Ok(Json(json!({ "events": events, "count": count })))
+}
+
+/// Append an [`AuthAuditEvent`] to the audit log in a best-effort, fire-and-forget manner.
+///
+/// Opens the log file on each call (cheap — the underlying file is small).
+/// Errors are logged via `tracing::warn!` and never propagated to callers.
+fn append_audit_event(workdir: &Path, event: AuthAuditEvent) {
+    match crate::auth_audit::open_audit_log(workdir) {
+        Ok(log) => log.append(&event),
+        Err(e) => tracing::warn!(error = %e, "auth_audit: could not open audit log"),
+    }
 }
 
 // ─── API key storage helpers ────────────────────────────────────────────────
@@ -263,6 +553,17 @@ async fn create_api_key(
     keys.push(entry);
     save_api_keys(&state.workdir, &keys)?;
 
+    // Audit: TokenIssued
+    append_audit_event(
+        &state.workdir,
+        AuthAuditEvent::new(
+            "api".to_string(),
+            AuthAuditAction::TokenIssued,
+            req.name.clone(),
+            AuthOutcome::Success,
+        ),
+    );
+
     // Also push the entry into the live ServeAuthConfig so the middleware
     // picks it up immediately without a server restart.
     {
@@ -313,6 +614,17 @@ async fn revoke_api_key(
         )));
     }
     save_api_keys(&state.workdir, &keys)?;
+
+    // Audit: TokenRevoked
+    append_audit_event(
+        &state.workdir,
+        AuthAuditEvent::new(
+            "api".to_string(),
+            AuthAuditAction::TokenRevoked,
+            name.clone(),
+            AuthOutcome::Success,
+        ),
+    );
 
     // Update live config.
     {
@@ -370,6 +682,18 @@ async fn rotate_api_key(
     };
 
     save_api_keys(&state.workdir, &keys)?;
+
+    // Audit: KeyRotated
+    append_audit_event(
+        &state.workdir,
+        AuthAuditEvent::new(
+            "api".to_string(),
+            AuthAuditAction::KeyRotated,
+            response.name.clone(),
+            AuthOutcome::Success,
+        )
+        .with_meta("grace_expires", &grace_expires),
+    );
 
     // Update live config.
     {
@@ -471,6 +795,43 @@ async fn revoke_agent_token(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ─── Relay token handlers (E35-T03) ──────────────────────────────────────────
+
+/// `POST /api/relay-tokens` — issue a short-lived, single-use relay token.
+///
+/// Returns the plaintext token secret exactly once; only the SHA-256 hash is
+/// stored. The caller must forward the secret to the requesting agent
+/// immediately.
+async fn issue_relay_token_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<IssueRelayTokenRequest>,
+) -> Result<(StatusCode, Json<IssueRelayTokenResponse>), ApiError> {
+    let (token, plaintext) =
+        issue_relay_token(&state.workdir, &req.agent_id, &req.scope, req.ttl_secs)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(IssueRelayTokenResponse {
+            token_id: token.token_id,
+            token_secret: plaintext,
+            issuer_agent_id: token.issuer_agent_id,
+            target_scope: token.target_scope,
+            expires_at: token.expires_at.to_rfc3339(),
+        }),
+    ))
+}
+
+/// `POST /api/relay-tokens/validate` — validate a relay token and mark it used.
+///
+/// Enforces: token exists, not expired, not used, scope matches.
+/// On success returns the token claims; the token is immediately consumed.
+async fn validate_relay_token_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ValidateRelayTokenRequest>,
+) -> Result<Json<RelayTokenClaims>, ApiError> {
+    let claims = validate_relay_token(&state.workdir, &req.token, &req.scope)?;
+    Ok(Json(claims))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,5 +856,165 @@ mod tests {
         // Verify the prefix contract used by the middleware router.
         let plaintext = format!("roko_agent_{}", Uuid::new_v4().as_simple());
         assert!(plaintext.starts_with("roko_agent_"));
+    }
+
+    // ── Relay token tests (E35-T03) ──────────────────────────────────────────
+
+    fn tmp_workdir() -> tempfile::TempDir {
+        tempfile::tempdir().expect("failed to create temp dir")
+    }
+
+    #[test]
+    fn relay_token_issuance_returns_roko_relay_prefix() {
+        let dir = tmp_workdir();
+        let (token, plaintext) =
+            issue_relay_token(dir.path(), "agent-1", "inference", DEFAULT_RELAY_TOKEN_TTL_SECS)
+                .expect("issue should succeed");
+
+        assert!(
+            plaintext.starts_with("roko_relay_"),
+            "plaintext should have roko_relay_ prefix, got: {plaintext}"
+        );
+        assert!(!token.used, "freshly issued token must not be used");
+        assert_eq!(token.issuer_agent_id, "agent-1");
+        assert_eq!(token.target_scope, "inference");
+        assert_ne!(token.token_hash, plaintext, "hash must differ from plaintext");
+        assert_eq!(token.token_hash.len(), 64, "SHA-256 hex must be 64 chars");
+    }
+
+    #[test]
+    fn relay_token_issuance_persists_to_disk() {
+        let dir = tmp_workdir();
+        let _ =
+            issue_relay_token(dir.path(), "agent-2", "store:read", DEFAULT_RELAY_TOKEN_TTL_SECS)
+                .expect("issue should succeed");
+
+        let path = relay_tokens_path(dir.path());
+        assert!(path.exists(), "relay-tokens.json must be created on disk");
+
+        let stored = load_relay_tokens(dir.path());
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].issuer_agent_id, "agent-2");
+    }
+
+    #[test]
+    fn relay_token_validation_succeeds_and_marks_used() {
+        let dir = tmp_workdir();
+        let (_token, plaintext) =
+            issue_relay_token(dir.path(), "agent-3", "store:write", DEFAULT_RELAY_TOKEN_TTL_SECS)
+                .expect("issue should succeed");
+
+        let claims = validate_relay_token(dir.path(), &plaintext, "store:write")
+            .expect("validation should succeed");
+
+        assert_eq!(claims.issuer_agent_id, "agent-3");
+        assert_eq!(claims.target_scope, "store:write");
+
+        let stored = load_relay_tokens(dir.path());
+        assert!(stored[0].used, "token must be marked used after validation");
+    }
+
+    #[test]
+    fn relay_token_single_use_rejects_second_call() {
+        let dir = tmp_workdir();
+        let (_token, plaintext) =
+            issue_relay_token(dir.path(), "agent-4", "inference", DEFAULT_RELAY_TOKEN_TTL_SECS)
+                .expect("issue should succeed");
+
+        assert!(
+            validate_relay_token(dir.path(), &plaintext, "inference").is_ok(),
+            "first validation should succeed"
+        );
+
+        let err = validate_relay_token(dir.path(), &plaintext, "inference")
+            .expect_err("second validation must fail");
+        assert!(
+            err.message.contains("already been used"),
+            "error should mention already-used, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn relay_token_scope_restriction_rejects_wrong_scope() {
+        let dir = tmp_workdir();
+        let (_token, plaintext) =
+            issue_relay_token(dir.path(), "agent-5", "inference", DEFAULT_RELAY_TOKEN_TTL_SECS)
+                .expect("issue should succeed");
+
+        let err = validate_relay_token(dir.path(), &plaintext, "store:write")
+            .expect_err("wrong scope must be rejected");
+        assert!(
+            err.message.contains("scope"),
+            "error should mention scope, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn relay_token_expiry_rejects_expired_token() {
+        let dir = tmp_workdir();
+        // Manually insert an already-expired token record.
+        let plaintext = format!("roko_relay_{}", Uuid::new_v4().as_simple());
+        let token_hash = hash_api_key(&plaintext);
+        let past = Utc::now() - Duration::seconds(60);
+
+        let expired = RelayToken {
+            token_id: Uuid::new_v4().to_string(),
+            issuer_agent_id: "agent-6".to_string(),
+            target_scope: "inference".to_string(),
+            issued_at: past - Duration::seconds(10),
+            expires_at: past,
+            used: false,
+            token_hash,
+        };
+
+        let mut tokens = load_relay_tokens(dir.path());
+        tokens.push(expired);
+        save_relay_tokens(dir.path(), &tokens).expect("save should succeed");
+
+        let err = validate_relay_token(dir.path(), &plaintext, "inference")
+            .expect_err("expired token must be rejected");
+        assert!(
+            err.message.contains("expired"),
+            "error should mention expiry, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn relay_token_unknown_token_is_rejected() {
+        let dir = tmp_workdir();
+        let err = validate_relay_token(dir.path(), "roko_relay_nonexistent", "inference")
+            .expect_err("unknown token must be rejected");
+        assert!(!err.message.is_empty());
+    }
+
+    #[test]
+    fn relay_token_bad_inputs_are_rejected() {
+        let dir = tmp_workdir();
+
+        assert!(
+            issue_relay_token(dir.path(), "", "inference", DEFAULT_RELAY_TOKEN_TTL_SECS).is_err(),
+            "empty agent_id must fail"
+        );
+        assert!(
+            issue_relay_token(dir.path(), "agent-1", "", DEFAULT_RELAY_TOKEN_TTL_SECS).is_err(),
+            "empty scope must fail"
+        );
+        assert!(
+            issue_relay_token(dir.path(), "agent-1", "inference", 0).is_err(),
+            "zero ttl must fail"
+        );
+        assert!(
+            issue_relay_token(dir.path(), "agent-1", "inference", -1).is_err(),
+            "negative ttl must fail"
+        );
+    }
+
+    #[test]
+    fn relay_token_default_ttl_is_five_minutes() {
+        assert_eq!(DEFAULT_RELAY_TOKEN_TTL_SECS, 300);
+        assert_eq!(default_relay_ttl_secs(), 300);
     }
 }

@@ -204,6 +204,35 @@ pub enum TriggerDef {
         #[serde(default)]
         description: Option<String>,
     },
+    /// Signal-match trigger — fires when a signal with the given kind is observed.
+    SignalMatch {
+        /// Signal kind string to match (e.g. `"github:push"`, `"prd.plan_approved"`).
+        signal_kind: String,
+        /// Optional JSON-pointer expression applied to the signal body for additional filtering.
+        ///
+        /// If set, the trigger only fires when the signal body contains the given value at the
+        /// given path (e.g. `"/branch" = "main"`).
+        #[serde(default)]
+        filter_path: Option<String>,
+        /// Value that must be present at `filter_path` (as a JSON string).
+        #[serde(default)]
+        filter_value: Option<String>,
+        /// Optional description.
+        #[serde(default)]
+        description: Option<String>,
+    },
+    /// Manual trigger — fired explicitly by a user or operator, never automatically.
+    ///
+    /// Declares intent that the trigger can be fired via `roko trigger fire <id>` or the
+    /// HTTP control plane. No automatic evaluation is performed.
+    Manual {
+        /// Human-readable label shown in `roko trigger list`.
+        #[serde(default)]
+        label: Option<String>,
+        /// Optional description.
+        #[serde(default)]
+        description: Option<String>,
+    },
 }
 
 /// Plugin dependency.
@@ -293,24 +322,34 @@ fn validate_manifest(manifest: &PluginManifestFile) -> Result<()> {
         }
     }
 
-    // Validate webhook trigger paths and scopes.
+    // Validate webhook trigger paths, scopes, and signal-match trigger kinds.
     for trigger in &manifest.triggers {
-        if let TriggerDef::Webhook { path, scope, .. } = trigger {
-            if path.is_empty() {
-                return Err(RokoError::config("webhook trigger path must not be empty"));
+        match trigger {
+            TriggerDef::Webhook { path, scope, .. } => {
+                if path.is_empty() {
+                    return Err(RokoError::config("webhook trigger path must not be empty"));
+                }
+                if !path.starts_with('/') {
+                    return Err(RokoError::config(format!(
+                        "webhook trigger path `{path}` must start with '/'"
+                    )));
+                }
+                if !VALID_WEBHOOK_SCOPES.contains(&scope.as_str()) {
+                    return Err(RokoError::config(format!(
+                        "webhook trigger path `{path}` declares unknown scope `{scope}`; \
+                         valid scopes are: {}",
+                        VALID_WEBHOOK_SCOPES.join(", ")
+                    )));
+                }
             }
-            if !path.starts_with('/') {
-                return Err(RokoError::config(format!(
-                    "webhook trigger path `{path}` must start with '/'"
-                )));
+            TriggerDef::SignalMatch { signal_kind, .. } => {
+                if signal_kind.is_empty() {
+                    return Err(RokoError::config(
+                        "signal_match trigger signal_kind must not be empty",
+                    ));
+                }
             }
-            if !VALID_WEBHOOK_SCOPES.contains(&scope.as_str()) {
-                return Err(RokoError::config(format!(
-                    "webhook trigger path `{path}` declares unknown scope `{scope}`; \
-                     valid scopes are: {}",
-                    VALID_WEBHOOK_SCOPES.join(", ")
-                )));
-            }
+            TriggerDef::Cron { .. } | TriggerDef::FileWatch { .. } | TriggerDef::Manual { .. } => {}
         }
     }
 
@@ -643,6 +682,105 @@ command = "echo hello"
     #[test]
     fn roundtrip_serialization() {
         let manifest = parse_manifest(FULL_MANIFEST).unwrap();
+        let serialized = toml::to_string_pretty(&manifest).unwrap();
+        let reparsed = parse_manifest(&serialized).unwrap();
+        assert_eq!(manifest, reparsed);
+    }
+
+    #[test]
+    fn parse_signal_match_trigger() {
+        let toml_str = r#"
+[plugin]
+name = "test"
+version = "0.1.0"
+
+[[triggers]]
+kind = "signal_match"
+signal_kind = "github:push"
+filter_path = "/branch"
+filter_value = "main"
+description = "Fire on main pushes"
+"#;
+        let manifest = parse_manifest(toml_str).unwrap();
+        assert_eq!(manifest.triggers.len(), 1);
+        assert!(matches!(
+            &manifest.triggers[0],
+            TriggerDef::SignalMatch {
+                signal_kind,
+                filter_path,
+                filter_value,
+                ..
+            }
+            if signal_kind == "github:push"
+                && filter_path.as_deref() == Some("/branch")
+                && filter_value.as_deref() == Some("main")
+        ));
+    }
+
+    #[test]
+    fn parse_manual_trigger() {
+        let toml_str = r#"
+[plugin]
+name = "test"
+version = "0.1.0"
+
+[[triggers]]
+kind = "manual"
+label = "Deploy production"
+description = "Only fire this manually"
+"#;
+        let manifest = parse_manifest(toml_str).unwrap();
+        assert_eq!(manifest.triggers.len(), 1);
+        assert!(matches!(
+            &manifest.triggers[0],
+            TriggerDef::Manual { label, .. }
+            if label.as_deref() == Some("Deploy production")
+        ));
+    }
+
+    #[test]
+    fn rejects_signal_match_with_empty_signal_kind() {
+        let toml_str = r#"
+[plugin]
+name = "test"
+version = "0.1.0"
+
+[[triggers]]
+kind = "signal_match"
+signal_kind = ""
+"#;
+        assert!(parse_manifest(toml_str).is_err());
+    }
+
+    #[test]
+    fn signal_match_trigger_roundtrips() {
+        let toml_str = r#"
+[plugin]
+name = "test"
+version = "0.1.0"
+
+[[triggers]]
+kind = "signal_match"
+signal_kind = "prd.plan_approved"
+"#;
+        let manifest = parse_manifest(toml_str).unwrap();
+        let serialized = toml::to_string_pretty(&manifest).unwrap();
+        let reparsed = parse_manifest(&serialized).unwrap();
+        assert_eq!(manifest, reparsed);
+    }
+
+    #[test]
+    fn manual_trigger_roundtrips() {
+        let toml_str = r#"
+[plugin]
+name = "test"
+version = "0.1.0"
+
+[[triggers]]
+kind = "manual"
+label = "Run backfill"
+"#;
+        let manifest = parse_manifest(toml_str).unwrap();
         let serialized = toml::to_string_pretty(&manifest).unwrap();
         let reparsed = parse_manifest(&serialized).unwrap();
         assert_eq!(manifest, reparsed);

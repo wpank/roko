@@ -20,6 +20,7 @@ members = [
     # Agent backends (MockAgent, ExecAgent, future: ClaudeAgent, ...)
     "crates/roko-agent",
     # Orchestration layer (plan discovery, task DAG, worktree manager, executor)
+    "crates/roko-orchestrator",
 
     # Chain client + wallet trait abstractions (reads + signed writes)
     "crates/roko-chain",

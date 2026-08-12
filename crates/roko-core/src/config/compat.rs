@@ -12,10 +12,10 @@ use serde::Deserialize;
 use super::schema::{
     AgentConfig, BudgetConfig, CURRENT_SCHEMA_VERSION, ChainConfig, ColdStorageConfig,
     ConductorConfig, CoreRunnerConfig, DeployConfig, FeedAgentsConfig, GatesConfig, GeminiConfig,
-    GithubWebhookConfig, ISFRSection, LearningConfig, PerplexityConfig, PipelineConfig, PrdConfig,
-    ProjectConfig, RelayConfig, ResourcesConfig, RokoConfig, RoleOverride, RoutingConfig,
-    SchedulerConfig, ServeConfig, ServerConfig, ToolsConfig, TuiConfig, ValidationConfig,
-    WatcherConfig, WebhooksConfig,
+    GitHubConfig, GithubWebhookConfig, ISFRSection, LearningConfig, PerplexityConfig,
+    PipelineConfig, PrdConfig, ProjectConfig, RelayConfig, ResourcesConfig, RokoConfig,
+    RoleOverride, RoutingConfig, SchedulerConfig, ServeConfig, ServerConfig, ToolsConfig,
+    TuiConfig, ValidationConfig, WatcherConfig, WebhooksConfig,
 };
 
 /// Subset of Mori's `ConfigState` that we recognize.
@@ -107,6 +107,7 @@ fn convert(m: &MoriConfig) -> RokoConfig {
         webhooks: WebhooksConfig {
             github: GithubWebhookConfig::default(),
         },
+        github: GitHubConfig::default(),
         providers: IndexMap::new(),
         models: IndexMap::new(),
         subscriptions: Vec::new(),

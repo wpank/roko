@@ -129,6 +129,9 @@ pub struct RokoConfig {
     pub scheduler: SchedulerConfig,
     #[serde(default)]
     pub webhooks: WebhooksConfig,
+    /// GitHub repository identity and workflow preferences.
+    #[serde(default)]
+    pub github: GitHubConfig,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subscriptions: Vec<SubscriptionConfig>,
     #[serde(default)]
@@ -266,6 +269,7 @@ impl Default for RokoConfig {
             serve: ServeConfig::default(),
             scheduler: SchedulerConfig::default(),
             webhooks: WebhooksConfig::default(),
+            github: GitHubConfig::default(),
             subscriptions: Vec::new(),
             server: ServerConfig::default(),
             deploy: DeployConfig::default(),
@@ -1170,6 +1174,17 @@ impl RokoConfig {
         let _ = writeln!(out, "\n# -- Webhooks --");
         let _ = writeln!(out, "[webhooks.github]");
         let _ = writeln!(out, "secret = \"change-me\"");
+        let _ = writeln!(out, "\n# -- GitHub integration --");
+        let _ = writeln!(out, "# [github]");
+        let _ = writeln!(out, "# owner = \"my-org\"");
+        let _ = writeln!(out, "# repo = \"my-repo\"");
+        let _ = writeln!(out, "# default_branch = \"main\"");
+        let _ = writeln!(out, "# auto_pr = false");
+        let _ = writeln!(
+            out,
+            "# merge_method = \"squash\"  # merge | squash | rebase"
+        );
+        let _ = writeln!(out, "# label_prefix = \"roko/\"");
     }
     fn write_example_deploy(out: &mut String, c: &Self) {
         let _ = writeln!(out, "\n# -- Cloud deployment (Railway, etc.) --");

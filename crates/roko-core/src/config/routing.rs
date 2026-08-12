@@ -47,6 +47,14 @@ pub struct RewardWeights {
     /// Falls back to `latency` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knowledge_bias: Option<f64>,
+    /// Multiplier weight for provider pass-rate bias.
+    ///
+    /// When set, the confidence/UCB score for each model is multiplied by
+    /// `lerp(1.0, provider_pass_rate, provider_pass_rate_weight)` so that
+    /// providers with poor historical pass rates are softly down-weighted
+    /// without being completely excluded. Defaults to 0.0 (disabled).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_pass_rate_weight: Option<f64>,
 }
 
 const fn default_reward_weight_quality() -> f64 {
@@ -68,6 +76,7 @@ impl Default for RewardWeights {
             cost: default_reward_weight_cost(),
             latency: default_reward_weight_latency(),
             knowledge_bias: None,
+            provider_pass_rate_weight: None,
         }
     }
 }

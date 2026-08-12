@@ -248,6 +248,62 @@ pub struct ExtensionMeta {
     pub version: String,
 }
 
+/// Sandboxing/distribution tier for an extension package.
+///
+/// Determines the isolation level and trust granted to an extension.
+/// Tiers are ordered from least trusted (Prompts) to most trusted (NativeRust).
+///
+/// See v2 spec §3 (12-EXTENSIONS.md) for the full 5-tier SPI table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageTier {
+    /// Markdown/TOML front-matter declaring hook behavior (no execution).
+    Prompts,
+    /// TOML profile bundles that configure built-in extensions.
+    Config,
+    /// TOML manifests for subprocess/HTTP/MCP hooks (OS process isolation).
+    Declarative,
+    /// Compiled WASM implementing extension hooks (fuel-metered sandbox).
+    Wasm,
+    /// `impl Extension` compiled in-tree (process-level trust).
+    NativeRust,
+}
+
+/// Full extension manifest as authored in TOML.
+///
+/// Extends [`ExtensionMeta`] with packaging metadata from the v2 spec (§3).
+/// The `tier` field determines the sandboxing/execution model; WASM and
+/// NativeRust tiers require additional runtime support beyond this struct.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExtensionManifest {
+    /// Unique extension name.
+    pub name: String,
+    /// Semantic version string.
+    pub version: String,
+    /// Human-readable description of what this extension does.
+    #[serde(default)]
+    pub description: String,
+    /// Layer this extension operates in.
+    pub layer: ExtensionLayer,
+    /// Other extension names that must be loaded before this one.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    /// Whether failure to load/run this extension is non-fatal.
+    #[serde(default)]
+    pub optional: bool,
+    /// Categorization tags (e.g. "observability", "security").
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Packaging and sandboxing tier.
+    pub tier: PackageTier,
+    /// Per-hook timeout override in milliseconds (overrides chain default).
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    /// Extension-specific configuration.
+    #[serde(default)]
+    pub config: serde_json::Value,
+}
+
 // ── Extension trait (async + typed parameters) ────────────────────────
 
 /// Extension trait for composable agent behavior.
@@ -429,6 +485,52 @@ pub trait Extension: Send + Sync {
     ) -> Result<RecoveryAction, Box<dyn std::error::Error + Send + Sync>> {
         Ok(RecoveryAction::Propagate)
     }
+
+    // ── Cross-cutting hooks (all layers) ────────────────────────────
+
+    /// Called at the start of each agent tick regardless of layer.
+    ///
+    /// `tick` is a monotonically increasing counter (0-based) for the
+    /// current agent session. These hooks fire for every extension in the
+    /// chain, not just those in a specific layer.
+    async fn on_tick_start(
+        &self,
+        _tick: u64,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Ok(())
+    }
+
+    /// Called at the end of each agent tick regardless of layer.
+    async fn on_tick_end(
+        &self,
+        _tick: u64,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Ok(())
+    }
+
+    /// Called when a task slot is assigned to an agent.
+    ///
+    /// `slot` is the slot/task identifier string.
+    /// `task` is the full task descriptor as a JSON value.
+    async fn on_slot_assigned(
+        &self,
+        _slot: &str,
+        _task: &serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Ok(())
+    }
+
+    /// Called when a task slot completes (success or failure).
+    ///
+    /// `slot` is the slot/task identifier string.
+    /// `result` is the task result/outcome as a JSON value.
+    async fn on_slot_completed(
+        &self,
+        _slot: &str,
+        _result: &serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Ok(())
+    }
 }
 
 // ── ExtensionChain ────────────────────────────────────────────────────
@@ -592,6 +694,54 @@ impl ExtensionChain {
     /// List all extension metadata.
     pub fn metadata(&self) -> Vec<ExtensionMeta> {
         self.extensions.iter().map(|e| e.meta()).collect()
+    }
+
+    // ── Cross-cutting chain runners ───────────────────────────────────
+
+    /// Run on_tick_start hooks across ALL extensions regardless of layer.
+    pub async fn run_on_tick_start(
+        &self,
+        tick: u64,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for ext in &self.extensions {
+            ext.on_tick_start(tick).await?;
+        }
+        Ok(())
+    }
+
+    /// Run on_tick_end hooks across ALL extensions regardless of layer.
+    pub async fn run_on_tick_end(
+        &self,
+        tick: u64,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for ext in &self.extensions {
+            ext.on_tick_end(tick).await?;
+        }
+        Ok(())
+    }
+
+    /// Run on_slot_assigned hooks across ALL extensions regardless of layer.
+    pub async fn run_on_slot_assigned(
+        &self,
+        slot: &str,
+        task: &serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for ext in &self.extensions {
+            ext.on_slot_assigned(slot, task).await?;
+        }
+        Ok(())
+    }
+
+    /// Run on_slot_completed hooks across ALL extensions regardless of layer.
+    pub async fn run_on_slot_completed(
+        &self,
+        slot: &str,
+        result: &serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for ext in &self.extensions {
+            ext.on_slot_completed(slot, result).await?;
+        }
+        Ok(())
     }
 }
 

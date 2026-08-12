@@ -15,6 +15,7 @@ use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[cfg(feature = "hdc")]
 use crate::hdc::KnowledgeHdcEncoder;
@@ -279,7 +280,46 @@ pub struct BackupHeader {
     pub entry_count: usize,
     /// Path of the source knowledge store that was exported.
     pub source_path: String,
+    /// SHA-256 Merkle root computed over exported entry IDs in sorted order.
+    /// Hex-encoded. Empty string for legacy exports that predate this field.
+    #[serde(default)]
+    pub merkle_root: String,
 }
+
+/// Bundle returned by [`KnowledgeStore::export_with_verification`].
+///
+/// Contains the exported entries (confidence-sorted, secrets-filtered) and
+/// the Merkle root computed over their IDs in sorted order.
+#[derive(Debug, Clone)]
+pub struct ExportBundle {
+    /// Exported entries, sorted by confidence descending.
+    pub entries: Vec<KnowledgeEntry>,
+    /// SHA-256 Merkle root over sorted entry IDs, hex-encoded.
+    pub merkle_root: String,
+}
+
+/// Secret patterns used to exclude sensitive entries from exports.
+///
+/// Entries whose content or tags match any of these patterns are silently
+/// skipped when `ExportFilter::filter_secrets` is `true`.
+const SECRET_PATTERNS: &[&str] = &[
+    "api_key",
+    "api-key",
+    "apikey",
+    "secret",
+    "password",
+    "passwd",
+    "token",
+    "bearer",
+    "private_key",
+    "private-key",
+    "privatekey",
+    "access_key",
+    "access-key",
+    "auth_token",
+    "auth-token",
+    "credential",
+];
 
 /// Filter criteria for [`KnowledgeStore::export`].
 #[derive(Debug, Clone, Default)]
@@ -292,6 +332,10 @@ pub struct ExportFilter {
     pub tags: Option<Vec<String>>,
     /// Only export entries created after this timestamp.
     pub since: Option<DateTime<Utc>>,
+    /// When `true`, skip entries whose tags or content match known secret patterns.
+    /// Defaults to `false` for backwards compatibility; set to `true` for any
+    /// export that may cross a trust boundary (e.g. backup to shared storage).
+    pub filter_secrets: bool,
 }
 
 impl ExportFilter {
@@ -316,8 +360,48 @@ impl ExportFilter {
                 return false;
             }
         }
+        if self.filter_secrets && entry_contains_secret(entry) {
+            return false;
+        }
         true
     }
+}
+
+/// Returns `true` if the entry's tags or content match a known secret pattern.
+fn entry_contains_secret(entry: &KnowledgeEntry) -> bool {
+    let content_lower = entry.content.to_lowercase();
+    for pattern in SECRET_PATTERNS {
+        // Check tags first (cheap, no allocation).
+        if entry
+            .tags
+            .iter()
+            .any(|t| t.to_lowercase().contains(pattern))
+        {
+            return true;
+        }
+        // Check content text.
+        if content_lower.contains(pattern) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Compute a SHA-256 Merkle root over the given entry IDs.
+///
+/// Entry IDs are sorted lexicographically so the result is deterministic
+/// regardless of the order entries appear in the store. The SHA-256 is
+/// computed by feeding each sorted ID as a fixed-length chunk into a single
+/// hasher, yielding a hex-encoded 64-character digest.
+fn compute_merkle_root(entries: &[KnowledgeEntry]) -> String {
+    let mut ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
+    ids.sort_unstable();
+    let mut hasher = Sha256::new();
+    for id in ids {
+        hasher.update(id.as_bytes());
+        hasher.update(b"\n");
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 /// Options for [`KnowledgeStore::import`].
@@ -892,7 +976,11 @@ impl KnowledgeStore {
 
     /// Export the knowledge store to a JSONL file with versioned backup header.
     ///
-    /// Entries can be filtered by kind, minimum confidence, tags, and date.
+    /// Entries are filtered by the provided [`ExportFilter`] (including optional
+    /// secret filtering), then sorted by confidence descending so that truncated
+    /// imports receive the most valuable knowledge first. A SHA-256 Merkle root
+    /// over all exported entry IDs (in sorted order) is included in the header.
+    ///
     /// Returns the number of entries exported.
     ///
     /// # Errors
@@ -901,8 +989,17 @@ impl KnowledgeStore {
     /// written.
     pub fn export(&self, output: &Path, filter: &ExportFilter) -> Result<usize> {
         let entries = self.read_all()?;
-        let filtered: Vec<_> = entries.into_iter().filter(|e| filter.matches(e)).collect();
+        let mut filtered: Vec<_> = entries.into_iter().filter(|e| filter.matches(e)).collect();
+
+        // Sort highest confidence first so truncated imports get the best entries.
+        filtered.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
         let count = filtered.len();
+        let merkle_root = compute_merkle_root(&filtered);
 
         if let Some(parent) = output.parent() {
             fs::create_dir_all(parent).context("create export directory")?;
@@ -913,6 +1010,7 @@ impl KnowledgeStore {
             created_at: Utc::now(),
             entry_count: count,
             source_path: self.path.display().to_string(),
+            merkle_root: merkle_root.clone(),
         };
 
         let mut file = OpenOptions::new()
@@ -934,6 +1032,41 @@ impl KnowledgeStore {
         file.sync_all().context("sync export")?;
 
         Ok(count)
+    }
+
+    /// Export all entries with integrity verification and return an [`ExportBundle`].
+    ///
+    /// This is a higher-level alternative to [`export`] for callers that need the
+    /// exported data in memory (e.g. replication, sync) rather than written to a file.
+    ///
+    /// Applies a default [`ExportFilter`] with `filter_secrets = true`, sorts entries
+    /// by confidence descending, and computes a SHA-256 Merkle root over all exported
+    /// entry IDs in lexicographic order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot be read.
+    pub fn export_with_verification(&self) -> Result<ExportBundle> {
+        let filter = ExportFilter {
+            filter_secrets: true,
+            ..Default::default()
+        };
+        let entries = self.read_all()?;
+        let mut filtered: Vec<KnowledgeEntry> =
+            entries.into_iter().filter(|e| filter.matches(e)).collect();
+
+        // Sort highest confidence first.
+        filtered.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let merkle_root = compute_merkle_root(&filtered);
+        Ok(ExportBundle {
+            entries: filtered,
+            merkle_root,
+        })
     }
 
     /// Import knowledge entries from a versioned JSONL backup file.

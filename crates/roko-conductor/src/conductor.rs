@@ -13,14 +13,15 @@ use crate::interventions::{
 use crate::pattern_detector::{CompoundPattern, PatternDetector};
 use crate::threshold_learner::{InterventionOutcome, ThresholdLearner};
 use crate::watchers::{
-    CompileFailRepeatWatcher, ContextWindowPressureWatcher, CostOverrunWatcher, GhostTurnWatcher,
-    IterationLoopWatcher, ReviewLoopWatcher, SpecDriftWatcher, StuckPatternWatcher,
-    TestFailureBudgetWatcher, TimeOverrunWatcher, WorktreeCountWatcher,
+    CompileFailRepeatWatcher, ContextWindowPressureWatcher, CostOverrunWatcher,
+    DiskPressureWatcher, GhostTurnWatcher, IterationLoopWatcher, ReviewLoopWatcher,
+    SpecDriftWatcher, StuckPatternWatcher, TestFailureBudgetWatcher, TimeOverrunWatcher,
+    WorktreeCountWatcher,
 };
 use parking_lot::Mutex;
 use roko_core::{
     Body, CognitiveSignal, ConductorDecision, ConductorEvaluation, Context, Engram, Kind, React,
-    config::schema::ConductorConfig,
+    config::schema::{ConductorConfig, ResourcesConfig},
 };
 use roko_learn::provider_health::ProviderHealthTracker;
 use serde::{Deserialize, Serialize};
@@ -105,10 +106,18 @@ fn default_watchers() -> Vec<Box<dyn React>> {
         Box::new(TimeOverrunWatcher::new()),
         Box::new(StuckPatternWatcher::default()),
         Box::new(WorktreeCountWatcher::default()),
+        Box::new(DiskPressureWatcher::default()),
     ]
 }
 
 fn configured_watchers(config: &ConductorConfig) -> Vec<Box<dyn React>> {
+    configured_watchers_with_resources(config, &ResourcesConfig::default())
+}
+
+fn configured_watchers_with_resources(
+    config: &ConductorConfig,
+    resources: &ResourcesConfig,
+) -> Vec<Box<dyn React>> {
     let thresholds = &config.watchers;
     let mut watchers: Vec<Box<dyn React>> = vec![
         Box::new(
@@ -181,6 +190,13 @@ fn configured_watchers(config: &ConductorConfig) -> Vec<Box<dyn React>> {
                 .map(|cfg| WorktreeCountWatcher::new(cfg.max_live.max(1)))
                 .unwrap_or_default(),
         ),
+        // DiskPressureWatcher thresholds come from ResourcesConfig, not from
+        // a per-watcher schema. No parallel [conductor.watchers.disk_pressure]
+        // section is defined or needed.
+        Box::new(DiskPressureWatcher::new(
+            resources.warn_disk_mb,
+            resources.min_free_disk_mb,
+        )),
     ];
 
     // Context window pressure watcher is only registered when explicitly
@@ -208,9 +224,36 @@ impl Conductor {
 
     /// Create a conductor from user configuration, materializing watcher
     /// thresholds from `[conductor.watchers.*]`.
+    ///
+    /// The [`DiskPressureWatcher`] is constructed with `ResourcesConfig` defaults.
+    /// Use [`Conductor::from_config_with_resources`] to supply live resource thresholds.
     #[must_use]
     pub fn from_config(config: &ConductorConfig) -> Self {
         Self::with_watchers(configured_watchers(config))
+    }
+
+    /// Create a conductor from user configuration and resource thresholds.
+    ///
+    /// The [`DiskPressureWatcher`] is constructed from `resources.warn_disk_mb` and
+    /// `resources.min_free_disk_mb` rather than hardcoded defaults. All other watcher
+    /// thresholds come from `[conductor.watchers.*]` as usual.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use roko_conductor::Conductor;
+    /// use roko_core::config::schema::{ConductorConfig, ResourcesConfig};
+    ///
+    /// let conductor_cfg = ConductorConfig::default();
+    /// let resources_cfg = ResourcesConfig::default();
+    /// let conductor = Conductor::from_config_with_resources(&conductor_cfg, &resources_cfg);
+    /// ```
+    #[must_use]
+    pub fn from_config_with_resources(
+        config: &ConductorConfig,
+        resources: &ResourcesConfig,
+    ) -> Self {
+        Self::with_watchers(configured_watchers_with_resources(config, resources))
     }
 
     /// Convenience helper for periodic watcher checks.

@@ -33,6 +33,8 @@ pub mod atomic;
 pub mod bandit;
 /// Archive-backed [`ColdStore`](roko_core::ColdStore) for aged-out engrams.
 pub mod cold_substrate;
+/// Cross-platform disk space checker and runtime monitor.
+pub mod disk;
 pub mod file_substrate;
 pub mod gc;
 pub mod layout;
@@ -40,6 +42,7 @@ pub mod log_rotation;
 pub mod metrics;
 pub mod observability;
 pub mod pointer;
+pub mod target_cleanup;
 pub mod tool_audit;
 pub mod tool_metrics_sink;
 pub mod trace_sink;
@@ -48,12 +51,16 @@ pub use archive::{ArchiveEntry, ArchiveKind, ArchiveStats, Archiver};
 pub use atomic::{atomic_write_bytes, atomic_write_json};
 pub use bandit::{ArmSnapshot, BanditStore};
 pub use cold_substrate::{ArchiveColdSubstrate, SubstrateMigrator};
+pub use disk::{DiskError, DiskMonitor, DiskStatus, DiskWarning, available_disk_mb};
 pub use file_substrate::FileSubstrate;
 pub use gc::{FsRetentionPolicy, GcCandidate, GcEngine, GcReport};
 pub use layout::{LayoutVersion, RokoLayout};
 pub use metrics::MetricsLog;
 pub use observability::FsObservabilitySinks;
 pub use pointer::PointerStore;
+pub use target_cleanup::{
+    CleanupReport, TargetDir, cargo_clean, clean_stale_targets, scan_target_dirs,
+};
 pub use tool_audit::ToolAuditLog;
 pub use tool_metrics_sink::{JsonlMetricsSink, ToolMetricsRecord};
 pub use trace_sink::{JsonlTraceSink, default_trace_sink};

@@ -8,6 +8,7 @@
 pub mod compile_fail_repeat;
 pub mod context_window_pressure;
 pub mod cost_overrun;
+pub mod disk_pressure;
 pub mod ghost_turn;
 pub mod iteration_loop;
 pub mod review_loop;
@@ -20,6 +21,7 @@ pub mod worktree_count;
 pub use compile_fail_repeat::CompileFailRepeatWatcher;
 pub use context_window_pressure::ContextWindowPressureWatcher;
 pub use cost_overrun::CostOverrunWatcher;
+pub use disk_pressure::DiskPressureWatcher;
 pub use ghost_turn::GhostTurnWatcher;
 pub use iteration_loop::IterationLoopWatcher;
 pub use review_loop::ReviewLoopWatcher;

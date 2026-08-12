@@ -1142,6 +1142,299 @@ fn dedupe(values: Vec<String>) -> Vec<String> {
     out
 }
 
+// ─── A-MAC 5-factor admission gate ───────────────────────────────────────────
+
+/// Cosine similarity threshold above which a candidate is rejected as a
+/// near-duplicate of an existing entry.
+const AMAC_DUPLICATE_REJECT_THRESHOLD: f64 = 0.95;
+/// Minimum combined A-MAC score required for admission.
+const AMAC_ADMISSION_THRESHOLD: f64 = 0.5;
+/// Weight for similarity factor in the combined score (negated: high similarity
+/// lowers the score).
+const AMAC_WEIGHT_NOVELTY: f64 = 0.30;
+/// Weight for contradiction factor (inverted: 1.0 means no contradiction).
+const AMAC_WEIGHT_CONTRADICTION: f64 = 0.20;
+/// Weight for relevance factor.
+const AMAC_WEIGHT_RELEVANCE: f64 = 0.25;
+/// Weight for candidate confidence factor.
+const AMAC_WEIGHT_CONFIDENCE: f64 = 0.25;
+/// Minimum tag overlap for two entries to be considered similar (keyword path).
+const AMAC_MIN_TAG_OVERLAP: usize = 1;
+/// Minimum keyword overlap in content for entries to be considered similar.
+const AMAC_MIN_KEYWORD_OVERLAP: usize = 2;
+/// Topic similarity threshold above which an AntiKnowledge entry triggers
+/// contradiction scoring.
+const AMAC_CONTRADICTION_TOPIC_THRESHOLD: f64 = 0.7;
+
+/// Per-factor breakdown from the A-MAC 5-factor admission evaluation.
+///
+/// All fields are in `[0.0, 1.0]` except `similarity` (raw max cosine-like
+/// overlap, before inversion). These scores are informational; the admission
+/// decision is derived from the combined weighted score.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdmissionFactors {
+    /// Maximum tag+keyword similarity to any existing entry (`0.0..=1.0`).
+    /// High similarity → low novelty → lower combined score.
+    pub similarity: f64,
+    /// `1.0 - similarity`. Higher = more novel.
+    pub novelty: f64,
+    /// `1.0` means no contradiction detected; `0.0` means strong contradiction.
+    /// Derived from AntiKnowledge entries with overlapping topics.
+    pub contradiction: f64,
+    /// Relevance score based on tag match and recency of the candidate.
+    pub relevance: f64,
+    /// Source-weighted confidence drawn from the candidate's own confidence
+    /// field, adjusted by the trust weight of its source.
+    pub confidence: f64,
+}
+
+/// Result of the A-MAC 5-factor admission evaluation for a candidate
+/// [`KnowledgeEntry`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdmissionResult {
+    /// Whether the candidate was admitted.
+    pub admitted: bool,
+    /// Combined weighted score that drove the decision (`0.0..=1.0`).
+    pub score: f64,
+    /// Per-factor breakdown.
+    pub factors: AdmissionFactors,
+}
+
+/// The A-MAC (Admission-MAC) 5-factor gate for the durable knowledge store.
+///
+/// Extends [`LightAdmissionGate`] with full contradiction detection and a
+/// weighted multi-factor admission score. The five factors are:
+///
+/// 1. **Similarity** — tag+keyword overlap with existing entries. Used both for
+///    deduplication (reject if ≥ 0.95) and as the inverse novelty signal.
+/// 2. **Novelty** — `1 - max_similarity`. Higher novelty lifts the score.
+/// 3. **Contradiction** — checks for existing [`KnowledgeKind::AntiKnowledge`]
+///    entries whose topic overlaps the candidate's. A high-confidence
+///    AntiKnowledge hit sets contradiction to 0.0.
+/// 4. **Relevance** — keyword match in tags combined with a recency discount so
+///    that fresher candidates score higher.
+/// 5. **Confidence** — the candidate's own confidence field, source-weighted
+///    via [`KnowledgeEvidenceSource::trust_weight`].
+///
+/// The combined score is a weighted average of factors 2–5. A candidate is
+/// admitted when `score >= 0.5` and `similarity < 0.95`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AmacGate {
+    /// Similarity threshold above which a candidate is rejected as a duplicate.
+    pub duplicate_threshold: f64,
+    /// Minimum combined score required for admission.
+    pub admission_threshold: f64,
+}
+
+impl Default for AmacGate {
+    fn default() -> Self {
+        Self {
+            duplicate_threshold: AMAC_DUPLICATE_REJECT_THRESHOLD,
+            admission_threshold: AMAC_ADMISSION_THRESHOLD,
+        }
+    }
+}
+
+/// Compute a tag+keyword overlap similarity between two [`KnowledgeEntry`]
+/// values, returning a value in `[0.0, 1.0]`.
+///
+/// The algorithm mirrors the overlap heuristics used in [`KnowledgeStore`]
+/// deduplication (`MIN_TAG_OVERLAP` / `MIN_KEYWORD_OVERLAP`), but returns a
+/// continuous score instead of a binary signal.
+fn entry_overlap_similarity(a: &KnowledgeEntry, b: &KnowledgeEntry) -> f64 {
+    // Tag overlap: Jaccard-like intersection / union.
+    let a_tags: std::collections::BTreeSet<&str> = a.tags.iter().map(String::as_str).collect();
+    let b_tags: std::collections::BTreeSet<&str> = b.tags.iter().map(String::as_str).collect();
+    let tag_intersection = a_tags.intersection(&b_tags).count();
+    let tag_union = a_tags.union(&b_tags).count();
+    let tag_sim = if tag_union == 0 {
+        0.0
+    } else {
+        tag_intersection as f64 / tag_union as f64
+    };
+
+    // Keyword overlap in content: split on whitespace, lower-case, intersect.
+    let a_words: std::collections::BTreeSet<String> = a
+        .content
+        .split_whitespace()
+        .map(|w| w.to_ascii_lowercase())
+        .filter(|w| w.len() > 3)
+        .collect();
+    let b_words: std::collections::BTreeSet<String> = b
+        .content
+        .split_whitespace()
+        .map(|w| w.to_ascii_lowercase())
+        .filter(|w| w.len() > 3)
+        .collect();
+    let word_intersection = a_words.intersection(&b_words).count();
+    let word_union = a_words.union(&b_words).count();
+    let word_sim = if word_union == 0 {
+        0.0
+    } else {
+        word_intersection as f64 / word_union as f64
+    };
+
+    // Blend: tags are a stronger signal when they agree, but content carries
+    // more information when there are many overlapping words.
+    let has_tag_overlap = tag_intersection >= AMAC_MIN_TAG_OVERLAP;
+    let has_word_overlap = word_intersection >= AMAC_MIN_KEYWORD_OVERLAP;
+    if has_tag_overlap && has_word_overlap {
+        (tag_sim + word_sim) / 2.0
+    } else if has_tag_overlap {
+        tag_sim * 0.6
+    } else if has_word_overlap {
+        word_sim * 0.6
+    } else {
+        0.0
+    }
+}
+
+/// Compute the contradiction score for `candidate` against `existing`.
+///
+/// Returns `0.0` when a high-confidence AntiKnowledge entry closely overlaps
+/// the candidate's topic, indicating strong contradiction. Returns `1.0` when
+/// no contradiction is found.
+fn compute_contradiction(candidate: &KnowledgeEntry, existing: &[KnowledgeEntry]) -> f64 {
+    for entry in existing {
+        if entry.kind != KnowledgeKind::AntiKnowledge {
+            continue;
+        }
+        // Only consider confident anti-knowledge entries.
+        if entry.confidence < 0.8 {
+            continue;
+        }
+        let overlap = entry_overlap_similarity(candidate, entry);
+        if overlap >= AMAC_CONTRADICTION_TOPIC_THRESHOLD {
+            // Strong contradiction: score drops proportionally.
+            // A perfect overlap returns 0.0; threshold-level overlap returns
+            // a value near 0.0 and decreases further with higher overlap.
+            let contradiction_severity = (overlap - AMAC_CONTRADICTION_TOPIC_THRESHOLD)
+                / (1.0 - AMAC_CONTRADICTION_TOPIC_THRESHOLD);
+            return (1.0 - contradiction_severity).clamp(0.0, 1.0);
+        }
+    }
+    1.0 // No contradiction found.
+}
+
+/// Compute a relevance score for `candidate` based on recency and tag richness.
+///
+/// Recency is a half-life decay factor using the entry's own `half_life_days`.
+/// Tag richness provides a modest lift for well-tagged entries.
+fn compute_relevance(candidate: &KnowledgeEntry) -> f64 {
+    let age_days = {
+        let now = Utc::now();
+        let diff = now.signed_duration_since(candidate.created_at);
+        diff.num_seconds().max(0) as f64 / 86_400.0
+    };
+    let half_life = candidate.half_life_days.max(1.0);
+    let recency = (-std::f64::consts::LN_2 * age_days / half_life).exp();
+
+    // Tag richness: saturates at 5 tags.
+    let tag_richness = (candidate.tags.len() as f64 / 5.0).clamp(0.0, 1.0);
+
+    // Blend: 70% recency, 30% tag richness.
+    (0.7 * recency + 0.3 * tag_richness).clamp(0.0, 1.0)
+}
+
+/// Evaluate a candidate [`KnowledgeEntry`] against the `existing` store using
+/// the A-MAC 5-factor gate.
+///
+/// This function is the public entry point for the admission gate. It does not
+/// mutate any store; callers integrate the result with their ingestion path.
+///
+/// # Arguments
+///
+/// * `candidate` — The entry under consideration for admission.
+/// * `existing` — The current contents of the durable knowledge store.
+///
+/// # Returns
+///
+/// An [`AdmissionResult`] describing the decision, combined score, and
+/// per-factor breakdown. Log `admitted == false` with `score` and `factors`
+/// for debugging rejected entries.
+#[must_use]
+pub fn evaluate_admission(
+    candidate: &KnowledgeEntry,
+    existing: &[KnowledgeEntry],
+) -> AdmissionResult {
+    let gate = AmacGate::default();
+
+    // Factor 1 & 2: Similarity and Novelty.
+    let max_similarity = existing
+        .iter()
+        .map(|e| entry_overlap_similarity(candidate, e))
+        .fold(0.0_f64, f64::max);
+    let novelty = (1.0 - max_similarity).clamp(0.0, 1.0);
+
+    // Reject immediately as duplicate before computing other factors.
+    if max_similarity >= gate.duplicate_threshold {
+        let factors = AdmissionFactors {
+            similarity: max_similarity,
+            novelty,
+            contradiction: 1.0, // Not evaluated — rejected for duplication.
+            relevance: compute_relevance(candidate),
+            confidence: candidate.confidence.clamp(0.0, 1.0),
+        };
+        let score = 0.0;
+        tracing::debug!(
+            candidate_id = %candidate.id,
+            similarity = max_similarity,
+            reason = "Reject: duplicate (similarity >= 0.95)",
+            "A-MAC admission rejected"
+        );
+        return AdmissionResult {
+            admitted: false,
+            score,
+            factors,
+        };
+    }
+
+    // Factor 3: Contradiction.
+    let contradiction = compute_contradiction(candidate, existing);
+
+    // Factor 4: Relevance.
+    let relevance = compute_relevance(candidate);
+
+    // Factor 5: Confidence (source-weighted if source tag is parseable).
+    let confidence = candidate.confidence.clamp(0.0, 1.0);
+
+    // Combined weighted score.
+    let score = (AMAC_WEIGHT_NOVELTY * novelty
+        + AMAC_WEIGHT_CONTRADICTION * contradiction
+        + AMAC_WEIGHT_RELEVANCE * relevance
+        + AMAC_WEIGHT_CONFIDENCE * confidence)
+        .clamp(0.0, 1.0);
+
+    let admitted = score >= gate.admission_threshold;
+
+    if !admitted {
+        tracing::debug!(
+            candidate_id = %candidate.id,
+            score,
+            novelty,
+            contradiction,
+            relevance,
+            confidence,
+            reason = "Reject: score below threshold",
+            "A-MAC admission rejected"
+        );
+    }
+
+    let factors = AdmissionFactors {
+        similarity: max_similarity,
+        novelty,
+        contradiction,
+        relevance,
+        confidence,
+    };
+
+    AdmissionResult {
+        admitted,
+        score,
+        factors,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

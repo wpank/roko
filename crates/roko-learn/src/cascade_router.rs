@@ -2498,6 +2498,184 @@ impl CascadeRouter {
         let residual = predicted_success - actual_value;
         self.feedback(model_slug, predicted_success, actual_success, residual);
     }
+
+    /// Route a context, applying a provider pass-rate multiplier to model scores
+    /// in stages 2 (Confidence) and 3 (UCB).
+    ///
+    /// `provider_metrics` maps provider id → [`ProviderMetrics`].
+    /// `model_providers` maps model slug → provider id.
+    /// `pass_rate_weight` controls how strongly the pass rate influences the
+    /// score: 0.0 disables the bias, 1.0 applies the full pass-rate multiplier.
+    ///
+    /// This is a soft signal — providers with low pass rates are down-weighted
+    /// but never completely excluded.
+    pub fn route_with_provider_metrics(
+        &self,
+        ctx: &RoutingContext,
+        provider_metrics: &HashMap<String, ProviderMetrics>,
+        model_providers: &HashMap<String, String>,
+        pass_rate_weight: f64,
+    ) -> CascadeModel {
+        match self.current_stage() {
+            CascadeStage::Static => self.route_static(ctx, None, None),
+            CascadeStage::Confidence => {
+                let thinking_candidates = thinking_filtered_candidates(&self.model_slugs, ctx);
+                let mut scores = self.confidence_scores(&thinking_candidates, ctx);
+                apply_provider_pass_rate(
+                    &mut scores,
+                    provider_metrics,
+                    model_providers,
+                    pass_rate_weight,
+                );
+                let best_slug = select_with_hysteresis(&scores, ctx.previous_model.as_deref());
+                let tier = slug_to_tier(&best_slug, &self.tier_map);
+                CascadeModel {
+                    primary: ModelSpec::from_slug(&best_slug),
+                    fallback_chain: fallback_chain_for_model(
+                        &self.model_slugs,
+                        &best_slug,
+                        &self.tier_map,
+                    ),
+                    context_overflow_fallback: context_overflow_fallback_for_model(
+                        &self.model_slugs,
+                        &best_slug,
+                        &self.tier_map,
+                    ),
+                    latency_sla_ms: default_latency_sla(tier),
+                    stage: CascadeStage::Confidence,
+                }
+            }
+            CascadeStage::Ucb => {
+                let thinking_candidates = thinking_filtered_candidates(&self.model_slugs, ctx);
+                let frontier = self.current_pareto_frontier();
+                let mut scores = self.ucb_scores(ctx, &thinking_candidates, frontier.as_deref());
+                apply_provider_pass_rate(
+                    &mut scores,
+                    provider_metrics,
+                    model_providers,
+                    pass_rate_weight,
+                );
+                let best_slug = select_with_hysteresis(&scores, ctx.previous_model.as_deref());
+                let tier = slug_to_tier(&best_slug, &self.tier_map);
+                CascadeModel {
+                    primary: ModelSpec::from_slug(&best_slug),
+                    fallback_chain: fallback_chain_for_model(
+                        &self.model_slugs,
+                        &best_slug,
+                        &self.tier_map,
+                    ),
+                    context_overflow_fallback: context_overflow_fallback_for_model(
+                        &self.model_slugs,
+                        &best_slug,
+                        &self.tier_map,
+                    ),
+                    latency_sla_ms: default_latency_sla(tier),
+                    stage: CascadeStage::Ucb,
+                }
+            }
+        }
+    }
+}
+
+// ─── Provider pass-rate metrics ──────────────────────────────────────────────
+
+/// Per-provider historical pass-rate metrics derived from lifetime request/failure counts.
+///
+/// Used by [`CascadeRouter::route_with_provider_metrics`] to soft-bias model scoring
+/// toward providers with better historical reliability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderMetrics {
+    /// Total requests recorded for this provider.
+    pub total_calls: u64,
+    /// Requests that completed successfully (total_calls - failures).
+    pub successful_calls: u64,
+}
+
+impl ProviderMetrics {
+    /// Historical pass rate in `[0.0, 1.0]`.
+    ///
+    /// Returns `1.0` when no calls have been recorded so that unknown providers
+    /// are treated optimistically rather than penalised.
+    #[must_use]
+    pub fn pass_rate(&self) -> f64 {
+        if self.total_calls == 0 {
+            return 1.0;
+        }
+        (self.successful_calls as f64 / self.total_calls as f64).clamp(0.0, 1.0)
+    }
+}
+
+/// Compute per-provider pass-rate metrics from a [`ProviderHealthRegistry`] snapshot.
+///
+/// Providers with fewer than `min_calls` requests are excluded from the returned
+/// map so that routing is not biased by statistically unreliable samples.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let metrics = compute_provider_metrics(&health_registry, 5);
+/// let route = router.route_with_provider_metrics(ctx, &metrics, &model_providers, 0.3);
+/// ```
+#[must_use]
+pub fn compute_provider_metrics(
+    health: &ProviderHealthRegistry,
+    min_calls: u64,
+) -> HashMap<String, ProviderMetrics> {
+    health
+        .snapshot()
+        .into_iter()
+        .filter_map(|(provider_id, h)| {
+            if h.total_requests < min_calls {
+                return None;
+            }
+            let successful_calls = h.total_requests.saturating_sub(h.total_failures);
+            Some((
+                provider_id,
+                ProviderMetrics {
+                    total_calls: h.total_requests,
+                    successful_calls,
+                },
+            ))
+        })
+        .collect()
+}
+
+/// Apply provider pass-rate as a soft multiplier to a score vector in-place.
+///
+/// For each `(slug, score)` pair the effective score becomes:
+///
+/// ```text
+/// adjusted = score * lerp(1.0, pass_rate, weight)
+///          = score * (1.0 - weight + weight * pass_rate)
+/// ```
+///
+/// When `weight == 0.0` the scores are unchanged. When `weight == 1.0` the
+/// scores are multiplied directly by the provider's pass rate.
+///
+/// Slugs whose provider is not present in `provider_metrics` (i.e. insufficient
+/// data) are left unchanged.
+fn apply_provider_pass_rate(
+    scores: &mut [(String, f64)],
+    provider_metrics: &HashMap<String, ProviderMetrics>,
+    model_providers: &HashMap<String, String>,
+    weight: f64,
+) {
+    if weight <= 0.0 || provider_metrics.is_empty() {
+        return;
+    }
+    let weight = weight.clamp(0.0, 1.0);
+    for (slug, score) in scores.iter_mut() {
+        let provider_id = model_providers
+            .get(slug.as_str())
+            .map_or(slug.as_str(), String::as_str);
+        if let Some(metrics) = provider_metrics.get(provider_id) {
+            let pass_rate = metrics.pass_rate();
+            // lerp(1.0, pass_rate, weight): no change when weight==0, full
+            // multiplier when weight==1.
+            let multiplier = 1.0 - weight + weight * pass_rate;
+            *score *= multiplier;
+        }
+    }
 }
 
 #[cfg(test)]

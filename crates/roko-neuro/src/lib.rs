@@ -1389,12 +1389,12 @@ pub mod temporal;
 pub mod tier_progression;
 
 pub use admission::{
-    AdmissionGateOutcome, DEFAULT_KNOWLEDGE_ADMISSION_DECISIONS_FILE,
-    DEFAULT_KNOWLEDGE_CANDIDATES_FILE, DEFAULT_MIN_ADMISSION_CONFIDENCE,
-    DEFAULT_MIN_ANTI_KNOWLEDGE_CONFIDENCE, EvidencePolarity, KnowledgeAdmissionDecision,
-    KnowledgeAdmissionOutcome, KnowledgeAdmissionPolicy, KnowledgeAdmissionReason,
-    KnowledgeAdmissionStore, KnowledgeCandidateRecord, KnowledgeEvidence, KnowledgeEvidenceSource,
-    KnowledgeScope, LightAdmissionGate,
+    AdmissionFactors, AdmissionGateOutcome, AdmissionResult, AmacGate,
+    DEFAULT_KNOWLEDGE_ADMISSION_DECISIONS_FILE, DEFAULT_KNOWLEDGE_CANDIDATES_FILE,
+    DEFAULT_MIN_ADMISSION_CONFIDENCE, DEFAULT_MIN_ANTI_KNOWLEDGE_CONFIDENCE, EvidencePolarity,
+    KnowledgeAdmissionDecision, KnowledgeAdmissionOutcome, KnowledgeAdmissionPolicy,
+    KnowledgeAdmissionReason, KnowledgeAdmissionStore, KnowledgeCandidateRecord, KnowledgeEvidence,
+    KnowledgeEvidenceSource, KnowledgeScope, LightAdmissionGate, evaluate_admission,
 };
 pub use context::{
     ContextAssembler, ContextChunk, ContextSource, EpisodeStore, PadState, ReadFileSpec, TaskInput,

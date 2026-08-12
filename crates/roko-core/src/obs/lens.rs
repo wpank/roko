@@ -16,6 +16,16 @@
 //! The trait and its supporting types are defined first; [`CollectorLens`] is
 //! the first concrete implementation, wrapping [`MetricRegistry`] as a
 //! read-side adapter (E13-T02).
+//!
+//! ## Concrete collector lenses (E33-T03)
+//!
+//! Three domain-specific lenses project subsets of [`MetricRegistry`] state:
+//!
+//! | Lens | Metric families | Labels |
+//! |------|----------------|--------|
+//! | [`TokenUsageLens`] | `roko_llm_tokens_total` | `provider`, `model`, `direction` |
+//! | [`LatencyLens`] | `roko_llm_ttft_seconds`, `roko_llm_request_duration_seconds` | `provider`, `model` |
+//! | [`CostLens`] | `roko_llm_cost_usd_total` | `provider`, `model` |
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -150,6 +160,196 @@ impl Lens for CollectorLens {
     }
 }
 
+// ─── TokenUsageLens ─────────────────────────────────────────────────
+
+/// A [`Lens`] that projects token-usage counters from a [`MetricRegistry`].
+///
+/// Filters the registry snapshot to entries belonging to the canonical
+/// `roko_llm_tokens_total` family (all `provider`/`model`/`direction`
+/// label combinations that have been registered).  The filtered view
+/// lets consumers focus purely on token accounting without noise from
+/// other metric families.
+///
+/// # Construction
+///
+/// ```rust
+/// # use std::sync::Arc;
+/// # use roko_core::obs::metrics::{MetricRegistry, LabelSet};
+/// # use roko_core::obs::lens::{TokenUsageLens, LensScope};
+/// let registry = Arc::new(MetricRegistry::new());
+/// let lens = TokenUsageLens::new(Arc::clone(&registry), LensScope::Global);
+/// ```
+pub struct TokenUsageLens {
+    registry: Arc<MetricRegistry>,
+    scope: LensScope,
+    version: AtomicU64,
+}
+
+impl TokenUsageLens {
+    /// Wrap an existing [`MetricRegistry`] as a token-usage lens.
+    pub fn new(registry: Arc<MetricRegistry>, scope: LensScope) -> Self {
+        Self {
+            registry,
+            scope,
+            version: AtomicU64::new(0),
+        }
+    }
+}
+
+impl Lens for TokenUsageLens {
+    fn name(&self) -> &str {
+        "token-usage"
+    }
+
+    fn scope(&self) -> &LensScope {
+        &self.scope
+    }
+
+    fn snapshot(&self) -> LensSnapshot {
+        use super::schema::ROKO_LLM_TOKENS_TOTAL;
+        let version = self.version.fetch_add(1, Ordering::Relaxed);
+        let metrics: Vec<MetricSnapshot> = self
+            .registry
+            .snapshot()
+            .into_iter()
+            .filter(|m| m.name == ROKO_LLM_TOKENS_TOTAL)
+            .collect();
+        LensSnapshot {
+            lens_name: Cow::Borrowed("token-usage"),
+            scope: self.scope.clone(),
+            version,
+            metrics,
+        }
+    }
+}
+
+// ─── LatencyLens ─────────────────────────────────────────────────────
+
+/// A [`Lens`] that projects LLM latency histograms from a [`MetricRegistry`].
+///
+/// Filters the registry snapshot to entries belonging to the canonical
+/// `roko_llm_ttft_seconds` and `roko_llm_request_duration_seconds` families
+/// (keyed by `provider` and `model`).  Downstream consumers (TUI, SSE,
+/// dashboards) can display p50/p95/p99 without touching the raw registry.
+///
+/// # Construction
+///
+/// ```rust
+/// # use std::sync::Arc;
+/// # use roko_core::obs::metrics::MetricRegistry;
+/// # use roko_core::obs::lens::{LatencyLens, LensScope};
+/// let registry = Arc::new(MetricRegistry::new());
+/// let lens = LatencyLens::new(Arc::clone(&registry), LensScope::Global);
+/// ```
+pub struct LatencyLens {
+    registry: Arc<MetricRegistry>,
+    scope: LensScope,
+    version: AtomicU64,
+}
+
+impl LatencyLens {
+    /// Wrap an existing [`MetricRegistry`] as a latency lens.
+    pub fn new(registry: Arc<MetricRegistry>, scope: LensScope) -> Self {
+        Self {
+            registry,
+            scope,
+            version: AtomicU64::new(0),
+        }
+    }
+}
+
+impl Lens for LatencyLens {
+    fn name(&self) -> &str {
+        "latency"
+    }
+
+    fn scope(&self) -> &LensScope {
+        &self.scope
+    }
+
+    fn snapshot(&self) -> LensSnapshot {
+        use super::schema::{ROKO_LLM_REQUEST_DURATION_SECONDS, ROKO_LLM_TTFT_SECONDS};
+        let version = self.version.fetch_add(1, Ordering::Relaxed);
+        let metrics: Vec<MetricSnapshot> = self
+            .registry
+            .snapshot()
+            .into_iter()
+            .filter(|m| {
+                m.name == ROKO_LLM_TTFT_SECONDS || m.name == ROKO_LLM_REQUEST_DURATION_SECONDS
+            })
+            .collect();
+        LensSnapshot {
+            lens_name: Cow::Borrowed("latency"),
+            scope: self.scope.clone(),
+            version,
+            metrics,
+        }
+    }
+}
+
+// ─── CostLens ────────────────────────────────────────────────────────
+
+/// A [`Lens`] that projects cumulative LLM cost counters from a
+/// [`MetricRegistry`].
+///
+/// Filters the registry snapshot to entries belonging to the canonical
+/// `roko_llm_cost_usd_total` family (keyed by `provider` and `model`).
+/// Values are in USD and accumulate monotonically; downstream consumers
+/// may diff consecutive snapshots to compute per-interval spend.
+///
+/// # Construction
+///
+/// ```rust
+/// # use std::sync::Arc;
+/// # use roko_core::obs::metrics::MetricRegistry;
+/// # use roko_core::obs::lens::{CostLens, LensScope};
+/// let registry = Arc::new(MetricRegistry::new());
+/// let lens = CostLens::new(Arc::clone(&registry), LensScope::Global);
+/// ```
+pub struct CostLens {
+    registry: Arc<MetricRegistry>,
+    scope: LensScope,
+    version: AtomicU64,
+}
+
+impl CostLens {
+    /// Wrap an existing [`MetricRegistry`] as a cost lens.
+    pub fn new(registry: Arc<MetricRegistry>, scope: LensScope) -> Self {
+        Self {
+            registry,
+            scope,
+            version: AtomicU64::new(0),
+        }
+    }
+}
+
+impl Lens for CostLens {
+    fn name(&self) -> &str {
+        "cost"
+    }
+
+    fn scope(&self) -> &LensScope {
+        &self.scope
+    }
+
+    fn snapshot(&self) -> LensSnapshot {
+        use super::schema::ROKO_LLM_COST_USD_TOTAL;
+        let version = self.version.fetch_add(1, Ordering::Relaxed);
+        let metrics: Vec<MetricSnapshot> = self
+            .registry
+            .snapshot()
+            .into_iter()
+            .filter(|m| m.name == ROKO_LLM_COST_USD_TOTAL)
+            .collect();
+        LensSnapshot {
+            lens_name: Cow::Borrowed("cost"),
+            scope: self.scope.clone(),
+            version,
+            metrics,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,5 +457,235 @@ mod tests {
     fn collector_lens_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<CollectorLens>();
+    }
+
+    // ─── TokenUsageLens tests ────────────────────────────────────────
+
+    #[test]
+    fn token_usage_lens_filters_to_token_counters_only() {
+        use crate::obs::schema::ROKO_LLM_TOKENS_TOTAL;
+
+        let registry = Arc::new(MetricRegistry::new());
+
+        // Register the token counter under the canonical name.
+        let input_labels = LabelSet::from_pairs(&[
+            ("direction", "input"),
+            ("model", "claude-sonnet-4-6"),
+            ("provider", "anthropic"),
+        ]);
+        let output_labels = LabelSet::from_pairs(&[
+            ("direction", "output"),
+            ("model", "claude-sonnet-4-6"),
+            ("provider", "anthropic"),
+        ]);
+        let input_counter = registry.register_counter(
+            ROKO_LLM_TOKENS_TOTAL,
+            "LLM tokens consumed/produced, by provider, model, direction",
+            input_labels,
+        );
+        let output_counter = registry.register_counter(
+            ROKO_LLM_TOKENS_TOTAL,
+            "LLM tokens consumed/produced, by provider, model, direction",
+            output_labels,
+        );
+        input_counter.inc_by(1_200);
+        output_counter.inc_by(300);
+
+        // Register an unrelated metric that must NOT appear in the lens.
+        let _ = registry.register_counter("roko_plans_total", "plans", LabelSet::new());
+
+        let lens = TokenUsageLens::new(Arc::clone(&registry), LensScope::Global);
+        assert_eq!(lens.name(), "token-usage");
+        assert_eq!(lens.scope(), &LensScope::Global);
+
+        let snap = lens.snapshot();
+        assert_eq!(snap.lens_name, "token-usage");
+        assert_eq!(snap.version, 0);
+
+        // Only token-usage entries appear.
+        assert_eq!(
+            snap.metrics.len(),
+            2,
+            "two token-direction entries expected"
+        );
+        for m in &snap.metrics {
+            assert_eq!(m.name, ROKO_LLM_TOKENS_TOTAL);
+        }
+
+        // Verify input token value.
+        let input_snap = snap
+            .metrics
+            .iter()
+            .find(|m| {
+                m.labels
+                    .iter()
+                    .any(|(k, v)| k == "direction" && v == "input")
+            })
+            .expect("input direction entry");
+        match &input_snap.value {
+            MetricValue::Counter(v) => assert_eq!(*v, 1_200),
+            other => panic!("expected Counter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn token_usage_lens_version_increments() {
+        let registry = Arc::new(MetricRegistry::new());
+        let lens = TokenUsageLens::new(registry, LensScope::Space("default".into()));
+
+        let s0 = lens.snapshot();
+        let s1 = lens.snapshot();
+        assert_eq!(s0.version, 0);
+        assert_eq!(s1.version, 1);
+    }
+
+    #[test]
+    fn token_usage_lens_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<TokenUsageLens>();
+    }
+
+    // ─── LatencyLens tests ───────────────────────────────────────────
+
+    #[test]
+    fn latency_lens_filters_to_latency_histograms_only() {
+        use crate::obs::histograms::LLM_LATENCY_BUCKETS;
+        use crate::obs::schema::{ROKO_LLM_REQUEST_DURATION_SECONDS, ROKO_LLM_TTFT_SECONDS};
+
+        let registry = Arc::new(MetricRegistry::new());
+
+        let provider_model =
+            LabelSet::from_pairs(&[("model", "claude-sonnet-4-6"), ("provider", "anthropic")]);
+
+        let ttft = registry.register_histogram(
+            ROKO_LLM_TTFT_SECONDS,
+            "LLM time-to-first-token in seconds",
+            provider_model.clone(),
+            LLM_LATENCY_BUCKETS.to_vec(),
+        );
+        let duration = registry.register_histogram(
+            ROKO_LLM_REQUEST_DURATION_SECONDS,
+            "LLM total request duration in seconds",
+            provider_model.clone(),
+            LLM_LATENCY_BUCKETS.to_vec(),
+        );
+        ttft.observe(0.12);
+        duration.observe(2.4);
+
+        // Unrelated metric — must not appear.
+        let _ = registry.register_counter("roko_tasks_total", "tasks", LabelSet::new());
+
+        let lens = LatencyLens::new(Arc::clone(&registry), LensScope::Agent("coder".into()));
+        assert_eq!(lens.name(), "latency");
+        assert_eq!(lens.scope(), &LensScope::Agent("coder".into()));
+
+        let snap = lens.snapshot();
+        assert_eq!(snap.lens_name, "latency");
+        assert_eq!(snap.version, 0);
+        assert_eq!(snap.metrics.len(), 2, "ttft + request-duration entries");
+
+        let names: Vec<&str> = snap.metrics.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&ROKO_LLM_TTFT_SECONDS),
+            "ttft entry must be present"
+        );
+        assert!(
+            names.contains(&ROKO_LLM_REQUEST_DURATION_SECONDS),
+            "request-duration entry must be present"
+        );
+    }
+
+    #[test]
+    fn latency_lens_version_increments() {
+        let registry = Arc::new(MetricRegistry::new());
+        let lens = LatencyLens::new(registry, LensScope::Global);
+
+        let s0 = lens.snapshot();
+        let s1 = lens.snapshot();
+        assert_eq!(s0.version, 0);
+        assert_eq!(s1.version, 1);
+    }
+
+    #[test]
+    fn latency_lens_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<LatencyLens>();
+    }
+
+    // ─── CostLens tests ──────────────────────────────────────────────
+
+    #[test]
+    fn cost_lens_filters_to_cost_counters_only() {
+        use crate::obs::schema::ROKO_LLM_COST_USD_TOTAL;
+
+        let registry = Arc::new(MetricRegistry::new());
+
+        let anthropic_labels =
+            LabelSet::from_pairs(&[("model", "claude-sonnet-4-6"), ("provider", "anthropic")]);
+        let openai_labels = LabelSet::from_pairs(&[("model", "gpt-5.2"), ("provider", "openai")]);
+
+        let anthropic_cost = registry.register_counter(
+            ROKO_LLM_COST_USD_TOTAL,
+            "Cumulative LLM spend in USD, by provider and model",
+            anthropic_labels,
+        );
+        let openai_cost = registry.register_counter(
+            ROKO_LLM_COST_USD_TOTAL,
+            "Cumulative LLM spend in USD, by provider and model",
+            openai_labels,
+        );
+        // Token counters are stored as integer micro-dollars (u64); we use
+        // integer-cent precision here: 150 = $0.000150 if interpreted as
+        // micro-dollars, but for the counter the value is opaque.
+        anthropic_cost.inc_by(150);
+        openai_cost.inc_by(420);
+
+        // Unrelated metric — must not appear.
+        let _ = registry.register_counter("roko_gate_verdicts_total", "verdicts", LabelSet::new());
+
+        let lens = CostLens::new(Arc::clone(&registry), LensScope::Graph("plan-42".into()));
+        assert_eq!(lens.name(), "cost");
+        assert_eq!(lens.scope(), &LensScope::Graph("plan-42".into()));
+
+        let snap = lens.snapshot();
+        assert_eq!(snap.lens_name, "cost");
+        assert_eq!(snap.version, 0);
+        assert_eq!(snap.metrics.len(), 2, "one entry per provider/model pair");
+
+        for m in &snap.metrics {
+            assert_eq!(m.name, ROKO_LLM_COST_USD_TOTAL);
+        }
+
+        // Find and verify the Anthropic entry.
+        let anthropic_snap = snap
+            .metrics
+            .iter()
+            .find(|m| {
+                m.labels
+                    .iter()
+                    .any(|(k, v)| k == "provider" && v == "anthropic")
+            })
+            .expect("anthropic cost entry");
+        match &anthropic_snap.value {
+            MetricValue::Counter(v) => assert_eq!(*v, 150),
+            other => panic!("expected Counter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cost_lens_version_increments() {
+        let registry = Arc::new(MetricRegistry::new());
+        let lens = CostLens::new(registry, LensScope::Global);
+
+        let s0 = lens.snapshot();
+        let s1 = lens.snapshot();
+        assert_eq!(s0.version, 0);
+        assert_eq!(s1.version, 1);
+    }
+
+    #[test]
+    fn cost_lens_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<CostLens>();
     }
 }

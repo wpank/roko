@@ -9657,6 +9657,30 @@ fn format_discovered_patterns_section(pattern_path: &std::path::Path) -> Option<
     Some(buf)
 }
 
+/// Collect playbook rule IDs whose file-glob triggers match any of the given
+/// files in scope. Used during context assembly to surface relevant playbook
+/// rules in the agent system prompt.
+pub(crate) fn collect_plan_playbook_scope(
+    files_in_scope: &[String],
+    playbook_rules: &[roko_learn::playbook_rules::Rule],
+) -> HashSet<String> {
+    if files_in_scope.is_empty() {
+        return HashSet::new();
+    }
+    playbook_rules
+        .iter()
+        .filter(|rule| {
+            rule.triggers.file_globs.iter().any(|glob| {
+                files_in_scope.iter().any(|file| {
+                    let pattern = glob.trim_start_matches("**/");
+                    file.contains(pattern) || pattern.contains(file.as_str())
+                })
+            })
+        })
+        .map(|rule| rule.rule_id.clone())
+        .collect()
+}
+
 /// Compact the episode log if it exceeds the retention threshold.
 ///
 /// Uses the default [`EpisodeRetentionPolicy`] (200 episodes, 90 days).
@@ -14515,6 +14539,160 @@ files = ["declared.txt"]
         ));
         assert_eq!(collect_in_flight_attempts(&state).len(), 1);
     }
+
+    // ── E45-T05: ContextScopingConfig + role_context_limits unit tests ───────
+
+    #[test]
+    fn context_scope_implementer_preset_matches_spec() {
+        let scope = ContextScopingConfig::IMPLEMENTER;
+        assert_eq!(scope.max_file_intel_entries, 10);
+        assert_eq!(scope.max_warning_entries, 5);
+        assert_eq!(scope.max_error_patterns, 5);
+        assert_eq!(scope.max_similar_episodes, 3);
+    }
+
+    #[test]
+    fn context_scope_reviewer_preset_matches_spec() {
+        let scope = ContextScopingConfig::REVIEWER;
+        assert_eq!(scope.max_file_intel_entries, 3);
+        assert_eq!(scope.max_warning_entries, 3);
+        assert_eq!(scope.max_error_patterns, 3);
+        assert_eq!(scope.max_similar_episodes, 5);
+    }
+
+    #[test]
+    fn context_scope_strategist_preset_zeros_all_entries() {
+        let scope = ContextScopingConfig::STRATEGIST;
+        assert_eq!(scope.max_file_intel_entries, 0);
+        assert_eq!(scope.max_warning_entries, 0);
+        assert_eq!(scope.max_error_patterns, 0);
+        assert_eq!(scope.max_similar_episodes, 0);
+    }
+
+    #[test]
+    fn role_context_limits_implementer_roles_use_implementer_preset() {
+        use roko_core::AgentRole;
+        for role in [
+            AgentRole::Implementer,
+            AgentRole::AutoFixer,
+            AgentRole::Refactorer,
+            AgentRole::Scribe,
+        ] {
+            let scope = role_context_limits(role);
+            assert_eq!(
+                scope,
+                ContextScopingConfig::IMPLEMENTER,
+                "expected IMPLEMENTER preset for {:?}",
+                role
+            );
+        }
+    }
+
+    #[test]
+    fn role_context_limits_strategist_roles_get_zero_context() {
+        use roko_core::AgentRole;
+        for role in [
+            AgentRole::Strategist,
+            AgentRole::Architect,
+            AgentRole::Conductor,
+            AgentRole::PlanLifecycleManager,
+        ] {
+            let scope = role_context_limits(role);
+            assert_eq!(
+                scope,
+                ContextScopingConfig::STRATEGIST,
+                "expected STRATEGIST preset (all zeros) for {:?}",
+                role
+            );
+        }
+    }
+
+    #[test]
+    fn role_context_limits_reviewer_roles_use_reviewer_preset() {
+        use roko_core::AgentRole;
+        for role in [
+            AgentRole::Auditor,
+            AgentRole::QuickReviewer,
+            AgentRole::Critic,
+        ] {
+            let scope = role_context_limits(role);
+            assert_eq!(
+                scope,
+                ContextScopingConfig::REVIEWER,
+                "expected REVIEWER preset for {:?}",
+                role
+            );
+        }
+    }
+
+    #[test]
+    fn collect_plan_playbook_scope_empty_files_returns_empty() {
+        let rules: Vec<roko_learn::playbook_rules::Rule> = vec![];
+        let result = collect_plan_playbook_scope(&[], &rules);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn collect_plan_playbook_scope_matches_glob_to_file() {
+        use chrono::Utc;
+        use roko_learn::playbook_rules::{Rule, Triggers};
+
+        let rule = Rule {
+            rule_id: "rule-1".to_string(),
+            title: "Test rule".to_string(),
+            body: "body".to_string(),
+            triggers: Triggers {
+                file_globs: vec!["**/event_loop.rs".to_string()],
+                tags: vec![],
+                categories: vec![],
+                error_signatures: vec![],
+                roles: vec![],
+            },
+            confidence: 0.8,
+            validations: 2,
+            contradictions: 0,
+            last_applied: None,
+            created_at: Utc::now(),
+            source_episodes: vec![],
+            balance: 1.0,
+            demurrage_rate: 0.01,
+            last_decay_at_ms: 0,
+        };
+        let files = vec!["crates/roko-cli/src/runner/event_loop.rs".to_string()];
+        let result = collect_plan_playbook_scope(&files, &[rule]);
+        assert!(result.contains("rule-1"));
+    }
+
+    #[test]
+    fn collect_plan_playbook_scope_excludes_non_matching_rules() {
+        use chrono::Utc;
+        use roko_learn::playbook_rules::{Rule, Triggers};
+
+        let rule = Rule {
+            rule_id: "unrelated-rule".to_string(),
+            title: "Unrelated".to_string(),
+            body: "body".to_string(),
+            triggers: Triggers {
+                file_globs: vec!["**/unrelated_module.rs".to_string()],
+                tags: vec![],
+                categories: vec![],
+                error_signatures: vec![],
+                roles: vec![],
+            },
+            confidence: 0.7,
+            validations: 1,
+            contradictions: 0,
+            last_applied: None,
+            created_at: Utc::now(),
+            source_episodes: vec![],
+            balance: 1.0,
+            demurrage_rate: 0.01,
+            last_decay_at_ms: 0,
+        };
+        let files = vec!["crates/roko-cli/src/runner/event_loop.rs".to_string()];
+        let result = collect_plan_playbook_scope(&files, &[rule]);
+        assert!(result.is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -17427,6 +17605,264 @@ mod tests_provider_rate_limit {
             start.elapsed() < Duration::from_secs(2),
             "4 concurrent acquires at 600 RPM should not stall: {:?}",
             start.elapsed()
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests_error_pattern_sharing {
+    //! Unit tests for E45-T03: error pattern sharing via discovered-patterns.json.
+    //!
+    //! Tests cover:
+    //! - Pattern recording from gate output to the JSON store.
+    //! - Deduplication by normalized key (same error code + file = same pattern).
+    //! - Prompt section formatting from the loaded store.
+    //! - Handling of missing or empty stores.
+
+    use super::*;
+    use roko_learn::error_pattern_store::ErrorPatternStore;
+    use tempfile::TempDir;
+
+    /// A cargo-json-format compile error line for `E0425` in `src/lib.rs`.
+    const CARGO_E0425_LIB: &str = r#"{"reason":"compiler-message","message":{"message":"cannot find value `foo`","code":{"code":"E0425","explanation":null},"level":"error","spans":[{"file_name":"src/lib.rs","line_start":10,"column_start":3,"is_primary":true}],"children":[{"message":"maybe try import foo","level":"help"}]}}"#;
+
+    /// The same error code but in `src/main.rs` -- different key, different pattern.
+    const CARGO_E0425_MAIN: &str = r#"{"reason":"compiler-message","message":{"message":"cannot find value `foo`","code":{"code":"E0425","explanation":null},"level":"error","spans":[{"file_name":"src/main.rs","line_start":5,"column_start":1,"is_primary":true}],"children":[]}}"#;
+
+    /// Repeated occurrence of `E0425` in `src/lib.rs` at a different line -- same key.
+    const CARGO_E0425_LIB_LINE2: &str = r#"{"reason":"compiler-message","message":{"message":"cannot find value `bar`","code":{"code":"E0425","explanation":null},"level":"error","spans":[{"file_name":"src/lib.rs","line_start":99,"column_start":7,"is_primary":true}],"children":[]}}"#;
+
+    // -- record_discovered_error_patterns ------------------------------------
+
+    #[test]
+    fn records_compile_error_to_discovered_patterns_json() {
+        let dir = TempDir::new().unwrap();
+        let learn_dir = dir.path().join("learn");
+
+        record_discovered_error_patterns(
+            &learn_dir,
+            "compile:cargo",
+            CARGO_E0425_LIB,
+            "plan-1",
+            "task-1",
+        );
+
+        let path = learn_dir.join("discovered-patterns.json");
+        assert!(path.exists(), "discovered-patterns.json must be created");
+
+        let store = ErrorPatternStore::load(&path);
+        assert_eq!(store.len(), 1, "one distinct error code/file pair expected");
+    }
+
+    #[test]
+    fn same_error_code_same_file_deduplicates_into_single_pattern() {
+        let dir = TempDir::new().unwrap();
+        let learn_dir = dir.path().join("learn");
+
+        // Two calls with the same error code in the same file but different lines.
+        record_discovered_error_patterns(
+            &learn_dir,
+            "compile:cargo",
+            CARGO_E0425_LIB,
+            "plan-1",
+            "task-1",
+        );
+        record_discovered_error_patterns(
+            &learn_dir,
+            "compile:cargo",
+            CARGO_E0425_LIB_LINE2,
+            "plan-1",
+            "task-2",
+        );
+
+        let path = learn_dir.join("discovered-patterns.json");
+        let store = ErrorPatternStore::load(&path);
+
+        // Key is `E0425::src/lib.rs` regardless of line number, so only one entry.
+        assert_eq!(
+            store.len(),
+            1,
+            "same error code + file must produce a single pattern entry"
+        );
+        let top = store.top_patterns(5);
+        assert_eq!(
+            top[0].occurrences, 2,
+            "occurrence count must increment on second observation"
+        );
+    }
+
+    #[test]
+    fn different_files_produce_separate_patterns() {
+        let dir = TempDir::new().unwrap();
+        let learn_dir = dir.path().join("learn");
+
+        record_discovered_error_patterns(
+            &learn_dir,
+            "compile:cargo",
+            CARGO_E0425_LIB,
+            "plan-1",
+            "task-1",
+        );
+        record_discovered_error_patterns(
+            &learn_dir,
+            "compile:cargo",
+            CARGO_E0425_MAIN,
+            "plan-1",
+            "task-2",
+        );
+
+        let path = learn_dir.join("discovered-patterns.json");
+        let store = ErrorPatternStore::load(&path);
+
+        // `E0425::src/lib.rs` vs `E0425::src/main.rs` are distinct keys.
+        assert_eq!(
+            store.len(),
+            2,
+            "errors in different files must produce separate pattern entries"
+        );
+    }
+
+    #[test]
+    fn non_fatal_on_empty_gate_output() {
+        let dir = TempDir::new().unwrap();
+        let learn_dir = dir.path().join("learn");
+
+        // Should not panic or create a file when there are no classifiable errors.
+        record_discovered_error_patterns(&learn_dir, "compile:cargo", "", "plan-1", "task-1");
+
+        let path = learn_dir.join("discovered-patterns.json");
+        // File may or may not be written -- we only care there is no panic.
+        let _ = path.exists();
+    }
+
+    // -- format_discovered_patterns_section ----------------------------------
+
+    #[test]
+    fn returns_none_when_store_is_missing() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("nonexistent.json");
+
+        let result = format_discovered_patterns_section(&path);
+        assert!(result.is_none(), "missing file must return None");
+    }
+
+    #[test]
+    fn returns_section_containing_pattern_digest() {
+        let dir = TempDir::new().unwrap();
+        let learn_dir = dir.path().join("learn");
+
+        record_discovered_error_patterns(
+            &learn_dir,
+            "compile:cargo",
+            CARGO_E0425_LIB,
+            "plan-1",
+            "task-1",
+        );
+
+        let path = learn_dir.join("discovered-patterns.json");
+        let section = format_discovered_patterns_section(&path)
+            .expect("section must be Some when patterns exist");
+
+        assert!(
+            section.contains("Known error patterns from parallel tasks"),
+            "section must contain the header"
+        );
+        assert!(
+            section.contains("E0425"),
+            "section must contain the error code from the digest"
+        );
+    }
+
+    #[test]
+    fn resolved_patterns_are_excluded_from_section() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("discovered-patterns.json");
+
+        let now = "2026-01-01T00:00:00+00:00";
+        let json = serde_json::json!({
+            "patterns": [
+                {
+                    "key": "E0425::src/lib.rs",
+                    "digest": "E0425: cannot find value `foo` [src/lib.rs]",
+                    "gate": "compile:cargo",
+                    "category": "unresolved_import",
+                    "occurrences": 1,
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "plan_ids": ["plan-1"],
+                    "task_ids": ["task-1"],
+                    "resolved": true,
+                    "resolution": "fixed",
+                    "suggestion": null
+                },
+                {
+                    "key": "E0308::src/main.rs",
+                    "digest": "E0308: mismatched types [src/main.rs]",
+                    "gate": "compile:cargo",
+                    "category": "type_mismatch",
+                    "occurrences": 2,
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "plan_ids": ["plan-1"],
+                    "task_ids": ["task-2"],
+                    "resolved": false,
+                    "resolution": null,
+                    "suggestion": null
+                }
+            ]
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+        let section = format_discovered_patterns_section(&path)
+            .expect("section must be Some since one unresolved pattern exists");
+
+        assert!(
+            !section.contains("E0425"),
+            "resolved pattern must not appear in section"
+        );
+        assert!(
+            section.contains("E0308"),
+            "unresolved pattern must appear in section"
+        );
+    }
+
+    #[test]
+    fn section_bounded_to_five_patterns() {
+        let dir = TempDir::new().unwrap();
+        let learn_dir = dir.path().join("learn");
+
+        let gate_outputs: &[&str] = &[
+            r#"{"reason":"compiler-message","message":{"message":"err","code":{"code":"E0400","explanation":null},"level":"error","spans":[{"file_name":"src/a.rs","line_start":1,"column_start":1,"is_primary":true}],"children":[]}}"#,
+            r#"{"reason":"compiler-message","message":{"message":"err","code":{"code":"E0401","explanation":null},"level":"error","spans":[{"file_name":"src/b.rs","line_start":1,"column_start":1,"is_primary":true}],"children":[]}}"#,
+            r#"{"reason":"compiler-message","message":{"message":"err","code":{"code":"E0402","explanation":null},"level":"error","spans":[{"file_name":"src/c.rs","line_start":1,"column_start":1,"is_primary":true}],"children":[]}}"#,
+            r#"{"reason":"compiler-message","message":{"message":"err","code":{"code":"E0403","explanation":null},"level":"error","spans":[{"file_name":"src/d.rs","line_start":1,"column_start":1,"is_primary":true}],"children":[]}}"#,
+            r#"{"reason":"compiler-message","message":{"message":"err","code":{"code":"E0404","explanation":null},"level":"error","spans":[{"file_name":"src/e.rs","line_start":1,"column_start":1,"is_primary":true}],"children":[]}}"#,
+            r#"{"reason":"compiler-message","message":{"message":"err","code":{"code":"E0405","explanation":null},"level":"error","spans":[{"file_name":"src/f.rs","line_start":1,"column_start":1,"is_primary":true}],"children":[]}}"#,
+            r#"{"reason":"compiler-message","message":{"message":"err","code":{"code":"E0406","explanation":null},"level":"error","spans":[{"file_name":"src/g.rs","line_start":1,"column_start":1,"is_primary":true}],"children":[]}}"#,
+            r#"{"reason":"compiler-message","message":{"message":"err","code":{"code":"E0407","explanation":null},"level":"error","spans":[{"file_name":"src/h.rs","line_start":1,"column_start":1,"is_primary":true}],"children":[]}}"#,
+        ];
+        for (i, output) in gate_outputs.iter().enumerate() {
+            record_discovered_error_patterns(
+                &learn_dir,
+                "compile:cargo",
+                output,
+                "plan-a",
+                &format!("task-{i}"),
+            );
+        }
+
+        let path = learn_dir.join("discovered-patterns.json");
+        let section = format_discovered_patterns_section(&path)
+            .expect("section must be Some for non-empty store");
+
+        // Count numbered list items ("1. ", "2. ", ...): the function caps at 5.
+        let entry_count = section
+            .lines()
+            .filter(|l| l.starts_with(|c: char| c.is_ascii_digit()))
+            .count();
+        assert!(
+            entry_count <= 5,
+            "section must contain at most 5 pattern entries, got {entry_count}"
         );
     }
 }

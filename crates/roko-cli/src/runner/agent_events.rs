@@ -7,6 +7,9 @@
 
 use tracing::{debug, info};
 
+use roko_gate::review_verdict::{IssueCategory, ReviewVerdictContext};
+use roko_gate::{ParsedReviewVerdict, parse_structured_review_verdict};
+
 use super::output_sink::{RunOutputSink, TokenUsage};
 use super::state::RunState;
 use super::tui_bridge::TuiBridge;
@@ -146,6 +149,14 @@ pub(crate) fn handle_agent_event(
             if *is_error {
                 state.agent_output.push_str("\n[agent error]\n");
             }
+
+            // Parse a structured review verdict from the accumulated agent
+            // output. Failures are handled by the FailClosed fallback inside
+            // parse_structured_review_verdict — never a hard error here.
+            let verdict = parse_review_verdict(state);
+            state.express_mode = is_quick_fixable(&verdict);
+            state.parsed_review_verdict = Some(verdict);
+
             let agent_id = agent_id_for_state(state);
             let attempt = state.iteration_for(plan_id, task_id);
             tui.agent_completed(&agent_id, plan_id, task_id, attempt);
@@ -160,6 +171,7 @@ pub(crate) fn handle_agent_event(
                 cost_usd = %cost_display,
                 model = %state.agent_model,
                 is_error = *is_error,
+                express_mode = state.express_mode,
                 "agent turn completed"
             );
 
@@ -198,6 +210,184 @@ fn agent_id_for_state(state: &RunState) -> String {
     format!("{}/{}", state.plan_id, state.current_task)
 }
 
+/// Parse a structured review verdict from the agent's accumulated output.
+///
+/// Constructs a [`ReviewVerdictContext`] from the current [`RunState`] fields
+/// and delegates to [`parse_structured_review_verdict`]. The parser handles
+/// malformed or free-text output via the `FailClosed` fallback — callers
+/// must never treat a parse failure as a fatal error.
+fn parse_review_verdict(state: &RunState) -> ParsedReviewVerdict {
+    let ctx = ReviewVerdictContext {
+        verdict_id: format!("{}/{}", state.plan_id, state.current_task),
+        batch_id: state.plan_id.clone(),
+        task_id: state.current_task.clone(),
+        reviewer_role_id: state.agent_model.clone(),
+        raw_output_ref: format!(".roko/runs/{}/{}.raw", state.plan_id, state.current_task),
+        created_at: chrono_now_rfc3339(),
+    };
+    parse_structured_review_verdict(&state.agent_output, ctx)
+}
+
+/// Return an RFC 3339 timestamp for the current moment.
+///
+/// Uses only `std` to avoid pulling in additional crate dependencies.
+fn chrono_now_rfc3339() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // Minimal RFC 3339 — seconds precision, UTC only.
+    // Format: YYYY-MM-DDTHH:MM:SSZ
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    let days = secs / 86400; // days since 1970-01-01
+    // Gregorian calendar calculation (ignores leap seconds).
+    let (y, mo, d) = days_to_ymd(days);
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+}
+
+/// Convert a count of days since 1970-01-01 to (year, month, day).
+fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
+    let mut y = 1970u64;
+    loop {
+        let leap = is_leap(y);
+        let days_in_year = if leap { 366 } else { 365 };
+        if days < days_in_year {
+            break;
+        }
+        days -= days_in_year;
+        y += 1;
+    }
+    let leap = is_leap(y);
+    let month_days: [u64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut mo = 1u64;
+    for &md in &month_days {
+        if days < md {
+            break;
+        }
+        days -= md;
+        mo += 1;
+    }
+    (y, mo, days + 1)
+}
+
+fn is_leap(y: u64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
+}
+
+/// Determine whether a parsed verdict's issues are all in quick-fixable categories.
+///
+/// Express mode is enabled when:
+/// - The verdict contains at least one blocking issue, AND
+/// - **All** blocking issues fall in quick-fixable categories:
+///   [`IssueCategory::CompileError`], [`IssueCategory::LintViolation`],
+///   [`IssueCategory::FormatViolation`], or [`IssueCategory::SymbolMissing`].
+///
+/// The following categories are explicitly **not** quick-fixable and will
+/// prevent express mode even if they are the only issues:
+/// [`IssueCategory::TestFailure`], [`IssueCategory::SecurityIssue`],
+/// [`IssueCategory::PerformanceRegression`], [`IssueCategory::NeedsHumanReview`],
+/// [`IssueCategory::IncompleteImpl`], [`IssueCategory::IntegrationFailure`].
+pub(crate) fn is_quick_fixable(verdict: &ParsedReviewVerdict) -> bool {
+    // A passed verdict needs no express dispatch.
+    if verdict.passed() {
+        return false;
+    }
+    // If there are no blocking findings, there is nothing to fix quickly.
+    if verdict.evidence.blocking_findings.is_empty() {
+        return false;
+    }
+    // If parse failed (FailClosed), we don't have typed issues — fall back
+    // to full strategist flow.
+    if verdict.parse_error.is_some() {
+        return false;
+    }
+    // Without typed ReviewIssue data we cannot classify. The ParsedReviewVerdict
+    // evidence carries blocking_findings as strings, not typed IssueCategory
+    // values. Express mode therefore requires that the verdict was parsed from
+    // the agent output as a ReviewVerdict with typed issues, which is stored
+    // separately in RunState via parse_review_verdict(). Here we do a
+    // best-effort heuristic on the evidence's blocking findings text.
+    for finding in &verdict.evidence.blocking_findings {
+        if !quick_fixable_by_text(finding) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Heuristic to classify a blocking-finding string as quick-fixable.
+///
+/// Checks for keyword patterns that correspond to quick-fixable
+/// [`IssueCategory`] variants. This is a text-based fallback because
+/// [`ParsedReviewVerdict`] carries string findings, not typed
+/// [`IssueCategory`] values.
+fn quick_fixable_by_text(finding: &str) -> bool {
+    let f = finding.to_ascii_lowercase();
+    // Quick-fixable keywords
+    let quick = [
+        "compile error",
+        "compilation error",
+        "compile_error",
+        "error[e", // rustc error codes like E0433
+        "lint",
+        "clippy",
+        "format",
+        "fmt",
+        "symbol missing",
+        "symbol_missing",
+        "unresolved import",
+        "cannot find",
+    ];
+    // Non-quick-fixable keywords — checked first to prevent false positives.
+    let not_quick = [
+        "test failure",
+        "test_failure",
+        "tests fail",
+        "security",
+        "performance regression",
+        "performance_regression",
+        "needs human",
+        "needs_human",
+        "human review",
+        "integration",
+        "incomplete",
+    ];
+    if not_quick.iter().any(|k| f.contains(k)) {
+        return false;
+    }
+    quick.iter().any(|k| f.contains(k))
+}
+
+/// Classify a [`ReviewIssue`]'s category as quick-fixable.
+///
+/// This typed variant is used in tests and by code that has access to a
+/// full [`ReviewVerdict`] (not just the string evidence in
+/// [`ParsedReviewVerdict`]).
+pub(crate) fn issue_category_is_quick_fixable(cat: &IssueCategory) -> bool {
+    matches!(
+        cat,
+        IssueCategory::CompileError
+            | IssueCategory::LintViolation
+            | IssueCategory::FormatViolation
+            | IssueCategory::SymbolMissing
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,6 +396,7 @@ mod tests {
     use crate::runner::tui_bridge::TuiBridge;
     use crate::runner::types::AgentEvent;
     use crate::state_hub::StateHub;
+    use roko_gate::review_verdict::IssueCategory;
 
     fn noop_bridge() -> (StateHub, TuiBridge) {
         let hub = StateHub::default_capacity();
@@ -402,6 +593,300 @@ mod tests {
         assert_eq!(
             state.agent_output, prior_output,
             "Exited must not append to agent_output"
+        );
+    }
+
+    // ─── E45-T01: Review verdict parsing + express mode ───────────────
+
+    // After TurnCompleted, the parsed verdict must be stored in state.
+    // Free-text output triggers the FailClosed path which is NOT a hard
+    // error — the verdict is stored but express_mode must be false.
+    #[test]
+    fn turn_completed_parses_review_verdict_and_stores_it() {
+        let (_hub, tui) = noop_bridge();
+        let mut state = make_state("plan", "T1");
+        // Agent output is free text — will be parsed as FailClosed.
+        state.agent_output = "LGTM, all looks good to me".to_string();
+        let sink = NoopSink;
+
+        handle_agent_event(
+            &AgentEvent::TurnCompleted {
+                session_id: None,
+                total_cost_usd: Some(0.001),
+                num_turns: Some(1),
+                is_error: false,
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+
+        assert!(
+            state.parsed_review_verdict.is_some(),
+            "parsed_review_verdict must be Some after TurnCompleted"
+        );
+        // FailClosed is a legitimate non-error result.
+        let verdict = state.parsed_review_verdict.as_ref().unwrap();
+        assert!(
+            verdict.parse_error.is_some(),
+            "free-text output should produce a FailClosed verdict with parse_error set"
+        );
+        // Free-text output cannot activate express mode.
+        assert!(
+            !state.express_mode,
+            "express_mode must be false when verdict is FailClosed"
+        );
+    }
+
+    // Structured JSON output that passes the review must produce a passed
+    // verdict and NOT activate express mode (there is nothing to fix).
+    #[test]
+    fn passed_verdict_does_not_activate_express_mode() {
+        let (_hub, tui) = noop_bridge();
+        let mut state = make_state("plan", "T2");
+        state.agent_output = r#"{
+            "status": "passed",
+            "confidence": 0.95,
+            "blocking_findings": [],
+            "non_blocking_findings": [],
+            "required_next_action": "none",
+            "evidence_refs": []
+        }"#
+        .to_string();
+        let sink = NoopSink;
+
+        handle_agent_event(
+            &AgentEvent::TurnCompleted {
+                session_id: None,
+                total_cost_usd: Some(0.002),
+                num_turns: Some(2),
+                is_error: false,
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+
+        let verdict = state
+            .parsed_review_verdict
+            .as_ref()
+            .expect("verdict must be stored");
+        assert!(verdict.passed(), "parsed verdict must be passed");
+        assert!(
+            !state.express_mode,
+            "express_mode must be false when verdict passes (nothing to fix)"
+        );
+    }
+
+    // A verdict with only quick-fixable blocking findings (compile error)
+    // must activate express mode.
+    #[test]
+    fn compile_error_finding_activates_express_mode() {
+        let (_hub, tui) = noop_bridge();
+        let mut state = make_state("plan", "T3");
+        state.agent_output = r#"{
+            "status": "failed",
+            "confidence": 0.6,
+            "blocking_findings": ["compile error: error[E0433] unresolved import"],
+            "non_blocking_findings": [],
+            "required_next_action": "retry",
+            "evidence_refs": []
+        }"#
+        .to_string();
+        let sink = NoopSink;
+
+        handle_agent_event(
+            &AgentEvent::TurnCompleted {
+                session_id: None,
+                total_cost_usd: None,
+                num_turns: Some(1),
+                is_error: false,
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+
+        assert!(
+            state.express_mode,
+            "express_mode must be true for a compile-error-only verdict"
+        );
+    }
+
+    // A verdict with a TestFailure blocking finding must NOT activate express
+    // mode — test failures are never quick-fixable.
+    #[test]
+    fn test_failure_finding_does_not_activate_express_mode() {
+        let (_hub, tui) = noop_bridge();
+        let mut state = make_state("plan", "T4");
+        state.agent_output = r#"{
+            "status": "failed",
+            "confidence": 0.5,
+            "blocking_findings": ["test failure: 3 tests failed"],
+            "non_blocking_findings": [],
+            "required_next_action": "retry",
+            "evidence_refs": []
+        }"#
+        .to_string();
+        let sink = NoopSink;
+
+        handle_agent_event(
+            &AgentEvent::TurnCompleted {
+                session_id: None,
+                total_cost_usd: None,
+                num_turns: Some(1),
+                is_error: false,
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+
+        assert!(
+            !state.express_mode,
+            "express_mode must be false for test-failure blocking findings"
+        );
+    }
+
+    // A verdict with a SecurityIssue finding must NOT activate express mode.
+    #[test]
+    fn security_issue_finding_does_not_activate_express_mode() {
+        let (_hub, tui) = noop_bridge();
+        let mut state = make_state("plan", "T5");
+        state.agent_output = r#"{
+            "status": "failed",
+            "confidence": 0.4,
+            "blocking_findings": ["security vulnerability detected in dependency"],
+            "non_blocking_findings": [],
+            "required_next_action": "retry",
+            "evidence_refs": []
+        }"#
+        .to_string();
+        let sink = NoopSink;
+
+        handle_agent_event(
+            &AgentEvent::TurnCompleted {
+                session_id: None,
+                total_cost_usd: None,
+                num_turns: Some(1),
+                is_error: false,
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+
+        assert!(
+            !state.express_mode,
+            "express_mode must be false for security-issue blocking findings"
+        );
+    }
+
+    // Typed IssueCategory classification: quick-fixable categories map correctly.
+    #[test]
+    fn issue_category_quick_fixable_matches_spec() {
+        assert!(issue_category_is_quick_fixable(
+            &IssueCategory::CompileError
+        ));
+        assert!(issue_category_is_quick_fixable(
+            &IssueCategory::LintViolation
+        ));
+        assert!(issue_category_is_quick_fixable(
+            &IssueCategory::FormatViolation
+        ));
+        assert!(issue_category_is_quick_fixable(
+            &IssueCategory::SymbolMissing
+        ));
+
+        assert!(!issue_category_is_quick_fixable(
+            &IssueCategory::TestFailure
+        ));
+        assert!(!issue_category_is_quick_fixable(
+            &IssueCategory::SecurityIssue
+        ));
+        assert!(!issue_category_is_quick_fixable(
+            &IssueCategory::PerformanceRegression
+        ));
+        assert!(!issue_category_is_quick_fixable(
+            &IssueCategory::NeedsHumanReview
+        ));
+        assert!(!issue_category_is_quick_fixable(
+            &IssueCategory::IncompleteImpl
+        ));
+        assert!(!issue_category_is_quick_fixable(
+            &IssueCategory::IntegrationFailure
+        ));
+    }
+
+    // Format and lint findings are quick-fixable.
+    #[test]
+    fn lint_and_format_findings_activate_express_mode() {
+        let (_hub, tui) = noop_bridge();
+        let mut state = make_state("plan", "T6");
+        state.agent_output = r#"{
+            "status": "failed",
+            "confidence": 0.7,
+            "blocking_findings": ["lint: clippy warning - unused variable"],
+            "non_blocking_findings": [],
+            "required_next_action": "retry",
+            "evidence_refs": []
+        }"#
+        .to_string();
+        let sink = NoopSink;
+
+        handle_agent_event(
+            &AgentEvent::TurnCompleted {
+                session_id: None,
+                total_cost_usd: None,
+                num_turns: Some(1),
+                is_error: false,
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+
+        assert!(
+            state.express_mode,
+            "express_mode must be true for lint-only blocking findings"
+        );
+    }
+
+    // A mix of quick-fixable and non-quick-fixable findings must NOT
+    // activate express mode — ALL blocking findings must be quick-fixable.
+    #[test]
+    fn mixed_findings_do_not_activate_express_mode() {
+        let (_hub, tui) = noop_bridge();
+        let mut state = make_state("plan", "T7");
+        state.agent_output = r#"{
+            "status": "failed",
+            "confidence": 0.5,
+            "blocking_findings": [
+                "compile error: error[E0433] unresolved import",
+                "test failure: integration test panicked"
+            ],
+            "non_blocking_findings": [],
+            "required_next_action": "retry",
+            "evidence_refs": []
+        }"#
+        .to_string();
+        let sink = NoopSink;
+
+        handle_agent_event(
+            &AgentEvent::TurnCompleted {
+                session_id: None,
+                total_cost_usd: None,
+                num_turns: Some(1),
+                is_error: false,
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+
+        assert!(
+            !state.express_mode,
+            "express_mode must be false when any blocking finding is not quick-fixable"
         );
     }
 }

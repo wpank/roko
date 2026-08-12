@@ -572,8 +572,7 @@ pub async fn run_gate_once(
                     let after_retry = gate_input_snapshot(workdir.clone()).await?;
                     if before_retry == after_retry {
                         // Immutable input confirmed after retry — use retry verdicts.
-                        let retry_passed =
-                            retry_verdicts.iter().all(|v| v.passed || v.skipped);
+                        let retry_passed = retry_verdicts.iter().all(|v| v.passed || v.skipped);
                         outcome.gate_passed_after_fix = retry_passed;
                         info!(
                             gate = %outcome.gate_name,
@@ -1858,7 +1857,10 @@ mod tests {
             .await
             .expect("attempt_auto_fix must not return Err for non-candidates");
 
-        assert!(!outcome.was_candidate, "test failures are not fix candidates");
+        assert!(
+            !outcome.was_candidate,
+            "test failures are not fix candidates"
+        );
         assert!(!outcome.fix_applied);
         assert!(!outcome.gate_passed_after_fix);
         assert!(outcome.command.is_none());

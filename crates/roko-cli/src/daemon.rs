@@ -557,21 +557,25 @@ fn daemon_install_launchd() -> Result<()> {
 fn daemon_uninstall_launchd() -> Result<()> {
     let plist_path = launchd::plist_path();
 
-    let status = Command::new("launchctl")
-        .arg("unload")
-        .arg(&plist_path)
-        .status()
-        .with_context(|| format!("run launchctl unload {}", plist_path.display()))?;
-
-    if !status.success() {
-        return Err(anyhow!(
-            "launchctl unload {} failed with {}",
-            plist_path.display(),
-            status
-        ));
-    }
-
+    // Unload only if the plist file exists; launchctl returns a nonzero exit
+    // status when asked to unload a service that was never registered, so we
+    // treat a missing file as "already uninstalled" and skip the unload step.
     if plist_path.exists() {
+        let status = Command::new("launchctl")
+            .arg("unload")
+            .arg(&plist_path)
+            .status()
+            .with_context(|| format!("run launchctl unload {}", plist_path.display()))?;
+
+        if !status.success() {
+            // Warn but continue so we still remove the stale plist file.
+            warn!(
+                "launchctl unload {} exited with {} — service may not have been registered",
+                plist_path.display(),
+                status
+            );
+        }
+
         fs::remove_file(&plist_path).with_context(|| format!("remove {}", plist_path.display()))?;
     }
 

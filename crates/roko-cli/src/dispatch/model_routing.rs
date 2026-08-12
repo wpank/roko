@@ -22,12 +22,15 @@
 //!
 //! [`runtime_feedback`]: crate::runtime_feedback
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use roko_core::agent::ModelSpec;
 use roko_core::task::TaskComplexityBand;
 use roko_learn::cascade_router::{CascadeRouter, RoutingBias};
+use roko_learn::latency::LatencyRegistry;
 use roko_learn::model_router::RoutingContext;
+use roko_learn::provider_health::ProviderHealthRegistry;
 
 use super::DispatchContext;
 use super::outcome::DispatchError;
@@ -134,12 +137,33 @@ impl ModelChoice {
 /// Holds an `Option<Arc<CascadeRouter>>` so callers without a configured
 /// router (CI, smoke tests) still work. When the router is absent the
 /// pipeline degrades to override → hint → default — never panics.
+///
+/// When a [`ProviderHealthRegistry`] is attached via
+/// [`Self::with_provider_health`], the cascade stage uses
+/// [`CascadeRouter::route_with_health_scored`] instead of the plain
+/// `route` / `route_with_bias` path.  This filters out `Open`-circuit
+/// providers and demotes `HalfOpen` ones so the selection automatically
+/// avoids degraded backends.
 #[derive(Clone)]
 pub struct ModelRouter {
     cascade: Option<Arc<CascadeRouter>>,
     /// Default model slug used when override / hint / router all decline.
     /// Configurable so tests can inject a deterministic baseline.
     default_slug: String,
+    /// Optional shared health registry.  When present, model selection
+    /// filters out `Open` providers and demotes `HalfOpen` ones.
+    health: Option<Arc<ProviderHealthRegistry>>,
+    /// Map from model slug → provider id (e.g. `"claude-sonnet-4-6"` →
+    /// `"anthropic"`).  Required for health-aware routing; without it
+    /// health filtering is skipped.
+    model_providers: HashMap<String, String>,
+    /// Optional latency registry used to demote high-latency providers.
+    /// When `latency_threshold_ms` is `None`, no latency demotion occurs.
+    latency_registry: Option<Arc<LatencyRegistry>>,
+    /// p95 latency ceiling in milliseconds.  Providers whose tracked p95
+    /// exceeds this are demoted to secondary candidates during health-aware
+    /// routing.  Has no effect when `latency_registry` is `None`.
+    latency_threshold_ms: Option<f64>,
 }
 
 impl std::fmt::Debug for ModelRouter {
@@ -147,6 +171,13 @@ impl std::fmt::Debug for ModelRouter {
         f.debug_struct("ModelRouter")
             .field("cascade", &self.cascade.as_ref().map(|_| ".."))
             .field("default_slug", &self.default_slug)
+            .field("health", &self.health.as_ref().map(|_| ".."))
+            .field("model_providers", &self.model_providers.len())
+            .field(
+                "latency_registry",
+                &self.latency_registry.as_ref().map(|_| ".."),
+            )
+            .field("latency_threshold_ms", &self.latency_threshold_ms)
             .finish()
     }
 }
@@ -157,6 +188,10 @@ impl ModelRouter {
         Self {
             cascade,
             default_slug: roko_core::defaults::MODEL_FOCUSED.to_string(),
+            health: None,
+            model_providers: HashMap::new(),
+            latency_registry: None,
+            latency_threshold_ms: None,
         }
     }
 
@@ -172,6 +207,38 @@ impl ModelRouter {
         self
     }
 
+    /// Attach a provider health registry and a model->provider map.
+    ///
+    /// When both are provided, the cascade routing stage calls
+    /// [`CascadeRouter::route_with_health_scored`] so `Open`-circuit providers
+    /// are filtered and `HalfOpen` ones are demoted.
+    #[must_use]
+    pub fn with_provider_health(
+        mut self,
+        health: Arc<ProviderHealthRegistry>,
+        model_providers: HashMap<String, String>,
+    ) -> Self {
+        self.health = Some(health);
+        self.model_providers = model_providers;
+        self
+    }
+
+    /// Attach a latency registry and ceiling.
+    ///
+    /// Providers whose tracked p95 latency exceeds `threshold_ms` are
+    /// treated as secondary candidates when health-aware routing is active.
+    /// Has no effect unless [`Self::with_provider_health`] is also called.
+    #[must_use]
+    pub fn with_latency_demotion(
+        mut self,
+        registry: Arc<LatencyRegistry>,
+        threshold_ms: f64,
+    ) -> Self {
+        self.latency_registry = Some(registry);
+        self.latency_threshold_ms = Some(threshold_ms);
+        self
+    }
+
     /// Apply the precedence pipeline.
     ///
     /// When a conductor [`RoutingBias`] is supplied through `inputs.routing_bias`,
@@ -179,6 +246,12 @@ impl ModelRouter {
     /// are filtered out and `prefer_cheaper` shifts scoring toward cheaper tiers.
     /// The bias is only consulted for router-driven selections -- overrides and
     /// task hints are never affected, preserving operator and author intent.
+    ///
+    /// When a [`ProviderHealthRegistry`] is attached via
+    /// [`Self::with_provider_health`], the cascade stage calls
+    /// [`CascadeRouter::route_with_health_scored`] which filters `Open`-circuit
+    /// providers and demotes `HalfOpen` / high-latency ones, ensuring the
+    /// selected model has a healthy provider.
     pub fn route(&self, inputs: &RoutingInputs) -> Result<ModelChoice, DispatchError> {
         if let Some(slug) = inputs.force_backend.as_ref() {
             return Ok(ModelChoice {
@@ -194,11 +267,19 @@ impl ModelRouter {
         }
         if let Some(router) = self.cascade.as_ref() {
             if let Some(ctx) = &inputs.routing_context {
-                // When the conductor has emitted a non-neutral routing bias,
-                // use route_with_bias to filter deprioritized models and apply
-                // prefer-cheaper scoring. Falls back to the unbiased route if
-                // the bias would filter out all candidates.
-                let cascade_model = if let Some(bias) = &inputs.routing_bias {
+                let cascade_model = if let Some(health) = &self.health {
+                    // Health-aware path: filters Open providers, demotes HalfOpen
+                    // and optionally high-latency providers.
+                    let latency_ref = self.latency_registry.as_deref();
+                    router.route_with_health_scored(
+                        ctx,
+                        health,
+                        &self.model_providers,
+                        latency_ref,
+                        self.latency_threshold_ms,
+                    )
+                } else if let Some(bias) = &inputs.routing_bias {
+                    // Conductor bias path (no health data).
                     if bias.deprioritize.is_empty() && !bias.prefer_cheaper {
                         router.route(ctx)
                     } else {
@@ -516,5 +597,97 @@ mod tests {
         let choice = router.route(&inputs).unwrap();
         assert_eq!(choice.model.slug, "claude-sonnet-4-6");
         assert_eq!(choice.source, ModelChoiceSource::TaskHint);
+    }
+
+    // ── Provider-health routing tests (E48-T08) ────────────────────────
+
+    /// When a health registry is attached and a provider is Open,
+    /// `ModelRouter::route` must use the health-aware path.
+    #[test]
+    fn health_aware_route_excludes_open_provider() {
+        use roko_learn::provider_health::ErrorClass;
+
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "gemini-2.5-flash".into(),
+        ]));
+
+        let health = Arc::new(ProviderHealthRegistry::new());
+        // Trip anthropic to Open.
+        health.record_failure("anthropic", ErrorClass::RateLimit);
+        health.record_failure("anthropic", ErrorClass::RateLimit);
+        health.record_failure("anthropic", ErrorClass::RateLimit);
+
+        let mut model_providers = HashMap::new();
+        model_providers.insert("claude-sonnet-4-6".into(), "anthropic".into());
+        model_providers.insert("gemini-2.5-flash".into(), "google".into());
+
+        let router = ModelRouter::new(Some(cascade)).with_provider_health(health, model_providers);
+
+        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
+        inputs.routing_context = Some(routing_context());
+
+        let choice = router.route(&inputs).unwrap();
+        assert_eq!(choice.source, ModelChoiceSource::Router);
+        assert_eq!(
+            choice.model.slug, "gemini-2.5-flash",
+            "Open anthropic must be excluded; gemini must be selected"
+        );
+    }
+
+    /// Health registry attached but no providers are degraded --
+    /// routing behaves normally.
+    #[test]
+    fn health_aware_route_normal_when_all_healthy() {
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "gemini-2.5-flash".into(),
+        ]));
+
+        let health = Arc::new(ProviderHealthRegistry::new());
+        health.record_success("anthropic");
+        health.record_success("google");
+
+        let mut model_providers = HashMap::new();
+        model_providers.insert("claude-sonnet-4-6".into(), "anthropic".into());
+        model_providers.insert("gemini-2.5-flash".into(), "google".into());
+
+        let router = ModelRouter::new(Some(cascade)).with_provider_health(health, model_providers);
+
+        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
+        inputs.routing_context = Some(routing_context());
+
+        let choice = router.route(&inputs).unwrap();
+        assert_eq!(choice.source, ModelChoiceSource::Router);
+        assert!(
+            choice.model.slug == "claude-sonnet-4-6" || choice.model.slug == "gemini-2.5-flash",
+            "must pick from the configured slugs"
+        );
+    }
+
+    /// Even with provider health attached, force_backend overrides everything.
+    #[test]
+    fn health_does_not_override_force_backend() {
+        use roko_learn::provider_health::ErrorClass;
+
+        let cascade = Arc::new(CascadeRouter::new(vec!["claude-sonnet-4-6".into()]));
+        let health = Arc::new(ProviderHealthRegistry::new());
+        // Trip the only provider Open.
+        for _ in 0..3 {
+            health.record_failure("anthropic", ErrorClass::RateLimit);
+        }
+
+        let mut model_providers = HashMap::new();
+        model_providers.insert("claude-sonnet-4-6".into(), "anthropic".into());
+
+        let router = ModelRouter::new(Some(cascade)).with_provider_health(health, model_providers);
+
+        let mut c = ctx();
+        c.force_backend = Some("gpt-5".into());
+        let inputs = RoutingInputs::from_task(&task(), &c);
+        let choice = router.route(&inputs).unwrap();
+
+        assert_eq!(choice.model.slug, "gpt-5");
+        assert_eq!(choice.source, ModelChoiceSource::Override);
     }
 }

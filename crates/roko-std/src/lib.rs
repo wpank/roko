@@ -34,5 +34,5 @@ pub use roles::{
 };
 pub use router::{FirstRouter, HighestScoreRouter, RoundRobinRouter};
 pub use scorer::{ConstScorer, MulScorer, SumScorer};
-pub use tool::{MockToolDispatcher, ROKO_BUILTIN_TOOLS, StaticToolRegistry, TOOL_COUNT};
+pub use tool::{DynamicToolRegistry, MockToolDispatcher, ROKO_BUILTIN_TOOLS, StaticToolRegistry, TOOL_COUNT};
 pub use trace_sink::InMemoryTraceSink;

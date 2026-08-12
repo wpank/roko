@@ -577,7 +577,7 @@ Query the ring buffer directly (without establishing an SSE connection). Useful 
 
 ## Plans
 
-Plans are the primary unit of work in Roko. A plan is a collection of tasks, each of which is executed by an agent and validated through the gate pipeline. Plans live in `.roko/plans/` as `tasks.toml` files and can be generated automatically from PRDs.
+Plans are the primary unit of work in Roko. A plan is a collection of tasks, each of which is executed by an agent and validated through the gate pipeline. Plans live in `./plans/` as `tasks.toml` files (with `.roko/plans/` as a fallback) and can be generated automatically from PRDs.
 
 | Method | Path | Description |
 |---|---|---|

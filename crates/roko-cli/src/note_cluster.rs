@@ -28,9 +28,9 @@ pub struct NoteCluster {
 
 /// Stop words excluded from clustering comparisons.
 const STOP_WORDS: &[&str] = &[
-    "the", "a", "an", "is", "are", "was", "were", "to", "for", "in", "on", "of", "and", "or",
-    "it", "this", "that", "with", "from", "but", "not", "be", "as", "at", "by", "has", "have",
-    "had", "do", "does", "did", "will", "would", "could", "should",
+    "the", "a", "an", "is", "are", "was", "were", "to", "for", "in", "on", "of", "and", "or", "it",
+    "this", "that", "with", "from", "but", "not", "be", "as", "at", "by", "has", "have", "had",
+    "do", "does", "did", "will", "would", "could", "should",
 ];
 
 /// Load all `.md` notes from `notes_dir`, optionally filtering by tag.
@@ -52,10 +52,7 @@ pub fn load_notes(notes_dir: &Path, tag_filter: Option<&str>) -> Vec<NoteEntry> 
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!(
-                    "warning: skipping {}: {e}",
-                    path.display()
-                );
+                eprintln!("warning: skipping {}: {e}", path.display());
                 continue;
             }
         };
@@ -130,7 +127,8 @@ pub fn cluster_notes(notes: Vec<NoteEntry>) -> Vec<NoteCluster> {
     }
 
     let n = notes.len();
-    let word_sets: Vec<HashSet<String>> = notes.iter().map(|n| significant_words(&n.text)).collect();
+    let word_sets: Vec<HashSet<String>> =
+        notes.iter().map(|n| significant_words(&n.text)).collect();
 
     // Union-find
     let mut parent: Vec<usize> = (0..n).collect();
@@ -179,8 +177,7 @@ pub fn cluster_notes(notes: Vec<NoteEntry>) -> Vec<NoteCluster> {
     let mut clusters: Vec<NoteCluster> = groups
         .into_values()
         .map(|indices| {
-            let cluster_notes: Vec<NoteEntry> =
-                indices.iter().map(|&i| notes[i].clone()).collect();
+            let cluster_notes: Vec<NoteEntry> = indices.iter().map(|&i| notes[i].clone()).collect();
 
             // Count word frequency across all notes in cluster
             let mut freq: HashMap<String, usize> = HashMap::new();
@@ -224,7 +221,8 @@ mod tests {
 
     #[test]
     fn test_parse_note_with_tags() {
-        let content = "# Note\n\n**Date:** 2026-08-10 14:30:00\n**Tags:** cli, ux\n\nSome body text here.";
+        let content =
+            "# Note\n\n**Date:** 2026-08-10 14:30:00\n**Tags:** cli, ux\n\nSome body text here.";
         let (tags, text) = parse_note(content);
         assert_eq!(tags, vec!["cli", "ux"]);
         assert!(text.contains("Some body text here."));

@@ -5121,9 +5121,49 @@ mod anti_pattern_tests {
 
     // ── Merkle root tests (E43-T01) ───────────────────────────────────
 
+    fn entry(
+        kind: KnowledgeKind,
+        id: &str,
+        content: &str,
+        tags: &[&str],
+        confidence: f64,
+        source_episodes: &[&str],
+        created_at: DateTime<Utc>,
+    ) -> KnowledgeEntry {
+        KnowledgeEntry {
+            id: id.to_owned(),
+            kind,
+            source: None,
+            content: content.to_owned(),
+            confidence,
+            confidence_weight: confidence,
+            refuted_insight_id: None,
+            refutation_evidence: None,
+            source_episodes: source_episodes
+                .iter()
+                .map(|source| (*source).to_owned())
+                .collect(),
+            tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
+            source_model: None,
+            model_generality: 1.0,
+            created_at,
+            half_life_days: kind.default_half_life_days(),
+            tier: KnowledgeTier::Consolidated,
+            emotional_tag: None,
+            emotional_provenance: None,
+            hdc_vector: None,
+            confirmation_count: 0,
+            distinct_contexts: Vec::new(),
+            deprecated: false,
+            balance: 1.0,
+            frozen: false,
+            catalytic_score: 0,
+        }
+    }
+
     #[test]
     fn export_includes_merkle_root_in_header() {
-        let tmp = TempDir::new().expect("tempdir");
+        let tmp = tempfile::TempDir::new().expect("tempdir");
         let store = KnowledgeStore::new(tmp.path().join("neuro").join("knowledge.jsonl"));
         let now = Utc::now();
 
@@ -5178,7 +5218,7 @@ mod anti_pattern_tests {
 
     #[test]
     fn export_merkle_root_is_deterministic() {
-        let tmp = TempDir::new().expect("tempdir");
+        let tmp = tempfile::TempDir::new().expect("tempdir");
         let now = Utc::now();
 
         let store_a = KnowledgeStore::new(tmp.path().join("a").join("knowledge.jsonl"));

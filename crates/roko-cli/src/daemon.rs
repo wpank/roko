@@ -148,6 +148,99 @@ pub enum DaemonState {
     Stopped,
 }
 
+/// Combined health classification from PID liveness + HTTP probe.
+///
+/// This is computed by [`classify_daemon_health`] and surfaced in
+/// `roko daemon status`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DaemonHealthState {
+    /// PID is alive and the HTTP `/api/health` endpoint responded OK.
+    Running {
+        /// Round-trip latency of the HTTP health probe in milliseconds.
+        latency_ms: u64,
+    },
+    /// PID is alive but the HTTP health endpoint did not respond (or returned
+    /// a non-2xx status).  The daemon process is present but may be stuck.
+    Degraded {
+        /// Human-readable reason (e.g. "connection refused", "timeout").
+        reason: String,
+    },
+    /// PID is dead.  If a stale `daemon.json` / PID file was found it has been
+    /// cleaned up automatically.
+    Stale,
+}
+
+impl std::fmt::Display for DaemonHealthState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Running { latency_ms } => write!(f, "running (HTTP {latency_ms}ms)"),
+            Self::Degraded { reason } => write!(f, "degraded ({reason})"),
+            Self::Stale => write!(f, "stopped (stale PID file cleaned)"),
+        }
+    }
+}
+
+/// HTTP health probe timeout.
+const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Classify the health of a daemon whose [`DaemonInfo`] is known.
+///
+/// 1. If the PID is dead, cleans up stale runtime files and returns
+///    [`DaemonHealthState::Stale`].
+/// 2. If the PID is alive, sends a GET to `http://127.0.0.1:{port}/api/health`
+///    with a [`HEALTH_PROBE_TIMEOUT`] deadline.
+///    - 2xx response → [`DaemonHealthState::Running`] with measured latency.
+///    - Any error (connection refused, timeout, non-2xx) →
+///      [`DaemonHealthState::Degraded`].
+pub async fn classify_daemon_health(workdir: &Path, info: &DaemonInfo) -> DaemonHealthState {
+    match pid_is_alive(info.pid) {
+        Ok(false) | Err(_) => {
+            cleanup_stale_runtime_files(workdir);
+            return DaemonHealthState::Stale;
+        }
+        Ok(true) => {}
+    }
+
+    // PID is alive — probe the HTTP health endpoint.
+    http_health_probe(info.port).await
+}
+
+/// Send a GET request to `http://127.0.0.1:{port}/api/health` with a
+/// [`HEALTH_PROBE_TIMEOUT`] deadline.  Returns the measured latency on
+/// success.
+pub async fn http_health_probe(port: u16) -> DaemonHealthState {
+    let url = format!("http://127.0.0.1:{port}/api/health");
+    let start = std::time::Instant::now();
+
+    let client = match reqwest::Client::builder()
+        .timeout(HEALTH_PROBE_TIMEOUT)
+        .build()
+    {
+        Ok(c) => c,
+        Err(err) => {
+            return DaemonHealthState::Degraded {
+                reason: format!("failed to build HTTP client: {err}"),
+            };
+        }
+    };
+
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            let latency_ms = start.elapsed().as_millis() as u64;
+            DaemonHealthState::Running { latency_ms }
+        }
+        Ok(resp) => DaemonHealthState::Degraded {
+            reason: format!("HTTP {}", resp.status()),
+        },
+        Err(err) if err.is_timeout() => DaemonHealthState::Degraded {
+            reason: "timeout".to_string(),
+        },
+        Err(err) => DaemonHealthState::Degraded {
+            reason: err.to_string(),
+        },
+    }
+}
+
 impl std::fmt::Display for DaemonState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -583,6 +676,11 @@ fn daemon_uninstall_launchd() -> Result<()> {
 }
 
 /// Print daemon status for the current working directory.
+///
+/// Reports one of three health states:
+/// - **Running** — PID alive and HTTP `/api/health` probe returned 2xx.
+/// - **Degraded** — PID alive but HTTP probe failed (stuck / unhealthy).
+/// - **Stale** — PID dead; stale runtime files cleaned up automatically.
 #[instrument(skip_all, fields(workdir = %workdir.display()))]
 pub async fn daemon_status(workdir: &Path) -> Result<()> {
     let info = match read_daemon_info(&workdir)? {
@@ -595,66 +693,71 @@ pub async fn daemon_status(workdir: &Path) -> Result<()> {
                 None,
                 None,
                 None,
+                None,
                 count_signals_processed(&workdir).await?,
             );
             return Ok(());
         }
     };
 
-    let pid_alive = pid_is_alive(info.pid)?;
-    let state = if pid_alive {
-        info.state.clone()
-    } else {
-        DaemonState::Stopped
-    };
-    let port = Some(info.port);
     let signals_processed = count_signals_processed(&workdir).await?;
+    let health = classify_daemon_health(&workdir, &info).await;
 
-    if !pid_alive {
-        print_daemon_status_table(
-            state,
-            Some(info.pid),
-            port,
-            None,
-            None,
-            None,
-            signals_processed,
-        );
-        return Ok(());
+    match &health {
+        DaemonHealthState::Stale => {
+            // Runtime files already cleaned up by classify_daemon_health.
+            print_daemon_status_table(
+                DaemonState::Stopped,
+                Some(info.pid),
+                Some(info.port),
+                None,
+                None,
+                None,
+                Some(&health),
+                signals_processed,
+            );
+            return Ok(());
+        }
+        DaemonHealthState::Degraded { .. } => {
+            print_daemon_status_table(
+                info.state.clone(),
+                Some(info.pid),
+                Some(info.port),
+                None,
+                None,
+                None,
+                Some(&health),
+                signals_processed,
+            );
+            return Ok(());
+        }
+        DaemonHealthState::Running { .. } => {}
     }
 
+    // PID is alive and HTTP is healthy — fetch richer IPC status.
     let socket_path = daemon_socket_path(&workdir);
-    let mut stream = UnixStream::connect(&socket_path)
-        .await
-        .with_context(|| format!("connect {}", socket_path.display()))?;
-    stream
-        .write_all(b"status")
-        .await
-        .context("send daemon status request")?;
-    stream
-        .shutdown()
-        .await
-        .context("close daemon status request")?;
-
-    let mut buf = Vec::new();
-    stream
-        .read_to_end(&mut buf)
-        .await
-        .context("read daemon status response")?;
-    let response: DaemonStatusResponse = serde_json::from_slice(&buf).with_context(|| {
-        format!(
-            "parse daemon status response from {}",
-            socket_path.display()
-        )
-    })?;
+    let ipc_result: Option<DaemonStatusResponse> = match UnixStream::connect(&socket_path).await {
+        Err(_) => None,
+        Ok(mut stream) => {
+            let _ = stream.write_all(b"status").await;
+            let _ = stream.shutdown().await;
+            let mut buf = Vec::new();
+            if stream.read_to_end(&mut buf).await.is_ok() {
+                serde_json::from_slice(&buf).ok()
+            } else {
+                None
+            }
+        }
+    };
 
     print_daemon_status_table(
-        state,
+        info.state.clone(),
         Some(info.pid),
-        port,
-        Some(response.uptime_secs),
-        Some(response.active_agents),
-        Some(response.subscriptions),
+        Some(info.port),
+        ipc_result.as_ref().map(|r| r.uptime_secs),
+        ipc_result.as_ref().map(|r| r.active_agents),
+        ipc_result.as_ref().map(|r| r.subscriptions),
+        Some(&health),
         signals_processed,
     );
     Ok(())
@@ -951,6 +1054,7 @@ fn print_daemon_status_table(
     uptime_secs: Option<u64>,
     active_agents: Option<usize>,
     subscriptions: Option<usize>,
+    health: Option<&DaemonHealthState>,
     total_signals_processed: usize,
 ) {
     println!("{:<26}{}", "field", "value");
@@ -981,6 +1085,13 @@ fn print_daemon_status_table(
         "subscriptions",
         subscriptions.map_or_else(|| "n/a".to_string(), |value| value.to_string())
     );
+    // Health: show the classified state and latency_ms when available.
+    if let Some(h) = health {
+        println!("{:<26}{}", "health", h);
+        if let DaemonHealthState::Running { latency_ms } = h {
+            println!("{:<26}{}ms", "health probe latency", latency_ms);
+        }
+    }
     println!(
         "{:<26}{}",
         "total signals processed", total_signals_processed
@@ -2018,5 +2129,134 @@ mod tests {
             "w".into(),
         );
         assert_eq!(sub.state_dir, PathBuf::from("/home/user/project/.roko"));
+    }
+
+    // ─── E43-T04: DaemonHealthState classification tests ─────────────────
+
+    #[test]
+    fn daemon_health_state_running_display() {
+        let h = DaemonHealthState::Running { latency_ms: 12 };
+        assert_eq!(h.to_string(), "running (HTTP 12ms)");
+    }
+
+    #[test]
+    fn daemon_health_state_degraded_display() {
+        let h = DaemonHealthState::Degraded {
+            reason: "connection refused".to_string(),
+        };
+        assert_eq!(h.to_string(), "degraded (connection refused)");
+    }
+
+    #[test]
+    fn daemon_health_state_stale_display() {
+        assert_eq!(DaemonHealthState::Stale.to_string(), "stopped (stale PID file cleaned)");
+    }
+
+    #[test]
+    fn daemon_health_state_running_eq() {
+        assert_eq!(
+            DaemonHealthState::Running { latency_ms: 5 },
+            DaemonHealthState::Running { latency_ms: 5 }
+        );
+        assert_ne!(
+            DaemonHealthState::Running { latency_ms: 5 },
+            DaemonHealthState::Running { latency_ms: 6 }
+        );
+    }
+
+    #[test]
+    fn daemon_health_state_degraded_eq() {
+        assert_eq!(
+            DaemonHealthState::Degraded { reason: "timeout".into() },
+            DaemonHealthState::Degraded { reason: "timeout".into() }
+        );
+        assert_ne!(
+            DaemonHealthState::Degraded { reason: "timeout".into() },
+            DaemonHealthState::Degraded { reason: "refused".into() }
+        );
+    }
+
+    #[test]
+    fn daemon_health_state_stale_eq() {
+        assert_eq!(DaemonHealthState::Stale, DaemonHealthState::Stale);
+    }
+
+    #[test]
+    fn daemon_health_states_are_distinct() {
+        assert_ne!(
+            DaemonHealthState::Stale,
+            DaemonHealthState::Running { latency_ms: 0 }
+        );
+        assert_ne!(
+            DaemonHealthState::Stale,
+            DaemonHealthState::Degraded { reason: "x".into() }
+        );
+    }
+
+    /// Verify that a dead PID results in `Stale` and that stale runtime files
+    /// are cleaned up.  Uses PID 0 which is never a user process.
+    #[tokio::test]
+    async fn classify_daemon_health_dead_pid_is_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path();
+
+        // Create the runtime files that would exist for a running daemon.
+        let roko_dir = workdir.join(".roko");
+        std::fs::create_dir_all(&roko_dir).unwrap();
+        std::fs::write(roko_dir.join("daemon.json"), "{}").unwrap();
+        std::fs::write(roko_dir.join("daemon.pid"), "0").unwrap();
+        std::fs::write(roko_dir.join("daemon.sock"), "").unwrap();
+
+        let info = DaemonInfo {
+            pid: 0,  // PID 0 is never a real user process.
+            port: 19999,
+            session_id: "test".into(),
+            started_at: chrono::Utc::now(),
+            state: DaemonState::Running,
+        };
+
+        let health = classify_daemon_health(workdir, &info).await;
+        assert_eq!(health, DaemonHealthState::Stale);
+
+        // Stale files must have been cleaned up.
+        assert!(!roko_dir.join("daemon.json").exists(), "daemon.json should be removed");
+        assert!(!roko_dir.join("daemon.pid").exists(), "daemon.pid should be removed");
+        assert!(!roko_dir.join("daemon.sock").exists(), "daemon.sock should be removed");
+    }
+
+    /// Verify that a live PID with a non-listening port results in `Degraded`
+    /// (not Stale), because the process is alive but HTTP is unreachable.
+    #[tokio::test]
+    async fn classify_daemon_health_alive_pid_no_http_is_degraded() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path();
+
+        let info = DaemonInfo {
+            // Use the current process's PID — guaranteed alive.
+            pid: std::process::id(),
+            // Use an ephemeral port that nothing is listening on.
+            port: 1,
+            session_id: "test".into(),
+            started_at: chrono::Utc::now(),
+            state: DaemonState::Running,
+        };
+
+        let health = classify_daemon_health(workdir, &info).await;
+        assert!(
+            matches!(health, DaemonHealthState::Degraded { .. }),
+            "expected Degraded but got {health:?}"
+        );
+    }
+
+    /// `http_health_probe` on a port with nothing listening must return
+    /// `Degraded` within a reasonable time (well under the 2-second default).
+    #[tokio::test]
+    async fn health_probe_connection_refused_is_degraded() {
+        // Port 1 requires no privileges to connect to (but nothing listens).
+        let result = http_health_probe(1).await;
+        assert!(
+            matches!(result, DaemonHealthState::Degraded { .. }),
+            "expected Degraded but got {result:?}"
+        );
     }
 }

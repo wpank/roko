@@ -406,10 +406,7 @@ mod tests {
 
     #[test]
     fn token_context_window_gemini_25() {
-        assert_eq!(
-            context_window_for_slug("gemini-2.5-flash"),
-            Some(1_048_576)
-        );
+        assert_eq!(context_window_for_slug("gemini-2.5-flash"), Some(1_048_576));
     }
 
     #[test]
@@ -424,10 +421,7 @@ mod tests {
 
     #[test]
     fn token_context_window_case_insensitive() {
-        assert_eq!(
-            context_window_for_slug("Claude-Sonnet-4-6"),
-            Some(200_000)
-        );
+        assert_eq!(context_window_for_slug("Claude-Sonnet-4-6"), Some(200_000));
     }
 
     // ── check_context_window ─────────────────────────────────────────────────

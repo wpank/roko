@@ -173,7 +173,10 @@ impl DynamicToolRegistry {
     /// Return all tools in the given [`roko_core::tool::ToolCategory`].
     #[must_use]
     pub fn by_category(&self, category: roko_core::tool::ToolCategory) -> Vec<&ToolDef> {
-        self.tools.iter().filter(|t| t.category == category).collect()
+        self.tools
+            .iter()
+            .filter(|t| t.category == category)
+            .collect()
     }
 
     /// Returns `true` if a tool with `name` is registered.

@@ -45,20 +45,21 @@ pub enum Role {
     Owner = 3,
 }
 
-impl Role {
-    /// Parse a role from its canonical lowercase string representation.
-    ///
-    /// Returns `None` for unrecognised values.
-    pub fn from_str(s: &str) -> Option<Self> {
+impl std::str::FromStr for Role {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "owner" => Some(Self::Owner),
-            "admin" => Some(Self::Admin),
-            "member" => Some(Self::Member),
-            "viewer" => Some(Self::Viewer),
-            _ => None,
+            "owner" => Ok(Self::Owner),
+            "admin" => Ok(Self::Admin),
+            "member" => Ok(Self::Member),
+            "viewer" => Ok(Self::Viewer),
+            _ => Err(()),
         }
     }
+}
 
+impl Role {
     /// Return the canonical lowercase string for this role.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -174,26 +175,35 @@ impl RoleBinding {
 /// middleware call [`enforce_permission`] instead of this function directly;
 /// this function is exposed for tests and admin tooling.
 pub fn role_permissions(role: Role) -> HashSet<Permission> {
-    use Permission::*;
-
-    let viewer: HashSet<Permission> = [ViewDashboard].into();
+    let viewer: HashSet<Permission> = [Permission::ViewDashboard].into();
 
     let member: HashSet<Permission> = viewer
         .iter()
         .copied()
-        .chain([PlanExecute, PlanCreate, AgentSpawn, AgentStop])
+        .chain([
+            Permission::PlanExecute,
+            Permission::PlanCreate,
+            Permission::AgentSpawn,
+            Permission::AgentStop,
+        ])
         .collect();
 
     let admin: HashSet<Permission> = member
         .iter()
         .copied()
-        .chain([ConfigEdit, SecretsRead, SecretsWrite, ApiKeyCreate, TokenIssue])
+        .chain([
+            Permission::ConfigEdit,
+            Permission::SecretsRead,
+            Permission::SecretsWrite,
+            Permission::ApiKeyCreate,
+            Permission::TokenIssue,
+        ])
         .collect();
 
     let owner: HashSet<Permission> = admin
         .iter()
         .copied()
-        .chain([TeamManage])
+        .chain([Permission::TeamManage])
         .collect();
 
     match role {
@@ -254,9 +264,9 @@ pub fn enforce_permission(role: Role, required: Permission) -> Result<(), ApiErr
 /// Returns an [`ApiError`] with HTTP 403 status when the role string is
 /// unrecognised or permission is denied.
 pub fn enforce_permission_str(role_str: &str, required: Permission) -> Result<(), ApiError> {
-    let role = Role::from_str(role_str).ok_or_else(|| {
-        ApiError::forbidden(format!("unrecognised role '{role_str}'"))
-    })?;
+    let role: Role = role_str
+        .parse()
+        .map_err(|()| ApiError::forbidden(format!("unrecognised role '{role_str}'")))?;
     enforce_permission(role, required)
 }
 
@@ -307,7 +317,7 @@ mod tests {
             ("member", Role::Member),
             ("viewer", Role::Viewer),
         ] {
-            let role = Role::from_str(s).expect("should parse");
+            let role: Role = s.parse().expect("should parse");
             assert_eq!(role, expected);
             assert_eq!(role.as_str(), s);
         }
@@ -315,9 +325,9 @@ mod tests {
 
     #[test]
     fn role_from_str_rejects_unknown() {
-        assert!(Role::from_str("superuser").is_none());
-        assert!(Role::from_str("").is_none());
-        assert!(Role::from_str("ADMIN").is_none()); // case-sensitive
+        assert!("superuser".parse::<Role>().is_err());
+        assert!("".parse::<Role>().is_err());
+        assert!("ADMIN".parse::<Role>().is_err()); // case-sensitive
     }
 
     // ── role_permissions ─────────────────────────────────────────────────────

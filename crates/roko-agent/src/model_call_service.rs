@@ -3251,7 +3251,10 @@ mod tests {
     fn token_context_window_unknown_model_returns_zero() {
         let svc = ModelCallService::new("default".into());
         let cw = svc.context_window_for_model("my-custom-model-v99");
-        assert_eq!(cw, 0, "unknown model should return 0 so the check is skipped");
+        assert_eq!(
+            cw, 0,
+            "unknown model should return 0 so the check is skipped"
+        );
     }
 
     /// `cost_predict` estimated_input_tokens agrees with the 4-chars/token

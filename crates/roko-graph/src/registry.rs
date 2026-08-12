@@ -98,7 +98,7 @@ impl std::fmt::Debug for CellRegistry {
 mod tests {
     use std::time::Duration;
 
-    use roko_core::Engram;
+    use roko_core::Signal;
 
     use crate::cell::{CellContext, CellVersion};
 
@@ -131,9 +131,9 @@ mod tests {
         }
         async fn execute(
             &self,
-            input: Vec<Engram>,
+            input: Vec<Signal>,
             _ctx: &CellContext,
-        ) -> roko_core::error::Result<Vec<Engram>> {
+        ) -> roko_core::error::Result<Vec<Signal>> {
             Ok(input)
         }
     }

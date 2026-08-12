@@ -22,7 +22,7 @@
 //! assert_eq!(signal.unwrap().kind, StuckKind::OutputLoop);
 //! ```
 
-use roko_core::{Body, Engram, Kind, OperatingFrequency};
+use roko_core::{Body, Kind, OperatingFrequency, Signal};
 use serde::{Deserialize, Serialize};
 
 // ---- StuckKind --------------------------------------------------------------
@@ -957,46 +957,42 @@ pub struct MetaCognitionAssessment {
 impl MetaCognitionAssessment {
     /// Convert the assessment into a structured signal when action is needed.
     ///
-    /// # Panics
-    ///
-    /// Panics if the assessment cannot be serialized into JSON for the signal
-    /// body payload.
+    /// Returns `None` if the action is `Continue` or if the assessment
+    /// cannot be serialized into JSON for the signal body payload.
     #[must_use]
-    pub fn to_signal(&self) -> Option<Engram> {
+    pub fn to_signal(&self) -> Option<Signal> {
         match self.action {
             MetaCognitionAction::Continue => None,
-            _ => Some(
-                Engram::builder(Kind::Custom("roko.meta_cognition".into()))
-                    .body(
-                        Body::from_json(self)
-                            .expect("meta-cognition assessment should serialize to JSON"),
-                    )
-                    .tag("frequency", "theta")
-                    .tag("action", self.action.label())
-                    .tag("reason", self.reason.as_str())
-                    .build(),
-            ),
+            _ => {
+                let body = Body::from_json(self).ok()?;
+                Some(
+                    Signal::builder(Kind::Custom("roko.meta_cognition".into()))
+                        .body(body)
+                        .tag("frequency", "theta")
+                        .tag("action", self.action.label())
+                        .tag("reason", self.reason.as_str())
+                        .build(),
+                )
+            }
         }
     }
 
     /// Docs-compatible alias for [`Self::to_signal`].
     ///
-    /// # Panics
-    ///
-    /// Panics if the assessment cannot be serialized into JSON for the signal
-    /// body payload.
+    /// Returns `None` if the action is `Continue` or if the assessment
+    /// cannot be serialized into JSON for the signal body payload.
     #[must_use]
-    pub fn to_engram(&self) -> Option<Engram> {
-        self.to_signal().map(|_| {
-            Engram::builder(Kind::Custom("conductor.meta_cognition".into()))
-                .body(
-                    Body::from_json(self)
-                        .expect("meta-cognition assessment should serialize to JSON"),
-                )
-                .tag("frequency", "theta")
-                .tag("action", self.action.as_str())
-                .tag("reason", self.reason.as_str())
-                .build()
+    pub fn to_engram(&self) -> Option<Signal> {
+        self.to_signal().and_then(|_| {
+            let body = Body::from_json(self).ok()?;
+            Some(
+                Signal::builder(Kind::Custom("conductor.meta_cognition".into()))
+                    .body(body)
+                    .tag("frequency", "theta")
+                    .tag("action", self.action.as_str())
+                    .tag("reason", self.reason.as_str())
+                    .build(),
+            )
         })
     }
 }

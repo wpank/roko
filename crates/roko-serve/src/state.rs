@@ -23,7 +23,7 @@ use crate::service_factory::{ServiceConfig, ServiceFactory};
 use roko_agent::ModelCallService;
 use roko_core::config::schema::RokoConfig;
 use roko_core::obs::LogScrubber;
-use roko_core::{Engram, Store};
+use roko_core::{Signal, Store};
 use roko_daimon::{DaimonState, StrategySpaceDefinition};
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::latency::LatencyRegistry;
@@ -942,7 +942,7 @@ impl AppState {
         let supervisor = Arc::new(ProcessSupervisor::new(cancel.child()));
         let subscriptions = SubscriptionRegistry::load_from_project(&workdir, &roko_config);
         let mut affect_engine = DaimonState::load_or_new(&affect_path);
-        affect_engine.configure_strategy_space(strategy_space);
+        let _ = affect_engine.configure_strategy_space(strategy_space);
 
         let mut template_registry = TemplateRegistry::new(workdir.clone());
         template_registry.scan();
@@ -951,7 +951,10 @@ impl AppState {
 
         // Initialize chain client + wallet from [chain] config section.
         let (chain_client, chain_wallet) = Self::init_chain(&roko_config);
-        let http_client = reqwest::Client::new();
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_default();
         let metrics = Arc::new(MetricRegistry::new());
         roko_core::obs::metrics::register_standard_metrics(&metrics);
         let mut service_config = ServiceConfig::production(workdir.clone(), roko_config.clone());
@@ -1580,7 +1583,7 @@ impl SignalStore {
     ///
     /// Returns an error if the backing [`FileSubstrate`] cannot be opened or
     /// if the signal cannot be appended to the `.roko/engrams.jsonl` store.
-    pub async fn put(&self, signal: Engram) -> anyhow::Result<()> {
+    pub async fn put(&self, signal: Signal) -> anyhow::Result<()> {
         let substrate = self.substrate().await?;
         substrate.put(signal).await?;
         Ok(())

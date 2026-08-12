@@ -20,7 +20,7 @@ use roko_compose::{
     SectionPriority, TaskContext, estimate_tokens,
 };
 use roko_core::AgentRole;
-use roko_core::Engram;
+use roko_core::Signal;
 use roko_learn::efficiency::PromptSectionMeta;
 use roko_learn::playbook::Playbook;
 use roko_learn::section_effect::{PriorityChange, SectionEffectivenessRegistry};
@@ -454,8 +454,8 @@ pub(crate) fn apply_section_effectiveness_to_prompt_section(
 }
 
 pub(crate) fn prompt_section_meta_from_sections(
-    sections: &[Engram],
-    prompt: &Engram,
+    sections: &[Signal],
+    prompt: &Signal,
 ) -> Vec<PromptSectionMeta> {
     let included = prompt.lineage.iter().copied().collect::<HashSet<_>>();
     sections

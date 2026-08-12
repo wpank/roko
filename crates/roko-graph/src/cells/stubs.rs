@@ -7,11 +7,11 @@
 
 use std::time::Duration;
 
-use roko_core::{Engram, ProtocolId, error::Result};
+use roko_core::{ProtocolId, Signal, error::Result};
 
 use crate::cell::{Cell, CellContext, CellVersion};
 
-/// Stub cell that passes input engrams through unchanged.
+/// Stub cell that passes input signals through unchanged.
 ///
 /// Used as a placeholder until the real implementation is built.
 /// Each instance carries a name so logs indicate which stub was invoked.
@@ -53,11 +53,11 @@ impl Cell for PassthroughCell {
         Some(Duration::from_millis(1))
     }
 
-    async fn execute(&self, input: Vec<Engram>, _ctx: &CellContext) -> Result<Vec<Engram>> {
+    async fn execute(&self, input: Vec<Signal>, _ctx: &CellContext) -> Result<Vec<Signal>> {
         tracing::info!(
             cell = %self.name,
             input_count = input.len(),
-            "PassthroughCell '{}' -- {} input engrams (stub)",
+            "PassthroughCell '{}' -- {} input signals (stub)",
             self.name,
             input.len()
         );

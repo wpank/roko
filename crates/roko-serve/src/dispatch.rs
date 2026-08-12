@@ -30,7 +30,7 @@ use roko_core::config::schema::{RokoConfig, SubscriptionConfig, SubscriptionFilt
 use roko_core::tool::ExternalAction;
 use roko_core::tool::ToolRegistry;
 use roko_core::tool::role_allowlist::role_allowlist;
-use roko_core::{Body, Context as RokoContext, Engram, Kind, Provenance};
+use roko_core::{Body, Context as RokoContext, Kind, Provenance, Signal};
 use roko_core::{ContentHash, Verdict};
 use roko_daimon::{AffectEngine as _, AffectEvent};
 use roko_learn::anomaly::{Anomaly, AnomalyDetector};
@@ -63,7 +63,7 @@ use roko_fs::layout::RokoLayout;
 #[async_trait]
 pub trait AgentDispatcher: Send + Sync {
     /// Dispatch a signal through the agent template identified by `template`.
-    async fn dispatch(&self, template: AgentTemplate, signal: Engram) -> Result<AgentResult>;
+    async fn dispatch(&self, template: AgentTemplate, signal: Signal) -> Result<AgentResult>;
 }
 
 /// Public subscription filter type used by the subscription API.
@@ -72,7 +72,7 @@ pub type SubscriptionFilter = SubscriptionFilterConfig;
 /// Extended episode metadata for webhook- and event-driven agents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WebhookEpisodeMetadata {
-    /// Engram kind that triggered the agent.
+    /// Signal kind that triggered the agent.
     #[serde(default)]
     pub trigger_kind: String,
     /// Content hash of the trigger signal.
@@ -130,14 +130,14 @@ struct RepoContext {
 
 /// Extract the repo full name (e.g. `"nunchi/roko"`) from a webhook signal's
 /// JSON body by probing `repository.full_name` and `repository.name`.
-fn signal_repo_full_name(signal: &Engram) -> Option<String> {
+fn signal_repo_full_name(signal: &Signal) -> Option<String> {
     let candidates = signal_repo_candidates(signal);
     candidates.into_iter().next().map(str::to_string)
 }
 
 /// Attempt to resolve a [`RepoContext`] from a signal using the runtime's
 /// repo registry. Returns `None` when the signal's repo is not configured.
-fn resolve_repo_context(state: &AppState, signal: &Engram) -> Option<RepoContext> {
+fn resolve_repo_context(state: &AppState, signal: &Signal) -> Option<RepoContext> {
     let full_name = signal_repo_full_name(signal)?;
     let repo_workdir = state.runtime.resolve_repo_workdir(&full_name)?;
 
@@ -323,9 +323,9 @@ fn queue_pending_anomaly(session_root: &Path, anomaly: Anomaly, model_slug: Stri
     });
 }
 
-fn prompt_hash_u64(signal: &Engram) -> u64 {
+fn prompt_hash_u64(signal: &Signal) -> u64 {
     let hash = signal.content_hash();
-    let bytes: [u8; 8] = hash.0[..8].try_into().expect("content hash prefix");
+    let bytes: [u8; 8] = hash.0[..8].try_into().unwrap_or([0u8; 8]);
     u64::from_be_bytes(bytes)
 }
 
@@ -417,7 +417,7 @@ async fn apply_pending_anomalies(
 async fn run_anomaly_preflight(
     state: &Arc<AppState>,
     template: &AgentTemplate,
-    dispatch_signal: &Engram,
+    dispatch_signal: &Signal,
     repo_ctx: Option<&RepoContext>,
     routed_model: &mut String,
 ) -> Result<()> {
@@ -527,7 +527,7 @@ pub fn start_dispatch_loop(state: Arc<AppState>) -> JoinHandle<()> {
 
 #[async_trait]
 impl AgentDispatcher for TemplateAgentDispatcher {
-    async fn dispatch(&self, template: AgentTemplate, signal: Engram) -> Result<AgentResult> {
+    async fn dispatch(&self, template: AgentTemplate, signal: Signal) -> Result<AgentResult> {
         let experiment_variant = template.experiment.as_ref().and_then(|experiment| {
             load_template_experiment_variant(&self.workdir, &experiment.name)
         });
@@ -582,7 +582,7 @@ pub struct Subscription {
     pub id: String,
     /// Agent template name associated with this subscription.
     pub template: String,
-    /// Engram kind glob used to match incoming signals.
+    /// Signal kind glob used to match incoming signals.
     pub trigger: String,
     /// Additional filters applied after the trigger matches.
     pub filter: SubscriptionFilter,
@@ -746,7 +746,7 @@ impl Subscription {
 
     /// Check whether this subscription should trigger for `signal`.
     #[must_use]
-    pub fn matches(&self, signal: &Engram) -> bool {
+    pub fn matches(&self, signal: &Signal) -> bool {
         self.is_enabled()
             && glob_match(self.trigger(), signal.kind.as_str())
             && subscription_filter_matches(self.filter(), signal)
@@ -765,7 +765,7 @@ impl Subscription {
 
     /// Check and update the deduplication gate using the signal content hash.
     #[must_use]
-    pub fn check_dedup(&self, signal: &Engram) -> bool {
+    pub fn check_dedup(&self, signal: &Signal) -> bool {
         if self.dedup_ttl.is_zero() {
             return true;
         }
@@ -946,7 +946,7 @@ impl SubscriptionRegistry {
 
     /// Return subscriptions whose trigger and filters match `signal`.
     #[must_use]
-    pub fn find_matching(&self, signal: &Engram) -> Vec<Subscription> {
+    pub fn find_matching(&self, signal: &Signal) -> Vec<Subscription> {
         self.subscriptions
             .read()
             .iter()
@@ -1067,7 +1067,7 @@ fn load_subscription_file(path: &Path) -> anyhow::Result<Vec<Subscription>> {
     Ok(subscriptions)
 }
 
-fn subscription_filter_matches(filter: &SubscriptionFilterConfig, signal: &Engram) -> bool {
+fn subscription_filter_matches(filter: &SubscriptionFilterConfig, signal: &Signal) -> bool {
     if filter.is_empty() {
         return true;
     }
@@ -1142,7 +1142,7 @@ fn matches_any_exact<'a>(
     })
 }
 
-fn signal_repo_candidates(signal: &Engram) -> Vec<&str> {
+fn signal_repo_candidates(signal: &Signal) -> Vec<&str> {
     json_string_fields(
         &signal.body,
         &[
@@ -1154,7 +1154,7 @@ fn signal_repo_candidates(signal: &Engram) -> Vec<&str> {
     )
 }
 
-fn signal_branch_candidates(signal: &Engram) -> Vec<&str> {
+fn signal_branch_candidates(signal: &Signal) -> Vec<&str> {
     let mut values = json_string_fields(
         &signal.body,
         &[
@@ -1179,7 +1179,7 @@ fn signal_branch_candidates(signal: &Engram) -> Vec<&str> {
     values
 }
 
-fn signal_path_candidates(signal: &Engram) -> Vec<&str> {
+fn signal_path_candidates(signal: &Signal) -> Vec<&str> {
     let mut values = Vec::new();
     values.extend(json_string_array_fields(
         &signal.body,
@@ -1203,7 +1203,7 @@ fn signal_path_candidates(signal: &Engram) -> Vec<&str> {
     values
 }
 
-fn signal_label_candidates(signal: &Engram) -> Vec<&str> {
+fn signal_label_candidates(signal: &Signal) -> Vec<&str> {
     json_stringish_array_fields(
         &signal.body,
         &[
@@ -1214,7 +1214,7 @@ fn signal_label_candidates(signal: &Engram) -> Vec<&str> {
     )
 }
 
-fn signal_author_candidates(signal: &Engram) -> Vec<&str> {
+fn signal_author_candidates(signal: &Signal) -> Vec<&str> {
     json_loginish_fields(
         &signal.body,
         &[
@@ -1381,10 +1381,10 @@ fn json_login_candidates<'a>(value: &'a Value) -> Vec<&'a str> {
         .unwrap_or_default()
 }
 
-/// Convert an in-process `ServerEvent` into a synthetic `Engram` so that
+/// Convert an in-process `ServerEvent` into a synthetic `Signal` so that
 /// subscriptions can trigger on plan completions, gate results, episodes,
 /// and job transitions -- not just external webhooks.
-fn server_event_to_synthetic_signal(event: &ServerEvent) -> Option<Engram> {
+fn server_event_to_synthetic_signal(event: &ServerEvent) -> Option<Signal> {
     let (kind_str, body_json) = match event {
         ServerEvent::PlanCompleted {
             plan_id, success, ..
@@ -1450,7 +1450,7 @@ fn server_event_to_synthetic_signal(event: &ServerEvent) -> Option<Engram> {
     };
 
     let body = Body::from_json(&body_json).unwrap_or_else(|_| Body::text("{}"));
-    let signal = Engram::builder(Kind::Custom(kind_str.into()))
+    let signal = Signal::builder(Kind::Custom(kind_str.into()))
         .body(body)
         .provenance(Provenance::trusted("roko-serve/dispatch"))
         .build();
@@ -1461,7 +1461,7 @@ fn server_event_to_synthetic_signal(event: &ServerEvent) -> Option<Engram> {
 ///
 /// Handles both external webhook events (which arrive as `WebhookReceived`
 /// signals) and in-process events (plan completions, gate results, episodes,
-/// job transitions) that are converted into synthetic `Engram`s and matched
+/// job transitions) that are converted into synthetic `Signal`s and matched
 /// against subscriptions.
 pub async fn dispatch_loop(state: Arc<AppState>, dispatcher: Arc<dyn AgentDispatcher>) {
     let subscriptions: SubscriptionRegistry = state.subscriptions.clone();
@@ -1609,7 +1609,7 @@ pub async fn dispatch_loop(state: Arc<AppState>, dispatcher: Arc<dyn AgentDispat
 async fn dispatch_agent(
     state: Arc<AppState>,
     subscription: Subscription,
-    signal: Engram,
+    signal: Signal,
     dispatcher: Arc<dyn AgentDispatcher>,
     repo_ctx: Option<RepoContext>,
 ) {
@@ -1676,7 +1676,7 @@ async fn dispatch_agent(
 async fn dispatch_template(
     state: Arc<AppState>,
     template: AgentTemplate,
-    signal: Engram,
+    signal: Signal,
     dispatcher: Arc<dyn AgentDispatcher>,
     repo_ctx: Option<&RepoContext>,
 ) -> Result<DispatchOutcome> {
@@ -1862,7 +1862,7 @@ async fn record_template_dispatch_feedback(
     state: &Arc<AppState>,
     config: &RokoConfig,
     template: &AgentTemplate,
-    signal: &Engram,
+    signal: &Signal,
     result: &AgentResult,
     learning_success: bool,
     learn_dir: &Path,
@@ -1975,7 +1975,7 @@ fn template_cascade_model_slugs(config: &RokoConfig, model_slug: &str) -> Vec<St
 
 fn build_template_system_prompt(
     template: &AgentTemplate,
-    signal: Option<&Engram>,
+    signal: Option<&Signal>,
     experiment_variant: Option<&str>,
 ) -> String {
     let role_prompt = match signal {
@@ -2166,7 +2166,7 @@ fn resolve_template_mcp_config(
     Ok(Some(path))
 }
 
-fn dispatch_context(template: &AgentTemplate, signal: &Engram) -> RokoContext {
+fn dispatch_context(template: &AgentTemplate, signal: &Signal) -> RokoContext {
     let mut ctx = RokoContext::now()
         .with_attr("template", template.name.clone())
         .with_attr("signal.id", signal.id.to_hex())
@@ -2181,16 +2181,16 @@ fn dispatch_context(template: &AgentTemplate, signal: &Engram) -> RokoContext {
     )
 }
 
-fn build_dispatch_signal(template: &AgentTemplate, signal: &Engram) -> Result<Engram> {
+fn build_dispatch_signal(template: &AgentTemplate, signal: &Signal) -> Result<Signal> {
     let mut context = serde_json::Map::new();
     context.insert("signal".into(), serde_json::to_value(signal)?);
     context.insert("template".into(), serde_json::to_value(template)?);
 
     let mut body = String::new();
-    body.push_str("Engram context:\n");
+    body.push_str("Signal context:\n");
     body.push_str(&serde_json::to_string_pretty(&context)?);
 
-    Ok(Engram::builder(Kind::Prompt)
+    Ok(Signal::builder(Kind::Prompt)
         .body(Body::text(body))
         .provenance(Provenance::trusted("roko-serve"))
         .lineage([signal.id])
@@ -2213,7 +2213,7 @@ fn signal_body_to_text(body: &Body) -> String {
 async fn run_template_gates(
     _state: &Arc<AppState>,
     _template: &AgentTemplate,
-    output: &Engram,
+    output: &Signal,
 ) -> Vec<Verdict> {
     let _ = output;
     Vec::new()
@@ -2236,7 +2236,7 @@ async fn record_template_run(state: &Arc<AppState>, template_name: &str, success
 async fn append_dispatch_episode(
     state: &Arc<AppState>,
     template: &AgentTemplate,
-    signal: &Engram,
+    signal: &Signal,
     outcome: &DispatchOutcome,
     started_at: chrono::DateTime<Utc>,
     completed_at: chrono::DateTime<Utc>,
@@ -2366,7 +2366,7 @@ async fn append_dispatch_episode(
 async fn publish_dispatch_learning_feedback(
     state: &Arc<AppState>,
     template: &AgentTemplate,
-    signal: &Engram,
+    signal: &Signal,
     repo_layout: Option<&RokoLayout>,
     template_name: &str,
     turns: u64,
@@ -2642,7 +2642,7 @@ mod tests {
             Subscription::new("reviewer", "github:*"),
             Subscription::new("ops", "slack:*").disabled(),
         ]);
-        let signal = Engram::builder(Kind::Custom("github:push".into()))
+        let signal = Signal::builder(Kind::Custom("github:push".into()))
             .body(Body::Json(serde_json::json!({"repo": "roko"})))
             .provenance(Provenance::external("github:webhook"))
             .build();
@@ -2677,7 +2677,7 @@ mod tests {
             }),
         ]);
 
-        let signal = Engram::builder(Kind::Custom("github:push".into()))
+        let signal = Signal::builder(Kind::Custom("github:push".into()))
             .body(Body::Json(serde_json::json!({
                 "repository": { "full_name": "roko/roko" },
                 "ref": "refs/heads/main",
@@ -2703,7 +2703,7 @@ mod tests {
     #[test]
     fn dedup_blocks_repeat_signals_within_window() {
         let sub = Subscription::new("reviewer", "github:*").with_dedup_ttl(Duration::from_secs(60));
-        let signal = Engram::builder(Kind::Custom("github:push".into()))
+        let signal = Signal::builder(Kind::Custom("github:push".into()))
             .body(Body::Json(serde_json::json!({"repo": "roko"})))
             .provenance(Provenance::external("github:webhook"))
             .build();
@@ -2717,7 +2717,7 @@ mod tests {
         let registry = SubscriptionRegistry::with_subscriptions(vec![
             Subscription::new("reviewer", "github:*").with_cooldown(Duration::from_secs(60)),
         ]);
-        let signal = Engram::builder(Kind::Custom("github:push".into()))
+        let signal = Signal::builder(Kind::Custom("github:push".into()))
             .body(Body::Json(serde_json::json!({"repo": "roko"})))
             .provenance(Provenance::external("github:webhook"))
             .build();
@@ -2736,7 +2736,7 @@ mod tests {
             Subscription::new("ops", "slack:*").with_concurrency_limit(2),
         ]);
 
-        let signal = Engram::builder(Kind::Custom("github:push".into()))
+        let signal = Signal::builder(Kind::Custom("github:push".into()))
             .body(Body::Json(serde_json::json!({"repo": "roko"})))
             .provenance(Provenance::external("github:webhook"))
             .build();
@@ -2784,7 +2784,7 @@ filter = { path = "src/*.rs" }
         let config = RokoConfig::from_toml(roko_toml).expect("parse roko.toml");
         let registry = SubscriptionRegistry::load_from_project(&workdir, &config);
 
-        let signal = Engram::builder(Kind::Custom("github:push".into()))
+        let signal = Signal::builder(Kind::Custom("github:push".into()))
             .body(Body::Json(serde_json::json!({
                 "repository": { "full_name": "roko/roko" },
                 "ref": "refs/heads/main",
@@ -2897,7 +2897,7 @@ filter = { path = "src/*.rs" }
 
     #[test]
     fn signal_repo_full_name_extracts_from_github_payload() {
-        let signal = Engram::builder(Kind::Custom("github:push".into()))
+        let signal = Signal::builder(Kind::Custom("github:push".into()))
             .body(Body::Json(serde_json::json!({
                 "repository": { "full_name": "nunchi/roko", "name": "roko" }
             })))
@@ -2910,7 +2910,7 @@ filter = { path = "src/*.rs" }
 
     #[test]
     fn signal_repo_full_name_returns_none_for_non_repo_signals() {
-        let signal = Engram::builder(Kind::Custom("cron:tick".into()))
+        let signal = Signal::builder(Kind::Custom("cron:tick".into()))
             .body(Body::Json(serde_json::json!({ "schedule": "hourly" })))
             .provenance(Provenance::trusted("scheduler"))
             .build();
@@ -3083,7 +3083,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
             experiment: None,
             provider: None,
         };
-        let signal = Engram::builder(Kind::Prompt)
+        let signal = Signal::builder(Kind::Prompt)
             .body(Body::text("dispatch this"))
             .provenance(Provenance::trusted("test"))
             .build();
@@ -3126,7 +3126,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
     #[test]
     fn anomaly_dispatch_prompt_loop_halts_after_five_identical_prompts() {
         let session_root = tempfile::tempdir().expect("session tempdir");
-        let signal = Engram::builder(Kind::Prompt)
+        let signal = Signal::builder(Kind::Prompt)
             .body(Body::text("looping prompt"))
             .provenance(Provenance::trusted("test"))
             .build();

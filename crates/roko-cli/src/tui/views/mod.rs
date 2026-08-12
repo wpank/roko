@@ -19,7 +19,7 @@
 //! | F4 Git | Git Detail | Branch Tree, Commit Graph, Worktrees |
 //! | F5 Logs | Logs | Filtered Log, Signal Stream |
 //! | F6 Config | System | Config View, Provider Health, Model Comparison |
-//! | F7 Inspect | Knowledge | Engram DAG, Episode Replay, Knowledge Browse |
+//! | F7 Inspect | Knowledge | Signal DAG, Episode Replay, Knowledge Browse |
 //! | F8 Marketplace | Jobs | Job List, Job Detail, Create Job |
 //! | F9 Atelier | Workshop | PRD Workshop, Plan Explorer |
 //! | F10 Learning | Learning | Route, History, Efficiency |
@@ -98,8 +98,8 @@ pub enum SubView {
     // ── Region 7: Inspect / Knowledge (F7) ──
     /// Context overview.
     InspectOverview,
-    /// Engram DAG inspector.
-    EngramDag,
+    /// Signal DAG inspector.
+    SignalDag,
     /// Episode replay viewer.
     EpisodeReplay,
     /// Knowledge browser (Neuro store).
@@ -161,7 +161,7 @@ impl SubView {
             ],
             Tab::Inspect => &[
                 SubView::InspectOverview,
-                SubView::EngramDag,
+                SubView::SignalDag,
                 SubView::EpisodeReplay,
                 SubView::KnowledgeBrowse,
             ],
@@ -197,7 +197,7 @@ impl SubView {
             Self::ProviderHealth => "Providers",
             Self::ModelComparison => "Models",
             Self::InspectOverview => "Overview",
-            Self::EngramDag => "Engrams",
+            Self::SignalDag => "Signals",
             Self::EpisodeReplay => "Episodes",
             Self::KnowledgeBrowse => "Knowledge",
             Self::JobList => "Jobs",

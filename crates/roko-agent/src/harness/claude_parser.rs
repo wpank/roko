@@ -99,7 +99,7 @@ impl ClaudeStreamJsonParser {
                                     .unwrap_or("unknown")
                                     .to_string();
                                 let arguments = block.get("input").cloned().unwrap_or(Value::Null);
-                                eprintln!("[{}] tool: {name}", self.name);
+                                tracing::debug!(agent = %self.name, "tool: {name}");
                                 out.push(HarnessEvent::ToolCall {
                                     id,
                                     name,
@@ -129,7 +129,7 @@ impl ClaudeStreamJsonParser {
                                 .and_then(Value::as_str)
                                 .unwrap_or("unknown")
                                 .to_string();
-                            eprintln!("[{}] tool: {name}", self.name);
+                            tracing::debug!(agent = %self.name, "tool: {name}");
                             out.push(HarnessEvent::ToolCall {
                                 id,
                                 name,
@@ -137,7 +137,7 @@ impl ClaudeStreamJsonParser {
                             });
                         }
                         "text" => {
-                            eprintln!("[{}] generating text...", self.name);
+                            tracing::debug!(agent = %self.name, "generating text...");
                         }
                         _ => {}
                     }
@@ -190,7 +190,7 @@ impl ClaudeStreamJsonParser {
                 } else {
                     format!("{} bytes text", self.text_bytes)
                 };
-                eprintln!("[{}] result received ({summary})", self.name);
+                tracing::info!(agent = %self.name, "result received ({summary})");
             }
 
             // ── tool (subtype: result) ─────────────────────────────
@@ -240,7 +240,7 @@ impl ClaudeStreamJsonParser {
 impl EventParser for ClaudeStreamJsonParser {
     fn parse_stdout_line(&mut self, line: &str) -> Vec<HarnessEvent> {
         if self.debug {
-            eprintln!("{line}");
+            tracing::debug!("{line}");
         }
 
         match Self::parse_event(line) {
@@ -257,7 +257,7 @@ impl EventParser for ClaudeStreamJsonParser {
         // emits stream-json on BOTH stdout AND stderr).
         if let Some(event) = Self::parse_event(line) {
             if self.debug {
-                eprintln!("{line}");
+                tracing::debug!("{line}");
             }
             return self.event_to_harness_events(&event);
         }
@@ -265,7 +265,7 @@ impl EventParser for ClaudeStreamJsonParser {
         // Not stream-json -- classify as benign stderr.
         if let Some(benign) = classify_benign_stderr(line) {
             if benign_stderr_warn_once(benign.key) {
-                eprintln!("[{}] {}", self.name, benign.summary);
+                tracing::warn!(agent = %self.name, "{}", benign.summary);
             }
             // Suppressed (benign).
             return vec![];
@@ -273,9 +273,9 @@ impl EventParser for ClaudeStreamJsonParser {
 
         // Real stderr line -- emit as Error.
         if self.debug {
-            eprintln!("{line}");
+            tracing::debug!("{line}");
         } else {
-            eprintln!("[{}] {line}", self.name);
+            tracing::debug!(agent = %self.name, "{line}");
         }
         vec![HarnessEvent::Error(line.to_string())]
     }

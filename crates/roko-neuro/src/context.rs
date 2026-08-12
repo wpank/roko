@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use chrono::Utc;
-use roko_core::{Body, EmotionalTag, Engram, PadVector};
+use roko_core::{Body, EmotionalTag, PadVector, Signal};
 use roko_learn::episode_logger::{Episode, EpisodeLogger};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -100,13 +100,13 @@ pub enum ContextSource {
         /// Optional line range (e.g. "40-80").
         lines: Option<String>,
     },
-    /// Recent Engram from the plan signal log.
+    /// Recent Signal from the plan signal log.
     RecentSignal {
-        /// Engram identifier.
+        /// Signal identifier.
         signal_id: String,
         /// Plan identifier.
         plan_id: String,
-        /// Engram kind.
+        /// Signal kind.
         kind: String,
     },
     /// Resolved symbol signature (struct/fn/trait/enum definition).
@@ -491,7 +491,7 @@ impl ContextAssembler {
         workdir: impl AsRef<Path>,
         task: &TaskInput,
         plan_id: &str,
-        engrams_path: impl AsRef<Path>,
+        signals_path: impl AsRef<Path>,
     ) -> Vec<ContextChunk> {
         let task_text = task_query_text(task);
         let workdir = workdir.as_ref();
@@ -500,7 +500,7 @@ impl ContextAssembler {
         chunks.extend(self.gather_knowledge(&task_text));
         chunks.extend(self.gather_episodes(task, plan_id, &task_text));
         chunks.extend(self.gather_read_files(workdir, task));
-        chunks.extend(self.gather_recent_engrams(plan_id, engrams_path.as_ref()));
+        chunks.extend(self.gather_recent_signals(plan_id, signals_path.as_ref()));
 
         apply_somatic_bias(&mut chunks, self.affect_state);
         self.rank(&task_text, &mut chunks);
@@ -830,10 +830,10 @@ impl ContextAssembler {
         chunks
     }
 
-    fn gather_recent_engrams(&self, plan_id: &str, engrams_path: &Path) -> Vec<ContextChunk> {
-        let signals = read_jsonl_lossy::<Engram>(engrams_path);
+    fn gather_recent_signals(&self, plan_id: &str, signals_path: &Path) -> Vec<ContextChunk> {
+        let signals = read_jsonl_lossy::<Signal>(signals_path);
 
-        let mut recent: Vec<Engram> = signals
+        let mut recent: Vec<Signal> = signals
             .into_iter()
             .filter(|signal| signal.tag("plan_id") == Some(plan_id))
             .rev()
@@ -948,7 +948,7 @@ fn episode_chunk(episode: Episode, relevance: f64, plan_id: &str) -> ContextChun
     }
 }
 
-fn render_signal_chunk(signal: &Engram) -> String {
+fn render_signal_chunk(signal: &Signal) -> String {
     let tags = if signal.tags.is_empty() {
         String::from("-")
     } else {
@@ -969,7 +969,7 @@ fn render_signal_chunk(signal: &Engram) -> String {
     };
 
     format!(
-        "### Engram {}\nKind: {}\nTags: {}\nCreated: {}\n```\n{}\n```",
+        "### Signal {}\nKind: {}\nTags: {}\nCreated: {}\n```\n{}\n```",
         signal.id,
         signal.kind.as_str(),
         tags,
@@ -1815,8 +1815,8 @@ mod tests {
         ep
     }
 
-    fn signal(plan_id: &str, kind: &str, body: &str, created_at_ms: i64) -> Engram {
-        Engram::builder(Kind::Custom(kind.into()))
+    fn signal(plan_id: &str, kind: &str, body: &str, created_at_ms: i64) -> Signal {
+        Signal::builder(Kind::Custom(kind.into()))
             .body(Body::text(body))
             .provenance(Provenance::trusted("test"))
             .tag("plan_id", plan_id)
@@ -2063,7 +2063,7 @@ mod tests {
         )
         .expect("write episodes");
 
-        let signals_path = workdir.join(".roko/engrams.jsonl");
+        let signals_path = workdir.join(".roko/signals.jsonl");
         std::fs::create_dir_all(signals_path.parent().expect("signals parent"))
             .expect("signals dir");
         let signals: Vec<_> = (0..12)
@@ -2157,7 +2157,7 @@ mod tests {
 
         let episode_store = Arc::new(EpisodeStore::new(workdir.join(".roko/episodes.jsonl")));
         std::fs::write(episode_store.path(), "").expect("write empty episodes");
-        let signals_path = workdir.join(".roko/engrams.jsonl");
+        let signals_path = workdir.join(".roko/signals.jsonl");
         std::fs::write(&signals_path, "").expect("write empty signals");
 
         let assembler = ContextAssembler::new(knowledge_store, episode_store).with_affect_state(
@@ -2295,7 +2295,7 @@ mod tests {
             depends_on: vec![],
             max_loc: None,
         };
-        let signals_path = workdir.join(".roko/engrams.jsonl");
+        let signals_path = workdir.join(".roko/signals.jsonl");
         std::fs::create_dir_all(signals_path.parent().expect("signals parent"))
             .expect("signals dir");
         std::fs::write(&signals_path, "").expect("write empty signals");
@@ -2523,7 +2523,7 @@ mod tests {
 
         let episode_store = Arc::new(EpisodeStore::new(workdir.join(".roko/episodes.jsonl")));
         std::fs::write(episode_store.path(), "").expect("write empty episodes");
-        let signals_path = workdir.join(".roko/engrams.jsonl");
+        let signals_path = workdir.join(".roko/signals.jsonl");
         std::fs::create_dir_all(signals_path.parent().expect("signals parent"))
             .expect("signals dir");
         std::fs::write(&signals_path, "").expect("write empty signals");
@@ -2636,7 +2636,7 @@ mod tests {
 
         let episode_store = Arc::new(EpisodeStore::new(workdir.join(".roko/episodes.jsonl")));
         std::fs::write(episode_store.path(), "").expect("write empty episodes");
-        let signals_path = workdir.join(".roko/engrams.jsonl");
+        let signals_path = workdir.join(".roko/signals.jsonl");
         std::fs::create_dir_all(signals_path.parent().expect("signals parent"))
             .expect("signals dir");
         std::fs::write(&signals_path, "").expect("write empty signals");

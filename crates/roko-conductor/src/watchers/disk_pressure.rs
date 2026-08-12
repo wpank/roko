@@ -11,7 +11,7 @@
 //! This watcher is a pure `React` consumer: it reads metric signals from the
 //! stream and emits intervention signals. It never performs I/O.
 
-use roko_core::{Body, Context, Engram, Kind, React};
+use roko_core::{Body, Context, Kind, React, Signal};
 
 /// Tag key marking signals from this watcher.
 pub const WATCHER_NAME: &str = "disk-pressure";
@@ -77,7 +77,7 @@ impl DiskPressureWatcher {
 }
 
 /// Find the most recent metric value by name (returns MB as `u64`).
-fn latest_metric(stream: &[Engram], name: &str) -> Option<u64> {
+fn latest_metric(stream: &[Signal], name: &str) -> Option<u64> {
     stream
         .iter()
         .rev()
@@ -101,7 +101,7 @@ impl roko_core::Cell for DiskPressureWatcher {
 }
 
 impl React for DiskPressureWatcher {
-    fn decide(&self, stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
+    fn decide(&self, stream: &[Signal], _ctx: &Context) -> Vec<Signal> {
         let Some(free_mb) = latest_metric(stream, DISK_FREE_MB_METRIC) else {
             return Vec::new();
         };
@@ -111,7 +111,7 @@ impl React for DiskPressureWatcher {
         if free_mb < emergency_threshold {
             // Emergency: < min/2 (e.g. < 1 GB). Force stop non-essential agents.
             vec![
-                Engram::builder(Kind::Custom("conductor.intervention".into()))
+                Signal::builder(Kind::Custom("conductor.intervention".into()))
                     .body(Body::text(format!(
                         "disk critically low: {free_mb} MB free (emergency threshold {emergency_threshold} MB); \
                          recommend abort to prevent data loss"
@@ -126,7 +126,7 @@ impl React for DiskPressureWatcher {
         } else if free_mb < self.min_free_disk_mb {
             // Critical: < min_free_disk_mb (e.g. < 2 GB). Pause new agent spawns.
             vec![
-                Engram::builder(Kind::Custom("conductor.intervention".into()))
+                Signal::builder(Kind::Custom("conductor.intervention".into()))
                     .body(Body::text(format!(
                         "disk space critical: {free_mb} MB free (minimum {min} MB); \
                          pausing new agent spawns",
@@ -142,7 +142,7 @@ impl React for DiskPressureWatcher {
         } else if free_mb < self.warn_disk_mb {
             // Warning: < warn_disk_mb (e.g. < 5 GB). Log warning, suggest cleanup.
             vec![
-                Engram::builder(Kind::Custom("conductor.intervention".into()))
+                Signal::builder(Kind::Custom("conductor.intervention".into()))
                     .body(Body::text(format!(
                         "disk space low: {free_mb} MB free (warning threshold {warn} MB); \
                          consider running `roko knowledge gc` or `roko doctor disk`",
@@ -170,8 +170,8 @@ mod tests {
     use super::*;
 
     /// Build a `disk_free_mb` metric signal with the given value.
-    fn disk_free_signal(free_mb: u64) -> Engram {
-        Engram::builder(Kind::Metric)
+    fn disk_free_signal(free_mb: u64) -> Signal {
+        Signal::builder(Kind::Metric)
             .body(Body::text("disk_free_mb"))
             .tag(METRIC_NAME_TAG, DISK_FREE_MB_METRIC)
             .tag(METRIC_VALUE_TAG, free_mb.to_string())
@@ -190,7 +190,7 @@ mod tests {
     fn no_disk_metric_no_fire() {
         let w = DiskPressureWatcher::default();
         // A Metric with a different name should not trigger.
-        let other = Engram::builder(Kind::Metric)
+        let other = Signal::builder(Kind::Metric)
             .body(Body::text("plan_cost"))
             .tag(METRIC_NAME_TAG, "plan_cost")
             .tag(METRIC_VALUE_TAG, "42")

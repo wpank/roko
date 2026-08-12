@@ -25,7 +25,7 @@ use async_trait::async_trait;
 
 use roko_core::config::graduation::GraduationConfig;
 use roko_core::traits::React;
-use roko_core::{Context, Engram, PolicyOutputs, ProtocolId, Provenance, Pulse, Score};
+use roko_core::{Context, PolicyOutputs, ProtocolId, Provenance, Pulse, Score, Signal};
 
 use crate::cell::{Cell, CellContext, CellVersion};
 
@@ -73,7 +73,7 @@ impl GraduationCell {
 
     /// Graduate a Pulse to a Signal with the cell's default provenance and
     /// a neutral score (downstream scorers will re-score based on content).
-    fn graduate_pulse(&self, pulse: &Pulse) -> Engram {
+    fn graduate_pulse(&self, pulse: &Pulse) -> Signal {
         let score = Score::NEUTRAL;
         let provenance = Provenance::trusted(self.provenance_tag.clone());
         pulse.graduate(provenance, 1.0, score, vec![])
@@ -114,10 +114,10 @@ impl Cell for GraduationCell {
 
     async fn execute(
         &self,
-        input: Vec<Engram>,
+        input: Vec<Signal>,
         _ctx: &CellContext,
-    ) -> roko_core::error::Result<Vec<Engram>> {
-        // In graph execution mode, we just pass through input engrams.
+    ) -> roko_core::error::Result<Vec<Signal>> {
+        // In graph execution mode, we just pass through input signals.
         // The real graduation work happens via decide_with_pulses() when
         // the Bus delivers pulses.
         Ok(input)
@@ -138,7 +138,7 @@ impl roko_core::cell::Cell for GraduationCell {
 // ---- roko-core React trait ------------------------------------------------
 
 impl React for GraduationCell {
-    fn decide(&self, _stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
+    fn decide(&self, _stream: &[Signal], _ctx: &Context) -> Vec<Signal> {
         // React::decide only receives Signals; graduation is pulse-driven.
         // Return empty -- the real work happens in decide_with_pulses.
         Vec::new()
@@ -146,7 +146,7 @@ impl React for GraduationCell {
 
     fn decide_with_pulses(
         &self,
-        _signals: &[Engram],
+        _signals: &[Signal],
         pulses: &[Pulse],
         _ctx: &Context,
     ) -> PolicyOutputs {
@@ -226,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn decide_with_pulses_promotes_to_engrams() {
+    fn decide_with_pulses_promotes_to_signals() {
         let cell = GraduationCell::with_default_policies();
         let ctx = Context::default();
 

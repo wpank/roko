@@ -88,7 +88,7 @@ impl DaimonPolicy {
     }
 }
 
-/// Optional PAD-based emotional metadata attached to an Engram.
+/// Optional PAD-based emotional metadata attached to a Signal.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EmotionalTag {
     /// Immediate PAD signal associated with the engram.

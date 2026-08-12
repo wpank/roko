@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::orchestrator::GateResult;
-use roko_core::{Context, Engram, TaskDomain, Verdict, Verify};
+use roko_core::{Context, Signal, TaskDomain, Verdict, Verify};
 use roko_gate::generated_test_gate::ArtifactStore as GeneratedArtifactStore;
 use roko_gate::rung_selector::Rung;
 use roko_gate::{AcceptanceDecision, AcceptanceOutcome, NoStubEvidence};
@@ -193,15 +193,14 @@ impl roko_core::Cell for RecordingGate {
 #[async_trait::async_trait]
 
 impl Verify for RecordingGate {
-    async fn verify(&self, signal: &Engram, ctx: &Context) -> Verdict {
+    async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict {
         let verdict = self.inner.verify(signal, ctx).await;
-        self.sink
-            .lock()
-            .expect("recorded gate sink poisoned")
-            .push(RecordedGateVerdict {
+        if let Ok(mut sink) = self.sink.lock() {
+            sink.push(RecordedGateVerdict {
                 rung: self.rung,
                 verdict: verdict.clone(),
             });
+        }
         verdict
     }
 

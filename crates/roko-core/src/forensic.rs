@@ -3,9 +3,9 @@
 //! [`ForensicReplay`] reconstructs the complete decision context for any past
 //! agent action. Seven-step reconstruction:
 //!
-//! 1. **Action** -- identify the action Engram by `ContentHash`
+//! 1. **Action** -- identify the action Signal by `ContentHash`
 //! 2. **Store state** -- reconstruct file/signal state at action time
-//! 3. **Score outputs** -- reconstruct scores for each relevant Engram
+//! 3. **Score outputs** -- reconstruct scores for each relevant Signal
 //! 4. **Route selection** -- reconstruct routing decision including alternatives
 //! 5. **Compose output** -- reconstruct prompt composition under budget
 //! 6. **Verify verdict** -- reconstruct gate pass/fail decision
@@ -35,7 +35,7 @@ pub enum ReconstructionStep {
     Action,
     /// Step 2: Store state at action time.
     SubstrateState,
-    /// Step 3: Score outputs for relevant Engrams.
+    /// Step 3: Score outputs for relevant Signals.
     ScorerOutputs,
     /// Step 4: Route selection and rejected alternatives.
     RouterSelection,
@@ -61,10 +61,10 @@ impl fmt::Display for ReconstructionStep {
     }
 }
 
-/// A scored Engram reference from the Score step.
+/// A scored Signal reference from the Score step.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScoredReference {
-    /// Content hash of the scored Engram.
+    /// Content hash of the scored Signal.
     pub hash: ContentHash,
     /// Score assigned by the Score.
     pub score: f64,
@@ -150,7 +150,7 @@ pub struct ForensicReplay {
 
     /// Step 2: Content hashes of the Store state at action time.
     pub substrate_state: Vec<ContentHash>,
-    /// Step 3: Score outputs for each relevant Engram.
+    /// Step 3: Score outputs for each relevant Signal.
     pub scorer_outputs: Vec<ScoredReference>,
     /// Step 4: Route selection including rejected alternatives.
     pub router_selection: Option<RouterDecisionRecord>,

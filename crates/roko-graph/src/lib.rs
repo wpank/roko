@@ -60,7 +60,7 @@ pub mod types;
 pub use cell::{Cell, CellContext, CellVersion};
 pub use engine::{
     FlowHandle, FlowStatus, GraphEngine, GraphOutput, GraphSnapshot, MergeEnqueuer, MergeRequest,
-    NodeResult, NodeStatus, SerializableEngram, SerializableNodeStatus, default_registry,
+    NodeResult, NodeStatus, SerializableNodeStatus, SerializableSignal, default_registry,
 };
 pub use registry::{CellFactory, CellRegistry};
 pub use types::{

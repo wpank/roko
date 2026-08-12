@@ -18456,8 +18456,7 @@ mod tests_reflect {
         record_gate_failure_reflection(
             learn_dir, gate, output, "plan-1", "task-1", iteration, &mut cost,
         );
-        let store =
-            PostGateReflectionStore::load(&learn_dir.join("post-gate-reflections.json"));
+        let store = PostGateReflectionStore::load(&learn_dir.join("post-gate-reflections.json"));
         (store, cost, dir)
     }
 
@@ -18489,8 +18488,7 @@ mod tests_reflect {
             &mut cost,
         );
         // Store must still be empty — guard tripped before recording.
-        let store =
-            PostGateReflectionStore::load(&learn_dir.join("post-gate-reflections.json"));
+        let store = PostGateReflectionStore::load(&learn_dir.join("post-gate-reflections.json"));
         assert_eq!(
             store.records.len(),
             0,
@@ -18512,7 +18510,13 @@ mod tests_reflect {
         let mut cost = 0.0_f64;
         // First call: should record.
         record_gate_failure_reflection(
-            learn_dir, "compile", long_output, "plan-1", "task-1", 1, &mut cost,
+            learn_dir,
+            "compile",
+            long_output,
+            "plan-1",
+            "task-1",
+            1,
+            &mut cost,
         );
         let store_after_first =
             PostGateReflectionStore::load(&learn_dir.join("post-gate-reflections.json"));
@@ -18522,7 +18526,13 @@ mod tests_reflect {
         // fee per call (dedup may or may not fire depending on classification).
         let cost_before_second = cost;
         record_gate_failure_reflection(
-            learn_dir, "compile", long_output, "plan-1", "task-1", 2, &mut cost,
+            learn_dir,
+            "compile",
+            long_output,
+            "plan-1",
+            "task-1",
+            2,
+            &mut cost,
         );
         assert!(
             cost <= cost_before_second + REFLECTION_COST_PER_OBSERVATION_USD + f64::EPSILON,
@@ -18574,9 +18584,11 @@ mod tests_reflect {
             );
         }
 
-        let store =
-            PostGateReflectionStore::load(&learn_dir.join("post-gate-reflections.json"));
-        assert!(!store.records.is_empty(), "at least one reflection must be recorded");
+        let store = PostGateReflectionStore::load(&learn_dir.join("post-gate-reflections.json"));
+        assert!(
+            !store.records.is_empty(),
+            "at least one reflection must be recorded"
+        );
         assert!(cost > 0.0, "cost must accumulate across observations");
     }
 }

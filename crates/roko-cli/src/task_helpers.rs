@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow};
 use roko_core::attestation::{self, SigningKey};
-use roko_core::{Body, ContentHash, Engram, Task, TaskStatus};
+use roko_core::{Body, ContentHash, Signal, Task, TaskStatus};
 
 use crate::task_parser::{TaskValidationIssue, TasksFile};
 
@@ -701,7 +701,7 @@ pub(crate) fn attestation_signing_key_from_env() -> Option<SigningKey> {
     Some(SigningKey::from_bytes(&hash.0))
 }
 
-pub(crate) fn maybe_attest_engram(mut signal: Engram) -> Engram {
+pub(crate) fn maybe_attest_signal(mut signal: Signal) -> Signal {
     if signal.attestation.is_none()
         && let Some(key) = attestation_signing_key_from_env()
     {
@@ -710,7 +710,7 @@ pub(crate) fn maybe_attest_engram(mut signal: Engram) -> Engram {
     signal
 }
 
-pub(crate) fn conductor_signal_from_output(output: &Engram) -> Option<Engram> {
+pub(crate) fn conductor_signal_from_output(output: &Signal) -> Option<Signal> {
     let body = match &output.body {
         Body::Text(text) => {
             let trimmed = text.trim();
@@ -729,7 +729,7 @@ pub(crate) fn conductor_signal_from_output(output: &Engram) -> Option<Engram> {
         Body::Empty => return None,
     };
 
-    let mut builder = Engram::builder(output.kind.clone())
+    let mut builder = Signal::builder(output.kind.clone())
         .body(body)
         .provenance(output.provenance.clone())
         .lineage(
@@ -748,5 +748,5 @@ pub(crate) fn conductor_signal_from_output(output: &Engram) -> Option<Engram> {
     if let Some(emotional_tag) = output.emotional_tag.clone() {
         builder = builder.emotional_tag(emotional_tag);
     }
-    Some(maybe_attest_engram(builder.build()))
+    Some(maybe_attest_signal(builder.build()))
 }

@@ -412,7 +412,10 @@ async fn proxy_task(
         deployment_id: id.clone(),
         task_id: task_id.clone(),
     });
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
     let resp = client
         .post(&worker_url)
         .json(&body)

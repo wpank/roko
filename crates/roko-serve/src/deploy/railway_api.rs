@@ -107,7 +107,10 @@ impl RailwayApiBackend {
         environment_id: Option<String>,
     ) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_default(),
             api_token,
             project_id,
             environment_id,

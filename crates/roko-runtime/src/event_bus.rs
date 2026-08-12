@@ -355,10 +355,10 @@ where
     if let Some(bus) = buses.get(&type_id) {
         // SAFETY: We always insert an `EventBus<RuntimeEvent>` keyed by
         // `TypeId::of::<RuntimeEvent>()`, so the downcast is infallible.
-        #[allow(clippy::expect_used)]
-        return bus
-            .downcast_ref::<EventBus<RuntimeEvent>>()
-            .expect("invariant: runtime event bus registry stores EventBus by TypeId");
+        if let Some(typed) = bus.downcast_ref::<EventBus<RuntimeEvent>>() {
+            return typed;
+        }
+        unreachable!("invariant: runtime event bus registry stores EventBus by TypeId");
     }
 
     // TODO(arch): switch this to `roko_core::RuntimeEvent` once the manifest

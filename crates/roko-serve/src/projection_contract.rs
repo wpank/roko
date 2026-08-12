@@ -523,8 +523,8 @@ pub struct RuntimeProjectionSet {
 pub struct RuntimeFeedbackProjection {
     /// Durable runner/runtime event records from `.roko/events.jsonl`.
     pub runner_events: Vec<Value>,
-    /// Legacy signal/engram records from `.roko/engrams.jsonl`.
-    pub engram_events: Vec<Value>,
+    /// Legacy signal records from `.roko/engrams.jsonl`.
+    pub signal_events: Vec<Value>,
     /// Episode records read from project learning stores.
     pub episodes: Vec<Episode>,
     /// Agent efficiency events read from `.roko/learn/efficiency.jsonl`.
@@ -559,8 +559,8 @@ pub struct RuntimeFeedbackProjection {
     pub knowledge_path: PathBuf,
     /// Durable runner event JSONL path.
     pub runner_events_path: PathBuf,
-    /// Legacy signal/engram JSONL path.
-    pub engram_path: PathBuf,
+    /// Legacy signal JSONL path.
+    pub signal_log_path: PathBuf,
 }
 
 impl RuntimeProjectionSet {
@@ -1149,7 +1149,7 @@ impl RuntimeProjectionSet {
     fn gate_sources(&self) -> Vec<String> {
         let mut sources = vec!["state_hub".to_string()];
         sources.extend(path_list(&self.feedback.episode_paths));
-        sources.push(self.feedback.engram_path.display().to_string());
+        sources.push(self.feedback.signal_log_path.display().to_string());
         sources.push(self.feedback.runner_events_path.display().to_string());
         sources.push(
             self.feedback
@@ -1248,8 +1248,8 @@ impl RuntimeProjectionSet {
             }
         }
 
-        for entry in &self.feedback.engram_events {
-            if let Some(row) = engram_gate_evidence(entry, query) {
+        for entry in &self.feedback.signal_events {
+            if let Some(row) = signal_gate_evidence(entry, query) {
                 values.push(row);
             }
         }
@@ -1599,7 +1599,7 @@ impl RuntimeFeedbackProjection {
         let executor_state_path = roko.join("state").join("executor.json");
         let knowledge_path = roko.join("neuro").join("knowledge.jsonl");
         let runner_events_path = roko.join("events.jsonl");
-        let engram_path = roko.join("engrams.jsonl");
+        let signal_log_path = roko.join("engrams.jsonl");
 
         let episodes = read_project_episodes_lossy(workdir)
             .await
@@ -1620,11 +1620,11 @@ impl RuntimeFeedbackProjection {
                 ))
             })?;
         let runner_events = read_jsonl_values(&runner_events_path).await?;
-        let engram_events = read_jsonl_values(&engram_path).await?;
+        let signal_events = read_jsonl_values(&signal_log_path).await?;
 
         Ok(Self {
             runner_events,
-            engram_events,
+            signal_events,
             episodes,
             efficiency_events,
             cost_records,
@@ -1645,7 +1645,7 @@ impl RuntimeFeedbackProjection {
             executor_state_path,
             knowledge_path,
             runner_events_path,
-            engram_path,
+            signal_log_path,
         })
     }
 }
@@ -2468,7 +2468,7 @@ fn outcome_status_label(status: ProviderModelOutcomeStatus) -> String {
         .unwrap_or_else(|| format!("{status:?}").to_ascii_lowercase())
 }
 
-fn engram_gate_evidence(entry: &Value, query: &ProjectionQuery) -> Option<Value> {
+fn signal_gate_evidence(entry: &Value, query: &ProjectionQuery) -> Option<Value> {
     let kind = entry.get("kind").and_then(Value::as_str)?;
     if !(kind == "gate_verdict" || kind.starts_with("gate:") || kind.starts_with("gate_")) {
         return None;
@@ -2493,7 +2493,7 @@ fn engram_gate_evidence(entry: &Value, query: &ProjectionQuery) -> Option<Value>
         .or_else(|| entry.pointer("/body/passed").and_then(Value::as_bool))?;
 
     let mut row = json!({
-        "source": "engram_log",
+        "source": "signal_log",
         "id": entry.get("id").cloned().unwrap_or(Value::Null),
         "plan_id": entry
             .pointer("/tags/plan_id")

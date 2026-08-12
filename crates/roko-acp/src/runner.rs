@@ -16,7 +16,7 @@ use roko_agent::safety::{SafetyLayer, SafetyViolation, ViolationSeverity};
 use roko_agent::{Agent as RokoAgent, ClaudeCliAgent};
 use roko_core::foundation::EventConsumer as CoreEventConsumer;
 use roko_core::{
-    Body, Context, Engram, Kind, RuntimeEvent as CoreRuntimeEvent, Verify,
+    Body, Context, Kind, RuntimeEvent as CoreRuntimeEvent, Signal, Verify,
     WorkflowOutcome as CoreWorkflowOutcome,
 };
 use roko_gate::{
@@ -1874,11 +1874,11 @@ async fn run_agent_phase(
     output
 }
 
-/// Build an Engram signal with a GatePayload body pointing at `workdir`.
-fn build_gate_signal(workdir: &Path) -> Engram {
+/// Build a Signal with a GatePayload body pointing at `workdir`.
+fn build_gate_signal(workdir: &Path) -> Signal {
     let payload = GatePayload::in_dir(workdir);
     let body = Body::from_json(&payload).unwrap_or_else(|_| Body::empty());
-    Engram::builder(Kind::Task).body(body).build()
+    Signal::builder(Kind::Task).body(body).build()
 }
 
 /// Path to adaptive gate thresholds relative to workdir.
@@ -1978,7 +1978,7 @@ fn save_thresholds(thresholds: &AdaptiveThresholds, path: &Path) {
 async fn run_verify_gate(
     gate_name: &str,
     gate: &dyn Verify,
-    signal: &Engram,
+    signal: &Signal,
     ctx: &Context,
     cancel_token: &CancelToken,
     event_sender: &mpsc::Sender<CognitiveEvent>,
@@ -2081,7 +2081,7 @@ async fn run_claude_cli_via_agent(
     if let Some(mcp_path) = mcp_config {
         agent = agent.with_mcp_config(mcp_path);
     }
-    let input = Engram::builder(Kind::Task).body(Body::text(prompt)).build();
+    let input = Signal::builder(Kind::Task).body(Body::text(prompt)).build();
     let ctx = Context::now();
 
     let result = tokio::select! {

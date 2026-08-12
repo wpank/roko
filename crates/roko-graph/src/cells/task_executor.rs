@@ -1,18 +1,18 @@
 //! Stub `TaskExecutorCell` -- placeholder cell for plan-to-graph converted tasks.
 //!
-//! In dry-run mode, returns a synthetic "task-output" engram without calling an LLM.
+//! In dry-run mode, returns a synthetic "task-output" signal without calling an LLM.
 //! In live mode, this will delegate to the existing Runner v2 agent dispatch path
 //! (to be implemented in a future task when the Engine replaces Runner v2).
 
 use std::time::Duration;
 
-use roko_core::{Body, Engram, Kind, ProtocolId, error::Result};
+use roko_core::{Body, Kind, ProtocolId, Signal, error::Result};
 
 use crate::cell::{Cell, CellContext, CellVersion};
 
 /// Stub cell that represents a plan task in the Graph Engine.
 ///
-/// When `dry_run` is `true`, it returns a synthetic output engram.
+/// When `dry_run` is `true`, it returns a synthetic output signal.
 /// When `dry_run` is `false`, it will eventually delegate to the real
 /// agent dispatch path. For now it always does a dry-run pass-through.
 pub struct TaskExecutorCell {
@@ -59,7 +59,7 @@ impl Cell for TaskExecutorCell {
         Some(Duration::from_secs(120))
     }
 
-    async fn execute(&self, input: Vec<Engram>, _ctx: &CellContext) -> Result<Vec<Engram>> {
+    async fn execute(&self, input: Vec<Signal>, _ctx: &CellContext) -> Result<Vec<Signal>> {
         // Extract task title from the node config if available in input metadata.
         let task_label = input
             .first()
@@ -72,8 +72,8 @@ impl Cell for TaskExecutorCell {
                 task = %task_label,
                 "TaskExecutorCell dry-run: skipping LLM dispatch"
             );
-            // Return a synthetic output engram.
-            let output = Engram::builder(Kind::AgentOutput)
+            // Return a synthetic output signal.
+            let output = Signal::builder(Kind::AgentOutput)
                 .body(Body::text(format!("task-output:dry-run:{task_label}")))
                 .build();
             Ok(vec![output])
@@ -85,7 +85,7 @@ impl Cell for TaskExecutorCell {
                 task = %task_label,
                 "TaskExecutorCell live dispatch not yet implemented; using dry-run fallback"
             );
-            let output = Engram::builder(Kind::AgentOutput)
+            let output = Signal::builder(Kind::AgentOutput)
                 .body(Body::text(format!("task-output:dry-run:{task_label}")))
                 .build();
             Ok(vec![output])

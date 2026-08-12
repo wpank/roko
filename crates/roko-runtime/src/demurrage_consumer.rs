@@ -69,7 +69,7 @@ impl Default for DemurrageConsumerConfig {
 /// Minimal knowledge entry representation for demurrage processing.
 ///
 /// This is domain-agnostic so `roko-runtime` does not depend on `roko-neuro`
-/// or `roko-agent`. The orchestrator converts between concrete Engram types
+/// or `roko-agent`. The orchestrator converts between concrete Signal types
 /// and this representation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DemurrageEntry {

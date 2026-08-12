@@ -20,7 +20,7 @@ use roko_core::config::schema::RokoConfig;
 use roko_core::foundation::{
     CachePolicy, ChatMessage, MessageRole, ModelCallRequest, ModelCaller, caller,
 };
-use roko_core::{Body, Context as RokoContext, Engram, Kind, Provenance};
+use roko_core::{Body, Context as RokoContext, Kind, Provenance, Signal};
 use roko_learn::{episode_logger::EpisodeLogger, playbook::PlaybookStore};
 use roko_neuro::{
     KnowledgeStore,
@@ -264,11 +264,11 @@ pub enum DreamTrigger {
     Manual,
     /// Accumulated episode count since last dream.
     EpisodeCount,
-    /// Bus-reactive trigger from a high-value engram (DREAM-09).
+    /// Bus-reactive trigger from a high-value signal (DREAM-09).
     BusPulse {
-        /// Hash or ID of the engram that triggered the dream.
-        #[serde(default)]
-        engram_hash: String,
+        /// Hash or ID of the signal that triggered the dream.
+        #[serde(default, alias = "engram_hash")]
+        signal_hash: String,
     },
     /// Coordination pattern trigger (INT-19): conductor compound patterns
     /// trigger dream consolidation so the system can process and learn from
@@ -338,14 +338,14 @@ impl PlanCompletionTriggerPolicy {
     }
 }
 
-/// Criteria for determining whether an engram is "dream-worthy" (DREAM-09).
+/// Criteria for determining whether a signal is "dream-worthy" (DREAM-09).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BusPulseTriggerConfig {
-    /// Minimum engram score to trigger a dream (default 0.7).
+    /// Minimum signal score to trigger a dream (default 0.7).
     pub min_score: f64,
     /// Minimum interval between bus-triggered dreams (default 30 minutes).
     pub min_interval_secs: u64,
-    /// Engram kinds that can trigger dreams.
+    /// Signal kinds that can trigger dreams.
     pub trigger_kinds: Vec<String>,
 }
 
@@ -364,7 +364,7 @@ impl Default for BusPulseTriggerConfig {
 }
 
 impl BusPulseTriggerConfig {
-    /// Check if an engram with the given score and kind qualifies as dream-worthy.
+    /// Check if a signal with the given score and kind qualifies as dream-worthy.
     #[must_use]
     pub fn is_dream_worthy(&self, score: f64, kind: &str) -> bool {
         score >= self.min_score
@@ -1286,7 +1286,7 @@ enum DreamReviewAgent {
 
 #[async_trait]
 impl Agent for DreamReviewAgent {
-    async fn run(&self, input: &Engram, ctx: &RokoContext) -> AgentResult {
+    async fn run(&self, input: &Signal, ctx: &RokoContext) -> AgentResult {
         match self {
             Self::Agent { inner } => inner.run(input, ctx).await,
             Self::Gateway {

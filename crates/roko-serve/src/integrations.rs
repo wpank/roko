@@ -4,7 +4,7 @@
 //!
 //! 1. **Event Reception** — webhook endpoints, polling adapters, WebSocket
 //!    streams that accept external events.
-//! 2. **Agent Execution** — received events become [`Engram`]s, matched to
+//! 2. **Agent Execution** — received events become [`Signal`]s, matched to
 //!    [`Subscription`]s, and dispatched to agent templates.
 //! 3. **MCP Tool Adapters** — agents interact with external platforms via
 //!    MCP servers (github.*, slack.*, scripts.*).

@@ -470,7 +470,7 @@ pub struct SchedulerCronConfig {
     pub name: String,
     /// Standard cron expression.
     pub expression: String,
-    /// Engram kind emitted when the schedule fires.
+    /// Signal kind emitted when the schedule fires.
     pub signal_kind: String,
     /// Extra structured metadata included in the emitted signal body.
     #[serde(default)]

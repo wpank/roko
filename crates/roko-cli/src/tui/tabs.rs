@@ -20,7 +20,7 @@ pub enum Tab {
     Logs,
     /// F6 - Config editor / effective config view.
     Config,
-    /// F7 - Engram DAG inspector, episode replay.
+    /// F7 - Signal DAG inspector, episode replay.
     Inspect,
     /// F8 - Marketplace: job browser, creation, assignment.
     Marketplace,

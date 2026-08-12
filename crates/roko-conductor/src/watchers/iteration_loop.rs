@@ -3,7 +3,7 @@
 //! When the same plan repeatedly cycles through gate failures without
 //! advancing to a later phase, this watcher fires a critical signal to abort.
 
-use roko_core::{Body, Context, Engram, Kind, React};
+use roko_core::{Body, Context, Kind, React, Signal};
 
 /// Maximum implementer attempts before firing.
 pub const MAX_IMPLEMENTER_ATTEMPTS: usize = 3;
@@ -38,7 +38,7 @@ impl IterationLoopWatcher {
     }
 }
 
-fn signal_plan_id(signal: &Engram) -> Option<String> {
+fn signal_plan_id(signal: &Signal) -> Option<String> {
     signal.tag(PLAN_ID_TAG).map(str::to_owned).or_else(|| {
         if signal.kind != Kind::PlanPhase {
             return None;
@@ -56,11 +56,11 @@ fn signal_plan_id(signal: &Engram) -> Option<String> {
     })
 }
 
-fn latest_plan_id(stream: &[Engram]) -> Option<String> {
+fn latest_plan_id(stream: &[Signal]) -> Option<String> {
     stream.iter().rev().find_map(signal_plan_id)
 }
 
-fn plan_event(signal: &Engram) -> Option<String> {
+fn plan_event(signal: &Signal) -> Option<String> {
     if signal.kind != Kind::PlanPhase {
         return None;
     }
@@ -89,7 +89,7 @@ impl roko_core::Cell for IterationLoopWatcher {
 }
 
 impl React for IterationLoopWatcher {
-    fn decide(&self, stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
+    fn decide(&self, stream: &[Signal], _ctx: &Context) -> Vec<Signal> {
         let Some(plan_id) = latest_plan_id(stream) else {
             return Vec::new();
         };
@@ -110,7 +110,7 @@ impl React for IterationLoopWatcher {
                     gate_failures += 1;
                     if gate_failures >= self.max_attempts {
                         return vec![
-                            Engram::builder(Kind::Custom("conductor.intervention".into()))
+                            Signal::builder(Kind::Custom("conductor.intervention".into()))
                                 .body(Body::text(format!(
                                     "plan {plan_id} repeated gate failures {gate_failures} times without progress"
                                 )))
@@ -146,8 +146,8 @@ impl React for IterationLoopWatcher {
 mod tests {
     use super::*;
 
-    fn plan_phase_signal(event: &str) -> Engram {
-        Engram::builder(Kind::PlanPhase)
+    fn plan_phase_signal(event: &str) -> Signal {
+        Signal::builder(Kind::PlanPhase)
             .body(Body::Json(serde_json::json!({
                 "plan_id": "plan-1",
                 "event": event,
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn custom_threshold() {
         let w = IterationLoopWatcher::new(5);
-        let stream: Vec<Engram> = (0..4).map(|_| plan_phase_signal("GateFailed")).collect();
+        let stream: Vec<Signal> = (0..4).map(|_| plan_phase_signal("GateFailed")).collect();
         assert!(w.decide(&stream, &Context::at(0)).is_empty());
         let mut stream5 = stream;
         stream5.push(plan_phase_signal("GateFailed"));

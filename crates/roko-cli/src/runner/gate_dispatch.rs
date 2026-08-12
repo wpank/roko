@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use futures::FutureExt;
 use roko_core::config::GatesConfig;
-use roko_core::{Body, Engram, EngramBuilder, Kind, Provenance, Verdict, Verify};
+use roko_core::{Body, Kind, Provenance, Signal, SignalBuilder, Verdict, Verify};
 use roko_fs::RokoLayout;
 use roko_gate::classify_gate_failure;
 use roko_gate::generated_test_gate::ArtifactStore as GeneratedArtifactStore;
@@ -649,9 +649,9 @@ pub async fn run_gate_once(
     let failure_kind = (!passed && !all_skipped).then(|| classify_failure_kind(&verdicts, &output));
 
     // E05-T08: Publish non-skipped verdicts through VerdictPublisher as
-    // Kind::GateVerdict engrams. The publisher callback (set up by the
-    // caller in event_loop.rs) graduates each Pulse to an Engram and
-    // appends it to engrams.jsonl.
+    // Kind::GateVerdict signals. The publisher callback (set up by the
+    // caller in event_loop.rs) graduates each Pulse to a Signal and
+    // appends it to signals.jsonl.
     if let Some(ref publisher) = verdict_publisher {
         let real: Vec<Verdict> = verdicts.iter().filter(|v| !v.skipped).cloned().collect();
         if !real.is_empty() {
@@ -897,7 +897,7 @@ fn build_rung_execution_inputs(
             });
         }
         Some(
-            EngramBuilder::new(Kind::Task)
+            SignalBuilder::new(Kind::Task)
                 .body(Body::from_json(&manifest).unwrap_or_else(|_| Body::empty()))
                 .provenance(Provenance::trusted("runner"))
                 .build(),
@@ -910,7 +910,7 @@ fn build_rung_execution_inputs(
     } else {
         let claims = ctx.acceptance.join("\n");
         Some(
-            EngramBuilder::new(Kind::Task)
+            SignalBuilder::new(Kind::Task)
                 .body(Body::text(&claims))
                 .provenance(Provenance::trusted("runner"))
                 .build(),
@@ -934,7 +934,7 @@ fn build_rung_execution_inputs(
                 diff: String::new(),
             };
             Some(
-                EngramBuilder::new(Kind::Task)
+                SignalBuilder::new(Kind::Task)
                     .body(Body::from_json(&payload).unwrap_or_else(|_| Body::empty()))
                     .provenance(Provenance::trusted("runner"))
                     .build(),
@@ -1003,7 +1003,7 @@ fn gate_signal(
     rung: u32,
     workdir: &std::path::Path,
     target_crates: &[String],
-) -> Engram {
+) -> Signal {
     let attempt_sentinel = RokoLayout::for_project(workdir)
         .gate_attempts_dir()
         .join(format!(
@@ -1022,7 +1022,7 @@ fn gate_signal(
             attempt_sentinel.to_string_lossy().to_string(),
         );
 
-    EngramBuilder::new(Kind::Task)
+    SignalBuilder::new(Kind::Task)
         .body(Body::from_json(&payload).unwrap_or_else(|_| Body::empty()))
         .provenance(Provenance::trusted("runner"))
         .tag("plan_id", plan_id.to_string())
@@ -1052,7 +1052,7 @@ fn sanitize_gate_env_segment(value: &str) -> String {
 }
 
 async fn run_verify_steps(
-    signal: &Engram,
+    signal: &Signal,
     ctx: &roko_core::Context,
     task_id: &str,
     verify_steps: Vec<VerifyStep>,
@@ -1790,7 +1790,7 @@ mod tests {
     /// E05-T08: Prove that `run_gate_once` publishes non-skipped verdicts
     /// through the `VerdictPublisher` as `Kind::GateVerdict` pulses.
     #[tokio::test]
-    async fn live_gate_verdicts_publish_engram() {
+    async fn live_gate_verdicts_publish_signal() {
         use roko_core::Kind;
         use std::sync::Mutex;
 

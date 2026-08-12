@@ -1407,7 +1407,7 @@ pub struct ContextSummary {
 
 /// Retrieved durable entry summary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EngramSummary {
+pub struct SignalSummary {
     /// Entry identifier or content hash.
     pub id: String,
     /// Entry kind.
@@ -1526,7 +1526,7 @@ pub struct DecisionCycleRecord {
     /// Context bundle summary.
     pub context_bundle_summary: ContextSummary,
     /// Retrieved durable entries.
-    pub retrieved_entries: Vec<EngramSummary>,
+    pub retrieved_entries: Vec<SignalSummary>,
     /// Active interventions.
     pub active_interventions: Vec<InterventionSummary>,
     // -- Step 5: ACT (execute the chosen action) --
@@ -1824,8 +1824,9 @@ pub enum EFETarget {
     },
     /// Context-entry inclusion target.
     ContextEntry {
-        /// Engram or entry identifier.
-        engram_id: String,
+        /// Signal or entry identifier.
+        #[serde(alias = "engram_id")]
+        signal_id: String,
     },
 }
 

@@ -6,7 +6,7 @@
 //! runner-v2 paths. This watcher is a pure `React` consumer and never
 //! queries git or the filesystem directly.
 
-use roko_core::{Body, Context, Engram, Kind, React};
+use roko_core::{Body, Context, Kind, React, Signal};
 
 /// Tag key marking signals from this watcher.
 pub const WATCHER_NAME: &str = "worktree-count";
@@ -25,9 +25,9 @@ pub const DEFAULT_MAX_LIVE: usize = 8;
 /// Fires a `severity=warning` intervention when the active worktree count
 /// exceeds `max_live`.
 ///
-/// This is a pure `React` consumer: it reads the latest `Kind::Metric` Engram
+/// This is a pure `React` consumer: it reads the latest `Kind::Metric` Signal
 /// tagged `name=worktree_count` from the stream and emits at most one
-/// `conductor.intervention` Engram per call.
+/// `conductor.intervention` Signal per call.
 #[derive(Debug, Clone)]
 pub struct WorktreeCountWatcher {
     /// Maximum number of live worktrees before a warning is emitted.
@@ -51,7 +51,7 @@ impl WorktreeCountWatcher {
 }
 
 /// Find the most recent metric value by name.
-fn latest_metric(stream: &[Engram], name: &str) -> Option<usize> {
+fn latest_metric(stream: &[Signal], name: &str) -> Option<usize> {
     stream
         .iter()
         .rev()
@@ -73,14 +73,14 @@ impl roko_core::Cell for WorktreeCountWatcher {
 }
 
 impl React for WorktreeCountWatcher {
-    fn decide(&self, stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
+    fn decide(&self, stream: &[Signal], _ctx: &Context) -> Vec<Signal> {
         let Some(count) = latest_metric(stream, WORKTREE_COUNT_METRIC) else {
             return Vec::new();
         };
 
         if count > self.max_live {
             vec![
-                Engram::builder(Kind::Custom("conductor.intervention".into()))
+                Signal::builder(Kind::Custom("conductor.intervention".into()))
                     .body(Body::text(format!(
                         "active worktree count {count} exceeds maximum {max_live}",
                         max_live = self.max_live,
@@ -105,8 +105,8 @@ impl React for WorktreeCountWatcher {
 mod tests {
     use super::*;
 
-    fn worktree_count_signal(count: usize) -> Engram {
-        Engram::builder(Kind::Metric)
+    fn worktree_count_signal(count: usize) -> Signal {
+        Signal::builder(Kind::Metric)
             .body(Body::text("worktree_count"))
             .tag(METRIC_NAME_TAG, WORKTREE_COUNT_METRIC)
             .tag(METRIC_VALUE_TAG, count.to_string())
@@ -123,7 +123,7 @@ mod tests {
     fn worktree_count_no_metric_no_fire() {
         let w = WorktreeCountWatcher::default();
         // A Metric signal with a different name should not trigger.
-        let other = Engram::builder(Kind::Metric)
+        let other = Signal::builder(Kind::Metric)
             .body(Body::text("disk_free_mb"))
             .tag(METRIC_NAME_TAG, "disk_free_mb")
             .tag(METRIC_VALUE_TAG, "100")

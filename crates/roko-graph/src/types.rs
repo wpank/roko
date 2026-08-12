@@ -778,9 +778,9 @@ mod tests {
         }
         async fn execute(
             &self,
-            input: Vec<roko_core::Engram>,
+            input: Vec<roko_core::Signal>,
             _ctx: &CellContext,
-        ) -> roko_core::error::Result<Vec<roko_core::Engram>> {
+        ) -> roko_core::error::Result<Vec<roko_core::Signal>> {
             Ok(input)
         }
     }
@@ -803,9 +803,9 @@ mod tests {
         }
         async fn execute(
             &self,
-            input: Vec<roko_core::Engram>,
+            input: Vec<roko_core::Signal>,
             _ctx: &CellContext,
-        ) -> roko_core::error::Result<Vec<roko_core::Engram>> {
+        ) -> roko_core::error::Result<Vec<roko_core::Signal>> {
             Ok(input)
         }
     }
@@ -828,9 +828,9 @@ mod tests {
         }
         async fn execute(
             &self,
-            input: Vec<roko_core::Engram>,
+            input: Vec<roko_core::Signal>,
             _ctx: &CellContext,
-        ) -> roko_core::error::Result<Vec<roko_core::Engram>> {
+        ) -> roko_core::error::Result<Vec<roko_core::Signal>> {
             Ok(input)
         }
     }

@@ -36,7 +36,7 @@ use anyhow::{Context as _, Result, anyhow};
 use indexmap::IndexMap;
 use roko_core::config::schema::RokoConfig;
 use roko_core::io::atomic_write_str;
-use roko_core::{Body, Engram, Kind, Provenance, Store};
+use roko_core::{Body, Kind, Provenance, Signal, Store};
 use roko_fs::FileSubstrate;
 use roko_learn::episode_logger::{Episode, EpisodeLogger};
 pub use roko_learn::runtime_feedback::{ArtifactValidationReport, GenerationOutcome};
@@ -403,7 +403,7 @@ async fn emit_prd_plan_signal(workdir: &Path, kind: Kind, body: serde_json::Valu
     let substrate = FileSubstrate::open(workdir.join(".roko"))
         .await
         .with_context(|| format!("open {}", workdir.join(".roko").display()))?;
-    let signal = Engram::builder(kind)
+    let signal = Signal::builder(kind)
         .body(Body::Json(body))
         .provenance(Provenance::trusted("roko.prd"))
         .build();

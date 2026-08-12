@@ -1,6 +1,6 @@
 //! Archive-backed [`ColdStore`] implementation.
 //!
-//! Stores aged-out engrams in compressed JSONL archive files organized by month.
+//! Stores aged-out signals in compressed JSONL archive files organized by month.
 //! This is the filesystem-backed cold storage tier, complementing the hot
 //! [`FileSubstrate`](crate::FileSubstrate).
 //!
@@ -20,14 +20,14 @@ use async_trait::async_trait;
 use chrono::{Datelike, Utc};
 use parking_lot::RwLock;
 use roko_core::{
-    ColdStore, ContentHash, Engram,
+    ColdStore, ContentHash, Engram as Signal,
     error::{Result, RokoError},
 };
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
-/// Record describing where an engram is stored in cold archives.
+/// Record describing where an signal is stored in cold archives.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct ColdIndexEntry {
     /// Archive file name (e.g., "2026-04.jsonl").
@@ -38,7 +38,7 @@ struct ColdIndexEntry {
     archived_at: i64,
 }
 
-/// Filesystem-backed cold substrate storing engrams in monthly JSONL archives.
+/// Filesystem-backed cold substrate storing signals in monthly JSONL archives.
 pub struct ArchiveColdSubstrate {
     /// Root directory for cold storage (e.g., `.roko/cold/`).
     root: PathBuf,
@@ -107,8 +107,8 @@ impl ArchiveColdSubstrate {
         Ok(())
     }
 
-    /// Append an engram to the current month's archive file.
-    async fn append_to_archive(&self, engram: &Engram) -> Result<(String, u64)> {
+    /// Append an signal to the current month's archive file.
+    async fn append_to_archive(&self, signal: &Signal) -> Result<(String, u64)> {
         let archive_path = self.current_archive_path();
         let file_name = archive_path
             .file_name()
@@ -124,7 +124,7 @@ impl ArchiveColdSubstrate {
 
         let offset = file.metadata().await?.len();
 
-        let mut line = serde_json::to_string(engram).map_err(|e| RokoError::body_encode(e))?;
+        let mut line = serde_json::to_string(signal).map_err(|e| RokoError::body_encode(e))?;
         line.push('\n');
         file.write_all(line.as_bytes()).await?;
         file.flush().await?;
@@ -132,8 +132,8 @@ impl ArchiveColdSubstrate {
         Ok((file_name, offset))
     }
 
-    /// Read an engram from a specific archive file at the given byte offset.
-    async fn read_from_archive(&self, file: &str, offset: u64) -> Result<Option<Engram>> {
+    /// Read an signal from a specific archive file at the given byte offset.
+    async fn read_from_archive(&self, file: &str, offset: u64) -> Result<Option<Signal>> {
         let path = self.archive_path(file);
         if !path.exists() {
             return Ok(None);
@@ -164,12 +164,12 @@ impl ArchiveColdSubstrate {
             return Ok(None);
         }
 
-        let engram: Engram =
+        let signal: Signal =
             serde_json::from_str(line.trim()).map_err(|e| RokoError::body_decode(e))?;
-        Ok(Some(engram))
+        Ok(Some(signal))
     }
 
-    /// Count all engrams across all archive files.
+    /// Count all signals across all archive files.
     async fn count_all_archives(&self) -> Result<usize> {
         let idx = self.index.read();
         Ok(idx.len())
@@ -193,11 +193,11 @@ impl ArchiveColdSubstrate {
 
 #[async_trait]
 impl ColdStore for ArchiveColdSubstrate {
-    async fn archive(&self, engram: Engram) -> Result<ContentHash> {
+    async fn archive(&self, signal: Signal) -> Result<ContentHash> {
         let _guard = self.write_lock.lock().await;
 
-        let hash = engram.id;
-        let (file, offset) = self.append_to_archive(&engram).await?;
+        let hash = signal.id;
+        let (file, offset) = self.append_to_archive(&signal).await?;
 
         {
             let mut idx = self.index.write();
@@ -215,20 +215,20 @@ impl ColdStore for ArchiveColdSubstrate {
         Ok(hash)
     }
 
-    async fn archive_batch(&self, engrams: Vec<Engram>) -> Result<usize> {
+    async fn archive_batch(&self, signals: Vec<Signal>) -> Result<usize> {
         let _guard = self.write_lock.lock().await;
         let mut count = 0;
 
-        for engram in engrams {
-            let hash = engram.id;
+        for signal in signals {
+            let hash = signal.id;
 
-            // Dedup: skip engrams already in the cold index so a crash
+            // Dedup: skip signals already in the cold index so a crash
             // between archive and hot-side prune does not re-append rows.
             if self.index.read().contains_key(&hash) {
                 continue;
             }
 
-            let (file, offset) = self.append_to_archive(&engram).await?;
+            let (file, offset) = self.append_to_archive(&signal).await?;
 
             {
                 let mut idx = self.index.write();
@@ -250,7 +250,7 @@ impl ColdStore for ArchiveColdSubstrate {
         Ok(count)
     }
 
-    async fn thaw(&self, id: &ContentHash) -> Result<Option<Engram>> {
+    async fn thaw(&self, id: &ContentHash) -> Result<Option<Signal>> {
         let entry = {
             let idx = self.index.read();
             idx.get(id).cloned()
@@ -307,16 +307,16 @@ impl ColdStore for ArchiveColdSubstrate {
     }
 }
 
-/// Helper to migrate engrams from a hot substrate to cold storage.
+/// Helper to migrate signals from a hot substrate to cold storage.
 ///
 /// This struct encapsulates the migration logic: query the hot substrate for
-/// aged-out engrams, archive them to cold storage, then prune them from hot.
+/// aged-out signals, archive them to cold storage, then prune them from hot.
 pub struct SubstrateMigrator {
-    /// Weight threshold below which engrams are candidates for migration.
+    /// Weight threshold below which signals are candidates for migration.
     pub weight_threshold: f32,
-    /// Maximum age in milliseconds. Engrams older than this are migrated.
+    /// Maximum age in milliseconds. Signals older than this are migrated.
     pub max_age_ms: i64,
-    /// Maximum number of engrams to migrate per batch.
+    /// Maximum number of signals to migrate per batch.
     pub batch_size: usize,
 }
 
@@ -353,8 +353,8 @@ mod tests {
     use super::*;
     use roko_core::{Body, Kind};
 
-    fn test_engram(tag: &str) -> Engram {
-        Engram::builder(Kind::Metric)
+    fn test_signal(tag: &str) -> Signal {
+        Signal::builder(Kind::Metric)
             .body(Body::text("test data"))
             .tag("label", tag)
             .build()
@@ -367,15 +367,15 @@ mod tests {
             .await
             .unwrap();
 
-        let engram = test_engram("gate.compile");
-        let hash = cold.archive(engram.clone()).await.unwrap();
+        let signal = test_signal("gate.compile");
+        let hash = cold.archive(signal.clone()).await.unwrap();
 
         assert!(cold.contains(&hash).await.unwrap());
         assert_eq!(cold.archived_count().await.unwrap(), 1);
 
         let thawed = cold.thaw(&hash).await.unwrap().unwrap();
-        assert_eq!(thawed.id, engram.id);
-        assert_eq!(thawed.kind, engram.kind);
+        assert_eq!(thawed.id, signal.id);
+        assert_eq!(thawed.kind, signal.kind);
     }
 
     #[tokio::test]
@@ -385,9 +385,9 @@ mod tests {
             .await
             .unwrap();
 
-        let engrams = vec![test_engram("a"), test_engram("b"), test_engram("c")];
+        let signals = vec![test_signal("a"), test_signal("b"), test_signal("c")];
 
-        let count = cold.archive_batch(engrams).await.unwrap();
+        let count = cold.archive_batch(signals).await.unwrap();
         assert_eq!(count, 3);
         assert_eq!(cold.archived_count().await.unwrap(), 3);
     }
@@ -409,8 +409,8 @@ mod tests {
             .await
             .unwrap();
 
-        let engram = test_engram("old.data");
-        let hash = cold.archive(engram).await.unwrap();
+        let signal = test_signal("old.data");
+        let hash = cold.archive(signal).await.unwrap();
         assert!(cold.contains(&hash).await.unwrap());
 
         // Purge entries archived before now + 1 second
@@ -427,7 +427,7 @@ mod tests {
             .await
             .unwrap();
 
-        cold.archive(test_engram("x")).await.unwrap();
+        cold.archive(test_signal("x")).await.unwrap();
         let bytes = cold.storage_bytes().await.unwrap();
         assert!(bytes > 0);
     }
@@ -440,7 +440,7 @@ mod tests {
         let hash;
         {
             let cold = ArchiveColdSubstrate::open(&cold_path).await.unwrap();
-            hash = cold.archive(test_engram("persist")).await.unwrap();
+            hash = cold.archive(test_signal("persist")).await.unwrap();
         }
 
         // Reopen
@@ -469,15 +469,15 @@ mod tests {
             .await
             .unwrap();
 
-        let engrams = vec![test_engram("dup1"), test_engram("dup2")];
-        let ids: Vec<_> = engrams.iter().map(|e| e.id).collect();
+        let signals = vec![test_signal("dup1"), test_signal("dup2")];
+        let ids: Vec<_> = signals.iter().map(|e| e.id).collect();
 
         // First archive: both should be archived.
-        let count1 = cold.archive_batch(engrams.clone()).await.unwrap();
+        let count1 = cold.archive_batch(signals.clone()).await.unwrap();
         assert_eq!(count1, 2);
 
         // Second archive of same batch: dedup should skip all.
-        let count2 = cold.archive_batch(engrams).await.unwrap();
+        let count2 = cold.archive_batch(signals).await.unwrap();
         assert_eq!(count2, 0);
 
         // Index still has exactly 2 entries.

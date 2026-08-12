@@ -1,6 +1,6 @@
 //! Polymorphic input surface — work over either medium without a new trait family.
 //!
-//! [`Datum`] unifies [`Engram`](crate::Engram) (persisted) and
+//! [`Datum`] unifies [`Signal`](crate::Signal) (persisted) and
 //! [`Pulse`](crate::Pulse) (ephemeral) so operators like [`Score`](crate::traits::Score)
 //! and [`Compose`](crate::Compose) can accept both without requiring callers
 //! to persist first.
@@ -8,7 +8,7 @@
 use crate::{Body, Engram, Kind, Pulse};
 use std::collections::BTreeMap;
 
-/// Polymorphic input surface over [`Engram`] and [`Pulse`].
+/// Polymorphic input surface over [`Signal`] and [`Pulse`].
 ///
 /// Operators that need to inspect kind, body, or tags can accept a `Datum`
 /// instead of requiring a concrete type. This avoids "persist first" friction
@@ -60,7 +60,7 @@ impl<'a> Datum<'a> {
 
     /// Tags, if available.
     ///
-    /// Both Engram and Pulse carry tags, so this always returns `Some`.
+    /// Both Signal and Pulse carry tags, so this always returns `Some`.
     #[must_use]
     pub fn tags(&self) -> &BTreeMap<String, String> {
         match self {
@@ -78,7 +78,7 @@ impl<'a> Datum<'a> {
         }
     }
 
-    /// Whether the underlying event is an engram (persisted).
+    /// Whether the underlying event is a signal (persisted).
     #[must_use]
     pub fn is_engram(&self) -> bool {
         matches!(self, Self::Engram(_))

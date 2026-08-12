@@ -89,12 +89,12 @@ pub static TOPICS: &[TopicEntry] = &[
         summary: "The neuro subsystem is roko's long-term memory. It stores distilled \
                   knowledge, learned patterns, and factual summaries that persist \
                   across sessions and inform future agent decisions.",
-        detail: "Knowledge entries are stored as engrams in `roko-neuro`. The \
+        detail: "Knowledge entries are stored as signals in `roko-neuro`. The \
                  distillation pipeline extracts key insights from completed episodes \
                  and stores them with embeddings for retrieval. Tier progression \
                  (novice -> competent -> proficient -> expert) tracks mastery of \
                  topics. Use `roko neuro search <query>` to query the knowledge base.",
-        internals: "Implementation lives in `crates/roko-neuro/`. Engrams persist as \
+        internals: "Implementation lives in `crates/roko-neuro/`. Signals persist as \
                     JSONL in `.roko/neuro/`. The knowledge graph uses HDC vectors \
                     from `roko-primitives` for similarity search. Distillation runs \
                     during dream cycles (see `dreams` topic). Tier progression is \
@@ -137,17 +137,17 @@ pub static TOPICS: &[TopicEntry] = &[
     },
     TopicEntry {
         name: "engram",
-        title: "Engrams (Signal Storage)",
-        summary: "Engrams are the fundamental unit of data in roko. Every piece of \
+        title: "Signals (Signal Storage)",
+        summary: "Signals are the fundamental unit of data in roko. Every piece of \
                   information (prompts, outputs, gate results, episodes) is stored \
-                  as a content-addressed engram with a blake3 hash and DAG lineage.",
-        detail: "Engrams form a directed acyclic graph (DAG) where each engram \
+                  as a content-addressed signal with a blake3 hash and DAG lineage.",
+        detail: "Signals form a directed acyclic graph (DAG) where each signal \
                  references its parent(s). This creates an immutable audit trail of \
                  every decision and action. Use `roko replay <hash>` to walk the \
-                 lineage DAG from any engram. Engrams persist in `.roko/engrams.jsonl` \
+                 lineage DAG from any signal. Signals persist in `.roko/engrams.jsonl` \
                  via the `FileSubstrate` in `roko-fs`.",
         internals: "The `Signal` type in `crates/roko-core/src/lib.rs` is the base \
-                    engram structure. `FileSubstrate` in `crates/roko-fs/` handles \
+                    signal structure. `FileSubstrate` in `crates/roko-fs/` handles \
                     JSONL persistence with append-only semantics. GC runs periodically \
                     to compact old entries. The DAG walker in `crates/roko-cli/` \
                     reconstructs lineage chains for `roko replay`.",

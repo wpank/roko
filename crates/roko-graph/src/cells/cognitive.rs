@@ -7,7 +7,7 @@
 //!
 //! The most common case (~80% of ticks) is that nothing changed between ticks:
 //! no new Signals, no new Pulses, no external input. In this case, SenseCell
-//! emits an output Engram tagged with `"t0_short_circuit" = "true"`, which the
+//! emits an output Signal tagged with `"t0_short_circuit" = "true"`, which the
 //! conditional edge in the graph definition uses to skip the expensive middle
 //! cells (Assess -> Compose -> Act -> Verify -> Persist) and jump directly to React.
 //!
@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use roko_core::{Body, Engram, Kind, ProtocolId, TypeSchema, error::Result};
+use roko_core::{Body, Kind, ProtocolId, Signal, TypeSchema, error::Result};
 use tracing::trace;
 
 use crate::cell::{Cell, CellContext, CellVersion};
@@ -48,7 +48,7 @@ const DEADLINE_BUDGET_THRESHOLD_USD: f64 = 0.05;
 ///
 /// If no new Signals or Pulses are available AND the tick is not deadline-
 /// proximate AND no forced full tick was requested, SenseCell emits a single
-/// Engram tagged with `"t0_short_circuit" = "true"`. Downstream conditional
+/// Signal tagged with `"t0_short_circuit" = "true"`. Downstream conditional
 /// edges route this directly to ReactCell, skipping the middle cognitive cells.
 ///
 /// The `t0_count` atomic counter is incremented on every short-circuit tick
@@ -81,10 +81,10 @@ impl SenseCell {
     /// Determine whether a T0 short-circuit should fire for this tick.
     ///
     /// Returns `true` when all of the following hold:
-    /// - The input engrams are empty (no new Signals or Pulses were queued).
+    /// - The input signals are empty (no new Signals or Pulses were queued).
     /// - Budget is not approaching the deadline threshold.
-    /// - No upstream engram carries a `"force_full_tick" = "true"` tag.
-    fn should_short_circuit(input: &[Engram], ctx: &CellContext) -> bool {
+    /// - No upstream signal carries a `"force_full_tick" = "true"` tag.
+    fn should_short_circuit(input: &[Signal], ctx: &CellContext) -> bool {
         // Condition 1: no actionable input.
         if !input.is_empty() {
             return false;
@@ -143,12 +143,12 @@ impl Cell for SenseCell {
     /// Execute the Sense phase.
     ///
     /// When the T0 short-circuit condition is met (no new input, not deadline-
-    /// proximate, no forced full tick), returns a single Engram tagged with
+    /// proximate, no forced full tick), returns a single Signal tagged with
     /// `"t0_short_circuit" = "true"` and increments the T0 counter.
     ///
-    /// Otherwise returns the input engrams as-is (a real implementation would
+    /// Otherwise returns the input signals as-is (a real implementation would
     /// read from the Store and Bus and attach sensed material here).
-    async fn execute(&self, input: Vec<Engram>, ctx: &CellContext) -> Result<Vec<Engram>> {
+    async fn execute(&self, input: Vec<Signal>, ctx: &CellContext) -> Result<Vec<Signal>> {
         if Self::should_short_circuit(&input, ctx) {
             self.t0_count.fetch_add(1, Ordering::Relaxed);
             trace!(
@@ -156,7 +156,7 @@ impl Cell for SenseCell {
                 "SenseCell: T0 short-circuit -- no actionable input this tick"
             );
 
-            let marker = Engram::builder(Kind::Custom("sense.tick".into()))
+            let marker = Signal::builder(Kind::Custom("sense.tick".into()))
                 .body(Body::text("t0: no actionable input"))
                 .tag("t0_short_circuit", "true")
                 .build();
@@ -168,7 +168,7 @@ impl Cell for SenseCell {
         // A real implementation would query the Signal Store and Bus here.
         trace!(
             input_count = input.len(),
-            "SenseCell: full tick -- {} input engrams",
+            "SenseCell: full tick -- {} input signals",
             input.len()
         );
         Ok(input)
@@ -231,7 +231,7 @@ impl Cell for AssessCell {
         Some(&self.output_schema)
     }
 
-    async fn execute(&self, input: Vec<Engram>, _ctx: &CellContext) -> Result<Vec<Engram>> {
+    async fn execute(&self, input: Vec<Signal>, _ctx: &CellContext) -> Result<Vec<Signal>> {
         tracing::trace!(
             cell = "assess",
             input_count = input.len(),
@@ -299,7 +299,7 @@ impl Cell for CognitiveComposeCell {
         Some(&self.output_schema)
     }
 
-    async fn execute(&self, input: Vec<Engram>, _ctx: &CellContext) -> Result<Vec<Engram>> {
+    async fn execute(&self, input: Vec<Signal>, _ctx: &CellContext) -> Result<Vec<Signal>> {
         tracing::trace!(
             cell = "compose",
             input_count = input.len(),
@@ -365,7 +365,7 @@ impl Cell for ActCell {
         Some(&self.output_schema)
     }
 
-    async fn execute(&self, input: Vec<Engram>, _ctx: &CellContext) -> Result<Vec<Engram>> {
+    async fn execute(&self, input: Vec<Signal>, _ctx: &CellContext) -> Result<Vec<Signal>> {
         tracing::trace!(cell = "act", input_count = input.len(), "ActCell tick");
         Ok(input)
     }
@@ -428,7 +428,7 @@ impl Cell for VerifyCell {
         Some(&self.output_schema)
     }
 
-    async fn execute(&self, input: Vec<Engram>, _ctx: &CellContext) -> Result<Vec<Engram>> {
+    async fn execute(&self, input: Vec<Signal>, _ctx: &CellContext) -> Result<Vec<Signal>> {
         tracing::trace!(
             cell = "verify",
             input_count = input.len(),
@@ -488,7 +488,7 @@ impl Cell for PersistCell {
         Some(&self.input_schema)
     }
 
-    async fn execute(&self, input: Vec<Engram>, _ctx: &CellContext) -> Result<Vec<Engram>> {
+    async fn execute(&self, input: Vec<Signal>, _ctx: &CellContext) -> Result<Vec<Signal>> {
         tracing::trace!(
             cell = "persist",
             input_count = input.len(),
@@ -504,7 +504,7 @@ impl Cell for PersistCell {
 /// forced full tick for the next iteration.
 ///
 /// ReactCell always runs, even on T0 short-circuit ticks. It is the only cell
-/// that can set `"force_full_tick" = "true"` on its output Engrams to force the
+/// that can set `"force_full_tick" = "true"` on its output Signals to force the
 /// next tick to execute the full cognitive loop regardless of sensed material.
 ///
 /// Protocols: `React` (reactive policy) + `Trigger` (event-driven triggers).
@@ -550,7 +550,7 @@ impl Cell for ReactCell {
         Some(Duration::from_millis(5))
     }
 
-    async fn execute(&self, input: Vec<Engram>, _ctx: &CellContext) -> Result<Vec<Engram>> {
+    async fn execute(&self, input: Vec<Signal>, _ctx: &CellContext) -> Result<Vec<Signal>> {
         self.tick_counter.fetch_add(1, Ordering::Relaxed);
         tracing::trace!(cell = "react", input_count = input.len(), "ReactCell tick");
         Ok(input)
@@ -571,8 +571,8 @@ mod tests {
         CellContext::new().with_budget(budget)
     }
 
-    fn make_engram(text: &str) -> Engram {
-        Engram::builder(Kind::Task).body(Body::text(text)).build()
+    fn make_signal(text: &str) -> Signal {
+        Signal::builder(Kind::Task).body(Body::text(text)).build()
     }
 
     // ── T0 short-circuit fires on empty input ────────────────────────────────
@@ -584,7 +584,7 @@ mod tests {
 
         let output = cell.execute(vec![], &ctx).await.unwrap();
 
-        // Must emit exactly one marker engram.
+        // Must emit exactly one marker signal.
         assert_eq!(output.len(), 1, "T0 short-circuit should emit one marker");
         let marker = &output[0];
         assert_eq!(
@@ -614,7 +614,7 @@ mod tests {
     async fn sense_cell_no_short_circuit_with_input() {
         let cell = SenseCell::new();
         let ctx = make_ctx();
-        let input = vec![make_engram("new signal")];
+        let input = vec![make_signal("new signal")];
 
         let output = cell.execute(input, &ctx).await.unwrap();
 
@@ -674,7 +674,7 @@ mod tests {
 
     #[tokio::test]
     async fn all_cognitive_cells_passthrough_input() {
-        let input = vec![make_engram("test signal")];
+        let input = vec![make_signal("test signal")];
         let ctx = make_ctx();
 
         // All non-Sense cells simply pass input through in stub form.

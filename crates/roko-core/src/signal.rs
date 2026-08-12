@@ -1,7 +1,7 @@
-//! Signal — forward-compatible alias for `Engram`.
+//! Signal — the primary type name for the universal datum.
 //!
-//! The full Engram→Signal rename happens in Phase 1. This module provides
-//! the new import path so downstream code can start using `Signal` today.
+//! `Signal` is now defined directly in the `engram` module as
+//! `pub type Signal = Engram`. This module re-exports for convenience.
 
 pub use crate::engram::{
     Engram as Signal, EngramBuilder as SignalBuilder, GraduationError, HdcFingerprint, SignalStatus,

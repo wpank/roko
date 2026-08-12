@@ -960,7 +960,7 @@ async fn select_model_via_router(state: &AppState, hints: &RoutingHints) -> Stri
                 let router = CascadeRouter::load_or_new(&cascade_path, all_model_slugs.clone());
                 *guard = Some(router);
             }
-            let router = guard.as_ref().expect("just initialised");
+            let router = guard.as_ref().unwrap_or_else(|| unreachable!());
             router
                 .explain_routing(&routing_ctx, &candidate_slugs)
                 .selected_model

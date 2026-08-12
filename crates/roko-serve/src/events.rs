@@ -2,7 +2,7 @@
 //! operations. These flow through the shared event bus and are streamed to
 //! connected SSE / WebSocket clients.
 
-use roko_core::{ContentHash, Engram};
+use roko_core::{ContentHash, Signal};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -425,7 +425,7 @@ pub enum ServerEvent {
     Error { message: String },
 
     /// A webhook signal was accepted and published for downstream processing.
-    WebhookReceived { signal: Engram },
+    WebhookReceived { signal: Signal },
 
     /// A vision-loop iteration completed.
     VisionLoopIteration {

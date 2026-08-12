@@ -31,7 +31,7 @@ pub mod archive;
 /// Shared atomic-write helpers (write-tmp-rename pattern).
 pub mod atomic;
 pub mod bandit;
-/// Archive-backed [`ColdStore`](roko_core::ColdStore) for aged-out engrams.
+/// Archive-backed [`ColdStore`](roko_core::ColdStore) for aged-out signals.
 pub mod cold_substrate;
 /// Cross-platform disk space checker and runtime monitor.
 pub mod disk;

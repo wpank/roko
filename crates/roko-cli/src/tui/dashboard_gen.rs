@@ -43,10 +43,7 @@ impl DurableDashboardGenerationCounter {
     #[must_use]
     pub fn next(&self, root: impl AsRef<Path>, fingerprint: u64) -> u64 {
         let root = root.as_ref().to_path_buf();
-        let mut guard = self
-            .state
-            .lock()
-            .expect("dashboard generation lock poisoned");
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let mut should_persist = false;
         let generation = {
             let entry = guard.entry(root).or_default();

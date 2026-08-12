@@ -72,7 +72,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                 )?;
                 println!("⏳ Deep research submitted ({model_slug}). This takes 1-10 min...");
 
-                let input = roko_core::Engram::builder(Kind::Prompt)
+                let input = roko_core::Signal::builder(Kind::Prompt)
                     .body(Body::text(&combined_prompt))
                     .build();
 
@@ -270,7 +270,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                         format!("create Gemini research agent for model {model_slug}"),
                     )?;
 
-                    let input = roko_core::Engram::builder(Kind::Prompt)
+                    let input = roko_core::Signal::builder(Kind::Prompt)
                         .body(Body::text(&combined_prompt))
                         .build();
                     let started = Instant::now();
@@ -384,7 +384,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                     format!("create Perplexity research agent for model {model_slug}"),
                 )?;
 
-                let input = roko_core::Engram::builder(Kind::Prompt)
+                let input = roko_core::Signal::builder(Kind::Prompt)
                     .body(Body::text(&combined_prompt))
                     .build();
                 let started = Instant::now();

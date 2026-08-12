@@ -75,7 +75,7 @@ pub fn scaffold_pages() -> Vec<PageScaffold> {
                 ),
                 WidgetScaffold::new(
                     "signal_tree",
-                    "Engram DAG Explorer",
+                    "Signal DAG Explorer",
                     "Indented parent-hash chain for the selected signal.",
                 ),
             ],

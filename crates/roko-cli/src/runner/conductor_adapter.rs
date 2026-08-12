@@ -1,9 +1,9 @@
-//! Adapter that maps runner-v2 events to conductor [`Engram`]s.
+//! Adapter that maps runner-v2 events to conductor [`Signal`]s.
 //!
-//! The conductor watchers consume typed [`Engram`] streams (ghost-turn
+//! The conductor watchers consume typed [`Signal`] streams (ghost-turn
 //! signals, gate verdicts, cost metrics, plan phases). This module provides
 //! pure mapping functions that convert [`RunnerEvent`] and [`AgentEvent`]
-//! instances into the `Option<Engram>` that watchers expect, without
+//! instances into the `Option<Signal>` that watchers expect, without
 //! performing any IO or mutating runner state.
 //!
 //! Only events that at least one conductor watcher consumes are mapped;
@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use roko_core::{Body, Engram, Kind};
+use roko_core::{Body, Kind, Signal};
 
 use super::types::{AgentEvent, RunnerEvent};
 use crate::runtime_feedback::{FeedbackEvent, FeedbackSink};
@@ -41,18 +41,18 @@ const SEVERITY_TAG: &str = "severity";
 /// Custom kind string the ghost-turn watcher listens for.
 const GHOST_TURN_KIND: &str = "conductor.ghost_turn";
 
-// ─── RunnerEvent -> Engram ──────────────────────────────────────────────
+// ─── RunnerEvent -> Signal ──────────────────────────────────────────────
 
-/// Map a [`RunnerEvent`] to an [`Engram`] the conductor can consume.
+/// Map a [`RunnerEvent`] to a [`Signal`] the conductor can consume.
 ///
 /// Returns `None` for events no watcher reads (the vast majority), keeping
 /// ring buffer usage bounded.
 #[must_use]
-pub fn runner_event_to_engram(event: &RunnerEvent) -> Option<Engram> {
+pub fn runner_event_to_signal(event: &RunnerEvent) -> Option<Signal> {
     match event {
-        // Plan lifecycle -> PlanPhase engrams (used by extract_plan_id).
+        // Plan lifecycle -> PlanPhase signals (used by extract_plan_id).
         RunnerEvent::PlanStarted { plan_id, .. } => Some(
-            Engram::builder(Kind::PlanPhase)
+            Signal::builder(Kind::PlanPhase)
                 .body(Body::text("started"))
                 .tag(PLAN_ID_TAG, plan_id.as_str())
                 .tag("phase", "started")
@@ -62,7 +62,7 @@ pub fn runner_event_to_engram(event: &RunnerEvent) -> Option<Engram> {
         RunnerEvent::PlanCompleted {
             plan_id, cost_usd, ..
         } => Some(
-            Engram::builder(Kind::PlanPhase)
+            Signal::builder(Kind::PlanPhase)
                 .body(Body::text("completed"))
                 .tag(PLAN_ID_TAG, plan_id.as_str())
                 .tag("phase", "completed")
@@ -70,7 +70,7 @@ pub fn runner_event_to_engram(event: &RunnerEvent) -> Option<Engram> {
                 .build(),
         ),
 
-        // Gate verdicts -> GateVerdict engrams (consumed by
+        // Gate verdicts -> GateVerdict signals (consumed by
         // TestFailureBudgetWatcher and other gate-aware watchers).
         RunnerEvent::GateCompleted {
             attempt,
@@ -108,7 +108,7 @@ pub fn runner_event_to_engram(event: &RunnerEvent) -> Option<Engram> {
             .ok()?;
 
             Some(
-                Engram::builder(Kind::GateVerdict)
+                Signal::builder(Kind::GateVerdict)
                     .body(body)
                     .tag(PLAN_ID_TAG, &attempt.plan_id)
                     .tag(TASK_TAG, &attempt.task_id)
@@ -126,9 +126,9 @@ pub fn runner_event_to_engram(event: &RunnerEvent) -> Option<Engram> {
         } => {
             // We emit nothing here directly. Cost is tracked via
             // AgentCompleted which has total_cost_usd.
-            // However, we do emit an AgentOutput-kind engram for model/provider
+            // However, we do emit an AgentOutput-kind signal for model/provider
             // tracking used by extract_provider.
-            let mut builder = Engram::builder(Kind::AgentOutput)
+            let mut builder = Signal::builder(Kind::AgentOutput)
                 .body(Body::text(format!(
                     "task attempt completed: {}/{}",
                     attempt.plan_id, attempt.task_id
@@ -146,7 +146,7 @@ pub fn runner_event_to_engram(event: &RunnerEvent) -> Option<Engram> {
             Some(builder.build())
         }
 
-        // Agent completed with cost -> Metric engram for CostOverrunWatcher.
+        // Agent completed with cost -> Metric signal for CostOverrunWatcher.
         RunnerEvent::AgentCompleted {
             attempt,
             total_cost_usd,
@@ -154,7 +154,7 @@ pub fn runner_event_to_engram(event: &RunnerEvent) -> Option<Engram> {
         } => {
             let cost = (*total_cost_usd)?;
             Some(
-                Engram::builder(Kind::Metric)
+                Signal::builder(Kind::Metric)
                     .body(Body::text(format!("plan_cost={cost:.4}")))
                     .tag(METRIC_NAME_TAG, "plan_cost")
                     .tag(METRIC_VALUE_TAG, format!("{cost:.4}"))
@@ -169,10 +169,10 @@ pub fn runner_event_to_engram(event: &RunnerEvent) -> Option<Engram> {
     }
 }
 
-// ─── AgentEvent -> Engram ───────────────────────────────────────────────
+// ─── AgentEvent -> Signal ───────────────────────────────────────────────
 
 /// Convert an [`AgentEvent`] (turn-level) into a conductor-consumable
-/// [`Engram`], if applicable.
+/// [`Signal`], if applicable.
 ///
 /// The `plan_id`, `task_id`, `model`, and `provider` are supplied by the
 /// caller from the dispatch context — the agent event itself does not
@@ -185,13 +185,13 @@ pub fn runner_event_to_engram(event: &RunnerEvent) -> Option<Engram> {
 ///
 /// All other variants return `None`.
 #[must_use]
-pub fn agent_event_to_engram(
+pub fn agent_event_to_signal(
     event: &AgentEvent,
     plan_id: &str,
     task_id: &str,
     model: &str,
     provider: &str,
-) -> Option<Engram> {
+) -> Option<Signal> {
     match event {
         AgentEvent::TurnCompleted {
             total_cost_usd,
@@ -220,7 +220,7 @@ pub fn agent_event_to_engram(
             .ok()?;
 
             Some(
-                Engram::builder(Kind::Custom(GHOST_TURN_KIND.into()))
+                Signal::builder(Kind::Custom(GHOST_TURN_KIND.into()))
                     .body(body)
                     .tag(PLAN_ID_TAG, plan_id)
                     .tag(TASK_TAG, task_id)
@@ -235,7 +235,7 @@ pub fn agent_event_to_engram(
             model: started_model,
             ..
         } => Some(
-            Engram::builder(Kind::AgentOutput)
+            Signal::builder(Kind::AgentOutput)
                 .body(Body::text("agent started"))
                 .tag(PLAN_ID_TAG, plan_id)
                 .tag(TASK_TAG, task_id)
@@ -255,7 +255,7 @@ pub fn agent_event_to_engram(
 /// Default capacity for the conductor ring buffer.
 const DEFAULT_RING_CAPACITY: usize = 512;
 
-/// A bounded ring buffer of [`Engram`]s consumed by the conductor's
+/// A bounded ring buffer of [`Signal`]s consumed by the conductor's
 /// evaluation pipeline.
 ///
 /// The ring uses drop-oldest (`pop_front`) semantics when the capacity is
@@ -263,7 +263,7 @@ const DEFAULT_RING_CAPACITY: usize = 512;
 /// must never hold the lock across `.await` points.
 #[derive(Debug, Clone)]
 pub struct ConductorRing {
-    inner: Arc<Mutex<VecDeque<Engram>>>,
+    inner: Arc<Mutex<VecDeque<Signal>>>,
     capacity: usize,
 }
 
@@ -288,30 +288,30 @@ impl ConductorRing {
         }
     }
 
-    /// Push an engram into the ring, dropping the oldest entry if full.
+    /// Push a signal into the ring, dropping the oldest entry if full.
     ///
     /// Returns `true` if the push succeeded (always, unless the lock is
-    /// poisoned, in which case we silently drop the engram).
-    pub fn push(&self, engram: Engram) -> bool {
+    /// poisoned, in which case we silently drop the signal).
+    pub fn push(&self, signal: Signal) -> bool {
         let Ok(mut ring) = self.inner.lock() else {
             // Poisoned lock — best-effort: silently drop.
-            tracing::warn!("conductor ring lock poisoned; dropping engram");
+            tracing::warn!("conductor ring lock poisoned; dropping signal");
             return false;
         };
         if ring.len() >= self.capacity {
             ring.pop_front();
         }
-        ring.push_back(engram);
+        ring.push_back(signal);
         true
     }
 
-    /// Snapshot the current contents as a `Vec<Engram>` for conductor
+    /// Snapshot the current contents as a `Vec<Signal>` for conductor
     /// evaluation.
     ///
-    /// Does **not** drain the ring — the same engrams remain available
+    /// Does **not** drain the ring — the same signals remain available
     /// for subsequent snapshots until overwritten by newer entries.
     #[must_use]
-    pub fn snapshot(&self) -> Vec<Engram> {
+    pub fn snapshot(&self) -> Vec<Signal> {
         let Ok(ring) = self.inner.lock() else {
             tracing::warn!("conductor ring lock poisoned; returning empty snapshot");
             return Vec::new();
@@ -319,7 +319,7 @@ impl ConductorRing {
         ring.iter().cloned().collect()
     }
 
-    /// Number of engrams currently in the ring.
+    /// Number of signals currently in the ring.
     #[must_use]
     pub fn len(&self) -> usize {
         self.inner.lock().map(|r| r.len()).unwrap_or(0)
@@ -344,17 +344,17 @@ impl Default for ConductorRing {
     }
 }
 
-// ─── FeedbackEvent -> Engram mapping ────────────────────────────────────
+// ─── FeedbackEvent -> Signal mapping ────────────────────────────────────
 
-/// Convert a [`FeedbackEvent`] into an [`Engram`] suitable for the
+/// Convert a [`FeedbackEvent`] into a [`Signal`] suitable for the
 /// conductor's evaluation pipeline.
 ///
-/// This is the feedback-vocabulary counterpart of [`runner_event_to_engram`]
-/// and [`agent_event_to_engram`]. It maps the provider-neutral
+/// This is the feedback-vocabulary counterpart of [`runner_event_to_signal`]
+/// and [`agent_event_to_signal`]. It maps the provider-neutral
 /// [`FeedbackEvent`] variants into the same tag layout the conductor
 /// watchers expect. Returns `None` for events no watcher consumes.
 #[must_use]
-pub fn feedback_event_to_engram(event: &FeedbackEvent) -> Option<Engram> {
+pub fn feedback_event_to_signal(event: &FeedbackEvent) -> Option<Signal> {
     match event {
         FeedbackEvent::TurnCompleted {
             plan_id,
@@ -381,7 +381,7 @@ pub fn feedback_event_to_engram(event: &FeedbackEvent) -> Option<Engram> {
             .ok()?;
 
             Some(
-                Engram::builder(Kind::Custom(GHOST_TURN_KIND.into()))
+                Signal::builder(Kind::Custom(GHOST_TURN_KIND.into()))
                     .body(body)
                     .tag(PLAN_ID_TAG, plan_id.as_str())
                     .tag(TASK_TAG, task_id.as_str())
@@ -406,7 +406,7 @@ pub fn feedback_event_to_engram(event: &FeedbackEvent) -> Option<Engram> {
             .ok()?;
 
             Some(
-                Engram::builder(Kind::GateVerdict)
+                Signal::builder(Kind::GateVerdict)
                     .body(body)
                     .tag(PLAN_ID_TAG, plan_id.as_str())
                     .tag(TASK_TAG, task_id.as_str())
@@ -421,7 +421,7 @@ pub fn feedback_event_to_engram(event: &FeedbackEvent) -> Option<Engram> {
             total_cost_usd,
             ..
         } => {
-            let mut builder = Engram::builder(Kind::PlanPhase)
+            let mut builder = Signal::builder(Kind::PlanPhase)
                 .body(Body::text(if *succeeded { "completed" } else { "failed" }))
                 .tag(PLAN_ID_TAG, plan_id.as_str())
                 .tag("phase", if *succeeded { "completed" } else { "failed" })
@@ -439,7 +439,7 @@ pub fn feedback_event_to_engram(event: &FeedbackEvent) -> Option<Engram> {
 
         // TaskCompleted, RetryDecision, IdleTick — no watcher consumes
         // these directly from the feedback vocabulary. The runner
-        // path emits the corresponding RunnerEvent-based engrams.
+        // path emits the corresponding RunnerEvent-based signals.
         _ => None,
     }
 }
@@ -447,7 +447,7 @@ pub fn feedback_event_to_engram(event: &FeedbackEvent) -> Option<Engram> {
 // ─── ConductorRingSink ──────────────────────────────────────────────────
 
 /// A [`FeedbackSink`] decorator that converts [`FeedbackEvent`]s into
-/// conductor [`Engram`]s via [`feedback_event_to_engram`] and pushes
+/// conductor [`Signal`]s via [`feedback_event_to_signal`] and pushes
 /// them into a shared [`ConductorRing`].
 ///
 /// The sink is best-effort: a poisoned lock or full ring never aborts
@@ -479,7 +479,7 @@ impl FeedbackSink for ConductorRingSink {
     }
 
     fn interested(&self, event: &FeedbackEvent) -> bool {
-        // Only forward events that produce an Engram.
+        // Only forward events that produce a Signal.
         matches!(
             event,
             FeedbackEvent::TurnCompleted { .. }
@@ -489,8 +489,8 @@ impl FeedbackSink for ConductorRingSink {
     }
 
     async fn on_event(&self, event: &FeedbackEvent) -> Result<(), anyhow::Error> {
-        if let Some(engram) = feedback_event_to_engram(event) {
-            self.ring.push(engram);
+        if let Some(signal) = feedback_event_to_signal(event) {
+            self.ring.push(signal);
         }
         Ok(())
     }
@@ -525,9 +525,9 @@ mod tests {
             run_id: "run-1".into(),
             plan_id: "plan-1".into(),
         };
-        let engram = runner_event_to_engram(&event).expect("should map");
-        assert_eq!(engram.kind, Kind::PlanPhase);
-        assert_eq!(engram.tag(PLAN_ID_TAG), Some("plan-1"));
+        let signal = runner_event_to_signal(&event).expect("should map");
+        assert_eq!(signal.kind, Kind::PlanPhase);
+        assert_eq!(signal.tag(PLAN_ID_TAG), Some("plan-1"));
     }
 
     #[test]
@@ -553,9 +553,9 @@ mod tests {
                 rung_index: None,
             }],
         };
-        let engram = runner_event_to_engram(&event).expect("should map");
-        assert_eq!(engram.kind, Kind::GateVerdict);
-        assert_eq!(engram.tag(SEVERITY_TAG), Some("info"));
+        let signal = runner_event_to_signal(&event).expect("should map");
+        assert_eq!(signal.kind, Kind::GateVerdict);
+        assert_eq!(signal.tag(SEVERITY_TAG), Some("info"));
     }
 
     #[test]
@@ -592,11 +592,11 @@ mod tests {
                 },
             ],
         };
-        let engram = runner_event_to_engram(&event).expect("should map");
-        assert_eq!(engram.kind, Kind::GateVerdict);
-        assert_eq!(engram.tag(SEVERITY_TAG), Some("error"));
+        let signal = runner_event_to_signal(&event).expect("should map");
+        assert_eq!(signal.kind, Kind::GateVerdict);
+        assert_eq!(signal.tag(SEVERITY_TAG), Some("error"));
         // Verify test_count is populated for TestFailureBudgetWatcher
-        let body: serde_json::Value = engram.body.as_json().unwrap();
+        let body: serde_json::Value = signal.body.as_json().unwrap();
         assert_eq!(body["test_count"]["failed"], 2);
         assert_eq!(body["test_count"]["passed"], 0);
     }
@@ -616,9 +616,9 @@ mod tests {
             exit_code: Some(0),
             message: None,
         };
-        let engram = runner_event_to_engram(&event).expect("should map");
-        assert_eq!(engram.kind, Kind::Metric);
-        assert_eq!(engram.tag(METRIC_NAME_TAG), Some("plan_cost"));
+        let signal = runner_event_to_signal(&event).expect("should map");
+        assert_eq!(signal.kind, Kind::Metric);
+        assert_eq!(signal.tag(METRIC_NAME_TAG), Some("plan_cost"));
     }
 
     #[test]
@@ -636,7 +636,7 @@ mod tests {
             exit_code: None,
             message: None,
         };
-        assert!(runner_event_to_engram(&event).is_none());
+        assert!(runner_event_to_signal(&event).is_none());
     }
 
     #[test]
@@ -650,7 +650,7 @@ mod tests {
             resumed: false,
             resume_session: None,
         };
-        assert!(runner_event_to_engram(&event).is_none());
+        assert!(runner_event_to_signal(&event).is_none());
     }
 
     // ── AgentEvent mapping tests ────────────────────────────────────────
@@ -663,12 +663,12 @@ mod tests {
             num_turns: Some(1),
             is_error: false,
         };
-        let engram =
-            agent_event_to_engram(&event, "plan-1", "task-1", "claude-sonnet-4-6", "anthropic")
+        let signal =
+            agent_event_to_signal(&event, "plan-1", "task-1", "claude-sonnet-4-6", "anthropic")
                 .expect("should map");
-        assert!(matches!(engram.kind, Kind::Custom(ref k) if k == GHOST_TURN_KIND));
-        assert_eq!(engram.tag(PLAN_ID_TAG), Some("plan-1"));
-        assert_eq!(engram.tag(MODEL_TAG), Some("claude-sonnet-4-6"));
+        assert!(matches!(signal.kind, Kind::Custom(ref k) if k == GHOST_TURN_KIND));
+        assert_eq!(signal.tag(PLAN_ID_TAG), Some("plan-1"));
+        assert_eq!(signal.tag(MODEL_TAG), Some("claude-sonnet-4-6"));
     }
 
     #[test]
@@ -679,9 +679,9 @@ mod tests {
             num_turns: Some(1),
             is_error: true,
         };
-        let engram = agent_event_to_engram(&event, "plan-1", "task-1", "model-x", "provider-y")
+        let signal = agent_event_to_signal(&event, "plan-1", "task-1", "model-x", "provider-y")
             .expect("should map");
-        let body: serde_json::Value = engram.body.as_json().unwrap();
+        let body: serde_json::Value = signal.body.as_json().unwrap();
         assert_eq!(body["wasted_cost"], true);
         assert_eq!(body["output_meaningful"], false);
     }
@@ -694,11 +694,11 @@ mod tests {
             model: "claude-sonnet-4-6".into(),
             pid: Some(12345),
         };
-        let engram =
-            agent_event_to_engram(&event, "plan-1", "task-1", "claude-sonnet-4-6", "anthropic")
+        let signal =
+            agent_event_to_signal(&event, "plan-1", "task-1", "claude-sonnet-4-6", "anthropic")
                 .expect("should map");
-        assert_eq!(engram.kind, Kind::AgentOutput);
-        assert_eq!(engram.tag(PROVIDER_TAG), Some("anthropic"));
+        assert_eq!(signal.kind, Kind::AgentOutput);
+        assert_eq!(signal.tag(PROVIDER_TAG), Some("anthropic"));
     }
 
     #[test]
@@ -706,7 +706,7 @@ mod tests {
         let event = AgentEvent::MessageDelta {
             text: "hello".into(),
         };
-        assert!(agent_event_to_engram(&event, "plan-1", "task-1", "m", "p").is_none());
+        assert!(agent_event_to_signal(&event, "plan-1", "task-1", "m", "p").is_none());
     }
 
     // ── Integration: ghost-turn stream drives non-Continue decision ─────
@@ -717,11 +717,11 @@ mod tests {
 
         // Build a stream of 4 error turns (ghost turns) — exceeds the
         // default MAX_GHOST_TURNS (3).
-        let mut stream: Vec<Engram> = Vec::new();
+        let mut stream: Vec<Signal> = Vec::new();
 
-        // First add a PlanPhase engram so extract_plan_id works.
+        // First add a PlanPhase signal so extract_plan_id works.
         stream.push(
-            Engram::builder(Kind::PlanPhase)
+            Signal::builder(Kind::PlanPhase)
                 .body(Body::text("implementing"))
                 .tag(PLAN_ID_TAG, "plan-1")
                 .tag("phase", "implementing")
@@ -735,10 +735,10 @@ mod tests {
                 num_turns: Some(1),
                 is_error: true,
             };
-            let engram =
-                agent_event_to_engram(&event, "plan-1", "task-1", "claude-sonnet-4-6", "anthropic")
-                    .expect("error turn should map to ghost-turn engram");
-            stream.push(engram);
+            let signal =
+                agent_event_to_signal(&event, "plan-1", "task-1", "claude-sonnet-4-6", "anthropic")
+                    .expect("error turn should map to ghost-turn signal");
+            stream.push(signal);
         }
 
         let conductor = Conductor::default();
@@ -755,18 +755,18 @@ mod tests {
         use roko_conductor::Conductor;
 
         // Build a stream with repeated gate failures on the same plan.
-        let mut stream: Vec<Engram> = Vec::new();
+        let mut stream: Vec<Signal> = Vec::new();
 
         // PlanPhase for plan identity.
         stream.push(
-            Engram::builder(Kind::PlanPhase)
+            Signal::builder(Kind::PlanPhase)
                 .body(Body::text("implementing"))
                 .tag(PLAN_ID_TAG, "plan-1")
                 .tag("phase", "implementing")
                 .build(),
         );
 
-        // Emit many failed gate verdict engrams — drives test-failure-budget
+        // Emit many failed gate verdict signals — drives test-failure-budget
         // and iteration-loop watchers.
         for i in 0..6 {
             let event = RunnerEvent::GateCompleted {
@@ -794,8 +794,8 @@ mod tests {
                     rung_index: None,
                 }],
             };
-            let engram = runner_event_to_engram(&event).expect("gate failure should map to engram");
-            stream.push(engram);
+            let signal = runner_event_to_signal(&event).expect("gate failure should map to signal");
+            stream.push(signal);
         }
 
         let conductor = Conductor::default();
@@ -821,10 +821,10 @@ mod tests {
             model: "claude-sonnet-4-6".into(),
             provider: "anthropic".into(),
         };
-        let engram = runner_event_to_engram(&event).expect("should map");
-        assert_eq!(engram.kind, Kind::AgentOutput);
-        assert_eq!(engram.tag(MODEL_TAG), Some("claude-sonnet-4-6"));
-        assert_eq!(engram.tag(PROVIDER_TAG), Some("anthropic"));
+        let signal = runner_event_to_signal(&event).expect("should map");
+        assert_eq!(signal.kind, Kind::AgentOutput);
+        assert_eq!(signal.tag(MODEL_TAG), Some("claude-sonnet-4-6"));
+        assert_eq!(signal.tag(PROVIDER_TAG), Some("anthropic"));
     }
 
     // ── ConductorRing tests ─────────────────────────────────────────────
@@ -835,10 +835,10 @@ mod tests {
         assert!(ring.is_empty());
         assert_eq!(ring.len(), 0);
 
-        let engram = Engram::builder(Kind::Metric)
+        let sig = Signal::builder(Kind::Metric)
             .body(Body::text("test"))
             .build();
-        assert!(ring.push(engram));
+        assert!(ring.push(sig));
 
         assert_eq!(ring.len(), 1);
         assert!(!ring.is_empty());
@@ -852,13 +852,13 @@ mod tests {
     fn conductor_ring_enforces_bound_with_drop_oldest() {
         let ring = ConductorRing::with_capacity(3);
 
-        // Push 5 engrams into a ring of capacity 3.
+        // Push 5 signals into a ring of capacity 3.
         for i in 0..5 {
-            let engram = Engram::builder(Kind::Metric)
+            let sig = Signal::builder(Kind::Metric)
                 .body(Body::text(format!("item-{i}")))
                 .tag("idx", format!("{i}"))
                 .build();
-            ring.push(engram);
+            ring.push(sig);
         }
 
         // Ring should contain only the last 3.
@@ -873,10 +873,10 @@ mod tests {
     #[test]
     fn conductor_ring_snapshot_does_not_drain() {
         let ring = ConductorRing::with_capacity(8);
-        let engram = Engram::builder(Kind::PlanPhase)
+        let sig = Signal::builder(Kind::PlanPhase)
             .body(Body::text("started"))
             .build();
-        ring.push(engram);
+        ring.push(sig);
 
         // Snapshot twice — both should return the same content.
         let snap1 = ring.snapshot();
@@ -898,7 +898,7 @@ mod tests {
         let _ring = ConductorRing::with_capacity(0);
     }
 
-    // ── FeedbackEvent -> Engram mapping tests ───────────────────────────
+    // ── FeedbackEvent -> Signal mapping tests ───────────────────────────
 
     #[test]
     fn feedback_turn_completed_maps_to_ghost_turn() {
@@ -910,10 +910,10 @@ mod tests {
             tokens_out: 50,
             cost_usd: 0.003,
         };
-        let engram = feedback_event_to_engram(&event).expect("should map");
-        assert!(matches!(engram.kind, Kind::Custom(ref k) if k == GHOST_TURN_KIND));
-        assert_eq!(engram.tag(PLAN_ID_TAG), Some("plan-1"));
-        assert_eq!(engram.tag(TASK_TAG), Some("task-1"));
+        let signal = feedback_event_to_signal(&event).expect("should map");
+        assert!(matches!(signal.kind, Kind::Custom(ref k) if k == GHOST_TURN_KIND));
+        assert_eq!(signal.tag(PLAN_ID_TAG), Some("plan-1"));
+        assert_eq!(signal.tag(TASK_TAG), Some("task-1"));
     }
 
     #[test]
@@ -925,9 +925,9 @@ mod tests {
             passed: true,
             duration_ms: 300,
         };
-        let engram = feedback_event_to_engram(&pass).expect("should map");
-        assert_eq!(engram.kind, Kind::GateVerdict);
-        assert_eq!(engram.tag(SEVERITY_TAG), Some("info"));
+        let signal = feedback_event_to_signal(&pass).expect("should map");
+        assert_eq!(signal.kind, Kind::GateVerdict);
+        assert_eq!(signal.tag(SEVERITY_TAG), Some("info"));
 
         let fail = FeedbackEvent::GateOutcome {
             plan_id: "p".into(),
@@ -936,8 +936,8 @@ mod tests {
             passed: false,
             duration_ms: 500,
         };
-        let engram = feedback_event_to_engram(&fail).expect("should map");
-        assert_eq!(engram.tag(SEVERITY_TAG), Some("error"));
+        let signal = feedback_event_to_signal(&fail).expect("should map");
+        assert_eq!(signal.tag(SEVERITY_TAG), Some("error"));
     }
 
     #[test]
@@ -949,10 +949,10 @@ mod tests {
             tasks_failed: 0,
             total_cost_usd: 1.234,
         };
-        let engram = feedback_event_to_engram(&event).expect("should map");
-        assert_eq!(engram.kind, Kind::PlanPhase);
-        assert_eq!(engram.tag(PLAN_ID_TAG), Some("plan-1"));
-        assert_eq!(engram.tag("phase"), Some("completed"));
+        let signal = feedback_event_to_signal(&event).expect("should map");
+        assert_eq!(signal.kind, Kind::PlanPhase);
+        assert_eq!(signal.tag(PLAN_ID_TAG), Some("plan-1"));
+        assert_eq!(signal.tag("phase"), Some("completed"));
     }
 
     #[test]
@@ -960,7 +960,7 @@ mod tests {
         let event = FeedbackEvent::IdleTick {
             ticks_since_last_work: 5,
         };
-        assert!(feedback_event_to_engram(&event).is_none());
+        assert!(feedback_event_to_signal(&event).is_none());
     }
 
     // ── ConductorRingSink tests ─────────────────────────────────────────
@@ -1000,7 +1000,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn conductor_ring_sink_pushes_engrams() {
+    async fn conductor_ring_sink_pushes_signals() {
         let ring = ConductorRing::with_capacity(16);
         let sink = ConductorRingSink::new(ring.clone());
 
@@ -1071,7 +1071,7 @@ mod tests {
         let ring = ConductorRing::with_capacity(8);
         let sink = ConductorRingSink::new(ring.clone());
 
-        // IdleTick does not map to an engram.
+        // IdleTick does not map to a signal.
         let event = FeedbackEvent::IdleTick {
             ticks_since_last_work: 5,
         };
@@ -1098,9 +1098,9 @@ mod tests {
 
         let ring = ConductorRing::with_capacity(64);
 
-        // Seed the ring with a plan-phase engram so extract_plan_id works.
+        // Seed the ring with a plan-phase signal so extract_plan_id works.
         ring.push(
-            Engram::builder(Kind::PlanPhase)
+            Signal::builder(Kind::PlanPhase)
                 .body(Body::text("implementing"))
                 .tag(PLAN_ID_TAG, "plan-sup-1")
                 .tag("phase", "implementing")
@@ -1115,7 +1115,7 @@ mod tests {
                 num_turns: Some(1),
                 is_error: true,
             };
-            if let Some(e) = agent_event_to_engram(
+            if let Some(e) = agent_event_to_signal(
                 &event,
                 "plan-sup-1",
                 "task-1",
@@ -1146,9 +1146,9 @@ mod tests {
 
         let ring = ConductorRing::with_capacity(64);
 
-        // Plan-phase engram for plan identity.
+        // Plan-phase signal for plan identity.
         ring.push(
-            Engram::builder(Kind::PlanPhase)
+            Signal::builder(Kind::PlanPhase)
                 .body(Body::text("implementing"))
                 .tag(PLAN_ID_TAG, "plan-sup-2")
                 .tag("phase", "implementing")
@@ -1182,7 +1182,7 @@ mod tests {
                     rung_index: None,
                 }],
             };
-            if let Some(e) = runner_event_to_engram(&event) {
+            if let Some(e) = runner_event_to_signal(&event) {
                 ring.push(e);
             }
         }
@@ -1209,7 +1209,7 @@ mod tests {
         let ring = ConductorRing::with_capacity(64);
 
         ring.push(
-            Engram::builder(Kind::PlanPhase)
+            Signal::builder(Kind::PlanPhase)
                 .body(Body::text("implementing"))
                 .tag(PLAN_ID_TAG, "plan-sup-3")
                 .tag("phase", "implementing")
@@ -1225,7 +1225,7 @@ mod tests {
                 is_error: true,
             };
             if let Some(e) =
-                agent_event_to_engram(&event, "plan-sup-3", "task-1", "model-x", "provider-y")
+                agent_event_to_signal(&event, "plan-sup-3", "task-1", "model-x", "provider-y")
             {
                 ring.push(e);
             }

@@ -20,7 +20,7 @@ use crate::watchers::{
 };
 use parking_lot::Mutex;
 use roko_core::{
-    Body, CognitiveSignal, ConductorDecision, ConductorEvaluation, Context, Engram, Kind, React,
+    Body, CognitiveSignal, ConductorDecision, ConductorEvaluation, Context, Kind, React, Signal,
     config::schema::{ConductorConfig, ResourcesConfig},
 };
 use roko_learn::provider_health::ProviderHealthTracker;
@@ -261,7 +261,7 @@ impl Conductor {
     /// Uses the current context and returns the intervention signals
     /// produced by the conductor for the supplied signal stream.
     #[must_use]
-    pub fn check_all(&self, stream: &[Engram]) -> Vec<Engram> {
+    pub fn check_all(&self, stream: &[Signal]) -> Vec<Signal> {
         self.decide(stream, &Context::now())
     }
 
@@ -345,7 +345,7 @@ impl Conductor {
     /// intervention signals, converts them to `WatcherOutput`s, and
     /// applies the escalation policy.
     #[must_use]
-    pub fn evaluate(&self, stream: &[Engram], ctx: &Context) -> ConductorDecision {
+    pub fn evaluate(&self, stream: &[Signal], ctx: &Context) -> ConductorDecision {
         self.evaluate_full(stream, ctx).decision
     }
 
@@ -359,7 +359,7 @@ impl Conductor {
     /// - COND-08: Proactive circuit breaker warnings from Holt forecaster
     /// - COND-09: Provider health escalation signals
     #[must_use]
-    pub fn evaluate_full(&self, stream: &[Engram], ctx: &Context) -> ConductorEvaluation {
+    pub fn evaluate_full(&self, stream: &[Signal], ctx: &Context) -> ConductorEvaluation {
         let plan_id = extract_plan_id(stream);
 
         // Check circuit breaker first (count-based + predictive).
@@ -504,7 +504,7 @@ impl Conductor {
 }
 
 /// Extract the provider name from the signal stream (most recent `provider` tag).
-fn extract_provider(stream: &[Engram]) -> Option<String> {
+fn extract_provider(stream: &[Signal]) -> Option<String> {
     stream.iter().rev().find_map(|s| {
         s.tag("provider").map(str::to_owned).or_else(|| {
             s.body.as_json::<serde_json::Value>().ok().and_then(|json| {
@@ -517,7 +517,7 @@ fn extract_provider(stream: &[Engram]) -> Option<String> {
 }
 
 /// Extract the plan ID from the signal stream (most recent `PlanPhase` tag).
-fn extract_plan_id(stream: &[Engram]) -> Option<String> {
+fn extract_plan_id(stream: &[Signal]) -> Option<String> {
     stream
         .iter()
         .rev()
@@ -597,7 +597,7 @@ fn derive_cognitive_signals(outputs: &[WatcherOutput]) -> Vec<CognitiveSignal> {
 /// Run all watchers and collect their outputs as `WatcherOutput` values.
 fn collect_watcher_outputs(
     watchers: &[Box<dyn React>],
-    stream: &[Engram],
+    stream: &[Signal],
     ctx: &Context,
 ) -> Vec<WatcherOutput> {
     let mut outputs = Vec::new();
@@ -633,7 +633,7 @@ impl roko_core::Cell for Conductor {
 }
 
 impl React for Conductor {
-    fn decide(&self, stream: &[Engram], ctx: &Context) -> Vec<Engram> {
+    fn decide(&self, stream: &[Signal], ctx: &Context) -> Vec<Signal> {
         // Run all watchers and collect outputs.
         let watcher_outputs = collect_watcher_outputs(&self.watchers, stream, ctx);
         self.update_routing_bias(stream, &watcher_outputs);
@@ -646,7 +646,7 @@ impl React for Conductor {
         if !decision.is_continue() {
             if let Ok(body) = Body::from_json(&decision) {
                 result.push(
-                    Engram::builder(Kind::Custom("conductor.decision".into()))
+                    Signal::builder(Kind::Custom("conductor.decision".into()))
                         .body(body)
                         .tag("decision", decision.label())
                         .build(),
@@ -664,7 +664,7 @@ impl React for Conductor {
 }
 
 impl Conductor {
-    fn update_routing_bias(&self, stream: &[Engram], watcher_outputs: &[WatcherOutput]) {
+    fn update_routing_bias(&self, stream: &[Signal], watcher_outputs: &[WatcherOutput]) {
         let bias = derive_routing_bias(stream, watcher_outputs);
         if !bias.reason.is_empty() || bias.prefer_cheaper || !bias.deprioritize.is_empty() {
             tracing::info!(
@@ -678,7 +678,7 @@ impl Conductor {
     }
 }
 
-fn derive_routing_bias(stream: &[Engram], watcher_outputs: &[WatcherOutput]) -> RoutingBias {
+fn derive_routing_bias(stream: &[Signal], watcher_outputs: &[WatcherOutput]) -> RoutingBias {
     let mut reasons = Vec::new();
     let mut prefer_cheaper = false;
     let mut deprioritize = Vec::new();
@@ -723,11 +723,11 @@ fn derive_routing_bias(stream: &[Engram], watcher_outputs: &[WatcherOutput]) -> 
     }
 }
 
-fn latest_model_from_stream(stream: &[Engram]) -> Option<String> {
+fn latest_model_from_stream(stream: &[Signal]) -> Option<String> {
     stream.iter().rev().find_map(extract_model_slug)
 }
 
-fn extract_model_slug(signal: &Engram) -> Option<String> {
+fn extract_model_slug(signal: &Signal) -> Option<String> {
     signal.tag("model").map(str::to_owned).or_else(|| {
         signal
             .body
@@ -751,8 +751,8 @@ fn dedup_strings(values: &mut Vec<String>) {
 mod tests {
     use super::*;
 
-    fn ghost_turn_signal(cost_usd: f64) -> Engram {
-        Engram::builder(Kind::Custom(
+    fn ghost_turn_signal(cost_usd: f64) -> Signal {
+        Signal::builder(Kind::Custom(
             crate::watchers::ghost_turn::TURN_SIGNAL_KIND.into(),
         ))
         .body(
@@ -774,26 +774,26 @@ mod tests {
         .build()
     }
 
-    fn ghost_stream(count: usize) -> Vec<Engram> {
+    fn ghost_stream(count: usize) -> Vec<Signal> {
         (0..count)
             .map(|i| ghost_turn_signal(1.0 - (i as f64 * 0.1)))
             .collect()
     }
 
-    fn healthy_stream() -> Vec<Engram> {
+    fn healthy_stream() -> Vec<Signal> {
         vec![
-            Engram::builder(Kind::AgentOutput)
+            Signal::builder(Kind::AgentOutput)
                 .body(Body::text("implementing feature X"))
                 .build(),
-            Engram::builder(Kind::AgentOutput)
+            Signal::builder(Kind::AgentOutput)
                 .body(Body::text("running tests"))
                 .build(),
         ]
     }
 
-    fn plan_phase_stream(plan_id: &str) -> Vec<Engram> {
+    fn plan_phase_stream(plan_id: &str) -> Vec<Signal> {
         vec![
-            Engram::builder(Kind::PlanPhase)
+            Signal::builder(Kind::PlanPhase)
                 .body(Body::text("implementing"))
                 .tag(PLAN_ID_TAG, plan_id)
                 .tag("phase", "implementing")
@@ -889,10 +889,10 @@ mod tests {
     #[test]
     fn multiple_watchers_worst_wins() {
         // Stream that triggers both ghost-turn (warning) and iteration-loop (critical).
-        let mut stream: Vec<Engram> = ghost_stream(3);
+        let mut stream: Vec<Signal> = ghost_stream(3);
         for _ in 0..3 {
             stream.push(
-                Engram::builder(Kind::GateVerdict)
+                Signal::builder(Kind::GateVerdict)
                     .body(Body::Json(serde_json::json!({
                         "plan_id": "plan-1",
                         "gate": "compile",
@@ -902,7 +902,7 @@ mod tests {
                     .build(),
             );
             stream.push(
-                Engram::builder(Kind::PlanPhase)
+                Signal::builder(Kind::PlanPhase)
                     .body(Body::Json(serde_json::json!({
                         "plan_id": "plan-1",
                         "event": "GateFailed",
@@ -921,8 +921,8 @@ mod tests {
     #[test]
     fn watcher_count() {
         let c = Conductor::default();
-        // 10 original watchers + WorktreeCountWatcher (E08-T09)
-        assert_eq!(c.watchers.len(), 11);
+        // 10 original watchers + WorktreeCountWatcher (E08-T09) + DiskPressureWatcher
+        assert_eq!(c.watchers.len(), 12);
     }
 
     #[test]
@@ -937,7 +937,7 @@ mod tests {
     fn routing_bias_tracks_recent_failures_and_load_pressure() {
         let c = Conductor::default();
         let stream = vec![
-            Engram::builder(Kind::Custom("conductor.agent_output".into()))
+            Signal::builder(Kind::Custom("conductor.agent_output".into()))
                 .body(
                     Body::from_json(&serde_json::json!({
                         "model": "claude-opus-4-6",
@@ -949,12 +949,12 @@ mod tests {
                     .expect("serialize timing event"),
                 )
                 .build(),
-            Engram::builder(Kind::Metric)
+            Signal::builder(Kind::Metric)
                 .body(Body::text("cost"))
                 .tag("name", "plan_cost")
                 .tag("value", "12.5")
                 .build(),
-            Engram::builder(Kind::Metric)
+            Signal::builder(Kind::Metric)
                 .body(Body::text("budget"))
                 .tag("name", "plan_budget")
                 .tag("value", "10.0")
@@ -1021,12 +1021,12 @@ mod tests {
     fn evaluate_full_cost_pressure_emits_cooldown() {
         let c = Conductor::default();
         let stream = vec![
-            Engram::builder(Kind::Metric)
+            Signal::builder(Kind::Metric)
                 .body(Body::text("cost"))
                 .tag("name", "plan_cost")
                 .tag("value", "12.5")
                 .build(),
-            Engram::builder(Kind::Metric)
+            Signal::builder(Kind::Metric)
                 .body(Body::text("budget"))
                 .tag("name", "plan_budget")
                 .tag("value", "10.0")

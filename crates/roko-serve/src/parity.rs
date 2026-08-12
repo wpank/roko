@@ -424,12 +424,12 @@ pub fn build_parity_matrix() -> ParityMatrix {
             backend_source: ".roko/signals.jsonl".into(),
             status: ParityStatus::Partial,
         },
-        // -- Knowledge / Engram browse --
+        // -- Knowledge / Signal browse --
         ParityEntry {
-            feature: "Knowledge / Engram browse".into(),
+            feature: "Knowledge / Signal browse".into(),
             dashboard_route: None,
             tui_tab: Some("F7 Inspect".into()),
-            tui_subview: Some("Engram DAG inspector".into()),
+            tui_subview: Some("Signal DAG inspector".into()),
             cli_fallback: None,
             backend_source: "roko-neuro NeuroStore".into(),
             status: ParityStatus::Incomplete,

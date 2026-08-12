@@ -135,7 +135,7 @@ pub(crate) async fn cmd_init(
                 if trimmed.is_empty() {
                     continue;
                 }
-                if serde_json::from_str::<roko_core::Engram>(trimmed).is_ok() {
+                if serde_json::from_str::<roko_core::Signal>(trimmed).is_ok() {
                     engram_lines.push(line.to_string());
                 } else {
                     kept_lines.push(line.to_string());
@@ -986,7 +986,7 @@ impl RunnerEventStatus {
 }
 
 fn latest_episode_timestamp(
-    substrate_episodes: &[roko_core::Engram],
+    substrate_episodes: &[roko_core::Signal],
     file_episode_status: Option<&FileEpisodeStatus>,
 ) -> Option<u64> {
     substrate_episodes

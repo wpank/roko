@@ -275,7 +275,7 @@ impl ClaudeCliAgent {
         match find_mcp_config(&self.current_dir) {
             Some(Ok((path, _))) => Some(path),
             Some(Err(err)) => {
-                eprintln!("[claude-cli] ignoring invalid MCP config: {err}");
+                tracing::warn!(agent = "claude-cli", "ignoring invalid MCP config: {err}");
                 None
             }
             None => None,
@@ -500,7 +500,7 @@ impl ClaudeCliAgent {
                     for block in content {
                         if block.get("type").and_then(Value::as_str) == Some("tool_use") {
                             *tool_count += 1;
-                            eprintln!("[{agent_name}] {}", Self::tool_summary(block));
+                            tracing::debug!(agent = %agent_name, "{}", Self::tool_summary(block));
                         }
                     }
                 }
@@ -510,10 +510,10 @@ impl ClaudeCliAgent {
                     match block.get("type").and_then(Value::as_str) {
                         Some("tool_use") => {
                             *tool_count += 1;
-                            eprintln!("[{agent_name}] {}", Self::tool_summary(block));
+                            tracing::debug!(agent = %agent_name, "{}", Self::tool_summary(block));
                         }
                         Some("text") => {
-                            eprintln!("[{agent_name}] generating text...");
+                            tracing::debug!(agent = %agent_name, "generating text...");
                         }
                         _ => {}
                     }
@@ -532,7 +532,7 @@ impl ClaudeCliAgent {
                 } else {
                     format!("{text_bytes} bytes text")
                 };
-                eprintln!("[{agent_name}] result received ({summary})");
+                tracing::info!(agent = %agent_name, "result received ({summary})");
             }
             _ => {}
         }
@@ -612,7 +612,7 @@ impl ClaudeCliAgent {
     fn warn_and_filter_benign(&self, line: &str) -> bool {
         if let Some(benign) = classify_benign_stderr(line) {
             if benign_stderr_warn_once(benign.key) {
-                eprintln!("[{}] {}", self.name, benign.summary);
+                tracing::warn!(agent = %self.name, "{}", benign.summary);
             }
             return true;
         }
@@ -659,11 +659,11 @@ impl Agent for ClaudeCliAgent {
             }
         }
 
-        eprintln!(
-            "[{}] agent started (pid {}, timeout {}s)",
-            self.name,
-            pid.unwrap_or(0),
-            self.timeout_ms / 1000
+        tracing::info!(
+            agent = %self.name,
+            pid = pid.unwrap_or(0),
+            timeout_s = self.timeout_ms / 1000,
+            "agent started"
         );
 
         // Track activity across stdout and stderr for heartbeat messages.
@@ -693,7 +693,7 @@ impl Agent for ClaudeCliAgent {
                 }
                 stdout_activity.store(true, std::sync::atomic::Ordering::Relaxed);
                 if debug_enabled {
-                    eprintln!("{line}");
+                    tracing::debug!("{line}");
                 }
 
                 // Parse stream-json events for progress reporting.
@@ -736,7 +736,7 @@ impl Agent for ClaudeCliAgent {
                 collected.push('\n');
                 if let Some(event) = Self::parse_stream_event(trimmed) {
                     if debug_enabled {
-                        eprintln!("{line}");
+                        tracing::debug!("{line}");
                     }
                     Self::emit_stream_summary(
                         &agent_name,
@@ -745,9 +745,9 @@ impl Agent for ClaudeCliAgent {
                         &mut tool_count,
                     );
                 } else if debug_enabled {
-                    eprintln!("{line}");
+                    tracing::debug!("{line}");
                 } else if !stderr_agent.warn_and_filter_benign(&line) {
-                    eprintln!("[{agent_name}] {line}");
+                    tracing::debug!(agent = %agent_name, "{line}");
                 }
             }
             collected
@@ -766,7 +766,7 @@ impl Agent for ClaudeCliAgent {
                 // Only print heartbeat when there's been no recent stdout/stderr activity.
                 if !heartbeat_activity.swap(false, std::sync::atomic::Ordering::Relaxed) {
                     let elapsed = heartbeat_started.elapsed().as_secs();
-                    eprintln!("[{heartbeat_name}] waiting for response... ({elapsed}s elapsed)");
+                    tracing::debug!(agent = %heartbeat_name, elapsed_s = elapsed, "waiting for response");
                 }
             }
         });
@@ -816,7 +816,7 @@ impl Agent for ClaudeCliAgent {
             let code = status
                 .code()
                 .map_or_else(|| "signal".to_string(), |c| c.to_string());
-            eprintln!("[{}] failed (exit {code}) after {elapsed_secs}s", self.name);
+            tracing::warn!(agent = %self.name, exit_code = %code, elapsed_s = elapsed_secs, "agent failed");
             let stderr_reason = Self::first_human_stderr_line(&stderr).unwrap_or("claude failed");
             return self.failure_with_stream_usage(
                 input,
@@ -835,9 +835,10 @@ impl Agent for ClaudeCliAgent {
             }
         };
         if text.trim().is_empty() {
-            eprintln!(
-                "[{}] finished after {elapsed_secs}s but produced empty output",
-                self.name
+            tracing::warn!(
+                agent = %self.name,
+                elapsed_s = elapsed_secs,
+                "agent finished but produced empty output"
             );
             return self.failure_with_stream_usage(
                 input,
@@ -847,10 +848,11 @@ impl Agent for ClaudeCliAgent {
             );
         }
 
-        eprintln!(
-            "[{}] completed successfully ({elapsed_secs}s, {} bytes)",
-            self.name,
-            text.len()
+        tracing::info!(
+            agent = %self.name,
+            elapsed_s = elapsed_secs,
+            bytes = text.len(),
+            "agent completed successfully"
         );
 
         let output_signal = input

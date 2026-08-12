@@ -69,7 +69,7 @@ pub struct GraphSnapshot {
     /// Per-node execution status at snapshot time.
     pub node_statuses: HashMap<String, SerializableNodeStatus>,
     /// Activity node outputs. Workflow nodes are excluded (re-derived on resume).
-    pub node_outputs: HashMap<String, Vec<SerializableEngram>>,
+    pub node_outputs: HashMap<String, Vec<SerializableSignal>>,
     /// Hot Graph tick count at snapshot time.
     pub tick_count: u64,
     /// Unix milliseconds when the snapshot was captured.
@@ -117,14 +117,14 @@ impl From<SerializableNodeStatus> for NodeStatus {
     }
 }
 
-/// Lightweight serializable engram reference for snapshots.
+/// Lightweight serializable signal reference for snapshots.
 ///
-/// Full [`roko_core::Engram`] is already serde-compatible, but we wrap the
-/// JSON representation to keep the snapshot format stable even if Engram
+/// Full [`roko_core::Signal`] is already serde-compatible, but we wrap the
+/// JSON representation to keep the snapshot format stable even if Signal
 /// internals change.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SerializableEngram {
-    /// JSON-serialized engram.
+pub struct SerializableSignal {
+    /// JSON-serialized signal.
     pub json: serde_json::Value,
 }
 
@@ -170,7 +170,7 @@ pub struct NodeResult {
     pub duration: Duration,
     /// Error message if status is Failed.
     pub error: Option<String>,
-    /// Number of output engrams produced.
+    /// Number of output signals produced.
     pub output_count: usize,
 }
 
@@ -403,7 +403,7 @@ impl GraphEngine {
         let order = topological_order(&self.graph)?;
 
         // 2. Track outputs per node and failed-set for skip propagation
-        let mut outputs: HashMap<NodeId, Vec<roko_core::Engram>> = HashMap::new();
+        let mut outputs: HashMap<NodeId, Vec<roko_core::Signal>> = HashMap::new();
         let mut failed_nodes: HashSet<NodeId> = HashSet::new();
         let mut results: Vec<NodeResult> = Vec::with_capacity(order.len());
 
@@ -466,9 +466,9 @@ impl GraphEngine {
 
             // Execute the cell
             match cell.execute(input, ctx).await {
-                Ok(output_engrams) => {
+                Ok(output_signals) => {
                     let duration = node_start.elapsed();
-                    let count = output_engrams.len();
+                    let count = output_signals.len();
                     info!(
                         node_id = %node_id,
                         outputs = count,
@@ -483,7 +483,7 @@ impl GraphEngine {
                                 &graph_name,
                                 node_id,
                                 tick,
-                                output_engrams.clone(),
+                                output_signals.clone(),
                             ) {
                                 warn!(
                                     node_id = %node_id,
@@ -494,7 +494,7 @@ impl GraphEngine {
                         }
                     }
 
-                    outputs.insert(node_id.clone(), output_engrams);
+                    outputs.insert(node_id.clone(), output_signals);
                     results.push(NodeResult {
                         node_id: node_id.clone(),
                         cell_type: node.cell_type.clone(),
@@ -585,7 +585,7 @@ impl GraphEngine {
         let waves = topological_waves(&self.graph)?;
 
         // 2. Track outputs and failures
-        let outputs: Arc<parking_lot::Mutex<HashMap<NodeId, Vec<roko_core::Engram>>>> =
+        let outputs: Arc<parking_lot::Mutex<HashMap<NodeId, Vec<roko_core::Signal>>>> =
             Arc::new(parking_lot::Mutex::new(HashMap::new()));
         let failed_nodes: Arc<parking_lot::Mutex<HashSet<NodeId>>> =
             Arc::new(parking_lot::Mutex::new(HashSet::new()));
@@ -636,13 +636,22 @@ impl GraphEngine {
                 let ctx = ctx.clone();
 
                 join_set.spawn(async move {
-                    let _permit = sem.acquire().await.expect("semaphore closed");
+                    let Ok(_permit) = sem.acquire().await else {
+                        return NodeResult {
+                            node_id: node_id.clone(),
+                            cell_type,
+                            status: NodeStatus::Failed,
+                            duration: Duration::ZERO,
+                            error: Some("semaphore closed".into()),
+                            output_count: 0,
+                        };
+                    };
 
                     let node_start = Instant::now();
                     match cell.execute(input, &ctx).await {
-                        Ok(output_engrams) => {
+                        Ok(output_signals) => {
                             let duration = node_start.elapsed();
-                            let count = output_engrams.len();
+                            let count = output_signals.len();
                             NodeResult {
                                 node_id: node_id.clone(),
                                 cell_type,
@@ -674,12 +683,12 @@ impl GraphEngine {
                         if node_result.status == NodeStatus::Failed {
                             failed_nodes.lock().insert(node_result.node_id.clone());
                         }
-                        // Note: in parallel mode, we don't capture engram outputs
+                        // Note: in parallel mode, we don't capture signal outputs
                         // in the wave_outputs map because the spawned tasks don't
                         // return them (they're consumed inside the task). For full
                         // inter-wave data flow, we'd need to Arc the outputs.
                         // This is acceptable for plan execution where nodes are
-                        // independent and communicate via filesystem/git, not engrams.
+                        // independent and communicate via filesystem/git, not signals.
                         results.push(node_result);
                     }
                     Err(join_err) => {
@@ -732,7 +741,7 @@ impl GraphEngine {
     pub fn snapshot(
         &self,
         node_statuses: &HashMap<NodeId, NodeStatus>,
-        node_outputs: &HashMap<NodeId, Vec<roko_core::Engram>>,
+        node_outputs: &HashMap<NodeId, Vec<roko_core::Signal>>,
         tick: u64,
     ) -> GraphSnapshot {
         let mut snap_statuses = HashMap::new();
@@ -741,16 +750,16 @@ impl GraphEngine {
         }
 
         let mut snap_outputs = HashMap::new();
-        for (id, engrams) in node_outputs {
+        for (id, signals) in node_outputs {
             // Only snapshot Activity node outputs.
             if let Some(node) = self.graph.get_node(id) {
                 if node.execution_class == ExecutionClass::Activity {
-                    let serialized: Vec<SerializableEngram> = engrams
+                    let serialized: Vec<SerializableSignal> = signals
                         .iter()
                         .filter_map(|e| {
                             serde_json::to_value(e)
                                 .ok()
-                                .map(|json| SerializableEngram { json })
+                                .map(|json| SerializableSignal { json })
                         })
                         .collect();
                     if !serialized.is_empty() {
@@ -796,19 +805,19 @@ impl GraphEngine {
 
         let order = topological_order(&graph)?;
 
-        let mut outputs: HashMap<NodeId, Vec<roko_core::Engram>> = HashMap::new();
+        let mut outputs: HashMap<NodeId, Vec<roko_core::Signal>> = HashMap::new();
         #[allow(clippy::collection_is_never_read)]
         let mut failed_nodes: HashSet<NodeId> = HashSet::new();
         let mut results: Vec<NodeResult> = Vec::with_capacity(order.len());
 
         // Restore completed Activity node outputs from the snapshot.
-        for (node_id, serialized_engrams) in &snapshot.node_outputs {
-            let engrams: Vec<roko_core::Engram> = serialized_engrams
+        for (node_id, serialized_signals) in &snapshot.node_outputs {
+            let signals: Vec<roko_core::Signal> = serialized_signals
                 .iter()
                 .filter_map(|se| serde_json::from_value(se.json.clone()).ok())
                 .collect();
-            if !engrams.is_empty() {
-                outputs.insert(node_id.clone(), engrams);
+            if !signals.is_empty() {
+                outputs.insert(node_id.clone(), signals);
             }
         }
 
@@ -867,8 +876,8 @@ impl GraphEngine {
                 if let Some(&idx) = graph.node_map.get(node_id) {
                     for pred_idx in graph.inner.neighbors_directed(idx, Direction::Incoming) {
                         let pred_id = &graph.inner[pred_idx].id;
-                        if let Some(engrams) = outputs.get(pred_id) {
-                            input.extend(engrams.iter().cloned());
+                        if let Some(signals) = outputs.get(pred_id) {
+                            input.extend(signals.iter().cloned());
                         }
                     }
                 }
@@ -878,10 +887,10 @@ impl GraphEngine {
             let node_start = Instant::now();
 
             match cell.execute(input, ctx).await {
-                Ok(output_engrams) => {
+                Ok(output_signals) => {
                     let duration = node_start.elapsed();
-                    let count = output_engrams.len();
-                    outputs.insert(node_id.clone(), output_engrams);
+                    let count = output_signals.len();
+                    outputs.insert(node_id.clone(), output_signals);
                     results.push(NodeResult {
                         node_id: node_id.clone(),
                         cell_type: node.cell_type.clone(),
@@ -1040,7 +1049,7 @@ impl GraphEngine {
 
         let order = topological_order(&self.graph)?;
 
-        let mut outputs: HashMap<NodeId, Vec<roko_core::Engram>> = HashMap::new();
+        let mut outputs: HashMap<NodeId, Vec<roko_core::Signal>> = HashMap::new();
         let mut failed_nodes: HashSet<NodeId> = HashSet::new();
         let mut results: Vec<NodeResult> = Vec::with_capacity(order.len());
 
@@ -1090,13 +1099,13 @@ impl GraphEngine {
             let node_start = Instant::now();
 
             match cell.execute(input, ctx).await {
-                Ok(output_engrams) => {
+                Ok(output_signals) => {
                     let duration = node_start.elapsed();
-                    let count = output_engrams.len();
+                    let count = output_signals.len();
                     node_statuses
                         .lock()
                         .insert(node_id.clone(), NodeStatus::Complete);
-                    outputs.insert(node_id.clone(), output_engrams);
+                    outputs.insert(node_id.clone(), output_signals);
                     results.push(NodeResult {
                         node_id: node_id.clone(),
                         cell_type: node.cell_type.clone(),
@@ -1159,12 +1168,12 @@ impl GraphEngine {
         false
     }
 
-    /// Gather output engrams from all upstream (predecessor) nodes as input.
+    /// Gather output signals from all upstream (predecessor) nodes as input.
     fn gather_inputs(
         &self,
         node_id: &str,
-        outputs: &HashMap<NodeId, Vec<roko_core::Engram>>,
-    ) -> Vec<roko_core::Engram> {
+        outputs: &HashMap<NodeId, Vec<roko_core::Signal>>,
+    ) -> Vec<roko_core::Signal> {
         use petgraph::Direction;
 
         let Some(&idx) = self.graph.node_map.get(node_id) else {
@@ -1178,8 +1187,8 @@ impl GraphEngine {
             .neighbors_directed(idx, Direction::Incoming)
         {
             let pred_id = &self.graph.inner[pred_idx].id;
-            if let Some(engrams) = outputs.get(pred_id) {
-                input.extend(engrams.iter().cloned());
+            if let Some(signals) = outputs.get(pred_id) {
+                input.extend(signals.iter().cloned());
             }
         }
         input
@@ -1207,13 +1216,13 @@ impl GraphEngine {
         false
     }
 
-    /// Gather input engrams from upstream nodes -- variant that takes
+    /// Gather input signals from upstream nodes -- variant that takes
     /// an external `HashMap` (used by `execute_parallel` with a `Mutex` guard).
     fn gather_inputs_from(
         &self,
         node_id: &str,
-        outputs: &HashMap<NodeId, Vec<roko_core::Engram>>,
-    ) -> Vec<roko_core::Engram> {
+        outputs: &HashMap<NodeId, Vec<roko_core::Signal>>,
+    ) -> Vec<roko_core::Signal> {
         use petgraph::Direction;
 
         let Some(&idx) = self.graph.node_map.get(node_id) else {
@@ -1227,8 +1236,8 @@ impl GraphEngine {
             .neighbors_directed(idx, Direction::Incoming)
         {
             let pred_id = &self.graph.inner[pred_idx].id;
-            if let Some(engrams) = outputs.get(pred_id) {
-                input.extend(engrams.iter().cloned());
+            if let Some(signals) = outputs.get(pred_id) {
+                input.extend(signals.iter().cloned());
             }
         }
         input
@@ -1237,13 +1246,13 @@ impl GraphEngine {
     /// Extract `files_changed` from completed node outputs.
     ///
     /// Convention: nodes that modify files include a `"files_changed"` tag in
-    /// their output engrams. The tag value is a comma-separated list of file
+    /// their output signals. The tag value is a comma-separated list of file
     /// paths. This method scans all node outputs and collects those paths.
-    fn collect_files_changed(outputs: &HashMap<NodeId, Vec<roko_core::Engram>>) -> Vec<String> {
+    fn collect_files_changed(outputs: &HashMap<NodeId, Vec<roko_core::Signal>>) -> Vec<String> {
         let mut files = Vec::new();
-        for engrams in outputs.values() {
-            for engram in engrams {
-                if let Some(value) = engram.tags.get("files_changed") {
+        for signals in outputs.values() {
+            for signal in signals {
+                if let Some(value) = signal.tags.get("files_changed") {
                     for path in value.split(',') {
                         let trimmed = path.trim();
                         if !trimmed.is_empty() {
@@ -1390,9 +1399,9 @@ impl Cell for NoopCell {
     }
     async fn execute(
         &self,
-        input: Vec<roko_core::Engram>,
+        input: Vec<roko_core::Signal>,
         _ctx: &CellContext,
-    ) -> roko_core::error::Result<Vec<roko_core::Engram>> {
+    ) -> roko_core::error::Result<Vec<roko_core::Signal>> {
         Ok(input)
     }
 }
@@ -1444,9 +1453,9 @@ impl Cell for ShellCell {
     }
     async fn execute(
         &self,
-        input: Vec<roko_core::Engram>,
+        input: Vec<roko_core::Signal>,
         _ctx: &CellContext,
-    ) -> roko_core::error::Result<Vec<roko_core::Engram>> {
+    ) -> roko_core::error::Result<Vec<roko_core::Signal>> {
         let output = tokio::process::Command::new(self.program)
             .args(self.args)
             .output()

@@ -1,12 +1,15 @@
 # Roko Railway image.
 #
-# One public Railway service:
-#   - roko serve listens on 0.0.0.0:$PORT
-#   - mirage-rs listens on 127.0.0.1:8545
-#   - agent-relay listens on 127.0.0.1:9011
+# Two build targets:
+#   runtime   — full Railway service with sidecars (mirage-rs, agent-relay, Claude CLI, Rust toolchain)
+#   distroless — minimal roko-cli-only image using gcr.io/distroless/cc-debian12
 #
-# The sidecars are required build artifacts. A deploy must fail if they do not
-# build, instead of silently shipping a half-functional control plane.
+# The sidecars are required build artifacts for the `runtime` target. A deploy must
+# fail if they do not build, instead of silently shipping a half-functional control plane.
+#
+# Usage:
+#   docker build --target runtime   -t roko:railway .       # Full Railway deploy
+#   docker build --target distroless -t roko:slim .          # Minimal distroless image
 
 # ---- Frontend (Vite) -------------------------------------------------------
 FROM node:22-bookworm-slim AS frontend
@@ -40,7 +43,33 @@ RUN cargo build --release -p roko-cli --bin roko \
     && cp target/release/mirage-rs /tmp/mirage-rs \
     && cp target/release/agent-relay /tmp/agent-relay
 
-# ---- Runtime ---------------------------------------------------------------
+# ---- Distroless (minimal roko-cli only) ------------------------------------
+# Binary-only image: no shell, no package manager, no source.
+# Port: ROKO_PORT env var (default 6677).
+FROM gcr.io/distroless/cc-debian12 AS distroless
+
+LABEL org.opencontainers.image.title="roko-serve (distroless)" \
+      org.opencontainers.image.description="Roko control plane — minimal distroless image" \
+      org.opencontainers.image.source="https://github.com/nunchi/roko"
+
+COPY --from=builder /tmp/roko /usr/local/bin/roko
+
+# Runtime environment
+ENV RUST_LOG=info
+ENV ROKO_BIND=0.0.0.0
+ENV ROKO_PORT=6677
+
+EXPOSE 6677
+
+# distroless has no shell, so HEALTHCHECK CMD cannot use shell syntax.
+# Use the binary itself for the health check.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD ["/usr/local/bin/roko", "status", "--json"]
+
+ENTRYPOINT ["/usr/local/bin/roko"]
+CMD ["serve"]
+
+# ---- Runtime (full) -------------------------------------------------------
 # Compiled binaries + Rust toolchain (for gate pipeline) + Claude CLI (for agent dispatch).
 FROM debian:bookworm-slim AS runtime
 

@@ -1304,6 +1304,7 @@ where
     let max_iterations = session.config_state.max_iterations;
     let review_strictness = session.config_state.review_strictness.clone();
     let session_mcp_servers = session.mcp_servers.clone();
+    let session_mcp_config_path = session.mcp_config_path.clone();
     let session_tools_enabled = session.tools_enabled;
     // Effort level from the IDE dropdown (low/medium/high/max). Passed to
     // config_with_session_effort() at dispatch time so the provider backend
@@ -1505,6 +1506,7 @@ where
                     &roko_config,
                     &workdir,
                     &session_mcp_servers,
+                    session_mcp_config_path.as_deref(),
                     &session_effort,
                     session_tools_enabled,
                     cancel_token,
@@ -2197,6 +2199,12 @@ fn acp_stop_reason_from_model(stop_reason: Option<&str>) -> StopReason {
 /// OpenAI-compatible provider selections (zhipu/GLM, moonshot/Kimi, OpenAI,
 /// Perplexity, Ollama, etc.). Accepts a pre-built messages array with system
 /// prompt and history.
+///
+/// `mcp_config_path` is the auto-discovered `.mcp.json` path resolved during
+/// session creation (see [`crate::session::AcpSession::mcp_config_path`]). When
+/// the session has no explicitly-attached MCP servers but a workspace `.mcp.json`
+/// was found, this path is forwarded to the `ModelCallService` so Claude CLI
+/// backends can load it via the `--mcp-config` flag.
 #[allow(clippy::too_many_arguments)]
 async fn run_openai_compat_cognitive_task(
     session_id: &str,
@@ -2205,6 +2213,7 @@ async fn run_openai_compat_cognitive_task(
     roko_config: &RokoConfig,
     workdir: &Path,
     mcp_servers: &[crate::types::McpServerConfig],
+    mcp_config_path: Option<&Path>,
     effort: &str,
     tools_enabled: bool,
     cancel_token: CancelToken,
@@ -2265,8 +2274,12 @@ async fn run_openai_compat_cognitive_task(
 
     // Fallback: plain streaming with no tool execution loop.
     // Thread session MCP servers as a --mcp-config file for Claude CLI dispatch.
+    // If no session-attached servers produced a written config, fall back to the
+    // auto-discovered workspace `.mcp.json` path resolved at session creation time.
     let mut caller = ModelCallService::new(model_key.to_string()).with_config(roko_config.clone());
-    if let Some(mcp_path) = write_session_mcp_config(mcp_servers, workdir) {
+    let resolved_mcp_path = write_session_mcp_config(mcp_servers, workdir)
+        .or_else(|| mcp_config_path.map(PathBuf::from));
+    if let Some(mcp_path) = resolved_mcp_path {
         caller = caller.with_mcp_config(mcp_path);
     }
     let tools = tools_enabled.then(acp_builtin_tools).unwrap_or_default();
@@ -4119,7 +4132,7 @@ Available commands (organized by Will's core loop):
         tokio::io::BufReader::new(child.stderr.take().expect("stderr was piped")).lines();
     let mut stdout_done = false;
     let mut stderr_done = false;
-    let mut output = String::new();
+    let mut had_output = false;
     let mut progress_task_counter: u64 = 0;
 
     loop {
@@ -4186,18 +4199,24 @@ Available commands (organized by Will's core loop):
                                     }
                                     _ => {
                                         // Unknown progress type — pass through as text
-                                        output.push_str(&l);
-                                        output.push('\n');
+                                        had_output = true;
+                                        let _ = event_sender
+                                            .send(CognitiveEvent::TokenChunk(format!("{l}\n")))
+                                            .await;
                                     }
                                 }
                             } else {
                                 // JSON parse failed — pass through as plain text
-                                output.push_str(&l);
-                                output.push('\n');
+                                had_output = true;
+                                let _ = event_sender
+                                    .send(CognitiveEvent::TokenChunk(format!("{l}\n")))
+                                    .await;
                             }
                         } else {
-                            output.push_str(&l);
-                            output.push('\n');
+                            had_output = true;
+                            let _ = event_sender
+                                .send(CognitiveEvent::TokenChunk(format!("{l}\n")))
+                                .await;
                         }
                     }
                     Ok(None) => stdout_done = true,
@@ -4210,7 +4229,10 @@ Available commands (organized by Will's core loop):
             line = stderr_lines.next_line(), if !stderr_done => {
                 match line {
                     Ok(Some(l)) => {
-                        output.push_str(&format!("\x1b[2m{}\x1b[0m\n", l));
+                        had_output = true;
+                        let _ = event_sender
+                            .send(CognitiveEvent::TokenChunk(format!("\x1b[2m{l}\x1b[0m\n")))
+                            .await;
                     }
                     Ok(None) => stderr_done = true,
                     Err(e) => {
@@ -4224,11 +4246,13 @@ Available commands (organized by Will's core loop):
 
     let _ = child.wait().await;
 
-    if output.is_empty() {
-        output = format!("/{command} completed (no output)");
+    if !had_output {
+        let _ = event_sender
+            .send(CognitiveEvent::TokenChunk(format!(
+                "/{command} completed (no output)"
+            )))
+            .await;
     }
-
-    let _ = event_sender.send(CognitiveEvent::TokenChunk(output)).await;
     let _ = event_sender
         .send(CognitiveEvent::Complete {
             stop_reason: StopReason::EndTurn,
@@ -4498,7 +4522,7 @@ fn extract_prompt_text(prompt: &[ContentBlock]) -> String {
         .map(|block| match block {
             ContentBlock::Text { text } => text.clone(),
             ContentBlock::Resource { .. } => String::new(),
-            ContentBlock::Image { .. } => String::new(),
+            ContentBlock::Image { mime_type, .. } => format!("[image: {mime_type}]"),
             ContentBlock::Diff { path, diff, .. } => {
                 format!("diff {path}:\n{}", diff.as_deref().unwrap_or(""))
             }

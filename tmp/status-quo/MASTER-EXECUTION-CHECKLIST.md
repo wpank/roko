@@ -42,10 +42,25 @@ mapping and equivalent-or-stronger acceptance. It never means “we chose not to
 
 ### Batch audit 2026-08-10
 
-Updated 2026-08-12 (batch 8 integrated)
+Updated 2026-08-12 (batches 8+9 integrated)
 
-Batches 1-8: 27 audit + 20 implementation + 27 mixed + 15 + 15 + 14 partial + 30 + 30 impl
+Batches 1-9: 27 audit + 20 implementation + 27 mixed + 15 + 15 + 14 partial + 30 + 30 + 30 impl
 agents. All changes integrated and pushed to `status-quo/batch-2026-08-10`.
+
+Batch 9 summary (30 agents, 15 auto-committed + 14 with working tree changes, ~5,000 LOC):
+
+| Plan/Issue | Progress | Batch 9 additions |
+|---|---|---|
+| E30 (plugin system) | 8/9 | T02: FilterDecision/BudgetAction hooks, T05: ExtensionHealthTracker circuit breaker, T06: hook timeout + auto-disable, T08: TOML manifest loader |
+| E31 (trigger system) | 4/8 | T02: ConcurrencyPolicy serde + TriggerFilter matching, T03: TriggerAuth/SecretRef validation, T04: TriggerCellAdapter |
+| E32 (tool registry) | 5/8 | T02: SandboxConfig with tier-based isolation, T03: version resolution + conflict detection |
+| E34 (security/IFC) | 8/8 | T02: lattice-aware taint propagation, T05: 5 sandbox enforcement levels, T07: QuarantineVault persistence (**DONE**) |
+| E35 (auth/tokens) | 5/8 | T03: relay tokens (issue/validate/single-use), T04: auth audit trail (JSONL + sweep + query) |
+| E43 (ops hardening) | 8/8 | T02: brain import with Merkle verify + dedup, T04: daemon health (PID+HTTP probe), T05: log rotation (**DONE**) |
+| E45 (agent quality) | 10/10 | T04: post-gate reflection with dedup + cost guard (**DONE**) |
+| E46 (GitHub) | 8/12 | T05: issue event pipeline, T06: workflow_run handler, T07: check_suite handler, T08: deployment event handler |
+| E47 (resource mgmt) | 10/11 | T04: disk pre-check wired, T05: target/ cleanup scanner, T06: worktree lifecycle cleanup, T08: DiskPressureWatcher wired |
+| E48 (cost control) | 10/12 | T05: shared rate pool (Arc<ProviderHealthRegistry>), T06: FallbackChain on rate limit, T10: --budget-override CLI flag |
 
 Batch 8 summary (30 agents, 23 with committed code, ~3,500 LOC):
 
@@ -63,7 +78,9 @@ Batch 8 summary (30 agents, 23 with committed code, ~3,500 LOC):
 | E48 (cost control) | 7/12 | T07: token estimator, T08: provider health routing, T09: cost projection |
 | E32 (tool registry) | 3/8 | T01: DynamicToolRegistry improvements |
 
-Cross-wave ledger: ~95 confirmed done, ~15 partial, ~10 greenfield remaining in active plans.
+Cross-wave ledger: ~125 confirmed done, ~10 partial, ~5 greenfield remaining in active plans.
+
+Epics completed (all tasks done): **E34** (security/IFC 8/8), **E43** (ops hardening 8/8), **E45** (agent quality 10/10).
 
 Prior findings:
 

@@ -1,372 +1,702 @@
-//! Trigger protocol types for roko-core.
+//! Trigger protocol types — protocol-level definitions for the Roko trigger system.
 //!
-//! This module provides the trigger binding, event, and protocol types used
-//! by the agent runtime to register and evaluate triggers. It mirrors the
-//! design of the roko-plugin manifest trigger DSL but at the core layer
-//! without any plugin-specific dependencies.
+//! These types are distinct from `roko-plugin`'s manifest-level `TriggerDef` stubs.
+//! This module provides full protocol fidelity: the 7-source state machine, handle
+//! lifecycle, event struct, and binding configuration.
 //!
-//! # Key types
+//! # Architecture
 //!
-//! - [`TriggerProtocol`] — the wire protocol for trigger registration.
-//! - [`TriggerBinding`] — a concrete binding between a trigger and its action.
-//! - [`TriggerEvent`] — a fired trigger event carried on the event bus.
-//! - [`TriggerKind`] — discriminant enum.
-//! - [`TriggerHandle`] — a cancellable handle to a registered trigger.
-//! - [`TriggerState`] — runtime lifecycle state of a trigger.
+//! A trigger is an armed condition that fires when criteria are met, publishing a
+//! `TriggerEvent` pulse. Implementors of [`TriggerProtocol`] handle a specific source
+//! kind (Cron, Webhook, FileWatch, etc.).
+//!
+//! ```text
+//! TriggerBinding ──arm()──► TriggerHandle (Armed)
+//!                               │
+//!                    condition  ▼
+//!                           TriggerEvent published as Pulse
+//!                               │
+//!                    disarm()   ▼
+//!                           TriggerHandle (Disarmed)
+//! ```
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::time::SystemTime;
+
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-// ─── basic identifiers ────────────────────────────────────────────────────────
+use crate::error::Result;
 
-/// A unique trigger identifier (newtype around `String`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TriggerId(pub String);
+// ── Placeholder type aliases ──────────────────────────────────────────────────
+// These will be replaced with concrete types as CellRef/GraphRef/SpaceId/etc. land.
 
-/// A plan/graph space identifier.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SpaceId(pub String);
+/// Unique identifier for a trigger binding.
+pub type TriggerId = String;
 
-/// A graph reference (name or UUID).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct GraphRef(pub String);
+/// Reference to a Graph (placeholder until Graph types exist).
+pub type GraphRef = String;
 
-/// An opaque trace ID for correlation.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TraceId(pub String);
+/// Space identifier for capability scoping.
+pub type SpaceId = String;
 
-/// A reference to a named secret.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SecretRef {
-    /// The name/key of the secret.
-    pub name: String,
-}
+/// Trace identifier for correlating trigger events with resulting flows.
+pub type TraceId = String;
 
-/// A reference to a named signal.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SignalRef {
-    /// The kind of the signal being referenced.
-    pub kind: String,
-}
+/// Author reference for manual triggers.
+pub type Author = String;
 
-// ─── rate limit ───────────────────────────────────────────────────────────────
+/// JSONPath expression (placeholder string).
+pub type Expr = String;
 
-/// Action to take when a rate limit is exceeded.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RateLimitAction {
-    /// Queue the trigger until the window resets.
-    Queue,
-    /// Drop the trigger silently.
-    Drop,
-    /// Return an error to the caller.
-    Error,
-}
+/// Signal reference (placeholder).
+pub type SignalRef = String;
 
-/// Rate-limiting configuration for a trigger.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RateLimit {
-    /// Maximum number of fires in the window.
-    pub max: u32,
-    /// Window duration in seconds.
-    pub window_secs: u64,
-    /// Action when the limit is exceeded.
-    pub action: RateLimitAction,
-}
+// ── TriggerProtocol ───────────────────────────────────────────────────────────
 
-// ─── concurrency policy ───────────────────────────────────────────────────────
-
-/// Policy for concurrent trigger evaluations.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ConcurrencyPolicy {
-    /// Allow any number of concurrent evaluations.
-    Allow,
-    /// Queue new evaluations until the current one finishes.
-    Queue,
-    /// Skip if an evaluation is already running.
-    Skip,
-    /// Abort the current evaluation and start a new one.
-    Replace,
-}
-
-// ─── expression ───────────────────────────────────────────────────────────────
-
-/// A simple expression for trigger condition guards.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Expr(pub String);
-
-// ─── auth ─────────────────────────────────────────────────────────────────────
-
-/// Authentication configuration for webhook triggers.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TriggerAuth {
-    /// Secret used for HMAC signature verification.
-    pub secret: Option<SecretRef>,
-    /// Required HTTP header name/value pairs.
-    pub headers: HashMap<String, String>,
-}
-
-// ─── filter ───────────────────────────────────────────────────────────────────
-
-/// A filter applied to incoming trigger events.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TriggerFilter {
-    /// CEL expression that must evaluate to `true`.
-    pub expr: Option<Expr>,
-    /// Signal kinds to match (for signal-pattern triggers).
-    pub signal_kinds: Vec<String>,
-}
-
-// ─── input mapping ────────────────────────────────────────────────────────────
-
-/// A mapping from trigger event fields to graph input fields.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct InputFieldMapping {
-    /// Source field path in the trigger event.
-    pub from: String,
-    /// Destination field name in the graph input.
-    pub to: String,
-}
-
-/// Input mapping configuration for a trigger.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TriggerInputMapping {
-    /// Field mappings.
-    pub fields: Vec<InputFieldMapping>,
-    /// Default input values.
-    pub defaults: HashMap<String, serde_json::Value>,
-}
-
-// ─── trigger source ───────────────────────────────────────────────────────────
-
-/// The runtime source that fires a trigger.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-pub enum TriggerSource {
-    /// Cron-based schedule.
-    Cron { schedule: String },
-    /// Signal pattern match.
-    SignalPattern { kinds: Vec<String> },
-    /// File system watch.
-    FileWatch { paths: Vec<String> },
-    /// Inbound webhook.
-    Webhook { path: String },
-    /// Bus event subscription.
-    Bus { topic: String },
-    /// Chain event subscription.
-    ChainEvent { event_signature: String },
-    /// Explicit manual invocation.
-    Manual,
-}
-
-// ─── concrete trigger types ───────────────────────────────────────────────────
-
-/// A cron-scheduled trigger.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CronTrigger {
-    /// POSIX cron expression (e.g. `"0 * * * *"` = every hour).
-    pub schedule: String,
-    /// Optional timezone (defaults to UTC).
-    pub timezone: Option<String>,
-    /// Rate-limit settings.
-    pub rate_limit: Option<RateLimit>,
-    /// Concurrency policy.
-    pub concurrency: ConcurrencyPolicy,
-}
-
-/// A trigger that fires when a signal matching a pattern arrives on the bus.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SignalPatternTrigger {
-    /// Signal kinds to watch.
-    pub kinds: Vec<String>,
-    /// Optional CEL filter expression.
-    pub filter: Option<Expr>,
-    /// Concurrency policy.
-    pub concurrency: ConcurrencyPolicy,
-}
-
-/// A filesystem-watch trigger.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FileWatchTrigger {
-    /// Paths or globs to watch.
-    pub paths: Vec<String>,
-    /// Events to observe (`"create"`, `"modify"`, `"delete"`).
-    pub events: Vec<String>,
-    /// Debounce delay in milliseconds.
-    pub debounce_ms: Option<u64>,
-}
-
-/// An inbound webhook trigger.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WebhookTrigger {
-    /// HTTP path to listen on (relative to the serve base URL).
-    pub path: String,
-    /// Accepted HTTP methods.
-    pub methods: Vec<String>,
-    /// Authentication configuration.
-    pub auth: Option<TriggerAuth>,
-    /// Rate-limit settings.
-    pub rate_limit: Option<RateLimit>,
-}
-
-/// A bus-subscription trigger.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct BusTrigger {
-    /// Bus topic to subscribe to.
-    pub topic: String,
-    /// Optional filter expression.
-    pub filter: Option<Expr>,
-    /// Concurrency policy.
-    pub concurrency: ConcurrencyPolicy,
-}
-
-/// A chain-event trigger.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ChainEventTrigger {
-    /// Solidity-style event signature (e.g. `"Transfer(address,address,uint256)"`).
-    pub event_signature: String,
-    /// Contract address filter (optional).
-    pub contract: Option<String>,
-    /// Concurrency policy.
-    pub concurrency: ConcurrencyPolicy,
-}
-
-/// A filesystem-watch event reported to a [`FileWatchTrigger`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FileWatchEvent {
-    /// Kind of filesystem event.
-    pub kind: String,
-    /// Affected path.
-    pub path: String,
-}
-
-// ─── TriggerKind ─────────────────────────────────────────────────────────────
-
-/// Discriminant enum for the kind of a trigger.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TriggerKind {
-    /// Fires on a cron schedule.
-    Cron,
-    /// Fires when a matching signal is observed.
-    SignalPattern,
-    /// Fires on filesystem changes.
-    FileWatch,
-    /// Fires on an inbound webhook request.
-    Webhook,
-    /// Fires on a bus message.
-    Bus,
-    /// Fires on a chain event.
-    ChainEvent,
-    /// Fires only on explicit manual invocation.
-    Manual,
-}
-
-// ─── TriggerState ─────────────────────────────────────────────────────────────
-
-/// Runtime lifecycle state of a registered trigger.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TriggerState {
-    /// The trigger is registered and actively watching for events.
-    Active,
-    /// The trigger is registered but suspended (not evaluating).
-    Suspended,
-    /// The trigger has been unregistered.
-    Cancelled,
-    /// The trigger encountered an error during evaluation.
-    Faulted,
-}
-
-// ─── TriggerEvent ─────────────────────────────────────────────────────────────
-
-/// A fired trigger event, carried on the internal event bus.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TriggerEvent {
-    /// The ID of the trigger that fired.
-    pub trigger_id: TriggerId,
-    /// The kind of trigger.
-    pub kind: TriggerKind,
-    /// Timestamp when the event fired (Unix seconds).
-    pub fired_at: i64,
-    /// Payload data for the event (varies by trigger kind).
-    pub payload: serde_json::Value,
-    /// Optional correlation trace ID.
-    pub trace_id: Option<TraceId>,
-}
-
-// ─── TriggerBinding ───────────────────────────────────────────────────────────
-
-/// A concrete binding between a trigger source and a graph/action target.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TriggerBinding {
-    /// Unique trigger identifier.
-    pub id: TriggerId,
-    /// Human-readable label.
-    pub label: Option<String>,
-    /// The trigger source that fires this binding.
-    pub source: TriggerSource,
-    /// Target graph reference.
-    pub graph: Option<GraphRef>,
-    /// Space context.
-    pub space: Option<SpaceId>,
-    /// Input mapping from event fields to graph inputs.
-    pub input_mapping: Option<TriggerInputMapping>,
-    /// Filter to apply before firing.
-    pub filter: Option<TriggerFilter>,
-    /// Whether the trigger is currently enabled.
-    pub enabled: bool,
-}
-
-// ─── TriggerHandle ────────────────────────────────────────────────────────────
-
-/// A cancellable handle to a registered trigger.
+/// Protocol for trigger implementations.
 ///
-/// Drop this handle or call [`TriggerHandle::cancel`] to deregister the
-/// trigger.
-#[derive(Debug)]
+/// Each trigger kind (Cron, Webhook, FileWatch, Bus, ChainEvent, Manual,
+/// SignalPattern) implements this trait. When armed, the implementation sets up
+/// the event subscription (timer, Axum route, notify watcher, etc.) and returns a
+/// [`TriggerHandle`]. When the condition fires, the implementation publishes a
+/// `TriggerEvent` pulse on `trigger:{name}:fired`.
+///
+/// # Anti-patterns
+///
+/// Do NOT add runtime/bus dependencies to this trait's method signatures in
+/// roko-core — the Bus type parameter would create a dependency cycle. Implementors
+/// live in crates that depend on roko-core, not the other way around.
+#[async_trait]
+pub trait TriggerProtocol: Send + Sync {
+    /// Arm the trigger. Sets up event subscription and returns a handle.
+    ///
+    /// The implementation must:
+    /// 1. Validate the binding's kind-specific config.
+    /// 2. Set up the subscription/watcher/route/timer.
+    /// 3. Return a `TriggerHandle` in the `Armed` state.
+    async fn arm(&self, binding: TriggerBinding) -> Result<TriggerHandle>;
+
+    /// Disarm the trigger. Tears down subscriptions and cleans up resources.
+    ///
+    /// After disarming, the handle's state transitions to `Disarmed`.
+    async fn disarm(&self, handle: TriggerHandle) -> Result<()>;
+}
+
+// ── TriggerHandle ─────────────────────────────────────────────────────────────
+
+/// A live handle to an armed trigger.
+///
+/// Returned by [`TriggerProtocol::arm`]. The handle carries the binding
+/// configuration and current state. Pass this to [`TriggerProtocol::disarm`]
+/// to clean up.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TriggerHandle {
-    /// Trigger ID.
+    /// Unique identifier for this armed instance.
     pub id: TriggerId,
-    /// Internal cancellation sender.
-    cancel_tx: tokio::sync::watch::Sender<bool>,
+    /// The binding that was armed.
+    pub binding: TriggerBinding,
+    /// When the trigger was armed (millis since UNIX epoch).
+    pub armed_at_ms: u64,
+    /// Current lifecycle state.
+    pub state: TriggerState,
 }
 
 impl TriggerHandle {
-    /// Create a new handle for `id`.
-    pub fn new(id: TriggerId) -> (Self, tokio::sync::watch::Receiver<bool>) {
-        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
-        (Self { id, cancel_tx }, cancel_rx)
+    /// Create a new handle in the `Armed` state.
+    #[must_use]
+    pub fn new_armed(id: TriggerId, binding: TriggerBinding) -> Self {
+        let armed_at_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        Self {
+            id,
+            binding,
+            armed_at_ms,
+            state: TriggerState::Armed,
+        }
     }
 
-    /// Signal cancellation of the trigger.
-    pub fn cancel(&self) {
-        let _ = self.cancel_tx.send(true);
+    /// Returns true if the trigger is currently capable of firing.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        matches!(self.state, TriggerState::Armed | TriggerState::Firing)
     }
 }
 
-// ─── TriggerProtocol ──────────────────────────────────────────────────────────
+// ── TriggerState ─────────────────────────────────────────────────────────────
 
-/// Wire-protocol request/response types for trigger registration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TriggerProtocol {
-    /// The binding to register.
-    pub binding: TriggerBinding,
-    /// Optional authentication token for the registration call.
-    pub auth_token: Option<String>,
+/// Lifecycle state of an armed trigger.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum TriggerState {
+    /// Watching for conditions; ready to fire.
+    Armed,
+    /// Currently executing a fire (condition met, Flow being spawned).
+    Firing,
+    /// Temporarily suppressed until the given epoch (millis since UNIX epoch).
+    Cooldown {
+        /// Epoch ms at which the cooldown expires and the trigger returns to `Armed`.
+        until_ms: u64,
+    },
+    /// Explicitly disarmed; no longer watching.
+    Disarmed,
+    /// Encountered an unrecoverable error; requires manual intervention.
+    Failed {
+        /// Human-readable error description.
+        error: String,
+    },
 }
 
-// ─── Author ───────────────────────────────────────────────────────────────────
+// ── TriggerEvent ─────────────────────────────────────────────────────────────
 
-/// The author or origin of a trigger.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// An event fired by a trigger.
+///
+/// Published as a [`Pulse`](crate::Pulse) on `trigger:{name}:fired`. The Trigger
+/// Engine subscribes to `trigger:*:fired` and spawns the bound Graph as a Flow.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TriggerEvent {
+    /// The trigger that fired.
+    pub trigger_id: TriggerId,
+    /// When the event fired (millis since UNIX epoch).
+    pub fired_at_ms: u64,
+    /// The event payload (kind-specific structure).
+    pub payload: Value,
+    /// Which source produced this event.
+    pub source: TriggerSource,
+    /// Space this event originated in (for Space capability scoping).
+    pub space_id: Option<SpaceId>,
+    /// Trace ID for correlating the trigger event with the resulting Flow.
+    pub trace_id: TraceId,
+}
+
+impl TriggerEvent {
+    /// Create a new trigger event with the current timestamp.
+    #[must_use]
+    pub fn new(
+        trigger_id: TriggerId,
+        payload: Value,
+        source: TriggerSource,
+        trace_id: TraceId,
+    ) -> Self {
+        let fired_at_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        Self {
+            trigger_id,
+            fired_at_ms,
+            payload,
+            source,
+            space_id: None,
+            trace_id,
+        }
+    }
+
+    /// Set the space scope for this event.
+    #[must_use]
+    pub fn with_space(mut self, space_id: SpaceId) -> Self {
+        self.space_id = Some(space_id);
+        self
+    }
+}
+
+// ── TriggerSource ─────────────────────────────────────────────────────────────
+
+/// The 7 possible origins of a trigger event.
+///
+/// Each variant carries the kind-specific metadata that was captured when the
+/// condition fired.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TriggerSource {
+    /// A cron schedule fired.
+    Cron {
+        /// The cron expression that matched.
+        expression: String,
+    },
+    /// An inbound HTTP webhook matched.
+    Webhook {
+        /// HTTP method (GET, POST, etc.).
+        method: String,
+        /// Path that received the request.
+        path: String,
+        /// Headers from the inbound request (selected subset, not all headers).
+        headers: BTreeMap<String, String>,
+    },
+    /// A filesystem event was detected.
+    FileWatch {
+        /// The path that changed.
+        path: PathBuf,
+        /// The kind of filesystem event.
+        event: FileWatchEvent,
+    },
+    /// A matching pulse was received on the Bus.
+    Bus {
+        /// Bus topic the pulse arrived on.
+        topic: String,
+        /// Sequence number of the matching pulse.
+        pulse_seq: u64,
+    },
+    /// An on-chain event was indexed.
+    ChainEvent {
+        /// Chain ID (EIP-155).
+        chain_id: u64,
+        /// Block number containing the event.
+        block_number: u64,
+        /// Transaction hash that emitted the event.
+        tx_hash: String,
+    },
+    /// Manually fired by a user or API call.
+    Manual {
+        /// The author who triggered it.
+        user: Author,
+    },
+    /// A pattern of signals matched.
+    SignalPattern {
+        /// The signals that matched the pattern.
+        matched_signals: Vec<SignalRef>,
+    },
+}
+
+/// Filesystem event kinds for [`TriggerSource::FileWatch`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Author {
-    /// Created by a user.
-    User(String),
-    /// Created by a plan task.
-    Plan(String),
-    /// Created by the system.
-    System,
+pub enum FileWatchEvent {
+    Created,
+    Modified,
+    Deleted,
+    Renamed,
+    /// Any of the above.
+    Any,
+}
+
+// ── TriggerBinding ────────────────────────────────────────────────────────────
+
+/// Persistent, TOML-defined configuration connecting an event source to a Graph.
+///
+/// Bindings survive process restarts — they are stored in `.roko/triggers/`
+/// and re-armed on startup. See `TriggerProtocol::arm` for the arming contract.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TriggerBinding {
+    /// Unique name for this binding (used as the file stem in `.roko/triggers/`).
+    pub name: String,
+    /// The trigger kind and its source-specific configuration.
+    pub kind: TriggerKind,
+    /// The Graph to fire when the trigger activates.
+    pub graph: GraphRef,
+    /// How to map the trigger event payload to Graph input signals.
+    pub input_mapping: Option<TriggerInputMapping>,
+    /// What to do if the trigger fires while a previous Flow is still running.
+    pub concurrency: ConcurrencyPolicy,
+    /// Additional conditions that must be met beyond the kind-specific matching.
+    pub filter: Option<TriggerFilter>,
+    /// Whether this binding is currently enabled (can be toggled without deletion).
+    pub enabled: bool,
+    /// Space this trigger runs within (restricts capability grants for fired Flows).
+    pub space: Option<SpaceId>,
+    /// Authentication configuration for the trigger source.
+    pub auth: Option<TriggerAuth>,
+}
+
+impl TriggerBinding {
+    /// Create a minimal enabled binding with default concurrency.
+    #[must_use]
+    pub fn new(name: impl Into<String>, kind: TriggerKind, graph: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+            graph: graph.into(),
+            input_mapping: None,
+            concurrency: ConcurrencyPolicy::Queue { max_depth: None },
+            filter: None,
+            enabled: true,
+            space: None,
+            auth: None,
+        }
+    }
+}
+
+// ── TriggerKind ───────────────────────────────────────────────────────────────
+
+/// Per-source configuration for a trigger binding.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TriggerKind {
+    Cron(CronTrigger),
+    Webhook(WebhookTrigger),
+    FileWatch(FileWatchTrigger),
+    Bus(BusTrigger),
+    ChainEvent(ChainEventTrigger),
+    Manual,
+    SignalPattern(SignalPatternTrigger),
+}
+
+/// Cron trigger: fires on a schedule.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CronTrigger {
+    /// Standard cron expression (e.g. `"0 * * * *"` = every hour).
+    pub expression: String,
+    /// Optional timezone (defaults to UTC).
+    pub timezone: Option<String>,
+}
+
+/// Webhook trigger: fires on inbound HTTP requests.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WebhookTrigger {
+    /// HTTP method to match (e.g. `"POST"`). `None` = match any.
+    pub method: Option<String>,
+    /// Path suffix to mount (e.g. `"/hook/my-trigger"`).
+    pub path: String,
+}
+
+/// FileWatch trigger: fires on filesystem events.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FileWatchTrigger {
+    /// Path to watch (file or directory).
+    pub path: PathBuf,
+    /// Which filesystem events to react to.
+    pub events: Vec<FileWatchEvent>,
+    /// Glob pattern for filtering within a watched directory.
+    pub glob: Option<String>,
+}
+
+/// Bus trigger: fires when a matching pulse arrives.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BusTrigger {
+    /// Topic filter (supports `*` wildcards, e.g. `"gate.verdict.*"`).
+    pub topic: String,
+}
+
+/// ChainEvent trigger: fires on indexed on-chain events.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChainEventTrigger {
+    /// EIP-155 chain ID.
+    pub chain_id: u64,
+    /// Contract address to watch (checksummed hex).
+    pub contract: String,
+    /// ABI event signature to filter (e.g. `"Transfer(address,address,uint256)"`).
+    pub event_signature: String,
+}
+
+/// SignalPattern trigger: fires when a pattern of signals is detected.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SignalPatternTrigger {
+    /// Human-readable description of the pattern.
+    pub description: String,
+    /// Signal kinds that must all appear within the time window.
+    pub required_kinds: Vec<String>,
+    /// Time window in seconds within which all signals must appear.
+    pub window_secs: u64,
+}
+
+// ── TriggerInputMapping ───────────────────────────────────────────────────────
+
+/// Defines how to map trigger event payload fields to Graph input signals.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TriggerInputMapping {
+    /// Individual field mappings.
+    pub mappings: Vec<InputFieldMapping>,
+}
+
+/// A single field mapping from trigger event payload to Graph input.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InputFieldMapping {
+    /// JSONPath expression selecting a value from the trigger event payload.
+    pub from: String,
+    /// Target field name in the Graph's input signals.
+    pub to: String,
+    /// Optional transformation to apply to the selected value.
+    pub transform: Option<Expr>,
+}
+
+// ── ConcurrencyPolicy ─────────────────────────────────────────────────────────
+
+/// What to do when a trigger fires while a previous Flow is still running.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ConcurrencyPolicy {
+    /// Buffer firings in a queue. If the queue is full, drop the new firing.
+    Queue {
+        /// Maximum queue depth. `None` = unbounded (not recommended for production).
+        max_depth: Option<usize>,
+    },
+    /// Silently drop new firings while a Flow is running.
+    Skip,
+    /// Cancel the currently running Flow and start a new one.
+    CancelRunning,
+    /// Allow multiple concurrent Flows from this trigger.
+    Parallel {
+        /// Maximum concurrency. `None` = unbounded.
+        max_concurrent: Option<usize>,
+    },
+}
+
+// ── TriggerFilter ─────────────────────────────────────────────────────────────
+
+/// Additional conditions that must be met before a trigger actually fires.
+///
+/// Applied after kind-specific matching, in the order: event_kind →
+/// where_clause → matches → debounce → rate_limit → custom_filter.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TriggerFilter {
+    /// Only fire for specific payload string patterns (applied as `contains`).
+    pub matches: Option<BTreeMap<String, Value>>,
+    /// Minimum time between firings (debounce). Duration in milliseconds.
+    pub debounce_ms: Option<u64>,
+    /// Rate limiting configuration.
+    pub rate_limit: Option<RateLimit>,
+}
+
+/// Rate limiting for trigger firings.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RateLimit {
+    /// Maximum number of fires within the window.
+    pub max_fires: u32,
+    /// Window duration in milliseconds.
+    pub window_ms: u64,
+    /// What to do when the rate limit is exceeded.
+    pub on_limit: RateLimitAction,
+}
+
+/// Action to take when a rate limit is exceeded.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitAction {
+    /// Silently discard the firing.
+    Drop,
+    /// Buffer the firing (subject to [`ConcurrencyPolicy`]).
+    Queue,
+    /// Log a warning but still fire.
+    Warn,
+}
+
+// ── TriggerAuth ───────────────────────────────────────────────────────────────
+
+/// Authentication configuration for a trigger source.
+///
+/// Secrets are never stored inline — only references to where the secret
+/// lives (env var name, store key, or file path).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TriggerAuth {
+    /// No authentication required.
+    None,
+    /// HMAC-SHA256 signature verification (e.g. GitHub webhooks).
+    HmacSha256 {
+        /// Reference to the shared secret.
+        secret: SecretRef,
+        /// Name of the header carrying the signature (e.g. `"X-Hub-Signature-256"`).
+        header: String,
+    },
+    /// Bearer token verification.
+    BearerToken {
+        /// Reference to the expected bearer token.
+        secret: SecretRef,
+    },
+    /// Mutual TLS client certificate authentication.
+    MutualTls {
+        /// Path to the client certificate PEM file.
+        cert: PathBuf,
+        /// Reference to the private key secret.
+        key: SecretRef,
+    },
+}
+
+/// A reference to a secret — never the secret value itself.
+///
+/// Distinct from `roko_core::secrets::SecretSource` (which describes *where*
+/// a resolved secret came from) — `SecretRef` is a *pointer* to where the
+/// secret should be looked up at runtime.
+///
+/// All variants use struct form (not tuple/newtype) to allow internal tagging
+/// (`#[serde(tag = "kind")]`) to work with serde's JSON serializer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SecretRef {
+    /// Read from an environment variable with this name.
+    Env {
+        /// Name of the environment variable.
+        var: String,
+    },
+    /// Look up this key in the Roko secret store.
+    Store {
+        /// Key in the secret store.
+        key: String,
+    },
+    /// Read from a file at this path.
+    File {
+        /// Path to the file containing the secret.
+        path: PathBuf,
+    },
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trigger_handle_new_armed() {
+        let binding = TriggerBinding::new("test-trigger", TriggerKind::Manual, "plans/test.toml");
+        let handle = TriggerHandle::new_armed("handle-1".to_string(), binding);
+        assert_eq!(handle.id, "handle-1");
+        assert!(matches!(handle.state, TriggerState::Armed));
+        assert!(handle.is_active());
+        assert!(handle.armed_at_ms > 0);
+    }
+
+    #[test]
+    fn trigger_state_is_active() {
+        let firing_handle = TriggerHandle {
+            id: "x".to_string(),
+            binding: TriggerBinding::new("x", TriggerKind::Manual, "g"),
+            armed_at_ms: 0,
+            state: TriggerState::Firing,
+        };
+        assert!(firing_handle.is_active());
+
+        let disarmed_handle = TriggerHandle {
+            id: "x".to_string(),
+            binding: TriggerBinding::new("x", TriggerKind::Manual, "g"),
+            armed_at_ms: 0,
+            state: TriggerState::Disarmed,
+        };
+        assert!(!disarmed_handle.is_active());
+
+        let armed_handle = TriggerHandle {
+            id: "x".to_string(),
+            binding: TriggerBinding::new("x", TriggerKind::Manual, "g"),
+            armed_at_ms: 0,
+            state: TriggerState::Armed,
+        };
+        assert!(armed_handle.is_active());
+    }
+
+    #[test]
+    fn trigger_event_new() {
+        let event = TriggerEvent::new(
+            "my-trigger".to_string(),
+            serde_json::json!({"key": "value"}),
+            TriggerSource::Manual {
+                user: "will".to_string(),
+            },
+            "trace-123".to_string(),
+        );
+        assert_eq!(event.trigger_id, "my-trigger");
+        assert!(event.space_id.is_none());
+        assert_eq!(event.trace_id, "trace-123");
+    }
+
+    #[test]
+    fn trigger_event_with_space() {
+        let event = TriggerEvent::new(
+            "t".to_string(),
+            serde_json::json!(null),
+            TriggerSource::Manual {
+                user: "admin".to_string(),
+            },
+            "trace-abc".to_string(),
+        )
+        .with_space("alpha".to_string());
+        assert_eq!(event.space_id.as_deref(), Some("alpha"));
+    }
+
+    #[test]
+    fn trigger_binding_defaults() {
+        let b = TriggerBinding::new(
+            "cron-job",
+            TriggerKind::Cron(CronTrigger {
+                expression: "0 * * * *".to_string(),
+                timezone: None,
+            }),
+            "plans/hourly.toml",
+        );
+        assert!(b.enabled);
+        assert!(b.filter.is_none());
+        assert!(b.auth.is_none());
+        assert!(b.space.is_none());
+        assert!(matches!(
+            b.concurrency,
+            ConcurrencyPolicy::Queue { max_depth: None }
+        ));
+    }
+
+    #[test]
+    fn trigger_binding_roundtrip_json() {
+        let b = TriggerBinding::new(
+            "webhook-hook",
+            TriggerKind::Webhook(WebhookTrigger {
+                method: Some("POST".to_string()),
+                path: "/hook/test".to_string(),
+            }),
+            "plans/on-webhook.toml",
+        );
+        let json = serde_json::to_string(&b).expect("serialise");
+        let b2: TriggerBinding = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(b.name, b2.name);
+        assert_eq!(b.graph, b2.graph);
+        assert_eq!(b.enabled, b2.enabled);
+    }
+
+    #[test]
+    fn secret_ref_variants_serialize() {
+        let env_ref = SecretRef::Env {
+            var: "MY_SECRET".to_string(),
+        };
+        let store_ref = SecretRef::Store {
+            key: "my.key".to_string(),
+        };
+        let file_ref = SecretRef::File {
+            path: PathBuf::from("/run/secrets/token"),
+        };
+
+        // All variants must round-trip through JSON without panicking.
+        for sr in [env_ref, store_ref, file_ref] {
+            let json = serde_json::to_string(&sr).expect("serialize SecretRef");
+            let _: SecretRef = serde_json::from_str(&json).expect("deserialize SecretRef");
+        }
+    }
+
+    #[test]
+    fn trigger_source_all_variants_serialize() {
+        let sources = vec![
+            TriggerSource::Cron {
+                expression: "*/5 * * * *".to_string(),
+            },
+            TriggerSource::Webhook {
+                method: "POST".to_string(),
+                path: "/hook".to_string(),
+                headers: BTreeMap::new(),
+            },
+            TriggerSource::FileWatch {
+                path: PathBuf::from("/tmp/watch"),
+                event: FileWatchEvent::Modified,
+            },
+            TriggerSource::Bus {
+                topic: "gate.*".to_string(),
+                pulse_seq: 42,
+            },
+            TriggerSource::ChainEvent {
+                chain_id: 1,
+                block_number: 100,
+                tx_hash: "0xabc".to_string(),
+            },
+            TriggerSource::Manual {
+                user: "alice".to_string(),
+            },
+            TriggerSource::SignalPattern {
+                matched_signals: vec!["s1".to_string()],
+            },
+        ];
+
+        for src in sources {
+            let json = serde_json::to_string(&src).expect("serialize TriggerSource");
+            let _: TriggerSource = serde_json::from_str(&json).expect("deserialize TriggerSource");
+        }
+    }
 }

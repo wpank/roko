@@ -111,9 +111,9 @@ impl CorrigibilityDecision {
     /// Returns the first veto, if any: the (head, reason) pair.
     #[must_use]
     pub fn first_veto(&self) -> Option<(CorrigibilityHead, &str)> {
-        self.verdicts.iter().find_map(|(head, verdict)| {
-            verdict.veto_reason().map(|reason| (*head, reason))
-        })
+        self.verdicts
+            .iter()
+            .find_map(|(head, verdict)| verdict.veto_reason().map(|reason| (*head, reason)))
     }
 
     /// Returns `true` if the action is allowed (no head vetoed).
@@ -257,18 +257,14 @@ fn evaluate_truth(_action: &str, ctx: &ActionContext) -> HeadVerdict {
 
 fn evaluate_impact(_action: &str, ctx: &ActionContext) -> HeadVerdict {
     if ctx.reversible == Some(false) {
-        return HeadVerdict::Veto(
-            "action has irreversible side effects".into(),
-        );
+        return HeadVerdict::Veto("action has irreversible side effects".into());
     }
     HeadVerdict::Pass
 }
 
 fn evaluate_task(_action: &str, ctx: &ActionContext) -> HeadVerdict {
     if ctx.on_task == Some(false) {
-        return HeadVerdict::Veto(
-            "action does not make progress toward the assigned task".into(),
-        );
+        return HeadVerdict::Veto("action does not make progress toward the assigned task".into());
     }
     HeadVerdict::Pass
 }
@@ -478,9 +474,10 @@ mod tests {
 
     #[test]
     fn decision_with_deference_veto_is_blocked() {
-        let d = CorrigibilityDecision::new(vec![
-            (CorrigibilityHead::Deference, HeadVerdict::Veto("observe mode".into())),
-        ]);
+        let d = CorrigibilityDecision::new(vec![(
+            CorrigibilityHead::Deference,
+            HeadVerdict::Veto("observe mode".into()),
+        )]);
         assert!(d.is_vetoed());
         assert!(!d.is_allowed());
         let (head, _) = d.first_veto().unwrap();
@@ -492,7 +489,10 @@ mod tests {
         let d = CorrigibilityDecision::new(vec![
             (CorrigibilityHead::Deference, HeadVerdict::Pass),
             (CorrigibilityHead::Switch, HeadVerdict::Pass),
-            (CorrigibilityHead::Truth, HeadVerdict::Veto("unverifiable output".into())),
+            (
+                CorrigibilityHead::Truth,
+                HeadVerdict::Veto("unverifiable output".into()),
+            ),
         ]);
         assert!(d.is_vetoed());
     }
@@ -510,15 +510,19 @@ mod tests {
 
     #[test]
     fn deference_veto_dominates_task_pass() {
-        let bad = CorrigibilityDecision::new(vec![
-            (CorrigibilityHead::Deference, HeadVerdict::Veto("observe mode".into())),
-        ]);
+        let bad = CorrigibilityDecision::new(vec![(
+            CorrigibilityHead::Deference,
+            HeadVerdict::Veto("observe mode".into()),
+        )]);
         let good = CorrigibilityDecision::new(vec![
             (CorrigibilityHead::Deference, HeadVerdict::Pass),
             (CorrigibilityHead::Switch, HeadVerdict::Pass),
             (CorrigibilityHead::Truth, HeadVerdict::Pass),
             (CorrigibilityHead::Impact, HeadVerdict::Pass),
-            (CorrigibilityHead::Task, HeadVerdict::Veto("off task".into())),
+            (
+                CorrigibilityHead::Task,
+                HeadVerdict::Veto("off task".into()),
+            ),
         ]);
         // bad vetoed at head 1 (Deference), good only at head 5 (Task).
         // bad is "worse" (Greater).
@@ -528,12 +532,14 @@ mod tests {
 
     #[test]
     fn same_veto_head_is_equal() {
-        let a = CorrigibilityDecision::new(vec![
-            (CorrigibilityHead::Impact, HeadVerdict::Veto("irreversible".into())),
-        ]);
-        let b = CorrigibilityDecision::new(vec![
-            (CorrigibilityHead::Impact, HeadVerdict::Veto("deletes files".into())),
-        ]);
+        let a = CorrigibilityDecision::new(vec![(
+            CorrigibilityHead::Impact,
+            HeadVerdict::Veto("irreversible".into()),
+        )]);
+        let b = CorrigibilityDecision::new(vec![(
+            CorrigibilityHead::Impact,
+            HeadVerdict::Veto("deletes files".into()),
+        )]);
         assert_eq!(lexicographic_compare(&a, &b), Ordering::Equal);
     }
 
@@ -541,15 +547,24 @@ mod tests {
     fn higher_priority_veto_beats_lower_priority_veto() {
         let switch_veto = CorrigibilityDecision::new(vec![
             (CorrigibilityHead::Deference, HeadVerdict::Pass),
-            (CorrigibilityHead::Switch, HeadVerdict::Veto("removes audit log".into())),
+            (
+                CorrigibilityHead::Switch,
+                HeadVerdict::Veto("removes audit log".into()),
+            ),
         ]);
         let impact_veto = CorrigibilityDecision::new(vec![
             (CorrigibilityHead::Deference, HeadVerdict::Pass),
             (CorrigibilityHead::Switch, HeadVerdict::Pass),
             (CorrigibilityHead::Truth, HeadVerdict::Pass),
-            (CorrigibilityHead::Impact, HeadVerdict::Veto("irreversible".into())),
+            (
+                CorrigibilityHead::Impact,
+                HeadVerdict::Veto("irreversible".into()),
+            ),
         ]);
-        assert_eq!(lexicographic_compare(&switch_veto, &impact_veto), Ordering::Greater);
+        assert_eq!(
+            lexicographic_compare(&switch_veto, &impact_veto),
+            Ordering::Greater
+        );
     }
 
     // ── evaluate_action ───────────────────────────────────────────────────────
@@ -681,16 +696,46 @@ mod tests {
 
     #[test]
     fn level_from_score_boundaries() {
-        assert_eq!(CorrigibilityLevel::from_score(1.0), CorrigibilityLevel::Compliant);
-        assert_eq!(CorrigibilityLevel::from_score(0.85), CorrigibilityLevel::Compliant);
-        assert_eq!(CorrigibilityLevel::from_score(0.84), CorrigibilityLevel::Cooperative);
-        assert_eq!(CorrigibilityLevel::from_score(0.65), CorrigibilityLevel::Cooperative);
-        assert_eq!(CorrigibilityLevel::from_score(0.64), CorrigibilityLevel::Autonomous);
-        assert_eq!(CorrigibilityLevel::from_score(0.40), CorrigibilityLevel::Autonomous);
-        assert_eq!(CorrigibilityLevel::from_score(0.39), CorrigibilityLevel::Resistant);
-        assert_eq!(CorrigibilityLevel::from_score(0.20), CorrigibilityLevel::Resistant);
-        assert_eq!(CorrigibilityLevel::from_score(0.19), CorrigibilityLevel::Adversarial);
-        assert_eq!(CorrigibilityLevel::from_score(0.0), CorrigibilityLevel::Adversarial);
+        assert_eq!(
+            CorrigibilityLevel::from_score(1.0),
+            CorrigibilityLevel::Compliant
+        );
+        assert_eq!(
+            CorrigibilityLevel::from_score(0.85),
+            CorrigibilityLevel::Compliant
+        );
+        assert_eq!(
+            CorrigibilityLevel::from_score(0.84),
+            CorrigibilityLevel::Cooperative
+        );
+        assert_eq!(
+            CorrigibilityLevel::from_score(0.65),
+            CorrigibilityLevel::Cooperative
+        );
+        assert_eq!(
+            CorrigibilityLevel::from_score(0.64),
+            CorrigibilityLevel::Autonomous
+        );
+        assert_eq!(
+            CorrigibilityLevel::from_score(0.40),
+            CorrigibilityLevel::Autonomous
+        );
+        assert_eq!(
+            CorrigibilityLevel::from_score(0.39),
+            CorrigibilityLevel::Resistant
+        );
+        assert_eq!(
+            CorrigibilityLevel::from_score(0.20),
+            CorrigibilityLevel::Resistant
+        );
+        assert_eq!(
+            CorrigibilityLevel::from_score(0.19),
+            CorrigibilityLevel::Adversarial
+        );
+        assert_eq!(
+            CorrigibilityLevel::from_score(0.0),
+            CorrigibilityLevel::Adversarial
+        );
     }
 
     #[test]

@@ -86,6 +86,7 @@ pub mod openapi;
 pub mod parity;
 pub mod plan_types;
 pub mod projection_contract;
+pub mod rbac;
 pub mod relay;
 pub mod retention;
 pub mod routes;

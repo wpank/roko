@@ -6,7 +6,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 use roko_core::defaults::DEFAULT_RUNNER_RETRY_STRATEGY_PIVOT_ATTEMPT;
-use roko_gate::ParsedReviewVerdict;
 use roko_learn::model_router::RoutingContext;
 
 use super::types::{
@@ -117,9 +116,6 @@ pub struct RunState {
     pub snapshot_fail_streak: u32,
     /// Set after 3 consecutive snapshot failures — crash recovery data may be stale.
     pub snapshot_degraded: bool,
-    /// Set when `BudgetAction::Block` fires — prevents new task dispatches.
-    /// Can be overridden by `RunConfig::budget_override` (--budget-override flag).
-    pub budget_exhausted: bool,
 
     // ─── Timing ─────────────────────────────────────────────────────
     /// When the run started.
@@ -159,14 +155,30 @@ pub struct RunState {
     /// Populated when a task fails so the final summary can show why.
     pub failure_reasons: HashMap<String, String>,
 
-    // ─── Review ──────────────────────────────────────────────────────
-    /// Role of the current task (e.g. "implementer", "reviewer").
-    /// Set at dispatch time so the TurnCompleted handler can branch on it.
+    // ─── Budget ────────────────────────────────────────────────────────
+    /// Whether the budget guardrail has been tripped for the current run.
+    /// Once set, every subsequent dispatch is blocked (unless
+    /// `config.budget_override` is true).
+    pub budget_exhausted: bool,
+
+    // ─── Current Task Role ──────────────────────────────────────────
+    /// Role of the current task (e.g. "implementer", "strategist").
+    /// Populated from the task definition's `role` field at dispatch time.
     pub current_task_role: String,
-    /// Parsed structured review verdict for the current task.
-    /// Populated in the TurnCompleted handler when `current_task_role` is a
-    /// reviewer role. `None` for non-reviewer tasks.
-    pub parsed_review_verdict: Option<ParsedReviewVerdict>,
+
+    // ─── Review Verdict ──────────────────────────────────────────────
+    /// Parsed structured review verdict from the most recent agent turn.
+    /// Populated after `TurnCompleted` by parsing `agent_output`.
+    /// `None` before the first completed turn or when parsing is skipped.
+    pub parsed_review_verdict: Option<roko_gate::ParsedReviewVerdict>,
+    /// Whether express mode is active for the current task.
+    ///
+    /// Express mode is set when all blocking issues in the last parsed
+    /// verdict are in quick-fixable categories (compile errors, lint
+    /// violations, format violations, or missing symbols). When active,
+    /// the runner can skip the strategist phase and dispatch directly
+    /// to the implementer with the structured issues as context.
+    pub express_mode: bool,
 }
 
 impl RunState {
@@ -211,7 +223,6 @@ impl RunState {
             task_outputs: HashMap::new(),
             snapshot_fail_streak: 0,
             snapshot_degraded: false,
-            budget_exhausted: false,
             started_at: Instant::now(),
             start_epoch_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -225,8 +236,10 @@ impl RunState {
             task_fingerprints: Vec::new(),
             routing_context: None,
             failure_reasons: HashMap::new(),
+            budget_exhausted: false,
             current_task_role: String::new(),
             parsed_review_verdict: None,
+            express_mode: false,
         }
     }
 
@@ -746,8 +759,6 @@ impl RunState {
         self.task_started_at = Instant::now();
         self.last_dispatch_ms = 0;
         self.routing_context = None;
-        self.current_task_role.clear();
-        self.parsed_review_verdict = None;
     }
 
     /// Record a completed task, rolling per-task stats into totals.

@@ -22,7 +22,8 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 // ── CaMeL IFC types (E30-T01) ─────────────────────────────────────────
 
@@ -519,6 +520,36 @@ pub enum RecoveryAction {
     Fallback(String),
 }
 
+// ── E30-T02: FilterDecision and BudgetAction ──────────────────────────
+
+/// Decision returned by [`Extension::filter_input`] (Perception layer).
+///
+/// Controls what happens to an incoming [`AgentMessage`] before it reaches
+/// the cognition layer.
+#[derive(Clone, Debug)]
+pub enum FilterDecision {
+    /// Message passes to the next stage unchanged.
+    Pass,
+    /// Message is silently discarded; the agent does not process it.
+    Drop,
+    /// Message is replaced by the provided value (inherits CaMeL tags from
+    /// the original on the caller side).
+    Transform(AgentMessage),
+}
+
+/// Decision returned by [`Extension::on_budget_exceeded`] (Recovery layer).
+///
+/// Determines how the agent behaves when its cost budget is exhausted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BudgetAction {
+    /// Enter observe-and-reflect mode: no LLM calls, passive monitoring only.
+    Sleepwalk,
+    /// Gracefully shut down the agent.
+    Stop,
+    /// Request additional budget (value in microdollars, i.e. 1 USD = 1_000_000).
+    RequestMore(u64),
+}
+
 /// An adjustment suggested during reflection.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Adjustment {
@@ -763,6 +794,18 @@ pub trait Extension: Send + Sync {
         Ok(())
     }
 
+    /// Called to filter an incoming inter-agent message before it is processed.
+    ///
+    /// Returns [`FilterDecision::Pass`] by default (all messages pass through).
+    /// Return [`FilterDecision::Drop`] to discard the message silently, or
+    /// [`FilterDecision::Transform`] to replace it with a modified copy.
+    async fn filter_input(
+        &self,
+        _message: &mut AgentMessage,
+    ) -> Result<FilterDecision, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(FilterDecision::Pass)
+    }
+
     // ── Memory (Layer 2) ────────────────────────────────────────────
 
     /// Called when retrieving from knowledge store. Can augment results.
@@ -879,6 +922,17 @@ pub trait Extension: Send + Sync {
         Ok(RecoveryAction::Propagate)
     }
 
+    /// Called when the agent's cost budget is exceeded.
+    ///
+    /// Returns [`BudgetAction::Sleepwalk`] by default, putting the agent into
+    /// passive observe-and-reflect mode without issuing further LLM calls.
+    async fn on_budget_exceeded(
+        &self,
+        _cost: &CostUpdate,
+    ) -> Result<BudgetAction, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(BudgetAction::Sleepwalk)
+    }
+
     // ── Cross-cutting hooks (all layers) ────────────────────────────
 
     /// Called at the start of each agent tick regardless of layer.
@@ -926,19 +980,115 @@ pub trait Extension: Send + Sync {
     }
 }
 
+// ── ExtensionHealthTracker (E30-T05/E30-T06) ──────────────────────────
+
+/// Tracks consecutive failures per extension and disables extensions that
+/// exceed the failure threshold (circuit-breaker pattern).
+///
+/// Disabled extensions are skipped by all `run_*` methods for the lifetime of
+/// the chain. The default threshold is 5 consecutive failures (matching v2
+/// spec §8). Timeouts are treated as failures for circuit-breaker purposes.
+pub struct ExtensionHealthTracker {
+    /// Consecutive failure count per extension name.
+    consecutive_failures: HashMap<String, u32>,
+    /// Extensions that have been disabled (exceeded threshold).
+    disabled: HashSet<String>,
+    /// Consecutive failures needed to disable an extension.
+    failure_threshold: u32,
+}
+
+impl ExtensionHealthTracker {
+    /// Create a new tracker with the given threshold.
+    pub fn new(threshold: u32) -> Self {
+        Self {
+            consecutive_failures: HashMap::new(),
+            disabled: HashSet::new(),
+            failure_threshold: threshold,
+        }
+    }
+
+    /// Record a successful hook invocation for an extension.
+    ///
+    /// Resets the consecutive failure counter to zero.
+    pub fn record_success(&mut self, name: &str) {
+        self.consecutive_failures.remove(name);
+    }
+
+    /// Record a failed hook invocation for an extension.
+    ///
+    /// Returns `true` if the extension should now be disabled (i.e., this
+    /// failure caused it to reach or exceed the threshold).
+    pub fn record_failure(&mut self, name: &str) -> bool {
+        let count = self
+            .consecutive_failures
+            .entry(name.to_string())
+            .or_insert(0);
+        *count += 1;
+        if *count >= self.failure_threshold {
+            self.disabled.insert(name.to_string());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Whether an extension is currently disabled.
+    pub fn is_disabled(&self, name: &str) -> bool {
+        self.disabled.contains(name)
+    }
+}
+
+impl Default for ExtensionHealthTracker {
+    fn default() -> Self {
+        Self::new(5)
+    }
+}
+
 // ── ExtensionChain ────────────────────────────────────────────────────
 
 /// An ordered chain of extensions, executed in layer order.
+///
+/// Each `run_*` method wraps individual hook calls with a per-extension
+/// timeout (E30-T06) and integrates with [`ExtensionHealthTracker`] to skip
+/// disabled extensions (E30-T05 circuit-breaker pattern).
 pub struct ExtensionChain {
     extensions: Vec<Box<dyn Extension>>,
+    /// Default per-hook timeout applied when no per-extension override exists.
+    pub default_timeout: Duration,
+    /// Per-extension timeout overrides (keyed by extension name).
+    pub timeout_overrides: HashMap<String, Duration>,
+    /// Circuit-breaker health tracker.
+    ///
+    /// `RefCell` gives interior mutability so `run_*` methods can record
+    /// success/failure while taking only `&self`.
+    pub(crate) health_tracker: std::cell::RefCell<ExtensionHealthTracker>,
 }
 
 impl ExtensionChain {
-    /// Create an empty chain.
+    /// Create an empty chain with a 5-second default hook timeout.
     pub fn new() -> Self {
         Self {
             extensions: Vec::new(),
+            default_timeout: Duration::from_secs(5),
+            timeout_overrides: HashMap::new(),
+            health_tracker: std::cell::RefCell::new(ExtensionHealthTracker::default()),
         }
+    }
+
+    /// Return the effective timeout for a named extension.
+    ///
+    /// Uses the per-extension override if one is registered, otherwise falls
+    /// back to [`Self::default_timeout`].
+    pub fn hook_timeout(&self, ext_name: &str) -> Duration {
+        self.timeout_overrides
+            .get(ext_name)
+            .copied()
+            .unwrap_or(self.default_timeout)
+    }
+
+    /// Register a custom timeout for a specific extension.
+    pub fn set_timeout_override(&mut self, ext_name: impl Into<String>, timeout: Duration) {
+        self.timeout_overrides.insert(ext_name.into(), timeout);
     }
 
     /// Add an extension to the chain. Extensions are sorted by layer on build.
@@ -986,6 +1136,11 @@ impl ExtensionChain {
     }
 
     /// Run pre_inference hooks (Cognition layer only).
+    ///
+    /// Skips disabled extensions. Wraps each hook call with
+    /// [`Self::hook_timeout`]. On timeout or error, logs a warning and records
+    /// a failure in the circuit breaker; the hook is treated as a no-op and
+    /// the next extension is tried.
     pub async fn run_pre_inference(
         &self,
         request: &mut InferenceRequest,
@@ -995,12 +1150,44 @@ impl ExtensionChain {
             .iter()
             .filter(|e| e.layer() == ExtensionLayer::Cognition)
         {
-            ext.pre_inference(request).await?;
+            let name = ext.name();
+            if self.health_tracker.borrow().is_disabled(name) {
+                tracing::debug!(extension = %name, "skipping disabled extension (pre_inference)");
+                continue;
+            }
+            let deadline = self.hook_timeout(name);
+            match tokio::time::timeout(deadline, ext.pre_inference(request)).await {
+                Ok(Ok(())) => {
+                    self.health_tracker.borrow_mut().record_success(name);
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(extension = %name, error = %e,
+                        "pre_inference hook error (isolated, continuing)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker after consecutive failures");
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(extension = %name, timeout_ms = deadline.as_millis(),
+                        "pre_inference hook timed out (isolated, continuing)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker after consecutive timeouts");
+                    }
+                }
+            }
         }
         Ok(())
     }
 
     /// Run post_inference hooks (Cognition layer only).
+    ///
+    /// Skips disabled extensions. Wraps each hook call with
+    /// [`Self::hook_timeout`]. On timeout or error, logs a warning and records
+    /// a failure in the circuit breaker; the hook is treated as a no-op.
     pub async fn run_post_inference(
         &self,
         response: &mut InferenceResponse,
@@ -1010,12 +1197,44 @@ impl ExtensionChain {
             .iter()
             .filter(|e| e.layer() == ExtensionLayer::Cognition)
         {
-            ext.post_inference(response).await?;
+            let name = ext.name();
+            if self.health_tracker.borrow().is_disabled(name) {
+                tracing::debug!(extension = %name, "skipping disabled extension (post_inference)");
+                continue;
+            }
+            let deadline = self.hook_timeout(name);
+            match tokio::time::timeout(deadline, ext.post_inference(response)).await {
+                Ok(Ok(())) => {
+                    self.health_tracker.borrow_mut().record_success(name);
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(extension = %name, error = %e,
+                        "post_inference hook error (isolated, continuing)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(extension = %name, timeout_ms = deadline.as_millis(),
+                        "post_inference hook timed out (isolated, continuing)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+            }
         }
         Ok(())
     }
 
     /// Run on_gate hooks (Cognition layer only).
+    ///
+    /// Skips disabled extensions. Wraps each hook call with
+    /// [`Self::hook_timeout`]. On timeout or error, logs a warning and records
+    /// a failure in the circuit breaker; the hook is treated as a no-op.
     pub async fn run_on_gate(
         &self,
         event: &mut GateEvent,
@@ -1025,12 +1244,43 @@ impl ExtensionChain {
             .iter()
             .filter(|e| e.layer() == ExtensionLayer::Cognition)
         {
-            ext.on_gate(event).await?;
+            let name = ext.name();
+            if self.health_tracker.borrow().is_disabled(name) {
+                tracing::debug!(extension = %name, "skipping disabled extension (on_gate)");
+                continue;
+            }
+            let deadline = self.hook_timeout(name);
+            match tokio::time::timeout(deadline, ext.on_gate(event)).await {
+                Ok(Ok(())) => {
+                    self.health_tracker.borrow_mut().record_success(name);
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(extension = %name, error = %e,
+                        "on_gate hook error (isolated, continuing)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(extension = %name, timeout_ms = deadline.as_millis(),
+                        "on_gate hook timed out (isolated, continuing)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+            }
         }
         Ok(())
     }
 
     /// Run pre_action hooks (Action layer only). Returns first Block/Rewrite.
+    ///
+    /// Skips disabled extensions. On timeout or error, treats the hook as
+    /// [`ActionDecision::Proceed`] (fail-open) and records a failure.
     pub async fn run_pre_action(
         &self,
         event: &ToolCallEvent,
@@ -1040,15 +1290,48 @@ impl ExtensionChain {
             .iter()
             .filter(|e| e.layer() == ExtensionLayer::Action)
         {
-            match ext.pre_action(event).await? {
-                ActionDecision::Proceed => continue,
-                decision => return Ok(decision),
+            let name = ext.name();
+            if self.health_tracker.borrow().is_disabled(name) {
+                tracing::debug!(extension = %name, "skipping disabled extension (pre_action)");
+                continue;
+            }
+            let deadline = self.hook_timeout(name);
+            match tokio::time::timeout(deadline, ext.pre_action(event)).await {
+                Ok(Ok(ActionDecision::Proceed)) => {
+                    self.health_tracker.borrow_mut().record_success(name);
+                    continue;
+                }
+                Ok(Ok(decision)) => {
+                    self.health_tracker.borrow_mut().record_success(name);
+                    return Ok(decision);
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(extension = %name, error = %e,
+                        "pre_action hook error (isolated, treating as Proceed)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(extension = %name, timeout_ms = deadline.as_millis(),
+                        "pre_action hook timed out (isolated, treating as Proceed)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
             }
         }
         Ok(ActionDecision::Proceed)
     }
 
     /// Run on_tool_call hooks (Action layer only). Returns first Deny/Rewrite.
+    ///
+    /// Skips disabled extensions. On timeout or error, treats the hook as
+    /// [`ToolDecision::Allow`] (fail-open) and records a failure.
     pub async fn run_on_tool_call(
         &self,
         event: &ToolCallEvent,
@@ -1058,15 +1341,48 @@ impl ExtensionChain {
             .iter()
             .filter(|e| e.layer() == ExtensionLayer::Action)
         {
-            match ext.on_tool_call(event).await? {
-                ToolDecision::Allow => continue,
-                decision => return Ok(decision),
+            let name = ext.name();
+            if self.health_tracker.borrow().is_disabled(name) {
+                tracing::debug!(extension = %name, "skipping disabled extension (on_tool_call)");
+                continue;
+            }
+            let deadline = self.hook_timeout(name);
+            match tokio::time::timeout(deadline, ext.on_tool_call(event)).await {
+                Ok(Ok(ToolDecision::Allow)) => {
+                    self.health_tracker.borrow_mut().record_success(name);
+                    continue;
+                }
+                Ok(Ok(decision)) => {
+                    self.health_tracker.borrow_mut().record_success(name);
+                    return Ok(decision);
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(extension = %name, error = %e,
+                        "on_tool_call hook error (isolated, treating as Allow)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(extension = %name, timeout_ms = deadline.as_millis(),
+                        "on_tool_call hook timed out (isolated, treating as Allow)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
             }
         }
         Ok(ToolDecision::Allow)
     }
 
     /// Run on_error hooks (Recovery layer only). Returns first non-Propagate.
+    ///
+    /// Skips disabled extensions. On timeout or error, treats the hook as
+    /// [`RecoveryAction::Propagate`] (fail-safe) and records a failure.
     pub async fn run_on_error(
         &self,
         event: &ErrorEvent,
@@ -1076,12 +1392,155 @@ impl ExtensionChain {
             .iter()
             .filter(|e| e.layer() == ExtensionLayer::Recovery)
         {
-            match ext.on_error(event).await? {
-                RecoveryAction::Propagate => continue,
-                action => return Ok(action),
+            let name = ext.name();
+            if self.health_tracker.borrow().is_disabled(name) {
+                tracing::debug!(extension = %name, "skipping disabled extension (on_error)");
+                continue;
+            }
+            let deadline = self.hook_timeout(name);
+            match tokio::time::timeout(deadline, ext.on_error(event)).await {
+                Ok(Ok(RecoveryAction::Propagate)) => {
+                    self.health_tracker.borrow_mut().record_success(name);
+                    continue;
+                }
+                Ok(Ok(action)) => {
+                    self.health_tracker.borrow_mut().record_success(name);
+                    return Ok(action);
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(extension = %name, error = %e,
+                        "on_error hook error (isolated, treating as Propagate)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(extension = %name, timeout_ms = deadline.as_millis(),
+                        "on_error hook timed out (isolated, treating as Propagate)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
             }
         }
         Ok(RecoveryAction::Propagate)
+    }
+
+    /// Run filter_input hooks (Perception layer only).
+    ///
+    /// Iterates Perception-layer extensions in order. The first extension that
+    /// returns [`FilterDecision::Drop`] or [`FilterDecision::Transform`] short-
+    /// circuits the chain and that decision is returned to the caller. If all
+    /// extensions return [`FilterDecision::Pass`] the message is passed through
+    /// unchanged.
+    ///
+    /// Skips disabled extensions. On timeout or error, treats the hook as
+    /// [`FilterDecision::Pass`] (fail-open) and records a failure.
+    pub async fn run_filter_input(
+        &self,
+        message: &mut AgentMessage,
+    ) -> Result<FilterDecision, Box<dyn std::error::Error + Send + Sync>> {
+        for ext in self
+            .extensions
+            .iter()
+            .filter(|e| e.layer() == ExtensionLayer::Perception)
+        {
+            let name = ext.name();
+            if self.health_tracker.borrow().is_disabled(name) {
+                tracing::debug!(extension = %name, "skipping disabled extension (filter_input)");
+                continue;
+            }
+            let deadline = self.hook_timeout(name);
+            match tokio::time::timeout(deadline, ext.filter_input(message)).await {
+                Ok(Ok(FilterDecision::Pass)) => {
+                    self.health_tracker.borrow_mut().record_success(name);
+                    continue;
+                }
+                Ok(Ok(decision)) => {
+                    self.health_tracker.borrow_mut().record_success(name);
+                    return Ok(decision);
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(extension = %name, error = %e,
+                        "filter_input hook error (isolated, treating as Pass)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(extension = %name, timeout_ms = deadline.as_millis(),
+                        "filter_input hook timed out (isolated, treating as Pass)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+            }
+        }
+        Ok(FilterDecision::Pass)
+    }
+
+    /// Run on_budget_exceeded hooks (Recovery layer only).
+    ///
+    /// Returns the first non-`Sleepwalk` decision so that `Stop` or
+    /// `RequestMore` override the passive default. Falls back to
+    /// [`BudgetAction::Sleepwalk`] if all hooks return the default.
+    ///
+    /// Skips disabled extensions. On timeout or error, treats the hook as
+    /// [`BudgetAction::Sleepwalk`] (fail-safe) and records a failure.
+    pub async fn run_on_budget_exceeded(
+        &self,
+        cost: &CostUpdate,
+    ) -> Result<BudgetAction, Box<dyn std::error::Error + Send + Sync>> {
+        for ext in self
+            .extensions
+            .iter()
+            .filter(|e| e.layer() == ExtensionLayer::Recovery)
+        {
+            let name = ext.name();
+            if self.health_tracker.borrow().is_disabled(name) {
+                tracing::debug!(extension = %name,
+                    "skipping disabled extension (on_budget_exceeded)");
+                continue;
+            }
+            let deadline = self.hook_timeout(name);
+            match tokio::time::timeout(deadline, ext.on_budget_exceeded(cost)).await {
+                Ok(Ok(BudgetAction::Sleepwalk)) => {
+                    self.health_tracker.borrow_mut().record_success(name);
+                    continue;
+                }
+                Ok(Ok(action)) => {
+                    self.health_tracker.borrow_mut().record_success(name);
+                    return Ok(action);
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(extension = %name, error = %e,
+                        "on_budget_exceeded hook error (isolated, treating as Sleepwalk)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(extension = %name, timeout_ms = deadline.as_millis(),
+                        "on_budget_exceeded hook timed out (isolated, treating as Sleepwalk)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+            }
+        }
+        Ok(BudgetAction::Sleepwalk)
     }
 
     /// List all extension metadata.
@@ -1092,47 +1551,172 @@ impl ExtensionChain {
     // ── Cross-cutting chain runners ───────────────────────────────────
 
     /// Run on_tick_start hooks across ALL extensions regardless of layer.
+    ///
+    /// Skips disabled extensions. On timeout or error, logs a warning and
+    /// records a failure in the circuit breaker.
     pub async fn run_on_tick_start(
         &self,
         tick: u64,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         for ext in &self.extensions {
-            ext.on_tick_start(tick).await?;
+            let name = ext.name();
+            if self.health_tracker.borrow().is_disabled(name) {
+                tracing::debug!(extension = %name, "skipping disabled extension (on_tick_start)");
+                continue;
+            }
+            let deadline = self.hook_timeout(name);
+            match tokio::time::timeout(deadline, ext.on_tick_start(tick)).await {
+                Ok(Ok(())) => {
+                    self.health_tracker.borrow_mut().record_success(name);
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(extension = %name, error = %e,
+                        "on_tick_start hook error (isolated, continuing)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(extension = %name, timeout_ms = deadline.as_millis(),
+                        "on_tick_start hook timed out (isolated, continuing)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+            }
         }
         Ok(())
     }
 
     /// Run on_tick_end hooks across ALL extensions regardless of layer.
+    ///
+    /// Skips disabled extensions. On timeout or error, logs a warning and
+    /// records a failure in the circuit breaker.
     pub async fn run_on_tick_end(
         &self,
         tick: u64,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         for ext in &self.extensions {
-            ext.on_tick_end(tick).await?;
+            let name = ext.name();
+            if self.health_tracker.borrow().is_disabled(name) {
+                tracing::debug!(extension = %name, "skipping disabled extension (on_tick_end)");
+                continue;
+            }
+            let deadline = self.hook_timeout(name);
+            match tokio::time::timeout(deadline, ext.on_tick_end(tick)).await {
+                Ok(Ok(())) => {
+                    self.health_tracker.borrow_mut().record_success(name);
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(extension = %name, error = %e,
+                        "on_tick_end hook error (isolated, continuing)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(extension = %name, timeout_ms = deadline.as_millis(),
+                        "on_tick_end hook timed out (isolated, continuing)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+            }
         }
         Ok(())
     }
 
     /// Run on_slot_assigned hooks across ALL extensions regardless of layer.
+    ///
+    /// Skips disabled extensions. On timeout or error, logs a warning and
+    /// records a failure in the circuit breaker.
     pub async fn run_on_slot_assigned(
         &self,
         slot: &str,
         task: &serde_json::Value,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         for ext in &self.extensions {
-            ext.on_slot_assigned(slot, task).await?;
+            let name = ext.name();
+            if self.health_tracker.borrow().is_disabled(name) {
+                tracing::debug!(extension = %name, "skipping disabled extension (on_slot_assigned)");
+                continue;
+            }
+            let deadline = self.hook_timeout(name);
+            match tokio::time::timeout(deadline, ext.on_slot_assigned(slot, task)).await {
+                Ok(Ok(())) => {
+                    self.health_tracker.borrow_mut().record_success(name);
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(extension = %name, error = %e,
+                        "on_slot_assigned hook error (isolated, continuing)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(extension = %name, timeout_ms = deadline.as_millis(),
+                        "on_slot_assigned hook timed out (isolated, continuing)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+            }
         }
         Ok(())
     }
 
     /// Run on_slot_completed hooks across ALL extensions regardless of layer.
+    ///
+    /// Skips disabled extensions. On timeout or error, logs a warning and
+    /// records a failure in the circuit breaker.
     pub async fn run_on_slot_completed(
         &self,
         slot: &str,
         result: &serde_json::Value,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         for ext in &self.extensions {
-            ext.on_slot_completed(slot, result).await?;
+            let name = ext.name();
+            if self.health_tracker.borrow().is_disabled(name) {
+                tracing::debug!(extension = %name,
+                    "skipping disabled extension (on_slot_completed)");
+                continue;
+            }
+            let deadline = self.hook_timeout(name);
+            match tokio::time::timeout(deadline, ext.on_slot_completed(slot, result)).await {
+                Ok(Ok(())) => {
+                    self.health_tracker.borrow_mut().record_success(name);
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(extension = %name, error = %e,
+                        "on_slot_completed hook error (isolated, continuing)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(extension = %name, timeout_ms = deadline.as_millis(),
+                        "on_slot_completed hook timed out (isolated, continuing)");
+                    let disabled = self.health_tracker.borrow_mut().record_failure(name);
+                    if disabled {
+                        tracing::warn!(extension = %name,
+                            "extension disabled by circuit breaker");
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -1303,6 +1887,92 @@ impl HookRunner {
             }
         }
         errors
+    }
+
+    /// Dispatch `filter_input` to Perception-layer extensions with fault isolation.
+    ///
+    /// Returns the first non-`Pass` decision encountered. If a hook errors or
+    /// times out the error is collected and the next extension is tried. On any
+    /// error the hook is treated as if it returned `Pass` (fail-open). All
+    /// errors are returned alongside the final decision so callers can log them.
+    pub async fn dispatch_filter_input(
+        &self,
+        message: &mut AgentMessage,
+    ) -> (FilterDecision, Vec<HookError>) {
+        let mut errors = Vec::new();
+        for ext in self
+            .chain
+            .extensions
+            .iter()
+            .filter(|e| e.layer() == ExtensionLayer::Perception)
+        {
+            let name = ext.name().to_string();
+            match tokio::time::timeout(self.timeout, ext.filter_input(message)).await {
+                Ok(Ok(FilterDecision::Pass)) => continue,
+                Ok(Ok(decision)) => return (decision, errors),
+                Ok(Err(e)) => {
+                    tracing::warn!(extension = %name, error = %e,
+                        "filter_input returned error (isolated, treating as Pass)");
+                    errors.push(HookError {
+                        extension: name,
+                        message: e.to_string(),
+                        timed_out: false,
+                    });
+                }
+                Err(_) => {
+                    tracing::warn!(extension = %name, timeout_ms = self.timeout.as_millis(),
+                        "filter_input timed out (isolated, treating as Pass)");
+                    errors.push(HookError {
+                        extension: name,
+                        message: format!("timed out after {}ms", self.timeout.as_millis()),
+                        timed_out: true,
+                    });
+                }
+            }
+        }
+        (FilterDecision::Pass, errors)
+    }
+
+    /// Dispatch `on_budget_exceeded` to Recovery-layer extensions with fault isolation.
+    ///
+    /// Returns the first non-`Sleepwalk` action. On hook error or timeout the
+    /// hook is treated as `Sleepwalk` (fail-safe) and processing continues.
+    pub async fn dispatch_on_budget_exceeded(
+        &self,
+        cost: &CostUpdate,
+    ) -> (BudgetAction, Vec<HookError>) {
+        let mut errors = Vec::new();
+        for ext in self
+            .chain
+            .extensions
+            .iter()
+            .filter(|e| e.layer() == ExtensionLayer::Recovery)
+        {
+            let name = ext.name().to_string();
+            match tokio::time::timeout(self.timeout, ext.on_budget_exceeded(cost)).await {
+                Ok(Ok(BudgetAction::Sleepwalk)) => continue,
+                Ok(Ok(action)) => return (action, errors),
+                Ok(Err(e)) => {
+                    tracing::warn!(extension = %name, error = %e,
+                        "on_budget_exceeded returned error (isolated, treating as Sleepwalk)");
+                    errors.push(HookError {
+                        extension: name,
+                        message: e.to_string(),
+                        timed_out: false,
+                    });
+                }
+                Err(_) => {
+                    tracing::warn!(extension = %name, timeout_ms = self.timeout.as_millis(),
+                        "on_budget_exceeded timed out (isolated, treating as Sleepwalk)");
+                    errors.push(HookError {
+                        extension: name,
+                        message: format!("timed out after {}ms", self.timeout.as_millis()),
+                        timed_out: true,
+                    });
+                }
+            }
+        }
+        (BudgetAction::Sleepwalk, errors)
     }
 
     /// Dispatch `on_slot_completed` to every extension with fault isolation.
@@ -2025,5 +2695,514 @@ mod tests {
         let errors = runner.dispatch_tick_start(0).await;
         assert!(errors.is_empty(), "late-added extension should work fine");
         assert_eq!(runner.chain().len(), 1);
+    }
+
+    // ── E30-T02: FilterDecision and BudgetAction tests ─────────────────
+
+    #[test]
+    fn filter_decision_pass_is_clone_and_debug() {
+        let d = FilterDecision::Pass;
+        let cloned = d.clone();
+        let _ = format!("{cloned:?}");
+    }
+
+    #[test]
+    fn filter_decision_drop_is_clone_and_debug() {
+        let d = FilterDecision::Drop;
+        let cloned = d.clone();
+        let _ = format!("{cloned:?}");
+    }
+
+    #[test]
+    fn filter_decision_transform_carries_message() {
+        let msg = AgentMessage {
+            from: "a".into(),
+            to: "b".into(),
+            payload: serde_json::json!({"x": 1}),
+        };
+        let d = FilterDecision::Transform(msg.clone());
+        match d {
+            FilterDecision::Transform(m) => assert_eq!(m.from, "a"),
+            _ => panic!("expected Transform variant"),
+        }
+    }
+
+    #[test]
+    fn budget_action_variants_eq_and_clone() {
+        assert_eq!(BudgetAction::Sleepwalk, BudgetAction::Sleepwalk);
+        assert_eq!(BudgetAction::Stop, BudgetAction::Stop);
+        assert_eq!(
+            BudgetAction::RequestMore(500_000),
+            BudgetAction::RequestMore(500_000)
+        );
+        assert_ne!(BudgetAction::Sleepwalk, BudgetAction::Stop);
+        let _ = format!("{:?}", BudgetAction::RequestMore(1_000_000));
+    }
+
+    #[tokio::test]
+    async fn chain_filter_input_pass_by_default() {
+        let chain = ExtensionChain::new();
+        let mut msg = AgentMessage {
+            from: "sender".into(),
+            to: "receiver".into(),
+            payload: serde_json::json!({}),
+        };
+        let decision = chain.run_filter_input(&mut msg).await.unwrap();
+        assert!(matches!(decision, FilterDecision::Pass));
+    }
+
+    #[tokio::test]
+    async fn chain_on_budget_exceeded_sleepwalk_by_default() {
+        let chain = ExtensionChain::new();
+        let cost = CostUpdate {
+            model: "claude-sonnet-4-20250514".into(),
+            tokens_in: 10_000,
+            tokens_out: 2_000,
+            cost_usd: 0.05,
+        };
+        let action = chain.run_on_budget_exceeded(&cost).await.unwrap();
+        assert_eq!(action, BudgetAction::Sleepwalk);
+    }
+
+    /// A Perception-layer extension that always drops messages.
+    struct DroppingExtension {
+        name: String,
+    }
+
+    #[async_trait::async_trait]
+    impl Extension for DroppingExtension {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn layer(&self) -> ExtensionLayer {
+            ExtensionLayer::Perception
+        }
+        async fn filter_input(
+            &self,
+            _message: &mut AgentMessage,
+        ) -> Result<FilterDecision, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(FilterDecision::Drop)
+        }
+    }
+
+    /// A Recovery-layer extension that requests more budget.
+    struct BudgetRequestExtension {
+        name: String,
+        microdollars: u64,
+    }
+
+    #[async_trait::async_trait]
+    impl Extension for BudgetRequestExtension {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn layer(&self) -> ExtensionLayer {
+            ExtensionLayer::Recovery
+        }
+        async fn on_budget_exceeded(
+            &self,
+            _cost: &CostUpdate,
+        ) -> Result<BudgetAction, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(BudgetAction::RequestMore(self.microdollars))
+        }
+    }
+
+    #[tokio::test]
+    async fn chain_filter_input_drop_short_circuits() {
+        let mut chain = ExtensionChain::new();
+        chain.add(Box::new(DroppingExtension {
+            name: "drop-ext".into(),
+        }));
+        // A second perception extension that would return Pass — should never run.
+        chain.add(Box::new(TestExtension {
+            name: "pass-ext".into(),
+            layer: ExtensionLayer::Perception,
+        }));
+        let mut msg = AgentMessage {
+            from: "a".into(),
+            to: "b".into(),
+            payload: serde_json::json!({}),
+        };
+        let decision = chain.run_filter_input(&mut msg).await.unwrap();
+        assert!(matches!(decision, FilterDecision::Drop));
+    }
+
+    #[tokio::test]
+    async fn chain_on_budget_exceeded_non_sleepwalk_short_circuits() {
+        let mut chain = ExtensionChain::new();
+        chain.add(Box::new(BudgetRequestExtension {
+            name: "budget-ext".into(),
+            microdollars: 500_000,
+        }));
+        let cost = CostUpdate {
+            model: "claude-sonnet-4-20250514".into(),
+            tokens_in: 50_000,
+            tokens_out: 10_000,
+            cost_usd: 1.0,
+        };
+        let action = chain.run_on_budget_exceeded(&cost).await.unwrap();
+        assert_eq!(action, BudgetAction::RequestMore(500_000));
+    }
+
+    #[tokio::test]
+    async fn hook_runner_dispatch_filter_input_pass_empty_chain() {
+        let chain = ExtensionChain::new();
+        let runner = HookRunner::with_default_timeout(chain);
+        let mut msg = AgentMessage {
+            from: "a".into(),
+            to: "b".into(),
+            payload: serde_json::json!({}),
+        };
+        let (decision, errors) = runner.dispatch_filter_input(&mut msg).await;
+        assert!(matches!(decision, FilterDecision::Pass));
+        assert!(errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hook_runner_dispatch_filter_input_drop() {
+        let mut chain = ExtensionChain::new();
+        chain.add(Box::new(DroppingExtension {
+            name: "drop-ext".into(),
+        }));
+        let runner = HookRunner::with_default_timeout(chain);
+        let mut msg = AgentMessage {
+            from: "x".into(),
+            to: "y".into(),
+            payload: serde_json::json!({}),
+        };
+        let (decision, errors) = runner.dispatch_filter_input(&mut msg).await;
+        assert!(matches!(decision, FilterDecision::Drop));
+        assert!(errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hook_runner_dispatch_budget_exceeded_sleepwalk_empty() {
+        let chain = ExtensionChain::new();
+        let runner = HookRunner::with_default_timeout(chain);
+        let cost = CostUpdate {
+            model: "claude-sonnet-4-20250514".into(),
+            tokens_in: 1,
+            tokens_out: 1,
+            cost_usd: 0.001,
+        };
+        let (action, errors) = runner.dispatch_on_budget_exceeded(&cost).await;
+        assert_eq!(action, BudgetAction::Sleepwalk);
+        assert!(errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hook_runner_dispatch_budget_exceeded_request_more() {
+        let mut chain = ExtensionChain::new();
+        chain.add(Box::new(BudgetRequestExtension {
+            name: "budget-ext".into(),
+            microdollars: 1_000_000,
+        }));
+        let runner = HookRunner::with_default_timeout(chain);
+        let cost = CostUpdate {
+            model: "claude-sonnet-4-20250514".into(),
+            tokens_in: 100_000,
+            tokens_out: 20_000,
+            cost_usd: 2.0,
+        };
+        let (action, errors) = runner.dispatch_on_budget_exceeded(&cost).await;
+        assert_eq!(action, BudgetAction::RequestMore(1_000_000));
+        assert!(errors.is_empty());
+    }
+
+    // ── E30-T06: Configurable hook timeout + circuit breaker tests ─────
+
+    /// An extension whose on_tick_start sleeps for the configured delay, useful
+    /// for testing timeout enforcement in `ExtensionChain`.
+    struct DelayedExtension {
+        name: String,
+        layer: ExtensionLayer,
+        delay_ms: u64,
+    }
+
+    #[async_trait::async_trait]
+    impl Extension for DelayedExtension {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn layer(&self) -> ExtensionLayer {
+            self.layer
+        }
+        async fn on_tick_start(
+            &self,
+            _tick: u64,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+            Ok(())
+        }
+        async fn on_tick_end(
+            &self,
+            _tick: u64,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+            Ok(())
+        }
+        async fn pre_inference(
+            &self,
+            _request: &mut InferenceRequest,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+            Ok(())
+        }
+    }
+
+    /// An extension that always errors on every hook.
+    struct AlwaysFailingExtension {
+        name: String,
+        layer: ExtensionLayer,
+    }
+
+    #[async_trait::async_trait]
+    impl Extension for AlwaysFailingExtension {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn layer(&self) -> ExtensionLayer {
+            self.layer
+        }
+        async fn on_tick_start(
+            &self,
+            _tick: u64,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            Err("always fails".into())
+        }
+        async fn pre_inference(
+            &self,
+            _request: &mut InferenceRequest,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            Err("always fails".into())
+        }
+    }
+
+    #[test]
+    fn extension_chain_default_timeout_is_5s() {
+        let chain = ExtensionChain::new();
+        assert_eq!(chain.default_timeout, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn extension_chain_hook_timeout_falls_back_to_default() {
+        let chain = ExtensionChain::new();
+        // No override registered — should return default.
+        assert_eq!(chain.hook_timeout("any-ext"), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn extension_chain_hook_timeout_uses_override() {
+        let mut chain = ExtensionChain::new();
+        chain.set_timeout_override("fast-ext", Duration::from_millis(100));
+        assert_eq!(chain.hook_timeout("fast-ext"), Duration::from_millis(100));
+        // Other extensions still get the default.
+        assert_eq!(chain.hook_timeout("other-ext"), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn extension_chain_timeout_overrides_field_accessible() {
+        let mut chain = ExtensionChain::new();
+        chain
+            .timeout_overrides
+            .insert("manual-ext".into(), Duration::from_millis(500));
+        assert_eq!(chain.hook_timeout("manual-ext"), Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn chain_tick_start_timeout_is_enforced() {
+        // DelayedExtension sleeps 200ms but timeout is 10ms — should not block.
+        let mut chain = ExtensionChain::new();
+        chain.default_timeout = Duration::from_millis(10);
+        chain.add(Box::new(DelayedExtension {
+            name: "slow-ext".into(),
+            layer: ExtensionLayer::Foundation,
+            delay_ms: 200,
+        }));
+        // Should complete quickly (timeout fires), not hang for 200ms.
+        chain.run_on_tick_start(0).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn chain_tick_start_timeout_does_not_block_next_extension() {
+        let mut chain = ExtensionChain::new();
+        chain.default_timeout = Duration::from_millis(10);
+        chain.add(Box::new(DelayedExtension {
+            name: "slow-ext".into(),
+            layer: ExtensionLayer::Foundation,
+            delay_ms: 200,
+        }));
+        // A fast extension after the slow one should still execute.
+        chain.add(Box::new(TestExtension {
+            name: "fast-ext".into(),
+            layer: ExtensionLayer::Cognition,
+        }));
+        chain.run_on_tick_start(0).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn chain_per_extension_timeout_override() {
+        let mut chain = ExtensionChain::new();
+        // Global default is very short.
+        chain.default_timeout = Duration::from_millis(5);
+        // Give "slow-ext" a generous override so it should complete without timeout.
+        chain.set_timeout_override("slow-ext", Duration::from_millis(300));
+        chain.add(Box::new(DelayedExtension {
+            name: "slow-ext".into(),
+            layer: ExtensionLayer::Foundation,
+            delay_ms: 50, // sleeps 50ms, override is 300ms — should succeed.
+        }));
+        chain.run_on_tick_start(0).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn chain_pre_inference_timeout_enforced() {
+        let mut chain = ExtensionChain::new();
+        chain.default_timeout = Duration::from_millis(10);
+        chain.add(Box::new(DelayedExtension {
+            name: "slow-cog".into(),
+            layer: ExtensionLayer::Cognition,
+            delay_ms: 200,
+        }));
+        let mut req = InferenceRequest {
+            plan_id: "p1".into(),
+            task: "t1".into(),
+            role: "engineer".into(),
+            model: "model".into(),
+            prompt_tokens: 100,
+            extra: serde_json::Value::Null,
+        };
+        // Should not hang — timeout fires and hook is treated as no-op.
+        chain.run_pre_inference(&mut req).await.unwrap();
+    }
+
+    // ── Circuit breaker tests ──────────────────────────────────────────
+
+    #[test]
+    fn health_tracker_record_failure_and_is_disabled() {
+        let mut tracker = ExtensionHealthTracker::new(3);
+        assert!(!tracker.is_disabled("ext-a"));
+
+        // First two failures do not disable.
+        assert!(!tracker.record_failure("ext-a"));
+        assert!(!tracker.record_failure("ext-a"));
+        assert!(!tracker.is_disabled("ext-a"));
+
+        // Third failure hits threshold — disabled.
+        assert!(tracker.record_failure("ext-a"));
+        assert!(tracker.is_disabled("ext-a"));
+    }
+
+    #[test]
+    fn health_tracker_record_success_resets_count() {
+        let mut tracker = ExtensionHealthTracker::new(3);
+        tracker.record_failure("ext-a");
+        tracker.record_failure("ext-a");
+        tracker.record_success("ext-a");
+
+        // Success reset the counter — two more failures should not disable.
+        assert!(!tracker.record_failure("ext-a"));
+        assert!(!tracker.record_failure("ext-a"));
+        assert!(!tracker.is_disabled("ext-a"));
+    }
+
+    #[test]
+    fn health_tracker_default_threshold_is_5() {
+        let mut tracker = ExtensionHealthTracker::default();
+        for i in 0..4u32 {
+            let disabled = tracker.record_failure("ext");
+            assert!(!disabled, "should not be disabled after {} failures", i + 1);
+        }
+        let disabled = tracker.record_failure("ext");
+        assert!(disabled, "should be disabled after 5 failures");
+    }
+
+    #[test]
+    fn health_tracker_independent_per_extension() {
+        let mut tracker = ExtensionHealthTracker::new(2);
+        tracker.record_failure("ext-a");
+        tracker.record_failure("ext-a"); // ext-a disabled
+        assert!(tracker.is_disabled("ext-a"));
+        // ext-b is unaffected.
+        assert!(!tracker.is_disabled("ext-b"));
+    }
+
+    #[tokio::test]
+    async fn chain_circuit_breaker_disables_after_consecutive_failures() {
+        // Threshold of 3 means the extension is disabled after 3 consecutive
+        // failures. Use AlwaysFailingExtension to trigger it.
+        let mut chain = ExtensionChain::new();
+        chain.health_tracker = std::cell::RefCell::new(ExtensionHealthTracker::new(3));
+        chain.add(Box::new(AlwaysFailingExtension {
+            name: "bad-ext".into(),
+            layer: ExtensionLayer::Cognition,
+        }));
+
+        let mut req = InferenceRequest {
+            plan_id: "p".into(),
+            task: "t".into(),
+            role: "engineer".into(),
+            model: "m".into(),
+            prompt_tokens: 0,
+            extra: serde_json::Value::Null,
+        };
+
+        // Three failures — on the third call the extension should be disabled.
+        chain.run_pre_inference(&mut req).await.unwrap();
+        chain.run_pre_inference(&mut req).await.unwrap();
+        chain.run_pre_inference(&mut req).await.unwrap();
+
+        // Now it should be disabled.
+        assert!(
+            chain.health_tracker.borrow().is_disabled("bad-ext"),
+            "bad-ext should be disabled after 3 consecutive failures"
+        );
+
+        // Subsequent calls should not invoke the extension (it's disabled).
+        chain.run_pre_inference(&mut req).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn chain_circuit_breaker_timeout_counts_as_failure() {
+        // Timeout should increment the failure counter, eventually disabling.
+        let mut chain = ExtensionChain::new();
+        chain.health_tracker = std::cell::RefCell::new(ExtensionHealthTracker::new(2));
+        chain.default_timeout = Duration::from_millis(10);
+        chain.add(Box::new(DelayedExtension {
+            name: "slow-ext".into(),
+            layer: ExtensionLayer::Foundation,
+            delay_ms: 200,
+        }));
+
+        // Two timeout-failures should disable the extension.
+        chain.run_on_tick_start(0).await.unwrap();
+        chain.run_on_tick_start(1).await.unwrap();
+
+        assert!(
+            chain.health_tracker.borrow().is_disabled("slow-ext"),
+            "slow-ext should be disabled after 2 consecutive timeouts"
+        );
+    }
+
+    #[tokio::test]
+    async fn chain_circuit_breaker_skips_disabled_extension() {
+        // Once disabled, the extension should not be called even if present.
+        let mut chain = ExtensionChain::new();
+        chain.health_tracker = std::cell::RefCell::new(ExtensionHealthTracker::new(1));
+        chain.add(Box::new(AlwaysFailingExtension {
+            name: "bad-ext".into(),
+            layer: ExtensionLayer::Foundation,
+        }));
+        chain.add(Box::new(TestExtension {
+            name: "good-ext".into(),
+            layer: ExtensionLayer::Foundation,
+        }));
+
+        // First call: bad-ext fails and gets disabled (threshold = 1).
+        chain.run_on_tick_start(0).await.unwrap();
+        assert!(chain.health_tracker.borrow().is_disabled("bad-ext"));
+
+        // Second call: bad-ext is skipped, good-ext runs without issue.
+        chain.run_on_tick_start(1).await.unwrap();
     }
 }

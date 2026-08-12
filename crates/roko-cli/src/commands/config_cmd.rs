@@ -1262,6 +1262,23 @@ pub(crate) async fn cmd_plugin(cli: &Cli, cmd: PluginCmd) -> Result<i32> {
                             roko_plugin::manifest::TriggerDef::Webhook { path, scope, .. } => {
                                 println!("    trigger: webhook({path}) [scope: {scope}]");
                             }
+                            roko_plugin::manifest::TriggerDef::SignalMatch {
+                                signal_kind,
+                                filter_path,
+                                filter_value,
+                                ..
+                            } => {
+                                let filter = match (filter_path.as_deref(), filter_value.as_deref())
+                                {
+                                    (Some(path), Some(val)) => format!(" [filter: {path}={val}]"),
+                                    _ => String::new(),
+                                };
+                                println!("    trigger: signal_match({signal_kind}){filter}");
+                            }
+                            roko_plugin::manifest::TriggerDef::Manual { label, .. } => {
+                                let label_str = label.as_deref().unwrap_or("(no label)");
+                                println!("    trigger: manual [{label_str}]");
+                            }
                         }
                     }
 

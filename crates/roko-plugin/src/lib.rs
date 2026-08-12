@@ -13,6 +13,7 @@
 )]
 
 pub mod manifest;
+pub mod trigger_protocol;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -26,11 +27,18 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{self, Sender};
 use tokio_util::sync::CancellationToken;
 
 /// Cloneable bounded sender used by event sources to publish signals into Roko.
 pub type SignalSender = Sender<Engram>;
+
+/// Sender half used to inject GitHub webhook signals into [`GitHubEventSource`].
+///
+/// The webhook route calls `sender.try_send(signal)` after verifying and parsing
+/// the payload. Dropping all senders causes the event source's `start` loop to
+/// exit cleanly.
+pub type GitHubEventSender = mpsc::Sender<Engram>;
 
 /// Outcome reported by a feedback collector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +83,67 @@ pub enum EventSourceKind {
     FileWatch,
     /// Custom source type provided by a plugin.
     Custom(String),
+}
+
+/// Channel capacity for the GitHub webhook event bridge.
+///
+/// 256 slots matches the capacity used by `start_event_source_group` for the
+/// outbound signal ingest channel — large enough to absorb a burst of webhook
+/// deliveries without back-pressure.
+const GITHUB_CHANNEL_CAPACITY: usize = 256;
+
+/// A push-based event source that relays GitHub webhook payloads as [`Engram`]
+/// signals into the Roko signal ingest pipeline.
+///
+/// # Design
+///
+/// Rather than opening a separate HTTP listener, `GitHubEventSource` bridges the
+/// existing `/webhooks/github` ingress route.  The webhook handler verifies the
+/// HMAC signature, converts the raw payload to a typed [`Engram`], and then
+/// forwards it via a [`GitHubEventSender`] that is stored on [`AppState`].
+///
+/// `start` drains the receiver side until either the sender is dropped or the
+/// cancellation token fires.  All signals flow through the shared signal ingest
+/// loop (persist + `WebhookReceived` bus event).
+///
+/// # Plan execution
+///
+/// Once signals reach the ingest loop they match against the configured
+/// `[[subscriptions]]` entries in `roko.toml`.  Add an entry whose `trigger`
+/// glob matches the desired signal kind (e.g.
+/// `"github:workflow_run:completed"`) and point `template` at the agent
+/// template that should run the plan.
+pub struct GitHubEventSource {
+    /// Receiver half of the webhook bridge channel.
+    receiver: tokio::sync::Mutex<mpsc::Receiver<Engram>>,
+}
+
+impl std::fmt::Debug for GitHubEventSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GitHubEventSource").finish()
+    }
+}
+
+impl GitHubEventSource {
+    /// Create a new `GitHubEventSource` and its paired [`GitHubEventSender`].
+    ///
+    /// Store the sender in [`AppState`] so the `/webhooks/github` route can
+    /// forward verified payloads into this source.
+    #[must_use]
+    pub fn new() -> (Self, GitHubEventSender) {
+        let (tx, rx) = mpsc::channel(GITHUB_CHANNEL_CAPACITY);
+        let source = Self {
+            receiver: tokio::sync::Mutex::new(rx),
+        };
+        (source, tx)
+    }
+}
+
+impl Default for GitHubEventSource {
+    fn default() -> Self {
+        let (source, _sender) = Self::new();
+        source
+    }
 }
 
 /// A filesystem event source backed by `notify`.
@@ -368,6 +437,41 @@ impl EventSource for FileWatchEventSource {
         }
 
         drain_file_watch_events(event_rx, sender, cancel, watched_paths).await
+    }
+}
+
+#[async_trait]
+impl EventSource for GitHubEventSource {
+    fn name(&self) -> &str {
+        "github"
+    }
+
+    fn kind(&self) -> EventSourceKind {
+        EventSourceKind::Webhook
+    }
+
+    /// Relay GitHub webhook signals until the sender is dropped or `cancel` fires.
+    ///
+    /// The webhook route injects pre-verified, pre-parsed [`Engram`] values via
+    /// the [`GitHubEventSender`] returned from [`GitHubEventSource::new`].  This
+    /// method drains those signals and forwards them to the signal ingest loop
+    /// (which persists them and publishes a `WebhookReceived` bus event).
+    async fn start(&self, sender: SignalSender, cancel: CancellationToken) -> Result<()> {
+        let mut receiver = self.receiver.lock().await;
+        loop {
+            let maybe_signal = tokio::select! {
+                _ = cancel.cancelled() => None,
+                signal = receiver.recv() => signal,
+            };
+            let Some(signal) = maybe_signal else {
+                break;
+            };
+            sender
+                .send(signal)
+                .await
+                .map_err(|_| RokoError::cancelled("github event source signal receiver dropped"))?;
+        }
+        Ok(())
     }
 }
 

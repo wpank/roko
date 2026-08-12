@@ -1821,6 +1821,10 @@ pub struct RunConfig {
     pub dangerously_skip_permissions: bool,
     /// When true, resume skips task-drift validation and reuses the snapshot state as-is.
     pub force_resume: bool,
+    /// When `true`, skip the disk-space pre-check and proceed even if free disk
+    /// is below `resources.min_free_disk_mb`. Use with caution: the plan may
+    /// fail mid-run if disk space is exhausted. Set via `--force` CLI flag.
+    pub force_disk_check: bool,
     /// Optional MCP config path.
     pub mcp_config: Option<PathBuf>,
     /// Optional session ID to resume from.
@@ -1834,8 +1838,22 @@ pub struct RunConfig {
     /// Maximum USD spend per single agent turn (0 = unlimited). From `[budget]`.
     pub max_turn_usd: f64,
     /// When `true`, allows execution to continue past `BudgetAction::Block` with
-    /// a warning. Set via `--budget-override` CLI flag. Default: `false`.
+    /// a warning. Derived from `--budget-override` / `--no-budget` CLI flags.
+    /// Default: `false`.
     pub budget_override: bool,
+    /// CLI-provided per-plan ceiling override in USD.
+    ///
+    /// `Some(amount)` replaces `max_plan_usd` (including `0.0` for unlimited).
+    /// `None` means the config value is used unchanged.
+    /// When set, `budget_override` is automatically `true` so the runner
+    /// warns rather than hard-blocking when the new ceiling is reached.
+    pub budget_ceiling_override: Option<f64>,
+    /// When `true`, budget enforcement is disabled entirely for this run.
+    ///
+    /// Equivalent to `budget_ceiling_override = Some(0.0)`.  Set via
+    /// `--no-budget` CLI flag.  When set, `max_plan_usd` is forced to
+    /// `0.0` (unlimited) and `budget_override` is `true`.
+    pub no_budget: bool,
     /// Whether clippy gate is enabled. From `[gates]` / gate config.
     pub clippy_enabled: bool,
     /// Whether to skip the test gate. From `[gates]` / gate config.
@@ -1913,7 +1931,7 @@ impl RunConfig {
         let mut state = roko_daimon::DaimonState::load_or_new(
             crate::config_helpers::daimon_state_path(workdir.as_ref()),
         );
-        state.configure_strategy_space(strategy_space);
+        let _ = state.configure_strategy_space(strategy_space);
         Arc::new(Mutex::new(state))
     }
 
@@ -1993,6 +2011,7 @@ impl RunConfig {
             approval: false,
             dangerously_skip_permissions: roko_config.runner.dangerously_skip_permissions,
             force_resume: false,
+            force_disk_check: false,
             mcp_config: None,
             resume_session: None,
             max_gate_rung: if roko_config.gates.skip_tests {
@@ -2009,6 +2028,8 @@ impl RunConfig {
             max_plan_usd: f64::from(roko_config.budget.max_plan_usd),
             max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
             budget_override: false,
+            budget_ceiling_override: None,
+            no_budget: false,
             clippy_enabled: roko_config.gates.clippy_enabled,
             skip_tests: roko_config.gates.skip_tests,
             roko_config: Some(Arc::new(roko_config)),
@@ -2054,6 +2075,7 @@ impl Default for RunConfig {
             approval: false,
             dangerously_skip_permissions: true,
             force_resume: false,
+            force_disk_check: false,
             mcp_config: None,
             resume_session: None,
             max_gate_rung: 2,
@@ -2061,6 +2083,8 @@ impl Default for RunConfig {
             max_plan_usd: 0.0,
             max_turn_usd: 0.0,
             budget_override: false,
+            budget_ceiling_override: None,
+            no_budget: false,
             clippy_enabled: true,
             skip_tests: false,
             roko_config: None,
@@ -2103,7 +2127,10 @@ impl std::fmt::Debug for RunConfig {
             .field("max_plan_usd", &self.max_plan_usd)
             .field("max_turn_usd", &self.max_turn_usd)
             .field("budget_override", &self.budget_override)
+            .field("budget_ceiling_override", &self.budget_ceiling_override)
+            .field("no_budget", &self.no_budget)
             .field("force_resume", &self.force_resume)
+            .field("force_disk_check", &self.force_disk_check)
             .field(
                 "extension_chain",
                 &self.extension_chain.as_ref().map(|_| ".."),

@@ -229,6 +229,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             fresh,
             force_resume,
             budget_override,
+            no_budget,
+            force,
         } => {
             let t_total = std::time::Instant::now();
             let t_setup = std::time::Instant::now();
@@ -517,6 +519,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     approval,
                     dangerously_skip_permissions: true,
                     force_resume,
+                    force_disk_check: force,
                     mcp_config: {
                         // Resolve MCP config with auto-discovery of roko-mcp-github.
                         // Priority: .roko/mcp.json > ~/.claude/mcp-config.json > .mcp.json
@@ -542,9 +545,35 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         .clone()
                         .map(std::path::PathBuf::from)
                         .unwrap_or_else(|| std::path::PathBuf::from("claude")),
-                    max_plan_usd: f64::from(roko_config.budget.max_plan_usd),
+                    // Apply CLI budget overrides via resolve_budget_ceiling().
+                    //
+                    // Priority (highest first):
+                    //   1. --no-budget → ceiling = 0.0 (unlimited, bypass block)
+                    //   2. --budget-override <amount> → ceiling = amount, bypass block
+                    //   3. roko.toml [budget].max_plan_usd (no CLI override active)
+                    max_plan_usd: {
+                        let (ceiling, _) = resolve_budget_ceiling(
+                            budget_override,
+                            no_budget,
+                            f64::from(roko_config.budget.max_plan_usd),
+                        );
+                        ceiling
+                    },
                     max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
-                    budget_override,
+                    budget_override: {
+                        let (_, bypass) = resolve_budget_ceiling(
+                            budget_override,
+                            no_budget,
+                            f64::from(roko_config.budget.max_plan_usd),
+                        );
+                        bypass
+                    },
+                    budget_ceiling_override: if no_budget {
+                        Some(0.0)
+                    } else {
+                        budget_override
+                    },
+                    no_budget,
                     clippy_enabled: roko_config.gates.clippy_enabled,
                     skip_tests: roko_config.gates.skip_tests,
                     safety_layer: Some(roko_agent::SafetyLayer::from_config(&roko_config)),
@@ -1900,6 +1929,33 @@ async fn cmd_plan_run_engine(
     })
 }
 
+/// Resolve the effective per-plan USD ceiling from CLI flags and config.
+///
+/// Priority order (highest to lowest):
+/// 1. `no_budget = true` → `0.0` (unlimited — no enforcement)
+/// 2. `budget_override = Some(amount)` → `amount.max(0.0)` (explicit CLI ceiling)
+/// 3. `config_max_plan_usd` (from `roko.toml [budget].max_plan_usd`)
+///
+/// Returns `(effective_ceiling, bypass_block)` where `bypass_block` is `true`
+/// when the caller explicitly provided a ceiling via the CLI (so the runner
+/// warns on overage instead of hard-blocking).
+pub(crate) fn resolve_budget_ceiling(
+    budget_override: Option<f64>,
+    no_budget: bool,
+    config_max_plan_usd: f64,
+) -> (f64, bool) {
+    if no_budget {
+        // Disable enforcement: ceiling 0.0 means unlimited.
+        (0.0, true)
+    } else if let Some(ceiling) = budget_override {
+        // Explicit CLI ceiling — clamp negatives to 0.0 (unlimited).
+        (ceiling.max(0.0), true)
+    } else {
+        // Use the config value unchanged; no CLI override active.
+        (config_max_plan_usd, false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1924,5 +1980,73 @@ mod tests {
 
         let state = read_executor_state(dir.path()).expect("state");
         assert_eq!(state, vec![("plan-a".to_string(), 1, 3)]);
+    }
+
+    // ── resolve_budget_ceiling unit tests ────────────────────────────────
+
+    /// No CLI flags: config value is used, bypass is false.
+    #[test]
+    fn budget_ceiling_no_override_uses_config() {
+        let (ceiling, bypass) = resolve_budget_ceiling(None, false, 25.0);
+        assert!((ceiling - 25.0).abs() < 1e-12);
+        assert!(!bypass, "should not bypass block when using config value");
+    }
+
+    /// `--budget-override 50.0`: ceiling is set to 50.0, bypass is true.
+    #[test]
+    fn budget_ceiling_override_amount_sets_ceiling_and_bypass() {
+        let (ceiling, bypass) = resolve_budget_ceiling(Some(50.0), false, 25.0);
+        assert!((ceiling - 50.0).abs() < 1e-12);
+        assert!(bypass, "CLI override should enable bypass");
+    }
+
+    /// `--budget-override 0`: ceiling is 0.0 (unlimited), bypass is true.
+    #[test]
+    fn budget_ceiling_override_zero_means_unlimited() {
+        let (ceiling, bypass) = resolve_budget_ceiling(Some(0.0), false, 25.0);
+        assert!((ceiling - 0.0).abs() < 1e-12);
+        assert!(bypass, "zero ceiling should enable bypass");
+    }
+
+    /// `--budget-override <negative>`: clamped to 0.0 (unlimited), bypass is true.
+    #[test]
+    fn budget_ceiling_override_negative_clamped_to_zero() {
+        let (ceiling, bypass) = resolve_budget_ceiling(Some(-10.0), false, 25.0);
+        assert!(
+            (ceiling - 0.0).abs() < 1e-12,
+            "negative should be clamped to 0"
+        );
+        assert!(bypass, "negative ceiling should enable bypass");
+    }
+
+    /// `--no-budget`: ceiling is 0.0, bypass is true regardless of config.
+    #[test]
+    fn budget_ceiling_no_budget_flag_disables_enforcement() {
+        let (ceiling, bypass) = resolve_budget_ceiling(None, true, 100.0);
+        assert!(
+            (ceiling - 0.0).abs() < 1e-12,
+            "--no-budget should set ceiling to 0.0"
+        );
+        assert!(bypass, "--no-budget should enable bypass");
+    }
+
+    /// `--no-budget` takes precedence over config even when config is unlimited.
+    #[test]
+    fn budget_ceiling_no_budget_with_zero_config() {
+        let (ceiling, bypass) = resolve_budget_ceiling(None, true, 0.0);
+        assert!((ceiling - 0.0).abs() < 1e-12);
+        assert!(bypass);
+    }
+
+    /// When `budget_override` is Some, the config value is ignored entirely.
+    #[test]
+    fn budget_ceiling_override_ignores_config() {
+        let config_val = 999.0;
+        let (ceiling, bypass) = resolve_budget_ceiling(Some(5.0), false, config_val);
+        assert!(
+            (ceiling - 5.0).abs() < 1e-12,
+            "override should ignore config"
+        );
+        assert!(bypass);
     }
 }

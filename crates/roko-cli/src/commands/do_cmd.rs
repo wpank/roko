@@ -601,6 +601,7 @@ pub(crate) async fn run_plan_execution(
         approval: false,
         dangerously_skip_permissions: true,
         force_resume: false,
+        force_disk_check: false,
         mcp_config: {
             // Resolve MCP config with auto-discovery of roko-mcp-github.
             let mcp = crate::resolve_mcp_config_with_autodiscovery(workdir, layout.root());
@@ -626,6 +627,8 @@ pub(crate) async fn run_plan_execution(
         max_plan_usd: f64::from(roko_config.budget.max_plan_usd),
         max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
         budget_override: false,
+        budget_ceiling_override: None,
+        no_budget: false,
         clippy_enabled: roko_config.gates.clippy_enabled,
         skip_tests: roko_config.gates.skip_tests,
         safety_layer: Some(roko_agent::SafetyLayer::from_config(&roko_config)),

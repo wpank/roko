@@ -40,4 +40,4 @@ pub mod registry;
 pub use builtin::{ROKO_BUILTIN_TOOLS, TOOL_COUNT};
 pub use handlers::{HandlerRegistry, handler_for};
 pub use mock_dispatcher::MockToolDispatcher;
-pub use registry::StaticToolRegistry;
+pub use registry::{DynamicToolRegistry, StaticToolRegistry};

@@ -263,4 +263,38 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn vision_capable_models_have_supports_vision() {
+        // Verify that known vision-capable models (Gemini, Claude, GPT) have supports_vision: true
+        for m in BUILTIN_MODELS {
+            match m.slug {
+                // Gemini models should support vision
+                "gemini-2.5-pro" | "gemini-2.5-flash" => {
+                    assert!(
+                        m.supports_vision,
+                        "{} should have supports_vision: true",
+                        m.slug
+                    );
+                }
+                // Claude models should support vision (Opus, Sonnet, Haiku)
+                "claude-opus-4-6" | "claude-sonnet-4-6" | "claude-haiku-4-5" => {
+                    assert!(
+                        m.supports_vision,
+                        "{} should have supports_vision: true",
+                        m.slug
+                    );
+                }
+                // OpenAI vision-capable models
+                "gpt-4o" | "o4" | "o4-mini" => {
+                    assert!(
+                        m.supports_vision,
+                        "{} should have supports_vision: true",
+                        m.slug
+                    );
+                }
+                _ => {} // Other models may or may not support vision
+            }
+        }
+    }
 }

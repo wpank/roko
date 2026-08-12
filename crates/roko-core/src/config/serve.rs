@@ -136,6 +136,13 @@ pub struct ApiKeyEntry {
     /// Optional ISO 8601 expiry timestamp.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
+    /// ISO 8601 timestamp of the last successful use of this key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<String>,
+    /// Previous key hashes retained for a 5-minute grace period after rotation.
+    /// Each entry is (hash, grace_expires_at_rfc3339).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previous_key_hashes: Vec<(String, String)>,
 }
 
 fn default_api_key_scope() -> String {
@@ -511,6 +518,88 @@ impl Default for GithubWebhookConfig {
     fn default() -> Self {
         Self {
             secret: String::new(),
+        }
+    }
+}
+
+// ---- [github] ------------------------------------------------------------
+
+/// Merge strategy when auto-merging plan PRs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeMethod {
+    /// Standard merge commit.
+    Merge,
+    /// Squash all commits into one.
+    #[default]
+    Squash,
+    /// Rebase commits onto the base branch.
+    Rebase,
+}
+
+impl MergeMethod {
+    /// Return the string form expected by the GitHub API.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Merge => "merge",
+            Self::Squash => "squash",
+            Self::Rebase => "rebase",
+        }
+    }
+}
+
+impl std::fmt::Display for MergeMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// GitHub repository identity and workflow preferences.
+///
+/// This section covers the repo the runner will operate against (branch
+/// creation, PRs, issues).  Webhook secrets remain under `[webhooks.github]`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHubConfig {
+    /// GitHub organisation or user that owns the target repository.
+    /// Optional — callers must check at use-site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// Repository name (without the owner prefix).
+    /// Optional — callers must check at use-site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// Base branch for plan PRs.
+    #[serde(default = "default_github_default_branch")]
+    pub default_branch: String,
+    /// When true, the runner automatically opens a draft PR when a plan starts.
+    #[serde(default)]
+    pub auto_pr: bool,
+    /// Strategy used when auto-merging a plan PR.
+    #[serde(default)]
+    pub merge_method: MergeMethod,
+    /// Label prefix applied to roko-managed GitHub labels and issues.
+    #[serde(default = "default_github_label_prefix")]
+    pub label_prefix: String,
+}
+
+fn default_github_default_branch() -> String {
+    "main".to_owned()
+}
+
+fn default_github_label_prefix() -> String {
+    "roko/".to_owned()
+}
+
+impl Default for GitHubConfig {
+    fn default() -> Self {
+        Self {
+            owner: None,
+            repo: None,
+            default_branch: default_github_default_branch(),
+            auto_pr: false,
+            merge_method: MergeMethod::default(),
+            label_prefix: default_github_label_prefix(),
         }
     }
 }

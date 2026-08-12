@@ -68,6 +68,7 @@ pub mod body;
 pub mod build;
 /// Additional Bus backend implementations: BroadcastBus, MemoryBus, MultiBus.
 pub mod bus_backends;
+pub mod capabilities;
 pub mod catalyst;
 /// The Cell trait — universal computation unit for all protocol implementations.
 pub mod cell;
@@ -184,6 +185,7 @@ pub use build::{BuildCommand, BuildSystem};
 pub use bus_backends::{
     BroadcastBus, BroadcastBusReceiver, BusErased, MemoryBus, MemoryBusReceiver, MultiBus,
 };
+pub use capabilities::{Capability, CapabilitySet, capabilities_for_taint};
 pub use catalyst::{CatalystImpactSummary, CatalystScorer, CatalystSignalSource};
 pub use cell::*;
 pub use cfactor::{CFactorPolicy, CFactorSource, CFactorSummary};

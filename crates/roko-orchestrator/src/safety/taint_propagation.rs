@@ -522,7 +522,10 @@ mod tests {
 
     #[test]
     fn propagate_taint_single_input_passes_through() {
-        assert_eq!(propagate_taint(&[TaintLevel::Internal]), TaintLevel::Internal);
+        assert_eq!(
+            propagate_taint(&[TaintLevel::Internal]),
+            TaintLevel::Internal
+        );
         assert_eq!(
             propagate_taint(&[TaintLevel::Confidential]),
             TaintLevel::Confidential
@@ -537,11 +540,7 @@ mod tests {
             TaintLevel::Confidential,
         );
         assert_eq!(
-            propagate_taint(&[
-                TaintLevel::Internal,
-                TaintLevel::Secret,
-                TaintLevel::Public
-            ]),
+            propagate_taint(&[TaintLevel::Internal, TaintLevel::Secret, TaintLevel::Public]),
             TaintLevel::Secret,
         );
     }

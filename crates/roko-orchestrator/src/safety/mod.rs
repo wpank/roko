@@ -6,6 +6,7 @@
 
 pub mod audit_chain;
 pub mod capability_tokens;
+pub mod ifc;
 pub mod loop_guard;
 pub mod permit;
 pub mod sandboxing;

@@ -183,24 +183,45 @@ pub fn hash_api_key(plaintext: &str) -> String {
     })
 }
 
+/// Result of matching a token against the stored API key entries.
+#[derive(Debug)]
+enum ApiKeyMatchResult<'a> {
+    /// Token matched an active, non-expired key.
+    Valid(&'a ApiKeyEntry),
+    /// Token matched a key that is past its `expires_at`.
+    Expired(&'a ApiKeyEntry),
+    /// Token matched a previous (rotated) hash within its 5-minute grace period.
+    GracePeriod(&'a ApiKeyEntry),
+    /// Token did not match any stored key (including grace period hashes).
+    NotFound,
+}
+
 /// Check an API key against the list of named key entries.
 ///
-/// Returns the matching entry if the hash matches and the key has not expired.
-fn match_api_key_entry<'a>(token: &str, entries: &'a [ApiKeyEntry]) -> Option<&'a ApiKeyEntry> {
+/// Returns a discriminated match result so callers can distinguish an expired
+/// key from a wrong key, enabling the `X-Key-Expired` response header.
+fn match_api_key_entry<'a>(token: &str, entries: &'a [ApiKeyEntry]) -> ApiKeyMatchResult<'a> {
     let token_hash = hash_api_key(token);
     let now = Utc::now().to_rfc3339();
-    entries.iter().find(|entry| {
-        if entry.key_hash != token_hash {
-            return false;
+
+    for entry in entries {
+        // Check current key hash.
+        if entry.key_hash == token_hash {
+            if let Some(ref expires) = entry.expires_at {
+                if *expires < now {
+                    return ApiKeyMatchResult::Expired(entry);
+                }
+            }
+            return ApiKeyMatchResult::Valid(entry);
         }
-        // Reject expired keys.
-        if let Some(ref expires) = entry.expires_at {
-            if *expires < now {
-                return false;
+        // Check previous (rotated) hashes still within their grace period.
+        for (prev_hash, grace_expires) in &entry.previous_key_hashes {
+            if prev_hash == &token_hash && grace_expires.as_str() >= now.as_str() {
+                return ApiKeyMatchResult::GracePeriod(entry);
             }
         }
-        true
-    })
+    }
+    ApiKeyMatchResult::NotFound
 }
 
 enum ApiCredential<'a> {
@@ -232,26 +253,40 @@ fn api_credential(headers: &HeaderMap) -> ApiCredential<'_> {
     ApiCredential::Missing
 }
 
+/// Outcome of an API-key authentication attempt.
+#[derive(Debug)]
+enum ApiKeyAuthResult {
+    /// Authentication succeeded.
+    Ok(AuthMethod, String, Option<String>),
+    /// The token matched a key that has expired.
+    KeyExpired,
+    /// The token did not match any key.
+    NoMatch,
+}
+
 /// Authenticate the supplied token against the legacy single key and the
-/// named `api_keys` list. Returns `(AuthMethod, scope, user_id)` on success.
+/// named `api_keys` list. Returns an [`ApiKeyAuthResult`] so callers can
+/// distinguish an expired key from a wrong key and emit `X-Key-Expired`.
 ///
 /// This function handles API-key-based auth only — Privy JWT verification
 /// is handled asynchronously by [`try_privy_jwt`].
-fn authenticate_api_key(
-    token: &str,
-    auth: &ServeAuthConfig,
-    via_header: bool,
-) -> Option<(AuthMethod, String, Option<String>)> {
+fn authenticate_api_key(token: &str, auth: &ServeAuthConfig, via_header: bool) -> ApiKeyAuthResult {
     // 1. Try named API keys first.
-    if let Some(entry) = match_api_key_entry(token, &auth.api_keys) {
-        let method = if via_header {
-            AuthMethod::ApiKey
-        } else if is_structurally_valid_jwt(token) {
-            AuthMethod::Jwt
-        } else {
-            AuthMethod::Bearer
-        };
-        return Some((method, entry.scope.clone(), Some(entry.name.clone())));
+    match match_api_key_entry(token, &auth.api_keys) {
+        ApiKeyMatchResult::Valid(entry) | ApiKeyMatchResult::GracePeriod(entry) => {
+            let method = if via_header {
+                AuthMethod::ApiKey
+            } else if is_structurally_valid_jwt(token) {
+                AuthMethod::Jwt
+            } else {
+                AuthMethod::Bearer
+            };
+            return ApiKeyAuthResult::Ok(method, entry.scope.clone(), Some(entry.name.clone()));
+        }
+        ApiKeyMatchResult::Expired(_) => {
+            return ApiKeyAuthResult::KeyExpired;
+        }
+        ApiKeyMatchResult::NotFound => {}
     }
 
     // 2. Fall back to legacy single api_key for backwards compatibility.
@@ -263,10 +298,10 @@ fn authenticate_api_key(
         } else {
             AuthMethod::Bearer
         };
-        return Some((method, "admin".to_string(), None));
+        return ApiKeyAuthResult::Ok(method, "admin".to_string(), None);
     }
 
-    None
+    ApiKeyAuthResult::NoMatch
 }
 
 /// Attempt to validate a Bearer token as a Privy JWT using the JWKS cache.
@@ -363,16 +398,120 @@ async fn try_agent_token(
     None
 }
 
+/// Update the `last_used_at` timestamp for a named API key (best-effort).
+///
+/// Reads `.roko/api-keys.json`, updates the matching entry, and writes it back.
+/// Errors are silently swallowed — key tracking must not block or fail requests.
+fn update_last_used_at(workdir: &std::path::Path, key_name: &str) {
+    let path = workdir.join(".roko").join("api-keys.json");
+    let data = match std::fs::read_to_string(&path) {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let mut keys: Vec<roko_core::config::ApiKeyEntry> = match serde_json::from_str(&data) {
+        Ok(k) => k,
+        Err(_) => return,
+    };
+    let now = Utc::now().to_rfc3339();
+    let mut updated = false;
+    for key in &mut keys {
+        if key.name == key_name {
+            key.last_used_at = Some(now.clone());
+            updated = true;
+            break;
+        }
+    }
+    if updated {
+        if let Ok(serialized) = serde_json::to_string_pretty(&keys) {
+            let _ = std::fs::write(&path, serialized);
+        }
+    }
+}
+
+/// Validate a `roko_agent_`-prefixed bearer token against the stored agent
+/// token registry (`.roko/agent-tokens.json`).
+///
+/// Returns `(AuthMethod, scope, user_id)` on success where scope is derived
+/// from the token's `capabilities` field and `user_id` is the `agent_id`.
+async fn try_named_agent_token(
+    token: &str,
+    state: &Arc<AppState>,
+) -> Option<(AuthMethod, String, Option<String>)> {
+    let path = state.workdir.join(".roko").join("agent-tokens.json");
+    let data = tokio::fs::read_to_string(&path).await.ok()?;
+    let tokens: Vec<serde_json::Value> = serde_json::from_str(&data).ok()?;
+    let token_hash = hash_api_key(token);
+    let now = Utc::now().to_rfc3339();
+    for entry in &tokens {
+        let stored_hash = entry.get("token_hash")?.as_str()?;
+        if stored_hash != token_hash {
+            continue;
+        }
+        // Reject revoked tokens.
+        if entry
+            .get("revoked")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        // Reject expired tokens.
+        if let Some(expires) = entry.get("expires_at").and_then(|v| v.as_str()) {
+            if expires < now.as_str() {
+                return None;
+            }
+        }
+        let agent_id = entry.get("agent_id")?.as_str()?.to_string();
+        // Build a scope string from capabilities (first capability wins for now).
+        let scope = entry
+            .get("capabilities")
+            .and_then(|v| v.as_array())
+            .and_then(|caps| caps.first())
+            .and_then(|c| c.as_str())
+            .map(capability_to_scope)
+            .unwrap_or("agent:write");
+        return Some((AuthMethod::Bearer, scope.to_string(), Some(agent_id)));
+    }
+    None
+}
+
+/// Map an `AgentCapability` string to a scope string.
+fn capability_to_scope(cap: &str) -> &'static str {
+    match cap {
+        "Inference" => "agent:write",
+        "Tools" => "agent:write",
+        "BusPublish" => "agent:write",
+        "StoreWrite" => "write",
+        "StoreRead" => "read",
+        _ => "agent:write",
+    }
+}
+
+/// Build a 401 response with `X-Key-Expired: true` to signal the client that
+/// the key was recognised but has passed its expiry timestamp.
+fn expired_key_response() -> Response {
+    let mut resp = ApiError::unauthorized("API key has expired").into_response();
+    resp.headers_mut().insert(
+        HeaderName::from_static("x-key-expired"),
+        axum::http::HeaderValue::from_static("true"),
+    );
+    resp
+}
+
 /// Require a matching API credential for the request to continue.
 ///
-/// Supports four credential sources (checked in order):
+/// Supports five credential sources (checked in order):
 /// 1. `X-Api-Key` header (API key only)
-/// 2. `Authorization: Bearer <token>` matched against API keys
-/// 3. `Authorization: Bearer <jwt>` verified via Privy JWKS
-/// 4. Named API keys from `api_keys` list (SHA-256 hash comparison)
+/// 2. `Authorization: Bearer roko_agent_*` — agent bearer tokens (T02)
+/// 3. `Authorization: Bearer <token>` matched against API keys
+/// 4. `Authorization: Bearer <jwt>` verified via Privy JWKS
+/// 5. Named API keys from `api_keys` list (SHA-256 hash comparison)
 ///
 /// On success, injects [`AuthContext`] into request extensions so downstream
 /// routes can inspect the caller's scope and identity.
+///
+/// Expired keys return 401 with `X-Key-Expired: true` so clients can
+/// distinguish "wrong key" from "key needs rotation".
 pub async fn require_api_key(
     State(state): State<Arc<AppState>>,
     mut req: Request<Body>,
@@ -380,57 +519,100 @@ pub async fn require_api_key(
 ) -> Result<Response, ApiError> {
     let auth = state.load_roko_config().serve.auth.clone();
 
-    let (auth_method, ctx) = match api_credential(req.headers()) {
+    let (auth_method, ctx, key_name_for_tracking) = match api_credential(req.headers()) {
         ApiCredential::XApiKey(supplied) => match authenticate_api_key(supplied, &auth, true) {
-            Some((method, scope, user_id)) => (
-                method,
-                AuthContext {
+            ApiKeyAuthResult::Ok(method, scope, user_id) => {
+                let name = user_id.clone();
+                (
                     method,
-                    scope,
-                    user_id,
-                },
-            ),
-            None => {
+                    AuthContext {
+                        method,
+                        scope,
+                        user_id,
+                    },
+                    name,
+                )
+            }
+            ApiKeyAuthResult::KeyExpired => {
+                return Ok(expired_key_response());
+            }
+            ApiKeyAuthResult::NoMatch => {
                 return Err(ApiError::unauthorized(
                     "invalid or missing X-Api-Key header",
                 ));
             }
         },
         ApiCredential::Bearer(supplied) => {
-            // Try API key (sync) → agent token (async) → Privy JWT (async).
-            if let Some((method, scope, user_id)) = authenticate_api_key(supplied, &auth, false) {
-                (
-                    method,
-                    AuthContext {
+            // Detect agent tokens by their `roko_agent_` prefix and route them
+            // to the dedicated agent token validator (T02).
+            if supplied.starts_with("roko_agent_") {
+                if let Some((method, scope, user_id)) =
+                    try_named_agent_token(supplied, &state).await
+                {
+                    (
                         method,
-                        scope,
-                        user_id,
-                    },
-                )
-            } else if let Some((method, scope, user_id)) = try_agent_token(supplied, &state).await {
-                (
-                    method,
-                    AuthContext {
-                        method,
-                        scope,
-                        user_id,
-                    },
-                )
-            } else if let Some((method, scope, user_id)) =
-                try_privy_jwt(supplied, &auth, &state).await
-            {
-                (
-                    method,
-                    AuthContext {
-                        method,
-                        scope,
-                        user_id,
-                    },
-                )
+                        AuthContext {
+                            method,
+                            scope,
+                            user_id,
+                        },
+                        None,
+                    )
+                } else {
+                    return Err(ApiError::unauthorized(
+                        "invalid or expired agent bearer token",
+                    ));
+                }
             } else {
-                return Err(ApiError::unauthorized(
-                    "invalid or missing Authorization bearer token",
-                ));
+                // Try API key (sync) → per-agent sidecar token (async) → Privy JWT (async).
+                match authenticate_api_key(supplied, &auth, false) {
+                    ApiKeyAuthResult::Ok(method, scope, user_id) => {
+                        let name = user_id.clone();
+                        (
+                            method,
+                            AuthContext {
+                                method,
+                                scope,
+                                user_id,
+                            },
+                            name,
+                        )
+                    }
+                    ApiKeyAuthResult::KeyExpired => {
+                        return Ok(expired_key_response());
+                    }
+                    ApiKeyAuthResult::NoMatch => {
+                        if let Some((method, scope, user_id)) =
+                            try_agent_token(supplied, &state).await
+                        {
+                            (
+                                method,
+                                AuthContext {
+                                    method,
+                                    scope,
+                                    user_id,
+                                },
+                                None,
+                            )
+                        } else if let Some((method, scope, user_id)) =
+                            try_privy_jwt(supplied, &auth, &state).await
+                        {
+                            (
+                                method,
+                                AuthContext {
+                                    method,
+                                    scope,
+                                    user_id,
+                                },
+                                None,
+                            )
+                        } else {
+                            return Err(ApiError::unauthorized(
+                                "invalid or missing Authorization bearer token",
+                            ));
+                        }
+                    }
+                }
             }
         }
         ApiCredential::InvalidXApiKey => {
@@ -449,6 +631,11 @@ pub async fn require_api_key(
             ));
         }
     };
+
+    // Update last_used_at for named API keys (best-effort, non-blocking).
+    if let Some(ref key_name) = key_name_for_tracking {
+        update_last_used_at(&state.workdir, key_name);
+    }
 
     // Inject identity headers so downstream handlers (team.rs, etc.)
     // can read the caller's identity without parsing extensions.
@@ -493,6 +680,10 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
     // --- admin ---------------------------------------------------------------
     RouteScopeEntry {
         prefix: "/api/api-keys",
+        scope: "admin",
+    },
+    RouteScopeEntry {
+        prefix: "/api/agent-tokens",
         scope: "admin",
     },
     RouteScopeEntry {
@@ -1827,6 +2018,10 @@ mod tests {
         // --- /api/api-keys (admin) ---
         (Method::POST, "/api/api-keys"),
         (Method::DELETE, "/api/api-keys/test-key"),
+        (Method::POST, "/api/api-keys/test-key/rotate"),
+        // --- /api/agent-tokens (admin) ---
+        (Method::POST, "/api/agent-tokens"),
+        (Method::DELETE, "/api/agent-tokens/tok-123"),
         // --- /api/secrets (admin) ---
         (Method::POST, "/api/secrets/ns/key"),
         (Method::DELETE, "/api/secrets/ns/key"),
@@ -2002,6 +2197,8 @@ mod tests {
                 scope: scope.to_string(),
                 created_at: "2024-01-01T00:00:00Z".to_string(),
                 expires_at: None,
+                last_used_at: None,
+                previous_key_hashes: Vec::new(),
             }],
             privy_app_id: None,
             ..Default::default()

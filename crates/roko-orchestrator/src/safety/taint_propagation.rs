@@ -10,10 +10,17 @@
 //! `HashMap` behind a `parking_lot::Mutex`, so multiple executor tasks may
 //! consult/update it concurrently without deadlock risk.
 //!
+//! # Lattice-aware propagation (E34-T02)
+//!
+//! In addition to boolean taint tracking, each hash is assigned a
+//! [`TaintLevel`] from the IFC lattice. Propagation is *monotonic*:
+//! a child's level is always the join (least upper bound) of all parent
+//! levels, ensuring taint can only increase, never decrease.
+//!
 //! # Example
 //!
 //! ```
-//! use roko_core::ContentHash;
+//! use roko_core::{ContentHash, TaintLevel};
 //! use roko_orchestrator::safety::taint_propagation::{TaintTracker, TaintReason};
 //!
 //! let tracker = TaintTracker::new();
@@ -24,6 +31,11 @@
 //! tracker.propagate(&[source], derived);
 //!
 //! assert!(tracker.is_tainted(&derived));
+//!
+//! // Lattice-aware query:
+//! let (tainted, level) = tracker.is_tainted_with_level(&derived);
+//! assert!(tainted);
+//! assert!(level.is_some());
 //! ```
 
 use parking_lot::Mutex;
@@ -121,6 +133,14 @@ impl TaintReason {
     }
 }
 
+/// Per-hash entry combining a taint reason with its lattice classification.
+#[derive(Clone, Debug)]
+struct TaintEntry {
+    reason: TaintReason,
+    /// IFC lattice level — monotonically non-decreasing across propagations.
+    level: TaintLevel,
+}
+
 /// Tracks taint status across a signal DAG.
 ///
 /// A [`TaintTracker`] is cheap to create and safe to share across threads
@@ -133,15 +153,20 @@ impl TaintReason {
 /// * [`mark_tainted`](Self::mark_tainted) stamps a hash with a reason.
 ///   Calling it twice overwrites the reason (last writer wins), which is
 ///   fine — taint is a boolean-with-annotation, not a vote.
+/// * [`mark_tainted_with_level`](Self::mark_tainted_with_level) additionally
+///   stores an explicit [`TaintLevel`] from the IFC lattice.
 /// * [`propagate`](Self::propagate) marks `child` tainted if **any** parent
 ///   is already tainted. If no parent is tainted, the child is left alone
 ///   (a clean child must not become tainted by being combined with other
 ///   clean signals).
-/// * [`is_tainted`](Self::is_tainted) is a pure read.
+/// * [`is_tainted`](Self::is_tainted) is a pure read (bool).
+/// * [`is_tainted_with_level`](Self::is_tainted_with_level) returns
+///   `(bool, Option<TaintLevel>)` for richer lattice queries.
+/// * [`get_level`](Self::get_level) retrieves the stored lattice level.
 /// * [`reason`](Self::reason) returns the stored reason, if any.
 #[derive(Debug, Default)]
 pub struct TaintTracker {
-    inner: Mutex<HashMap<ContentHash, TaintReason>>,
+    inner: Mutex<HashMap<ContentHash, TaintEntry>>,
 }
 
 impl TaintTracker {
@@ -151,10 +176,42 @@ impl TaintTracker {
         Self::default()
     }
 
-    /// Mark `hash` tainted with the given `reason`. Overwrites any prior
-    /// reason for the same hash.
+    /// Mark `hash` tainted with the given `reason`.
+    ///
+    /// The lattice level defaults to [`TaintLevel::Internal`] when taint is
+    /// asserted without an explicit level. Use
+    /// [`mark_tainted_with_level`](Self::mark_tainted_with_level) to supply a
+    /// specific level. Calling this twice overwrites the prior entry.
     pub fn mark_tainted(&self, hash: ContentHash, reason: TaintReason) {
-        self.inner.lock().insert(hash, reason);
+        self.inner.lock().insert(
+            hash,
+            TaintEntry {
+                reason,
+                level: TaintLevel::Internal,
+            },
+        );
+    }
+
+    /// Mark `hash` tainted with both a [`TaintReason`] and an explicit
+    /// [`TaintLevel`] from the IFC lattice.
+    ///
+    /// The level must be at least [`TaintLevel::Internal`] — passing
+    /// [`TaintLevel::Public`] would be a no-op taint, so it is silently
+    /// promoted to `Internal`.
+    pub fn mark_tainted_with_level(
+        &self,
+        hash: ContentHash,
+        reason: TaintReason,
+        level: TaintLevel,
+    ) {
+        let effective_level = level.join(TaintLevel::Internal);
+        self.inner.lock().insert(
+            hash,
+            TaintEntry {
+                reason,
+                level: effective_level,
+            },
+        );
     }
 
     /// Returns `true` if `hash` has been marked tainted at any point.
@@ -163,10 +220,33 @@ impl TaintTracker {
         self.inner.lock().contains_key(hash)
     }
 
+    /// Returns `(is_tainted, level)` for richer lattice queries.
+    ///
+    /// When the hash is not tainted, returns `(false, None)`. When tainted,
+    /// returns `(true, Some(level))` where `level` is the stored lattice
+    /// classification.
+    #[must_use]
+    pub fn is_tainted_with_level(&self, hash: &ContentHash) -> (bool, Option<TaintLevel>) {
+        let guard = self.inner.lock();
+        match guard.get(hash) {
+            Some(entry) => (true, Some(entry.level)),
+            None => (false, None),
+        }
+    }
+
+    /// Retrieve the [`TaintLevel`] stored for `hash`, if any.
+    ///
+    /// Returns `None` when the hash is not tracked (clean), and
+    /// `Some(level)` when it has been marked or had taint propagated to it.
+    #[must_use]
+    pub fn get_level(&self, hash: &ContentHash) -> Option<TaintLevel> {
+        self.inner.lock().get(hash).map(|e| e.level)
+    }
+
     /// Retrieve the [`TaintReason`] stored for `hash`, if any.
     #[must_use]
     pub fn reason(&self, hash: &ContentHash) -> Option<TaintReason> {
-        self.inner.lock().get(hash).cloned()
+        self.inner.lock().get(hash).map(|e| e.reason.clone())
     }
 
     /// Retrieve structured taint metadata suitable for storing in provenance.
@@ -178,39 +258,169 @@ impl TaintTracker {
     /// Propagate taint from parents to `child`.
     ///
     /// If any parent in `parents` is currently tainted, `child` is marked
-    /// tainted with a `"propagated"` reason that names the offending
-    /// parent. If multiple parents are tainted, the first-encountered
-    /// parent is cited for the reason, but all of them would have caused
-    /// the propagation.
+    /// tainted with a `"propagated"` reason that names the offending parent.
+    /// The child's lattice level is computed as the join (max) of all parent
+    /// levels, enforcing monotonicity: taint can only increase, never decrease.
     ///
-    /// If `child` was already tainted with a more specific (non-
-    /// propagated) reason, that reason is preserved — we never weaken a
-    /// concrete `external` / `user_input` explanation with a generic
-    /// `propagated` one.
+    /// If `child` was already tainted with a more specific (non-propagated)
+    /// reason, that reason is preserved, but the lattice level is still
+    /// updated to the join to maintain monotonicity.
     ///
-    /// Returns `true` if taint was actually propagated; `false` if no
-    /// parent was tainted and `child` was left untouched.
+    /// Returns `true` if taint was actually propagated; `false` if no parent
+    /// was tainted and `child` was left untouched.
+    ///
+    /// Emits a `tracing::info!` event for every propagation with structured
+    /// fields: `child`, `parents`, and `resulting_level`.
     pub fn propagate(&self, parents: &[ContentHash], child: ContentHash) -> bool {
         let mut guard = self.inner.lock();
-        let first_tainted_parent = parents.iter().find(|p| guard.contains_key(p)).copied();
-        first_tainted_parent.is_some_and(|parent| {
-            // Preserve any pre-existing, stronger reason for `child`
-            // (anything that isn't itself just "propagated").
-            let already_specific = guard
-                .get(&child)
-                .is_some_and(|r| r.category != "propagated");
-            if !already_specific {
-                let mut reason =
-                    TaintReason::propagated(format!("inherited from {}", parent.short()));
-                reason.inherited_from = Some(parent);
-                guard.insert(child, reason);
+
+        // Collect all tainted parents and join their levels.
+        let mut joined_level = TaintLevel::Public;
+        let mut first_tainted_parent: Option<ContentHash> = None;
+        for p in parents {
+            if let Some(entry) = guard.get(p) {
+                joined_level = joined_level.join(entry.level);
+                if first_tainted_parent.is_none() {
+                    first_tainted_parent = Some(*p);
+                }
             }
-            true
-        })
+        }
+
+        let Some(parent) = first_tainted_parent else {
+            return false;
+        };
+
+        // Ensure the joined level is at least Internal when propagating.
+        let resulting_level = joined_level.join(TaintLevel::Internal);
+
+        // Preserve any pre-existing, stronger reason (anything that isn't
+        // itself just "propagated"), but always monotonically join the level.
+        let already_specific = guard
+            .get(&child)
+            .is_some_and(|e| e.reason.category != "propagated");
+        if already_specific {
+            // Level is still updated for monotonicity.
+            if let Some(existing) = guard.get_mut(&child) {
+                existing.level = existing.level.join(resulting_level);
+            }
+        } else {
+            let mut reason = TaintReason::propagated(format!("inherited from {}", parent.short()));
+            reason.inherited_from = Some(parent);
+            guard.insert(
+                child,
+                TaintEntry {
+                    reason,
+                    level: resulting_level,
+                },
+            );
+        }
+
+        tracing::info!(
+            child = %child.short(),
+            parent_count = parents.len(),
+            first_tainted_parent = %parent.short(),
+            resulting_level = ?resulting_level,
+            "taint propagated to child",
+        );
+
+        true
+    }
+
+    /// Propagate taint through a linear pipeline of stages.
+    ///
+    /// Given a slice of input hashes and a corresponding slice of output
+    /// hashes (one per stage), each output is tainted with the join of all
+    /// inputs' lattice levels plus any previously accumulated taint on
+    /// earlier outputs. This models a sequential data-flow pipeline where
+    /// contamination at any stage flows forward to all subsequent stages.
+    ///
+    /// Returns the final effective [`TaintLevel`] after propagating through
+    /// all stages, or [`TaintLevel::Public`] if no input was tainted.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use roko_core::{ContentHash, TaintLevel};
+    /// use roko_orchestrator::safety::taint_propagation::{TaintTracker, TaintReason};
+    ///
+    /// let tracker = TaintTracker::new();
+    /// let input = ContentHash::of(b"raw input");
+    /// let stage1 = ContentHash::of(b"parsed");
+    /// let stage2 = ContentHash::of(b"transformed");
+    ///
+    /// tracker.mark_tainted_with_level(input, TaintReason::external("api"), TaintLevel::Confidential);
+    /// let final_level = tracker.propagate_through_pipeline(&[input], &[stage1, stage2]);
+    ///
+    /// assert_eq!(final_level, TaintLevel::Confidential);
+    /// assert!(tracker.is_tainted(&stage2));
+    /// ```
+    pub fn propagate_through_pipeline(
+        &self,
+        inputs: &[ContentHash],
+        outputs: &[ContentHash],
+    ) -> TaintLevel {
+        // Compute initial joined level and first-tainted-input attribution
+        // from all inputs in a single lock acquisition.
+        let (input_level, attr) = {
+            let guard = self.inner.lock();
+            let joined = inputs
+                .iter()
+                .filter_map(|h| guard.get(h).map(|e| e.level))
+                .fold(TaintLevel::Public, TaintLevel::join);
+            let first_tainted = inputs.iter().find(|h| guard.contains_key(h)).copied();
+            (joined, first_tainted)
+        };
+
+        if input_level == TaintLevel::Public {
+            // No tainted inputs — nothing to propagate.
+            return TaintLevel::Public;
+        }
+
+        // Attribution: use first tainted input; fall back to first input.
+        let attribution = attr.or_else(|| inputs.first().copied());
+
+        // Propagate forward through each output stage, accumulating level.
+        let mut current_level = input_level;
+        for &output in outputs {
+            let effective_level = {
+                let mut guard = self.inner.lock();
+                // Join with any pre-existing level on this output.
+                if let Some(e) = guard.get(&output) {
+                    current_level = current_level.join(e.level);
+                }
+                let effective = current_level.join(TaintLevel::Internal);
+                let mut reason =
+                    TaintReason::propagated(format!("pipeline stage {}", output.short()));
+                if let Some(src) = attribution {
+                    reason.inherited_from = Some(src);
+                    reason.detail = format!("pipeline input {}", src.short());
+                }
+                let entry = guard.entry(output).or_insert(TaintEntry {
+                    reason: reason.clone(),
+                    level: effective,
+                });
+                entry.level = entry.level.join(effective);
+                if entry.reason.category == "propagated" {
+                    entry.reason = reason;
+                }
+                effective
+            };
+
+            tracing::info!(
+                stage = %output.short(),
+                resulting_level = ?effective_level,
+                "taint propagated through pipeline stage",
+            );
+
+            current_level = effective_level;
+        }
+
+        current_level
     }
 
     /// Inspect a [`Signal`] and, if its provenance is tainted, mark it in
-    /// the tracker with a reason derived from the provenance's [`Taint`] variant.
+    /// the tracker with a reason derived from the provenance's [`Taint`] variant
+    /// and the provenance's [`TaintLevel`] lattice classification.
     ///
     /// Returns `true` if the signal was (or already was) tainted, `false`
     /// if the signal's provenance is clean.
@@ -232,7 +442,11 @@ impl TaintTracker {
                 },
                 TaintReason::from_taint_info,
             );
-            self.mark_tainted(signal.id, reason);
+            // Use the signal's effective_taint() for the lattice level, which
+            // joins the provenance's taint_level field with the level implied
+            // by the Taint variant.
+            let level = signal.provenance.effective_taint();
+            self.mark_tainted_with_level(signal.id, reason, level);
             true
         } else {
             false
@@ -558,5 +772,218 @@ mod tests {
         let a = &[TaintLevel::Internal, TaintLevel::Confidential];
         let b = &[TaintLevel::Confidential, TaintLevel::Internal];
         assert_eq!(propagate_taint(a), propagate_taint(b));
+    }
+
+    // ─── E34-T02: lattice-aware TaintTracker tests ────────────────────────────
+
+    #[test]
+    fn mark_tainted_with_level_stores_level() {
+        let tracker = TaintTracker::new();
+        let id = h(b"sensitive");
+        tracker.mark_tainted_with_level(
+            id,
+            TaintReason::external("api"),
+            TaintLevel::Confidential,
+        );
+        assert!(tracker.is_tainted(&id));
+        assert_eq!(tracker.get_level(&id), Some(TaintLevel::Confidential));
+    }
+
+    #[test]
+    fn mark_tainted_defaults_to_internal_level() {
+        // mark_tainted() (no explicit level) should default to at least Internal.
+        let tracker = TaintTracker::new();
+        let id = h(b"basic");
+        tracker.mark_tainted(id, TaintReason::user_input("stdin"));
+        let level = tracker.get_level(&id).expect("level must be set");
+        assert!(level >= TaintLevel::Internal, "default level must be >= Internal");
+    }
+
+    #[test]
+    fn public_level_is_promoted_to_internal_on_mark() {
+        // Passing TaintLevel::Public to mark_tainted_with_level is promoted.
+        let tracker = TaintTracker::new();
+        let id = h(b"promoted");
+        tracker.mark_tainted_with_level(id, TaintReason::external("src"), TaintLevel::Public);
+        let level = tracker.get_level(&id).expect("level must be set");
+        assert!(
+            level >= TaintLevel::Internal,
+            "Public is promoted to at least Internal"
+        );
+    }
+
+    #[test]
+    fn is_tainted_with_level_returns_correct_pair() {
+        let tracker = TaintTracker::new();
+        let id = h(b"pair");
+        let absent = h(b"absent");
+
+        tracker.mark_tainted_with_level(id, TaintReason::external("api"), TaintLevel::Secret);
+
+        let (tainted, level) = tracker.is_tainted_with_level(&id);
+        assert!(tainted);
+        assert_eq!(level, Some(TaintLevel::Secret));
+
+        let (tainted2, level2) = tracker.is_tainted_with_level(&absent);
+        assert!(!tainted2);
+        assert_eq!(level2, None);
+    }
+
+    #[test]
+    fn get_level_returns_none_for_clean_hash() {
+        let tracker = TaintTracker::new();
+        assert_eq!(tracker.get_level(&h(b"clean")), None);
+    }
+
+    #[test]
+    fn propagate_joins_parent_levels_monotonically() {
+        let tracker = TaintTracker::new();
+        let p1 = h(b"parent1");
+        let p2 = h(b"parent2");
+        let child = h(b"child");
+
+        tracker.mark_tainted_with_level(p1, TaintReason::external("a"), TaintLevel::Internal);
+        tracker.mark_tainted_with_level(p2, TaintReason::external("b"), TaintLevel::Confidential);
+
+        tracker.propagate(&[p1, p2], child);
+
+        // Child must be >= the max of parent levels (Confidential).
+        let child_level = tracker.get_level(&child).expect("child must be tainted");
+        assert!(
+            child_level >= TaintLevel::Confidential,
+            "child level must be >= join of parent levels"
+        );
+    }
+
+    #[test]
+    fn propagate_level_is_monotone_cannot_decrease() {
+        // Mark child at Confidential, then propagate from an Internal parent.
+        // Child's level must remain at least Confidential.
+        let tracker = TaintTracker::new();
+        let parent = h(b"parent");
+        let child = h(b"child");
+
+        tracker.mark_tainted_with_level(
+            parent,
+            TaintReason::external("api"),
+            TaintLevel::Internal,
+        );
+        tracker.mark_tainted_with_level(
+            child,
+            TaintReason::user_input("direct"),
+            TaintLevel::Confidential,
+        );
+
+        tracker.propagate(&[parent], child);
+
+        let child_level = tracker.get_level(&child).expect("child must still be tainted");
+        assert!(
+            child_level >= TaintLevel::Confidential,
+            "level must not decrease: got {child_level:?}"
+        );
+    }
+
+    #[test]
+    fn propagate_through_pipeline_propagates_all_stages() {
+        let tracker = TaintTracker::new();
+        let input = h(b"raw input");
+        let stage1 = h(b"stage1 output");
+        let stage2 = h(b"stage2 output");
+        let stage3 = h(b"stage3 output");
+
+        tracker.mark_tainted_with_level(
+            input,
+            TaintReason::external("api"),
+            TaintLevel::Confidential,
+        );
+
+        let final_level =
+            tracker.propagate_through_pipeline(&[input], &[stage1, stage2, stage3]);
+
+        assert!(
+            final_level >= TaintLevel::Confidential,
+            "final level must be >= input level"
+        );
+        assert!(
+            tracker.is_tainted(&stage1),
+            "stage1 must be tainted after pipeline"
+        );
+        assert!(
+            tracker.is_tainted(&stage2),
+            "stage2 must be tainted after pipeline"
+        );
+        assert!(
+            tracker.is_tainted(&stage3),
+            "stage3 must be tainted after pipeline"
+        );
+    }
+
+    #[test]
+    fn propagate_through_pipeline_with_clean_inputs_noop() {
+        let tracker = TaintTracker::new();
+        let clean_input = h(b"clean input");
+        let output = h(b"output");
+
+        // No taint on the input — pipeline should be a no-op.
+        let final_level = tracker.propagate_through_pipeline(&[clean_input], &[output]);
+
+        assert_eq!(final_level, TaintLevel::Public);
+        assert!(!tracker.is_tainted(&output));
+    }
+
+    #[test]
+    fn propagate_through_pipeline_inherits_highest_input_level() {
+        let tracker = TaintTracker::new();
+        let in1 = h(b"in1");
+        let in2 = h(b"in2");
+        let out = h(b"out");
+
+        tracker.mark_tainted_with_level(in1, TaintReason::external("a"), TaintLevel::Internal);
+        tracker.mark_tainted_with_level(in2, TaintReason::external("b"), TaintLevel::Secret);
+
+        let final_level = tracker.propagate_through_pipeline(&[in1, in2], &[out]);
+
+        // The highest input (Secret) must dominate.
+        assert!(
+            final_level >= TaintLevel::Secret,
+            "must inherit highest input level"
+        );
+        assert!(tracker.get_level(&out).unwrap() >= TaintLevel::Secret);
+    }
+
+    #[test]
+    fn observe_signal_stores_lattice_level() {
+        use roko_core::{Body, Kind, Provenance, Signal};
+
+        let signal = Signal::builder(Kind::AgentOutput)
+            .body(Body::text("external"))
+            .provenance(
+                Provenance::external("webhook").with_taint_level(TaintLevel::Confidential),
+            )
+            .build();
+
+        let tracker = TaintTracker::new();
+        tracker.observe_signal(&signal);
+
+        let (tainted, level) = tracker.is_tainted_with_level(&signal.id);
+        assert!(tainted);
+        // effective_taint() for an external source is at least Confidential.
+        assert!(level.unwrap() >= TaintLevel::Confidential);
+    }
+
+    #[test]
+    fn lattice_attribution_tracks_origin() {
+        // Verify that the TaintReason's inherited_from field is set during propagation.
+        let tracker = TaintTracker::new();
+        let source = h(b"origin");
+        let derived = h(b"derived");
+
+        tracker.mark_tainted_with_level(source, TaintReason::external("api"), TaintLevel::Secret);
+        tracker.propagate(&[source], derived);
+
+        let reason = tracker.reason(&derived).expect("derived must have reason");
+        assert_eq!(reason.category, "propagated");
+        assert_eq!(reason.inherited_from, Some(source));
+        assert_eq!(tracker.get_level(&derived), Some(TaintLevel::Secret));
     }
 }

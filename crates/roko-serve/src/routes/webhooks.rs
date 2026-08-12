@@ -412,11 +412,24 @@ fn github_signal_kind(event_type: &str, payload: &Value) -> Option<Kind> {
             }
         }
         "pull_request_review" => Some(Kind::Custom(signal_kinds::GITHUB_PR_REVIEW.into())),
-        "issues" => payload
-            .get("action")
-            .and_then(Value::as_str)
-            .filter(|action| *action == "opened")
-            .map(|_| Kind::Custom(signal_kinds::GITHUB_ISSUE_OPENED.into())),
+        "issues" => {
+            let action = payload.get("action").and_then(Value::as_str)?;
+            match action {
+                "opened" => Some(Kind::Custom(signal_kinds::GITHUB_ISSUE_OPENED.into())),
+                "closed" => Some(Kind::Custom(signal_kinds::GITHUB_ISSUE_CLOSED.into())),
+                "reopened" => Some(Kind::Custom(signal_kinds::GITHUB_ISSUE_REOPENED.into())),
+                "labeled" => Some(Kind::Custom(signal_kinds::GITHUB_ISSUE_LABELED.into())),
+                "assigned" => Some(Kind::Custom(signal_kinds::GITHUB_ISSUE_ASSIGNED.into())),
+                _ => None,
+            }
+        }
+        "issue_comment" => {
+            let action = payload.get("action").and_then(Value::as_str)?;
+            match action {
+                "created" => Some(Kind::Custom(signal_kinds::GITHUB_ISSUE_COMMENTED.into())),
+                _ => None,
+            }
+        }
         "check_suite" => {
             let action = payload.get("action").and_then(Value::as_str)?;
             match action {
@@ -1098,5 +1111,84 @@ mod tests {
         let json = serde_json::to_string(&DeploymentState::InProgress)
             .expect("serialize DeploymentState");
         assert_eq!(json, r#""in_progress""#);
+    }
+
+    #[test]
+    fn maps_issue_closed_to_github_issue_closed() {
+        let kind = github_signal_kind("issues", &serde_json::json!({ "action": "closed" }));
+        assert!(
+            matches!(
+                kind.as_ref().map(Kind::as_str),
+                Some(k) if k == signal_kinds::GITHUB_ISSUE_CLOSED
+            ),
+            "issues closed should map to GITHUB_ISSUE_CLOSED"
+        );
+    }
+
+    #[test]
+    fn maps_issue_reopened_to_github_issue_reopened() {
+        let kind = github_signal_kind("issues", &serde_json::json!({ "action": "reopened" }));
+        assert!(
+            matches!(
+                kind.as_ref().map(Kind::as_str),
+                Some(k) if k == signal_kinds::GITHUB_ISSUE_REOPENED
+            ),
+            "issues reopened should map to GITHUB_ISSUE_REOPENED"
+        );
+    }
+
+    #[test]
+    fn maps_issue_labeled_to_github_issue_labeled() {
+        let kind = github_signal_kind("issues", &serde_json::json!({ "action": "labeled" }));
+        assert!(
+            matches!(
+                kind.as_ref().map(Kind::as_str),
+                Some(k) if k == signal_kinds::GITHUB_ISSUE_LABELED
+            ),
+            "issues labeled should map to GITHUB_ISSUE_LABELED"
+        );
+    }
+
+    #[test]
+    fn maps_issue_assigned_to_github_issue_assigned() {
+        let kind = github_signal_kind("issues", &serde_json::json!({ "action": "assigned" }));
+        assert!(
+            matches!(
+                kind.as_ref().map(Kind::as_str),
+                Some(k) if k == signal_kinds::GITHUB_ISSUE_ASSIGNED
+            ),
+            "issues assigned should map to GITHUB_ISSUE_ASSIGNED"
+        );
+    }
+
+    #[test]
+    fn maps_issue_comment_created_to_github_issue_commented() {
+        let kind = github_signal_kind(
+            "issue_comment",
+            &serde_json::json!({ "action": "created" }),
+        );
+        assert!(
+            matches!(
+                kind.as_ref().map(Kind::as_str),
+                Some(k) if k == signal_kinds::GITHUB_ISSUE_COMMENTED
+            ),
+            "issue_comment created should map to GITHUB_ISSUE_COMMENTED"
+        );
+    }
+
+    #[test]
+    fn unknown_issue_action_returns_none() {
+        let kind = github_signal_kind("issues", &serde_json::json!({ "action": "pinned" }));
+        assert!(kind.is_none(), "unknown issue action should return None");
+    }
+
+    #[test]
+    fn unknown_issue_comment_action_returns_none() {
+        let kind =
+            github_signal_kind("issue_comment", &serde_json::json!({ "action": "deleted" }));
+        assert!(
+            kind.is_none(),
+            "issue_comment deleted should return None (not handled)"
+        );
     }
 }

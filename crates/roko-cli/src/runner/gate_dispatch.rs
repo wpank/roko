@@ -346,6 +346,71 @@ fn failed_gate_completion(
     }
 }
 
+/// Attempt to auto-fix compile or clippy gate failures using `cargo fix`.
+///
+/// For "compile" gates: runs `cargo fix --allow-dirty` then `cargo fmt`.
+/// For "clippy" gates: runs `cargo clippy --fix --allow-dirty`.
+///
+/// Returns `Ok(true)` if the fix command exited zero (fix was applied and
+/// the gate should be retried). Returns `Ok(false)` if the gate name is
+/// not auto-fixable or if `cargo_fix_candidate` is false. Returns `Err` only
+/// on internal failures (spawn error, etc).
+///
+/// Per spec: never use `--allow-staged`, only `--allow-dirty`.
+pub async fn attempt_auto_fix(
+    workdir: &Path,
+    gate_name: &str,
+    error_output: &str,
+) -> Result<bool, String> {
+    let classification = roko_gate::classify_gate_failure(gate_name, error_output);
+    if !classification.cargo_fix_candidate {
+        return Ok(false);
+    }
+
+    let raw = raw_gate_name(gate_name);
+    let (program, args): (&str, &[&str]) = if raw.starts_with("compile") {
+        ("cargo", &["fix", "--allow-dirty"])
+    } else if raw.starts_with("clippy") {
+        ("cargo", &["clippy", "--fix", "--allow-dirty"])
+    } else {
+        return Ok(false);
+    };
+
+    info!(
+        gate = %gate_name,
+        program,
+        "attempting cargo auto-fix before agent retry"
+    );
+
+    let fix_status = tokio::process::Command::new(program)
+        .args(args)
+        .current_dir(workdir)
+        .output()
+        .await
+        .map_err(|e| format!("failed to spawn {program}: {e}"))?;
+
+    if !fix_status.status.success() {
+        info!(
+            gate = %gate_name,
+            exit_code = ?fix_status.status.code(),
+            "cargo auto-fix exited non-zero — falling through to agent"
+        );
+        return Ok(false);
+    }
+
+    // For compile fixes, also run cargo fmt to keep formatting clean.
+    if raw.starts_with("compile") {
+        let _ = tokio::process::Command::new("cargo")
+            .args(["fmt"])
+            .current_dir(workdir)
+            .output()
+            .await;
+    }
+
+    info!(gate = %gate_name, "cargo auto-fix applied — will retry gate");
+    Ok(true)
+}
+
 /// Run a gate rung to completion and return its summary.
 pub async fn run_gate_once(
     effect: GateEffectRef,
@@ -380,6 +445,10 @@ pub async fn run_gate_once(
     // for this gate run BEFORE building the pipeline, so we can thread them
     // through the GateCompletion for callers.
     let selected_rungs = GatePipelineBuilder::selected_rung_labels(&gates_config, complexity);
+
+    // E45-T02: Clone verify_steps so we can use them for the auto-fix retry
+    // pass if the first run fails and cargo fix is applicable.
+    let verify_steps_for_retry = verify_steps.clone();
 
     let workdir_for_run = workdir.clone();
     let run = async {
@@ -418,8 +487,59 @@ pub async fn run_gate_once(
 
     let checked = async {
         let before = gate_input_snapshot(workdir.clone()).await?;
-        let verdicts = run.await;
+        let mut verdicts = run.await;
         let after = gate_input_snapshot(workdir.clone()).await?;
+
+        // E45-T02: If the first run produced any failures, attempt cargo auto-fix
+        // before we finalise. If the fix applied cleanly, rerun the gate pipeline
+        // once and replace the verdicts so the caller sees a pass instead.
+        let first_run_failed = verdicts.iter().any(|v| !v.passed && !v.skipped);
+        if first_run_failed && before == after {
+            let first_output = render_output(&verdicts);
+            // Find the first failing gate name to drive the fix heuristic.
+            let failing_gate = verdicts
+                .iter()
+                .find(|v| !v.passed && !v.skipped)
+                .map(|v| v.gate.as_str())
+                .unwrap_or("compile");
+            match attempt_auto_fix(&workdir, failing_gate, &first_output).await {
+                Ok(true) => {
+                    // Fix applied — rerun the pipeline with a fresh snapshot pair.
+                    let before_retry = gate_input_snapshot(workdir.clone()).await?;
+                    let inputs_retry =
+                        build_rung_execution_inputs(&target_crates, task_context.as_ref());
+                    let config_retry = build_rung_execution_config(
+                        &workdir,
+                        timeout_secs,
+                        &verify_steps_for_retry,
+                        verdict_publisher.clone(),
+                    );
+                    let pipeline_retry = if gates_config.has_custom_rungs() {
+                        GatePipelineBuilder::from_config(&gates_config, complexity)
+                    } else {
+                        GatePipelineBuilder::from_config_with_execution(
+                            &gates_config,
+                            complexity,
+                            inputs_retry,
+                            config_retry,
+                        )
+                    };
+                    let mut retry_verdicts = vec![pipeline_retry.verify(&signal, &ctx).await];
+                    retry_verdicts.extend(
+                        run_verify_steps(&signal, &ctx, &task_id, verify_steps_for_retry).await,
+                    );
+                    let after_retry = gate_input_snapshot(workdir.clone()).await?;
+                    if before_retry == after_retry {
+                        // Immutable input confirmed after retry — use retry verdicts.
+                        verdicts = retry_verdicts;
+                    }
+                }
+                Ok(false) | Err(_) => {
+                    // No fix applied or fix failed — proceed with original verdicts.
+                }
+            }
+        }
+
         Ok::<_, String>((before, after, verdicts))
     };
     let (input_before, mut verdicts) = match timeout(limit, checked).await {

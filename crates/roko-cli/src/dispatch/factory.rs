@@ -99,7 +99,10 @@ impl SharedAgentFactory {
         let prompt_assembler = prompt_assembler
             .with_composition_strategy(config.prompt.composition_strategy)
             .with_vcg_warmup_observations(config.prompt.vcg_warmup_observations);
-        let dispatcher = Dispatcher::new(cascade_router, prompt_assembler, WarmPool::new(0));
+        // Default warm-pool capacity: 2 slots per role. Zero-capacity silently
+        // discards every pre-spawned agent on insert; using 2 lets the reviewer
+        // slot remain warm while the implementer is being cleaned up.
+        let dispatcher = Dispatcher::new(cascade_router, prompt_assembler, WarmPool::new(2));
         let resolver = ProviderDispatchResolver::new(Arc::clone(&config));
 
         // Build one shared rate limiter from the provider limits declared in roko.toml.
@@ -136,7 +139,7 @@ impl SharedAgentFactory {
         self.dispatcher = Dispatcher::new(
             self.dispatcher.cascade_router_arc(),
             assembler,
-            WarmPool::new(0),
+            WarmPool::new(2),
         );
     }
 
@@ -151,7 +154,7 @@ impl SharedAgentFactory {
             .with_composition_strategy(self.config.prompt.composition_strategy)
             .with_vcg_warmup_observations(self.config.prompt.vcg_warmup_observations)
             .with_learning_bidders(bidders);
-        self.dispatcher = Dispatcher::new(cascade, assembler, WarmPool::new(0));
+        self.dispatcher = Dispatcher::new(cascade, assembler, WarmPool::new(2));
     }
 
     /// Resolve the runtime for a model key.

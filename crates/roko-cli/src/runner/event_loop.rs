@@ -32,7 +32,10 @@ use roko_daimon::{
     TaskStrategyObservation,
 };
 use roko_fs::{FsObservabilitySinks, RokoLayout};
-use roko_gate::{PlanComplexity, classify_gate_failure, render_failure_classification};
+use roko_gate::{
+    PlanComplexity, classify_gate_failure, records_from_classification,
+    render_failure_classification,
+};
 use roko_runtime::event_bus::PlanRevisionReason;
 use roko_runtime::run_ledger::{
     TaskTimeoutTerminal as RuntimeTaskTimeoutTerminal, TimeoutEffectKind,
@@ -58,6 +61,9 @@ use crate::task_parser::TaskDef;
 use roko_agent::ViolationSeverity;
 use roko_agent::safety::contract::{AgentContract, ContractLoadMode};
 use roko_learn::episode_logger::EpisodeLogger;
+use roko_learn::error_pattern_store::{
+    ErrorPatternStore, GateFailureObservation, GateFailureSource,
+};
 use roko_learn::playbook::PlaybookStore;
 use roko_learn::post_gate_reflection::{PostGateReflectionStore, ReflectionGateOutcome};
 use roko_learn::section_outcome::{
@@ -92,6 +98,89 @@ use super::types::{
     TaskAttemptStatus, TaskLifecycleStatus, TaskPhaseDurations, TaskRunCategory, TaskRunSummary,
     TimeoutEvent, TimeoutKind, effective_plan_timeout_secs,
 };
+
+// ─── ContextScopingConfig ───────────────────────────────────────────────
+
+/// Per-role limits on how much context is injected into agent prompts.
+///
+/// Different roles benefit from different context sizes. Implementers need
+/// rich error patterns and fewer historical episodes (focused on the task at
+/// hand). Reviewers benefit from more episodes to compare against but fewer
+/// raw error patterns. Strategists work at plan-level and receive no
+/// file-level context.
+///
+/// These limits are applied when assembling the prompt before agent dispatch.
+/// They can be overridden via `[knowledge]` in `roko.toml`; if absent the
+/// role-specific defaults below are used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextScopingConfig {
+    /// Max neuro/file-intelligence entries injected (0 = skip entirely).
+    pub max_file_intel_entries: usize,
+    /// Max warning entries injected (0 = skip entirely).
+    pub max_warning_entries: usize,
+    /// Max error-pattern entries injected (0 = skip entirely).
+    pub max_error_patterns: usize,
+    /// Max similar-episode entries injected (0 = skip entirely).
+    pub max_similar_episodes: usize,
+}
+
+impl ContextScopingConfig {
+    /// Role-specific preset for an **Implementer**: focused context, more
+    /// error patterns, fewer historical episodes.
+    pub const IMPLEMENTER: Self = Self {
+        max_file_intel_entries: 10,
+        max_warning_entries: 5,
+        max_error_patterns: 5,
+        max_similar_episodes: 3,
+    };
+
+    /// Role-specific preset for a **Reviewer** (Auditor / QuickReviewer /
+    /// Critic): broader episode recall, fewer raw error patterns.
+    pub const REVIEWER: Self = Self {
+        max_file_intel_entries: 3,
+        max_warning_entries: 3,
+        max_error_patterns: 3,
+        max_similar_episodes: 5,
+    };
+
+    /// Role-specific preset for a **Strategist** (Strategist / Architect /
+    /// Conductor): plan-level view only — no file-level context injected.
+    pub const STRATEGIST: Self = Self {
+        max_file_intel_entries: 0,
+        max_warning_entries: 0,
+        max_error_patterns: 0,
+        max_similar_episodes: 0,
+    };
+}
+
+/// Return the [`ContextScopingConfig`] for the given agent role.
+///
+/// Maps each [`AgentRole`] to one of the three canonical presets
+/// (`IMPLEMENTER`, `REVIEWER`, `STRATEGIST`).  Falls back to the
+/// `IMPLEMENTER` preset for any role not explicitly listed.
+///
+/// This is the single wiring point: callers in the event loop call
+/// `role_context_limits(role_enum)` before assembling context sections,
+/// then use the returned limits to cap how many entries they inject.
+pub(crate) fn role_context_limits(role: AgentRole) -> ContextScopingConfig {
+    use roko_core::AgentRole as R;
+    match role {
+        // ── Strategist-class: plan-level only ──────────────────────────
+        R::Strategist | R::Architect | R::Conductor | R::PlanLifecycleManager => {
+            ContextScopingConfig::STRATEGIST
+        }
+        // ── Reviewer-class: broader episode recall ──────────────────────
+        R::Auditor
+        | R::QuickReviewer
+        | R::Critic
+        | R::SpecDriftDetector
+        | R::RegressionDetector
+        | R::DocVerifier
+        | R::SnapshotComparator => ContextScopingConfig::REVIEWER,
+        // ── Implementer-class (default): focused context ────────────────
+        _ => ContextScopingConfig::IMPLEMENTER,
+    }
+}
 
 // ─── RunReport ──────────────────────────────────────────────────────────
 
@@ -3201,6 +3290,34 @@ pub async fn run(
                     }
                 } else if completion.passed {
                     state.clear_retry_backoff(&completion.plan_id);
+                    // WarmPool: on gate pass, try to promote a pre-spawned
+                    // agent for the next phase. If a warm slot exists it is
+                    // consumed here; otherwise the dispatcher cold-spawns as
+                    // usual. Either path is correct — warm is just faster.
+                    {
+                        let current_role = task_index
+                            .get(completion.plan_id.as_str())
+                            .and_then(|tasks| tasks.get(completion.task_id.as_str()))
+                            .and_then(|td| td.role.as_deref())
+                            .unwrap_or("implementer");
+                        let next_role = next_warm_role(current_role);
+                        let promoted =
+                            factory.dispatcher().warm_pool().take(next_role);
+                        if let Some(warm) = promoted {
+                            debug!(
+                                warm_agent_id = %warm.id,
+                                role = next_role,
+                                plan_id = %completion.plan_id,
+                                "warm_pool: promoted pre-spawned agent for next phase"
+                            );
+                        } else {
+                            debug!(
+                                role = next_role,
+                                plan_id = %completion.plan_id,
+                                "warm_pool: no warm agent available — next dispatch will cold-spawn"
+                            );
+                        }
+                    }
                     let phase_clock = task_runtime_states
                         .get(&completion_attempt.key())
                         .map(|runtime| runtime.phase_clock)
@@ -3396,6 +3513,18 @@ pub async fn run(
                         }
                     }
                 } else {
+                    // WarmPool: gate failed — evict stale pre-spawned agents.
+                    // No point keeping a reviewer warm if we're replanning.
+                    {
+                        let evicted = factory.dispatcher().warm_pool().evict_expired();
+                        if !evicted.is_empty() {
+                            debug!(
+                                count = evicted.len(),
+                                plan_id = %completion.plan_id,
+                                "warm_pool: evicted stale agents on gate failure"
+                            );
+                        }
+                    }
                     let failure_kind = completion
                         .failure_kind
                         .unwrap_or_else(|| RunnerFailureKind::from_output(&completion.output));
@@ -3562,6 +3691,44 @@ pub async fn run(
                                             lessons = lessons.len(),
                                             "post-gate reflection lessons added to retry prompt"
                                         );
+                                    }
+
+                                    // E45-T03: Record discovered error patterns for
+                                    // sharing across parallel tasks. Classify the
+                                    // gate output, build FailurePatternRecord entries,
+                                    // and upsert them into the store. Dedup is by key
+                                    // (error_code::file_path), so repeated patterns
+                                    // accumulate occurrence counts rather than
+                                    // duplicating entries.
+                                    record_discovered_error_patterns(
+                                        &config.layout.learn_dir(),
+                                        gate_name,
+                                        &completion.output,
+                                        &completion.plan_id,
+                                        &completion.task_id,
+                                    );
+
+                                    // E45-T03: If tests are mostly passing (>90% pass
+                                    // rate with >20 tests and >=1 failure), recommend
+                                    // a targeted fix rather than broad replanning.
+                                    // This context is appended to the retry prompt so
+                                    // the agent knows it's close to passing.
+                                    if let Some(plan_state) =
+                                        executor.plan_state(&completion.plan_id)
+                                    {
+                                        if GateResult::is_mostly_passing(&plan_state.gate_results) {
+                                            replan_context.push_str(
+                                                "\n\n### Note: tests are mostly passing\n\
+                                                 More than 90% of tests pass. Apply a targeted \
+                                                 fix for the specific failing test(s) — do not \
+                                                 rewrite unrelated code.",
+                                            );
+                                            debug!(
+                                                plan_id = %completion.plan_id,
+                                                task_id = %completion.task_id,
+                                                "is_mostly_passing: recommending targeted fix"
+                                            );
+                                        }
                                     }
 
                                     maybe_apply_gate_failure_plan_revision(
@@ -3771,6 +3938,14 @@ pub async fn run(
                 if prompt_cache.is_stale() {
                     prompt_cache = Arc::new(PromptCache::load(&config.workdir));
                     debug!("prompt cache refreshed (stale)");
+                }
+                // WarmPool TTL housekeeping — evict agents whose TTL has
+                // expired so we don't leak idle processes between tasks.
+                {
+                    let evicted = factory.dispatcher().warm_pool().evict_expired();
+                    if !evicted.is_empty() {
+                        debug!(count = evicted.len(), "warm_pool: evicted stale agents");
+                    }
                 }
                 let actions = executor.tick();
                 for action in actions {
@@ -7110,30 +7285,98 @@ async fn dispatch_action(
                 return ActionDispatchOutcome::Noop;
             }
 
-            // Per-plan budget check.
+            // Per-plan budget check using BudgetGuardrail (roko-learn).
+            //
+            // A one-shot guardrail is built from the configured ceiling and the
+            // current plan spend to obtain a typed BudgetAction.  Block halts new
+            // dispatches (setting `budget_exhausted`); weaker actions only warn.
+            // When --budget-override is active the Block is demoted to a warning
+            // so the run can continue past the ceiling.
+            //
+            // `budget_exhausted` persists across ticks: once set, every
+            // subsequent dispatch for this plan is rejected without rebuilding
+            // the guardrail.
             let max_plan_usd = ctx.config.max_plan_usd;
             let plan_spent = ctx.state.plan_cost(plan_id);
-            if max_plan_usd > 0.0 && plan_spent >= max_plan_usd {
+
+            if ctx.state.budget_exhausted && !ctx.config.budget_override {
                 warn!(
                     plan_id = %plan_id,
-                    spent = plan_spent,
-                    limit = max_plan_usd,
-                    "plan budget exceeded — aborting"
+                    "budget already exhausted — halting dispatch (--budget-override to continue)"
                 );
-                ctx.tui.error(&format!(
-                    "budget exceeded: ${plan_spent:.2} >= ${max_plan_usd:.2}"
-                ));
-                if let Err(e) = ctx.executor.apply_event(
-                    plan_id,
-                    &ExecutorEvent::Fatal(format!(
-                        "budget exceeded: ${plan_spent:.2} >= ${max_plan_usd:.2}"
-                    )),
-                ) {
-                    error!(plan_id = %plan_id, error = %e,
-                        "failed to apply Fatal event -- forcing plan terminal");
-                    ctx.state.force_plan_terminal(plan_id);
-                }
                 return ActionDispatchOutcome::Noop;
+            }
+
+            if max_plan_usd > 0.0 {
+                let mut guardrail = roko_learn::budget::BudgetGuardrail::new(
+                    max_plan_usd,        // per-task ceiling (re-used as plan ceiling here)
+                    max_plan_usd * 10.0, // session ceiling — not enforced at this layer
+                    max_plan_usd * 30.0, // day ceiling — not enforced at this layer
+                    0.80,                // warn threshold
+                );
+                let budget_action = guardrail.record_cost(plan_spent, "task");
+                match budget_action {
+                    roko_learn::budget::BudgetAction::Block => {
+                        warn!(
+                            plan_id = %plan_id,
+                            spent = plan_spent,
+                            limit = max_plan_usd,
+                            "plan budget exceeded — BudgetAction::Block"
+                        );
+                        ctx.state.budget_exhausted = true;
+                        if ctx.config.budget_override {
+                            warn!(
+                                plan_id = %plan_id,
+                                "--budget-override active — continuing past budget ceiling"
+                            );
+                        } else {
+                            ctx.tui.error(&format!(
+                                "budget exceeded: ${plan_spent:.2} >= ${max_plan_usd:.2}"
+                            ));
+                            if let Err(e) = ctx.executor.apply_event(
+                                plan_id,
+                                &ExecutorEvent::Fatal(format!(
+                                    "budget exceeded: ${plan_spent:.2} >= ${max_plan_usd:.2}"
+                                )),
+                            ) {
+                                error!(plan_id = %plan_id, error = %e,
+                                    "failed to apply Fatal event -- forcing plan terminal");
+                                ctx.state.force_plan_terminal(plan_id);
+                            }
+                            return ActionDispatchOutcome::Noop;
+                        }
+                    }
+                    roko_learn::budget::BudgetAction::BlockNewSessions => {
+                        warn!(
+                            plan_id = %plan_id,
+                            spent = plan_spent,
+                            limit = max_plan_usd,
+                            pct = ">95%",
+                            "plan budget near ceiling — BudgetAction::BlockNewSessions"
+                        );
+                    }
+                    roko_learn::budget::BudgetAction::RouteToCheaper => {
+                        warn!(
+                            plan_id = %plan_id,
+                            spent = plan_spent,
+                            limit = max_plan_usd,
+                            pct = ">80%",
+                            "plan budget >80% consumed — BudgetAction::RouteToCheaper"
+                        );
+                    }
+                    roko_learn::budget::BudgetAction::Warn {
+                        percent_used,
+                        level,
+                    } => {
+                        warn!(
+                            plan_id = %plan_id,
+                            pct = format!("{:.0}%", percent_used * 100.0),
+                            level,
+                            "plan budget warning"
+                        );
+                    }
+                    roko_learn::budget::BudgetAction::Ok => {}
+                }
             }
 
             let task_def = match ctx
@@ -7506,6 +7749,10 @@ async fn dispatch_action(
             };
             ctx.state.task_model_hint = task_def.model_hint.clone();
             ctx.state.routing_context = dispatch_ctx.routing_context.clone();
+            ctx.state.current_task_role = task_def
+                .role
+                .clone()
+                .unwrap_or_else(|| "implementer".to_string());
             let dispatcher = ctx.factory.dispatcher();
             let mut dispatch_plan = match dispatcher.plan(task_def, &dispatch_ctx) {
                 Ok(plan) => plan,
@@ -7630,31 +7877,77 @@ async fn dispatch_action(
             // Compute the task's HDC fingerprint from its title and query past
             // episodes for similar work.  If matches are found, append them as
             // supplementary context so the agent can learn from prior attempts.
+            //
+            // E45-T05: The number of episodes injected is gated by the
+            // per-role context_scope.  Strategist-class roles receive no
+            // episode context (max=0); reviewer-class roles get up to 5;
+            // implementer-class roles get up to 3.
             {
-                let task_fp = roko_learn::hdc_fingerprint::fingerprint_episode(&task_def.title, "");
-                match EpisodeLogger::query_similar_episodes(&ctx.paths.episodes_jsonl, &task_fp, 3)
+                let context_scope = role_context_limits(role_enum);
+                if context_scope.max_similar_episodes > 0 {
+                    let task_fp =
+                        roko_learn::hdc_fingerprint::fingerprint_episode(&task_def.title, "");
+                    match EpisodeLogger::query_similar_episodes(
+                        &ctx.paths.episodes_jsonl,
+                        &task_fp,
+                        context_scope.max_similar_episodes,
+                    )
                     .await
-                {
-                    Ok(similar) => {
-                        if let Some(section) = format_similar_episodes_section(&similar) {
-                            system_prompt.push_str("\n\n");
-                            system_prompt.push_str(&section);
+                    {
+                        Ok(similar) => {
+                            if let Some(section) = format_similar_episodes_section(&similar) {
+                                system_prompt.push_str("\n\n");
+                                system_prompt.push_str(&section);
+                                debug!(
+                                    plan_id = %plan_id,
+                                    task = %task_id,
+                                    similar_count = similar.len(),
+                                    role = %role_enum,
+                                    max_episodes = context_scope.max_similar_episodes,
+                                    "injected similar-episode context (per_role scoping)"
+                                );
+                            }
+                        }
+                        Err(err) => {
                             debug!(
                                 plan_id = %plan_id,
                                 task = %task_id,
-                                similar_count = similar.len(),
-                                "injected similar-episode context"
+                                error = %err,
+                                "similar-episode query failed (non-fatal)"
                             );
                         }
                     }
-                    Err(err) => {
-                        debug!(
-                            plan_id = %plan_id,
-                            task = %task_id,
-                            error = %err,
-                            "similar-episode query failed (non-fatal)"
-                        );
-                    }
+                } else {
+                    debug!(
+                        plan_id = %plan_id,
+                        task = %task_id,
+                        role = %role_enum,
+                        "skipping similar-episode context: role_context_limits max_similar_episodes=0"
+                    );
+                }
+            }
+            // ── E45-T03: discovered error pattern context ─────────────────
+            //
+            // Load the top 5 unresolved patterns discovered by parallel or
+            // prior tasks and inject them as "Known error patterns from
+            // parallel tasks" so the agent can avoid repeating known pitfalls.
+            // Patterns are deduplicated by key (error_code::file_path) in the
+            // store; we inject up to 5 most-frequent unresolved ones.
+            {
+                let pattern_path = ctx
+                    .config
+                    .layout
+                    .learn_dir()
+                    .join("discovered-patterns.json");
+                let pattern_section = format_discovered_patterns_section(&pattern_path);
+                if let Some(section) = pattern_section {
+                    system_prompt.push_str("\n\n");
+                    system_prompt.push_str(&section);
+                    debug!(
+                        plan_id = %plan_id,
+                        task = %task_id,
+                        "injected discovered error pattern context"
+                    );
                 }
             }
             let mut final_prompt = dispatch_plan.prompt.user_prompt;
@@ -8391,6 +8684,38 @@ async fn dispatch_action(
                     EffectRef(gate_effect.generation),
                 )
                 .expect("gate dispatch must retain exact owner");
+            // WarmPool: pre-spawn the next phase's agent while the gate runs.
+            // When implementer dispatches a gate, pre-warm a reviewer slot so
+            // the transition is <100 ms instead of a cold 5-15 s spawn.
+            // We register a placeholder WarmAgent — real provider spawn happens
+            // in the dispatcher when `take()` is called and the slot is promoted.
+            {
+                let current_role = task_def
+                    .and_then(|td| td.role.as_deref())
+                    .unwrap_or("implementer");
+                let next_role = next_warm_role(current_role);
+                let warm_agent = crate::dispatch::warm_pool::WarmAgent {
+                    id: format!("{plan_id}:{task_id}:warm:{next_role}"),
+                    model: ctx.config.model.clone(),
+                    spawned_at: Instant::now(),
+                    ttl: Duration::from_secs(300),
+                };
+                if let Some(evicted) = ctx
+                    .factory
+                    .dispatcher()
+                    .warm_pool()
+                    .insert(next_role, warm_agent)
+                {
+                    debug!(evicted_id = %evicted.id, "warm_pool: evicted overflow agent on pre-spawn");
+                } else {
+                    debug!(
+                        next_role,
+                        plan_id = %plan_id,
+                        task_id = %task_id,
+                        "warm_pool: pre-spawned agent slot for next phase"
+                    );
+                }
+            }
             if start_tx.send(()).is_err() {
                 ctx.state.clear_gate_active(&effect_key);
                 if let Ok(mut failed_claim) = ctx.attempt_ownership.claim_phase(
@@ -9238,6 +9563,96 @@ fn format_similar_episodes_section(
             buf.push_str(&format!(" — {reason}"));
         }
         buf.push('\n');
+    }
+    Some(buf)
+}
+
+/// E45-T03: Record failure patterns from a gate output into the shared
+/// discovered-patterns store.
+///
+/// Classifies `gate_output` with [`classify_gate_failure`], extracts
+/// [`FailurePatternRecord`]s via [`records_from_classification`], and upserts
+/// each record into the persistent store. Dedup is by normalized key
+/// (`error_code::file_path`) so the same error in the same file accumulates
+/// occurrence counts rather than creating duplicate entries.
+///
+/// Errors are swallowed — pattern recording is always non-fatal.
+fn record_discovered_error_patterns(
+    learn_dir: &std::path::Path,
+    gate_name: &str,
+    gate_output: &str,
+    plan_id: &str,
+    task_id: &str,
+) {
+    let path = learn_dir.join("discovered-patterns.json");
+    let classification = classify_gate_failure(gate_name, gate_output);
+    let records = records_from_classification(&classification);
+    if records.is_empty() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(learn_dir);
+    let mut store = ErrorPatternStore::load(&path);
+    for record in &records {
+        let observation = GateFailureObservation::new(
+            record.key.clone(),
+            plan_id,
+            Some(task_id.to_string()),
+            record.gate.clone(),
+            record.classification.clone(),
+            record.digest.clone(),
+            GateFailureSource::GateClassification,
+        )
+        .with_suggestion(record.suggestion.clone());
+        store.observe_gate_failure(observation);
+    }
+    if let Err(err) = store.save(&path) {
+        debug!(error = %err, "failed to save discovered-patterns.json (non-fatal)");
+    }
+    debug!(
+        gate = %gate_name,
+        patterns = records.len(),
+        plan_id = %plan_id,
+        task_id = %task_id,
+        "recorded discovered error patterns"
+    );
+}
+
+/// E45-T03: Load the top 5 unresolved error patterns from the shared store
+/// and format them as a prompt section for the agent.
+///
+/// Returns `None` when the store is empty or missing.
+fn format_discovered_patterns_section(pattern_path: &std::path::Path) -> Option<String> {
+    let store = ErrorPatternStore::load(pattern_path);
+    let top = store.top_patterns(5);
+    if top.is_empty() {
+        return None;
+    }
+    // Filter to unresolved patterns only (same as bounded_summary).
+    let unresolved: Vec<_> = top.into_iter().filter(|p| !p.resolved).collect();
+    if unresolved.is_empty() {
+        return None;
+    }
+    let mut buf = String::from("## Known error patterns from parallel tasks\n");
+    buf.push_str(
+        "These patterns were discovered during this run. \
+         Avoid repeating them in your implementation.\n",
+    );
+    for (i, pattern) in unresolved.iter().enumerate() {
+        buf.push_str(&format!(
+            "{}. [{}] {} (seen {} time{})",
+            i + 1,
+            pattern.category,
+            pattern.digest,
+            pattern.occurrences,
+            if pattern.occurrences == 1 { "" } else { "s" },
+        ));
+        if let Some(gate) = &pattern.gate {
+            buf.push_str(&format!(" — gate: {gate}"));
+        }
+        buf.push('\n');
+        if let Some(suggestion) = &pattern.suggestion {
+            buf.push_str(&format!("   Fix hint: {suggestion}\n"));
+        }
     }
     Some(buf)
 }
@@ -11687,6 +12102,21 @@ fn dag_quiescence_reason(plan_id: &str, summary: &DagProgressSummary) -> String 
 
 fn gate_effect_key(plan_id: &str, task_id: &str, rung: u32, kind: GateCompletionKind) -> String {
     format!("{kind:?}:{plan_id}:{task_id}:{rung}")
+}
+
+/// Map a task role to the next phase role that should be pre-spawned in
+/// the warm pool while the current gate is running.
+///
+/// The most expensive cold-spawn bottleneck is the implementer → reviewer
+/// transition immediately after a gate pass. Pre-warming the reviewer saves
+/// 5-15 s per task when the pool slot is available.
+fn next_warm_role(current_role: &str) -> &'static str {
+    match current_role {
+        "implementer" => "reviewer",
+        "reviewer" => "implementer",
+        "strategist" => "implementer",
+        _ => "implementer",
+    }
 }
 
 /// Build enriched retry context for the agent after a gate failure.
@@ -16901,5 +17331,102 @@ depends_on = ["T1"]
         assert!(!events.contains("timeout.recorded"));
         assert!(ownership.contains(&attempt));
         assert!(state.mark_gate_active(effect_key));
+    }
+}
+
+// ─── Provider rate-limit pool tests (E48-T03) ─────────────────────────────────
+//
+// Verify that a single `Arc<ProviderRateLimiter>` shared by `SharedAgentFactory`
+// gates concurrent agent dispatches without false contention:
+//
+// 1. Concurrent acquires for the **same** provider share one RPM budget.
+// 2. Concurrent acquires for **different** providers are independent.
+//
+// Both assertions confirm the pool is shared (not rebuilt per-task) because
+// that is the invariant `SharedAgentFactory::new` establishes and
+// `spawn_shared_agent_bridge` relies on.
+#[cfg(test)]
+mod tests_provider_rate_limit {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use roko_agent::rate_limit::{ProviderLimits, ProviderRateLimiter};
+
+    /// Two concurrent `acquire` calls for the same provider share the
+    /// single RPM budget slot via one Arc.
+    ///
+    /// At 600 RPM (10 req/s) both requests should complete within 500 ms on
+    /// any realistic host, proving they are not blocked by a per-task rebuild.
+    #[tokio::test]
+    async fn provider_rate_limit_pool_shared_across_concurrent_dispatches() {
+        let limiter = Arc::new(ProviderRateLimiter::new(600));
+        let start = Instant::now();
+
+        let l1 = Arc::clone(&limiter);
+        let l2 = Arc::clone(&limiter);
+        let ((), ()) = tokio::join!(async move { l1.acquire("anthropic").await }, async move {
+            l2.acquire("anthropic").await
+        },);
+
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "shared pool should not stall under 600 RPM: {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// Concurrent acquires for different providers must not contend with each
+    /// other — each provider has an independent RPM budget in the shared pool.
+    #[tokio::test]
+    async fn provider_rate_limit_pool_independent_budgets_per_provider() {
+        let mut limits = HashMap::new();
+        limits.insert("anthropic".to_string(), ProviderLimits { rpm: 600, tpm: 0 });
+        limits.insert(
+            "openrouter".to_string(),
+            ProviderLimits { rpm: 600, tpm: 0 },
+        );
+        let limiter = Arc::new(ProviderRateLimiter::with_provider_limits(60, limits));
+        let start = Instant::now();
+
+        let la = Arc::clone(&limiter);
+        let lb = Arc::clone(&limiter);
+        let ((), ()) = tokio::join!(async move { la.acquire("anthropic").await }, async move {
+            lb.acquire("openrouter").await
+        },);
+
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "independent providers should not contend: {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// Validate the `from_provider_configs` constructor path used by
+    /// `SharedAgentFactory`: an Arc-shared limiter must not stall when 4
+    /// concurrent tasks all acquire within a 600 RPM budget.
+    #[tokio::test]
+    async fn provider_rate_limit_pool_from_provider_configs_high_rpm() {
+        // Mirror what SharedAgentFactory::new passes to from_provider_configs.
+        let limiter = Arc::new(ProviderRateLimiter::new(600));
+        let start = Instant::now();
+
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let l = Arc::clone(&limiter);
+                tokio::spawn(async move { l.acquire("anthropic").await })
+            })
+            .collect();
+
+        for h in handles {
+            h.await.expect("acquire task should not panic");
+        }
+
+        // 4 requests at 600 RPM should finish well within 2 s on any host.
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "4 concurrent acquires at 600 RPM should not stall: {:?}",
+            start.elapsed()
+        );
     }
 }

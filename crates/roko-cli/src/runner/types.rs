@@ -1833,6 +1833,9 @@ pub struct RunConfig {
     pub max_plan_usd: f64,
     /// Maximum USD spend per single agent turn (0 = unlimited). From `[budget]`.
     pub max_turn_usd: f64,
+    /// When `true`, allows execution to continue past `BudgetAction::Block` with
+    /// a warning. Set via `--budget-override` CLI flag. Default: `false`.
+    pub budget_override: bool,
     /// Whether clippy gate is enabled. From `[gates]` / gate config.
     pub clippy_enabled: bool,
     /// Whether to skip the test gate. From `[gates]` / gate config.
@@ -2005,6 +2008,7 @@ impl RunConfig {
                 .unwrap_or_else(|| PathBuf::from("claude")),
             max_plan_usd: f64::from(roko_config.budget.max_plan_usd),
             max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
+            budget_override: false,
             clippy_enabled: roko_config.gates.clippy_enabled,
             skip_tests: roko_config.gates.skip_tests,
             roko_config: Some(Arc::new(roko_config)),
@@ -2056,6 +2060,7 @@ impl Default for RunConfig {
             claude_program: PathBuf::from("claude"),
             max_plan_usd: 0.0,
             max_turn_usd: 0.0,
+            budget_override: false,
             clippy_enabled: true,
             skip_tests: false,
             roko_config: None,
@@ -2097,6 +2102,7 @@ impl std::fmt::Debug for RunConfig {
             .field("max_gate_rung", &self.max_gate_rung)
             .field("max_plan_usd", &self.max_plan_usd)
             .field("max_turn_usd", &self.max_turn_usd)
+            .field("budget_override", &self.budget_override)
             .field("force_resume", &self.force_resume)
             .field(
                 "extension_chain",

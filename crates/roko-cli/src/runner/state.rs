@@ -6,6 +6,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use roko_core::defaults::DEFAULT_RUNNER_RETRY_STRATEGY_PIVOT_ATTEMPT;
+use roko_gate::ParsedReviewVerdict;
 use roko_learn::model_router::RoutingContext;
 
 use super::types::{
@@ -116,6 +117,9 @@ pub struct RunState {
     pub snapshot_fail_streak: u32,
     /// Set after 3 consecutive snapshot failures — crash recovery data may be stale.
     pub snapshot_degraded: bool,
+    /// Set when `BudgetAction::Block` fires — prevents new task dispatches.
+    /// Can be overridden by `RunConfig::budget_override` (--budget-override flag).
+    pub budget_exhausted: bool,
 
     // ─── Timing ─────────────────────────────────────────────────────
     /// When the run started.
@@ -154,6 +158,15 @@ pub struct RunState {
     /// Per-task failure reasons (plan_id:task_id → reason string).
     /// Populated when a task fails so the final summary can show why.
     pub failure_reasons: HashMap<String, String>,
+
+    // ─── Review ──────────────────────────────────────────────────────
+    /// Role of the current task (e.g. "implementer", "reviewer").
+    /// Set at dispatch time so the TurnCompleted handler can branch on it.
+    pub current_task_role: String,
+    /// Parsed structured review verdict for the current task.
+    /// Populated in the TurnCompleted handler when `current_task_role` is a
+    /// reviewer role. `None` for non-reviewer tasks.
+    pub parsed_review_verdict: Option<ParsedReviewVerdict>,
 }
 
 impl RunState {
@@ -198,6 +211,7 @@ impl RunState {
             task_outputs: HashMap::new(),
             snapshot_fail_streak: 0,
             snapshot_degraded: false,
+            budget_exhausted: false,
             started_at: Instant::now(),
             start_epoch_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -211,6 +225,8 @@ impl RunState {
             task_fingerprints: Vec::new(),
             routing_context: None,
             failure_reasons: HashMap::new(),
+            current_task_role: String::new(),
+            parsed_review_verdict: None,
         }
     }
 
@@ -730,6 +746,8 @@ impl RunState {
         self.task_started_at = Instant::now();
         self.last_dispatch_ms = 0;
         self.routing_context = None;
+        self.current_task_role.clear();
+        self.parsed_review_verdict = None;
     }
 
     /// Record a completed task, rolling per-task stats into totals.

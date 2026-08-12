@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 
 #[cfg(feature = "hdc")]
 use crate::hdc::KnowledgeHdcEncoder;
+use crate::admission::evaluate_admission;
 use crate::{KnowledgeEntry, KnowledgeKind, KnowledgeTier, NeuroStore};
 
 /// Default garbage-collection threshold for knowledge entries.
@@ -600,6 +601,32 @@ impl KnowledgeStore {
         let _guard = self.write_gate.lock();
         let existing = self.read_all().unwrap_or_default();
         let entries = dedupe_entries_for_ingest(prepare_entries_for_ingest(entries), &existing);
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        // A-MAC 5-factor admission gate: filter entries that fail the novelty,
+        // contradiction, relevance, and confidence gate before persisting.
+        // AntiKnowledge entries always bypass the gate so the contradiction
+        // check for future positive entries works correctly.
+        let entries: Vec<KnowledgeEntry> = entries
+            .into_iter()
+            .filter(|entry| {
+                if entry.kind == KnowledgeKind::AntiKnowledge {
+                    return true;
+                }
+                let result = evaluate_admission(entry, &existing);
+                if !result.admitted {
+                    tracing::debug!(
+                        entry_id = %entry.id,
+                        score = result.score,
+                        reason = ?result.reject_reason,
+                        "A-MAC gate rejected entry during ingest"
+                    );
+                }
+                result.admitted
+            })
+            .collect();
         if entries.is_empty() {
             return Ok(());
         }

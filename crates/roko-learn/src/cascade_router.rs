@@ -41,8 +41,9 @@ pub use crate::cascade::helpers::slug_family;
 pub use crate::cascade::types::{
     CascadeCandidateScore, CascadeModel, CascadeObservationStats, CascadeRouteExplanation,
     CascadeRoutingCandidate, CascadeRoutingExplanation, CascadeSelection, CascadeStage,
-    GeminiContextTier, GeminiObservation, KnowledgeHint, KnowledgeRoutingAdvice,
-    PerplexityObservation, RoutingBias, ShadowModelRunner, StageTransition,
+    DEFAULT_MAX_FALLBACK_DEPTH, FallbackChain, FallbackEvent, GeminiContextTier, GeminiObservation,
+    KnowledgeHint, KnowledgeRoutingAdvice, PerplexityObservation, RoutingBias, ShadowModelRunner,
+    StageTransition,
 };
 
 use crate::cascade::helpers::{
@@ -1403,6 +1404,51 @@ impl CascadeRouter {
             &weights,
         );
         true
+    }
+
+    /// Record the outcome of a rate-limit fallback attempt for cascade learning.
+    ///
+    /// Call this after every dispatch that was triggered by a [`FallbackEvent`]
+    /// (i.e. a dispatch to the fallback model selected by [`FallbackChain::advance`]).
+    ///
+    /// Two observations are written:
+    ///
+    /// 1. A **failure** for the rate-limited model (`event.rate_limited_slug`),
+    ///    recording that the rate limit is an adverse outcome for that model.
+    /// 2. A **success or failure** for the fallback model (`event.fallback_slug`),
+    ///    depending on whether the fallback dispatch succeeded.
+    ///
+    /// Both observations use the confidence-stage path so they accumulate
+    /// toward the empirical pass-rate table used by Stage 2 and LinUCB.
+    ///
+    /// Returns `(rate_limited_recorded, fallback_recorded)` — each `true` when
+    /// the corresponding slug was known to the router.
+    pub fn record_fallback_outcome(
+        &self,
+        event: &FallbackEvent,
+        fallback_succeeded: bool,
+    ) -> (bool, bool) {
+        tracing::warn!(
+            rate_limited = %event.rate_limited_slug,
+            fallback = %event.fallback_slug,
+            depth = event.depth,
+            success = fallback_succeeded,
+            "rate-limited on {}, falling back to {} (depth={})",
+            event.rate_limited_slug,
+            event.fallback_slug,
+            event.depth,
+        );
+
+        // Record the rate-limited model as a failure so the router learns to
+        // prefer alternatives when this provider is under quota pressure.
+        let rate_limited_recorded =
+            self.record_confidence_outcome(&event.rate_limited_slug, false);
+
+        // Record the fallback model with the actual outcome.
+        let fallback_recorded =
+            self.record_confidence_outcome(&event.fallback_slug, fallback_succeeded);
+
+        (rate_limited_recorded, fallback_recorded)
     }
 
     /// Run a shadow evaluation against a free-tier Gemini model.
@@ -3369,5 +3415,276 @@ mod cascade_router_tests {
             "higher-pass-rate google provider must be preferred over anthropic; got {}",
             route.primary.slug
         );
+    }
+}
+
+// ─── FallbackChain tests ─────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+    use roko_core::agent::ModelSpec;
+
+    /// claude-* slugs map to AgentBackend::Claude via heuristic.
+    fn anthropic(slug: &str) -> ModelSpec {
+        ModelSpec::from_slug(slug)
+    }
+
+    /// gemini-* slugs map to AgentBackend::Codex (OpenAI-compat) via heuristic.
+    /// Either way they differ from Claude backend, satisfying the different-backend test.
+    fn google(slug: &str) -> ModelSpec {
+        ModelSpec::from_slug(slug)
+    }
+
+    fn make_cascade(primary: ModelSpec, fallbacks: Vec<ModelSpec>) -> CascadeModel {
+        CascadeModel {
+            primary,
+            fallback_chain: fallbacks,
+            context_overflow_fallback: None,
+            latency_sla_ms: 30_000,
+            stage: CascadeStage::Static,
+        }
+    }
+
+    // ── FallbackChain::new ───────────────────────────────────────────────────
+
+    #[test]
+    fn fallback_chain_empty_when_no_fallbacks() {
+        let cascade = make_cascade(anthropic("claude-sonnet-4-6"), vec![]);
+        let chain = FallbackChain::new(&cascade, "claude-sonnet-4-6", None);
+        assert!(chain.is_empty());
+        assert_eq!(chain.len(), 0);
+        assert_eq!(chain.remaining(), 0);
+        assert!(chain.is_exhausted());
+    }
+
+    #[test]
+    fn fallback_chain_different_backend_first() {
+        // Primary is anthropic (Claude backend); fallbacks include one same-backend
+        // Claude model then a Codex-backend Gemini model.
+        // The different-backend (Gemini) model should appear first.
+        let cascade = make_cascade(
+            anthropic("claude-sonnet-4-6"),
+            vec![
+                anthropic("claude-haiku-4-5"), // same backend (Claude)
+                google("gemini-2.5-flash"),    // different backend (Codex) — should come first
+            ],
+        );
+        let mut chain = FallbackChain::new(&cascade, "claude-sonnet-4-6", None);
+        assert_eq!(chain.len(), 2);
+
+        let (first, event) = chain.advance().expect("first fallback must exist");
+        assert_eq!(
+            first.slug, "gemini-2.5-flash",
+            "different-backend model must come first"
+        );
+        assert_eq!(event.fallback_slug, "gemini-2.5-flash");
+        assert_eq!(event.rate_limited_slug, "claude-sonnet-4-6");
+        assert_eq!(event.depth, 1);
+    }
+
+    #[test]
+    fn fallback_chain_respects_max_depth() {
+        let cascade = make_cascade(
+            anthropic("claude-sonnet-4-6"),
+            vec![
+                google("gemini-2.5-flash"),
+                google("gemini-2.5-pro"),
+                google("gemini-2.5-flash-lite"),
+                anthropic("claude-haiku-4-5"),
+            ],
+        );
+        // Limit to depth 2.
+        let chain = FallbackChain::new(&cascade, "claude-sonnet-4-6", Some(2));
+        assert_eq!(chain.len(), 2, "depth cap must limit to 2 candidates");
+        assert_eq!(chain.max_fallback_depth, 2);
+    }
+
+    #[test]
+    fn fallback_chain_default_max_depth_is_three() {
+        let cascade = make_cascade(
+            anthropic("claude-sonnet-4-6"),
+            vec![
+                google("gemini-2.5-flash"),
+                google("gemini-2.5-pro"),
+                google("gemini-2.5-flash-lite"),
+                anthropic("claude-haiku-4-5"),
+            ],
+        );
+        let chain = FallbackChain::new(&cascade, "claude-sonnet-4-6", None);
+        assert_eq!(
+            chain.len(),
+            3,
+            "default depth must cap at DEFAULT_MAX_FALLBACK_DEPTH=3"
+        );
+        assert_eq!(chain.max_fallback_depth, DEFAULT_MAX_FALLBACK_DEPTH);
+    }
+
+    #[test]
+    fn fallback_chain_excludes_rate_limited_slug_from_candidates() {
+        // The rate-limited model also appears in the fallback list (unusual but
+        // possible if the config is strange). It must be excluded.
+        let cascade = make_cascade(
+            anthropic("claude-sonnet-4-6"),
+            vec![
+                anthropic("claude-sonnet-4-6"), // same as primary — must be excluded
+                google("gemini-2.5-flash"),
+            ],
+        );
+        let chain = FallbackChain::new(&cascade, "claude-sonnet-4-6", None);
+        assert_eq!(chain.len(), 1, "rate-limited slug must be excluded from candidates");
+        let slugs: Vec<_> = {
+            let mut c = chain;
+            let mut out = vec![];
+            while let Some((m, _)) = c.advance() {
+                out.push(m.slug.clone());
+            }
+            out
+        };
+        assert!(!slugs.contains(&"claude-sonnet-4-6".to_string()));
+    }
+
+    // ── FallbackChain::advance ───────────────────────────────────────────────
+
+    #[test]
+    fn fallback_chain_advance_returns_none_when_exhausted() {
+        let cascade = make_cascade(
+            anthropic("claude-sonnet-4-6"),
+            vec![google("gemini-2.5-flash")],
+        );
+        let mut chain = FallbackChain::new(&cascade, "claude-sonnet-4-6", None);
+        assert!(chain.advance().is_some(), "first advance must return a model");
+        assert!(chain.is_exhausted(), "chain must be exhausted after last model");
+        assert!(chain.advance().is_none(), "advance past exhaustion must return None");
+    }
+
+    #[test]
+    fn fallback_chain_depth_increments_per_advance() {
+        let cascade = make_cascade(
+            anthropic("claude-sonnet-4-6"),
+            vec![google("gemini-2.5-flash"), google("gemini-2.5-pro")],
+        );
+        let mut chain = FallbackChain::new(&cascade, "claude-sonnet-4-6", None);
+
+        let (_, ev1) = chain.advance().unwrap();
+        assert_eq!(ev1.depth, 1);
+
+        let (_, ev2) = chain.advance().unwrap();
+        assert_eq!(ev2.depth, 2);
+    }
+
+    #[test]
+    fn fallback_chain_remaining_decrements_on_advance() {
+        let cascade = make_cascade(
+            anthropic("claude-sonnet-4-6"),
+            vec![google("gemini-2.5-flash"), google("gemini-2.5-pro")],
+        );
+        let mut chain = FallbackChain::new(&cascade, "claude-sonnet-4-6", None);
+        assert_eq!(chain.remaining(), 2);
+        let _ = chain.advance();
+        assert_eq!(chain.remaining(), 1);
+        let _ = chain.advance();
+        assert_eq!(chain.remaining(), 0);
+    }
+
+    // ── CascadeRouter::record_fallback_outcome ───────────────────────────────
+
+    #[test]
+    fn record_fallback_outcome_records_rate_limited_model_as_failure() {
+        let router = CascadeRouter::new(vec![
+            "claude-sonnet-4-6".to_string(),
+            "gemini-2.5-flash".to_string(),
+        ]);
+
+        let event = FallbackEvent {
+            rate_limited_slug: "claude-sonnet-4-6".to_string(),
+            fallback_slug: "gemini-2.5-flash".to_string(),
+            depth: 1,
+        };
+        let (rl_recorded, fb_recorded) = router.record_fallback_outcome(&event, true);
+        assert!(rl_recorded, "rate-limited model must be known to router");
+        assert!(fb_recorded, "fallback model must be known to router");
+
+        let snap = router.confidence_snapshot();
+
+        // Rate-limited model: 1 trial, 0 successes.
+        let (rl_trials, rl_successes) = snap["claude-sonnet-4-6"];
+        assert_eq!(rl_trials, 1, "rate-limited model must have 1 trial");
+        assert_eq!(
+            rl_successes, 0,
+            "rate-limited model must have 0 successes (it failed)"
+        );
+
+        // Fallback model: 1 trial, 1 success (fallback_succeeded=true).
+        let (fb_trials, fb_successes) = snap["gemini-2.5-flash"];
+        assert_eq!(fb_trials, 1, "fallback model must have 1 trial");
+        assert_eq!(fb_successes, 1, "fallback model must have 1 success");
+    }
+
+    #[test]
+    fn record_fallback_outcome_records_failure_when_fallback_also_fails() {
+        let router = CascadeRouter::new(vec![
+            "claude-sonnet-4-6".to_string(),
+            "gemini-2.5-flash".to_string(),
+        ]);
+
+        let event = FallbackEvent {
+            rate_limited_slug: "claude-sonnet-4-6".to_string(),
+            fallback_slug: "gemini-2.5-flash".to_string(),
+            depth: 1,
+        };
+        // fallback_succeeded = false
+        router.record_fallback_outcome(&event, false);
+
+        let snap = router.confidence_snapshot();
+        let (fb_trials, fb_successes) = snap["gemini-2.5-flash"];
+        assert_eq!(fb_trials, 1);
+        assert_eq!(fb_successes, 0, "fallback failure must not increment successes");
+    }
+
+    #[test]
+    fn record_fallback_outcome_returns_false_for_unknown_slug() {
+        let router = CascadeRouter::new(vec!["claude-sonnet-4-6".to_string()]);
+
+        let event = FallbackEvent {
+            rate_limited_slug: "nonexistent-model".to_string(),
+            fallback_slug: "also-nonexistent".to_string(),
+            depth: 1,
+        };
+        let (rl_recorded, fb_recorded) = router.record_fallback_outcome(&event, true);
+        assert!(!rl_recorded, "unknown rate-limited model must return false");
+        assert!(!fb_recorded, "unknown fallback model must return false");
+    }
+
+    #[test]
+    fn record_fallback_outcome_accumulates_across_multiple_events() {
+        let router = CascadeRouter::new(vec![
+            "claude-sonnet-4-6".to_string(),
+            "gemini-2.5-flash".to_string(),
+        ]);
+
+        // Two fallback events: first succeeds, second fails.
+        let event1 = FallbackEvent {
+            rate_limited_slug: "claude-sonnet-4-6".to_string(),
+            fallback_slug: "gemini-2.5-flash".to_string(),
+            depth: 1,
+        };
+        let event2 = FallbackEvent {
+            rate_limited_slug: "claude-sonnet-4-6".to_string(),
+            fallback_slug: "gemini-2.5-flash".to_string(),
+            depth: 2,
+        };
+
+        router.record_fallback_outcome(&event1, true);
+        router.record_fallback_outcome(&event2, false);
+
+        let snap = router.confidence_snapshot();
+        let (rl_trials, rl_successes) = snap["claude-sonnet-4-6"];
+        assert_eq!(rl_trials, 2, "two rate-limit failures = 2 trials for primary");
+        assert_eq!(rl_successes, 0);
+
+        let (fb_trials, fb_successes) = snap["gemini-2.5-flash"];
+        assert_eq!(fb_trials, 2, "two fallback attempts = 2 trials for fallback model");
+        assert_eq!(fb_successes, 1, "only first fallback succeeded");
     }
 }

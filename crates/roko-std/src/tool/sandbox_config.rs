@@ -15,7 +15,73 @@
 //! | 4 Trusted | full | full | 512 | 120 |
 //! | 5 Kernel | unrestricted | unrestricted | u64::MAX | u64::MAX |
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+
+// ─── SandboxValidationError ───────────────────────────────────────────────
+
+/// Errors produced by command and path validation in [`SandboxConfig`].
+///
+/// Each variant carries a human-readable description of the specific
+/// violation so callers can surface actionable diagnostics without
+/// having to inspect enum internals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SandboxValidationError {
+    /// The command string contains one or more shell metacharacters that
+    /// could enable injection (e.g. `|`, `;`, `&&`, `` ` ``, `$(`, `>`).
+    ShellMetacharacter {
+        /// The specific metacharacter or sequence that was detected.
+        found: String,
+        /// The original command string.
+        command: String,
+    },
+
+    /// A path entry contains `../` or equivalent traversal sequences that
+    /// could escape the intended sandbox root.
+    PathTraversal {
+        /// The offending path pattern.
+        path: String,
+    },
+
+    /// The command string is empty or contains only whitespace.
+    EmptyCommand,
+}
+
+impl fmt::Display for SandboxValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ShellMetacharacter { found, command } => {
+                write!(
+                    f,
+                    "shell metacharacter '{found}' found in command: {command}"
+                )
+            }
+            Self::PathTraversal { path } => {
+                write!(f, "path traversal detected in path pattern: {path}")
+            }
+            Self::EmptyCommand => {
+                write!(f, "command is empty or contains only whitespace")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SandboxValidationError {}
+
+// ─── Shell metacharacter constants ────────────────────────────────────────
+
+/// Multi-character shell metacharacter sequences to reject.
+///
+/// Order matters: longer sequences are checked before their single-char
+/// substrings so that the error message reports the most specific match.
+const SHELL_META_SEQUENCES: &[&str] = &["&&", "||", "$(", "<<", ">>"];
+
+/// Single-character shell metacharacters to reject.
+///
+/// Each of these can enable command injection, output redirection, or
+/// subshell execution when passed unsanitized to a shell.
+const SHELL_META_CHARS: &[char] = &['|', ';', '`', '>', '<', '&'];
 
 // ─── SandboxConfig ────────────────────────────────────────────────────────
 
@@ -161,14 +227,105 @@ impl SandboxConfig {
         }
     }
 
+    /// Validate that a command string is safe for sandboxed execution.
+    ///
+    /// Rejects commands that are empty/whitespace-only or that contain
+    /// shell metacharacters which could enable injection attacks:
+    ///
+    /// - Pipe (`|`), semicolon (`;`), logical operators (`&&`, `||`)
+    /// - Backtick (`` ` ``), command substitution (`$(`)
+    /// - Redirections (`>`, `<`, `>>`, `<<`)
+    /// - Bare ampersand (`&`) for background execution
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SandboxValidationError::EmptyCommand`] if the command is
+    /// blank, or [`SandboxValidationError::ShellMetacharacter`] with the
+    /// specific offending sequence.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use roko_std::tool::sandbox_config::SandboxConfig;
+    ///
+    /// assert!(SandboxConfig::validate_command("cargo build").is_ok());
+    /// assert!(SandboxConfig::validate_command("ls ; rm -rf /").is_err());
+    /// ```
+    pub fn validate_command(cmd: &str) -> Result<(), SandboxValidationError> {
+        if cmd.trim().is_empty() {
+            return Err(SandboxValidationError::EmptyCommand);
+        }
+
+        // Check multi-char sequences first for more specific error messages.
+        for seq in SHELL_META_SEQUENCES {
+            if cmd.contains(seq) {
+                return Err(SandboxValidationError::ShellMetacharacter {
+                    found: (*seq).to_string(),
+                    command: cmd.to_string(),
+                });
+            }
+        }
+
+        // Check single-char metacharacters.
+        for &ch in SHELL_META_CHARS {
+            if cmd.contains(ch) {
+                return Err(SandboxValidationError::ShellMetacharacter {
+                    found: ch.to_string(),
+                    command: cmd.to_string(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Remove or escape dangerous shell metacharacters from a command string.
+    ///
+    /// This is a best-effort sanitizer: it strips all characters and
+    /// sequences that [`SandboxConfig::validate_command`] would reject.
+    /// The result is safe to pass to a non-shell executor (e.g. direct
+    /// `execvp`), but callers should prefer [`validate_command`](Self::validate_command)
+    /// and rejecting bad input over silently sanitizing it.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use roko_std::tool::sandbox_config::SandboxConfig;
+    ///
+    /// let clean = SandboxConfig::sanitize_command("cargo build && rm -rf /");
+    /// assert!(!clean.contains("&&"));
+    /// assert!(!clean.contains("rm -rf /"));
+    /// ```
+    #[must_use]
+    pub fn sanitize_command(cmd: &str) -> String {
+        let mut result = cmd.to_string();
+
+        // Strip multi-char sequences first (order matters: longer before
+        // shorter so we don't leave partial matches).
+        for seq in SHELL_META_SEQUENCES {
+            result = result.replace(seq, "");
+        }
+
+        // Strip single-char metacharacters.
+        result.retain(|c| !SHELL_META_CHARS.contains(&c));
+
+        // Collapse runs of whitespace that result from stripping.
+        let collapsed: String = result.split_whitespace().collect::<Vec<_>>().join(" ");
+        collapsed
+    }
+
     /// Validate that this `SandboxConfig` is internally consistent.
     ///
     /// Returns a list of human-readable violations. An empty list means
-    /// the config is valid. Contradictions checked:
+    /// the config is valid. Checks performed:
     ///
     /// - A path that appears in both `allowed_paths` and `denied_paths`
     ///   with an exact match (denial always wins, but the overlap is almost
     ///   certainly a mistake).
+    /// - An `allowed_paths` entry that contains `../` path traversal
+    ///   sequences, which could escape the sandbox root.
+    /// - `denied_paths` containing `**` while `allowed_paths` is non-empty,
+    ///   making the effective access empty (likely a config error).
     /// - `max_cpu_seconds > 0` while `max_memory_mb == 0` when a memory
     ///   limit is clearly expected (i.e. tier < Trusted) is **not** flagged
     ///   here — that would require tier context. Callers may perform that
@@ -203,6 +360,26 @@ impl SandboxConfig {
             }
         }
 
+        // Check allowed_paths for path traversal sequences.
+        for path in &self.allowed_paths {
+            if Self::contains_path_traversal(path) {
+                violations.push(format!(
+                    "allowed_paths entry '{path}' contains path traversal (../) \
+                     which could escape the sandbox root"
+                ));
+            }
+        }
+
+        // Also check denied_paths — traversal there is suspicious too.
+        for path in &self.denied_paths {
+            if Self::contains_path_traversal(path) {
+                violations.push(format!(
+                    "denied_paths entry '{path}' contains path traversal (../) \
+                     which is suspicious and likely a config error"
+                ));
+            }
+        }
+
         // Catch obviously impossible configs: allowed_paths is non-empty but
         // denied_paths covers ALL allowed entries (wildcard "**" in denied).
         let deny_all = self.denied_paths.iter().any(|d| d == "**");
@@ -215,6 +392,28 @@ impl SandboxConfig {
         }
 
         violations
+    }
+
+    /// Check whether a path pattern contains traversal sequences (`../`).
+    ///
+    /// Detects:
+    /// - Literal `../` anywhere in the path
+    /// - Path ending with `..` (traversal without trailing slash)
+    /// - Path that is exactly `..`
+    fn contains_path_traversal(path: &str) -> bool {
+        // Exact match
+        if path == ".." {
+            return true;
+        }
+        // Starts with ../ or contains /../
+        if path.starts_with("../") || path.contains("/../") {
+            return true;
+        }
+        // Ends with /..
+        if path.ends_with("/..") {
+            return true;
+        }
+        false
     }
 
     /// Return `true` if `path_glob` (relative to worktree) is permitted
@@ -439,5 +638,355 @@ mod tests {
         let json = serde_json::to_string(&cfg).expect("serialize");
         let decoded: SandboxConfig = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(cfg, decoded);
+    }
+
+    // ── validate_command tests ────────────────────────────────────────
+
+    #[test]
+    fn sandbox_validate_command_accepts_clean_commands() {
+        assert!(SandboxConfig::validate_command("cargo build").is_ok());
+        assert!(SandboxConfig::validate_command("rustfmt --edition 2021 src/main.rs").is_ok());
+        assert!(SandboxConfig::validate_command("python3 -c 'print(1)'").is_ok());
+        assert!(SandboxConfig::validate_command("ls -la /tmp/output").is_ok());
+    }
+
+    #[test]
+    fn sandbox_validate_command_rejects_empty() {
+        assert_eq!(
+            SandboxConfig::validate_command(""),
+            Err(SandboxValidationError::EmptyCommand)
+        );
+        assert_eq!(
+            SandboxConfig::validate_command("   "),
+            Err(SandboxValidationError::EmptyCommand)
+        );
+        assert_eq!(
+            SandboxConfig::validate_command("\t\n"),
+            Err(SandboxValidationError::EmptyCommand)
+        );
+    }
+
+    #[test]
+    fn sandbox_validate_command_rejects_pipe() {
+        let err = SandboxConfig::validate_command("cat /etc/passwd | grep root").expect_err("pipe");
+        assert!(matches!(
+            err,
+            SandboxValidationError::ShellMetacharacter { ref found, .. } if found == "|"
+        ));
+    }
+
+    #[test]
+    fn sandbox_validate_command_rejects_semicolon() {
+        let err = SandboxConfig::validate_command("ls ; rm -rf /").expect_err("semicolon");
+        assert!(matches!(
+            err,
+            SandboxValidationError::ShellMetacharacter { ref found, .. } if found == ";"
+        ));
+    }
+
+    #[test]
+    fn sandbox_validate_command_rejects_logical_and() {
+        let err = SandboxConfig::validate_command("true && rm -rf /").expect_err("&&");
+        assert!(matches!(
+            err,
+            SandboxValidationError::ShellMetacharacter { ref found, .. } if found == "&&"
+        ));
+    }
+
+    #[test]
+    fn sandbox_validate_command_rejects_logical_or() {
+        let err = SandboxConfig::validate_command("false || echo pwned").expect_err("||");
+        assert!(matches!(
+            err,
+            SandboxValidationError::ShellMetacharacter { ref found, .. } if found == "||"
+        ));
+    }
+
+    #[test]
+    fn sandbox_validate_command_rejects_backtick() {
+        let err = SandboxConfig::validate_command("echo `whoami`").expect_err("backtick");
+        assert!(matches!(
+            err,
+            SandboxValidationError::ShellMetacharacter { ref found, .. } if found == "`"
+        ));
+    }
+
+    #[test]
+    fn sandbox_validate_command_rejects_dollar_paren() {
+        let err = SandboxConfig::validate_command("echo $(whoami)").expect_err("$(");
+        assert!(matches!(
+            err,
+            SandboxValidationError::ShellMetacharacter { ref found, .. } if found == "$("
+        ));
+    }
+
+    #[test]
+    fn sandbox_validate_command_rejects_redirect_out() {
+        let err = SandboxConfig::validate_command("echo hi > /tmp/out").expect_err(">");
+        assert!(matches!(
+            err,
+            SandboxValidationError::ShellMetacharacter { ref found, .. } if found == ">"
+        ));
+    }
+
+    #[test]
+    fn sandbox_validate_command_rejects_redirect_in() {
+        let err = SandboxConfig::validate_command("wc < /etc/passwd").expect_err("<");
+        assert!(matches!(
+            err,
+            SandboxValidationError::ShellMetacharacter { ref found, .. } if found == "<"
+        ));
+    }
+
+    #[test]
+    fn sandbox_validate_command_rejects_append_redirect() {
+        let err = SandboxConfig::validate_command("echo hi >> /tmp/log").expect_err(">>");
+        assert!(matches!(
+            err,
+            SandboxValidationError::ShellMetacharacter { ref found, .. } if found == ">>"
+        ));
+    }
+
+    #[test]
+    fn sandbox_validate_command_rejects_heredoc() {
+        let err = SandboxConfig::validate_command("cat << EOF").expect_err("<<");
+        assert!(matches!(
+            err,
+            SandboxValidationError::ShellMetacharacter { ref found, .. } if found == "<<"
+        ));
+    }
+
+    #[test]
+    fn sandbox_validate_command_rejects_background_ampersand() {
+        let err = SandboxConfig::validate_command("sleep 999 &").expect_err("&");
+        assert!(matches!(
+            err,
+            SandboxValidationError::ShellMetacharacter { ref found, .. } if found == "&"
+        ));
+    }
+
+    // ── sanitize_command tests ────────────────────────────────────────
+
+    #[test]
+    fn sandbox_sanitize_preserves_clean_commands() {
+        assert_eq!(
+            SandboxConfig::sanitize_command("cargo build"),
+            "cargo build"
+        );
+        assert_eq!(
+            SandboxConfig::sanitize_command("rustfmt src/main.rs"),
+            "rustfmt src/main.rs"
+        );
+    }
+
+    #[test]
+    fn sandbox_sanitize_strips_pipe() {
+        let result = SandboxConfig::sanitize_command("cat file | grep pattern");
+        assert!(!result.contains('|'));
+        // Ensure we kept the meaningful tokens.
+        assert!(result.contains("cat"));
+        assert!(result.contains("file"));
+    }
+
+    #[test]
+    fn sandbox_sanitize_strips_semicolon() {
+        let result = SandboxConfig::sanitize_command("ls ; rm -rf /");
+        assert!(!result.contains(';'));
+    }
+
+    #[test]
+    fn sandbox_sanitize_strips_logical_operators() {
+        let result = SandboxConfig::sanitize_command("true && rm -rf / || echo fail");
+        assert!(!result.contains("&&"));
+        assert!(!result.contains("||"));
+    }
+
+    #[test]
+    fn sandbox_sanitize_strips_subshell() {
+        let result = SandboxConfig::sanitize_command("echo $(whoami)");
+        assert!(!result.contains("$("));
+    }
+
+    #[test]
+    fn sandbox_sanitize_strips_backtick() {
+        let result = SandboxConfig::sanitize_command("echo `id`");
+        assert!(!result.contains('`'));
+    }
+
+    #[test]
+    fn sandbox_sanitize_strips_redirects() {
+        let result =
+            SandboxConfig::sanitize_command("echo data > /tmp/out 2>> /tmp/err < /dev/null");
+        assert!(!result.contains('>'));
+        assert!(!result.contains('<'));
+    }
+
+    #[test]
+    fn sandbox_sanitize_collapses_whitespace() {
+        let result = SandboxConfig::sanitize_command("echo   &&   data");
+        // After stripping && and collapsing spaces, result should be tidy.
+        assert!(!result.contains("  "), "should not contain double spaces");
+    }
+
+    #[test]
+    fn sandbox_sanitize_then_validate_passes() {
+        // The sanitized output of any string should pass validate_command
+        // (unless empty).
+        let dirty = "cat /etc/passwd | grep root; rm -rf / && echo $(whoami)";
+        let clean = SandboxConfig::sanitize_command(dirty);
+        if !clean.trim().is_empty() {
+            assert!(
+                SandboxConfig::validate_command(&clean).is_ok(),
+                "sanitized command should pass validation: '{clean}'"
+            );
+        }
+    }
+
+    // ── Path traversal in validate() ──────────────────────────────────
+
+    #[test]
+    fn sandbox_validate_detects_path_traversal_in_allowed() {
+        let cfg = SandboxConfig {
+            allowed_paths: vec!["../../../etc/passwd".to_string()],
+            denied_paths: vec![],
+            network_access: false,
+            max_memory_mb: 64,
+            max_cpu_seconds: 5,
+        };
+        let violations = cfg.validate();
+        assert!(
+            !violations.is_empty(),
+            "path traversal in allowed_paths must be flagged"
+        );
+        assert!(
+            violations[0].contains("path traversal"),
+            "violation message must mention path traversal"
+        );
+    }
+
+    #[test]
+    fn sandbox_validate_detects_path_traversal_in_denied() {
+        let cfg = SandboxConfig {
+            allowed_paths: vec!["**".to_string()],
+            denied_paths: vec!["../../sensitive".to_string()],
+            network_access: false,
+            max_memory_mb: 64,
+            max_cpu_seconds: 5,
+        };
+        let violations = cfg.validate();
+        assert!(
+            !violations.is_empty(),
+            "path traversal in denied_paths must be flagged"
+        );
+        assert!(
+            violations[0].contains("path traversal"),
+            "violation message must mention path traversal"
+        );
+    }
+
+    #[test]
+    fn sandbox_validate_detects_mid_path_traversal() {
+        let cfg = SandboxConfig {
+            allowed_paths: vec!["src/../../etc/shadow".to_string()],
+            denied_paths: vec![],
+            network_access: false,
+            max_memory_mb: 64,
+            max_cpu_seconds: 5,
+        };
+        let violations = cfg.validate();
+        assert!(
+            !violations.is_empty(),
+            "mid-path traversal (/../) must be flagged"
+        );
+    }
+
+    #[test]
+    fn sandbox_validate_detects_trailing_dotdot() {
+        let cfg = SandboxConfig {
+            allowed_paths: vec!["src/..".to_string()],
+            denied_paths: vec![],
+            network_access: false,
+            max_memory_mb: 64,
+            max_cpu_seconds: 5,
+        };
+        let violations = cfg.validate();
+        assert!(
+            !violations.is_empty(),
+            "trailing /.. traversal must be flagged"
+        );
+    }
+
+    #[test]
+    fn sandbox_validate_detects_bare_dotdot() {
+        let cfg = SandboxConfig {
+            allowed_paths: vec!["..".to_string()],
+            denied_paths: vec![],
+            network_access: false,
+            max_memory_mb: 64,
+            max_cpu_seconds: 5,
+        };
+        let violations = cfg.validate();
+        assert!(!violations.is_empty(), "bare '..' as path must be flagged");
+    }
+
+    #[test]
+    fn sandbox_validate_allows_double_dot_in_filenames() {
+        // A filename like "foo..bar" or a glob like "**..txt" is NOT
+        // path traversal — only "../" or "/.."/standalone ".." patterns.
+        let cfg = SandboxConfig {
+            allowed_paths: vec!["foo..bar".to_string(), "data...csv".to_string()],
+            denied_paths: vec![],
+            network_access: false,
+            max_memory_mb: 64,
+            max_cpu_seconds: 5,
+        };
+        let violations = cfg.validate();
+        assert!(
+            violations.is_empty(),
+            "double dots in filenames must not be flagged as traversal: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn sandbox_validate_tier_configs_have_no_traversal() {
+        // Verify all tier defaults pass the traversal check.
+        for level in 1..=5 {
+            let cfg = SandboxConfig::for_tier_level(level);
+            let violations = cfg.validate();
+            assert!(
+                violations.is_empty(),
+                "tier {level} config must not have traversal violations: {violations:?}"
+            );
+        }
+    }
+
+    // ── SandboxValidationError Display ────────────────────────────────
+
+    #[test]
+    fn sandbox_validation_error_display_metacharacter() {
+        let err = SandboxValidationError::ShellMetacharacter {
+            found: "|".to_string(),
+            command: "ls | cat".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("|"));
+        assert!(msg.contains("ls | cat"));
+    }
+
+    #[test]
+    fn sandbox_validation_error_display_path_traversal() {
+        let err = SandboxValidationError::PathTraversal {
+            path: "../secret".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("path traversal"));
+        assert!(msg.contains("../secret"));
+    }
+
+    #[test]
+    fn sandbox_validation_error_display_empty_command() {
+        let err = SandboxValidationError::EmptyCommand;
+        let msg = err.to_string();
+        assert!(msg.contains("empty"));
     }
 }

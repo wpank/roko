@@ -328,9 +328,10 @@ pub use traits::{
 pub use trigger::{
     Author, BusTrigger, ChainEventTrigger, ConcurrencyPolicy, CronTrigger, Expr, FileWatchEvent,
     FileWatchTrigger, GraphRef, InputFieldMapping, RateLimit, RateLimitAction, SecretRef,
-    SignalPatternTrigger, SignalRef, SpaceId, TraceId as TriggerTraceId, TriggerAuth,
-    TriggerBinding, TriggerEvent, TriggerFilter, TriggerHandle, TriggerId, TriggerInputMapping,
-    TriggerKind, TriggerProtocol, TriggerSource, TriggerState, WebhookTrigger,
+    SignalPatternTrigger, SignalRef, SpaceId, TRIGGER_AUTH_FAILED, TRIGGER_CREATED,
+    TRIGGER_DELETED, TRIGGER_FIRED, TRIGGER_RATE_LIMITED, TraceId as TriggerTraceId, TriggerAuth,
+    TriggerBinding, TriggerEvent, TriggerFilter, TriggerGraduationPolicy, TriggerHandle, TriggerId,
+    TriggerInputMapping, TriggerKind, TriggerProtocol, TriggerSource, TriggerState, WebhookTrigger,
 };
 // Note: The `Score` protocol trait (formerly `Scorer`) is NOT re-exported at
 // the crate root to avoid colliding with the `Score` value struct. Access it

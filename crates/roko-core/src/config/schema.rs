@@ -1773,6 +1773,7 @@ impl Default for ColdStorageConfig {
 /// worktree_cleanup_on_complete = true
 /// worktree_cleanup_on_failure = true
 /// worktree_max_age_secs = 86400
+/// auto_cleanup_on_complete = true
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResourcesConfig {
@@ -1799,6 +1800,18 @@ pub struct ResourcesConfig {
     /// Default: `None` (unlimited).
     #[serde(default)]
     pub per_plan_disk_budget_mb: Option<u64>,
+
+    /// Maximum combined size of `.roko/` and `target/` directories in MB
+    /// before the runner pauses a plan.
+    ///
+    /// Before dispatching each task the runner measures the aggregate size
+    /// of these directories and compares it to this limit.  When exceeded,
+    /// the plan is paused with a clear error so the operator can free space
+    /// or raise the limit.
+    ///
+    /// `0` means unlimited (no enforcement).  Default: `0`.
+    #[serde(default)]
+    pub max_plan_disk_mb: u64,
 
     /// Run the filesystem GC engine before starting a plan.
     ///
@@ -1861,6 +1874,17 @@ pub struct ResourcesConfig {
     /// Default: 86400 (24 hours).
     #[serde(default = "ResourcesConfig::default_worktree_max_age_secs")]
     pub worktree_max_age_secs: u64,
+
+    /// Run consolidated post-plan cleanup after completion or failure.
+    ///
+    /// When true, the runner runs a single `post_plan_cleanup` pass after
+    /// the plan finishes that combines: JSONL log rotation, `.roko/` GC,
+    /// stale `target/` directory removal, and orphan worktree cleanup.
+    /// Individual sub-steps respect their own config flags (e.g.
+    /// `target_cleanup_enabled`, `gc_on_plan_end`).
+    /// Default: `true`.
+    #[serde(default = "ResourcesConfig::default_auto_cleanup_on_complete")]
+    pub auto_cleanup_on_complete: bool,
 }
 
 impl ResourcesConfig {
@@ -1907,6 +1931,10 @@ impl ResourcesConfig {
     const fn default_worktree_max_age_secs() -> u64 {
         86400 // 24 hours
     }
+
+    const fn default_auto_cleanup_on_complete() -> bool {
+        true
+    }
 }
 
 impl Default for ResourcesConfig {
@@ -1915,6 +1943,7 @@ impl Default for ResourcesConfig {
             min_free_disk_mb: Self::default_min_free_disk_mb(),
             warn_disk_mb: Self::default_warn_disk_mb(),
             per_plan_disk_budget_mb: None,
+            max_plan_disk_mb: 0,
             gc_on_plan_start: Self::default_gc_on_plan_start(),
             gc_on_plan_end: Self::default_gc_on_plan_end(),
             gc_on_failure: Self::default_gc_on_failure(),
@@ -1924,6 +1953,7 @@ impl Default for ResourcesConfig {
             worktree_cleanup_on_complete: Self::default_worktree_cleanup_on_complete(),
             worktree_cleanup_on_failure: Self::default_worktree_cleanup_on_failure(),
             worktree_max_age_secs: Self::default_worktree_max_age_secs(),
+            auto_cleanup_on_complete: Self::default_auto_cleanup_on_complete(),
         }
     }
 }

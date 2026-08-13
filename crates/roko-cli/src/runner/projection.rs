@@ -291,7 +291,8 @@ impl Projection {
             | RunnerEvent::GateCompleted { run_id, .. }
             | RunnerEvent::PromptAssembled { run_id, .. }
             | RunnerEvent::MergeBackendCompleted { run_id, .. }
-            | RunnerEvent::RetryDecision { run_id, .. } => run_id.clone(),
+            | RunnerEvent::RetryDecision { run_id, .. }
+            | RunnerEvent::BudgetExceeded { run_id, .. } => run_id.clone(),
         };
         let attempt = match &event {
             RunnerEvent::TaskAttemptStarted { attempt, .. }

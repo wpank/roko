@@ -74,6 +74,24 @@ fn default_share_ttl_days() -> u64 {
     7
 }
 
+/// Enforcement behaviour for scope-based permission checks.
+///
+/// Controls whether the auth middleware blocks requests that fail scope checks
+/// or merely logs the violation and allows the request through.
+///
+/// Configurable via `serve.auth.enforcement_mode` in `roko.toml`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnforcementMode {
+    /// Block requests that fail scope checks (return 403). This is the default.
+    #[default]
+    Enforce,
+    /// Log the violation but allow the request through (audit-only mode).
+    Audit,
+    /// Skip scope checks entirely — no logging, no blocking.
+    Disabled,
+}
+
 /// Authentication settings for the HTTP API.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServeAuthConfig {
@@ -103,6 +121,13 @@ pub struct ServeAuthConfig {
     /// role filtering.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub privy_allowed_roles: Vec<String>,
+    /// Enforcement mode for scope-based permission checks.
+    ///
+    /// - `enforce` (default): block requests that fail scope checks (403).
+    /// - `audit`: log the violation but allow the request through.
+    /// - `disabled`: skip scope checks entirely.
+    #[serde(default)]
+    pub enforcement_mode: EnforcementMode,
 }
 
 impl Default for ServeAuthConfig {
@@ -117,6 +142,7 @@ impl Default for ServeAuthConfig {
             privy_app_id: None,
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            enforcement_mode: EnforcementMode::default(),
         }
     }
 }
@@ -581,6 +607,21 @@ pub struct GitHubConfig {
     /// Label prefix applied to roko-managed GitHub labels and issues.
     #[serde(default = "default_github_label_prefix")]
     pub label_prefix: String,
+    /// When true, the runner posts a comment and updates labels on the
+    /// associated PR whenever a gate passes or fails.  Requires `owner`
+    /// and `repo` to be set and `GITHUB_TOKEN` to be available.
+    #[serde(default)]
+    pub auto_update_prs: bool,
+    /// Interval (in hours) between automatic state/progress syncs to GitHub.
+    /// Syncs push the current branch and update the PR description with
+    /// progress. Set to 0 to disable scheduled syncs. Default: 4 hours.
+    #[serde(default = "default_github_sync_interval_hours")]
+    pub sync_interval_hours: u32,
+    /// When true, the runner deletes roko-managed branches (both local and
+    /// remote) after their associated PR has been merged.  Runs as a
+    /// post-plan-completion step.
+    #[serde(default)]
+    pub cleanup_merged_branches: bool,
 }
 
 fn default_github_default_branch() -> String {
@@ -589,6 +630,10 @@ fn default_github_default_branch() -> String {
 
 fn default_github_label_prefix() -> String {
     "roko/".to_owned()
+}
+
+const fn default_github_sync_interval_hours() -> u32 {
+    4
 }
 
 impl Default for GitHubConfig {
@@ -600,6 +645,9 @@ impl Default for GitHubConfig {
             auto_pr: false,
             merge_method: MergeMethod::default(),
             label_prefix: default_github_label_prefix(),
+            auto_update_prs: false,
+            sync_interval_hours: default_github_sync_interval_hours(),
+            cleanup_merged_branches: false,
         }
     }
 }

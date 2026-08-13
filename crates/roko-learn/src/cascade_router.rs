@@ -3709,3 +3709,347 @@ mod fallback_tests {
         assert_eq!(fb_successes, 1, "only first fallback succeeded");
     }
 }
+
+// ─── Cost control integration tests (E48-T12) ──────────────────────────────
+
+#[cfg(test)]
+mod cost_control_integration_tests {
+    use super::*;
+    use crate::provider_health::{ErrorClass, ProviderHealthRegistry};
+
+    /// Helper: build a three-model cascade router spanning two providers.
+    fn three_model_router() -> CascadeRouter {
+        CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "claude-haiku-4-5".into(),
+            "gemini-2.5-flash".into(),
+        ])
+    }
+
+    fn two_provider_map() -> HashMap<String, String> {
+        let mut m = HashMap::new();
+        m.insert("claude-sonnet-4-6".into(), "anthropic".into());
+        m.insert("claude-haiku-4-5".into(), "anthropic".into());
+        m.insert("gemini-2.5-flash".into(), "google".into());
+        m
+    }
+
+    // ── 1. FallbackChain + ProviderHealthRegistry end-to-end ────────────
+
+    /// Simulate rate limit on anthropic, build a FallbackChain, advance to a
+    /// healthy alternative, record the outcome, and verify the router learned
+    /// from the event while the health registry reflects provider state.
+    #[test]
+    fn fallback_chain_plus_health_registry_end_to_end() {
+        let router = three_model_router();
+        let health = ProviderHealthRegistry::new();
+        let model_providers = two_provider_map();
+        let ctx = RoutingContext::default();
+
+        // Step 1: anthropic hits rate limit — mark unhealthy.
+        health.record_failure("anthropic", ErrorClass::RateLimit);
+        health.record_failure("anthropic", ErrorClass::RateLimit);
+        health.record_failure("anthropic", ErrorClass::RateLimit);
+        assert!(
+            !health.is_healthy("anthropic"),
+            "anthropic must be Open after 3 failures"
+        );
+
+        // Step 2: route with health — should pick gemini (the only healthy model).
+        let route = router.route_with_health_scored(&ctx, &health, &model_providers, None, None);
+        assert_eq!(
+            route.primary.slug, "gemini-2.5-flash",
+            "must route to the healthy provider"
+        );
+
+        // Step 3: build a FallbackChain from the original route (as if sonnet
+        // was the primary but got rate-limited at dispatch time).
+        let original_route = router.route(&ctx);
+        let mut chain = FallbackChain::new(&original_route, &original_route.primary.slug, None);
+
+        // Step 4: advance the chain — get the next fallback.
+        let (fallback_model, fallback_event) = chain
+            .advance()
+            .expect("chain must have at least one fallback");
+        assert_ne!(
+            fallback_model.slug, original_route.primary.slug,
+            "fallback must differ from the rate-limited primary"
+        );
+
+        // Step 5: record the fallback outcome in the cascade router.
+        let (rl_ok, fb_ok) = router.record_fallback_outcome(&fallback_event, true);
+        assert!(rl_ok, "rate-limited model must be known");
+        assert!(fb_ok, "fallback model must be known");
+
+        // Step 6: verify the cascade learned — primary has a failure, fallback
+        // has a success.
+        let snap = router.confidence_snapshot();
+        let (rl_trials, rl_successes) = snap[&fallback_event.rate_limited_slug];
+        assert_eq!(rl_trials, 1);
+        assert_eq!(
+            rl_successes, 0,
+            "rate-limited primary must be recorded as failure"
+        );
+
+        let (fb_trials, fb_successes) = snap[&fallback_event.fallback_slug];
+        assert_eq!(fb_trials, 1);
+        assert_eq!(fb_successes, 1, "successful fallback must be recorded");
+
+        // Step 7: recover anthropic and confirm routing includes it again.
+        health.record_success("anthropic");
+        assert!(health.is_healthy("anthropic"), "anthropic must recover");
+
+        let recovered_available =
+            router.filter_unhealthy(&["claude-sonnet-4-6".into()], &health, &model_providers);
+        assert!(
+            recovered_available.contains(&"claude-sonnet-4-6".to_string()),
+            "sonnet must be available again after anthropic recovery"
+        );
+    }
+
+    // ── 2. Budget tracking with model cost accumulation ─────────────────
+
+    /// BudgetGuardrail tracks cost across multiple record_cost calls and
+    /// transitions through all action levels.
+    #[test]
+    fn budget_tracking_with_model_cost_accumulation() {
+        use crate::budget::{BudgetAction, BudgetGuardrail};
+
+        let mut budget = BudgetGuardrail::new(
+            10.0,  // per-task
+            50.0,  // per-session
+            100.0, // per-day
+            0.70,  // warn at 70%
+        );
+
+        // Accumulate cost in small increments at the task level.
+        assert_eq!(budget.record_cost(3.0, "task"), BudgetAction::Ok);
+        assert_eq!(budget.record_cost(2.0, "task"), BudgetAction::Ok);
+        // At $5.0 / $10.0 = 50% — still below warn threshold.
+
+        // Push past 70% warning.
+        match budget.record_cost(2.5, "task") {
+            BudgetAction::Warn { percent_used, .. } => {
+                assert!(
+                    (percent_used - 0.75).abs() < 1e-9,
+                    "percent must be 75% (got {percent_used})"
+                );
+            }
+            other => panic!("expected Warn at 75%, got {other:?}"),
+        }
+
+        // Push past 80% → RouteToCheaper.
+        assert_eq!(
+            budget.record_cost(1.0, "task"),
+            BudgetAction::RouteToCheaper,
+            "85% usage must trigger RouteToCheaper"
+        );
+
+        // Push past 95% → BlockNewSessions.
+        assert_eq!(
+            budget.record_cost(1.0, "task"),
+            BudgetAction::BlockNewSessions,
+            "95% usage must trigger BlockNewSessions"
+        );
+
+        // Push to 100% → Block.
+        assert_eq!(
+            budget.record_cost(0.5, "task"),
+            BudgetAction::Block,
+            "100%+ usage must trigger Block"
+        );
+    }
+
+    // ── 3. Rate-limit detection → fallback → recording flow ─────────────
+
+    /// Full flow: detect rate limit, advance FallbackChain, record outcome,
+    /// verify confidence stats reflect the outcome for both models.
+    #[test]
+    fn rate_limit_fallback_recording_flow() {
+        let router = CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "gemini-2.5-flash".into(),
+            "gemini-2.5-pro".into(),
+        ]);
+
+        // Build a route, then simulate rate limit on primary.
+        let route = router.route(&RoutingContext::default());
+        let primary_slug = route.primary.slug.clone();
+
+        let mut chain = FallbackChain::new(&route, &primary_slug, None);
+
+        // Advance through two fallbacks: first succeeds, second fails.
+        let mut outcomes = vec![];
+        while let Some((model, event)) = chain.advance() {
+            let success = outcomes.is_empty(); // first = success, second = failure
+            router.record_fallback_outcome(&event, success);
+            outcomes.push((model.slug.clone(), success));
+        }
+
+        assert!(
+            !outcomes.is_empty(),
+            "must have advanced at least one fallback"
+        );
+
+        // Verify the rate-limited primary accumulated as many failures as
+        // fallback hops.
+        let snap = router.confidence_snapshot();
+        if let Some(&(trials, successes)) = snap.get(&primary_slug) {
+            assert_eq!(
+                trials,
+                outcomes.len() as u64,
+                "rate-limited primary must record one failure per fallback hop"
+            );
+            assert_eq!(successes, 0, "all primary entries must be failures");
+        }
+
+        // Verify the first fallback was recorded as success.
+        let first_fb = &outcomes[0].0;
+        if let Some(&(trials, successes)) = snap.get(first_fb) {
+            assert!(trials >= 1);
+            assert!(successes >= 1, "first fallback must be recorded as success");
+        }
+    }
+
+    // ── 4. Cascade router respects provider health state ────────────────
+
+    /// When a provider is unhealthy the cascade router must exclude its models
+    /// from selection. When the provider recovers, its models must be candidates
+    /// again.
+    #[test]
+    fn cascade_router_respects_provider_health_state() {
+        let router = three_model_router();
+        let health = ProviderHealthRegistry::new();
+        let model_providers = two_provider_map();
+        let ctx = RoutingContext::default();
+
+        // Baseline: all healthy → route may pick any model.
+        let baseline = router.route_with_health_scored(&ctx, &health, &model_providers, None, None);
+        assert!(
+            !baseline.primary.slug.is_empty(),
+            "baseline route must return a valid slug"
+        );
+
+        // Trip google → Open.
+        for _ in 0..3 {
+            health.record_failure("google", ErrorClass::ServerError);
+        }
+        assert!(!health.is_healthy("google"));
+
+        // Route must now exclude gemini (the only google model).
+        let route_no_google =
+            router.route_with_health_scored(&ctx, &health, &model_providers, None, None);
+        assert_ne!(
+            route_no_google.primary.slug, "gemini-2.5-flash",
+            "gemini must be excluded when google is Open"
+        );
+
+        // Recover google.
+        health.record_success("google");
+        assert!(health.is_healthy("google"));
+
+        // Route should consider gemini again — filter_unhealthy confirms.
+        let all_slugs: Vec<String> = vec![
+            "claude-sonnet-4-6".into(),
+            "claude-haiku-4-5".into(),
+            "gemini-2.5-flash".into(),
+        ];
+        let filtered = router.filter_unhealthy(&all_slugs, &health, &model_providers);
+        assert!(
+            filtered.contains(&"gemini-2.5-flash".to_string()),
+            "gemini must be available after google recovery"
+        );
+    }
+
+    // ── 5. Cost pressure penalizes premium models under spike ───────────
+
+    /// apply_cost_pressure must zero-out premium models when spike=true,
+    /// boost fast models, and leave scores unchanged when spike=false.
+    #[test]
+    fn cost_pressure_penalizes_premium_under_spike() {
+        let router = CascadeRouter::new(vec![
+            "claude-opus-4-6".into(),   // Premium
+            "claude-sonnet-4-6".into(), // Standard
+            "claude-haiku-4-5".into(),  // Fast
+        ]);
+
+        let mut candidates = vec![
+            ("claude-opus-4-6".to_string(), 1.0),
+            ("claude-sonnet-4-6".to_string(), 1.0),
+            ("claude-haiku-4-5".to_string(), 1.0),
+        ];
+
+        // No spike → scores unchanged.
+        router.apply_cost_pressure(&mut candidates, false);
+        assert!(
+            (candidates[0].1 - 1.0).abs() < f64::EPSILON,
+            "no spike: premium score must be unchanged"
+        );
+
+        // Spike → premium zeroed, standard reduced, fast boosted.
+        router.apply_cost_pressure(&mut candidates, true);
+
+        let opus_score = candidates[0].1;
+        let sonnet_score = candidates[1].1;
+        let haiku_score = candidates[2].1;
+
+        assert!(
+            opus_score < 0.01,
+            "premium model must be zeroed under cost spike (got {opus_score})"
+        );
+        assert!(
+            sonnet_score < 1.0,
+            "standard model must be reduced under cost spike (got {sonnet_score})"
+        );
+        assert!(
+            haiku_score >= 1.0,
+            "fast model must be boosted under cost spike (got {haiku_score})"
+        );
+    }
+
+    // ── 6. Budget guardrail resets are independent per scope ─────────────
+
+    /// Resetting task spend must not affect session spend and vice versa.
+    #[test]
+    fn budget_guardrail_resets_are_independent_per_scope() {
+        use crate::budget::{BudgetAction, BudgetGuardrail};
+
+        let mut budget = BudgetGuardrail::new(10.0, 20.0, 100.0, 0.70);
+
+        // Accumulate $8 at task level and $15 at session level.
+        budget.record_cost(8.0, "task");
+        budget.record_cost(15.0, "session");
+
+        // Reset task.
+        budget.reset_task();
+
+        // Task must be clean (new $5 at task level → 50% → Ok).
+        assert_eq!(
+            budget.record_cost(5.0, "task"),
+            BudgetAction::Ok,
+            "task budget must be reset to 0"
+        );
+
+        // Session must still be at $15 + $5 = $20 → 100% → Block.
+        assert_eq!(
+            budget.record_cost(5.0, "session"),
+            BudgetAction::Block,
+            "session spend must not be affected by task reset"
+        );
+    }
+
+    // ── 7. Budget zero limit means unlimited ────────────────────────────
+
+    /// A per_task_limit_usd of 0.0 must never trigger any budget action.
+    #[test]
+    fn budget_zero_limit_means_unlimited() {
+        use crate::budget::{BudgetAction, BudgetGuardrail};
+
+        let mut budget = BudgetGuardrail::new(0.0, 0.0, 0.0, 0.80);
+
+        // Record absurdly large cost — must always be Ok.
+        assert_eq!(budget.record_cost(1_000_000.0, "task"), BudgetAction::Ok);
+        assert_eq!(budget.record_cost(1_000_000.0, "session"), BudgetAction::Ok);
+        assert_eq!(budget.record_cost(1_000_000.0, "day"), BudgetAction::Ok);
+    }
+}

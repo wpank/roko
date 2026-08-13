@@ -41,5 +41,7 @@ pub mod sandbox_config;
 pub use builtin::{ROKO_BUILTIN_TOOLS, TOOL_COUNT};
 pub use handlers::{HandlerRegistry, handler_for};
 pub use mock_dispatcher::MockToolDispatcher;
-pub use registry::{DynamicToolRegistry, StaticToolRegistry};
-pub use sandbox_config::SandboxConfig;
+pub use registry::{
+    DynamicToolRegistry, StaticToolRegistry, ToolValidationIssue, validate_tool_catalog,
+};
+pub use sandbox_config::{SandboxConfig, SandboxValidationError};

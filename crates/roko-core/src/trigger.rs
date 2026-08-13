@@ -21,14 +21,64 @@
 //! ```
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+use std::{fs, io};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Result;
+
+// ── Trigger event topic constants ─────────────────────────────────────────────
+// Bus/signal kind strings published when trigger lifecycle events occur.
+
+/// Topic published when a trigger fires (condition met, Flow being spawned).
+pub const TRIGGER_FIRED: &str = "trigger:fired";
+
+/// Topic published when a new trigger binding is created.
+pub const TRIGGER_CREATED: &str = "trigger:created";
+
+/// Topic published when a trigger binding is deleted.
+pub const TRIGGER_DELETED: &str = "trigger:deleted";
+
+/// Topic published when a trigger firing is rejected by rate limiting.
+pub const TRIGGER_RATE_LIMITED: &str = "trigger:rate_limited";
+
+/// Topic published when trigger authentication fails (e.g. bad HMAC, expired token).
+pub const TRIGGER_AUTH_FAILED: &str = "trigger:auth_failed";
+
+// ── TriggerGraduationPolicy ──────────────────────────────────────────────────
+
+/// Controls when a trigger binding is auto-promoted to a higher trust tier.
+///
+/// Distinct from [`GraduationPolicy`](crate::config::graduation::GraduationPolicy),
+/// which governs Pulse-to-Signal promotion. `TriggerGraduationPolicy` governs
+/// the promotion of trigger *bindings* themselves (e.g. from draft/sandbox
+/// to production).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "policy", rename_all = "snake_case")]
+pub enum TriggerGraduationPolicy {
+    /// Only explicit manual promotion (no auto-graduation).
+    ManualOnly,
+    /// Auto-promote after `count` consecutive successful firings.
+    AfterSuccesses {
+        /// Number of consecutive successful firings required.
+        count: u32,
+    },
+    /// Auto-promote after the binding has existed for at least `min_age_hours`.
+    TimeBased {
+        /// Minimum age in hours before auto-promotion is allowed.
+        min_age_hours: u64,
+    },
+}
+
+impl Default for TriggerGraduationPolicy {
+    fn default() -> Self {
+        Self::ManualOnly
+    }
+}
 
 // ── Placeholder type aliases ──────────────────────────────────────────────────
 // These will be replaced with concrete types as CellRef/GraphRef/SpaceId/etc. land.
@@ -300,6 +350,9 @@ pub struct TriggerBinding {
     pub space: Option<SpaceId>,
     /// Authentication configuration for the trigger source.
     pub auth: Option<TriggerAuth>,
+    /// When (if ever) this binding should be auto-promoted to a higher trust tier.
+    #[serde(default)]
+    pub graduation_policy: TriggerGraduationPolicy,
 }
 
 impl TriggerBinding {
@@ -316,7 +369,89 @@ impl TriggerBinding {
             enabled: true,
             space: None,
             auth: None,
+            graduation_policy: TriggerGraduationPolicy::default(),
         }
+    }
+
+    // ── TOML persistence ─────────────────────────────────────────────────
+
+    /// Serialize this binding to TOML and write it to `path`.
+    ///
+    /// Creates parent directories if they do not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if serialization or writing fails.
+    pub fn save_to_file(&self, path: &Path) -> io::Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let toml_str = toml::to_string_pretty(self).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("TOML serialize: {e}"))
+        })?;
+        fs::write(path, toml_str)
+    }
+
+    /// Deserialize a `TriggerBinding` from a TOML file at `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the file cannot be read or contains invalid TOML.
+    pub fn load_from_file(path: &Path) -> io::Result<Self> {
+        let text = fs::read_to_string(path)?;
+        toml::from_str(&text).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("TOML parse {}: {e}", path.display()),
+            )
+        })
+    }
+
+    /// Save every binding in `bindings` to `dir`, one file per binding.
+    ///
+    /// Each file is named `{binding.name}.toml`. The directory is created
+    /// if it does not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the directory cannot be created or any
+    /// binding fails to serialize/write.
+    pub fn save_all(dir: &Path, bindings: &[TriggerBinding]) -> io::Result<()> {
+        fs::create_dir_all(dir)?;
+        for binding in bindings {
+            let file = dir.join(format!("{}.toml", binding.name));
+            binding.save_to_file(&file)?;
+        }
+        Ok(())
+    }
+
+    /// Load all `*.toml` files in `dir` as `TriggerBinding`s.
+    ///
+    /// Non-`.toml` files are silently skipped. If `dir` does not exist,
+    /// returns an empty `Vec` rather than an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the directory cannot be read, or any
+    /// `.toml` file contains invalid TOML.
+    pub fn load_all(dir: &Path) -> io::Result<Vec<TriggerBinding>> {
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+
+        let mut bindings = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+                bindings.push(Self::load_from_file(&path)?);
+            }
+        }
+        // Sort by name for deterministic ordering.
+        bindings.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(bindings)
     }
 }
 
@@ -643,6 +778,159 @@ mod tests {
         assert_eq!(b.enabled, b2.enabled);
     }
 
+    // ── TOML persistence tests ────────────────────────────────────────────
+
+    #[test]
+    fn save_load_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("my-trigger.toml");
+        let binding = TriggerBinding::new(
+            "my-trigger",
+            TriggerKind::Cron(CronTrigger {
+                expression: "0 */6 * * *".to_string(),
+                timezone: Some("America/New_York".to_string()),
+            }),
+            "plans/cron-job.toml",
+        );
+        binding.save_to_file(&path).expect("save");
+        let loaded = TriggerBinding::load_from_file(&path).expect("load");
+        assert_eq!(loaded.name, "my-trigger");
+        assert_eq!(loaded.graph, "plans/cron-job.toml");
+        assert!(loaded.enabled);
+    }
+
+    #[test]
+    fn save_creates_parent_dirs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nested = dir
+            .path()
+            .join("a")
+            .join("b")
+            .join("c")
+            .join("trigger.toml");
+        let binding = TriggerBinding::new("nested", TriggerKind::Manual, "g");
+        binding.save_to_file(&nested).expect("save nested");
+        assert!(nested.exists());
+    }
+
+    #[test]
+    fn save_all_load_all_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let triggers_dir = dir.path().join("triggers");
+
+        let bindings = vec![
+            TriggerBinding::new("alpha", TriggerKind::Manual, "g1"),
+            TriggerBinding::new(
+                "beta",
+                TriggerKind::Bus(BusTrigger {
+                    topic: "gate.*".to_string(),
+                }),
+                "g2",
+            ),
+        ];
+
+        TriggerBinding::save_all(&triggers_dir, &bindings).expect("save_all");
+        let loaded = TriggerBinding::load_all(&triggers_dir).expect("load_all");
+        assert_eq!(loaded.len(), 2);
+        // Sorted by name.
+        assert_eq!(loaded[0].name, "alpha");
+        assert_eq!(loaded[1].name, "beta");
+    }
+
+    #[test]
+    fn load_all_missing_dir_returns_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("nonexistent");
+        let result = TriggerBinding::load_all(&missing).expect("load_all missing");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn load_all_skips_non_toml_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let triggers_dir = dir.path().join("triggers");
+        std::fs::create_dir_all(&triggers_dir).expect("mkdir");
+
+        // Write a valid binding.
+        let binding = TriggerBinding::new("real", TriggerKind::Manual, "g");
+        binding
+            .save_to_file(&triggers_dir.join("real.toml"))
+            .expect("save");
+
+        // Write a non-TOML file that should be ignored.
+        std::fs::write(triggers_dir.join("readme.txt"), "not a trigger").expect("write txt");
+        std::fs::write(triggers_dir.join("data.json"), "{}").expect("write json");
+
+        let loaded = TriggerBinding::load_all(&triggers_dir).expect("load_all");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "real");
+    }
+
+    #[test]
+    fn load_from_file_invalid_toml() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("bad.toml");
+        std::fs::write(&path, "this is not valid TOML {{{{").expect("write");
+        let err = TriggerBinding::load_from_file(&path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn load_from_file_missing_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("does-not-exist.toml");
+        let err = TriggerBinding::load_from_file(&path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn round_trip_complex_binding() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("complex.toml");
+
+        let binding = TriggerBinding {
+            name: "webhook-deploy".to_string(),
+            kind: TriggerKind::Webhook(WebhookTrigger {
+                method: Some("POST".to_string()),
+                path: "/hook/deploy".to_string(),
+            }),
+            graph: "plans/deploy-pipeline.toml".to_string(),
+            input_mapping: Some(TriggerInputMapping {
+                mappings: vec![InputFieldMapping {
+                    from: "$.payload.ref".to_string(),
+                    to: "branch".to_string(),
+                    transform: None,
+                }],
+            }),
+            concurrency: ConcurrencyPolicy::CancelRunning,
+            filter: Some(TriggerFilter {
+                matches: None,
+                debounce_ms: Some(5000),
+                rate_limit: Some(RateLimit {
+                    max_fires: 10,
+                    window_ms: 60_000,
+                    on_limit: RateLimitAction::Drop,
+                }),
+            }),
+            enabled: true,
+            space: Some("production".to_string()),
+            auth: Some(TriggerAuth::HmacSha256 {
+                secret: SecretRef::Env {
+                    var: "WEBHOOK_SECRET".to_string(),
+                },
+                header: "X-Hub-Signature-256".to_string(),
+            }),
+            graduation_policy: TriggerGraduationPolicy::AfterSuccesses { count: 5 },
+        };
+
+        binding.save_to_file(&path).expect("save complex");
+        let loaded = TriggerBinding::load_from_file(&path).expect("load complex");
+        assert_eq!(loaded.name, "webhook-deploy");
+        assert_eq!(loaded.graph, "plans/deploy-pipeline.toml");
+        assert!(loaded.filter.is_some());
+        assert_eq!(loaded.space.as_deref(), Some("production"));
+    }
+
     #[test]
     fn secret_ref_variants_serialize() {
         let env_ref = SecretRef::Env {
@@ -698,5 +986,109 @@ mod tests {
             let json = serde_json::to_string(&src).expect("serialize TriggerSource");
             let _: TriggerSource = serde_json::from_str(&json).expect("deserialize TriggerSource");
         }
+    }
+
+    // ── Trigger event topic constant tests ───────────────────────────────
+
+    #[test]
+    fn trigger_topic_constants_have_correct_values() {
+        assert_eq!(TRIGGER_FIRED, "trigger:fired");
+        assert_eq!(TRIGGER_CREATED, "trigger:created");
+        assert_eq!(TRIGGER_DELETED, "trigger:deleted");
+        assert_eq!(TRIGGER_RATE_LIMITED, "trigger:rate_limited");
+        assert_eq!(TRIGGER_AUTH_FAILED, "trigger:auth_failed");
+    }
+
+    #[test]
+    fn trigger_topic_constants_are_unique() {
+        let topics = [
+            TRIGGER_FIRED,
+            TRIGGER_CREATED,
+            TRIGGER_DELETED,
+            TRIGGER_RATE_LIMITED,
+            TRIGGER_AUTH_FAILED,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for topic in &topics {
+            assert!(seen.insert(*topic), "duplicate topic constant: {topic}");
+        }
+    }
+
+    // ── TriggerGraduationPolicy tests ────────────────────────────────────
+
+    #[test]
+    fn graduation_policy_default_is_manual_only() {
+        let policy = TriggerGraduationPolicy::default();
+        assert_eq!(policy, TriggerGraduationPolicy::ManualOnly);
+    }
+
+    #[test]
+    fn graduation_policy_all_variants_roundtrip_json() {
+        let policies = [
+            TriggerGraduationPolicy::ManualOnly,
+            TriggerGraduationPolicy::AfterSuccesses { count: 10 },
+            TriggerGraduationPolicy::TimeBased { min_age_hours: 48 },
+        ];
+        for policy in &policies {
+            let json = serde_json::to_string(policy).expect("serialize");
+            let decoded: TriggerGraduationPolicy =
+                serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(&decoded, policy);
+        }
+    }
+
+    #[test]
+    fn graduation_policy_serde_tags() {
+        // ManualOnly should serialize with policy tag "manual_only".
+        let json = serde_json::to_string(&TriggerGraduationPolicy::ManualOnly).unwrap();
+        assert!(json.contains("\"manual_only\""), "json: {json}");
+
+        // AfterSuccesses should include the count field.
+        let json =
+            serde_json::to_string(&TriggerGraduationPolicy::AfterSuccesses { count: 3 }).unwrap();
+        assert!(json.contains("\"after_successes\""), "json: {json}");
+        assert!(json.contains("\"count\":3"), "json: {json}");
+
+        // TimeBased should include min_age_hours.
+        let json = serde_json::to_string(&TriggerGraduationPolicy::TimeBased { min_age_hours: 24 })
+            .unwrap();
+        assert!(json.contains("\"time_based\""), "json: {json}");
+        assert!(json.contains("\"min_age_hours\":24"), "json: {json}");
+    }
+
+    #[test]
+    fn binding_new_has_default_graduation_policy() {
+        let b = TriggerBinding::new("test", TriggerKind::Manual, "g");
+        assert_eq!(b.graduation_policy, TriggerGraduationPolicy::ManualOnly);
+    }
+
+    #[test]
+    fn binding_graduation_policy_survives_json_roundtrip() {
+        let mut b = TriggerBinding::new("grad-test", TriggerKind::Manual, "g");
+        b.graduation_policy = TriggerGraduationPolicy::AfterSuccesses { count: 7 };
+        let json = serde_json::to_string(&b).expect("serialize");
+        let b2: TriggerBinding = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            b2.graduation_policy,
+            TriggerGraduationPolicy::AfterSuccesses { count: 7 }
+        );
+    }
+
+    #[test]
+    fn binding_without_graduation_policy_deserializes_to_default() {
+        // Simulate JSON from before the graduation_policy field existed.
+        let json = r#"{
+            "name": "legacy",
+            "kind": {"type": "manual"},
+            "graph": "g",
+            "input_mapping": null,
+            "concurrency": {"kind": "skip"},
+            "filter": null,
+            "enabled": true,
+            "space": null,
+            "auth": null
+        }"#;
+        let b: TriggerBinding = serde_json::from_str(json).expect("deserialize legacy");
+        assert_eq!(b.graduation_policy, TriggerGraduationPolicy::ManualOnly);
     }
 }

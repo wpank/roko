@@ -15,6 +15,7 @@ mod deployments;
 mod diagnosis;
 mod dream;
 mod event_ingest;
+mod extensions;
 pub(crate) mod feeds;
 mod gateway;
 mod heartbeats;
@@ -40,6 +41,7 @@ mod subscriptions;
 mod swe_bench;
 mod team;
 mod templates;
+mod triggers;
 mod vision_loop;
 mod webhooks;
 mod workflows;
@@ -58,6 +60,7 @@ use std::sync::Arc;
 use super::state::AppState;
 use crate::adapters::SseAdapter;
 use crate::error::ApiError;
+use crate::rbac::Permission;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::StatusCode;
@@ -239,22 +242,56 @@ pub fn build_router(
     let cors = middleware::cors_layer(cors_origins, roko_config.server.unsafe_public_cors);
     let terminal_enabled = roko_config.serve.terminal_enabled;
 
+    // ── RBAC-gated route groups ────────────────────────────────────────
+    //
+    // Sensitive routes are wrapped with `require_permission` middleware so
+    // the RBAC permission model (Owner > Admin > Member > Viewer) is
+    // enforced on top of the existing scope-based auth.
+
+    // Plan execution + creation (Member+)
+    let plans_gated = plans::routes().layer(axum::middleware::from_fn(
+        middleware::require_permission(Permission::PlanExecute),
+    ));
+    let prds_gated = prds::routes().layer(axum::middleware::from_fn(
+        middleware::require_permission(Permission::PlanCreate),
+    ));
+
+    // Agent management (Member+)
+    let agents_gated = agents::routes().layer(axum::middleware::from_fn(
+        middleware::require_permission(Permission::AgentSpawn),
+    ));
+
+    // Config changes (Admin+)
+    let config_gated = config::routes().layer(axum::middleware::from_fn(
+        middleware::require_permission(Permission::ConfigEdit),
+    ));
+
+    // Secrets (Admin+)
+    let secrets_gated = secrets::routes().layer(axum::middleware::from_fn(
+        middleware::require_permission(Permission::SecretsWrite),
+    ));
+
+    // Team management (Owner only)
+    let team_gated = team::routes().layer(axum::middleware::from_fn(
+        middleware::require_permission(Permission::TeamManage),
+    ));
+
     let api = Router::new()
         .merge(crate::openapi::routes())
         .merge(status::routes())
         .merge(jobs::routes())
         .merge(heartbeats::routes())
-        .merge(plans::routes())
-        .merge(prds::routes())
+        .merge(plans_gated)
+        .merge(prds_gated)
         .merge(run::routes())
         .merge(runs::routes())
         .merge(research::routes())
         .merge(subscriptions::routes())
         .merge(templates::routes())
         .merge(aggregator::routes())
-        .merge(agents::routes())
+        .merge(agents_gated)
         .merge(learning::routes())
-        .merge(config::routes())
+        .merge(config_gated)
         .merge(deployments::routes())
         .merge(diagnosis::routes())
         .merge(integrations::routes())
@@ -262,17 +299,19 @@ pub fn build_router(
         .merge(neuro::routes())
         .merge(dream::routes())
         .merge(event_ingest::routes())
+        .merge(extensions::routes())
         .merge(gateway::routes())
         .merge(chain::routes())
         .merge(connectors::routes())
         .merge(feeds::routes())
         .merge(isfr::routes())
         .merge(auth::routes())
-        .merge(secrets::routes())
+        .merge(secrets_gated)
         .merge(vision_loop::routes())
-        .merge(team::routes())
+        .merge(team_gated)
         .merge(bench::routes())
         .merge(swe_bench::routes())
+        .merge(triggers::routes())
         .merge(workflows::routes())
         .merge(workspaces::routes())
         .merge(shared_runs::auth_routes())
@@ -285,11 +324,14 @@ pub fn build_router(
         .route("/workflow/events", get(workflow_sse_handler));
 
     let api = if api_auth.enabled {
-        api.layer(axum::middleware::from_fn(middleware::require_scope))
-            .layer(axum::middleware::from_fn_with_state(
-                Arc::clone(&state),
-                middleware::require_api_key,
-            ))
+        api.layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            middleware::require_scope,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            middleware::require_api_key,
+        ))
     } else {
         api
     };
@@ -304,7 +346,10 @@ pub fn build_router(
     // Terminal routes always require auth + scope when enabled, even on loopback.
     let terminal = if terminal_enabled {
         crate::terminal::routes()
-            .layer(axum::middleware::from_fn(middleware::require_scope))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                middleware::require_scope,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 Arc::clone(&state),
                 middleware::require_api_key,
@@ -324,7 +369,10 @@ pub fn build_router(
 
     let relay = if api_auth.enabled {
         relay_proxy::routes()
-            .layer(axum::middleware::from_fn(middleware::require_scope))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                middleware::require_scope,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 Arc::clone(&state),
                 middleware::require_api_key,
@@ -536,6 +584,7 @@ mod tests {
             privy_app_id: None,
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            enforcement_mode: Default::default(),
         };
 
         let (_dir, app) = build_test_router(config);
@@ -591,6 +640,7 @@ mod tests {
             privy_app_id: None,
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            enforcement_mode: Default::default(),
         };
 
         let (_dir, app) = build_test_router(config);
@@ -712,6 +762,7 @@ mod tests {
             privy_app_id: None,
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            enforcement_mode: Default::default(),
         };
 
         let (_dir, app) = build_test_router(config);
@@ -752,6 +803,7 @@ mod tests {
             privy_app_id: None,
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            enforcement_mode: Default::default(),
         };
 
         let (_dir, app) = build_test_router(config);

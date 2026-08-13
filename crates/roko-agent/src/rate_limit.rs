@@ -14,8 +14,19 @@
 //! TPM blocking is advisory: it delays the caller and emits a warning instead
 //! of returning an error, because token budgets are frequently generous and a
 //! hard block would stall unrelated providers sharing the same runtime.
+//!
+//! ## Health-aware acquisition
+//!
+//! When a [`ProviderHealthChecker`] is attached via
+//! [`ProviderRateLimiter::with_health_registry`], the [`try_acquire`] method
+//! consults the shared circuit-breaker state before waiting for an RPM slot.
+//! Providers in `Open` circuit state are rejected immediately; providers in
+//! `HalfOpen` state are allowed through as probe requests.
+//!
+//! [`try_acquire`]: ProviderRateLimiter::try_acquire
 
 use std::collections::HashMap;
+use std::fmt;
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -29,6 +40,73 @@ use governor::{
 
 #[cfg(test)]
 use std::time::Instant;
+
+// ─── Health-aware circuit-breaker integration ──────────────────────────────
+
+/// Circuit-breaker state for a provider, mirroring the three-state machine
+/// in `roko_learn::provider_health::CircuitState`.
+///
+/// Defined here so `roko-agent` does not depend on `roko-learn` in production.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CircuitState {
+    /// Normal operation -- requests proceed.
+    Closed,
+    /// Provider is unhealthy -- requests should be rejected immediately.
+    Open,
+    /// Cooldown expired -- one probe request is allowed.
+    HalfOpen,
+}
+
+/// Dependency-safe trait for checking provider circuit-breaker state.
+///
+/// `roko_learn::provider_health::ProviderHealthRegistry` implements this trait
+/// so the rate limiter can consult the shared circuit breaker without creating
+/// a production `roko-agent` -> `roko-learn` dependency edge.
+pub trait ProviderHealthChecker: Send + Sync {
+    /// Return the current circuit state for `provider_id`.
+    ///
+    /// Unknown providers should return [`CircuitState::Closed`].
+    fn circuit_state(&self, provider_id: &str) -> CircuitState;
+
+    /// Record that a probe request (made during [`CircuitState::HalfOpen`])
+    /// succeeded, transitioning the provider back to [`CircuitState::Closed`].
+    fn record_probe_success(&self, provider_id: &str);
+
+    /// Record that a probe request failed, resetting the provider to
+    /// [`CircuitState::Open`] with a fresh cooldown.
+    fn record_probe_failure(&self, provider_id: &str);
+}
+
+/// Outcome of a successful [`ProviderRateLimiter::try_acquire`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcquireOutcome {
+    /// Provider is healthy; request may proceed normally.
+    Healthy,
+    /// Provider is in half-open (probing) state; caller should track the
+    /// outcome and report back via [`ProviderHealthChecker::record_probe_success`]
+    /// or [`ProviderHealthChecker::record_probe_failure`].
+    Probing,
+}
+
+/// Error returned by [`ProviderRateLimiter::try_acquire`] when the provider's
+/// circuit breaker is in [`CircuitState::Open`].
+#[derive(Debug, Clone)]
+pub struct RateLimitError {
+    /// The provider whose circuit is open.
+    pub provider_id: String,
+}
+
+impl fmt::Display for RateLimitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "provider '{}' circuit is open -- rate limited",
+            self.provider_id
+        )
+    }
+}
+
+impl std::error::Error for RateLimitError {}
 
 /// Per-provider request and token limits loaded from `ProviderConfig.limits`.
 #[derive(Clone, Debug)]
@@ -123,6 +201,13 @@ struct ProviderState {
 ///
 /// Each provider keyed by its config ID gets its own RPM governor slot.
 /// Providers without explicit config entries share the `default_rpm` slot.
+///
+/// When a [`ProviderHealthChecker`] is attached via [`with_health_registry`],
+/// [`try_acquire`] checks the provider's circuit-breaker state before waiting
+/// for an RPM slot. Providers in `Open` state are rejected immediately.
+///
+/// [`with_health_registry`]: ProviderRateLimiter::with_health_registry
+/// [`try_acquire`]: ProviderRateLimiter::try_acquire
 pub struct ProviderRateLimiter {
     /// Default RPM used when no per-provider config is available.
     default_rpm: NonZeroU32,
@@ -130,12 +215,20 @@ pub struct ProviderRateLimiter {
     providers: Mutex<HashMap<String, ProviderState>>,
     /// Shared fallback RPM limiter used for unknown providers.
     default_limiter: RateLimiter<String, DefaultKeyedStateStore<String>, DefaultClock>,
+    /// Optional shared circuit-breaker state consulted by [`try_acquire`].
+    ///
+    /// When set, providers whose circuit is [`CircuitState::Open`] are
+    /// rejected immediately without consuming an RPM slot.
+    ///
+    /// [`try_acquire`]: ProviderRateLimiter::try_acquire
+    shared_health: Option<Arc<dyn ProviderHealthChecker>>,
 }
 
 impl std::fmt::Debug for ProviderRateLimiter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProviderRateLimiter")
             .field("default_rpm", &self.default_rpm)
+            .field("has_health_checker", &self.shared_health.is_some())
             .finish()
     }
 }
@@ -153,6 +246,7 @@ impl ProviderRateLimiter {
             default_rpm,
             providers: Mutex::new(HashMap::new()),
             default_limiter: RateLimiter::keyed(Quota::per_minute(default_rpm)),
+            shared_health: None,
         }
     }
 
@@ -184,6 +278,7 @@ impl ProviderRateLimiter {
             default_rpm,
             providers: Mutex::new(providers),
             default_limiter: RateLimiter::keyed(Quota::per_minute(default_rpm)),
+            shared_health: None,
         }
     }
 
@@ -215,6 +310,36 @@ impl ProviderRateLimiter {
         Self::with_provider_limits(default_rpm, limits)
     }
 
+    /// Attach a shared provider health checker (circuit-breaker registry).
+    ///
+    /// When set, [`try_acquire`] consults the checker before waiting for an
+    /// RPM slot. Providers in `Open` circuit state are rejected immediately;
+    /// providers in `HalfOpen` state are allowed through as probe requests.
+    ///
+    /// The intended implementation is `ProviderHealthRegistry` from
+    /// `roko-learn`, passed via `Arc<ProviderHealthRegistry>` at runtime
+    /// construction.
+    ///
+    /// [`try_acquire`]: ProviderRateLimiter::try_acquire
+    #[must_use]
+    pub fn with_health_registry(mut self, registry: Arc<dyn ProviderHealthChecker>) -> Self {
+        self.shared_health = Some(registry);
+        self
+    }
+
+    /// Set the health checker on an existing limiter (non-builder variant).
+    ///
+    /// Useful when the limiter is already constructed and shared via `Arc`.
+    pub fn set_health_registry(&mut self, registry: Arc<dyn ProviderHealthChecker>) {
+        self.shared_health = Some(registry);
+    }
+
+    /// Return a reference to the attached health checker, if any.
+    #[must_use]
+    pub fn health_checker(&self) -> Option<&dyn ProviderHealthChecker> {
+        self.shared_health.as_deref()
+    }
+
     /// Wait until the next request for `provider_id` can proceed.
     ///
     /// If the provider has a configured RPM limit, acquires a slot from its
@@ -236,6 +361,53 @@ impl ProviderRateLimiter {
                 .until_key_ready(&provider_id.to_string())
                 .await;
         }
+    }
+
+    /// Health-aware acquisition: check circuit-breaker state, then acquire an
+    /// RPM slot.
+    ///
+    /// When a [`ProviderHealthChecker`] is attached:
+    ///
+    /// - **`Open`** circuit: returns [`RateLimitError`] immediately without
+    ///   consuming an RPM slot.
+    /// - **`HalfOpen`** circuit: acquires the RPM slot and returns
+    ///   [`AcquireOutcome::Probing`] so the caller can track the probe outcome.
+    /// - **`Closed`** circuit (or no health checker): acquires the RPM slot
+    ///   and returns [`AcquireOutcome::Healthy`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RateLimitError`] when the provider's circuit is open.
+    pub async fn try_acquire(&self, provider_id: &str) -> Result<AcquireOutcome, RateLimitError> {
+        // Check circuit-breaker state before consuming an RPM slot.
+        let outcome = if let Some(ref checker) = self.shared_health {
+            match checker.circuit_state(provider_id) {
+                CircuitState::Open => {
+                    tracing::warn!(
+                        provider = provider_id,
+                        "provider circuit is open -- rejecting request"
+                    );
+                    return Err(RateLimitError {
+                        provider_id: provider_id.to_owned(),
+                    });
+                }
+                CircuitState::HalfOpen => {
+                    tracing::info!(
+                        provider = provider_id,
+                        "provider circuit is half-open -- allowing probe request"
+                    );
+                    AcquireOutcome::Probing
+                }
+                CircuitState::Closed => AcquireOutcome::Healthy,
+            }
+        } else {
+            AcquireOutcome::Healthy
+        };
+
+        // RPM slot acquisition (same logic as `acquire`).
+        self.acquire(provider_id).await;
+
+        Ok(outcome)
     }
 
     /// Record token consumption and check advisory TPM limits.
@@ -296,6 +468,7 @@ impl ProviderRateLimiter {
                 .unwrap_or(NonZeroU32::new(60).unwrap()),
             providers: Mutex::new(HashMap::new()),
             default_limiter: RateLimiter::keyed(Quota::per_second(rps)),
+            shared_health: None,
         }
     }
 }
@@ -415,6 +588,194 @@ mod tests {
         );
         let state = providers.get("anthropic").unwrap();
         assert_eq!(state.tpm_limit, 40_000, "TPM limit should be 40000");
+    }
+
+    // ── Shared health integration tests ─────────────────────────────────
+
+    /// Mock health checker that returns a fixed circuit state per provider.
+    struct MockHealthChecker {
+        states: Mutex<HashMap<String, CircuitState>>,
+    }
+
+    impl MockHealthChecker {
+        fn new() -> Self {
+            Self {
+                states: Mutex::new(HashMap::new()),
+            }
+        }
+
+        fn set_state(&self, provider: &str, state: CircuitState) {
+            self.states
+                .lock()
+                .unwrap()
+                .insert(provider.to_owned(), state);
+        }
+    }
+
+    impl ProviderHealthChecker for MockHealthChecker {
+        fn circuit_state(&self, provider_id: &str) -> CircuitState {
+            self.states
+                .lock()
+                .unwrap()
+                .get(provider_id)
+                .copied()
+                .unwrap_or(CircuitState::Closed)
+        }
+
+        fn record_probe_success(&self, provider_id: &str) {
+            self.states
+                .lock()
+                .unwrap()
+                .insert(provider_id.to_owned(), CircuitState::Closed);
+        }
+
+        fn record_probe_failure(&self, provider_id: &str) {
+            self.states
+                .lock()
+                .unwrap()
+                .insert(provider_id.to_owned(), CircuitState::Open);
+        }
+    }
+
+    /// try_acquire returns Healthy when no health checker is set.
+    #[tokio::test]
+    async fn try_acquire_healthy_without_checker() {
+        let limiter = ProviderRateLimiter::new(60);
+        let outcome = limiter.try_acquire("anthropic").await.unwrap();
+        assert_eq!(outcome, AcquireOutcome::Healthy);
+    }
+
+    /// try_acquire returns Healthy for a Closed circuit.
+    #[tokio::test]
+    async fn try_acquire_healthy_with_closed_circuit() {
+        let checker = Arc::new(MockHealthChecker::new());
+        checker.set_state("anthropic", CircuitState::Closed);
+        let limiter = ProviderRateLimiter::new(60)
+            .with_health_registry(checker as Arc<dyn ProviderHealthChecker>);
+        let outcome = limiter.try_acquire("anthropic").await.unwrap();
+        assert_eq!(outcome, AcquireOutcome::Healthy);
+    }
+
+    /// try_acquire returns RateLimitError for an Open circuit.
+    #[tokio::test]
+    async fn try_acquire_rejects_open_circuit() {
+        let checker = Arc::new(MockHealthChecker::new());
+        checker.set_state("anthropic", CircuitState::Open);
+        let limiter = ProviderRateLimiter::new(60)
+            .with_health_registry(checker as Arc<dyn ProviderHealthChecker>);
+        let err = limiter.try_acquire("anthropic").await.unwrap_err();
+        assert_eq!(err.provider_id, "anthropic");
+        assert!(
+            err.to_string().contains("circuit is open"),
+            "error message should mention open circuit: {}",
+            err
+        );
+    }
+
+    /// try_acquire returns Probing for a HalfOpen circuit.
+    #[tokio::test]
+    async fn try_acquire_probes_halfopen_circuit() {
+        let checker = Arc::new(MockHealthChecker::new());
+        checker.set_state("anthropic", CircuitState::HalfOpen);
+        let limiter = ProviderRateLimiter::new(60)
+            .with_health_registry(checker as Arc<dyn ProviderHealthChecker>);
+        let outcome = limiter.try_acquire("anthropic").await.unwrap();
+        assert_eq!(outcome, AcquireOutcome::Probing);
+    }
+
+    /// Unknown providers default to Closed (healthy).
+    #[tokio::test]
+    async fn try_acquire_unknown_provider_defaults_healthy() {
+        let checker = Arc::new(MockHealthChecker::new());
+        // Do not set any state for "new-provider"
+        let limiter = ProviderRateLimiter::new(60)
+            .with_health_registry(checker as Arc<dyn ProviderHealthChecker>);
+        let outcome = limiter.try_acquire("new-provider").await.unwrap();
+        assert_eq!(outcome, AcquireOutcome::Healthy);
+    }
+
+    /// Open circuit for one provider does not affect another.
+    #[tokio::test]
+    async fn try_acquire_independent_per_provider() {
+        let checker = Arc::new(MockHealthChecker::new());
+        checker.set_state("anthropic", CircuitState::Open);
+        checker.set_state("openrouter", CircuitState::Closed);
+        let limiter = ProviderRateLimiter::new(60)
+            .with_health_registry(checker as Arc<dyn ProviderHealthChecker>);
+
+        // anthropic is blocked
+        assert!(limiter.try_acquire("anthropic").await.is_err());
+        // openrouter is fine
+        let outcome = limiter.try_acquire("openrouter").await.unwrap();
+        assert_eq!(outcome, AcquireOutcome::Healthy);
+    }
+
+    /// Probe success transitions checker state to Closed.
+    #[tokio::test]
+    async fn probe_success_transitions_to_closed() {
+        let checker = Arc::new(MockHealthChecker::new());
+        checker.set_state("anthropic", CircuitState::HalfOpen);
+        let limiter = ProviderRateLimiter::new(60)
+            .with_health_registry(Arc::clone(&checker) as Arc<dyn ProviderHealthChecker>);
+
+        let outcome = limiter.try_acquire("anthropic").await.unwrap();
+        assert_eq!(outcome, AcquireOutcome::Probing);
+
+        // Simulate probe success
+        checker.record_probe_success("anthropic");
+        let outcome = limiter.try_acquire("anthropic").await.unwrap();
+        assert_eq!(outcome, AcquireOutcome::Healthy);
+    }
+
+    /// Probe failure transitions checker state to Open.
+    #[tokio::test]
+    async fn probe_failure_transitions_to_open() {
+        let checker = Arc::new(MockHealthChecker::new());
+        checker.set_state("anthropic", CircuitState::HalfOpen);
+        let limiter = ProviderRateLimiter::new(60)
+            .with_health_registry(Arc::clone(&checker) as Arc<dyn ProviderHealthChecker>);
+
+        let outcome = limiter.try_acquire("anthropic").await.unwrap();
+        assert_eq!(outcome, AcquireOutcome::Probing);
+
+        // Simulate probe failure
+        checker.record_probe_failure("anthropic");
+        assert!(limiter.try_acquire("anthropic").await.is_err());
+    }
+
+    /// set_health_registry works on an already-constructed limiter.
+    #[tokio::test]
+    async fn set_health_registry_after_construction() {
+        let mut limiter = ProviderRateLimiter::new(60);
+        assert!(limiter.health_checker().is_none());
+
+        let checker = Arc::new(MockHealthChecker::new());
+        checker.set_state("anthropic", CircuitState::Open);
+        limiter.set_health_registry(checker as Arc<dyn ProviderHealthChecker>);
+        assert!(limiter.health_checker().is_some());
+
+        assert!(limiter.try_acquire("anthropic").await.is_err());
+    }
+
+    /// with_health_registry builder returns a limiter that shows the checker
+    /// in debug output.
+    #[test]
+    fn debug_shows_health_checker_presence() {
+        let without = ProviderRateLimiter::new(60);
+        let debug_without = format!("{without:?}");
+        assert!(
+            debug_without.contains("has_health_checker: false"),
+            "debug should show no health checker: {debug_without}"
+        );
+
+        let checker = Arc::new(MockHealthChecker::new());
+        let with = ProviderRateLimiter::new(60)
+            .with_health_registry(checker as Arc<dyn ProviderHealthChecker>);
+        let debug_with = format!("{with:?}");
+        assert!(
+            debug_with.contains("has_health_checker: true"),
+            "debug should show health checker: {debug_with}"
+        );
     }
 
     /// Concurrent calls to the same provider share a single RPM budget.

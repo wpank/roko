@@ -15,6 +15,46 @@ use super::types::{
     retry_delay,
 };
 
+/// Tracks scheduled GitHub sync timestamps so the runner knows when to
+/// push state and update PRs.
+#[derive(Debug, Clone)]
+pub struct GitHubSyncState {
+    /// When the last successful sync completed (monotonic).
+    pub last_sync_at: Option<Instant>,
+    /// Number of successful syncs performed during this run.
+    pub syncs_completed: u64,
+    /// Number of sync attempts that failed (e.g. `git push` error).
+    pub syncs_failed: u64,
+    /// Whether a sync is currently in progress (guard against overlapping syncs).
+    pub sync_in_progress: bool,
+}
+
+impl Default for GitHubSyncState {
+    fn default() -> Self {
+        Self {
+            last_sync_at: None,
+            syncs_completed: 0,
+            syncs_failed: 0,
+            sync_in_progress: false,
+        }
+    }
+}
+
+impl GitHubSyncState {
+    /// Record a successful sync.
+    pub fn record_success(&mut self) {
+        self.last_sync_at = Some(Instant::now());
+        self.syncs_completed += 1;
+        self.sync_in_progress = false;
+    }
+
+    /// Record a failed sync attempt.
+    pub fn record_failure(&mut self) {
+        self.syncs_failed += 1;
+        self.sync_in_progress = false;
+    }
+}
+
 /// Mutable state for the current runner execution.
 #[derive(Debug)]
 pub struct RunState {
@@ -161,6 +201,11 @@ pub struct RunState {
     /// `config.budget_override` is true).
     pub budget_exhausted: bool,
 
+    /// Whether the disk budget has been exceeded for the current run.
+    /// Once set, every subsequent dispatch is blocked until the operator
+    /// frees space or raises `resources.max_plan_disk_mb`.
+    pub disk_budget_paused: bool,
+
     // ─── Current Task Role ──────────────────────────────────────────
     /// Role of the current task (e.g. "implementer", "strategist").
     /// Populated from the task definition's `role` field at dispatch time.
@@ -188,6 +233,16 @@ pub struct RunState {
     /// new reflections are skipped for the remainder of the run to cap the
     /// overhead of the reflection loop.
     pub cumulative_reflection_cost_usd: f64,
+
+    // ─── GitHub Sync ─────────────────────────────────────────────────
+    /// Tracks scheduled GitHub sync state (push + PR update).
+    pub github_sync: GitHubSyncState,
+
+    // ─── PR / Gate Updates ──────────────────────────────────────────
+    /// Maps `plan_id` to the GitHub PR number associated with that plan.
+    /// Populated when a plan opens or discovers its PR; consumed by the
+    /// gate-result PR-update hook when `github.auto_update_prs = true`.
+    pub plan_pr_numbers: HashMap<String, u64>,
 }
 
 impl RunState {
@@ -246,10 +301,13 @@ impl RunState {
             routing_context: None,
             failure_reasons: HashMap::new(),
             budget_exhausted: false,
+            disk_budget_paused: false,
             current_task_role: String::new(),
             parsed_review_verdict: None,
             express_mode: false,
             cumulative_reflection_cost_usd: 0.0,
+            github_sync: GitHubSyncState::default(),
+            plan_pr_numbers: HashMap::new(),
         }
     }
 
@@ -535,6 +593,9 @@ impl RunState {
                     attempt_state.completed_at_ms = Some(*timestamp_ms);
                 }
                 self.apply_attempt_terminal_to_task(attempt, status, *timestamp_ms, *failure_kind);
+            }
+            RunnerEvent::BudgetExceeded { .. } => {
+                self.budget_exhausted = true;
             }
         }
     }

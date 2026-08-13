@@ -242,7 +242,7 @@ impl Drop for RuntimeShutdownOwner {
 }
 
 /// Configuration handed to [`WorktreeManager::new`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct WorktreeConfig {
     /// Absolute path to the main repository checkout. `git worktree`
     /// commands are executed with this as their working directory.

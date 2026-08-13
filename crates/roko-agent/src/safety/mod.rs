@@ -73,8 +73,8 @@ pub use authz::{
     LogAndDenyChannel,
 };
 pub use capabilities::{
-    AgentWarrant, Capability, CapabilityError, PluginTier, check_capability, check_plugin_tier,
-    delegate,
+    AgentWarrant, Capability, CapabilityError, PluginTier, ToolPermissionPolicy, check_capability,
+    check_plugin_capability, check_plugin_tier, check_tool_permission, delegate,
 };
 pub use data_llm::{
     DataLlmAuditEntry, DataLlmDecision, DataLlmRouter, SanitizeResult, sanitize_input,
@@ -214,6 +214,22 @@ pub struct SafetyLayer {
     /// Protected by `Arc<Mutex<_>>` for interior mutability (the monitor
     /// maintains per-property state).
     pub temporal_monitor: Option<Arc<Mutex<TemporalMonitor>>>,
+    /// Tool permission policy governing the default for unconfigured tools.
+    ///
+    /// When set to [`AllowExplicit`](ToolPermissionPolicy::AllowExplicit)
+    /// (the default), only tools listed in `tool_permission_list` are
+    /// permitted — everything else is denied (fail-closed).
+    ///
+    /// When set to [`DenyExplicit`](ToolPermissionPolicy::DenyExplicit),
+    /// all tools are permitted unless they appear in `tool_permission_list`.
+    pub tool_permission_policy: ToolPermissionPolicy,
+    /// The list of tool names evaluated against `tool_permission_policy`.
+    ///
+    /// Under `AllowExplicit` this is the set of allowed tools (empty = deny
+    /// all). Under `DenyExplicit` this is the set of denied tools (empty =
+    /// allow all). The wildcard `"*"` is recognised under `AllowExplicit`
+    /// to permit every tool.
+    pub tool_permission_list: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -263,6 +279,12 @@ impl SafetyLayer {
             role_tools: HashMap::new(),
             role_overrides: HashMap::new(),
             temporal_monitor: None,
+            // Fail-closed policy with wildcard allows all tools by default.
+            // Callers that want strict enforcement should use
+            // `with_tool_permission_policy()` to supply an explicit list
+            // without the wildcard.
+            tool_permission_policy: ToolPermissionPolicy::AllowExplicit,
+            tool_permission_list: vec!["*".to_string()],
         }
     }
 
@@ -309,6 +331,8 @@ impl SafetyLayer {
             role_tools: HashMap::new(),
             role_overrides: HashMap::new(),
             temporal_monitor: None,
+            tool_permission_policy: ToolPermissionPolicy::AllowExplicit,
+            tool_permission_list: vec!["*".to_string()],
         }
     }
 
@@ -370,6 +394,38 @@ impl SafetyLayer {
         self
     }
 
+    /// Set the tool permission policy and corresponding tool list.
+    ///
+    /// Under [`AllowExplicit`](ToolPermissionPolicy::AllowExplicit),
+    /// `tools` is the set of tools that are permitted (fail-closed: any
+    /// tool not in the list is denied). Under
+    /// [`DenyExplicit`](ToolPermissionPolicy::DenyExplicit), `tools` is
+    /// the set of tools that are denied (fail-open: everything else is
+    /// allowed).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use roko_agent::safety::{SafetyLayer, ToolPermissionPolicy};
+    ///
+    /// // Only allow read_file and grep — everything else is denied.
+    /// let layer = SafetyLayer::with_defaults()
+    ///     .with_tool_permission_policy(
+    ///         ToolPermissionPolicy::AllowExplicit,
+    ///         vec!["read_file".into(), "grep".into()],
+    ///     );
+    /// ```
+    #[must_use]
+    pub fn with_tool_permission_policy(
+        mut self,
+        policy: ToolPermissionPolicy,
+        tools: Vec<String>,
+    ) -> Self {
+        self.tool_permission_policy = policy;
+        self.tool_permission_list = tools;
+        self
+    }
+
     /// Run all pre-execution safety checks for `call` + `ctx`.
     ///
     /// Returns `Ok(())` if all policies pass; the first failure
@@ -384,6 +440,18 @@ impl SafetyLayer {
                     call.name, self.role
                 )));
             }
+        }
+
+        // 0. Tool permission policy (fail-closed gate).
+        if !check_tool_permission(
+            name,
+            &self.tool_permission_policy,
+            &self.tool_permission_list,
+        ) {
+            return Err(ToolError::PermissionDenied(format!(
+                "tool `{}` is not permitted under {:?} policy",
+                call.name, self.tool_permission_policy
+            )));
         }
 
         // 1. Rate limit (applies to all tools).

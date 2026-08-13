@@ -32,6 +32,7 @@
 pub mod agent_events;
 pub mod agent_stream;
 pub mod attempt_ownership;
+pub mod branch_cleanup;
 pub mod conductor_adapter;
 pub mod deadlines;
 pub mod event_loop;
@@ -42,6 +43,7 @@ pub mod merge;
 pub mod output_sink;
 pub mod persist;
 pub mod plan_loader;
+pub mod pr_gate_update;
 pub mod projection;
 pub mod resume;
 pub mod snapshot_writer;

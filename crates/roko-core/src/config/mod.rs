@@ -58,18 +58,20 @@ pub use schema::{
     AgentBudget, AgentConfig, AgentDefinition, AgentMode, AgentThresholds, ApiKeyEntry,
     BudgetConfig, CURRENT_SCHEMA_VERSION, ChainConfig, ColdStorageConfig, CompileFailRepeatConfig,
     ConductorConfig, ContextWindowPressureConfig, CoreRunnerConfig, CostOverrunConfig,
-    DataLlmConfig, DeployConfig, GateRungConfig, GatesConfig, GeminiConfig, GhostTurnConfig,
-    GithubWebhookConfig, GraduationConfig, GraduationPolicy, ISFRSection, ISFRSourceConfig,
-    IterationLoopConfig, LearningConfig, ModelProfile, PerplexityConfig, PipelineBandConfig,
-    PipelineConfig, PipelineReviewerMode, PrdConfig, ProjectConfig, ProviderConfig,
-    ProviderRouting, RelayConfig, ResourcesConfig, ReviewLoopConfig, RewardWeights, RokoConfig,
-    RoleOverride, RoutingAlgorithm, RoutingConfig, RoutingOverrides, RoutingRewardWeightsConfig,
-    SafetySetting, SchedulerConfig, SchedulerCronConfig, ServeAuthConfig, ServeConfig,
-    ServeDeployConfig, ServeDeployWebhookConfig, ServerConfig, SpecDriftConfig, StuckPatternConfig,
-    SubscriptionConfig, SubscriptionFilterConfig, SubscriptionTrigger, TestFailureBudgetConfig,
-    TimeOverrunConfig, ToolProfileConfig, ToolsConfig, TracingConfig, TuiConfig, ValidationConfig,
-    WatcherConfig, WatcherPathConfig, WatcherThresholds, WebhooksConfig, WorktreeCountConfig,
+    DataLlmConfig, DeployConfig, EnforcementMode, GateRungConfig, GatesConfig, GeminiConfig,
+    GhostTurnConfig, GithubWebhookConfig, GraduationConfig, GraduationPolicy, ISFRSection,
+    ISFRSourceConfig, IterationLoopConfig, LearningConfig, ModelProfile, PerplexityConfig,
+    PipelineBandConfig, PipelineConfig, PipelineReviewerMode, PrdConfig, ProjectConfig,
+    ProviderConfig, ProviderRouting, RelayConfig, ResourcesConfig, ReviewLoopConfig, RewardWeights,
+    RokoConfig, RoleOverride, RoutingAlgorithm, RoutingConfig, RoutingOverrides,
+    RoutingRewardWeightsConfig, SafetySetting, SchedulerConfig, SchedulerCronConfig,
+    ServeAuthConfig, ServeConfig, ServeDeployConfig, ServeDeployWebhookConfig, ServerConfig,
+    SpecDriftConfig, StuckPatternConfig, SubscriptionConfig, SubscriptionFilterConfig,
+    SubscriptionTrigger, TestFailureBudgetConfig, TimeOverrunConfig, ToolProfileConfig,
+    ToolsConfig, TracingConfig, TuiConfig, ValidationConfig, WatcherConfig, WatcherPathConfig,
+    WatcherThresholds, WebhooksConfig, WorktreeCountConfig,
 };
+pub use serve::GitHubConfig;
 
 /// Error returned when loading a `roko.toml` file from disk.
 #[derive(Debug, Error)]

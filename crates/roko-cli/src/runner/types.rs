@@ -341,6 +341,7 @@ impl EventCategory {
             RunnerEvent::PromptAssembled { .. } => Self::Prompt,
             RunnerEvent::MergeBackendCompleted { .. } => Self::Merge,
             RunnerEvent::RetryDecision { .. } => Self::Retry,
+            RunnerEvent::BudgetExceeded { .. } => Self::Plan,
         }
     }
 
@@ -1176,6 +1177,19 @@ pub enum RunnerEvent {
         exhausted: bool,
         reason: String,
     },
+    /// Emitted when cumulative plan cost exceeds the configured `max_plan_usd`
+    /// budget ceiling and `budget_override` is not active.
+    #[serde(rename = "budget.exceeded")]
+    BudgetExceeded {
+        timestamp: String,
+        timestamp_ms: u64,
+        run_id: String,
+        plan_id: String,
+        /// Cumulative USD spent on this plan at the time of the breach.
+        spent_usd: f64,
+        /// The configured ceiling that was exceeded.
+        limit_usd: f64,
+    },
 }
 
 impl RunnerEvent {
@@ -1192,6 +1206,7 @@ impl RunnerEvent {
                 | Self::GateCompleted { .. }
                 | Self::MergeBackendCompleted { .. }
                 | Self::RetryDecision { .. }
+                | Self::BudgetExceeded { .. }
         )
     }
 
@@ -1283,6 +1298,18 @@ impl RunnerEvent {
             cost_usd,
             tasks_completed,
             tasks_failed,
+        }
+    }
+
+    pub fn budget_exceeded(run_id: &str, plan_id: &str, spent_usd: f64, limit_usd: f64) -> Self {
+        let stamp = EventStamp::now();
+        Self::BudgetExceeded {
+            timestamp: stamp.timestamp,
+            timestamp_ms: stamp.timestamp_ms,
+            run_id: run_id.to_string(),
+            plan_id: plan_id.to_string(),
+            spent_usd,
+            limit_usd,
         }
     }
 
@@ -1575,6 +1602,7 @@ impl RunnerEvent {
             Self::PromptAssembled { .. } => "prompt.assembled",
             Self::MergeBackendCompleted { .. } => "merge.backend.completed",
             Self::RetryDecision { .. } => "retry.decision",
+            Self::BudgetExceeded { .. } => "budget.exceeded",
         }
     }
 
@@ -1597,7 +1625,8 @@ impl RunnerEvent {
             | Self::GateCompleted { timestamp_ms, .. }
             | Self::PromptAssembled { timestamp_ms, .. }
             | Self::MergeBackendCompleted { timestamp_ms, .. }
-            | Self::RetryDecision { timestamp_ms, .. } => *timestamp_ms,
+            | Self::RetryDecision { timestamp_ms, .. }
+            | Self::BudgetExceeded { timestamp_ms, .. } => *timestamp_ms,
         }
     }
 
@@ -1622,6 +1651,7 @@ impl RunnerEvent {
                 .attempt
                 .as_ref()
                 .map(|attempt| attempt.plan_id.as_str()),
+            Self::BudgetExceeded { plan_id, .. } => Some(plan_id),
             Self::ResumeMarker { .. } | Self::RunStarted { .. } | Self::RunCompleted { .. } => None,
         }
     }
@@ -1725,6 +1755,12 @@ impl RunnerEvent {
                 reason,
                 ..
             } => format!("retry decision: {action:?} after {failure_kind:?}: {reason}"),
+            Self::BudgetExceeded {
+                plan_id,
+                spent_usd,
+                limit_usd,
+                ..
+            } => format!("budget exceeded for plan {plan_id}: ${spent_usd:.2} >= ${limit_usd:.2}"),
         }
     }
 }

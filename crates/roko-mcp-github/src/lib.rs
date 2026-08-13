@@ -88,8 +88,8 @@ impl GitHubClient {
     }
 
     /// Override the API base URL (useful for tests pointing at a local server).
-    #[cfg(test)]
-    pub(crate) fn with_api_base(mut self, base: impl Into<String>) -> Self {
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn with_api_base(mut self, base: impl Into<String>) -> Self {
         self.api_base = base.into();
         self
     }
@@ -259,6 +259,36 @@ impl GitHubClient {
         );
         let payload = serde_json::json!({ "labels": labels });
         self.post_json(&url, &payload, "add labels")
+    }
+
+    /// Remove a single label from an issue or pull request.
+    ///
+    /// Returns the remaining labels on the issue.  If the label does not
+    /// exist on the issue GitHub returns 404 — this method treats that as
+    /// a success (idempotent removal).
+    pub fn remove_label(&self, owner: &str, repo: &str, number: u64, label: &str) -> Result<()> {
+        let encoded = label.replace(' ', "%20");
+        let url = format!(
+            "{}/repos/{owner}/{repo}/issues/{number}/labels/{encoded}",
+            self.api_base
+        );
+        let resp = self
+            .client
+            .delete(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .map_err(|e| api_err(format!("call GitHub API (remove label): {e}")))?;
+        let status = resp.status();
+        // 200 = removed, 404 = label was not present (idempotent)
+        if status.is_success() || status.as_u16() == 404 {
+            Ok(())
+        } else {
+            let text = resp.text().unwrap_or_default();
+            Err(api_err(format!(
+                "GitHub API returned {status} (remove label): {}",
+                text.trim()
+            )))
+        }
     }
 
     // ── Actions / CI ──────────────────────────────────────────────────────

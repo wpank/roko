@@ -284,6 +284,153 @@ impl ToolRegistry for DynamicToolRegistry {
     }
 }
 
+// ─── Catalog validation ───────────────────────────────────────────────────
+
+/// Issue found by [`validate_tool_catalog`].
+///
+/// Each variant captures enough context for a human or automated dashboard to
+/// understand *which* tool is affected and *why* the issue matters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolValidationIssue {
+    /// A tool is registered in the catalog but has no corresponding handler in
+    /// [`handler_for`](super::handlers::handler_for), and its source is not
+    /// MCP (MCP tools are dispatched externally and don't need a local handler).
+    UnhandledTool {
+        /// Canonical tool name that lacks a handler.
+        name: String,
+    },
+    /// Two or more tool definitions share the same canonical name.
+    DuplicateName {
+        /// The duplicated tool name.
+        name: String,
+    },
+    /// A handler is listed in [`HandlerRegistry::shipped_names`] but no
+    /// matching [`ToolDef`] exists in the registry, meaning the dispatcher
+    /// can execute it but the LLM catalog will never advertise it.
+    MissingHandler {
+        /// Canonical name of the handler with no catalog entry.
+        name: String,
+    },
+    /// A tool whose name matches a known deprecated prefix or pattern.
+    /// The tool still works but should be migrated away from.
+    DeprecatedTool {
+        /// Canonical tool name.
+        name: String,
+        /// Human-readable reason for deprecation.
+        reason: String,
+    },
+}
+
+impl std::fmt::Display for ToolValidationIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnhandledTool { name } => {
+                write!(
+                    f,
+                    "unhandled tool: `{name}` has no handler and is not MCP-dispatched"
+                )
+            }
+            Self::DuplicateName { name } => {
+                write!(f, "duplicate tool name: `{name}` appears more than once")
+            }
+            Self::MissingHandler { name } => {
+                write!(
+                    f,
+                    "missing handler: handler `{name}` shipped but no tool definition in registry"
+                )
+            }
+            Self::DeprecatedTool { name, reason } => {
+                write!(f, "deprecated tool: `{name}` -- {reason}")
+            }
+        }
+    }
+}
+
+/// Known deprecated tool name prefixes.
+///
+/// Tools whose names start with any of these prefixes are flagged as
+/// [`ToolValidationIssue::DeprecatedTool`]. Extend this list as tools are
+/// superseded (e.g. a v2 replacement ships).
+const DEPRECATED_PREFIXES: &[(&str, &str)] = &[
+    ("legacy.", "legacy-prefixed tools are slated for removal"),
+    ("deprecated.", "explicitly deprecated"),
+    ("old_", "old-prefixed tools have been superseded"),
+];
+
+/// Validate a [`DynamicToolRegistry`] for catalog/handler parity issues.
+///
+/// Checks performed:
+///
+/// 1. **Duplicate names** — scans for tools sharing a canonical name.
+/// 2. **Unhandled tools** — tools registered in the catalog that have no
+///    handler via [`handler_for`](super::handlers::handler_for) *and* whose
+///    source is not [`ToolSource::Mcp`](roko_core::tool::ToolSource::Mcp).
+///    MCP tools are dispatched through an external MCP client, so a missing
+///    local handler is expected and is not flagged.
+/// 3. **Missing handlers** — handler names from
+///    [`HandlerRegistry::shipped_names`] with no corresponding
+///    [`ToolDef`] in the registry.
+/// 4. **Deprecated tools** — tools whose names match a known deprecated
+///    prefix (see [`DEPRECATED_PREFIXES`]).
+///
+/// Returns an empty `Vec` when the catalog is healthy.
+#[must_use]
+pub fn validate_tool_catalog(registry: &DynamicToolRegistry) -> Vec<ToolValidationIssue> {
+    use roko_core::tool::ToolSource;
+    use std::collections::HashSet;
+
+    let mut issues = Vec::new();
+    let all_tools = &registry.tools;
+
+    // 1. Duplicate names.
+    let mut seen_names: HashSet<&str> = HashSet::with_capacity(all_tools.len());
+    let mut dupes_reported: HashSet<&str> = HashSet::new();
+    for tool in all_tools {
+        if !seen_names.insert(&tool.name) && dupes_reported.insert(&tool.name) {
+            issues.push(ToolValidationIssue::DuplicateName {
+                name: tool.name.clone(),
+            });
+        }
+    }
+
+    // 2. Unhandled tools — tools in the catalog with no local handler and not
+    //    MCP-dispatched.
+    for tool in all_tools {
+        let is_mcp = matches!(&tool.source, ToolSource::Mcp { .. });
+        if !is_mcp && super::handlers::handler_for(&tool.name).is_none() {
+            issues.push(ToolValidationIssue::UnhandledTool {
+                name: tool.name.clone(),
+            });
+        }
+    }
+
+    // 3. Missing handlers — handler names that have no catalog entry.
+    let handler_reg = super::handlers::HandlerRegistry::new();
+    let catalog_names: HashSet<&str> = all_tools.iter().map(|t| t.name.as_str()).collect();
+    for name in handler_reg.shipped_names() {
+        if !catalog_names.contains(name) {
+            issues.push(ToolValidationIssue::MissingHandler {
+                name: (*name).to_string(),
+            });
+        }
+    }
+
+    // 4. Deprecated tools.
+    for tool in all_tools {
+        for &(prefix, reason) in DEPRECATED_PREFIXES {
+            if tool.name.starts_with(prefix) {
+                issues.push(ToolValidationIssue::DeprecatedTool {
+                    name: tool.name.clone(),
+                    reason: reason.to_string(),
+                });
+                break; // One deprecation reason per tool is enough.
+            }
+        }
+    }
+
+    issues
+}
+
 // ─── Internal helpers ─────────────────────────────────────────────────────
 
 /// Validate `args` against a tool's JSON schema.
@@ -683,5 +830,248 @@ mod tests {
         let cfg = reg.sandbox_for("kernel_ext").unwrap();
         assert!(cfg.network_access, "tier 5 must allow network");
         assert_eq!(cfg.max_memory_mb, 0, "tier 5 must have no memory cap");
+    }
+
+    // ── validate_tool_catalog tests ──────────────────────────────────────
+
+    use super::{ToolValidationIssue, validate_tool_catalog};
+
+    #[test]
+    fn validate_default_registry_has_no_issues() {
+        // The default DynamicToolRegistry (built-ins only) should be healthy:
+        // every built-in tool has a handler or is MCP-dispatched, no duplicates,
+        // no deprecated prefixes.
+        let reg = DynamicToolRegistry::new();
+        let issues = validate_tool_catalog(&reg);
+        assert!(
+            issues.is_empty(),
+            "expected no issues for default registry, got: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn validate_detects_unhandled_tool() {
+        // Register a tool with source=Builtin that has no handler.
+        let orphan = ToolDef::new(
+            "orphan_tool",
+            "a tool with no handler",
+            ToolCategory::Read,
+            ToolPermission::read_only(),
+        );
+        let mut reg = DynamicToolRegistry::from_tools(vec![orphan]);
+        // Also add a real tool so we have a mix.
+        reg.register(ToolDef::new(
+            "read_file",
+            "read a file",
+            ToolCategory::Read,
+            ToolPermission::read_only(),
+        ));
+        let issues = validate_tool_catalog(&reg);
+        let unhandled: Vec<_> = issues
+            .iter()
+            .filter(|i| matches!(i, ToolValidationIssue::UnhandledTool { name } if name == "orphan_tool"))
+            .collect();
+        assert_eq!(
+            unhandled.len(),
+            1,
+            "expected exactly one UnhandledTool issue for orphan_tool"
+        );
+    }
+
+    #[test]
+    fn validate_mcp_tools_not_flagged_as_unhandled() {
+        // MCP-sourced tools should not be flagged as unhandled.
+        let mut mcp_tool = ToolDef::new(
+            "mcp_only_tool",
+            "dispatched via MCP",
+            ToolCategory::Mcp,
+            ToolPermission::read_only(),
+        );
+        mcp_tool.source = ToolSource::Mcp {
+            server: "test-mcp-server".to_string(),
+        };
+        let reg = DynamicToolRegistry::from_tools(vec![mcp_tool]);
+        let issues = validate_tool_catalog(&reg);
+        let unhandled: Vec<_> = issues
+            .iter()
+            .filter(|i| matches!(i, ToolValidationIssue::UnhandledTool { .. }))
+            .collect();
+        assert!(
+            unhandled.is_empty(),
+            "MCP tools should not be flagged as unhandled, got: {unhandled:?}"
+        );
+    }
+
+    #[test]
+    fn validate_detects_duplicate_names() {
+        // Manually build a vec with two tools sharing a name.
+        let tool_a = ToolDef::new(
+            "dupe_tool",
+            "first instance",
+            ToolCategory::Read,
+            ToolPermission::read_only(),
+        );
+        let tool_b = ToolDef::new(
+            "dupe_tool",
+            "second instance",
+            ToolCategory::Write,
+            ToolPermission::writes(),
+        );
+        let reg = DynamicToolRegistry::from_tools(vec![tool_a, tool_b]);
+        let issues = validate_tool_catalog(&reg);
+        let dupes: Vec<_> = issues
+            .iter()
+            .filter(
+                |i| matches!(i, ToolValidationIssue::DuplicateName { name } if name == "dupe_tool"),
+            )
+            .collect();
+        assert_eq!(
+            dupes.len(),
+            1,
+            "expected exactly one DuplicateName issue for dupe_tool"
+        );
+    }
+
+    #[test]
+    fn validate_duplicate_reported_once_even_with_three_copies() {
+        let tools: Vec<ToolDef> = (0..3)
+            .map(|_| {
+                ToolDef::new(
+                    "triple",
+                    "triplicate",
+                    ToolCategory::Read,
+                    ToolPermission::read_only(),
+                )
+            })
+            .collect();
+        let reg = DynamicToolRegistry::from_tools(tools);
+        let issues = validate_tool_catalog(&reg);
+        let dupes: Vec<_> = issues
+            .iter()
+            .filter(|i| matches!(i, ToolValidationIssue::DuplicateName { .. }))
+            .collect();
+        assert_eq!(
+            dupes.len(),
+            1,
+            "DuplicateName should be reported once regardless of copy count"
+        );
+    }
+
+    #[test]
+    fn validate_detects_missing_handler() {
+        // An empty registry means every shipped handler name is missing.
+        let reg = DynamicToolRegistry::from_tools(vec![]);
+        let issues = validate_tool_catalog(&reg);
+        let missing: Vec<_> = issues
+            .iter()
+            .filter(|i| matches!(i, ToolValidationIssue::MissingHandler { .. }))
+            .collect();
+        // HandlerRegistry::shipped_names() has 20 entries.
+        assert_eq!(
+            missing.len(),
+            super::super::handlers::HandlerRegistry::new()
+                .shipped_names()
+                .len(),
+            "expected one MissingHandler per shipped handler name"
+        );
+    }
+
+    #[test]
+    fn validate_detects_deprecated_tool() {
+        let deprecated = ToolDef::new(
+            "legacy.old_grep",
+            "a legacy tool",
+            ToolCategory::Read,
+            ToolPermission::read_only(),
+        );
+        let reg = DynamicToolRegistry::from_tools(vec![deprecated]);
+        let issues = validate_tool_catalog(&reg);
+        let depr: Vec<_> = issues
+            .iter()
+            .filter(|i| matches!(i, ToolValidationIssue::DeprecatedTool { name, .. } if name == "legacy.old_grep"))
+            .collect();
+        assert_eq!(
+            depr.len(),
+            1,
+            "expected one DeprecatedTool issue for legacy.old_grep"
+        );
+    }
+
+    #[test]
+    fn validate_deprecated_all_prefixes() {
+        // Every deprecated prefix should be detected.
+        let tools = vec![
+            ToolDef::new(
+                "legacy.x",
+                "l",
+                ToolCategory::Read,
+                ToolPermission::read_only(),
+            ),
+            ToolDef::new(
+                "deprecated.y",
+                "d",
+                ToolCategory::Read,
+                ToolPermission::read_only(),
+            ),
+            ToolDef::new(
+                "old_z",
+                "o",
+                ToolCategory::Read,
+                ToolPermission::read_only(),
+            ),
+        ];
+        let reg = DynamicToolRegistry::from_tools(tools);
+        let issues = validate_tool_catalog(&reg);
+        let depr: Vec<_> = issues
+            .iter()
+            .filter(|i| matches!(i, ToolValidationIssue::DeprecatedTool { .. }))
+            .collect();
+        assert_eq!(depr.len(), 3, "expected one DeprecatedTool per prefix");
+    }
+
+    #[test]
+    fn validate_issue_display() {
+        let issue = ToolValidationIssue::UnhandledTool {
+            name: "foo".to_string(),
+        };
+        let s = format!("{issue}");
+        assert!(s.contains("foo"));
+        assert!(s.contains("unhandled"));
+
+        let issue = ToolValidationIssue::DuplicateName {
+            name: "bar".to_string(),
+        };
+        let s = format!("{issue}");
+        assert!(s.contains("bar"));
+        assert!(s.contains("duplicate"));
+
+        let issue = ToolValidationIssue::MissingHandler {
+            name: "baz".to_string(),
+        };
+        let s = format!("{issue}");
+        assert!(s.contains("baz"));
+        assert!(s.contains("missing handler"));
+
+        let issue = ToolValidationIssue::DeprecatedTool {
+            name: "old_x".to_string(),
+            reason: "superseded by new_x".to_string(),
+        };
+        let s = format!("{issue}");
+        assert!(s.contains("old_x"));
+        assert!(s.contains("superseded"));
+    }
+
+    #[test]
+    fn validate_empty_registry_reports_missing_handlers_only() {
+        let reg = DynamicToolRegistry::from_tools(vec![]);
+        let issues = validate_tool_catalog(&reg);
+        // No tools means: no duplicates, no unhandled, no deprecated.
+        // Only MissingHandler issues for shipped handler names.
+        for issue in &issues {
+            assert!(
+                matches!(issue, ToolValidationIssue::MissingHandler { .. }),
+                "expected only MissingHandler issues, got: {issue:?}"
+            );
+        }
     }
 }

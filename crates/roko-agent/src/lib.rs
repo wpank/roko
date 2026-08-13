@@ -155,7 +155,7 @@ pub use provider::{
     ProviderAdapter, adapter_for_kind, create_agent_for_model, current_safety_layer,
     with_scoped_safety_layer,
 };
-pub use rate_limit::ProviderRateLimiter;
+pub use rate_limit::{AcquireOutcome, ProviderHealthChecker, ProviderRateLimiter, RateLimitError};
 pub use roko_core::{
     BUILTIN_ROLE_POLICY_MANIFEST_PATH, BUILTIN_ROLE_POLICY_MANIFEST_TOML,
     MANIFEST_BACKED_BUILTIN_ROLE_IDS, PromptPolicy, RolePolicyManifest,
@@ -164,8 +164,8 @@ pub use roko_core::{
 pub use runtime_events::{AgentEventStream, AgentRuntimeEvent};
 pub use safety::{
     AgentWarrant, Capability, CapabilityError, DataSink, HookDecision, SafetyAuditRecord,
-    SafetyHook, SafetyLayer, SafetyViolation, TaintLabel, TaintedString, ViolationSeverity,
-    ViolationType, check_capability, delegate,
+    SafetyHook, SafetyLayer, SafetyViolation, TaintLabel, TaintedString, ToolPermissionPolicy,
+    ViolationSeverity, ViolationType, check_capability, check_tool_permission, delegate,
 };
 pub use session::{
     AgentInvocationSession, InvocationState, ResumeValidationError, ReuseScope, WarmReusePolicy,

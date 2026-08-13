@@ -6467,6 +6467,7 @@ dependencies = [
  "roko-graph",
  "roko-index",
  "roko-learn",
+ "roko-mcp-github",
  "roko-neuro",
  "roko-plugin",
  "roko-runtime",

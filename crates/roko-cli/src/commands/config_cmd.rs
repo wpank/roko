@@ -1053,9 +1053,36 @@ pub(crate) fn cmd_model_route(
     Ok(())
 }
 
+/// JSON-serializable summary of a single plugin for `--json` output.
+#[derive(Serialize)]
+struct PluginListEntry {
+    name: String,
+    version: String,
+    description: Option<String>,
+    tier: String,
+    tier_level: u8,
+    wire_status: String,
+    sandbox: PluginSandboxSummary,
+    tool_count: usize,
+    tools: Vec<String>,
+    prompt_count: usize,
+    profile_count: usize,
+    trigger_count: usize,
+    location: String,
+}
+
+/// JSON-serializable sandbox summary.
+#[derive(Serialize)]
+struct PluginSandboxSummary {
+    network: bool,
+    secrets: bool,
+    allowed_path_count: usize,
+    denied_path_count: usize,
+}
+
 pub(crate) async fn cmd_plugin(cli: &Cli, cmd: PluginCmd) -> Result<i32> {
     let workdir = match &cmd {
-        PluginCmd::List { workdir } => workdir.clone(),
+        PluginCmd::List { workdir, .. } => workdir.clone(),
         PluginCmd::Install { workdir, .. } => workdir.clone(),
         PluginCmd::Remove { workdir, .. } => workdir.clone(),
         PluginCmd::Audit { workdir } => workdir.clone(),
@@ -1063,7 +1090,7 @@ pub(crate) async fn cmd_plugin(cli: &Cli, cmd: PluginCmd) -> Result<i32> {
     .unwrap_or_else(|| resolve_workdir(cli));
 
     match cmd {
-        PluginCmd::List { .. } => {
+        PluginCmd::List { json, .. } => {
             let plugins_dir = workdir.join("plugins");
             let roko_plugins = workdir.join(".roko").join("plugins");
             let mut all_plugins = Vec::new();
@@ -1075,7 +1102,39 @@ pub(crate) async fn cmd_plugin(cli: &Cli, cmd: PluginCmd) -> Result<i32> {
                 }
             }
 
-            if all_plugins.is_empty() {
+            // Also honour the global --json flag.
+            let emit_json = json || cli.json;
+
+            if emit_json {
+                let entries: Vec<PluginListEntry> = all_plugins
+                    .iter()
+                    .map(|plugin| {
+                        let m = &plugin.manifest;
+                        let sandbox = m.effective_sandbox();
+                        PluginListEntry {
+                            name: m.plugin.name.clone(),
+                            version: m.plugin.version.clone(),
+                            description: m.plugin.description.clone(),
+                            tier: m.tier().label().to_string(),
+                            tier_level: m.tier().level(),
+                            wire_status: m.wire_status().to_string(),
+                            sandbox: PluginSandboxSummary {
+                                network: sandbox.network,
+                                secrets: sandbox.secrets,
+                                allowed_path_count: sandbox.allowed_paths.len(),
+                                denied_path_count: sandbox.denied_paths.len(),
+                            },
+                            tool_count: m.tool_count(),
+                            tools: m.tools.iter().map(|t| t.name.clone()).collect(),
+                            prompt_count: m.prompts.len(),
+                            profile_count: m.profiles.len(),
+                            trigger_count: m.triggers.len(),
+                            location: plugin.base_dir.display().to_string(),
+                        }
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&entries)?);
+            } else if all_plugins.is_empty() {
                 println!("no plugins found");
                 println!(
                     "  search paths: {}, {}",
@@ -1086,39 +1145,59 @@ pub(crate) async fn cmd_plugin(cli: &Cli, cmd: PluginCmd) -> Result<i32> {
             } else {
                 println!("installed plugins ({}):", all_plugins.len());
                 for plugin in &all_plugins {
-                    let m = &plugin.manifest.plugin;
-                    let desc = m.description.as_deref().unwrap_or("no description");
-                    println!("  {} v{} — {}", m.name, m.version, desc);
-                    if !plugin.manifest.prompts.is_empty() {
+                    let m = &plugin.manifest;
+                    let meta = &m.plugin;
+                    let desc = meta.description.as_deref().unwrap_or("no description");
+                    let tier = m.tier();
+                    let sandbox = m.effective_sandbox();
+
+                    // Header line: name, version, tier, wire status.
+                    println!(
+                        "  {} v{} [tier:{} wire:{}] — {}",
+                        meta.name,
+                        meta.version,
+                        tier.label(),
+                        m.wire_status(),
+                        desc
+                    );
+
+                    // Sandbox summary.
+                    let path_count = sandbox.allowed_paths.len() + sandbox.denied_paths.len();
+                    println!(
+                        "    sandbox: network={}, secrets={}, paths={}",
+                        if sandbox.network { "yes" } else { "no" },
+                        if sandbox.secrets { "yes" } else { "no" },
+                        path_count
+                    );
+
+                    // Tool count and names.
+                    if !m.tools.is_empty() {
                         println!(
-                            "    prompts: {}",
-                            plugin
-                                .manifest
-                                .prompts
-                                .iter()
-                                .map(|p| p.name.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        );
-                    }
-                    if !plugin.manifest.tools.is_empty() {
-                        println!(
-                            "    tools: {}",
-                            plugin
-                                .manifest
-                                .tools
+                            "    tools ({}): {}",
+                            m.tool_count(),
+                            m.tools
                                 .iter()
                                 .map(|t| t.name.as_str())
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         );
                     }
-                    if !plugin.manifest.profiles.is_empty() {
+                    if !m.prompts.is_empty() {
                         println!(
-                            "    profiles: {}",
-                            plugin
-                                .manifest
-                                .profiles
+                            "    prompts ({}): {}",
+                            m.prompts.len(),
+                            m.prompts
+                                .iter()
+                                .map(|p| p.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
+                    }
+                    if !m.profiles.is_empty() {
+                        println!(
+                            "    profiles ({}): {}",
+                            m.profiles.len(),
+                            m.profiles
                                 .iter()
                                 .map(|p| p.name.as_str())
                                 .collect::<Vec<_>>()

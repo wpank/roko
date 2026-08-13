@@ -77,6 +77,9 @@ pub struct PluginManifestFile {
     /// Plugin dependencies (other plugins required).
     #[serde(default)]
     pub dependencies: Vec<PluginDependency>,
+    /// Optional sandbox configuration (overrides tier defaults).
+    #[serde(default)]
+    pub sandbox: Option<SandboxConfig>,
 }
 
 /// Plugin metadata section.
@@ -95,6 +98,111 @@ pub struct PluginMeta {
     /// Optional license.
     #[serde(default)]
     pub license: Option<String>,
+    /// Trust tier level (1-5). Mirrors [`roko_plugin::tool_registry::PluginTier`].
+    /// Defaults to `"sandboxed"` (tier 2) when not specified.
+    #[serde(default)]
+    pub tier: PluginTierLevel,
+    /// Whether the plugin is enabled (wired into the runtime).
+    /// Defaults to `true`.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+/// Trust tier level for a plugin, declared in the manifest.
+///
+/// Mirrors the 5-tier SPI from `roko-plugin/src/tool_registry.rs`:
+///
+/// | Tier | Label | FS | Network | Secrets |
+/// |------|-------------|-----------|---------|---------|
+/// | 1 | Untrusted | none | no | no |
+/// | 2 | Sandboxed | read-only | no | no |
+/// | 3 | Standard | worktree | allow | no |
+/// | 4 | Trusted | full | full | yes |
+/// | 5 | Kernel | full | full | yes |
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginTierLevel {
+    /// Tier 1: untrusted -- no filesystem, no network, no secrets.
+    Untrusted,
+    /// Tier 2: sandboxed -- read-only filesystem, no network.
+    #[default]
+    Sandboxed,
+    /// Tier 3: standard -- worktree-scoped filesystem, allowlisted network.
+    Standard,
+    /// Tier 4: trusted -- full filesystem, full network, secrets allowed.
+    Trusted,
+    /// Tier 5: kernel -- same trust as core.
+    Kernel,
+}
+
+impl PluginTierLevel {
+    /// Human-readable label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Untrusted => "untrusted",
+            Self::Sandboxed => "sandboxed",
+            Self::Standard => "standard",
+            Self::Trusted => "trusted",
+            Self::Kernel => "kernel",
+        }
+    }
+
+    /// Whether this tier allows network access.
+    #[must_use]
+    pub const fn allows_network(self) -> bool {
+        matches!(self, Self::Standard | Self::Trusted | Self::Kernel)
+    }
+
+    /// Whether this tier allows filesystem writes.
+    #[must_use]
+    pub const fn allows_fs_write(self) -> bool {
+        matches!(self, Self::Standard | Self::Trusted | Self::Kernel)
+    }
+
+    /// Whether this tier allows secret access.
+    #[must_use]
+    pub const fn allows_secrets(self) -> bool {
+        matches!(self, Self::Trusted | Self::Kernel)
+    }
+
+    /// Numeric tier level (1-5).
+    #[must_use]
+    pub const fn level(self) -> u8 {
+        match self {
+            Self::Untrusted => 1,
+            Self::Sandboxed => 2,
+            Self::Standard => 3,
+            Self::Trusted => 4,
+            Self::Kernel => 5,
+        }
+    }
+}
+
+/// Sandbox configuration for a plugin.
+///
+/// Optional section in the plugin manifest that overrides the tier defaults.
+/// When absent, sandbox policy is derived from the `tier` field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SandboxConfig {
+    /// Whether network access is allowed.
+    #[serde(default)]
+    pub network: bool,
+    /// Allowed filesystem paths (empty = no fs access).
+    #[serde(default)]
+    pub allowed_paths: Vec<String>,
+    /// Denied filesystem paths.
+    #[serde(default)]
+    pub denied_paths: Vec<String>,
+    /// Whether secrets can be accessed.
+    #[serde(default)]
+    pub secrets: bool,
 }
 
 /// Tier 1: A prompt template that can be registered with the prompt system.
@@ -384,6 +492,53 @@ impl PluginManifestFile {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Compute the effective sandbox summary for display.
+    ///
+    /// If an explicit `[sandbox]` is present it is used; otherwise defaults
+    /// are derived from the plugin's tier level.
+    #[must_use]
+    pub fn effective_sandbox(&self) -> SandboxConfig {
+        if let Some(ref sandbox) = self.sandbox {
+            sandbox.clone()
+        } else {
+            let tier = self.plugin.tier;
+            SandboxConfig {
+                network: tier.allows_network(),
+                allowed_paths: Vec::new(),
+                denied_paths: Vec::new(),
+                secrets: tier.allows_secrets(),
+            }
+        }
+    }
+
+    /// The tier level declared (or defaulted) for this plugin.
+    #[must_use]
+    pub fn tier(&self) -> PluginTierLevel {
+        self.plugin.tier
+    }
+
+    /// Whether this plugin is wired (enabled) at runtime.
+    #[must_use]
+    pub fn is_enabled(&self) -> bool {
+        self.plugin.enabled
+    }
+
+    /// Wire status label: `"active"` or `"disabled"`.
+    #[must_use]
+    pub fn wire_status(&self) -> &'static str {
+        if self.plugin.enabled {
+            "active"
+        } else {
+            "disabled"
+        }
+    }
+
+    /// Total number of tools declared by this plugin.
+    #[must_use]
+    pub fn tool_count(&self) -> usize {
+        self.tools.len()
     }
 }
 

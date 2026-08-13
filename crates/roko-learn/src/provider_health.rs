@@ -748,6 +748,48 @@ impl roko_agent::model_call_service::ProviderOutcomeRecorder for ProviderHealthR
     }
 }
 
+// ─── ProviderHealthChecker bridge ────────────────────────────────────────────
+//
+// `ProviderHealthRegistry` implements the `ProviderHealthChecker` trait
+// defined in `roko-agent::rate_limit` so that the `ProviderRateLimiter`
+// can consult the shared circuit-breaker state before acquiring an RPM slot.
+// Providers in Open state are rejected immediately; HalfOpen providers are
+// allowed through as probes.
+
+impl roko_agent::rate_limit::ProviderHealthChecker for ProviderHealthRegistry {
+    fn circuit_state(&self, provider_id: &str) -> roko_agent::rate_limit::CircuitState {
+        let providers = self.providers.lock();
+        match providers.get(provider_id) {
+            None => roko_agent::rate_limit::CircuitState::Closed,
+            Some(health) => match health.state {
+                CircuitState::Closed => roko_agent::rate_limit::CircuitState::Closed,
+                CircuitState::Open => {
+                    // Check if cooldown has expired -- if so, treat as HalfOpen.
+                    if let Some(until) = health.cooldown_until {
+                        if unix_ms_now() >= until {
+                            // Note: we don't mutate state here because the lock
+                            // is read-only at this point. The actual transition
+                            // happens via `is_available()` when the request
+                            // succeeds or fails.
+                            return roko_agent::rate_limit::CircuitState::HalfOpen;
+                        }
+                    }
+                    roko_agent::rate_limit::CircuitState::Open
+                }
+                CircuitState::HalfOpen => roko_agent::rate_limit::CircuitState::HalfOpen,
+            },
+        }
+    }
+
+    fn record_probe_success(&self, provider_id: &str) {
+        self.record_success(provider_id);
+    }
+
+    fn record_probe_failure(&self, provider_id: &str) {
+        self.record_failure(provider_id, ErrorClass::Unknown);
+    }
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

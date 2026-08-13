@@ -1,6 +1,7 @@
-//! Status, health, metrics, dashboard, episodes, signals, gates, and operation endpoints.
+//! Status, health, metrics, dashboard, disk, episodes, signals, gates, and operation endpoints.
 
 mod dashboard;
+mod disk;
 mod episodes;
 mod gates;
 pub(super) mod health;
@@ -43,6 +44,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/parity", get(health::parity_handler))
         .route("/statehub/snapshot", get(health::statehub_snapshot))
         .route("/statehub/events", get(health::statehub_events))
+        .route("/status/disk", get(disk::disk_usage))
 }
 
 #[cfg(test)]

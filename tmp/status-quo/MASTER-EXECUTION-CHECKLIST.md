@@ -1,5 +1,14 @@
 # Roko master execution checklist
 
+> **What is this?** This checklist tracks every feature, fix, and integration task across the roko codebase.
+> It is organized into "Waves" (0-13) roughly corresponding to development phases.
+> Items are marked: [x] done, [~] partial/regressed, [ ] not done.
+>
+> **How to use:** Search for your area of interest, check its status, and look for linked plan IDs (P01-P31).
+> Before starting new work, verify the item isn't already done or in progress.
+>
+> **Last updated:** 2026-08-13 (batch 2026-08-12: Engram-to-Signal rename, eprintln-to-tracing, .expect()-to-proper-errors, docs/v2 reality sync, docs/v1 deprecation headers, HTTP timeouts, .DS_Store cleanup)
+
 > Canonical entry point for long-running, context-free Claude/Codex agents
 >
 > Repository: /Users/will/dev/nunchi/roko/roko
@@ -42,7 +51,7 @@ mapping and equivalent-or-stronger acceptance. It never means “we chose not to
 
 ### Batch audit 2026-08-10
 
-Updated 2026-08-12 (batches 8+9 integrated)
+Updated 2026-08-13 (batches 8+9 integrated; batch 2026-08-12 hygiene sweep applied)
 
 Batches 1-9: 27 audit + 20 implementation + 27 mixed + 15 + 15 + 14 partial + 30 + 30 + 30 impl
 agents. All changes integrated and pushed to `status-quo/batch-2026-08-10`.
@@ -78,15 +87,31 @@ Batch 8 summary (30 agents, 23 with committed code, ~3,500 LOC):
 | E48 (cost control) | 7/12 | T07: token estimator, T08: provider health routing, T09: cost projection |
 | E32 (tool registry) | 3/8 | T01: DynamicToolRegistry improvements |
 
-Cross-wave ledger: ~125 confirmed done, ~10 partial, ~5 greenfield remaining in active plans.
+Cross-wave ledger: ~125 confirmed done, ~10 partial, ~5 greenfield remaining in active plans. **Note (2026-08-13 audit):** Wave 10 entries for E30, E31, E35, E46, E47 were stale relative to batch 9 summary counts; corrected below.
 
 Epics completed (all tasks done): **E34** (security/IFC 8/8), **E43** (ops hardening 8/8), **E45** (agent quality 10/10).
+
+### Batch 2026-08-12
+
+Codebase-wide hygiene and correctness sweep. No new features; focus on rename consistency,
+logging discipline, error handling safety, and documentation reality-sync.
+
+| Change | Scope | Detail |
+|---|---|---|
+| **Engram-to-Signal rename** | 38 crates, ~500 type refs, ~200 variable renames | **Correction (2026-08-13):** Struct is still `pub struct Engram` in `roko-core/src/engram.rs:176`; `Signal` is a type alias (`pub type Signal = Engram` line 226). Only 3 serde aliases exist in source (roko-dreams, roko-runtime, roko-graph). Consumers use `Signal` but canonical struct name is unchanged. |
+| **eprintln!-to-tracing** | ~40 calls converted; hundreds remain | **Correction (2026-08-13):** ~40 calls were converted, but 231 `eprintln!` remain in roko-cli (25 files), 7 in roko-learn (2 files), 3 in roko-agent (test files). roko-acp is clean. Sweep was partial, not comprehensive. |
+| **.expect()-to-proper-errors** | ~25 targeted fixes | **Correction (2026-08-13):** ~25 high-risk `.expect()` sites fixed, but `.lock().expect()` still appears 113 times across 40 files. roko-serve has 1,102 `.expect()` calls (44 files); roko-cli has 710 (71 files). Sweep targeted specific hot spots, not comprehensive cleanup. |
+| **docs/v2 implementation status markers** | 29 chapters + 5 guides | Every docs/v2/ file now has a header block indicating implementation status (Implemented / Partial / Spec-only) with specific notes on what is and isn't wired. |
+| **docs/v1 deprecation headers** | 417 files | All docs/v1/ files now carry a deprecation header pointing to the docs/v2/ successor or marking the content as historical-only. |
+| **HTTP timeouts on reqwest::Client** | 8 instances in roko-serve | All `reqwest::Client::new()` or `reqwest::Client::builder().build()` calls in roko-serve now set explicit `.timeout(Duration::from_secs(30))`. Prevents unbounded blocking on external HTTP calls. |
+| **configure_strategy_space signature** | roko-daimon (not roko-learn) | **Correction (2026-08-13):** Function is in `roko-daimon/src/lib.rs:2092`, not roko-learn. Changed to `-> Result<()>`. Callers in roko-serve and roko-cli updated. |
+| **.DS_Store cleanup** | tmp/ | 13 `.DS_Store` files removed from `tmp/` subdirectories. |
 
 Prior findings:
 
 | Finding | Detail |
 |---|---|
-| Build health | `cargo build --workspace` passes. Nightly fmt applied, clippy clean. |
+| Build health | `cargo build --workspace` passes. Nightly fmt applied, clippy clean. Batch 2026-08-12: ~25 `.expect()` calls in production code converted to proper error handling; `configure_strategy_space` signature changed from panicking to `Result<()>`; 8 `reqwest::Client` instances in roko-serve given explicit HTTP timeouts. |
 | Stale TOML metadata | P08 (4/4), P09 (3/3), P23 (6/6), e2e-smoke (2/2), E16 (2/2), E07-T07, E07-T09, E09-T09, E05-T05, E18-T07 all show `done = 0` in their tasks.toml but are fully implemented in code. |
 | E04 security | 18/19 done (was reported as 12/19). T13 fixed; only T14 (fail-closed tool permission) remains. |
 | Waves 10-13 | Most now have foundations from batch 7 agents. Best coverage: E45, E47, E48. |
@@ -632,7 +657,7 @@ hint; Wave 0 may correct it from actual file/dependency evidence.
 - [x] P14-gate-rung-fix (3/3 done) — plans/P14-gate-rung-fix/tasks.toml; Wave 8/E05. T1,T2,T3 all done. T3 `complex_pipeline_has_seven_canonical_rungs` test added.
 - [x] P15-error-recovery-wiring (5/5 done) — plans/P15-error-recovery-wiring/tasks.toml; Waves 2/7 SH02/E01. T1 done (classify_agent_crash), T2 done (crash classification in do_cmd plan-gen errors), T3 done (config parse warnings logged instead of silently swallowed), T4 done (task_crash_class ledger entry), T5 done (enriched agent exit handler).
 - [x] P16-safety-contracts (5/5 done) — plans/P16-safety-contracts/tasks.toml; Wave 7/E04. T1 done (contract load in event_loop), T2 done (disallowed_tools field on CliDispatchRequest + --disallowed-tools flags), T3 done (forbidden_tool_names()), T4 done (AgentSpawnConfig.disallowed_tools passthrough), T5 done (bridge advisory log for non-CLI dispatch).
-- [ ] P17-cli-output-format (3/6) — plans/P17-cli-output-format/tasks.toml; Waves 4/9 SH04/E10. T1 done (`CliOutput` struct), T2 done (do_cmd.rs eprintln migration), T3 done (10 unit tests). T4-T6 remaining.
+- [x] P17-cli-output-format (6/6 done, verified 2026-08-13) — plans/P17-cli-output-format/tasks.toml; Waves 4/9 SH04/E10. T1 done (`CliOutput` struct, 27 unit tests in cli_output.rs). T2 done (config diagnostic downgraded to `tracing::debug!` in loader.rs:273). T3 done (do_cmd.rs `CliOutput` usage, 34 refs). T4 done (0 `eprintln!` calls remain in do_cmd.rs). T5 done (`output_format::intro("Plan complete")` at do_cmd.rs:698). T6 done (0 raw `eprintln!` remain). TOML `done = 0` is stale.
 - [x] P18-tui-agent-data (5/5) — plans/P18-tui-agent-data/tasks.toml; Waves 4/9 SH04/E10. All 5 acceptance roll-ups verified: structured attribution, token accumulation, error classification, gate diagnosis, TUI bridge. 6 agent_events tests added.
 - [ ] P19-cascade-router-acp (1/6) — plans/P19-cascade-router-acp/tasks.toml; Wave 10/E17. T1 done (cascade_select_model env-gated). T2-T6 remaining: wire call site, model key fix, DaimonState loading.
 - [x] P20-zero-config (5/5) — plans/P20-zero-config/tasks.toml; Wave 8/E15/E18. T1 done (auto-detect provider), T2 done (default roko.toml), T3 done (skip provider validation), T4 done (use_max_completion_tokens), T5 done (resolve_model builtin path + 3 tests).
@@ -677,8 +702,8 @@ Keep max_parallel=1 until the full plan proves otherwise.
 Plan: tmp/status-quo/self-heal/plans/SH02-isolation-recovery/tasks.toml
 
 - [x] SH02-T01 Enforce effective per-plan concurrency. (Per-plan active_count gate using PlanDag.running; plan_max_parallel index from tasks.toml.)
-- [x] SH02-T02 Create task-owned worktrees and immutable gate inputs. (Per-task branches via checkout_task_branch/merge_task_into_plan/discard_task_branch; agent spawns onto roko/task/<plan>/<task> branch, merged on pass, discarded on fail.)
-- [x] SH02-T05 Replace spawn polling with queued capacity wakeups. (NotifyPermit wrapper notifies on drop; spawns_queued dedup prevents log storm; reset_immediately on waker.)
+- [x] SH02-T02 Create task-owned worktrees and immutable gate inputs. (Per-task branches via `roko/task/<plan>/<task>` pattern in `runner/branch_cleanup.rs`; agent spawns onto per-task branch, merged on pass, discarded on fail. Note: exact function names `checkout_task_branch/merge_task_into_plan/discard_task_branch` do not exist — actual impl uses worktree tracking in `event_loop.rs` + `branch_cleanup.rs`.)
+- [x] SH02-T05 Replace spawn polling with queued capacity wakeups. (Implemented via `TaskConcurrencyPermit` + `TaskCapacity` using `tokio::sync::Semaphore` for both global and per-plan capacity. Note: description primitives `NotifyPermit/spawns_queued/reset_immediately` do not exist — actual impl uses `OwnedSemaphorePermit` with `try_acquire` in `event_loop.rs:528-564`.)
 - [x] SH02-T03 Require a durable task commit before success. (Already implemented: terminalize_passed_task commits via commit_task_changes with declared_files filter, CommitOutcome::Created{hash} recorded in TaskTerminalOutcome/RunLedger, failures terminalize as PersistenceFailed.)
 - [x] SH02-T04 Make worktree resume/reacquisition idempotent. (Already implemented: try_reattach validates path/branch/HEAD match, discover_existing at startup re-registers disk worktrees, ensure_for_plan falls back to try_reattach before create.)
 - [x] SH02-T06 Clean crash locks and recover dirty worktrees. (Already implemented: clear_stale_locks in create/remove/prune cleans dead locks > 60s; try_reattach preserves dirty work with ownership; discover_existing at startup re-registers without touching working tree.)
@@ -697,7 +722,7 @@ Plan: tmp/status-quo/self-heal/plans/SH03-persistence-integrity/tasks.toml
 - [x] SH03-T03 Make the lifecycle ledger complete and idempotent. (Run ledger JSONL already writes task_started/completed/failed, gate_outcome, plan_revision, timeout_recorded, run_summary entries; RunLedger.record_task_terminal idempotent; added fsync to append_ledger_entry for durability.)
 - [x] SH03-T05 Recover and clean atomic-write debris after T02. (Added clean_stale_staging_files scanning *.tmp.<PID>.<SEQ> pattern; dead-PID detection via kill -0; called at event loop startup; atomic_write already uses create_new to preserve existing debris.)
 - [x] SH03-T04 Repair fresh-run seeded task semantics after T01/T03. (Already implemented: seed_completed_tasks_from_plan_status excludes done tasks from DAG selection; progress counts consistent; unit tested.)
-- [x] SH03-T06 Make StateHub publication ordered/recoverable after T03. (Already implemented: publish_lock serializes snapshot+broadcast; subscriber N observes state including N; lag sends gap+resync; concurrent publishers safe; comprehensive tests.)
+- [x] SH03-T06 Make StateHub publication ordered/recoverable after T03. (Already implemented: `publish_lock: Arc<Mutex<()>>` in `roko-runtime/src/state_hub.rs:217` serializes snapshot+broadcast; subscriber N observes state including N; concurrent publishers safe; comprehensive tests. Verified 2026-08-13.)
 - [x] SH03 reads 6/6 done after integrated acceptance.
 
 T02/T03 and T04/T06 are logically parallel, but must serialize if persistence files
@@ -726,7 +751,7 @@ Plan: tmp/status-quo/self-heal/plans/SH05-config-dispatch/tasks.toml
 
 - [x] SH05-T01 Fail fast on ambiguous model configuration. — Duplicate slugs rejected via `AmbiguousModelSlug`, unresolved default via `UnresolvedModel`, validated at runner startup (event_loop.rs:741). Tests: `load_validated_rejects_duplicate_slugs`, `unresolved_default_model_is_fatal`.
 - [x] SH05-T02 Normalize dispatch lifecycle and transient retry. — RetryPolicy::for_rate_limit() uses DEFAULT_RATE_LIMIT_RETRY_ATTEMPTS (5), added dispatch_max_retries to CoreRunnerConfig/RunConfig, 529→RateLimit in all providers, improved retry logging with error_class. Tests: retry 14/14.
-- [x] SH05-T03 Harden process supervision and cancellation. — Process groups via setpgid(0,0), recursive descendant kill (pgrep -P, depth 8), ProcessSupervisor::Drop force-kills sync, timeout produces TimeoutEvent persisted to ledger. Tests: `kill_tree_removes_child_and_grandchild_pids`, timeout replay tests.
+- [x] SH05-T03 Harden process supervision and cancellation. — Process groups via `setpgid(0,0)` (`roko-agent/src/process/group.rs`), recursive descendant kill via `pgrep -P` depth 8 (`group.rs:107-128`), `kill_tree` escalation in `roko-agent/src/process/kill.rs`, `ProcessSupervisor::Drop` force-kills sync in `roko-runtime/src/process.rs`. Tests: `kill_tree_removes_child_and_grandchild_pids`, `kill_tree_escalates_to_sigkill`, `kill_tree_handles_already_exited`.
 - [x] SH05-T04 Enforce and attribute cost budgets. — BudgetConfig defaults to 0.0=unlimited, PlanCompleted FeedbackEvent uses real costs, pre-flight validate_budget_ceilings rejects negative/NaN/Inf, budget guards handle 0.0=unlimited. Tests: budget 7/7, presets 8/8, facades 3/3.
 - [x] SH05 reads 4/4 done after integrated acceptance.
 
@@ -740,7 +765,7 @@ Plan: tmp/status-quo/self-heal/plans/SH06-regression-harness/tasks.toml
 - [x] SH06-T03 Test connected TUI responsiveness and invariants. — 16 new tests (28 total) in tui_tabs.rs covering parallel agents, diagnosis ring buffer (eviction, dedup), token accumulation/routing, phase transitions, agent timing lifecycle, error ring eviction, AgentCompleted deactivation, full lifecycle replay.
 - [x] SH06-T02 Test interruption, dirty worktree, and exact resume after T01. — 8 new tests (13 total) in resume_cycle_e2e.rs: interrupt-after-gate recovery, multi-plan fingerprint validation, multi-plan drift detection, replan ledger round-trip, all-3-JSONL recovery, empty completed set, schema version mismatch/acceptance. All deterministic, tempdir-isolated.
 - [x] SH06-T04 Run subsystem regression/quality gates after T01/T02/T03. — ~5,139 tests across roko-cli/runtime/agent/core/serve: 0 SH-related regressions. 4-5 pre-existing/flaky failures (3 config CWD reads, 1 HTTP startup timeout, 1 CLI subprocess timeout). Clippy clean (0 warnings) across all 5 crates.
-- [x] SH06-T05 Prove Roko completes its own deterministic smoke repair. — 3 tests in e2e_self_host.rs: full pipeline (3-task DAG with gate-fail-retry, dashboard projection, persistence round-trip, resume validation, orphan detection), mid-run crash resume, failure propagation with terminal counts. 309 LOC, deterministic, network-free.
+- [x] SH06-T05 Prove Roko completes its own deterministic smoke repair. — 4 tests in e2e_self_host.rs (verified 2026-08-13): `prd_front_half_offline_smoke`, `self_host_smoke_full_pipeline` (3-task DAG with gate-fail-retry, dashboard projection, persistence round-trip, resume validation, orphan detection), `resume_from_mid_run_replays_remaining`, `failed_task_blocks_dependent_terminal_counts`. Deterministic, network-free.
 - [x] SH06 reads 5/5 done.
 - [x] Self-heal reads 57/57 done. (SH01-T07 fix merged to main at 88b3a31; all gate tests pass.)
 - [x] Autonomous concurrency increase approved: SH06 5/5 + SH01-SH05 all done, 57/57 self-heal complete.
@@ -789,7 +814,7 @@ After Wave 7, run disjoint tracks with one owner/worktree per plan.
 
 Track A, sequential:
 
-- [x] E03-type-consolidation — 7/7 done. (T06 done: `ArtifactRetentionPolicy::from_core_policy()` adapter added in roko-serve/retention.rs.)
+- [x] E03-type-consolidation — 7/7 done. (T06 done: `ArtifactRetentionPolicy::from_core_policy()` adapter added in roko-serve/retention.rs. Batch 2026-08-12: Engram-to-Signal done via type aliases (`pub type Signal = Engram`), not true struct renames; only 3 serde aliases added.)
 - [x] E02-STORAGE-CONVERGENCE — 12/12 done. (T12 done: cold archival fixed — copy-not-move bug resolved, dedup guard added, hot.remove_ids + compact wired.)
 - [x] E05-gate-adaptivity-live — 8/8 done. T05 done: `build_rung_execution_inputs` + `build_rung_execution_config` (gate_dispatch.rs). `complex_pipeline_has_seven_canonical_rungs` test now added (P14-T3).
 - [x] E06-COMPOSE-UNIFY — 9 tasks, after E01 and SH foundations. (9/9 done: T01,T02,T03,T04,T05,T06,T07,T08,T09.)
@@ -810,7 +835,7 @@ Track C:
 
 Wave gate:
 
-- [x] One canonical durable path per concern. (E02 convergence: engrams, episodes, daimon, gate-verdicts, state-snapshot all canonical.)
+- [x] One canonical durable path per concern. (E02 convergence: signals (formerly engrams), episodes, daimon, gate-verdicts, state-snapshot all canonical.)
 - [x] Complete state migration/recovery proof. (LayoutVersion::V2 migration, executor.json→state-snapshot.json, doctor warns on V1.)
 - [x] No positive learning from stub/skipped gates. (E05-T02/T03: stub verdicts skipped, excluded from EMA.)
 - [x] Canonical prompt path is used by Runner v2. (RoleSystemPromptSpec delegates to build_role_system_prompt; runner-v2 default.)
@@ -827,7 +852,7 @@ Eligible parallel roots, subject to file reservations:
 - [x] E09-OBSERVABILITY — 11 tasks. (11/11 done: T01,T02,T03,T04,T05,T06,T07,T08,T09,T10,T11. T10 log rotation: roko-fs log_rotation module with size-based JSONL rotation + timestamped archives.)
 - [x] E10-FRONTEND-CONTRACT — 7 tasks after E03. (7/7 done: T01 share fix, T02 ws/agents, T03 bench matrix, T04 ISFR SSE, T05 snake_case, T06 single SSE, T07 lastEventId.)
 - [x] E11-chain-isfr prerequisite/design recovery — 5 tasks. (5/5 done: T01,T02,T03,T04,T05.)
-- [x] E19-signal-protocol — 10 tasks. (10/10 done: SignalStatus, graduation, TaintLevel, lineage_hint, demurrage, re-exports all implemented in roko-core.)
+- [x] E19-signal-protocol — 10 tasks. (10/10 done: SignalStatus, graduation, TaintLevel, lineage_hint, demurrage, re-exports all implemented in roko-core. Batch 2026-08-12: Signal is a type alias for Engram (`pub type Signal = Engram` in engram.rs:226); canonical struct name is still Engram internally.)
 - [x] E20-cell-unification — 10/10 done. (T07 done: Cell as supertrait on Score/Verify/Route/Compose/React. T09 done: 40+ Cell impls across 15 crates. T10 re-exports confirmed.)
 
 E19/E20 both touch roko-core. Freeze public vocabulary/trait ownership first or run
@@ -859,16 +884,16 @@ Run only after the named parents are DONE:
 - [ ] E27-feeds-system — 0/10, all greenfield. After E19/E20. No feed types exist.
 - [ ] E28-groups-coordination — 0/8, all greenfield. After E20. No group coordination types exist.
 - [ ] E29-connectivity-relay — 0/9, all greenfield. After E04. Data types exist in `roko-core` but no relay protocol.
-- [ ] E30-extension-system — ~5/9 partial. After E20. T01 CamelTag/ProvenanceEntry, T03 ExtensionManifest/PackageTier validation, T04 HookRunner lifecycle hooks (29 tests), T07 topological sort with cycle detection. `PluginManifestFile`, `discover_plugins`, `LoadedPlugin`, `DeclarativeTool` exist. SignalMatch/Manual trigger variants added to TriggerDef.
-- [ ] E31-trigger-system — ~2/8 partial. After E08. T01 done: TriggerProtocol trait, TriggerBinding, TriggerEvent, TriggerState, TriggerSource types. `TriggerDef` now has 5 manifest variants (Cron, Webhook, SignalMatch, Manual + stub). trigger_protocol module with TriggerEnvelope/TriggerOutcome types added.
-- [ ] E32-tool-plugin-ecosystem — ~1/8 partial. After E14/E15. `PluginTier` (5 tiers) exists + `PluginCmd::Audit` basic tier inference. No `DynamicToolRegistry`, `SandboxConfig`, version resolution.
+- [ ] E30-extension-system — **Correction (2026-08-13): ~8/9 partial** (was ~5/9; batch 9 agrees). After E20. T01 CamelTag/ProvenanceEntry, T02 FilterDecision/BudgetAction hooks, T03 ExtensionManifest validation, T04 HookRunner lifecycle hooks, T05 ExtensionHealthTracker, T06 hook timeout+auto-disable, T07 topological sort, T08 TOML manifest loader. `PluginManifestFile`, `discover_plugins`, `LoadedPlugin`, `DeclarativeTool` exist.
+- [ ] E31-trigger-system — **Correction (2026-08-13): ~4/8 partial** (was ~2/8; batch 9 agrees). After E08. T01: TriggerProtocol/TriggerBinding/TriggerEvent/TriggerState/TriggerSource. T02: ConcurrencyPolicy serde + TriggerFilter. T03: TriggerAuth/SecretRef. T04: TriggerCellAdapter. `TriggerDef` has 5 variants (Cron, FileWatch, Webhook, SignalMatch, Manual -- no stub).
+- [ ] E32-tool-plugin-ecosystem — ~5/8 partial. After E14/E15. T01: DynamicToolRegistry improvements. T02: SandboxConfig with tier-based isolation. T03: version resolution + conflict detection. `PluginTier` (5 tiers) exists + `PluginCmd::Audit` basic tier inference. Batch 2026-08-12: `.expect()` calls in tool_registry.rs converted to proper error handling.
 - [ ] E33-telemetry-lens — ~8/9 partial. After E09/E10. T03 done: domain lenses. T04 done: LensRegistry. T05 done: TelemetryObserve trait + ObservableEvent (38 variants) + CircuitBreakerState. `Lens` trait, `LensScope`, `LensSnapshot`, `CollectorLens` exist.
-- [ ] E34-security-ifc — ~6/8 partial. After E04. T01 done: TaintLevel trust_score + lattice tests. T03 done: capabilities module. T04 done: IFC check + corrigibility ordering. T06 done: 3-layer capability intersection. `QuarantineVault` exists. `propagate_taint` lattice join implemented. Remaining: T02 (taint tracker upgrade), T05 (sandbox levels), T07 (quarantine persistence), T08 (safety hook wiring).
-- [ ] E35-auth-protocol — ~3/8 partial. After E04. T01 done: AgentToken + key rotation. T02 done: RBAC module with Role hierarchy, Permission sets, enforce_permission, escalation guard (23 tests). `expires_at` field exists on `ApiKeyEntry`. Remaining: relay tokens, JWKS hardening, audit trail, enforcement wiring.
+- [x] E34-security-ifc — 8/8 done. After E04. T01: TaintLevel trust_score + lattice tests. T02: lattice-aware taint propagation. T03: capabilities module. T04: IFC check + corrigibility ordering. T05: 5 sandbox enforcement levels. T06: 3-layer capability intersection. T07: QuarantineVault persistence. T08: safety hook wiring. (Completed in batches 8+9. Batch 2026-08-12: `.expect()` calls in taint_propagation.rs and sandboxing.rs converted to proper error handling.)
+- [ ] E35-auth-protocol — **Correction (2026-08-13): ~5/8 partial** (was ~3/8; batch 9 agrees). After E04. T01 done: AgentToken + key rotation. T02 done: RBAC module (23 tests). T03 done: RelayToken issue/validate/single-use with 7 tests (roko-serve/src/routes/auth.rs). T04 done: AuthAuditLog JSONL + sweep + query (roko-serve/src/auth_audit.rs). T05 done: JwksCache (roko-serve/src/jwks.rs). Remaining: T06-T08 (enforcement wiring).
 - [ ] E42-config-evolution — 0/8, all greenfield. After E19. Hot-reload watcher exists but no `ConfigMigrator`, `FieldProvenance`, `DomainProfile`.
 - [ ] E44-cross-cut-functors — 0/8, all greenfield, architecturally novel. After E19/E20. `CrossCutFunctor` trait doesn't exist anywhere.
 - [ ] E37-surfaces — 0/9, all greenfield. After E09/E33. `ProjectionEnvelope`, `DashboardEvent` are the right foundation.
-- [ ] E43-deployment-portability — ~6/8 partial. After E18. T01 done: brain export Merkle. T03 done: daemon launchd RUST_LOG + uninstall fix. T06 done: secrets rotation. T07 done: deployment tier advisor. T08 done: distroless Dockerfile. Remaining: T02 (brain import), T04 (daemon health check), T05 (daemon log rotation).
+- [x] E43-deployment-portability — 8/8 done. After E18. T01: brain export Merkle. T02: brain import with Merkle verify + dedup. T03: daemon launchd RUST_LOG + uninstall fix. T04: daemon health (PID+HTTP probe). T05: log rotation. T06: secrets rotation. T07: deployment tier advisor. T08: distroless Dockerfile. (Completed in batches 8+9. Batch 2026-08-12: `.expect()` calls in daemon.rs converted to proper error handling.)
 - [ ] Reconcile/complete P19-cascade-router-acp — 1/6. T1 done (cascade_select_model env-gated). T2-T6 remaining.
 - [ ] Reconcile/complete P25-mcp-acp-passthrough — 3/4. T1,T2,T3 done. T4 remaining.
 - [ ] Reconcile/complete P28-image-support — 0/5. All unimplemented.
@@ -876,9 +901,9 @@ Run only after the named parents are DONE:
 
 Operational epics with corrected real dependencies:
 
-- [ ] E46-github-workflow-integration — ~4/12 partial. After E01/E04/E15. T01-T02: webhook handler + signal routing. T03: GitHubClient webhook signature verification. T04: GitHubOps trait + NoOpGitHubOps. Signal kind constants added. 8 tasks remaining.
-- [ ] E47-resource-disk-management — 11 tasks after E01/E02. (3/11 done: T01 ResourcesConfig, T03 GcEngine wired, post-run worktree+target cleanup. Remaining: T02,T04-T11.)
-- [ ] E48-rate-limit-budgeting — ~7/12 partial. After E14/E26. T01 retry-with-backoff, T02 per-provider limits, T03-T04 rate limiter + budget guardrail, T05-T06 token estimator + cost projection, T07 token estimation, T08 provider health routing, T09 cost projector. Remaining: T05 (shared pool), T06 (fallback), T10-T11 (CLI wiring), T12 (integration tests).
+- [ ] E46-github-workflow-integration — **Correction (2026-08-13): ~8/12 partial** (was ~4/12). After E01/E04/E15. T01-T02: webhook handler + signal routing. T03: GitHubClient webhook signature verification. T04: GitHubOps trait + NoOpGitHubOps. T05: issue event pipeline. T06: workflow_run handler. T07: check_suite handler (CheckSuiteAction enum + CheckSuiteEvent struct). T08: deployment event handler (DeploymentState enum + DeploymentEvent struct). 29 signal_kinds::GITHUB_* constants defined. 4 tasks remaining.
+- [ ] E47-resource-disk-management — **Correction (2026-08-13): ~10/11 partial** (was 3/11; batch 9 summary says 10/11 which matches code). After E01/E02. T01 ResourcesConfig, T02 DiskUsage+DiskPressureLevel, T03 GcEngine wired, T04 disk pre-check, T05 target/ cleanup scanner (roko-fs/src/target_cleanup.rs), T06 worktree lifecycle cleanup, T08 DiskPressureWatcher wired. Remaining: verify T07/T09/T10/T11 status.
+- [ ] E48-rate-limit-budgeting — ~10/12 partial. After E14/E26. T01 retry-with-backoff, T02 per-provider limits, T03-T04 rate limiter + budget guardrail, T05 shared rate pool (Arc<ProviderHealthRegistry>), T06 FallbackChain on rate limit, T07 token estimation, T08 provider health routing, T09 cost projector, T10 --budget-override CLI flag. Remaining: T11 (CLI cost report), T12 (integration tests). **Correction (2026-08-13):** `configure_strategy_space` is in roko-daimon, not roko-learn.
 - [ ] Operational overlap has one implementation owner and no duplicate mechanisms.
 
 ### Wave 11 — economy and chain
@@ -899,12 +924,12 @@ registry types.
 Plan: tmp/status-quo/backlog/plans/E12-DEAD-CODE-CLEANUP/tasks.toml
 
 - [ ] E12 T01–T05 and T09 pass consumer audits and named prerequisites. (T01 done: orphan files deleted. T04 done: dead_code count 53 < 71 baseline. T05 done: roko-index HDC uses roko-primitives. T02 blocked/wontfix: roko-gate is a genuine runtime dep used by effect_driver.rs (rung_for_gate_name, is_deterministic_gate). T03 done: legacy-runner-v2 feature removed from Cargo.toml. T09 needs impl: roko-plugin fully live.)
-- [x] E12-T06 runs only after E01/E04/E08. (Partial: workspace membership removed, no Cargo edges remain; physical `crates/roko-orchestrator/` directory still on disk.)
+- [~] E12-T06 runs only after E01/E04/E08. (Partial: **Correction (2026-08-13):** workspace membership NOT removed -- `roko-orchestrator` still listed at line 23 of root Cargo.toml. No other crate depends on it (no Cargo edges). Physical `crates/roko-orchestrator/` directory still on disk with src/, tests/, examples/.)
 - [x] E12-T07 runs only after E05/E06/E08. (Done: lib.rs exports and Cargo bin path cleaned; `orchestrate.rs` deleted.)
 - [x] E12-T08 runs only after T07. (Done: `legacy-orchestrate` feature removed from Cargo.toml; ~1900 lines of conditional code removed from run.rs; dead structs cleaned.)
 - [ ] Every deletion has full workspace proof before and after its own commit.
 - [ ] E12 reads 9/9 done. (Current: 7 done (T01,T03,T04,T05,T07,T08,T09), 1 partial (T06), 1 blocked (T02 — roko-gate genuine runtime dep). T09 done: plugin webhook scopes wired at serve startup.)
-- [ ] E45-orchestrator-mori-parity — 9/10 done. T01: ReviewVerdict + express mode. T02: gate auto-fix. T03: error sharing. T05: context scoping. T06: warm pool. T07: knowledge routing advice. T08: provider metrics. T10: A-MAC gate. Remaining: T04 (post-gate reflection loop, needs T02), T09 (playbook rules, needs T04).
+- [x] E45-orchestrator-mori-parity — 10/10 done. T01: ReviewVerdict + express mode. T02: gate auto-fix. T03: error sharing. T04: post-gate reflection with dedup + cost guard. T05: context scoping. T06: warm pool. T07: knowledge routing advice. T08: provider metrics. T09: playbook rules. T10: A-MAC gate. (Completed in batches 8+9.)
 - [ ] No legacy behavior remains solely in deleted/quarantined code.
 
 Never combine unrelated legacy deletions in one unverifiable commit.
@@ -917,14 +942,14 @@ clear baseline/supersession banners rather than rewritten history.
 DOC reconciliation plans:
 
 - [ ] DOC-status-quo-corpus — 12 tasks.
-- [ ] DOC-v1-kernel — 8 tasks.
-- [ ] DOC-v1-cognition — 7 tasks after canonical dependency repair.
-- [ ] DOC-v1-ecosystem — 10 tasks.
-- [ ] DOC-v2-depth — 24 tasks.
+- [~] DOC-v1-kernel — 8 tasks. (Batch 2026-08-12: deprecation headers added to all 417 docs/v1/ files pointing to docs/v2/ successors. Content reconciliation tasks remain.)
+- [~] DOC-v1-cognition — 7 tasks after canonical dependency repair. (Batch 2026-08-12: deprecation headers applied.)
+- [~] DOC-v1-ecosystem — 10 tasks. (Batch 2026-08-12: deprecation headers applied.)
+- [~] DOC-v2-depth — 24 tasks. (Batch 2026-08-12: implementation status markers added to all 29 chapters + 5 guides. Content depth tasks remain.)
 - [ ] DOC-v2-core is a deduplicated acceptance roll-up, not a second implementation stream.
-- [ ] E18 T10–T13/T15 complete after product truth stabilizes.
+- [ ] E18 T10-T13/T15 complete after product truth stabilizes.
 - [ ] All 108 original top-level documents have a current or historical disposition.
-- [ ] Issues 60–67 are added to self-heal coverage. (Confirmed absent from COVERAGE.md — 8 issues with no coverage mapping. Issue 66 secret scrubber false-positive confirmed still broken in source.)
+- [ ] Issues 60-67 are added to self-heal coverage. (Confirmed absent from COVERAGE.md -- 8 issues with no coverage mapping. **Correction (2026-08-13):** Issue 66 secret scrubber false-positive IS FIXED -- `LogScrubber` requires 20+ chars after `sk-` prefix (roko-core/src/obs/scrub.rs:72), test `short_sk_prefix_not_scrubbed` verifies. Contradicts the "confirmed still broken" claim here; agrees with section 2 "Issue 66 fixed" claim.)
 - [ ] Issue states derive from merged task evidence.
 - [ ] Counts derive from manifests/scripts with one owner.
 - [ ] CLI help, README, deployment examples, engine/resume semantics, and paths agree.

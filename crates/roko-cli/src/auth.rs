@@ -155,6 +155,7 @@ mod tests {
             privy_app_id: None,
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
+            enforcement_mode: Default::default(),
         }
     }
 

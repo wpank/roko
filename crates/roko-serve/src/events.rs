@@ -2,6 +2,7 @@
 //! operations. These flow through the shared event bus and are streamed to
 //! connected SSE / WebSocket clients.
 
+use roko_core::trigger::TriggerEvent;
 use roko_core::{ContentHash, Signal};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -416,6 +417,12 @@ pub enum ServerEvent {
     IsfrKeeperStateChanged {
         /// Whether the keeper is now running.
         running: bool,
+    },
+
+    /// A trigger binding was manually fired via the API.
+    TriggerFired {
+        trigger_name: String,
+        event: TriggerEvent,
     },
 
     /// The server is shutting down.

@@ -637,6 +637,13 @@ Examples:
         cmd: commands::feed::FeedCmd,
     },
 
+    // ── Triggers ────────────────────────────────────────────────────
+    /// Manage trigger bindings (list, show, create, fire).
+    Trigger {
+        #[command(subcommand)]
+        cmd: commands::trigger::TriggerCmd,
+    },
+
     // ── Server & deployment ─────────────────────────────────────────
     /// Start the dev environment (serve + optional demo frontend).
     #[command(after_help = "\
@@ -1202,6 +1209,9 @@ enum PluginCmd {
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
+        /// Emit JSON output instead of human-readable text.
+        #[arg(long)]
+        json: bool,
     },
     /// Install a plugin from a local path or registry.
     Install {
@@ -2564,6 +2574,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         Command::Graph { cmd } => commands::graph::cmd_graph(cmd).await,
         Command::Isfr { cmd } => commands::isfr::cmd_isfr(cli, cmd).await,
         Command::Feed { cmd } => commands::feed::cmd_feed(cli, cmd).await,
+        Command::Trigger { cmd } => commands::trigger::cmd_trigger(cli, cmd).await,
         Command::Dev { no_frontend } => commands::dev::cmd_dev(cli, no_frontend).await,
         Command::Up { workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
@@ -5530,5 +5541,93 @@ mod tests {
             parsed.servers.iter().any(|s| s.name == "github"),
             "mcp-auto.json must contain a 'github' server entry"
         );
+    }
+
+    // ── E31-T06: trigger subcommand parsing ────────────────────────────────
+
+    #[test]
+    fn cli_parses_trigger_list() {
+        let cli = Cli::try_parse_from(["roko", "trigger", "list"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Trigger {
+                cmd: commands::trigger::TriggerCmd::List { .. },
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_trigger_show() {
+        let cli = Cli::try_parse_from(["roko", "trigger", "show", "my-hook"]).unwrap();
+        match cli.command {
+            Some(Command::Trigger {
+                cmd: commands::trigger::TriggerCmd::Show { name, .. },
+            }) => assert_eq!(name, "my-hook"),
+            other => panic!("unexpected command variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_trigger_create() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "trigger",
+            "create",
+            "deploy-hook",
+            "--kind",
+            "webhook",
+            "--graph",
+            "plans/deploy.toml",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Trigger {
+                cmd:
+                    commands::trigger::TriggerCmd::Create {
+                        name, kind, graph, ..
+                    },
+            }) => {
+                assert_eq!(name, "deploy-hook");
+                assert_eq!(kind, "webhook");
+                assert_eq!(graph, "plans/deploy.toml");
+            }
+            other => panic!("unexpected command variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_trigger_fire() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "trigger",
+            "fire",
+            "my-hook",
+            "--payload",
+            "{\"key\":\"value\"}",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Trigger {
+                cmd: commands::trigger::TriggerCmd::Fire { name, payload, .. },
+            }) => {
+                assert_eq!(name, "my-hook");
+                assert_eq!(payload, "{\"key\":\"value\"}");
+            }
+            other => panic!("unexpected command variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_trigger_fire_default_payload() {
+        let cli = Cli::try_parse_from(["roko", "trigger", "fire", "my-hook"]).unwrap();
+        match cli.command {
+            Some(Command::Trigger {
+                cmd: commands::trigger::TriggerCmd::Fire { name, payload, .. },
+            }) => {
+                assert_eq!(name, "my-hook");
+                assert_eq!(payload, "{}");
+            }
+            other => panic!("unexpected command variant: {other:?}"),
+        }
     }
 }

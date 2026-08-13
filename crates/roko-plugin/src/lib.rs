@@ -12,6 +12,7 @@
     clippy::unnecessary_literal_bound
 )]
 
+pub mod dependency;
 pub mod manifest;
 pub mod tool_registry;
 pub mod trigger_protocol;

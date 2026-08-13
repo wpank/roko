@@ -23,6 +23,7 @@ use crate::service_factory::{ServiceConfig, ServiceFactory};
 use roko_agent::ModelCallService;
 use roko_core::config::schema::RokoConfig;
 use roko_core::obs::LogScrubber;
+use roko_core::trigger::TriggerBinding;
 use roko_core::{Signal, Store};
 use roko_daimon::{DaimonState, StrategySpaceDefinition};
 use roko_learn::cascade_router::CascadeRouter;
@@ -530,6 +531,9 @@ pub struct AppState {
     /// Ephemeral workspaces created via the API (keyed by workspace id).
     pub ephemeral_workspaces: RwLock<HashMap<String, WorkspaceInfo>>,
 
+    /// In-memory trigger binding registry keyed by binding name.
+    pub trigger_bindings: RwLock<HashMap<String, TriggerBinding>>,
+
     /// Upstream mirage JSON-RPC URL for reverse proxy (`ROKO_MIRAGE_URL`).
     pub mirage_url: Option<String>,
     /// Upstream agent-relay URL for reverse proxy (`ROKO_AGENT_RELAY_URL`).
@@ -1028,6 +1032,7 @@ impl AppState {
             active_bench_runs: RwLock::new(HashMap::new()),
             active_matrix_runs: RwLock::new(HashMap::new()),
             ephemeral_workspaces,
+            trigger_bindings: RwLock::new(HashMap::new()),
             mirage_url: std::env::var("ROKO_MIRAGE_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),

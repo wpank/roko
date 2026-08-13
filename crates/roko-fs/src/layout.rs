@@ -200,6 +200,12 @@ impl RokoLayout {
         self.root.join("extensions")
     }
 
+    /// `.roko/triggers/` — persisted trigger bindings (one `.toml` per binding).
+    #[must_use]
+    pub fn triggers_dir(&self) -> PathBuf {
+        self.root.join("triggers")
+    }
+
     /// `.roko/neuro/` — knowledge ingestion scratch space.
     #[must_use]
     pub fn neuro_dir(&self) -> PathBuf {

@@ -421,6 +421,22 @@ pub fn projection_policies() -> Vec<ProjectionCatalogEntry> {
                 invalidation_triggers: vec!["knowledge_entries_updated".into()],
             },
         },
+        ProjectionCatalogEntry {
+            name: "telemetry".into(),
+            version: 1,
+            policy: InvalidationPolicy {
+                max_age_secs: 5,
+                incremental: true,
+                invalidation_triggers: vec![
+                    "agent_spawned".into(),
+                    "agent_completed".into(),
+                    "efficiency_event".into(),
+                    "diagnosis".into(),
+                    "error".into(),
+                    "gate_result".into(),
+                ],
+            },
+        },
     ]
 }
 
@@ -444,6 +460,7 @@ pub fn projection_version(name: &str) -> Option<u32> {
         "jobs" => "marketplace_jobs",
         "atelier" => "prds",
         "knowledge_entries" => "knowledge",
+        "watchers" | "circuit_breakers" | "observations" => "telemetry",
         _ => name,
     };
     projection_policies()
@@ -726,6 +743,7 @@ impl RuntimeProjectionSet {
                 "durable_total": self.feedback.knowledge_entries,
                 "durable_path": self.feedback.knowledge_path.display().to_string(),
             })),
+            "telemetry" => Ok(self.telemetry_state(query)),
             other => Err(ApiError::not_found(format!("unknown projection '{other}'"))),
         }
     }
@@ -1085,6 +1103,59 @@ impl RuntimeProjectionSet {
                 .cloned()
                 .collect::<Vec<_>>(),
             "gates": self.gate_evidence(query),
+            "stats": self.snapshot.stats,
+        })
+    }
+
+    /// Build the telemetry projection: active watchers, circuit breaker states,
+    /// observation counts, and provider health for live observability.
+    fn telemetry_state(&self, _query: &ProjectionQuery) -> Value {
+        // Active watchers derived from recent diagnosis summaries in the snapshot.
+        // Each diagnosis subject identifies the watcher (e.g. "Circuit Breaker",
+        // "Stuck Pattern", "Time Overrun").
+        let active_watchers: Vec<Value> = self
+            .snapshot
+            .diagnoses
+            .iter()
+            .map(|diagnosis| {
+                json!({
+                    "watcher": &diagnosis.subject,
+                    "last_fired": diagnosis.ts.to_rfc3339(),
+                    "severity": diagnosis.severity,
+                    "detail": &diagnosis.detail,
+                    "suggested_action": &diagnosis.suggested_action,
+                    "intervention_taken": &diagnosis.intervention_taken,
+                })
+            })
+            .collect();
+
+        // Circuit breaker states from provider health. Each provider tracked
+        // by the ProviderHealthTracker acts as a circuit breaker that opens
+        // on repeated failures and probes for recovery.
+        let circuit_breaker_states: Vec<Value> = self.provider_health.clone();
+
+        // Observation counts aggregated from snapshot stats and durable feedback.
+        let observation_counts = json!({
+            "plans_active": self.snapshot.stats.plans_active,
+            "plans_completed": self.snapshot.stats.plans_completed,
+            "plans_failed": self.snapshot.stats.plans_failed,
+            "tasks_active": self.snapshot.stats.tasks_active,
+            "tasks_completed": self.snapshot.stats.tasks_completed,
+            "tasks_failed": self.snapshot.stats.tasks_failed,
+            "agents_active": self.snapshot.stats.agents_active,
+            "gates_passed": self.snapshot.stats.gates_passed,
+            "gates_failed": self.snapshot.stats.gates_failed,
+            "episodes_total": self.snapshot.stats.episodes_total.max(self.feedback.episodes.len()),
+            "errors_total": self.snapshot.stats.errors_total,
+            "efficiency_events": self.feedback.efficiency_events.len(),
+            "diagnoses": self.snapshot.diagnoses.len(),
+        });
+
+        json!({
+            "active_watchers": active_watchers,
+            "circuit_breaker_states": circuit_breaker_states,
+            "observation_counts": observation_counts,
+            "provider_health": self.provider_health,
             "stats": self.snapshot.stats,
         })
     }
@@ -1667,6 +1738,7 @@ pub fn canonical_projection_name(name: &str) -> &str {
         "jobs" => "marketplace_jobs",
         "atelier" => "prds",
         "knowledge_entries" => "knowledge",
+        "watchers" | "circuit_breakers" | "observations" => "telemetry",
         _ => name,
     }
 }
@@ -1785,6 +1857,15 @@ pub fn projection_accepts_event(
         "marketplace_jobs" => matches!(event, DashboardEvent::MarketplaceJobsUpdated { .. }),
         "prds" => matches!(event, DashboardEvent::AtelierPrdsUpdated { .. }),
         "knowledge" => matches!(event, DashboardEvent::KnowledgeEntriesUpdated { .. }),
+        "telemetry" => matches!(
+            event,
+            DashboardEvent::AgentSpawned { .. }
+                | DashboardEvent::AgentCompleted { .. }
+                | DashboardEvent::EfficiencyEvent { .. }
+                | DashboardEvent::Diagnosis { .. }
+                | DashboardEvent::Error { .. }
+                | DashboardEvent::GateResult { .. }
+        ),
         _ => false,
     }
 }

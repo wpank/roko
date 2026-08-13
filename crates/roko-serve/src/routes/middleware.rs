@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::error::ApiError;
+use crate::rbac::{Permission, Role, enforce_permission};
 use crate::state::AppState;
 
 static UNSAFE_PUBLIC_CORS_WARNING: OnceLock<()> = OnceLock::new();
@@ -874,11 +875,45 @@ fn is_scope_sufficient(has: &str, required: &str) -> bool {
     has == normalised
 }
 
+/// Emit an [`AuthAuditEvent`] for a permission decision (best-effort).
+///
+/// Opens the audit log on each call. Errors are swallowed — audit logging
+/// must never block or fail a request.
+fn emit_enforcement_audit(
+    workdir: &std::path::Path,
+    actor: &str,
+    action: crate::auth_audit::AuthAuditAction,
+    route: &str,
+    outcome: crate::auth_audit::AuthOutcome,
+    scope_has: &str,
+    scope_required: &str,
+) {
+    let event = crate::auth_audit::AuthAuditEvent::new(actor, action, route, outcome)
+        .with_meta("scope_has", scope_has)
+        .with_meta("scope_required", scope_required);
+    match crate::auth_audit::open_audit_log(workdir) {
+        Ok(log) => log.append(&event),
+        Err(e) => tracing::warn!(error = %e, "auth_audit: could not open audit log"),
+    }
+}
+
 /// Enforce scope requirements on mutating routes.
 ///
 /// Runs after [`require_api_key`] and reads the [`AuthContext`] from
 /// request extensions. GET/HEAD/OPTIONS always pass through.
-pub async fn require_scope(req: Request<Body>, next: Next) -> Result<Response, ApiError> {
+///
+/// Behaviour is controlled by [`EnforcementMode`] from `serve.auth.enforcement_mode`:
+/// - `enforce` (default): blocks insufficient scope with 403 and emits a deny audit event.
+/// - `audit`: logs the violation and emits a deny audit event, but allows the request through.
+/// - `disabled`: skips scope checks entirely (no logging, no audit events).
+///
+/// Permission grants on mutating routes are logged at `debug` level and recorded
+/// as `PermissionGranted` audit events.
+pub async fn require_scope(
+    State(state): State<Arc<AppState>>,
+    req: Request<Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
 
@@ -887,26 +922,51 @@ pub async fn require_scope(req: Request<Body>, next: Next) -> Result<Response, A
         return Ok(next.run(req).await);
     }
 
+    // Check enforcement mode.
+    let enforcement_mode = state.load_roko_config().serve.auth.enforcement_mode;
+    if enforcement_mode == roko_core::config::EnforcementMode::Disabled {
+        return Ok(next.run(req).await);
+    }
+
     let required = required_scope_for(&method, &path);
-    let has_scope = req
+    let (has_scope, actor) = req
         .extensions()
         .get::<AuthContext>()
-        .map(|ctx| ctx.scope.clone())
-        .unwrap_or_else(|| "read".to_string());
+        .map(|ctx| {
+            (
+                ctx.scope.clone(),
+                ctx.user_id.clone().unwrap_or_else(|| "unknown".to_string()),
+            )
+        })
+        .unwrap_or_else(|| ("read".to_string(), "unknown".to_string()));
+
+    let route_label = format!("{method} {path}");
 
     if !is_scope_sufficient(&has_scope, required) {
-        let actor = req
-            .extensions()
-            .get::<AuthContext>()
-            .and_then(|ctx| ctx.user_id.clone())
-            .unwrap_or_else(|| "unknown".to_string());
+        // --- Permission denied ---
         tracing::warn!(
             actor = %actor,
             scope_has = %has_scope,
             scope_required = %required,
-            route = %format!("{method} {path}"),
+            route = %route_label,
+            enforcement = ?enforcement_mode,
             "auth_audit: permission denied",
         );
+        emit_enforcement_audit(
+            &state.workdir,
+            &actor,
+            crate::auth_audit::AuthAuditAction::PermissionDenied,
+            &route_label,
+            crate::auth_audit::AuthOutcome::Denied,
+            &has_scope,
+            required,
+        );
+
+        // In audit mode, log but do NOT block.
+        if enforcement_mode == roko_core::config::EnforcementMode::Audit {
+            return Ok(next.run(req).await);
+        }
+
         return Err(ApiError {
             status: axum::http::StatusCode::FORBIDDEN,
             code: "insufficient_scope".into(),
@@ -916,12 +976,115 @@ pub async fn require_scope(req: Request<Body>, next: Next) -> Result<Response, A
             details: Some(Box::new(serde_json::json!({
                 "required": required,
                 "has": has_scope,
-                "route": format!("{method} {path}"),
+                "route": route_label,
             }))),
         });
     }
 
+    // --- Permission granted ---
+    tracing::debug!(
+        actor = %actor,
+        scope_has = %has_scope,
+        scope_required = %required,
+        route = %route_label,
+        "auth_audit: permission granted",
+    );
+    emit_enforcement_audit(
+        &state.workdir,
+        &actor,
+        crate::auth_audit::AuthAuditAction::PermissionGranted,
+        &route_label,
+        crate::auth_audit::AuthOutcome::Success,
+        &has_scope,
+        required,
+    );
+
     Ok(next.run(req).await)
+}
+
+// ── RBAC middleware ──────────────────────────────────────────────────────────
+
+/// Map an auth scope string (from [`AuthContext::scope`]) to an RBAC [`Role`].
+///
+/// The scope vocabulary comes from API key entries and Privy JWT auth:
+///
+/// | Scope           | Role    |
+/// |-----------------|---------|
+/// | `"admin"`       | Admin   |
+/// | `"owner"`       | Owner   |
+/// | `"write"`       | Member  |
+/// | `"agent:write"` | Member  |
+/// | `"plan:write"`  | Member  |
+/// | `"read"`        | Viewer  |
+/// | anything else   | Viewer  |
+///
+/// This mapping is intentionally conservative: unrecognised scopes default
+/// to the least-privileged role.
+pub(crate) fn scope_to_role(scope: &str) -> Role {
+    match scope {
+        "owner" => Role::Owner,
+        "admin" => Role::Admin,
+        "write" | "agent:write" | "plan:write" | "terminal:write" => Role::Member,
+        "read" => Role::Viewer,
+        _ => Role::Viewer,
+    }
+}
+
+/// Build an axum middleware layer that enforces a specific RBAC [`Permission`].
+///
+/// The returned middleware:
+/// 1. Extracts the caller's [`AuthContext`] from request extensions (injected
+///    by [`require_api_key`]).
+/// 2. Maps the `scope` string to an RBAC [`Role`] via [`scope_to_role`].
+/// 3. Calls [`enforce_permission`] and returns 403 Forbidden on denial.
+///
+/// # Usage
+///
+/// ```ignore
+/// use roko_serve::rbac::Permission;
+/// use roko_serve::routes::middleware::require_permission;
+///
+/// let plans = plans::routes()
+///     .layer(axum::middleware::from_fn(require_permission(Permission::PlanExecute)));
+/// ```
+pub fn require_permission(
+    required: Permission,
+) -> impl Fn(
+    Request<Body>,
+    Next,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, ApiError>> + Send>>
++ Clone
++ Send
++ 'static {
+    move |req: Request<Body>, next: Next| {
+        let required = required;
+        Box::pin(async move {
+            let (role, actor) = match req.extensions().get::<AuthContext>() {
+                Some(ctx) => (
+                    scope_to_role(&ctx.scope),
+                    ctx.user_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                ),
+                None => {
+                    // No AuthContext means auth middleware didn't run or auth
+                    // is disabled. Default to Viewer (least-privileged) which
+                    // will be rejected for any write-level permission.
+                    (Role::Viewer, "unauthenticated".to_string())
+                }
+            };
+
+            if let Err(api_err) = enforce_permission(role, required) {
+                tracing::warn!(
+                    actor = %actor,
+                    role = %role.as_str(),
+                    permission = %required.as_str(),
+                    "rbac: permission denied",
+                );
+                return Err(api_err);
+            }
+
+            Ok(next.run(req).await)
+        })
+    }
 }
 
 /// Methods the server actually serves on browser-callable routes.
@@ -1275,6 +1438,7 @@ mod tests {
             privy_app_id: Some("app-id-123".to_string()),
             privy_workspace_id: Some("ws_required_org".to_string()),
             privy_allowed_roles: vec!["admin".to_string()],
+            ..Default::default()
         };
         let state = make_test_state(auth.clone());
 
@@ -1308,6 +1472,7 @@ mod tests {
     // --- scope enforcement tests ---
 
     fn scope_test_app(scope: &str) -> Router {
+        let state = make_test_state(ServeAuthConfig::default());
         let handler = || async { StatusCode::NO_CONTENT };
         Router::new()
             .route("/api/secrets", post(handler))
@@ -1315,7 +1480,7 @@ mod tests {
             .route("/api/plans/run", post(handler))
             .route("/api/status", post(handler))
             .route("/api/status", get(handler))
-            .layer(axum::middleware::from_fn(require_scope))
+            .layer(axum::middleware::from_fn_with_state(state, require_scope))
             .layer(axum::Extension(AuthContext {
                 method: AuthMethod::ApiKey,
                 scope: scope.to_string(),
@@ -1723,10 +1888,11 @@ mod tests {
     async fn read_scope_denied_on_mutation() {
         // A read-scoped key must get 403 on POST to an unclassified mutating
         // route (one that hits the "write" fallback in required_scope_for).
+        let state = make_test_state(ServeAuthConfig::default());
         let handler = || async { StatusCode::NO_CONTENT };
         let app = Router::new()
             .route("/api/jobs", post(handler))
-            .layer(axum::middleware::from_fn(require_scope))
+            .layer(axum::middleware::from_fn_with_state(state, require_scope))
             .layer(axum::Extension(AuthContext {
                 method: AuthMethod::ApiKey,
                 scope: "read".to_string(),
@@ -2226,7 +2392,10 @@ mod tests {
         // inner (runs first, injects AuthContext).
         Router::new()
             .route(route, post(handler))
-            .layer(axum::middleware::from_fn(require_scope))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                require_scope,
+            ))
             .layer(axum::middleware::from_fn_with_state(state, require_api_key))
     }
 
@@ -2394,5 +2563,589 @@ mod tests {
             "agent:write".to_string(),
         )]);
         // No panic means the test passes.
+    }
+
+    // ── RBAC middleware tests ───────────────────────────────────────────
+
+    use crate::rbac::{Permission, Role};
+
+    #[test]
+    fn rbac_scope_to_role_maps_admin() {
+        assert_eq!(scope_to_role("admin"), Role::Admin);
+    }
+
+    #[test]
+    fn rbac_scope_to_role_maps_owner() {
+        assert_eq!(scope_to_role("owner"), Role::Owner);
+    }
+
+    #[test]
+    fn rbac_scope_to_role_maps_write_variants_to_member() {
+        assert_eq!(scope_to_role("write"), Role::Member);
+        assert_eq!(scope_to_role("agent:write"), Role::Member);
+        assert_eq!(scope_to_role("plan:write"), Role::Member);
+        assert_eq!(scope_to_role("terminal:write"), Role::Member);
+    }
+
+    #[test]
+    fn rbac_scope_to_role_maps_read_to_viewer() {
+        assert_eq!(scope_to_role("read"), Role::Viewer);
+    }
+
+    #[test]
+    fn rbac_scope_to_role_defaults_unknown_to_viewer() {
+        assert_eq!(scope_to_role("unknown-scope"), Role::Viewer);
+        assert_eq!(scope_to_role(""), Role::Viewer);
+    }
+
+    /// Helper: build a minimal router with the `require_permission` middleware
+    /// and a pre-injected `AuthContext`.
+    fn rbac_test_app(scope: &str, required: Permission) -> Router {
+        let handler = || async { StatusCode::NO_CONTENT };
+        Router::new()
+            .route("/test", post(handler))
+            .route("/test", get(handler))
+            .layer(axum::middleware::from_fn(require_permission(required)))
+            .layer(axum::Extension(AuthContext {
+                method: AuthMethod::ApiKey,
+                scope: scope.to_string(),
+                user_id: Some("test-user".to_string()),
+            }))
+    }
+
+    #[tokio::test]
+    async fn rbac_admin_allowed_config_edit() {
+        let app = rbac_test_app("admin", Permission::ConfigEdit);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/test")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::NO_CONTENT,
+            "admin scope must be allowed ConfigEdit"
+        );
+    }
+
+    #[tokio::test]
+    async fn rbac_viewer_denied_config_edit() {
+        let app = rbac_test_app("read", Permission::ConfigEdit);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/test")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "read/viewer scope must be denied ConfigEdit"
+        );
+    }
+
+    #[tokio::test]
+    async fn rbac_member_allowed_plan_execute() {
+        let app = rbac_test_app("write", Permission::PlanExecute);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/test")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::NO_CONTENT,
+            "write/member scope must be allowed PlanExecute"
+        );
+    }
+
+    #[tokio::test]
+    async fn rbac_viewer_denied_plan_execute() {
+        let app = rbac_test_app("read", Permission::PlanExecute);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/test")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "viewer must be denied PlanExecute"
+        );
+    }
+
+    #[tokio::test]
+    async fn rbac_member_denied_secrets_write() {
+        let app = rbac_test_app("write", Permission::SecretsWrite);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/test")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "member scope must be denied SecretsWrite (requires Admin+)"
+        );
+    }
+
+    #[tokio::test]
+    async fn rbac_admin_denied_team_manage() {
+        let app = rbac_test_app("admin", Permission::TeamManage);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/test")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "admin scope must be denied TeamManage (requires Owner)"
+        );
+    }
+
+    #[tokio::test]
+    async fn rbac_owner_allowed_team_manage() {
+        let app = rbac_test_app("owner", Permission::TeamManage);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/test")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::NO_CONTENT,
+            "owner scope must be allowed TeamManage"
+        );
+    }
+
+    #[tokio::test]
+    async fn rbac_get_requests_pass_through() {
+        // Even a viewer-level scope must be able to GET through RBAC middleware
+        // that gates a write-level permission like ConfigEdit.
+        let app = rbac_test_app("read", Permission::ConfigEdit);
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/test")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::NO_CONTENT,
+            "GET requests must pass through RBAC regardless of permission"
+        );
+    }
+
+    #[tokio::test]
+    async fn rbac_no_auth_context_defaults_to_viewer() {
+        // When no AuthContext is present (auth disabled), the middleware
+        // should default to Viewer and deny write-level permissions.
+        let handler = || async { StatusCode::NO_CONTENT };
+        let app = Router::new()
+            .route("/test", post(handler))
+            .layer(axum::middleware::from_fn(require_permission(
+                Permission::PlanExecute,
+            )));
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/test")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "missing AuthContext must default to Viewer and be denied PlanExecute"
+        );
+    }
+
+    #[tokio::test]
+    async fn rbac_denied_response_has_forbidden_code() {
+        let app = rbac_test_app("read", Permission::AgentSpawn);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/test")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(resp.into_body(), 4096)
+            .await
+            .expect("collect body");
+        let json: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["code"], "forbidden");
+        assert!(
+            json["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("agent:spawn"),
+            "error message should mention the denied permission"
+        );
+    }
+
+    // ── E35-T08: enforcement mode + audit event tests ─────────────────────────
+
+    /// Build a test `ServeAuthConfig` with a specific `EnforcementMode`.
+    fn auth_with_enforcement(mode: roko_core::config::EnforcementMode) -> ServeAuthConfig {
+        ServeAuthConfig {
+            enforcement_mode: mode,
+            ..Default::default()
+        }
+    }
+
+    /// Build a scope test app whose backing `AppState` uses the given
+    /// enforcement mode. The caller's `AuthContext` is injected via Extension.
+    fn enforcement_test_app(
+        mode: roko_core::config::EnforcementMode,
+        scope: &str,
+        user_id: Option<String>,
+    ) -> Router {
+        let state = make_test_state(auth_with_enforcement(mode));
+        let handler = || async { StatusCode::NO_CONTENT };
+        Router::new()
+            .route("/api/secrets", post(handler))
+            .route("/api/agents/test", post(handler))
+            .route("/api/status", get(handler))
+            .layer(axum::middleware::from_fn_with_state(state, require_scope))
+            .layer(axum::Extension(AuthContext {
+                method: AuthMethod::ApiKey,
+                scope: scope.to_string(),
+                user_id,
+            }))
+    }
+
+    // -- enforce mode (default) -----------------------------------------------
+
+    #[tokio::test]
+    async fn enforcement_enforce_blocks_insufficient_scope() {
+        let app = enforcement_test_app(roko_core::config::EnforcementMode::Enforce, "read", None);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/secrets")
+            .body(Body::empty())
+            .expect("invariant: request builds");
+        let resp = app.oneshot(req).await.expect("invariant: router responds");
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "enforce mode must block insufficient scope with 403"
+        );
+    }
+
+    #[tokio::test]
+    async fn enforcement_enforce_allows_sufficient_scope() {
+        let app = enforcement_test_app(roko_core::config::EnforcementMode::Enforce, "admin", None);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/secrets")
+            .body(Body::empty())
+            .expect("invariant: request builds");
+        let resp = app.oneshot(req).await.expect("invariant: router responds");
+        assert_eq!(
+            resp.status(),
+            StatusCode::NO_CONTENT,
+            "enforce mode must allow admin scope on admin route"
+        );
+    }
+
+    // -- audit mode -----------------------------------------------------------
+
+    #[tokio::test]
+    async fn enforcement_audit_allows_insufficient_scope() {
+        let app = enforcement_test_app(roko_core::config::EnforcementMode::Audit, "read", None);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/secrets")
+            .body(Body::empty())
+            .expect("invariant: request builds");
+        let resp = app.oneshot(req).await.expect("invariant: router responds");
+        assert_eq!(
+            resp.status(),
+            StatusCode::NO_CONTENT,
+            "audit mode must allow the request through even with insufficient scope"
+        );
+    }
+
+    #[tokio::test]
+    async fn enforcement_audit_allows_sufficient_scope() {
+        let app = enforcement_test_app(roko_core::config::EnforcementMode::Audit, "admin", None);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/secrets")
+            .body(Body::empty())
+            .expect("invariant: request builds");
+        let resp = app.oneshot(req).await.expect("invariant: router responds");
+        assert_eq!(
+            resp.status(),
+            StatusCode::NO_CONTENT,
+            "audit mode must allow admin scope"
+        );
+    }
+
+    // -- disabled mode --------------------------------------------------------
+
+    #[tokio::test]
+    async fn enforcement_disabled_skips_scope_check() {
+        let app = enforcement_test_app(roko_core::config::EnforcementMode::Disabled, "read", None);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/secrets")
+            .body(Body::empty())
+            .expect("invariant: request builds");
+        let resp = app.oneshot(req).await.expect("invariant: router responds");
+        assert_eq!(
+            resp.status(),
+            StatusCode::NO_CONTENT,
+            "disabled mode must skip scope checks entirely"
+        );
+    }
+
+    // -- GET always bypasses regardless of mode --------------------------------
+
+    #[tokio::test]
+    async fn enforcement_get_always_bypasses() {
+        for mode in [
+            roko_core::config::EnforcementMode::Enforce,
+            roko_core::config::EnforcementMode::Audit,
+            roko_core::config::EnforcementMode::Disabled,
+        ] {
+            let app = enforcement_test_app(mode, "read", None);
+            let req = Request::builder()
+                .method(Method::GET)
+                .uri("/api/status")
+                .body(Body::empty())
+                .expect("invariant: request builds");
+            let resp = app.oneshot(req).await.expect("invariant: router responds");
+            assert_eq!(
+                resp.status(),
+                StatusCode::NO_CONTENT,
+                "GET must bypass scope checks in {mode:?} mode"
+            );
+        }
+    }
+
+    // -- audit event emission -------------------------------------------------
+
+    #[tokio::test]
+    async fn enforcement_emits_audit_event_on_deny() {
+        let dir = tempdir().unwrap();
+        let mut config = RokoConfig::default();
+        config.serve.auth.enforcement_mode = roko_core::config::EnforcementMode::Enforce;
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                config,
+                Arc::new(ManualBackend::default()),
+            )
+            .expect("AppState::new"),
+        );
+        let handler = || async { StatusCode::NO_CONTENT };
+        let app = Router::new()
+            .route("/api/secrets", post(handler))
+            .layer(axum::middleware::from_fn_with_state(state, require_scope))
+            .layer(axum::Extension(AuthContext {
+                method: AuthMethod::ApiKey,
+                scope: "read".to_string(),
+                user_id: Some("test-user".to_string()),
+            }));
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/secrets")
+            .body(Body::empty())
+            .expect("invariant: request builds");
+        let resp = app.oneshot(req).await.expect("invariant: router responds");
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        // Verify audit event was written.
+        let log = crate::auth_audit::open_audit_log(dir.path()).unwrap();
+        let events = log.query(None, None, None, None).unwrap();
+        assert_eq!(events.len(), 1, "exactly one audit event should be emitted");
+        assert_eq!(
+            events[0].action,
+            crate::auth_audit::AuthAuditAction::PermissionDenied
+        );
+        assert_eq!(events[0].outcome, crate::auth_audit::AuthOutcome::Denied);
+        assert_eq!(events[0].actor, "test-user");
+        assert!(events[0].target.contains("POST /api/secrets"));
+        assert_eq!(
+            events[0].metadata.get("scope_has").map(|s| s.as_str()),
+            Some("read")
+        );
+        assert_eq!(
+            events[0].metadata.get("scope_required").map(|s| s.as_str()),
+            Some("admin")
+        );
+    }
+
+    #[tokio::test]
+    async fn enforcement_emits_audit_event_on_grant() {
+        let dir = tempdir().unwrap();
+        let mut config = RokoConfig::default();
+        config.serve.auth.enforcement_mode = roko_core::config::EnforcementMode::Enforce;
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                config,
+                Arc::new(ManualBackend::default()),
+            )
+            .expect("AppState::new"),
+        );
+        let handler = || async { StatusCode::NO_CONTENT };
+        let app = Router::new()
+            .route("/api/secrets", post(handler))
+            .layer(axum::middleware::from_fn_with_state(state, require_scope))
+            .layer(axum::Extension(AuthContext {
+                method: AuthMethod::ApiKey,
+                scope: "admin".to_string(),
+                user_id: Some("admin-user".to_string()),
+            }));
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/secrets")
+            .body(Body::empty())
+            .expect("invariant: request builds");
+        let resp = app.oneshot(req).await.expect("invariant: router responds");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // Verify audit event was written.
+        let log = crate::auth_audit::open_audit_log(dir.path()).unwrap();
+        let events = log.query(None, None, None, None).unwrap();
+        assert_eq!(events.len(), 1, "exactly one audit event should be emitted");
+        assert_eq!(
+            events[0].action,
+            crate::auth_audit::AuthAuditAction::PermissionGranted
+        );
+        assert_eq!(events[0].outcome, crate::auth_audit::AuthOutcome::Success);
+        assert_eq!(events[0].actor, "admin-user");
+        assert!(events[0].target.contains("POST /api/secrets"));
+    }
+
+    #[tokio::test]
+    async fn enforcement_audit_mode_emits_deny_event_but_allows_request() {
+        let dir = tempdir().unwrap();
+        let mut config = RokoConfig::default();
+        config.serve.auth.enforcement_mode = roko_core::config::EnforcementMode::Audit;
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                config,
+                Arc::new(ManualBackend::default()),
+            )
+            .expect("AppState::new"),
+        );
+        let handler = || async { StatusCode::NO_CONTENT };
+        let app = Router::new()
+            .route("/api/secrets", post(handler))
+            .layer(axum::middleware::from_fn_with_state(state, require_scope))
+            .layer(axum::Extension(AuthContext {
+                method: AuthMethod::ApiKey,
+                scope: "read".to_string(),
+                user_id: Some("audit-user".to_string()),
+            }));
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/secrets")
+            .body(Body::empty())
+            .expect("invariant: request builds");
+        let resp = app.oneshot(req).await.expect("invariant: router responds");
+        // Must allow through in audit mode.
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // Verify a deny audit event was still emitted.
+        let log = crate::auth_audit::open_audit_log(dir.path()).unwrap();
+        let events = log.query(None, None, None, None).unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "audit event should be emitted in audit mode"
+        );
+        assert_eq!(
+            events[0].action,
+            crate::auth_audit::AuthAuditAction::PermissionDenied
+        );
+        assert_eq!(events[0].outcome, crate::auth_audit::AuthOutcome::Denied);
+        assert_eq!(events[0].actor, "audit-user");
+    }
+
+    #[tokio::test]
+    async fn enforcement_disabled_emits_no_audit_events() {
+        let dir = tempdir().unwrap();
+        let mut config = RokoConfig::default();
+        config.serve.auth.enforcement_mode = roko_core::config::EnforcementMode::Disabled;
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                config,
+                Arc::new(ManualBackend::default()),
+            )
+            .expect("AppState::new"),
+        );
+        let handler = || async { StatusCode::NO_CONTENT };
+        let app = Router::new()
+            .route("/api/secrets", post(handler))
+            .layer(axum::middleware::from_fn_with_state(state, require_scope))
+            .layer(axum::Extension(AuthContext {
+                method: AuthMethod::ApiKey,
+                scope: "read".to_string(),
+                user_id: None,
+            }));
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/secrets")
+            .body(Body::empty())
+            .expect("invariant: request builds");
+        let resp = app.oneshot(req).await.expect("invariant: router responds");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // Disabled mode should not emit any audit events.
+        let log = crate::auth_audit::open_audit_log(dir.path()).unwrap();
+        let events = log.query(None, None, None, None).unwrap();
+        assert!(
+            events.is_empty(),
+            "disabled mode must not emit audit events, found {}",
+            events.len()
+        );
+    }
+
+    // -- EnforcementMode serde -----------------------------------------------
+
+    #[test]
+    fn enforcement_mode_serde_roundtrip() {
+        use roko_core::config::EnforcementMode;
+
+        let cases = [
+            (EnforcementMode::Enforce, "\"enforce\""),
+            (EnforcementMode::Audit, "\"audit\""),
+            (EnforcementMode::Disabled, "\"disabled\""),
+        ];
+        for (mode, expected_json) in cases {
+            let serialized = serde_json::to_string(&mode).unwrap();
+            assert_eq!(serialized, expected_json, "serde round-trip for {mode:?}");
+            let deserialized: EnforcementMode = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(deserialized, mode);
+        }
+    }
+
+    #[test]
+    fn enforcement_mode_default_is_enforce() {
+        assert_eq!(
+            roko_core::config::EnforcementMode::default(),
+            roko_core::config::EnforcementMode::Enforce,
+        );
     }
 }

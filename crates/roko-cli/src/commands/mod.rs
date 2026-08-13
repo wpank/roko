@@ -25,5 +25,6 @@ pub mod setup;
 pub mod show;
 pub mod status;
 pub mod think;
+pub mod trigger;
 pub mod tune;
 pub mod util;

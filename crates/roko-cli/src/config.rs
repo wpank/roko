@@ -2668,6 +2668,7 @@ impl ServeAuthLayer {
             privy_app_id: defaults.privy_app_id,
             privy_workspace_id: defaults.privy_workspace_id,
             privy_allowed_roles: defaults.privy_allowed_roles,
+            enforcement_mode: defaults.enforcement_mode,
         }
     }
 }

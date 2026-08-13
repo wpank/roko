@@ -1,12 +1,12 @@
 # Roko
 
-Roko is a Rust toolkit for building agents that build themselves. 18 crates, ~177K LOC.
+Roko is a Rust toolkit for building agents that build themselves. 35 workspace members (31 crates + 3 apps + 1 test harness), ~800K LOC.
 
 **Goal**: roko develops itself — it reads PRDs, generates implementation plans, executes tasks
 via Claude agents, validates with gates, and persists results. The core loop is wired. Your job
 is to use it and improve it.
 
-## Current state (2026-04-20)
+## Current state (2026-08-13)
 
 The plan-execute-gate-persist loop **works end-to-end**, and so do the HTTP
 control plane, per-agent sidecar, and interactive TUI:
@@ -29,8 +29,8 @@ control plane, per-agent sidecar, and interactive TUI:
 | CascadeRouter (model routing) | **Wired** | Persists to `.roko/learn/cascade-router.json`, configurable models |
 | Prompt experiments (A/B) | **Wired** | `ExperimentStore` in `.roko/learn/experiments.json` |
 | Adaptive gate thresholds | **Wired** | EMA per rung in `.roko/learn/gate-thresholds.json` |
-| Interactive TUI (ratatui) | **Wired** | `crates/roko-cli/src/tui/`, F1–F7 tabs, `roko dashboard` |
-| HTTP control plane (~85 routes) | **Wired** | `crates/roko-serve/src/routes/`, `roko serve` on :6677 |
+| Interactive TUI (ratatui) | **Wired** | `crates/roko-cli/src/tui/`, F1–F10 tabs, `roko dashboard` |
+| HTTP control plane (~317 routes) | **Wired** | `crates/roko-serve/src/routes/`, `roko serve` on :6677 |
 | Per-agent sidecar (13 routes) | **Wired** | `crates/roko-agent-server/`, real LLM dispatch (T9) + integration tests (T19) |
 | Code-intelligence MCP | **Wired** | `crates/roko-mcp-code/` |
 | `roko chat` CLI | **Wired** | `crates/roko-cli/src/chat.rs` |
@@ -43,8 +43,10 @@ control plane, per-agent sidecar, and interactive TUI:
 | Playbook store queries | **Wired** | Queried at dispatch time → system prompt |
 | VCG auction in composition | **Partial** | `vcg_allocate` built + exported but greedy path dominates at runtime |
 | Context bidders (Neuro/Task/Research) | **Wired** | `AttentionBidder` variants in runner/ |
-| Safety contracts enforcement | **Partial** | `AgentContract` wired but falls back to permissive default when YAML missing |
+| Safety contracts enforcement | **Wired** | `AgentContract` wired; falls back to restricted (deny-all) default when YAML missing |
 | TUI file watcher | **Wired** | `notify::RecommendedWatcher` in `tui/fs_watch.rs` |
+| Engram-to-Signal rename (2026-08-12) | **Done** | `Signal` is the primary name across all 35 workspace members; `Engram` kept as underlying struct with `pub type Signal = Engram` |
+| Code hygiene batch (2026-08-12) | **Done** | `eprintln!` replaced with `tracing`, `.expect()` replaced with proper error handling, `docs/v2` markers added, `docs/v1` deprecation annotations |
 
 ### Known blockers
 
@@ -71,7 +73,8 @@ This file is the canonical gap tracker — check it before starting new work.
 
 ## Architecture
 
-1 noun (Signal) + 6 verb traits (Substrate, Scorer, Gate, Router, Composer, Policy).
+1 noun (Signal) + 12 traits (Store, ColdStore, Score, Verify, Route, Compose, React, Bus, Observe, Connect, Trigger, Substrate).
+`Signal` is the primary type name (renamed from `Engram` across all 35 workspace members on 2026-08-12). In code: `pub struct Engram` + `pub type Signal = Engram` in roko-core/src/engram.rs. Always use `Signal` in new code; `Engram` is the backward-compat alias.
 Universal loop: query -> score -> route -> compose -> act -> verify -> write -> react.
 
 ## Self-hosting workflow
@@ -186,7 +189,7 @@ cargo run -p roko-cli -- status
 ### Server & deployment
 | Command | What it does |
 |---|---|
-| `roko serve` | Start HTTP control plane (~85 routes on :6677) |
+| `roko serve` | Start HTTP control plane (~317 routes on :6677) |
 | `roko daemon start/stop/status/logs/install` | Daemon lifecycle |
 | `roko deploy railway/fly/docker` | Cloud deployment |
 | `roko worker` | Run as deployed worker |
@@ -194,7 +197,7 @@ cargo run -p roko-cli -- status
 ### Utilities
 | Command | What it does |
 |---|---|
-| `roko dashboard` | Interactive ratatui TUI (F1–F7 tabs) |
+| `roko dashboard` | Interactive ratatui TUI (F1–F10 tabs) |
 | `roko replay <hash>` | Walk signal DAG by hash |
 | `roko inject <session> <payload>` | Signal injection |
 | `roko index build/search/stats` | Code intelligence index |
@@ -206,27 +209,31 @@ cargo run -p roko-cli -- status
 
 | Crate | Path | What | Status |
 |---|---|---|---|
-| roko-core | `crates/roko-core/` | Signal + 6 traits, types, config, tools, errors | Kernel, stable |
-| roko-agent | `crates/roko-agent/` | 5+ LLM backends (Claude CLI, Claude API, Codex, Cursor, OpenAI-compat, Ollama, Gemini, Perplexity), pools, MCP, tool loop, safety | Dispatch wired, MCP passed |
+| roko-core | `crates/roko-core/` | Signal + 12 traits, types, config, tools, errors | Kernel, stable |
+| roko-agent | `crates/roko-agent/` | 11 LLM provider kinds (AnthropicApi, ClaudeCli, OpenAiCompat, CursorAcp, CursorCli, PerplexityApi, GeminiApi, GeminiCli, CerebrasApi, Hermes, OpenClaw), pools, MCP, tool loop, safety | Dispatch wired, MCP passed |
 | roko-agent-server | `crates/roko-agent-server/` | Per-agent HTTP sidecar: `/message` (real LLM dispatch), `/stream` WS, `/predictions`, `/research`, `/tasks` | Wired |
-| roko-serve | `crates/roko-serve/` | HTTP control plane: ~85 REST routes + SSE + WebSocket on :6677 | Wired |
+| roko-serve | `crates/roko-serve/` | HTTP control plane: ~317 REST routes + SSE + WebSocket on :6677 | Wired |
 | roko-orchestrator | `crates/roko-orchestrator/` | Plan DAG, parallel executor, merge queue, safety | Wired via runner/ event loop |
-| roko-gate | `crates/roko-gate/` | 11 gates, 7-rung pipeline, adaptive thresholds | Wired, called per-task |
-| roko-compose | `crates/roko-compose/` | Prompt assembly, 9 templates, enrichment | Wired via RoleSystemPromptSpec |
-| roko-conductor | `crates/roko-conductor/` | 10 watchers, circuit breaker, diagnosis | Used by executor internals |
+| roko-gate | `crates/roko-gate/` | 16 gates, 7-rung pipeline, adaptive thresholds | Wired, called per-task |
+| roko-compose | `crates/roko-compose/` | Prompt assembly, 12 role templates, enrichment | Wired via RoleSystemPromptSpec |
+| roko-conductor | `crates/roko-conductor/` | 11 watchers, circuit breaker, diagnosis | Used by executor internals |
 | roko-learn | `crates/roko-learn/` | Episodes, playbooks, bandits, model routing, experiments, efficiency | Fully wired |
 | roko-cli | `crates/roko-cli/` | CLI binary: all subcommands, ratatui TUI | Main entry point |
 | roko-fs | `crates/roko-fs/` | FileSubstrate (JSONL), GC, layout | Stable |
-| roko-std | `crates/roko-std/` | Defaults, 19 builtin tools, mock dispatcher | Stable |
+| roko-std | `crates/roko-std/` | Defaults, 39 builtin tools (16 std + 4 ISFR + 19 GitHub MCP), mock dispatcher | Stable |
 | roko-runtime | `crates/roko-runtime/` | ProcessSupervisor, event bus, cancellation | Wired into PlanRunner |
 | roko-primitives | `crates/roko-primitives/` | HDC vectors, tier routing | Fully wired (tier routing + HDC fingerprint-per-episode) |
 | roko-neuro | `crates/roko-neuro/` | Durable knowledge store, distillation, tier progression | Wired |
-| roko-mcp-code | `crates/roko-mcp-code/` | Code-intelligence MCP server | New in PR #13 |
+| roko-mcp-code | `crates/roko-mcp-code/` | Code-intelligence MCP server | Wired |
 | roko-mcp-github / slack / scripts / stdio | `crates/roko-mcp-*/` | Additional MCP integrations | Partial; see `tmp/ux-followup/05-partially-wired-subsystems.md` |
 | roko-index | `crates/roko-index/` | Parser + graph + HDC indexing | Built |
 | roko-lang-rust / typescript / go | `crates/roko-lang-*/` | Language support | Built |
 | roko-dreams | `crates/roko-dreams/` | Offline consolidation (hypnagogia, imagination, cycle) | Partial (used from runner/ but no runtime trigger/cron) |
 | roko-daimon | `crates/roko-daimon/` | Affect engine, somatic markers, dispatch modulation | Wired (DaimonState loaded + used per-task in runner/) |
+| roko-acp | `crates/roko-acp/` | ACP (Agent Client Protocol) server for Cursor/external agent integration | Wired |
+| roko-plugin | `crates/roko-plugin/` | Plugin system, tool registry extensions | Wired |
+| roko-graph | `crates/roko-graph/` | Graph data structures, DAG operations | Built |
+| roko-demo | `crates/roko-demo/` | Demo/example binary for showcasing features | Built |
 | roko-chain | `crates/roko-chain/` | Chain client/runtime integration (alloy RPC, ISFR vertical wired, 16 shelf-ware modules). daeji devnet owns node/BFT/precompiles (separate repo). | ISFR wired; rest Phase 2+ |
 
 ## Absolute paths
@@ -299,9 +306,9 @@ Priority order for reaching full self-hosting:
 4. ~~**Wire ProcessSupervisor**~~ → Done. `PlanRunner` tracks agents via `roko-runtime`.
 5. ~~**Wire MCP**~~ → Done. `agent.mcp_config` in `roko.toml` + auto-discovery fallback.
 6. ~~**Learning & feedback**~~ → Done. Efficiency events, cascade router persistence, prompt experiments, adaptive gate thresholds.
-7. ~~**Interactive TUI**~~ → Done. ratatui wired; T1–T19 parity batches merged via PR #13.
+7. ~~**Interactive TUI**~~ → Done. ratatui wired; F1–F10 tabs, T1–T19 parity batches merged via PR #13.
 8. ~~**Per-agent sidecar**~~ → Done. `roko-agent-server` real-dispatch path (T9) + integration tests (T19).
-9. ~~**HTTP control plane**~~ → Done. `roko-serve` exposes ~85 routes for dashboards / external callers.
+9. ~~**HTTP control plane**~~ → Done. `roko-serve` exposes ~317 routes for dashboards / external callers.
 10. ~~**Automatic plan generation**~~ → Done. `prd.auto_plan` config triggers `prd plan` on publish via `spawn_prd_publish_subscriber`.
 11. ~~**Feedback loop**~~ → Done. `learning_config.replan_on_gate_failure` triggers `build_gate_failure_plan_revision`.
 12. ~~**Follow-up catalog**~~ → Done. Most items verified/closed; see `tmp/ux-followup/00-INDEX.md`.

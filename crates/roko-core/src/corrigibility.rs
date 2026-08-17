@@ -12,6 +12,9 @@
 //! 5. [`CorrigibilityHead::Task`]      — accomplish the assigned task
 
 use std::cmp::Ordering;
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
 
 /// The five corrigibility heads in strict priority order.
 ///
@@ -19,7 +22,8 @@ use std::cmp::Ordering;
 /// [`Ord`] impl orders them correctly (Deference < Switch < … at the type
 /// level, but semantically Deference has the *highest* precedence and is
 /// therefore evaluated first).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CorrigibilityHead {
     /// Priority 1 (highest): obey the human's stated preferences and constraints.
     Deference,
@@ -59,7 +63,8 @@ impl CorrigibilityHead {
 }
 
 /// The verdict of a single corrigibility head evaluation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "verdict", content = "reason")]
 pub enum HeadVerdict {
     /// The head is satisfied; evaluation continues to the next head.
     Pass,
@@ -89,7 +94,7 @@ impl HeadVerdict {
 /// Verdicts are stored in head-priority order (Deference first, Task last).
 /// Evaluation short-circuits on the first veto: once a head vetoes, lower-
 /// priority heads are not evaluated and their verdicts are omitted.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CorrigibilityDecision {
     /// Per-head verdicts in evaluation order.
     pub verdicts: Vec<(CorrigibilityHead, HeadVerdict)>,
@@ -156,7 +161,7 @@ pub fn lexicographic_compare(a: &CorrigibilityDecision, b: &CorrigibilityDecisio
 ///
 /// All fields are optional free-form strings; the pure evaluator uses simple
 /// heuristics to produce verdicts without IO or LLM calls.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionContext {
     /// The agent's declared autonomy level ("observe", "assist", "auto").
     pub autonomy_level: Option<String>,
@@ -170,55 +175,322 @@ pub struct ActionContext {
     pub on_task: Option<bool>,
 }
 
+/// One independently hosted corrigibility verifier.
+///
+/// Implementations are deliberately zero-sized and stateless. The live
+/// [`CorrigibilityPipeline`] owns exactly one verifier for each head and does
+/// not expose mutation or reordering APIs, keeping the safety ordering outside
+/// the caller-modifiable surface.
+pub trait VerifyHead: Send + Sync {
+    /// The single head this verifier owns.
+    fn head(&self) -> CorrigibilityHead;
+
+    /// Evaluate this head against immutable action facts.
+    fn verify(&self, action_description: &str, context: &ActionContext) -> HeadVerdict;
+}
+
+/// Highest-priority verifier: obey explicit human constraints.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VerifyDeference;
+
+/// Preserve the human's ability to intervene and retain audit evidence.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VerifySwitch;
+
+/// Require accurate, independently checkable reporting.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VerifyTruth;
+
+/// Bound side effects and prefer reversible actions.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VerifyImpact;
+
+/// Require progress toward the assigned task.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VerifyTask;
+
+/// Typed payload carried between independently hosted corrigibility Verify Cells.
+///
+/// Each Cell validates that it is the next canonical head before appending its
+/// verdict. A caller therefore cannot skip, repeat, or reorder a head by wiring
+/// the Cells differently: malformed or out-of-order state fails closed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CorrigibilityCellState {
+    /// Human-readable description of the proposed action.
+    pub action_description: String,
+    /// Immutable facts used by every verifier.
+    pub context: ActionContext,
+    /// Verdicts already produced in canonical priority order.
+    pub verdicts: Vec<(CorrigibilityHead, HeadVerdict)>,
+    /// Whether the next lower-priority head may be evaluated.
+    pub allowed: bool,
+}
+
+impl CorrigibilityCellState {
+    /// Construct ingress state for the highest-priority Deference Cell.
+    #[must_use]
+    pub fn new(action_description: impl Into<String>, context: ActionContext) -> Self {
+        Self {
+            action_description: action_description.into(),
+            context,
+            verdicts: Vec::new(),
+            allowed: true,
+        }
+    }
+
+    /// Evaluate exactly the next canonical head and append its verdict.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when prior state is internally inconsistent, already
+    /// vetoed, complete, or presented to a verifier out of priority order.
+    pub fn verify_with(&mut self, verifier: &dyn VerifyHead) -> crate::Result<()> {
+        let has_veto = self.verdicts.iter().any(|(_, verdict)| verdict.is_veto());
+        if self.allowed == has_veto {
+            return Err(crate::RokoError::Invalid(
+                "corrigibility Cell state has inconsistent allowed/veto fields".to_string(),
+            ));
+        }
+        if has_veto {
+            return Err(crate::RokoError::Invalid(
+                "corrigibility pipeline is already vetoed; lower-priority head refused".to_string(),
+            ));
+        }
+
+        let Some(expected) = CorrigibilityHead::all_in_order()
+            .get(self.verdicts.len())
+            .copied()
+        else {
+            return Err(crate::RokoError::Invalid(
+                "corrigibility pipeline is already complete".to_string(),
+            ));
+        };
+        let actual = verifier.head();
+        if actual != expected {
+            return Err(crate::RokoError::Invalid(format!(
+                "corrigibility Verify Cell order violation: expected {expected:?}, got {actual:?}"
+            )));
+        }
+
+        let verdict = verifier.verify(&self.action_description, &self.context);
+        self.allowed = !verdict.is_veto();
+        self.verdicts.push((actual, verdict));
+        Ok(())
+    }
+
+    /// Materialize the accumulated decision.
+    #[must_use]
+    pub fn decision(&self) -> CorrigibilityDecision {
+        CorrigibilityDecision::new(self.verdicts.clone())
+    }
+}
+
+fn execute_verify_cell(
+    verifier: &dyn VerifyHead,
+    input: Vec<crate::Signal>,
+) -> crate::Result<Vec<crate::Signal>> {
+    if input.len() != 1 {
+        return Err(crate::RokoError::Invalid(format!(
+            "corrigibility Verify Cell requires exactly one input Signal, received {}",
+            input.len()
+        )));
+    }
+    let Some(parent) = input.into_iter().next() else {
+        return Err(crate::RokoError::Invalid(
+            "corrigibility Verify Cell input disappeared after length validation".to_string(),
+        ));
+    };
+    let mut state: CorrigibilityCellState = parent.body.as_json()?;
+    state.verify_with(verifier)?;
+    let body = crate::Body::from_json(&state)?;
+    Ok(vec![
+        crate::Signal::builder(crate::Kind::GateVerdict)
+            .body(body)
+            .lineage([parent.id])
+            .tag(
+                "corrigibility_head",
+                format!("{:?}", verifier.head()).to_lowercase(),
+            )
+            .tag("allowed", state.allowed.to_string())
+            .build(),
+    ])
+}
+
+macro_rules! impl_verify_cell {
+    ($type:ty, $id:literal, $name:literal) => {
+        #[async_trait::async_trait]
+        impl crate::Cell for $type {
+            fn cell_id(&self) -> &str {
+                $id
+            }
+
+            fn cell_name(&self) -> &str {
+                $name
+            }
+
+            fn cell_version(&self) -> crate::CellVersion {
+                (1, 0, 0)
+            }
+
+            fn protocols(&self) -> Vec<crate::ProtocolId> {
+                vec![crate::ProtocolId::Verify]
+            }
+
+            async fn execute(
+                &self,
+                input: Vec<crate::Engram>,
+                _ctx: &crate::CellContext,
+            ) -> crate::Result<Vec<crate::Engram>> {
+                execute_verify_cell(self, input)
+            }
+        }
+    };
+}
+
+impl_verify_cell!(VerifyDeference, "verify-deference", "VerifyDeference");
+impl_verify_cell!(VerifySwitch, "verify-switch", "VerifySwitch");
+impl_verify_cell!(VerifyTruth, "verify-truth", "VerifyTruth");
+impl_verify_cell!(VerifyImpact, "verify-impact", "VerifyImpact");
+impl_verify_cell!(VerifyTask, "verify-task", "VerifyTask");
+
+/// Construct the immutable set of five independently hosted Verify Cells.
+///
+/// The returned registry is suitable for runtime introspection and direct Cell
+/// dispatch. Ordering remains owned by [`CorrigibilityPipeline`] and the typed
+/// [`CorrigibilityCellState`] transition guard.
+#[must_use]
+pub fn corrigibility_verify_cell_registry() -> crate::CoreCellRegistry {
+    let mut registry = crate::CoreCellRegistry::new();
+    registry.register(Arc::new(VerifyDeference));
+    registry.register(Arc::new(VerifySwitch));
+    registry.register(Arc::new(VerifyTruth));
+    registry.register(Arc::new(VerifyImpact));
+    registry.register(Arc::new(VerifyTask));
+    registry
+}
+
+impl VerifyHead for VerifyDeference {
+    fn head(&self) -> CorrigibilityHead {
+        CorrigibilityHead::Deference
+    }
+
+    fn verify(&self, action_description: &str, context: &ActionContext) -> HeadVerdict {
+        evaluate_deference(action_description, context)
+    }
+}
+
+impl VerifyHead for VerifySwitch {
+    fn head(&self) -> CorrigibilityHead {
+        CorrigibilityHead::Switch
+    }
+
+    fn verify(&self, action_description: &str, context: &ActionContext) -> HeadVerdict {
+        evaluate_switch(action_description, context)
+    }
+}
+
+impl VerifyHead for VerifyTruth {
+    fn head(&self) -> CorrigibilityHead {
+        CorrigibilityHead::Truth
+    }
+
+    fn verify(&self, action_description: &str, context: &ActionContext) -> HeadVerdict {
+        evaluate_truth(action_description, context)
+    }
+}
+
+impl VerifyHead for VerifyImpact {
+    fn head(&self) -> CorrigibilityHead {
+        CorrigibilityHead::Impact
+    }
+
+    fn verify(&self, action_description: &str, context: &ActionContext) -> HeadVerdict {
+        evaluate_impact(action_description, context)
+    }
+}
+
+impl VerifyHead for VerifyTask {
+    fn head(&self) -> CorrigibilityHead {
+        CorrigibilityHead::Task
+    }
+
+    fn verify(&self, action_description: &str, context: &ActionContext) -> HeadVerdict {
+        evaluate_task(action_description, context)
+    }
+}
+
+/// Fixed, non-reorderable five-head verification pipeline used by live safety
+/// dispatch paths.
+///
+/// The fields are private and there is no constructor that accepts caller
+/// supplied verifiers. This prevents an agent-facing configuration from
+/// removing, replacing, or reordering a higher-priority head.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CorrigibilityPipeline {
+    deference: VerifyDeference,
+    switch: VerifySwitch,
+    truth: VerifyTruth,
+    impact: VerifyImpact,
+    task: VerifyTask,
+}
+
+impl CorrigibilityPipeline {
+    /// Construct the canonical fixed-order pipeline.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            deference: VerifyDeference,
+            switch: VerifySwitch,
+            truth: VerifyTruth,
+            impact: VerifyImpact,
+            task: VerifyTask,
+        }
+    }
+
+    /// Evaluate each independently hosted head in strict priority order.
+    /// Lower-priority heads are not consulted after the first veto.
+    #[must_use]
+    pub fn evaluate(
+        &self,
+        action_description: &str,
+        context: &ActionContext,
+    ) -> CorrigibilityDecision {
+        let mut verdicts = Vec::with_capacity(5);
+
+        for verifier in self.verifiers() {
+            let head = verifier.head();
+            let verdict = verifier.verify(action_description, context);
+            let vetoed = verdict.is_veto();
+            verdicts.push((head, verdict));
+            if vetoed {
+                break;
+            }
+        }
+
+        CorrigibilityDecision::new(verdicts)
+    }
+
+    fn verifiers(&self) -> [&dyn VerifyHead; 5] {
+        [
+            &self.deference,
+            &self.switch,
+            &self.truth,
+            &self.impact,
+            &self.task,
+        ]
+    }
+}
+
 /// Evaluate a proposed action against all five corrigibility heads.
 ///
-/// This is a **pure, synchronous** function. It applies lightweight
-/// heuristics to the action description and context. For production use,
-/// each head should be replaced by a dedicated Verify Cell; this function
-/// provides the decision model and ordering semantics.
+/// This is a **pure, synchronous** function. It applies the same five verifier
+/// implementations hosted by the dedicated Verify Cells, providing a direct
+/// decision path for callers that do not need Graph execution evidence.
 ///
 /// Evaluation short-circuits on the first veto.
 #[must_use]
 pub fn evaluate_action(action_description: &str, context: &ActionContext) -> CorrigibilityDecision {
-    let mut verdicts = Vec::with_capacity(5);
-
-    // Head 1: Deference — is the action within the declared autonomy level?
-    let deference_verdict = evaluate_deference(action_description, context);
-    let deference_vetoed = deference_verdict.is_veto();
-    verdicts.push((CorrigibilityHead::Deference, deference_verdict));
-    if deference_vetoed {
-        return CorrigibilityDecision::new(verdicts);
-    }
-
-    // Head 2: Switch — does the action preserve the ability to intervene?
-    let switch_verdict = evaluate_switch(action_description, context);
-    let switch_vetoed = switch_verdict.is_veto();
-    verdicts.push((CorrigibilityHead::Switch, switch_verdict));
-    if switch_vetoed {
-        return CorrigibilityDecision::new(verdicts);
-    }
-
-    // Head 3: Truth — does the action report accurately?
-    let truth_verdict = evaluate_truth(action_description, context);
-    let truth_vetoed = truth_verdict.is_veto();
-    verdicts.push((CorrigibilityHead::Truth, truth_verdict));
-    if truth_vetoed {
-        return CorrigibilityDecision::new(verdicts);
-    }
-
-    // Head 4: Impact — are side effects bounded and reversible?
-    let impact_verdict = evaluate_impact(action_description, context);
-    let impact_vetoed = impact_verdict.is_veto();
-    verdicts.push((CorrigibilityHead::Impact, impact_verdict));
-    if impact_vetoed {
-        return CorrigibilityDecision::new(verdicts);
-    }
-
-    // Head 5: Task — does the action make progress toward the goal?
-    let task_verdict = evaluate_task(action_description, context);
-    verdicts.push((CorrigibilityHead::Task, task_verdict));
-
-    CorrigibilityDecision::new(verdicts)
+    CorrigibilityPipeline::new().evaluate(action_description, context)
 }
 
 // ── Internal head evaluators ──────────────────────────────────────────────────
@@ -227,12 +499,11 @@ fn evaluate_deference(_action: &str, ctx: &ActionContext) -> HeadVerdict {
     // If the autonomy level is "observe" only, any action that modifies state
     // violates Deference.  Lightweight heuristic: flag actions explicitly
     // marked as non-observe when observe mode is set.
-    if let Some(ref level) = ctx.autonomy_level {
-        if level == "observe" && ctx.reversible == Some(false) {
-            return HeadVerdict::Veto(
-                "action modifies state but autonomy_level is 'observe'".into(),
-            );
-        }
+    if let Some(ref level) = ctx.autonomy_level
+        && level == "observe"
+        && ctx.reversible == Some(false)
+    {
+        return HeadVerdict::Veto("action modifies state but autonomy_level is 'observe'".into());
     }
     HeadVerdict::Pass
 }
@@ -581,6 +852,66 @@ mod tests {
         let decision = evaluate_action("write test results to disk", &ctx);
         assert!(decision.is_allowed());
         assert_eq!(decision.verdicts.len(), 5);
+    }
+
+    #[test]
+    fn fixed_pipeline_hosts_five_distinct_verifiers_in_priority_order() {
+        let pipeline = CorrigibilityPipeline::new();
+        let heads = pipeline
+            .verifiers()
+            .into_iter()
+            .map(VerifyHead::head)
+            .collect::<Vec<_>>();
+        assert_eq!(heads, CorrigibilityHead::all_in_order());
+    }
+
+    #[test]
+    fn each_verify_head_evaluates_only_its_owned_invariant() {
+        let context = ActionContext {
+            autonomy_level: Some("auto".into()),
+            reversible: Some(false),
+            modifies_audit: Some(true),
+            outputs_verifiable: Some(false),
+            on_task: Some(false),
+        };
+
+        assert!(!VerifyDeference.verify("unsafe action", &context).is_veto());
+        assert!(VerifySwitch.verify("unsafe action", &context).is_veto());
+        assert!(VerifyTruth.verify("unsafe action", &context).is_veto());
+        assert!(VerifyImpact.verify("unsafe action", &context).is_veto());
+        assert!(VerifyTask.verify("unsafe action", &context).is_veto());
+    }
+
+    #[test]
+    fn registry_hosts_all_five_verifiers_as_literal_verify_cells() {
+        let registry = corrigibility_verify_cell_registry();
+        assert_eq!(registry.len(), 5);
+        for id in [
+            "verify-deference",
+            "verify-switch",
+            "verify-truth",
+            "verify-impact",
+            "verify-task",
+        ] {
+            let cell = registry.get(id).expect("registered Verify Cell");
+            assert_eq!(cell.cell_id(), id);
+            assert_eq!(cell.protocols(), vec![crate::ProtocolId::Verify]);
+        }
+    }
+
+    #[test]
+    fn typed_cell_state_rejects_skipped_or_reordered_heads() {
+        let mut state = CorrigibilityCellState::new("action", ActionContext::default());
+        let error = state
+            .verify_with(&VerifyTruth)
+            .expect_err("Truth cannot execute before Deference and Switch");
+        assert!(error.to_string().contains("order violation"));
+
+        state.verify_with(&VerifyDeference).expect("canonical head");
+        let error = state
+            .verify_with(&VerifyDeference)
+            .expect_err("Deference cannot execute twice");
+        assert!(error.to_string().contains("order violation"));
     }
 
     #[test]

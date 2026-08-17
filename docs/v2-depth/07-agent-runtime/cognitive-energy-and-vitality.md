@@ -2,6 +2,8 @@
 
 > Depth for [07-AGENT-RUNTIME.md](../../unified/07-AGENT-RUNTIME.md). Models energy depletion, recovery modes, and the bidirectional coupling between energy and affect that drives behavioral phase transitions.
 
+> **Implementation status (2026-08-17):** PARTIAL. The `CognitiveEnergy` type and `EnergyPool`/`CognitiveMetabolism`/`EnergyLedger` structs exist in `crates/roko-runtime/src/energy.rs` and compile. That module's header explicitly states `STATUS: NOT WIRED -- built but no non-test runtime caller.` E23 is accepted complete (10/10) for lifecycle/vitality/EFE/GoalTree; the energy pool depletion-by-operation and zone-based tier throttling described here remain product integration scope.
+
 ## Energy as a First-Class Resource
 
 Every Agent maintains a cognitive energy pool alongside its budget. Budget tracks money (tokens × price); energy tracks computational capacity (ability to sustain complex reasoning). They deplete independently:

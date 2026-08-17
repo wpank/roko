@@ -1,5 +1,8 @@
 # Causal Microstructure Discovery
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Correlation is not causation. The causal discovery subsystem uses Pearl's structural causal models, Granger causality, and interventional experiments (via mirage-rs simulation) to discover genuine causal relationships in structured domains.
 
 

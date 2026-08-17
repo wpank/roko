@@ -49,7 +49,7 @@ impl Watcher {
     /// Reset the per-minute rate-limit counter if more than 60 seconds have elapsed.
     fn maybe_reset_window(&self) {
         let mut last = self.last_reset.lock();
-        if last.elapsed() >= Duration::from_secs(60) {
+        if last.elapsed() >= Duration::from_mins(1) {
             self.reactions_this_min.store(0, Ordering::Relaxed);
             *last = Instant::now();
         }

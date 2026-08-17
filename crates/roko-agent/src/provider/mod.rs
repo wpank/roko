@@ -42,11 +42,14 @@
 use crate::SafetyLayer;
 use crate::dispatcher::{HandlerResolver, ToolDispatcher};
 use crate::gemini::GeminiAdapter;
+use crate::immune_boundary::{safe_provider_agent_identity, wrap_provider_agent};
+use crate::mcp::McpRuntime;
 use crate::mock::MockAgent;
+use crate::process::ResourceLimits;
 use crate::rate_limit::ProviderRateLimiter;
+use crate::safety::contract::AgentContract;
 use crate::{Agent, ExecAgent};
 use indexmap::IndexMap;
-use roko_core::Temperament;
 use roko_core::agent::{ProviderKind, resolve_model};
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
@@ -54,6 +57,7 @@ use roko_core::config::schema::RokoConfig;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
 use roko_core::defaults::{DEFAULT_MAX_TOOL_ITERATIONS, DEFAULT_REQUEST_TIMEOUT_MS};
 use roko_core::tool::{ToolDef, ToolRegistry};
+use roko_core::{ModelInputMessage, Temperament};
 use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -190,10 +194,24 @@ pub fn create_agent_for_model(
     options: AgentOptions,
 ) -> Result<Box<dyn Agent>, AgentCreationError> {
     let mut options = options;
-    if let Some(mock_agent) = mock_agent_from_env(&options)? {
-        return Ok(mock_agent);
+    // Preserve the requested value only until the outer boundary can record
+    // whether it was valid. Provider adapters and their inner agents receive
+    // only the safe identity, so even an infallible construction path cannot
+    // retain or later expose a rejected secret-shaped/control-bearing value.
+    let requested_agent_id = options.name.clone();
+    options.name = safe_provider_agent_identity(&requested_agent_id).0;
+    roko_core::validate_model_input_messages(&options.input_messages)
+        .map_err(AgentCreationError::InvalidImageInput)?;
+    let has_images = crate::multimodal::contains_images(&options.input_messages);
+    let mut mock_agent = mock_agent_from_env(&options)?;
+    if !has_images && let Some(mock_agent) = mock_agent.take() {
+        return Ok(wrap_provider_agent(
+            mock_agent,
+            &requested_agent_id,
+            options.effective_immune_root(),
+        ));
     }
-    let safety_layer = current_safety_layer().unwrap_or_else(|| SafetyLayer::from_config(config));
+    let safety_layer = safety_layer_for_options(config, &options);
     let effective_temperament = config.agent.temperament_for_role(&safety_layer.role);
     let resolved = resolve_model(config, model_key);
     let profile = resolved
@@ -235,6 +253,12 @@ pub fn create_agent_for_model(
             )));
         }
         _ => {
+            if has_images {
+                return Err(AgentCreationError::ImageInputUnsupported {
+                    model: model_key.to_string(),
+                    provider: resolved.provider_kind,
+                });
+            }
             tracing::warn!(
                 model_key = model_key,
                 command = %legacy_command.unwrap_or("unknown"),
@@ -253,7 +277,11 @@ pub fn create_agent_for_model(
             if !options.env.is_empty() {
                 agent = agent.with_env(options.env.clone());
             }
-            return Ok(Box::new(agent) as Box<dyn Agent>);
+            return Ok(wrap_provider_agent(
+                Box::new(agent) as Box<dyn Agent>,
+                &requested_agent_id,
+                options.effective_immune_root(),
+            ));
         }
     };
 
@@ -265,17 +293,94 @@ pub fn create_agent_for_model(
         "creating agent via provider adapter"
     );
 
+    if has_images && (!profile.supports_vision || !provider_config.kind.supports_inline_images()) {
+        return Err(AgentCreationError::ImageInputUnsupported {
+            model: model_key.to_string(),
+            provider: provider_config.kind,
+        });
+    }
+
+    if let Some(mock_agent) = mock_agent.take() {
+        return Ok(wrap_provider_agent(
+            mock_agent,
+            &requested_agent_id,
+            options.effective_immune_root(),
+        ));
+    }
+
+    if options
+        .pre_discovered_local_tools
+        .as_ref()
+        .is_some_and(|runtime| !runtime.tools().is_empty())
+        && !provider_supports_local_tool_runtime(provider_config.kind)
+    {
+        return Err(AgentCreationError::LocalToolsUnsupported(
+            provider_config.kind,
+        ));
+    }
+    if options
+        .local_tool_mcp_servers
+        .as_ref()
+        .is_some_and(|servers| !servers.is_empty())
+        && !provider_supports_per_call_local_mcp(&provider_config)
+    {
+        return Err(AgentCreationError::LocalToolsUnsupported(
+            provider_config.kind,
+        ));
+    }
+
     if options.provider_semaphores.is_none() {
         let providers = config.effective_providers();
         options.provider_semaphores = Some(Arc::new(ProviderSemaphores::new(&providers)));
     }
 
     let adapter = adapter_for_kind(provider_config.kind);
-    with_temperament(Some(effective_temperament), || {
+    let agent = with_temperament(Some(effective_temperament), || {
         with_safety_layer(Some(safety_layer), || {
             adapter.create_agent(&provider_config, &profile, &options)
         })
-    })
+    })?;
+    Ok(wrap_provider_agent(
+        agent,
+        &requested_agent_id,
+        options.effective_immune_root(),
+    ))
+}
+
+/// Whether this provider's in-process loop consumes `LocalToolRuntime`.
+///
+/// Opaque CLI/ACP harnesses must use an explicit transport bridge instead of
+/// receiving a runtime they cannot execute. Keeping this list fail-closed
+/// prevents a newly added adapter from silently advertising definition-only
+/// plugin tools.
+const fn provider_supports_local_tool_runtime(kind: ProviderKind) -> bool {
+    matches!(
+        kind,
+        ProviderKind::OpenAiCompat
+            | ProviderKind::AnthropicApi
+            | ProviderKind::PerplexityApi
+            | ProviderKind::GeminiApi
+            | ProviderKind::CerebrasApi
+    )
+}
+
+fn provider_supports_per_call_local_mcp(provider: &ProviderConfig) -> bool {
+    provider.kind == ProviderKind::CursorCli
+        || (provider.kind == ProviderKind::Hermes
+            && provider.base_url.is_none()
+            && provider
+                .args
+                .as_ref()
+                .is_some_and(|args| args.iter().any(|argument| argument == "acp")))
+}
+
+fn safety_layer_for_options(config: &RokoConfig, options: &AgentOptions) -> SafetyLayer {
+    let mut safety_layer =
+        current_safety_layer().unwrap_or_else(|| SafetyLayer::from_config(config));
+    if let Some(contract) = options.agent_contract.clone() {
+        safety_layer = safety_layer.with_contract(contract);
+    }
+    safety_layer
 }
 
 fn mock_agent_from_env(
@@ -461,10 +566,10 @@ fn provider_for_kind(
     kind: ProviderKind,
 ) -> Option<(String, &ProviderConfig)> {
     let exact_key = kind.label();
-    if let Some(provider) = providers.get(exact_key) {
-        if provider.kind == kind {
-            return Some((exact_key.to_string(), provider));
-        }
+    if let Some(provider) = providers.get(exact_key)
+        && provider.kind == kind
+    {
+        return Some((exact_key.to_string(), provider));
     }
     providers
         .iter()
@@ -528,15 +633,99 @@ pub trait ProviderAdapter: Send + Sync {
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError;
 }
 
+pub(crate) fn configured_resource_limits(
+    provider: &ProviderConfig,
+) -> Result<Option<ResourceLimits>, AgentCreationError> {
+    let limits = ResourceLimits::from_provider_config(provider);
+    if let Some(limits) = &limits {
+        limits
+            .validate_for_current_platform()
+            .map_err(|error| AgentCreationError::ResourceLimitEnforcement(error.to_string()))?;
+    }
+    Ok(limits)
+}
+
+/// Model-visible local tool definitions paired with executable handlers.
+///
+/// This is the dependency-neutral handoff used by embedding surfaces such as
+/// the CLI plugin loader. A provider must retain both halves for the lifetime
+/// of its tool loop: definitions without handlers would advertise tools that
+/// fail only after a model selects them.
+#[derive(Clone)]
+pub struct LocalToolRuntime {
+    tools: Arc<Vec<ToolDef>>,
+    resolver: Arc<dyn HandlerResolver>,
+}
+
+impl fmt::Debug for LocalToolRuntime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LocalToolRuntime")
+            .field("tool_count", &self.tools.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl LocalToolRuntime {
+    /// Construct a runtime from definitions and the resolver that executes
+    /// them. Provider construction validates handler parity before use.
+    #[must_use]
+    pub fn new(tools: Vec<ToolDef>, resolver: Arc<dyn HandlerResolver>) -> Self {
+        Self {
+            tools: Arc::new(tools),
+            resolver,
+        }
+    }
+
+    /// Canonical local definitions exposed to provider tool loops.
+    #[must_use]
+    pub fn tools(&self) -> &Arc<Vec<ToolDef>> {
+        &self.tools
+    }
+
+    /// Definitions that do not resolve to an executable handler.
+    #[must_use]
+    pub fn missing_handlers(&self) -> Vec<String> {
+        self.tools
+            .iter()
+            .filter(|tool| self.resolver.resolve(&tool.name).is_none())
+            .map(|tool| tool.name.clone())
+            .collect()
+    }
+
+    /// Compose these local handlers over a fallback resolver. Local handlers
+    /// take precedence, matching the local registry's definition override
+    /// semantics.
+    #[must_use]
+    pub fn resolver(&self, fallback: Arc<dyn HandlerResolver>) -> Arc<dyn HandlerResolver> {
+        let local = Arc::clone(&self.resolver);
+        Arc::new(move |name: &str| local.resolve(name).or_else(|| fallback.resolve(name)))
+    }
+}
+
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Default)]
 pub struct AgentOptions {
     pub command: Option<String>,
     pub timeout_ms: Option<u64>,
     pub system_prompt: Option<String>,
+    /// Validated provider-neutral structured messages for a multimodal turn.
+    /// HTTP adapters translate these at their final wire boundary. Adapters
+    /// without an inline-image protocol must reject a non-empty list.
+    pub input_messages: Vec<ModelInputMessage>,
     pub cached_content: Option<String>,
     pub tools: Option<String>,
+    /// Role contract resolved by the orchestration boundary.
+    ///
+    /// Provider construction scopes this contract into every in-process tool
+    /// dispatcher. This is structured rather than encoded in `tools` so an
+    /// empty allowlist remains a binding deny-all.
+    pub agent_contract: Option<AgentContract>,
     pub mcp_config: Option<PathBuf>,
+    /// Canonical workspace root for durable immune authority and evidence.
+    ///
+    /// Unlike `working_dir`, this path must not point at a disposable attempt
+    /// worktree. Standalone callers may omit it and inherit `working_dir`.
+    pub immune_root: Option<PathBuf>,
     pub working_dir: Option<PathBuf>,
     pub provider_semaphores: Option<Arc<ProviderSemaphores>>,
     pub env: Vec<(String, String)>,
@@ -582,9 +771,22 @@ pub struct AgentOptions {
     /// Default MUST be `false`. PE_02 will flip all NEEDS FIX sites.
     pub dangerously_skip_permissions: bool,
     pub name: String,
-    /// Pre-discovered MCP tools. When `Some`, the provider adapter skips MCP
-    /// discovery entirely and uses these tools instead of spawning MCP servers.
+    /// Pre-supplied tool definitions that do not require a dynamic execution
+    /// client. MCP-sourced definitions are rejected unless
+    /// `pre_discovered_mcp_runtime` is also supplied.
     pub pre_discovered_mcp_tools: Option<Arc<Vec<ToolDef>>>,
+    /// Pre-discovered MCP definitions plus their initialized execution
+    /// clients. HTTP-provider tool loops use this instead of advertising
+    /// definition-only MCP tools.
+    pub pre_discovered_mcp_runtime: Option<Arc<McpRuntime>>,
+    /// Non-MCP local tools, such as declarative plugin commands, paired with
+    /// the handlers that execute them. Providers reject the entire runtime if
+    /// any definition lacks a handler.
+    pub pre_discovered_local_tools: Option<Arc<LocalToolRuntime>>,
+    /// Task-scoped loopback MCP servers that expose local tools to an ACP
+    /// subprocess. This is separate from `pre_discovered_local_tools`: ACP
+    /// adapters receive transport configuration, never in-process handlers.
+    pub local_tool_mcp_servers: Option<Arc<Vec<LocalToolMcpServer>>>,
     /// Runtime-scoped per-provider rate limiter shared across concurrent dispatches.
     ///
     /// When set, provider adapters that create HTTP-backed LLM backends (OpenAI-compat,
@@ -593,12 +795,64 @@ pub struct AgentOptions {
     pub rate_limiter: Option<Arc<ProviderRateLimiter>>,
 }
 
+/// Authenticated per-call MCP endpoint for an ACP provider subprocess.
+///
+/// The bearer token is intentionally redacted from `Debug` output. Adapters
+/// materialize the standard ACP HTTP server object only at `session/new`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct LocalToolMcpServer {
+    pub name: String,
+    pub url: String,
+    pub bearer_token: String,
+}
+
+impl LocalToolMcpServer {
+    /// Serialize to ACP v1's flat HTTP MCP server shape.
+    #[must_use]
+    pub fn to_acp_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "http",
+            "name": self.name,
+            "url": self.url,
+            "headers": [{
+                "name": "Authorization",
+                "value": format!("Bearer {}", self.bearer_token),
+            }],
+        })
+    }
+}
+
+impl fmt::Debug for LocalToolMcpServer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LocalToolMcpServer")
+            .field("name", &self.name)
+            .field("url", &self.url)
+            .field("bearer_token", &"[REDACTED]")
+            .finish()
+    }
+}
+
 impl AgentOptions {
     /// Root the agent subprocess in the given working directory.
     #[must_use]
     pub fn with_working_dir(mut self, working_dir: impl Into<PathBuf>) -> Self {
         self.working_dir = Some(working_dir.into());
         self
+    }
+
+    /// Root durable immune controls independently from the effect worktree.
+    #[must_use]
+    pub fn with_immune_root(mut self, immune_root: impl Into<PathBuf>) -> Self {
+        let immune_root = immune_root.into();
+        self.immune_root = Some(immune_root.canonicalize().unwrap_or(immune_root));
+        self
+    }
+
+    /// Resolve the explicit immune root, falling back for standalone callers.
+    #[must_use]
+    pub fn effective_immune_root(&self) -> Option<&Path> {
+        self.immune_root.as_deref().or(self.working_dir.as_deref())
     }
 
     /// Append Perplexity search options as a structured `extra_args` payload.
@@ -792,6 +1046,19 @@ pub enum AgentCreationError {
     FixtureLoad(String),
     #[error("Binary not found on PATH: {0}")]
     BinaryNotFound(String),
+    #[error("Provider process resource-limit enforcement failed: {0}")]
+    ResourceLimitEnforcement(String),
+    #[error("Invalid inline image input: {0}")]
+    InvalidImageInput(String),
+    #[error("Model {model:?} on provider {provider:?} cannot accept inline image input")]
+    ImageInputUnsupported {
+        model: String,
+        provider: ProviderKind,
+    },
+    #[error(
+        "Provider {0:?} cannot execute in-process local tools; use an authenticated MCP bridge or a provider-native tool loop"
+    )]
+    LocalToolsUnsupported(ProviderKind),
 }
 
 #[cfg(test)]
@@ -810,6 +1077,61 @@ mod tests {
 
     fn prompt(text: &str) -> Signal {
         Signal::builder(Kind::Prompt).body(Body::text(text)).build()
+    }
+
+    #[test]
+    fn local_tool_mcp_server_uses_authenticated_acp_http_shape_and_redacts_debug() {
+        let server = LocalToolMcpServer {
+            name: "roko_plugins".to_string(),
+            url: "http://127.0.0.1:1234/mcp".to_string(),
+            bearer_token: "secret-token".to_string(),
+        };
+        assert_eq!(
+            server.to_acp_json(),
+            serde_json::json!({
+                "type": "http",
+                "name": "roko_plugins",
+                "url": "http://127.0.0.1:1234/mcp",
+                "headers": [{"name": "Authorization", "value": "Bearer secret-token"}],
+            })
+        );
+        let debug = format!("{server:?}");
+        assert!(!debug.contains("secret-token"));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn only_cursor_cli_and_hermes_acp_accept_per_call_local_mcp() {
+        let provider = |kind| ProviderConfig {
+            kind,
+            base_url: None,
+            api_key_env: None,
+            command: None,
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+        };
+        let cursor = provider(ProviderKind::CursorCli);
+        assert!(provider_supports_per_call_local_mcp(&cursor));
+
+        let hermes_acp = ProviderConfig {
+            command: Some("hermes".to_string()),
+            args: Some(vec!["acp".to_string()]),
+            ..provider(ProviderKind::Hermes)
+        };
+        assert!(provider_supports_per_call_local_mcp(&hermes_acp));
+
+        let hermes_oneshot = ProviderConfig {
+            command: Some("hermes".to_string()),
+            ..provider(ProviderKind::Hermes)
+        };
+        assert!(!provider_supports_per_call_local_mcp(&hermes_oneshot));
+        let openclaw = provider(ProviderKind::OpenClaw);
+        assert!(!provider_supports_per_call_local_mcp(&openclaw));
     }
 
     fn write_script(path: &std::path::Path, body: &str) {
@@ -1120,6 +1442,37 @@ mod tests {
     }
 
     #[test]
+    fn image_input_fails_closed_without_a_vision_http_transport() {
+        let image_options = || AgentOptions {
+            input_messages: vec![roko_core::ModelInputMessage::new(
+                roko_core::MessageRole::User,
+                vec![roko_core::ModelInputBlock::image("image/png", "aGVsbG8=")],
+            )],
+            ..Default::default()
+        };
+
+        let no_config = create_agent_for_model(
+            &RokoConfig::default(),
+            "unconfigured-model",
+            image_options(),
+        );
+        assert!(matches!(
+            no_config,
+            Err(AgentCreationError::ImageInputUnsupported { .. })
+        ));
+
+        let config = test_config("https://example.invalid/v1".to_string());
+        let text_only_model = create_agent_for_model(&config, "glm-5-1", image_options());
+        assert!(matches!(
+            text_only_model,
+            Err(AgentCreationError::ImageInputUnsupported {
+                provider: ProviderKind::OpenAiCompat,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn build_tool_dispatcher_attaches_scoped_safety_layer() {
         fn no_handler(_: &str) -> Option<Arc<dyn roko_core::tool::ToolHandler>> {
             None
@@ -1135,6 +1488,55 @@ mod tests {
 
         // Safety is always present; verify it was constructed.
         let _ = dispatcher.safety();
+    }
+
+    #[test]
+    fn agent_options_contract_is_the_live_provider_safety_contract() {
+        use crate::safety::contract::{AgentContract, GovernanceRule};
+        use roko_core::tool::{ToolCall, ToolContext};
+
+        let known = AgentOptions {
+            agent_contract: Some(AgentContract {
+                role: "known-role".into(),
+                allowed_tools: Some(vec!["read_file".into(), "bash".into()]),
+                governance: vec![GovernanceRule::ForbiddenTools(vec!["bash".into()])],
+                ..AgentContract::default()
+            }),
+            ..AgentOptions::default()
+        };
+        let layer = safety_layer_for_options(&RokoConfig::default(), &known);
+        let ctx = ToolContext::testing("/tmp/provider-contract");
+        assert!(
+            layer
+                .check_pre_execution(
+                    &ToolCall::new("read", "read_file", serde_json::json!({})),
+                    &ctx,
+                )
+                .is_ok()
+        );
+        assert!(
+            layer
+                .check_pre_execution(
+                    &ToolCall::new("bash", "bash", serde_json::json!({"command": "echo ok"})),
+                    &ctx,
+                )
+                .is_err()
+        );
+
+        let unknown = AgentOptions {
+            agent_contract: Some(AgentContract::restricted("unknown-role")),
+            ..AgentOptions::default()
+        };
+        let layer = safety_layer_for_options(&RokoConfig::default(), &unknown);
+        assert!(
+            layer
+                .check_pre_execution(
+                    &ToolCall::new("read", "read_file", serde_json::json!({})),
+                    &ctx,
+                )
+                .is_err(),
+            "provider dispatcher must preserve RestrictedFallback deny-all"
+        );
     }
 
     #[test]
@@ -1502,6 +1904,62 @@ mod tests {
         };
         assert!(message.contains("explicit [providers] and [models]"));
         assert!(message.contains("claude"));
+    }
+
+    #[test]
+    fn opaque_cli_provider_rejects_unconsumed_local_tool_runtime() {
+        let mut config = RokoConfig::default();
+        config.providers.insert(
+            "test-claude".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                base_url: None,
+                api_key_env: None,
+                command: Some("/bin/sh".to_string()),
+                args: None,
+                timeout_ms: Some(5_000),
+                ttft_timeout_ms: Some(DEFAULT_TTFT_TIMEOUT_MS),
+                connect_timeout_ms: Some(5_000),
+                extra_headers: None,
+                max_concurrent: None,
+                limits: None,
+            },
+        );
+        config.models.insert(
+            "test-model".to_string(),
+            ModelProfile {
+                provider: "test-claude".to_string(),
+                slug: "test-model".to_string(),
+                supports_tools: true,
+                ..Default::default()
+            },
+        );
+        let mut plugin_tool = ToolDef::new(
+            "demo.run",
+            "test plugin tool",
+            roko_core::tool::ToolCategory::Exec,
+            roko_core::tool::ToolPermission::executes(),
+        );
+        plugin_tool.source = roko_core::tool::ToolSource::Plugin {
+            name: "demo".to_string(),
+        };
+        let resolver: Arc<dyn HandlerResolver> = Arc::new(|_: &str| None);
+        let result = create_agent_for_model(
+            &config,
+            "test-model",
+            AgentOptions {
+                pre_discovered_local_tools: Some(Arc::new(LocalToolRuntime::new(
+                    vec![plugin_tool],
+                    resolver,
+                ))),
+                ..Default::default()
+            },
+        );
+
+        let Err(AgentCreationError::LocalToolsUnsupported(kind)) = result else {
+            panic!("opaque provider must reject an unconsumed local tool runtime");
+        };
+        assert_eq!(kind, ProviderKind::ClaudeCli);
     }
 
     #[test]

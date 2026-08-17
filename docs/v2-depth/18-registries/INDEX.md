@@ -3,6 +3,13 @@
 Depth for [22-REGISTRIES.md](../../unified/22-REGISTRIES.md).
 Covers all 24 source docs from `docs/08-chain/`. 8 depth docs absorb all 24 source docs.
 
+> **Last updated:** 2026-08-13
+>
+> **ISFR DEPRECATED (2026-08-13):** The ISFR vertical is deprecated and scheduled
+> for removal. See `.roko/GAPS.md`. Doc 06 (payments-and-settlement) contains
+> ISFR clearing/settlement content that is historical -- the code exists in
+> `roko-chain` but is not wired at runtime and will be removed.
+
 ---
 
 ## Depth docs (8)
@@ -14,7 +21,7 @@ Covers all 24 source docs from `docs/08-chain/`. 8 depth docs absorb all 24 sour
 | [03-job-market-and-hiring.md](03-job-market-and-hiring.md) | 10-spore-job-market, 11-sparrow-power-of-two-choices, 12-three-hiring-models |
 | [04-reputation-and-peer-scoring.md](04-reputation-and-peer-scoring.md) | 09-peer-scoring-3-layer, 13-vickrey-reputation-auction, 14-reputation-system-7-domain |
 | [05-chain-witness-and-triage.md](05-chain-witness-and-triage.md) | 15-chainwitness-event-watching, 16-triage-curiosity-midas, 17-chain-client-wallet-traits |
-| [06-payments-and-settlement.md](06-payments-and-settlement.md) | 20-x402-micropayments, 21-isfr-clearing-settlement, 23-knowledge-futures-market |
+| [06-payments-and-settlement.md](06-payments-and-settlement.md) | 20-x402-micropayments, 21-isfr-clearing-settlement (DEPRECATED), 23-knowledge-futures-market |
 | [07-gossip-and-privacy.md](07-gossip-and-privacy.md) | 04-korai-passport-erc-721-soulbound, 05-ventriloquist-defense, 07-4-tier-gossip-architecture, 08-eight-gossip-topics, 22-valhalla-privacy-layer |
 | [08-simulation-and-liveness.md](08-simulation-and-liveness.md) | 18-mirage-rs-evm-simulator, 19-chain-agent-heartbeat, 24-current-status-and-6-contracts |
 
@@ -72,7 +79,7 @@ Covers all 24 source docs from `docs/08-chain/`. 8 depth docs absorb all 24 sour
 | Source doc | Status |
 |---|---|
 | `docs/08-chain/20-x402-micropayments.md` | Absorbed -> [06-payments-and-settlement.md](06-payments-and-settlement.md) |
-| `docs/08-chain/21-isfr-clearing-settlement.md` | Absorbed -> [06-payments-and-settlement.md](06-payments-and-settlement.md) |
+| `docs/08-chain/21-isfr-clearing-settlement.md` | Absorbed -> [06-payments-and-settlement.md](06-payments-and-settlement.md) (DEPRECATED) |
 | `docs/08-chain/22-valhalla-privacy-layer.md` | Absorbed -> [07-gossip-and-privacy.md](07-gossip-and-privacy.md) |
 | `docs/08-chain/23-knowledge-futures-market.md` | Absorbed -> [06-payments-and-settlement.md](06-payments-and-settlement.md) |
 | `docs/08-chain/24-current-status-and-6-contracts.md` | Absorbed -> [08-simulation-and-liveness.md](08-simulation-and-liveness.md) |

@@ -1,5 +1,8 @@
 # 12 — Affect-Modulated Retrieval: PAD State Biases Context Surfacing
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Layer 2 Scaffold — Synapse Architecture
 > Status: **Scaffold** — PadState struct implemented, modulation hooks in ContextAssembler
 > Canonical sources: `refactoring-prd/09-innovations.md`, Mehrabian (1996)

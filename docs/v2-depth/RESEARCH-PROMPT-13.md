@@ -14,7 +14,7 @@ This is **Round 14 of a sustained research program** (13 prior rounds, ~300+ pag
 
 ### The company
 **Nunchi** = two parts:
-1. **Roko** — open-source Rust agent runtime (18 crates, 177K LOC, Apache 2.0). 6-stage pipeline: OBSERVE → GATE → ASSEMBLE → INFER+TOOLS → REFLECT → CONSOLIDATE. CascadeRouter learns which LLM to use (10-30x cost reduction). 11-gate verification pipeline. Shared knowledge store with decay. Self-hosting: reads its own PRDs, generates plans, dispatches Claude agents, validates, persists.
+1. **Roko** — open-source Rust agent runtime (34 workspace members, ~800K LOC, Apache 2.0). 6-stage pipeline: OBSERVE → GATE → ASSEMBLE → INFER+TOOLS → REFLECT → CONSOLIDATE. CascadeRouter learns which LLM to use (10-30x cost reduction). 11-gate verification pipeline. Shared knowledge store with decay. Self-hosting: reads its own PRDs, generates plans, dispatches Claude agents, validates, persists.
 2. **Nunchi Chain** — sovereign EVM L1, Simplex consensus, ~50ms blocks via co-located Tokyo validators (Hyperliquid architecture). Native HDC precompile (~400 gas). ERC-8004 agent identities, 7-domain reputation. On-chain knowledge substrate with demurrage. Cooperative clearing engine (clearing-as-inference).
 
 ### The category (decided R11)
@@ -71,7 +71,7 @@ Write the actual words for each of the 13 slides. Every headline (max 8 words), 
 
 **Slide 7**: Product. Real screenshots or the demo CLI output. The 6-stage pipeline. Predict-publish-correct with actual deltas.
 
-**Slide 8**: Traction. Three numbers in Temporal's format. "177K lines of Rust. Self-hosting loop operational. [Design partner conversations / GitHub stat]." Acknowledge: no revenue yet — Temporal had none at Series A either.
+**Slide 8**: Traction. Three numbers in Temporal's format. "800K lines of Rust. Self-hosting loop operational. [Design partner conversations / GitHub stat]." Acknowledge: no revenue yet — Temporal had none at Series A either.
 
 **Slide 9**: Cost proof. $44.86 → $1.42 waterfall. "All raw data published. Third-party reproducible." Casado's token-path margin quote underneath.
 

@@ -5,8 +5,16 @@
 //! `TaskExecutorCell`.
 
 use roko_graph::convert::{PlanTaskInfo, plan_to_graph, plan_to_graph_with_endpoints};
+use roko_graph::default_registry;
 use roko_graph::engine::GraphEngine;
-use roko_graph::{CellRegistry, default_registry};
+
+fn diagnostic_registry() -> roko_graph::CellRegistry {
+    let mut registry = default_registry();
+    registry.register("task-executor", |config| {
+        Box::new(roko_graph::cells::TaskExecutorCell::dry_run(config))
+    });
+    registry
+}
 
 /// Helper: create a `PlanTaskInfo` with minimal defaults.
 fn task_info(title: &str, depends_on: &[&str]) -> PlanTaskInfo {
@@ -35,7 +43,7 @@ async fn single_task_round_trip() {
     let graph = plan_to_graph("test-plan", "/tmp/plan", &tasks, 1).unwrap();
     assert_eq!(graph.node_count(), 1);
 
-    let registry = default_registry();
+    let registry = diagnostic_registry();
     let engine = GraphEngine::new(graph, registry);
 
     // Validate before execution.
@@ -70,7 +78,7 @@ async fn linear_chain_execution() {
     assert_eq!(graph.node_count(), 3);
     assert_eq!(graph.edge_count(), 2);
 
-    let registry = default_registry();
+    let registry = diagnostic_registry();
     let engine = GraphEngine::new(graph, registry);
     let ctx = roko_graph::CellContext::new();
     let output = engine.execute(&ctx).await.unwrap();
@@ -103,7 +111,7 @@ async fn diamond_with_endpoints() {
     assert_eq!(exits, vec!["T4"]);
 
     // Execute through the engine.
-    let registry = default_registry();
+    let registry = diagnostic_registry();
     let engine = GraphEngine::new(graph, registry);
     let ctx = roko_graph::CellContext::new();
     let output = engine.execute(&ctx).await.unwrap();

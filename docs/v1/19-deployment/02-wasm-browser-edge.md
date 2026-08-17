@@ -1,5 +1,8 @@
 # WASM Deployment (Browser and Edge)
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Roko's core traits and cognitive primitives compile to WebAssembly (wasm32-wasi), enabling
 > agents to run in browsers, edge functions, and embedded WASM runtimes. This document covers
 > what works in WASM, what does not, the MemorySubstrate alternative to filesystem access,

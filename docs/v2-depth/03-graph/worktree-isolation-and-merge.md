@@ -2,6 +2,8 @@
 
 > Depth for [03-GRAPH.md](../../unified/03-GRAPH.md). How parallel agent execution is isolated via git worktrees and serialized back into a shared branch via a merge queue.
 
+> **Implementation status (2026-08-17):** PARTIAL. Worktree Space creation/reclamation (`WorktreeManager` in `roko-cli/src/orchestrator/worktree.rs`) is implemented. The `MergeQueue` module (627 lines, 20+ tests in `roko-cli/src/orchestrator/merge_queue.rs`) is built but not wired into the runtime event loop — `MergeBranch` actions currently auto-advance without conflict detection. The `MergeCoordinator` pattern described in §3 is the design target, not current state.
+
 ---
 
 ## Problem
@@ -180,7 +182,7 @@ Both use file overlap as the conflict signal but operate at different pipeline s
 
 ## MergeCoordinator: Wiring Queue to Event Loop
 
-The `MergeQueue` module exists in `roko-orchestrator` but (as of the mori-diffs audit) is **not wired into the runtime event loop**. The current `MergeBranch` handler auto-advances:
+The `MergeQueue` module exists in `roko-cli::orchestrator` but (as of the mori-diffs audit) is **not wired into the runtime event loop**. The current `MergeBranch` handler auto-advances:
 
 ```rust
 // CURRENT: auto-advance, no queue

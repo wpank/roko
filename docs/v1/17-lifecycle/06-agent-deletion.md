@@ -1,5 +1,8 @@
 # Agent Deletion
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L0 Runtime (process lifecycle, supervision) + L1 Framework (resource release)
 >
 > **Prerequisites**: `docs/17-lifecycle/02-provisioning.md` (provisioning pipeline — deletion is its reverse), `docs/17-lifecycle/05-knowledge-backup-export.md` (backup before deletion)

@@ -26,11 +26,13 @@ use roko_agent::{Agent, AgentResult};
 use roko_compose::SystemPromptBuilder;
 use roko_core::OperatingFrequency;
 use roko_core::agent::{AgentRole, resolve_model};
-use roko_core::config::schema::{RokoConfig, SubscriptionConfig, SubscriptionFilterConfig};
+use roko_core::config::schema::{
+    RokoConfig, SubscriptionConfig, SubscriptionFilterConfig, SubscriptionTrigger,
+};
 use roko_core::tool::ExternalAction;
 use roko_core::tool::ToolRegistry;
 use roko_core::tool::role_allowlist::role_allowlist;
-use roko_core::{Body, Context as RokoContext, Kind, Provenance, Signal};
+use roko_core::{Body, Context as RokoContext, Kind, ObservableEvent, Provenance, Signal};
 use roko_core::{ContentHash, Verdict};
 use roko_daimon::{AffectEngine as _, AffectEvent};
 use roko_learn::anomaly::{Anomaly, AnomalyDetector};
@@ -185,6 +187,18 @@ struct DispatchOutcome {
     gate_verdicts: Vec<EpisodeGateVerdict>,
     success: bool,
     model_used: String,
+}
+
+/// Durable terminal receipt returned only after the dispatch episode has been
+/// appended successfully. Relay consumers use this receipt as the boundary
+/// before which an inbound topic message must never be acknowledged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct DispatchTerminal {
+    pub subscription_id: String,
+    pub template: String,
+    pub episode_id: String,
+    pub output_signal_hash: String,
+    pub success: bool,
 }
 
 #[derive(Debug)]
@@ -557,6 +571,8 @@ impl AgentDispatcher for TemplateAgentDispatcher {
             &system_prompt,
             &allowed_tools,
             mcp_config.as_ref(),
+            effective_workdir,
+            effective_workdir,
         )?;
         let ctx = dispatch_context(&template, &signal);
         let mut result = agent.run(&signal, &ctx).await;
@@ -584,12 +600,16 @@ pub struct Subscription {
     pub template: String,
     /// Signal kind glob used to match incoming signals.
     pub trigger: String,
+    /// Typed trigger configuration retained across runtime/API round-trips.
+    pub trigger_config: Option<SubscriptionTrigger>,
     /// Additional filters applied after the trigger matches.
     pub filter: SubscriptionFilter,
     /// Maximum number of concurrent agents for this subscription.
     pub concurrency_limit: usize,
     /// Minimum seconds between dispatches.
     pub cooldown_secs: u64,
+    /// Debounce window retained across runtime/API round-trips.
+    pub debounce_ms: u64,
     /// Whether the subscription is enabled.
     pub enabled: bool,
     subscription_id: usize,
@@ -600,12 +620,14 @@ pub struct Subscription {
 #[derive(Debug)]
 struct SubscriptionState {
     recent_signals: Mutex<HashMap<ContentHash, Instant>>,
+    last_debounce_admission: Mutex<Option<Instant>>,
 }
 
 impl SubscriptionState {
     fn new() -> Self {
         Self {
             recent_signals: Mutex::new(HashMap::new()),
+            last_debounce_admission: Mutex::new(None),
         }
     }
 }
@@ -616,9 +638,11 @@ impl Clone for Subscription {
             id: self.id.clone(),
             template: self.template.clone(),
             trigger: self.trigger.clone(),
+            trigger_config: self.trigger_config.clone(),
             filter: self.filter.clone(),
             concurrency_limit: self.concurrency_limit,
             cooldown_secs: self.cooldown_secs,
+            debounce_ms: self.debounce_ms,
             enabled: self.enabled,
             subscription_id: self.subscription_id,
             dedup_ttl: self.dedup_ttl,
@@ -646,9 +670,11 @@ impl Subscription {
             id: String::new(),
             template: config.template,
             trigger: config.trigger,
+            trigger_config: config.trigger_config,
             filter: config.filter,
             concurrency_limit: config.concurrency_limit,
             cooldown_secs: config.cooldown_secs,
+            debounce_ms: config.debounce_ms,
             enabled: config.enabled,
             subscription_id: usize::MAX,
             dedup_ttl: Duration::from_secs(60),
@@ -697,11 +723,11 @@ impl Subscription {
         SubscriptionConfig {
             template: self.template.clone(),
             trigger: self.trigger.clone(),
-            trigger_config: None,
+            trigger_config: self.trigger_config.clone(),
             filter: self.filter.clone(),
             concurrency_limit: self.concurrency_limit,
             cooldown_secs: self.cooldown_secs,
-            debounce_ms: 0,
+            debounce_ms: self.debounce_ms,
             enabled: self.enabled,
         }
     }
@@ -766,12 +792,19 @@ impl Subscription {
     /// Check and update the deduplication gate using the signal content hash.
     #[must_use]
     pub fn check_dedup(&self, signal: &Signal) -> bool {
+        self.check_dedup_key(signal.content_hash())
+    }
+
+    /// Check and update the deduplication gate with a caller-provided stable
+    /// content key. Relay ingestion uses an envelope-content key that excludes
+    /// transport sequence metadata.
+    #[must_use]
+    pub fn check_dedup_key(&self, signal_hash: ContentHash) -> bool {
         if self.dedup_ttl.is_zero() {
             return true;
         }
 
         let now = Instant::now();
-        let signal_hash = signal.content_hash();
         let mut recent = self.state.recent_signals.lock();
 
         recent.retain(|_, seen_at| now.duration_since(*seen_at) < self.dedup_ttl);
@@ -783,6 +816,24 @@ impl Subscription {
         }
 
         recent.insert(signal_hash, now);
+        true
+    }
+
+    /// Admit the first event in each configured debounce window. Relay
+    /// delivery records later events as explicit durable suppressions instead
+    /// of silently dropping them.
+    #[must_use]
+    pub fn check_debounce(&self) -> bool {
+        if self.debounce_ms == 0 {
+            return true;
+        }
+        let now = Instant::now();
+        let window = Duration::from_millis(self.debounce_ms);
+        let mut last = self.state.last_debounce_admission.lock();
+        if last.is_some_and(|previous| now.duration_since(previous) < window) {
+            return false;
+        }
+        *last = Some(now);
         true
     }
 }
@@ -1010,6 +1061,35 @@ impl SubscriptionRegistry {
 
         last_dispatches.insert(subscription.subscription_id(), now);
         true
+    }
+}
+
+/// RAII reservation for one subscription concurrency slot. Dropping the
+/// future that owns this value (including cancellation or panic unwinding)
+/// releases the slot exactly once.
+pub(crate) struct SubscriptionPermit {
+    registry: SubscriptionRegistry,
+    subscription: Subscription,
+}
+
+impl SubscriptionPermit {
+    #[must_use]
+    pub(crate) fn try_acquire(
+        registry: &SubscriptionRegistry,
+        subscription: &Subscription,
+    ) -> Option<Self> {
+        registry
+            .check_concurrency_limit(subscription)
+            .then(|| Self {
+                registry: registry.clone(),
+                subscription: subscription.clone(),
+            })
+    }
+}
+
+impl Drop for SubscriptionPermit {
+    fn drop(&mut self) {
+        self.registry.release_concurrency(&self.subscription);
     }
 }
 
@@ -1558,14 +1638,17 @@ pub async fn dispatch_loop(state: Arc<AppState>, dispatcher: Arc<dyn AgentDispat
                     let suggested_subscription =
                         Subscription::new(template_name.clone(), signal.kind.as_str());
                     tokio::spawn(async move {
-                        Box::pin(dispatch_agent(
+                        if let Err(error) = Box::pin(dispatch_agent(
                             state,
                             suggested_subscription,
                             signal,
                             dispatcher,
                             repo_ctx,
                         ))
-                        .await;
+                        .await
+                        {
+                            warn!(%error, "suggested subscription dispatch did not commit");
+                        }
                     });
                 }
                 Ok(None) => {}
@@ -1577,30 +1660,33 @@ pub async fn dispatch_loop(state: Arc<AppState>, dispatcher: Arc<dyn AgentDispat
         }
 
         for sub in matched {
-            if !subscriptions.check_concurrency_limit(&sub) {
+            let Some(permit) = SubscriptionPermit::try_acquire(&subscriptions, &sub) else {
                 continue;
-            }
+            };
 
-            if subscriptions.check_cooldown(&sub) && sub.check_dedup(&signal) {
+            if subscriptions.check_cooldown(&sub)
+                && sub.check_dedup(&signal)
+                && sub.check_debounce()
+            {
                 let signal = signal.clone();
                 let dispatcher = Arc::clone(&dispatcher);
                 let state = Arc::clone(&state);
-                let subscriptions = subscriptions.clone();
                 let sub_for_task = sub.clone();
                 let repo_ctx = repo_ctx.clone();
                 tokio::spawn(async move {
-                    Box::pin(dispatch_agent(
+                    let _permit = permit;
+                    if let Err(error) = Box::pin(dispatch_agent(
                         state,
                         sub_for_task.clone(),
                         signal,
                         dispatcher,
                         repo_ctx,
                     ))
-                    .await;
-                    sub_for_task.release_concurrency(&subscriptions);
+                    .await
+                    {
+                        warn!(%error, "subscription dispatch did not commit");
+                    }
                 });
-            } else {
-                subscriptions.release_concurrency(&sub);
             }
         }
     }
@@ -1612,7 +1698,7 @@ async fn dispatch_agent(
     signal: Signal,
     dispatcher: Arc<dyn AgentDispatcher>,
     repo_ctx: Option<RepoContext>,
-) {
+) -> Result<DispatchTerminal> {
     let template_name = subscription.template().to_owned();
     let started_at = Utc::now();
     let started = Instant::now();
@@ -1622,14 +1708,15 @@ async fn dispatch_agent(
     };
 
     let Some(template) = template else {
-        warn!(
-            template = %template_name,
-            "no template found for matched subscription"
-        );
-        return;
+        anyhow::bail!("no template found for matched subscription '{template_name}'");
     };
 
-    let outcome = match Box::pin(dispatch_template(
+    super::emit_lens_observation(
+        &state,
+        ObservableEvent::SignalRouted(signal.id.to_hex(), template_name.clone()),
+    );
+
+    let (outcome, dispatch_error) = match Box::pin(dispatch_template(
         state.clone(),
         template.clone(),
         signal.clone(),
@@ -1638,29 +1725,33 @@ async fn dispatch_agent(
     ))
     .await
     {
-        Ok(outcome) => outcome,
+        Ok(outcome) => (outcome, None),
         Err(err) => {
             warn!(error = %err, template = %template_name, "agent dispatch failed");
+            let error = err.to_string();
             let fallback_output = signal
                 .derive(
                     Kind::AgentOutput,
-                    Body::text(format!("dispatch failed: {err}")),
+                    Body::text(format!("dispatch failed: {error}")),
                 )
                 .provenance(Provenance::trusted("roko-serve"))
                 .tag("agent", "claude")
                 .tag("failed", "true")
                 .build();
-            DispatchOutcome {
-                result: AgentResult::fail(fallback_output),
-                gate_verdicts: Vec::new(),
-                success: false,
-                model_used: template.model.clone(),
-            }
+            (
+                DispatchOutcome {
+                    result: AgentResult::fail(fallback_output),
+                    gate_verdicts: Vec::new(),
+                    success: false,
+                    model_used: template.model.clone(),
+                },
+                Some(error),
+            )
         }
     };
     let completed_at = Utc::now();
 
-    append_dispatch_episode(
+    let episode_id = append_dispatch_episode(
         &state,
         &template,
         &signal,
@@ -1670,7 +1761,34 @@ async fn dispatch_agent(
         started.elapsed().as_secs_f64(),
         repo_ctx.as_ref(),
     )
-    .await;
+    .await?;
+
+    if let Some(error) = dispatch_error {
+        anyhow::bail!(
+            "agent dispatch failed after persisting failure episode {episode_id}: {error}"
+        );
+    }
+
+    Ok(DispatchTerminal {
+        subscription_id: subscription.id,
+        template: template_name,
+        episode_id,
+        output_signal_hash: outcome.result.output.id.to_hex(),
+        success: outcome.success,
+    })
+}
+
+/// Execute one relay-selected subscription and return only after its terminal
+/// episode is durable. The relay journal calls this instead of the background
+/// event loop so ACK ordering remains explicit and testable.
+pub(crate) async fn dispatch_relay_subscription(
+    state: Arc<AppState>,
+    subscription: Subscription,
+    signal: Signal,
+    dispatcher: Arc<dyn AgentDispatcher>,
+) -> Result<DispatchTerminal> {
+    let repo_ctx = resolve_repo_context(&state, &signal);
+    dispatch_agent(state, subscription, signal, dispatcher, repo_ctx).await
 }
 
 async fn dispatch_template(
@@ -1682,6 +1800,10 @@ async fn dispatch_template(
 ) -> Result<DispatchOutcome> {
     let dispatch_started = Instant::now();
     let dispatch_signal = build_dispatch_signal(&template, &signal)?;
+    super::emit_lens_observation(
+        &state,
+        ObservableEvent::SignalComposed(vec![signal.id.to_hex()], dispatch_signal.clone()),
+    );
     let mut routed_template = template.clone();
     run_anomaly_preflight(
         &state,
@@ -1832,6 +1954,8 @@ fn build_agent(
     system_prompt: &str,
     allowed_tools: &str,
     mcp_config: Option<&PathBuf>,
+    working_dir: &Path,
+    immune_root: &Path,
 ) -> Result<Box<dyn Agent>> {
     create_agent_for_model(
         roko_config,
@@ -1840,10 +1964,13 @@ fn build_agent(
             command: roko_config.agent.command.clone(),
             timeout_ms: None,
             system_prompt: Some(system_prompt.to_string()),
+            input_messages: Vec::new(),
             cached_content: None,
             tools: Some(allowed_tools.to_string()),
+            agent_contract: None,
             mcp_config: mcp_config.cloned(),
-            working_dir: None,
+            immune_root: Some(immune_root.to_path_buf()),
+            working_dir: Some(working_dir.to_path_buf()),
             provider_semaphores: None,
             env: Vec::new(),
             extra_args: Vec::new(),
@@ -1852,6 +1979,9 @@ fn build_agent(
             dangerously_skip_permissions: true,
             name: String::new(),
             pre_discovered_mcp_tools: None,
+            pre_discovered_mcp_runtime: None,
+            pre_discovered_local_tools: None,
+            local_tool_mcp_servers: None,
             rate_limiter: None,
         },
     )
@@ -2242,7 +2372,7 @@ async fn append_dispatch_episode(
     completed_at: chrono::DateTime<Utc>,
     duration_secs: f64,
     repo_ctx: Option<&RepoContext>,
-) {
+) -> Result<String> {
     let agent_id = outcome
         .result
         .output
@@ -2329,16 +2459,16 @@ async fn append_dispatch_episode(
 
     // Ensure parent directories exist for per-repo paths.
     if let Some(parent) = episodes_path.parent() {
-        if let Err(err) = tokio::fs::create_dir_all(parent).await {
-            warn!(error = %err, path = %parent.display(), "failed to create per-repo episodes dir");
-        }
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("create episode directory {}", parent.display()))?;
     }
 
     let logger = EpisodeLogger::new(episodes_path);
-    if let Err(err) = logger.append(&episode).await {
-        warn!(error = %err, template = %template.name, "failed to append episode");
-        return;
-    }
+    logger
+        .append(&episode)
+        .await
+        .with_context(|| format!("append dispatch episode for template '{}'", template.name))?;
 
     let distill_workdir = repo_ctx
         .map(|ctx| ctx.repo_workdir.clone())
@@ -2361,6 +2491,8 @@ async fn append_dispatch_episode(
     {
         warn!(error = %err, template = %template.name, "failed to apply learning events");
     }
+
+    Ok(episode.id)
 }
 
 async fn publish_dispatch_learning_feedback(
@@ -2710,6 +2842,19 @@ mod tests {
 
         assert!(sub.check_dedup(&signal));
         assert!(!sub.check_dedup(&signal));
+    }
+
+    #[test]
+    fn debounce_blocks_repeat_admissions_within_window() {
+        let sub = Subscription::from_config(SubscriptionConfig {
+            template: "reviewer".to_string(),
+            trigger: "github:*".to_string(),
+            debounce_ms: 60_000,
+            ..SubscriptionConfig::default()
+        });
+
+        assert!(sub.check_debounce());
+        assert!(!sub.check_debounce());
     }
 
     #[test]

@@ -75,8 +75,9 @@ export interface AgentInfo {
 // ── Episodes / metrics ──────────────────────────────────────────────
 
 export interface EpisodeInfo {
-  planId: string;
-  taskId: string;
+  episodeId: string;
+  agentId: string;
+  role: string;
   passed: boolean;
   timestamp: number;
 }

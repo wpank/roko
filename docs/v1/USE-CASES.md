@@ -1,5 +1,8 @@
 # Use cases and positioning
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../v2/](../v2/) for the current reference.
+
+
 > **Abstract:** Concrete use cases for Roko, organized by maturity tier and user persona.
 > Each use case maps to real CLI commands, names competitive alternatives, and estimates
 > cost per task. Written for engineers evaluating whether to adopt Roko.
@@ -657,7 +660,7 @@ plan -> execute -> verify -> PR) maps directly to the maintainer workflow.
 Teams building their own agent systems need routing, learning, verification, and
 observability as composable building blocks. Roko's crates are independently usable:
 
-- `roko-agent` — agent pool, 5 LLM backends, event streaming
+- `roko-agent` — agent pool, 11 LLM backends, event streaming
 - `roko-gate` — verification pipeline with adaptive thresholds
 - `roko-learn` — episodes, bandits, playbooks, experiments
 - `roko-compose` — prompt assembly with token budgets

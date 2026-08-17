@@ -1,5 +1,8 @@
 # Temporal Knowledge Topology
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** Knowledge in Roko exists in time — facts have validity windows, relationships
 > evolve, and the order of events matters for causal reasoning. This document specifies a
 > temporal knowledge layer that augments Roko's Neuro knowledge store with Allen's interval

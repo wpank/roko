@@ -8,9 +8,9 @@
 
 use crate::agent::{Agent, AgentResult, derived_output};
 use crate::process::{
-    GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, ResourceLimits, apply_resource_limits,
-    benign_stderr_warn_once, classify_benign_stderr, kill_tree, register_spawned_pid,
-    set_process_group, unregister_pid,
+    GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, ResourceLimits, benign_stderr_warn_once,
+    classify_benign_stderr, confined_command, kill_tree, register_spawned_pid, set_process_group,
+    unregister_pid,
 };
 use crate::safety::SafetyLayer;
 use crate::usage::Usage;
@@ -24,7 +24,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
 use tokio::time::timeout;
 
 /// An agent that spawns a subprocess, pipes the input's text body to stdin,
@@ -165,7 +164,16 @@ impl Agent for ExecAgent {
         };
 
         // Spawn subprocess.
-        let mut cmd = Command::new(&self.program);
+        let mut cmd = match confined_command(&self.program, self.resource_limits.as_ref()) {
+            Ok(command) => command,
+            Err(error) => {
+                return self.failure_signal(
+                    input,
+                    &format!("process confinement unavailable: {error}"),
+                    started,
+                );
+            }
+        };
         cmd.args(&self.args);
         for (k, v) in &self.env {
             cmd.env(k, v);
@@ -178,10 +186,6 @@ impl Agent for ExecAgent {
         cmd.stderr(Stdio::piped());
         cmd.kill_on_drop(true);
         set_process_group(&mut cmd);
-        if let Some(limits) = &self.resource_limits {
-            apply_resource_limits(&mut cmd, limits);
-        }
-
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {

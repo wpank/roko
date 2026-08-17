@@ -1,5 +1,8 @@
 # Bandits: UCB1, Thompson Sampling, LinUCB
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Crate:** `roko-learn` · **Modules:** `bandits.rs`, `model_router.rs`
 > **Persistence:** `.roko/learn/cascade-router.json` (LinUCB state), per-bandit JSON files
 > **Academic basis:** Auer, Cesa-Bianchi & Fischer 2002 (UCB1); Li et al. 2010 (LinUCB); Garivier & Kaufmann 2016 (Track-and-Stop); Thompson 1933

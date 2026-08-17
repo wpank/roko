@@ -1,5 +1,8 @@
 # ChainWitness: Event Watching Pipeline
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > ChainWitness is the agent's eyes on the chain. One Tokio task per configured chain maintains a WebSocket connection, ingests block headers, pre-screens with a Binary Fuse filter (8.7 bits/entry, <1% FPR), and feeds relevant blocks to the triage pipeline. Over 90% of blocks are skipped in O(1) time with zero false negatives.
 
 > See also `tmp/refinements/09-phase-2-implications.md` and [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md) for the `ChainBus` / `ChainSubstrate` split and Bus vocabulary.

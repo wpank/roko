@@ -2,8 +2,8 @@
 //!
 //! Monitors `Metric` signals tagged `name=worktree_count` and compares
 //! against the configured `max_live` threshold. The metric is produced by
-//! the E47-T09 WorktreeManager adapter on both the legacy orchestrate and
-//! runner-v2 paths. This watcher is a pure `React` consumer and never
+//! the E47-T09 WorktreeManager adapter on the runner-v2 path. This watcher
+//! is a pure `React` consumer and never
 //! queries git or the filesystem directly.
 
 use roko_core::{Body, Context, Kind, React, Signal};

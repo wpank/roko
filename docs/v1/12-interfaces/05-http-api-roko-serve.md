@@ -1,5 +1,8 @@
 # HTTP API — `roko-serve`
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The `roko-serve` crate provides the HTTP server exposing REST endpoints plus the shared realtime surface over WebSocket, SSE, and optional gRPC streaming for remote control of Roko.
 
 

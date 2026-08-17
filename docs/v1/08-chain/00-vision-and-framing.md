@@ -1,5 +1,8 @@
 # Vision and Framing: Blockchain as Domain Plugin
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Nunchi chain is ONE domain plugin for agent coordination — not the default framing, not the center of the architecture. The core cognitive system is domain-agnostic.
 
 

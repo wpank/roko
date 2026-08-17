@@ -60,6 +60,36 @@ impl PaymentEdge {
     }
 }
 
+/// Reputation attribution flowing from a successful fork to its upstream
+/// author. It is converted into the same graph edge used for payments.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForkAttributionEdge {
+    /// Passport ID of the upstream artifact author.
+    pub original_author: u256,
+    /// Passport ID of the fork author whose success triggered attribution.
+    pub fork_author: u256,
+    /// Stable artifact reference identifying the upstream work.
+    pub artifact_ref: String,
+    /// Reputation earned by the successful fork before upstream sharing.
+    pub reputation_earned: f64,
+    /// Block at which the attribution was recorded.
+    pub block: u64,
+}
+
+impl ForkAttributionEdge {
+    /// Convert upstream attribution into a TraceRank payment edge.
+    #[must_use]
+    pub fn into_payment_edge(self, upstream_share: f64) -> PaymentEdge {
+        PaymentEdge {
+            from: self.fork_author,
+            to: self.original_author,
+            amount: self.reputation_earned * upstream_share,
+            quality: 1.0,
+            block: self.block,
+        }
+    }
+}
+
 /// Configuration for TraceRank computation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TraceRankConfig {
@@ -76,6 +106,8 @@ pub struct TraceRankConfig {
     pub lookback_blocks: u64,
     /// Weight of TraceRank in the blended reputation score.
     pub blend_weight: f64,
+    /// Share of fork-earned reputation attributed to the upstream author.
+    pub upstream_share: f64,
 }
 
 impl Default for TraceRankConfig {
@@ -87,6 +119,7 @@ impl Default for TraceRankConfig {
             min_edge_weight: 0.01,
             lookback_blocks: 0,
             blend_weight: 0.3,
+            upstream_share: 0.1,
         }
     }
 }
@@ -139,6 +172,12 @@ impl TraceRank {
         if edge.weight() >= self.config.min_edge_weight {
             self.edges.push(edge);
         }
+    }
+
+    /// Record reputation earned by a fork as an upstream attribution edge.
+    pub fn record_fork_attribution(&mut self, fork_edge: ForkAttributionEdge) {
+        let payment = fork_edge.into_payment_edge(self.config.upstream_share);
+        self.record_payment(payment);
     }
 
     /// Number of recorded edges.
@@ -324,6 +363,22 @@ mod tests {
             rank_2 > rank_1,
             "receiver should rank higher: {rank_1} vs {rank_2}"
         );
+    }
+
+    #[test]
+    fn fork_attribution_gives_the_upstream_author_reputation() {
+        let mut trace_rank = TraceRank::new();
+        trace_rank.record_fork_attribution(ForkAttributionEdge {
+            original_author: 7,
+            fork_author: 42,
+            artifact_ref: "@alice/review@1.0.0".to_owned(),
+            reputation_earned: 100.0,
+            block: 10,
+        });
+
+        let result = trace_rank.compute();
+        assert_eq!(result.edge_count, 1);
+        assert!(result.ranks[&7] > result.ranks[&42]);
     }
 
     #[test]

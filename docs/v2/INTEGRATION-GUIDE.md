@@ -77,7 +77,7 @@ roko init
 roko prd idea "Add input validation to the API handler"
 roko prd draft new "api-validation"
 roko prd plan api-validation
-roko plan run plans/api-validation/
+roko plan run plans/api-validation/ --engine runner-v2
 
 # Watch progress in real time
 roko dashboard
@@ -133,8 +133,9 @@ into what happened.
 .roko/
   roko.toml is NOT here — it lives in your workspace root
 
+  episodes.jsonl        Sole active per-turn episode log: model, cost, verdict, fingerprint
+
   memory/               What agents learned
-    episodes.jsonl      Per-turn records: model, cost, gate verdict, HDC fingerprint
     playbook.toml       Accumulated successful techniques, injected into future prompts
     skills/             Learned skill files
 
@@ -147,7 +148,7 @@ into what happened.
     section-effects.json Prompt section effectiveness scores
 
   state/                Crash recovery
-    executor.json       Pipeline checkpoint — resume any interrupted plan run
+    state-snapshot.json Unified runner-v2 checkpoint — resume any interrupted plan run
     events.json         Event log snapshot
 
   prd/                  Product Requirements Documents
@@ -161,8 +162,14 @@ into what happened.
   cache/                Cargo target dir, context pack cache
   custody.jsonl         Append-only audit chain
   witness.jsonl         Witness DAG log
-  VERSION               Layout format version (currently 1)
+  VERSION               Layout format version (currently 3)
 ```
+
+Layout V3 converges historical episode logs automatically. It merges root,
+`learn/`, and `memory/` inputs in that order, deduplicates episode identities,
+archives each source byte-for-byte as `.v2-legacy`, quarantines malformed bytes,
+and removes the two legacy active files only after the canonical replacement is
+published.
 
 <details>
 <summary>Full .roko/ path accessor reference</summary>
@@ -170,9 +177,9 @@ into what happened.
 | Path | Method on RokoLayout | Purpose |
 |---|---|---|
 | `.roko/` | `root()` | Data directory root |
-| `.roko/memory/episodes.jsonl` | `episodes_path()` | Episode log |
+| `.roko/episodes.jsonl` | `episodes_path()` | Canonical episode log |
 | `.roko/memory/playbook.toml` | `playbook_path()` | Active playbook |
-| `.roko/state/executor.json` | `executor_snapshot()` | Executor checkpoint |
+| `.roko/state/state-snapshot.json` | `PersistPaths::from_workdir(...).state_snapshot_json` | Unified runner-v2 checkpoint |
 | `.roko/learn/cascade-router.json` | `cascade_router_path()` | Router state |
 | `.roko/learn/experiments.json` | `experiments_path()` | Experiment store |
 | `.roko/learn/efficiency.jsonl` | `efficiency_path()` | Efficiency events |
@@ -180,7 +187,8 @@ into what happened.
 | `.roko/witness.jsonl` | `witness_log()` | Witness DAG |
 | `.roko/runtime/roko.pid` | `pid_file()` | PID file |
 
-Source: `crates/roko-fs/src/layout.rs` (`RokoLayout` struct).
+Sources: `crates/roko-fs/src/layout.rs` (`RokoLayout`) and
+`crates/roko-cli/src/runner/persist.rs` (`PersistPaths`).
 
 </details>
 
@@ -355,7 +363,7 @@ roko plan validate plans/knowledge-informed-routing/
 ### Step 7: Execute the plan
 
 ```bash
-roko plan run plans/knowledge-informed-routing/
+roko plan run plans/knowledge-informed-routing/ --engine runner-v2
 ```
 
 This starts the runner-v2 event loop (`crates/roko-cli/src/runner/event_loop.rs`). For each task:
@@ -374,11 +382,11 @@ Progress is visible in real time on the TUI.
 
 ```bash
 roko plan run plans/knowledge-informed-routing/ \
-  --resume .roko/state/executor.json
+  --engine runner-v2 --resume-plan
 ```
 
-The `PipelineStateV2` checkpoint is written atomically after each phase transition. Resumption
-restores the exact pipeline state so work is never duplicated.
+The unified `.roko/state/state-snapshot.json` checkpoint is written atomically after each
+phase transition. Resumption restores the exact pipeline state so work is never duplicated.
 
 ### Step 9: Watch progress
 
@@ -386,17 +394,20 @@ restores the exact pipeline state so work is never duplicated.
 roko dashboard
 ```
 
-Opens the interactive ratatui TUI. F1–F7 cycle through tabs:
+Opens the interactive ratatui TUI. F1–F10 cycle through tabs:
 
-| Tab | Content |
-|---|---|
-| F1 | Active tasks and phase indicators |
-| F2 | Agent output stream |
-| F3 | Gate results per task |
-| F4 | Episode history |
-| F5 | Learning state (router, experiments) |
-| F6 | Cost and token usage |
-| F7 | System health |
+| Tab | Name | Content |
+|---|---|---|
+| F1 | Dashboard | Overview with health gauges, plan progress, cost |
+| F2 | Plans | Plan tree, task progress, wave overview |
+| F3 | Agents | Agent output, diffs, token burn, parallel pool |
+| F4 | Git | Branch tree, commit graph, worktree list |
+| F5 | Logs | Scrollable log viewer with filtering |
+| F6 | Config | Config editor / effective config view |
+| F7 | Inspect | Signal DAG inspector, episode replay |
+| F8 | Marketplace | Job browser, creation, assignment |
+| F9 | Atelier | PRD workshop, plan progress |
+| F10 | Learning | Cascade router, model routing, efficiency |
 
 The TUI uses a file watcher (`notify::RecommendedWatcher`) to pick up changes to `.roko/`
 without polling. Updates appear in under 250 ms.
@@ -479,7 +490,7 @@ default_backend = "anthropic_api"     # provider kind, default: auto-detected fr
 default_effort = "medium"             # reasoning effort: "low"/"medium"/"high"/"max"
 temperament = "balanced"              # default agent temperament
 context_limit_k = 200                 # context window in thousands of tokens
-bare_mode = true                      # pass --bare to skip built-in system prompt
+bare_mode = true                      # replace Claude's built-in prompt with Roko's prompt
 fallback_model = "claude-haiku-4-5"  # retry model on spawn failure (optional)
 mode = "ephemeral"                    # agent lifecycle: "ephemeral"/"persistent"/"reactive"
 domain = "coding"                     # domain profile name (optional)
@@ -598,7 +609,11 @@ max_concurrent = 4         # max concurrent requests (optional)
 | `CursorAcp` | `"cursor_acp"` | Cursor Agent Client Protocol |
 | `PerplexityApi` | `"perplexity_api"` | Perplexity Sonar HTTP API |
 | `GeminiApi` | `"gemini_api"` | Google Gemini API (native) |
+| `GeminiCli` | `"gemini_cli"` | Google `gemini` CLI subprocess |
 | `CerebrasApi` | `"cerebras_api"` | Cerebras inference API |
+| `CursorCli` | `"cursor_cli"` | Cursor `agent` CLI subprocess (ACP JSON-RPC over stdio) |
+| `Hermes` | `"hermes"` | Hermes gateway (HTTP, CLI one-shot, or ACP) |
+| `OpenClaw` | `"openclaw"` | OpenClaw inference runtime (CLI one-shot or ACP) |
 
 </details>
 
@@ -630,6 +645,12 @@ cost_output_per_m = 15.0       # $ per million output tokens (optional)
 cost_cache_read_per_m = 0.3    # $ per million cache-read tokens (optional)
 cost_cache_write_per_m = 3.75  # $ per million cache-write tokens (optional)
 ```
+
+`supports_vision` is an enforcement boundary, not descriptive metadata. When it is
+`true`, inline image blocks are preserved for Anthropic, OpenAI-compatible, and Gemini
+API providers and ACP advertises image input for the resolved default model. Non-vision
+models and unsupported subprocess/legacy transports reject image-bearing requests before
+dispatch. Images must be inline base64 data; remote image URLs and audio are not supported.
 
 See [Section 8: Model Registry](#8-model-registry) for a minimum three-model setup and a
 full-featured example.
@@ -854,9 +875,16 @@ than intended.
 
 ```toml
 [budget]
-max_plan_usd = 25.0         # max dollars per plan run, default: 25.0
-max_turn_usd = 3.0          # max dollars per agent turn, default: 3.0
+max_plan_usd = 25.0         # max dollars per plan run; default 0 means unlimited
+max_task_usd = 1.0          # base per-task ceiling; default 0 means unlimited
+max_turn_usd = 3.0          # max dollars per agent turn; default 0 means unlimited
 prompt_token_budget = 10000 # token budget for prompt composition, default: 10000
+
+[budget.tier_multipliers]
+mechanical = 0.2
+standard = 1.0
+complex = 3.0
+expert = 5.0
 ```
 
 ### 5.6 [pipeline]
@@ -1021,7 +1049,7 @@ refresh_rate_ms = 250   # TUI refresh interval in milliseconds, default: 250
 <details>
 <summary>[serve] — HTTP API options</summary>
 
-**Why this matters**: `roko serve` exposes ~85 REST routes plus SSE streaming on port 6677.
+**Why this matters**: `roko serve` exposes ~317 REST routes plus SSE streaming on port 6677.
 This section controls authentication, terminal access, and auto-orchestration behavior. The
 `terminal_enabled` flag is off by default because it exposes a PTY shell — only enable it in
 trusted environments.
@@ -1089,7 +1117,7 @@ nightly builds, hourly health checks — without external cron infrastructure.
 [[scheduler.cron]]
 name = "weekly-digest"
 expression = "0 9 * * MON"              # standard cron expression
-signal_kind = "scheduler:cron:weekly-digest"  # engram kind emitted when fires
+signal_kind = "scheduler:cron:weekly-digest"  # signal kind emitted when fires
 # metadata = { key = "value" }          # extra structured metadata (optional)
 ```
 
@@ -1103,7 +1131,7 @@ signal_kind = "scheduler:cron:weekly-digest"  # engram kind emitted when fires
 secret = "my-webhook-secret"   # shared secret for X-Hub-Signature-256 verification
 ```
 
-The webhook endpoint is `POST /v1/webhooks/github`. Roko verifies the
+The webhook endpoint is `POST /webhooks/github`. Roko verifies the
 `X-Hub-Signature-256` header automatically.
 
 </details>
@@ -1119,7 +1147,7 @@ webhooks.
 ```toml
 [[subscriptions]]
 template = "prd-publisher"       # agent template name
-trigger = "prd.published"        # engram kind glob to match
+trigger = "prd.published"        # signal kind glob to match
 concurrency_limit = 1            # max concurrent dispatches, default: 1
 cooldown_secs = 0                # min interval between dispatches, default: 0
 debounce_ms = 0                  # debounce window in milliseconds, default: 0
@@ -1660,8 +1688,10 @@ The code-intelligence MCP server (`roko-mcp-code`) provides these tools to agent
 
 ### Referencing the MCP config
 
-In practice, MCP config is assembled programmatically in
-`crates/roko-cli/src/orchestrate.rs` using `McpConfig` and `McpServerConfig` structs:
+In practice, runner v2 resolves `agent.mcp_config` (including autodiscovery) in
+`commands/plan.rs` and threads the path through `runner/event_loop.rs` into agent dispatch.
+The referenced file is parsed by `roko-agent` using `McpConfig` and
+`McpServerConfig` structs:
 
 ```rust
 let mcp_config = McpConfig {
@@ -1896,12 +1926,12 @@ planning agent pass.
 
 ## 12. Learning Configuration
 
-All learning state lives in `.roko/learn/`. Everything here is automatic — you don't need
-to manage it manually.
+Learning artifacts live in `.roko/learn/`; the canonical episode log lives at
+`.roko/episodes.jsonl`. Everything here is automatic — you don't need to manage it manually.
 
 ### Episode logging
 
-Every agent turn produces an `Episode` record in `.roko/memory/episodes.jsonl`:
+Every agent turn produces an `Episode` record in `.roko/episodes.jsonl`:
 
 ```jsonl
 {
@@ -2118,7 +2148,7 @@ secret = "${GITHUB_WEBHOOK_SECRET}"
 
 [[subscriptions]]
 template = "pr-reviewer"
-trigger = "github.pull_request.opened"
+trigger = "github:pull_request:opened"
 concurrency_limit = 2
 cooldown_secs = 60
 enabled = true
@@ -2133,7 +2163,7 @@ type = "webhook"
 event = "pull_request.opened"
 ```
 
-The webhook endpoint is `POST /v1/webhooks/github`. Roko verifies the
+The webhook endpoint is `POST /webhooks/github`. Roko verifies the
 `X-Hub-Signature-256` header using `webhooks.github.secret`.
 
 ### PRD auto-plan subscription
@@ -2160,25 +2190,30 @@ roko serve
 # Listening on http://127.0.0.1:6677
 ```
 
-The server exposes approximately 85 REST routes plus SSE streaming. All routes under `/v1/`
+The server exposes approximately 317 REST routes plus SSE streaming. All routes under `/api/`
 can be protected with `serve.auth`.
 
 ### Key endpoint groups
 
-| Prefix | What |
+| Endpoint | What |
 |---|---|
-| `GET /v1/status` | System health, agent fleet status |
-| `GET /v1/plans` | Plan list and status |
-| `POST /v1/plans` | Create and run a plan |
-| `GET /v1/agents` | Agent list |
-| `POST /v1/agents/:id/message` | Send message to a running agent |
-| `GET /v1/events` | SSE stream of `RuntimeEvent` |
-| `GET /v1/learn/*` | Learning state inspection |
-| `GET /v1/prd/*` | PRD management |
-| `GET /v1/gates/*` | Gate pipeline status |
-| `GET /v1/bench` | Benchmark endpoint |
-| `GET /v1/dream` | Dream consolidation status |
-| `POST /v1/webhooks/github` | GitHub webhook ingress |
+| `GET /api/status` | System health, session status |
+| `GET /api/dashboard` | Dashboard data |
+| `GET /api/plans` | Plan list and status |
+| `POST /api/plans` | Create a plan |
+| `POST /api/plans/:id/execute` | Execute a plan |
+| `GET /api/agents` | Agent list |
+| `POST /api/agents/:id/message` | Send message to a running agent |
+| `GET /api/events` | SSE stream of `RuntimeEvent` |
+| `GET /api/learn/*` | Learning state inspection |
+| `GET /api/prds` | PRD list |
+| `POST /api/prds/ideas` | Create a PRD idea |
+| `POST /api/prds/:slug/plan` | Generate plan from PRD |
+| `GET /api/gates/summary` | Gate pipeline summary |
+| `GET /api/gates/history` | Gate history |
+| `GET /api/bench/run` | Benchmark endpoint |
+| `GET /api/dream/*` | Dream consolidation status |
+| `POST /webhooks/github` | GitHub webhook ingress (public, no `/api` prefix) |
 
 ### Authentication
 
@@ -2244,7 +2279,7 @@ is interrupted (Ctrl-C, process crash, network failure), resume with:
 
 ```bash
 roko plan run plans/my-plan/ \
-  --resume .roko/state/executor.json
+  --engine runner-v2 --resume-plan
 ```
 
 The checkpoint restores the exact pipeline state — phase, iteration count, accumulated review
@@ -2254,7 +2289,7 @@ findings — so no work is duplicated.
 
 ```bash
 # View checkpoint state
-cat .roko/state/executor.json | jq
+cat .roko/state/state-snapshot.json | jq
 
 # View event log
 cat .roko/state/events.json | jq
@@ -2303,10 +2338,10 @@ If the executor checkpoint is corrupt:
 
 ```bash
 # Remove the corrupt checkpoint
-rm .roko/state/executor.json
+rm .roko/state/state-snapshot.json
 
 # Restart the plan from the beginning
-roko plan run plans/my-plan/
+roko plan run plans/my-plan/ --engine runner-v2
 ```
 
 To skip already-completed tasks, use `roko plan show` to inspect which task IDs completed,
@@ -2527,7 +2562,7 @@ let model_caller = Arc::new(
 let prompt_assembler = Arc::new(
     PromptAssemblyService::new()
         .with_domain_context("Rust systems programming".to_string())
-        .with_episodes_path(PathBuf::from(".roko/memory/episodes.jsonl"))
+        .with_episodes_path(PathBuf::from(".roko/episodes.jsonl"))
         .with_playbook_store(Arc::clone(&playbook_store))
         .with_knowledge_store(Arc::clone(&neuro_store))
         .with_token_budget(8192)
@@ -2626,15 +2661,15 @@ let report = engine.run_with_cancel(config, token).await?;
 ### Checkpoint and resume
 
 ```rust
-// Checkpointing is automatic inside EffectDriver::save_checkpoint.
-// Manual checkpoint:
+// Library-level checkpoint round trip (kept in memory here):
 let json = pipeline_state.checkpoint()?;
-std::fs::write(".roko/state/executor.json", &json)?;
-
-// Restore:
 let restored = PipelineStateV2::from_checkpoint(&json)?;
 let output = restored.step(PipelineInput::Start);
 ```
+
+The runner-v2 CLI wraps its complete state in a checksummed envelope and writes
+`.roko/state/state-snapshot.json` atomically; do not overwrite that file with a raw
+`PipelineStateV2` checkpoint.
 
 ---
 
@@ -2645,8 +2680,8 @@ let output = restored.step(PipelineInput::Start);
 | Workspace config | `<project>/roko.toml` |
 | Data directory | `<project>/.roko/` |
 | Layout version | `<project>/.roko/VERSION` |
-| Executor checkpoint | `<project>/.roko/state/executor.json` |
-| Episode log | `<project>/.roko/memory/episodes.jsonl` |
+| Unified runner-v2 checkpoint | `<project>/.roko/state/state-snapshot.json` |
+| Episode log | `<project>/.roko/episodes.jsonl` |
 | Playbook | `<project>/.roko/memory/playbook.toml` |
 | Cascade router state | `<project>/.roko/learn/cascade-router.json` |
 | Gate thresholds | `<project>/.roko/learn/gate-thresholds.json` |
@@ -2690,4 +2725,4 @@ The following items are built but not fully wired at runtime. The canonical gap 
 | VCG auction in composition | `vcg_allocate` built and exported but greedy path dominates at runtime |
 | Safety contracts enforcement | `AgentContract` falls back to permissive defaults when YAML manifest is missing |
 | LLM judge gate | Rung 6 is a stub — not wired to a live model |
-| Dream cron trigger | `roko-dreams` offline consolidation has no automatic cron/runtime trigger |
+| Dream advanced scheduling | Daemon-resident adaptive idle, configurable cron, and episode-count execution are live; BusPulse triggers and intensive backlog draining remain |

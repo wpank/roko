@@ -221,18 +221,18 @@ where
             }
         }
 
-        if event::poll(Duration::from_millis(50))? {
-            if let CEvent::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Char('j') => {
-                        state.log_scroll = state.log_scroll.saturating_add(1);
-                    }
-                    KeyCode::Char('k') => {
-                        state.log_scroll = state.log_scroll.saturating_sub(1);
-                    }
-                    _ => {}
+        if event::poll(Duration::from_millis(50))?
+            && let CEvent::Key(key) = event::read()?
+        {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Char('j') => {
+                    state.log_scroll = state.log_scroll.saturating_add(1);
                 }
+                KeyCode::Char('k') => {
+                    state.log_scroll = state.log_scroll.saturating_sub(1);
+                }
+                _ => {}
             }
         }
         tokio::time::sleep(Duration::from_millis(25)).await;

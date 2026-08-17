@@ -10,6 +10,7 @@
 //! State channels reduce gas to 2 tx per session via signed balance proofs.
 
 use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -84,6 +85,281 @@ pub enum VerificationStatus {
     RecipientMismatch,
     /// Signature invalid (stub -- real verification would use ecrecover).
     InvalidSignature,
+}
+
+// ---------------------------------------------------------------------------
+// Settlement batching
+// ---------------------------------------------------------------------------
+
+/// In-memory queue of verified x402 authorizations awaiting batch submission.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettlementBatch {
+    /// Verified authorization/request pairs in arrival order.
+    pub authorizations: Vec<(PaymentAuthorization, PaymentRequest)>,
+    /// Unix timestamp at which the current batch began accumulating.
+    pub created_at: u64,
+    /// Maximum number of authorizations retained by this queue.
+    pub max_batch_size: usize,
+    /// Maximum age of a non-empty batch before settlement.
+    pub batch_timeout_secs: u64,
+}
+
+impl SettlementBatch {
+    /// Canonical authorization-count trigger from the payment specification.
+    pub const SETTLEMENT_SIZE_TRIGGER: usize = 100;
+
+    /// Create an empty settlement batch.
+    #[must_use]
+    pub fn new(max_size: usize, timeout_secs: u64) -> Self {
+        Self {
+            authorizations: Vec::new(),
+            created_at: unix_timestamp_secs(),
+            max_batch_size: max_size,
+            batch_timeout_secs: timeout_secs,
+        }
+    }
+
+    /// Queue one authorization, returning `false` when the batch is full.
+    pub fn add_authorization(
+        &mut self,
+        auth: PaymentAuthorization,
+        request: PaymentRequest,
+    ) -> bool {
+        if self.authorizations.len() >= self.max_batch_size {
+            return false;
+        }
+        self.authorizations.push((auth, request));
+        true
+    }
+
+    /// Whether a non-empty batch reached 100 authorizations or its age limit.
+    #[must_use]
+    pub fn should_settle(&self, current_timestamp: u64) -> bool {
+        self.authorizations.len() >= Self::SETTLEMENT_SIZE_TRIGGER
+            || (!self.authorizations.is_empty()
+                && current_timestamp.saturating_sub(self.created_at) >= self.batch_timeout_secs)
+    }
+
+    /// Drain all queued authorizations and begin a fresh batch window.
+    pub fn drain(&mut self) -> Vec<(PaymentAuthorization, PaymentRequest)> {
+        self.created_at = unix_timestamp_secs();
+        std::mem::take(&mut self.authorizations)
+    }
+
+    /// Number of queued authorizations.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.authorizations.len()
+    }
+
+    /// Whether no authorizations are currently queued.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.authorizations.is_empty()
+    }
+}
+
+fn unix_timestamp_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+// ---------------------------------------------------------------------------
+// Metered Payment Protocol (MPP)
+// ---------------------------------------------------------------------------
+
+/// Lifecycle state of one metered payment session.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MppSessionState {
+    /// Usage may still be metered.
+    #[default]
+    Active,
+    /// Final usage has been settled.
+    Closed,
+    /// The session crossed its deadline and awaits final settlement.
+    Expired,
+    /// Settlement is paused pending dispute resolution.
+    Disputed,
+}
+
+/// One session authorized once and metered until close or expiry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MppSession {
+    /// Stable session identifier.
+    pub session_id: [u8; 32],
+    /// Account paying for metered usage.
+    pub subscriber: Address,
+    /// Account providing the metered service.
+    pub provider: Address,
+    /// Single ERC-3009 authorization covering this session.
+    pub authorization: PaymentAuthorization,
+    /// Accumulated metered units.
+    pub usage_units: u64,
+    /// KORAI base units charged per usage unit.
+    pub rate_per_unit: u256,
+    /// Maximum session charge authorized by the subscriber.
+    pub max_cost: u256,
+    /// Unix timestamp when the session began.
+    pub started_at: u64,
+    /// Unix timestamp after which the session expires.
+    pub deadline: u64,
+    /// Current lifecycle state.
+    pub state: MppSessionState,
+}
+
+/// Final accounting result for an MPP session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MppSettlement {
+    /// Settled session identifier.
+    pub session_id: [u8; 32],
+    /// Account that paid for the session.
+    pub subscriber: Address,
+    /// Account that provided the service.
+    pub provider: Address,
+    /// Final metered unit count.
+    pub usage_units: u64,
+    /// Final KORAI amount owed.
+    pub amount: u256,
+}
+
+/// In-memory owner of active and terminal MPP sessions.
+#[derive(Clone, Debug, Default)]
+pub struct MppSessionManager {
+    sessions: HashMap<[u8; 32], MppSession>,
+}
+
+impl MppSessionManager {
+    /// Create an empty session manager.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a new active session.
+    pub fn open_session(&mut self, session: MppSession) -> Result<(), MppError> {
+        if self.sessions.contains_key(&session.session_id) {
+            return Err(MppError::DuplicateSession);
+        }
+        if session.state != MppSessionState::Active {
+            return Err(MppError::SessionNotActive);
+        }
+        self.sessions.insert(session.session_id, session);
+        Ok(())
+    }
+
+    /// Read a session by id.
+    #[must_use]
+    pub fn get_session(&self, session_id: &[u8; 32]) -> Option<&MppSession> {
+        self.sessions.get(session_id)
+    }
+
+    /// Increment metered usage without crossing the authorized maximum cost.
+    pub fn meter_usage(&mut self, session_id: &[u8; 32], units: u64) -> Result<(), MppError> {
+        let session = self
+            .sessions
+            .get_mut(session_id)
+            .ok_or(MppError::SessionNotFound)?;
+        if session.state != MppSessionState::Active {
+            return Err(MppError::SessionNotActive);
+        }
+        let usage_units = session
+            .usage_units
+            .checked_add(units)
+            .ok_or(MppError::UsageOverflow)?;
+        let amount = u256::from(usage_units)
+            .checked_mul(session.rate_per_unit)
+            .ok_or(MppError::UsageOverflow)?;
+        if amount > session.max_cost {
+            return Err(MppError::MaxCostExceeded {
+                attempted: amount,
+                maximum: session.max_cost,
+            });
+        }
+        session.usage_units = usage_units;
+        Ok(())
+    }
+
+    /// Compute the final amount and close an active or expired session.
+    pub fn settle(&mut self, session_id: &[u8; 32]) -> Result<MppSettlement, MppError> {
+        let session = self
+            .sessions
+            .get_mut(session_id)
+            .ok_or(MppError::SessionNotFound)?;
+        if !matches!(
+            session.state,
+            MppSessionState::Active | MppSessionState::Expired
+        ) {
+            return Err(MppError::SessionNotSettleable);
+        }
+        let amount = u256::from(session.usage_units)
+            .checked_mul(session.rate_per_unit)
+            .ok_or(MppError::UsageOverflow)?;
+        if amount > session.max_cost {
+            return Err(MppError::MaxCostExceeded {
+                attempted: amount,
+                maximum: session.max_cost,
+            });
+        }
+        session.state = MppSessionState::Closed;
+        Ok(MppSettlement {
+            session_id: session.session_id,
+            subscriber: session.subscriber.clone(),
+            provider: session.provider.clone(),
+            usage_units: session.usage_units,
+            amount,
+        })
+    }
+
+    /// Whether a session is already expired or has crossed its deadline.
+    #[must_use]
+    pub fn is_expired(&self, session_id: &[u8; 32], current_timestamp: u64) -> bool {
+        self.sessions.get(session_id).is_some_and(|session| {
+            session.state == MppSessionState::Expired || current_timestamp > session.deadline
+        })
+    }
+
+    /// Mark every active session past its deadline as expired.
+    pub fn expire_stale(&mut self, current_timestamp: u64) -> usize {
+        let mut expired = 0;
+        for session in self.sessions.values_mut() {
+            if session.state == MppSessionState::Active && current_timestamp > session.deadline {
+                session.state = MppSessionState::Expired;
+                expired += 1;
+            }
+        }
+        expired
+    }
+}
+
+/// Accounting-layer errors for MPP sessions.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum MppError {
+    /// No session exists for the supplied id.
+    #[error("session not found")]
+    SessionNotFound,
+    /// A session already exists for the supplied id.
+    #[error("session id already exists")]
+    DuplicateSession,
+    /// The requested operation requires an active session.
+    #[error("session is not active")]
+    SessionNotActive,
+    /// The session lifecycle does not permit settlement.
+    #[error("session is not settleable")]
+    SessionNotSettleable,
+    /// The usage counter or computed amount overflowed.
+    #[error("metered usage overflow")]
+    UsageOverflow,
+    /// The proposed accumulated usage exceeds the session spending cap.
+    #[error("session cost {attempted} exceeds maximum {maximum}")]
+    MaxCostExceeded {
+        /// Cost that would result from the requested usage.
+        attempted: u256,
+        /// Authorized maximum session cost.
+        maximum: u256,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +475,8 @@ pub struct X402Manager {
     current_timestamp: u64,
     /// Nonce counter for payment requests.
     next_nonce: u256,
+    /// Verified authorizations waiting for batched on-chain settlement.
+    pub settlement_batch: SettlementBatch,
 }
 
 impl Default for X402Manager {
@@ -210,6 +488,7 @@ impl Default for X402Manager {
             current_block: 0,
             current_timestamp: 0,
             next_nonce: 1,
+            settlement_batch: SettlementBatch::new(100, 600),
         }
     }
 }
@@ -301,6 +580,30 @@ impl X402Manager {
     /// Record a nonce as used (after successful verification + submission).
     pub fn record_nonce(&mut self, from: &Address, nonce: u256) {
         self.used_nonces.insert((from.clone(), nonce), true);
+    }
+
+    /// Verify and queue an authorization for batched settlement.
+    ///
+    /// Returns `false` for invalid/replayed authorizations or a full batch.
+    pub fn queue_for_settlement(
+        &mut self,
+        auth: PaymentAuthorization,
+        request: PaymentRequest,
+    ) -> bool {
+        if self.verify_authorization(&request, &auth) != VerificationStatus::Valid {
+            return false;
+        }
+        if self.settlement_batch.is_empty() {
+            self.settlement_batch.created_at = self.current_timestamp;
+        }
+        if !self
+            .settlement_batch
+            .add_authorization(auth.clone(), request)
+        {
+            return false;
+        }
+        self.record_nonce(&auth.from, auth.nonce);
+        true
     }
 
     // -----------------------------------------------------------------------
@@ -577,6 +880,45 @@ mod tests {
         m
     }
 
+    fn payment_pair(nonce: u256) -> (PaymentAuthorization, PaymentRequest) {
+        let request = PaymentRequest {
+            recipient: "0xAgent".to_string(),
+            amount: 500,
+            token: "0xKORAI".to_string(),
+            nonce,
+            deadline: 1_001_000,
+            reason: "test".to_string(),
+        };
+        let auth = PaymentAuthorization {
+            from: "0xClient".to_string(),
+            to: request.recipient.clone(),
+            value: request.amount,
+            valid_after: 999_000,
+            valid_before: 1_001_000,
+            nonce,
+            v: 27,
+            r: [0u8; 32],
+            s: [0u8; 32],
+        };
+        (auth, request)
+    }
+
+    fn mpp_session(id: u8) -> MppSession {
+        let (authorization, _) = payment_pair(u256::from(id));
+        MppSession {
+            session_id: [id; 32],
+            subscriber: "0xClient".to_string(),
+            provider: "0xAgent".to_string(),
+            authorization,
+            usage_units: 0,
+            rate_per_unit: 10,
+            max_cost: 100,
+            started_at: 1_000,
+            deadline: 2_000,
+            state: MppSessionState::Active,
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Payment Request / Authorization
     // -----------------------------------------------------------------------
@@ -766,6 +1108,115 @@ mod tests {
         assert_eq!(
             mgr.verify_authorization(&request, &auth),
             VerificationStatus::NonceReused
+        );
+    }
+
+    #[test]
+    fn settlement_batch_triggers_at_one_hundred_authorizations() {
+        let mut batch = SettlementBatch::new(150, 600);
+        batch.created_at = 1_000;
+        for nonce in 0..99 {
+            let (auth, request) = payment_pair(nonce);
+            assert!(batch.add_authorization(auth, request));
+        }
+        assert!(!batch.should_settle(1_100));
+        let (auth, request) = payment_pair(99);
+        assert!(batch.add_authorization(auth, request));
+        assert!(batch.should_settle(1_100));
+    }
+
+    #[test]
+    fn settlement_batch_triggers_at_timeout_and_drain_resets_contents() {
+        let mut batch = SettlementBatch::new(100, 600);
+        batch.created_at = 1_000;
+        let (auth, request) = payment_pair(1);
+        assert!(batch.add_authorization(auth, request));
+        assert!(!batch.should_settle(1_599));
+        assert!(batch.should_settle(1_600));
+
+        let drained = batch.drain();
+        assert_eq!(drained.len(), 1);
+        assert!(batch.is_empty());
+        assert!(!batch.should_settle(u64::MAX));
+    }
+
+    #[test]
+    fn settlement_batch_rejects_over_capacity_and_manager_replays() {
+        let mut batch = SettlementBatch::new(1, 600);
+        let (auth, request) = payment_pair(1);
+        assert!(batch.add_authorization(auth, request));
+        let (auth, request) = payment_pair(2);
+        assert!(!batch.add_authorization(auth, request));
+
+        let mut mgr = manager();
+        let (auth, request) = payment_pair(7);
+        assert!(mgr.queue_for_settlement(auth.clone(), request.clone()));
+        assert!(!mgr.queue_for_settlement(auth, request));
+        assert_eq!(mgr.settlement_batch.len(), 1);
+    }
+
+    #[test]
+    fn mpp_meter_usage_and_settlement_compute_exact_amount() {
+        let mut sessions = MppSessionManager::new();
+        sessions.open_session(mpp_session(1)).unwrap();
+        sessions.meter_usage(&[1; 32], 4).unwrap();
+        sessions.meter_usage(&[1; 32], 2).unwrap();
+
+        let settlement = sessions.settle(&[1; 32]).unwrap();
+        assert_eq!(settlement.usage_units, 6);
+        assert_eq!(settlement.amount, 60);
+        assert_eq!(
+            sessions.get_session(&[1; 32]).unwrap().state,
+            MppSessionState::Closed
+        );
+        assert_eq!(
+            sessions.meter_usage(&[1; 32], 1),
+            Err(MppError::SessionNotActive)
+        );
+    }
+
+    #[test]
+    fn mpp_rejects_usage_over_max_without_mutating_session() {
+        let mut sessions = MppSessionManager::new();
+        sessions.open_session(mpp_session(2)).unwrap();
+
+        assert_eq!(
+            sessions.meter_usage(&[2; 32], 11),
+            Err(MppError::MaxCostExceeded {
+                attempted: 110,
+                maximum: 100,
+            })
+        );
+        assert_eq!(sessions.get_session(&[2; 32]).unwrap().usage_units, 0);
+    }
+
+    #[test]
+    fn mpp_expiry_is_detected_marked_and_settleable() {
+        let mut sessions = MppSessionManager::new();
+        sessions.open_session(mpp_session(3)).unwrap();
+        sessions.meter_usage(&[3; 32], 5).unwrap();
+
+        assert!(!sessions.is_expired(&[3; 32], 2_000));
+        assert!(sessions.is_expired(&[3; 32], 2_001));
+        assert_eq!(sessions.expire_stale(2_001), 1);
+        assert_eq!(
+            sessions.get_session(&[3; 32]).unwrap().state,
+            MppSessionState::Expired
+        );
+        assert_eq!(sessions.settle(&[3; 32]).unwrap().amount, 50);
+    }
+
+    #[test]
+    fn mpp_rejects_duplicate_and_missing_sessions() {
+        let mut sessions = MppSessionManager::new();
+        sessions.open_session(mpp_session(4)).unwrap();
+        assert_eq!(
+            sessions.open_session(mpp_session(4)),
+            Err(MppError::DuplicateSession)
+        );
+        assert_eq!(
+            sessions.meter_usage(&[9; 32], 1),
+            Err(MppError::SessionNotFound)
         );
     }
 

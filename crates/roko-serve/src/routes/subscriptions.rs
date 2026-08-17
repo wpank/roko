@@ -20,6 +20,10 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/subscriptions/catalog", get(subscriptions_catalog))
         .route(
+            "/subscriptions/relay/status",
+            get(relay_subscription_status),
+        )
+        .route(
             "/subscriptions",
             get(list_subscriptions).post(create_subscription),
         )
@@ -29,6 +33,15 @@ pub fn routes() -> Router<Arc<AppState>> {
         )
         .route("/subscriptions/{id}/enable", post(enable_subscription))
         .route("/subscriptions/{id}/disable", post(disable_subscription))
+}
+
+/// `GET /api/subscriptions/relay/status` — durable relay-consumer cursor and
+/// reconciliation diagnostics. The parent API router applies normal read
+/// authentication/scope enforcement when serve auth is enabled.
+async fn relay_subscription_status(
+    State(state): State<Arc<AppState>>,
+) -> Json<crate::subscription_relay::SubscriptionRelayStatus> {
+    Json(state.subscription_relay.status().await)
 }
 
 /// `GET /api/subscriptions/catalog` — describe available trigger types and filter fields.
@@ -58,9 +71,12 @@ struct SubscriptionResponse {
     id: String,
     template: String,
     trigger: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trigger_config: Option<roko_core::config::schema::SubscriptionTrigger>,
     filter: roko_core::config::schema::SubscriptionFilterConfig,
     concurrency_limit: usize,
     cooldown_secs: u64,
+    debounce_ms: u64,
     enabled: bool,
     status: &'static str,
 }
@@ -71,9 +87,11 @@ impl From<&Subscription> for SubscriptionResponse {
             id: subscription.id.clone(),
             template: subscription.template.clone(),
             trigger: subscription.trigger.clone(),
+            trigger_config: subscription.trigger_config.clone(),
             filter: subscription.filter.clone(),
             concurrency_limit: subscription.concurrency_limit,
             cooldown_secs: subscription.cooldown_secs,
+            debounce_ms: subscription.debounce_ms,
             enabled: subscription.enabled,
             status: subscription_status(subscription.enabled),
         }
@@ -300,4 +318,90 @@ async fn write_subscription_file(
         .await
         .map_err(|e| ApiError::internal(format!("write subscription: {e}")))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use roko_core::config::ApiKeyEntry;
+    use roko_core::config::schema::{RokoConfig, SubscriptionConfig, SubscriptionTrigger};
+    use tempfile::tempdir;
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::deploy::create_backend;
+    use crate::routes::{build_router, middleware};
+    use crate::runtime::NoOpRuntime;
+
+    #[test]
+    fn runtime_subscription_preserves_trigger_config_and_debounce_roundtrip() {
+        let config = SubscriptionConfig {
+            template: "digest".to_string(),
+            trigger: "workspace:updates".to_string(),
+            trigger_config: Some(SubscriptionTrigger::Webhook {
+                event: "workspace:updates".to_string(),
+            }),
+            debounce_ms: 750,
+            cooldown_secs: 3,
+            ..SubscriptionConfig::default()
+        };
+        let runtime = Subscription::from_config(config.clone());
+        assert_eq!(runtime.to_config(), config);
+        let response = SubscriptionResponse::from(&runtime);
+        assert_eq!(response.trigger_config, config.trigger_config);
+        assert_eq!(response.debounce_ms, 750);
+    }
+
+    #[tokio::test]
+    async fn relay_status_route_uses_normal_api_authentication() {
+        let dir = tempdir().expect("tempdir");
+        let mut config = RokoConfig::default();
+        config.serve.auth.enabled = true;
+        config.serve.auth.api_keys = vec![ApiKeyEntry {
+            name: "relay-reader".to_string(),
+            key_hash: middleware::hash_api_key("relay-status-secret"),
+            scope: "read".to_string(),
+            created_at: "2026-08-16T00:00:00Z".to_string(),
+            expires_at: None,
+            last_used_at: None,
+            previous_key_hashes: Vec::new(),
+        }];
+        let deploy_backend =
+            Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                config.clone(),
+                deploy_backend,
+            )
+            .expect("app state"),
+        );
+        let app = build_router(Arc::clone(&state), &[], config.serve.auth.clone());
+
+        let unauthenticated = app
+            .clone()
+            .oneshot(
+                Request::get("/api/subscriptions/relay/status")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        let authenticated = app
+            .oneshot(
+                Request::get("/api/subscriptions/relay/status")
+                    .header("X-Api-Key", "relay-status-secret")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(authenticated.status(), StatusCode::OK);
+    }
 }

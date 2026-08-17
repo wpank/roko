@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use roko_agent::translate::openai::parse_glm_metadata;
 
 #[test]

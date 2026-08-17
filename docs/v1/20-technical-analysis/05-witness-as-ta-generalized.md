@@ -1,5 +1,8 @@
 # The Witness Pipeline — Generalized Data Ingestion for TA
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The witness is the perception layer of technical analysis. Originally designed for blockchain observation, it generalizes to any structured data stream. Every oracle needs a witness to feed it data.
 
 

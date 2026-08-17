@@ -2,6 +2,8 @@
 
 > Depth for [05-AGENT.md](../../unified/05-AGENT.md). The agent tool loop as a Hot Flow implementing the perceive-think-act-verify cycle, MCP integration as a Connect protocol providing dynamic tool discovery, and the ToolDispatcher as a Pipeline Cell enforcing safety at every invocation.
 
+> **Implementation status (2026-08-17):** IMPLEMENTED. Tool loop, `LlmBackend` single-turn interface, `DynamicToolRegistry`, and MCP passthrough are wired (`crates/roko-agent/src/mcp/`, `crates/roko-agent/src/tool_loop/`). The `SafetyLayer` 6 policy families and `AgentContract` tool allowlist enforcement are live. Definition-only MCP advertisements fail closed. Tool RAG / AutoTool / PASTE optimization patterns are spec-level targets.
+
 ---
 
 ## 1. The ToolLoop as a Hot Flow
@@ -152,14 +154,16 @@ The ToolLoop calls `send_turn()` once per iteration, inspects the response for t
 
 ### Existing implementations
 
-- **`OllamaLlmBackend`** (`crates/roko-agent/src/ollama_backend.rs`) -- Implements `LlmBackend` for the Ollama HTTP API. Proves the pattern works.
+- **`OllamaLlmBackend`** (`crates/roko-agent/src/ollama/agent.rs`) -- Ollama HTTP tool-loop backend.
+- **`OpenAiCompatBackend`** (`crates/roko-agent/src/tool_loop/backends/openai_compat.rs`) -- OpenAI-compatible backend used for configured OpenAI-compatible, Perplexity, Cerebras, and related HTTP surfaces.
+- **`AnthropicMessagesBackend`** (`crates/roko-agent/src/provider/anthropic_api/tool_loop.rs`) -- Anthropic Messages backend with its provider translator.
+- **`GeminiNativeBackend`** (`crates/roko-agent/src/tool_loop/backends/gemini_native.rs`) -- native Gemini backend.
 
-### Missing implementations
-
-The critical gap: no `OpenAiCompatBackend` or `AnthropicApiBackend` implementations exist yet. HTTP-based agents (OpenAI, ZhipuAI, Gemini, Perplexity) currently go through `Agent::run()` which does a single-shot call, bypassing the ToolLoop entirely. The implementation plan documents this as the highest-priority integration gap.
+Tool-capable HTTP provider profiles construct a `ToolLoop` with a resolver-backed
+`ToolDispatcher`. CLI/ACP providers remain separate because they own or bridge their own loop.
 
 ```rust
-/// Proposed OpenAI-compatible LlmBackend implementation
+/// Simplified shape of the implemented OpenAI-compatible LlmBackend
 pub struct OpenAiCompatBackend {
     client: reqwest::Client,
     base_url: String,
@@ -258,11 +262,14 @@ pub struct SafetyLayer {
 | `ScrubPolicy` | -- | Remove API keys, tokens, secrets from output |
 | `RateLimiter` | Per-role, per-tool call rate check | -- |
 
-### Integration gap
+### Remaining integration gap
 
-The SafetyLayer is wired into the ToolDispatcher. The ToolDispatcher is used by the ToolLoop. But **the ToolDispatcher is never called from `orchestrate.rs`**. The orchestrator constructs `ClaudeCliAgent` instances directly, and the Claude CLI drives its own internal tool loop. Roko's full safety pipeline is bypassed for the primary execution path.
-
-This is documented as the number-one integration gap. The fix is wiring HTTP backends through `create_agent_for_model` -> adapter -> `LlmBackend` -> `ToolLoop` -> `ToolDispatcher` -> `SafetyLayer`.
+Tool-capable HTTP adapters now follow `provider adapter -> LlmBackend -> ToolLoop ->
+ToolDispatcher -> SafetyLayer`, including resolver-backed built-in, MCP, and local plugin
+tools. CLI-owned providers such as Claude CLI still execute their internal tool loops rather
+than calling Roko's `ToolDispatcher` for every invocation. Contract-level restrictions exist
+on supported runner/bridge paths, but CLI-owned loops do not yet have identical per-tool
+dispatcher policy coverage.
 
 ---
 
@@ -460,7 +467,14 @@ Run predicted tools in parallel with the LLM's reasoning. If the actual tool cal
 
 ### Tool Result Caching
 
-Cache tool results by (tool_name, args_hash) with per-tool TTL policies:
+> **Research only (not a dispatcher feature).** Roko ships reusable cache primitives,
+> but `ToolDispatcher` deliberately performs every call against current authorization,
+> durable immune controls, screening, finalization, and audit state. No production owner
+> currently caches tool results. A future higher-level owner would need explicit
+> invalidation and safety semantics before adopting the policy below.
+
+A possible design would cache tool results by `(tool_name, args_hash)` with per-tool TTL
+policies:
 
 | Tool category | Cacheable? | TTL | Invalidation |
 |---|---|---|---|
@@ -491,7 +505,7 @@ Achieves 1.69x latency speedup without accuracy loss (ToolCacheAgent, ICLR 2026)
 
 ## Open Questions
 
-1. **LlmBackend implementations**: The OpenAiCompatBackend and AnthropicApiBackend do not exist yet. Only OllamaLlmBackend is implemented. This blocks the ToolLoop from serving the majority of HTTP-based agents.
+1. **Provider parity**: OpenAI-compatible, Anthropic, Gemini-native, and Ollama backends exist. The remaining question is how CLI/ACP-owned loops can obtain equivalent dispatcher-level policy and telemetry without duplicating provider logic.
 
 2. **Reasoning strategy routing**: Should the CascadeRouter select reasoning patterns (Direct, ReAct, Reflexion, MCTS) alongside model selection? This would make the routing decision multi-dimensional: model x reasoning_strategy x effort_level.
 

@@ -1,5 +1,8 @@
 # Heartbeat: The Cognitive Clock
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The heartbeat is the agent's autonomous decision cycle — in the two-fabric model it is driven by Bus-published tick Pulses at three concurrent timescales (Gamma, Theta, Delta), with dual-process tier gating that makes ~80% of ticks free and active inference determining compute investment.
 
 > See `tmp/refinements/05-loop-retold.md` for the seven-step retelling, `tmp/refinements/09-phase-2-implications.md` for the Phase 2+ Bus-consumer framing, `tmp/refinements/10-self-learning-cybernetic-loops.md` for the prediction/outcome/error learning loop, and `../00-architecture/01-naming-and-glossary.md` for canonical heartbeat terms.

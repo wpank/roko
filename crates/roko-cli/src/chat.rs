@@ -98,13 +98,12 @@ pub async fn run_chat_repl(agent_id: &str, serve_url: &str) -> Result<()> {
     println!("Type a message. Press Ctrl-D to exit.\n");
 
     // Resolve API key from CLI flag / env / config (best-effort).
-    let api_key =
-        auth::resolve_api_key(&roko_core::config::ServeAuthConfig::default(), None).map(|r| r.key);
+    let credential = auth::resolve_api_key(&roko_core::config::ServeAuthConfig::default(), None);
 
     // Build client with auth headers when a key is available.
     let mut client_builder = reqwest::Client::builder();
-    if let Some(ref key) = api_key {
-        client_builder = client_builder.default_headers(auth::auth_headers(key));
+    if let Some(ref credential) = credential {
+        client_builder = client_builder.default_headers(credential.headers());
     }
     let client = client_builder.build().context("build HTTP client")?;
 
@@ -269,6 +268,8 @@ pub async fn run_direct_provider_chat(
     let options = AgentOptions {
         name: agent_id.to_string(),
         timeout_ms: Some(llm_timeout_ms),
+        working_dir: Some(workdir.to_path_buf()),
+        immune_root: Some(workdir.to_path_buf()),
         ..Default::default()
     };
 

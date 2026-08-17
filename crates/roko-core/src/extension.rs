@@ -22,8 +22,11 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use crate::{LensScope, ObservableEvent, TelemetryEventSink};
 
 // ── CaMeL IFC types (E30-T01) ─────────────────────────────────────────
 
@@ -582,27 +585,61 @@ pub struct ExtensionMeta {
     /// Extension version.
     #[serde(default)]
     pub version: String,
+    /// Packaging and sandboxing tier.
+    #[serde(default = "default_native_package_tier")]
+    pub tier: PackageTier,
+}
+
+const fn default_native_package_tier() -> PackageTier {
+    PackageTier::NativeRust
 }
 
 /// Sandboxing/distribution tier for an extension package.
 ///
 /// Determines the isolation level and trust granted to an extension.
-/// Tiers are ordered from least trusted (Prompts) to most trusted (NativeRust).
+/// Tiers are ordered from least trusted (Prompt) to most trusted (NativeRust).
 ///
 /// See v2 spec §3 (12-EXTENSIONS.md) for the full 5-tier SPI table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PackageTier {
     /// Markdown/TOML front-matter declaring hook behavior (no execution).
-    Prompts,
+    #[serde(alias = "prompts")]
+    Prompt,
     /// TOML profile bundles that configure built-in extensions.
-    Config,
+    #[serde(alias = "config")]
+    ConfigProfile,
     /// TOML manifests for subprocess/HTTP/MCP hooks (OS process isolation).
     Declarative,
     /// Compiled WASM implementing extension hooks (fuel-metered sandbox).
     Wasm,
     /// `impl Extension` compiled in-tree (process-level trust).
     NativeRust,
+}
+
+impl PackageTier {
+    /// Whether packages at this tier execute code rather than contribute data.
+    #[must_use]
+    pub const fn executes_code(self) -> bool {
+        matches!(self, Self::Declarative | Self::Wasm | Self::NativeRust)
+    }
+
+    /// Stable, human-readable isolation boundary for this tier.
+    #[must_use]
+    pub const fn sandboxing_level(self) -> &'static str {
+        match self {
+            Self::Prompt | Self::ConfigProfile => "None",
+            Self::Declarative => "OS-process",
+            Self::Wasm => "WASM+fuel",
+            Self::NativeRust => "Process-level",
+        }
+    }
+
+    /// Whether an artifact at this tier may be distributed directly.
+    #[must_use]
+    pub const fn marketplace_publishable(self) -> bool {
+        !matches!(self, Self::NativeRust)
+    }
 }
 
 /// Full extension manifest as authored in TOML.
@@ -624,6 +661,11 @@ pub struct ExtensionManifest {
     /// Other extension names that must be loaded before this one.
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// Semantic-version requirements keyed by names in `depends_on`.
+    ///
+    /// An omitted entry is backward-compatible shorthand for `*`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dependency_requirements: BTreeMap<String, String>,
     /// Whether failure to load/run this extension is non-fatal.
     #[serde(default)]
     pub optional: bool,
@@ -710,6 +752,7 @@ impl ExtensionManifest {
             depends_on: self.depends_on,
             soft_depends_on: Vec::new(),
             version: self.version,
+            tier: self.tier,
         }
     }
 }
@@ -761,6 +804,7 @@ pub trait Extension: Send + Sync {
             depends_on: Vec::new(),
             soft_depends_on: Vec::new(),
             version: String::new(),
+            tier: PackageTier::NativeRust,
         }
     }
 
@@ -1036,6 +1080,29 @@ impl ExtensionHealthTracker {
     pub fn is_disabled(&self, name: &str) -> bool {
         self.disabled.contains(name)
     }
+
+    /// Disable an extension immediately, without waiting for the normal
+    /// consecutive-failure threshold.
+    pub fn disable(&mut self, name: &str) {
+        self.disabled.insert(name.to_string());
+    }
+
+    /// Consecutive failures currently recorded for an extension.
+    pub fn consecutive_failures(&self, name: &str) -> u32 {
+        self.consecutive_failures.get(name).copied().unwrap_or(0)
+    }
+}
+
+/// Serializable runtime status for a loaded extension.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExtensionStatus {
+    /// Static metadata supplied by the extension.
+    #[serde(flatten)]
+    pub meta: ExtensionMeta,
+    /// Whether the circuit breaker has disabled the extension.
+    pub disabled: bool,
+    /// Number of consecutive hook failures.
+    pub consecutive_failures: u32,
 }
 
 impl Default for ExtensionHealthTracker {
@@ -1053,6 +1120,8 @@ impl Default for ExtensionHealthTracker {
 /// disabled extensions (E30-T05 circuit-breaker pattern).
 pub struct ExtensionChain {
     extensions: Vec<Box<dyn Extension>>,
+    initialized: bool,
+    telemetry_sink: Option<Arc<dyn TelemetryEventSink>>,
     /// Default per-hook timeout applied when no per-extension override exists.
     pub default_timeout: Duration,
     /// Per-extension timeout overrides (keyed by extension name).
@@ -1069,6 +1138,8 @@ impl ExtensionChain {
     pub fn new() -> Self {
         Self {
             extensions: Vec::new(),
+            initialized: false,
+            telemetry_sink: None,
             default_timeout: Duration::from_secs(5),
             timeout_overrides: HashMap::new(),
             health_tracker: std::cell::RefCell::new(ExtensionHealthTracker::default()),
@@ -1091,6 +1162,47 @@ impl ExtensionChain {
         self.timeout_overrides.insert(ext_name.into(), timeout);
     }
 
+    /// Attach the passive telemetry sink used for per-extension hook outcomes.
+    pub fn set_telemetry_sink(&mut self, sink: Arc<dyn TelemetryEventSink>) {
+        self.telemetry_sink = Some(sink);
+    }
+
+    async fn emit_hook_called(
+        &self,
+        extension: &str,
+        hook: &str,
+        layer: ExtensionLayer,
+        started: Instant,
+    ) {
+        let Some(sink) = &self.telemetry_sink else {
+            return;
+        };
+        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let event = ObservableEvent::ExtensionHookCalled {
+            extension: extension.to_string(),
+            hook: hook.to_string(),
+            layer: layer as u8,
+            duration_ms,
+        };
+        if let Err(error) = sink.emit(&event, &[LensScope::Global]).await {
+            tracing::warn!(%error, extension, hook, "extension hook telemetry delivery failed");
+        }
+    }
+
+    async fn emit_hook_failed(&self, extension: &str, hook: &str, error: String) {
+        let Some(sink) = &self.telemetry_sink else {
+            return;
+        };
+        let event = ObservableEvent::ExtensionHookFailed {
+            extension: extension.to_string(),
+            hook: hook.to_string(),
+            error,
+        };
+        if let Err(error) = sink.emit(&event, &[LensScope::Global]).await {
+            tracing::warn!(%error, extension, hook, "extension hook telemetry delivery failed");
+        }
+    }
+
     /// Add an extension to the chain. Extensions are sorted by layer on build.
     pub fn add(&mut self, ext: Box<dyn Extension>) {
         self.extensions.push(ext);
@@ -1111,14 +1223,26 @@ impl ExtensionChain {
         self.extensions.is_empty()
     }
 
+    /// Prevent a loaded extension from receiving subsequent runtime hooks.
+    ///
+    /// It remains owned by the chain so shutdown can clean up resources from
+    /// a partially completed initialization.
+    pub fn disable_extension(&mut self, name: &str) {
+        self.health_tracker.borrow_mut().disable(name);
+    }
+
     /// Initialize all extensions in order.
     pub async fn init_all(&mut self) -> Vec<(String, Box<dyn std::error::Error + Send + Sync>)> {
+        if self.initialized {
+            return Vec::new();
+        }
         let mut errors = Vec::new();
         for ext in &mut self.extensions {
             if let Err(e) = ext.on_init().await {
                 errors.push((ext.name().to_string(), e));
             }
         }
+        self.initialized = true;
         errors
     }
 
@@ -1126,12 +1250,16 @@ impl ExtensionChain {
     pub async fn shutdown_all(
         &mut self,
     ) -> Vec<(String, Box<dyn std::error::Error + Send + Sync>)> {
+        if !self.initialized {
+            return Vec::new();
+        }
         let mut errors = Vec::new();
         for ext in self.extensions.iter_mut().rev() {
             if let Err(e) = ext.on_shutdown().await {
                 errors.push((ext.name().to_string(), e));
             }
         }
+        self.initialized = false;
         errors
     }
 
@@ -1156,11 +1284,17 @@ impl ExtensionChain {
                 continue;
             }
             let deadline = self.hook_timeout(name);
-            match tokio::time::timeout(deadline, ext.pre_inference(request)).await {
+            let started = Instant::now();
+            let outcome = tokio::time::timeout(deadline, ext.pre_inference(request)).await;
+            self.emit_hook_called(name, "pre_inference", ext.layer(), started)
+                .await;
+            match outcome {
                 Ok(Ok(())) => {
                     self.health_tracker.borrow_mut().record_success(name);
                 }
                 Ok(Err(e)) => {
+                    self.emit_hook_failed(name, "pre_inference", e.to_string())
+                        .await;
                     tracing::warn!(extension = %name, error = %e,
                         "pre_inference hook error (isolated, continuing)");
                     let disabled = self.health_tracker.borrow_mut().record_failure(name);
@@ -1170,6 +1304,12 @@ impl ExtensionChain {
                     }
                 }
                 Err(_) => {
+                    self.emit_hook_failed(
+                        name,
+                        "pre_inference",
+                        format!("timed out after {} ms", deadline.as_millis()),
+                    )
+                    .await;
                     tracing::warn!(extension = %name, timeout_ms = deadline.as_millis(),
                         "pre_inference hook timed out (isolated, continuing)");
                     let disabled = self.health_tracker.borrow_mut().record_failure(name);
@@ -1203,11 +1343,17 @@ impl ExtensionChain {
                 continue;
             }
             let deadline = self.hook_timeout(name);
-            match tokio::time::timeout(deadline, ext.post_inference(response)).await {
+            let started = Instant::now();
+            let outcome = tokio::time::timeout(deadline, ext.post_inference(response)).await;
+            self.emit_hook_called(name, "post_inference", ext.layer(), started)
+                .await;
+            match outcome {
                 Ok(Ok(())) => {
                     self.health_tracker.borrow_mut().record_success(name);
                 }
                 Ok(Err(e)) => {
+                    self.emit_hook_failed(name, "post_inference", e.to_string())
+                        .await;
                     tracing::warn!(extension = %name, error = %e,
                         "post_inference hook error (isolated, continuing)");
                     let disabled = self.health_tracker.borrow_mut().record_failure(name);
@@ -1217,6 +1363,12 @@ impl ExtensionChain {
                     }
                 }
                 Err(_) => {
+                    self.emit_hook_failed(
+                        name,
+                        "post_inference",
+                        format!("timed out after {} ms", deadline.as_millis()),
+                    )
+                    .await;
                     tracing::warn!(extension = %name, timeout_ms = deadline.as_millis(),
                         "post_inference hook timed out (isolated, continuing)");
                     let disabled = self.health_tracker.borrow_mut().record_failure(name);
@@ -1250,11 +1402,16 @@ impl ExtensionChain {
                 continue;
             }
             let deadline = self.hook_timeout(name);
-            match tokio::time::timeout(deadline, ext.on_gate(event)).await {
+            let started = Instant::now();
+            let outcome = tokio::time::timeout(deadline, ext.on_gate(event)).await;
+            self.emit_hook_called(name, "on_gate", ext.layer(), started)
+                .await;
+            match outcome {
                 Ok(Ok(())) => {
                     self.health_tracker.borrow_mut().record_success(name);
                 }
                 Ok(Err(e)) => {
+                    self.emit_hook_failed(name, "on_gate", e.to_string()).await;
                     tracing::warn!(extension = %name, error = %e,
                         "on_gate hook error (isolated, continuing)");
                     let disabled = self.health_tracker.borrow_mut().record_failure(name);
@@ -1264,6 +1421,12 @@ impl ExtensionChain {
                     }
                 }
                 Err(_) => {
+                    self.emit_hook_failed(
+                        name,
+                        "on_gate",
+                        format!("timed out after {} ms", deadline.as_millis()),
+                    )
+                    .await;
                     tracing::warn!(extension = %name, timeout_ms = deadline.as_millis(),
                         "on_gate hook timed out (isolated, continuing)");
                     let disabled = self.health_tracker.borrow_mut().record_failure(name);
@@ -1398,7 +1561,11 @@ impl ExtensionChain {
                 continue;
             }
             let deadline = self.hook_timeout(name);
-            match tokio::time::timeout(deadline, ext.on_error(event)).await {
+            let started = Instant::now();
+            let outcome = tokio::time::timeout(deadline, ext.on_error(event)).await;
+            self.emit_hook_called(name, "on_error", ext.layer(), started)
+                .await;
+            match outcome {
                 Ok(Ok(RecoveryAction::Propagate)) => {
                     self.health_tracker.borrow_mut().record_success(name);
                     continue;
@@ -1408,6 +1575,7 @@ impl ExtensionChain {
                     return Ok(action);
                 }
                 Ok(Err(e)) => {
+                    self.emit_hook_failed(name, "on_error", e.to_string()).await;
                     tracing::warn!(extension = %name, error = %e,
                         "on_error hook error (isolated, treating as Propagate)");
                     let disabled = self.health_tracker.borrow_mut().record_failure(name);
@@ -1417,6 +1585,12 @@ impl ExtensionChain {
                     }
                 }
                 Err(_) => {
+                    self.emit_hook_failed(
+                        name,
+                        "on_error",
+                        format!("timed out after {} ms", deadline.as_millis()),
+                    )
+                    .await;
                     tracing::warn!(extension = %name, timeout_ms = deadline.as_millis(),
                         "on_error hook timed out (isolated, treating as Propagate)");
                     let disabled = self.health_tracker.borrow_mut().record_failure(name);
@@ -1546,6 +1720,22 @@ impl ExtensionChain {
     /// List all extension metadata.
     pub fn metadata(&self) -> Vec<ExtensionMeta> {
         self.extensions.iter().map(|e| e.meta()).collect()
+    }
+
+    /// List metadata together with the live circuit-breaker state.
+    pub fn statuses(&self) -> Vec<ExtensionStatus> {
+        let health = self.health_tracker.borrow();
+        self.extensions
+            .iter()
+            .map(|extension| {
+                let name = extension.name();
+                ExtensionStatus {
+                    meta: extension.meta(),
+                    disabled: health.is_disabled(name),
+                    consecutive_failures: health.consecutive_failures(name),
+                }
+            })
+            .collect()
     }
 
     // ── Cross-cutting chain runners ───────────────────────────────────
@@ -2013,10 +2203,81 @@ impl HookRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn package_tier_contract_has_exact_execution_and_distribution_boundaries() {
+        let tiers = [
+            PackageTier::Prompt,
+            PackageTier::ConfigProfile,
+            PackageTier::Declarative,
+            PackageTier::Wasm,
+            PackageTier::NativeRust,
+        ];
+        assert_eq!(tiers.len(), 5);
+        assert!(!PackageTier::Prompt.executes_code());
+        assert!(!PackageTier::ConfigProfile.executes_code());
+        assert!(PackageTier::Declarative.executes_code());
+        assert!(PackageTier::Wasm.executes_code());
+        assert!(PackageTier::NativeRust.executes_code());
+        assert_eq!(PackageTier::Prompt.sandboxing_level(), "None");
+        assert_eq!(PackageTier::ConfigProfile.sandboxing_level(), "None");
+        assert_eq!(PackageTier::Declarative.sandboxing_level(), "OS-process");
+        assert_eq!(PackageTier::Wasm.sandboxing_level(), "WASM+fuel");
+        assert_eq!(PackageTier::NativeRust.sandboxing_level(), "Process-level");
+        assert!(!PackageTier::NativeRust.marketplace_publishable());
+        assert!(tiers[..4].iter().all(|tier| tier.marketplace_publishable()));
+    }
+
+    #[test]
+    fn package_tier_serializes_canonically_and_reads_e30_names() {
+        assert_eq!(
+            serde_json::to_string(&PackageTier::Prompt).expect("serialize prompt tier"),
+            "\"prompt\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PackageTier::ConfigProfile).expect("serialize config tier"),
+            "\"config_profile\""
+        );
+        assert_eq!(
+            serde_json::from_str::<PackageTier>("\"prompts\"").expect("legacy prompt alias"),
+            PackageTier::Prompt
+        );
+        assert_eq!(
+            serde_json::from_str::<PackageTier>("\"config\"").expect("legacy config alias"),
+            PackageTier::ConfigProfile
+        );
+    }
+
+    #[derive(Default)]
+    struct RecordingTelemetrySink {
+        seen: Mutex<Vec<(ObservableEvent, Vec<LensScope>)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl TelemetryEventSink for RecordingTelemetrySink {
+        async fn emit(
+            &self,
+            event: &ObservableEvent,
+            ancestry: &[LensScope],
+        ) -> crate::Result<Vec<crate::Signal>> {
+            self.seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((event.clone(), ancestry.to_vec()));
+            Ok(Vec::new())
+        }
+    }
 
     struct TestExtension {
         name: String,
         layer: ExtensionLayer,
+    }
+
+    struct CountingLifecycleExtension {
+        init_count: Arc<AtomicUsize>,
+        shutdown_count: Arc<AtomicUsize>,
     }
 
     #[async_trait::async_trait]
@@ -2026,6 +2287,27 @@ mod tests {
         }
         fn layer(&self) -> ExtensionLayer {
             self.layer
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Extension for CountingLifecycleExtension {
+        fn name(&self) -> &str {
+            "counting-lifecycle"
+        }
+
+        fn layer(&self) -> ExtensionLayer {
+            ExtensionLayer::Foundation
+        }
+
+        async fn on_init(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.init_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn on_shutdown(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.shutdown_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
     }
 
@@ -2067,6 +2349,28 @@ mod tests {
 
         let shutdown_errors = chain.shutdown_all().await;
         assert!(shutdown_errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn chain_lifecycle_calls_are_idempotent_until_state_changes() {
+        let init_count = Arc::new(AtomicUsize::new(0));
+        let shutdown_count = Arc::new(AtomicUsize::new(0));
+        let mut chain = ExtensionChain::new();
+        chain.add(Box::new(CountingLifecycleExtension {
+            init_count: Arc::clone(&init_count),
+            shutdown_count: Arc::clone(&shutdown_count),
+        }));
+
+        assert!(chain.init_all().await.is_empty());
+        assert!(chain.init_all().await.is_empty());
+        assert_eq!(init_count.load(Ordering::SeqCst), 1);
+
+        assert!(chain.shutdown_all().await.is_empty());
+        assert!(chain.shutdown_all().await.is_empty());
+        assert_eq!(shutdown_count.load(Ordering::SeqCst), 1);
+
+        assert!(chain.init_all().await.is_empty());
+        assert_eq!(init_count.load(Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -2978,6 +3282,67 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn extension_hook_outcomes_emit_called_and_failed_once() {
+        let sink = Arc::new(RecordingTelemetrySink::default());
+        let mut chain = ExtensionChain::new();
+        chain.set_telemetry_sink(sink.clone());
+        chain.add(Box::new(TestExtension {
+            name: "healthy".into(),
+            layer: ExtensionLayer::Cognition,
+        }));
+        chain.add(Box::new(AlwaysFailingExtension {
+            name: "failing".into(),
+            layer: ExtensionLayer::Cognition,
+        }));
+        let mut request = InferenceRequest {
+            plan_id: "plan".into(),
+            task: "task".into(),
+            role: "engineer".into(),
+            model: "test-model".into(),
+            prompt_tokens: 1,
+            extra: serde_json::Value::Null,
+        };
+
+        chain.run_pre_inference(&mut request).await.unwrap();
+
+        let seen = sink
+            .seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(seen.len(), 3);
+        assert!(
+            seen.iter()
+                .all(|(_, ancestry)| ancestry == &[LensScope::Global])
+        );
+        assert!(seen.iter().any(|(event, _)| matches!(
+            event,
+            ObservableEvent::ExtensionHookCalled {
+                extension,
+                hook,
+                layer: 3,
+                ..
+            } if extension == "healthy" && hook == "pre_inference"
+        )));
+        assert!(seen.iter().any(|(event, _)| matches!(
+            event,
+            ObservableEvent::ExtensionHookCalled {
+                extension,
+                hook,
+                layer: 3,
+                ..
+            } if extension == "failing" && hook == "pre_inference"
+        )));
+        assert!(seen.iter().any(|(event, _)| matches!(
+            event,
+            ObservableEvent::ExtensionHookFailed {
+                extension,
+                hook,
+                error,
+            } if extension == "failing" && hook == "pre_inference" && error == "always fails"
+        )));
+    }
+
     #[test]
     fn extension_chain_default_timeout_is_5s() {
         let chain = ExtensionChain::new();
@@ -3157,6 +3522,11 @@ mod tests {
             chain.health_tracker.borrow().is_disabled("bad-ext"),
             "bad-ext should be disabled after 3 consecutive failures"
         );
+        let statuses = chain.statuses();
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].meta.name, "bad-ext");
+        assert!(statuses[0].disabled);
+        assert_eq!(statuses[0].consecutive_failures, 3);
 
         // Subsequent calls should not invoke the extension (it's disabled).
         chain.run_pre_inference(&mut req).await.unwrap();

@@ -49,12 +49,14 @@ pub(crate) fn task_status_is_terminal(status: &str) -> bool {
 // ─── Skipped reason ─────────────────────────────────────────────────────
 
 /// Why a downstream task was marked as skipped.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SkippedReason {
     /// One of the task's prerequisites terminally failed.
     PrerequisiteFailed { prerequisite: TaskId },
     /// The plan ran past its wall-clock deadline.
     PlanTimedOut,
+    /// The daimon entered its terminal behavioral phase and disabled dispatch.
+    CognitiveAutonomyTerminal,
 }
 
 // ─── Progress classification ────────────────────────────────────────────
@@ -542,6 +544,18 @@ impl TaskDag {
         plan.retry_not_before = None;
     }
 
+    /// Record an explicit skipped outcome for one task.
+    pub fn mark_skipped(&mut self, plan_id: &str, task_id: &str, reason: SkippedReason) -> bool {
+        let plan = self.plan_mut(plan_id);
+        if plan.is_terminal(task_id) {
+            return false;
+        }
+        plan.running.remove(task_id);
+        plan.skipped.insert(task_id.to_string(), reason);
+        plan.retry_not_before = None;
+        true
+    }
+
     /// Record a terminal failure for a task and propagate skipped state to
     /// every downstream task (transitively) within this plan.
     ///
@@ -853,6 +867,21 @@ mod tests {
             }
             other => panic!("expected PrerequisiteFailed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn cognitive_terminal_skip_is_explicit_and_idempotent() {
+        let mut dag = TaskDag::default();
+
+        assert!(dag.mark_skipped("p1", "A", SkippedReason::CognitiveAutonomyTerminal,));
+        assert!(!dag.mark_skipped("p1", "A", SkippedReason::CognitiveAutonomyTerminal,));
+
+        let plan = dag.plan("p1").expect("plan recorded");
+        assert_eq!(
+            plan.skipped.get("A"),
+            Some(&SkippedReason::CognitiveAutonomyTerminal)
+        );
+        assert!(plan.is_terminal("A"));
     }
 
     #[test]

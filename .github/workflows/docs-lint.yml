@@ -1,0 +1,81 @@
+name: Docs Lint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "README.md"
+      - "CLAUDE.md"
+      - "docs/v1/**/*.md"
+      - "docs/v2/**"
+      - "docs/v2-depth/**/*.md"
+      - "docker/README.md"
+      - "tmp/status-quo/*.md"
+      - "tmp/status-quo/backlog/08-SOURCE-CORPUS-PLAN-COVERAGE.md"
+      - "tmp/status-quo/backlog/source-coverage/**"
+      - "tmp/status-quo/backlog/plans/DOC-*/tasks.toml"
+      - "tools/docs_integrity/**"
+      - ".github/workflows/docs-lint.yml"
+      - ".github/workflows/plan-validate.yml"
+  pull_request:
+    paths:
+      - "README.md"
+      - "CLAUDE.md"
+      - "docs/v1/**/*.md"
+      - "docs/v2/**"
+      - "docs/v2-depth/**/*.md"
+      - "docker/README.md"
+      - "tmp/status-quo/*.md"
+      - "tmp/status-quo/backlog/08-SOURCE-CORPUS-PLAN-COVERAGE.md"
+      - "tmp/status-quo/backlog/source-coverage/**"
+      - "tmp/status-quo/backlog/plans/DOC-*/tasks.toml"
+      - "tools/docs_integrity/**"
+      - ".github/workflows/docs-lint.yml"
+      - ".github/workflows/plan-validate.yml"
+
+jobs:
+  docs-lint:
+    name: Reject stale operator documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the bounded Markdown checker
+        run: python3 -m unittest tools.docs_integrity.test_check_markdown_links
+      - name: Check local Markdown paths, anchors, and document registries
+        run: python3 tools/docs_integrity/check_markdown_links.py
+      - name: Check audited docs
+        shell: bash
+        run: |
+          # Scope: README.md CLAUDE.md docs/v2 docker/README.md
+          docs=(
+            README.md
+            CLAUDE.md
+            docs/v2
+            docker/README.md
+          )
+
+          stale='roko neuro|--listen|18 crates|1 noun \(Signal\)|F1.?F7|~85 routes|/healthz|/readyz'
+          if grep -R -nE -- "$stale" "${docs[@]}"; then
+            echo "Stale operator documentation detected." >&2
+            exit 1
+          fi
+
+          # executor.json may only appear when a line explicitly labels the
+          # compatibility/legacy path. Unqualified mentions imply it is the
+          # current Runner-v2 authority and are stale.
+          executor_mentions="$(grep -R -nE -- 'executor\.json' "${docs[@]}" || true)"
+          unqualified_executor="$(
+            printf '%s\n' "$executor_mentions" |
+              grep -viE 'legacy|compatib|fallback|superseded|pre-unified|read-only' || true
+          )"
+          if [[ -n "$unqualified_executor" ]]; then
+            printf '%s\n' "$unqualified_executor"
+            echo "executor.json mentions must be explicitly identified as legacy compatibility." >&2
+            exit 1
+          fi
+
+          bare_plan='roko plan run plans(/[^[:space:]\\]*)?[[:space:]]*$'
+          if grep -R -nE -- "$bare_plan" "${docs[@]}"; then
+            echo "Plan-run examples must select --engine runner-v2." >&2
+            exit 1
+          fi

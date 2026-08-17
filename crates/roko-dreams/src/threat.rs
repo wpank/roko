@@ -127,6 +127,8 @@ pub fn threat_warning_entries_with_floor(
             id: threat_entry_id(&threat, &source_episodes, &tags),
             kind: KnowledgeKind::Warning,
             source: Some("dream".to_string()),
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: format!("{} Mitigation: {}.", threat.description, threat.mitigation),
             confidence: threat.severity().clamp(0.0, 1.0),
             confidence_weight: threat.severity().clamp(0.0, 1.0),
@@ -150,6 +152,9 @@ pub fn threat_warning_entries_with_floor(
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         });
     }

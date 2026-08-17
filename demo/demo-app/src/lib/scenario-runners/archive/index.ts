@@ -14,7 +14,6 @@ import { chat } from './chat';
 import { knowledgeTransfer } from './knowledge-transfer';
 import { chainIntelligence } from './chain-intelligence';
 import { mirage } from './mirage';
-import { isfrAgents } from './isfr-agents';
 
 export { PRD_IDEA, PRD_PIPELINE_COMMANDS, getRuntimeCmd, prdPipeline } from './prd-pipeline';
 export { prdResearchLoop, RESEARCH_LOOP_COMMANDS } from './prd-research-loop';
@@ -29,7 +28,6 @@ export { chat, CHAT_COMMANDS } from './chat';
 export { knowledgeTransfer, KNOWLEDGE_TRANSFER_COMMANDS } from './knowledge-transfer';
 export { chainIntelligence, CHAIN_INTELLIGENCE_COMMANDS } from './chain-intelligence';
 export { mirage, MIRAGE_COMMANDS } from './mirage';
-export { isfrAgents, ISFR_COMMANDS } from './isfr-agents';
 
 export const archivedScenarios: ClickableScenario[] = [
   prdPipeline,
@@ -45,5 +43,4 @@ export const archivedScenarios: ClickableScenario[] = [
   knowledgeTransfer,
   chainIntelligence,
   mirage,
-  isfrAgents,
 ];

@@ -1,5 +1,8 @@
 # Benchmarks and evaluation methodology
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../v2/](../v2/) for the current reference.
+
+
 > Audience: ML researchers, evaluation engineers, contributors building on roko
 >
 > Scope: How roko measures agent performance, what it measures today, and where

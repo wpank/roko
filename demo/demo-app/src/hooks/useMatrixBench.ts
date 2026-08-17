@@ -1,14 +1,15 @@
 import { useState, useCallback, useEffect } from 'react';
-import { useLiveApi } from './useLiveApi';
+import { useDataApi } from './useDataApi';
 import { useBenchSSE } from './useBenchSSE';
+import { adaptBenchRun } from '../lib/bench-types';
 import type {
-  AgentStrategy,
+  BenchConfigOverrides,
   BenchModel,
   BenchRunConfig,
   BenchTaskResult,
   ConfigPreset,
-  MatrixLaneSummary,
-  BenchSSEEvent,
+  MatrixLaneRequestWire,
+  StartMatrixResponseWire,
 } from '../lib/bench-types';
 
 /* ── Default presets (mirror STRATEGIES in Bench.tsx) ── */
@@ -39,7 +40,7 @@ export type MatrixStatus = 'idle' | 'running' | 'completed' | 'cancelled' | 'par
 /* ── Hook ── */
 
 export function useMatrixBench(models: BenchModel[]) {
-  const { post } = useLiveApi();
+  const { get, post } = useDataApi();
 
   // Selected models (Y-axis rows)
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
@@ -117,7 +118,7 @@ export function useMatrixBench(models: BenchModel[]) {
       if (selectedModels.length === 0 || presets.length === 0) return;
 
       // Build lanes: models x presets
-      const lanes: { model: string; backend?: string; strategy: AgentStrategy; label: string; overrides: Partial<BenchRunConfig> }[] = [];
+      const lanes: MatrixLaneRequestWire[] = [];
       const newLaneMap = new Map<string, { row: number; col: number }>();
 
       for (let row = 0; row < selectedModels.length; row++) {
@@ -126,19 +127,19 @@ export function useMatrixBench(models: BenchModel[]) {
         for (let col = 0; col < presets.length; col++) {
           const preset = presets[col];
           const laneLabel = `${modelId.split('-').slice(0, 2).join('-')} / ${preset.label}`;
+          const overrides: BenchConfigOverrides = {
+            model: modelId,
+            backend: modelInfo?.provider || undefined,
+            strategy: preset.strategy,
+            temperature: preset.temperature ?? baseConfig.temperature,
+            max_tokens: preset.maxTokens ?? baseConfig.max_tokens,
+          };
           lanes.push({
             model: modelId,
-            backend: modelInfo?.provider,
+            backend: modelInfo?.provider || undefined,
             strategy: preset.strategy,
             label: laneLabel,
-            overrides: {
-              ...baseConfig,
-              model: modelId,
-              provider: modelInfo?.provider,
-              strategy: preset.strategy,
-              temperature: preset.temperature ?? baseConfig.temperature,
-              max_tokens: preset.maxTokens ?? baseConfig.max_tokens,
-            },
+            overrides,
           });
           // Lane ID will be assigned by server; use index as placeholder
           const placeholderId = `lane-${row}-${col}`;
@@ -147,11 +148,11 @@ export function useMatrixBench(models: BenchModel[]) {
       }
 
       try {
-        const res = await post<{ id?: string; matrix_id?: string; lane_ids: string[] }>(
+        const res = await post<StartMatrixResponseWire>(
           '/api/bench/matrix',
           { suite_id: suiteId, lanes },
         );
-        const nextMatrixId = res.matrix_id ?? res.id;
+        const nextMatrixId = res.matrix_id;
 
         if (!nextMatrixId) return;
 
@@ -199,7 +200,7 @@ export function useMatrixBench(models: BenchModel[]) {
   useEffect(() => {
     if (!lastEvent || status !== 'running') return;
 
-    const evt = lastEvent as BenchSSEEvent;
+    const evt = lastEvent;
 
     switch (evt.type) {
       case 'BenchTaskCompleted': {
@@ -242,7 +243,7 @@ export function useMatrixBench(models: BenchModel[]) {
         // Update all cells from summary
         setCells((prev) => {
           const next = prev.map((r) => [...r]);
-          for (const lane of evt.summary as MatrixLaneSummary[]) {
+          for (const lane of evt.summary) {
             const pos = laneMap.get(lane.lane_id);
             if (!pos) continue;
             const cell = { ...next[pos.row][pos.col] };
@@ -253,11 +254,72 @@ export function useMatrixBench(models: BenchModel[]) {
           }
           return next;
         });
-        setStatus('completed');
+        // Keep reconciliation active until persisted lane records confirm the
+        // terminal state and hydrate any task events missed by the live stream.
         break;
       }
     }
   }, [lastEvent, status, laneMap, benchToLane, matrixId]);
+
+  // The bench stream is live-only. Poll persisted lane records while a matrix
+  // is running so dropped task/lane/terminal events are authoritatively healed.
+  useEffect(() => {
+    if (status !== 'running' || laneMap.size === 0) return;
+    let cancelled = false;
+    let polling = false;
+
+    const reconcile = async () => {
+      if (polling || cancelled) return;
+      polling = true;
+      try {
+        const laneIds = [...laneMap.keys()];
+        const runs = await Promise.all(laneIds.map(async (laneId) => {
+          try {
+            return adaptBenchRun(await get<unknown>(`/api/bench/runs/${encodeURIComponent(laneId)}`));
+          } catch {
+            return null;
+          }
+        }));
+        if (cancelled) return;
+
+        setCells((prev) => {
+          const next = prev.map((row) => row.map((cell) => ({ ...cell })));
+          runs.forEach((run, index) => {
+            if (!run) return;
+            const pos = laneMap.get(laneIds[index]);
+            if (!pos) return;
+            const cell = next[pos.row][pos.col];
+            cell.results = run.results;
+            cell.passRate = run.summary?.pass_rate;
+            cell.costUsd = run.summary?.total_cost_usd;
+            cell.status = run.status === 'running'
+              ? 'running'
+              : run.status === 'completed'
+                ? (run.summary?.pass_rate ?? 0) >= 0.5 ? 'pass' : 'fail'
+                : 'fail';
+          });
+          return next;
+        });
+
+        const completeRuns = runs.filter((run) => run !== null);
+        if (completeRuns.length === runs.length
+          && completeRuns.every((run) => run.status !== 'running')) {
+          const allCompleted = completeRuns.every((run) => run.status === 'completed');
+          const allCancelled = completeRuns.every((run) => run.status === 'cancelled');
+          setStatus(allCompleted ? 'completed' : allCancelled ? 'cancelled' : 'partial_failure');
+        }
+      } finally {
+        polling = false;
+      }
+    };
+
+    void reconcile();
+    const interval = setInterval(() => void reconcile(), 3_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [get, laneMap, status]);
 
   // Total lanes count
   const totalLanes = selectedModels.length * presets.length;

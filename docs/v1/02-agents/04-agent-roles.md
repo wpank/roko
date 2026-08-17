@@ -1,5 +1,8 @@
 # 04 — Agent Roles
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Sub-doc 04 of **02-agents** · Roko Documentation
 >
 > This document defines Roko's 28-role agent taxonomy, the per-role defaults

@@ -158,7 +158,7 @@ async fn learn_path_episodes_write_path_matches_reader() {
 }
 
 #[tokio::test]
-async fn learn_path_episodes_in_learn_subdir_are_also_readable() {
+async fn legacy_learn_subdir_episodes_remain_readable_as_fallback() {
     let tmp = TempDir::new().expect("tempdir");
     let workdir = tmp.path();
     let learn_episodes_path = learn_root(workdir).join("episodes.jsonl");
@@ -178,6 +178,39 @@ async fn learn_path_episodes_in_learn_subdir_are_also_readable() {
 
     assert_eq!(read_back.len(), 1);
     assert_eq!(read_back[0].episode_id, "episode-learn");
+}
+
+#[tokio::test]
+async fn canonical_root_episode_log_takes_precedence_over_legacy_logs() {
+    let tmp = TempDir::new().expect("tempdir");
+    let workdir = tmp.path();
+    write_jsonl(
+        &roko_root(workdir).join("episodes.jsonl"),
+        &[sample_episode(
+            "agent-root",
+            "task-root",
+            "episode-root",
+            "claude-sonnet-4-6",
+            true,
+        )],
+    );
+    write_jsonl(
+        &learn_root(workdir).join("episodes.jsonl"),
+        &[sample_episode(
+            "agent-legacy",
+            "task-legacy",
+            "episode-legacy",
+            "claude-haiku-4-5",
+            false,
+        )],
+    );
+
+    let read_back = read_project_episodes_lossy(workdir)
+        .await
+        .expect("read canonical episodes");
+
+    assert_eq!(read_back.len(), 1);
+    assert_eq!(read_back[0].episode_id, "episode-root");
 }
 
 #[tokio::test]

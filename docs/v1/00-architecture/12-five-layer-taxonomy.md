@@ -1,5 +1,8 @@
 # The Five-Layer Taxonomy
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** Roko's crates are organized into five architectural layers with strictly
 > downward dependencies. This document specifies each layer, maps the six Synapse traits
 > to their layer assignments, describes the dependency rules, and provides the complete

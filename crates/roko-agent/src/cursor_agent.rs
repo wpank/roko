@@ -51,6 +51,7 @@ use crate::translate::{BackendResponse, RenderedTools, SessionState};
 use crate::usage::{Usage, UsageObservation, UsageSource};
 use async_trait::async_trait;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
+use roko_core::extension::CamelTaintLevel;
 use roko_core::tool::{ToolCall, ToolContext, ToolResult};
 use roko_core::{Body, Context, Kind, Provenance, Signal};
 use serde::{Deserialize, Serialize};
@@ -437,7 +438,8 @@ impl CursorAgent {
             return Ok(());
         };
 
-        let tool_ctx = ToolContext::testing(std::env::current_dir().unwrap_or_else(|_| ".".into()));
+        let tool_ctx = ToolContext::testing(std::env::current_dir().unwrap_or_else(|_| ".".into()))
+            .with_taint_level(CamelTaintLevel::External);
         for raw_call in calls {
             let id = raw_call
                 .get("id")

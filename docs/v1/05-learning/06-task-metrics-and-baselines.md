@@ -1,5 +1,8 @@
 # Task Metrics and Baselines
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Crate:** `roko-learn` · **Modules:** `task_metric.rs`, `baseline.rs`, `efficiency.rs`
 > **Persistence:** `.roko/learn/task-metrics.jsonl`, `.roko/learn/efficiency.jsonl`
 > **Wiring:** `LearningRuntime::record_completed_run()` → metrics pipeline

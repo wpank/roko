@@ -86,13 +86,12 @@ fn format_response(parsed: &serde_json::Value) -> String {
     if let Some(citations) = parsed
         .get("citations")
         .and_then(serde_json::Value::as_array)
+        && !citations.is_empty()
     {
-        if !citations.is_empty() {
-            out.push_str("\n\nSources:\n");
-            for (i, cite) in citations.iter().enumerate() {
-                if let Some(url) = cite.as_str() {
-                    let _ = writeln!(out, "[{}] {}", i + 1, url);
-                }
+        out.push_str("\n\nSources:\n");
+        for (i, cite) in citations.iter().enumerate() {
+            if let Some(url) = cite.as_str() {
+                let _ = writeln!(out, "[{}] {}", i + 1, url);
             }
         }
     }
@@ -101,31 +100,30 @@ fn format_response(parsed: &serde_json::Value) -> String {
     if let Some(results) = parsed
         .get("search_results")
         .and_then(serde_json::Value::as_array)
+        && !results.is_empty()
     {
-        if !results.is_empty() {
-            out.push_str("\nSearch results:\n");
-            for result in results {
-                let title = result
-                    .get("title")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("(untitled)");
-                let url = result
-                    .get("url")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("");
-                let snippet = result
-                    .get("content")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("");
-                let _ = writeln!(out, "- {title}\n  {url}");
-                if !snippet.is_empty() {
-                    let truncated = if snippet.len() > 200 {
-                        format!("{}...", &snippet[..200])
-                    } else {
-                        snippet.to_string()
-                    };
-                    let _ = writeln!(out, "  {truncated}");
-                }
+        out.push_str("\nSearch results:\n");
+        for result in results {
+            let title = result
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("(untitled)");
+            let url = result
+                .get("url")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let snippet = result
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let _ = writeln!(out, "- {title}\n  {url}");
+            if !snippet.is_empty() {
+                let truncated = if snippet.len() > 200 {
+                    format!("{}...", &snippet[..200])
+                } else {
+                    snippet.to_string()
+                };
+                let _ = writeln!(out, "  {truncated}");
             }
         }
     }
@@ -205,6 +203,7 @@ async fn call_gateway(model_caller: Arc<dyn ModelCaller>, query: &str) -> ToolRe
                 role: MessageRole::User,
                 content: query.to_string(),
             }],
+            input_messages: Vec::new(),
             max_tokens: None,
             temperature: None,
             role: Some("web-search".to_string()),

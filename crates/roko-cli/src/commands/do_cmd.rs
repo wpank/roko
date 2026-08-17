@@ -30,6 +30,7 @@ pub(crate) async fn cmd_do(
     let prompt = prompt_args.join(" ").trim().to_string();
 
     if let Some(work_id) = continue_work {
+        let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
         return cmd_do_continue(&workdir, work_id).await;
     }
 
@@ -50,6 +51,7 @@ pub(crate) async fn cmd_do(
             workdir.join("plans").join(plan_slug).join("tasks.toml"),
         ];
         if let Some(found) = candidates.iter().find(|p| p.is_file()) {
+            let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
             let plan_dir = found.parent().expect("tasks.toml has parent dir");
             roko_cli::output_format::step("Found plan", &plan_dir.display().to_string());
             return run_plan_execution(cli, &workdir, plan_dir, no_cascade, provider).await;
@@ -87,6 +89,10 @@ pub(crate) async fn cmd_do(
         }
         return Ok(EXIT_SUCCESS);
     }
+
+    // A `do` execution owns the workspace's mutable runtime state for its
+    // complete lifetime (including plan generation and runner dispatch).
+    let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
 
     // Route based on classified complexity.
     match complexity {
@@ -644,19 +650,27 @@ pub(crate) async fn run_plan_execution(
         feedback_facade: Some(feedback_facade),
         projection: Some(projection),
         http_event_sink: None,
-        output_sink: if !cli.quiet && !cli.json {
-            if roko_cli::inline::should_use_inline() {
-                std::sync::Arc::new(roko_cli::runner::output_sink::StderrSink::new())
-                    as std::sync::Arc<dyn roko_cli::runner::output_sink::RunOutputSink>
-            } else {
-                std::sync::Arc::new(roko_cli::runner::output_sink::FormattedStderrSink::new(
-                    cli.color.should_color(),
-                ))
-                    as std::sync::Arc<dyn roko_cli::runner::output_sink::RunOutputSink>
-            }
-        } else {
-            std::sync::Arc::new(roko_cli::runner::output_sink::NoopSink)
-                as std::sync::Arc<dyn roko_cli::runner::output_sink::RunOutputSink>
+        output_sink: {
+            let human_sink: std::sync::Arc<dyn roko_cli::runner::output_sink::RunOutputSink> =
+                if !cli.quiet && !cli.json {
+                    if roko_cli::inline::should_use_inline() {
+                        std::sync::Arc::new(roko_cli::runner::output_sink::StderrSink::new())
+                    } else {
+                        std::sync::Arc::new(
+                            roko_cli::runner::output_sink::FormattedStderrSink::new(
+                                cli.color.should_color(),
+                            ),
+                        )
+                    }
+                } else {
+                    std::sync::Arc::new(roko_cli::runner::output_sink::NoopSink)
+                };
+            roko_cli::runner::output_sink::with_acp_progress_sink(
+                human_sink,
+                roko_cli::runner::output_sink::is_acp_progress_enabled(
+                    std::env::var("ROKO_ACP_PROGRESS").ok().as_deref(),
+                ),
+            )
         },
         warm_cache: true,
         metrics: {
@@ -667,6 +681,7 @@ pub(crate) async fn run_plan_execution(
         obs_sinks: None,
         conductor: Some(std::sync::Arc::new(conductor)),
         conductor_ring: Some(conductor_ring),
+        github_ops: None,
     };
 
     let cancel = tokio_util::sync::CancellationToken::new();

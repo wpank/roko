@@ -1,5 +1,8 @@
 # 04 — Enrichment Pipeline: 13-Step Context Pre-Computation
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Layer 2 Scaffold — Synapse Architecture
 > Status: **Implemented** — `roko-compose::enrichment` (1,187 lines total)
 > Canonical source: `crates/roko-compose/src/enrichment/`

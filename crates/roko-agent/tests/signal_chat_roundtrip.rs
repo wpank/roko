@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use roko_agent::chat_types::{ChatResponse, FinishReason, ResponseMetadata};
 use roko_agent::{ChatRequest, RequestOptions};
 use roko_core::{Body, ChatMessage, Engram, Kind, MessageContent};

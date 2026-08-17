@@ -1,5 +1,8 @@
 # Six Behavioral States
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > How PAD octants map to discrete behavioral states that modulate compute allocation, model routing, exploration budgets, and retry policies — cyclical, never terminal.
 
 

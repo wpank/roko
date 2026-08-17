@@ -907,6 +907,31 @@ fn render_plan_summary(
             ),
         ]),
     ];
+    let cost = tui_state.plan_budget_summary(plan);
+    let budget_text = if cost.budget_usd > 0.0 {
+        format!(
+            "${:.3} / ${:.2} ({:.0}%)",
+            cost.spent_usd,
+            cost.budget_usd,
+            cost.spent_usd / cost.budget_usd * 100.0
+        )
+    } else {
+        format!("${:.3} / unlimited", cost.spent_usd)
+    };
+    header_lines.push(Line::from(vec![
+        Span::styled(" cost: ", Style::default().fg(theme.muted)),
+        Span::styled(budget_text, Style::default().fg(theme.warning)),
+        Span::styled(
+            format!("  projected ${:.3}", cost.projected_total_usd),
+            Style::default().fg(
+                if cost.budget_usd > 0.0 && cost.projected_total_usd > cost.budget_usd {
+                    theme.danger
+                } else {
+                    theme.muted
+                },
+            ),
+        ),
+    ]));
     if let Some(err) = last_error {
         header_lines.push(Line::from(vec![
             Span::styled(" error: ", Style::default().fg(theme.danger)),
@@ -936,7 +961,15 @@ fn render_plan_summary(
     .split(area);
 
     frame.render_widget(Paragraph::new(header_lines), sections[0]);
-    render_plan_tasks(frame, sections[1], &plan.tasks, view_state, theme);
+    render_plan_tasks(
+        frame,
+        sections[1],
+        &plan.id,
+        &plan.tasks,
+        tui_state,
+        view_state,
+        theme,
+    );
     render_plan_gates(frame, sections[2], &plan_gates, theme);
     render_plan_timing(frame, sections[3], plan, plan_execution, &plan_gates, theme);
 }
@@ -944,7 +977,9 @@ fn render_plan_summary(
 fn render_plan_tasks(
     frame: &mut Frame<'_>,
     area: Rect,
+    plan_id: &str,
     tasks: &[TaskEntry],
+    tui_state: &TuiState,
     view_state: &ViewState,
     theme: &Theme,
 ) {
@@ -983,6 +1018,14 @@ fn render_plan_tasks(
             } else {
                 theme.text()
             };
+            let key = format!("{plan_id}:{}", task.id);
+            let spent = tui_state.cost_per_task.get(&key).copied().unwrap_or(0.0);
+            let budget = tui_state.task_budget(plan_id, &task.id);
+            let cost = if budget > 0.0 {
+                format!("${spent:.3}/${budget:.2}")
+            } else {
+                format!("${spent:.3}/∞")
+            };
 
             Row::new(vec![
                 Cell::from(Span::styled(
@@ -1000,6 +1043,14 @@ fn render_plan_tasks(
                         .map(|agent| truncate(agent, 14))
                         .unwrap_or_else(|| "-".to_string()),
                 ),
+                Cell::from(Span::styled(
+                    cost,
+                    Style::default().fg(if budget > 0.0 && spent >= budget {
+                        theme.danger
+                    } else {
+                        theme.muted
+                    }),
+                )),
             ])
             .style(style)
         })
@@ -1010,10 +1061,11 @@ fn render_plan_tasks(
         Constraint::Min(16),
         Constraint::Length(12),
         Constraint::Min(8),
+        Constraint::Length(14),
     ];
     let table = Table::new(rows, widths)
         .header(
-            Row::new([" ", "task", "status", "agent"]).style(
+            Row::new([" ", "task", "status", "agent", "cost / budget"]).style(
                 Style::default()
                     .fg(theme.accent)
                     .add_modifier(Modifier::BOLD),

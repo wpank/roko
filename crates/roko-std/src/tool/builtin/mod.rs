@@ -1,5 +1,5 @@
-//! Built-in tool definitions (§36.b) plus ISFR, GitHub MCP, and optionally
-//! chain-domain tools.
+//! Built-in tool definitions (§36.b), GitHub MCP, and optionally chain-domain
+//! tools.
 //!
 //! Each `builtin/<name>.rs` module exposes:
 //!
@@ -7,10 +7,10 @@
 //! - `pub const DESCRIPTION: &str` — LLM-facing help text
 //! - `pub fn tool_def() -> ToolDef` — constructs the full definition
 //!
-//! [`ROKO_BUILTIN_TOOLS`] exposes the 16 std tools plus 4 ISFR tools plus
-//! 19 GitHub MCP tool catalog entries, and — when the `chain` cargo feature
-//! is enabled — 17 chain-domain tools as well.  Materialized once via
-//! [`std::sync::LazyLock`] on first access.
+//! [`ROKO_BUILTIN_TOOLS`] exposes the 16 std tools plus 19 GitHub MCP tool
+//! catalog entries, and — when the `chain` cargo feature is enabled — 17
+//! chain-domain tools as well. Materialized once via [`std::sync::LazyLock`]
+//! on first access.
 //!
 //! Std tool order follows `roko_core::tool::aliases::ALIASES`:
 //! `read_file` → `write_file` → `edit_file` → `multi_edit` → `glob` →
@@ -37,7 +37,6 @@ pub mod exit_plan_mode;
 pub mod github;
 pub mod glob;
 pub mod grep;
-pub mod isfr;
 pub mod ls;
 pub mod multi_edit;
 pub mod notebook_edit;
@@ -51,23 +50,23 @@ pub mod web_search;
 pub mod write_file;
 
 /// Number of total built-in tools advertised in the default (no `chain`) build:
-/// 16 std + 4 ISFR + 19 GitHub MCP = 39.
+/// 16 std + 19 GitHub MCP = 35.
 ///
 /// When the `chain` feature is enabled, 17 chain-domain tools are added,
-/// making the total 56.  Use <code>[ROKO_BUILTIN_TOOLS].len()</code> at runtime for
+/// making the total 52.  Use <code>[ROKO_BUILTIN_TOOLS].len()</code> at runtime for
 /// the actual count — this constant matches only the default feature set.
 #[cfg(not(feature = "chain"))]
-pub const TOOL_COUNT: usize = 39;
+pub const TOOL_COUNT: usize = 35;
 
 /// Number of total built-in tools advertised with the `chain` feature enabled:
-/// 16 std + 17 chain + 4 ISFR + 19 GitHub MCP = 56.
+/// 16 std + 17 chain + 19 GitHub MCP = 52.
 #[cfg(feature = "chain")]
-pub const TOOL_COUNT: usize = 56;
+pub const TOOL_COUNT: usize = 52;
 
 /// All built-in tool definitions.
 ///
-/// Without the `chain` feature: 16 std + 4 ISFR + 19 GitHub MCP = 39 tools.
-/// With the `chain` feature: additionally includes 17 chain-domain tools = 56.
+/// Without the `chain` feature: 16 std + 19 GitHub MCP = 35 tools.
+/// With the `chain` feature: additionally includes 17 chain-domain tools = 52.
 ///
 /// Materialized on first access via [`std::sync::LazyLock`]; every
 /// subsequent read is lock-free.
@@ -92,7 +91,6 @@ pub static ROKO_BUILTIN_TOOLS: LazyLock<Vec<ToolDef>> = LazyLock::new(|| {
     ];
     #[cfg(feature = "chain")]
     tools.extend(roko_chain::tools::CHAIN_DOMAIN_TOOLS.iter().cloned());
-    tools.extend(isfr::all_tool_defs());
     tools.extend(github::all_tool_defs());
     tools
 });
@@ -119,7 +117,6 @@ pub static BUILTIN_TOOL_NAMES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     ];
     #[cfg(feature = "chain")]
     names.extend_from_slice(&roko_chain::tools::CHAIN_TOOL_NAMES);
-    names.extend_from_slice(&isfr::ISFR_TOOL_NAMES);
     names.extend_from_slice(&github::GITHUB_TOOL_NAMES);
     names
 });

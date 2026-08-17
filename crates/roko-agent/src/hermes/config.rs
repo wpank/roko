@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::process::ResourceLimits;
+
 /// Configuration for the Hermes harness adapter.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HermesConfig {
@@ -50,6 +52,9 @@ pub struct HermesConfig {
     /// Crash recovery settings.
     #[serde(default)]
     pub crash_recovery: CrashRecoveryConfig,
+    /// Optional OS-enforced limits for managed Hermes subprocesses.
+    #[serde(default)]
+    pub resource_limits: Option<ResourceLimits>,
 }
 
 /// Crash recovery configuration for the Hermes gateway.
@@ -135,6 +140,7 @@ impl Default for HermesConfig {
             gateway_port: default_gateway_port(),
             auto_start_gateway: false,
             crash_recovery: CrashRecoveryConfig::default(),
+            resource_limits: None,
         }
     }
 }
@@ -172,6 +178,7 @@ impl HermesConfig {
         if let Some(timeout_ms) = provider.timeout_ms {
             cfg.timeout = Duration::from_millis(timeout_ms);
         }
+        cfg.resource_limits = ResourceLimits::from_provider_config(provider);
 
         cfg
     }
@@ -254,6 +261,7 @@ mod tests {
                 max_restarts: 5,
                 health_timeout: Duration::from_millis(10_000),
             },
+            resource_limits: None,
         };
 
         let json = serde_json::to_string(&cfg).expect("serialize");

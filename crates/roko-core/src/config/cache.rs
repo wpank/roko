@@ -77,23 +77,23 @@ impl ConfigCache {
 
         let watcher = match watcher {
             Ok(mut w) => {
-                if let Some(ref p) = project_path {
-                    if let Err(e) = w.watch(p, notify::RecursiveMode::NonRecursive) {
-                        tracing::warn!(
-                            path = %p.display(),
-                            error = %e,
-                            "failed to watch project config"
-                        );
-                    }
+                if let Some(ref p) = project_path
+                    && let Err(e) = w.watch(p, notify::RecursiveMode::NonRecursive)
+                {
+                    tracing::warn!(
+                        path = %p.display(),
+                        error = %e,
+                        "failed to watch project config"
+                    );
                 }
-                if let Some(ref p) = global_path {
-                    if let Err(e) = w.watch(p, notify::RecursiveMode::NonRecursive) {
-                        tracing::warn!(
-                            path = %p.display(),
-                            error = %e,
-                            "failed to watch global config"
-                        );
-                    }
+                if let Some(ref p) = global_path
+                    && let Err(e) = w.watch(p, notify::RecursiveMode::NonRecursive)
+                {
+                    tracing::warn!(
+                        path = %p.display(),
+                        error = %e,
+                        "failed to watch global config"
+                    );
                 }
                 Some(w)
             }
@@ -161,6 +161,7 @@ mod tests {
 
     #[test]
     fn cache_loads_default_when_no_config_file() {
+        let _env_guard = crate::config::loader::TEST_ENV_LOCK.lock();
         let dir = tempfile::tempdir().unwrap();
         let cache = ConfigCache::new_static(dir.path()).unwrap();
         let config = cache.get();
@@ -170,6 +171,7 @@ mod tests {
 
     #[test]
     fn cache_loads_from_roko_toml() {
+        let _env_guard = crate::config::loader::TEST_ENV_LOCK.lock();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("roko.toml"),
@@ -191,6 +193,7 @@ base_url = "https://cache-test.example/v1"
 
     #[test]
     fn watched_cache_sees_file_change() {
+        let _env_guard = crate::config::loader::TEST_ENV_LOCK.lock();
         // Regression: ConfigCache::new() previously created two independent
         // ArcSwap instances -- the watcher wrote to one while get() read the
         // other. After the fix, both share the same Arc<ArcSwap>.

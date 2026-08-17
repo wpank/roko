@@ -12,7 +12,7 @@ This round focuses on **the things that determine whether this becomes a billion
 
 ### What's decided
 
-- **Roko (the agent runtime)**: Fully open-source. Signal/Block/Graph primitives. 9 protocols. 10 specializations. HDC fingerprinting. Predict-publish-correct learning. Demurrage-based knowledge. 18 crates, ~177K LOC Rust.
+- **Roko (the agent runtime)**: Fully open-source. Signal/Block/Graph primitives. 9 protocols. 10 specializations. HDC fingerprinting. Predict-publish-correct learning. Demurrage-based knowledge. 34 workspace members, ~800K LOC Rust.
 - **Nunchi blockchain**: Purpose-built EVM chain with Simplex consensus, 50ms block times via Hyperliquid-style validator clustering (not globally decentralized — honest about this). Soulbound agent passports (ERC-721, ERC-5192). ZK-HDC similarity proofs. 7-domain EMA reputation. Spore job marketplace. ERC-8004 compatible. NO demurrage on the infra token (dropped based on research7 — no successful large-scale precedent).
 - **Positioning**: Trust layer for the agent economy. Complement to MCP + ACP + A2A + x402 + ERC-8004. Not "Stripe for agents" (Stripe already did that).
 - **Go-to-market**: MCP-style launch (spec + 2 SDKs + 5 demos + 5 partners). ACP registry for IDE distribution. Forward-deployed engineering at first enterprise.

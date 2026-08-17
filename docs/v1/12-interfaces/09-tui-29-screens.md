@@ -1,5 +1,8 @@
 # TUI 29-Screen Inventory
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Complete inventory of all 29 screens across 6 window regions — navigation, agent detail, plan detail, knowledge, collective intelligence, and system monitoring.
 
 

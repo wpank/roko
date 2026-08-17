@@ -473,6 +473,8 @@ fn hypothetical_entry(
         id: dream_imagination_id(kind, content, &source_episodes, &tags),
         kind,
         source: Some("dream".to_string()),
+        origin_taint: Default::default(),
+        classification: Default::default(),
         content: content.to_string(),
         confidence: 0.78,
         confidence_weight: 0.78,
@@ -496,6 +498,9 @@ fn hypothetical_entry(
         deprecated: false,
         balance: 1.0,
         frozen: false,
+        balance_depleted_at: None,
+        frozen_at: None,
+        falsifier: None,
         catalytic_score: 0,
     }
 }

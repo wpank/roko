@@ -1,6 +1,7 @@
 # 14 — Builtin Cell Catalog
 
 > Every Cell that ships with Roko, organized by protocol conformance. All Cells participate in predict-publish-correct ([doc-02](02-CELL.md)): each publishes predictions as Pulses, subscribes to calibration error topics, and updates. 46 protocol Cells, 28+ domain Cells, 70+ total.
+> **Implementation status:** PARTIAL -- roko-std has 35 definitions by default (16 executable local + 19 GitHub MCP) and 52 with the chain feature. Static + Dynamic registries are wired; resolved plugin manifests add executable declarative tools with resolver-aware catalog validation on provider-Bridge paths. HTTP-provider MCP discovery retains executable clients and composes only live MCP definitions into audited tool loops; definition-only entries fail closed. Declarative tools have strict admission, bounded streaming, path/env/process controls, and fail-closed kernel confinement. Claude/Codex CLI, Cursor/Hermes ACP, and Runner-v2 Gemini CLI paths consume canonical handlers through authenticated per-call MCP; Gemini uses native stream-JSON, task-scoped system settings, and contract-derived filtering. Verified recursive registry install, authenticated signed relay publishing, signed semantic-version dependency graphs, fail-fast required-extension startup, and a bounded no-import typed WASM ABI for all 23 current hooks are live. Component-model Store/Bus/capability hostcalls, OpenClaw/legacy one-shot parity, and optional chain handlers remain open. The broader 70+ Cell catalog below is aspirational.
 
 **Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal/Pulse duality, demurrage, Kind system), [02-CELL](02-CELL.md) (9 protocols, predict-publish-correct, Verify redesign, EFE routing), [15-TELEMETRY](15-TELEMETRY.md) (Lens system, StateHub, c-factor), [11-CONNECTIVITY](11-CONNECTIVITY.md) (Connect protocol, exoskeleton)
 
@@ -416,7 +417,7 @@ Compose Cells predict prompt-fits-budget-and-wins-gate, publish the prediction a
 | Input | `Vec<Signal>` (context Signals: role, task, knowledge, history, constraints) |
 | Output | `Signal { kind: Text }` (assembled prompt) |
 | Capabilities | (none) |
-| Description | Assembles system prompt from up to 9 layers (role, domain, task, context, knowledge, history, constraints, tools, format). Budget-aware: truncates lower-priority layers to fit token limit. Maps to existing `RoleSystemPromptSpec` in orchestrate.rs. |
+| Description | Assembles system prompt from up to 9 layers (role, domain, task, context, knowledge, history, constraints, tools, format). Budget-aware: truncates lower-priority layers to fit token limit. Maps to `RoleSystemPromptSpec` used by runner v2. |
 
 ```toml
 [[nodes]]
@@ -1326,7 +1327,12 @@ Every Cell that declares `capabilities: [Mcp]` or is registered via `agent.mcp_c
 
 ### External MCP tools as Cells
 
-MCP servers configured in `agent.mcp_config` auto-register as `McpConnector` instances ([doc-11](11-CONNECTIVITY.md)). Each MCP tool becomes a queryable operation via the Connector's `query()` and `execute()` methods.
+MCP servers configured in `agent.mcp_config` are discovered once into an `McpRuntime`
+that retains canonical definitions and initialized clients. HTTP provider tool loops
+compose built-in handlers with `McpHandlerResolver`, so a selected external tool reaches
+the originating server's `tools/call`. Definition-only MCP tools are rejected rather
+than advertised without an execution path. The more general `McpConnector`/Cell mapping
+described here remains architectural work ([doc-11](11-CONNECTIVITY.md)).
 
 ### Safety hooks for tool dispatch
 

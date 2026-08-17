@@ -1,5 +1,8 @@
 # Hyperdimensional Technical Analysis
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > HDC encodes TA patterns as 10,240-bit vectors. Pattern algebra (bind, bundle, permute) enables nanosecond cross-domain similarity search, temporal composition, and shift-invariant pattern matching.
 
 

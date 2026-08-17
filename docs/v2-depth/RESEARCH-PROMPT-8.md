@@ -8,7 +8,7 @@ Copy everything below the `---` line into Claude Desktop with deep research enab
 
 You are researching for **Nunchi**, a two-part system:
 
-1. **Roko** — open-source Rust agent runtime (18 crates, ~177K LOC). Three primitives: Signal (durable, content-addressed, HDC-fingerprinted), Pulse (ephemeral on Bus), Cell (atomic computation, 9 protocols). Agents learn via predict-publish-correct on the Bus. Native 6-stage harness: OBSERVE → GATE → ASSEMBLE → INFER+TOOLS → REFLECT → CONSOLIDATE. CascadeRouter for model selection. 11-gate pipeline with adaptive thresholds.
+1. **Roko** — open-source Rust agent runtime (34 workspace members, ~800K LOC). Three primitives: Signal (durable, content-addressed, HDC-fingerprinted), Pulse (ephemeral on Bus), Cell (atomic computation, 9 protocols). Agents learn via predict-publish-correct on the Bus. Native 6-stage harness: OBSERVE → GATE → ASSEMBLE → INFER+TOOLS → REFLECT → CONSOLIDATE. CascadeRouter for model selection. 11-gate pipeline with adaptive thresholds.
 
 2. **Nunchi chain** — sovereign EVM L1, Simplex consensus (Chan & Pass, IACR 2023/463), ~50ms blocks via co-located Tokyo validators (Hyperliquid model). Native HDC precompile (~400 gas, 20-100x cheaper than Solidity). ERC-8004 agent identities with 7-domain EMA reputation. On-chain knowledge substrate with demurrage-based pruning. ZK-HDC proofs (Circom + Groth16, <1s proving). ERC-8183 job market.
 

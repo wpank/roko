@@ -1,5 +1,8 @@
 # Design Principles and Frontier Innovation Summary
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** Roko is guided by seven design principles (P1-P7) that constrain architectural
 > decisions and prevent feature drift. REF19 reframes the capability list as a net-new
 > innovations catalog with an explicit split between primitive innovations and composed

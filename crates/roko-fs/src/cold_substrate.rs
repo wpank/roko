@@ -181,10 +181,10 @@ impl ArchiveColdSubstrate {
         let mut entries = fs::read_dir(&self.root).await?;
         while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
-            if path.extension().map_or(false, |e| e == "jsonl") {
-                if let Ok(meta) = fs::metadata(&path).await {
-                    total += meta.len();
-                }
+            if path.extension().map_or(false, |e| e == "jsonl")
+                && let Ok(meta) = fs::metadata(&path).await
+            {
+                total += meta.len();
             }
         }
         Ok(total)

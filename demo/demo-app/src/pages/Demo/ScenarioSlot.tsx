@@ -13,7 +13,6 @@ import { CommandList } from '../../components/CommandList';
 import PipelineStagesPanel, { EMPTY_PIPELINE_METRICS, type PipelineMetrics } from '../../components/PipelineStagesPanel';
 import CostComparisonPanel, { EMPTY_RUN_METRICS, type RunMetrics } from '../../components/CostComparisonPanel';
 import MemoryTransferPanel from '../../components/MemoryTransferPanel';
-import ISFRPanel from '../../components/ISFRPanel';
 import OracleFlowPanel from '../../components/OracleFlowPanel';
 import { useCommandList } from '../../hooks/useCommandList';
 import { PlaybackController, TimelineStepper, type TimelineStepState } from '../../lib/playback-controller';
@@ -1216,14 +1215,6 @@ const ScenarioSlot = forwardRef<ScenarioSlotHandle, ScenarioSlotProps>(function 
               {scenario.id === 'memory' && (
                 <div className="demo-clickable-context">
                   <MemoryTransferPanel cold={coldCost} warm={warmCost} isRunning={isRunning} />
-                </div>
-              )}
-              {scenario.id === 'isfr' && (
-                <div className="demo-clickable-context">
-                  <ISFRPanel
-                    insights={ciInsights}
-                    connected={chainWs.connected}
-                  />
                 </div>
               )}
               {scenario.id === 'oracle' && (

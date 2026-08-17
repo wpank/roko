@@ -1,5 +1,8 @@
 # Edge and Embedded Deployment
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Roko's core cognitive primitives can be compiled to a minimal ~500KB binary for deployment on
 > resource-constrained devices, edge nodes, IoT gateways, and embedded systems. This document
 > covers the minimal feature set, the binary size budget, the no_std considerations, use cases

@@ -1,5 +1,8 @@
 # Cross-Domain HDC Transfer
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > HDC's algebraic structure enables automatic detection of structural analogies across domains — an Insight learned in coding ("high complexity → more review") transfers to chain ("high volatility → more caution") because both encode the abstract pattern BIND(high_uncertainty, more_verification).
 
 

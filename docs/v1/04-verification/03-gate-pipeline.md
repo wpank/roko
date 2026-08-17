@@ -1,5 +1,8 @@
 # 03 — The Gate Pipeline
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L3 Harness — Verification
 > **Crate**: `roko-gate` (`crates/roko-gate/src/gate_pipeline.rs`)
 > **Status**: Implemented (593 lines), wired into orchestrate.rs

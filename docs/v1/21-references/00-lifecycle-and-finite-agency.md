@@ -1,5 +1,8 @@
 # Lifecycle and Finite Agency
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for knowledge lifecycle management, resource-bounded cognition, and evolutionary computing as they apply to the Roko agent framework.
 
 **Topic**: [References](./INDEX.md)

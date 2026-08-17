@@ -1,5 +1,8 @@
 # OODA and the Cybernetic Loop
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Observe the signal stream. Orient through watcher analysis.
 > Decide via intervention policy. Act through orchestrator commands.
 > Every evaluation cycle is one iteration of this loop.

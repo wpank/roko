@@ -194,12 +194,13 @@ fn type_schema_mismatched_kinds_are_incompatible() {
 }
 
 #[test]
-fn type_schema_json_schemas_are_incompatible_with_each_other() {
-    // JsonSchema vs JsonSchema: not yet supported, returns false
+fn type_schema_json_schemas_require_an_exact_match() {
     let a = TypeSchema::JsonSchema(r#"{"type":"object"}"#.to_string());
     let b = TypeSchema::JsonSchema(r#"{"type":"object"}"#.to_string());
+    let different = TypeSchema::JsonSchema(r#"{"type":"string"}"#.to_string());
 
-    assert!(!a.is_compatible_with(&b));
+    assert!(a.is_compatible_with(&b));
+    assert!(!a.is_compatible_with(&different));
 }
 
 #[test]

@@ -1208,9 +1208,8 @@ const fn bidder_for_context_source(source: &ContextSource) -> AttentionBidder {
             AttentionBidder::CodeIntelligence
         }
         ContextSource::ResearchMemo => AttentionBidder::Research,
-        ContextSource::RecentSignal { .. } | ContextSource::Pheromone { .. } => {
-            AttentionBidder::Oracles
-        }
+        ContextSource::RecentSignal { .. } => AttentionBidder::Oracles,
+        ContextSource::Pheromone { .. } => AttentionBidder::GroupContext,
         ContextSource::AntiPattern
         | ContextSource::Verification
         | ContextSource::TaskBrief

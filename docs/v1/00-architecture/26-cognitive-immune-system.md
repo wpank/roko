@@ -1,5 +1,8 @@
 # Cognitive Immune System
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** Roko operates in adversarial environments: user input can contain prompt injection,
 > external fetches can be wrong or hostile, plugin output can exceed its declared trust envelope,
 > and imported history can carry stale or forged lineage. The Cognitive Immune System (CIS) is

@@ -6,7 +6,7 @@
 //! need not distinguish between static and dynamic registries.
 
 use roko_core::tool::{ToolDef, ToolRegistry};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use tracing::warn;
 
 /// A registry that combines a static base set of tools with
@@ -19,7 +19,7 @@ pub struct DynamicToolRegistry {
     /// The base (static/built-in) tools.
     base: Vec<ToolDef>,
     /// MCP tools keyed by server name.
-    mcp_servers: HashMap<String, Vec<ToolDef>>,
+    mcp_servers: BTreeMap<String, Vec<ToolDef>>,
     /// If true, prefer MCP tools over built-ins when names collide.
     prefer_mcp: bool,
     /// Flattened view of base + all MCP tools, rebuilt on mutation.
@@ -45,7 +45,7 @@ impl DynamicToolRegistry {
         let all_tools = base_tools.clone();
         Self {
             base: base_tools,
-            mcp_servers: HashMap::new(),
+            mcp_servers: BTreeMap::new(),
             prefer_mcp,
             all_tools,
         }
@@ -56,7 +56,7 @@ impl DynamicToolRegistry {
     pub fn empty() -> Self {
         Self {
             base: Vec::new(),
-            mcp_servers: HashMap::new(),
+            mcp_servers: BTreeMap::new(),
             prefer_mcp: false,
             all_tools: Vec::new(),
         }
@@ -251,6 +251,20 @@ mod tests {
         assert_eq!(reg.all().len(), 2);
         assert!(reg.get("fs__list").is_none());
         assert!(reg.get("git__status").is_some());
+    }
+
+    #[test]
+    fn mcp_dynamic_registry_orders_servers_deterministically() {
+        let mut reg = DynamicToolRegistry::empty();
+        reg.add_mcp_tools("zeta", vec![mcp_tool("zeta.last")]);
+        reg.add_mcp_tools("alpha", vec![mcp_tool("alpha.first")]);
+
+        let names = reg
+            .all()
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["alpha.first", "zeta.last"]);
     }
 
     #[test]

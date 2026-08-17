@@ -2,6 +2,8 @@
 
 > Depth for [02-CELL.md](../../unified/02-CELL.md). How Cells implementing the Compose protocol assemble context under budget constraints, and how the 9-layer system prompt builder works as a Pipeline Graph of Compose Cells.
 
+> **Implementation status (2026-08-17):** IMPLEMENTED (core path). The 9-layer `SystemPromptBuilder` and `RoleSystemPromptSpec` are wired into runner dispatch (`crates/roko-compose/src/system_prompt_builder.rs`). `PromptComposer` greedy knapsack with `AttentionBidder` tracking is live. The VCG auction Cell (`roko-compose/src/auction.rs`) is built as a diagnostics/learning helper but not the primary allocation path at runtime — greedy priority allocation is used. `ComposeProtocol` trait and `ComposeBid`/`ComposeResult` types as described are spec-level; the runtime equivalent is `PromptComposer`.
+
 ---
 
 ## 1. The Compose Protocol in the Cell Model
@@ -20,11 +22,11 @@ pub trait ComposeProtocol: Cell {
 }
 ```
 
-This trait maps to the legacy `Composer` trait in `roko-core`, which accepted `(&[Engram], &Budget, &dyn Scorer, &Context)`. The key design shift: the new protocol replaces the `&dyn Scorer` parameter with pre-scored `ComposeBid` values. Scoring is no longer an input to composition -- it is upstream. A Score Cell produces bids; a Compose Cell assembles them. This separation lets the runtime compose any Score Cell with any Compose Cell without coupling.
+This trait maps to the legacy `Composer` trait in `roko-core`, which accepted `(&[Signal], &Budget, &dyn Scorer, &Context)`. The key design shift: the new protocol replaces the `&dyn Scorer` parameter with pre-scored `ComposeBid` values. Scoring is no longer an input to composition -- it is upstream. A Score Cell produces bids; a Compose Cell assembles them. This separation lets the runtime compose any Score Cell with any Compose Cell without coupling.
 
 ### Why Compose Takes Bids, Not Raw Signals
 
-The legacy `Composer` trait accepted raw Engrams plus a scorer reference, coupling scoring and composition into a single call. The Compose protocol separates these concerns:
+The legacy `Composer` trait accepted raw Signals plus a scorer reference, coupling scoring and composition into a single call. The Compose protocol separates these concerns:
 
 1. **Score Cells** (upstream) evaluate each candidate Signal against the current context and produce `ComposeBid` values with a `value: f64` and `effect: BetaPosterior` (historical gate-pass correlation).
 2. **Compose Cells** (this protocol) receive the bids and allocate budget.

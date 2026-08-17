@@ -30,6 +30,7 @@ roko-learn = { path = "../roko-learn" }
 roko-neuro = { path = "../roko-neuro", features = ["hdc"] }
 roko-dreams = { path = "../roko-dreams" }
 roko-gate = { path = "../roko-gate" }
+roko-gateway = { path = "../roko-gateway" }
 roko-fs = { path = "../roko-fs" }
 roko-compose = { path = "../roko-compose" }
 roko-std = { path = "../roko-std" }
@@ -46,20 +47,29 @@ arc-swap = "1"
 async-trait = { workspace = true }
 axum = { workspace = true }
 base64 = { workspace = true }
+blake3 = { workspace = true }
 chrono = { workspace = true }
+chrono-tz = "0.10"
+cron = "0.12"
 futures = { workspace = true }
 governor = { version = "0.10", default-features = false, features = ["std"] }
 hmac = { workspace = true }
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server", "http1", "http2", "tokio"] }
 indexmap = { workspace = true }
 regex = { workspace = true }
+rustls = "0.23"
+rustls-pemfile = "2"
 jsonwebtoken = { workspace = true }
 reqwest = { workspace = true }
+rand = { workspace = true }
 octocrab = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true }
+tokio-rustls = "0.26"
 tokio-tungstenite = { workspace = true }
 toml = { workspace = true }
 tower = { workspace = true }
@@ -86,7 +96,9 @@ tracing-subscriber = { workspace = true, optional = true }
 [dev-dependencies]
 async-trait = { workspace = true }
 http-body-util = { workspace = true }
+rcgen = "0.13"
 roko-core = { path = "../roko-core" }
+roko-graph = { path = "../roko-graph" }
 roko-runtime = { path = "../roko-runtime" }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

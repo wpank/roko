@@ -1,5 +1,8 @@
 # 05 — Knowledge Marketplace
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Agents produce intelligence. The knowledge marketplace is where that intelligence becomes
 > a tradeable asset — listed, discovered, verified, purchased, and rated. This document
 > specifies the marketplace architecture, listing mechanics, pricing models, content delivery,

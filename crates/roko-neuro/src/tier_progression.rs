@@ -560,6 +560,79 @@ pub struct TierProgressionReport {
     pub falsifiers: Vec<FalsifierRecord>,
 }
 
+/// Configurable evidence threshold for one knowledge tier transition.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TierThreshold {
+    /// Minimum independent confirmations.
+    #[serde(default)]
+    pub min_confirmations: u32,
+    /// Minimum number of distinct runtime contexts.
+    #[serde(default)]
+    pub min_distinct_contexts: u32,
+    /// Minimum entry age in days.
+    #[serde(default)]
+    pub min_age_days: f64,
+    /// Minimum current confidence.
+    pub min_confidence: f64,
+}
+
+/// Thresholds for durable knowledge tier promotion and demotion.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TierProgressionConfig {
+    /// Requirements for moving transient knowledge into working memory.
+    pub transient_to_working: TierThreshold,
+    /// Requirements for consolidating working knowledge.
+    pub working_to_consolidated: TierThreshold,
+    /// Requirements for making consolidated knowledge persistent.
+    pub consolidated_to_persistent: TierThreshold,
+    /// Whether confidence/deprecation-based demotions are active.
+    #[serde(default = "default_demotion_enabled")]
+    pub demotion_enabled: bool,
+}
+
+const fn default_demotion_enabled() -> bool {
+    true
+}
+
+impl Default for TierProgressionConfig {
+    fn default() -> Self {
+        Self {
+            transient_to_working: TierThreshold {
+                min_confirmations: 2,
+                min_distinct_contexts: 0,
+                min_age_days: 0.0,
+                min_confidence: 0.5,
+            },
+            working_to_consolidated: TierThreshold {
+                min_confirmations: 0,
+                min_distinct_contexts: 3,
+                min_age_days: 0.0,
+                min_confidence: 0.6,
+            },
+            consolidated_to_persistent: TierThreshold {
+                min_confirmations: 0,
+                min_distinct_contexts: 0,
+                min_age_days: 30.0,
+                min_confidence: 0.8,
+            },
+            demotion_enabled: true,
+        }
+    }
+}
+
+/// Result of applying entry-level progression rules to one store snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct EntryTierProgressionReport {
+    /// Entry IDs and their new promoted tier.
+    pub promoted: Vec<(String, KnowledgeTier)>,
+    /// Entry IDs and their new demoted tier.
+    pub demoted: Vec<(String, KnowledgeTier)>,
+    /// Entries whose tier did not change.
+    pub unchanged: usize,
+    /// Transient entries below the default confidence floor.
+    pub gc_eligible: Vec<String>,
+}
+
 /// Result of evaluating whether a knowledge entry should change tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TierProgressionDecision {
@@ -643,6 +716,82 @@ impl TierProgression {
             playbook,
             falsifiers: Vec::new(),
         }
+    }
+
+    /// Apply configurable tier rules to all entries in a single pass.
+    #[must_use]
+    pub fn evaluate_all(
+        &self,
+        entries: &mut [KnowledgeEntry],
+        config: &TierProgressionConfig,
+    ) -> EntryTierProgressionReport {
+        let now = Utc::now();
+        let mut report = EntryTierProgressionReport::default();
+        for entry in entries {
+            let age_days = now
+                .signed_duration_since(entry.created_at)
+                .num_seconds()
+                .max(0) as f64
+                / 86_400.0;
+            let target = match entry.tier {
+                KnowledgeTier::Transient
+                    if entry.confirmation_count
+                        >= config.transient_to_working.min_confirmations
+                        && entry.confidence >= config.transient_to_working.min_confidence =>
+                {
+                    Some(KnowledgeTier::Working)
+                }
+                KnowledgeTier::Working
+                    if entry.distinct_contexts.len()
+                        >= config.working_to_consolidated.min_distinct_contexts as usize
+                        && entry.confidence >= config.working_to_consolidated.min_confidence =>
+                {
+                    Some(KnowledgeTier::Consolidated)
+                }
+                KnowledgeTier::Consolidated
+                    if age_days >= config.consolidated_to_persistent.min_age_days
+                        && entry.confidence >= config.consolidated_to_persistent.min_confidence =>
+                {
+                    Some(KnowledgeTier::Persistent)
+                }
+                _ => None,
+            };
+            if let Some(target) = target {
+                entry.tier = target;
+                report.promoted.push((entry.id.clone(), target));
+                continue;
+            }
+
+            let demoted_to = if config.demotion_enabled {
+                match entry.tier {
+                    KnowledgeTier::Persistent if entry.deprecated => {
+                        Some(KnowledgeTier::Consolidated)
+                    }
+                    KnowledgeTier::Consolidated if entry.confidence < 0.3 => {
+                        Some(KnowledgeTier::Working)
+                    }
+                    KnowledgeTier::Working if entry.confidence < 0.15 => {
+                        Some(KnowledgeTier::Transient)
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some(target) = demoted_to {
+                entry.tier = target;
+                report.demoted.push((entry.id.clone(), target));
+                continue;
+            }
+
+            if entry.tier == KnowledgeTier::Transient
+                && entry.confidence < crate::knowledge_store::DEFAULT_GC_MIN_CONFIDENCE
+            {
+                report.gc_eligible.push(entry.id.clone());
+            }
+            report.unchanged += 1;
+        }
+        report
     }
 
     /// Evaluate whether a knowledge entry should change tier based on gate verdicts.
@@ -1028,10 +1177,10 @@ impl TierProgression {
         episodes: &[Episode],
     ) -> io::Result<TierProgressionReport> {
         let report = self.analyze(episodes);
-        if let Some(parent) = path.as_ref().parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = path.as_ref().parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)?;
         }
         fs::write(path, report.playbook.markdown.as_bytes())?;
         Ok(report)
@@ -1044,6 +1193,8 @@ impl From<&InsightRecord> for KnowledgeEntry {
             id: value.id.clone(),
             kind: KnowledgeKind::Insight,
             source: Some(TIER_PROGRESSION_D1_SOURCE.to_string()),
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: value.summary(),
             confidence: value.confidence,
             confidence_weight: value.confidence,
@@ -1068,6 +1219,9 @@ impl From<&InsightRecord> for KnowledgeEntry {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         }
     }
@@ -1079,6 +1233,8 @@ impl From<&HeuristicRule> for KnowledgeEntry {
             id: value.id.clone(),
             kind: KnowledgeKind::Heuristic,
             source: Some(TIER_PROGRESSION_D2_SOURCE.to_string()),
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: value.summary(),
             confidence: value.confidence,
             confidence_weight: value.confidence,
@@ -1103,6 +1259,9 @@ impl From<&HeuristicRule> for KnowledgeEntry {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         }
     }
@@ -1114,6 +1273,8 @@ impl From<&PlaybookCompilation> for KnowledgeEntry {
             id: format!("playbook:{:016x}", stable_hash(value.markdown.as_bytes())),
             kind: KnowledgeKind::StrategyFragment,
             source: Some(TIER_PROGRESSION_D3_SOURCE.to_string()),
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: value.markdown.clone(),
             confidence: if value.rules.is_empty() { 0.0 } else { 1.0 },
             confidence_weight: if value.rules.is_empty() { 0.0 } else { 1.0 },
@@ -1144,6 +1305,9 @@ impl From<&PlaybookCompilation> for KnowledgeEntry {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         }
     }
@@ -1599,6 +1763,8 @@ fn anti_knowledge_for_heuristic(heuristic: &Heuristic, created_at_ms: i64) -> Kn
         ),
         kind: KnowledgeKind::AntiKnowledge,
         source: Some("heuristic-falsifier".to_string()),
+        origin_taint: Default::default(),
+        classification: Default::default(),
         content,
         confidence: (1.0 - heuristic.confidence).clamp(0.65, 1.0),
         confidence_weight: -(1.0 - heuristic.confidence).clamp(0.65, 1.0),
@@ -1625,6 +1791,9 @@ fn anti_knowledge_for_heuristic(heuristic: &Heuristic, created_at_ms: i64) -> Kn
         deprecated: false,
         balance: 1.0,
         frozen: false,
+        balance_depleted_at: None,
+        frozen_at: None,
+        falsifier: None,
         catalytic_score: 0,
     }
 }
@@ -1987,6 +2156,8 @@ mod tests {
             id: "entry-promote".to_string(),
             kind: KnowledgeKind::Insight,
             source: None,
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: "Promote me".to_string(),
             confidence: 0.8,
             confidence_weight: 0.8,
@@ -2007,6 +2178,9 @@ mod tests {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         };
         let verdicts = vec![
@@ -2031,6 +2205,8 @@ mod tests {
             id: "entry-demote".to_string(),
             kind: KnowledgeKind::Insight,
             source: None,
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: "Demote me".to_string(),
             confidence: 0.8,
             confidence_weight: 0.8,
@@ -2051,6 +2227,9 @@ mod tests {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         };
         let verdicts = vec![
@@ -2074,6 +2253,8 @@ mod tests {
             id: "entry-review".to_string(),
             kind: KnowledgeKind::Insight,
             source: None,
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: "Review me".to_string(),
             confidence: 0.8,
             confidence_weight: 0.8,
@@ -2094,6 +2275,9 @@ mod tests {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         };
 
@@ -2111,6 +2295,8 @@ mod tests {
             id: "entry-persistent".to_string(),
             kind: KnowledgeKind::Insight,
             source: None,
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: "Already saturated".to_string(),
             confidence: 0.9,
             confidence_weight: 0.9,
@@ -2131,6 +2317,9 @@ mod tests {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         };
         let transient = KnowledgeEntry {

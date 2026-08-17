@@ -1,5 +1,8 @@
 # Why the Mortality Thesis Was Wrong — And What Replaces It
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: Cross-cut (touches L0 Runtime through L4 Orchestration)
 >
 > **Prerequisites**: `docs/00-architecture/INDEX.md` (5-layer taxonomy, Synapse Architecture)

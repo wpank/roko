@@ -22,6 +22,7 @@ use roko_core::defaults::{
     DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_PLAN_TIMEOUT_SECS, DEFAULT_REQUEST_TIMEOUT_MS,
 };
 use roko_daimon::StrategySpaceDefinition;
+use roko_dreams::DreamSchedulePolicy;
 
 /// The top-level `roko.toml` document.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -121,7 +122,9 @@ impl Config {
 
     /// Parse a TOML config from a string.
     pub fn parse_toml(text: &str) -> Result<Self> {
-        parse_toml_with_env(text, "invalid roko.toml")
+        let config: Self = parse_toml_with_env(text, "invalid roko.toml")?;
+        config.dreams.validate().context("validate [dreams]")?;
+        Ok(config)
     }
 
     /// Render this config back to a TOML string.
@@ -149,7 +152,8 @@ pub struct AgentConfig {
     /// Reasoning effort passed to Claude-style CLIs.
     #[serde(default = "AgentConfig::default_effort")]
     pub effort: String,
-    /// Whether to run Claude in `--bare` mode.
+    /// Whether Claude CLI replaces its built-in system prompt with Roko's
+    /// canonical prompt instead of appending to it.
     #[serde(default = "AgentConfig::default_bare_mode")]
     pub bare_mode: bool,
     /// Optional fallback model slug for Claude-style CLIs.
@@ -222,6 +226,20 @@ pub struct DreamsConfig {
     /// Minimum number of new episodes required before dreaming.
     #[serde(default = "DreamsConfig::default_min_episodes_for_dream")]
     pub min_episodes_for_dream: usize,
+    /// Optional seven-field cron expression used as a fallback cadence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_cron: Option<String>,
+    /// Trigger as soon as this many unconsolidated episodes exist. Zero
+    /// disables the episode-count trigger; the idle/cron minimum still uses
+    /// `min_episodes_for_dream`.
+    #[serde(default)]
+    pub episode_count_trigger: usize,
+    /// Idle-delay multiplier after a high-quality dream cycle.
+    #[serde(default = "DreamsConfig::default_quality_gain")]
+    pub quality_gain: f64,
+    /// Idle-delay multiplier after a low-quality cycle.
+    #[serde(default = "DreamsConfig::default_quality_penalty")]
+    pub quality_penalty: f64,
 }
 
 impl DreamsConfig {
@@ -236,6 +254,38 @@ impl DreamsConfig {
     const fn default_min_episodes_for_dream() -> usize {
         5
     }
+
+    const fn default_quality_gain() -> f64 {
+        0.75
+    }
+
+    const fn default_quality_penalty() -> f64 {
+        1.25
+    }
+
+    /// Convert the resolved CLI fields into the shared dream runtime policy.
+    #[must_use]
+    pub fn schedule_policy(&self) -> DreamSchedulePolicy {
+        DreamSchedulePolicy {
+            enabled: self.auto_dream,
+            idle_threshold_mins: self.idle_threshold_mins,
+            scheduled_cron: self.scheduled_cron.clone(),
+            manual_enabled: true,
+            quality_gain: self.quality_gain,
+            quality_penalty: self.quality_penalty,
+            episode_count_trigger: self.episode_count_trigger,
+        }
+    }
+
+    /// Validate the resolved scheduling fields before they reach a runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid cron expression or invalid adaptive
+    /// quality multiplier.
+    pub fn validate(&self) -> Result<()> {
+        self.schedule_policy().validate()
+    }
 }
 
 impl Default for DreamsConfig {
@@ -244,6 +294,10 @@ impl Default for DreamsConfig {
             auto_dream: Self::default_auto_dream(),
             idle_threshold_mins: Self::default_idle_threshold_mins(),
             min_episodes_for_dream: Self::default_min_episodes_for_dream(),
+            scheduled_cron: None,
+            episode_count_trigger: 0,
+            quality_gain: Self::default_quality_gain(),
+            quality_penalty: Self::default_quality_penalty(),
         }
     }
 }
@@ -336,6 +390,9 @@ pub struct BudgetConfig {
     /// Maximum USD spend per plan.
     #[serde(default = "BudgetConfig::default_max_plan")]
     pub max_plan_usd: f64,
+    /// Maximum USD spend per agent turn.
+    #[serde(default = "BudgetConfig::default_max_turn")]
+    pub max_turn_usd: f64,
     /// Maximum USD spend per task.
     #[serde(default = "BudgetConfig::default_max_task")]
     pub max_task_usd: f64,
@@ -352,6 +409,9 @@ impl BudgetConfig {
         10.0
     }
     const fn default_max_task() -> f64 {
+        1.0
+    }
+    const fn default_max_turn() -> f64 {
         1.0
     }
     const fn default_max_session() -> f64 {
@@ -376,6 +436,7 @@ impl Default for BudgetConfig {
     fn default() -> Self {
         Self {
             max_plan_usd: Self::default_max_plan(),
+            max_turn_usd: Self::default_max_turn(),
             max_task_usd: Self::default_max_task(),
             max_session_usd: Self::default_max_session(),
             warn_at_percent: Self::default_warn_pct(),
@@ -601,6 +662,18 @@ pub struct DreamsLayer {
     /// Minimum number of new episodes required before dreaming.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_episodes_for_dream: Option<usize>,
+    /// Optional fallback cron expression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_cron: Option<String>,
+    /// Optional unconsolidated-episode trigger threshold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode_count_trigger: Option<usize>,
+    /// Optional high-quality idle-delay multiplier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_gain: Option<f64>,
+    /// Optional low-quality idle-delay multiplier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_penalty: Option<f64>,
 }
 
 impl DreamsLayer {
@@ -613,6 +686,10 @@ impl DreamsLayer {
             min_episodes_for_dream: overlay
                 .min_episodes_for_dream
                 .or(self.min_episodes_for_dream),
+            scheduled_cron: overlay.scheduled_cron.or(self.scheduled_cron),
+            episode_count_trigger: overlay.episode_count_trigger.or(self.episode_count_trigger),
+            quality_gain: overlay.quality_gain.or(self.quality_gain),
+            quality_penalty: overlay.quality_penalty.or(self.quality_penalty),
         }
     }
 
@@ -628,6 +705,12 @@ impl DreamsLayer {
             min_episodes_for_dream: self
                 .min_episodes_for_dream
                 .unwrap_or(defaults.min_episodes_for_dream),
+            scheduled_cron: self.scheduled_cron.or(defaults.scheduled_cron),
+            episode_count_trigger: self
+                .episode_count_trigger
+                .unwrap_or(defaults.episode_count_trigger),
+            quality_gain: self.quality_gain.unwrap_or(defaults.quality_gain),
+            quality_penalty: self.quality_penalty.unwrap_or(defaults.quality_penalty),
         }
     }
 }
@@ -1019,6 +1102,8 @@ pub struct LearningLayer {
     pub use_lookahead_router: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lookahead_threshold: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_threshold_flush_interval: Option<u64>,
 }
 
 impl LearningLayer {
@@ -1032,6 +1117,9 @@ impl LearningLayer {
             auto_playbook_refresh: overlay.auto_playbook_refresh.or(self.auto_playbook_refresh),
             use_lookahead_router: overlay.use_lookahead_router.or(self.use_lookahead_router),
             lookahead_threshold: overlay.lookahead_threshold.or(self.lookahead_threshold),
+            gate_threshold_flush_interval: overlay
+                .gate_threshold_flush_interval
+                .or(self.gate_threshold_flush_interval),
         }
     }
 }
@@ -1203,6 +1291,7 @@ impl ConfigLayer {
             Some(dreams) => dreams.resolve(),
             None => DreamsConfig::default(),
         };
+        dreams.validate().context("validate [dreams]")?;
         let daimon = match self.daimon {
             Some(daimon) => daimon.resolve()?,
             None => DaimonConfig::default(),
@@ -1709,6 +1798,34 @@ pub(crate) fn apply_layer_value(layer: &mut ConfigLayer, key: &str, value: &str)
                     .context("parse min_episodes_for_dream as usize")?,
             );
         }
+        ["dreams", "scheduled_cron"] => {
+            let dreams = layer.dreams.get_or_insert_with(DreamsLayer::default);
+            dreams.scheduled_cron = Some(value.to_string());
+        }
+        ["dreams", "episode_count_trigger"] => {
+            let dreams = layer.dreams.get_or_insert_with(DreamsLayer::default);
+            dreams.episode_count_trigger = Some(
+                value
+                    .parse::<usize>()
+                    .context("parse episode_count_trigger as usize")?,
+            );
+        }
+        ["dreams", "quality_gain"] => {
+            let dreams = layer.dreams.get_or_insert_with(DreamsLayer::default);
+            dreams.quality_gain = Some(
+                value
+                    .parse::<f64>()
+                    .context("parse dream quality_gain as f64")?,
+            );
+        }
+        ["dreams", "quality_penalty"] => {
+            let dreams = layer.dreams.get_or_insert_with(DreamsLayer::default);
+            dreams.quality_penalty = Some(
+                value
+                    .parse::<f64>()
+                    .context("parse dream quality_penalty as f64")?,
+            );
+        }
         ["daimon", "strategy_space", "domain"] => {
             let daimon = layer.daimon.get_or_insert_with(DaimonLayer::default);
             let strategy_space = daimon
@@ -2195,6 +2312,14 @@ pub(crate) fn apply_layer_value(layer: &mut ConfigLayer, key: &str, value: &str)
                     .context("parse lookahead_threshold as f64")?,
             );
         }
+        ["learning", "gate_threshold_flush_interval"] => {
+            let learning = layer.learning.get_or_insert_with(LearningLayer::default);
+            learning.gate_threshold_flush_interval = Some(
+                value
+                    .parse::<u64>()
+                    .context("parse gate_threshold_flush_interval as u64")?,
+            );
+        }
         _ => return Err(anyhow!("unknown key: {key}")),
     }
 
@@ -2307,6 +2432,10 @@ fn apply_env_source_overrides(sources: &mut ConfigSources, paths: &[String]) {
             "dreams.auto_dream" => sources.dreams_auto_dream = Source::Env,
             "dreams.idle_threshold_mins" => sources.dreams_idle_threshold_mins = Source::Env,
             "dreams.min_episodes_for_dream" => sources.dreams_min_episodes_for_dream = Source::Env,
+            "dreams.scheduled_cron" => sources.dreams_scheduled_cron = Source::Env,
+            "dreams.episode_count_trigger" => sources.dreams_episode_count_trigger = Source::Env,
+            "dreams.quality_gain" => sources.dreams_quality_gain = Source::Env,
+            "dreams.quality_penalty" => sources.dreams_quality_penalty = Source::Env,
             "runner.plan_timeout_secs" => sources.runner_plan_timeout_secs = Source::Env,
             path if path.starts_with("providers.") => sources.providers = Source::Env,
             path if path.starts_with("models.") => sources.models = Source::Env,
@@ -2666,9 +2795,11 @@ impl ServeAuthLayer {
             api_key: self.api_key.unwrap_or(defaults.api_key),
             api_keys: defaults.api_keys,
             privy_app_id: defaults.privy_app_id,
+            jwks_providers: defaults.jwks_providers,
             privy_workspace_id: defaults.privy_workspace_id,
             privy_allowed_roles: defaults.privy_allowed_roles,
             enforcement_mode: defaults.enforcement_mode,
+            invite_expiry_days: defaults.invite_expiry_days,
         }
     }
 }
@@ -2877,6 +3008,14 @@ pub struct ConfigSources {
     pub dreams_idle_threshold_mins: Source,
     /// Where `dreams.min_episodes_for_dream` came from.
     pub dreams_min_episodes_for_dream: Source,
+    /// Where `dreams.scheduled_cron` came from.
+    pub dreams_scheduled_cron: Source,
+    /// Where `dreams.episode_count_trigger` came from.
+    pub dreams_episode_count_trigger: Source,
+    /// Where `dreams.quality_gain` came from.
+    pub dreams_quality_gain: Source,
+    /// Where `dreams.quality_penalty` came from.
+    pub dreams_quality_penalty: Source,
     /// Where `gates` came from.
     pub gates: Source,
     /// Where `runner.plan_timeout_secs` came from.
@@ -2903,6 +3042,7 @@ const KNOWN_CONFIG_KEYS: &[&str] = &[
     "routing",
     "pipeline",
     "budget",
+    "statehub",
     "conductor",
     "watcher",
     "learning",
@@ -2911,6 +3051,7 @@ const KNOWN_CONFIG_KEYS: &[&str] = &[
     "serve",
     "scheduler",
     "webhooks",
+    "github",
     "subscriptions",
     "server",
     "deploy",
@@ -2919,12 +3060,12 @@ const KNOWN_CONFIG_KEYS: &[&str] = &[
     "tools",
     "chain",
     "relay",
-    "isfr",
     "feed_agents",
     "runner",
     "agents",
     "validation",
     "cold_storage",
+    "resources",
     // CLI-only ConfigLayer keys (not in core schema)
     "auto_plan",
     "dreams",
@@ -3235,6 +3376,22 @@ fn compute_sources(global: &ConfigLayer, project: &ConfigLayer) -> ConfigSources
             p_dreams.and_then(|d| d.min_episodes_for_dream).is_some(),
             g_dreams.and_then(|d| d.min_episodes_for_dream).is_some(),
         ),
+        dreams_scheduled_cron: pick(
+            p_dreams.and_then(|d| d.scheduled_cron.as_ref()).is_some(),
+            g_dreams.and_then(|d| d.scheduled_cron.as_ref()).is_some(),
+        ),
+        dreams_episode_count_trigger: pick(
+            p_dreams.and_then(|d| d.episode_count_trigger).is_some(),
+            g_dreams.and_then(|d| d.episode_count_trigger).is_some(),
+        ),
+        dreams_quality_gain: pick(
+            p_dreams.and_then(|d| d.quality_gain).is_some(),
+            g_dreams.and_then(|d| d.quality_gain).is_some(),
+        ),
+        dreams_quality_penalty: pick(
+            p_dreams.and_then(|d| d.quality_penalty).is_some(),
+            g_dreams.and_then(|d| d.quality_penalty).is_some(),
+        ),
         gates: pick(project.gates.is_some(), global.gates.is_some()),
         runner_plan_timeout_secs: pick(p_runner.is_some(), g_runner.is_some()),
     }
@@ -3268,6 +3425,10 @@ fn sources_from_layer(layer: &ConfigLayer, present: Source, fallback: Source) ->
         dreams_min_episodes_for_dream: pick(
             dreams.and_then(|d| d.min_episodes_for_dream).is_some(),
         ),
+        dreams_scheduled_cron: pick(dreams.and_then(|d| d.scheduled_cron.as_ref()).is_some()),
+        dreams_episode_count_trigger: pick(dreams.and_then(|d| d.episode_count_trigger).is_some()),
+        dreams_quality_gain: pick(dreams.and_then(|d| d.quality_gain).is_some()),
+        dreams_quality_penalty: pick(dreams.and_then(|d| d.quality_penalty).is_some()),
         gates: pick(layer.gates.is_some()),
         runner_plan_timeout_secs: pick(layer.runner.is_some()),
     }
@@ -3401,6 +3562,10 @@ warn_at_percent = 90
 auto_dream = false
 idle_threshold_mins = 30
 min_episodes_for_dream = 8
+scheduled_cron = "0 0 */4 * * * *"
+episode_count_trigger = 12
+quality_gain = 0.8
+quality_penalty = 1.4
 
 [tools]
 prefer_mcp = true
@@ -3441,6 +3606,13 @@ build_system = "cargo"
         assert!(!cfg.dreams.auto_dream);
         assert_eq!(cfg.dreams.idle_threshold_mins, 30);
         assert_eq!(cfg.dreams.min_episodes_for_dream, 8);
+        assert_eq!(
+            cfg.dreams.scheduled_cron.as_deref(),
+            Some("0 0 */4 * * * *")
+        );
+        assert_eq!(cfg.dreams.episode_count_trigger, 12);
+        assert_eq!(cfg.dreams.quality_gain, 0.8);
+        assert_eq!(cfg.dreams.quality_penalty, 1.4);
         assert!(cfg.tools.prefer_mcp);
         assert_eq!(
             cfg.tools.global_denied,
@@ -3465,6 +3637,22 @@ build_system = "cargo"
             "github:issues:labeled:implement"
         );
         assert_eq!(cfg.gates.len(), 2);
+    }
+
+    #[test]
+    fn parse_rejects_invalid_dream_schedule() {
+        let err = Config::parse_toml(
+            r#"
+[agent]
+command = "cat"
+
+[dreams]
+scheduled_cron = "not a cron expression"
+"#,
+        )
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains("invalid dream schedule cron expression"));
     }
 
     #[test]
@@ -3936,6 +4124,7 @@ max_output = 131072
         apply_layer_value(&mut layer, "models.glm51.slug", "glm-5.1").unwrap();
         apply_layer_value(&mut layer, "models.glm51.supports_thinking", "true").unwrap();
         apply_layer_value(&mut layer, "runner.plan_timeout_secs", "1800").unwrap();
+        apply_layer_value(&mut layer, "learning.gate_threshold_flush_interval", "7").unwrap();
 
         let cfg = layer.resolve().unwrap();
         let provider = cfg.providers.get("zai").unwrap();
@@ -3950,6 +4139,7 @@ max_output = 131072
         assert_eq!(model.slug, "glm-5.1");
         assert!(model.supports_thinking);
         assert_eq!(cfg.runner.plan_timeout_secs, 1_800);
+        assert_eq!(cfg.learning.gate_threshold_flush_interval, Some(7));
     }
 
     #[test]
@@ -3982,6 +4172,10 @@ base_url = "https://api.z.ai/api/paas/v4"
         assert!(cfg.dreams.auto_dream);
         assert_eq!(cfg.dreams.idle_threshold_mins, 15);
         assert_eq!(cfg.dreams.min_episodes_for_dream, 5);
+        assert!(cfg.dreams.scheduled_cron.is_none());
+        assert_eq!(cfg.dreams.episode_count_trigger, 0);
+        assert_eq!(cfg.dreams.quality_gain, 0.75);
+        assert_eq!(cfg.dreams.quality_penalty, 1.25);
         assert_eq!(cfg.daimon.strategy_space.domain, "coding");
         assert_eq!(cfg.daimon.strategy_space.dimensions[0], "complexity");
         assert!(cfg.gates.is_empty());
@@ -4000,6 +4194,10 @@ base_url = "https://api.z.ai/api/paas/v4"
 auto_dream = false
 idle_threshold_mins = 22
 min_episodes_for_dream = 9
+scheduled_cron = "0 30 * * * * *"
+episode_count_trigger = 7
+quality_gain = 0.7
+quality_penalty = 1.5
 "#,
         )
         .unwrap();
@@ -4008,6 +4206,24 @@ min_episodes_for_dream = 9
         assert!(!cfg.dreams.auto_dream);
         assert_eq!(cfg.dreams.idle_threshold_mins, 22);
         assert_eq!(cfg.dreams.min_episodes_for_dream, 9);
+        assert_eq!(cfg.dreams.scheduled_cron.as_deref(), Some("0 30 * * * * *"));
+        assert_eq!(cfg.dreams.episode_count_trigger, 7);
+        assert_eq!(cfg.dreams.quality_gain, 0.7);
+        assert_eq!(cfg.dreams.quality_penalty, 1.5);
+    }
+
+    #[test]
+    fn layer_resolve_rejects_invalid_dream_schedule() {
+        let layer = ConfigLayer::parse_toml(
+            r#"
+[dreams]
+quality_penalty = -1.0
+"#,
+        )
+        .unwrap();
+
+        let err = layer.resolve().unwrap_err();
+        assert!(format!("{err:#}").contains("quality_penalty"));
     }
 
     #[test]
@@ -4092,7 +4308,46 @@ token_budget = 8000
         assert_eq!(sources.dreams_auto_dream, Source::Default);
         assert_eq!(sources.dreams_idle_threshold_mins, Source::Default);
         assert_eq!(sources.dreams_min_episodes_for_dream, Source::Default);
+        assert_eq!(sources.dreams_scheduled_cron, Source::Default);
+        assert_eq!(sources.dreams_episode_count_trigger, Source::Default);
+        assert_eq!(sources.dreams_quality_gain, Source::Default);
+        assert_eq!(sources.dreams_quality_penalty, Source::Default);
         assert_eq!(sources.runner_plan_timeout_secs, Source::Default);
+    }
+
+    #[test]
+    fn dream_layers_merge_field_by_field_and_track_provenance() {
+        let global = ConfigLayer::parse_toml(
+            r#"
+[dreams]
+scheduled_cron = "0 0 * * * * *"
+quality_gain = 0.6
+"#,
+        )
+        .unwrap();
+        let project = ConfigLayer::parse_toml(
+            r#"
+[dreams]
+episode_count_trigger = 9
+quality_penalty = 1.6
+"#,
+        )
+        .unwrap();
+
+        let sources = compute_sources(&global, &project);
+        let resolved = global.merge(project).resolve().unwrap();
+
+        assert_eq!(
+            resolved.dreams.scheduled_cron.as_deref(),
+            Some("0 0 * * * * *")
+        );
+        assert_eq!(resolved.dreams.episode_count_trigger, 9);
+        assert_eq!(resolved.dreams.quality_gain, 0.6);
+        assert_eq!(resolved.dreams.quality_penalty, 1.6);
+        assert_eq!(sources.dreams_scheduled_cron, Source::Global);
+        assert_eq!(sources.dreams_episode_count_trigger, Source::Project);
+        assert_eq!(sources.dreams_quality_gain, Source::Global);
+        assert_eq!(sources.dreams_quality_penalty, Source::Project);
     }
 
     #[test]
@@ -4102,6 +4357,12 @@ token_budget = 8000
 [agent]
 command = "cat"
 model = "from-file"
+
+[dreams]
+scheduled_cron = "0 0 */4 * * * *"
+episode_count_trigger = 4
+quality_gain = 0.8
+quality_penalty = 1.3
 
 [providers.zai]
 kind = "openai_compat"
@@ -4120,6 +4381,19 @@ base_url = "https://file.example"
                 "ROKO__PROVIDERS__ZAI__BASE_URL".to_string(),
                 "https://env.example".to_string(),
             ),
+            (
+                "ROKO__DREAMS__SCHEDULED_CRON".to_string(),
+                "0 30 * * * * *".to_string(),
+            ),
+            (
+                "ROKO__DREAMS__EPISODE_COUNT_TRIGGER".to_string(),
+                "11".to_string(),
+            ),
+            ("ROKO__DREAMS__QUALITY_GAIN".to_string(), "0.65".to_string()),
+            (
+                "ROKO__DREAMS__QUALITY_PENALTY".to_string(),
+                "1.55".to_string(),
+            ),
         ])
         .unwrap();
 
@@ -4136,6 +4410,17 @@ base_url = "https://file.example"
             Some("https://env.example")
         );
         assert_eq!(sources.providers, Source::Env);
+        assert_eq!(
+            resolved.dreams.scheduled_cron.as_deref(),
+            Some("0 30 * * * * *")
+        );
+        assert_eq!(resolved.dreams.episode_count_trigger, 11);
+        assert_eq!(resolved.dreams.quality_gain, 0.65);
+        assert_eq!(resolved.dreams.quality_penalty, 1.55);
+        assert_eq!(sources.dreams_scheduled_cron, Source::Env);
+        assert_eq!(sources.dreams_episode_count_trigger, Source::Env);
+        assert_eq!(sources.dreams_quality_gain, Source::Env);
+        assert_eq!(sources.dreams_quality_penalty, Source::Env);
     }
 
     #[test]
@@ -4246,6 +4531,52 @@ program = "echo"
         assert!(rendered.contains("[prd]"));
         assert!(rendered.contains("auto_plan = false"));
         assert!(rendered.contains("auto_start = false"));
+        assert!(rendered.contains("[learning]"));
+        assert!(rendered.contains("gate_threshold_flush_interval = 10"));
+    }
+
+    #[test]
+    fn init_template_model_overrides_same_slug_from_global_config() {
+        let rendered = Config::default_toml_template(false).unwrap();
+        let mut project = RokoConfig::from_toml(&rendered).expect("parse init template");
+        let rendered_value: toml::Value = toml::from_str(&rendered).expect("parse template TOML");
+        let unknown_keys = rendered_value
+            .as_table()
+            .expect("init template is a TOML table")
+            .keys()
+            .filter(|key| !KNOWN_CONFIG_KEYS.contains(&key.as_str()))
+            .collect::<Vec<_>>();
+        assert!(
+            unknown_keys.is_empty(),
+            "fresh init template contains unrecognized top-level sections: {unknown_keys:?}"
+        );
+        let global = RokoConfig::from_toml(
+            r#"
+[providers.claude_cli]
+kind = "claude_cli"
+command = "claude"
+
+[models.claude-sonnet]
+provider = "claude_cli"
+slug = "claude-sonnet-4-6"
+context_window = 100000
+
+[agent]
+default_model = "claude-sonnet"
+"#,
+        )
+        .expect("parse global config fixture");
+
+        roko_core::config::loader::merge_global_config_into(&mut project, global);
+        roko_core::config::loader::normalize_and_validate_dispatch_models(&mut project)
+            .expect("fresh init config must remain dispatchable after global merge");
+
+        assert_eq!(project.agent.default_model, "claude-sonnet-4-6");
+        assert!(project.models.contains_key("claude-sonnet-4-6"));
+        assert!(
+            !project.models.contains_key("claude-sonnet"),
+            "global alias with the init template's slug should be shadowed"
+        );
     }
 
     #[test]
@@ -4334,7 +4665,7 @@ model = "opus-4"
     fn config_unknown_keys_warn() {
         // TOML with both known and unknown top-level keys.
         let toml_text =
-            "[agent]\ncommand = \"cat\"\n\n[bogus_section]\nkey = \"value\"\n\ntypo_key = 42\n";
+            "typo_key = 42\n\n[agent]\ncommand = \"cat\"\n\n[bogus_section]\nkey = \"value\"\n";
 
         // Verify known keys pass the filter.
         let known_only =

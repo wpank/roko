@@ -1,5 +1,8 @@
 # References — Master Citation Index
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Complete academic bibliography for the Roko cognitive agent architecture. Every citation referenced in any Roko PRD document has an entry here, organized by domain with annotations linking each paper to the specific subsystem it grounds.
 
 **Topic**: References

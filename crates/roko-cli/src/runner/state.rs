@@ -8,6 +8,7 @@ use std::time::Instant;
 use roko_core::defaults::DEFAULT_RUNNER_RETRY_STRATEGY_PIVOT_ATTEMPT;
 use roko_learn::model_router::RoutingContext;
 
+use super::task_dag::SkippedReason;
 use super::types::{
     AgentDispatchOutcome, PlanLifecycleStatus, RetryAction, RetryDecision, RunnerEvent,
     RunnerFailureKind, RunnerLifecycleProjection, RunnerRunStatus, TaskAttemptLifecycle,
@@ -134,6 +135,10 @@ pub struct RunState {
     pub total_agent_calls: usize,
     /// Cost accumulated per plan_id (for per-plan budget enforcement).
     pub plan_costs: HashMap<String, f64>,
+    /// Usage accumulated per task, keyed by `"{plan_id}:{task_id}"`.
+    pub task_usage: HashMap<String, TaskUsage>,
+    /// Attempts whose terminal usage event has already been attributed.
+    accounted_usage_attempts: HashSet<String>,
     /// Current retry backoff deadline per plan.
     pub retry_backoff_until: HashMap<String, Instant>,
     /// Last structured failure kind per plan.
@@ -147,6 +152,9 @@ pub struct RunState {
     /// Failed task IDs per plan. Tasks depending on a failed task are
     /// skipped rather than blocking the entire plan.
     pub failed_tasks: HashMap<String, HashSet<String>>,
+    /// Explicit skipped outcomes that cannot be reconstructed solely from a
+    /// failed dependency (for example cognitive-autonomy Terminal shutdown).
+    pub skipped_tasks: HashMap<String, HashMap<String, SkippedReason>>,
     /// Files created or modified by each completed task.
     /// Key: `"{plan_id}:{task_id}"`, value: list of file paths.
     pub task_outputs: HashMap<String, Vec<String>>,
@@ -279,11 +287,14 @@ impl RunState {
             total_cost_usd: 0.0,
             total_agent_calls: 0,
             plan_costs: HashMap::new(),
+            task_usage: HashMap::new(),
+            accounted_usage_attempts: HashSet::new(),
             retry_backoff_until: HashMap::new(),
             last_failure_kind: HashMap::new(),
             active_gate_effects: HashSet::new(),
             completed_tasks: HashMap::new(),
             failed_tasks: HashMap::new(),
+            skipped_tasks: HashMap::new(),
             task_outputs: HashMap::new(),
             snapshot_fail_streak: 0,
             snapshot_degraded: false,
@@ -886,6 +897,71 @@ impl RunState {
         self.plan_costs.get(plan_id).copied().unwrap_or(0.0)
     }
 
+    /// Cost attributed to one task across all of its agent attempts.
+    pub fn task_cost(&self, plan_id: &str, task_id: &str) -> f64 {
+        self.task_usage
+            .get(&task_key(plan_id, task_id))
+            .map_or(0.0, |usage| usage.cost_usd)
+    }
+
+    /// Effective budget assigned to one task's agent, or zero when unbounded.
+    pub fn task_budget(&self, plan_id: &str, task_id: &str) -> f64 {
+        self.task_usage
+            .get(&task_key(plan_id, task_id))
+            .map_or(0.0, |usage| usage.budget_usd)
+    }
+
+    /// Record the effective ceiling selected for a task.
+    pub fn set_task_budget(&mut self, plan_id: &str, task_id: &str, budget_usd: f64) {
+        self.task_usage
+            .entry(task_key(plan_id, task_id))
+            .or_default()
+            .budget_usd = budget_usd;
+    }
+
+    /// Attribute the current agent usage to an exact task attempt once.
+    ///
+    /// This ledger is updated at `TurnCompleted`, before gates and retries, so
+    /// failed attempts still consume the task's budget.
+    pub fn record_task_attempt_usage(
+        &mut self,
+        plan_id: &str,
+        task_id: &str,
+        attempt: u32,
+    ) -> bool {
+        let attempt_key = format!("{plan_id}:{task_id}:{attempt}");
+        if !self.accounted_usage_attempts.insert(attempt_key) {
+            return false;
+        }
+        let usage = self
+            .task_usage
+            .entry(task_key(plan_id, task_id))
+            .or_default();
+        usage.model.clone_from(&self.agent_model);
+        usage.provider.clone_from(&self.agent_provider);
+        usage.tokens_in = usage.tokens_in.saturating_add(self.tokens_in);
+        usage.tokens_out = usage.tokens_out.saturating_add(self.tokens_out);
+        usage.cost_usd += self.cost_usd;
+        usage.agent_calls = usage.agent_calls.saturating_add(1);
+        true
+    }
+
+    /// Stable set of terminal usage events already attributed to the ledger.
+    pub(crate) fn accounted_usage_attempts(&self) -> Vec<String> {
+        let mut attempts = self
+            .accounted_usage_attempts
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        attempts.sort();
+        attempts
+    }
+
+    /// Restore replay guards alongside the durable per-task usage ledger.
+    pub(crate) fn restore_accounted_usage_attempts(&mut self, attempts: &[String]) {
+        self.accounted_usage_attempts = attempts.iter().cloned().collect();
+    }
+
     /// Whether a plan is still cooling down before retry dispatch.
     pub fn retry_cooldown_remaining(&self, plan_id: &str) -> Option<Duration> {
         let deadline = self.retry_backoff_until.get(plan_id)?;
@@ -1006,6 +1082,20 @@ impl RunState {
         self.failed_tasks.get(plan_id).unwrap_or(&EMPTY)
     }
 
+    /// Record an explicit skipped outcome for crash-safe DAG reconstruction.
+    pub fn mark_task_skipped(&mut self, plan_id: &str, task_id: &str, reason: SkippedReason) {
+        self.skipped_tasks
+            .entry(plan_id.to_string())
+            .or_default()
+            .entry(task_id.to_string())
+            .or_insert(reason);
+    }
+
+    /// Return durable explicit skip reasons for one plan.
+    pub fn plan_skipped_tasks(&self, plan_id: &str) -> Option<&HashMap<String, SkippedReason>> {
+        self.skipped_tasks.get(plan_id)
+    }
+
     /// Record the files produced by a completed task.
     pub fn record_task_outputs(&mut self, plan_id: &str, task_id: &str, files: Vec<String>) {
         let key = format!("{plan_id}:{task_id}");
@@ -1111,6 +1201,18 @@ impl RunState {
             revision,
         );
     }
+}
+
+/// Durable per-task usage used for enforcement and final reporting.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TaskUsage {
+    pub model: String,
+    pub provider: String,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub cost_usd: f64,
+    pub budget_usd: f64,
+    pub agent_calls: u32,
 }
 
 fn task_key(plan_id: &str, task_id: &str) -> String {
@@ -1451,5 +1553,34 @@ mod tests {
             state.lifecycle.tasks["plan:T1"].status,
             TaskLifecycleStatus::TimedOut
         );
+    }
+
+    #[test]
+    fn task_usage_counts_retried_attempts_once_each() {
+        let mut state = RunState::new(1);
+        state.agent_model = "model".into();
+        state.agent_provider = "provider".into();
+        state.tokens_in = 10;
+        state.tokens_out = 5;
+        state.cost_usd = 0.3;
+        state.set_task_budget("plan", "T1", 0.5);
+
+        assert!(state.record_task_attempt_usage("plan", "T1", 1));
+        assert!(!state.record_task_attempt_usage("plan", "T1", 1));
+        state.reset_for_task("plan", "T1");
+        state.agent_model = "model".into();
+        state.agent_provider = "provider".into();
+        state.tokens_in = 7;
+        state.tokens_out = 3;
+        state.cost_usd = 0.25;
+        assert!(state.record_task_attempt_usage("plan", "T1", 2));
+
+        let usage = &state.task_usage["plan:T1"];
+        assert_eq!(usage.agent_calls, 2);
+        assert_eq!(usage.tokens_in, 17);
+        assert_eq!(usage.tokens_out, 8);
+        assert!((usage.cost_usd - 0.55).abs() < 1e-9);
+        assert_eq!(usage.budget_usd, 0.5);
+        assert_eq!(state.task_budget("plan", "T1"), 0.5);
     }
 }

@@ -1,5 +1,8 @@
 # Index.db Storage and Scaling
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > SQLite-backed persistent index with FTS5, BLAKE3 content hashing, and tiered storage — scaling code intelligence from single-crate projects to enterprise monorepos.
 
 

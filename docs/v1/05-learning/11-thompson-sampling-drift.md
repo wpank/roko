@@ -1,5 +1,8 @@
 # Thompson Sampling with Drift
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Implementation plan:** `modelrouting/12-advanced-patterns.md` (tasks 2J.01–2J.03)
 > **Academic basis:** Thompson 1933; Garivier & Moulines 2011 (discounted Thompson Sampling)
 > **Cross-references:** [03-bandits-ucb-thompson-linucb](03-bandits-ucb-thompson-linucb.md), [04-cascade-router](04-cascade-router.md), [14-stability-mechanisms](14-stability-mechanisms.md)

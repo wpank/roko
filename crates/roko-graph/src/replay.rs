@@ -21,7 +21,7 @@
 //! engine.execute(&ctx).await?;
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -69,6 +69,27 @@ impl ActivityRecorder {
         })
     }
 
+    /// Create a new JSONL recording, truncating any file already at `path`.
+    ///
+    /// Callers should use this for a new run and [`Self::create`] only when
+    /// appending to a validated checkpoint from the same run.
+    pub fn create_fresh(
+        run_id: impl Into<String>,
+        path: impl AsRef<Path>,
+    ) -> std::io::Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)?;
+        Ok(Self {
+            run_id: run_id.into(),
+            path,
+            writer: BufWriter::new(file),
+        })
+    }
+
     /// Return the path of the underlying JSONL file.
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -106,7 +127,8 @@ impl ActivityRecorder {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         self.writer.write_all(line.as_bytes())?;
         self.writer.write_all(b"\n")?;
-        self.writer.flush()
+        self.writer.flush()?;
+        self.writer.get_ref().sync_data()
     }
 }
 
@@ -129,7 +151,23 @@ impl ActivityReplayer {
     /// # Errors
     /// Returns an `std::io::Error` if the file cannot be opened.
     pub fn load(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        let file = File::open(path.as_ref())?;
+        Self::load_inner(path.as_ref(), None)
+    }
+
+    /// Load a recording and reject malformed entries or entries from another
+    /// graph or run.
+    ///
+    /// This is the fail-closed entry point for durable runtime checkpoints.
+    pub fn load_scoped(
+        path: impl AsRef<Path>,
+        expected_graph_id: &str,
+        expected_run_id: &str,
+    ) -> std::io::Result<Self> {
+        Self::load_inner(path.as_ref(), Some((expected_graph_id, expected_run_id)))
+    }
+
+    fn load_inner(path: &Path, expected: Option<(&str, &str)>) -> std::io::Result<Self> {
+        let file = File::open(path)?;
         let reader = BufReader::new(file);
         let mut entries: HashMap<(String, u64), Vec<roko_core::Signal>> = HashMap::new();
 
@@ -141,9 +179,41 @@ impl ActivityReplayer {
             }
             match serde_json::from_str::<RecordEntry>(trimmed) {
                 Ok(entry) => {
-                    entries.insert((entry.node_id, entry.tick), entry.signals);
+                    if let Some((expected_graph_id, expected_run_id)) = expected
+                        && (entry.graph_id != expected_graph_id || entry.run_id != expected_run_id)
+                    {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "record at line {} belongs to graph/run '{}/{}', expected '{}/{}'",
+                                line_num + 1,
+                                entry.graph_id,
+                                entry.run_id,
+                                expected_graph_id,
+                                expected_run_id
+                            ),
+                        ));
+                    }
+                    let key = (entry.node_id, entry.tick);
+                    if entries.insert(key.clone(), entry.signals).is_some() && expected.is_some() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "duplicate Activity record at line {} for node '{}' tick {}",
+                                line_num + 1,
+                                key.0,
+                                key.1
+                            ),
+                        ));
+                    }
                 }
                 Err(e) => {
+                    if expected.is_some() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("unparseable Activity record at line {}: {e}", line_num + 1),
+                        ));
+                    }
                     tracing::warn!(
                         line = line_num + 1,
                         error = %e,
@@ -169,6 +239,37 @@ impl ActivityReplayer {
     #[must_use]
     pub fn entry_count(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Validate that every record belongs to a current Activity node and does
+    /// not come from a tick later than the interrupted checkpoint tick.
+    ///
+    /// # Errors
+    /// Returns `InvalidData` for an unknown node or impossible future tick.
+    pub fn validate_checkpoint(
+        &self,
+        activity_node_ids: &HashSet<String>,
+        interrupted_tick: u64,
+    ) -> std::io::Result<()> {
+        for (node_id, tick) in self.entries.keys() {
+            if !activity_node_ids.contains(node_id) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "Activity checkpoint contains unknown or non-Activity node '{node_id}'"
+                    ),
+                ));
+            }
+            if *tick > interrupted_tick {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "Activity checkpoint contains future tick {tick} after checkpoint tick {interrupted_tick}"
+                    ),
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -235,5 +336,46 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let rec = ActivityRecorder::create("my-run-id", tmp.path()).unwrap();
         assert_eq!(rec.run_id(), "my-run-id");
+    }
+
+    #[test]
+    fn create_fresh_truncates_a_previous_run() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut old = ActivityRecorder::create("old", tmp.path()).unwrap();
+        old.record("g", "old-node", 0, vec![]).unwrap();
+        drop(old);
+
+        let mut fresh = ActivityRecorder::create_fresh("new", tmp.path()).unwrap();
+        fresh.record("g", "new-node", 0, vec![]).unwrap();
+        drop(fresh);
+
+        let rep = ActivityReplayer::load_scoped(tmp.path(), "g", "new").unwrap();
+        assert_eq!(rep.entry_count(), 1);
+        assert!(rep.lookup("old-node", 0).is_none());
+        assert!(rep.lookup("new-node", 0).is_some());
+    }
+
+    #[test]
+    fn scoped_load_rejects_a_different_run() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut rec = ActivityRecorder::create_fresh("run-a", tmp.path()).unwrap();
+        rec.record("g", "node", 0, vec![]).unwrap();
+        drop(rec);
+
+        let error = ActivityReplayer::load_scoped(tmp.path(), "g", "run-b")
+            .err()
+            .expect("run mismatch must fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn scoped_load_rejects_a_corrupt_record() {
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"not-json\n").unwrap();
+
+        let error = ActivityReplayer::load_scoped(tmp.path(), "g", "run")
+            .err()
+            .expect("corrupt checkpoint must fail closed");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
 }

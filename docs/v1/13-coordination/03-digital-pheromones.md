@@ -1,5 +1,8 @@
 # Digital Pheromones: Typed Engrams with Decay Profiles
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L0 Runtime (Substrate persistence and decay timers), L1 Framework (Bus
 > publication and type system), L2 Scaffold (context assembly enrichment)
 >

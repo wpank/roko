@@ -1,5 +1,8 @@
 # Agent Harnesses and Tool Use
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for agent scaffolding, harness engineering, tool interfaces, and coding agent systems that inform Roko's framework and harness layers.
 
 **Topic**: [References](./INDEX.md)

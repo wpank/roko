@@ -12,6 +12,7 @@ use crate::http::{HttpPoster, ReqwestPoster};
 use crate::tool_loop::{LlmBackend, LlmError, StopReason, ToolLoop};
 use crate::translate::{BackendResponse, RenderedTools, SessionState};
 use async_trait::async_trait;
+use roko_core::extension::CamelTaintLevel;
 use roko_core::tool::{ToolContext, ToolDef};
 use roko_core::{Body, Context, Kind, Provenance, Signal};
 use roko_fs::RokoLayout;
@@ -148,6 +149,7 @@ pub struct PerplexityToolLoopAgent {
     name: String,
     model_slug: String,
     worktree_path: PathBuf,
+    immune_root_path: Option<PathBuf>,
 }
 
 impl PerplexityToolLoopAgent {
@@ -165,6 +167,7 @@ impl PerplexityToolLoopAgent {
             name: "perplexity-tool-loop".to_string(),
             model_slug: model_slug.into(),
             worktree_path: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            immune_root_path: None,
         }
     }
 
@@ -189,6 +192,13 @@ impl PerplexityToolLoopAgent {
     #[must_use]
     pub fn with_worktree_path(mut self, worktree_path: impl Into<PathBuf>) -> Self {
         self.worktree_path = worktree_path.into();
+        self
+    }
+
+    #[must_use]
+    pub fn with_immune_root(mut self, immune_root: impl Into<PathBuf>) -> Self {
+        let immune_root = immune_root.into();
+        self.immune_root_path = Some(immune_root.canonicalize().unwrap_or(immune_root));
         self
     }
 
@@ -232,7 +242,13 @@ impl PerplexityToolLoopAgent {
 impl Agent for PerplexityToolLoopAgent {
     async fn run(&self, input: &Signal, ctx: &Context) -> AgentResult {
         let prompt = input.body.as_text().unwrap_or_default();
-        let tool_ctx = ToolContext::testing(&self.worktree_path);
+        let tool_ctx = ToolContext::testing(&self.worktree_path)
+            .with_immune_root(
+                self.immune_root_path
+                    .as_deref()
+                    .unwrap_or(&self.worktree_path),
+            )
+            .with_taint_level(CamelTaintLevel::External);
         let tool_loop = match self.checkpoint_path(ctx) {
             Some(path) => self.tool_loop.clone().with_checkpoint_path(path),
             None => self.tool_loop.clone(),

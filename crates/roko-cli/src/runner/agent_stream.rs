@@ -15,11 +15,13 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, warn};
 
-use roko_agent::process::{kill_tree, set_process_group};
+use roko_agent::process::{confined_command, kill_tree, set_process_group};
 use roko_core::defaults::DEFAULT_AGENT_TURN_LIMIT;
 use roko_core::obs::LogScrubber;
 
-use crate::dispatch_v2::{CliDispatchProvider, CliDispatchRequest, CliProviderConfig};
+use crate::dispatch_v2::{
+    CliDispatchProvider, CliDispatchRequest, CliPluginMcpConfig, CliProtocol, CliProviderConfig,
+};
 
 use super::types::{AgentEvent, RunConfig};
 
@@ -28,7 +30,7 @@ use super::types::{AgentEvent, RunConfig};
 pub struct AgentSpawnConfig {
     /// The prompt to send to the agent.
     pub prompt: String,
-    /// System prompt appended via --append-system-prompt.
+    /// System prompt translated into the selected provider's input format.
     pub system_prompt: String,
     /// Model to use.
     pub model: String,
@@ -38,7 +40,7 @@ pub struct AgentSpawnConfig {
     pub max_turns: u32,
     /// Optional reasoning effort hint for providers that support it.
     pub effort: Option<String>,
-    /// Claude CLI binary path.
+    /// Legacy/default CLI binary path.
     pub program: PathBuf,
     /// Whether to skip permission checks.
     pub dangerously_skip_permissions: bool,
@@ -55,6 +57,13 @@ pub struct AgentSpawnConfig {
     /// Set by the caller (event_loop) after contract loading — not populated
     /// by `from_run_config`. Passed through to `CliDispatchRequest`.
     pub disallowed_tools: Vec<String>,
+    /// Binding tool allowlist derived from the role contract and task.
+    ///
+    /// `Some(vec![])` is intentionally distinct from `None`: it means the
+    /// restricted fallback denied every tool and must be forwarded as such.
+    pub allowed_tools: Option<Vec<String>>,
+    /// Contract-scoped bridge for in-process declarative-plugin handlers.
+    pub plugin_mcp: Option<CliPluginMcpConfig>,
 }
 
 impl AgentSpawnConfig {
@@ -80,6 +89,8 @@ impl AgentSpawnConfig {
             agent_id,
             cli_provider: None,
             disallowed_tools: Vec::new(),
+            allowed_tools: None,
+            plugin_mcp: None,
         }
     }
 
@@ -101,6 +112,8 @@ pub struct AgentHandle {
     reader_task: Option<JoinHandle<()>>,
     /// Task reading stderr lines, when stderr was captured.
     stderr_reader_task: Option<JoinHandle<()>>,
+    /// Keeps provider configuration alive until the subprocess is absent.
+    _ephemeral_config_dir: Option<tempfile::TempDir>,
 }
 
 /// Result of attempting to terminate an agent and its stream readers.
@@ -263,6 +276,16 @@ pub fn parse_stream_line(line: &str) -> Vec<AgentEvent> {
     roko_agent::provider::claude_cli::stream::parse_stream_line(line)
 }
 
+/// Parse one line using the selected provider's stream protocol.
+pub fn parse_provider_stream_line(protocol: CliProtocol, line: &str) -> Vec<AgentEvent> {
+    match protocol {
+        CliProtocol::ClaudeStreamJson | CliProtocol::CodexExecJson => parse_stream_line(line),
+        CliProtocol::GeminiStreamJson => {
+            roko_agent::provider::gemini_cli::stream::parse_stream_line(line)
+        }
+    }
+}
+
 /// Spawn a configured CLI agent process and stream its output through the channel.
 pub async fn spawn_agent(
     config: &AgentSpawnConfig,
@@ -284,10 +307,30 @@ pub async fn spawn_agent(
         resume_session: config.resume_session.clone(),
         env: Vec::new(),
         agent_id: config.agent_id.clone(),
+        allowed_tools: config.allowed_tools.clone(),
         disallowed_tools: config.disallowed_tools.clone(),
+        plugin_mcp: config.plugin_mcp.clone(),
     })?;
 
-    let mut cmd = Command::new(&invocation.program);
+    let mut ephemeral_config_dir = None;
+    let ephemeral_config_env = if let Some(config) = &invocation.ephemeral_config {
+        let directory = tempfile::Builder::new()
+            .prefix("roko-cli-provider-")
+            .tempdir()
+            .context("creating temporary provider config directory")?;
+        let path = directory.path().join(&config.file_name);
+        tokio::fs::write(&path, config.contents.as_bytes())
+            .await
+            .with_context(|| format!("writing temporary provider config {}", path.display()))?;
+        let env = Some((config.env_key.clone(), path));
+        ephemeral_config_dir = Some(directory);
+        env
+    } else {
+        None
+    };
+
+    let mut cmd = confined_command(&invocation.program, invocation.resource_limits.as_ref())
+        .context("configuring provider process confinement")?;
     cmd.current_dir(&invocation.workdir);
     cmd.args(&invocation.args);
     cmd.stdin(Stdio::piped());
@@ -298,6 +341,12 @@ pub async fn spawn_agent(
     // Environment.
     for (key, value) in &invocation.env {
         cmd.env(key, value);
+    }
+    for (key, value) in invocation.secret_env.iter() {
+        cmd.env(key, value);
+    }
+    if let Some((key, path)) = &ephemeral_config_env {
+        cmd.env(key, path);
     }
     // Unset all Claude Code env vars to prevent "nested session" detection
     // when spawning agents from within a Claude Code session.
@@ -310,7 +359,6 @@ pub async fn spawn_agent(
 
     // Process group isolation.
     set_process_group(&mut cmd);
-
     let mut child = cmd
         .spawn()
         .with_context(|| format!("spawning {} CLI", invocation.event_provider))?;
@@ -346,6 +394,7 @@ pub async fn spawn_agent(
 
     let agent_id = config.agent_id.clone();
     let stdout_tx = event_tx.clone();
+    let protocol = invocation.protocol;
     let scrubber = Arc::new(LogScrubber::new());
     let stdout_scrubber = Arc::clone(&scrubber);
     let reader_task = tokio::spawn(async move {
@@ -354,7 +403,7 @@ pub async fn spawn_agent(
 
         while let Ok(Some(line)) = lines.next_line().await {
             let line = stdout_scrubber.scrub(&line);
-            for event in parse_stream_line(&line) {
+            for event in parse_provider_stream_line(protocol, &line) {
                 if stdout_tx.send(event).await.is_err() {
                     debug!(agent_id = %agent_id, "event channel closed, stopping reader");
                     return;
@@ -391,6 +440,7 @@ pub async fn spawn_agent(
         child,
         reader_task: Some(reader_task),
         stderr_reader_task,
+        _ephemeral_config_dir: ephemeral_config_dir,
     })
 }
 
@@ -425,6 +475,8 @@ mod tests {
             agent_id: "test-agent".to_string(),
             cli_provider: Some(CliProviderConfig::claude("test-cli", program)),
             disallowed_tools: Vec::new(),
+            allowed_tools: None,
+            plugin_mcp: None,
         };
         (temp, config)
     }
@@ -446,6 +498,7 @@ mod tests {
             child,
             reader_task: Some(reader_task),
             stderr_reader_task: Some(tokio::spawn(std::future::pending())),
+            _ephemeral_config_dir: None,
         }
     }
 
@@ -470,6 +523,7 @@ mod tests {
             child,
             reader_task: Some(reader_task),
             stderr_reader_task: Some(stderr_reader_task),
+            _ephemeral_config_dir: None,
         }
     }
 
@@ -699,6 +753,91 @@ mod tests {
             reader_finished,
             "stdout reader remained attached to the live child after its event channel closed"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gemini_spawn_materializes_auth_config_parses_events_and_cleans_up() {
+        let (temp, mut config) = scripted_agent(
+            r#"#!/bin/sh
+set -eu
+test -f "${GEMINI_CLI_SYSTEM_SETTINGS_PATH:?}"
+test "${ROKO_PLUGIN_MCP_TOKEN:?}" = "signed-secret"
+printf '%s' "$GEMINI_CLI_SYSTEM_SETTINGS_PATH" > "$PWD/settings-path"
+cp "$GEMINI_CLI_SYSTEM_SETTINGS_PATH" "$PWD/settings-snapshot.json"
+cat >/dev/null
+printf '%s\n' '{"type":"init","session_id":"gemini-session","model":"gemini-2.5-pro"}'
+printf '%s\n' '{"type":"message","role":"assistant","content":"calling plugin","delta":true}'
+printf '%s\n' '{"type":"tool_use","tool_name":"demo.echo","tool_id":"call-1","parameters":{"text":"hi"}}'
+printf '%s\n' '{"type":"tool_result","tool_id":"call-1","status":"success","output":"hi"}'
+printf '%s\n' '{"type":"result","status":"success","stats":{"input_tokens":9,"output_tokens":4,"cached":2}}'
+"#,
+        );
+        config.model = "gemini-2.5-pro".to_string();
+        config.cli_provider = Some(CliProviderConfig::gemini(
+            "gemini-cli",
+            config.program.clone(),
+        ));
+        config.allowed_tools = Some(vec!["demo.echo".to_string()]);
+        config.plugin_mcp = Some(CliPluginMcpConfig {
+            server_name: "roko_plugins".to_string(),
+            url: "http://127.0.0.1:43123/mcp".to_string(),
+            bearer_token: "signed-secret".to_string(),
+            tool_names: vec!["demo.echo".to_string()],
+        });
+
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let handle = spawn_agent(&config, event_tx)
+            .await
+            .expect("spawn fake Gemini CLI");
+        assert!(matches!(
+            handle.wait().await,
+            AgentWait::Confirmed {
+                exit_code: Some(0),
+                ref reader_errors,
+                ..
+            } if reader_errors.is_empty()
+        ));
+
+        let events = std::iter::from_fn(|| event_rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::SystemInit { session_id, .. } if session_id == "gemini-session"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCall { id, name } if id == "call-1" && name == "demo.echo"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolOutput { id, output } if id == "call-1" && output == "hi"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::TokenUsage {
+                input_tokens: 9,
+                output_tokens: 4,
+                cache_read_tokens: 2,
+                ..
+            }
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::TurnCompleted {
+                is_error: false,
+                ..
+            }
+        )));
+
+        let settings_path =
+            std::fs::read_to_string(temp.path().join("settings-path")).expect("settings path");
+        assert!(
+            !PathBuf::from(settings_path).exists(),
+            "ephemeral Gemini settings must be deleted after process exit"
+        );
+        let settings = std::fs::read_to_string(temp.path().join("settings-snapshot.json")).unwrap();
+        assert!(settings.contains("${ROKO_PLUGIN_MCP_TOKEN}"));
+        assert!(!settings.contains("signed-secret"));
     }
 
     #[test]

@@ -368,20 +368,22 @@ impl JobFilter {
     /// Check whether a job matches all active filter criteria.
     #[must_use]
     pub fn matches(&self, job: &MarketplaceJob) -> bool {
-        if let Some(ref status) = self.state {
-            if JobStatus::parse(&job.status) != Some(*status) {
-                return false;
-            }
+        if let Some(ref status) = self.state
+            && JobStatus::parse(&job.status) != Some(*status)
+        {
+            return false;
         }
-        if let Some(ref jt) = self.job_type {
-            if !jt.is_empty() && job.job_type != *jt {
-                return false;
-            }
+        if let Some(ref jt) = self.job_type
+            && !jt.is_empty()
+            && job.job_type != *jt
+        {
+            return false;
         }
-        if let Some(ref assignee) = self.assigned_to {
-            if !assignee.is_empty() && job.assigned_to != *assignee {
-                return false;
-            }
+        if let Some(ref assignee) = self.assigned_to
+            && !assignee.is_empty()
+            && job.assigned_to != *assignee
+        {
+            return false;
         }
         true
     }

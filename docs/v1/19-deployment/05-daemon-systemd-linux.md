@@ -1,5 +1,8 @@
 # Daemon Mode: systemd (Linux)
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > On Linux, Roko can run as a persistent background daemon managed by systemd. The
 > `roko daemon --install` command generates a systemd user unit file, installs it to
 > `~/.config/systemd/user/`, and enables the service. This document covers the unit file

@@ -1,5 +1,8 @@
 # Three Hiring Models
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The Nunchi marketplace offers three hiring models: Random VRF (fast, cheap, for routine jobs), Blind Auction (competitive, for quality-sensitive jobs), and Direct Hire (guaranteed agent, 1.5× premium, for critical jobs). Each model optimizes for a different point on the speed-quality-cost frontier.
 
 

@@ -1,5 +1,8 @@
 # Dream Art and Creative Expression (Oneirography)
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L1 Framework (image generation backends, art prompt inference), L2 Scaffold (prompt construction from cognitive state), L4 Orchestration (lifecycle hooks, pipeline coordination)
 >
 > **Synapse Traits**: `Policy` (art generation triggers and self-appraisal decisions), `Scorer` (variant scoring, emotional attachment computation), `Composer` (prompt assembly from cognitive state under budget), `Gate` (budget verification before generation)

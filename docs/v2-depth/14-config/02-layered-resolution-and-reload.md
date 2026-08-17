@@ -1,6 +1,8 @@
 # Layered Resolution and Hot Reload
 
 > Depth for [04-configuration-layered-resolution.md](../../docs/12-interfaces/04-configuration-layered-resolution.md). Redesigns layered config resolution as a Signal merge Pipeline. Four layers are four Store sources merged by priority into a resolved config Signal. Hot-reload via Trigger Cell. Auto-detection as Score Cells. Domain profiles as Rack macros.
+>
+> **Implementation status (2026-08-17):** Vocabulary redesign document. The four-layer config merge (CLI > env > TOML > defaults) and selective hot reload are wired in `crates/roko-core/src/config/hot_reload.rs` and `loader.rs`. The runtime uses struct-level field merging rather than a literal Graph of Cells, but the priority semantics and hot-reloadable sections are equivalent to what this doc describes.
 
 **Depends on**: [01-SIGNAL](../../unified/01-SIGNAL.md) (Signal, content addressing, lineage), [02-CELL](../../unified/02-CELL.md) (Compose protocol, Score protocol, Trigger Cell, Verify Cell), [03-GRAPH](../../unified/03-GRAPH.md) (Pipeline pattern, Rack specialization), [06-TRIGGER-SYSTEM](../../unified/06-TRIGGER-SYSTEM.md) (file watcher Trigger), [config-as-signal.md](config-as-signal.md) (Config Signal, ConfigSource, schema validation)
 

@@ -1,5 +1,8 @@
 # The Engram Data Type
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** The Engram is the universal datum of the Roko system. Every event, every
 > piece of data, every agent output, every gate verdict, every knowledge entry, every
 > prediction, every tool trace - is an Engram. Engrams are content-addressed (BLAKE3),

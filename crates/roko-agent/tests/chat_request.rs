@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use roko_agent::{ChatRequest, RequestOptions, ResponseFormat, ToolChoice};
 use roko_core::{ChatMessage, ContentBlock, MessageContent, ToolCategory, ToolDef, ToolPermission};
 use serde_json::json;

@@ -42,19 +42,154 @@
 //! - `ROKO__CONDUCTOR__MAX_AGENTS=16` -> `conductor.max_agents = 16`
 //! - `ROKO__GATES__SKIP_TESTS=true` -> `gates.skip_tests = true`
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use parking_lot::Mutex;
 
 use super::LoadConfigError;
-use super::provenance::{ConfigDiagnostic, ConfigProvenance, ValidatedConfig};
+use super::provenance::{
+    ConfigDiagnostic, ConfigProvenance, ConfigSource, FieldProvenance, MergeContext,
+    ValidatedConfig,
+};
 use super::schema::RokoConfig;
+use super::validation::{InvariantSeverity, validate_invariants};
+
+/// One in-place schema migration from version N to N+1.
+pub type MigrationFn = fn(&mut toml::Value) -> Result<(), String>;
+
+/// A successfully applied migration edge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MigrationStep {
+    pub from: u32,
+    pub to: u32,
+    pub description: String,
+}
+
+/// Outcome of attempting to migrate one TOML value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MigrationReport {
+    pub from_version: u32,
+    pub to_version: u32,
+    pub steps_applied: Vec<MigrationStep>,
+    pub warnings: Vec<String>,
+}
+
+/// Ordered registry of schema migrations.
+pub struct ConfigMigrator {
+    pub migrations: BTreeMap<u32, MigrationFn>,
+    pub target_version: u32,
+}
+
+impl ConfigMigrator {
+    #[must_use]
+    pub fn new() -> Self {
+        let mut migrator = Self {
+            migrations: BTreeMap::new(),
+            target_version: super::schema::CURRENT_SCHEMA_VERSION,
+        };
+        migrator.register(1, migrate_v1_to_v2);
+        migrator
+    }
+
+    pub fn register(&mut self, from_version: u32, migration: MigrationFn) {
+        self.migrations.insert(from_version, migration);
+    }
+
+    /// Apply every available N -> N+1 migration up to the target schema.
+    ///
+    /// The report retains partial progress and warnings when a migration edge
+    /// is unavailable or fails. Live loaders reject reports that do not reach
+    /// `target_version`; tooling may inspect the partial report directly.
+    pub fn migrate(&self, toml_value: &mut toml::Value) -> MigrationReport {
+        let from_version = toml_value
+            .get("schema_version")
+            .and_then(toml::Value::as_integer)
+            .and_then(|version| u32::try_from(version).ok())
+            .unwrap_or(1);
+        let mut current = from_version;
+        let mut steps_applied = Vec::new();
+        let mut warnings = Vec::new();
+
+        while current < self.target_version {
+            let Some(migration) = self.migrations.get(&current) else {
+                warnings.push(format!(
+                    "no config migration registered from schema version {current}"
+                ));
+                break;
+            };
+            if let Err(error) = migration(toml_value) {
+                warnings.push(format!(
+                    "config migration from schema version {current} failed: {error}"
+                ));
+                break;
+            }
+            let next = current + 1;
+            if let Some(table) = toml_value.as_table_mut() {
+                table.insert(
+                    "schema_version".to_string(),
+                    toml::Value::Integer(i64::from(next)),
+                );
+            }
+            steps_applied.push(MigrationStep {
+                from: current,
+                to: next,
+                description: format!("migrate config schema v{current} to v{next}"),
+            });
+            current = next;
+        }
+
+        MigrationReport {
+            from_version,
+            to_version: current,
+            steps_applied,
+            warnings,
+        }
+    }
+}
+
+impl Default for ConfigMigrator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn migrate_v1_to_v2(value: &mut toml::Value) -> Result<(), String> {
+    let root = value
+        .as_table_mut()
+        .ok_or_else(|| "config root must be a TOML table".to_string())?;
+
+    if let Some(agent) = root.get_mut("agent").and_then(toml::Value::as_table_mut) {
+        rename_if_absent(agent, "model", "default_model");
+        rename_if_absent(agent, "backend", "default_backend");
+        rename_if_absent(agent, "effort", "default_effort");
+    }
+    if let Some(budget) = root.get_mut("budget").and_then(toml::Value::as_table_mut) {
+        rename_if_absent(budget, "max_session_usd", "max_plan_usd");
+        rename_if_absent(budget, "max_agent_usd", "max_turn_usd");
+    }
+
+    root.insert("schema_version".to_string(), toml::Value::Integer(2));
+    root.insert("config_version".to_string(), toml::Value::Integer(2));
+    Ok(())
+}
+
+fn rename_if_absent(table: &mut toml::map::Map<String, toml::Value>, old: &str, new: &str) {
+    if table.contains_key(new) {
+        table.remove(old);
+    } else if let Some(value) = table.remove(old) {
+        table.insert(new.to_string(), value);
+    }
+}
 
 /// Global dedup set for config diagnostic warnings.
 /// Prevents the same warning from being logged on every config reload.
 static EMITTED_DIAGNOSTICS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+/// Serializes tests that mutate or observe process-wide configuration variables.
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn emitted_diagnostics() -> &'static Mutex<HashSet<String>> {
     EMITTED_DIAGNOSTICS.get_or_init(|| Mutex::new(HashSet::new()))
@@ -168,13 +303,21 @@ pub fn load_config_validated_with_options(
     let path = find_config_path(workdir);
 
     // Parse + validate (no env overrides or secret resolution yet).
-    let raw = parse_from_resolved_path(&path, opts)?;
+    let parsed = parse_from_resolved_path(&path, opts)?;
+    let raw = parsed.config;
 
     // Apply the same runtime layers as ordinary loading while retaining the
     // parsed source value independently for provenance and safe editing.
-    let migrated = resolve_runtime_layers(raw.clone(), &path, opts)?;
+    let (migrated, merge_context) = resolve_runtime_layers_with_context(
+        raw.clone(),
+        &path,
+        opts,
+        Some(&parsed.explicit_fields),
+    )?;
 
-    let diagnostics = collect_diagnostics(&migrated);
+    let mut diagnostics = parsed.diagnostics;
+    diagnostics.extend(collect_diagnostics(&migrated));
+    diagnostics.extend(invariant_diagnostics(&migrated));
 
     let mut provenance = match &path {
         Some(p) => vec![ConfigProvenance::file(p.clone(), "roko.toml")],
@@ -183,6 +326,15 @@ pub fn load_config_validated_with_options(
             "missing file; using built-in defaults",
         )],
     };
+
+    if let Some(report) = parsed.migration_report {
+        for step in report.steps_applied {
+            provenance.push(ConfigProvenance::migration(
+                "schema_version",
+                step.description,
+            ));
+        }
+    }
 
     // Record which hierarchical env overrides were applied.
     if opts.apply_hierarchical_env {
@@ -203,7 +355,15 @@ pub fn load_config_validated_with_options(
         migrated,
         diagnostics,
         provenance,
+        merge_context,
     })
+}
+
+struct ParsedConfig {
+    config: RokoConfig,
+    diagnostics: Vec<ConfigDiagnostic>,
+    migration_report: Option<MigrationReport>,
+    explicit_fields: Vec<String>,
 }
 
 /// Parse config from an already-resolved path (read + validate + parse only).
@@ -213,7 +373,7 @@ pub fn load_config_validated_with_options(
 fn parse_from_resolved_path(
     path: &Option<PathBuf>,
     opts: &LoadOptions,
-) -> Result<RokoConfig, LoadConfigError> {
+) -> Result<ParsedConfig, LoadConfigError> {
     // 1. Read the raw text once (returns default if no file).
     let raw_text = match path {
         Some(p) => Some(
@@ -226,25 +386,69 @@ fn parse_from_resolved_path(
     };
 
     // 2. Optionally apply strict validation on the raw text.
-    if opts.strict_validation {
-        if let (Some(p), Some(text)) = (path, &raw_text) {
-            let strict_source = super::validation::StrictConfigSource::shared(Some(p.clone()));
-            super::validation::validate_strict_config_toml(text, &strict_source).map_err(
-                |source| LoadConfigError::Validation {
-                    path: p.clone(),
-                    source,
-                },
-            )?;
-        }
+    if opts.strict_validation
+        && let (Some(p), Some(text)) = (path, &raw_text)
+    {
+        let strict_source = super::validation::StrictConfigSource::shared(Some(p.clone()));
+        super::validation::validate_strict_config_toml(text, &strict_source).map_err(|source| {
+            LoadConfigError::Validation {
+                path: p.clone(),
+                source,
+            }
+        })?;
     }
 
-    // 3. Parse (or use defaults if no file).
+    // 3. Parse to a value tree, migrate, then deserialize. Migrations must run
+    // before serde so renamed fields are not silently discarded.
     match (&path, raw_text) {
-        (Some(p), Some(text)) => toml::from_str(&text).map_err(|source| LoadConfigError::Parse {
-            path: p.clone(),
-            source,
+        (Some(p), Some(text)) => {
+            let mut value =
+                text.parse::<toml::Value>()
+                    .map_err(|source| LoadConfigError::Parse {
+                        path: p.clone(),
+                        source,
+                    })?;
+            let diagnostics = unknown_field_diagnostics(&value);
+            for diagnostic in &diagnostics {
+                tracing::warn!(
+                    config_key = %diagnostic.key,
+                    "config warning: {}",
+                    diagnostic.message
+                );
+            }
+
+            let migrator = ConfigMigrator::new();
+            let report = migrator.migrate(&mut value);
+            if report.to_version < migrator.target_version {
+                return Err(LoadConfigError::Migration {
+                    path: p.clone(),
+                    message: report.warnings.join("; "),
+                });
+            }
+            for warning in &report.warnings {
+                tracing::warn!(path = %p.display(), "config migration warning: {warning}");
+            }
+            let explicit_fields = toml_leaf_paths(&value);
+            let config =
+                value
+                    .try_into::<RokoConfig>()
+                    .map_err(|source| LoadConfigError::Parse {
+                        path: p.clone(),
+                        source,
+                    })?;
+            Ok(ParsedConfig {
+                config,
+                diagnostics,
+                migration_report: Some(report),
+                explicit_fields,
+            })
+        }
+        _ => Ok(ParsedConfig {
+            config: RokoConfig::default(),
+            diagnostics: Vec::new(),
+            migration_report: None,
+            explicit_fields: Vec::new(),
         }),
-        _ => Ok(RokoConfig::default()),
     }
 }
 
@@ -256,15 +460,26 @@ fn load_from_resolved_path(
     path: &Option<PathBuf>,
     opts: &LoadOptions,
 ) -> Result<RokoConfig, LoadConfigError> {
-    let source = parse_from_resolved_path(path, opts)?;
-    let config = resolve_runtime_layers(source, path, opts)?;
+    let parsed = parse_from_resolved_path(path, opts)?;
+    let config = resolve_runtime_layers_with_context(
+        parsed.config,
+        path,
+        opts,
+        Some(&parsed.explicit_fields),
+    )?
+    .0;
 
     // Emit diagnostics as warnings so callers don't need to opt into
     // load_config_validated() to see slug duplicates and orphaned models.
     // Deduplicated: each unique key is only logged once per process lifetime.
     {
         let mut emitted = emitted_diagnostics().lock();
-        for diag in collect_diagnostics(&config) {
+        for diag in parsed
+            .diagnostics
+            .into_iter()
+            .chain(collect_diagnostics(&config))
+            .chain(invariant_diagnostics(&config))
+        {
             if diag.key.starts_with('_') {
                 // Skip the env-override meta-note; it's noise on the hot path.
                 continue;
@@ -287,18 +502,75 @@ fn load_from_resolved_path(
 /// File loading, provenance loading, and pre-commit validation all delegate
 /// here so their precedence and validation semantics cannot drift.
 fn resolve_runtime_layers(
-    mut config: RokoConfig,
+    config: RokoConfig,
     path: &Option<PathBuf>,
     opts: &LoadOptions,
 ) -> Result<RokoConfig, LoadConfigError> {
+    resolve_runtime_layers_with_context(config, path, opts, None).map(|(config, _)| config)
+}
+
+fn resolve_runtime_layers_with_context(
+    mut config: RokoConfig,
+    path: &Option<PathBuf>,
+    opts: &LoadOptions,
+    explicit_fields: Option<&[String]>,
+) -> Result<(RokoConfig, MergeContext), LoadConfigError> {
+    let mut merge_context = MergeContext::default();
+    if path.is_none() {
+        merge_context.record(FieldProvenance::new(
+            "roko.toml",
+            ConfigSource::Default,
+            Some("missing file; using built-in defaults".to_string()),
+        ));
+    }
+
     if opts.merge_global {
+        let before = config.clone();
         merge_global_into(&mut config);
+        if let Some(fields) = explicit_fields {
+            reapply_explicit_fields(&mut config, &before, fields);
+        }
+        record_changed_fields(
+            &mut merge_context,
+            &before,
+            &config,
+            ConfigSource::File,
+            "global config merge",
+        );
+    }
+    if let Some(fields) = explicit_fields {
+        for field in fields {
+            merge_context.record(FieldProvenance::new(
+                field.clone(),
+                ConfigSource::File,
+                Some(path.as_ref().map_or_else(
+                    || "explicit config source".to_string(),
+                    |path| format!("explicit field in {}", path.display()),
+                )),
+            ));
+        }
     }
     if opts.apply_env_overrides {
+        let before = config.clone();
         config.apply_process_env();
+        record_changed_fields(
+            &mut merge_context,
+            &before,
+            &config,
+            ConfigSource::Env,
+            "named ROKO_* environment override",
+        );
     }
     if opts.apply_hierarchical_env {
+        let before = config.clone();
         apply_hierarchical_env_overrides(&mut config);
+        record_changed_fields(
+            &mut merge_context,
+            &before,
+            &config,
+            ConfigSource::Env,
+            "hierarchical ROKO__* environment override",
+        );
     }
     config.interpolate_env_vars();
     config.resolve_file_secrets();
@@ -310,7 +582,137 @@ fn resolve_runtime_layers(
         validate_provider_references(&config, path)?;
     }
 
-    Ok(config)
+    let invariants = validate_invariants(&config);
+    if let Some(error) = invariants
+        .iter()
+        .find(|result| result.severity == InvariantSeverity::Error)
+    {
+        return Err(LoadConfigError::InvariantViolation {
+            invariant_id: error.invariant_id,
+            message: error.message.clone(),
+        });
+    }
+    for warning in invariants
+        .iter()
+        .filter(|result| result.severity == InvariantSeverity::Warning)
+    {
+        tracing::warn!(
+            invariant_id = warning.invariant_id,
+            config_path = %warning.config_path,
+            "config invariant warning: {}",
+            warning.message
+        );
+    }
+
+    Ok((config, merge_context))
+}
+
+fn record_changed_fields(
+    merge_context: &mut MergeContext,
+    before: &RokoConfig,
+    after: &RokoConfig,
+    source: ConfigSource,
+    reason: &str,
+) {
+    let (Ok(before), Ok(after)) = (
+        toml::Value::try_from(before.clone()),
+        toml::Value::try_from(after.clone()),
+    ) else {
+        return;
+    };
+    for key in changed_toml_paths(&before, &after) {
+        merge_context.record(FieldProvenance::new(
+            key,
+            source.clone(),
+            Some(reason.to_string()),
+        ));
+    }
+}
+
+fn changed_toml_paths(before: &toml::Value, after: &toml::Value) -> Vec<String> {
+    let mut before_values = BTreeMap::new();
+    let mut after_values = BTreeMap::new();
+    flatten_toml(before, "", &mut before_values);
+    flatten_toml(after, "", &mut after_values);
+    before_values
+        .keys()
+        .chain(after_values.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter(|key| before_values.get(*key) != after_values.get(*key))
+        .cloned()
+        .collect()
+}
+
+fn toml_leaf_paths(value: &toml::Value) -> Vec<String> {
+    let mut values = BTreeMap::new();
+    flatten_toml(value, "", &mut values);
+    values.into_keys().collect()
+}
+
+fn flatten_toml(value: &toml::Value, prefix: &str, output: &mut BTreeMap<String, toml::Value>) {
+    match value {
+        toml::Value::Table(table) if !table.is_empty() => {
+            for (key, value) in table {
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                flatten_toml(value, &path, output);
+            }
+        }
+        _ if !prefix.is_empty() => {
+            output.insert(prefix.to_string(), value.clone());
+        }
+        _ => {}
+    }
+}
+
+fn reapply_explicit_fields(config: &mut RokoConfig, source: &RokoConfig, fields: &[String]) {
+    let (Ok(mut effective), Ok(source)) = (
+        toml::Value::try_from(config.clone()),
+        toml::Value::try_from(source.clone()),
+    ) else {
+        return;
+    };
+    for field in fields {
+        if let Some(value) = toml_value_at_path(&source, field).cloned() {
+            set_toml_value(&mut effective, field, value);
+        }
+    }
+    match effective.try_into::<RokoConfig>() {
+        Ok(updated) => *config = updated,
+        Err(error) => tracing::warn!(
+            %error,
+            "failed to reapply explicit project fields after global config merge"
+        ),
+    }
+}
+
+fn toml_value_at_path<'a>(value: &'a toml::Value, path: &str) -> Option<&'a toml::Value> {
+    path.split('.')
+        .try_fold(value, |current, segment| current.as_table()?.get(segment))
+}
+
+fn set_toml_value(root: &mut toml::Value, path: &str, value: toml::Value) {
+    let segments = path.split('.').collect::<Vec<_>>();
+    let Some((leaf, parents)) = segments.split_last() else {
+        return;
+    };
+    let mut current = root;
+    for segment in parents {
+        let Some(table) = current.as_table_mut() else {
+            return;
+        };
+        let Some(next) = table.get_mut(*segment) else {
+            return;
+        };
+        current = next;
+    }
+    if let Some(table) = current.as_table_mut() {
+        table.insert((*leaf).to_string(), value);
+    }
 }
 
 /// Validate that all model profiles reference providers that exist in the
@@ -643,10 +1045,10 @@ fn parse_env_value_to_toml(raw: &str) -> toml::Value {
     }
 
     // Try float (only if it contains a dot to avoid int->float coercion).
-    if raw.contains('.') {
-        if let Ok(f) = raw.parse::<f64>() {
-            return toml::Value::Float(f);
-        }
+    if raw.contains('.')
+        && let Ok(f) = raw.parse::<f64>()
+    {
+        return toml::Value::Float(f);
     }
 
     // Fall back to string.
@@ -747,6 +1149,72 @@ fn collect_diagnostics(config: &RokoConfig) -> Vec<ConfigDiagnostic> {
     diagnostics
 }
 
+fn invariant_diagnostics(config: &RokoConfig) -> Vec<ConfigDiagnostic> {
+    validate_invariants(config)
+        .into_iter()
+        .filter(|result| result.severity == InvariantSeverity::Warning)
+        .map(|result| ConfigDiagnostic {
+            key: format!("invariant.{}.{}", result.invariant_id, result.config_path),
+            message: result.message,
+        })
+        .collect()
+}
+
+fn unknown_field_diagnostics(value: &toml::Value) -> Vec<ConfigDiagnostic> {
+    const TOP_LEVEL_FIELDS: &[&str] = &[
+        "config_version",
+        "schema_version",
+        "project",
+        "prd",
+        "agent",
+        "providers",
+        "models",
+        "profiles",
+        "gates",
+        "graduation",
+        "routing",
+        "pipeline",
+        "budget",
+        "conductor",
+        "watcher",
+        "learning",
+        "tui",
+        "timeouts",
+        "statehub",
+        "serve",
+        "scheduler",
+        "webhooks",
+        "github",
+        "subscriptions",
+        "server",
+        "deploy",
+        "perplexity",
+        "gemini",
+        "tools",
+        "chain",
+        "relay",
+        "feed_agents",
+        "runner",
+        "agents",
+        "validation",
+        "cold_storage",
+        "prompt",
+        "resources",
+    ];
+
+    let Some(table) = value.as_table() else {
+        return Vec::new();
+    };
+    table
+        .keys()
+        .filter(|key| !TOP_LEVEL_FIELDS.contains(&key.as_str()))
+        .map(|key| ConfigDiagnostic {
+            key: key.clone(),
+            message: format!("unknown config field '{key}' was ignored"),
+        })
+        .collect()
+}
+
 /// Serialize the effective (fully-resolved) config as TOML.
 ///
 /// Useful for workspace creation (write resolved config, not blind copy)
@@ -760,9 +1228,10 @@ pub const REDACTED_MARKER: &str = "[REDACTED]";
 
 /// Key name fragments that identify secret-bearing fields.
 ///
-/// Any TOML leaf whose key contains one of these substrings (case-insensitive)
-/// is replaced with [`REDACTED_MARKER`]. Non-secret fields (model names, URLs
-/// without credentials, booleans, numerics) are left intact.
+/// Any non-empty TOML leaf whose key contains one of these substrings
+/// (case-insensitive) is replaced with [`REDACTED_MARKER`], except `_env`
+/// metadata fields. Non-secret fields (model names, URLs without credentials,
+/// booleans, numerics) are left intact.
 const SECRET_KEY_FRAGMENTS: &[&str] = &[
     "api_key",
     "secret",
@@ -772,6 +1241,7 @@ const SECRET_KEY_FRAGMENTS: &[&str] = &[
     "authorization",
     "auth_token",
     "private_key",
+    "wallet_key",
     "passphrase",
 ];
 
@@ -804,9 +1274,11 @@ pub fn redact_secrets_in_toml_str(raw: &str) -> String {
 ///
 /// A value is considered secret when its parent key contains any of the
 /// substrings listed in [`SECRET_KEY_FRAGMENTS`] (compared case-insensitively).
-/// Tables under `extra_headers` are treated as entirely secret — every string
-/// value inside is redacted regardless of key name, because header values
-/// frequently carry bearer tokens and API keys.
+/// Environment-reference fields ending in `_env` are metadata and remain
+/// visible. Empty strings also remain unchanged so output still distinguishes
+/// an unconfigured secret from a configured one. Tables under `extra_headers`
+/// treat every non-empty string as secret regardless of key name, because
+/// header values frequently carry bearer tokens and API keys.
 fn redact_secrets_in_toml(value: &mut toml::Value) {
     match value {
         toml::Value::Table(table) => {
@@ -826,19 +1298,22 @@ fn redact_secrets_in_toml(value: &mut toml::Value) {
 /// Recursive inner helper that knows the current key name.
 fn redact_secrets_in_toml_keyed(key: &str, value: &mut toml::Value) {
     let key_lower = key.to_ascii_lowercase();
-    let is_secret_key = SECRET_KEY_FRAGMENTS
-        .iter()
-        .any(|frag| key_lower.contains(frag));
+    // `*_env` fields contain environment-variable names, not secret values.
+    let is_env_reference = key_lower.ends_with("_env");
+    let is_secret_key = !is_env_reference
+        && SECRET_KEY_FRAGMENTS
+            .iter()
+            .any(|frag| key_lower.contains(frag));
     let is_extra_headers = key_lower == "extra_headers";
 
     match value {
-        toml::Value::String(_) if is_secret_key => {
+        toml::Value::String(secret) if is_secret_key && !secret.is_empty() => {
             *value = toml::Value::String(REDACTED_MARKER.to_string());
         }
         toml::Value::Table(table) if is_extra_headers => {
-            // Redact all string values inside extra_headers unconditionally.
+            // Redact all non-empty string values inside extra_headers.
             for (_k, child) in table.iter_mut() {
-                if child.is_str() {
+                if child.as_str().is_some_and(|secret| !secret.is_empty()) {
                     *child = toml::Value::String(REDACTED_MARKER.to_string());
                 }
             }
@@ -851,7 +1326,7 @@ fn redact_secrets_in_toml_keyed(key: &str, value: &mut toml::Value) {
         toml::Value::Array(arr) => {
             for item in arr.iter_mut() {
                 if is_secret_key {
-                    if item.is_str() {
+                    if item.as_str().is_some_and(|secret| !secret.is_empty()) {
                         *item = toml::Value::String(REDACTED_MARKER.to_string());
                     }
                 } else {
@@ -944,10 +1419,13 @@ pub fn global_config_path() -> PathBuf {
 
 // ─── Internal helpers ───────────────────────────────────────────────────
 
-/// Merge providers, models, and agent defaults from the global config.
+/// Merge providers, models, and agent defaults from the global config file.
 ///
-/// Project entries take precedence: global entries are only inserted if the
-/// key doesn't already exist in the project config.
+/// Project providers take precedence by key. Project models take precedence by
+/// both key and provider-facing slug: a local model deliberately claiming a
+/// slug shadows a differently-keyed global model with the same slug. This
+/// keeps the merged registry consistent with dispatch validation, where a slug
+/// may have only one owner.
 pub fn merge_global_into(config: &mut RokoConfig) {
     let global_path = global_config_path();
     if !global_path.exists() {
@@ -966,7 +1444,7 @@ pub fn merge_global_into(config: &mut RokoConfig) {
         }
     };
 
-    let global = match RokoConfig::from_toml(&text) {
+    let global = match deserialize_migrated_toml(&text) {
         Ok(g) => g,
         Err(e) => {
             tracing::warn!(
@@ -978,18 +1456,85 @@ pub fn merge_global_into(config: &mut RokoConfig) {
         }
     };
 
-    // -- Providers and models (always merge, project wins) --
+    merge_global_config_into(config, global);
+}
+
+fn deserialize_migrated_toml(text: &str) -> Result<RokoConfig, String> {
+    let mut value = text
+        .parse::<toml::Value>()
+        .map_err(|error| error.to_string())?;
+    let migrator = ConfigMigrator::new();
+    let report = migrator.migrate(&mut value);
+    if report.to_version < migrator.target_version {
+        return Err(report.warnings.join("; "));
+    }
+    value
+        .try_into::<RokoConfig>()
+        .map_err(|error| error.to_string())
+}
+
+/// Merge an already-parsed global layer beneath a project config.
+///
+/// This is the deterministic counterpart to [`merge_global_into`] for callers
+/// that already loaded the global layer (and for tests that must not depend on
+/// the process-wide `HOME`). Project entries always win. Model identity has two
+/// user-visible forms -- the table key and the provider-facing slug -- so
+/// either collision shadows the global entry. Duplicate slugs originating
+/// entirely within one layer remain present and are still rejected by
+/// [`normalize_and_validate_dispatch_models`].
+pub fn merge_global_config_into(config: &mut RokoConfig, global: RokoConfig) {
+    // -- Providers (project wins by stable config key) --
     for (name, provider) in global.providers {
         config.providers.entry(name).or_insert(provider);
     }
+
+    // Capture the project layer before inserting anything from the global
+    // layer. This is intentionally not updated during the loop: two duplicate
+    // slugs in the global file must survive the merge so dispatch validation
+    // can report the invalid global config instead of silently picking one.
+    let mut project_slug_owners = std::collections::HashMap::<String, Vec<String>>::new();
+    for (key, model) in &config.models {
+        project_slug_owners
+            .entry(model.slug.trim().to_string())
+            .or_default()
+            .push(key.clone());
+    }
+    for owners in project_slug_owners.values_mut() {
+        owners.sort_unstable();
+    }
+
+    // -- Models (project wins by key or normalized provider slug) --
+    let mut shadowed_global_model_keys = std::collections::HashMap::<String, String>::new();
     for (name, model) in global.models {
-        config.models.entry(name).or_insert(model);
+        if config.models.contains_key(&name) {
+            tracing::debug!(model = %name, "project model shadows same-key global model");
+            continue;
+        }
+
+        let normalized_slug = model.slug.trim();
+        if let Some(project_keys) = project_slug_owners.get(normalized_slug) {
+            if let [project_key] = project_keys.as_slice() {
+                shadowed_global_model_keys.insert(name.clone(), project_key.clone());
+            }
+            tracing::debug!(
+                global_model = %name,
+                slug = %normalized_slug,
+                project_models = %project_keys.join(", "),
+                "project model slug shadows global model"
+            );
+            continue;
+        }
+
+        config.models.insert(name, model);
     }
 
     // -- Agent defaults (fill gaps only) --
     if config.agent.default_model.is_empty() && !global.agent.default_model.is_empty() {
         tracing::debug!(model = %global.agent.default_model, "merged global agent.default_model");
-        config.agent.default_model = global.agent.default_model;
+        config.agent.default_model = shadowed_global_model_keys
+            .get(global.agent.default_model.trim())
+            .cloned()
+            .unwrap_or(global.agent.default_model);
     }
     if config.agent.default_backend.is_empty() && !global.agent.default_backend.is_empty() {
         tracing::debug!(backend = %global.agent.default_backend, "merged global agent.default_backend");
@@ -1039,6 +1584,185 @@ pub fn merge_global_into(config: &mut RokoConfig) {
 #[allow(unsafe_code)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_migrator_applies_v1_to_v2_and_renames_legacy_fields() {
+        let mut value = r#"
+schema_version = 1
+config_version = 1
+[agent]
+model = "legacy-model"
+effort = "high"
+[budget]
+max_session_usd = 25.0
+max_agent_usd = 2.0
+"#
+        .parse::<toml::Value>()
+        .expect("parse v1 value");
+
+        let report = ConfigMigrator::new().migrate(&mut value);
+        assert_eq!(report.from_version, 1);
+        assert_eq!(report.to_version, 2);
+        assert_eq!(report.steps_applied.len(), 1);
+        assert_eq!(value["schema_version"].as_integer(), Some(2));
+        assert_eq!(value["config_version"].as_integer(), Some(2));
+        assert_eq!(
+            value["agent"]["default_model"].as_str(),
+            Some("legacy-model")
+        );
+        assert!(value["agent"].get("model").is_none());
+        assert_eq!(value["budget"]["max_plan_usd"].as_float(), Some(25.0));
+    }
+
+    #[test]
+    fn config_migrator_skips_current_schema() {
+        let mut value = "schema_version = 2\nconfig_version = 2\n"
+            .parse::<toml::Value>()
+            .expect("parse current value");
+
+        let report = ConfigMigrator::new().migrate(&mut value);
+        assert_eq!(report.from_version, 2);
+        assert_eq!(report.to_version, 2);
+        assert!(report.steps_applied.is_empty());
+    }
+
+    #[test]
+    fn config_migrator_defaults_missing_version_to_v1() {
+        let mut value = "[agent]\nmodel = 'legacy'\n"
+            .parse::<toml::Value>()
+            .expect("parse unversioned value");
+
+        let report = ConfigMigrator::new().migrate(&mut value);
+        assert_eq!(report.from_version, 1);
+        assert_eq!(report.to_version, 2);
+        assert_eq!(value["agent"]["default_model"].as_str(), Some("legacy"));
+    }
+
+    #[test]
+    fn loader_migrates_before_deserializing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            "schema_version = 1\nconfig_version = 1\n[agent]\nmodel = 'migrated-model'\n",
+        )
+        .expect("write config");
+
+        let loaded = load_config_validated_with_options(
+            dir.path(),
+            &LoadOptions {
+                merge_global: false,
+                apply_env_overrides: false,
+                apply_hierarchical_env: false,
+                strict_validation: false,
+            },
+        )
+        .expect("load migrated config");
+        assert_eq!(loaded.config().agent.default_model, "migrated-model");
+        assert_eq!(loaded.config().schema_version, 2);
+        assert!(
+            loaded
+                .provenance()
+                .iter()
+                .any(|entry| entry.source == ConfigSource::Migration)
+        );
+    }
+
+    #[test]
+    fn loader_rejects_error_invariant_after_merge() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            "schema_version = 2\nconfig_version = 2\n[budget]\nmax_plan_usd = 1.0\nmax_turn_usd = 2.0\n",
+        )
+        .expect("write config");
+
+        let error = load_config_with_options(
+            dir.path(),
+            &LoadOptions {
+                merge_global: false,
+                apply_env_overrides: false,
+                apply_hierarchical_env: false,
+                strict_validation: false,
+            },
+        )
+        .expect_err("budget invariant must reject load");
+        assert!(matches!(
+            error,
+            LoadConfigError::InvariantViolation {
+                invariant_id: 1,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn loader_allows_warning_invariant_and_retains_diagnostic() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            "schema_version = 2\nconfig_version = 2\n[agent]\ncontext_limit_k = 2\n",
+        )
+        .expect("write config");
+
+        let loaded = load_config_validated_with_options(
+            dir.path(),
+            &LoadOptions {
+                merge_global: false,
+                apply_env_overrides: false,
+                apply_hierarchical_env: false,
+                strict_validation: false,
+            },
+        )
+        .expect("warning must not reject load");
+        assert!(
+            loaded
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.key.starts_with("invariant.5."))
+        );
+    }
+
+    #[test]
+    fn validated_loader_warns_for_unknown_top_level_field() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            "schema_version = 2\nconfig_version = 2\nfuture_section = 'ignored'\n",
+        )
+        .expect("write config");
+
+        let loaded = load_config_validated_with_options(
+            dir.path(),
+            &LoadOptions {
+                merge_global: false,
+                apply_env_overrides: false,
+                apply_hierarchical_env: false,
+                strict_validation: false,
+            },
+        )
+        .expect("unknown field must remain forward compatible");
+        assert!(loaded.diagnostics().iter().any(|diagnostic| {
+            diagnostic.key == "future_section" && diagnostic.message.contains("unknown")
+        }));
+    }
+
+    #[test]
+    fn validated_loader_records_default_field_provenance_without_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let loaded = load_config_validated_with_options(
+            dir.path(),
+            &LoadOptions {
+                merge_global: false,
+                apply_env_overrides: false,
+                apply_hierarchical_env: false,
+                strict_validation: false,
+            },
+        )
+        .expect("load defaults");
+        assert!(loaded.merge_context.field_provenance.iter().any(|field| {
+            field.key == "roko.toml" && field.value_source == ConfigSource::Default
+        }));
+    }
 
     #[test]
     fn load_without_merge_returns_default_when_no_config() {
@@ -1124,7 +1848,7 @@ authorization_file = "{}"
     }
 
     #[test]
-    fn load_validated_detects_orphaned_models() {
+    fn load_validated_rejects_orphaned_models_as_invariant_error() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("roko.toml"),
@@ -1143,12 +1867,14 @@ default_model = "orphan"
         )
         .unwrap();
 
-        let validated = load_config_validated(dir.path()).unwrap();
-        let has_orphan_warning = validated
-            .diagnostics()
-            .iter()
-            .any(|d| d.key.contains("orphan") && d.message.contains("nonexistent"));
-        assert!(has_orphan_warning, "should warn about orphaned model");
+        let error = load_config_validated(dir.path()).expect_err("orphan must be rejected");
+        assert!(matches!(
+            error,
+            LoadConfigError::InvariantViolation {
+                invariant_id: 3,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1275,6 +2001,91 @@ default_model = "missing"
             },
         );
         config
+    }
+
+    #[test]
+    fn project_model_slug_shadows_differently_keyed_global_model() {
+        let mut project = RokoConfig::from_toml(
+            r#"
+[providers.claude_cli]
+kind = "claude_cli"
+command = "claude"
+
+[models.claude-sonnet-4-6]
+provider = "claude_cli"
+slug = "claude-sonnet-4-6"
+context_window = 200000
+
+[agent]
+default_model = "claude-sonnet-4-6"
+"#,
+        )
+        .unwrap();
+        let global = RokoConfig::from_toml(
+            r#"
+[providers.claude_cli]
+kind = "claude_cli"
+command = "claude"
+
+[models.claude-sonnet]
+provider = "claude_cli"
+slug = "claude-sonnet-4-6"
+context_window = 100000
+
+[agent]
+default_model = "claude-sonnet"
+"#,
+        )
+        .unwrap();
+
+        merge_global_config_into(&mut project, global);
+
+        assert!(project.models.contains_key("claude-sonnet-4-6"));
+        assert!(
+            !project.models.contains_key("claude-sonnet"),
+            "a differently-keyed global alias must not survive a local slug override"
+        );
+        assert_eq!(
+            project.models["claude-sonnet-4-6"].context_window, 200_000,
+            "the project profile must win in full"
+        );
+        normalize_and_validate_dispatch_models(&mut project).unwrap();
+        assert_eq!(project.agent.default_model, "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn duplicate_slugs_within_global_layer_are_not_silently_collapsed() {
+        let mut project = RokoConfig::default();
+        let mut global = dispatch_config_with_model("global-a", "shared-provider-slug");
+        global.models.insert(
+            "global-b".to_string(),
+            super::super::schema::ModelProfile {
+                provider: "another-provider".to_string(),
+                slug: "shared-provider-slug".to_string(),
+                ..Default::default()
+            },
+        );
+
+        merge_global_config_into(&mut project, global);
+
+        assert_eq!(project.models.len(), 2);
+        let error = normalize_and_validate_dispatch_models(&mut project).unwrap_err();
+        assert!(matches!(error, LoadConfigError::AmbiguousModelSlug { .. }));
+        assert!(error.to_string().contains("global-a, global-b"));
+    }
+
+    #[test]
+    fn inherited_global_default_tracks_local_slug_override() {
+        let mut project = dispatch_config_with_model("project-model", "provider-model");
+        project.agent.default_model.clear();
+        let mut global = dispatch_config_with_model("global-model", "provider-model");
+        global.agent.default_model = "global-model".to_string();
+
+        merge_global_config_into(&mut project, global);
+
+        assert_eq!(project.agent.default_model, "project-model");
+        assert!(!project.models.contains_key("global-model"));
+        normalize_and_validate_dispatch_models(&mut project).unwrap();
     }
 
     #[test]
@@ -1531,7 +2342,7 @@ default_model = "missing"
             ProviderConfig {
                 kind: ProviderKind::OpenAiCompat,
                 base_url: Some("https://api.example.com/v1".into()),
-                api_key_env: Some("sk-ant-REAL_KEY_12345".into()),
+                api_key_env: Some("ANTHROPIC_API_KEY".into()),
                 command: None,
                 args: None,
                 timeout_ms: None,
@@ -1554,11 +2365,6 @@ default_model = "missing"
             !redacted.contains("tok_secret_val"),
             "extra_headers value leaked: {redacted}"
         );
-        assert!(
-            !redacted.contains("sk-ant-REAL_KEY_12345"),
-            "api_key_env value leaked: {redacted}"
-        );
-
         // The redaction marker must appear in place of secrets.
         assert!(
             redacted.contains(REDACTED_MARKER),
@@ -1570,11 +2376,44 @@ default_model = "missing"
             redacted.contains("https://api.example.com/v1"),
             "base_url should not be redacted: {redacted}"
         );
+        assert!(
+            redacted.contains("ANTHROPIC_API_KEY"),
+            "api_key_env metadata should not be redacted: {redacted}"
+        );
 
         // TOML structure is still valid.
         let reparsed: toml::Value =
             toml::from_str(&redacted).expect("redacted output must be valid TOML");
         assert!(reparsed.is_table());
+    }
+
+    #[test]
+    fn redaction_preserves_empty_values_and_env_references() {
+        let redacted = redact_secrets_in_toml_str(
+            r#"
+api_key = ""
+auth_token = "live-token"
+auth_token_env = "ROKO_SERVER_AUTH_TOKEN"
+
+[chain]
+wallet_key = "live-wallet-key"
+
+[providers.test]
+api_key_env = "OPENAI_API_KEY"
+
+[providers.test.extra_headers]
+authorization = ""
+x-api-key = "live-header-key"
+"#,
+        );
+
+        assert!(redacted.contains("api_key = \"\""), "{redacted}");
+        assert!(redacted.contains("authorization = \"\""), "{redacted}");
+        assert!(redacted.contains("ROKO_SERVER_AUTH_TOKEN"), "{redacted}");
+        assert!(redacted.contains("OPENAI_API_KEY"), "{redacted}");
+        assert!(!redacted.contains("live-token"), "{redacted}");
+        assert!(!redacted.contains("live-wallet-key"), "{redacted}");
+        assert!(!redacted.contains("live-header-key"), "{redacted}");
     }
 
     #[test]
@@ -1694,6 +2533,7 @@ default_model = "missing"
 
     #[test]
     fn validated_loader_records_hierarchical_env_provenance() {
+        let _env_guard = super::TEST_ENV_LOCK.lock();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("roko.toml"), "config_version = 2\n").unwrap();
 
@@ -1718,6 +2558,15 @@ default_model = "missing"
             .iter()
             .any(|p| p.key == "agent.default_model");
         assert!(has_env_provenance, "expected env provenance entry");
+        assert!(
+            validated
+                .merge_context
+                .field_provenance
+                .iter()
+                .any(|field| {
+                    field.key == "agent.default_model" && field.value_source == ConfigSource::Env
+                })
+        );
     }
 
     #[test]
@@ -1765,7 +2614,7 @@ slug = "claude-sonnet-4-20250514"
     }
 
     #[test]
-    fn lenient_validation_allows_dangling_provider_reference() {
+    fn invariant_validation_rejects_dangling_provider_reference_in_lenient_mode() {
         let dir = tempfile::tempdir().expect("tempdir");
         let toml_text = r#"
 config_version = 2
@@ -1789,11 +2638,13 @@ slug = "claude-sonnet-4-20250514"
                 strict_validation: false,
             },
         );
-        assert!(
-            result.is_ok(),
-            "lenient mode should allow dangling provider ref: {:?}",
-            result.err()
-        );
+        assert!(matches!(
+            result,
+            Err(LoadConfigError::InvariantViolation {
+                invariant_id: 3,
+                ..
+            })
+        ));
     }
 
     #[test]

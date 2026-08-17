@@ -12,6 +12,7 @@ use chrono::DateTime;
 use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::header::{ACCEPT, HeaderMap, HeaderValue, RETRY_AFTER, USER_AGENT};
+use roko_mcp_github::GitHubClient;
 use roko_mcp_stdio::{JsonRpcError, JsonRpcRequest, serve_stdio};
 use serde::Deserialize;
 use serde_json::Value;
@@ -400,18 +401,6 @@ struct GithubPullRequestDetails {
     requested_reviewers: Vec<GithubUser>,
     head: GithubBranchRef,
     base: GithubBranchRef,
-}
-
-#[derive(Debug, Deserialize)]
-struct GithubCreatePullRequestResponse {
-    number: u64,
-    html_url: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GithubCreateIssueResponse {
-    number: u64,
-    html_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -859,8 +848,22 @@ fn handle_list_prs(arguments: Value) -> Result<Value, JsonRpcError> {
     let args: ListPrsArguments = serde_json::from_value(arguments).map_err(|err| {
         JsonRpcError::invalid_params(format!("invalid github.list_prs args: {err}"))
     })?;
-    let client = github_client()?;
-    let prs = list_pull_requests(&client, &args)?;
+    let client = reusable_github_client()?;
+    let prs = client
+        .list_prs_with_filters(
+            &args.owner,
+            &args.repo,
+            args.state.unwrap_or(PullRequestState::Open).as_str(),
+            args.head.as_deref(),
+            args.base.as_deref(),
+            args.per_page.unwrap_or(30),
+        )
+        .map_err(github_api_error)
+        .and_then(|value| {
+            serde_json::from_value::<Vec<GithubPullRequest>>(value).map_err(|error| {
+                JsonRpcError::internal_error(format!("parse GitHub pull requests: {error}"))
+            })
+        })?;
     Ok(serde_json::json!({
         "content": [{
             "type": "text",
@@ -890,17 +893,24 @@ fn handle_create_pr(arguments: Value) -> Result<Value, JsonRpcError> {
     let args: CreatePrArguments = serde_json::from_value(arguments).map_err(|err| {
         JsonRpcError::invalid_params(format!("invalid github.create_pr args: {err}"))
     })?;
-    let client = github_client()?;
-    let pr = create_pull_request(&client, &args, "https://api.github.com")?;
-    let html_url = pr
-        .html_url
-        .ok_or_else(|| JsonRpcError::internal_error("GitHub API response missing html_url"))?;
+    let client = reusable_github_client()?;
+    let (number, html_url) = client
+        .create_pr(
+            &args.owner,
+            &args.repo,
+            &args.title,
+            &args.body,
+            &args.head,
+            &args.base,
+            args.draft.unwrap_or(false),
+        )
+        .map_err(github_api_error)?;
 
     Ok(serde_json::json!({
         "content": [{
             "type": "text",
             "text": serde_json::json!({
-                "number": pr.number,
+                "number": number,
                 "html_url": html_url
             }).to_string()
         }],
@@ -912,8 +922,15 @@ fn handle_comment_pr(arguments: Value) -> Result<Value, JsonRpcError> {
     let args: CommentPrArguments = serde_json::from_value(arguments).map_err(|err| {
         JsonRpcError::invalid_params(format!("invalid github.comment_pr args: {err}"))
     })?;
-    let client = github_client()?;
-    let comment = create_pull_request_comment(&client, &args, "https://api.github.com")?;
+    let client = reusable_github_client()?;
+    let comment: GithubIssueComment = serde_json::from_value(
+        client
+            .comment_pr(&args.owner, &args.repo, args.number, &args.body)
+            .map_err(github_api_error)?,
+    )
+    .map_err(|error| {
+        JsonRpcError::internal_error(format!("parse GitHub issue comment response: {error}"))
+    })?;
     let html_url = comment
         .html_url
         .ok_or_else(|| JsonRpcError::internal_error("GitHub API response missing html_url"))?;
@@ -935,8 +952,23 @@ fn handle_review_pr(arguments: Value) -> Result<Value, JsonRpcError> {
     let args: ReviewPrArguments = serde_json::from_value(arguments).map_err(|err| {
         JsonRpcError::invalid_params(format!("invalid github.review_pr args: {err}"))
     })?;
-    let client = github_client()?;
-    let review = submit_pull_request_review(&client, &args, "https://api.github.com")?;
+    let client = reusable_github_client()?;
+    let review: GithubPullRequestReview = serde_json::from_value(
+        client
+            .review_pr(
+                &args.owner,
+                &args.repo,
+                args.number,
+                &args.body,
+                args.event.as_str(),
+            )
+            .map_err(github_api_error)?,
+    )
+    .map_err(|error| {
+        JsonRpcError::internal_error(format!(
+            "parse GitHub pull request review response: {error}"
+        ))
+    })?;
 
     Ok(serde_json::json!({
         "content": [{
@@ -959,8 +991,21 @@ fn handle_merge_pr(arguments: Value) -> Result<Value, JsonRpcError> {
     let args: MergePrArguments = serde_json::from_value(arguments).map_err(|err| {
         JsonRpcError::invalid_params(format!("invalid github.merge_pr args: {err}"))
     })?;
-    let client = github_client()?;
-    let merge = merge_pull_request(&client, &args, "https://api.github.com")?;
+    let client = reusable_github_client()?;
+    let merge: GithubMergePullRequestResponse = serde_json::from_value(
+        client
+            .merge_pr_with_title(
+                &args.owner,
+                &args.repo,
+                args.number,
+                args.merge_method.as_str(),
+                args.commit_title.as_deref(),
+            )
+            .map_err(github_api_error)?,
+    )
+    .map_err(|error| {
+        JsonRpcError::internal_error(format!("parse GitHub pull request merge response: {error}"))
+    })?;
 
     Ok(serde_json::json!({
         "content": [{
@@ -979,8 +1024,25 @@ fn handle_list_issues(arguments: Value) -> Result<Value, JsonRpcError> {
     let args: ListIssuesArguments = serde_json::from_value(arguments).map_err(|err| {
         JsonRpcError::invalid_params(format!("invalid github.list_issues args: {err}"))
     })?;
-    let client = github_client()?;
-    let issues = list_issues(&client, &args, "https://api.github.com")?;
+    let client = reusable_github_client()?;
+    let issues = client
+        .list_issues(
+            &args.owner,
+            &args.repo,
+            args.state.unwrap_or(IssueState::Open).as_str(),
+            args.labels.as_deref().unwrap_or_default(),
+            args.assignee.as_deref(),
+            args.per_page.unwrap_or(30),
+        )
+        .map_err(github_api_error)
+        .and_then(|value| {
+            serde_json::from_value::<Vec<GithubIssue>>(value).map_err(|error| {
+                JsonRpcError::internal_error(format!("parse GitHub issues: {error}"))
+            })
+        })?
+        .into_iter()
+        .filter(|issue| issue.pull_request.is_none())
+        .collect::<Vec<_>>();
     Ok(serde_json::json!({
         "content": [{
             "type": "text",
@@ -994,17 +1056,23 @@ fn handle_create_issue(arguments: Value) -> Result<Value, JsonRpcError> {
     let args: CreateIssueArguments = serde_json::from_value(arguments).map_err(|err| {
         JsonRpcError::invalid_params(format!("invalid github.create_issue args: {err}"))
     })?;
-    let client = github_client()?;
-    let issue = create_issue(&client, &args, "https://api.github.com")?;
-    let html_url = issue
-        .html_url
-        .ok_or_else(|| JsonRpcError::internal_error("GitHub API response missing html_url"))?;
+    let client = reusable_github_client()?;
+    let (number, html_url) = client
+        .create_issue_with_assignees(
+            &args.owner,
+            &args.repo,
+            &args.title,
+            &args.body,
+            args.labels.as_deref().unwrap_or_default(),
+            args.assignees.as_deref().unwrap_or_default(),
+        )
+        .map_err(github_api_error)?;
 
     Ok(serde_json::json!({
         "content": [{
             "type": "text",
             "text": serde_json::json!({
-                "number": issue.number,
+                "number": number,
                 "html_url": html_url
             }).to_string()
         }],
@@ -1035,8 +1103,10 @@ fn handle_close_issue(arguments: Value) -> Result<Value, JsonRpcError> {
     let args: CloseIssueArguments = serde_json::from_value(arguments).map_err(|err| {
         JsonRpcError::invalid_params(format!("invalid github.close_issue args: {err}"))
     })?;
-    let client = github_client()?;
-    close_issue(&client, &args)?;
+    let client = reusable_github_client()?;
+    client
+        .close_issue_with_reason(&args.owner, &args.repo, args.number, args.reason.as_deref())
+        .map_err(github_api_error)?;
     Ok(serde_json::json!({
         "content": [{
             "type": "text",
@@ -1055,8 +1125,18 @@ fn handle_add_labels(arguments: Value) -> Result<Value, JsonRpcError> {
     let args: AddLabelsArguments = serde_json::from_value(arguments).map_err(|err| {
         JsonRpcError::invalid_params(format!("invalid github.add_labels args: {err}"))
     })?;
-    let client = github_client()?;
-    let labels = add_labels_to_issue(&client, &args)?;
+    let client = reusable_github_client()?;
+    let labels = serde_json::from_value::<Vec<GithubLabel>>(
+        client
+            .add_labels(&args.owner, &args.repo, args.number, &args.labels)
+            .map_err(github_api_error)?,
+    )
+    .map_err(|error| {
+        JsonRpcError::internal_error(format!("parse GitHub labels response: {error}"))
+    })?
+    .into_iter()
+    .map(|label| label.name)
+    .collect::<Vec<_>>();
     Ok(serde_json::json!({
         "content": [{
             "type": "text",
@@ -1142,8 +1222,10 @@ fn handle_create_branch(arguments: Value) -> Result<Value, JsonRpcError> {
     let args: CreateBranchArguments = serde_json::from_value(arguments).map_err(|err| {
         JsonRpcError::invalid_params(format!("invalid github.create_branch args: {err}"))
     })?;
-    let client = github_client()?;
-    let result = create_git_ref(&client, &args)?;
+    let client = reusable_github_client()?;
+    let result = client
+        .create_branch(&args.owner, &args.repo, &args.branch, &args.from_sha)
+        .map_err(github_api_error)?;
     Ok(serde_json::json!({
         "content": [{
             "type": "text",
@@ -1199,8 +1281,10 @@ fn handle_get_actions_status(arguments: Value) -> Result<Value, JsonRpcError> {
     let args: GetActionsStatusArguments = serde_json::from_value(arguments).map_err(|err| {
         JsonRpcError::invalid_params(format!("invalid github.get_actions_status args: {err}"))
     })?;
-    let client = github_client()?;
-    let status = get_combined_status(&client, &args)?;
+    let client = reusable_github_client()?;
+    let status = client
+        .get_actions_status(&args.owner, &args.repo, &args.ref_name)
+        .map_err(github_api_error)?;
     Ok(serde_json::json!({
         "content": [{
             "type": "text",
@@ -1223,6 +1307,20 @@ fn github_tool(name: &str, description: &str, input_schema: Value) -> Value {
     );
     tool.insert("inputSchema".to_string(), input_schema);
     Value::Object(tool)
+}
+
+#[cfg(not(test))]
+fn reusable_github_client() -> Result<GitHubClient, JsonRpcError> {
+    GitHubClient::from_env().map_err(github_api_error)
+}
+
+#[cfg(test)]
+fn reusable_github_client() -> Result<GitHubClient, JsonRpcError> {
+    GitHubClient::new("test-token").map_err(github_api_error)
+}
+
+fn github_api_error(error: roko_mcp_github::GitHubError) -> JsonRpcError {
+    JsonRpcError::internal_error(error.to_string())
 }
 
 fn github_client() -> Result<Client, JsonRpcError> {
@@ -1354,113 +1452,6 @@ fn exponential_backoff_delay(attempt: u32) -> Duration {
     Duration::from_millis(delay_ms)
 }
 
-fn list_pull_requests(
-    client: &Client,
-    args: &ListPrsArguments,
-) -> Result<Vec<GithubPullRequest>, JsonRpcError> {
-    let url = format!(
-        "https://api.github.com/repos/{}/{}/pulls",
-        args.owner, args.repo
-    );
-    let mut query: Vec<(&str, String)> = Vec::with_capacity(4);
-    query.push((
-        "state",
-        args.state
-            .unwrap_or(PullRequestState::Open)
-            .as_str()
-            .to_string(),
-    ));
-    if let Some(head) = &args.head {
-        query.push(("head", head.clone()));
-    }
-    if let Some(base) = &args.base {
-        query.push(("base", base.clone()));
-    }
-    query.push((
-        "per_page",
-        args.per_page.unwrap_or(30).clamp(1, 100).to_string(),
-    ));
-    let token = github_token()?;
-
-    let response = send_github_request(
-        || {
-            let mut request = client.get(&url);
-            request = request.bearer_auth(&token);
-            request.query(&query)
-        },
-        "list pull requests",
-    )?;
-
-    let status = response.status();
-    let body = response
-        .text()
-        .map_err(|err| JsonRpcError::internal_error(format!("read GitHub response: {err}")))?;
-    if !status.is_success() {
-        return Err(JsonRpcError::internal_error(format!(
-            "GitHub API returned {status}: {}",
-            body.trim()
-        )));
-    }
-
-    serde_json::from_str(&body)
-        .map_err(|err| JsonRpcError::internal_error(format!("parse GitHub pull requests: {err}")))
-}
-
-fn list_issues(
-    client: &Client,
-    args: &ListIssuesArguments,
-    api_base_url: &str,
-) -> Result<Vec<GithubIssue>, JsonRpcError> {
-    let url = format!("{api_base_url}/repos/{}/{}/issues", args.owner, args.repo);
-    let mut query: Vec<(&str, String)> = Vec::with_capacity(5);
-    query.push((
-        "state",
-        args.state.unwrap_or(IssueState::Open).as_str().to_string(),
-    ));
-    if let Some(labels) = &args.labels
-        && !labels.is_empty()
-    {
-        query.push(("labels", labels.join(",")));
-    }
-    if let Some(assignee) = &args.assignee
-        && !assignee.is_empty()
-    {
-        query.push(("assignee", assignee.clone()));
-    }
-    query.push((
-        "per_page",
-        args.per_page.unwrap_or(30).clamp(1, 100).to_string(),
-    ));
-    let token = github_token()?;
-
-    let response = send_github_request(
-        || {
-            let mut request = client.get(&url);
-            request = request.bearer_auth(&token);
-            request.query(&query)
-        },
-        "list issues",
-    )?;
-
-    let status = response.status();
-    let body = response
-        .text()
-        .map_err(|err| JsonRpcError::internal_error(format!("read GitHub response: {err}")))?;
-    if !status.is_success() {
-        return Err(JsonRpcError::internal_error(format!(
-            "GitHub API returned {status}: {}",
-            body.trim()
-        )));
-    }
-
-    let issues: Vec<GithubIssue> = serde_json::from_str(&body)
-        .map_err(|err| JsonRpcError::internal_error(format!("parse GitHub issues: {err}")))?;
-    Ok(issues
-        .into_iter()
-        .filter(|issue| issue.pull_request.is_none())
-        .collect())
-}
-
 fn get_pull_request(
     client: &Client,
     owner: &str,
@@ -1523,97 +1514,6 @@ fn list_pull_request_reviews(
 
     serde_json::from_str(&body).map_err(|err| {
         JsonRpcError::internal_error(format!("parse GitHub pull request reviews: {err}"))
-    })
-}
-
-fn create_pull_request(
-    client: &Client,
-    args: &CreatePrArguments,
-    api_base_url: &str,
-) -> Result<GithubCreatePullRequestResponse, JsonRpcError> {
-    let url = format!("{api_base_url}/repos/{}/{}/pulls", args.owner, args.repo);
-    let mut payload = serde_json::json!({
-        "title": args.title,
-        "body": args.body,
-        "head": args.head,
-        "base": args.base,
-    });
-    if let Some(draft) = args.draft {
-        payload["draft"] = Value::Bool(draft);
-    }
-    let token = github_token()?;
-
-    let response = send_github_request(
-        || {
-            let mut request = client.post(&url);
-            request = request.bearer_auth(&token);
-            request.json(&payload)
-        },
-        "create pull request",
-    )?;
-
-    let status = response.status();
-    let body = response
-        .text()
-        .map_err(|err| JsonRpcError::internal_error(format!("read GitHub response: {err}")))?;
-    if !status.is_success() {
-        return Err(JsonRpcError::internal_error(format!(
-            "GitHub API returned {status}: {}",
-            body.trim()
-        )));
-    }
-
-    serde_json::from_str(&body).map_err(|err| {
-        JsonRpcError::internal_error(format!(
-            "parse GitHub pull request creation response: {err}"
-        ))
-    })
-}
-
-fn create_issue(
-    client: &Client,
-    args: &CreateIssueArguments,
-    api_base_url: &str,
-) -> Result<GithubCreateIssueResponse, JsonRpcError> {
-    let url = format!("{api_base_url}/repos/{}/{}/issues", args.owner, args.repo);
-    let mut payload = serde_json::json!({
-        "title": args.title,
-        "body": args.body,
-    });
-    if let Some(labels) = &args.labels
-        && !labels.is_empty()
-    {
-        payload["labels"] = Value::Array(labels.iter().cloned().map(Value::String).collect());
-    }
-    if let Some(assignees) = &args.assignees
-        && !assignees.is_empty()
-    {
-        payload["assignees"] = Value::Array(assignees.iter().cloned().map(Value::String).collect());
-    }
-    let token = github_token()?;
-
-    let response = send_github_request(
-        || {
-            let mut request = client.post(&url);
-            request = request.bearer_auth(&token);
-            request.json(&payload)
-        },
-        "create issue",
-    )?;
-
-    let status = response.status();
-    let body = response
-        .text()
-        .map_err(|err| JsonRpcError::internal_error(format!("read GitHub response: {err}")))?;
-    if !status.is_success() {
-        return Err(JsonRpcError::internal_error(format!(
-            "GitHub API returned {status}: {}",
-            body.trim()
-        )));
-    }
-
-    serde_json::from_str(&body).map_err(|err| {
-        JsonRpcError::internal_error(format!("parse GitHub issue creation response: {err}"))
     })
 }
 
@@ -1781,78 +1681,6 @@ fn comment_on_issue(
     })
 }
 
-fn close_issue(client: &Client, args: &CloseIssueArguments) -> Result<Value, JsonRpcError> {
-    let url = format!(
-        "https://api.github.com/repos/{}/{}/issues/{}",
-        args.owner, args.repo, args.number
-    );
-    let mut payload = serde_json::json!({ "state": "closed" });
-    if let Some(reason) = &args.reason {
-        payload["state_reason"] = Value::String(reason.clone());
-    }
-    let token = github_token()?;
-
-    let response = send_github_request(
-        || {
-            let mut request = client.patch(&url);
-            request = request.bearer_auth(&token);
-            request.json(&payload)
-        },
-        "close issue",
-    )?;
-
-    let status = response.status();
-    let body = response
-        .text()
-        .map_err(|err| JsonRpcError::internal_error(format!("read GitHub response: {err}")))?;
-    if !status.is_success() {
-        return Err(JsonRpcError::internal_error(format!(
-            "GitHub API returned {status}: {}",
-            body.trim()
-        )));
-    }
-
-    serde_json::from_str(&body)
-        .map_err(|err| JsonRpcError::internal_error(format!("parse GitHub issue response: {err}")))
-}
-
-fn add_labels_to_issue(
-    client: &Client,
-    args: &AddLabelsArguments,
-) -> Result<Vec<String>, JsonRpcError> {
-    let url = format!(
-        "https://api.github.com/repos/{}/{}/issues/{}/labels",
-        args.owner, args.repo, args.number
-    );
-    let payload = serde_json::json!({ "labels": args.labels });
-    let token = github_token()?;
-
-    let response = send_github_request(
-        || {
-            let mut request = client.post(&url);
-            request = request.bearer_auth(&token);
-            request.json(&payload)
-        },
-        "add labels to issue",
-    )?;
-
-    let status = response.status();
-    let body = response
-        .text()
-        .map_err(|err| JsonRpcError::internal_error(format!("read GitHub response: {err}")))?;
-    if !status.is_success() {
-        return Err(JsonRpcError::internal_error(format!(
-            "GitHub API returned {status}: {}",
-            body.trim()
-        )));
-    }
-
-    let labels: Vec<GithubLabel> = serde_json::from_str(&body).map_err(|err| {
-        JsonRpcError::internal_error(format!("parse GitHub labels response: {err}"))
-    })?;
-    Ok(labels.into_iter().map(|l| l.name).collect())
-}
-
 fn create_repo_label(client: &Client, args: &CreateLabelArguments) -> Result<Value, JsonRpcError> {
     let url = format!(
         "https://api.github.com/repos/{}/{}/labels",
@@ -1952,41 +1780,6 @@ fn list_commits(client: &Client, args: &ListCommitsArguments) -> Result<Vec<Valu
         .collect())
 }
 
-fn create_git_ref(client: &Client, args: &CreateBranchArguments) -> Result<Value, JsonRpcError> {
-    let url = format!(
-        "https://api.github.com/repos/{}/{}/git/refs",
-        args.owner, args.repo
-    );
-    let payload = serde_json::json!({
-        "ref": format!("refs/heads/{}", args.branch),
-        "sha": args.from_sha,
-    });
-    let token = github_token()?;
-
-    let response = send_github_request(
-        || {
-            let mut request = client.post(&url);
-            request = request.bearer_auth(&token);
-            request.json(&payload)
-        },
-        "create branch",
-    )?;
-
-    let status = response.status();
-    let body = response
-        .text()
-        .map_err(|err| JsonRpcError::internal_error(format!("read GitHub response: {err}")))?;
-    if !status.is_success() {
-        return Err(JsonRpcError::internal_error(format!(
-            "GitHub API returned {status}: {}",
-            body.trim()
-        )));
-    }
-
-    serde_json::from_str(&body)
-        .map_err(|err| JsonRpcError::internal_error(format!("parse GitHub ref response: {err}")))
-}
-
 fn get_branch(client: &Client, args: &GetBranchArguments) -> Result<Value, JsonRpcError> {
     let url = format!(
         "https://api.github.com/repos/{}/{}/branches/{}",
@@ -2053,166 +1846,11 @@ fn compare_branches(
     })
 }
 
-fn get_combined_status(
-    client: &Client,
-    args: &GetActionsStatusArguments,
-) -> Result<Value, JsonRpcError> {
-    let url = format!(
-        "https://api.github.com/repos/{}/{}/commits/{}/status",
-        args.owner, args.repo, args.ref_name
-    );
-    let token = github_token()?;
-
-    let response = send_github_request(
-        || {
-            let mut request = client.get(&url);
-            request = request.bearer_auth(&token);
-            request
-        },
-        "get combined status",
-    )?;
-
-    let status = response.status();
-    let body = response
-        .text()
-        .map_err(|err| JsonRpcError::internal_error(format!("read GitHub response: {err}")))?;
-    if !status.is_success() {
-        return Err(JsonRpcError::internal_error(format!(
-            "GitHub API returned {status}: {}",
-            body.trim()
-        )));
-    }
-
-    serde_json::from_str(&body)
-        .map_err(|err| JsonRpcError::internal_error(format!("parse GitHub status response: {err}")))
-}
-
 fn decode_github_file_content(content: &str) -> Result<Vec<u8>, JsonRpcError> {
     let compact: String = content.chars().filter(|c| !c.is_whitespace()).collect();
     BASE64
         .decode(compact.as_bytes())
         .map_err(|err| JsonRpcError::internal_error(format!("decode GitHub file content: {err}")))
-}
-
-fn create_pull_request_comment(
-    client: &Client,
-    args: &CommentPrArguments,
-    api_base_url: &str,
-) -> Result<GithubIssueComment, JsonRpcError> {
-    let url = format!(
-        "{api_base_url}/repos/{}/{}/issues/{}/comments",
-        args.owner, args.repo, args.number
-    );
-    let payload = serde_json::json!({
-        "body": args.body,
-    });
-    let token = github_token()?;
-
-    let response = send_github_request(
-        || {
-            let mut request = client.post(&url);
-            request = request.bearer_auth(&token);
-            request.json(&payload)
-        },
-        "create pull request comment",
-    )?;
-
-    let status = response.status();
-    let body = response
-        .text()
-        .map_err(|err| JsonRpcError::internal_error(format!("read GitHub response: {err}")))?;
-    if !status.is_success() {
-        return Err(JsonRpcError::internal_error(format!(
-            "GitHub API returned {status}: {}",
-            body.trim()
-        )));
-    }
-
-    serde_json::from_str(&body).map_err(|err| {
-        JsonRpcError::internal_error(format!("parse GitHub issue comment response: {err}"))
-    })
-}
-
-fn submit_pull_request_review(
-    client: &Client,
-    args: &ReviewPrArguments,
-    api_base_url: &str,
-) -> Result<GithubPullRequestReview, JsonRpcError> {
-    let url = format!(
-        "{api_base_url}/repos/{}/{}/pulls/{}/reviews",
-        args.owner, args.repo, args.number
-    );
-    let payload = serde_json::json!({
-        "body": args.body,
-        "event": args.event.as_str(),
-    });
-    let token = github_token()?;
-
-    let response = send_github_request(
-        || {
-            let mut request = client.post(&url);
-            request = request.bearer_auth(&token);
-            request.json(&payload)
-        },
-        "submit pull request review",
-    )?;
-
-    let status = response.status();
-    let body = response
-        .text()
-        .map_err(|err| JsonRpcError::internal_error(format!("read GitHub response: {err}")))?;
-    if !status.is_success() {
-        return Err(JsonRpcError::internal_error(format!(
-            "GitHub API returned {status}: {}",
-            body.trim()
-        )));
-    }
-
-    serde_json::from_str(&body).map_err(|err| {
-        JsonRpcError::internal_error(format!("parse GitHub pull request review response: {err}"))
-    })
-}
-
-fn merge_pull_request(
-    client: &Client,
-    args: &MergePrArguments,
-    api_base_url: &str,
-) -> Result<GithubMergePullRequestResponse, JsonRpcError> {
-    let url = format!(
-        "{api_base_url}/repos/{}/{}/pulls/{}/merge",
-        args.owner, args.repo, args.number
-    );
-    let mut payload = serde_json::json!({
-        "merge_method": args.merge_method.as_str(),
-    });
-    if let Some(commit_title) = &args.commit_title {
-        payload["commit_title"] = Value::String(commit_title.clone());
-    }
-    let token = github_token()?;
-
-    let response = send_github_request(
-        || {
-            let mut request = client.put(&url);
-            request = request.bearer_auth(&token);
-            request.json(&payload)
-        },
-        "merge pull request",
-    )?;
-
-    let status = response.status();
-    let body = response
-        .text()
-        .map_err(|err| JsonRpcError::internal_error(format!("read GitHub response: {err}")))?;
-    if !status.is_success() {
-        return Err(JsonRpcError::internal_error(format!(
-            "GitHub API returned {status}: {}",
-            body.trim()
-        )));
-    }
-
-    serde_json::from_str(&body).map_err(|err| {
-        JsonRpcError::internal_error(format!("parse GitHub pull request merge response: {err}"))
-    })
 }
 
 fn summarize_pull_request(
@@ -2473,6 +2111,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn summarize_pull_request_includes_diff_stats_and_review_state() {
         let pr = GithubPullRequestDetails {
             url: "https://api.github.com/repos/octo/hello-world/pulls/17".to_string(),
@@ -2856,7 +2495,9 @@ mod tests {
             .expect("write response");
         });
 
-        let client = github_client().expect("client");
+        let client = GitHubClient::new("test-token")
+            .expect("client")
+            .with_api_base(format!("http://{addr}"));
         let args = CreateIssueArguments {
             owner: "octo".to_string(),
             repo: "hello-world".to_string(),
@@ -2866,13 +2507,18 @@ mod tests {
             assignees: Some(vec!["octocat".to_string(), "maintainer".to_string()]),
         };
 
-        let issue =
-            create_issue(&client, &args, &format!("http://{}", addr)).expect("create issue");
-        assert_eq!(issue.number, 101);
-        assert_eq!(
-            issue.html_url.as_deref(),
-            Some("https://github.com/octo/hello-world/issues/101")
-        );
+        let (number, html_url) = client
+            .create_issue_with_assignees(
+                &args.owner,
+                &args.repo,
+                &args.title,
+                &args.body,
+                args.labels.as_deref().unwrap_or_default(),
+                args.assignees.as_deref().unwrap_or_default(),
+            )
+            .expect("create issue");
+        assert_eq!(number, 101);
+        assert_eq!(html_url, "https://github.com/octo/hello-world/issues/101");
 
         server.join().expect("server thread");
     }
@@ -2932,7 +2578,9 @@ mod tests {
             .expect("write response");
         });
 
-        let client = github_client().expect("client");
+        let client = GitHubClient::new("test-token")
+            .expect("client")
+            .with_api_base(format!("http://{addr}"));
         let args = ListIssuesArguments {
             owner: "octo".to_string(),
             repo: "hello-world".to_string(),
@@ -2942,7 +2590,21 @@ mod tests {
             per_page: Some(50),
         };
 
-        let issues = list_issues(&client, &args, &format!("http://{}", addr)).expect("list issues");
+        let issues_value = client
+            .list_issues(
+                &args.owner,
+                &args.repo,
+                args.state.unwrap_or(IssueState::Open).as_str(),
+                args.labels.as_deref().unwrap_or_default(),
+                args.assignee.as_deref(),
+                args.per_page.unwrap_or(30),
+            )
+            .expect("list issues");
+        let issues: Vec<GithubIssue> = serde_json::from_value::<Vec<GithubIssue>>(issues_value)
+            .expect("parse issues")
+            .into_iter()
+            .filter(|issue: &GithubIssue| issue.pull_request.is_none())
+            .collect();
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].number, 101);
         assert_eq!(issues[0].title, "Bug: login redirect");
@@ -3010,7 +2672,9 @@ mod tests {
             .expect("write response");
         });
 
-        let client = github_client().expect("client");
+        let client = GitHubClient::new("test-token")
+            .expect("client")
+            .with_api_base(format!("http://{addr}"));
         let args = CreatePrArguments {
             owner: "octo".to_string(),
             repo: "hello-world".to_string(),
@@ -3021,13 +2685,19 @@ mod tests {
             draft: Some(true),
         };
 
-        let pr =
-            create_pull_request(&client, &args, &format!("http://{}", addr)).expect("create pr");
-        assert_eq!(pr.number, 17);
-        assert_eq!(
-            pr.html_url.as_deref(),
-            Some("https://github.com/octo/hello-world/pull/17")
-        );
+        let (number, html_url) = client
+            .create_pr(
+                &args.owner,
+                &args.repo,
+                &args.title,
+                &args.body,
+                &args.head,
+                &args.base,
+                args.draft.unwrap_or(false),
+            )
+            .expect("create pr");
+        assert_eq!(number, 17);
+        assert_eq!(html_url, "https://github.com/octo/hello-world/pull/17");
 
         server.join().expect("server thread");
     }
@@ -3094,7 +2764,9 @@ mod tests {
             .expect("write response");
         });
 
-        let client = github_client().expect("client");
+        let client = GitHubClient::new("test-token")
+            .expect("client")
+            .with_api_base(format!("http://{addr}"));
         let args = ReviewPrArguments {
             owner: "octo".to_string(),
             repo: "hello-world".to_string(),
@@ -3103,8 +2775,18 @@ mod tests {
             event: GithubReviewEvent::Approve,
         };
 
-        let review = submit_pull_request_review(&client, &args, &format!("http://{}", addr))
-            .expect("submit review");
+        let review: GithubPullRequestReview = serde_json::from_value(
+            client
+                .review_pr(
+                    &args.owner,
+                    &args.repo,
+                    args.number,
+                    &args.body,
+                    args.event.as_str(),
+                )
+                .expect("submit review"),
+        )
+        .expect("parse review");
         assert_eq!(review.id, 88);
         assert_eq!(review.state, GithubReviewState::Approved);
         assert_eq!(review.body.as_deref(), Some("Looks good to me."));
@@ -3172,7 +2854,9 @@ mod tests {
             .expect("write response");
         });
 
-        let client = github_client().expect("client");
+        let client = GitHubClient::new("test-token")
+            .expect("client")
+            .with_api_base(format!("http://{addr}"));
         let args = MergePrArguments {
             owner: "octo".to_string(),
             repo: "hello-world".to_string(),
@@ -3181,8 +2865,18 @@ mod tests {
             commit_title: Some("Release v1.2.3".to_string()),
         };
 
-        let merge =
-            merge_pull_request(&client, &args, &format!("http://{}", addr)).expect("merge pr");
+        let merge: GithubMergePullRequestResponse = serde_json::from_value(
+            client
+                .merge_pr_with_title(
+                    &args.owner,
+                    &args.repo,
+                    args.number,
+                    args.merge_method.as_str(),
+                    args.commit_title.as_deref(),
+                )
+                .expect("merge pr"),
+        )
+        .expect("parse merge response");
         assert!(merge.merged);
         assert_eq!(merge.sha.as_deref(), Some("abc123"));
         assert_eq!(

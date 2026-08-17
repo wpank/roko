@@ -2,6 +2,8 @@
 
 > Depth for [07-AGENT-RUNTIME.md](../../unified/07-AGENT-RUNTIME.md). Redesigns three-cognitive-speeds and dual-process theory as three concurrent Hot Graphs, derives the T0/T1/T2 cascade from Expected Free Energy, and specifies the 16 T0 probes as concrete Cells.
 
+> **Implementation status (2026-08-17):** PARTIAL. The gamma/theta/delta tick constants, `HeartbeatSpeed`, adaptive clock state, and Bus topic constants are implemented in `crates/roko-runtime/src/heartbeat.rs`. EFE tier selection field exists in `CorticalState`. The "three concurrent Hot Graphs per Agent" formulation is aspirational architecture — the actual runtime wires heartbeat tick events on the shared Bus, not three independent Graph instances per agent. T0 probes as Verify Cells and the full EFE cascade from probe outputs remain spec-only.
+
 ---
 
 ## 1. Three Timescales, Three Hot Graphs

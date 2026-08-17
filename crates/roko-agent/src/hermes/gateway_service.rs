@@ -12,10 +12,8 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use async_trait::async_trait;
-use tokio::process::Command;
-
 use crate::harness::{HarnessError, HarnessService, ServiceStatus};
+use async_trait::async_trait;
 
 use super::config::HermesConfig;
 
@@ -111,15 +109,18 @@ impl HarnessService for HermesGatewayService {
             .timeout(Duration::from_secs(2))
             .send()
             .await
+            && resp.status().is_success()
         {
-            if resp.status().is_success() {
-                tracing::info!("hermes gateway already running and healthy");
-                return Ok(());
-            }
+            tracing::info!("hermes gateway already running and healthy");
+            return Ok(());
         }
 
         // 2. Build the command.
-        let mut cmd = Command::new(&self.config.binary);
+        let mut cmd = crate::process::confined_command(
+            &self.config.binary,
+            self.config.resource_limits.as_ref(),
+        )
+        .map_err(HarnessError::Io)?;
         cmd.arg("gateway").arg("run");
 
         // Detach stdin so the gateway doesn't block on terminal input.
@@ -129,7 +130,6 @@ impl HarnessService for HermesGatewayService {
 
         // Set process group so we can kill the entire tree.
         crate::process::group::set_process_group(&mut cmd);
-
         tracing::info!(
             binary = %self.config.binary,
             "starting hermes gateway"

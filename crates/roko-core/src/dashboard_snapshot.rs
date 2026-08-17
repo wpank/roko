@@ -11,6 +11,58 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Semantic category for an item requiring human attention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InboxCategory {
+    GateVerdict,
+    AgentQuestion,
+    BudgetAlert,
+    TaskCompletion,
+    StructuralChange,
+    SecurityEvent,
+    KnowledgeEvent,
+    SystemEvent,
+}
+
+/// Human-attention priority used by every Inbox rendering target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UrgencyLevel {
+    Notify,
+    Question,
+    Review,
+}
+
+/// Default routing policy for an Inbox category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InboxRouting {
+    pub urgency: UrgencyLevel,
+    pub transport_strip: bool,
+    pub badge: bool,
+    pub full_panel: bool,
+}
+
+/// Return the stable default urgency and visibility policy for a category.
+#[must_use]
+pub const fn inbox_routing(category: InboxCategory) -> InboxRouting {
+    let urgency = match category {
+        InboxCategory::GateVerdict
+        | InboxCategory::StructuralChange
+        | InboxCategory::SecurityEvent => UrgencyLevel::Review,
+        InboxCategory::AgentQuestion | InboxCategory::BudgetAlert => UrgencyLevel::Question,
+        InboxCategory::TaskCompletion
+        | InboxCategory::KnowledgeEvent
+        | InboxCategory::SystemEvent => UrgencyLevel::Notify,
+    };
+    InboxRouting {
+        urgency,
+        transport_strip: !matches!(urgency, UrgencyLevel::Notify),
+        badge: true,
+        full_panel: true,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Event type — the only thing DashboardSnapshot knows how to ingest
 // ---------------------------------------------------------------------------
@@ -113,6 +165,15 @@ pub enum DashboardEvent {
         /// Current rolling c-factor buckets for the Learning tab.
         buckets: Vec<CFactorBucket>,
     },
+    /// A Lens-backed StateHub projection advanced to a new version.
+    ///
+    /// The projection value remains in StateHub's dedicated projection store;
+    /// this lightweight event invalidates live HTTP/WS consumers.
+    ProjectionUpdated {
+        projection_id: String,
+        version: u64,
+        source_lens: String,
+    },
     /// An episode was recorded by the learning subsystem.
     EpisodeRecorded {
         /// Agent that produced the episode.
@@ -179,25 +240,6 @@ pub enum DashboardEvent {
         /// Current rolling efficiency buckets for the Learning tab.
         buckets: Vec<EfficiencyBucket>,
     },
-    /// ISFR composite rate was computed.
-    IsfrRateComputed {
-        composite_bps: u64,
-        lending_bps: u64,
-        structured_bps: u64,
-        funding_bps: u64,
-        staking_bps: u64,
-        confidence_bps: u64,
-        source_count: usize,
-        timestamp_ms: i64,
-    },
-    /// ISFR source health changed.
-    IsfrSourceHealthChanged {
-        source_id: String,
-        health: String,
-        last_rate_bps: Option<u64>,
-    },
-    /// ISFR keeper started or stopped.
-    IsfrKeeperStateChanged { running: bool },
     /// New block observed on the connected chain.
     ChainBlock {
         number: u64,
@@ -245,6 +287,38 @@ pub enum DashboardEvent {
     },
     /// A feed agent went offline.
     FeedAgentOffline { agent_id: String },
+    /// A paid feed request or metered usage charge was received.
+    PaymentReceived {
+        feed_id: String,
+        protocol: String,
+        amount_korai: f64,
+        payer: String,
+        payee: String,
+    },
+    /// A payment settlement batch or metered session completed.
+    SettlementCompleted {
+        protocol: String,
+        batch_size: u32,
+        total_korai: f64,
+    },
+    /// A new item entered the human-attention Inbox.
+    InboxItemReceived {
+        item_id: String,
+        category: InboxCategory,
+        urgency: UrgencyLevel,
+        summary: String,
+    },
+    /// A human approved a pending Inbox item.
+    InboxApprove { item_id: String },
+    /// A human rejected a pending Inbox item.
+    InboxReject { item_id: String, reason: String },
+    /// A human deferred a pending Inbox item until an RFC 3339 timestamp.
+    InboxDefer {
+        item_id: String,
+        defer_until: String,
+    },
+    /// A human dismissed a pending notification.
+    InboxDismiss { item_id: String },
     /// An error occurred.
     Error { message: String },
 }
@@ -820,6 +894,18 @@ pub struct DashboardEventLogEntry {
     pub message: String,
 }
 
+/// One unresolved Inbox item retained in the materialized dashboard state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InboxItemState {
+    pub item_id: String,
+    pub category: InboxCategory,
+    pub urgency: UrgencyLevel,
+    pub summary: String,
+    pub received_at_ms: u64,
+    #[serde(default)]
+    pub defer_until: Option<String>,
+}
+
 /// The full materialized dashboard state.
 ///
 /// Updated atomically by `StateHub` (in `roko-cli`) via
@@ -885,6 +971,27 @@ pub struct DashboardSnapshot {
     /// Knowledge entries for the Inspect (F7) tab.
     #[serde(default)]
     pub knowledge_entries: Vec<KnowledgeBrowseEntry>,
+    /// Total paid feed and metered-session payments received.
+    #[serde(default)]
+    pub payment_count: u64,
+    /// Cumulative KORAI received through payment protocols.
+    #[serde(default)]
+    pub total_payment_korai: f64,
+    /// Payment count grouped by protocol name.
+    #[serde(default)]
+    pub payments_by_protocol: HashMap<String, u64>,
+    /// Total completed settlement operations.
+    #[serde(default)]
+    pub settlement_count: u64,
+    /// Unresolved human-attention items keyed by stable item id.
+    #[serde(default)]
+    pub inbox_items: HashMap<String, InboxItemState>,
+    /// Terminal item ids retained to make replay and retry idempotent.
+    #[serde(default)]
+    pub inbox_resolved_ids: HashSet<String>,
+    /// Number of unresolved Inbox items.
+    #[serde(default)]
+    pub inbox_pending_count: usize,
     /// Overall counts.
     pub stats: SnapshotStats,
 }
@@ -1330,16 +1437,72 @@ impl DashboardSnapshot {
             DashboardEvent::EfficiencyTrendUpdated { buckets } => {
                 self.efficiency_trend = buckets.clone();
             }
-            DashboardEvent::JobExecutionStarted { .. } | DashboardEvent::JobProgress { .. } => {}
-            DashboardEvent::IsfrRateComputed { .. }
-            | DashboardEvent::IsfrSourceHealthChanged { .. }
-            | DashboardEvent::IsfrKeeperStateChanged { .. } => {}
+            DashboardEvent::JobExecutionStarted { .. }
+            | DashboardEvent::JobProgress { .. }
+            | DashboardEvent::ProjectionUpdated { .. } => {}
             DashboardEvent::ChainBlock { .. }
             | DashboardEvent::ChainTx { .. }
             | DashboardEvent::ChainContractEvent { .. } => {}
             DashboardEvent::FeedTick { .. }
             | DashboardEvent::FeedAgentOnline { .. }
             | DashboardEvent::FeedAgentOffline { .. } => {}
+            DashboardEvent::PaymentReceived {
+                protocol,
+                amount_korai,
+                ..
+            } => {
+                self.payment_count = self.payment_count.saturating_add(1);
+                self.total_payment_korai += amount_korai;
+                let count = self
+                    .payments_by_protocol
+                    .entry(protocol.clone())
+                    .or_default();
+                *count = count.saturating_add(1);
+            }
+            DashboardEvent::SettlementCompleted { .. } => {
+                self.settlement_count = self.settlement_count.saturating_add(1);
+            }
+            DashboardEvent::InboxItemReceived {
+                item_id,
+                category,
+                urgency,
+                summary,
+            } => {
+                if !self.inbox_resolved_ids.contains(item_id) {
+                    self.inbox_items
+                        .entry(item_id.clone())
+                        .and_modify(|item| {
+                            item.category = *category;
+                            item.urgency = *urgency;
+                            item.summary.clone_from(summary);
+                        })
+                        .or_insert_with(|| InboxItemState {
+                            item_id: item_id.clone(),
+                            category: *category,
+                            urgency: *urgency,
+                            summary: summary.clone(),
+                            received_at_ms: ts,
+                            defer_until: None,
+                        });
+                }
+                self.inbox_pending_count = self.inbox_items.len();
+            }
+            DashboardEvent::InboxDefer {
+                item_id,
+                defer_until,
+            } => {
+                if let Some(item) = self.inbox_items.get_mut(item_id) {
+                    item.defer_until = Some(defer_until.clone());
+                }
+                self.inbox_pending_count = self.inbox_items.len();
+            }
+            DashboardEvent::InboxApprove { item_id }
+            | DashboardEvent::InboxReject { item_id, .. }
+            | DashboardEvent::InboxDismiss { item_id } => {
+                self.inbox_items.remove(item_id);
+                self.inbox_resolved_ids.insert(item_id.clone());
+                self.inbox_pending_count = self.inbox_items.len();
+            }
         }
     }
 
@@ -1366,7 +1529,25 @@ impl DashboardSnapshot {
         None
     }
 
-    pub fn load_from_workdir(workdir: &Path) -> Result<Self, io::Error> {
+    #[cfg(test)]
+    pub(crate) fn load_from_workdir(workdir: &Path) -> Result<Self, io::Error> {
+        let root = resolve_snapshot_root(workdir);
+        let state = read_json_value(&root.join(".roko/state/executor.json"))?
+            .unwrap_or(serde_json::Value::Null);
+        Self::load_from_workdir_with_runner_projection(&root, &state, None)
+    }
+
+    /// Build a dashboard snapshot from an already validated Runner projection.
+    ///
+    /// Higher layers own the unified Runner-v2 snapshot format and checksum.
+    /// Supplying its parsed executor and gate-threshold payloads here keeps the
+    /// domain projection in `roko-core` without introducing an upward crate
+    /// dependency. Other durable dashboard inputs retain their normal paths.
+    pub fn load_from_workdir_with_runner_projection(
+        workdir: &Path,
+        executor_state: &serde_json::Value,
+        gate_thresholds_json: Option<&str>,
+    ) -> Result<Self, io::Error> {
         let root = resolve_snapshot_root(workdir);
 
         // Derive paths through Workspace accessors when the workspace is
@@ -1387,16 +1568,36 @@ impl DashboardSnapshot {
                 (rd, sd, ld, ep)
             };
 
-        let state =
-            read_json_value(&state_dir.join("executor.json"))?.unwrap_or(serde_json::Value::Null);
-        let task_trackers = read_task_trackers(&state_dir.join("task-trackers.json"))?;
-        let signal_gates = read_signal_gates(&engrams_path)?;
-        let event_entries = read_event_entries(&state_dir.join("events.json"))?;
-        let experiment_winners = read_experiment_winners(&learn_dir.join("experiments.json"))?;
-        let cfactor_trend = read_cfactor_trend(&learn_dir.join("c-factor.jsonl"))?;
+        let task_trackers = if executor_state.get("_runner_projection").is_some() {
+            HashMap::new()
+        } else {
+            read_task_trackers(&state_dir.join("task-trackers.json")).unwrap_or_else(|error| {
+                tracing::warn!(%error, "dashboard auxiliary task tracker unavailable");
+                HashMap::new()
+            })
+        };
+        let signal_gates = read_signal_gates(&engrams_path).unwrap_or_else(|error| {
+            tracing::warn!(%error, "dashboard auxiliary signal gates unavailable");
+            Vec::new()
+        });
+        let event_entries =
+            read_event_entries(&state_dir.join("events.json")).unwrap_or_else(|error| {
+                tracing::warn!(%error, "dashboard auxiliary event snapshot unavailable");
+                Vec::new()
+            });
+        let experiment_winners = read_experiment_winners(&learn_dir.join("experiments.json"))
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "dashboard auxiliary experiment store unavailable");
+                Vec::new()
+            });
+        let cfactor_trend =
+            read_cfactor_trend(&learn_dir.join("c-factor.jsonl")).unwrap_or_else(|error| {
+                tracing::warn!(%error, "dashboard auxiliary c-factor history unavailable");
+                Vec::new()
+            });
 
         let mut snapshot = snapshot_from_workdir_parts(
-            &state,
+            executor_state,
             &task_trackers,
             &signal_gates,
             &event_entries,
@@ -1406,9 +1607,14 @@ impl DashboardSnapshot {
 
         // Bootstrap new fields from persisted files.
         snapshot.cascade_router_json =
-            std::fs::read_to_string(learn_dir.join("cascade-router.json")).unwrap_or_default();
-        snapshot.gate_thresholds_json =
-            std::fs::read_to_string(learn_dir.join("gate-thresholds.json")).unwrap_or_default();
+            read_bounded_dashboard_text(&learn_dir.join("cascade-router.json")).unwrap_or_default();
+        snapshot.gate_thresholds_json = gate_thresholds_json.map_or_else(
+            || {
+                read_bounded_dashboard_text(&learn_dir.join("gate-thresholds.json"))
+                    .unwrap_or_default()
+            },
+            ToOwned::to_owned,
+        );
 
         // Bootstrap episodes from JSONL.
         bootstrap_episodes(&mut snapshot, &roko_dir);
@@ -1428,7 +1634,7 @@ fn current_ts_millis() -> u64 {
 }
 
 fn read_json_value(path: &Path) -> Result<Option<serde_json::Value>, io::Error> {
-    match std::fs::read_to_string(path) {
+    match read_bounded_dashboard_text(path) {
         Ok(text) => {
             let value = serde_json::from_str::<serde_json::Value>(&text).map_err(|err| {
                 io::Error::new(
@@ -1441,6 +1647,42 @@ fn read_json_value(path: &Path) -> Result<Option<serde_json::Value>, io::Error> 
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(err),
     }
+}
+
+const MAX_DASHBOARD_AUX_BYTES: u64 = 16 * 1024 * 1024;
+
+fn read_bounded_dashboard_text(path: &Path) -> Result<String, io::Error> {
+    use std::io::Read as _;
+
+    let file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    if len > MAX_DASHBOARD_AUX_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{} is {len} bytes; maximum is {MAX_DASHBOARD_AUX_BYTES}",
+                path.display()
+            ),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(len as usize);
+    file.take(MAX_DASHBOARD_AUX_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_DASHBOARD_AUX_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{} exceeded maximum {MAX_DASHBOARD_AUX_BYTES}",
+                path.display()
+            ),
+        ));
+    }
+    String::from_utf8(bytes).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} is not UTF-8: {error}", path.display()),
+        )
+    })
 }
 
 #[derive(Debug, Default)]
@@ -1485,12 +1727,18 @@ fn snapshot_from_workdir_parts(
                 &mut snapshot,
                 &plan_id,
                 plan_state,
-                task_trackers.get(&plan_id),
+                state
+                    .get("_runner_projection")
+                    .is_none()
+                    .then(|| task_trackers.get(&plan_id))
+                    .flatten(),
                 &agent_roles,
                 &mut plan_gate_results,
             );
         }
     }
+
+    apply_runner_lifecycle_projection(&mut snapshot, state, &agent_roles);
 
     if plan_gate_results == 0 {
         for gate in signal_gates {
@@ -1576,7 +1824,7 @@ fn read_cfactor_trend(path: &Path) -> Result<Vec<CFactorBucket>, io::Error> {
     const CFACTOR_TREND_BUCKETS: usize = 24;
     const CFACTOR_TREND_BUCKET_MS: i64 = 60 * 60 * 1000;
 
-    let content = match std::fs::read_to_string(path) {
+    let content = match read_bounded_dashboard_text(path) {
         Ok(text) => text,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err),
@@ -1823,7 +2071,7 @@ fn bootstrap_plan_state(
         .get("paused")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
-    let active = !terminal && !paused;
+    let active = !terminal && !paused && !phase.eq_ignore_ascii_case("queued");
     let active_task_id = plan_state
         .get("task_id")
         .and_then(serde_json::Value::as_str)
@@ -1876,49 +2124,47 @@ fn bootstrap_plan_state(
     }
 
     if active {
-        if let Some(task_id) = active_task_id {
-            if seen_task_ids.insert(task_id.to_string()) {
-                snapshot.stats.tasks_active += 1;
-                snapshot.tasks.insert(
-                    format!("{plan_id}/{task_id}"),
-                    TaskState {
-                        task_id: task_id.to_string(),
-                        title: String::new(),
-                        plan_id: plan_id.to_string(),
-                        phase: phase.clone(),
-                        outcome: None,
-                    },
-                );
-            }
+        if let Some(task_id) = active_task_id
+            && seen_task_ids.insert(task_id.to_string())
+        {
+            snapshot.stats.tasks_active += 1;
+            snapshot.tasks.insert(
+                format!("{plan_id}/{task_id}"),
+                TaskState {
+                    task_id: task_id.to_string(),
+                    title: String::new(),
+                    plan_id: plan_id.to_string(),
+                    phase: phase.clone(),
+                    outcome: None,
+                },
+            );
         }
-    } else if terminal {
-        if let Some(task_id) = active_task_id {
-            if seen_task_ids.insert(task_id.to_string()) {
-                let failed =
-                    phase.eq_ignore_ascii_case("failed") || phase.eq_ignore_ascii_case("error");
-                if failed {
-                    tasks_failed += 1;
-                    snapshot.stats.tasks_failed += 1;
+    } else if terminal
+        && let Some(task_id) = active_task_id
+        && seen_task_ids.insert(task_id.to_string())
+    {
+        let failed = phase.eq_ignore_ascii_case("failed") || phase.eq_ignore_ascii_case("error");
+        if failed {
+            tasks_failed += 1;
+            snapshot.stats.tasks_failed += 1;
+        } else {
+            tasks_done += 1;
+            snapshot.stats.tasks_completed += 1;
+        }
+        snapshot.tasks.insert(
+            format!("{plan_id}/{task_id}"),
+            TaskState {
+                task_id: task_id.to_string(),
+                title: String::new(),
+                plan_id: plan_id.to_string(),
+                phase: String::from("completed"),
+                outcome: Some(if failed {
+                    String::from("failed")
                 } else {
-                    tasks_done += 1;
-                    snapshot.stats.tasks_completed += 1;
-                }
-                snapshot.tasks.insert(
-                    format!("{plan_id}/{task_id}"),
-                    TaskState {
-                        task_id: task_id.to_string(),
-                        title: String::new(),
-                        plan_id: plan_id.to_string(),
-                        phase: String::from("completed"),
-                        outcome: Some(if failed {
-                            String::from("failed")
-                        } else {
-                            String::from("success")
-                        }),
-                    },
-                );
-            }
-        }
+                    String::from("success")
+                }),
+            },
+        );
     }
 
     snapshot.plans.insert(
@@ -1978,6 +2224,8 @@ fn bootstrap_plan_state(
             }
             if active && !entry.active {
                 entry.active = true;
+                entry.current_plan = plan_id.to_string();
+                entry.current_task = active_task_id.unwrap_or_default().to_string();
                 snapshot.stats.agents_active += 1;
             }
         }
@@ -2070,8 +2318,366 @@ fn current_phase_label(plan_state: &serde_json::Value) -> Option<String> {
 fn is_terminal_phase(phase: &str) -> bool {
     matches!(
         phase.trim().to_ascii_lowercase().as_str(),
-        "done" | "completed" | "complete" | "failed" | "error" | "skipped"
+        "completed" | "complete" | "failed" | "skipped"
     )
+}
+
+fn apply_runner_lifecycle_projection(
+    snapshot: &mut DashboardSnapshot,
+    state: &serde_json::Value,
+    agent_roles: &HashMap<String, String>,
+) {
+    let Some(runner) = state
+        .get("_runner_projection")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return;
+    };
+
+    snapshot.tasks.clear();
+    snapshot.agents.clear();
+    snapshot.stats.tasks_active = 0;
+    snapshot.stats.tasks_completed = 0;
+    snapshot.stats.tasks_failed = 0;
+    snapshot.stats.agents_active = 0;
+    for plan in snapshot.plans.values_mut() {
+        plan.tasks_total = 0;
+        plan.tasks_done = 0;
+        plan.tasks_failed = 0;
+    }
+
+    let lifecycle = runner
+        .get("lifecycle")
+        .and_then(serde_json::Value::as_object);
+    if let Some(plan_lifecycle) = lifecycle
+        .and_then(|lifecycle| lifecycle.get("plans"))
+        .and_then(serde_json::Value::as_object)
+    {
+        snapshot.stats.plans_active = 0;
+        snapshot.stats.plans_completed = 0;
+        snapshot.stats.plans_failed = 0;
+        for (plan_id, plan) in &mut snapshot.plans {
+            let paused = !plan.active
+                && !is_terminal_phase(&plan.phase)
+                && !plan.phase.eq_ignore_ascii_case("queued");
+            match plan_lifecycle
+                .get(plan_id)
+                .and_then(serde_json::Value::as_str)
+            {
+                Some("started") => {
+                    plan.active = !paused;
+                    if plan.active {
+                        snapshot.stats.plans_active += 1;
+                    }
+                }
+                Some("succeeded") => {
+                    plan.active = false;
+                    plan.phase = "complete".to_string();
+                    snapshot.stats.plans_completed += 1;
+                }
+                Some("failed") => {
+                    plan.active = false;
+                    plan.phase = "failed".to_string();
+                    snapshot.stats.plans_failed += 1;
+                }
+                Some("skipped") => {
+                    plan.active = false;
+                    plan.phase = "skipped".to_string();
+                    snapshot.stats.plans_completed += 1;
+                }
+                _ if plan.active => snapshot.stats.plans_active += 1,
+                _ if plan.phase.eq_ignore_ascii_case("failed") => {
+                    snapshot.stats.plans_failed += 1;
+                }
+                _ if is_terminal_phase(&plan.phase) => snapshot.stats.plans_completed += 1,
+                _ => {}
+            }
+        }
+    }
+    let tasks = lifecycle
+        .and_then(|lifecycle| lifecycle.get("tasks"))
+        .and_then(serde_json::Value::as_object);
+    if let Some(tasks) = tasks {
+        let mut task_keys = tasks.keys().collect::<Vec<_>>();
+        task_keys.sort();
+        for key in task_keys {
+            let task = &tasks[key];
+            let Some(plan_id) = task.get("plan_id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let Some(task_id) = task.get("task_id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let status = task
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("started");
+            let paused = snapshot
+                .plans
+                .get(plan_id)
+                .is_some_and(|plan| !plan.active && !is_terminal_phase(&plan.phase));
+            let active = matches!(status, "started" | "running" | "retrying") && !paused;
+            let outcome = runner_terminal_task_outcome(runner, plan_id, task_id).or(match status {
+                "passed" => Some("success"),
+                "failed" | "exhausted" | "timed_out" => Some("failed"),
+                "cancelled" => Some("cancelled"),
+                _ => None,
+            });
+            snapshot.tasks.insert(
+                format!("{plan_id}/{task_id}"),
+                TaskState {
+                    task_id: task_id.to_string(),
+                    title: String::new(),
+                    plan_id: plan_id.to_string(),
+                    phase: if paused { "paused" } else { status }.to_string(),
+                    outcome: outcome.map(str::to_string),
+                },
+            );
+            if let Some(plan) = snapshot.plans.get_mut(plan_id) {
+                plan.tasks_total += 1;
+                match outcome {
+                    Some("success") => plan.tasks_done += 1,
+                    Some("failed" | "cancelled") => plan.tasks_failed += 1,
+                    _ => {}
+                }
+            }
+            if active {
+                snapshot.stats.tasks_active += 1;
+            } else {
+                match outcome {
+                    Some("success") => snapshot.stats.tasks_completed += 1,
+                    Some("failed" | "cancelled") => snapshot.stats.tasks_failed += 1,
+                    _ => {}
+                }
+            }
+        }
+    } else {
+        apply_runner_terminal_task_maps(snapshot, runner);
+    }
+
+    let attempts = lifecycle
+        .and_then(|lifecycle| lifecycle.get("task_attempts"))
+        .and_then(serde_json::Value::as_object);
+    let Some(attempts) = attempts else {
+        return;
+    };
+    let mut latest = HashMap::<String, &serde_json::Value>::new();
+    for attempt in attempts.values() {
+        let Some(plan_id) = attempt.get("plan_id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(task_id) = attempt.get("task_id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let attempt_number = attempt
+            .get("attempt")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        if tasks
+            .and_then(|tasks| tasks.get(&format!("{plan_id}:{task_id}")))
+            .and_then(|task| task.get("current_attempt"))
+            .and_then(serde_json::Value::as_u64)
+            != Some(attempt_number)
+        {
+            continue;
+        }
+        let Some(agent_id) = attempt.get("agent_id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let replace = latest.get(agent_id).is_none_or(|current| {
+            let current_rank = (
+                current
+                    .get("started_at_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or_default(),
+                current
+                    .get("attempt")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or_default(),
+                current
+                    .get("plan_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+                current
+                    .get("task_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+            );
+            let next_rank = (
+                attempt
+                    .get("started_at_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or_default(),
+                attempt_number,
+                attempt
+                    .get("plan_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+                attempt
+                    .get("task_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+            );
+            current_rank <= next_rank
+        });
+        if replace {
+            latest.insert(agent_id.to_string(), attempt);
+        }
+    }
+    let mut agent_ids = latest.keys().cloned().collect::<Vec<_>>();
+    agent_ids.sort();
+    for agent_id in agent_ids {
+        let attempt = latest[&agent_id];
+        let plan_id = attempt
+            .get("plan_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let task_id = attempt
+            .get("task_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let status = attempt
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("started");
+        let task_active = snapshot
+            .tasks
+            .get(&format!("{plan_id}/{task_id}"))
+            .is_some_and(|task| task.outcome.is_none() && task.phase != "paused");
+        let active = matches!(
+            status,
+            "agent_running" | "cancelling" | "cancellation_failed"
+        ) && task_active;
+        snapshot.agents.insert(
+            agent_id.clone(),
+            AgentState {
+                agent_id: agent_id.clone(),
+                role: agent_roles
+                    .get(&agent_id)
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                active,
+                output_bytes: 0,
+                model: String::new(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                cost_usd: 0.0,
+                current_task: task_id.to_string(),
+                current_plan: plan_id.to_string(),
+                attempt: attempt
+                    .get("attempt")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|attempt| u32::try_from(attempt).ok())
+                    .unwrap_or_default(),
+                spawned_at_ms: attempt
+                    .get("started_at_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or_default(),
+                last_event_at_ms: attempt
+                    .get("completed_at_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or_default(),
+            },
+        );
+        if active {
+            snapshot.stats.agents_active += 1;
+        }
+    }
+}
+
+fn runner_terminal_task_outcome<'a>(
+    runner: &'a serde_json::Map<String, serde_json::Value>,
+    plan_id: &str,
+    task_id: &str,
+) -> Option<&'a str> {
+    if runner
+        .get("completed_tasks")
+        .and_then(|plans| plans.get(plan_id))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|tasks| tasks.iter().any(|task| task.as_str() == Some(task_id)))
+    {
+        return Some("success");
+    }
+    if runner
+        .get("failed_tasks")
+        .and_then(|plans| plans.get(plan_id))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|tasks| tasks.iter().any(|task| task.as_str() == Some(task_id)))
+    {
+        return Some("failed");
+    }
+    runner
+        .get("skipped_tasks")
+        .and_then(|plans| plans.get(plan_id))
+        .and_then(serde_json::Value::as_object)
+        .filter(|tasks| tasks.contains_key(task_id))
+        .map(|_| "skipped")
+}
+
+fn apply_runner_terminal_task_maps(
+    snapshot: &mut DashboardSnapshot,
+    runner: &serde_json::Map<String, serde_json::Value>,
+) {
+    for (field, outcome) in [("completed_tasks", "success"), ("failed_tasks", "failed")] {
+        let Some(plans) = runner.get(field).and_then(serde_json::Value::as_object) else {
+            continue;
+        };
+        for (plan_id, tasks) in plans {
+            let Some(tasks) = tasks.as_array() else {
+                continue;
+            };
+            for task_id in tasks.iter().filter_map(serde_json::Value::as_str) {
+                snapshot.tasks.insert(
+                    format!("{plan_id}/{task_id}"),
+                    TaskState {
+                        task_id: task_id.to_string(),
+                        title: String::new(),
+                        plan_id: plan_id.clone(),
+                        phase: "completed".to_string(),
+                        outcome: Some(outcome.to_string()),
+                    },
+                );
+                if let Some(plan) = snapshot.plans.get_mut(plan_id) {
+                    plan.tasks_total += 1;
+                    if outcome == "success" {
+                        plan.tasks_done += 1;
+                        snapshot.stats.tasks_completed += 1;
+                    } else {
+                        plan.tasks_failed += 1;
+                        snapshot.stats.tasks_failed += 1;
+                    }
+                }
+            }
+        }
+    }
+    let Some(plans) = runner
+        .get("skipped_tasks")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return;
+    };
+    for (plan_id, tasks) in plans {
+        let Some(tasks) = tasks.as_object() else {
+            continue;
+        };
+        for task_id in tasks.keys() {
+            snapshot.tasks.insert(
+                format!("{plan_id}/{task_id}"),
+                TaskState {
+                    task_id: task_id.clone(),
+                    title: String::new(),
+                    plan_id: plan_id.clone(),
+                    phase: "completed".to_string(),
+                    outcome: Some("skipped".to_string()),
+                },
+            );
+            if let Some(plan) = snapshot.plans.get_mut(plan_id) {
+                plan.tasks_total += 1;
+            }
+        }
+    }
 }
 
 fn resolve_snapshot_root(start: &Path) -> PathBuf {
@@ -2180,7 +2786,7 @@ fn read_signal_gates(path: &Path) -> Result<Vec<GateVerdictView>, io::Error> {
 }
 
 fn read_jsonl_values(path: &Path) -> Result<Option<Vec<serde_json::Value>>, io::Error> {
-    match std::fs::read_to_string(path) {
+    match read_bounded_dashboard_text(path) {
         Ok(text) => Ok(Some(
             text.lines()
                 .filter(|line| !line.trim().is_empty())
@@ -2644,11 +3250,11 @@ fn bootstrap_episodes(snapshot: &mut DashboardSnapshot, roko_dir: &Path) {
     let content = {
         let mut found = None;
         for path in &candidates {
-            if let Ok(text) = std::fs::read_to_string(path) {
-                if !text.trim().is_empty() {
-                    found = Some(text);
-                    break;
-                }
+            if let Ok(text) = read_bounded_dashboard_text(path)
+                && !text.trim().is_empty()
+            {
+                found = Some(text);
+                break;
             }
         }
         match found {
@@ -2708,7 +3314,7 @@ fn bootstrap_episodes(snapshot: &mut DashboardSnapshot, roko_dir: &Path) {
 /// Bootstrap aggregate token/cost stats from `.roko/learn/efficiency.jsonl`.
 fn bootstrap_efficiency_stats(snapshot: &mut DashboardSnapshot, learn_dir: &Path) {
     let path = learn_dir.join("efficiency.jsonl");
-    let content = match std::fs::read_to_string(&path) {
+    let content = match read_bounded_dashboard_text(&path) {
         Ok(text) => text,
         Err(_) => return,
     };
@@ -2778,6 +3384,113 @@ mod tests {
         assert_eq!(snap.stats.plans_active, 0);
         assert_eq!(snap.stats.plans_completed, 1);
         assert!(!snap.plans["p1"].active);
+    }
+
+    #[test]
+    fn payment_events_update_dashboard_totals_and_preserve_event_contracts() {
+        let mut snap = DashboardSnapshot::default();
+        let x402 = DashboardEvent::PaymentReceived {
+            feed_id: "feed-1".into(),
+            protocol: "x402".into(),
+            amount_korai: 2.5,
+            payer: "subscriber-1".into(),
+            payee: "provider-1".into(),
+        };
+        let mpp = DashboardEvent::PaymentReceived {
+            feed_id: "feed-2".into(),
+            protocol: "mpp".into(),
+            amount_korai: 4.25,
+            payer: "subscriber-2".into(),
+            payee: "provider-2".into(),
+        };
+        let settlement = DashboardEvent::SettlementCompleted {
+            protocol: "x402".into(),
+            batch_size: 2,
+            total_korai: 6.75,
+        };
+
+        assert_eq!(
+            serde_json::to_value(&x402).expect("serialize payment")["type"],
+            "payment_received"
+        );
+        assert_eq!(
+            serde_json::to_value(&settlement).expect("serialize settlement")["type"],
+            "settlement_completed"
+        );
+
+        snap.apply(&x402);
+        snap.apply(&x402);
+        snap.apply(&mpp);
+        snap.apply(&settlement);
+        assert_eq!(snap.payment_count, 3);
+        assert!((snap.total_payment_korai - 9.25).abs() < f64::EPSILON);
+        assert_eq!(snap.payments_by_protocol.get("x402"), Some(&2));
+        assert_eq!(snap.payments_by_protocol.get("mpp"), Some(&1));
+        assert_eq!(snap.settlement_count, 1);
+    }
+
+    #[test]
+    fn inbox_lifecycle_is_idempotent_and_defer_remains_pending() {
+        let mut snap = DashboardSnapshot::default();
+        let received = DashboardEvent::InboxItemReceived {
+            item_id: "pulse-1".into(),
+            category: InboxCategory::AgentQuestion,
+            urgency: UrgencyLevel::Question,
+            summary: "Which deployment target?".into(),
+        };
+        snap.apply_with_ts(&received, 1_000);
+        snap.apply_with_ts(&received, 2_000);
+        assert_eq!(snap.inbox_pending_count, 1);
+        assert_eq!(snap.inbox_items["pulse-1"].received_at_ms, 1_000);
+
+        snap.apply(&DashboardEvent::InboxDefer {
+            item_id: "pulse-1".into(),
+            defer_until: "2026-08-16T12:00:00Z".into(),
+        });
+        assert_eq!(snap.inbox_pending_count, 1);
+        assert_eq!(
+            snap.inbox_items["pulse-1"].defer_until.as_deref(),
+            Some("2026-08-16T12:00:00Z")
+        );
+
+        snap.apply(&DashboardEvent::InboxApprove {
+            item_id: "pulse-1".into(),
+        });
+        snap.apply(&DashboardEvent::InboxDismiss {
+            item_id: "pulse-1".into(),
+        });
+        snap.apply_with_ts(&received, 3_000);
+        assert_eq!(snap.inbox_pending_count, 0);
+        assert!(snap.inbox_items.is_empty());
+        assert!(snap.inbox_resolved_ids.contains("pulse-1"));
+    }
+
+    #[test]
+    fn inbox_routing_matches_attention_policy() {
+        for category in [
+            InboxCategory::GateVerdict,
+            InboxCategory::StructuralChange,
+            InboxCategory::SecurityEvent,
+        ] {
+            let route = inbox_routing(category);
+            assert_eq!(route.urgency, UrgencyLevel::Review);
+            assert!(route.transport_strip && route.badge && route.full_panel);
+        }
+        for category in [InboxCategory::AgentQuestion, InboxCategory::BudgetAlert] {
+            let route = inbox_routing(category);
+            assert_eq!(route.urgency, UrgencyLevel::Question);
+            assert!(route.transport_strip);
+        }
+        for category in [
+            InboxCategory::TaskCompletion,
+            InboxCategory::KnowledgeEvent,
+            InboxCategory::SystemEvent,
+        ] {
+            let route = inbox_routing(category);
+            assert_eq!(route.urgency, UrgencyLevel::Notify);
+            assert!(!route.transport_strip);
+            assert!(route.badge && route.full_panel);
+        }
     }
 
     #[test]
@@ -2996,6 +3709,84 @@ mod tests {
         assert_eq!(snapshot.diagnoses.len(), 1);
         assert_eq!(snapshot.diagnoses[0].severity, DiagnosisSeverity::Alert);
         assert!(snapshot.diagnoses[0].subject.contains("Circuit Breaker"));
+    }
+
+    #[test]
+    fn supplied_runner_projection_bypasses_conflicting_legacy_executor() {
+        let dir = tempdir().unwrap();
+        let state_dir = dir.path().join(".roko/state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(
+            state_dir.join("executor.json"),
+            serde_json::json!({
+                "plan_states": {"legacy": {"current_phase": {"kind": "implementing"}}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let canonical = serde_json::json!({
+            "plan_states": {
+                "canonical": {
+                    "current_phase": {"kind": "implementing"},
+                    "task_id": "task-1",
+                    "assigned_agents": ["agent-1"]
+                }
+            }
+        });
+        let gate_thresholds = serde_json::json!({"rungs": {"compile": 0.9}}).to_string();
+
+        let snapshot = DashboardSnapshot::load_from_workdir_with_runner_projection(
+            dir.path(),
+            &canonical,
+            Some(&gate_thresholds),
+        )
+        .unwrap();
+        assert!(snapshot.plans.contains_key("canonical"));
+        assert!(!snapshot.plans.contains_key("legacy"));
+        assert_eq!(snapshot.gate_thresholds_json, gate_thresholds);
+    }
+
+    #[test]
+    fn runner_projection_aligns_queued_started_terminal_and_skipped_semantics() {
+        let dir = tempdir().unwrap();
+        let runner = serde_json::json!({
+            "plan_states": {
+                "queued": {"plan_id": "queued", "current_phase": {"kind": "queued"}},
+                "started": {"plan_id": "started", "current_phase": {"kind": "implementing"}},
+                "terminal": {"plan_id": "terminal", "current_phase": {"kind": "done"}}
+            },
+            "_runner_projection": {
+                "completed_tasks": {"terminal": ["passed"]},
+                "failed_tasks": {"terminal": ["failed"]},
+                "skipped_tasks": {"terminal": {"skipped": {"PrerequisiteFailed": {"prerequisite": "failed"}}}},
+                "lifecycle": {
+                    "plans": {"started": "started", "terminal": "succeeded"},
+                    "tasks": {
+                        "terminal:passed": {"plan_id": "terminal", "task_id": "passed", "status": "passed"},
+                        "terminal:failed": {"plan_id": "terminal", "task_id": "failed", "status": "failed"},
+                        "terminal:skipped": {"plan_id": "terminal", "task_id": "skipped", "status": "cancelled"}
+                    },
+                    "task_attempts": {}
+                }
+            }
+        });
+        let snapshot =
+            DashboardSnapshot::load_from_workdir_with_runner_projection(dir.path(), &runner, None)
+                .unwrap();
+
+        assert!(!snapshot.plans["queued"].active);
+        assert!(snapshot.plans["started"].active);
+        assert!(!snapshot.plans["terminal"].active);
+        assert_eq!(snapshot.stats.plans_active, 1);
+        assert_eq!(snapshot.plans["terminal"].tasks_total, 3);
+        assert_eq!(snapshot.plans["terminal"].tasks_done, 1);
+        assert_eq!(snapshot.plans["terminal"].tasks_failed, 1);
+        assert_eq!(snapshot.stats.tasks_completed, 1);
+        assert_eq!(snapshot.stats.tasks_failed, 1);
+        assert_eq!(
+            snapshot.tasks["terminal/skipped"].outcome.as_deref(),
+            Some("skipped")
+        );
     }
 
     #[test]

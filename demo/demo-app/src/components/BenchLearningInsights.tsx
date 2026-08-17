@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { useLiveApi } from '../hooks/useLiveApi';
+import { useDataApi } from '../hooks/useDataApi';
 import { shortModel } from '../lib/format';
 import type { BenchLearningEvent, BenchRun } from '../lib/bench-types';
 import Pane from './Pane';
@@ -148,7 +148,7 @@ function computeGateInsights(history: BenchRun[]): GatePassRate[] {
 /* ── Component ── */
 
 export default function BenchLearningInsights({ history, learningEvents, isRunning }: BenchLearningInsightsProps) {
-  const { get } = useLiveApi();
+  const { get } = useDataApi();
 
   // Fetch learning data from API
   const [cascadeRouter, setCascadeRouter] = useState<CascadeRouterResponse | null>(null);
@@ -361,21 +361,14 @@ export default function BenchLearningInsights({ history, learningEvents, isRunni
         <Pane title="LEARNING EVENTS">
           <div className="bench-learning-events">
             {learningEvents.map((evt, i) => (
-              <div key={i} className="bench-learning-event">
-                <span className="bench-learning-event-text">{evt.insight}</span>
-                {evt.metric && (
-                  <span className="bench-learning-event-metric">
-                    {evt.metric}
-                    {evt.before != null && evt.after != null && (
-                      <> ({evt.before.toFixed(2)} &rarr; {evt.after.toFixed(2)})</>
-                    )}
-                  </span>
-                )}
-                {evt.confidence != null && (
-                  <span className="bench-learning-event-conf">
-                    {(evt.confidence * 100).toFixed(0)}%
-                  </span>
-                )}
+              <div key={`${evt.bench_id}:${evt.task_id}:${i}`} className="bench-learning-event">
+                <span className="bench-learning-event-text">
+                  {evt.task_id}: created {evt.playbooks_created} playbook{evt.playbooks_created === 1 ? '' : 's'} and{' '}
+                  {evt.anti_patterns_created} anti-pattern{evt.anti_patterns_created === 1 ? '' : 's'}
+                </span>
+                <span className="bench-learning-event-metric">
+                  Library total: {evt.total_playbooks} playbooks / {evt.total_anti_patterns} anti-patterns
+                </span>
               </div>
             ))}
           </div>

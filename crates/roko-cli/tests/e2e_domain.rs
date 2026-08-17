@@ -2,8 +2,8 @@
 //!
 //! These tests validate that roko can parse and validate tasks.toml files
 //! with the new `domain` field, and that the `roko run` path respects
-//! domain configuration. We use `cat` as the mock agent backend and `true`
-//! as the gate — no LLM needed.
+//! domain configuration. We use a local Claude-CLI fixture and `true` as the
+//! gate — no LLM needed.
 
 use assert_cmd::Command;
 use std::fs;
@@ -26,8 +26,27 @@ fn roko(workdir: &Path, args: &[&str]) -> assert_cmd::assert::Assert {
         .assert()
 }
 
-/// Write a roko.toml with `cat` backend and domain-specific config.
+/// Write a roko.toml with a deterministic backend and domain-specific config.
 fn write_domain_config(workdir: &Path, default_domain: Option<&str>, extra_gates: &str) {
+    let mock_claude = workdir.join("mock-claude.sh");
+    fs::write(
+        &mock_claude,
+        r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"mock-ok"}}'
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = fs::metadata(&mock_claude).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&mock_claude, permissions).unwrap();
+    }
+    let mock_command = mock_claude.to_string_lossy();
     let domain_line = default_domain
         .map(|d| format!("default_domain = \"{d}\""))
         .unwrap_or_default();
@@ -38,9 +57,21 @@ name = "domain-test"
 {domain_line}
 
 [agent]
-command = "cat"
+default_model = "mock-model"
+command = {mock_command:?}
 args = []
 timeout_ms = 30000
+
+[providers.mock]
+kind = "claude_cli"
+command = {mock_command:?}
+timeout_ms = 30000
+
+[models.mock-model]
+provider = "mock"
+slug = "mock-model"
+context_window = 8192
+supports_tools = false
 
 [prompt]
 token_budget = 1000
@@ -163,7 +194,7 @@ fn run_with_research_domain_uses_shell_gate() {
     roko(workdir, &["init", &workdir.display().to_string()]).success();
     write_domain_config(workdir, Some("research"), "");
 
-    // `roko run` with cat should succeed even without Cargo.toml,
+    // `roko run` with the fixture backend should succeed even without Cargo.toml,
     // because the [[gate]] in the config is `true`.
     roko(
         workdir,

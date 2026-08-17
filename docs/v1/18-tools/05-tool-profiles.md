@@ -1,5 +1,8 @@
 # 05 — Tool Profiles & Configuration
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Profile-based tool loading, 13 chain domain profiles, configuration hierarchy,
 > environment variables, and fine-grained overrides. See also
 > [tmp/refinements/25-domain-specific-agents.md](../../tmp/refinements/25-domain-specific-agents.md).
@@ -159,12 +162,12 @@ max_writes_per_minute = 10
 # Simulation
 require_simulation = true
 simulation_gas_multiplier = 1.2
-
-[tools.cache]
-# Tool result caching
-ttl_seconds = 15
-max_entries = 1000
 ```
+
+There is no shipping `[tools.cache]` configuration. The dispatcher intentionally executes
+every call against current authorization, durable immune controls, output screening, and
+terminal auditing; standalone cache primitives are reserved for an explicit higher-level
+owner with its own invalidation contract.
 
 For domain bundles, this section is the runtime override layer. The bundle itself carries the
 default tools, gates, heuristics, templates, and typed context schema; `roko.toml` only

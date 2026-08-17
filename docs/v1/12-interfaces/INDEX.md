@@ -1,5 +1,8 @@
 # Topic 12: Interfaces
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > CLI, TUI, HTTP API, and the interface specs around them.
 
 ---

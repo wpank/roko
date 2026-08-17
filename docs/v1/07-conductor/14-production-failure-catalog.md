@@ -1,5 +1,8 @@
 # Production Failure Catalog
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Every issue cataloged here was hit in production during batch runs
 > between March and April 2026. Each entry traces the full chain:
 > symptom, root cause, and the Conductor response that detects or

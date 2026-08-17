@@ -7,9 +7,31 @@ export interface ConfigModelOption {
 
 export type RawConfigModels = Record<string, { provider: string; slug: string }>;
 
-interface ProviderModelGroup {
+export interface ProviderModelGroup {
   provider: string;
+  kind: string;
   models: { key: string; name: string; slug: string }[];
+}
+
+export function groupConfigModels(
+  models: RawConfigModels | undefined,
+  providers: Record<string, { kind: string }> | undefined,
+): ProviderModelGroup[] {
+  if (!models) return [];
+  const grouped = new Map<string, ProviderModelGroup>();
+  for (const [key, model] of Object.entries(models)) {
+    let group = grouped.get(model.provider);
+    if (!group) {
+      group = {
+        provider: model.provider,
+        kind: providers?.[model.provider]?.kind ?? 'unknown',
+        models: [],
+      };
+      grouped.set(model.provider, group);
+    }
+    group.models.push({ key, name: key, slug: model.slug });
+  }
+  return Array.from(grouped.values());
 }
 
 export function flattenProviderModels(providers: ProviderModelGroup[]): ConfigModelOption[] {

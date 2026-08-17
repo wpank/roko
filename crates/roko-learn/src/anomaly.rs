@@ -380,9 +380,9 @@ mod tests {
     #[test]
     fn cost_accumulates_session_total() {
         let mut detector = AnomalyDetector::new(0);
-        detector.check_cost(1.5);
-        detector.check_cost(2.5);
-        detector.check_cost(1.0);
+        let _ = detector.check_cost(1.5);
+        let _ = detector.check_cost(2.5);
+        let _ = detector.check_cost(1.0);
         // Total should be 5.0.
         assert!(detector.check_budget(5.0).is_some());
         assert!(detector.check_budget(5.01).is_none());
@@ -441,7 +441,7 @@ mod tests {
         // Earlier scores are high, recent scores drop but stay above 0.5.
         // The condition requires recent_avg < 0.5, so no anomaly.
         for _ in 0..10 {
-            detector.check_quality(0.9);
+            let _ = detector.check_quality(0.9);
         }
         for _ in 0..5 {
             let result = detector.check_quality(0.55);
@@ -458,7 +458,7 @@ mod tests {
         // Earlier scores around 0.45, recent scores around 0.40.
         // Drop is only 0.05 which is below the 0.15 threshold.
         for _ in 0..10 {
-            detector.check_quality(0.45);
+            let _ = detector.check_quality(0.45);
         }
         for _ in 0..5 {
             let result = detector.check_quality(0.40);
@@ -474,7 +474,7 @@ mod tests {
         let mut detector = AnomalyDetector::new(0);
         // Earlier window: 10 scores of 0.80.
         for _ in 0..10 {
-            detector.check_quality(0.80);
+            let _ = detector.check_quality(0.80);
         }
         // Recent window: 5 scores of 0.30.
         let mut last = None;
@@ -522,15 +522,15 @@ mod tests {
     #[test]
     fn budget_no_anomaly_when_under_limit() {
         let mut detector = AnomalyDetector::new(0);
-        detector.check_cost(1.0);
-        detector.check_cost(1.0);
+        let _ = detector.check_cost(1.0);
+        let _ = detector.check_cost(1.0);
         assert!(detector.check_budget(10.0).is_none());
     }
 
     #[test]
     fn budget_triggers_at_exact_limit() {
         let mut detector = AnomalyDetector::new(0);
-        detector.check_cost(5.0);
+        let _ = detector.check_cost(5.0);
         let result = detector.check_budget(5.0);
         assert!(result.is_some(), "should trigger when used == limit");
         match result.unwrap() {
@@ -545,7 +545,7 @@ mod tests {
     #[test]
     fn budget_zero_limit_means_unlimited() {
         let mut detector = AnomalyDetector::new(0);
-        detector.check_cost(0.001);
+        let _ = detector.check_cost(0.001);
         assert!(
             detector.check_budget(0.0).is_none(),
             "zero limit means unlimited — should not trigger"
@@ -756,7 +756,7 @@ mod tests {
 
         // Trigger prompt loop.
         for _ in 0..PROMPT_LOOP_THRESHOLD {
-            detector.check_prompt(1);
+            let _ = detector.check_prompt(1);
         }
         assert!(matches!(
             detector.check_prompt(1),
@@ -765,7 +765,7 @@ mod tests {
 
         // Trigger cost spike (build baseline, then spike).
         for _ in 0..10 {
-            detector.check_cost(1.0);
+            let _ = detector.check_cost(1.0);
         }
         let cost_result = detector.check_cost(100.0);
         assert!(
@@ -781,7 +781,7 @@ mod tests {
 
         // Trigger quality degradation.
         for _ in 0..10 {
-            detector.check_quality(0.9);
+            let _ = detector.check_quality(0.9);
         }
         let mut quality_result = None;
         for _ in 0..5 {

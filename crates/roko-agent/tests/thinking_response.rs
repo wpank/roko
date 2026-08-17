@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use roko_agent::Usage;
 use roko_agent::translate::{
     BackendResponse, ChatResponse, FinishReason, OpenAiTranslator, Translator,

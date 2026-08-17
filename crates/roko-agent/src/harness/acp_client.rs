@@ -31,6 +31,7 @@
 //! only killed on explicit `shutdown()` or `Drop`.
 
 use crate::process;
+use crate::process::ResourceLimits;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -297,6 +298,7 @@ pub struct AcpStdioClient {
     session_id: Option<String>,
     reader_handle: Option<JoinHandle<()>>,
     stderr_handle: Option<JoinHandle<()>>,
+    resource_limits: Option<ResourceLimits>,
 }
 
 impl AcpStdioClient {
@@ -320,7 +322,15 @@ impl AcpStdioClient {
             session_id: None,
             reader_handle: None,
             stderr_handle: None,
+            resource_limits: None,
         }
+    }
+
+    /// Apply OS resource limits to the persistent ACP subprocess.
+    #[must_use]
+    pub fn with_resource_limits(mut self, limits: ResourceLimits) -> Self {
+        self.resource_limits = Some(limits);
+        self
     }
 
     // ---- Convenience constructors -------------------------------------------
@@ -416,7 +426,14 @@ impl AcpStdioClient {
     /// Returns `AcpError::MethodFailed` if the server returns an error.
     pub async fn connect(&mut self) -> Result<AcpInitResponse, AcpError> {
         // --- 1. Build command ---
-        let mut cmd = tokio::process::Command::new(&self.config.command);
+        let mut cmd =
+            process::confined_command(&self.config.command, self.resource_limits.as_ref())
+                .map_err(|error| {
+                    AcpError::Spawn(format!(
+                        "process confinement unavailable for `{}`: {error}",
+                        self.config.command
+                    ))
+                })?;
         cmd.args(&self.config.args);
         if let Some(ref cwd) = self.config.cwd {
             cmd.current_dir(cwd);
@@ -431,7 +448,6 @@ impl AcpStdioClient {
         // --- 2. Process group + kill_on_drop ---
         process::set_process_group(&mut cmd);
         cmd.kill_on_drop(true);
-
         // --- 3. Spawn ---
         let mut child = cmd.spawn().map_err(|e| {
             AcpError::Spawn(format!("failed to spawn `{}`: {e}", self.config.command))
@@ -678,11 +694,11 @@ impl AcpStdioClient {
         }
 
         // Merge any extra params from the adapter.
-        if let Some(extra) = opts.extra_params {
-            if let (Some(base), Some(ext)) = (params.as_object_mut(), extra.as_object()) {
-                for (k, v) in ext {
-                    base.insert(k.clone(), v.clone());
-                }
+        if let Some(extra) = opts.extra_params
+            && let (Some(base), Some(ext)) = (params.as_object_mut(), extra.as_object())
+        {
+            for (k, v) in ext {
+                base.insert(k.clone(), v.clone());
             }
         }
 
@@ -743,11 +759,11 @@ impl AcpStdioClient {
         });
 
         // Merge extra params (adapter-specific fields).
-        if let Some(extra) = payload.extra_params {
-            if let (Some(base), Some(ext)) = (params.as_object_mut(), extra.as_object()) {
-                for (k, v) in ext {
-                    base.insert(k.clone(), v.clone());
-                }
+        if let Some(extra) = payload.extra_params
+            && let (Some(base), Some(ext)) = (params.as_object_mut(), extra.as_object())
+        {
+            for (k, v) in ext {
+                base.insert(k.clone(), v.clone());
             }
         }
 
@@ -1132,6 +1148,7 @@ done
             session_id: None,
             reader_handle: None,
             stderr_handle: None,
+            resource_limits: None,
         };
 
         // Send responses out of order.
@@ -1166,6 +1183,7 @@ done
             session_id: None,
             reader_handle: None,
             stderr_handle: None,
+            resource_limits: None,
         };
 
         // Drop the sender to close the channel.
@@ -1194,6 +1212,7 @@ done
             session_id: None,
             reader_handle: None,
             stderr_handle: None,
+            resource_limits: None,
         };
 
         tx.send((1, serde_json::json!({"error": "auth failed"})))

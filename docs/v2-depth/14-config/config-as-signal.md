@@ -1,6 +1,8 @@
 # Config as Signal
 
 > Depth for [20-configuration-schema.md](../../docs/00-architecture/20-configuration-schema.md). Redesigns configuration as a Signal -- content-addressed, versioned, lineage-tracked, and subject to demurrage. Runtime overrides become a Compose protocol. Schema validation becomes a Verify Cell. Hot reload becomes a Trigger Cell.
+>
+> **Implementation status (2026-08-17):** Vocabulary redesign document. The config system (E42 8/8) is fully wired: priority layering, hot reload, seven invariants, schema validation, and provenance tracking are implemented in `crates/roko-core/src/config/`. This doc maps that implementation onto unified Signal/Cell/Graph vocabulary — the runtime uses struct-based merging rather than literal Cell/Graph primitives, but the behaviors are equivalent.
 
 **Depends on**: [01-SIGNAL](../../unified/01-SIGNAL.md) (Signal, Kind, demurrage, content addressing), [02-CELL](../../unified/02-CELL.md) (Compose protocol, Verify protocol, Trigger Cell), [03-GRAPH](../../unified/03-GRAPH.md) (Graph wiring), [06-TRIGGER-SYSTEM](../../unified/06-TRIGGER-SYSTEM.md) (Trigger Cell, file watcher)
 

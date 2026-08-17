@@ -1,5 +1,8 @@
 # Cascade Router
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Crate:** `roko-learn` · **Module:** `cascade_router.rs`
 > **Persistence:** `.roko/learn/cascade-router.json`
 > **Wiring:** `LearningRuntime` → `CascadeRouter::select()` (called from orchestrate.rs)

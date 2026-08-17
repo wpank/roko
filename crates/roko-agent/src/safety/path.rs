@@ -246,13 +246,13 @@ fn check_no_symlink_components(path: &Path) -> Result<(), ToolError> {
             }
             std::path::Component::Normal(n) => {
                 current.push(n);
-                if let Ok(meta) = std::fs::symlink_metadata(&current) {
-                    if meta.file_type().is_symlink() {
-                        return Err(ToolError::Other(format!(
-                            "symlink component not allowed: {}",
-                            current.display()
-                        )));
-                    }
+                if let Ok(meta) = std::fs::symlink_metadata(&current)
+                    && meta.file_type().is_symlink()
+                {
+                    return Err(ToolError::Other(format!(
+                        "symlink component not allowed: {}",
+                        current.display()
+                    )));
                 }
             }
         }

@@ -29,6 +29,7 @@ export type {
 export {
   useServerConnected,
   useServerStatus,
+  useServerHealthController,
   useSseStatus,
   useWsStatus,
   useTransportStatus,
@@ -36,6 +37,7 @@ export {
   useDefaultModel,
   useDefaultBackend,
   useConfigSlice,
+  useConfigController,
   useServerWorkdir,
   useWorkspaceInfo,
   useWorkspaceSlice,

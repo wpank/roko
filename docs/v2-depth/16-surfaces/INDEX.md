@@ -12,7 +12,7 @@
 | 02 | [02-cli-and-command-graph.md](02-cli-and-command-graph.md) | CLI subcommands as Graph triggers, layered config resolution, progressive help as React Cell, scaffolders as template Graphs |
 | 03 | [03-tui-screen-architecture.md](03-tui-screen-architecture.md) | 29 TUI screens as Lens Cells, 6 regions with keyboard-driven Route Cell, ratatui immediate-mode as Observe protocol, event batching |
 | 04 | [04-rosedust-and-spectre.md](04-rosedust-and-spectre.md) | ROSEDUST design tokens as config Signals, Spectre deterministic from HDC fingerprint, PAD-driven animation, 4 renderers as Cell specializations |
-| 05 | [05-http-api-and-realtime.md](05-http-api-and-realtime.md) | HTTP API as Connect Cell, ~85 routes, WebSocket/SSE as Bus subscriptions, frame vocabulary, cursor semantics, deployment shapes |
+| 05 | [05-http-api-and-realtime.md](05-http-api-and-realtime.md) | HTTP API as Connect Cell, ~317 routes, WebSocket/SSE as Bus subscriptions, frame vocabulary, cursor semantics, deployment shapes |
 | 06 | [06-generative-interfaces-and-a2ui.md](06-generative-interfaces-and-a2ui.md) | A2UI as Extension emitting Pulses, 12 UI component kinds, sonification as React Cell, rich UX primitives as Pulse→Lens compositions |
 | 07 | [07-developer-experience-and-onboarding.md](07-developer-experience-and-onboarding.md) | SDK as Graph templates (Rack pattern), onboarding as Trigger Graph, ACP-first IDE strategy, domain profiles as parameterized Racks |
 

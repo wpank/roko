@@ -1,5 +1,8 @@
 # 19 — Deployment
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > How Roko is packaged, distributed, and deployed across five runtime shapes: laptop-local,
 > single-server, container, clustered, and edge. The chapter is runtime-shape-driven: one Rust
 > binary plus packaging artifacts, with configuration selecting the shape instead of forking

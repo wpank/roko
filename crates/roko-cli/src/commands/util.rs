@@ -277,6 +277,7 @@ pub(crate) async fn cmd_run(
 
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
     prepare_runtime_hooks(&workdir, cli.quiet);
+    let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
     let mut config = resolve_config_for_workdir(cli, &workdir)?;
     apply_resume_session_override(&mut config, cli.resume.clone());
 
@@ -300,8 +301,9 @@ pub(crate) async fn cmd_run(
             repo_registry,
             state_hub.clone(),
             Some(std::sync::Arc::clone(&metrics)),
-        )
-        .into_arc();
+        );
+        runtime.prepare_workspace_extensions(&workdir).await?;
+        let runtime = runtime.into_arc();
         let roko_config = roko_core::config::loader::load_config_unified(&workdir)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let server_config =
@@ -366,18 +368,17 @@ pub(crate) async fn cmd_run(
                 }
             }
 
-            if share {
-                if let Err(err) = roko_cli::run::write_shared_workflow_run(
+            if share
+                && let Err(err) = roko_cli::run::write_shared_workflow_run(
                     &workdir,
                     &prompt,
                     &config.agent.command,
                     &config.prompt.role,
                     &report,
-                ) {
-                    if !cli.quiet {
-                        eprintln!("share failed: {err}");
-                    }
-                }
+                )
+                && !cli.quiet
+            {
+                eprintln!("share failed: {err}");
             }
 
             if report.success {
@@ -474,7 +475,7 @@ pub(crate) async fn cmd_status(
         Vec::new()
     };
     let cfactor_trend = if cfactor_snapshot.is_some() {
-        cfactor_trend_arrow(&cfactor_history, Duration::from_secs(7 * 24 * 60 * 60))
+        cfactor_trend_arrow(&cfactor_history, Duration::from_hours(168))
     } else {
         "→"
     };
@@ -543,14 +544,14 @@ pub(crate) async fn cmd_status(
             let fallback = read_gate_result_counts(&learn_dir);
             gate_pass = fallback.0;
             gate_fail = fallback.1;
-            if gate_pass == 0 && gate_fail == 0 {
-                if let Some(runner) = runner_event_status
+            if gate_pass == 0
+                && gate_fail == 0
+                && let Some(runner) = runner_event_status
                     .as_ref()
                     .filter(|runner| runner.has_gates())
-                {
-                    gate_pass = runner.gate_pass;
-                    gate_fail = runner.gate_fail;
-                }
+            {
+                gate_pass = runner.gate_pass;
+                gate_fail = runner.gate_fail;
             }
         }
 
@@ -768,14 +769,14 @@ pub(crate) async fn cmd_status(
         let fallback = read_gate_result_counts(&learn_dir);
         passed = fallback.0;
         failed = fallback.1;
-        if passed == 0 && failed == 0 {
-            if let Some(runner) = runner_event_status
+        if passed == 0
+            && failed == 0
+            && let Some(runner) = runner_event_status
                 .as_ref()
                 .filter(|runner| runner.has_gates())
-            {
-                passed = runner.gate_pass;
-                failed = runner.gate_fail;
-            }
+        {
+            passed = runner.gate_pass;
+            failed = runner.gate_fail;
         }
     }
     println!("gate verdicts: {passed} pass / {failed} fail");
@@ -1103,11 +1104,23 @@ fn read_gate_result_counts(learn_dir: &Path) -> (usize, usize) {
 
 pub(crate) async fn cmd_doctor(
     cli: &Cli,
+    subject: Option<DoctorSubject>,
     workdir: Option<PathBuf>,
     serve_url: Option<String>,
 ) -> Result<i32> {
+    let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
+    if matches!(subject, Some(DoctorSubject::Disk)) {
+        let report = roko_cli::doctor::run_disk_doctor(&workdir, cli.config.as_deref()).await;
+        if cli.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print!("{}", report.render_human());
+        }
+        return Ok(EXIT_SUCCESS);
+    }
+
     let report = roko_cli::doctor::run_doctor(&roko_cli::doctor::DoctorOptions {
-        workdir: workdir.unwrap_or_else(|| resolve_workdir(cli)),
+        workdir,
         config_override: cli.config.clone(),
         serve_url,
     })
@@ -1838,8 +1851,8 @@ pub(crate) async fn persist_capture_episode(
         resume_session,
     );
 
-    tracing::debug!(workdir = %workdir.display(), "opening learning runtime under .roko/learn/");
-    let mut runtime = LearningRuntime::open_under(workdir.join(".roko").join("learn"))
+    tracing::debug!(workdir = %workdir.display(), "opening project learning runtime");
+    let mut runtime = LearningRuntime::open_for_project(workdir)
         .await
         .map_err(|e| anyhow!("open learning runtime: {e}"))?;
     let distillation_workdir = workdir.to_path_buf();
@@ -1902,39 +1915,39 @@ pub(crate) fn preflight_provider_for_model(
         )
     })?;
 
-    if let Some(ref env_var) = provider.api_key_env {
-        if !env_var.trim().is_empty() {
-            match std::env::var(env_var) {
-                Ok(val) if val.is_empty() => {
-                    anyhow::bail!(
-                        "provider '{}' requires {} but it is empty.\n  hint: export {}=<your-key>",
-                        provider_name,
-                        env_var,
-                        env_var
-                    );
-                }
-                Err(_) => {
-                    anyhow::bail!(
-                        "provider '{}' requires {} but it is not set.\n  hint: export {}=<your-key>",
-                        provider_name,
-                        env_var,
-                        env_var
-                    );
-                }
-                Ok(_) => {}
+    if let Some(ref env_var) = provider.api_key_env
+        && !env_var.trim().is_empty()
+    {
+        match std::env::var(env_var) {
+            Ok(val) if val.is_empty() => {
+                anyhow::bail!(
+                    "provider '{}' requires {} but it is empty.\n  hint: export {}=<your-key>",
+                    provider_name,
+                    env_var,
+                    env_var
+                );
             }
+            Err(_) => {
+                anyhow::bail!(
+                    "provider '{}' requires {} but it is not set.\n  hint: export {}=<your-key>",
+                    provider_name,
+                    env_var,
+                    env_var
+                );
+            }
+            Ok(_) => {}
         }
     }
 
-    if let Some(ref binary) = provider.command {
-        if !binary_on_path(binary) {
-            anyhow::bail!(
-                "provider '{}' requires '{}' on PATH but it was not found.\n  hint: install {} or change provider in roko.toml",
-                provider_name,
-                binary,
-                binary
-            );
-        }
+    if let Some(ref binary) = provider.command
+        && !binary_on_path(binary)
+    {
+        anyhow::bail!(
+            "provider '{}' requires '{}' on PATH but it was not found.\n  hint: install {} or change provider in roko.toml",
+            provider_name,
+            binary,
+            binary
+        );
     }
 
     Ok(())

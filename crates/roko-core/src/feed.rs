@@ -5,11 +5,10 @@
 //! schema describing the payload shape. The [`FeedRegistry`] tracks all
 //! registered feeds and supports queries by kind, agent, and free-text search.
 //!
-//! **Migration note (Phase 1, §1.12):** Feeds will become Pulse streams on
-//! the Bus, managed via the `Connect` + `Trigger` protocols defined in
-//! `docs/v2/11-CONNECTIVITY.md`. The `FeedRegistry` is actively used by
-//! `roko-serve` HTTP routes and will be migrated in M037. Do not add new
-//! callers — prefer Bus-based Pulse streams once available.
+//! [`FeedRegistry`] remains the static descriptor catalog. Runnable instances
+//! are [`FeedCell`](crate::FeedCell)s supervised by
+//! [`RuntimeRegistry`](crate::RuntimeRegistry), and their output is routed to
+//! canonical Bus Pulse topics by [`FeedBusBridge`](crate::FeedBusBridge).
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -45,6 +44,73 @@ pub enum FeedAccess {
     Paid,
 }
 
+/// Reputation-derived commercial tier for paid feed access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PricingTier {
+    /// Selling is disabled and no payment is required.
+    Free,
+    /// Entry-level access at half the base price.
+    Starter,
+    /// Default access at the base price.
+    Standard,
+    /// Priority access at one-and-a-half times the base price.
+    Professional,
+    /// SLA-backed access at twice the base price.
+    Enterprise,
+}
+
+impl PricingTier {
+    /// Multiplier applied to a feed's configured base price.
+    #[must_use]
+    pub const fn price_multiplier(self) -> f64 {
+        match self {
+            Self::Free => 0.0,
+            Self::Starter => 0.5,
+            Self::Standard => 1.0,
+            Self::Professional => 1.5,
+            Self::Enterprise => 2.0,
+        }
+    }
+}
+
+/// Payment protocol used to authorize paid feed access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaymentProtocol {
+    /// One authorization per HTTP request.
+    X402,
+    /// One metered authorization per session.
+    Mpp,
+}
+
+/// Metered pricing terms for a longer-lived feed session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionPricing {
+    /// Base KORAI charge per minute.
+    pub base_rate_per_minute: f64,
+    /// Additional KORAI charge for burst usage.
+    pub burst_rate: f64,
+    /// Hard maximum KORAI charge for one session.
+    pub max_session_cost: f64,
+    /// Frequency at which accrued usage should be settled.
+    pub settlement_interval_secs: u64,
+}
+
+/// Commercial terms advertised by a feed descriptor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FeedPricingConfig {
+    /// Reputation-derived pricing tier.
+    pub tier: PricingTier,
+    /// Base KORAI charge for one request.
+    pub per_request_cost: f64,
+    /// Optional metered-session terms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_pricing: Option<SessionPricing>,
+    /// Authorization protocol expected from consumers.
+    pub protocol: PaymentProtocol,
+}
+
 // ── Structs ───────────────────────────────────────────────────────
 
 /// Full descriptor for a registered feed.
@@ -52,6 +118,9 @@ pub enum FeedAccess {
 pub struct FeedInfo {
     /// Unique feed identifier (assigned by the registry on registration).
     pub id: String,
+    /// Runtime Cell identifier. Empty for descriptor-only legacy feeds.
+    #[serde(default)]
+    pub cell_id: String,
     /// Human-readable feed name.
     pub name: String,
     /// Data lineage classification.
@@ -66,6 +135,9 @@ pub struct FeedInfo {
     /// Optional JSON Schema describing individual feed payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<Value>,
+    /// Optional commercial terms, normally present for [`FeedAccess::Paid`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<FeedPricingConfig>,
     /// When the feed was first registered.
     pub created_at: DateTime<Utc>,
 }
@@ -74,9 +146,9 @@ pub struct FeedInfo {
 
 /// In-memory registry of [`FeedInfo`] entries.
 ///
-/// **Migration (M037):** Will be replaced by Bus-based Pulse streams
-/// with the `Connect` + `Trigger` protocols (Phase 1 §1.12).
-/// See `docs/v2/11-CONNECTIVITY.md` for the replacement design.
+/// Runtime lifecycle deliberately lives beside this catalog in
+/// [`RuntimeRegistry`](crate::RuntimeRegistry), keeping serializable metadata
+/// separate from task handles and cancellation tokens.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FeedRegistry {
     feeds: Vec<FeedInfo>,
@@ -191,12 +263,14 @@ mod tests {
     fn sample_feed(name: &str, kind: FeedKind, agent: &str) -> FeedInfo {
         FeedInfo {
             id: String::new(), // will be overwritten by register()
+            cell_id: String::new(),
             name: name.to_string(),
             kind,
             access: FeedAccess::Public,
             agent_id: agent.to_string(),
             description: format!("Test feed: {name}"),
             schema: None,
+            pricing: None,
             created_at: Utc::now(),
         }
     }
@@ -297,5 +371,51 @@ mod tests {
         assert_eq!(restored.list().len(), 1);
         assert_eq!(restored.list()[0].name, "x");
         assert_eq!(restored.next_id, 2);
+    }
+
+    #[test]
+    fn paid_feed_pricing_survives_serde_roundtrip() {
+        let mut feed = sample_feed("premium-prices", FeedKind::Derived, "agent-1");
+        feed.access = FeedAccess::Paid;
+        feed.pricing = Some(FeedPricingConfig {
+            tier: PricingTier::Professional,
+            per_request_cost: 1.25,
+            session_pricing: Some(SessionPricing {
+                base_rate_per_minute: 0.5,
+                burst_rate: 0.1,
+                max_session_cost: 20.0,
+                settlement_interval_secs: 600,
+            }),
+            protocol: PaymentProtocol::Mpp,
+        });
+
+        let json = serde_json::to_string(&feed).expect("serialize priced feed");
+        let restored: FeedInfo = serde_json::from_str(&json).expect("deserialize priced feed");
+        assert_eq!(restored.pricing, feed.pricing);
+    }
+
+    #[test]
+    fn legacy_feed_json_without_pricing_still_deserializes() {
+        let json = serde_json::json!({
+            "id": "feed-legacy",
+            "name": "legacy",
+            "kind": "raw",
+            "access": "public",
+            "agent_id": "agent-legacy",
+            "description": "old descriptor",
+            "created_at": "2026-01-01T00:00:00Z"
+        });
+
+        let restored: FeedInfo = serde_json::from_value(json).expect("deserialize legacy feed");
+        assert!(restored.pricing.is_none());
+    }
+
+    #[test]
+    fn pricing_tiers_expose_canonical_multipliers() {
+        assert_eq!(PricingTier::Free.price_multiplier(), 0.0);
+        assert_eq!(PricingTier::Starter.price_multiplier(), 0.5);
+        assert_eq!(PricingTier::Standard.price_multiplier(), 1.0);
+        assert_eq!(PricingTier::Professional.price_multiplier(), 1.5);
+        assert_eq!(PricingTier::Enterprise.price_multiplier(), 2.0);
     }
 }

@@ -12,13 +12,128 @@
 //! runtime logic.
 
 use crate::phase2::{Address, u256};
-use std::{collections::HashMap, time::Duration};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    fs::{self, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
+use thiserror::Error;
+
+static IDENTITY_STATE_WRITE_NONCE: AtomicU64 = AtomicU64::new(0);
 
 /// Placeholder passport or agent identifier used by the identity-economy docs.
 pub type AgentId = u256;
 
 /// Placeholder BLAKE3 hash used across the deferred identity-economy surface.
 pub type Blake3Hash = [u8; 32];
+
+/// Durable local half of ERC-8004 identity registration.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityState {
+    /// Registered identity token, when registration has completed.
+    pub token_id: Option<u128>,
+    /// Wallet that controls the registered identity.
+    pub wallet: Option<String>,
+    /// Block in which the identity was registered.
+    pub registered_at_block: Option<u64>,
+    /// Agent name used for registration.
+    pub name: String,
+}
+
+/// Result of checking durable local identity state during startup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IdentityCheckResult {
+    /// A token ID is already persisted and should be verified by the chain adapter.
+    Registered {
+        /// Persisted ERC-8004 token ID.
+        token_id: u128,
+    },
+    /// The chain adapter needs to register this agent and persist the result.
+    NeedsRegistration,
+}
+
+/// Errors reading or atomically writing the local identity state file.
+#[derive(Debug, Error)]
+pub enum IdentityStateError {
+    /// Filesystem access failed.
+    #[error("identity state I/O failed: {0}")]
+    Io(#[from] std::io::Error),
+    /// State JSON was malformed or could not be encoded.
+    #[error("identity state JSON failed: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+/// Resolve the identity state path for a project root or `.roko` directory.
+#[must_use]
+pub fn identity_state_path(roko_dir: &Path) -> PathBuf {
+    if roko_dir.file_name().is_some_and(|name| name == ".roko") {
+        roko_dir.join("state").join("identity.json")
+    } else {
+        roko_dir.join(".roko").join("state").join("identity.json")
+    }
+}
+
+/// Load `.roko/state/identity.json`, returning default state when absent.
+pub fn load_identity_state(roko_dir: &Path) -> Result<IdentityState, IdentityStateError> {
+    let path = identity_state_path(roko_dir);
+    match fs::read(&path) {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(IdentityState::default()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Atomically persist `.roko/state/identity.json`.
+pub fn save_identity_state(
+    roko_dir: &Path,
+    state: &IdentityState,
+) -> Result<(), IdentityStateError> {
+    let path = identity_state_path(roko_dir);
+    let parent = path
+        .parent()
+        .expect("identity state path always has parent");
+    fs::create_dir_all(parent)?;
+    let nonce = IDENTITY_STATE_WRITE_NONCE.fetch_add(1, Ordering::Relaxed);
+    let temp_path = parent.join(format!(
+        "identity.json.tmp.{}.{}",
+        std::process::id(),
+        nonce
+    ));
+    let result = (|| -> Result<(), IdentityStateError> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)?;
+        serde_json::to_writer_pretty(&mut file, state)?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        fs::rename(&temp_path, &path)?;
+        // Sync the directory entry on platforms where directory fsync is available.
+        if let Ok(directory) = fs::File::open(parent) {
+            let _ = directory.sync_all();
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
+}
+
+/// Check whether startup should register an ERC-8004 identity.
+///
+/// A returned token still needs verification by the configured chain client;
+/// this function is intentionally the durable local half only.
+pub fn ensure_identity(roko_dir: &Path) -> Result<IdentityCheckResult, IdentityStateError> {
+    Ok(match load_identity_state(roko_dir)?.token_id {
+        Some(token_id) => IdentityCheckResult::Registered { token_id },
+        None => IdentityCheckResult::NeedsRegistration,
+    })
+}
 
 /// Placeholder detached signature bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1630,6 +1745,86 @@ pub struct X402Receipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn identity_test_dir(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "roko-e39-identity-{label}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn identity_state_missing_then_atomic_round_trip() {
+        let root = identity_test_dir("round-trip");
+        assert_eq!(
+            ensure_identity(&root).unwrap(),
+            IdentityCheckResult::NeedsRegistration
+        );
+        let state = IdentityState {
+            token_id: Some(42),
+            wallet: Some("0xabc".to_string()),
+            registered_at_block: Some(99),
+            name: "worker-1".to_string(),
+        };
+        save_identity_state(&root, &state).unwrap();
+        assert_eq!(load_identity_state(&root).unwrap(), state);
+        assert_eq!(
+            ensure_identity(&root).unwrap(),
+            IdentityCheckResult::Registered { token_id: 42 }
+        );
+        assert!(identity_state_path(&root).is_file());
+        assert!(
+            fs::read_dir(identity_state_path(&root).parent().unwrap())
+                .unwrap()
+                .all(|entry| !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".tmp."))
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn identity_state_accepts_explicit_dot_roko_path() {
+        let root = identity_test_dir("dot-roko");
+        let roko_dir = root.join(".roko");
+        save_identity_state(
+            &roko_dir,
+            &IdentityState {
+                name: "agent".to_string(),
+                ..IdentityState::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            identity_state_path(&roko_dir),
+            root.join(".roko/state/identity.json")
+        );
+        assert_eq!(
+            ensure_identity(&roko_dir).unwrap(),
+            IdentityCheckResult::NeedsRegistration
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn malformed_identity_state_is_not_treated_as_unregistered() {
+        let root = identity_test_dir("malformed");
+        let path = identity_state_path(&root);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"{not-json").unwrap();
+        assert!(matches!(
+            ensure_identity(&root),
+            Err(IdentityStateError::Json(_))
+        ));
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     // -----------------------------------------------------------------------
     // IDECON-01: EMA reputation

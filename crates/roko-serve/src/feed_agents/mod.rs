@@ -1,4 +1,4 @@
-//! Feed agent framework: 29 background agents that publish structured data
+//! Feed agent framework for background agents that publish structured data
 //! feeds to the relay topic bus and local event bus.
 //!
 //! Each agent implements [`FeedAgent`] and is spawned by [`spawn_all`] during
@@ -6,16 +6,9 @@
 //! SSE bridge streams to the demo-app Feeds dashboard.
 
 mod chain_watcher;
-mod defi;
-mod derivatives;
-mod epoch_tracker;
 mod gas_oracle;
-mod keeper;
-mod market;
 mod monitors;
 mod onchain;
-mod oracle_submitter;
-mod source_scouts;
 
 use std::sync::Arc;
 
@@ -52,9 +45,9 @@ pub struct FeedDescriptor {
 
 /// A background agent that publishes structured data feeds.
 pub trait FeedAgent: Send + Sync + 'static {
-    /// Unique agent identifier (e.g. `"isfr-keeper"`).
+    /// Unique agent identifier (e.g. `"chain-watcher"`).
     fn agent_id(&self) -> &'static str;
-    /// Human-readable display name (e.g. `"ISFR Composite Keeper"`).
+    /// Human-readable display name (e.g. `"Chain Watcher"`).
     fn display_name(&self) -> &'static str;
     /// Agent capability tags.
     fn capabilities(&self) -> Vec<&str>;
@@ -98,7 +91,7 @@ impl FeedAgentContext {
 }
 
 // ---------------------------------------------------------------------------
-// spawn_all — create and run all 29 feed agents
+// spawn_all — create and run all feed agents
 // ---------------------------------------------------------------------------
 
 /// Spawn all feed agents as background tokio tasks.
@@ -126,39 +119,17 @@ pub fn spawn_all(state: Arc<AppState>) -> Vec<JoinHandle<()>> {
     }
 
     let agents: Vec<Arc<dyn FeedAgent>> = vec![
-        // Original 15 agents
-        Arc::new(keeper::IsfrKeeperAgent),
-        Arc::new(source_scouts::AaveScoutAgent),
-        Arc::new(source_scouts::CompoundScoutAgent),
-        Arc::new(source_scouts::EthenaScoutAgent),
-        Arc::new(source_scouts::LidoScoutAgent),
         Arc::new(chain_watcher::ChainWatcherAgent),
         Arc::new(gas_oracle::GasOracleAgent),
-        Arc::new(derivatives::RateDerivativeAgent),
-        Arc::new(derivatives::SpreadMonitorAgent),
-        Arc::new(epoch_tracker::EpochTrackerAgent),
-        Arc::new(oracle_submitter::OracleSubmitterAgent),
         Arc::new(monitors::AgentMonitorAgent),
-        Arc::new(monitors::ConfidenceScorerAgent),
-        Arc::new(derivatives::VolatilityWatcherAgent),
         Arc::new(monitors::RelayStatsAgent),
+        Arc::new(monitors::SystemHeartbeatAgent),
         // On-chain analytics (5)
         Arc::new(onchain::BlockSpaceAgent),
         Arc::new(onchain::TxThroughputAgent),
         Arc::new(onchain::FeeBurnAgent),
         Arc::new(onchain::NetworkHealthAgent),
         Arc::new(onchain::ContractActivityAgent),
-        // DeFi analytics (5)
-        Arc::new(defi::YieldCurveAgent),
-        Arc::new(defi::LiquidationRiskAgent),
-        Arc::new(defi::TvlTrackerAgent),
-        Arc::new(defi::StablecoinPegAgent),
-        Arc::new(defi::MevTrackerAgent),
-        // Market analytics (5)
-        Arc::new(market::CorrelationAgent),
-        Arc::new(market::RegimeClassifierAgent),
-        Arc::new(market::RiskAdjustedAgent),
-        Arc::new(market::SystemHeartbeatAgent),
     ];
 
     // Build catalog snapshot for the /api/feeds/catalog endpoint.

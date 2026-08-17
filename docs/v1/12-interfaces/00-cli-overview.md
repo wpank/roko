@@ -1,5 +1,8 @@
 # CLI Overview — `roko` as Primary Interface
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The `roko` binary is the primary interface to the Roko cognitive agent framework, supporting a default interactive shell, five additional invocation modes, and a first-class plugin surface for discovery, install, audit, and extension management.
 
 

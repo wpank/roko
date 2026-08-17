@@ -1,5 +1,8 @@
 # Conductor learning, federation, and self-healing
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The Conductor is not static. It learns which interventions work,
 > federates control across subsystem boundaries, and heals itself
 > when its own model drifts from reality.

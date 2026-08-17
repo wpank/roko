@@ -76,8 +76,11 @@ fn baseline_snapshot(run_id: &str, fingerprints: Vec<TaskDefFingerprint>) -> Run
         total_cost_usd: 0.05,
         total_agent_calls: 1,
         plan_costs: HashMap::new(),
+        task_usage: HashMap::new(),
+        accounted_usage_attempts: Vec::new(),
         completed_tasks: HashMap::from([("p1".to_string(), vec!["a".to_string()])]),
         failed_tasks: HashMap::new(),
+        skipped_tasks: HashMap::new(),
         lifecycle: None,
         snapshot_fail_streak: 0,
         fingerprints,
@@ -174,21 +177,28 @@ fn drifted_task_definition_is_reported_for_requeue() {
 }
 
 #[test]
-fn missing_plan_in_current_run_is_rejected() {
+fn missing_plan_in_partially_overlapping_run_is_rejected() {
     let dir = tempdir().expect("tempdir");
     let paths = PersistPaths::from_workdir(dir.path()).expect("paths");
 
     let task_a = task("a", "A");
     let fp_a = TaskDefFingerprint::from_task(&task_a, "p1");
-    save_run_state(&paths, &baseline_snapshot("prior", vec![fp_a.clone()])).unwrap();
+    let fp_b = TaskDefFingerprint::from_task(&task("b", "B"), "p2");
+    save_run_state(
+        &paths,
+        &baseline_snapshot("prior", vec![fp_a.clone(), fp_b.clone()]),
+    )
+    .unwrap();
 
-    // Current run only has p2 — p1 (which the snapshot recorded) is gone.
-    let task_x = task("x", "X");
+    // Current run still overlaps on p1, but p2 from the snapshot is gone.
     let mut plans = HashMap::new();
-    plans.insert("p2".to_string(), vec![task_x]);
+    plans.insert("p1".to_string(), vec![task_a]);
 
-    let err = prepare_resume(&paths, &plans, &[fp_a]).unwrap_err();
-    assert!(matches!(err, ResumeError::PlanMissing { .. }));
+    let err = prepare_resume(&paths, &plans, &[fp_a, fp_b]).unwrap_err();
+    assert!(matches!(
+        err,
+        ResumeError::PlanMissing { plan_id } if plan_id == "p2"
+    ));
 }
 
 #[test]
@@ -249,8 +259,11 @@ fn snapshot_with(
         total_cost_usd: 0.10,
         total_agent_calls: 2,
         plan_costs: HashMap::new(),
+        task_usage: HashMap::new(),
+        accounted_usage_attempts: Vec::new(),
         completed_tasks: completed,
         failed_tasks: HashMap::new(),
+        skipped_tasks: HashMap::new(),
         lifecycle: None,
         snapshot_fail_streak: 0,
         fingerprints,

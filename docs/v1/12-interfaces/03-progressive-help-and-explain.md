@@ -1,5 +1,8 @@
 # Progressive Help and Explain System
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Layered disclosure: beginners see three commands; experts see the full trait system. Errors are instructions, not dead ends.
 
 

@@ -1,5 +1,8 @@
 # Collective Calibration (31.6× Heuristic)
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **PRD source:** `refactoring-prd/09-innovations.md` §VI
 > **Module:** `roko-learn/src/cfactor.rs`
 > **Cross-references:** [04-cascade-router](04-cascade-router.md), [07-regression-detection](07-regression-detection.md), [13-8-missing-feedback-loops](13-8-missing-feedback-loops.md)

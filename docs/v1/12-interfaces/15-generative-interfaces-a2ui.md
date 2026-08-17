@@ -1,5 +1,8 @@
 # Generative Interfaces (A2UI)
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Agents create their own UI components — the A2UI (Agent-to-UI) protocol enables cognitive agents to emit structured UI descriptions that render in ROSEDUST across any interface.
 
 

@@ -6,6 +6,12 @@
 
 **Existing code**: `crates/roko-dreams/src/` (cycle.rs, runner.rs, staging.rs, replay.rs, imagination.rs, hypnagogia.rs, phase2/)
 
+> **Current implementation note (2026-08-15):** daemon mode now owns a resident scheduler
+> for adaptive idle, seven-field cron, and episode-count triggers. It defers scheduled work
+> while active, retains one pending cron fire, and restores the last report boundary. The
+> Trigger-Cell/Bus architecture, intensive backlog mode, and Loop-Graph refactor specified
+> below remain proposed work.
+
 ---
 
 ## 1. The Dream Problem, Precisely Stated
@@ -14,7 +20,9 @@ The existing `DreamCycle` in `crates/roko-dreams/src/cycle.rs` is a 900-line mon
 
 Three consequences:
 
-1. **No scheduling.** `DreamRunner` exists but nothing calls it at runtime. The Mori lesson applies directly: dreams exist but no trigger calls them. The idle-time trigger, the cron trigger, and the episode-count trigger are all implemented as methods on `DreamSchedulePolicy` but never wired into the event loop.
+1. **Scheduling is not yet protocol-native.** The resident daemon scheduler now calls the
+   existing cycle for adaptive-idle, cron, and episode-count deadlines. It does not yet use
+   the Trigger protocol or Bus topics, and intensive backlog draining is still absent.
 
 2. **No composability.** Adding a new consolidation strategy (say, a specialized code-pattern extractor or a cross-domain analogy finder) requires modifying the monolithic cycle function. There is no way to insert a Cell between NREM and REM, or to run an alternative REM implementation for a specific domain.
 

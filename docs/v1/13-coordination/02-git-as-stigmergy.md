@@ -1,5 +1,8 @@
 # Git as Stigmergy: Version Control as a Coordination Medium
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L0 Runtime (file system events), L2 Scaffold (context assembly from repository
 > state), L4 Orchestration (multi-agent worktree coordination)
 >

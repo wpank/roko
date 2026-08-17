@@ -213,8 +213,12 @@ async fn spawn_background_serve(
         RepoRegistry::default(),
         state_hub.clone(),
         Some(std::sync::Arc::clone(&metrics)),
-    )
-    .into_arc();
+    );
+    if let Err(e) = runtime.prepare_workspace_extensions(workdir).await {
+        tracing::warn!("background serve extension startup failed: {e:#}");
+        return None;
+    }
+    let runtime = runtime.into_arc();
     let roko_config = match roko_core::config::loader::load_config_unified(workdir) {
         Ok(config) => config,
         Err(e) => {

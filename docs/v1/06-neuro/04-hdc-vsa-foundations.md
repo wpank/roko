@@ -1,5 +1,8 @@
 # HDC/VSA Foundations
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Hyperdimensional Computing (HDC) and Vector Symbolic Architectures (VSA) provide the mathematical substrate for Neuro's similarity search, knowledge encoding, and cross-domain transfer — using 10,240-bit binary vectors with algebraic operations that run in nanoseconds.
 
 

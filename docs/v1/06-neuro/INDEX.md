@@ -1,5 +1,8 @@
 # Neuro — Cognitive Knowledge Layer
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Neuro (`roko-neuro`) is the agent's persistent, tiered knowledge system. Shipping pieces include `KnowledgeEntry`, `KnowledgeKind`, `KnowledgeStore`, `Distiller`, tier progression, and HDC-backed encoding/query support in parts of the stack. The broader design in this topic treats universal per-Engram fingerprints, demurrage/balance freshness, and worldview-aware heuristic memory as target-state extensions rather than fully implemented behavior.
 > REF14 contributes useful direction here, but the near-term layer is heuristic calibration and contradiction tracking around existing knowledge structures, not a finished worldview stack.
 >

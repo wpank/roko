@@ -1,5 +1,8 @@
 # Tree-Sitter Incremental Parsing
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Language-agnostic, incremental AST parsing via tree-sitter grammars — the planned upgrade from heuristic line-by-line parsers to full structural analysis.
 
 

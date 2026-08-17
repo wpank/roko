@@ -96,18 +96,16 @@ impl ValidationRegistry {
         attester: Option<u256>,
     ) -> Result<ValidationRecord, ValidationError> {
         // Check for duplicates
-        if self.config.reject_duplicates {
-            if let Some(existing) = self.records.get(&proof.job_hash) {
-                if existing
-                    .iter()
-                    .any(|r| r.proof.passport_id == proof.passport_id)
-                {
-                    return Err(ValidationError::DuplicateProof {
-                        job_hash: proof.job_hash,
-                        passport_id: proof.passport_id,
-                    });
-                }
-            }
+        if self.config.reject_duplicates
+            && let Some(existing) = self.records.get(&proof.job_hash)
+            && existing
+                .iter()
+                .any(|r| r.proof.passport_id == proof.passport_id)
+        {
+            return Err(ValidationError::DuplicateProof {
+                job_hash: proof.job_hash,
+                passport_id: proof.passport_id,
+            });
         }
 
         let pass_count = gate_scores.iter().filter(|g| g.passed).count();

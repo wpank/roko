@@ -1,5 +1,8 @@
 # Provenance and Attestation
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** In the revised architecture, provenance is the durable audit context attached to every `Engram`, not just a lightweight author tag. It tells operators who produced the record, how much to trust it, whether it is tainted, and which higher-assurance artifacts such as `Custody` and `Attestation` are linked to it. This document aligns the architecture chapter with the REF32 safety spine: typed taint, chain-of-custody records for auditable actions, explicit attestation levels, and a clear split between durable proof in `Substrate` and live safety signaling on the `Bus`. See [tmp/refinements/32-safety-sandbox-provenance.md](../../tmp/refinements/32-safety-sandbox-provenance.md) and [Naming Map and Glossary](01-naming-and-glossary.md).
 
 > **Implementation status:** Specified architecture with a shipping subset

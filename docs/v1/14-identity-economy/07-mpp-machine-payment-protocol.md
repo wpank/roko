@@ -1,5 +1,8 @@
 # 07 — MPP: Machine Payment Protocol
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > MPP (Machine Payment Protocol) provides session-based streaming payments for agent
 > operations. While x402 handles per-request micropayments, MPP handles pre-funded sessions
 > where an agent deposits once and draws against a balance across many requests. This

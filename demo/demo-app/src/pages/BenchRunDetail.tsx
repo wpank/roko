@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useParams, Link } from 'react-router';
-import { useLiveApi } from '../hooks/useLiveApi';
+import { useDataApi } from '../hooks/useDataApi';
 import { useCountUp } from '../hooks/useCountUp';
+import { adaptBenchRun } from '../lib/bench-types';
 import type { BenchRun } from '../lib/bench-types';
 import Pane from '../components/Pane';
 import Mosaic, { MosaicCell } from '../components/Mosaic';
@@ -92,7 +93,7 @@ function ModelBadge({ model, delay = 0 }: { model: string; delay?: number }) {
 
 export default function BenchRunDetail() {
   const { id } = useParams<{ id: string }>();
-  const { get } = useLiveApi();
+  const { get } = useDataApi();
   const [run, setRun] = useState<BenchRun | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -103,7 +104,7 @@ export default function BenchRunDetail() {
     setError(null);
     (async () => {
       try {
-        const data = await get<BenchRun>(`/api/bench/runs/${id}`);
+        const data = adaptBenchRun(await get<unknown>(`/api/bench/runs/${id}`));
         if (data && data.id) {
           setRun(data);
           return;

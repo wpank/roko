@@ -7,11 +7,20 @@
 //! carries schema version, monotonic cursor, staleness information, and a
 //! flag indicating whether the data was recovered from disk after a restart.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use chrono::{DateTime, Utc};
-use roko_core::dashboard_snapshot::{DashboardEvent, DashboardSnapshot};
+use chrono::{DateTime, TimeZone, Utc};
+pub use roko_core::agent::AutonomyConfig;
+use roko_core::dashboard_snapshot::{
+    DashboardEvent, DashboardSnapshot, InboxCategory, UrgencyLevel,
+};
+use roko_core::telemetry_projections::{
+    ActiveTasksProjection, AgentVitalityProjection, AgentVitalitySnapshot, CFactorProjection,
+    CohortHealthProjection, CostMeterProjection, GatePipelineProjection, KnowledgeHealthProjection,
+    RungSnapshot, TaskSnapshot,
+};
 use roko_learn::costs_db::CostRecord;
 use roko_learn::costs_log::CostsLog;
 use roko_learn::efficiency::AgentEfficiencyEvent;
@@ -21,10 +30,13 @@ use roko_learn::provider_model_outcome::{
     ProviderModelOutcomeRecord, ProviderModelOutcomeStatus, read_provider_model_outcomes,
 };
 use roko_learn::runtime_feedback::{
-    project_episode_paths, read_project_efficiency_events, read_project_episodes_lossy,
+    read_project_efficiency_events, read_project_episodes_lossy, resolve_project_episode_path,
 };
+use roko_runtime::{DurableRunnerProjection, RunnerProjectionSource};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::io::AsyncReadExt;
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -56,6 +68,136 @@ pub struct ProjectionEnvelope<T> {
     pub recovered: bool,
     /// The actual projection data.
     pub data: T,
+}
+
+/// Status of a Flow rendered in the Workbench.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+pub enum FlowStatus {
+    Running,
+    Paused,
+    WaitingHuman,
+    Completed { verdict: String },
+    Failed { error: String },
+    Cancelled,
+}
+
+/// Human response requested by one Flow cell.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HumanInputRequest {
+    pub run_id: String,
+    pub cell_id: String,
+    pub prompt: String,
+    pub urgency: UrgencyLevel,
+    pub deadline: Option<DateTime<Utc>>,
+}
+
+/// Workbench summary for one active or recently completed Flow.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FlowSummary {
+    pub run_id: String,
+    pub graph_name: String,
+    pub progress_pct: f64,
+    pub cost_usd: f64,
+    pub elapsed: Duration,
+    pub status: FlowStatus,
+    pub active_nodes: Vec<String>,
+    pub pending_human: Option<HumanInputRequest>,
+}
+
+/// Current assignment and health for one agent slot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlotState {
+    pub agent_id: String,
+    pub slot_index: usize,
+    pub occupied: bool,
+    pub current_task: Option<String>,
+    pub vitality: f64,
+}
+
+/// Complete typed input consumed by the Workbench surface.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkbenchProjection {
+    pub flows: Vec<FlowSummary>,
+    pub slots: Vec<SlotState>,
+    pub gate_pipeline: GatePipelineProjection,
+    pub cost_meter: CostMeterProjection,
+}
+
+/// One unresolved item rendered by the Agent Inbox.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InboxItem {
+    pub id: String,
+    pub urgency: UrgencyLevel,
+    pub category: InboxCategory,
+    pub summary: String,
+    pub detail: Value,
+    pub source_agent: Option<String>,
+    pub timestamp: DateTime<Utc>,
+    pub deadline: Option<DateTime<Utc>>,
+    pub blocking_run: Option<String>,
+}
+
+/// Complete typed input consumed by the Agent Inbox surface.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InboxProjection {
+    pub items: Vec<InboxItem>,
+    pub pending_count: usize,
+    pub agent_vitality: AgentVitalityProjection,
+    pub cohort_health: CohortHealthProjection,
+}
+
+/// Typed live overlay for the Generative Canvas.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanvasProjection {
+    pub graph_names: Vec<String>,
+    /// Source used for graph identities until GraphRegistry joins AppState.
+    pub graph_source: String,
+    pub active_tasks: ActiveTasksProjection,
+    pub gate_pipeline: GatePipelineProjection,
+}
+
+/// One agent's deterministic position and live health in the Minimap.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentPosition {
+    pub id: String,
+    pub x: f64,
+    pub y: f64,
+    pub status: String,
+    pub vitality: f64,
+    pub profile: String,
+    pub current_task: Option<String>,
+}
+
+/// Named c-factor components used by the coordination surface.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CFactorSummary {
+    pub overall: f64,
+    pub turn_taking_entropy: f64,
+    pub peer_prediction_accuracy: f64,
+    pub citation_reciprocity: f64,
+    pub hdc_diversity: f64,
+}
+
+/// Complete typed input consumed by the Stigmergy Minimap.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MinimapProjection {
+    pub agents: Vec<AgentPosition>,
+    /// Coordinate source; currently a stable layout, not an HDC embedding.
+    pub position_source: String,
+    pub c_factor: CFactorSummary,
+    pub cohort_health: CohortHealthProjection,
+    pub knowledge_health: KnowledgeHealthProjection,
+}
+
+/// Complete typed input consumed by the Autonomy Slider.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutonomyProjection {
+    pub configs: Vec<AutonomyConfig>,
+    /// Explicit source state so an empty list is never mistaken for defaults.
+    pub config_source: String,
+    pub agent_vitality: AgentVitalityProjection,
+    pub c_factor: CFactorSummary,
 }
 
 /// Data quality summary attached to responses that read from on-disk telemetry.
@@ -132,6 +274,81 @@ pub struct ProjectionCatalogEntry {
 /// and invalidation policies.
 pub fn projection_policies() -> Vec<ProjectionCatalogEntry> {
     vec![
+        ProjectionCatalogEntry {
+            name: "workbench".into(),
+            version: 1,
+            policy: InvalidationPolicy {
+                max_age_secs: 5,
+                incremental: false,
+                invalidation_triggers: vec![
+                    "plan_started".into(),
+                    "task_started".into(),
+                    "task_completed".into(),
+                    "agent_spawned".into(),
+                    "agent_completed".into(),
+                    "gate_result".into(),
+                    "projection_updated".into(),
+                ],
+            },
+        },
+        ProjectionCatalogEntry {
+            name: "inbox".into(),
+            version: 1,
+            policy: InvalidationPolicy {
+                max_age_secs: 5,
+                incremental: false,
+                invalidation_triggers: vec![
+                    "inbox_item_received".into(),
+                    "inbox_approve".into(),
+                    "inbox_reject".into(),
+                    "inbox_defer".into(),
+                    "inbox_dismiss".into(),
+                    "projection_updated".into(),
+                ],
+            },
+        },
+        ProjectionCatalogEntry {
+            name: "canvas".into(),
+            version: 1,
+            policy: InvalidationPolicy {
+                max_age_secs: 5,
+                incremental: false,
+                invalidation_triggers: vec![
+                    "plan_started".into(),
+                    "plan_completed".into(),
+                    "task_started".into(),
+                    "task_completed".into(),
+                    "gate_result".into(),
+                    "projection_updated".into(),
+                ],
+            },
+        },
+        ProjectionCatalogEntry {
+            name: "minimap".into(),
+            version: 1,
+            policy: InvalidationPolicy {
+                max_age_secs: 5,
+                incremental: false,
+                invalidation_triggers: vec![
+                    "agent_spawned".into(),
+                    "agent_completed".into(),
+                    "projection_updated".into(),
+                ],
+            },
+        },
+        ProjectionCatalogEntry {
+            name: "autonomy".into(),
+            version: 1,
+            policy: InvalidationPolicy {
+                max_age_secs: 5,
+                incremental: false,
+                invalidation_triggers: vec![
+                    "agent_spawned".into(),
+                    "agent_completed".into(),
+                    "projection_updated".into(),
+                ],
+            },
+        },
         ProjectionCatalogEntry {
             name: "dashboard".into(),
             version: 1,
@@ -312,6 +529,37 @@ pub fn projection_policies() -> Vec<ProjectionCatalogEntry> {
             },
         },
         ProjectionCatalogEntry {
+            name: "knowledge_health".into(),
+            version: 1,
+            policy: InvalidationPolicy {
+                max_age_secs: 60,
+                incremental: true,
+                invalidation_triggers: vec!["knowledge_entries_updated".into()],
+            },
+        },
+        ProjectionCatalogEntry {
+            name: "c_factor".into(),
+            version: 1,
+            policy: InvalidationPolicy {
+                max_age_secs: 10,
+                incremental: true,
+                invalidation_triggers: vec!["cfactor_trend_updated".into()],
+            },
+        },
+        ProjectionCatalogEntry {
+            name: "agent_vitality".into(),
+            version: 1,
+            policy: InvalidationPolicy {
+                max_age_secs: 5,
+                incremental: true,
+                invalidation_triggers: vec![
+                    "agent_spawned".into(),
+                    "agent_completed".into(),
+                    "efficiency_event".into(),
+                ],
+            },
+        },
+        ProjectionCatalogEntry {
             name: "cost_state".into(),
             version: 1,
             policy: InvalidationPolicy {
@@ -449,7 +697,7 @@ pub fn projection_version(name: &str) -> Option<u32> {
         "dashboard_snapshot" => "dashboard",
         "agents" | "agent_trails" => "agent_state",
         "plans" | "plans_list" => "plan_state",
-        "gates" | "gate_pipeline" => "gate_state",
+        "gates" => "gate_state",
         "learning" | "learning_policy" => "learning_policy_state",
         "events" => "event_log",
         "providers" | "provider_outcomes" => "provider_state",
@@ -533,6 +781,10 @@ pub struct RuntimeProjectionSet {
     pub feedback: RuntimeFeedbackProjection,
     /// Current provider circuit-breaker health rows.
     pub provider_health: Vec<Value>,
+    /// Materialized typed Lens projections supplied by StateHub.
+    pub statehub_projections: BTreeMap<String, roko_runtime::ProjectionState>,
+    /// Live bounded Lens queues and their operator-visible breaker states.
+    pub lens_runtimes: Vec<roko_runtime::LensRuntimeSnapshot>,
 }
 
 /// Durable feedback inputs joined into runtime projection responses.
@@ -556,6 +808,14 @@ pub struct RuntimeFeedbackProjection {
     pub gate_thresholds_json: Option<Value>,
     /// Parsed executor state when present.
     pub executor_state_json: Option<Value>,
+    /// Durable format supplying executor state.
+    pub runner_projection_source: Option<RunnerProjectionSource>,
+    /// Stable identity of the exact Runner generation joined to StateHub.
+    pub runner_projection_generation: Option<String>,
+    /// Stable source status: state_snapshot, legacy_executor, missing, or invalid.
+    pub runner_projection_status: String,
+    /// Durable loader failure retained for every HTTP projection surface.
+    pub runner_projection_error: Option<String>,
     /// Count of durable neuro knowledge entries.
     pub knowledge_entries: usize,
     /// Episode store paths that contributed durable records.
@@ -583,28 +843,47 @@ pub struct RuntimeFeedbackProjection {
 impl RuntimeProjectionSet {
     /// Load the canonical runtime projection inputs once for a request.
     pub async fn load(state: &AppState) -> Result<Self, ApiError> {
-        let live_snapshot = state.state_hub.current_snapshot();
-        let recovered_snapshot = if snapshot_has_observable_content(&live_snapshot) {
-            None
-        } else {
-            DashboardSnapshot::load_from_workdir(&state.workdir).ok()
-        };
-        let recovered = recovered_snapshot.is_some();
-        let snapshot = recovered_snapshot.unwrap_or(live_snapshot);
+        if !state
+            .state_hub
+            .current_snapshot_with_provenance()
+            .provenance
+            .bootstrapped
+        {
+            let _ = state.state_hub.bootstrap_from_workdir(&state.workdir);
+        }
+        // A recovered-only hub may advance to a newer atomic disk generation.
+        // Once live events exist, retain the captured baseline rather than
+        // joining live state to unrelated newer raw files.
+        let _ = state
+            .state_hub
+            .refresh_recovered_from_workdir(&state.workdir);
+        let captured = state.state_hub.cursor_snapshot();
+        let recovered = captured.provenance.recovered && !captured.provenance.live_events_applied;
+        let runner = captured.provenance.runner.clone();
+        let source_status = captured.provenance.source_status.clone();
+        let source_error = captured.provenance.source_error.clone();
 
         Ok(Self {
-            snapshot,
-            cursor: state.state_hub.total_published(),
-            ring_len: state.state_hub.ring_len(),
+            snapshot: captured.snapshot,
+            cursor: captured.next_seq,
+            ring_len: captured.ring_len,
             computed_at: Utc::now(),
             recovered,
-            feedback: RuntimeFeedbackProjection::load(&state.workdir).await?,
+            feedback: RuntimeFeedbackProjection::load(
+                &state.workdir,
+                runner.as_ref(),
+                source_status.as_deref(),
+                source_error.as_deref(),
+            )
+            .await?,
             provider_health: state
                 .provider_health
                 .snapshot()
                 .iter()
                 .map(provider_status_value)
                 .collect(),
+            statehub_projections: state.state_hub.projections(),
+            lens_runtimes: state.state_hub.lens_runtime_snapshots(),
         })
     }
 
@@ -622,7 +901,15 @@ impl RuntimeProjectionSet {
             "computed_at": self.computed_at.to_rfc3339(),
             "recovered": self.recovered,
             "freshness": {
-                "state": if self.recovered { "recovered" } else { "live" },
+                "state": if self.recovered {
+                    "recovered"
+                } else if self.feedback.runner_projection_status == "invalid" {
+                    "invalid"
+                } else if self.feedback.runner_projection_status == "missing" {
+                    "missing"
+                } else {
+                    "live"
+                },
                 "cursor": cursor,
             },
             "evidence": self.evidence(),
@@ -631,37 +918,407 @@ impl RuntimeProjectionSet {
         })
     }
 
+    /// Wrap a concrete surface projection in the stable typed envelope.
+    pub fn envelope<T>(&self, name: &str, data: T) -> ProjectionEnvelope<T> {
+        ProjectionEnvelope {
+            name: name.to_string(),
+            version: projection_version(name).unwrap_or(1),
+            cursor: self.cursor,
+            computed_at: self.computed_at.to_rfc3339(),
+            recovered: self.recovered,
+            data,
+        }
+    }
+
+    /// Build the Workbench view from live dashboard state and typed Lens data.
+    pub fn workbench_surface(&self) -> WorkbenchProjection {
+        let vitality = self.agent_vitality();
+        let vitality_by_agent = vitality
+            .agents
+            .iter()
+            .map(|agent| (agent.name.as_str(), agent.vitality))
+            .collect::<HashMap<_, _>>();
+        let mut agents = self.snapshot.agents.values().collect::<Vec<_>>();
+        agents.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+        let slots = agents
+            .into_iter()
+            .enumerate()
+            .map(|(slot_index, agent)| SlotState {
+                agent_id: agent.agent_id.clone(),
+                slot_index,
+                occupied: agent.active,
+                current_task: (!agent.current_task.is_empty()).then(|| agent.current_task.clone()),
+                vitality: vitality_by_agent
+                    .get(agent.agent_id.as_str())
+                    .copied()
+                    .unwrap_or(if agent.active { 1.0 } else { 0.0 }),
+            })
+            .collect();
+
+        WorkbenchProjection {
+            flows: self.flow_summaries(),
+            slots,
+            gate_pipeline: self.gate_pipeline(),
+            cost_meter: self.cost_meter(),
+        }
+    }
+
+    /// Build the Inbox view from its materialized lifecycle and health context.
+    pub fn inbox_surface(&self) -> InboxProjection {
+        let mut items = self
+            .snapshot
+            .inbox_items
+            .values()
+            .map(|item| InboxItem {
+                id: item.item_id.clone(),
+                urgency: item.urgency,
+                category: item.category,
+                summary: item.summary.clone(),
+                detail: json!({ "defer_until": item.defer_until }),
+                source_agent: None,
+                timestamp: timestamp_from_millis(item.received_at_ms),
+                deadline: None,
+                blocking_run: None,
+            })
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| {
+            inbox_urgency_rank(right.urgency)
+                .cmp(&inbox_urgency_rank(left.urgency))
+                .then_with(|| right.timestamp.cmp(&left.timestamp))
+        });
+
+        InboxProjection {
+            pending_count: items.len(),
+            items,
+            agent_vitality: self.agent_vitality(),
+            cohort_health: self.cohort_health(),
+        }
+    }
+
+    /// Build the Canvas live overlay from current Graph/Task state.
+    pub fn canvas_surface(&self) -> CanvasProjection {
+        let mut graph_names = self
+            .snapshot
+            .plans
+            .values()
+            .map(|plan| plan.plan_id.clone())
+            .collect::<Vec<_>>();
+        graph_names.sort();
+        graph_names.dedup();
+        CanvasProjection {
+            graph_names,
+            graph_source: "dashboard_plan_ids".to_string(),
+            active_tasks: self.active_tasks(),
+            gate_pipeline: self.gate_pipeline(),
+        }
+    }
+
+    /// Build the Minimap from live agents and collective-intelligence data.
+    pub fn minimap_surface(&self) -> MinimapProjection {
+        let vitality = self.agent_vitality();
+        let vitality_by_agent = vitality
+            .agents
+            .iter()
+            .map(|agent| (agent.name.as_str(), agent.vitality))
+            .collect::<HashMap<_, _>>();
+        let mut agents = self.snapshot.agents.values().collect::<Vec<_>>();
+        agents.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+        let positions = agents
+            .into_iter()
+            .enumerate()
+            .map(|(index, agent)| AgentPosition {
+                id: agent.agent_id.clone(),
+                x: (index % 8) as f64,
+                y: (index / 8) as f64,
+                status: if agent.active { "active" } else { "inactive" }.to_string(),
+                vitality: vitality_by_agent
+                    .get(agent.agent_id.as_str())
+                    .copied()
+                    .unwrap_or(if agent.active { 1.0 } else { 0.0 }),
+                profile: agent.role.clone(),
+                current_task: (!agent.current_task.is_empty()).then(|| agent.current_task.clone()),
+            })
+            .collect();
+
+        MinimapProjection {
+            agents: positions,
+            position_source: "deterministic_layout".to_string(),
+            c_factor: self.c_factor_summary(),
+            cohort_health: self.cohort_health(),
+            knowledge_health: self.knowledge_health(),
+        }
+    }
+
+    /// Build the Autonomy view for every currently known agent.
+    pub fn autonomy_surface(&self) -> AutonomyProjection {
+        let vitality = self.agent_vitality();
+        AutonomyProjection {
+            configs: Vec::new(),
+            config_source: "unavailable".to_string(),
+            agent_vitality: vitality,
+            c_factor: self.c_factor_summary(),
+        }
+    }
+
+    fn typed_lens<T: DeserializeOwned>(&self, name: &str) -> Option<T> {
+        self.statehub_projections
+            .get(name)
+            .and_then(|projection| serde_json::from_value(projection.data.clone()).ok())
+    }
+
+    fn active_tasks(&self) -> ActiveTasksProjection {
+        self.typed_lens("active_tasks").unwrap_or_else(|| {
+            let tasks = self
+                .snapshot
+                .tasks
+                .values()
+                .map(|task| TaskSnapshot {
+                    id: task.task_id.clone(),
+                    title: task.title.clone(),
+                    status: task.phase.clone(),
+                    agent: self
+                        .snapshot
+                        .agents
+                        .values()
+                        .find(|agent| agent.current_task == task.task_id)
+                        .map(|agent| agent.agent_id.clone()),
+                    started_at: None,
+                    duration_ms: None,
+                })
+                .collect();
+            ActiveTasksProjection {
+                tasks,
+                queued: 0,
+                completed_last_hour: self.snapshot.stats.tasks_completed,
+                avg_task_duration_ms: 0,
+            }
+        })
+    }
+
+    fn agent_vitality(&self) -> AgentVitalityProjection {
+        self.typed_lens("agent_vitality").unwrap_or_else(|| {
+            let mut agents = self
+                .snapshot
+                .agents
+                .values()
+                .map(|agent| AgentVitalitySnapshot {
+                    name: agent.agent_id.clone(),
+                    vitality: if agent.active { 1.0 } else { 0.0 },
+                    phase: if agent.active { "active" } else { "inactive" }.to_string(),
+                    regime: agent.role.clone(),
+                    slots_active: usize::from(agent.active),
+                    slots_total: 1,
+                    tasks_completed: 0,
+                    current_task: (!agent.current_task.is_empty())
+                        .then(|| agent.current_task.clone()),
+                })
+                .collect::<Vec<_>>();
+            agents.sort_by(|left, right| left.name.cmp(&right.name));
+            AgentVitalityProjection { agents }
+        })
+    }
+
+    fn gate_pipeline(&self) -> GatePipelineProjection {
+        self.typed_lens("gate_pipeline").unwrap_or_else(|| {
+            let mut by_gate = BTreeMap::<String, (u64, u64)>::new();
+            for gate in &self.snapshot.gates {
+                let counts = by_gate.entry(gate.gate.clone()).or_default();
+                if gate.passed {
+                    counts.0 += 1;
+                } else {
+                    counts.1 += 1;
+                }
+            }
+            let rungs = by_gate
+                .into_iter()
+                .map(|(name, (pass_count, fail_count))| {
+                    let total = pass_count + fail_count;
+                    RungSnapshot {
+                        name,
+                        pass_count,
+                        fail_count,
+                        pass_rate: if total == 0 {
+                            0.0
+                        } else {
+                            pass_count as f64 / total as f64
+                        },
+                    }
+                })
+                .collect::<Vec<_>>();
+            let total = self.snapshot.stats.gates_passed + self.snapshot.stats.gates_failed;
+            GatePipelineProjection {
+                rungs,
+                overall_pass_rate: if total == 0 {
+                    0.0
+                } else {
+                    self.snapshot.stats.gates_passed as f64 / total as f64
+                },
+                avg_reward: 0.0,
+                hard_criteria_fail_rate: if total == 0 {
+                    0.0
+                } else {
+                    self.snapshot.stats.gates_failed as f64 / total as f64
+                },
+            }
+        })
+    }
+
+    fn cost_meter(&self) -> CostMeterProjection {
+        self.typed_lens("cost_meter")
+            .unwrap_or_else(|| CostMeterProjection {
+                total_usd: self.snapshot.stats.cost_usd_total,
+                ..CostMeterProjection::default()
+            })
+    }
+
+    fn cohort_health(&self) -> CohortHealthProjection {
+        self.typed_lens("cohort_health")
+            .unwrap_or_else(|| CohortHealthProjection {
+                agent_count: self.snapshot.agents.len(),
+                active_count: self.snapshot.stats.agents_active,
+                total_spend_usd: self.snapshot.stats.cost_usd_total,
+                avg_vitality: if self.snapshot.agents.is_empty() {
+                    0.0
+                } else {
+                    self.snapshot.stats.agents_active as f64 / self.snapshot.agents.len() as f64
+                },
+                ..CohortHealthProjection::default()
+            })
+    }
+
+    fn knowledge_health(&self) -> KnowledgeHealthProjection {
+        self.typed_lens("knowledge_health").unwrap_or_else(|| {
+            let mut tier_distribution = BTreeMap::new();
+            for entry in &self.snapshot.knowledge_entries {
+                *tier_distribution.entry(entry.tier.clone()).or_insert(0) += 1;
+            }
+            KnowledgeHealthProjection {
+                total_entries: self.snapshot.knowledge_entries.len() as u64,
+                tier_distribution,
+                ..KnowledgeHealthProjection::default()
+            }
+        })
+    }
+
+    fn c_factor_summary(&self) -> CFactorSummary {
+        let projection = self
+            .typed_lens::<CFactorProjection>("c_factor")
+            .unwrap_or_else(|| CFactorProjection {
+                c_factor: self
+                    .snapshot
+                    .cfactor_trend
+                    .last()
+                    .map_or(0.0, |bucket| bucket.avg),
+                ..CFactorProjection::default()
+            });
+        CFactorSummary {
+            overall: projection.c_factor,
+            turn_taking_entropy: component(&projection.components, "turn_taking_entropy"),
+            peer_prediction_accuracy: component(&projection.components, "peer_prediction_accuracy"),
+            citation_reciprocity: component(&projection.components, "citation_reciprocity"),
+            hdc_diversity: projection
+                .components
+                .get("hdc_diversity")
+                .copied()
+                .unwrap_or(projection.agent_diversity),
+        }
+    }
+
+    fn flow_summaries(&self) -> Vec<FlowSummary> {
+        let now_ms = self.computed_at.timestamp_millis().max(0) as u64;
+        let mut flows = self
+            .snapshot
+            .plans
+            .values()
+            .map(|plan| {
+                let tasks = self
+                    .snapshot
+                    .tasks
+                    .values()
+                    .filter(|task| task.plan_id == plan.plan_id)
+                    .collect::<Vec<_>>();
+                let total = plan.tasks_total.max(tasks.len());
+                let done = plan.tasks_done + plan.tasks_failed;
+                let agents = self
+                    .snapshot
+                    .agents
+                    .values()
+                    .filter(|agent| agent.current_plan == plan.plan_id)
+                    .collect::<Vec<_>>();
+                let started_at_ms = agents
+                    .iter()
+                    .map(|agent| agent.spawned_at_ms)
+                    .filter(|timestamp| *timestamp > 0)
+                    .min()
+                    .unwrap_or(now_ms);
+                let active_nodes = tasks
+                    .iter()
+                    .filter(|task| task.outcome.is_none())
+                    .map(|task| task.task_id.clone())
+                    .collect();
+                let status = if plan.phase.eq_ignore_ascii_case("cancelled") {
+                    FlowStatus::Cancelled
+                } else if plan.active && plan.phase.eq_ignore_ascii_case("paused") {
+                    FlowStatus::Paused
+                } else if plan.active && plan.phase.to_ascii_lowercase().contains("human") {
+                    FlowStatus::WaitingHuman
+                } else if plan.active {
+                    FlowStatus::Running
+                } else if plan.tasks_failed > 0 || plan.phase.eq_ignore_ascii_case("failed") {
+                    FlowStatus::Failed {
+                        error: format!("{} task(s) failed", plan.tasks_failed.max(1)),
+                    }
+                } else {
+                    FlowStatus::Completed {
+                        verdict: "success".to_string(),
+                    }
+                };
+                FlowSummary {
+                    run_id: plan.plan_id.clone(),
+                    graph_name: plan.plan_id.clone(),
+                    progress_pct: if total == 0 {
+                        0.0
+                    } else {
+                        (done as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
+                    },
+                    cost_usd: agents.iter().map(|agent| agent.cost_usd).sum(),
+                    elapsed: Duration::from_millis(now_ms.saturating_sub(started_at_ms)),
+                    status,
+                    active_nodes,
+                    pending_human: None,
+                }
+            })
+            .collect::<Vec<_>>();
+        flows.sort_by(|left, right| left.run_id.cmp(&right.run_id));
+        flows
+    }
+
     /// Build a projection body by name from the canonical loaded inputs.
     pub fn project(&self, name: &str, query: &ProjectionQuery) -> Result<Value, ApiError> {
-        match canonical_projection_name(name) {
+        let canonical = canonical_projection_name(name);
+        if let Some(projection) = self.statehub_projections.get(canonical) {
+            return Ok(projection.data.clone());
+        }
+
+        match canonical {
+            "workbench" => serde_json::to_value(self.workbench_surface())
+                .map_err(|error| ApiError::internal(format!("serialize workbench: {error}"))),
+            "inbox" => serde_json::to_value(self.inbox_surface())
+                .map_err(|error| ApiError::internal(format!("serialize inbox: {error}"))),
+            "canvas" => serde_json::to_value(self.canvas_surface())
+                .map_err(|error| ApiError::internal(format!("serialize canvas: {error}"))),
+            "minimap" => serde_json::to_value(self.minimap_surface())
+                .map_err(|error| ApiError::internal(format!("serialize minimap: {error}"))),
+            "autonomy" => serde_json::to_value(self.autonomy_surface())
+                .map_err(|error| ApiError::internal(format!("serialize autonomy: {error}"))),
             "dashboard" => Ok(json!(self.snapshot)),
             "agent_state" => Ok(self.agent_state(query)),
             "plan_state" => Ok(self.plan_state(query)),
             "gate_state" => Ok(self.gate_state(query)),
             "learning_policy_state" => Ok(self.learning_policy_state(query)),
-            "cohort_health" => Ok(json!({
-                "stats": self.snapshot.stats,
-                "agent_topology": self.snapshot.agent_topology,
-                "cfactor_trend": self.snapshot.cfactor_trend,
-                "efficiency_trend": self.snapshot.efficiency_trend,
-                "roster_size": self.snapshot.agents.len(),
-                "provider_summary": self.provider_summary(query),
-                "statehub": {
-                    "source": "state_hub",
-                    "events_retained": self.snapshot.event_log.len(),
-                },
-            })),
-            "active_tasks" => Ok(json!({
-                "items": self
-                    .snapshot
-                    .tasks
-                    .values()
-                    .filter(|task| task_matches_filter(task, query))
-                    .take(query.limit.unwrap_or(usize::MAX))
-                    .cloned()
-                    .collect::<Vec<_>>(),
-                "stats": self.snapshot.stats,
-            })),
+            "cohort_health" => serialize_default_projection::<CohortHealthProjection>(),
+            "active_tasks" => serialize_default_projection::<ActiveTasksProjection>(),
+            "gate_pipeline" => serialize_default_projection::<GatePipelineProjection>(),
             "alerts" => Ok(json!({
                 "diagnoses": self.snapshot.diagnoses,
                 "recent_failures": self.snapshot.gate_recent_failures,
@@ -719,7 +1376,11 @@ impl RuntimeProjectionSet {
                     }))
                     .collect::<Vec<_>>(),
             })),
-            "cost_meter" | "cost_state" => Ok(self.cost_state(query)),
+            "cost_meter" => serialize_default_projection::<CostMeterProjection>(),
+            "knowledge_health" => serialize_default_projection::<KnowledgeHealthProjection>(),
+            "c_factor" => serialize_default_projection::<CFactorProjection>(),
+            "agent_vitality" => serialize_default_projection::<AgentVitalityProjection>(),
+            "cost_state" => Ok(self.cost_state(query)),
             "provider_state" => Ok(self.provider_state(query)),
             "retry_state" => Ok(self.retry_state(query)),
             "execution_trace" => Ok(self.execution_trace(query)?),
@@ -777,7 +1438,14 @@ impl RuntimeProjectionSet {
                 },
                 "cascade_router": json_source_state(&self.feedback.cascade_router_path, self.feedback.cascade_router_json.is_some()),
                 "gate_thresholds": json_source_state(&self.feedback.gate_thresholds_path, self.feedback.gate_thresholds_json.is_some()),
-                "executor_state": json_source_state(&self.feedback.executor_state_path, self.feedback.executor_state_json.is_some()),
+                "executor_state": runner_json_source_state(
+                    &self.feedback.executor_state_path,
+                    self.feedback.executor_state_json.is_some(),
+                    self.feedback.runner_projection_source,
+                    &self.feedback.runner_projection_status,
+                    self.feedback.runner_projection_generation.as_deref(),
+                    self.feedback.runner_projection_error.as_deref(),
+                ),
                 "knowledge": {
                     "path": self.feedback.knowledge_path.display().to_string(),
                     "records": self.feedback.knowledge_entries,
@@ -1079,7 +1747,14 @@ impl RuntimeProjectionSet {
 
     fn executor_state(&self, query: &ProjectionQuery) -> Value {
         json!({
-            "source": json_source_state(&self.feedback.executor_state_path, self.feedback.executor_state_json.is_some()),
+            "source": runner_json_source_state(
+                &self.feedback.executor_state_path,
+                self.feedback.executor_state_json.is_some(),
+                self.feedback.runner_projection_source,
+                &self.feedback.runner_projection_status,
+                self.feedback.runner_projection_generation.as_deref(),
+                self.feedback.runner_projection_error.as_deref(),
+            ),
             "raw": self.feedback.executor_state_json,
             "plans": self
                 .snapshot
@@ -1149,6 +1824,10 @@ impl RuntimeProjectionSet {
             "errors_total": self.snapshot.stats.errors_total,
             "efficiency_events": self.feedback.efficiency_events.len(),
             "diagnoses": self.snapshot.diagnoses.len(),
+            "lens_queue_enqueued": self.lens_runtimes.iter().map(|runtime| runtime.queue.enqueued).sum::<u64>(),
+            "lens_queue_processed": self.lens_runtimes.iter().map(|runtime| runtime.queue.processed).sum::<u64>(),
+            "lens_queue_dropped_oldest": self.lens_runtimes.iter().map(|runtime| runtime.queue.dropped_oldest).sum::<u64>(),
+            "lens_queue_failed_dispatches": self.lens_runtimes.iter().map(|runtime| runtime.queue.failed_dispatches).sum::<u64>(),
         });
 
         json!({
@@ -1156,6 +1835,7 @@ impl RuntimeProjectionSet {
             "circuit_breaker_states": circuit_breaker_states,
             "observation_counts": observation_counts,
             "provider_health": self.provider_health,
+            "lens_runtimes": self.lens_runtimes,
             "stats": self.snapshot.stats,
         })
     }
@@ -1658,40 +2338,90 @@ impl RuntimeProjectionSet {
     }
 }
 
+fn timestamp_from_millis(timestamp_ms: u64) -> DateTime<Utc> {
+    Utc.timestamp_millis_opt(timestamp_ms.min(i64::MAX as u64) as i64)
+        .single()
+        .unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
+}
+
+const fn inbox_urgency_rank(urgency: UrgencyLevel) -> u8 {
+    match urgency {
+        UrgencyLevel::Notify => 1,
+        UrgencyLevel::Question => 2,
+        UrgencyLevel::Review => 3,
+    }
+}
+
+fn component(components: &BTreeMap<String, f64>, name: &str) -> f64 {
+    components
+        .get(name)
+        .or_else(|| components.get(&name.replace('_', "-")))
+        .copied()
+        .unwrap_or_default()
+}
+
 impl RuntimeFeedbackProjection {
-    async fn load(workdir: &Path) -> Result<Self, ApiError> {
+    async fn load(
+        workdir: &Path,
+        runner_projection: Option<&DurableRunnerProjection>,
+        source_status: Option<&str>,
+        source_error: Option<&str>,
+    ) -> Result<Self, ApiError> {
         let roko = workdir.join(".roko");
         let learn = roko.join("learn");
         let efficiency_path = learn.join("efficiency.jsonl");
         let costs_path = learn.join("costs.jsonl");
         let provider_model_outcomes_path = learn.join("provider-model-outcomes.jsonl");
         let cascade_router_path = learn.join("cascade-router.json");
-        let gate_thresholds_path = learn.join("gate-thresholds.json");
-        let executor_state_path = roko.join("state").join("executor.json");
+        let standalone_gate_thresholds_path = learn.join("gate-thresholds.json");
+        let canonical_executor_state_path = roko.join("state").join("state-snapshot.json");
+        let executor_state_path = runner_projection.map_or_else(
+            || canonical_executor_state_path.clone(),
+            |projection| projection.source_path.clone(),
+        );
+        let gate_thresholds_path = runner_projection
+            .filter(|projection| projection.gate_thresholds.is_some())
+            .map_or_else(
+                || standalone_gate_thresholds_path.clone(),
+                |projection| projection.source_path.clone(),
+            );
         let knowledge_path = roko.join("neuro").join("knowledge.jsonl");
         let runner_events_path = roko.join("events.jsonl");
         let signal_log_path = roko.join("engrams.jsonl");
 
         let episodes = read_project_episodes_lossy(workdir)
             .await
-            .map_err(|e| ApiError::internal(format!("read project episodes: {e}")))?;
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "runtime projection auxiliary episodes unavailable");
+                Vec::new()
+            });
         let efficiency_events = read_project_efficiency_events(workdir)
             .await
-            .map_err(|e| ApiError::internal(format!("read project efficiency events: {e}")))?;
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "runtime projection auxiliary efficiency events unavailable");
+                Vec::new()
+            });
         let cost_records = CostsLog::at(&costs_path)
             .read_all()
             .await
-            .map_err(|e| ApiError::internal(format!("read {}: {e}", costs_path.display())))?;
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, path = %costs_path.display(), "runtime projection auxiliary costs unavailable");
+                Vec::new()
+            });
         let provider_model_outcomes = read_provider_model_outcomes(&provider_model_outcomes_path)
             .await
-            .map_err(|e| {
-                ApiError::internal(format!(
-                    "read {}: {e}",
-                    provider_model_outcomes_path.display()
-                ))
-            })?;
-        let runner_events = read_jsonl_values(&runner_events_path).await?;
-        let signal_events = read_jsonl_values(&signal_log_path).await?;
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, path = %provider_model_outcomes_path.display(), "runtime projection auxiliary provider outcomes unavailable");
+                Vec::new()
+            });
+        let runner_events = read_jsonl_values(&runner_events_path).await.unwrap_or_else(|error| {
+            tracing::warn!(%error, path = %runner_events_path.display(), "runtime projection auxiliary runner events unavailable");
+            Vec::new()
+        });
+        let signal_events = read_jsonl_values(&signal_log_path).await.unwrap_or_else(|error| {
+            tracing::warn!(%error, path = %signal_log_path.display(), "runtime projection auxiliary signal events unavailable");
+            Vec::new()
+        });
 
         Ok(Self {
             runner_events,
@@ -1700,14 +2430,40 @@ impl RuntimeFeedbackProjection {
             efficiency_events,
             cost_records,
             provider_model_outcomes,
-            cascade_router_json: read_optional_json(&cascade_router_path).await?,
-            gate_thresholds_json: read_optional_json(&gate_thresholds_path).await?,
-            executor_state_json: read_optional_json(&executor_state_path).await?,
-            knowledge_entries: count_jsonl_records(&knowledge_path).await?,
-            episode_paths: project_episode_paths(workdir)
-                .into_iter()
-                .filter(|path| path.exists())
-                .collect(),
+            cascade_router_json: read_optional_json(&cascade_router_path)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, path = %cascade_router_path.display(), "runtime projection auxiliary cascade router unavailable");
+                    None
+                }),
+            gate_thresholds_json: match runner_projection
+                .and_then(|projection| projection.gate_thresholds.as_ref())
+            {
+                Some(thresholds) => Some(thresholds.clone()),
+                None if source_status == Some("invalid") => None,
+                None => read_optional_json(&standalone_gate_thresholds_path)
+                    .await
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(%error, path = %standalone_gate_thresholds_path.display(), "runtime projection auxiliary gate thresholds unavailable");
+                        None
+                    }),
+            },
+            executor_state_json: runner_projection.map(|projection| projection.executor.clone()),
+            runner_projection_source: runner_projection.map(|projection| projection.source),
+            runner_projection_generation: runner_projection
+                .map(|projection| projection.generation.clone()),
+            runner_projection_status: source_status.unwrap_or("missing").to_string(),
+            runner_projection_error: source_error.map(ToOwned::to_owned),
+            knowledge_entries: count_jsonl_records(&knowledge_path)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, path = %knowledge_path.display(), "runtime projection auxiliary knowledge unavailable");
+                    0
+                }),
+            episode_paths: {
+                let path = resolve_project_episode_path(workdir);
+                path.exists().then_some(path).into_iter().collect()
+            },
             efficiency_path,
             costs_path,
             provider_model_outcomes_path,
@@ -1721,13 +2477,21 @@ impl RuntimeFeedbackProjection {
     }
 }
 
+fn serialize_default_projection<T>() -> Result<Value, ApiError>
+where
+    T: Default + Serialize,
+{
+    serde_json::to_value(T::default())
+        .map_err(|error| ApiError::internal(format!("serialize default projection: {error}")))
+}
+
 /// Canonical projection name for aliases accepted by the HTTP API.
 pub fn canonical_projection_name(name: &str) -> &str {
     match name {
         "dashboard_snapshot" => "dashboard",
         "agents" | "agent_trails" => "agent_state",
         "plans" | "plans_list" => "plan_state",
-        "gates" | "gate_pipeline" => "gate_state",
+        "gates" => "gate_state",
         "learning" | "learning_policy" => "learning_policy_state",
         "events" => "event_log",
         "providers" | "provider_outcomes" => "provider_state",
@@ -1759,8 +2523,74 @@ pub fn projection_accepts_event(
     query: &ProjectionQuery,
     event: &DashboardEvent,
 ) -> bool {
-    match canonical_projection_name(name) {
+    let canonical_name = canonical_projection_name(name);
+    if let DashboardEvent::ProjectionUpdated { projection_id, .. } = event {
+        let projection_id = canonical_projection_name(projection_id);
+        return projection_id == canonical_name
+            || matches!(
+                (canonical_name, projection_id),
+                (
+                    "workbench",
+                    "active_tasks" | "agent_vitality" | "gate_pipeline" | "cost_meter"
+                ) | ("inbox", "agent_vitality" | "cohort_health")
+                    | ("canvas", "active_tasks" | "gate_pipeline")
+                    | (
+                        "minimap",
+                        "agent_vitality" | "c_factor" | "cohort_health" | "knowledge_health"
+                    )
+                    | ("autonomy", "agent_vitality" | "c_factor")
+            );
+    }
+    match canonical_name {
         "dashboard" | "execution_trace" | "runtime_feedback" => true,
+        "workbench" => matches!(
+            event,
+            DashboardEvent::PlanStarted { .. }
+                | DashboardEvent::PlanCompleted { .. }
+                | DashboardEvent::PhaseTransition { .. }
+                | DashboardEvent::TaskStarted { .. }
+                | DashboardEvent::TaskCompleted { .. }
+                | DashboardEvent::TaskPhaseChanged { .. }
+                | DashboardEvent::AgentSpawned { .. }
+                | DashboardEvent::AgentCompleted { .. }
+                | DashboardEvent::EfficiencyEvent { .. }
+                | DashboardEvent::GateResult { .. }
+        ),
+        "inbox" => matches!(
+            event,
+            DashboardEvent::InboxItemReceived { .. }
+                | DashboardEvent::InboxApprove { .. }
+                | DashboardEvent::InboxReject { .. }
+                | DashboardEvent::InboxDefer { .. }
+                | DashboardEvent::InboxDismiss { .. }
+                | DashboardEvent::AgentSpawned { .. }
+                | DashboardEvent::AgentCompleted { .. }
+                | DashboardEvent::EfficiencyEvent { .. }
+        ),
+        "canvas" => matches!(
+            event,
+            DashboardEvent::PlanStarted { .. }
+                | DashboardEvent::PlanCompleted { .. }
+                | DashboardEvent::TaskStarted { .. }
+                | DashboardEvent::TaskCompleted { .. }
+                | DashboardEvent::TaskPhaseChanged { .. }
+                | DashboardEvent::GateResult { .. }
+        ),
+        "minimap" => matches!(
+            event,
+            DashboardEvent::AgentSpawned { .. }
+                | DashboardEvent::AgentCompleted { .. }
+                | DashboardEvent::EfficiencyEvent { .. }
+                | DashboardEvent::CFactorTrendUpdated { .. }
+                | DashboardEvent::KnowledgeEntriesUpdated { .. }
+        ),
+        "autonomy" => matches!(
+            event,
+            DashboardEvent::AgentSpawned { .. }
+                | DashboardEvent::AgentCompleted { .. }
+                | DashboardEvent::EfficiencyEvent { .. }
+                | DashboardEvent::CFactorTrendUpdated { .. }
+        ),
         "agent_state" => match event {
             DashboardEvent::AgentSpawned { agent_id, .. }
             | DashboardEvent::AgentOutput { agent_id, .. }
@@ -1785,6 +2615,7 @@ pub fn projection_accepts_event(
             DashboardEvent::GateThresholdsUpdated { .. } => true,
             _ => false,
         },
+        "gate_pipeline" => matches!(event, DashboardEvent::GateResult { .. }),
         "learning_policy_state" => matches!(
             event,
             DashboardEvent::ExperimentWinnersUpdated { .. }
@@ -1835,6 +2666,14 @@ pub fn projection_accepts_event(
                 | DashboardEvent::EpisodeRecorded { .. }
                 | DashboardEvent::AgentCompleted { .. }
         ),
+        "knowledge_health" => matches!(event, DashboardEvent::KnowledgeEntriesUpdated { .. }),
+        "c_factor" => matches!(event, DashboardEvent::CFactorTrendUpdated { .. }),
+        "agent_vitality" => matches!(
+            event,
+            DashboardEvent::AgentSpawned { .. }
+                | DashboardEvent::AgentCompleted { .. }
+                | DashboardEvent::EfficiencyEvent { .. }
+        ),
         "retry_state" => matches!(
             event,
             DashboardEvent::GateResult { .. }
@@ -1870,16 +2709,6 @@ pub fn projection_accepts_event(
     }
 }
 
-fn snapshot_has_observable_content(snapshot: &DashboardSnapshot) -> bool {
-    !snapshot.plans.is_empty()
-        || !snapshot.tasks.is_empty()
-        || !snapshot.agents.is_empty()
-        || !snapshot.gates.is_empty()
-        || !snapshot.episodes.is_empty()
-        || !snapshot.event_log.is_empty()
-        || snapshot.stats.cost_usd_total > 0.0
-}
-
 fn provider_status_value(status: &ProviderStatus) -> Value {
     let (state, recovery_in_ms) = match status.state {
         HealthState::Healthy => ("healthy", None),
@@ -1908,7 +2737,7 @@ fn provider_status_value(status: &ProviderStatus) -> Value {
 }
 
 async fn read_optional_json(path: &Path) -> Result<Option<Value>, ApiError> {
-    let content = match tokio::fs::read_to_string(path).await {
+    let content = match read_bounded_projection_text(path).await {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => {
@@ -1924,7 +2753,7 @@ async fn read_optional_json(path: &Path) -> Result<Option<Value>, ApiError> {
 }
 
 async fn count_jsonl_records(path: &Path) -> Result<usize, ApiError> {
-    let content = match tokio::fs::read_to_string(path).await {
+    let content = match read_bounded_projection_text(path).await {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(err) => {
@@ -1941,7 +2770,7 @@ async fn count_jsonl_records(path: &Path) -> Result<usize, ApiError> {
 }
 
 async fn read_jsonl_values(path: &Path) -> Result<Vec<Value>, ApiError> {
-    let content = match tokio::fs::read_to_string(path).await {
+    let content = match read_bounded_projection_text(path).await {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => {
@@ -1969,6 +2798,41 @@ async fn read_jsonl_values(path: &Path) -> Result<Vec<Value>, ApiError> {
     Ok(values)
 }
 
+const MAX_PROJECTION_AUX_BYTES: u64 = 16 * 1024 * 1024;
+
+async fn read_bounded_projection_text(path: &Path) -> std::io::Result<String> {
+    let file = tokio::fs::File::open(path).await?;
+    let len = file.metadata().await?.len();
+    if len > MAX_PROJECTION_AUX_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{} is {len} bytes; maximum is {MAX_PROJECTION_AUX_BYTES}",
+                path.display()
+            ),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(len as usize);
+    file.take(MAX_PROJECTION_AUX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() as u64 > MAX_PROJECTION_AUX_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{} exceeded maximum {MAX_PROJECTION_AUX_BYTES}",
+                path.display()
+            ),
+        ));
+    }
+    String::from_utf8(bytes).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} is not UTF-8: {error}", path.display()),
+        )
+    })
+}
+
 fn path_list(paths: &[PathBuf]) -> Vec<String> {
     paths
         .iter()
@@ -1980,6 +2844,26 @@ fn json_source_state(path: &Path, available: bool) -> Value {
     json!({
         "path": path.display().to_string(),
         "state": if available { "available" } else { "missing" },
+    })
+}
+
+fn runner_json_source_state(
+    path: &Path,
+    available: bool,
+    source: Option<RunnerProjectionSource>,
+    status: &str,
+    generation: Option<&str>,
+    error: Option<&str>,
+) -> Value {
+    json!({
+        "path": path.display().to_string(),
+        "state": if available { "available" } else { status },
+        "format": source.map_or_else(
+            || status.to_string(),
+            |source| source.label().to_string(),
+        ),
+        "generation": generation,
+        "error": error,
     })
 }
 
@@ -3095,6 +3979,81 @@ mod tests {
         assert_eq!(decoded.version, 1);
         assert_eq!(decoded.cursor, 42);
         assert!(!decoded.recovered);
+    }
+
+    #[test]
+    fn projection_invalidation_routes_only_to_its_live_stream() {
+        let event = DashboardEvent::ProjectionUpdated {
+            projection_id: "cost_meter".into(),
+            version: 2,
+            source_lens: "cost-monitor".into(),
+        };
+        let query = ProjectionQuery::default();
+
+        assert!(projection_accepts_event("cost_meter", &query, &event));
+        assert!(!projection_accepts_event("c_factor", &query, &event));
+        let frame = projection_delta_frame("cost_meter", 7, &event);
+        assert_eq!(frame["channel"], "projection:cost_meter");
+        assert_eq!(frame["delta"]["type"], "projection_updated");
+        assert_eq!(frame["delta"]["version"], 2);
+    }
+
+    #[test]
+    fn runner_source_state_reports_missing_and_invalid_without_format_drift() {
+        let path = Path::new(".roko/state/state-snapshot.json");
+        let missing = runner_json_source_state(path, false, None, "missing", None, None);
+        assert_eq!(missing["state"], "missing");
+        assert_eq!(missing["format"], "missing");
+
+        let invalid = runner_json_source_state(
+            path,
+            false,
+            None,
+            "invalid",
+            None,
+            Some("checksum mismatch"),
+        );
+        assert_eq!(invalid["state"], "invalid");
+        assert_eq!(invalid["format"], "invalid");
+        assert_eq!(invalid["error"], "checksum mismatch");
+
+        let canonical = runner_json_source_state(
+            path,
+            true,
+            Some(RunnerProjectionSource::StateSnapshot),
+            "state_snapshot",
+            Some("generation"),
+            None,
+        );
+        assert_eq!(canonical["state"], "available");
+        assert_eq!(canonical["format"], "state_snapshot");
+    }
+
+    #[tokio::test]
+    async fn invalid_authoritative_runner_never_falls_back_to_standalone_thresholds() {
+        let dir = tempfile::tempdir().unwrap();
+        let learn = dir.path().join(".roko/learn");
+        std::fs::create_dir_all(&learn).unwrap();
+        std::fs::write(
+            learn.join("gate-thresholds.json"),
+            serde_json::json!({"rungs": {"1": {"pass_count": 9}}}).to_string(),
+        )
+        .unwrap();
+
+        let feedback = RuntimeFeedbackProjection::load(
+            dir.path(),
+            None,
+            Some("invalid"),
+            Some("checksum mismatch"),
+        )
+        .await
+        .unwrap();
+        assert!(feedback.gate_thresholds_json.is_none());
+        assert_eq!(feedback.runner_projection_status, "invalid");
+        assert_eq!(
+            feedback.runner_projection_error.as_deref(),
+            Some("checksum mismatch")
+        );
     }
 
     #[test]

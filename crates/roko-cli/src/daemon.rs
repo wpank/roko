@@ -410,6 +410,10 @@ pub async fn daemon_start(workdir: &Path, foreground: bool, port: u16) -> Result
         return Ok(());
     }
 
+    // The detached parent returns immediately; the foreground child owns the
+    // single-writer guard for the daemon's complete state-mutating lifetime.
+    let _workspace_lock = crate::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
+
     let core_config = load_config_unified(workdir)?;
     let cli_config = load_resolved_config(workdir)?.config;
     let dream_settings = cli_config.dreams.clone();
@@ -417,8 +421,9 @@ pub async fn daemon_start(workdir: &Path, foreground: bool, port: u16) -> Result
     let daimon_strategy_space = cli_config.daimon.strategy_space.clone();
     let repo_registry = RepoRegistry::load(&cli_config, workdir).unwrap_or_default();
     let state_hub = AppState::state_hub_for_workdir(workdir);
-    let runtime =
-        RokoCliRuntime::new_with_state_hub(cli_config, repo_registry, state_hub.clone()).into_arc();
+    let runtime = RokoCliRuntime::new_with_state_hub(cli_config, repo_registry, state_hub.clone());
+    runtime.prepare_workspace_extensions(workdir).await?;
+    let runtime = runtime.into_arc();
     let deploy_backend = Arc::from(deploy::create_backend("manual", None, None, None)?);
     let state = Arc::new(AppState::new_with_daimon_strategy_and_state_hub(
         workdir.to_path_buf(),
@@ -433,6 +438,7 @@ pub async fn daemon_start(workdir: &Path, foreground: bool, port: u16) -> Result
         auto_dream: dream_settings.auto_dream,
         idle_threshold_mins: dream_settings.idle_threshold_mins,
         min_episodes_for_dream: dream_settings.min_episodes_for_dream,
+        schedule: dream_settings.schedule_policy(),
         agent: dreams::DreamAgentConfig {
             command: agent_settings.command,
             args: agent_settings.args,
@@ -444,6 +450,10 @@ pub async fn daemon_start(workdir: &Path, foreground: bool, port: u16) -> Result
             env: agent_settings.env,
         },
     };
+    dream_config
+        .effective_schedule()
+        .validate()
+        .context("validate dream schedule")?;
 
     let info = DaemonInfo {
         pid: std::process::id(),
@@ -458,7 +468,7 @@ pub async fn daemon_start(workdir: &Path, foreground: bool, port: u16) -> Result
     let _watchers = fswatcher::start_watchers(Arc::clone(&state));
     let _dispatch = dispatch::start_dispatch_loop(Arc::clone(&state));
     let _feedback = feedback::start_feedback_loop(Arc::clone(&state));
-    let _dreams = dreams::start_dream_loop(Arc::clone(&state), dream_config);
+    let _dreams = dreams::start_dream_loop(Arc::clone(&state), dream_config)?;
     let shutdown_request = CancellationToken::new();
     let http_shutdown = CancellationToken::new();
     let ipc_server = match start_ipc_server(Arc::clone(&state), shutdown_request.clone()).await {

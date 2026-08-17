@@ -43,6 +43,7 @@ pub struct SpawnAgentSpec {
 
 impl SpawnAgentSpec {
     fn into_agent_options(self) -> AgentOptions {
+        let immune_root = self.working_dir.clone();
         AgentOptions {
             command: self.command,
             timeout_ms: self.timeout_ms,
@@ -50,6 +51,7 @@ impl SpawnAgentSpec {
             cached_content: self.cached_content,
             tools: self.tools,
             mcp_config: self.mcp_config,
+            immune_root,
             working_dir: self.working_dir,
             provider_semaphores: None,
             env: self.env,

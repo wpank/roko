@@ -1,5 +1,8 @@
 # 16 — Plugin Loading Mechanisms
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Discovery-first loading for the five-tier SPI. Manifests are the source of truth; `roko.toml`
 > is runtime configuration, not the plugin catalog. See also
 > [tmp/refinements/17-plugin-extension-architecture.md](../../tmp/refinements/17-plugin-extension-architecture.md)

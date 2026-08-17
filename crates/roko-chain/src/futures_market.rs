@@ -211,15 +211,14 @@ impl FuturesMarket {
         }
 
         // HDC similarity check if target is specified
-        if future.specification.target_hdc.is_some() {
-            if let Some(sim) = submission.hdc_similarity {
-                if sim < min_quality {
-                    return Err(FuturesError::QualityBelowThreshold {
-                        quality: sim,
-                        threshold: min_quality,
-                    });
-                }
-            }
+        if future.specification.target_hdc.is_some()
+            && let Some(sim) = submission.hdc_similarity
+            && sim < min_quality
+        {
+            return Err(FuturesError::QualityBelowThreshold {
+                quality: sim,
+                threshold: min_quality,
+            });
         }
 
         let future = self.futures.get_mut(future_id).unwrap();

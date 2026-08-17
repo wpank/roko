@@ -1,5 +1,8 @@
 # The Pulse Ephemeral Event Medium
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** Pulse is the ephemeral sibling medium to Engram. Pulses are typed,
 > sequence-numbered, in-flight events on the Bus: they are delivered now, may be observed
 > once, and are not persisted by default. They can carry a lightweight source attribution

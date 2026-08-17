@@ -4,8 +4,9 @@
 //! resolution, cost tracking, event emission, and feedback recording.
 
 use crate::gateway_events::{GatewayEvent, GatewayEventWriter};
+use crate::multimodal::contains_images;
 use crate::observer::InferenceObserver;
-use crate::provider::{AgentOptions, create_agent_for_model};
+use crate::provider::{AgentOptions, LocalToolRuntime, create_agent_for_model};
 use crate::rate_limit::ProviderRateLimiter;
 use crate::task_runner::CostTable;
 use async_trait::async_trait;
@@ -13,7 +14,8 @@ use chrono::Utc;
 use roko_core::config::schema::RokoConfig;
 use roko_core::foundation::{
     CachePolicy, ChatMessage, FeedbackEvent, FeedbackSink, GatewayError, MessageRole,
-    ModelCallRequest, ModelCallResponse, ModelCaller, TokenBudget, TokenUsage,
+    ModelCallRequest, ModelCallResponse, ModelCaller, ModelInputBlock, ModelInputMessage,
+    TokenBudget, TokenUsage, validate_model_input_messages,
 };
 use roko_core::{
     Body, Context, EventConsumer, Kind, Result, RokoError, RuntimeEvent, Signal, ToolCallSummary,
@@ -120,6 +122,12 @@ pub struct ModelCallService {
     env: Vec<(String, String)>,
     /// Explicit MCP config path threaded into provider options.
     mcp_config: Option<PathBuf>,
+    /// Stable effect directory for provider/tool execution.
+    working_dir: Option<PathBuf>,
+    /// Canonical workspace root for durable immune authority state.
+    immune_root: Option<PathBuf>,
+    /// Local executable tool definitions retained for provider tool loops.
+    local_tool_runtime: Option<Arc<LocalToolRuntime>>,
     /// L1 exact-match response cache.
     cache: CacheCell,
     /// Service-lifetime cost budget tracker.
@@ -163,6 +171,9 @@ impl ModelCallService {
             fallback_models: Vec::new(),
             env: Vec::new(),
             mcp_config: None,
+            working_dir: None,
+            immune_root: None,
+            local_tool_runtime: None,
             metrics: None,
             cache: CacheCell::new(128),
             budget: BudgetCell::new(None),
@@ -179,6 +190,25 @@ impl ModelCallService {
     pub fn with_config(mut self, config: RokoConfig) -> Self {
         self.fallback_models = configured_fallback_models(&config, &self.default_model);
         self.config = config;
+        self
+    }
+
+    /// Set the service's provider/tool execution directory.
+    #[must_use]
+    pub fn with_working_dir(mut self, working_dir: impl Into<PathBuf>) -> Self {
+        self.working_dir = Some(working_dir.into());
+        self
+    }
+
+    /// Set the canonical workspace root for durable immune state.
+    #[must_use]
+    pub fn with_immune_root(mut self, immune_root: impl Into<PathBuf>) -> Self {
+        let immune_root = immune_root.into();
+        self.immune_root = Some(
+            immune_root
+                .canonicalize()
+                .unwrap_or_else(|_| immune_root.clone()),
+        );
         self
     }
 
@@ -280,6 +310,14 @@ impl ModelCallService {
         self
     }
 
+    /// Return live rolling utilization for every configured provider.
+    #[must_use]
+    pub fn rate_limit_snapshot(&self) -> Vec<crate::rate_limit::ProviderRateLimitSnapshot> {
+        self.rate_limiter
+            .as_ref()
+            .map_or_else(Vec::new, |limiter| limiter.snapshot())
+    }
+
     /// Provide an Anthropic API key for service-created agents.
     #[must_use]
     pub fn with_anthropic_api_key(mut self, key: String) -> Self {
@@ -298,6 +336,13 @@ impl ModelCallService {
     #[must_use]
     pub fn with_mcp_config(mut self, path: impl Into<PathBuf>) -> Self {
         self.mcp_config = Some(path.into());
+        self
+    }
+
+    /// Make non-MCP local tools available to every service-created provider.
+    #[must_use]
+    pub fn with_local_tool_runtime(mut self, runtime: Arc<LocalToolRuntime>) -> Self {
+        self.local_tool_runtime = Some(runtime);
         self
     }
 
@@ -375,7 +420,27 @@ impl ModelCallService {
                 .iter()
                 .map(|message| message.content.chars().count() as u64)
                 .sum::<u64>();
-        let estimated_input_tokens = total_chars / 4;
+        let structured_text_chars = req
+            .input_messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|block| match block {
+                ModelInputBlock::Text { text } => Some(text.chars().count() as u64),
+                ModelInputBlock::Image { .. } => None,
+            })
+            .sum::<u64>();
+        let image_count = req
+            .input_messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter(|block| matches!(block, ModelInputBlock::Image { .. }))
+            .count() as u64;
+        // Provider image token accounting varies with resolution/detail. Use a
+        // conservative non-zero floor without treating base64 bytes as text.
+        let estimated_input_tokens = total_chars
+            .max(structured_text_chars)
+            .saturating_div(4)
+            .saturating_add(image_count.saturating_mul(85));
         let max_output_tokens = u64::from(
             req.max_tokens
                 .unwrap_or(roko_core::defaults::DEFAULT_FALLBACK_MAX_OUTPUT_TOKENS),
@@ -414,7 +479,21 @@ impl ModelCallService {
     ) -> AgentOptions {
         let mut options = AgentOptions {
             system_prompt,
+            // System guidance is normalized into `system_prompt` before
+            // dispatch. Keeping system-role structured messages here would
+            // make adapters that lift both sources send it twice.
+            input_messages: req
+                .input_messages
+                .iter()
+                .filter(|message| message.role != MessageRole::System)
+                .cloned()
+                .collect(),
             mcp_config: self.mcp_config.clone(),
+            working_dir: self.working_dir.clone(),
+            immune_root: self
+                .immune_root
+                .clone()
+                .or_else(|| self.working_dir.clone()),
             name: req.role.clone().unwrap_or_else(|| "model_call".to_string()),
             env: self.env.clone(),
             effort: Some(self.config.agent.default_effort.clone())
@@ -425,6 +504,7 @@ impl ModelCallService {
             .mcp_config
             .clone()
             .or_else(|| self.config_agent_mcp_config());
+        options.pre_discovered_local_tools = self.local_tool_runtime.clone();
         if !req.tools.is_empty() {
             options.pre_discovered_mcp_tools = Some(Arc::new(req.tools.clone()));
         }
@@ -673,6 +753,7 @@ impl ModelCallService {
     /// `"anthropic"`, `"openai"`, `"gemini"`). When no provider is configured
     /// for the model, falls back to the model slug itself so the health registry
     /// can still track failures.
+    #[cfg(test)]
     fn record_provider_outcome(&self, provider_id: Option<&str>, model: &str, success: bool) {
         let Some(recorder) = &self.provider_outcome_recorder else {
             return;
@@ -687,24 +768,6 @@ impl ModelCallService {
             // variant helpers below.
             recorder.record_provider_failure(effective_provider, "unknown");
         }
-    }
-
-    /// Record a rate-limit failure for the provider backing `model`.
-    fn record_provider_rate_limit(&self, provider_id: Option<&str>, model: &str) {
-        let Some(recorder) = &self.provider_outcome_recorder else {
-            return;
-        };
-        let effective_provider = provider_id.filter(|p| !p.is_empty()).unwrap_or(model);
-        recorder.record_provider_failure(effective_provider, "rate_limit");
-    }
-
-    /// Record a timeout failure for the provider backing `model`.
-    fn record_provider_timeout(&self, provider_id: Option<&str>, model: &str) {
-        let Some(recorder) = &self.provider_outcome_recorder else {
-            return;
-        };
-        let effective_provider = provider_id.filter(|p| !p.is_empty()).unwrap_or(model);
-        recorder.record_provider_failure(effective_provider, "timeout");
     }
 
     /// Emit metrics for a completed model call (success, cache hit, or error).
@@ -874,6 +937,15 @@ impl ModelCallService {
             .collect()
     }
 
+    fn model_supports_input_images(&self, model: &str) -> bool {
+        let resolved = roko_core::agent::resolve_model(&self.config, model);
+        resolved.provider_kind.supports_inline_images()
+            && resolved
+                .profile
+                .as_ref()
+                .is_some_and(|profile| profile.supports_vision)
+    }
+
     fn build_knowledge_advice(
         &self,
         candidate_slugs: &[String],
@@ -1017,6 +1089,43 @@ fn append_knowledge_to_system_prompt(
         Some(existing) if !existing.trim().is_empty() => format!("{existing}\n\n{knowledge}"),
         _ => knowledge,
     })
+}
+
+fn canonical_system_prompt(req: &ModelCallRequest) -> Option<String> {
+    let mut segments = Vec::new();
+
+    push_unique_system_segment(&mut segments, req.system.as_deref());
+    for message in &req.messages {
+        if message.role == MessageRole::System {
+            push_unique_system_segment(&mut segments, Some(&message.content));
+        }
+    }
+    for message in &req.input_messages {
+        if message.role != MessageRole::System {
+            continue;
+        }
+        let content = message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ModelInputBlock::Text { text } if !text.trim().is_empty() => Some(text.as_str()),
+                ModelInputBlock::Text { .. } | ModelInputBlock::Image { .. } => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        push_unique_system_segment(&mut segments, Some(&content));
+    }
+
+    (!segments.is_empty()).then(|| segments.join("\n\n"))
+}
+
+fn push_unique_system_segment(segments: &mut Vec<String>, value: Option<&str>) {
+    let Some(value) = value.filter(|value| !value.trim().is_empty()) else {
+        return;
+    };
+    if !segments.iter().any(|existing| existing == value) {
+        segments.push(value.to_string());
+    }
 }
 
 fn request_prompt(messages: &[ChatMessage]) -> (Option<String>, String) {
@@ -1351,6 +1460,7 @@ impl CacheCell {
         model: &str,
         system: Option<&str>,
         messages: &[ChatMessage],
+        input_messages: &[ModelInputMessage],
         temperature: Option<f32>,
         max_tokens: Option<u32>,
     ) -> u64 {
@@ -1363,6 +1473,10 @@ impl CacheCell {
             message_role_tag(&message.role).hash(&mut hasher);
             message.content.hash(&mut hasher);
         }
+        // Hash MIME types, ordered block boundaries, and image bytes into the
+        // identity. The digest is the only derived value exposed in request ids;
+        // raw base64 never enters logs or telemetry.
+        input_messages.hash(&mut hasher);
 
         temperature.map(f32::to_bits).hash(&mut hasher);
         max_tokens.hash(&mut hasher);
@@ -1401,11 +1515,11 @@ impl CacheCell {
 
         if inner.entries.contains_key(&key) {
             inner.order.retain(|existing| *existing != key);
-        } else if inner.entries.len() >= inner.max_entries {
-            if let Some(oldest) = inner.order.first().copied() {
-                inner.entries.remove(&oldest);
-                inner.order.remove(0);
-            }
+        } else if inner.entries.len() >= inner.max_entries
+            && let Some(oldest) = inner.order.first().copied()
+        {
+            inner.entries.remove(&oldest);
+            inner.order.remove(0);
         }
 
         inner.entries.insert(key, response);
@@ -1450,28 +1564,25 @@ impl BudgetCell {
     fn check(&self, budget: &Option<TokenBudget>) -> std::result::Result<(), GatewayError> {
         let cumulative = self.cumulative_cost_micro_usd.load(Ordering::Relaxed);
 
-        if let Some(limit) = self.max_cumulative_cost_micro_usd {
-            if cumulative >= limit {
-                return Err(GatewayError::BudgetExceeded {
-                    detail: format!(
-                        "cumulative cost {:.6} USD reached configured limit {:.6} USD",
-                        micro_usd_to_usd(cumulative),
-                        micro_usd_to_usd(limit)
-                    ),
-                });
-            }
+        if let Some(limit) = self.max_cumulative_cost_micro_usd
+            && cumulative >= limit
+        {
+            return Err(GatewayError::BudgetExceeded {
+                detail: format!(
+                    "cumulative cost {:.6} USD reached configured limit {:.6} USD",
+                    micro_usd_to_usd(cumulative),
+                    micro_usd_to_usd(limit)
+                ),
+            });
         }
 
-        if let Some(budget) = budget {
-            if let Some(max_cost_usd) = budget.max_cost_usd {
-                if max_cost_usd <= 0.0 {
-                    return Err(GatewayError::BudgetExceeded {
-                        detail: format!(
-                            "per-call max_cost_usd must be positive, got {max_cost_usd:.6}"
-                        ),
-                    });
-                }
-            }
+        if let Some(budget) = budget
+            && let Some(max_cost_usd) = budget.max_cost_usd
+            && max_cost_usd <= 0.0
+        {
+            return Err(GatewayError::BudgetExceeded {
+                detail: format!("per-call max_cost_usd must be positive, got {max_cost_usd:.6}"),
+            });
         }
 
         Ok(())
@@ -1694,6 +1805,13 @@ struct ProviderCallCell {
     cost_table: CostTable,
     /// Optional shared rate limiter acquired before every live LLM request.
     rate_limiter: Option<Arc<ProviderRateLimiter>>,
+    /// Optional direct recorder for each live provider attempt.
+    ///
+    /// This lives at the provider-call boundary rather than the outer
+    /// `ModelCaller::call` boundary so fallback attempts are attributed to
+    /// the provider that actually handled them and each attempt is counted
+    /// exactly once.
+    provider_outcome_recorder: Option<Arc<dyn ProviderOutcomeRecorder>>,
 }
 
 impl ProviderCallCell {
@@ -1701,12 +1819,27 @@ impl ProviderCallCell {
         config: RokoConfig,
         cost_table: CostTable,
         rate_limiter: Option<Arc<ProviderRateLimiter>>,
+        provider_outcome_recorder: Option<Arc<dyn ProviderOutcomeRecorder>>,
     ) -> Self {
         Self {
             config,
             cost_table,
             rate_limiter,
+            provider_outcome_recorder,
         }
+    }
+
+    fn record_provider_attempt(&self, provider_id: &str, result: &crate::AgentResult) {
+        let Some(recorder) = &self.provider_outcome_recorder else {
+            return;
+        };
+        if result.success {
+            recorder.record_provider_success(provider_id);
+            return;
+        }
+
+        let message = output_text(&result.output);
+        recorder.record_provider_failure(provider_id, provider_error_kind(&message));
     }
 
     /// Resolve the provider ID for a model key using the cell's config.
@@ -1754,28 +1887,31 @@ impl ProviderCallCell {
         {
             // On rate-limit errors, apply exponential backoff before the next
             // attempt so we don't hammer the provider in a tight loop.
-            if attempt_index > 0 {
-                if let Some(CellError::Retryable { ref message }) = last_error {
-                    if is_rate_limit_message(message) {
-                        let delay_ms =
-                            rate_limit_policy.rate_limit_delay(attempt_index as u32 - 1, None);
-                        tracing::warn!(
-                            model = %attempt_model,
-                            delay_ms,
-                            attempt = attempt_index,
-                            "rate limited; backing off before fallback attempt"
-                        );
-                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                    }
-                }
+            if attempt_index > 0
+                && let Some(CellError::Retryable { ref message }) = last_error
+                && is_rate_limit_message(message)
+            {
+                let delay_ms = rate_limit_policy.rate_limit_delay(attempt_index as u32 - 1, None);
+                tracing::warn!(
+                    model = %attempt_model,
+                    delay_ms,
+                    attempt = attempt_index,
+                    "rate limited; backing off before fallback attempt"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
             }
 
             // Acquire a rate-limit slot before dispatching to the provider.
             // This is the canonical enforcement point for RPM budgets shared
             // across all concurrent agent calls in this runtime.
             let provider_id = self.provider_id_for(attempt_model);
-            if let Some(ref limiter) = self.rate_limiter {
-                limiter.acquire(&provider_id).await;
+            if let Some(ref limiter) = self.rate_limiter
+                && let Err(error) = limiter.try_acquire(&provider_id).await
+            {
+                last_error = Some(CellError::Retryable {
+                    message: error.to_string(),
+                });
+                continue;
             }
 
             let mut attempt_options = options.clone();
@@ -1788,6 +1924,19 @@ impl ProviderCallCell {
 
             let ctx = Context::now();
             let result = agent.run(&prompt, &ctx).await;
+            self.record_provider_attempt(&provider_id, &result);
+            if let Some(ref limiter) = self.rate_limiter {
+                limiter
+                    .record_tokens(
+                        &provider_id,
+                        result
+                            .usage
+                            .input_tokens
+                            .saturating_add(result.usage.output_tokens)
+                            .into(),
+                    )
+                    .await;
+            }
             let calculated_cost = self.cost_table.calculate(attempt_model, &result.usage);
             let cost_usd = if calculated_cost > 0.0 {
                 calculated_cost
@@ -1835,6 +1984,45 @@ fn is_rate_limit_message(message: &str) -> bool {
         || lower.contains("rate_limit")
         || lower.contains("429")
         || lower.contains("too many requests")
+}
+
+/// Classify the provider-facing error text emitted by an agent attempt.
+///
+/// Provider adapters normalize typed transport errors into `AgentResult`
+/// output, so the call cell classifies at this boundary before fallback or
+/// outer workflow handling can erase the provider identity.
+/// Classify provider-facing error text for circuit-breaker outcome recording.
+pub(crate) fn provider_error_kind(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if is_rate_limit_message(&lower) {
+        "rate_limit"
+    } else if lower.contains("timeout") || lower.contains("timed out") {
+        "timeout"
+    } else if lower.contains("unauthorized")
+        || lower.contains("forbidden")
+        || lower.contains("permission denied")
+        || lower.contains("authentication")
+        || lower.contains("401")
+        || lower.contains("403")
+    {
+        "auth_failure"
+    } else if lower.contains("context window")
+        || lower.contains("context length")
+        || lower.contains("context overflow")
+    {
+        "context_overflow"
+    } else if lower.contains("content policy") || lower.contains("safety policy") {
+        "content_policy"
+    } else if lower.contains("server error")
+        || lower.contains("temporarily unavailable")
+        || lower.contains("502")
+        || lower.contains("503")
+        || lower.contains("504")
+    {
+        "server_error"
+    } else {
+        "unknown"
+    }
 }
 
 struct CellOutput {
@@ -1886,6 +2074,15 @@ fn is_retryable_provider_message(message: &str) -> bool {
 #[async_trait]
 impl ModelCaller for ModelCallService {
     async fn call(&self, mut req: ModelCallRequest) -> Result<ModelCallResponse> {
+        validate_model_input_messages(&req.input_messages).map_err(RokoError::invalid)?;
+        let model = self.resolve_model(&req);
+        let has_images = contains_images(&req.input_messages);
+        if has_images && !self.model_supports_input_images(&model) {
+            return Err(RokoError::invalid(format!(
+                "model {model:?} or its configured provider does not support inline image input"
+            )));
+        }
+
         let mut knowledge_candidates = Vec::new();
         if !req.model.is_empty() {
             knowledge_candidates.push(req.model.clone());
@@ -1921,8 +2118,6 @@ impl ModelCaller for ModelCallService {
                 );
             }
         }
-
-        let model = self.resolve_model(&req);
         let start = Instant::now();
         let agent_id = format!("model-call:{model}");
         let auto_routed = req.model.trim().is_empty() || req.model != model;
@@ -1930,6 +2125,7 @@ impl ModelCaller for ModelCallService {
             &model,
             req.system.as_deref(),
             &req.messages,
+            &req.input_messages,
             req.temperature,
             req.max_tokens,
         );
@@ -1983,38 +2179,38 @@ impl ModelCaller for ModelCallService {
         self.budget.check(&req.budget).map_err(RokoError::from)?;
         if let Some(budget) = &req.budget {
             let estimate = self.cost_predict(&req);
-            if let Some(max_input) = budget.max_input {
-                if estimate.estimated_input_tokens > max_input {
-                    return Err(GatewayError::BudgetExceeded {
-                        detail: format!(
-                            "estimated input tokens {} exceed per-call limit {}",
-                            estimate.estimated_input_tokens, max_input
-                        ),
-                    }
-                    .into());
+            if let Some(max_input) = budget.max_input
+                && estimate.estimated_input_tokens > max_input
+            {
+                return Err(GatewayError::BudgetExceeded {
+                    detail: format!(
+                        "estimated input tokens {} exceed per-call limit {}",
+                        estimate.estimated_input_tokens, max_input
+                    ),
                 }
+                .into());
             }
-            if let Some(max_output) = budget.max_output {
-                if estimate.max_output_tokens > max_output {
-                    return Err(GatewayError::BudgetExceeded {
-                        detail: format!(
-                            "requested output tokens {} exceed per-call limit {}",
-                            estimate.max_output_tokens, max_output
-                        ),
-                    }
-                    .into());
+            if let Some(max_output) = budget.max_output
+                && estimate.max_output_tokens > max_output
+            {
+                return Err(GatewayError::BudgetExceeded {
+                    detail: format!(
+                        "requested output tokens {} exceed per-call limit {}",
+                        estimate.max_output_tokens, max_output
+                    ),
                 }
+                .into());
             }
-            if let Some(max_cost_usd) = budget.max_cost_usd {
-                if estimate.predicted_cost_usd > max_cost_usd {
-                    return Err(GatewayError::BudgetExceeded {
-                        detail: format!(
-                            "predicted cost {:.6} USD exceeds per-call limit {:.6} USD",
-                            estimate.predicted_cost_usd, max_cost_usd
-                        ),
-                    }
-                    .into());
+            if let Some(max_cost_usd) = budget.max_cost_usd
+                && estimate.predicted_cost_usd > max_cost_usd
+            {
+                return Err(GatewayError::BudgetExceeded {
+                    detail: format!(
+                        "predicted cost {:.6} USD exceeds per-call limit {:.6} USD",
+                        estimate.predicted_cost_usd, max_cost_usd
+                    ),
                 }
+                .into());
             }
         }
 
@@ -2074,9 +2270,9 @@ impl ModelCaller for ModelCallService {
             }
         }
 
-        let (message_system, user_content) = request_prompt(&req.messages);
+        let (_, user_content) = request_prompt(&req.messages);
         let system_prompt = append_knowledge_to_system_prompt(
-            req.system.clone().or(message_system),
+            canonical_system_prompt(&req),
             knowledge_advice.as_ref(),
         );
         let config = self.config_for_model(&model);
@@ -2093,9 +2289,17 @@ impl ModelCaller for ModelCallService {
         // TODO(converge): Thread req-level MCP config here in S05 once
         // ModelCallRequest carries it.
 
-        let fallback_models = self.fallback_models_for_request(&model);
-        let cell =
-            ProviderCallCell::new(config, self.cost_table.clone(), self.rate_limiter.clone());
+        let fallback_models = self
+            .fallback_models_for_request(&model)
+            .into_iter()
+            .filter(|fallback| !has_images || self.model_supports_input_images(fallback))
+            .collect::<Vec<_>>();
+        let cell = ProviderCallCell::new(
+            config,
+            self.cost_table.clone(),
+            self.rate_limiter.clone(),
+            self.provider_outcome_recorder.clone(),
+        );
         self.inference_started(&request_id, &model, &agent_id, auto_routed);
         let inference_start = Instant::now();
         let output = match cell
@@ -2129,16 +2333,6 @@ impl ModelCaller for ModelCallService {
                     Some(message.clone()),
                 )?;
                 self.record_force_backend_override(&req.model, &model, false);
-                // Classify rate-limit vs timeout vs generic for the circuit breaker.
-                if is_rate_limit_message(&message) {
-                    self.record_provider_rate_limit(provider.as_deref(), &model);
-                } else if message.to_ascii_lowercase().contains("timeout")
-                    || message.to_ascii_lowercase().contains("timed out")
-                {
-                    self.record_provider_timeout(provider.as_deref(), &model);
-                } else {
-                    self.record_provider_outcome(provider.as_deref(), &model, false);
-                }
                 self.record_feedback(
                     &req,
                     &request_id,
@@ -2182,9 +2376,6 @@ impl ModelCaller for ModelCallService {
             });
             self.record_force_backend_override(&req.model, &output.model_used, false);
             let output_provider = self.provider_for_model(&output.model_used);
-            // Convergence loop is a model-side failure, not a provider transport error;
-            // record as a generic provider outcome so the circuit breaker can track it.
-            self.record_provider_outcome(output_provider.as_deref(), &output.model_used, false);
             self.write_gateway_event(
                 &req,
                 &request_id,
@@ -2243,8 +2434,6 @@ impl ModelCaller for ModelCallService {
         });
         self.record_force_backend_override(&req.model, &output.model_used, true);
         let output_provider = self.provider_for_model(&output.model_used);
-        // Record provider success for the circuit breaker.
-        self.record_provider_outcome(output_provider.as_deref(), &output.model_used, true);
         self.write_gateway_event(
             &req,
             &request_id,
@@ -2291,16 +2480,24 @@ mod tests {
     use roko_core::{
         ModelStreamEvent, model_call_failure_to_stream, model_call_response_to_stream,
     };
-    use roko_learn::cascade_router::CascadeRouter;
-    use tempfile::tempdir;
-
+    #[derive(Default)]
     struct TestCascadeRecorder {
-        router: Arc<CascadeRouter>,
+        confidence_stats: Mutex<HashMap<String, (u64, u64)>>,
+    }
+
+    impl TestCascadeRecorder {
+        fn confidence_snapshot(&self) -> HashMap<String, (u64, u64)> {
+            self.confidence_stats.lock().clone()
+        }
     }
 
     impl ForceBackendOverrideRecorder for TestCascadeRecorder {
         fn record_override_outcome(&self, model_slug: &str, success: bool) -> bool {
-            self.router.record_confidence_outcome(model_slug, success)
+            let mut stats = self.confidence_stats.lock();
+            let entry = stats.entry(model_slug.to_string()).or_default();
+            entry.0 += 1;
+            entry.1 += u64::from(success);
+            true
         }
     }
 
@@ -2312,6 +2509,7 @@ mod tests {
                 role: MessageRole::User,
                 content: content.into(),
             }],
+            input_messages: Vec::new(),
             max_tokens: None,
             temperature: None,
             role: None,
@@ -2365,6 +2563,67 @@ mod tests {
 
         assert_eq!(system.as_deref(), Some("system one\n\nsystem two"));
         assert_eq!(prompt, "User:\nfirst\n\nAssistant:\nsecond\n\nUser:\nthird");
+    }
+
+    #[test]
+    fn system_guidance_is_lifted_once_and_removed_from_structured_messages() {
+        let req = ModelCallRequest {
+            system: Some("shared guidance".to_string()),
+            messages: vec![
+                ChatMessage {
+                    role: MessageRole::System,
+                    content: "shared guidance".to_string(),
+                },
+                ChatMessage {
+                    role: MessageRole::System,
+                    content: "legacy-only guidance".to_string(),
+                },
+                ChatMessage {
+                    role: MessageRole::User,
+                    content: "inspect the image".to_string(),
+                },
+            ],
+            input_messages: vec![
+                ModelInputMessage::new(
+                    MessageRole::System,
+                    vec![ModelInputBlock::text("shared guidance")],
+                ),
+                ModelInputMessage::new(
+                    MessageRole::System,
+                    vec![ModelInputBlock::text("structured-only guidance")],
+                ),
+                ModelInputMessage::new(
+                    MessageRole::User,
+                    vec![
+                        ModelInputBlock::text("before"),
+                        ModelInputBlock::image("image/png", "aGVsbG8="),
+                        ModelInputBlock::text("after"),
+                    ],
+                ),
+            ],
+            ..user_request("gpt-4o", "inspect the image")
+        };
+
+        let system = canonical_system_prompt(&req).expect("system prompt");
+        assert_eq!(
+            system,
+            "shared guidance\n\nlegacy-only guidance\n\nstructured-only guidance"
+        );
+        assert_eq!(system.matches("shared guidance").count(), 1);
+
+        let options =
+            ModelCallService::new("gpt-4o".to_string()).build_agent_options(&req, Some(system));
+        assert!(
+            options
+                .input_messages
+                .iter()
+                .all(|message| message.role != MessageRole::System)
+        );
+        assert_eq!(options.input_messages.len(), 1);
+        assert!(matches!(
+            &options.input_messages[0].content[1],
+            ModelInputBlock::Image { data, .. } if data == "aGVsbG8="
+        ));
     }
 
     #[tokio::test]
@@ -2428,6 +2687,7 @@ mod tests {
                 role: MessageRole::User,
                 content: "hello".into(),
             }],
+            input_messages: Vec::new(),
             max_tokens: None,
             temperature: None,
             role: None,
@@ -2451,6 +2711,7 @@ mod tests {
             model: "claude-opus-4-20250514".into(),
             system: None,
             messages: vec![],
+            input_messages: Vec::new(),
             max_tokens: None,
             temperature: None,
             role: None,
@@ -2477,6 +2738,7 @@ mod tests {
             model: String::new(),
             system: None,
             messages: vec![],
+            input_messages: Vec::new(),
             max_tokens: None,
             temperature: None,
             role: Some("reviewer".to_string()),
@@ -2496,17 +2758,10 @@ mod tests {
 
     #[tokio::test]
     async fn force_backend_records_when_router_present() {
-        let dir = tempdir().expect("tempdir");
         let model = "ux34-model";
-        let router = Arc::new(CascadeRouter::load_or_new(
-            &dir.path().join("cascade.json"),
-            vec![model.to_string()],
-        ));
-        let svc = ModelCallService::new("default".into()).with_cascade_router(Arc::new(
-            TestCascadeRecorder {
-                router: Arc::clone(&router),
-            },
-        ));
+        let recorder = Arc::new(TestCascadeRecorder::default());
+        let svc =
+            ModelCallService::new("default".into()).with_cascade_router(Arc::clone(&recorder));
 
         let response = svc
             .call(user_request(model, "learn this override"))
@@ -2514,7 +2769,7 @@ mod tests {
             .expect("model call should succeed");
 
         assert_eq!(response.model, model);
-        assert_eq!(router.confidence_snapshot().get(model), Some(&(1, 1)));
+        assert_eq!(recorder.confidence_snapshot().get(model), Some(&(1, 1)));
     }
 
     #[tokio::test]
@@ -2531,24 +2786,18 @@ mod tests {
 
     #[tokio::test]
     async fn force_backend_records_failure_when_router_present() {
-        let dir = tempdir().expect("tempdir");
         let model = "ux34-failing-model";
-        let router = Arc::new(CascadeRouter::load_or_new(
-            &dir.path().join("cascade.json"),
-            vec![model.to_string()],
-        ));
+        let recorder = Arc::new(TestCascadeRecorder::default());
         let mut config = RokoConfig::default();
         config.agent.command = Some("false".to_string());
         let svc = ModelCallService::new("default".into())
             .with_config(config)
-            .with_cascade_router(Arc::new(TestCascadeRecorder {
-                router: Arc::clone(&router),
-            }));
+            .with_cascade_router(Arc::clone(&recorder));
 
         let result = svc.call(user_request(model, "this should fail")).await;
 
         assert!(result.is_err());
-        assert_eq!(router.confidence_snapshot().get(model), Some(&(1, 0)));
+        assert_eq!(recorder.confidence_snapshot().get(model), Some(&(1, 0)));
     }
 
     #[test]
@@ -2566,6 +2815,7 @@ mod tests {
             model: "claude-haiku-4".into(),
             system: None,
             messages: vec![],
+            input_messages: Vec::new(),
             max_tokens: None,
             temperature: None,
             role: None,
@@ -2601,6 +2851,7 @@ mod tests {
             model: String::new(),
             system: None,
             messages: vec![],
+            input_messages: Vec::new(),
             max_tokens: None,
             temperature: None,
             role: None,
@@ -2661,6 +2912,7 @@ mod tests {
                 role: MessageRole::User,
                 content: "hello".into(),
             }],
+            input_messages: Vec::new(),
             max_tokens: None,
             temperature: None,
             role: None,
@@ -2703,6 +2955,7 @@ mod tests {
                 role: MessageRole::User,
                 content: "x".repeat(1000),
             }],
+            input_messages: Vec::new(),
             max_tokens: Some(2048),
             temperature: None,
             role: None,
@@ -2732,8 +2985,8 @@ mod tests {
             content: "hello".into(),
         }];
 
-        let first = CacheCell::cache_key("model-a", None, &messages, Some(0.2), Some(1024));
-        let second = CacheCell::cache_key("model-a", None, &messages, Some(0.2), Some(1024));
+        let first = CacheCell::cache_key("model-a", None, &messages, &[], Some(0.2), Some(1024));
+        let second = CacheCell::cache_key("model-a", None, &messages, &[], Some(0.2), Some(1024));
 
         assert_eq!(first, second);
     }
@@ -2745,8 +2998,8 @@ mod tests {
             content: "hello".into(),
         }];
 
-        let first = CacheCell::cache_key("model-a", None, &messages, None, None);
-        let second = CacheCell::cache_key("model-b", None, &messages, None, None);
+        let first = CacheCell::cache_key("model-a", None, &messages, &[], None, None);
+        let second = CacheCell::cache_key("model-b", None, &messages, &[], None, None);
 
         assert_ne!(first, second);
     }
@@ -2758,8 +3011,8 @@ mod tests {
             content: "hello".into(),
         }];
 
-        let first = CacheCell::cache_key("model-a", None, &messages, Some(0.1), None);
-        let second = CacheCell::cache_key("model-a", None, &messages, Some(0.9), None);
+        let first = CacheCell::cache_key("model-a", None, &messages, &[], Some(0.1), None);
+        let second = CacheCell::cache_key("model-a", None, &messages, &[], Some(0.9), None);
 
         assert_ne!(first, second);
     }
@@ -2771,8 +3024,8 @@ mod tests {
             content: "hello".into(),
         }];
 
-        let first = CacheCell::cache_key("model-a", None, &messages, None, Some(1024));
-        let second = CacheCell::cache_key("model-a", None, &messages, None, Some(2048));
+        let first = CacheCell::cache_key("model-a", None, &messages, &[], None, Some(1024));
+        let second = CacheCell::cache_key("model-a", None, &messages, &[], None, Some(2048));
 
         assert_ne!(first, second);
     }
@@ -2800,11 +3053,57 @@ mod tests {
             },
         ];
 
-        let first = CacheCell::cache_key("model-a", None, &first_messages, Some(0.2), Some(1024));
-        let second =
-            CacheCell::cache_key("model-a", None, &swapped_messages, Some(0.2), Some(1024));
+        let first =
+            CacheCell::cache_key("model-a", None, &first_messages, &[], Some(0.2), Some(1024));
+        let second = CacheCell::cache_key(
+            "model-a",
+            None,
+            &swapped_messages,
+            &[],
+            Some(0.2),
+            Some(1024),
+        );
 
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn cache_key_includes_ordered_image_mime_and_bytes_without_exposing_them() {
+        let messages = vec![ChatMessage {
+            role: MessageRole::User,
+            content: "inspect this".into(),
+        }];
+        let structured = |mime: &str, data: &str| {
+            vec![ModelInputMessage::new(
+                MessageRole::User,
+                vec![
+                    ModelInputBlock::text("before"),
+                    ModelInputBlock::image(mime, data),
+                    ModelInputBlock::text("after"),
+                ],
+            )]
+        };
+        let first_input = structured("image/png", "aGVsbG8=");
+        let bytes_changed = structured("image/png", "d29ybGQ=");
+        let mime_changed = structured("image/jpeg", "aGVsbG8=");
+        let reordered = vec![ModelInputMessage::new(
+            MessageRole::User,
+            vec![
+                ModelInputBlock::image("image/png", "aGVsbG8="),
+                ModelInputBlock::text("before"),
+                ModelInputBlock::text("after"),
+            ],
+        )];
+
+        let key = |input: &[ModelInputMessage]| {
+            CacheCell::cache_key("model-a", None, &messages, input, None, None)
+        };
+        assert_ne!(key(&first_input), key(&bytes_changed));
+        assert_ne!(key(&first_input), key(&mime_changed));
+        assert_ne!(key(&first_input), key(&reordered));
+        let debug = format!("{first_input:?}");
+        assert!(!debug.contains("aGVsbG8="));
+        assert!(debug.contains("REDACTED"));
     }
 
     #[test]
@@ -3120,6 +3419,7 @@ mod tests {
                 limits: Some(ProviderLimits {
                     rpm: 50,
                     tpm: 40_000,
+                    ..Default::default()
                 }),
             },
         );
@@ -3138,6 +3438,7 @@ mod tests {
             config,
             cost_table: CostTable::default(),
             rate_limiter: Some(Arc::new(ProviderRateLimiter::new(60))),
+            provider_outcome_recorder: None,
         };
 
         // Model key in config resolves to provider "anthropic".
@@ -3180,6 +3481,7 @@ mod tests {
                 limits: Some(ProviderLimits {
                     rpm: 600,
                     tpm: 100_000,
+                    ..Default::default()
                 }),
             },
         );
@@ -3270,6 +3572,7 @@ mod tests {
                 role: MessageRole::User,
                 content: "x".repeat(200),
             }],
+            input_messages: Vec::new(),
             max_tokens: None,
             temperature: None,
             role: None,

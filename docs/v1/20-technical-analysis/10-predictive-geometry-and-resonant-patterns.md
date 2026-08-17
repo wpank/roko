@@ -1,5 +1,8 @@
 # Predictive Geometry and Resonant Pattern Ecosystems
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Topological Data Analysis (TDA) extracts shape from time series. Persistence landscapes provide a Banach space for pattern comparison. Resonant patterns are living organisms with HDC genomes that compete for attention via VCG auction.
 
 

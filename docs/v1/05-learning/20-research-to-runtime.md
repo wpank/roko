@@ -1,5 +1,8 @@
 # Research-to-Runtime Pipeline
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **REF16 source:** `../../tmp/refinements/16-research-to-runtime.md`
 > **Glossary:** [Naming and Glossary](../00-architecture/01-naming-and-glossary.md)
 > **Cross-references:** [18-self-learning-cybernetic-loops](18-self-learning-cybernetic-loops.md), [19-heuristics-worldviews-and-falsifiers](19-heuristics-worldviews-and-falsifiers.md), [16-predictive-foraging](16-predictive-foraging.md), [25-research-to-runtime](../21-references/25-research-to-runtime.md), [12-4-tier-distillation-pipeline](../06-neuro/12-4-tier-distillation-pipeline.md)

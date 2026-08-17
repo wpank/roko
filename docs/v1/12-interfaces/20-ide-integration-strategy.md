@@ -1,5 +1,8 @@
 # IDE integration strategy
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Architecture decision document for exposing Roko's plan execution, gate pipeline, learning loops, and dashboard inside code editors.
 
 > **Status**: Proposed

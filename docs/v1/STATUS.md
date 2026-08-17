@@ -1,5 +1,8 @@
 # Roko Implementation Status
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../v2/](../v2/) for the current reference.
+
+
 > **Last updated**: 2026-04-17
 >
 > Single source of truth for what's implemented vs. specified across the Roko system.
@@ -61,7 +64,7 @@ These components form the working self-hosting loop: `roko prd` → `roko plan r
 |-----------|-------|-------|-------------|
 | Signal/Engram type + 6 Synapse traits | `roko-core` | 376 | — (kernel) |
 | Plan DAG executor + parallel scheduling | `roko-orchestrator` | 158 | `roko plan run` |
-| 5 LLM backends + CascadeRouter + MCP | `roko-agent` | 346 | `roko run` |
+| 11 LLM backends + CascadeRouter + MCP | `roko-agent` | 346 | `roko run` |
 | 6-layer SystemPromptBuilder + 9 templates | `roko-compose` | 23 | — (used by orchestrator) |
 | 14 gates + 7-rung pipeline + adaptive thresholds | `roko-gate` | 200 | — (used by orchestrator) |
 | JSONL FileSubstrate + GC | `roko-fs` | 37 | — (storage layer) |

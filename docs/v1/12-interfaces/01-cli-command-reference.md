@@ -1,5 +1,8 @@
 # CLI Command Reference
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Full command list for the `roko` binary with per-command syntax, flags, and descriptions.
 
 

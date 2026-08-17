@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use roko_core::{LensConfig, LensRegistry};
 use serde::Deserialize;
 
 use crate::types::{
@@ -16,6 +17,9 @@ struct RawGraphFile {
     nodes: Vec<RawNode>,
     #[serde(default)]
     edges: Vec<RawEdge>,
+    /// Top-level `[[lenses]]` entries from the telemetry specification.
+    #[serde(default)]
+    lenses: Vec<LensConfig>,
 }
 
 /// Raw metadata section (including optional policy subsection).
@@ -103,7 +107,8 @@ pub fn load_from_str(toml_str: &str) -> Result<Graph, GraphError> {
     // Use the `[graph.policy]` section if present; otherwise fall back to default.
     let policy = raw.graph.policy.unwrap_or_default();
 
-    let mut graph = Graph::new(metadata).with_policy(policy);
+    let lenses = load_lenses(raw.lenses)?;
+    let mut graph = Graph::new(metadata).with_policy(policy).with_lenses(lenses);
 
     // Add all nodes first.
     for raw_node in raw.nodes {
@@ -131,6 +136,20 @@ pub fn load_from_str(toml_str: &str) -> Result<Graph, GraphError> {
     }
 
     Ok(graph)
+}
+
+fn load_lenses(configs: Vec<LensConfig>) -> Result<LensRegistry, GraphError> {
+    let mut registry = LensRegistry::new();
+    for config in configs {
+        let name = config.name.clone();
+        registry
+            .register(config)
+            .map_err(|error| GraphError::LoaderError(format!("invalid lens `{name}`: {error}")))?;
+    }
+    registry
+        .validate()
+        .map_err(|error| GraphError::LoaderError(format!("invalid lens composition: {error}")))?;
+    Ok(registry)
 }
 
 /// Load a graph from a TOML file on disk.
@@ -246,6 +265,158 @@ cell_type = "noop"
         let graph = load_from_str(toml_str).unwrap();
         assert_eq!(graph.node_count(), 1);
         assert_eq!(graph.edge_count(), 0);
+        assert!(graph.lenses.registrations().is_empty());
+    }
+
+    #[test]
+    fn load_graph_with_lenses_preserves_params_filters_and_chain_order() {
+        let toml_str = r#"
+[graph]
+name = "observed-pipeline"
+
+[[nodes]]
+id = "build"
+cell_type = "noop"
+
+[[lenses]]
+name = "cost"
+block = "roko:cost-lens@^1.0"
+scope = "graph:observed-pipeline"
+[lenses.params]
+interval = "60s"
+budget_warn_pct = 0.8
+
+[[lenses]]
+name = "trend"
+block = "roko:trend-lens@^1.0"
+scope = "lens:cost"
+[lenses.params]
+metric = "total_usd"
+"#;
+
+        let graph = load_from_str(toml_str).unwrap();
+        assert_eq!(graph.lenses.registrations().len(), 2);
+        let cost = graph.lenses.get("cost").unwrap();
+        assert_eq!(cost.config.params["interval"].as_str(), Some("60s"));
+        assert_eq!(
+            cost.observes,
+            [
+                roko_core::ObservableEventKind::CellLifecycle,
+                roko_core::ObservableEventKind::GraphLifecycle,
+                roko_core::ObservableEventKind::AgentLifecycle,
+            ]
+        );
+        assert_eq!(graph.lenses.chain_order().unwrap(), ["cost", "trend"]);
+    }
+
+    #[test]
+    fn load_graph_allows_forward_referenced_lens_chains() {
+        let toml_str = r#"
+[graph]
+name = "forward-chain"
+
+[[lenses]]
+name = "anomaly"
+block = "roko:anomaly-lens@^1.0"
+scope = "lens:trend"
+
+[[lenses]]
+name = "trend"
+block = "roko:trend-lens@^1.0"
+scope = "lens:cost"
+
+[[lenses]]
+name = "cost"
+block = "roko:cost-lens@^1.0"
+scope = "graph"
+"#;
+
+        let graph = load_from_str(toml_str).unwrap();
+        assert_eq!(
+            graph.lenses.chain_order().unwrap(),
+            ["cost", "trend", "anomaly"]
+        );
+        assert_eq!(graph.lenses.chains()["cost"], ["trend"]);
+        assert_eq!(graph.lenses.chains()["trend"], ["anomaly"]);
+    }
+
+    #[test]
+    fn load_graph_rejects_invalid_lens_config_and_duplicates() {
+        let invalid_scope = r#"
+[graph]
+name = "bad-lens"
+
+[[lenses]]
+name = "cost"
+block = "roko:cost-lens@^1.0"
+scope = "universe"
+"#;
+        let error = load_from_str(invalid_scope).unwrap_err();
+        assert!(matches!(error, GraphError::LoaderError(_)));
+        assert!(error.to_string().contains("invalid lens `cost`"));
+        assert!(error.to_string().contains("unknown lens scope `universe`"));
+
+        let duplicate = r#"
+[graph]
+name = "duplicate-lens"
+
+[[lenses]]
+name = "cost"
+block = "roko:cost-lens@^1.0"
+scope = "graph"
+
+[[lenses]]
+name = "cost"
+block = "roko:cost-lens@^2.0"
+scope = "global"
+"#;
+        let error = load_from_str(duplicate).unwrap_err();
+        assert!(error.to_string().contains("duplicate lens name `cost`"));
+    }
+
+    #[test]
+    fn load_graph_rejects_lens_cycles_with_path() {
+        let toml_str = r#"
+[graph]
+name = "cyclic-lenses"
+
+[[lenses]]
+name = "a"
+block = "plugin:a@1"
+scope = "lens:b"
+
+[[lenses]]
+name = "b"
+block = "plugin:b@1"
+scope = "lens:c"
+
+[[lenses]]
+name = "c"
+block = "plugin:c@1"
+scope = "lens:a"
+"#;
+
+        let error = load_from_str(toml_str).unwrap_err();
+        assert!(matches!(error, GraphError::LoaderError(_)));
+        assert!(error.to_string().contains("lens chain cycle detected"));
+        assert!(error.to_string().contains("a -> c -> b -> a"));
+    }
+
+    #[test]
+    fn load_graph_rejects_unresolved_lens_forward_reference() {
+        let toml_str = r#"
+[graph]
+name = "missing-upstream"
+
+[[lenses]]
+name = "trend"
+block = "roko:trend-lens@^1.0"
+scope = "lens:cost"
+"#;
+
+        let error = load_from_str(toml_str).unwrap_err();
+        assert!(matches!(error, GraphError::LoaderError(_)));
+        assert!(error.to_string().contains("unresolved upstream lens: cost"));
     }
 
     #[test]

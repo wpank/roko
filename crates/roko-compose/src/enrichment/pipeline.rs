@@ -306,13 +306,13 @@ impl<C: LlmClient> EnrichmentPipeline<C> {
 
         // COMP-09: Adaptive step selection — skip steps with historically
         // low success rates.
-        if let Some(history) = &self.outcome_history {
-            if history.should_skip(step) {
-                return StepOutcome::Skipped {
-                    step,
-                    reason: SkipReason::AdaptiveSkip,
-                };
-            }
+        if let Some(history) = &self.outcome_history
+            && history.should_skip(step)
+        {
+            return StepOutcome::Skipped {
+                step,
+                reason: SkipReason::AdaptiveSkip,
+            };
         }
 
         // Staleness check: skip if output exists, is fresh, and force is off.
@@ -491,18 +491,18 @@ impl<C: LlmClient> EnrichmentPipeline<C> {
         }
 
         // Ensure parent directory exists.
-        if let Some(parent) = output_file.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                return StepOutcome::Failed {
-                    step,
-                    message: format!("failed to create directory {}: {e}", parent.display()),
-                    cost: StepCost {
-                        elapsed_ms: start.elapsed().as_millis() as u64,
-                        llm_calls,
-                        ..StepCost::default()
-                    },
-                };
-            }
+        if let Some(parent) = output_file.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            return StepOutcome::Failed {
+                step,
+                message: format!("failed to create directory {}: {e}", parent.display()),
+                cost: StepCost {
+                    elapsed_ms: start.elapsed().as_millis() as u64,
+                    llm_calls,
+                    ..StepCost::default()
+                },
+            };
         }
 
         let output_bytes = content.len();

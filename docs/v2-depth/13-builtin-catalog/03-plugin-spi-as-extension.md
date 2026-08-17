@@ -3,6 +3,10 @@
 > The five-tier plugin system as Extension specialization with graduated sandboxing.
 > Each tier corresponds to a different power level: data-only Signals through
 > WASM Cells with capability sandbox and fuel metering.
+> **Implementation status (2026-08-15):** Tiers 1-3 have manifest/discovery substrate;
+> Tier 3 declarative subprocess tools resolve, register, audit, and execute on provider-Bridge
+> paths. Tier 4 WASM and Tier 5 native plugin loading remain aspirational. Current Tier 3
+> policy is not kernel/OS isolation.
 
 **Parent spec**: [12-EXTENSIONS.md](../../unified/12-EXTENSIONS.md), [14-TOOLS.md](../../unified/14-TOOLS.md)
 
@@ -15,8 +19,8 @@ and enriching Cell behavior. The **plugin SPI** is the user-facing surface of th
 graduated ladder of five tiers, each with a fixed power envelope, discovery path, and sandbox.
 
 The key constraint: **the loader selects the lowest tier that satisfies the requested capability.**
-A prompt template is Tier 1 (pure data). A subprocess wrapper is Tier 3 (declarative). Native
-trait implementations are Tier 4. WASM logic with bounded authority is Tier 5. You never use a
+A prompt template is Tier 1 (pure data). A subprocess wrapper is Tier 3 (declarative). WASM
+logic with bounded authority is Tier 4. Native trait implementations are Tier 5. You never use a
 higher tier when a lower one suffices.
 
 In unified vocabulary:
@@ -30,15 +34,16 @@ In unified vocabulary:
 
 ## 2. Five Tiers as Extension Power Levels
 
-Each tier adds execution capability while the sandbox tightens proportionally:
+Each tier expands the power/trust envelope; Tier 4 is the sandboxed portable-code tier and
+Tier 5 is trusted in-tree native code:
 
 | Tier | Extension Shape | Cell Analogy | Sandbox | Example |
 |---|---|---|---|---|
 | 1 | Prompt/template bundle | Signal (pure data, no execution) | None | Role prompts, system overlays |
 | 2 | Configuration profile | Signal (parameterizes Graphs) | None | Team presets, domain bundles |
 | 3 | Declarative tool / MCP | Connect Cell (subprocess proxy) | Tool safety layer | Shell wrapper, MCP server |
-| 4 | Native trait implementation | Any protocol Cell (in-process) | ABI bridge + policy | Custom Store, Gate, Router |
-| 5 | WASM sandboxed extension | Any protocol Cell (capability-bound) | Fuel + memory + imports | Untrusted third-party logic |
+| 4 | WASM sandboxed extension | Any protocol Cell (capability-bound) | Fuel + memory + imports | Untrusted third-party logic |
+| 5 | Native Rust implementation | Any protocol Cell (in-process) | Trusted in-tree policy boundary | Custom Store, Gate, Router |
 
 ### Power Progression
 
@@ -46,8 +51,8 @@ Each tier adds execution capability while the sandbox tightens proportionally:
 Tier 1: Can inject text into prompts
 Tier 2: Can parameterize Graph behavior via config Signals
 Tier 3: Can execute external processes and expose their results as Cells
-Tier 4: Can implement kernel protocols (Store, Verify, Route, etc.) natively
-Tier 5: Can run arbitrary logic with bounded resources and restricted host access
+Tier 4: Can run portable logic with bounded resources and restricted host access
+Tier 5: Can implement kernel protocols (Store, Verify, Route, etc.) as trusted native Rust
 ```
 
 Each step up requires more trust from the platform and more isolation from the runtime.
@@ -218,9 +223,9 @@ Tier 3 extensions operate within the existing tool safety layer:
 
 ---
 
-## 6. Tier 4: Native Protocol Implementations
+## 6. Tier 5: Native Protocol Implementations
 
-Tier 4 is for extensions that must participate directly in kernel protocols — implementing
+Tier 5 is for extensions that must participate directly in kernel protocols — implementing
 Store, Verify, Score, Route, Compose, or React.
 
 ### Use Cases
@@ -232,7 +237,8 @@ Store, Verify, Score, Route, Compose, or React.
 
 ### ABI Bridge
 
-Rust does not guarantee a stable plugin ABI. Tier 4 uses a narrow bridge crate:
+Rust does not guarantee a stable plugin ABI. A future out-of-tree Tier 5 loader would need a
+narrow bridge crate; the current contract reserves this tier for trusted in-tree Rust:
 
 ```toml
 id = "org.example.medical-gate"
@@ -260,7 +266,7 @@ The loader:
 ### Native Extension Contract
 
 ```rust
-/// The stable ABI contract for Tier 4 extensions.
+/// A possible stable ABI contract for future out-of-tree Tier 5 extensions.
 /// This is the only interface a native extension sees.
 #[repr(C)]
 pub struct ExtensionAbi {
@@ -272,9 +278,9 @@ pub struct ExtensionAbi {
 
 ---
 
-## 7. Tier 5: WASM Cells with Capability Sandbox
+## 7. Tier 4: WASM Cells with Capability Sandbox
 
-Tier 5 is the safest path for untrusted third-party logic. A WASM module runs inside a
+Tier 4 is the intended path for untrusted third-party logic. A WASM module would run inside a
 capability sandbox with explicit host imports and bounded resources.
 
 ### Resource Limits
@@ -292,7 +298,7 @@ capability sandbox with explicit host imports and bounded resources.
 The WASM module sees only six host functions — a restricted Store + Bus interface:
 
 ```rust
-/// The complete host import surface for Tier 5 WASM extensions.
+/// The proposed host import surface for Tier 4 WASM extensions.
 /// Nothing else is accessible. No filesystem. No network. No keys.
 pub mod host {
     /// Publish a Pulse on Bus (restricted to declared topics).
@@ -405,8 +411,8 @@ pub struct PluginMetrics {
     pub invocations: u64,
     pub errors: u64,
     pub avg_latency_ms: f64,
-    pub fuel_consumed: u64,      // Tier 5 only
-    pub memory_peak_mb: f64,     // Tier 5 only
+    pub fuel_consumed: u64,      // Tier 4 only
+    pub memory_peak_mb: f64,     // Tier 4 only
     pub last_invocation: Option<DateTime<Utc>>,
 }
 ```
@@ -420,9 +426,10 @@ can auto-disable plugins that exceed error thresholds or consume excessive resou
 
 1. **Progressive extensibility** — start with a prompt file (Tier 1), graduate to config
    (Tier 2), then declarative tools (Tier 3), and only reach for native/WASM when necessary.
-2. **Safety by default** — each tier has a fixed sandbox that cannot be exceeded. Tier 3
-   cannot access the filesystem beyond declared paths. Tier 5 cannot access the network at all.
-3. **Third-party ecosystem** — Tier 3 and 5 require no Rust knowledge. Declarative tools are
+2. **Safety direction** — each tier declares a fixed capability envelope. Tier 3 currently
+   applies pre-spawn path/env/shell checks and process controls; kernel-enforced filesystem and
+   network isolation remain open. Tier 4's WASM host policy is still aspirational.
+3. **Third-party ecosystem** — Tier 3 and future Tier 4 require no Rust knowledge. Declarative tools are
    TOML manifests pointing at shell commands. WASM modules can be compiled from any language.
 4. **Domain composability** — Tier 2 bundles package coherent domain configurations (tools +
    gates + heuristics + templates) as installable profiles.
@@ -436,7 +443,7 @@ can auto-disable plugins that exceed error thresholds or consume excessive resou
 - **Plugin health → auto-disable**: Lens Cell monitors error rate → React Cell disables plugin
   when threshold exceeded → alert Pulse fired → operator notified.
 - **Invocation patterns → discovery suggestions**: frequently-used Tier 3 tools that cause
-  latency → suggest Tier 4 native reimplementation for performance.
+  latency → suggest Tier 5 native reimplementation for performance.
 - **WASM fuel consumption → budget adjustment**: actual fuel use vs declared limit feeds
   adaptive fuel allocation for future invocations.
 - **Profile composition conflicts → surface via Lens**: when two Tier 2 bundles declare
@@ -448,14 +455,14 @@ can auto-disable plugins that exceed error thresholds or consume excessive resou
 
 1. **Plugin registry / marketplace** — should there be a centralized registry for discovering
    published plugins, or is filesystem-based discovery sufficient?
-2. **Tier 4 ABI stability** — Rust has no stable ABI. Is `cdylib` + C FFI the right bridge,
-   or should Tier 4 be workspace-local crates only?
-3. **WASM module signing** — should Tier 5 modules require cryptographic signatures for
+2. **Tier 5 ABI stability** — Rust has no stable ABI. Should native extensions remain
+   workspace-local crates, or eventually use a narrow `cdylib` + C FFI bridge?
+3. **WASM module signing** — should Tier 4 modules require cryptographic signatures for
    provenance verification before loading?
 4. **Hot-reload for Tier 1/2** — can prompt and profile bundles be reloaded without restarting
    the agent? (Manifest watcher + registry refresh.)
 5. **Tier escalation** — if a Tier 3 plugin needs Bus access, does it automatically become
-   Tier 5, or is there a Tier 3.5 (declarative + Bus permissions)?
+   Tier 4, or is there a Tier 3.5 (declarative + Bus permissions)?
 
 ---
 
@@ -467,9 +474,9 @@ can auto-disable plugins that exceed error thresholds or consume excessive resou
 | Manifest parser (TOML schema) | `crates/roko-core/src/extension.rs` | Planned |
 | Tier 1 loader (prompt bundles) | `crates/roko-compose/src/` | Planned |
 | Tier 2 loader (profile bundles) | `crates/roko-core/src/config/` | Planned |
-| Tier 3 loader (subprocess tools) | `crates/roko-agent/src/mcp/` | Partial (via MCP) |
-| Tier 4 loader (native ABI bridge) | (not yet created) | Aspirational |
-| Tier 5 loader (WASM sandbox) | `crates/roko-std/src/tool/` | Planned |
+| Tier 3 loader (subprocess tools) | `crates/roko-cli/src/runner/extension_loader.rs` | Implemented on provider-Bridge paths with strict admission, bounded streaming, path/env controls, process-tree cleanup, and fail-closed Seatbelt/firejail confinement; some adapter parity remains open |
+| Tier 4 loader (WASM sandbox) | `crates/roko-cli/src/runner/wasm_extension.rs` | Implemented with no imports, bounded resources, and a typed JSON ABI for all 23 hooks; Component/WIT hostcalls remain aspirational |
+| Tier 5 loader (trusted native Rust) | in-tree crates | In-tree only; no dynamic ABI loader |
 | Plugin health Lens Cell | `crates/roko-conductor/src/` | Planned |
-| `roko plugin` CLI commands | `crates/roko-cli/src/` | Planned |
+| `roko plugin` CLI commands | `crates/roko-cli/src/` | List/audit plus authenticated signed relay publish and recursive verified install implemented; declarative-plugin and registry-WASM lifecycle views remain split |
 | Discovery-first Pipeline | `crates/roko-core/src/extension.rs` | Planned |

@@ -1,0 +1,118 @@
+[meta]
+source_prd = "plugin-discovery-runtime"
+done = 0
+max_parallel = 1
+plan = "plugin-discovery-runtime"
+status = "superseded"
+superseded_by = "E30-extension-system + E32-tool-plugin-ecosystem"
+total = 2
+
+[[task]]
+allowed_tools = [
+    "read_file",
+    "write_file",
+    "grep",
+]
+denied_tools = []
+depends_on = []
+description = """
+Add a `plugins_dir()` method to `RokoLayout` in `crates/roko-fs/src/layout.rs` that
+returns `.roko/plugins/` as a `PathBuf`. This follows the same pattern as `extensions_dir()` directly above it.
+No other file changes."""
+files = ["crates/roko-fs/src/layout.rs"]
+id = "T1"
+max_loc = 8
+role = "implementer"
+status = "ready"
+tier = "mechanical"
+title = "Add plugins_dir() to RokoLayout"
+
+[task.context]
+anti_patterns = [
+    "Do NOT modify any file other than crates/roko-fs/src/layout.rs.",
+    "Do NOT rename, relocate, or remove extensions_dir().",
+    'The new method must be named exactly `plugins_dir` and return `self.root.join("plugins")`.',
+]
+symbols = ['RokoLayout::extensions_dir — the method to copy the pattern from; return type is PathBuf, uses self.root.join("extensions")']
+
+[[task.context.read_files]]
+lines = "195-210"
+path = "crates/roko-fs/src/layout.rs"
+why = "See extensions_dir() at line 199 — plugins_dir() must follow the identical pattern, inserted immediately after it."
+
+[[task.verify]]
+command = "grep -q 'pub fn plugins_dir' crates/roko-fs/src/layout.rs"
+fail_msg = "plugins_dir() method not found in RokoLayout"
+phase = "structural"
+
+[[task.verify]]
+command = """grep -q 'self.root.join("plugins")' crates/roko-fs/src/layout.rs"""
+fail_msg = 'plugins_dir() does not return self.root.join("plugins")'
+phase = "structural"
+
+[[task.verify]]
+command = "cargo check -p roko-fs"
+phase = "compile"
+
+[[task]]
+allowed_tools = [
+    "read_file",
+    "write_file",
+    "grep",
+]
+denied_tools = []
+depends_on = ["T1"]
+description = """
+In `load_extensions_with_disabled` (crates/roko-cli/src/runner/extension_loader.rs, line 347),
+add `layout.plugins_dir()` as the third entry in the `plugin_dirs` array so that user-installed plugins
+in `.roko/plugins/` are discovered during `roko plan run`. Then add one unit test
+`load_discovers_plugins_from_roko_plugins_dir` that creates a `plugin.toml` under
+`.roko/plugins/test-installed/`, calls `load_extensions()`, and asserts count == 1."""
+files = ["crates/roko-cli/src/runner/extension_loader.rs"]
+id = "T2"
+max_loc = 35
+role = "implementer"
+status = "ready"
+tier = "focused"
+title = "Wire .roko/plugins/ into extension loader scan path and add test"
+
+[task.context]
+anti_patterns = [
+    "Do NOT modify roko-fs/src/layout.rs — that is T1's scope.",
+    "Do NOT add a new import for RokoLayout — it is already imported at line 19.",
+    "The array change is one line: add `layout.plugins_dir()` as the third element. Do not restructure the loop.",
+    "The new test must use `RokoLayout::for_project(tmp.path()).plugins_dir()` to construct the plugin directory path — do NOT hardcode `.roko/plugins/`.",
+]
+symbols = [
+    "load_extensions_with_disabled — the function containing `plugin_dirs` at line 347; `layout` is already in scope at line 345",
+    "RokoLayout::for_project — used in tests at line 516 to construct layout from a tempdir; call `layout.plugins_dir()` for the path",
+]
+
+[[task.context.read_files]]
+lines = "339-420"
+path = "crates/roko-cli/src/runner/extension_loader.rs"
+why = "The load_extensions_with_disabled function: line 345 constructs RokoLayout, line 347 is the plugin_dirs array to extend. Lines 490-580 show the test pattern to follow."
+
+[[task.context.read_files]]
+lines = "197-208"
+path = "crates/roko-fs/src/layout.rs"
+why = "Confirm plugins_dir() return type and doc comment to write an accurate test path assertion."
+
+[[task.verify]]
+command = "grep -q 'plugins_dir()' crates/roko-cli/src/runner/extension_loader.rs"
+fail_msg = "plugins_dir() not referenced in extension_loader.rs"
+phase = "structural"
+
+[[task.verify]]
+command = "grep -q 'load_discovers_plugins_from_roko_plugins_dir' crates/roko-cli/src/runner/extension_loader.rs"
+fail_msg = "new test function not found in extension_loader.rs"
+phase = "structural"
+
+[[task.verify]]
+command = "cargo check -p roko-cli"
+phase = "compile"
+
+[[task.verify]]
+command = "cargo test -p roko-cli -- extension_loader"
+fail_msg = "extension_loader tests failed"
+phase = "test"

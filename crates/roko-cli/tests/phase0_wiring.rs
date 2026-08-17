@@ -313,12 +313,14 @@ fn phase0_registries_basic_ops() {
     let mut feeds = roko_core::FeedRegistry::new();
     let feed_id = feeds.register(roko_core::FeedInfo {
         id: String::new(),
+        cell_id: String::new(),
         name: "test-plan/T1".to_string(),
         agent_id: "test-plan/T1".to_string(),
         kind: roko_core::FeedKind::Raw,
         access: roko_core::FeedAccess::Private,
         description: String::new(),
         schema: None,
+        pricing: None,
         created_at: chrono::Utc::now(),
     });
     assert!(!feed_id.is_empty(), "feed ID should be auto-assigned");

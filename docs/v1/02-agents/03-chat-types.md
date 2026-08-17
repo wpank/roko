@@ -1,5 +1,8 @@
 # 03 — Chat Types in roko-core
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Sub-doc 03 of **02-agents** · Roko Documentation
 >
 > This document explains why `ChatResponse`, `FinishReason`, and

@@ -3,8 +3,9 @@
  * Extracted from useBench.ts. Focused on run CRUD and real-time event processing.
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useLiveApi } from './useLiveApi';
+import { useDataApi } from './useDataApi';
 import { useBenchSSE } from './useBenchSSE';
+import { adaptBenchRun, parseBenchRunsListResponse } from '../lib/bench-types';
 import type {
   AgentStrategy,
   BenchSuite,
@@ -14,9 +15,6 @@ import type {
   BenchRunSummary,
   BenchGateConfig,
   BenchLearningEvent,
-  BenchAgentOutputEvent,
-  BenchGateVerdictEvent,
-  BenchTokenVelocityEvent,
 } from '../lib/bench-types';
 
 /* ── Shared types (same as useBench) ── */
@@ -65,7 +63,7 @@ const DEFAULT_CONFIG: BenchConfig = {
 /* ── Hook ── */
 
 export function useBenchRuns() {
-  const { get, post, isLive } = useLiveApi();
+  const { get, post, isLive } = useDataApi();
 
   // Config
   const [config, setConfig] = useState<BenchConfig>(DEFAULT_CONFIG);
@@ -115,9 +113,9 @@ export function useBenchRuns() {
     setSuitesLoading(true);
     (async () => {
       try {
-        const s = await get<BenchSuite[]>('/api/bench/suites');
-        if (Array.isArray(s) && s.length > 0) setSuites(s);
-        else setSuites([]);
+        const raw = await get<{ suites: BenchSuite[] } | BenchSuite[]>('/api/bench/suites');
+        const suites = Array.isArray(raw) ? raw : (raw?.suites ?? []);
+        setSuites(suites.map((suite) => ({ ...suite, tasks: suite.tasks ?? [] })));
       } catch {
         setSuites([]);
       } finally {
@@ -131,9 +129,11 @@ export function useBenchRuns() {
     setModelsLoading(true);
     (async () => {
       try {
-        const m = await get<BenchModel[]>('/api/bench/models');
-        if (Array.isArray(m) && m.length > 0) setModels(m);
-        else setModels([]);
+        const raw = await get<{ models: Array<string | BenchModel> } | BenchModel[]>('/api/bench/models');
+        const models = Array.isArray(raw) ? raw : (raw?.models ?? []);
+        setModels(models.map((model) => typeof model === 'string'
+          ? { id: model, name: model, provider: '', cost_per_1k_input: 0, cost_per_1k_output: 0, max_tokens: 0, context_window: 0 }
+          : model));
       } catch {
         setModels([]);
       } finally {
@@ -142,21 +142,26 @@ export function useBenchRuns() {
     })();
   }, [get]);
 
+  const refetchHistory = useCallback(async () => {
+    const listing = parseBenchRunsListResponse(await get<unknown>('/api/bench/runs'));
+    if (!listing) throw new Error('invalid bench run listing');
+    const full = await Promise.all(listing.runs.map(async (entry) => {
+      try {
+        return adaptBenchRun(await get<unknown>(`/api/bench/runs/${encodeURIComponent(entry.id)}`));
+      } catch {
+        return null;
+      }
+    }));
+    setHistory(full.filter((run): run is BenchRun => run !== null));
+  }, [get]);
+
   // Fetch history on mount
   useEffect(() => {
     setHistoryLoading(true);
-    (async () => {
-      try {
-        const h = await get<BenchRun[]>('/api/bench/runs');
-        if (Array.isArray(h) && h.length > 0) setHistory(h.filter((r) => r.config));
-        else setHistory([]);
-      } catch {
-        setHistory([]);
-      } finally {
-        setHistoryLoading(false);
-      }
-    })();
-  }, [get]);
+    refetchHistory()
+      .catch(() => setHistory([]))
+      .finally(() => setHistoryLoading(false));
+  }, [refetchHistory]);
 
   // ETA computation
   const eta = (() => {
@@ -245,16 +250,12 @@ export function useBenchRuns() {
           ...f,
         ].slice(0, 100));
         // Refresh history
-        get<BenchRun[]>('/api/bench/runs')
-          .then((h) => { if (Array.isArray(h) && h.length > 0) setHistory(h.filter((r) => r.config)); })
-          .catch(() => {});
+        void refetchHistory();
         break;
 
-      case 'BenchLearning':
       case 'BenchLearningEvent': {
-        const learningEvent = lastEvent as BenchLearningEvent;
-        const insight = learningEvent.insight
-          ?? `Learning artifacts: ${learningEvent.playbooks_created ?? 0} playbooks, ${learningEvent.anti_patterns_created ?? 0} anti-patterns`;
+        const learningEvent = lastEvent;
+        const insight = `Learning artifacts: ${learningEvent.playbooks_created} playbooks, ${learningEvent.anti_patterns_created} anti-patterns`;
         setActiveRunLearning((prev) => [...prev, learningEvent]);
         setFeed((f): FeedItem[] => [
           { text: `Learning: ${insight}`, type: 'learning' as const, ts },
@@ -264,7 +265,7 @@ export function useBenchRuns() {
       }
 
       case 'BenchAgentOutput': {
-        const ev = lastEvent as BenchAgentOutputEvent;
+        const ev = lastEvent;
         setCurrentAgentId(ev.agent_id);
         if (ev.content) {
           setAgentOutput((prev) => [...prev, ev.content]);
@@ -273,7 +274,7 @@ export function useBenchRuns() {
       }
 
       case 'BenchGateVerdict': {
-        const ev = lastEvent as BenchGateVerdictEvent;
+        const ev = lastEvent;
         setGateVerdicts((prev) => [...prev, {
           taskId: ev.task_id,
           gate: ev.gate,
@@ -293,7 +294,7 @@ export function useBenchRuns() {
       }
 
       case 'BenchTokenVelocity': {
-        const ev = lastEvent as BenchTokenVelocityEvent;
+        const ev = lastEvent;
         setTokenVelocity((prev) => [...prev, {
           taskId: ev.task_id,
           tokensPerSecond: ev.tokens_per_second,
@@ -301,7 +302,7 @@ export function useBenchRuns() {
         break;
       }
     }
-  }, [lastEvent, get]);
+  }, [lastEvent, refetchHistory]);
 
   // Cleanup polling on unmount
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
@@ -357,7 +358,8 @@ export function useBenchRuns() {
       // Poll for status in addition to SSE so a missed event does not strand the run.
       pollRef.current = setInterval(async () => {
         try {
-          const run = await get<BenchRun>(`/api/bench/runs/${runId}`);
+          const run = adaptBenchRun(await get<unknown>(`/api/bench/runs/${runId}`));
+          if (!run) return;
           if (run.status === 'completed' || run.status === 'cancelled' || run.status === 'failed') {
             if (pollRef.current) clearInterval(pollRef.current);
             setActiveRun((prev) => {
@@ -372,8 +374,7 @@ export function useBenchRuns() {
               };
             });
             // Refresh history
-            const h = await get<BenchRun[]>('/api/bench/runs');
-            if (Array.isArray(h) && h.length > 0) setHistory(h.filter((r) => r.config));
+            await refetchHistory();
           }
         } catch {
           // poll error, will retry
@@ -386,7 +387,7 @@ export function useBenchRuns() {
         ...f,
       ]);
     }
-  }, [config, selectedSuiteId, suites, get, post, clearSSE]);
+  }, [config, selectedSuiteId, suites, get, post, clearSSE, refetchHistory]);
 
   const cancelRun = useCallback(async () => {
     if (!activeRun) return;
@@ -400,7 +401,7 @@ export function useBenchRuns() {
   const exportRun = useCallback(async (runId: string) => {
     let data: BenchRun | null = null;
     try {
-      data = await get<BenchRun>(`/api/bench/export/${runId}`);
+      data = adaptBenchRun(await get<unknown>(`/api/bench/export/${runId}`));
     } catch {
       // Fallback below.
     }
@@ -426,20 +427,13 @@ export function useBenchRuns() {
         const text = e.target?.result;
         if (typeof text !== 'string') return;
 
-        const data = JSON.parse(text) as Partial<BenchRun>;
-        if (
-          !data ||
-          typeof data !== 'object' ||
-          !data.id ||
-          !data.suite_id ||
-          !Array.isArray(data.results)
-        ) {
+        const data = adaptBenchRun(JSON.parse(text));
+        if (!data) {
           console.warn('Invalid bench run file: missing required fields');
           return;
         }
 
-        const imported: BenchRun = { ...(data as BenchRun), kind: 'comparison' };
-        setHistory((prev) => prev.some((r) => r.id === imported.id) ? prev : [imported, ...prev]);
+        setHistory((prev) => prev.some((r) => r.id === data.id) ? prev : [data, ...prev]);
       } catch (err) {
         console.warn('Failed to parse bench run file:', err);
       }

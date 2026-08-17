@@ -1,8 +1,31 @@
 # 02 — Cell and Protocols
 
-> The universal computation unit. Signals in, Signals out. Declares typed I/O, capabilities, and protocol conformance. Every Cell is a learner via predict-publish-correct (Friston 2006).
+> The universal computation unit. Signals in, Signals out. Declares typed I/O,
+> capabilities, and protocol conformance. Current Cell traits expose opt-in
+> prediction/correction hooks; universal predict-publish-correct wiring remains
+> target architecture (Friston 2006).
+> **Implementation status (2026-08): PARTIAL.** Roko currently has two related
+> Cell execution contracts: an infrastructure-rich contract in `roko-core` and
+> the Graph Engine contract in `roko-graph`. Both expose typed schemas,
+> `ProtocolId`, cost estimates, and predict/correct hooks, but their contexts and
+> registries are intentionally distinct today. The nine protocol identifiers are
+> canonical; their concrete traits do not all share one uniform async shape.
 
 **Subsumes**: Module, Tool, Gate, Router, Composer, Scorer, Policy, Substrate, Connector, Operator.
+
+### Current implementation sources and reading contract
+
+| Surface | Current authority | Shipped boundary |
+|---|---|---|
+| Core Cell | `crates/roko-core/src/cell.rs` | `Cell`, infrastructure `CellContext`, `Capabilities`, `TypeSchema`, `CoreCellRegistry` |
+| Graph Cell and registry | `crates/roko-graph/src/cell.rs`, `crates/roko-graph/src/registry.rs` | Graph-node `Cell`, Graph `CellContext`, calibration hook, factory `CellRegistry` |
+| Protocol traits | `crates/roko-core/src/traits.rs` | `Store`, `Score`, `Verify`, `Route`, `Compose`, `React`, `Bus`, `Observe`, plus compatibility `Connect`/`Trigger` |
+| Transport-neutral connectivity | `crates/roko-core/src/connector.rs`, `trigger.rs` | `Connect` and `TriggerProtocol` lifecycles outside the legacy Cell-bound traits |
+
+Unless a block is explicitly labelled **Current implementation**, the Rust
+snippets, protocol algebra, categorical constructions, policies, and acceptance
+items below are normative target/design material. They remain useful design
+rationale but do not define a second runtime API.
 
 ---
 
@@ -10,113 +33,56 @@
 
 A Cell is atomic computation with an identity, typed inputs and outputs, declared capabilities, protocol conformance, and cost estimation. Every first-class primitive in Roko is a Cell or composed of Cells.
 
+**Current implementation.** Both current traits use these names and broad
+shapes; `roko-core` additionally exposes infrastructure capabilities, while
+`roko-graph` adds `calibration_error` and requires `execute`:
+
 ```rust
 /// The universal computation unit.
-///
-/// A Cell declares what it consumes, what it produces, what protocols it
-/// speaks, and what capabilities it requires. The runtime uses these
-/// declarations for type-checking edges, capability intersection, cost
-/// budgeting, and protocol dispatch.
 pub trait Cell: Send + Sync + 'static {
-    /// Stable identifier. Content-addressed from (name, version, author).
-    fn id(&self) -> CellId;
-
-    /// Human-readable name.
-    fn name(&self) -> &str;
-
-    /// Semantic version.
-    fn version(&self) -> Version;
-
-    /// Typed input schema. `None` means "accepts any Signal."
+    fn cell_id(&self) -> &str;
+    fn cell_name(&self) -> &str;
+    fn cell_version(&self) -> CellVersion;
     fn input_schema(&self) -> Option<&TypeSchema>;
-
-    /// Typed output schema. `None` means "produces any Signal."
     fn output_schema(&self) -> Option<&TypeSchema>;
-
-    /// Capabilities this Cell requires to run (see S3).
-    fn capabilities(&self) -> &Capabilities;
-
-    /// Which of the 9 protocols this Cell conforms to.
-    fn protocols(&self) -> &[ProtocolId];
-
-    /// Estimated cost to execute once, in USD-equivalent microcents.
-    /// Used by the Route protocol for EFE cost terms and by Compose
-    /// for budget-constrained assembly. Returns `None` if cost is
-    /// input-dependent and cannot be estimated statically.
-    fn estimated_cost(&self) -> Option<Cost>;
-
-    /// Estimated wall-clock time to execute once.
+    fn protocols(&self) -> Vec<ProtocolId>;
+    fn estimated_cost(&self) -> Option<f64>;
     fn estimated_duration(&self) -> Option<Duration>;
-
-    /// Execute the Cell. Consumes input Signals, produces output Signals.
-    /// The runtime supplies a `CellContext` with Bus access, Store handle,
-    /// budget remaining, trace context, and cancellation token.
-    async fn execute(
-        &self,
-        input: Vec<Signal>,
-        ctx: &CellContext,
-    ) -> Result<Vec<Signal>, CellError>;
+    fn predict(&self, input: &[Signal]) -> Option<PredictionRecord>;
+    fn correct(&self, prediction: &PredictionRecord, actual: &[Signal]);
+    async fn execute(&self, input: Vec<Signal>, ctx: &CellContext)
+        -> Result<Vec<Signal>>;
 }
 ```
+
+The `roko-core` trait also has `capabilities()` and `cost_estimate()` defaults.
+The Graph trait gets effective `CapabilitySet` through its context instead.
 
 ### CellId
 
-```rust
-/// Content-addressed Cell identity.
-/// Deterministic: same (name, version, author) -> same CellId.
-pub struct CellId(pub ContentHash);
-
-impl CellId {
-    pub fn compute(name: &str, version: &Version, author: &Author) -> Self {
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(name.as_bytes());
-        hasher.update(version.to_string().as_bytes());
-        hasher.update(author.to_string().as_bytes());
-        Self(ContentHash(hasher.finalize().into()))
-    }
-}
-```
+**Current implementation.** `roko_core::cell::CellId` is a `String` alias and
+`CellVersion` is `(u32, u32, u32)`. The traits return borrowed string IDs; they
+do not derive a SHA-256 identity from name/version/author.
 
 ### CellContext
 
-```rust
-/// Runtime context provided to every Cell execution.
-pub struct CellContext {
-    /// Access to Bus for publishing Pulses (predictions, lifecycle events).
-    pub bus: Arc<dyn Bus>,
-
-    /// Access to Store for reading/writing Signals.
-    pub store: Arc<dyn Store>,
-
-    /// Remaining budget for this execution scope (Graph or Agent).
-    pub budget_remaining: Cost,
-
-    /// Distributed trace context for observability.
-    pub trace: TraceContext,
-
-    /// Cancellation token -- checked between steps.
-    pub cancel: CancellationToken,
-
-    /// The Cell's own calibration table (for predict-publish-correct).
-    pub calibration: Arc<CalibrationTable>,
-
-    /// Current Agent identity if running inside an Agent scope.
-    pub agent: Option<AgentId>,
-
-    /// Run ID if running inside a Flow.
-    pub run_id: Option<RunId>,
-
-    /// Lock-free shared perception surface. Defined in [05-AGENT](05-AGENT.md) S4.
-    /// Available inside Agent Hot Graphs; `None` for standalone Flows.
-    pub cortical: Option<Arc<CorticalState>>,
-}
-```
+**Current implementation.** The two contexts share trace/run/budget/deadline,
+parent-graph, and cell identifiers. The core context additionally owns
+`Arc<dyn BusErased>`, `Arc<dyn Substrate>`, and `CancellationToken`; the Graph
+context instead carries `Option<CapabilitySet>`. Neither current context has
+the speculative `calibration`, `agent`, or `cortical` fields shown in older
+design sketches.
 
 ---
 
 ## 2. The Nine Protocols
 
-Every Cell conforms to one or more of 9 protocols. Each protocol is an `async_trait` with well-typed signatures. All protocols support **predict-publish-correct** (see [S8](#8-predict-publish-correct)).
+Every Cell may declare zero or more of nine canonical `ProtocolId` values.
+`Score`, `Verify`, `Route`, `Compose`, `React`, and `Observe` are Cell-bound
+traits in `traits.rs`; `Store` and `Bus` are substrate/transport traits.
+Compatibility Cell-bound `Connect`/`Trigger` coexist with the newer
+transport-neutral connector and trigger APIs. Predict/correct hooks live on
+the Cell traits rather than being duplicated on every protocol trait.
 
 ```rust
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -137,7 +103,8 @@ pub enum ProtocolId {
 
 ### 2.1 Store Protocol
 
-Persisted storage of Signals. Defined in [doc-01](01-SIGNAL.md) S14.
+Persisted storage of Signals. The current trait is `roko_core::Store`; the
+`StoreProtocol` sketch below is target vocabulary rather than a shipped trait.
 
 ```rust
 #[async_trait]
@@ -665,7 +632,10 @@ fn compute_efe(candidate: &RouteCandidate, context: &RouteContext) -> f64 {
 
 ### 2.5 Compose Protocol
 
-Assemble multiple Signals into a single output Signal under a budget constraint. Uses a **VCG auction** (Vickrey 1961, Clarke 1971, Groves 1973) with 8+ context bidders.
+Assemble multiple Signals into a single output Signal under a budget constraint.
+The current `PromptComposer` exposes nine canonical `AttentionBidder` identities
+and supports a **VCG auction** (Vickrey 1961, Clarke 1971, Groves 1973). The
+protocol types below remain target vocabulary.
 
 ```rust
 #[async_trait]
@@ -727,18 +697,19 @@ pub struct ComposeResult {
 }
 ```
 
-**8+ built-in context bidders**:
+**Nine canonical `AttentionBidder` identities**:
 
 | Bidder | What it bids | Source |
 |---|---|---|
-| `TaskBidder` | Task description, acceptance criteria | Current plan task |
-| `CodeBidder` | Relevant code files, definitions | roko-index / tree-sitter |
-| `ResearchBidder` | Research findings, citations | roko-research artifacts |
-| `EpisodeBidder` | Prior episodes on similar tasks | roko-learn episodes |
-| `HeuristicBidder` | Relevant heuristics with calibration | roko-neuro |
-| `ToolBidder` | Tool documentation for enabled tools | MCP tool manifests |
-| `SafetyBidder` | Safety constraints, contract terms | Agent contract YAML |
-| `NeuroBidder` | Distilled knowledge entries | roko-neuro knowledge store |
+| `Neuro` | Durable knowledge | Neuro retrieval |
+| `Daimon` | Affect and somatic guidance | Current PAD/behavioral context |
+| `IterationMemory` | Recent turns, retries, and outputs | Invocation history |
+| `CodeIntelligence` | Relevant files and symbols | Workspace indexes |
+| `PlaybookRules` | Skills and learned reusable rules | Playbook/skill stores |
+| `Research` | Research artifacts and citations | Research context |
+| `TaskContext` | Brief, plan, verification, and PRD slices | Current task contract |
+| `Oracles` | Predictions and warnings | Oracle context |
+| `GroupContext` | Membership-scoped knowledge and pheromone signals | Group context |
 
 **Novelty attenuation**: `effective_value = stated_value * (1 / (1 + ln(freq)))`. Common boilerplate gradually loses bid strength, making room for novel context.
 
@@ -1400,14 +1371,14 @@ Store and Bus are dual -- two views of the same information flow:
 | Store (pull) | Bus (push) |
 |---|---|
 | Consumer initiates (`query`) | Producer initiates (`publish`) |
-| Durable (survives restart) | Ephemeral (bounded ring, then gone) |
+| Durable (survives restart) | Ephemeral (live-only or bounded ring, by backend) |
 | Identity is content hash | Identity is sequence number |
 | Supports similarity (`query_similar`) | Supports topic routing (`TopicFilter`) |
-| Retention is decay-based (demurrage) | Retention is capacity-based (ring eviction) |
+| Retention is store policy | Retention is absent or capacity-based |
 | Medium: Signal | Medium: Pulse |
 | Concurrency: read-many, write-serialized | Concurrency: write-many, read-many (broadcast) |
 
-### 6.1 The Store-Bus Adjunction
+### 6.1 The Store-Bus Adjunction (target algebra)
 
 Graduation (`F: Pul -> Sig`) and Projection (`G: Sig -> Pul`) form an adjunction `F -| G`:
 
@@ -1426,7 +1397,7 @@ Hom_Bus(Pulses, G(Signals))  ~=  Hom_Store(F(Pulses), Signals)
 
 Subscribing to store-write notifications on Bus is equivalent to querying Store for recently graduated Signals.
 
-### 6.2 Graduation Policy as a React Cell
+### 6.2 Graduation Policy as a React Cell (target)
 
 ```rust
 struct GraduationPolicy {
@@ -1461,12 +1432,13 @@ impl ReactProtocol for GraduationPolicy {
 }
 ```
 
-### 6.3 Consistency Guarantees
+### 6.3 Target consistency guarantees
 
 1. **Store-first**: graduation writes to Store before publishing downstream Pulses. Prevents phantom notifications.
 2. **Projection-best-effort**: projection Pulse after Store write is best-effort. Signal is safe in Store regardless.
 3. **Idempotent graduation**: same Pulse twice produces same SignalRef (content-addressed).
-4. **Ring eviction is not data loss**: graduated content is in Store. Un-graduated was deemed ephemeral.
+4. **Ring eviction is not durable-store loss**: content already graduated to
+   Store remains available; an ungraduated Pulse can still be lost.
 
 ### 6.4 The Decision Tree: Store or Bus?
 
@@ -1484,21 +1456,23 @@ Does the information need to survive process restart?
 
 | Strategy | Implementation | Used for |
 |---|---|---|
-| Ring capacity sizing | `bus.ring_capacity = 16384` in roko.toml | Burst absorption |
-| Sampling | `SamplingReactCell<R>`: every N-th Pulse | High-throughput feeds |
-| Windowed aggregation | `WindowedReactCell<R>`: collect for window, batch | Metrics, telemetry |
-| Priority eviction | `PriorityRingBuffer`: low-priority evicted first | Mixed-criticality traffic |
+| Ring capacity sizing | Caller-provided `MemoryBus::new(capacity)` today | Burst absorption |
+| Sampling | `SamplingReactCell<R>` target | High-throughput feeds |
+| Windowed aggregation | `WindowedReactCell<R>` target | Metrics, telemetry |
+| Priority eviction | `PriorityRingBuffer` target | Mixed-criticality traffic |
 
 ### 6.6 Distributed Bus
 
 ```text
-Single-process:   BroadcastBus (tokio broadcast + VecDeque ring)
-Multi-process:    NatsBus / KafkaBus (topic -> subject/partition mapping)
-Cross-datacenter: MultiBus (fan-in from multiple backends)
-On-chain:         ChainBus (topics -> contract event logs)
+Single-process:   BroadcastBus (live Tokio MPSC) or MemoryBus (VecDeque replay)
+Fan-out:          MultiBus (MemoryBus primary plus publish-only secondaries)
+Multi-process:    NatsBus / KafkaBus (target)
+On-chain:         ChainBus (target)
 ```
 
-All backends implement the same `Bus` trait. `MultiBus` aggregates multiple backends into a single Bus surface.
+Current local backends implement the associated-receiver `Bus` trait.
+`MultiBus` serves subscriptions from its `MemoryBus` primary and publishes to
+secondaries through `BusErased`.
 
 ---
 
@@ -1626,7 +1600,9 @@ The regress terminates at ground truth:
 
 ## 8. Predict-Publish-Correct
 
-Every Cell is a learner. This is the structural learning pattern (Friston 2006, active inference made structural).
+The current Cell traits expose opt-in `predict` and `correct` hooks. The universal
+Bus wiring below is the target structural learning pattern, not an automatic
+behavior of every registered Cell (Friston 2006, active inference made structural).
 
 **The pattern**:
 1. Before acting, the Cell publishes a **prediction** Pulse on `prediction.{block_id}`.
@@ -1726,12 +1702,16 @@ mcp_server = "github"
 
 ---
 
-## 12. Acceptance Criteria
+## 12. Target Acceptance Catalog
+
+This is a normative backlog, not a current pass report. Only the source-backed
+boundary at the top of this chapter is shipped; entries below require a cited
+implementation test before becoming present-tense guarantees.
 
 | Criterion | Verification |
 |---|---|
-| `Cell` trait compiles with `id`, `input_schema`, `output_schema`, `capabilities`, `protocols`, `estimated_cost`, `execute` | Compile check |
-| All 9 protocol traits compile with full type signatures | Compile check |
+| Current Cell traits compile with `cell_id`, `cell_name`, `cell_version`, schemas, protocols, estimates, predict/correct, and execute | Compile check |
+| All 9 `ProtocolId` variants remain represented by the documented current or compatibility APIs | Compile check |
 | `Verdict` has `reward: f64`, `hard_pass: bool`, `hard_criteria`, `soft_criteria`, `evidence` | Compile check |
 | Hard criteria are conjunctive: single hard fail -> overall fail | Unit test |
 | Soft criteria produce Pareto front, not weighted sum | Unit test with 3+ criteria showing non-dominated set |
@@ -1743,7 +1723,7 @@ mcp_server = "github"
 | Regime-dependent exploration weights | Unit test: Crisis -> 0 exploration |
 | Compose uses VCG auction with `ComposeBid.value` and `ComposeBudget` | Unit test: truthful bidding dominates lying |
 | Section effect tracked via `BetaPosterior` updated from gate verdicts | Unit test: alpha increments on pass, beta on fail |
-| 8 built-in bidders registered | Integration test |
+| All 9 canonical `AttentionBidder` variants remain available to composition | Compile/integration test |
 | Novelty attenuation in Compose: `1/(1+ln(freq))` | Unit test |
 | React operates on `Pulse` (not `Signal`), returns `ReactOutput { pulses, signals }` | Compile check |
 | `TypeSchema::is_compatible` rejects mismatched edges | Unit test |
@@ -1761,7 +1741,7 @@ mcp_server = "github"
 | Complete edge validation: type + protocol + capability check | Integration test |
 | Score => Verify natural transformation: geometric mean reward | Unit test |
 | Verify => React natural transformation: verdict Pulse on correct topic | Unit test |
-| Store-Bus adjunction: graduation + projection round-trip idempotent | Integration test |
+| Target Store-Bus notification equivalence accounts for current lossy, non-idempotent projection/graduation | Integration test |
 | Graduation policy: `always_graduate` > `never_graduate` > defaults | Unit test |
 | Store-first consistency: Store write before Bus notification | Integration test |
 | Idempotent graduation: same Pulse twice -> same SignalRef | Unit test |

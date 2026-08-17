@@ -1,5 +1,8 @@
 # Knowledge Backup and Export
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L1 Framework (Substrate serialization) + L0 Runtime (snapshot persistence)
 >
 > **Prerequisites**: `docs/03-neuro/INDEX.md` (Neuro knowledge store, Engram format), `docs/17-lifecycle/00-vision-and-mortality-replaced.md` (lifecycle model)

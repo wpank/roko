@@ -41,7 +41,7 @@ use roko_core::shutdown::GracefulShutdown;
 use roko_core::task::{TaskCategory, TaskComplexityBand};
 use roko_core::{ContentHash, Context, DaimonPolicy, Kind, Query, Store};
 use roko_core::{Headlines, TaskMetric, compute_headlines};
-use roko_dreams::{DreamAgentConfig, DreamEngine, DreamLoopConfig, DreamRunner};
+use roko_dreams::{DreamAgentConfig, DreamLoopConfig, DreamRunner};
 use roko_fs::{FileSubstrate, FsObservabilitySinks};
 use roko_learn::cascade_router::{CascadeRouteExplanation, CascadeRouter};
 use roko_learn::cfactor::{CFactor, trend_arrow as cfactor_trend_arrow};
@@ -55,7 +55,10 @@ use roko_learn::prompt_experiment::ExperimentStore;
 use roko_learn::provider_health::{CircuitState, ProviderHealth};
 use roko_learn::runtime_feedback::{CompletedRunInput, LearningRuntime};
 use roko_learn::runtime_feedback::{read_efficiency_events, refresh_cfactor_snapshot};
-use roko_neuro::{DEFAULT_GC_MIN_CONFIDENCE, KnowledgeStore};
+use roko_neuro::{
+    DEFAULT_GC_MIN_CONFIDENCE, ExportFilter, ImportOptions, ImportResult, KnowledgeKind,
+    KnowledgeStore,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -119,6 +122,13 @@ impl DoComplexity {
             Self::Complex => roko_gate::PlanComplexity::Complex,
         }
     }
+}
+
+/// Optional focused view for `roko doctor`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DoctorSubject {
+    /// Disk capacity, retained logs, targets, and worktree storage.
+    Disk,
 }
 
 /// Log output format for tracing subscriber initialization.
@@ -241,8 +251,8 @@ struct Cli {
     #[arg(long, global = true)]
     role: Option<String>,
 
-    /// Set the model name (passed to the agent backend).
-    #[arg(long, global = true)]
+    /// Force the model name for this invocation, bypassing adaptive routing.
+    #[arg(long, global = true, visible_alias = "force-model")]
     model: Option<String>,
 
     /// Set the repository / working directory root.
@@ -450,6 +460,11 @@ Examples:
         #[arg(long)]
         surfaces: bool,
     },
+    /// Inspect the configured GitHub workflow integration.
+    Github {
+        #[command(subcommand)]
+        cmd: commands::github::GithubCmd,
+    },
     /// Inspect workspace state from `.roko/`.
     #[command(after_help = "\
 Examples:
@@ -482,6 +497,9 @@ Examples:
     },
     /// Diagnose self-hosted workspace bootstrap state.
     Doctor {
+        /// Limit diagnostics to one area (currently: disk).
+        #[arg(value_enum)]
+        subject: Option<DoctorSubject>,
         /// Directory containing `roko.toml` and `.roko/` (default: cwd / --repo).
         #[arg(long)]
         workdir: Option<PathBuf>,
@@ -593,6 +611,12 @@ Examples:
         cmd: JobCmd,
     },
 
+    /// Browse and manage marketplace artifacts.
+    Market {
+        #[command(subcommand)]
+        cmd: MarketCmd,
+    },
+
     /// Run benchmark evaluations and write learning telemetry.
     Bench {
         #[command(subcommand)]
@@ -623,18 +647,17 @@ Examples:
         cmd: commands::graph::GraphCmd,
     },
 
-    // ── ISFR keeper ──────────────────────────────────────────────────
-    /// ISFR keeper management (start, status, sources).
-    Isfr {
-        #[command(subcommand)]
-        cmd: commands::isfr::IsfrCmd,
-    },
-
     // ── Feeds ────────────────────────────────────────────────────────
     /// Inspect runtime data feeds (list, status).
     Feed {
         #[command(subcommand)]
         cmd: commands::feed::FeedCmd,
+    },
+
+    /// Manage and evaluate pure-data feed recipes.
+    Recipe {
+        #[command(subcommand)]
+        cmd: commands::recipe::RecipeCmd,
     },
 
     // ── Triggers ────────────────────────────────────────────────────
@@ -899,6 +922,17 @@ Examples:
 // Knowledge: neuro + dreams + custody + archive
 // -----------------------------------------------------------------------
 
+fn parse_decay_factor(value: &str) -> std::result::Result<f64, String> {
+    let parsed = value
+        .parse::<f64>()
+        .map_err(|error| format!("invalid decay factor `{value}`: {error}"))?;
+    if parsed.is_finite() && (0.0..=1.0).contains(&parsed) {
+        Ok(parsed)
+    } else {
+        Err("decay factor must be between 0.0 and 1.0".to_owned())
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum KnowledgeCmd {
     /// Query the durable knowledge store for a topic.
@@ -921,6 +955,34 @@ enum KnowledgeCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Export a canonical, integrity-protected knowledge bundle.
+    Export {
+        /// Directory containing `.roko/` (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Versioned JSONL bundle to write.
+        output: PathBuf,
+        /// Replace an existing output file.
+        #[arg(long)]
+        force: bool,
+        /// Export only the top N secret-safe entries by confidence.
+        #[arg(long)]
+        top_n: Option<usize>,
+    },
+    /// Import a canonical, integrity-protected knowledge bundle.
+    Import {
+        /// Directory containing `.roko/` (default: cwd).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Versioned JSONL bundle to import.
+        input: PathBuf,
+        /// Confidence multiplier applied to imported entries.
+        #[arg(long, default_value_t = 0.8, value_parser = parse_decay_factor)]
+        decay_factor: f64,
+        /// Explicitly migrate a trusted legacy raw/version-1 JSONL backup.
+        #[arg(long)]
+        legacy_raw: bool,
+    },
     /// Backup the knowledge store to a directory with optional genomic bottleneck.
     Backup {
         /// Directory containing `.roko/` (default: cwd).
@@ -928,7 +990,7 @@ enum KnowledgeCmd {
         workdir: Option<PathBuf>,
         /// Directory to write the backup files into.
         destination: PathBuf,
-        /// Overwrite existing backup files in the destination directory.
+        /// Replace a populated destination directory after staging succeeds.
         #[arg(long)]
         force: bool,
         /// Genomic bottleneck: export only the top N entries by confidence.
@@ -942,7 +1004,7 @@ enum KnowledgeCmd {
         workdir: Option<PathBuf>,
         /// Directory created by `roko knowledge backup`.
         source: PathBuf,
-        /// Overwrite existing local neuro store files.
+        /// Permit merging into existing knowledge and replacing confirmations.
         #[arg(long)]
         force: bool,
         /// Filter by knowledge types (comma-separated).
@@ -954,6 +1016,12 @@ enum KnowledgeCmd {
         /// Generation hop count for confidence decay (default: 1).
         #[arg(long, default_value_t = 1)]
         generation: u32,
+        /// Per-generation confidence multiplier.
+        #[arg(long, default_value_t = 0.8, value_parser = parse_decay_factor)]
+        decay_factor: f64,
+        /// Explicitly migrate a trusted legacy raw/version-1 JSONL backup.
+        #[arg(long)]
+        legacy_raw: bool,
     },
     /// Sync knowledge with a peer agent via the Mesh protocol.
     Sync {
@@ -1221,6 +1289,20 @@ enum PluginCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Sign and publish a WASM extension directory to the relay registry.
+    Publish {
+        /// Extension directory containing extension.toml and its WASM module.
+        source: PathBuf,
+        /// Publisher identity configured by the relay.
+        #[arg(long)]
+        publisher: String,
+        /// Registry base URL. Defaults to relay.url or ROKO_EXTENSION_REGISTRY_URL.
+        #[arg(long)]
+        registry: Option<String>,
+        /// Working directory used to resolve Roko configuration.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
     /// Remove an installed plugin by name.
     Remove {
         /// Name of the plugin to remove.
@@ -1366,15 +1448,25 @@ enum PlanCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Rebuild or verify the deterministic plans index.
+    Index {
+        /// Verify exact generated content without writing any files.
+        #[arg(long)]
+        check: bool,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
     /// Run a plan directory through the orchestration loop.
     #[command(after_help = "\
 Examples:
-  roko plan run plans/              Run all plans (Graph Engine, default)
+  roko plan run plans/              Run all plans (runner-v2, default)
   roko plan run plans/my-plan       Run a specific plan
   roko plan run plans/ --approval   Run with interactive TUI approval
   roko plan run plans/ --dry-run    Preview without executing
   roko plan run plans/ --fresh      Archive old state and start clean
-  roko plan run plans/ --resume-plan .roko/state/executor.json   Resume from snapshot")]
+  roko plan run plans/ --engine runner-v2 --resume-plan .roko/state/state-snapshot.json   Resume Runner v2 from snapshot
+  roko plan run plans/ --engine graph --resume-plan .roko/state/graph                    Resume Graph Activities")]
     Run {
         /// Path to the plans directory.
         plans_dir: PathBuf,
@@ -1384,10 +1476,11 @@ Examples:
         /// Working directory (repo root). Defaults to current directory.
         #[arg(long)]
         workdir: Option<PathBuf>,
-        /// Resume from `.roko/state/executor.json` in the working directory.
-        #[arg(long = "resume-plan", visible_alias = "resume-state", num_args = 0..=1, default_missing_value = ".roko/state/executor.json")]
+        /// Resume from engine state (Runner executor snapshot or Graph checkpoint directory/file).
+        #[arg(long = "resume-plan", visible_alias = "resume-state", num_args = 0..=1, default_missing_value = ".roko/state/state-snapshot.json")]
         resume_plan: Option<PathBuf>,
-        /// Launch the connected approval TUI while the plan runs.
+        /// Launch the connected approval TUI while Runner-v2 runs. Graph
+        /// rejects this option until it has an equivalent approval channel.
         #[arg(long)]
         approval: bool,
         /// Maximum retry attempts per task (overrides per-task and config values).
@@ -1399,7 +1492,7 @@ Examples:
         /// Parse and display the plan without executing. Shows tasks, dependencies, and estimates.
         #[arg(long)]
         dry_run: bool,
-        /// Archive old run state and start from scratch (ignores any existing executor.json).
+        /// Archive old run state and start from scratch (ignores the unified state snapshot and legacy files).
         #[arg(long)]
         fresh: bool,
         /// Re-queue drifted tasks instead of aborting when resuming from a snapshot.
@@ -1453,6 +1546,55 @@ Examples:
     /// Shorthand: `roko plan "add cursor support"` routes to plan generate.
     #[command(external_subcommand)]
     Shorthand(Vec<String>),
+}
+
+impl PlanCmd {
+    /// Whether dispatching this command can change plan state or artifacts.
+    ///
+    /// Read-only commands must not rebuild indexes: rebuilding writes generated index files and
+    /// makes commands such as `plan validate` unexpectedly dirty the caller's workspace.
+    fn should_rebuild_indexes(&self) -> bool {
+        match self {
+            Self::List { .. } | Self::Show { .. } | Self::Validate { .. } | Self::Index { .. } => {
+                false
+            }
+            Self::Run { dry_run, .. } | Self::Regenerate { dry_run, .. } => !dry_run,
+            Self::Create { .. } | Self::Generate { .. } | Self::Shorthand(_) => true,
+        }
+    }
+
+    /// Workspace whose plan artifacts the command can mutate.
+    fn index_rebuild_workdir(&self, cli: &Cli) -> PathBuf {
+        match self {
+            Self::Run {
+                workdir: Some(workdir),
+                ..
+            }
+            | Self::Create {
+                workdir: Some(workdir),
+                ..
+            } => workdir.clone(),
+            _ => resolve_workdir(cli),
+        }
+    }
+}
+
+const fn should_rebuild_plan_indexes(command_can_mutate: bool, exit_code: Option<i32>) -> bool {
+    command_can_mutate && matches!(exit_code, Some(EXIT_SUCCESS))
+}
+
+fn finish_with_index_rebuild(
+    result: Result<i32>,
+    workdir: &Path,
+    should_rebuild: bool,
+) -> Result<i32> {
+    match result {
+        Ok(EXIT_SUCCESS) if should_rebuild => {
+            roko_cli::index::rebuild_all(workdir)?;
+            Ok(EXIT_SUCCESS)
+        }
+        primary => primary,
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -1668,6 +1810,56 @@ enum JobCmd {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum MarketCmd {
+    /// Browse marketplace artifacts.
+    Browse {
+        #[arg(long)]
+        query: Option<String>,
+        #[arg(long)]
+        tag: Option<String>,
+        #[arg(long)]
+        kind: Option<String>,
+        #[arg(long)]
+        featured: bool,
+    },
+    /// Show one artifact.
+    Show { artifact_ref: String },
+    /// Install an artifact.
+    Install { artifact_ref: String },
+    /// Uninstall an artifact.
+    Uninstall { artifact_ref: String },
+    /// Fork an artifact under an optional new name.
+    Fork {
+        artifact_ref: String,
+        new_name: Option<String>,
+    },
+    /// Publish a local artifact.
+    Publish { local_name: String },
+    /// Verify an artifact checksum and signature.
+    Verify { artifact_ref: String },
+}
+
+fn market_command_name(command: &MarketCmd) -> &'static str {
+    match command {
+        MarketCmd::Browse { .. } => "browse",
+        MarketCmd::Show { .. } => "show",
+        MarketCmd::Install { .. } => "install",
+        MarketCmd::Uninstall { .. } => "uninstall",
+        MarketCmd::Fork { .. } => "fork",
+        MarketCmd::Publish { .. } => "publish",
+        MarketCmd::Verify { .. } => "verify",
+    }
+}
+
+fn cmd_market(command: MarketCmd) -> Result<i32> {
+    println!(
+        "roko market {}: not yet implemented",
+        market_command_name(&command)
+    );
+    Ok(EXIT_SUCCESS)
+}
+
 // Internal enum used by cmd_neuro — mirrors the old top-level NeuroCmd.
 // KnowledgeCmd dispatches to this.
 #[derive(Debug)]
@@ -1682,6 +1874,18 @@ enum NeuroCmd {
     Gc {
         workdir: Option<PathBuf>,
     },
+    Export {
+        workdir: Option<PathBuf>,
+        output: PathBuf,
+        force: bool,
+        top_n: Option<usize>,
+    },
+    Import {
+        workdir: Option<PathBuf>,
+        input: PathBuf,
+        decay_factor: f64,
+        legacy_raw: bool,
+    },
     Backup {
         workdir: Option<PathBuf>,
         destination: PathBuf,
@@ -1695,6 +1899,8 @@ enum NeuroCmd {
         types: Option<String>,
         min_confidence: Option<f64>,
         generation: u32,
+        decay_factor: f64,
+        legacy_raw: bool,
     },
     Sync {
         peer: String,
@@ -2482,6 +2688,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             let code = commands::status::cmd_status(cli, workdir, quick, cfactor, surfaces).await?;
             Ok(code)
         }
+        Command::Github { cmd } => commands::github::cmd_github(cli, cmd).await,
         Command::Show {
             live,
             follow,
@@ -2489,29 +2696,31 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             workdir,
             subject,
         } => commands::show::cmd_show(cli, workdir, live, follow, serve_url, subject).await,
-        Command::Doctor { workdir, serve_url } => {
-            commands::util::cmd_doctor(cli, workdir, serve_url).await
-        }
+        Command::Doctor {
+            subject,
+            workdir,
+            serve_url,
+        } => commands::util::cmd_doctor(cli, subject, workdir, serve_url).await,
         Command::Setup { workdir, yes } => commands::setup::cmd_setup(cli, workdir, yes).await,
         Command::LayerCheck => roko_cli::layer_check::run_layer_check(),
         Command::Plan { cmd } => {
-            let wd = resolve_workdir(cli);
+            let wd = cmd.index_rebuild_workdir(cli);
+            let command_can_mutate = cmd.should_rebuild_indexes();
             let result = commands::plan::cmd_plan(cli, cmd).await;
-            let _ = roko_cli::index::rebuild_all(&wd);
-            result
+            let should_rebuild =
+                should_rebuild_plan_indexes(command_can_mutate, result.as_ref().ok().copied());
+            finish_with_index_rebuild(result, &wd, should_rebuild)
         }
         Command::Prd { cmd } => {
             let wd = resolve_workdir(cli);
             let result = commands::prd::cmd_prd(cli, cmd).await;
-            let _ = roko_cli::index::rebuild_all(&wd);
-            result
+            finish_with_index_rebuild(result, &wd, true)
         }
         Command::Agent { cmd } => commands::agent::cmd_agent(cli, cmd).await,
         Command::Research { cmd } => {
             let wd = resolve_workdir(cli);
             let result = commands::research::cmd_research(cli, cmd).await;
-            let _ = roko_cli::index::rebuild_all(&wd);
-            result
+            finish_with_index_rebuild(result, &wd, true)
         }
         Command::Think { question, workdir } => {
             commands::think::cmd_think(cli, question, workdir).await
@@ -2528,6 +2737,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         Command::Knowledge { cmd } => commands::knowledge::dispatch_knowledge(cli, cmd).await,
         Command::Learn { cmd } => commands::learn::dispatch_learn(cli, cmd).await,
         Command::Job { cmd } => commands::job::cmd_job(cli, cmd).await,
+        Command::Market { cmd } => cmd_market(cmd),
         Command::Bench { cmd } => commands::bench::cmd_bench(cli, cmd).await,
         Command::Demo(cmd) => {
             let workdir = match &cmd {
@@ -2572,8 +2782,8 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         }
         Command::Index { cmd } => commands::util::cmd_index(cli, cmd),
         Command::Graph { cmd } => commands::graph::cmd_graph(cmd).await,
-        Command::Isfr { cmd } => commands::isfr::cmd_isfr(cli, cmd).await,
         Command::Feed { cmd } => commands::feed::cmd_feed(cli, cmd).await,
+        Command::Recipe { cmd } => commands::recipe::cmd_recipe(cli, cmd),
         Command::Trigger { cmd } => commands::trigger::cmd_trigger(cli, cmd).await,
         Command::Dev { no_frontend } => commands::dev::cmd_dev(cli, no_frontend).await,
         Command::Up { workdir } => {
@@ -2600,8 +2810,9 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 repo_registry,
                 state_hub.clone(),
                 Some(std::sync::Arc::clone(&metrics)),
-            )
-            .into_arc();
+            );
+            runtime.prepare_workspace_extensions(&wd).await?;
+            let runtime = runtime.into_arc();
 
             // Bootstrap: consistent workspace check + unified config load.
             let boot = roko_cli::bootstrap::RokoBootstrap::new(
@@ -2734,15 +2945,23 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             // Sugar for `roko plan run --resume-plan`
             let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
             let snapshot = if let Some(ref id) = run_id {
-                // Try .roko/state/<id>.json then .roko/state/executor.json
+                // Try a named checkpoint, then the authoritative unified snapshot,
+                // then the legacy executor only when the unified file is absent.
                 let specific = workdir.join(format!(".roko/state/{id}.json"));
                 if specific.exists() {
                     specific
+                } else if workdir.join(".roko/state/state-snapshot.json").exists() {
+                    workdir.join(".roko/state/state-snapshot.json")
                 } else {
                     workdir.join(".roko/state/executor.json")
                 }
             } else {
-                workdir.join(".roko/state/executor.json")
+                let unified = workdir.join(".roko/state/state-snapshot.json");
+                if unified.exists() {
+                    unified
+                } else {
+                    workdir.join(".roko/state/executor.json")
+                }
             };
 
             if !snapshot.exists() {
@@ -2988,44 +3207,41 @@ fn resolve_plans_dir(workdir: &Path, explicit: Option<&Path>) -> PathBuf {
 /// | `ROKO_QUIET`      | `--quiet`      | Enable quiet if "1" or "true"                |
 /// | `ROKO_LOG_FORMAT`  | `--log-format` | Override when default "text" is in effect     |
 fn apply_env_overrides(cli: &mut Cli) {
-    if cli.model.is_none() {
-        if let Ok(val) = env::var("ROKO_MODEL") {
-            if !val.is_empty() {
-                cli.model = Some(val);
+    if cli.model.is_none()
+        && let Ok(val) = env::var("ROKO_MODEL")
+        && !val.is_empty()
+    {
+        cli.model = Some(val);
+    }
+
+    if cli.effort.is_none()
+        && let Ok(val) = env::var("ROKO_EFFORT")
+    {
+        match val.to_ascii_lowercase().as_str() {
+            "low" => cli.effort = Some(Effort::Low),
+            "medium" => cli.effort = Some(Effort::Medium),
+            "high" => cli.effort = Some(Effort::High),
+            "max" => cli.effort = Some(Effort::Max),
+            _ => {
+                eprintln!(
+                    "warning: ROKO_EFFORT={val:?} is not valid (expected low/medium/high/max), ignoring"
+                );
             }
         }
     }
 
-    if cli.effort.is_none() {
-        if let Ok(val) = env::var("ROKO_EFFORT") {
-            match val.to_ascii_lowercase().as_str() {
-                "low" => cli.effort = Some(Effort::Low),
-                "medium" => cli.effort = Some(Effort::Medium),
-                "high" => cli.effort = Some(Effort::High),
-                "max" => cli.effort = Some(Effort::Max),
-                _ => {
-                    eprintln!(
-                        "warning: ROKO_EFFORT={val:?} is not valid (expected low/medium/high/max), ignoring"
-                    );
-                }
-            }
-        }
+    if cli.role.is_none()
+        && let Ok(val) = env::var("ROKO_ROLE")
+        && !val.is_empty()
+    {
+        cli.role = Some(val);
     }
 
-    if cli.role.is_none() {
-        if let Ok(val) = env::var("ROKO_ROLE") {
-            if !val.is_empty() {
-                cli.role = Some(val);
-            }
-        }
-    }
-
-    if !cli.quiet {
-        if let Ok(val) = env::var("ROKO_QUIET") {
-            if val == "1" || val.eq_ignore_ascii_case("true") {
-                cli.quiet = true;
-            }
-        }
+    if !cli.quiet
+        && let Ok(val) = env::var("ROKO_QUIET")
+        && (val == "1" || val.eq_ignore_ascii_case("true"))
+    {
+        cli.quiet = true;
     }
 
     // log_format has a clap default of Text; override only when the user
@@ -3033,16 +3249,16 @@ fn apply_env_overrides(cli: &mut Cli) {
     // the env var is set — the clap default means we can't distinguish
     // "user typed --log-format text" from "default", but the env var path
     // is still useful when the default is in effect).
-    if cli.log_format == LogFormat::Text {
-        if let Ok(val) = env::var("ROKO_LOG_FORMAT") {
-            match val.to_ascii_lowercase().as_str() {
-                "json" => cli.log_format = LogFormat::Json,
-                "text" => {} // already the default
-                _ => {
-                    eprintln!(
-                        "warning: ROKO_LOG_FORMAT={val:?} is not valid (expected text/json), ignoring"
-                    );
-                }
+    if cli.log_format == LogFormat::Text
+        && let Ok(val) = env::var("ROKO_LOG_FORMAT")
+    {
+        match val.to_ascii_lowercase().as_str() {
+            "json" => cli.log_format = LogFormat::Json,
+            "text" => {} // already the default
+            _ => {
+                eprintln!(
+                    "warning: ROKO_LOG_FORMAT={val:?} is not valid (expected text/json), ignoring"
+                );
             }
         }
     }
@@ -3147,10 +3363,10 @@ fn apply_resume_session_override(config: &mut Config, resume: Option<String>) {
 }
 
 fn prepare_runtime_hooks(workdir: &Path, quiet: bool) {
-    if let Err(err) = bootstrap_observability_dirs(workdir) {
-        if !quiet {
-            tracing::warn!(%err, "observability bootstrap failed");
-        }
+    if let Err(err) = bootstrap_observability_dirs(workdir)
+        && !quiet
+    {
+        tracing::warn!(%err, "observability bootstrap failed");
     }
     run_process_lifecycle_hooks(workdir, quiet);
 }
@@ -3443,19 +3659,19 @@ fn find_binary_on_path(name: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
         let candidate = dir.join(name);
-        if let Ok(meta) = std::fs::metadata(&candidate) {
-            if meta.is_file() {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if meta.permissions().mode() & 0o111 != 0 {
-                        return Some(candidate);
-                    }
-                }
-                #[cfg(not(unix))]
-                {
+        if let Ok(meta) = std::fs::metadata(&candidate)
+            && meta.is_file()
+        {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if meta.permissions().mode() & 0o111 != 0 {
                     return Some(candidate);
                 }
+            }
+            #[cfg(not(unix))]
+            {
+                return Some(candidate);
             }
         }
     }
@@ -3509,10 +3725,10 @@ fn discover_roko_github_binary(workdir: &Path) -> Option<String> {
 /// binary.  `GITHUB_TOKEN` is forwarded from the current environment when set.
 fn add_github_mcp_server(config: &mut roko_agent::mcp::McpConfig, command: String) {
     let mut env = std::collections::HashMap::new();
-    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-        if !token.is_empty() {
-            env.insert("GITHUB_TOKEN".to_string(), token);
-        }
+    if let Ok(token) = std::env::var("GITHUB_TOKEN")
+        && !token.is_empty()
+    {
+        env.insert("GITHUB_TOKEN".to_string(), token);
     }
 
     config.servers.push(roko_agent::mcp::McpServerConfig {
@@ -3635,7 +3851,8 @@ mod tests {
     };
     use commands::dashboard::dashboard_output;
     use commands::knowledge::{
-        NEURO_CONFIRMATIONS_FILE, NEURO_KNOWLEDGE_FILE, backup_neuro_store, restore_neuro_store,
+        NEURO_CONFIRMATIONS_FILE, NEURO_KNOWLEDGE_FILE, backup_neuro_store, neuro_live_files,
+        restore_neuro_store,
     };
     use commands::util::persist_capture_episode;
     use roko_core::ConfigHash;
@@ -3651,6 +3868,55 @@ mod tests {
         assert!(!cli.json);
         assert!(!cli.quiet);
         assert!(!cli.headless);
+    }
+
+    #[test]
+    fn cli_parses_marketplace_subcommands_and_fields() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "market",
+            "browse",
+            "--query",
+            "review",
+            "--tag",
+            "strict",
+            "--kind",
+            "graph",
+            "--featured",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Market {
+                cmd:
+                    MarketCmd::Browse {
+                        query,
+                        tag,
+                        kind,
+                        featured,
+                    },
+            }) => {
+                assert_eq!(query.as_deref(), Some("review"));
+                assert_eq!(tag.as_deref(), Some("strict"));
+                assert_eq!(kind.as_deref(), Some("graph"));
+                assert!(featured);
+            }
+            other => panic!("unexpected command variant: {other:?}"),
+        }
+
+        for (arguments, expected_name) in [
+            (vec!["roko", "market", "show", "@a/x@1"], "show"),
+            (vec!["roko", "market", "install", "@a/x@1"], "install"),
+            (vec!["roko", "market", "uninstall", "@a/x@1"], "uninstall"),
+            (vec!["roko", "market", "fork", "@a/x@1", "mine"], "fork"),
+            (vec!["roko", "market", "publish", "local"], "publish"),
+            (vec!["roko", "market", "verify", "@a/x@1"], "verify"),
+        ] {
+            let cli = Cli::try_parse_from(arguments).unwrap();
+            let Some(Command::Market { cmd }) = cli.command else {
+                panic!("market command did not parse");
+            };
+            assert_eq!(market_command_name(&cmd), expected_name);
+        }
     }
 
     #[test]
@@ -3677,6 +3943,13 @@ mod tests {
         assert!(cli.json);
         assert!(cli.quiet);
         assert!(cli.headless);
+    }
+
+    #[test]
+    fn force_model_alias_arms_the_existing_highest_precedence_override() {
+        let cli = Cli::try_parse_from(["roko", "--force-model", "model-b", "status"])
+            .expect("parse --force-model alias");
+        assert_eq!(cli.model.as_deref(), Some("model-b"));
     }
 
     #[test]
@@ -3798,6 +4071,18 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_github_status_subcommand() {
+        let cli =
+            Cli::try_parse_from(["roko", "github", "status", "--workdir", "/tmp/project"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Github {
+                cmd: commands::github::GithubCmd::Status { workdir: Some(_) }
+            })
+        ));
+    }
+
+    #[test]
     fn cli_parses_status_quick_flag() {
         let cli = Cli::try_parse_from(["roko", "status", "--quick"]).unwrap();
         assert!(matches!(
@@ -3832,8 +4117,23 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Doctor {
+                subject: None,
                 workdir: Some(_),
                 serve_url: Some(_),
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_parses_doctor_disk_subreport() {
+        let cli =
+            Cli::try_parse_from(["roko", "doctor", "disk", "--workdir", "/tmp/project"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Doctor {
+                subject: Some(DoctorSubject::Disk),
+                workdir: Some(_),
+                ..
             })
         ));
     }
@@ -3936,6 +4236,123 @@ mod tests {
     }
 
     #[test]
+    fn read_only_plan_commands_do_not_rebuild_indexes() {
+        let commands = [
+            Cli::try_parse_from(["roko", "plan", "list"]).unwrap(),
+            Cli::try_parse_from(["roko", "plan", "show", "P34"]).unwrap(),
+            Cli::try_parse_from(["roko", "plan", "validate", "plans/"]).unwrap(),
+            Cli::try_parse_from(["roko", "plan", "index", "--check"]).unwrap(),
+        ];
+
+        for cli in commands {
+            let Some(Command::Plan { cmd }) = cli.command else {
+                panic!("expected a plan command");
+            };
+            assert!(!cmd.should_rebuild_indexes());
+        }
+    }
+
+    #[test]
+    fn mutating_plan_commands_rebuild_indexes_but_dry_runs_do_not() {
+        let mutating = [
+            Cli::try_parse_from(["roko", "plan", "create", "my-plan", "--title", "My Plan"])
+                .unwrap(),
+            Cli::try_parse_from(["roko", "plan", "run", "plans/"]).unwrap(),
+            Cli::try_parse_from(["roko", "plan", "generate", "fix", "the", "bug"]).unwrap(),
+            Cli::try_parse_from(["roko", "plan", "regenerate", "plans/my-plan"]).unwrap(),
+        ];
+        for cli in mutating {
+            let Some(Command::Plan { cmd }) = cli.command else {
+                panic!("expected a plan command");
+            };
+            assert!(cmd.should_rebuild_indexes());
+            assert!(should_rebuild_plan_indexes(
+                cmd.should_rebuild_indexes(),
+                Some(EXIT_SUCCESS)
+            ));
+            assert!(!should_rebuild_plan_indexes(
+                cmd.should_rebuild_indexes(),
+                Some(1)
+            ));
+            assert!(!should_rebuild_plan_indexes(
+                cmd.should_rebuild_indexes(),
+                None
+            ));
+        }
+
+        let dry_runs = [
+            Cli::try_parse_from(["roko", "plan", "run", "plans/", "--dry-run"]).unwrap(),
+            Cli::try_parse_from(["roko", "plan", "regenerate", "plans/my-plan", "--dry-run"])
+                .unwrap(),
+        ];
+        for cli in dry_runs {
+            let Some(Command::Plan { cmd }) = cli.command else {
+                panic!("expected a plan command");
+            };
+            assert!(!cmd.should_rebuild_indexes());
+        }
+    }
+
+    #[test]
+    fn successful_command_propagates_index_rebuild_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(".roko"), b"not a directory").unwrap();
+
+        let error = finish_with_index_rebuild(Ok(EXIT_SUCCESS), tmp.path(), true).unwrap_err();
+
+        assert!(
+            error.to_string().contains("Not a directory")
+                || error.to_string().contains("not a directory"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn failed_or_read_only_command_does_not_attempt_index_rebuild() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(".roko"), b"not a directory").unwrap();
+
+        let primary =
+            finish_with_index_rebuild(Err(anyhow!("primary command failed")), tmp.path(), true)
+                .unwrap_err();
+        let read_only = finish_with_index_rebuild(Ok(EXIT_SUCCESS), tmp.path(), false).unwrap();
+
+        assert_eq!(primary.to_string(), "primary command failed");
+        assert_eq!(read_only, EXIT_SUCCESS);
+    }
+
+    #[test]
+    fn nonzero_primary_result_is_preserved_without_index_rebuild() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(".roko"), b"not a directory").unwrap();
+
+        let exit_code = finish_with_index_rebuild(Ok(7), tmp.path(), true).unwrap();
+
+        assert_eq!(exit_code, 7);
+    }
+
+    #[test]
+    fn plan_run_rebuild_uses_the_command_workdir() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "plan",
+            "run",
+            "plans",
+            "--workdir",
+            "selected-workspace",
+        ])
+        .unwrap();
+        let Some(Command::Plan { ref cmd }) = cli.command else {
+            panic!("expected a plan command");
+        };
+
+        assert_eq!(
+            cmd.index_rebuild_workdir(&cli),
+            PathBuf::from("selected-workspace")
+        );
+    }
+
+    #[test]
     fn cli_parses_plan_create() {
         let cli = Cli::try_parse_from(["roko", "plan", "create", "my-plan", "--title", "My Plan"])
             .unwrap();
@@ -3948,17 +4365,33 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_plan_resume_flag() {
-        let cli = Cli::try_parse_from(["roko", "plan", "run", "plans", "--resume-plan"]).unwrap();
+    fn cli_parses_non_mutating_plan_index_check() {
+        let cli =
+            Cli::try_parse_from(["roko", "plan", "index", "--check", "--workdir", "."]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Plan {
-                cmd: PlanCmd::Run {
-                    resume_plan: Some(_),
-                    ..
+                cmd: PlanCmd::Index {
+                    check: true,
+                    workdir: Some(_),
                 }
             })
         ));
+    }
+
+    #[test]
+    fn cli_parses_plan_resume_flag() {
+        let cli = Cli::try_parse_from(["roko", "plan", "run", "plans", "--resume-plan"]).unwrap();
+        let Some(Command::Plan {
+            cmd: PlanCmd::Run { resume_plan, .. },
+        }) = cli.command
+        else {
+            panic!("expected plan run");
+        };
+        assert_eq!(
+            resume_plan,
+            Some(PathBuf::from(".roko/state/state-snapshot.json"))
+        );
     }
 
     #[test]
@@ -4159,9 +4592,11 @@ mod tests {
         .await
         .unwrap();
 
-        let episodes_path = workdir.join(".roko").join("learn").join("episodes.jsonl");
+        let episodes_path = workdir.join(".roko").join("episodes.jsonl");
         let episodes = EpisodeLogger::read_all_lossy(&episodes_path).await.unwrap();
         assert_eq!(episodes.len(), 1);
+        assert!(!workdir.join(".roko/learn/episodes.jsonl").exists());
+        assert!(!workdir.join(".roko/memory/episodes.jsonl").exists());
 
         let episode = &episodes[0];
         assert_eq!(episode.agent_id, "claude");
@@ -4487,6 +4922,75 @@ mod tests {
                 cmd: KnowledgeCmd::Backup { destination, force, .. }
             }) if destination == PathBuf::from("/tmp/neuro-backup") && !force
         ));
+    }
+
+    #[test]
+    fn cli_parses_knowledge_export_and_import_with_safe_defaults() {
+        let export =
+            Cli::try_parse_from(["roko", "knowledge", "export", "/tmp/knowledge-export.jsonl"])
+                .unwrap();
+        assert!(matches!(
+            export.command,
+            Some(Command::Knowledge {
+                cmd: KnowledgeCmd::Export {
+                    output,
+                    force: false,
+                    top_n: None,
+                    ..
+                }
+            }) if output == PathBuf::from("/tmp/knowledge-export.jsonl")
+        ));
+
+        let import =
+            Cli::try_parse_from(["roko", "knowledge", "import", "/tmp/knowledge-export.jsonl"])
+                .unwrap();
+        assert!(matches!(
+            import.command,
+            Some(Command::Knowledge {
+                cmd: KnowledgeCmd::Import {
+                    input,
+                    decay_factor,
+                    legacy_raw: false,
+                    ..
+                }
+            }) if input == PathBuf::from("/tmp/knowledge-export.jsonl")
+                && (decay_factor - 0.8).abs() < f64::EPSILON
+        ));
+    }
+
+    #[test]
+    fn cli_validates_knowledge_import_decay_factor() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "knowledge",
+            "import",
+            "/tmp/knowledge-export.jsonl",
+            "--decay-factor",
+            "0.65",
+            "--legacy-raw",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Knowledge {
+                cmd: KnowledgeCmd::Import {
+                    decay_factor,
+                    legacy_raw: true,
+                    ..
+                }
+            }) if (decay_factor - 0.65).abs() < f64::EPSILON
+        ));
+
+        let error = Cli::try_parse_from([
+            "roko",
+            "knowledge",
+            "import",
+            "/tmp/knowledge-export.jsonl",
+            "--decay-factor",
+            "1.01",
+        ])
+        .unwrap_err();
+        assert!(error.to_string().contains("between 0.0 and 1.0"));
     }
 
     #[test]
@@ -4829,6 +5333,7 @@ mod tests {
             total_requests: 20,
             total_failures: 3,
             last_failure_at: Some(90_000),
+            last_success_at: Some(95_000),
             cooldown_until: Some(108_000),
             failure_window: std::collections::VecDeque::new(),
         };
@@ -4947,7 +5452,7 @@ mod tests {
         ep2.usage.input_tokens = 200;
         ep2.usage.cache_read_tokens = 50;
 
-        let episodes_path = memory_dir.join("episodes.jsonl");
+        let episodes_path = workdir.join(".roko").join("episodes.jsonl");
         let episodes = [
             serde_json::to_string(&ep1).unwrap(),
             serde_json::to_string(&ep2).unwrap(),
@@ -5184,7 +5689,7 @@ mod tests {
     }
 
     #[test]
-    fn backup_neuro_store_copies_live_files_into_snapshot_dir() {
+    fn backup_neuro_store_writes_canonical_secret_safe_snapshot() {
         let workdir = tempdir().unwrap();
         let backup_dir = tempdir().unwrap();
         let neuro_dir = workdir.path().join(".roko").join("neuro");
@@ -5198,15 +5703,47 @@ mod tests {
 
         let report = backup_neuro_store(workdir.path(), backup_dir.path(), false, None).unwrap();
 
-        assert_eq!(
-            std::fs::read(report.snapshot.knowledge).unwrap(),
-            b"{\"id\":\"k1\"}\n"
+        let backup = std::fs::read_to_string(&report.snapshot.knowledge).unwrap();
+        let mut lines = backup.lines();
+        let header: serde_json::Value =
+            serde_json::from_str(lines.next().expect("backup header")).unwrap();
+        assert_eq!(header["version"], 2);
+        assert_eq!(header["entry_count"], 1);
+        assert!(
+            header["merkle_root"]
+                .as_str()
+                .is_some_and(|root| !root.is_empty())
         );
+        let entry: serde_json::Value =
+            serde_json::from_str(lines.next().expect("knowledge entry")).unwrap();
+        assert_eq!(entry["id"], "k1");
+        assert!(lines.next().is_none());
+
+        let restored = KnowledgeStore::new(backup_dir.path().join("roundtrip.jsonl"));
+        let import = restored
+            .import(&report.snapshot.knowledge, &ImportOptions::default())
+            .unwrap();
+        assert_eq!(import.imported, 1);
+        assert_eq!(restored.read_all().unwrap()[0].id, "k1");
         assert_eq!(
             std::fs::read(report.snapshot.confirmations).unwrap(),
             b"{\"id\":\"c1\"}\n"
         );
         assert!(report.confirmations_present);
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&report.manifest).expect("read generated manifest"),
+        )
+        .expect("parse generated manifest");
+        assert_eq!(manifest["version"], 2);
+        assert_eq!(manifest["knowledge_format_version"], 2);
+        assert_eq!(manifest["entry_count"], 1);
+        assert_eq!(manifest["confirmations_present"], true);
+        assert_eq!(manifest["confirmations"]["bytes"], 12);
+        assert!(
+            manifest["confirmations"]["sha256"]
+                .as_str()
+                .is_some_and(|digest| digest.len() == 64)
+        );
     }
 
     #[test]
@@ -5227,12 +5764,30 @@ mod tests {
         )
         .unwrap();
 
-        let err = restore_neuro_store(workdir.path(), backup_dir.path(), false, 1, None, None)
-            .unwrap_err();
+        let err = restore_neuro_store(
+            workdir.path(),
+            backup_dir.path(),
+            false,
+            1,
+            0.8,
+            None,
+            None,
+            true,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("Re-run with --force"));
 
-        let report =
-            restore_neuro_store(workdir.path(), backup_dir.path(), true, 1, None, None).unwrap();
+        let report = restore_neuro_store(
+            workdir.path(),
+            backup_dir.path(),
+            true,
+            1,
+            0.8,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
         let restored = std::fs::read_to_string(&report.live.knowledge).unwrap();
         assert!(
             restored.contains("\"new\""),
@@ -5240,6 +5795,228 @@ mod tests {
         );
         // The backup has no confirmations file, so the report should note it as absent.
         assert!(!report.confirmations_present);
+        assert!(
+            !report.live.confirmations.exists(),
+            "restore must remove confirmations that are absent from the backup"
+        );
+    }
+
+    #[test]
+    fn backup_preflight_and_alias_checks_preserve_existing_state() {
+        let workdir = tempdir().unwrap();
+        let backup_parent = tempdir().unwrap();
+        let neuro_dir = workdir.path().join(".roko").join("neuro");
+        std::fs::create_dir_all(&neuro_dir).unwrap();
+        let live_knowledge = neuro_dir.join(NEURO_KNOWLEDGE_FILE);
+        std::fs::write(&live_knowledge, b"{\"id\":\"live\"}\n").unwrap();
+
+        let destination = backup_parent.path().join("snapshot");
+        std::fs::create_dir_all(&destination).unwrap();
+        let marker = destination.join("keep.txt");
+        std::fs::write(&marker, b"unchanged").unwrap();
+        let error = backup_neuro_store(workdir.path(), &destination, false, None)
+            .expect_err("populated destination must require force");
+        assert!(error.to_string().contains("--force"));
+        assert_eq!(std::fs::read(&marker).unwrap(), b"unchanged");
+        assert!(!destination.join(NEURO_KNOWLEDGE_FILE).exists());
+
+        let forced = backup_neuro_store(workdir.path(), &destination, true, None)
+            .expect("forced staged replacement");
+        assert!(forced.snapshot.knowledge.exists());
+        assert!(forced.manifest.exists());
+        assert!(
+            !marker.exists(),
+            "forced replacement must not retain stale files"
+        );
+
+        let before = std::fs::read(&live_knowledge).unwrap();
+        let error = backup_neuro_store(workdir.path(), &neuro_dir, true, None)
+            .expect_err("backup must reject the live neuro directory");
+        assert!(error.to_string().contains("live neuro store"));
+        assert_eq!(std::fs::read(&live_knowledge).unwrap(), before);
+
+        let absent_workdir = tempdir().unwrap();
+        let nonexistent_ancestor = absent_workdir.path().join(".roko");
+        let error = backup_neuro_store(absent_workdir.path(), &nonexistent_ancestor, true, None)
+            .expect_err("nonexistent ancestor of live store must still be rejected");
+        assert!(error.to_string().contains("live neuro store"));
+        assert!(
+            !nonexistent_ancestor.exists(),
+            "alias preflight must not create a missing destination"
+        );
+    }
+
+    #[test]
+    fn restore_verifies_confirmation_digest_before_creating_live_state() {
+        let source = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let backup = tempdir().unwrap();
+        let source_neuro = source.path().join(".roko").join("neuro");
+        std::fs::create_dir_all(&source_neuro).unwrap();
+        std::fs::write(
+            source_neuro.join(NEURO_KNOWLEDGE_FILE),
+            b"{\"id\":\"source\",\"content\":\"source knowledge\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source_neuro.join(NEURO_CONFIRMATIONS_FILE),
+            b"original confirmations\n",
+        )
+        .unwrap();
+        backup_neuro_store(source.path(), backup.path(), false, None).unwrap();
+        std::fs::write(
+            backup.path().join(NEURO_CONFIRMATIONS_FILE),
+            b"tampered confirmations\n",
+        )
+        .unwrap();
+
+        let error = restore_neuro_store(
+            destination.path(),
+            backup.path(),
+            false,
+            1,
+            0.8,
+            None,
+            None,
+            false,
+        )
+        .expect_err("confirmation tampering must fail");
+        assert!(error.to_string().contains("integrity verification failed"));
+        assert!(!neuro_live_files(destination.path()).knowledge.exists());
+    }
+
+    #[test]
+    fn restore_rejects_manifest_count_mismatch_without_live_writes() {
+        let source = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let backup = tempdir().unwrap();
+        let source_neuro = source.path().join(".roko").join("neuro");
+        std::fs::create_dir_all(&source_neuro).unwrap();
+        std::fs::write(
+            source_neuro.join(NEURO_KNOWLEDGE_FILE),
+            b"{\"id\":\"source\",\"content\":\"source knowledge\"}\n",
+        )
+        .unwrap();
+        let report = backup_neuro_store(source.path(), backup.path(), false, None).unwrap();
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report.manifest).unwrap()).unwrap();
+        manifest["entry_count"] = serde_json::json!(2);
+        std::fs::write(
+            &report.manifest,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let error = restore_neuro_store(
+            destination.path(),
+            backup.path(),
+            false,
+            1,
+            0.8,
+            None,
+            None,
+            false,
+        )
+        .expect_err("manifest count mismatch must fail");
+        assert!(error.to_string().contains("entry_count mismatch"));
+        assert!(!neuro_live_files(destination.path()).knowledge.exists());
+    }
+
+    #[test]
+    fn restore_requires_explicit_legacy_for_missing_or_v1_manifest() {
+        for legacy_case in ["missing", "v1"] {
+            let source = tempdir().unwrap();
+            let backup = tempdir().unwrap();
+            let destination = tempdir().unwrap();
+            let source_neuro = source.path().join(".roko").join("neuro");
+            std::fs::create_dir_all(&source_neuro).unwrap();
+            std::fs::write(
+                source_neuro.join(NEURO_KNOWLEDGE_FILE),
+                format!("{{\"id\":\"{legacy_case}\",\"content\":\"legacy case\"}}\n"),
+            )
+            .unwrap();
+            let report = backup_neuro_store(source.path(), backup.path(), false, None).unwrap();
+            if legacy_case == "missing" {
+                std::fs::remove_file(&report.manifest).unwrap();
+            } else {
+                let mut manifest: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&report.manifest).unwrap()).unwrap();
+                manifest["version"] = serde_json::json!(1);
+                std::fs::write(
+                    &report.manifest,
+                    serde_json::to_vec_pretty(&manifest).unwrap(),
+                )
+                .unwrap();
+            }
+
+            let error = restore_neuro_store(
+                destination.path(),
+                backup.path(),
+                false,
+                1,
+                0.8,
+                None,
+                None,
+                false,
+            )
+            .expect_err("legacy manifest must require opt-in");
+            assert!(error.to_string().contains("legacy") || error.to_string().contains("manifest"));
+            assert!(!neuro_live_files(destination.path()).knowledge.exists());
+
+            let restored = restore_neuro_store(
+                destination.path(),
+                backup.path(),
+                false,
+                1,
+                0.8,
+                None,
+                None,
+                true,
+            )
+            .expect("explicit legacy restore");
+            assert!(restored.legacy_input);
+            assert_eq!(restored.entries_restored, 1);
+        }
+    }
+
+    #[test]
+    fn restore_rejects_corrupt_live_store_without_partial_knowledge_or_confirmation_changes() {
+        let source = tempdir().unwrap();
+        let backup = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let source_neuro = source.path().join(".roko").join("neuro");
+        std::fs::create_dir_all(&source_neuro).unwrap();
+        std::fs::write(
+            source_neuro.join(NEURO_KNOWLEDGE_FILE),
+            b"{\"id\":\"new\",\"content\":\"new knowledge\"}\n",
+        )
+        .unwrap();
+        backup_neuro_store(source.path(), backup.path(), false, None).unwrap();
+
+        let live = neuro_live_files(destination.path());
+        std::fs::create_dir_all(live.knowledge.parent().unwrap()).unwrap();
+        let knowledge_before = b"{\"id\":\"old\",\"content\":\"valid\"}\nnot-json\n";
+        let confirmations_before = b"old confirmations\n";
+        std::fs::write(&live.knowledge, knowledge_before).unwrap();
+        std::fs::write(&live.confirmations, confirmations_before).unwrap();
+
+        let error = restore_neuro_store(
+            destination.path(),
+            backup.path(),
+            true,
+            1,
+            0.8,
+            None,
+            None,
+            false,
+        )
+        .expect_err("corrupt live store must fail closed");
+        assert!(format!("{error:#}").contains("decode knowledge line 2"));
+        assert_eq!(std::fs::read(&live.knowledge).unwrap(), knowledge_before);
+        assert_eq!(
+            std::fs::read(&live.confirmations).unwrap(),
+            confirmations_before
+        );
     }
 
     #[test]
@@ -5390,6 +6167,31 @@ mod tests {
             Some(Command::Feed {
                 cmd: commands::feed::FeedCmd::Status { id },
             }) => assert_eq!(id, "file-watch-roko-dir"),
+            other => panic!("unexpected command variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_feed_lifecycle_and_recipe_run() {
+        let feed = Cli::try_parse_from(["roko", "feed", "start", "provider-health-feed"]).unwrap();
+        assert!(matches!(
+            feed.command,
+            Some(Command::Feed {
+                cmd: commands::feed::FeedCmd::Start { .. }
+            })
+        ));
+
+        let recipe = Cli::try_parse_from([
+            "roko", "recipe", "run", "blend", "--input", "left=2", "--input", "right=6",
+        ])
+        .unwrap();
+        match recipe.command {
+            Some(Command::Recipe {
+                cmd: commands::recipe::RecipeCmd::Run { id, inputs },
+            }) => {
+                assert_eq!(id, "blend");
+                assert_eq!(inputs, vec!["left=2", "right=6"]);
+            }
             other => panic!("unexpected command variant: {other:?}"),
         }
     }

@@ -124,6 +124,85 @@ impl Default for MarketplaceConfig {
     }
 }
 
+/// Marketplace take-rate bands expressed in integer cents.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TakeRateSchedule {
+    /// Lifetime revenue that is exempt from platform take, in cents.
+    pub free_band_cents: u64,
+    /// Fraction charged only on revenue above the free band.
+    pub above_band_rate: f64,
+}
+
+impl Default for TakeRateSchedule {
+    fn default() -> Self {
+        Self {
+            free_band_cents: 100_000_000,
+            above_band_rate: 0.12,
+        }
+    }
+}
+
+impl TakeRateSchedule {
+    /// Compute the take on a new receipt. Revenue below the lifetime free band
+    /// is never charged retroactively.
+    #[must_use]
+    pub fn compute_take_rate(&self, lifetime_revenue_cents: u64, new_revenue_cents: u64) -> u64 {
+        let before = lifetime_revenue_cents.saturating_sub(self.free_band_cents);
+        let after = lifetime_revenue_cents
+            .saturating_add(new_revenue_cents)
+            .saturating_sub(self.free_band_cents);
+        let newly_taxable_cents = after.saturating_sub(before);
+        let basis_points = if self.above_band_rate.is_finite() {
+            (self.above_band_rate.clamp(0.0, 1.0) * 10_000.0).round() as u128
+        } else {
+            0
+        };
+        let take = u128::from(newly_taxable_cents).saturating_mul(basis_points) / 10_000;
+        u64::try_from(take).unwrap_or(u64::MAX)
+    }
+}
+
+/// Per-creator lifetime marketplace revenue totals, in integer cents.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreatorRevenue {
+    /// Gross marketplace revenue received across the creator's lifetime.
+    pub lifetime_revenue_cents: u64,
+    /// Cumulative platform take charged to the creator.
+    pub take_paid_cents: u64,
+    /// Gross lifetime revenue minus cumulative platform take.
+    pub net_revenue_cents: u64,
+}
+
+impl CreatorRevenue {
+    /// Record a receipt and return the take charged on that receipt.
+    pub fn record_revenue(&mut self, new_revenue_cents: u64, schedule: &TakeRateSchedule) -> u64 {
+        let take = schedule.compute_take_rate(self.lifetime_revenue_cents, new_revenue_cents);
+        self.lifetime_revenue_cents = self
+            .lifetime_revenue_cents
+            .saturating_add(new_revenue_cents);
+        self.take_paid_cents = self.take_paid_cents.saturating_add(take);
+        self.net_revenue_cents = self
+            .lifetime_revenue_cents
+            .saturating_sub(self.take_paid_cents);
+        take
+    }
+}
+
+/// One parent-to-child edge in an artifact fork chain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForkChainEntry {
+    /// Immediate parent artifact reference.
+    pub original_ref: String,
+    /// Child artifact reference created by this fork.
+    pub fork_ref: String,
+    /// Passport ID of the forking creator.
+    pub forked_by: u256,
+    /// Block or monotonic ledger position at which the fork was recorded.
+    pub forked_at: u64,
+    /// Creator-authored summary of changes relative to the parent.
+    pub changes_summary: String,
+}
+
 /// The Spore marketplace: manages jobs, escrow, and dispute resolution.
 #[derive(Debug, Clone)]
 pub struct Marketplace {
@@ -139,29 +218,33 @@ pub struct Marketplace {
     current_block: u64,
     /// Collected bids per job (for auction model).
     bids: HashMap<[u8; 32], Vec<SparrowBid>>,
+    /// Fork lineage keyed by the child artifact reference.
+    fork_chains: HashMap<String, ForkChainEntry>,
 }
 
 impl Default for Marketplace {
     fn default() -> Self {
+        Self::empty(MarketplaceConfig::default())
+    }
+}
+
+impl Marketplace {
+    fn empty(config: MarketplaceConfig) -> Self {
         Self {
-            config: MarketplaceConfig::default(),
+            config,
             jobs: HashMap::new(),
             escrow: HashMap::new(),
             disputes: HashMap::new(),
             current_block: 0,
             bids: HashMap::new(),
+            fork_chains: HashMap::new(),
         }
     }
-}
 
-impl Marketplace {
     /// Create a new marketplace.
     #[must_use]
     pub fn new(config: MarketplaceConfig) -> Self {
-        Self {
-            config,
-            ..Default::default()
-        }
+        Self::empty(config)
     }
 
     /// Set the current block number.
@@ -197,6 +280,68 @@ impl Marketplace {
     #[must_use]
     pub fn get_dispute(&self, job_id: &[u8; 32]) -> Option<&DisputeResolution> {
         self.disputes.get(job_id)
+    }
+
+    /// Record a new artifact fork while rejecting ambiguous or cyclic lineage.
+    pub fn fork_artifact(
+        &mut self,
+        original_ref: impl Into<String>,
+        new_ref: impl Into<String>,
+        forker: u256,
+        block: u64,
+        summary: impl Into<String>,
+    ) -> Result<ForkChainEntry, MarketplaceError> {
+        let original_ref = original_ref.into();
+        let new_ref = new_ref.into();
+        if original_ref.trim().is_empty()
+            || new_ref.trim().is_empty()
+            || original_ref == new_ref
+            || self.fork_chains.contains_key(&new_ref)
+        {
+            return Err(MarketplaceError::InvalidForkLineage);
+        }
+
+        let mut ancestor = original_ref.as_str();
+        let mut visited = std::collections::HashSet::new();
+        loop {
+            if ancestor == new_ref {
+                return Err(MarketplaceError::InvalidForkLineage);
+            }
+            if !visited.insert(ancestor) {
+                return Err(MarketplaceError::InvalidForkLineage);
+            }
+            let Some(entry) = self.fork_chains.get(ancestor) else {
+                break;
+            };
+            ancestor = &entry.original_ref;
+        }
+
+        let entry = ForkChainEntry {
+            original_ref,
+            fork_ref: new_ref.clone(),
+            forked_by: forker,
+            forked_at: block,
+            changes_summary: summary.into(),
+        };
+        self.fork_chains.insert(new_ref, entry.clone());
+        Ok(entry)
+    }
+
+    /// Return a root-to-leaf list of parent edges for an artifact reference.
+    #[must_use]
+    pub fn fork_chain(&self, artifact_ref: &str) -> Vec<ForkChainEntry> {
+        let mut chain = Vec::new();
+        let mut current = artifact_ref;
+        let mut visited = std::collections::HashSet::new();
+        while visited.insert(current) {
+            let Some(entry) = self.fork_chains.get(current) else {
+                break;
+            };
+            chain.push(entry.clone());
+            current = &entry.original_ref;
+        }
+        chain.reverse();
+        chain
     }
 
     // -----------------------------------------------------------------------
@@ -457,6 +602,12 @@ impl Marketplace {
         let agent = job
             .assigned_agent
             .ok_or(MarketplaceError::NoAssignedAgent)?;
+        let domain = job.domain.clone();
+        let quality_score = job
+            .quality_score
+            .filter(|score| score.is_finite())
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0);
         let payment = job.payment.unwrap_or(job.budget as f64);
         let platform_fee = (payment * self.config.platform_fee_fraction) as u256;
         let agent_payment = (payment as u256).saturating_sub(platform_fee);
@@ -476,7 +627,12 @@ impl Marketplace {
             agent_payment,
             platform_fee,
             agent_passport_id: agent,
-            quality_score: job.quality_score.unwrap_or(0.0),
+            quality_score,
+            reputation_effects: vec![ReputationEffect {
+                passport_id: agent,
+                domain,
+                delta: quality_score,
+            }],
         })
     }
 
@@ -508,6 +664,8 @@ impl Marketplace {
 
         let refund = job.budget;
         let poster = job.poster_passport_id;
+        let assigned_agent = job.assigned_agent;
+        let domain = job.domain.clone();
 
         // Refund escrow
         if let Some(escrow) = self.escrow.get_mut(job_id) {
@@ -523,6 +681,14 @@ impl Marketplace {
         Ok(ExpirationResult {
             refund,
             poster_passport_id: poster,
+            reputation_effects: assigned_agent
+                .map(|passport_id| ReputationEffect {
+                    passport_id,
+                    domain,
+                    delta: -0.5,
+                })
+                .into_iter()
+                .collect(),
         })
     }
 
@@ -744,15 +910,30 @@ pub struct SettlementResult {
     pub agent_passport_id: u256,
     /// Quality score of the submission.
     pub quality_score: f64,
+    /// Caller-applied reputation effects produced by settlement.
+    pub reputation_effects: Vec<ReputationEffect>,
+}
+
+/// A marketplace outcome to apply to the reputation registry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReputationEffect {
+    /// Passport receiving the effect.
+    pub passport_id: u256,
+    /// Marketplace job domain.
+    pub domain: String,
+    /// Signed reputation delta.
+    pub delta: f64,
 }
 
 /// Result of expiring a job.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExpirationResult {
     /// Refunded amount.
     pub refund: u256,
     /// Poster who receives the refund.
     pub poster_passport_id: u256,
+    /// Assigned agent's timeout penalty, or empty when never assigned.
+    pub reputation_effects: Vec<ReputationEffect>,
 }
 
 /// Result of resolving a dispute.
@@ -818,6 +999,9 @@ pub enum MarketplaceError {
     /// No active dispute.
     #[error("no active dispute for this job")]
     NoDispute,
+    /// Artifact lineage is empty, duplicated, self-referential, or cyclic.
+    #[error("invalid artifact fork lineage")]
+    InvalidForkLineage,
 }
 
 // ---------------------------------------------------------------------------
@@ -858,6 +1042,58 @@ mod tests {
             reputation_snapshot: rep,
             signature: Signature::default(),
         }
+    }
+
+    #[test]
+    fn take_rate_is_free_below_band_and_non_retroactive_above_it() {
+        let schedule = TakeRateSchedule::default();
+        assert_eq!(schedule.compute_take_rate(0, 99_900_000), 0);
+        assert_eq!(schedule.compute_take_rate(99_900_000, 100_000), 0);
+        assert_eq!(schedule.compute_take_rate(100_000_000, 100), 12);
+        assert_eq!(schedule.compute_take_rate(99_999_950, 150), 12);
+
+        let mut revenue = CreatorRevenue::default();
+        assert_eq!(revenue.record_revenue(100_000_000, &schedule), 0);
+        assert_eq!(revenue.record_revenue(100, &schedule), 12);
+        assert_eq!(revenue.lifetime_revenue_cents, 100_000_100);
+        assert_eq!(revenue.take_paid_cents, 12);
+        assert_eq!(revenue.net_revenue_cents, 100_000_088);
+    }
+
+    #[test]
+    fn fork_chain_returns_three_ancestors_in_root_to_leaf_order() {
+        let mut market = Marketplace::default();
+        market.fork_artifact("A", "B", 2, 10, "A to B").unwrap();
+        market.fork_artifact("B", "C", 3, 20, "B to C").unwrap();
+        market.fork_artifact("C", "D", 4, 30, "C to D").unwrap();
+
+        let chain = market.fork_chain("D");
+        assert_eq!(
+            chain
+                .iter()
+                .map(|entry| entry.original_ref.as_str())
+                .collect::<Vec<_>>(),
+            vec!["A", "B", "C"]
+        );
+        assert_eq!(chain.last().map(|entry| entry.fork_ref.as_str()), Some("D"));
+    }
+
+    #[test]
+    fn fork_lineage_rejects_duplicates_self_forks_and_cycles() {
+        let mut market = Marketplace::default();
+        market.fork_artifact("A", "B", 2, 10, "A to B").unwrap();
+        assert_eq!(
+            market.fork_artifact("A", "B", 3, 20, "duplicate"),
+            Err(MarketplaceError::InvalidForkLineage)
+        );
+        assert_eq!(
+            market.fork_artifact("A", "A", 3, 20, "self"),
+            Err(MarketplaceError::InvalidForkLineage)
+        );
+        assert_eq!(
+            market.fork_artifact("B", "A", 3, 20, "cycle"),
+            Err(MarketplaceError::InvalidForkLineage)
+        );
     }
 
     #[test]
@@ -979,6 +1215,14 @@ mod tests {
         assert_eq!(settlement.agent_passport_id, 42);
         assert!(settlement.agent_payment > 0);
         assert_eq!(
+            settlement.reputation_effects,
+            vec![ReputationEffect {
+                passport_id: 42,
+                domain: "coding".to_string(),
+                delta: 0.85,
+            }]
+        );
+        assert_eq!(
             market.get_job(&posting.job_id).unwrap().state,
             JobState::Settled
         );
@@ -995,9 +1239,31 @@ mod tests {
         let result = market.expire_job(&posting.job_id).unwrap();
         assert_eq!(result.refund, 10_000);
         assert_eq!(result.poster_passport_id, 100);
+        assert!(result.reputation_effects.is_empty());
         assert_eq!(
             market.get_job(&posting.job_id).unwrap().state,
             JobState::Expired
+        );
+    }
+
+    #[test]
+    fn assigned_job_expiry_emits_exact_negative_reputation_effect() {
+        let mut market = Marketplace::new(MarketplaceConfig::default());
+        let posting = test_posting();
+        market.create_job(&posting).unwrap();
+        market
+            .assign_random_vrf(&posting.job_id, &[test_bid(42, 100, 0.9)])
+            .unwrap();
+        market.set_block(posting.deadline_block);
+
+        let result = market.expire_job(&posting.job_id).unwrap();
+        assert_eq!(
+            result.reputation_effects,
+            vec![ReputationEffect {
+                passport_id: 42,
+                domain: "coding".to_string(),
+                delta: -0.5,
+            }]
         );
     }
 

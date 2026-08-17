@@ -1,5 +1,8 @@
 # Integration Points
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The four ways the Daimon's PAD vector drives other systems: behavioral state selection, tier routing bias, VCG auction bidding, and somatic landscape querying.
 
 

@@ -1,88 +1,55 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { SERVE_URL } from '../lib/serve-url';
-import type { BenchSSEEvent } from '../lib/bench-types';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
+import { useDataHub } from '../app/DataHub';
 
 interface UseBenchSSEOptions {
   benchId?: string;
   enabled?: boolean;
 }
 
+/**
+ * Selects bench events from the app-wide `/api/bench/events` connection.
+ * The transport is owned by bootstrap; mounting this hook never opens another
+ * EventSource. Each caller keeps its own clear cursor, so clearing one bench
+ * view does not discard events needed by another view.
+ */
 export function useBenchSSE({ benchId, enabled = true }: UseBenchSSEOptions = {}) {
-  const [connected, setConnected] = useState(false);
-  const [lastEvent, setLastEvent] = useState<BenchSSEEvent | null>(null);
-  const [events, setEvents] = useState<BenchSSEEvent[]>([]);
-  const esRef = useRef<EventSource | null>(null);
+  const { status, sequence, entries } = useDataHub(
+    useShallow((state) => ({
+      status: state.benchSseStatus,
+      sequence: state.benchEventSequence,
+      entries: state.benchEvents,
+    })),
+  );
+  const [afterSequence, setAfterSequence] = useState(
+    () => useDataHub.getState().benchEventSequence,
+  );
+
+  // A disabled hook mirrors the old unmounted connection: events received
+  // while disabled are not replayed when the caller enables it later.
+  useEffect(() => {
+    if (!enabled) setAfterSequence(sequence);
+  }, [enabled, sequence]);
+
+  const events = useMemo(() => {
+    if (!enabled) return [];
+    return entries
+      .filter(({ sequence: eventSequence, event }) => {
+        if (eventSequence <= afterSequence) return false;
+        const eventBenchId = 'bench_id' in event ? event.bench_id : undefined;
+        return !benchId || !eventBenchId || eventBenchId === benchId;
+      })
+      .map(({ event }) => event);
+  }, [afterSequence, benchId, enabled, entries]);
 
   const clear = useCallback(() => {
-    setEvents([]);
-    setLastEvent(null);
-  }, []);
+    setAfterSequence(sequence);
+  }, [sequence]);
 
-  useEffect(() => {
-    if (!enabled) {
-      setConnected(false);
-      esRef.current?.close();
-      esRef.current = null;
-      return;
-    }
-
-    let cancelled = false;
-    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-    const params = benchId ? `?bench_id=${encodeURIComponent(benchId)}` : '';
-    setConnected(false);
-
-    function connect() {
-      if (cancelled) return;
-
-      esRef.current?.close();
-
-      const es = new EventSource(`${SERVE_URL}/api/bench/events${params}`);
-      esRef.current = es;
-
-      es.onopen = () => {
-        if (cancelled || esRef.current !== es) return;
-        setConnected(true);
-      };
-
-      es.onmessage = (e) => {
-        if (cancelled || esRef.current !== es) return;
-
-        try {
-          const parsed = JSON.parse(e.data) as BenchSSEEvent;
-          const eventBenchId = 'bench_id' in parsed ? parsed.bench_id : undefined;
-          if (benchId && eventBenchId && eventBenchId !== benchId) return;
-          setLastEvent(parsed);
-          setEvents((prev) => [...prev.slice(-499), parsed]);
-        } catch {
-          // Ignore unparseable events
-        }
-      };
-
-      es.onerror = () => {
-        if (cancelled || esRef.current !== es) {
-          es.close();
-          return;
-        }
-
-        setConnected(false);
-        es.close();
-        esRef.current = null;
-        clearTimeout(reconnectTimer);
-        reconnectTimer = setTimeout(connect, 3_000);
-      };
-    }
-
-    connect();
-
-    return () => {
-      cancelled = true;
-      clearTimeout(reconnectTimer);
-      if (esRef.current) {
-        esRef.current.close();
-        esRef.current = null;
-      }
-    };
-  }, [benchId, enabled]);
-
-  return { connected, lastEvent, events, clear };
+  return {
+    connected: enabled && status === 'connected',
+    lastEvent: events[events.length - 1] ?? null,
+    events,
+    clear,
+  };
 }

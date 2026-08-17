@@ -1,8 +1,8 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useTerminal } from '../hooks/useTerminal';
 import { enterWorkspace, showCmd, getRoko } from '../lib/terminal-session';
-import { useRokoConfig } from '../hooks/useRokoConfig';
-import { useWorkspace } from '../hooks/useWorkspace';
+import { useConfigController } from '../data/selectors';
+import { useWorkspaceActions } from '../hooks/useWorkspaceActions';
 import { useToast } from '../components/Toast';
 import GateBar from '../components/GateBar';
 import './Builder.css';
@@ -60,8 +60,8 @@ export default function Builder() {
   const terminalFlashTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Use only live config for model list.
-  const { providers: liveProviders, isLive, defaultModel } = useRokoConfig();
-  const { ensureWorkspace } = useWorkspace();
+  const { providers: liveProviders, isLive, defaultModel } = useConfigController();
+  const { ensureWorkspace } = useWorkspaceActions();
   const { toast } = useToast();
 
   const { liveModelCatalog, liveAllModels } = useMemo(() => {

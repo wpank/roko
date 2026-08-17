@@ -315,6 +315,8 @@ async fn test_provider(
     let request = provider_test_request(&model_key, &provider_id);
     let result = ModelCallService::new(model_key.clone())
         .with_config(config)
+        .with_working_dir(&state.workdir)
+        .with_immune_root(&state.workdir)
         .call(request)
         .await;
     let fallback_latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -620,6 +622,7 @@ fn provider_test_request(model_key: &str, provider_id: &str) -> ModelCallRequest
             role: MessageRole::User,
             content: PROVIDER_TEST_PROMPT.to_string(),
         }],
+        input_messages: Vec::new(),
         max_tokens: Some(32),
         temperature: None,
         role: Some(format!("provider-test-{provider_id}")),

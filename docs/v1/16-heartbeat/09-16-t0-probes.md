@@ -1,5 +1,8 @@
 # The 16 T0 Probes: Zero-LLM Cognitive Perception
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > 16 deterministic probes that run on every gamma tick with zero LLM cost — the foundation of the 80% T0 suppression rate that makes high-frequency agent cognition economically viable.
 
 

@@ -1,5 +1,8 @@
 # Run anywhere
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../v2/](../v2/) for the current reference.
+
+
 > Agents that run everywhere -- CLI, browser, edge, cloud, chain -- sharing intelligence
 > across all deployment targets. The more instances run, the smarter all instances become.
 >
@@ -582,7 +585,7 @@ infrastructure to be rock-solid first.
 ### What works today (shipping)
 
 - CLI agent with full plan-execute-gate-learn loop
-- 5 LLM backends (Claude CLI, Anthropic API, OpenAI-compat, Cursor ACP, Ollama)
+- 11 LLM backends (Claude CLI, Claude API, Codex, Cursor, OpenAI-compat, Ollama, Gemini, Perplexity, xAI, DeepSeek, Mistral)
 - 3-stage CascadeRouter (Static -> Confidence -> UCB) for model selection
 - 11-gate, 7-rung verification pipeline with adaptive thresholds
 - 7-layer SystemPromptBuilder with 12 role templates

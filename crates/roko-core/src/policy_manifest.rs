@@ -10,6 +10,7 @@ use std::fs;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::agent::{AgentRole, ToolPermissions};
 
@@ -29,6 +30,47 @@ pub const MANIFEST_BACKED_BUILTIN_ROLE_IDS: [&str; 6] = [
     "quick-reviewer",
     "scribe",
 ];
+
+/// A capability declared by a marketplace artifact, including its limits.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CapabilityDeclaration {
+    pub name: String,
+    pub constraints: Value,
+}
+
+/// Result of applying the cell, graph, and space capability policies.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct EffectiveCapabilities {
+    pub granted: Vec<CapabilityDeclaration>,
+    pub denied: Vec<String>,
+}
+
+/// Compute the fail-closed intersection of artifact declarations, graph
+/// allowance, and space grants while preserving declaration order.
+#[must_use]
+pub fn intersect_capabilities(
+    cell_declared: &[CapabilityDeclaration],
+    graph_allowed: &[String],
+    space_granted: &HashMap<String, bool>,
+) -> EffectiveCapabilities {
+    let graph_allowed = graph_allowed
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let mut effective = EffectiveCapabilities::default();
+
+    for declaration in cell_declared {
+        let graph_allows = graph_allowed.contains(declaration.name.as_str());
+        let space_allows = space_granted.get(&declaration.name).copied() == Some(true);
+        if graph_allows && space_allows {
+            effective.granted.push(declaration.clone());
+        } else {
+            effective.denied.push(declaration.name.clone());
+        }
+    }
+
+    effective
+}
 
 /// TOML source for the built-in role manifest shipped with this runtime.
 pub const BUILTIN_ROLE_POLICY_MANIFEST_TOML: &str = include_str!("builtin_roles/core_roles.toml");
@@ -1133,6 +1175,47 @@ fn validate_non_empty_unique_strings(
 mod tests {
     use super::*;
     use crate::AgentRole;
+
+    #[test]
+    fn capability_intersect_is_ordered_and_fails_closed_at_every_layer() {
+        let declared = [
+            CapabilityDeclaration {
+                name: "network.egress".to_owned(),
+                constraints: serde_json::json!({"hosts": ["api.example"]}),
+            },
+            CapabilityDeclaration {
+                name: "filesystem.read".to_owned(),
+                constraints: serde_json::json!({"roots": ["docs"]}),
+            },
+            CapabilityDeclaration {
+                name: "secrets.read".to_owned(),
+                constraints: Value::Null,
+            },
+        ];
+        let graph = vec!["network.egress".to_owned(), "filesystem.read".to_owned()];
+        let space = HashMap::from([
+            ("network.egress".to_owned(), true),
+            ("filesystem.read".to_owned(), false),
+            ("secrets.read".to_owned(), true),
+        ]);
+
+        let effective = intersect_capabilities(&declared, &graph, &space);
+        assert_eq!(effective.granted, vec![declared[0].clone()]);
+        assert_eq!(
+            effective.denied,
+            vec!["filesystem.read".to_owned(), "secrets.read".to_owned()]
+        );
+
+        let empty_graph = intersect_capabilities(&declared, &[], &space);
+        assert!(empty_graph.granted.is_empty());
+        assert_eq!(
+            empty_graph.denied,
+            declared
+                .iter()
+                .map(|declaration| declaration.name.clone())
+                .collect::<Vec<_>>()
+        );
+    }
 
     const VALID_MANIFEST: &str = r#"
 schema_version = 1

@@ -25,7 +25,7 @@ gate.
 | 1 | `rustup update stable` | Ensure Rust 1.91+ (alloy deps require it, per `README.md` line ~289) | toolchain |
 | 2 | `cargo build --workspace` | Compile all 34 workspace members (not just `default-members`) | build cache |
 | 3 | `cargo clippy --workspace --no-deps -- -D warnings` | Enforce pedantic lint policy (`README.md` line ~292) | clean lint |
-| 4 | `cargo test --workspace` | Run 1,600+ tests across all crates | test results |
+| 4 | `cargo test --workspace` | Run 9,900+ tests across all crates | test results |
 | 5 | `cargo install --path crates/roko-cli` | Install the `roko` binary for interactive use | `~/.cargo/bin/roko` |
 | 6 | `roko init my-project && cd my-project && roko run "add a health check endpoint to the API"` | Run the quick-start pipeline (`README.md` lines 10–13) as a live smoke test | `.roko/` directory, `roko.toml`, first signal |
 
@@ -218,8 +218,8 @@ considered successful. Each criterion is independently verifiable.
    the correct minimum, eliminating the version mismatch as a source of
    contributor friction.
 
-5. **Update the "18 crates" figure in `README.md`.**
-   The workspace currently has 34 members. The stale "18 crates" claim
+5. **Update the "18 crates" figure in `README.md`.** [DONE]
+   The workspace currently has 35 members. The former "18 crates" claim has been corrected to "35 workspace members." The stale claim
    (Risk 5 in `demo/multistage-plan/discovery.md`) understates the codebase
    and weakens the "Search before writing" contributing guideline by
    suggesting a smaller search surface than actually exists.

@@ -2,7 +2,9 @@ use crate::Agent;
 use crate::openclaw::{
     OpenClawAcpAgent, OpenClawAcpConfig, OpenClawInferAgent, OpenClawInferConfig,
 };
-use crate::provider::{AgentCreationError, AgentOptions, ProviderAdapter, ProviderError};
+use crate::provider::{
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
+};
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
@@ -55,6 +57,7 @@ impl ProviderAdapter for OpenClawProviderAdapter {
             .args
             .as_ref()
             .is_some_and(|args| args.iter().any(|a| a == "acp"));
+        let resource_limits = configured_resource_limits(provider)?;
 
         if is_acp {
             // Tier 3: ACP over stdio.
@@ -65,6 +68,7 @@ impl ProviderAdapter for OpenClawProviderAdapter {
                 session_key: Some("agent:main:roko".to_string()),
                 timeout,
                 auto_approve_permissions: true,
+                resource_limits,
             };
             let agent = OpenClawAcpAgent::new(config);
             Ok(Box::new(agent))
@@ -73,6 +77,7 @@ impl ProviderAdapter for OpenClawProviderAdapter {
             let mut config = OpenClawInferConfig {
                 binary: binary.into(),
                 timeout,
+                resource_limits,
                 ..Default::default()
             };
             if !model.slug.is_empty() {

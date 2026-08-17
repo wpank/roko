@@ -472,7 +472,8 @@ pub enum GossipTopic {
 ///
 /// **Note**: `Ord` is manually implemented so that higher privilege = greater value.
 /// `PassportTier::Protocol > PassportTier::Edge` is always true.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PassportTier {
     /// Protocol tier with the strongest privileges (governance-approved, 100,000 KORAI).
     Protocol,
@@ -916,8 +917,8 @@ pub struct TeeAttestation {
     pub expiry: u64,
 }
 
-/// Soulbound Korai passport carrying identity, capabilities, and reputation.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// Transferable ERC-8004 passport carrying identity, capabilities, and reputation.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AgentPassport {
     /// Unique passport identifier.
     pub passport_id: u256,
@@ -937,11 +938,12 @@ pub struct AgentPassport {
     pub tier: PassportTier,
     /// Historical slashing events.
     pub slash_history: Vec<SlashRecord>,
-    /// Service endpoints for agent discovery (P1-05).
-    ///
-    /// Each endpoint describes a service this agent offers, with a type
-    /// (e.g., "inference", "code-review") and a URL.
-    pub service_endpoints: Vec<ServiceEndpoint>,
+    /// Advertised service endpoints for agent discovery.
+    pub service_endpoints: Vec<String>,
+    /// Advertised feed URIs.
+    pub feeds: Vec<String>,
+    /// Narrow-only capability delegations issued by the passport owner.
+    pub delegation_caveats: Vec<crate::agent_registry::DelegationCaveat>,
     /// Runtime fingerprint for ventriloquist defense (P1-05).
     ///
     /// Hash of the agent's runtime environment (model version, tool versions,
@@ -961,7 +963,7 @@ pub struct ServiceEndpoint {
 }
 
 /// EMA-smoothed per-domain reputation score.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ReputationScore {
     /// Reputation score in the range `[0.0, 1.0]`.
     pub score: f64,
@@ -972,7 +974,7 @@ pub struct ReputationScore {
 }
 
 /// Recorded slashing event on an agent passport.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SlashRecord {
     /// Violation that triggered the slash.
     pub violation_type: ViolationType,
@@ -983,7 +985,8 @@ pub struct SlashRecord {
 }
 
 /// Violation categories that can trigger slashing.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ViolationType {
     /// The agent missed a deadline.
     MissedDeadline,
@@ -2068,7 +2071,7 @@ pub struct FactClaim {
     pub submitted_at_block: u64,
 }
 
-/// Claim topics supported by the ISFR docs.
+/// Topics supported by the intersubjective fact-clearing protocol.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FactTopic {
     /// Service-price discovery.
@@ -2081,7 +2084,7 @@ pub enum FactTopic {
     Custom(String),
 }
 
-/// Claim values supported by the ISFR docs.
+/// Values supported by the intersubjective fact-clearing protocol.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FactValue {
     /// Numeric scalar.

@@ -510,12 +510,11 @@ fn parse_cargo_style_counts(output: &str) -> Option<TestCount> {
 fn extract_number_before(line: &str, label: &str) -> u32 {
     for part in line.split(';') {
         let p = part.trim();
-        if let Some(rest) = p.strip_suffix(label).map(str::trim_end) {
-            if let Some(num_str) = rest.split_whitespace().last() {
-                if let Ok(n) = num_str.parse::<u32>() {
-                    return n;
-                }
-            }
+        if let Some(rest) = p.strip_suffix(label).map(str::trim_end)
+            && let Some(num_str) = rest.split_whitespace().last()
+            && let Ok(n) = num_str.parse::<u32>()
+        {
+            return n;
         }
     }
     0

@@ -71,6 +71,49 @@ pub use self::somatic_ta::{
     SubsystemActivity, apply_somatic_confidence_bias, detect_synergy, somatic_confidence_bias,
 };
 
+/// Map realized P&L to subjective value using prospect theory.
+///
+/// Gains use `x^0.88`; losses use `-2.25 * |x|^0.88`. Non-finite inputs are
+/// returned unchanged so callers can reject invalid upstream accounting data
+/// instead of silently treating it as a real outcome.
+#[must_use]
+pub fn prospect_value(pnl: f64) -> f64 {
+    const LOSS_AVERSION: f64 = 2.25;
+    const CURVATURE: f64 = 0.88;
+
+    if pnl == 0.0 {
+        0.0
+    } else if pnl > 0.0 {
+        pnl.powf(CURVATURE)
+    } else {
+        -LOSS_AVERSION * pnl.abs().powf(CURVATURE)
+    }
+}
+
+/// Compute a bounded position-size multiplier from PAD affect dimensions.
+///
+/// Pleasure and arousal follow the documented Phase 2 formula. Dominance is
+/// accepted for a stable PAD-shaped API but is intentionally neutral in this
+/// version. Finite inputs are clamped to the PAD interval; a non-finite input
+/// is treated as neutral to keep the result safe and finite.
+#[must_use]
+pub fn affect_size_multiplier(pleasure: f64, arousal: f64, dominance: f64) -> f64 {
+    fn normalized(value: f64) -> f64 {
+        if value.is_finite() {
+            value.clamp(-1.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+
+    let pleasure = normalized(pleasure);
+    let arousal = normalized(arousal);
+    let _dominance = normalized(dominance);
+    let arousal_factor = 1.0 - arousal * 0.5;
+    let pleasure_factor = 1.0 + pleasure * 0.25;
+    (arousal_factor * pleasure_factor).clamp(0.25, 1.5)
+}
+
 // ─── Four-Factor Retrieval Model (P0-20) ────────────────────────────
 
 /// Learnable weights for the four-factor retrieval scoring model.
@@ -300,10 +343,10 @@ impl AlmaLayers {
 
     /// Process a tick, updating mood and temperament layers at their intervals.
     pub fn tick(&mut self, tick_count: u64) {
-        if tick_count > 0 && tick_count % self.mood_interval == 0 {
+        if tick_count > 0 && tick_count.is_multiple_of(self.mood_interval) {
             self.update_mood();
         }
-        if tick_count > 0 && tick_count % self.temperament_interval == 0 {
+        if tick_count > 0 && tick_count.is_multiple_of(self.temperament_interval) {
             self.update_temperament();
         }
     }
@@ -1968,6 +2011,276 @@ impl NoveltyFilter {
     }
 }
 
+// ─── Operational vitality and cognitive energy ──────────────────────────
+
+/// Budget-driven operating phase, separate from the Nietzsche lifecycle in
+/// [`mortality::VitalityPhase`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BehavioralPhase {
+    /// Vitality is at least 0.8: all tiers and exploration are available.
+    Thriving,
+    /// Vitality is at least 0.5: all tiers with at most five active goals.
+    Stable,
+    /// Vitality is at least 0.3: T0/T1 only and reduced exploration.
+    Conservation,
+    /// Vitality is at least 0.1: T0 only, one goal, no exploration.
+    Declining,
+    /// Vitality is below 0.1: no dispatch; prepare to shut down.
+    Terminal,
+}
+
+impl BehavioralPhase {
+    /// Memoryless phase classification used before hysteresis is applied.
+    #[must_use]
+    pub fn from_vitality(vitality: f64) -> Self {
+        match vitality.clamp(0.0, 1.0) {
+            value if value >= 0.8 => Self::Thriving,
+            value if value >= 0.5 => Self::Stable,
+            value if value >= 0.3 => Self::Conservation,
+            value if value >= 0.1 => Self::Declining,
+            _ => Self::Terminal,
+        }
+    }
+
+    /// Maximum active goals allowed in this phase.
+    #[must_use]
+    pub const fn max_active_goals(self) -> Option<usize> {
+        match self {
+            Self::Thriving => None,
+            Self::Stable => Some(5),
+            Self::Conservation => Some(3),
+            Self::Declining => Some(1),
+            Self::Terminal => Some(0),
+        }
+    }
+
+    /// Highest permitted EFE tier, or `None` when dispatch is disabled.
+    #[must_use]
+    pub const fn max_efe_tier(self) -> Option<u8> {
+        match self {
+            Self::Thriving | Self::Stable => Some(2),
+            Self::Conservation => Some(1),
+            Self::Declining => Some(0),
+            Self::Terminal => None,
+        }
+    }
+
+    /// Whether exploratory behavior is permitted.
+    #[must_use]
+    pub const fn allows_exploration(self) -> bool {
+        matches!(self, Self::Thriving | Self::Stable | Self::Conservation)
+    }
+}
+
+/// Tracks budget-derived vitality with a five-percentage-point hysteresis band.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VitalityTracker {
+    /// Budget at lifecycle initialization.
+    pub initial_budget: f64,
+    /// Most recently observed remaining budget.
+    pub remaining_budget: f64,
+    /// Stable phase after hysteresis.
+    pub last_phase: BehavioralPhase,
+    /// Wall-clock time of the last actual phase transition.
+    pub last_transition_at: DateTime<Utc>,
+}
+
+impl Default for VitalityTracker {
+    fn default() -> Self {
+        Self {
+            initial_budget: 1.0,
+            remaining_budget: 1.0,
+            last_phase: BehavioralPhase::Thriving,
+            last_transition_at: Utc::now(),
+        }
+    }
+}
+
+impl VitalityTracker {
+    /// Hysteresis band applied around every phase boundary.
+    pub const HYSTERESIS: f64 = 0.05;
+
+    /// Create a fully funded tracker.
+    pub fn new(initial_budget: f64) -> Result<Self> {
+        if !initial_budget.is_finite() || initial_budget <= 0.0 {
+            return Err(anyhow!(
+                "initial budget must be finite and greater than zero"
+            ));
+        }
+        Ok(Self {
+            initial_budget,
+            remaining_budget: initial_budget,
+            ..Self::default()
+        })
+    }
+
+    /// Current normalized remaining-budget ratio.
+    #[must_use]
+    pub fn vitality(&self) -> f64 {
+        (self.remaining_budget / self.initial_budget).clamp(0.0, 1.0)
+    }
+
+    /// Observe remaining budget and return the stable phase.
+    pub fn update_remaining(&mut self, remaining_budget: f64) -> Result<BehavioralPhase> {
+        if !remaining_budget.is_finite() || remaining_budget < 0.0 {
+            return Err(anyhow!("remaining budget must be finite and non-negative"));
+        }
+        self.remaining_budget = remaining_budget.min(self.initial_budget);
+        let vitality = self.vitality();
+        let candidate = BehavioralPhase::from_vitality(vitality);
+        let should_transition = match self.last_phase {
+            BehavioralPhase::Thriving => vitality < 0.8 - Self::HYSTERESIS,
+            BehavioralPhase::Stable => {
+                !(0.5 - Self::HYSTERESIS..0.8 + Self::HYSTERESIS).contains(&vitality)
+            }
+            BehavioralPhase::Conservation => {
+                !(0.3 - Self::HYSTERESIS..0.5 + Self::HYSTERESIS).contains(&vitality)
+            }
+            BehavioralPhase::Declining => {
+                !(0.1 - Self::HYSTERESIS..0.3 + Self::HYSTERESIS).contains(&vitality)
+            }
+            BehavioralPhase::Terminal => vitality >= 0.1 + Self::HYSTERESIS,
+        };
+        if should_transition && candidate != self.last_phase {
+            self.last_phase = candidate;
+            self.last_transition_at = Utc::now();
+        }
+        Ok(self.last_phase)
+    }
+}
+
+/// Recovery cadence for the cognitive energy pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryMode {
+    /// Fast partial recovery.
+    Gamma,
+    /// Moderate partial recovery.
+    Theta,
+    /// Full recovery with fatigue reset.
+    Delta,
+}
+
+/// Canonical cognitive activity costs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EnergyActivity {
+    /// Deterministic T0 execution.
+    T0Tick,
+    /// Lightweight-model T1 execution.
+    T1Tick,
+    /// Deep-model T2 execution.
+    T2Tick,
+    /// External tool invocation.
+    ToolCall,
+    /// Context assembly.
+    ContextAssembly,
+    /// Corrigibility gate evaluation.
+    GateCheck,
+    /// Dream cycle recovery.
+    DreamCycle,
+}
+
+impl EnergyActivity {
+    /// Base cost from the E23 cognitive-energy table.
+    #[must_use]
+    pub const fn base_cost(self) -> f64 {
+        match self {
+            Self::T0Tick => 0.01,
+            Self::T1Tick => 0.05,
+            Self::T2Tick => 0.15,
+            Self::ToolCall => 0.03,
+            Self::ContextAssembly => 0.02,
+            Self::GateCheck => 0.04,
+            Self::DreamCycle => -0.30,
+        }
+    }
+}
+
+/// Mutable cognitive energy pool owned by [`DaimonState`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CognitiveEnergy {
+    /// Current available energy.
+    pub current: f64,
+    /// Maximum energy capacity.
+    pub max: f64,
+    /// Accumulated fatigue.
+    pub fatigue: f64,
+    /// Most recent recovery cadence.
+    pub recovery_mode: RecoveryMode,
+    /// Affect-derived cost multiplier.
+    #[serde(default = "default_depletion_multiplier")]
+    pub depletion_multiplier: f64,
+    /// Fatigue contribution to the effective-cost formula.
+    #[serde(default = "default_fatigue_intensity_factor")]
+    pub fatigue_intensity_factor: f64,
+}
+
+const fn default_depletion_multiplier() -> f64 {
+    1.0
+}
+
+const fn default_fatigue_intensity_factor() -> f64 {
+    1.0
+}
+
+impl Default for CognitiveEnergy {
+    fn default() -> Self {
+        Self {
+            current: 1.0,
+            max: 1.0,
+            fatigue: 0.0,
+            recovery_mode: RecoveryMode::Gamma,
+            depletion_multiplier: 1.0,
+            fatigue_intensity_factor: 1.0,
+        }
+    }
+}
+
+impl CognitiveEnergy {
+    /// Deplete by a raw base cost, returning the effective charged cost.
+    pub fn deplete(&mut self, cost: f64) -> f64 {
+        if !cost.is_finite() {
+            tracing::warn!(cost, "ignored non-finite cognitive energy cost");
+            return 0.0;
+        }
+        if cost < 0.0 {
+            self.current = (self.current - cost).min(self.max);
+            return cost;
+        }
+        let effective =
+            cost * (1.0 + self.fatigue * self.fatigue_intensity_factor) * self.depletion_multiplier;
+        self.current -= effective;
+        self.fatigue = (self.fatigue * 0.95 + cost * 0.1).clamp(0.0, 1.0);
+        if self.current < 0.0 {
+            tracing::warn!(
+                effective_cost = effective,
+                "cognitive energy exhausted; entering conservation"
+            );
+            self.current = 0.0;
+        }
+        effective
+    }
+
+    /// Apply one canonical activity cost.
+    pub fn deplete_activity(&mut self, activity: EnergyActivity) -> f64 {
+        self.deplete(activity.base_cost())
+    }
+
+    /// Recover according to the selected cadence.
+    pub fn recover(&mut self, mode: RecoveryMode) {
+        self.recovery_mode = mode;
+        match mode {
+            RecoveryMode::Gamma => self.current = (self.current + 0.05).min(self.max),
+            RecoveryMode::Theta => self.current = (self.current + 0.15).min(self.max),
+            RecoveryMode::Delta => {
+                self.current = self.max;
+                self.fatigue = 0.0;
+            }
+        }
+    }
+}
+
 /// Single entry point for affect operations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DaimonState {
@@ -2003,6 +2316,18 @@ pub struct DaimonState {
     /// Behavioral state tracker with hysteresis and minimum dwell time (DAIM-02).
     #[serde(default)]
     pub behavioral_tracker: BehavioralStateTracker,
+    /// Budget-derived operational vitality phase.
+    #[serde(default)]
+    pub vitality_tracker: VitalityTracker,
+    /// Cognitive energy and fatigue budget.
+    #[serde(default)]
+    pub cognitive_energy: CognitiveEnergy,
+    /// Promoted emergent goals and their lifecycle state.
+    #[serde(default)]
+    pub goal_tree: GoalTree,
+    /// Behavioral patterns accumulating evidence for promotion.
+    #[serde(default)]
+    pub goal_seeds: Vec<GoalSeed>,
     /// Optional persistence path for best-effort autosaves.
     #[serde(skip, default)]
     persistence_path: Option<PathBuf>,
@@ -2030,8 +2355,111 @@ impl DaimonState {
             fatigue_detector: FatigueDetector::default(),
             borrowed_affect: Vec::new(),
             behavioral_tracker: BehavioralStateTracker::default(),
+            vitality_tracker: VitalityTracker::default(),
+            cognitive_energy: CognitiveEnergy::default(),
+            goal_tree: GoalTree::default(),
+            goal_seeds: Vec::new(),
             persistence_path: None,
         }
+    }
+
+    /// Current stable budget-derived behavioral phase.
+    #[must_use]
+    pub const fn behavioral_phase(&self) -> BehavioralPhase {
+        self.vitality_tracker.last_phase
+    }
+
+    /// Update remaining budget and enforce the resulting phase's goal capacity.
+    pub fn update_vitality(&mut self, remaining_budget: f64) -> Result<BehavioralPhase> {
+        let phase = self.vitality_tracker.update_remaining(remaining_budget)?;
+        self.enforce_goal_limit();
+        self.autosave();
+        Ok(phase)
+    }
+
+    /// Apply the bidirectional energy/affect coupling once.
+    pub fn apply_energy_affect_coupling(&mut self) {
+        if self.cognitive_energy.current < 0.3 {
+            self.state.pad.arousal *= 0.8;
+        }
+        self.cognitive_energy.depletion_multiplier = if self.state.pad.arousal.abs() > 0.7 {
+            1.5
+        } else {
+            1.0
+        };
+    }
+
+    /// Recover cognitive energy and apply Delta's affect-neutralizing effect.
+    pub fn recover_cognitive_energy(&mut self, mode: RecoveryMode) {
+        self.cognitive_energy.recover(mode);
+        if mode == RecoveryMode::Delta {
+            self.state.pad = PadVector::new(
+                self.state.pad.pleasure * 0.7,
+                self.state.pad.arousal * 0.7,
+                self.state.pad.dominance * 0.7,
+            );
+            self.state.refresh_behavioral_state();
+            self.state.updated_at = Utc::now();
+        }
+    }
+
+    /// Observe a rewarded behavioral pattern and promote it when sufficiently reinforced.
+    pub fn observe_pattern(&mut self, pattern: &str, reward: f64) {
+        let pattern = pattern.trim();
+        if pattern.is_empty() || !reward.is_finite() {
+            tracing::warn!(
+                reward,
+                pattern_empty = pattern.is_empty(),
+                "ignored invalid emergent-goal observation"
+            );
+            return;
+        }
+
+        if self.goal_tree.reinforce_pattern(pattern, reward) {
+            self.enforce_goal_limit();
+            self.autosave();
+            return;
+        }
+
+        let id = emergent_goal_id(pattern);
+        if let Some(seed) = self.goal_seeds.iter_mut().find(|seed| seed.id == id) {
+            seed.observe(reward);
+        } else {
+            let mut seed = GoalSeed::new(id, pattern);
+            seed.score = reward;
+            self.goal_seeds.push(seed);
+        }
+
+        let promotable = self
+            .goal_seeds
+            .iter()
+            .filter(|seed| self.goal_tree.promote_seed(seed))
+            .map(|seed| seed.id.clone())
+            .collect::<HashSet<_>>();
+        self.goal_seeds
+            .retain(|seed| !promotable.contains(&seed.id));
+        self.enforce_goal_limit();
+        self.autosave();
+    }
+
+    /// Apply one task outcome to every phase-permitted active emergent goal.
+    pub fn update_goals(&mut self, task_outcome: bool, reward: f64) {
+        let reward = if reward.is_finite() { reward } else { 0.0 };
+        self.enforce_goal_limit();
+        self.goal_tree.update_active_goals(task_outcome, reward);
+        self.enforce_goal_limit();
+        self.autosave();
+    }
+
+    /// Active goals in deterministic descending-priority order.
+    #[must_use]
+    pub fn active_goals(&self) -> Vec<&GoalNode> {
+        self.goal_tree.active_goals()
+    }
+
+    fn enforce_goal_limit(&mut self) {
+        self.goal_tree
+            .enforce_active_limit(self.behavioral_phase().max_active_goals());
     }
 
     /// Construct a state with a custom half-life.
@@ -2308,6 +2736,8 @@ impl AffectEngine for DaimonState {
             }
         }
 
+        self.apply_energy_affect_coupling();
+
         // DAIM-02: Use hysteresis tracker instead of memoryless classification.
         // The tracker enforces minimum dwell time and split entry/exit thresholds,
         // preventing rapid oscillation between behavioral states.
@@ -2376,6 +2806,15 @@ impl AffectEngine for DaimonState {
 
 fn default_half_life_hours() -> f64 {
     4.0
+}
+
+fn emergent_goal_id(pattern: &str) -> String {
+    let normalized = pattern
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>()
+        .join("-");
+    format!("emergent:{normalized}")
 }
 
 fn decay_factor(delta_hours: f64, half_life_hours: f64) -> f64 {
@@ -3759,5 +4198,322 @@ mod tests {
         // Just verify it didn't panic and state is still valid.
         assert!(state.query().confidence >= 0.0);
         assert!(state.query().confidence <= 1.0);
+    }
+
+    #[test]
+    fn vitality_tracker_applies_five_percent_hysteresis() {
+        let mut tracker = VitalityTracker::new(100.0).expect("valid budget");
+        assert_eq!(tracker.last_phase, BehavioralPhase::Thriving);
+
+        // Crossing the nominal 0.8 boundary is not enough to flap phases.
+        assert_eq!(
+            tracker.update_remaining(77.0).expect("valid remaining"),
+            BehavioralPhase::Thriving
+        );
+        assert_eq!(
+            tracker.update_remaining(74.0).expect("valid remaining"),
+            BehavioralPhase::Stable
+        );
+        // Moving back above 0.8 remains stable until the upper band is crossed.
+        assert_eq!(
+            tracker.update_remaining(84.0).expect("valid remaining"),
+            BehavioralPhase::Stable
+        );
+        assert_eq!(
+            tracker.update_remaining(86.0).expect("valid remaining"),
+            BehavioralPhase::Thriving
+        );
+    }
+
+    #[test]
+    fn behavioral_phase_stable_to_conservation_requires_crossing_lower_hysteresis_band() {
+        let mut tracker = VitalityTracker::new(100.0).expect("valid budget");
+        assert_eq!(
+            tracker.update_remaining(74.0).expect("valid remaining"),
+            BehavioralPhase::Stable
+        );
+
+        // Stable does not fall into Conservation at the nominal 0.50
+        // boundary, or even at the inclusive edge of the 0.05 band.
+        assert_eq!(
+            tracker.update_remaining(49.0).expect("valid remaining"),
+            BehavioralPhase::Stable
+        );
+        assert_eq!(
+            tracker.update_remaining(45.0).expect("valid remaining"),
+            BehavioralPhase::Stable
+        );
+        assert_eq!(
+            tracker.update_remaining(44.0).expect("valid remaining"),
+            BehavioralPhase::Conservation
+        );
+    }
+
+    #[test]
+    fn behavioral_phase_classifies_every_vitality_range() {
+        assert_eq!(
+            BehavioralPhase::from_vitality(0.85),
+            BehavioralPhase::Thriving
+        );
+        assert_eq!(
+            BehavioralPhase::from_vitality(0.60),
+            BehavioralPhase::Stable
+        );
+        assert_eq!(
+            BehavioralPhase::from_vitality(0.40),
+            BehavioralPhase::Conservation
+        );
+        assert_eq!(
+            BehavioralPhase::from_vitality(0.20),
+            BehavioralPhase::Declining
+        );
+        assert_eq!(
+            BehavioralPhase::from_vitality(0.05),
+            BehavioralPhase::Terminal
+        );
+    }
+
+    #[test]
+    fn behavioral_phase_exposes_operational_constraints() {
+        assert_eq!(BehavioralPhase::Conservation.max_efe_tier(), Some(1));
+        assert_eq!(BehavioralPhase::Declining.max_active_goals(), Some(1));
+        assert!(!BehavioralPhase::Declining.allows_exploration());
+        assert_eq!(BehavioralPhase::Terminal.max_efe_tier(), None);
+    }
+
+    #[test]
+    fn cognitive_energy_depletes_recovers_and_tracks_fatigue() {
+        let mut energy = CognitiveEnergy::default();
+        let charged = energy.deplete_activity(EnergyActivity::T2Tick);
+        assert!((charged - 0.15).abs() < f64::EPSILON);
+        assert!((energy.current - 0.85).abs() < f64::EPSILON);
+        assert!(energy.fatigue > 0.0);
+
+        let first_fatigue = energy.fatigue;
+        energy.deplete_activity(EnergyActivity::ToolCall);
+        assert!(energy.fatigue > first_fatigue);
+
+        let fatigue = energy.fatigue;
+        energy.recover(RecoveryMode::Gamma);
+        assert_eq!(energy.fatigue, fatigue);
+        energy.recover(RecoveryMode::Theta);
+        assert_eq!(energy.fatigue, fatigue);
+        energy.recover(RecoveryMode::Delta);
+        assert_eq!(energy.current, energy.max);
+        assert_eq!(energy.fatigue, 0.0);
+    }
+
+    #[test]
+    fn cognitive_energy_applies_every_activity_cost_and_recovery_mode() {
+        for (activity, expected_cost) in [
+            (EnergyActivity::T0Tick, 0.01),
+            (EnergyActivity::T1Tick, 0.05),
+            (EnergyActivity::T2Tick, 0.15),
+            (EnergyActivity::ToolCall, 0.03),
+            (EnergyActivity::ContextAssembly, 0.02),
+            (EnergyActivity::GateCheck, 0.04),
+        ] {
+            let mut energy = CognitiveEnergy::default();
+            let charged = energy.deplete_activity(activity);
+            assert!((charged - expected_cost).abs() < f64::EPSILON);
+            assert!((energy.current - (1.0 - expected_cost)).abs() < f64::EPSILON);
+        }
+
+        let mut dream = CognitiveEnergy {
+            current: 0.5,
+            fatigue: 0.25,
+            ..CognitiveEnergy::default()
+        };
+        let charged = dream.deplete_activity(EnergyActivity::DreamCycle);
+        assert!((charged - (-0.30)).abs() < f64::EPSILON);
+        assert!((dream.current - 0.8).abs() < f64::EPSILON);
+        assert_eq!(dream.fatigue, 0.25);
+
+        let mut gamma = CognitiveEnergy {
+            current: 0.4,
+            fatigue: 0.25,
+            ..CognitiveEnergy::default()
+        };
+        gamma.recover(RecoveryMode::Gamma);
+        assert!((gamma.current - 0.45).abs() < f64::EPSILON);
+        assert_eq!(gamma.fatigue, 0.25);
+
+        let mut theta = CognitiveEnergy {
+            current: 0.4,
+            fatigue: 0.25,
+            ..CognitiveEnergy::default()
+        };
+        theta.recover(RecoveryMode::Theta);
+        assert!((theta.current - 0.55).abs() < f64::EPSILON);
+        assert_eq!(theta.fatigue, 0.25);
+
+        let mut delta = CognitiveEnergy {
+            current: 0.4,
+            fatigue: 0.25,
+            ..CognitiveEnergy::default()
+        };
+        delta.recover(RecoveryMode::Delta);
+        assert_eq!(delta.current, delta.max);
+        assert_eq!(delta.fatigue, 0.0);
+    }
+
+    #[test]
+    fn energy_affect_coupling_modulates_both_directions() {
+        let mut state = DaimonState::new();
+        state.cognitive_energy.current = 0.2;
+        state.state.pad.arousal = 0.5;
+        state.apply_energy_affect_coupling();
+        assert!((state.state.pad.arousal - 0.4).abs() < f64::EPSILON);
+
+        state.cognitive_energy.current = 1.0;
+        state.state.pad.arousal = 0.8;
+        state.apply_energy_affect_coupling();
+        assert_eq!(state.cognitive_energy.depletion_multiplier, 1.5);
+
+        state.state.pad = PadVector::new(0.5, 0.8, -0.4);
+        state.cognitive_energy.fatigue = 0.7;
+        state.recover_cognitive_energy(RecoveryMode::Delta);
+        assert_eq!(state.cognitive_energy.fatigue, 0.0);
+        assert!((state.state.pad.pleasure - 0.35).abs() < f64::EPSILON);
+        assert!((state.state.pad.arousal - 0.56).abs() < 1e-12);
+        assert!((state.state.pad.dominance - -0.28).abs() < 1e-12);
+    }
+
+    #[test]
+    fn daimon_promotes_reinforced_patterns_into_goals() {
+        let mut state = DaimonState::new();
+        for _ in 0..3 {
+            state.observe_pattern("verify before completion", 2.0);
+        }
+
+        assert!(state.goal_seeds.is_empty());
+        assert_eq!(state.active_goals().len(), 1);
+        assert_eq!(
+            state.active_goals()[0].description,
+            "verify before completion"
+        );
+    }
+
+    #[test]
+    fn daimon_goal_outcomes_complete_and_prune() {
+        let mut successful = DaimonState::new();
+        for _ in 0..3 {
+            successful.observe_pattern("finish useful work", 2.0);
+        }
+        for _ in 0..3 {
+            successful.update_goals(true, 1.0);
+        }
+        let completed = successful.goal_tree.goals().next().expect("promoted goal");
+        assert_eq!(completed.success_count, 3);
+        assert_eq!(completed.status, GoalStatus::Completed);
+
+        let mut failing = DaimonState::new();
+        for _ in 0..3 {
+            failing.observe_pattern("avoid repeated failure", 2.0);
+        }
+        for _ in 0..3 {
+            failing.update_goals(false, -1.0);
+        }
+        let pruned = failing.goal_tree.goals().next().expect("promoted goal");
+        assert_eq!(pruned.failure_count, 3);
+        assert_eq!(pruned.status, GoalStatus::Pruned);
+    }
+
+    #[test]
+    fn daimon_goal_count_tracks_behavioral_phase_without_pruning() {
+        let mut state = DaimonState::new();
+        assert_eq!(
+            state.update_vitality(0.60).expect("valid vitality"),
+            BehavioralPhase::Stable
+        );
+        for index in 0..6 {
+            let pattern = format!("pattern-{index}");
+            let reward = 2.0 + f64::from(index) * 0.1;
+            for _ in 0..3 {
+                state.observe_pattern(&pattern, reward);
+            }
+        }
+        assert_eq!(state.active_goals().len(), 5);
+        assert_eq!(
+            state
+                .goal_tree
+                .goals()
+                .filter(|goal| goal.status == GoalStatus::Suspended)
+                .count(),
+            1
+        );
+        assert_eq!(
+            state
+                .goal_tree
+                .goals()
+                .find(|goal| goal.description == "pattern-0")
+                .map(|goal| goal.status),
+            Some(GoalStatus::Suspended)
+        );
+
+        assert_eq!(
+            state.update_vitality(0.40).expect("valid vitality"),
+            BehavioralPhase::Conservation
+        );
+        assert_eq!(state.active_goals().len(), 3);
+
+        assert_eq!(
+            state.update_vitality(0.20).expect("valid vitality"),
+            BehavioralPhase::Declining
+        );
+        assert_eq!(state.active_goals().len(), 1);
+
+        assert_eq!(
+            state.update_vitality(0.04).expect("valid vitality"),
+            BehavioralPhase::Terminal
+        );
+        assert!(state.active_goals().is_empty());
+        assert_eq!(
+            state
+                .goal_tree
+                .goals()
+                .filter(|goal| goal.status == GoalStatus::Suspended)
+                .count(),
+            6
+        );
+
+        assert_eq!(
+            state.update_vitality(1.0).expect("valid vitality"),
+            BehavioralPhase::Thriving
+        );
+        assert_eq!(state.active_goals().len(), 6);
+        assert!(
+            state
+                .goal_tree
+                .goals()
+                .all(|goal| goal.status != GoalStatus::Pruned)
+        );
+    }
+
+    #[test]
+    fn prospect_value_applies_curvature_and_loss_aversion() {
+        let gain = prospect_value(100.0);
+        let loss = prospect_value(-100.0);
+        assert!((gain - 100_f64.powf(0.88)).abs() < 1e-12);
+        assert!((loss + 2.25 * gain).abs() < 1e-12);
+        assert_eq!(prospect_value(0.0), 0.0);
+    }
+
+    #[test]
+    fn affect_size_multiplier_is_neutral_and_bounded() {
+        assert_eq!(affect_size_multiplier(0.0, 0.0, 0.0), 1.0);
+        for pleasure in [-10.0, -1.0, 0.0, 1.0, 10.0, f64::NAN] {
+            for arousal in [-10.0, -1.0, 0.0, 1.0, 10.0, f64::INFINITY] {
+                let result = affect_size_multiplier(pleasure, arousal, f64::NAN);
+                assert!(result.is_finite());
+                assert!((0.25..=1.5).contains(&result));
+            }
+        }
+    }
+
+    #[test]
+    fn panic_affect_reduces_position_below_half_size() {
+        assert!(affect_size_multiplier(-0.8, 0.9, 0.0) < 0.5);
+        assert!(affect_size_multiplier(0.8, -0.9, 0.0) > 1.0);
     }
 }

@@ -31,13 +31,19 @@ pub mod context_mesh;
 pub mod context_provider;
 pub mod conventions;
 pub mod cost_attribution;
+pub mod cross_cut;
+pub mod daimon_functor;
+pub mod dreams_functor;
 pub mod enrichment;
 pub mod foraging;
 pub mod gate_feedback;
+pub mod memory_functor;
+pub mod natural_transforms;
 pub mod prompt;
 pub mod prompt_assembly_service;
 pub mod prompt_hints;
 pub mod role_prompts;
+pub mod safety_functor;
 pub mod scorer;
 pub mod strategy;
 pub mod symbol_resolver;
@@ -51,9 +57,11 @@ pub use attention::{
     ModelAttentionCurves, PositionAttentionModel, dynamic_placement, placement_adjusted_score,
 };
 pub use auction::{
-    AffectModulation, AuctionDiagnostics, FairnessConfig, LearningBidder, SectionAllocation,
-    SectionCostStats, SubsystemId, VcgAllocation, VcgBid, detect_bid_correlation,
-    is_pareto_optimal, vcg_allocate,
+    AffectModulation, ArbitrationMechanism, AuctionDiagnostics, CrossCutArbitration,
+    CrossCutArbitrationResult, CrossCutArbitrator, CrossCutDecisionKind, CrossCutId,
+    CrossCutRecommendation, FairnessConfig, LearningBidder, SectionAllocation, SectionCostStats,
+    SubsystemId, VcgAllocation, VcgBid, detect_bid_correlation, is_pareto_optimal,
+    resolve_by_priority, resolve_by_vcg, vcg_allocate,
 };
 pub use budget::{AdjustedBudget, Complexity, adjusted_adaptive_budget_for, adjusted_budget_for};
 pub use budget_predictor::{BudgetPredictor, SectionInfluence, TaskFeatures};
@@ -74,16 +82,25 @@ pub use context_provider::{
 };
 pub use conventions::{ProjectConventions, detect_conventions};
 pub use cost_attribution::{CostAttribution, SectionCost};
+pub use cross_cut::{CrossCutContext, CrossCutFunctor, CrossCutResult, EnrichedCell, LoopStep};
+pub use daimon_functor::{DaimonFunctor, PROSPECT_ALPHA, PROSPECT_LAMBDA, prospect_value};
+pub use dreams_functor::{DreamConsumptionReport, DreamOutputConsumer, DreamsFunctor};
 pub use error::ComposeError;
 pub use foraging::{
     MultiPatchForager, RetrievalSignal, SourceForagingProfile, estimate_context_sufficiency,
     should_stop_searching, social_foraging_boost,
 };
 pub use gate_feedback::{GateFeedback, MAX_GATE_FEEDBACK_LINES};
+pub use memory_functor::MemoryFunctor;
+pub use natural_transforms::{
+    DaimonAssessment, DreamAffectInput, DreamConsolidationInput, GateFailureCascade, MemoryOutcome,
+    NaturalTransformation, eta_DM, eta_DN, eta_MD, eta_MN, eta_ND, eta_NM,
+    run_gate_failure_cascade,
+};
 pub use prompt::{
-    AttentionBidder, COMPOSITION_MANIFEST_TAG, CacheLayer, CompositionManifest, ContextStrategy,
-    ExcludedSectionMeta, IncludedSectionMeta, Placement, PromptBuild, PromptComposer,
-    PromptSection, SectionPriority, estimate_tokens,
+    AttentionBidder, COMPOSITION_MANIFEST_TAG, CacheLayer, CandidateScoreResult,
+    CompositionManifest, ContextStrategy, ExcludedSectionMeta, IncludedSectionMeta, Placement,
+    PromptBuild, PromptComposer, PromptSection, ScoredSignalMeta, SectionPriority, estimate_tokens,
 };
 pub use prompt_assembly_service::PromptAssemblyService;
 pub use prompt_hints::prompt_hints_for;
@@ -94,6 +111,7 @@ pub use role_prompts::{
     manifest_backed_core_roles, role_identity_for, role_prompt_source_for,
     tool_allowlist_instructions,
 };
+pub use safety_functor::SafetyFunctor;
 pub use scorer::{ActiveInferenceScorer, GoalDirectedHeuristicScorer, SectionScorer};
 pub use strategy::{CompositionStrategy, DEFAULT_VCG_WARMUP_OBSERVATIONS};
 pub use system_prompt_builder::SystemPromptBuilder;

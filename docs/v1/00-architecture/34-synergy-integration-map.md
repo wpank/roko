@@ -1,5 +1,8 @@
 # Synergy & Integration Map
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** This chapter is the cross-reference map for the architecture stack. The prior architecture docs describe the primitives one by one; this doc shows how they reinforce each other. The claim is simple: Roko's moat is not any single feature, but the interaction density of the whole system. A competitor can copy one node or even a pair; reproducing the weave means reproducing the same architectural choices in the same order. See also [tmp/refinements/31-synergy-integration-map.md](../../tmp/refinements/31-synergy-integration-map.md) and [Naming and Glossary](./01-naming-and-glossary.md).
 
 > **Implementation**: Reference

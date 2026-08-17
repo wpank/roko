@@ -1,5 +1,8 @@
 # Health Monitors
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Four system-level checks that produce a HealthStatus snapshot.
 > Not individual task health — system health. Is the infrastructure
 > functioning? Are agents alive? Is coverage trending down?

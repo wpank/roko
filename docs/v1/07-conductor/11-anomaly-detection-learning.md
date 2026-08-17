@@ -1,5 +1,8 @@
 # Anomaly Detection and Learning Integration
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The Conductor does not exist in isolation. It feeds the learning
 > system and is fed by it. Interventions produce data. Data produces
 > better interventions.

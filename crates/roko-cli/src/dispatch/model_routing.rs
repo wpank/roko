@@ -361,6 +361,7 @@ mod tests {
             force_backend: None,
             budget_remaining_usd: 5.0,
             attempt: 0,
+            prompt_experiment: None,
             gate_feedback: None,
             routing_context: None,
             routing_bias: None,

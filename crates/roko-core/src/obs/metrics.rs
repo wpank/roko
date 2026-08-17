@@ -280,12 +280,12 @@ impl MetricRegistry {
         let mut families = self.inner.write();
         let family = get_or_insert_family(&mut families, name, help, MetricKind::Counter);
         for entry in &family.entries {
-            if entry.labels == labels {
-                if let Variant::Counter(c) = &entry.variant {
-                    let handle = c.clone();
-                    drop(families);
-                    return handle;
-                }
+            if entry.labels == labels
+                && let Variant::Counter(c) = &entry.variant
+            {
+                let handle = c.clone();
+                drop(families);
+                return handle;
             }
         }
         let c = Counter::new();
@@ -303,12 +303,12 @@ impl MetricRegistry {
         let mut families = self.inner.write();
         let family = get_or_insert_family(&mut families, name, help, MetricKind::Gauge);
         for entry in &family.entries {
-            if entry.labels == labels {
-                if let Variant::Gauge(g) = &entry.variant {
-                    let handle = g.clone();
-                    drop(families);
-                    return handle;
-                }
+            if entry.labels == labels
+                && let Variant::Gauge(g) = &entry.variant
+            {
+                let handle = g.clone();
+                drop(families);
+                return handle;
             }
         }
         let g = Gauge::new();
@@ -335,12 +335,12 @@ impl MetricRegistry {
         let mut families = self.inner.write();
         let family = get_or_insert_family(&mut families, name, help, MetricKind::Histogram);
         for entry in &family.entries {
-            if entry.labels == labels {
-                if let Variant::Histogram(h) = &entry.variant {
-                    let handle = Arc::clone(h);
-                    drop(families);
-                    return handle;
-                }
+            if entry.labels == labels
+                && let Variant::Histogram(h) = &entry.variant
+            {
+                let handle = Arc::clone(h);
+                drop(families);
+                return handle;
             }
         }
         let h = Arc::new(Histogram::new(buckets));
@@ -360,11 +360,11 @@ impl MetricRegistry {
         for family in families.iter() {
             if family.name == name && family.kind == MetricKind::Counter {
                 for entry in &family.entries {
-                    if &entry.labels == labels {
-                        if let Variant::Counter(c) = &entry.variant {
-                            out = Some(c.clone());
-                            break;
-                        }
+                    if &entry.labels == labels
+                        && let Variant::Counter(c) = &entry.variant
+                    {
+                        out = Some(c.clone());
+                        break;
                     }
                 }
             }
@@ -381,11 +381,11 @@ impl MetricRegistry {
         for family in families.iter() {
             if family.name == name && family.kind == MetricKind::Gauge {
                 for entry in &family.entries {
-                    if &entry.labels == labels {
-                        if let Variant::Gauge(g) = &entry.variant {
-                            out = Some(g.clone());
-                            break;
-                        }
+                    if &entry.labels == labels
+                        && let Variant::Gauge(g) = &entry.variant
+                    {
+                        out = Some(g.clone());
+                        break;
                     }
                 }
             }
@@ -402,11 +402,11 @@ impl MetricRegistry {
         for family in families.iter() {
             if family.name == name && family.kind == MetricKind::Histogram {
                 for entry in &family.entries {
-                    if &entry.labels == labels {
-                        if let Variant::Histogram(h) = &entry.variant {
-                            out = Some(Arc::clone(h));
-                            break;
-                        }
+                    if &entry.labels == labels
+                        && let Variant::Histogram(h) = &entry.variant
+                    {
+                        out = Some(Arc::clone(h));
+                        break;
                     }
                 }
             }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useLiveApi } from '../../hooks/useLiveApi';
+import { useDataApi } from '../../hooks/useDataApi';
 import { DOMAIN_COLORS, domainColor } from '../../lib/palette';
 import { useServerEventSubscription } from '../../hooks/useEventStream';
 import { useDebouncedRefetch } from '../../hooks/useDebouncedRefetch';
@@ -27,7 +27,7 @@ interface KnowledgeEdge {
 /* ── Component ───────────────────────────────────────────── */
 
 export default function KnowledgeGraph() {
-  const { get } = useLiveApi();
+  const { get } = useDataApi();
   const [entries, setEntries] = useState<KnowledgeEntry[]>([]);
   const [edges, setEdges] = useState<KnowledgeEdge[]>([]);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -61,7 +61,7 @@ export default function KnowledgeGraph() {
   // SSE-triggered refetch
   const debouncedRefetch = useDebouncedRefetch(fetchAll, 2000);
   useServerEventSubscription(
-    ['knowledge_updated', 'knowledge_created', 'knowledge_deleted'],
+    ['knowledge_entries_updated'],
     debouncedRefetch,
   );
 

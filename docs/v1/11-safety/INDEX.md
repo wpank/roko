@@ -1,5 +1,8 @@
 # Safety & Provenance
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** Safety in Roko is a single spine, not a grab-bag of guards. The safety chapter ties together trait-level authorization, human-in-the-loop checkpoints, per-tier plugin sandboxes, taint propagation, attestation, chain-of-custody, network egress control, secret handling, and multi-tenant isolation so an operator can answer: who did what, with what authorization, on what inputs, and with what consequence?
 >
 > **Alignment:** This chapter reflects [REF32](../../tmp/refinements/32-safety-sandbox-provenance.md). For shared vocabulary, see [docs/00-architecture/01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md).

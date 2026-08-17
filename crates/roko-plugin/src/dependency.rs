@@ -120,13 +120,13 @@ pub fn resolve_plugin_dependencies(
                 )));
             };
 
-            if let Some(ref constraint) = dep.version {
-                if !version_satisfies(&dep_manifest.plugin.version, constraint) {
-                    return Err(RokoError::invalid(format!(
-                        "plugin '{}' requires '{}' >= {}, but found {}",
-                        manifest.plugin.name, dep.name, constraint, dep_manifest.plugin.version,
-                    )));
-                }
+            if let Some(ref constraint) = dep.version
+                && !version_satisfies(&dep_manifest.plugin.version, constraint)
+            {
+                return Err(RokoError::invalid(format!(
+                    "plugin '{}' requires '{}' >= {}, but found {}",
+                    manifest.plugin.name, dep.name, constraint, dep_manifest.plugin.version,
+                )));
             }
         }
     }
@@ -260,13 +260,15 @@ mod tests {
         deps: Vec<(&str, Option<&str>)>,
     ) -> PluginManifestFile {
         PluginManifestFile {
+            tier: None,
+            capabilities: None,
             plugin: PluginMeta {
                 name: name.to_string(),
                 version: version.to_string(),
                 description: None,
                 author: None,
                 license: None,
-                tier: Default::default(),
+                tier: None,
                 enabled: true,
             },
             prompts: Vec::new(),

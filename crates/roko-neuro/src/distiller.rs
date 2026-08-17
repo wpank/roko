@@ -254,6 +254,8 @@ impl DistillationCandidate {
             id: derive_knowledge_id(self.kind, content, &self.source_episodes, &self.tags),
             kind: self.kind,
             source: Some(DISTILLER_SOURCE.to_string()),
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: content.to_string(),
             confidence,
             confidence_weight: confidence,
@@ -274,6 +276,9 @@ impl DistillationCandidate {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         })
     }

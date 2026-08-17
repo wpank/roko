@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useTerminal } from '../hooks/useTerminal';
-import { useWorkspace } from '../hooks/useWorkspace';
+import { useWorkspaceActions } from '../hooks/useWorkspaceActions';
 import { enterWorkspace } from '../lib/terminal-session';
 import ComponentErrorBoundary from '../components/design/ComponentErrorBoundary';
 import '../components/Terminal/TerminalPane.css';
@@ -147,7 +147,7 @@ export default function Terminal() {
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [activeTabIdx, setActiveTabIdx] = useState(0);
   const [initState, setInitState] = useState<'idle' | 'spinning' | 'done'>('idle');
-  const { ensureWorkspace, serverWorkdir } = useWorkspace();
+  const { ensureWorkspace, serverWorkdir } = useWorkspaceActions();
   const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const tabBarRef = useRef<HTMLDivElement>(null);
 

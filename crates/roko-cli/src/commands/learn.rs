@@ -350,18 +350,11 @@ pub(crate) async fn print_learn_efficiency(workdir: &std::path::Path) {
 
 pub(crate) async fn print_learn_episodes(workdir: &std::path::Path) {
     let exact_path = learn_episodes_path(workdir);
-    let legacy_path = learn_legacy_episodes_path(workdir);
+    let path = roko_learn::runtime_feedback::resolve_project_episode_path(workdir);
     print_checked_path(&exact_path);
-    if legacy_path != exact_path {
-        println!("  legacy path: {}", legacy_path.display());
+    if path != exact_path && path.exists() {
+        println!("  legacy fallback: {}", path.display());
     }
-    let path = if exact_path.exists() {
-        exact_path
-    } else if legacy_path.exists() {
-        legacy_path
-    } else {
-        exact_path
-    };
     if !path.exists() {
         print_no_data(&path);
         return;
@@ -476,11 +469,6 @@ fn learn_efficiency_path(workdir: &std::path::Path) -> std::path::PathBuf {
 
 fn learn_episodes_path(workdir: &std::path::Path) -> std::path::PathBuf {
     workdir.join(".roko").join("episodes.jsonl")
-}
-
-/// Legacy episode log path retained for older worktrees and fixtures.
-fn learn_legacy_episodes_path(workdir: &std::path::Path) -> std::path::PathBuf {
-    learn_root(workdir).join("episodes.jsonl")
 }
 
 fn learn_knowledge_path(workdir: &std::path::Path) -> std::path::PathBuf {

@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::orchestrator::{ExecutorSnapshot, OrchestratorSnapshot, PlanRevisionRequest};
@@ -121,6 +121,12 @@ pub struct RunStateSnapshot {
     /// Per-plan cost accumulation.
     #[serde(default)]
     pub plan_costs: HashMap<String, f64>,
+    /// Per-task usage accumulation, including failed/retried agent attempts.
+    #[serde(default)]
+    pub task_usage: HashMap<String, super::state::TaskUsage>,
+    /// Exact attempts already attributed to `task_usage`, preventing replay duplication.
+    #[serde(default)]
+    pub accounted_usage_attempts: Vec<String>,
     /// Completed task IDs per plan — the durable record used to skip
     /// already-finished work on resume.
     #[serde(default)]
@@ -129,6 +135,10 @@ pub struct RunStateSnapshot {
     /// blocked/skipped state on resume (SH03-T01).
     #[serde(default)]
     pub failed_tasks: HashMap<String, Vec<String>>,
+    /// Explicit skipped task outcomes that are not derivable from failed-task
+    /// dependency propagation.
+    #[serde(default)]
+    pub skipped_tasks: HashMap<String, HashMap<String, super::task_dag::SkippedReason>>,
     /// Durable lifecycle projection, including in-flight cancellation state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<RunnerLifecycleProjection>,
@@ -406,17 +416,14 @@ pub fn append_jsonl(path: &Path, value: &impl Serialize) -> Result<()> {
     let mut line = serde_json::to_string(value).context("serializing JSONL value")?;
     line.push('\n');
 
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("opening {}", path.display()))?;
-
-    file.write_all(line.as_bytes())
+    // Use the canonical E47 append/rotation boundary. This coordinates with
+    // StateHub compaction and lifecycle rotation through the sibling advisory
+    // lock, so an event cannot be lost during rename-and-recreate. Runtime
+    // config overrides are also applied by the plan lifecycle; this per-append
+    // safety valve uses the one canonical ResourcesConfig default.
+    let max_mb = roko_core::config::ResourcesConfig::default().log_rotation_max_mb;
+    roko_fs::log_rotation::append_jsonl_line_sync(path, line.as_bytes(), max_mb)
         .with_context(|| format!("appending to {}", path.display()))?;
-    file.flush()?;
-    file.sync_data()
-        .with_context(|| format!("syncing {}", path.display()))?;
     Ok(())
 }
 
@@ -459,7 +466,7 @@ pub fn save_run_state(paths: &PersistPaths, snapshot: &RunStateSnapshot) -> Resu
 /// or filesystem errors so callers can distinguish "fresh run" from
 /// "broken state".
 pub fn load_run_state(paths: &PersistPaths) -> Result<Option<RunStateSnapshot>> {
-    match fs::read_to_string(&paths.run_state_json) {
+    match read_bounded_string(&paths.run_state_json) {
         Ok(content) => serde_json::from_str(&content)
             .map(Some)
             .with_context(|| format!("parsing {}", paths.run_state_json.display())),
@@ -468,9 +475,50 @@ pub fn load_run_state(paths: &PersistPaths) -> Result<Option<RunStateSnapshot>> 
     }
 }
 
+pub(crate) fn read_bounded_string(path: &Path) -> std::io::Result<String> {
+    let file = fs::File::open(path)?;
+    let metadata_len = file.metadata()?.len();
+    if metadata_len > roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{} is {metadata_len} bytes; maximum is {}",
+                path.display(),
+                roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES
+            ),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(metadata_len as usize);
+    file.take(roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{} exceeded maximum {} while reading",
+                path.display(),
+                roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES
+            ),
+        ));
+    }
+    String::from_utf8(bytes).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} is not UTF-8: {error}", path.display()),
+        )
+    })
+}
+
 /// Serialize and atomically write a [`StateSnapshot`] to disk.
 pub fn save_state_snapshot(paths: &PersistPaths, snapshot: &StateSnapshot) -> Result<()> {
     let json = serde_json::to_vec_pretty(snapshot).context("serializing state snapshot")?;
+    if json.len() as u64 > roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES {
+        anyhow::bail!(
+            "state snapshot is {} bytes; maximum is {}",
+            json.len(),
+            roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES
+        );
+    }
     atomic_write(&paths.state_snapshot_json, &json)
 }
 
@@ -479,13 +527,37 @@ pub fn save_state_snapshot(paths: &PersistPaths, snapshot: &StateSnapshot) -> Re
 /// Returns `Err` if the file exists but is corrupt or the checksum fails.
 pub fn load_state_snapshot(paths: &PersistPaths) -> Result<Option<StateSnapshot>> {
     let path = &paths.state_snapshot_json;
-    if !path.exists() {
-        return Ok(None);
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("opening {}", path.display())),
+    };
+    let metadata_len = file
+        .metadata()
+        .with_context(|| format!("stat {}", path.display()))?
+        .len();
+    if metadata_len > roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES {
+        anyhow::bail!(
+            "state snapshot {} is {metadata_len} bytes; maximum is {}",
+            path.display(),
+            roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES
+        );
     }
-    let json = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut json = Vec::with_capacity(metadata_len as usize);
+    file.take(roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES + 1)
+        .read_to_end(&mut json)
+        .with_context(|| format!("reading {}", path.display()))?;
+    if json.len() as u64 > roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES {
+        anyhow::bail!(
+            "state snapshot {} exceeded maximum {} while reading",
+            path.display(),
+            roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES
+        );
+    }
     let snapshot: StateSnapshot =
-        serde_json::from_str(&json).with_context(|| format!("parsing {}", path.display()))?;
-    snapshot.verify().map_err(|e| anyhow::anyhow!("{}", e))?;
+        serde_json::from_slice(&json).with_context(|| format!("parsing {}", path.display()))?;
+    roko_runtime::validate_state_snapshot(path, snapshot.clone())
+        .with_context(|| format!("validate authoritative snapshot {}", path.display()))?;
     Ok(Some(snapshot))
 }
 
@@ -932,29 +1004,34 @@ mod tests {
     /// re-read.
     #[test]
     fn incremental_gate_threshold_flush() {
-        use super::super::event_loop::GATE_THRESHOLD_FLUSH_INTERVAL;
-
         let tmp = tempfile::tempdir().unwrap();
         let paths = PersistPaths::from_workdir(tmp.path()).unwrap();
+        let config = roko_core::config::RokoConfig::from_toml(
+            "[learning]\ngate_threshold_flush_interval = 3\n",
+        )
+        .expect("parse custom learning cadence");
+        let flush_interval = config.learning.effective_gate_threshold_flush_interval();
+        assert_eq!(flush_interval, 3);
 
         let mut thresholds = GateThresholds::default();
         let mut obs_since_flush: u64 = 0;
 
         // Accumulate observations below the flush interval -- no file yet.
-        for i in 0..(GATE_THRESHOLD_FLUSH_INTERVAL - 1) {
+        for i in 0..(flush_interval - 1) {
             thresholds.observe(1, i % 2 == 0);
             obs_since_flush += 1;
             super::super::event_loop::maybe_flush_gate_thresholds(
                 &thresholds,
                 &mut obs_since_flush,
                 &paths,
+                flush_interval,
             );
         }
         assert!(
             !paths.gate_thresholds_json.exists(),
             "file must not exist before flush interval reached"
         );
-        assert_eq!(obs_since_flush, GATE_THRESHOLD_FLUSH_INTERVAL - 1);
+        assert_eq!(obs_since_flush, flush_interval - 1);
 
         // One more observation crosses the interval -- file must appear.
         thresholds.observe(1, true);
@@ -963,6 +1040,7 @@ mod tests {
             &thresholds,
             &mut obs_since_flush,
             &paths,
+            flush_interval,
         );
         assert!(
             paths.gate_thresholds_json.exists(),
@@ -976,7 +1054,7 @@ mod tests {
 
         // Another full interval of observations produces a second flush
         // with updated data.
-        for _ in 0..GATE_THRESHOLD_FLUSH_INTERVAL {
+        for _ in 0..flush_interval {
             thresholds.observe(2, false);
             obs_since_flush += 1;
         }
@@ -984,6 +1062,7 @@ mod tests {
             &thresholds,
             &mut obs_since_flush,
             &paths,
+            flush_interval,
         );
         let reloaded = GateThresholds::load(&paths.gate_thresholds_json).unwrap();
         assert_eq!(reloaded, thresholds, "second flush must write updated data");

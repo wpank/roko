@@ -1,5 +1,8 @@
 # Current Status and Port Allocation
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > This document tracks the implementation status of all deployment features described in the
 > 19-deployment section, the port allocation table for all Roko services, and the Tier 3H
 > roadmap for deployment-related work items.

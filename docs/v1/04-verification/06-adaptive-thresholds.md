@@ -1,5 +1,8 @@
 # 06 — Adaptive Gate Thresholds
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L3 Harness — Verification
 > **Crate**: `roko-gate` (`crates/roko-gate/src/adaptive_threshold.rs`)
 > **Status**: Implemented (215 lines), persists to `.roko/learn/gate-thresholds.json`

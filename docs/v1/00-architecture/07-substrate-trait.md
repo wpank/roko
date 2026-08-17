@@ -1,5 +1,8 @@
 # The Substrate Trait
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** The Substrate trait is the storage fabric and kernel primitive of Roko's
 > runtime. It persists, retrieves, queries, and prunes durable Engrams at L0, and it also
 > exposes native HDC similarity queries over `HdcVector` fingerprints. It is one half of

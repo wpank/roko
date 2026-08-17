@@ -1,5 +1,8 @@
 # 13 — Current Status and Gaps
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Layer 2 Scaffold — Synapse Architecture
 > Status: Comprehensive status report as of 2026-04-11
 > Canonical source: `crates/roko-compose/src/`

@@ -1,5 +1,8 @@
 # Adversarial Signal Robustness
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Every domain has adversaries who manipulate signals. MEV searchers manipulate prices. Attackers manipulate supply chains. p-hackers manipulate statistics. The adversarial robustness subsystem defends predictions through HDC prototype matching, robust statistics, and red-team dreaming.
 
 

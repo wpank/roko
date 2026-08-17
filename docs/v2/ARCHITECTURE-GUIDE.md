@@ -11,7 +11,7 @@ anything else.
 
 1. [What is Roko?](#1-what-is-roko)
 2. [Core Mental Model: 1 Noun + 9 Operations](#2-core-mental-model-1-noun--9-operations)
-3. [The Universal Loop](#3-the-universal-loop)
+3. [Runtime Workflows and the Signal-Selection Helper](#3-runtime-workflows-and-the-signal-selection-helper)
 4. [Crate Map](#4-crate-map)
 5. [Protocol Traits (Core Six)](#5-protocol-traits-core-six)
 6. [Foundation Service Traits](#6-foundation-service-traits)
@@ -47,7 +47,7 @@ validate the results, learn from failures, and iterate — autonomously, in a
 loop. The goal is a system sophisticated enough to develop itself.
 
 Roko is not a chat wrapper or a thin LLM client. It is a full orchestration
-runtime: 18 crates, a typed event bus, a multi-stage gate pipeline, a
+runtime: 35 workspace members, a typed event bus, a multi-stage gate pipeline, a
 self-improving model router, a durable knowledge store, and an affect engine
 that adjusts agent behavior based on recent history. Every component exists
 because the self-hosting loop needed it.
@@ -64,27 +64,25 @@ to that question.
 The entire design reduces to one data type and nine operations:
 
 ```
-Engram            -- the universal datum: addressable, decaying, scored, traced
+Signal            -- the universal datum: addressable, decaying, scored, traced
+                     (Rust struct is `Engram`; `type Signal = Engram` is the preferred alias)
 
-  Store           -- persist and retrieve Engrams (FileSubstrate, HdcSubstrate, ChainSubstrate)
+  Store           -- persist and retrieve Signals (FileSubstrate, HdcSubstrate, ChainSubstrate)
   Score           -- rate along multi-dimensional axes (relevance, recency, reputation)
   Verify          -- check against ground truth (compile, test, clippy, LLM-judge)
   Route           -- select one candidate from many (CascadeRouter, LinUCB, StaticRouter)
   Compose         -- combine under budget (PromptComposer, ContextAssembler)
   React           -- watch streams and emit interventions (Conductor watchers, Policy)
   Bus             -- publish/subscribe transport for ephemeral Pulses
-  ColdStore       -- archival store for aged-out Engrams
+  ColdStore       -- archival store for aged-out Signals
   Observe/Connect/Trigger  -- peripheral protocol traits (Cell-based extensions)
 ```
 
-### What is an Engram?
+### What is a Signal?
 
-Think of an `Engram` like a Git commit for a piece of knowledge or an agent
-output: it is content-addressed (its identity is a BLAKE3 hash of what it
-contains), immutable once created, and it carries metadata about where it came
-from and when.
+Signal is the preferred name in Roko (the Rust struct is `Engram`; `type Signal = Engram` is the alias). Think of a Signal like a Git commit for a piece of knowledge or an agent output: it is content-addressed (its identity is a BLAKE3 hash of what it contains), immutable once created, and it carries metadata about where it came from and when.
 
-Unlike a Git commit, an Engram also has:
+Unlike a Git commit, a Signal also has:
 - A **decay** curve (knowledge has a half-life; a `Warning` decays in hours, an
   `Insight` in weeks)
 - A **score** (multi-dimensional: confidence, novelty, utility, reputation)
@@ -93,31 +91,31 @@ Unlike a Git commit, an Engram also has:
 - An **HDC fingerprint** (a 10,240-bit vector for semantic similarity lookup)
 
 Everything in Roko — every agent output, every gate verdict, every piece of
-knowledge, every task definition — is an Engram. This uniformity is what makes
+knowledge, every task definition — is a Signal. This uniformity is what makes
 the universal loop possible.
 
 <details>
-<summary>Full Engram struct (roko-core/src/engram.rs)</summary>
+<summary>Full Signal struct (roko-core/src/engram.rs)</summary>
 
 ```rust
-pub struct Engram {
+pub struct Engram {  // Signal is the preferred name; `type Signal = Engram` alias exists
     /// Content-addressed identity (BLAKE3 hash of kind+body+author+tags).
     pub id: ContentHash,
     /// HDC fingerprint for semantic similarity lookup.
     pub fingerprint: Option<HdcFingerprint>,
-    /// What kind of engram this is (Task, GateVerdict, Episode, Prompt, ...).
+    /// What kind of signal this is (Task, GateVerdict, Episode, Prompt, ...).
     pub kind: Kind,
     /// The payload (Text, Json, Binary, Empty).
     pub body: Body,
     /// Unix milliseconds when first emitted.
     pub created_at_ms: i64,
-    /// How this engram's weight decays over time (None, HalfLife, Exponential).
+    /// How this signal's weight decays over time (None, HalfLife, Exponential).
     pub decay: Decay,
     /// Producer attribution and trust.
     pub provenance: Provenance,
     /// Quality score at emission time (confidence, novelty, utility, reputation).
     pub score: Score,
-    /// ContentHashes of parent Engrams (forms a DAG for audit and C-factor metrics).
+    /// ContentHashes of parent Signals (forms a DAG for audit and C-factor metrics).
     pub lineage: Vec<ContentHash>,
     /// Arbitrary string metadata (BTreeMap for stable hashing).
     pub tags: BTreeMap<String, String>,
@@ -132,7 +130,7 @@ pub struct Engram {
 
 Content hash covers: `kind + body + author + taint + lineage + tags`. It does
 NOT cover score, decay, timestamp, attestation, or emotional metadata — those
-can change without changing what the engram fundamentally is.
+can change without changing what the signal fundamentally is.
 
 ```rust
 pub fn content_hash(&self) -> ContentHash {
@@ -153,7 +151,7 @@ pub fn weight_at(&self, now_ms: i64) -> f32 {
 **Construction**
 
 ```rust
-let engram = Engram::builder(Kind::Task)
+let signal = Signal::builder(Kind::Task)
     .body(Body::text("implement login"))
     .tag("priority", "high")
     .decay(Decay::HalfLife { half_life_ms: 86_400_000 })
@@ -162,33 +160,33 @@ let engram = Engram::builder(Kind::Task)
 
 **HDC Operations**
 
-Engrams support hyperdimensional computing operations when fingerprints are set:
+Signals support hyperdimensional computing operations when fingerprints are set:
 
 ```rust
-pub fn bind(&self, other: &Engram) -> Option<HdcVector>        // XOR binding
-pub fn bundle(engrams: &[Engram]) -> Option<HdcVector>         // majority bundle
+pub fn bind(&self, other: &Signal) -> Option<HdcVector>        // XOR binding
+pub fn bundle(signals: &[Signal]) -> Option<HdcVector>         // majority bundle
 pub fn at_position(&self, position: usize) -> Option<HdcVector> // positional permutation
 ```
 
 </details>
 
-### Pulse vs. Engram
+### Pulse vs. Signal
 
 Not everything needs to be persisted. `Pulse` is the ephemeral counterpart —
 published on the `Bus` for immediate reactions. Pulses that are worth keeping
-get promoted to `Engram`s via `Store::put`. Think of Pulses as in-flight
-events and Engrams as the durable record.
+get promoted to Signals via `Store::put`. Think of Pulses as in-flight
+events and Signals as the durable record.
 
 ```rust
-pub fn from_pulse_synthetic(p: &Pulse) -> Self  // single pulse -> Engram
-pub fn from_pulses(pulses: &[Pulse]) -> Self     // batch of pulses -> summary Engram
+pub fn from_pulse_synthetic(p: &Pulse) -> Self  // single pulse -> Signal
+pub fn from_pulses(pulses: &[Pulse]) -> Self     // batch of pulses -> summary Signal
 ```
 
 ### Why this design?
 
 Every capability in the system — agent spawning, gate verification, prompt
 assembly, model routing, memory retrieval, affect modulation, chain participation
-— is an implementation of one of the nine traits applied to Engrams.
+— is an implementation of one of the nine traits applied to Signals.
 
 This uniformity has a practical payoff: when you understand these nine
 operations, you understand the whole system. When adding a feature, identify
@@ -197,19 +195,19 @@ reconsider the design.
 
 ---
 
-## 3. The Universal Loop
+## 3. Runtime Workflows and the Signal-Selection Helper
 
-Source: `crates/roko-core/src/loop_tick.rs`
+Production execution has three explicit owners:
 
-Every operation in Roko follows the same shape. Here is the loop in plain
-English:
+- `roko run` uses `roko-runtime::WorkflowEngine` for provider execution,
+  verification, persistence, cancellation, and lifecycle events.
+- `roko plan run --engine runner-v2` uses the durable plan runner.
+- `roko plan run --engine graph` converts tasks into Activities executed by
+  `roko-graph::GraphEngine`.
 
-1. **Query** the store for candidate Engrams (what do we know that's relevant?)
-2. **Score** the candidates (which are the most valuable right now?)
-3. **Route** to a selection (pick the best one)
-4. **Compose** it into an output Engram (assemble, under budget)
-5. **Verify** the result (did it pass the gate?)
-6. **Write back** if it passed, then **React** (policy fires side effects)
+`crates/roko-core/src/loop_tick.rs` contains a smaller reusable helper named
+`select_compose_verify_persist`. It queries candidate Signals, routes one,
+composes it, verifies it, persists passing output, and applies a React policy:
 
 ```
 candidates = substrate.query(q, ctx)
@@ -223,27 +221,22 @@ verdict   = gate.verify(composed, ctx)
 if passed: substrate.put(composed) + policy.decide(stream, ctx)
 ```
 
-The loop is parameterized entirely by trait implementations. The same
-`loop_tick` call trains the scaffold optimizer, picks a model, runs a gate,
-assembles a prompt, or claims a bounty — only the concrete impls change.
+This helper does not perform ACT/provider execution, BROADCAST to a Bus,
+iteration, cancellation, or resource-limit enforcement. It is not the
+production universal runtime. The old `loop_tick` and `loop_tick_with_config`
+names remain deprecated source-compatibility wrappers; their historical
+`TickConfig` limits were never enforced.
 
 <details>
-<summary>TickConfig and TickOutcome structs</summary>
+<summary>SignalSelectionOutcome</summary>
 
 ```rust
-pub struct TickConfig {
-    pub max_turns: Option<u64>,       // limit iterations
-    pub timeout_secs: Option<u64>,    // wall-clock limit
-    pub budget_usd: Option<f64>,      // cost ceiling
-    pub verbose: bool,
-}
-
-pub struct TickOutcome {
+pub struct SignalSelectionOutcome {
     pub candidates_examined: usize,
-    pub composed: Option<Engram>,
+    pub composed: Option<Signal>,
     pub verdict: Option<Verdict>,
-    pub emitted: Vec<Engram>,         // from policy.decide()
-    pub stored_hash: Option<ContentHash>,
+    pub emitted: Vec<Signal>,
+    pub written: Vec<ContentHash>,
 }
 ```
 
@@ -254,12 +247,12 @@ pub struct TickOutcome {
 To make this concrete, here is what happens when `roko plan run` executes a
 single task:
 
-1. `PlanRunner` (orchestrate.rs) picks a pending task from the DAG.
+1. Runner v2 (`runner/event_loop.rs`) picks a dependency-ready task from the plan.
 2. `CascadeRouter.select()` chooses a model based on the task's role and
    complexity — this is the **Route** step applied to model selection.
 3. `SystemPromptBuilder.build()` assembles a 9-layer system prompt by
    **composing** role identity, conventions, domain context, task details,
-   relevant playbooks, and current affect state into a single Engram.
+   relevant playbooks, and current affect state into a single Signal.
 4. `ContextAssembler` queries `KnowledgeStore` and injects relevant knowledge
    entries — past insights, anti-patterns, strategy fragments.
 5. `DaimonState.pre_dispatch()` computes a `DispatchModulation` that adjusts
@@ -291,8 +284,8 @@ the top are foundations.
                                      │
                          ┌───────────▼─────────────┐
                          │       roko-core          │
-                         │  Engram, 9 traits,       │
-                         │  foundation traits,      │
+                         │  Signal, 9               │
+                         │  traits, foundation,     │
                          │  config, tool, runtime   │
                          │  events, signals, jobs   │
                          └──┬──────┬──────┬────────┘
@@ -312,7 +305,7 @@ the top are foundations.
        │                           │                    │
 ┌──────▼──────┐  ┌─────────────────▼──────┐  ┌────────▼───────┐
 │ roko-agent  │  │   roko-gate            │  │  roko-neuro    │
-│ 5 backends  │  │  7-rung pipeline,      │  │  KnowledgeStore│
+│ 11 providers│  │  7-rung pipeline,      │  │  KnowledgeStore│
 │ ToolDisp.,  │  │  AdaptiveThresholds,   │  │  ContextAssemb.│
 │ SafetyLayer,│  │  SPC detectors,        │  │  TierProgress. │
 │ MCP passth. │  │  CompileGate,TestGate, │  │  Admission     │
@@ -341,14 +334,14 @@ the top are foundations.
                             └──────────────┬───────────┘
                                            │
                  ┌─────────────────────────▼──────────────────┐
-                 │             roko-orchestrator               │
+                 │       roko-cli::orchestrator / runner       │
                  │  ParallelExecutor, UnifiedTaskDag,          │
                  │  EventLog, WorktreeManager, PheromoneStore  │
                  └────────────────────┬───────────────────────┘
                                       │
           ┌───────────────────────────▼───────────────────────┐
           │                      roko-cli                      │
-          │  orchestrate.rs (PlanRunner), dashboard TUI,       │
+          │  runner/event_loop.rs, dashboard TUI,              │
           │  all subcommands (prd, plan, agent, research, ...) │
           └───────────────────────────────────────────────────┘
 ```
@@ -356,10 +349,14 @@ the top are foundations.
 Additional crates (parallel, not in the main execution stack):
 
 ```
-  roko-serve          HTTP control plane (~85 routes on :6677)
-  roko-agent-server   Per-agent HTTP sidecar (13 routes)
-  roko-std            19 builtin tools, StaticToolRegistry, SumScorer
-  roko-chain          Chain witness primitives (Phase 2+)
+  roko-serve          HTTP control plane (~317 routes on :6677), durable exact-room
+                      relay subscription execution, local arena/meta-agent services
+  roko-agent-server   Per-agent HTTP sidecar plus supervised durable relay client
+  agent-relay         Bounded canonical-envelope relay and atomic recovery server
+  roko-std            35 builtin tools (52 with chain), StaticToolRegistry, SumScorer
+  roko-chain          Chain primitives plus local registry, marketplace, durable local
+                      arena state/settlement/outbox, and DeFi state machines;
+                      on-chain production adapters are Phase 2+
   roko-index          Code-intelligence indexer
   roko-mcp-code       Code-intelligence MCP server
   roko-lang-{rust,typescript,go}  Language analyzers
@@ -377,8 +374,8 @@ Additional crates (parallel, not in the main execution stack):
   core: LLM dispatch, verification, knowledge, prompt assembly.
 - `roko-conductor`, `roko-daimon`, `roko-dreams` layer on reactive oversight,
   affect modulation, and offline consolidation.
-- `roko-orchestrator` and `roko-cli` are the entry points that wire everything
-  together.
+- `roko-cli` is the execution and command entry point that wires everything
+  together; its `orchestrator` and `runner` modules own the former orchestration APIs.
 
 ---
 
@@ -386,14 +383,15 @@ Additional crates (parallel, not in the main execution stack):
 
 Source: `crates/roko-core/src/traits.rs`
 
-These six traits define the complete operational surface of Roko. Every
-capability is an implementation of one of these traits. If you add a feature
-and it does not fit into one of these six verbs, reconsider the design.
+These six traits are the core workflow verbs. Supporting contracts for buses,
+observation, connectivity, triggers, and archival extend the operational surface.
+New capabilities should compose these contracts rather than inventing an isolated
+execution model.
 
 ### 5.1 Store — Persist and Retrieve
 
 **What it does in plain English**: A Store is an addressable database of
-Engrams. You put things in (by content hash), get them back, and query by
+Signals. You put things in (by content hash), get them back, and query by
 filter or semantic similarity. Implementations range from an in-memory hash
 map (for tests) to a JSONL file on disk to an HDC-indexed semantic store.
 
@@ -403,15 +401,15 @@ map (for tests) to a JSONL file on disk to an HDC-indexed semantic store.
 ```rust
 #[async_trait]
 pub trait Store: Send + Sync {
-    /// Store an engram. Returns its content hash. Idempotent on content.
-    async fn put(&self, engram: Engram) -> Result<ContentHash>;
+    /// Store a signal. Returns its content hash. Idempotent on content.
+    async fn put(&self, signal: Signal) -> Result<ContentHash>;
 
-    /// Retrieve an engram by content hash. Does not apply decay.
-    async fn get(&self, id: &ContentHash) -> Result<Option<Engram>>;
+    /// Retrieve a signal by content hash. Does not apply decay.
+    async fn get(&self, id: &ContentHash) -> Result<Option<Signal>>;
 
-    /// Query for engrams matching the given filter. Impls may apply decay
+    /// Query for signals matching the given filter. Impls may apply decay
     /// when evaluating min_weight and ordering results.
-    async fn query(&self, q: &Query, ctx: &Context) -> Result<Vec<Engram>>;
+    async fn query(&self, q: &Query, ctx: &Context) -> Result<Vec<Signal>>;
 
     /// Query by HDC similarity against a fingerprint.
     async fn query_similar(
@@ -422,7 +420,7 @@ pub trait Store: Send + Sync {
         ctx: &Context,
     ) -> Result<Vec<(ContentHash, f32)>>;
 
-    /// Remove engrams whose effective weight has fallen below threshold.
+    /// Remove signals whose effective weight has fallen below threshold.
     async fn prune(&self, threshold: f32, ctx: &Context) -> Result<usize>;
 
     async fn len(&self) -> Result<usize>;
@@ -441,10 +439,10 @@ state, Phase 2+).
 
 ### 5.2 Score — Rate Along Dimensions
 
-**What it does in plain English**: A Scorer takes an Engram and returns a
+**What it does in plain English**: A Scorer takes a Signal and returns a
 numeric rating. Scores are multi-dimensional (confidence, novelty, utility,
 reputation) and context-dependent. Different scorers weight things differently:
-`RecencyScorer` favors newer engrams, `ReputationScorer` favors high-trust
+`RecencyScorer` favors newer signals, `ReputationScorer` favors high-trust
 sources. The composite `SumScorer` blends multiple scorers.
 
 <details>
@@ -452,10 +450,10 @@ sources. The composite `SumScorer` blends multiple scorers.
 
 ```rust
 pub trait Score: Send + Sync {
-    /// Score an engram in the given context. Pure function.
-    fn score(&self, engram: &Engram, ctx: &Context) -> ScoreValue;
+    /// Score a signal in the given context. Pure function.
+    fn score(&self, signal: &Signal, ctx: &Context) -> ScoreValue;
 
-    fn score_engram(&self, engram: &Engram, ctx: &Context) -> ScoreValue;
+    fn score_signal(&self, signal: &Signal, ctx: &Context) -> ScoreValue;
     fn score_pulse(&self, p: &Pulse, ctx: &Context) -> ScoreValue;
     fn score_datum(&self, datum: Datum<'_>, ctx: &Context) -> ScoreValue;
     fn name(&self) -> &'static str;
@@ -475,7 +473,7 @@ combining them.
 
 ### 5.3 Verify — Check Against Ground Truth
 
-**What it does in plain English**: A Verifier takes an Engram and returns a
+**What it does in plain English**: A Verifier takes a Signal and returns a
 Verdict — pass or fail, with output. This is how the gate pipeline works: each
 gate is a `Verify` implementation that runs `cargo compile`, `cargo test`, a
 diff check, or an LLM judge, and returns whether the output is acceptable.
@@ -486,10 +484,10 @@ diff check, or an LLM judge, and returns whether the output is acceptable.
 ```rust
 #[async_trait]
 pub trait Verify: Send + Sync {
-    /// Verify the engram and return a verdict.
-    async fn verify(&self, engram: &Engram, ctx: &Context) -> Verdict;
+    /// Verify the signal and return a verdict.
+    async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict;
 
-    /// Verify a batch of ephemeral pulses by promoting them to a synthetic engram.
+    /// Verify a batch of ephemeral pulses by promoting them to a synthetic signal.
     async fn verify_stream(&self, pulses: &[Pulse], ctx: &Context) -> Verdict;
 
     /// Human-readable name (appears in verdicts).
@@ -515,10 +513,10 @@ knowledge level, the Router picks which knowledge entry to surface.
 
 ```rust
 pub trait Route: Send + Sync {
-    /// Select one engram from the candidates. None = no selection made.
-    fn select(&self, candidates: &[Engram], ctx: &Context) -> Option<Selection>;
+    /// Select one signal from the candidates. None = no selection made.
+    fn select(&self, candidates: &[Signal], ctx: &Context) -> Option<Selection>;
 
-    fn select_engram(&self, candidates: &[Engram], ctx: &Context) -> Option<Selection>;
+    fn select_signal(&self, candidates: &[Signal], ctx: &Context) -> Option<Selection>;
     fn select_pulse(&self, candidates: &[Pulse], ctx: &Context) -> Option<Selection>;
 
     /// Learn from a selection's actual outcome (for bandit updates).
@@ -538,8 +536,8 @@ bandit), `CascadeRouter` (3-stage: Static→Confidence→UCB), `WeightedRouter`
 
 ### 5.5 Compose — Combine Under Budget
 
-**What it does in plain English**: A Composer takes multiple input Engrams and
-assembles them into a single output Engram, respecting a token budget. This is
+**What it does in plain English**: A Composer takes multiple input Signals and
+assembles them into a single output Signal, respecting a token budget. This is
 how prompt assembly works: `PromptComposer` takes role identity, conventions,
 task context, knowledge entries, and gate feedback, and assembles them into a
 single system prompt that fits within the model's context window.
@@ -549,23 +547,23 @@ single system prompt that fits within the model's context window.
 
 ```rust
 pub trait Compose: Send + Sync {
-    /// Combine input engrams into a new composed engram.
+    /// Combine input signals into a new composed signal.
     fn compose(
         &self,
-        engrams: &[Engram],
+        signals: &[Signal],
         budget: &Budget,
         scorer: &dyn Score,
         ctx: &Context,
-    ) -> Result<Engram>;
+    ) -> Result<Signal>;
 
-    /// Compose from a polymorphic mix of engrams and pulses.
+    /// Compose from a polymorphic mix of signals and pulses.
     fn compose_datums(
         &self,
         datums: &[Datum<'_>],
         budget: &Budget,
         scorer: &dyn Score,
         ctx: &Context,
-    ) -> Result<Engram>;
+    ) -> Result<Signal>;
 
     fn name(&self) -> &str;
 }
@@ -581,7 +579,7 @@ pub trait Compose: Send + Sync {
 ### 5.6 React — Watch Streams and Emit Interventions
 
 **What it does in plain English**: A Policy watches the stream of recent
-Engrams and decides whether to intervene. The `Conductor` is the primary
+Signals and decides whether to intervene. The `Conductor` is the primary
 implementation: it runs 10 watchers over the stream and emits `ConductorDecision`
 events when something is wrong (agent stuck, budget exceeded, quality degrading).
 This is the reactive oversight layer.
@@ -591,13 +589,13 @@ This is the reactive oversight layer.
 
 ```rust
 pub trait React: Send + Sync {
-    /// Examine the recent engram stream and produce new engrams (interventions).
-    fn decide(&self, stream: &[Engram], ctx: &Context) -> Vec<Engram>;
+    /// Examine the recent signal stream and produce new signals (interventions).
+    fn decide(&self, stream: &[Signal], ctx: &Context) -> Vec<Signal>;
 
-    /// Examine both persisted engrams and ephemeral pulses.
+    /// Examine both persisted signals and ephemeral pulses.
     fn decide_with_pulses(
         &self,
-        engrams: &[Engram],
+        signals: &[Signal],
         pulses: &[Pulse],
         ctx: &Context,
     ) -> PolicyOutputs;
@@ -608,7 +606,7 @@ pub trait React: Send + Sync {
 
 </details>
 
-`PolicyOutputs` contains both `engrams: Vec<Engram>` (to persist) and
+`PolicyOutputs` contains both `signals: Vec<Signal>` (to persist) and
 `pulses: Vec<Pulse>` (to publish on the Bus).
 
 **Implementations**: `Conductor` (composite of 10 watchers), `CircuitBreaker`,
@@ -630,7 +628,7 @@ touching a real LLM or filesystem.
 
 **What it does**: The contract between the engine and LLM backends. Takes a
 structured request (model, messages, budget, routing hints) and returns a
-response (content, usage, stop reason). All five LLM backends implement this.
+response (content, usage, stop reason). All 11 provider backends implement this.
 
 <details>
 <summary>ModelCaller structs and trait</summary>
@@ -669,8 +667,9 @@ pub trait ModelCaller: Send + Sync {
 
 </details>
 
-Implemented by: `roko-agent` backends (Claude CLI, Claude API, Gemini, Codex,
-Ollama, Perplexity, OpenAI-compat).
+Implemented by: `roko-agent` backends (Claude CLI, Anthropic API, OpenAI-compat,
+Cursor ACP, Perplexity, Gemini API, Gemini CLI, Cerebras, Cursor CLI, Hermes,
+OpenClaw).
 
 ---
 
@@ -898,7 +897,8 @@ Canonical implementation: `DaimonPolicy` (roko-daimon). No-op: `NoOpAffectPolicy
 
 ## 7. Supporting Protocol Traits
 
-Source: `crates/roko-core/src/traits.rs`
+Sources: `crates/roko-core/src/traits.rs`, `connector.rs`, `wire_protocol.rs`,
+and `exoskeleton.rs`
 
 ### 7.1 Bus — Publish/Subscribe for Ephemeral Pulses
 
@@ -924,12 +924,12 @@ pub trait Bus: Send + Sync {
 
 ---
 
-### 7.2 ColdStore — Archival for Aged-Out Engrams
+### 7.2 ColdStore — Archival for Aged-Out Signals
 
-**What it does**: When an Engram's effective weight falls below a threshold
+**What it does**: When a Signal's effective weight falls below a threshold
 (because it is old and low-scored), it moves from the hot `Store` to a
 `ColdStore`. Cold storage is compressed, rarely-accessed, and does not
-participate in live queries. Engrams can be thawed back on demand.
+participate in live queries. Signals can be thawed back on demand.
 
 <details>
 <summary>ColdStore trait and migration flow</summary>
@@ -937,9 +937,9 @@ participate in live queries. Engrams can be thawed back on demand.
 ```rust
 #[async_trait]
 pub trait ColdStore: Send + Sync {
-    async fn archive(&self, engram: Engram) -> Result<ContentHash>;
-    async fn archive_batch(&self, engrams: Vec<Engram>) -> Result<usize>;
-    async fn thaw(&self, id: &ContentHash) -> Result<Option<Engram>>;
+    async fn archive(&self, signal: Signal) -> Result<ContentHash>;
+    async fn archive_batch(&self, signals: Vec<Signal>) -> Result<usize>;
+    async fn thaw(&self, id: &ContentHash) -> Result<Option<Signal>>;
     async fn contains(&self, id: &ContentHash) -> Result<bool>;
     async fn archived_count(&self) -> Result<usize>;
     async fn storage_bytes(&self) -> Result<u64>;
@@ -960,7 +960,7 @@ Store (hot) ──age_out()──► ColdStore (cold/archive)
 
 ---
 
-### 7.3 Observe, Connect, Trigger (Cell-Based Extensions)
+### 7.3 Legacy Observe, Connect, Trigger Cell Extensions
 
 These three traits extend the `Cell` supertrait for peripheral integrations:
 external data sources (`Observe`), network connections (`Connect`), and
@@ -971,7 +971,7 @@ scheduled triggers (`Trigger`).
 
 ```rust
 pub trait Observe: Cell {
-    fn observe(&self) -> Vec<Engram>;
+    fn observe(&self) -> Vec<Signal>;
 }
 
 pub trait Connect: Cell {
@@ -988,16 +988,28 @@ pub trait Trigger: Cell {
 
 </details>
 
+The synchronous `traits::Connect` above remains for source compatibility. E29's
+current transport contract is the independent async `connector::Connect: Send + Sync`,
+with typed `connect`, `query`, `execute`, `health`, and `disconnect` methods. It has no
+`Cell` supertrait: a connector Cell composes the transport contract and advertises the
+Connect protocol. `wire_protocol.rs` and `exoskeleton.rs` define the portable relay,
+recovery, backpressure, MCP, A2A, and x402 payload contracts. R01 supplies one supervised
+HTTP JSON adapter in `roko-runtime`. R02 supplies the bounded `agent-relay` server, a
+supervised durable client in `roko-agent-server`, and restart-safe exact-room subscription
+execution in `roko-serve`. Additional transports, startup discovery, MCP auto-registration,
+workspace/A2A publication, x402 settlement, finality/reorg execution, and dashboard
+auto-connect remain outside these scoped implementations.
+
 ---
 
 ## 8. The Cell Supertrait
 
 Source: `crates/roko-cell.rs`
 
-Every protocol implementation must be a `Cell`. This gives the execution engine
-identity, cost estimation, and protocol introspection. Think of it as the
-common interface that lets the system ask any component "who are you, how
-expensive are you, and what can you do?"
+Execution-level protocol implementations are Cells. This gives the engine identity,
+cost estimation, and protocol introspection. Lower-level portable contracts, such as
+E29's async transport `connector::Connect`, may be composed by a Cell without themselves
+implementing `Cell`.
 
 <details>
 <summary>Cell trait signature</summary>
@@ -1159,9 +1171,10 @@ let json = sm.checkpoint()?;             // → JSON string
 let sm = PipelineStateV2::from_checkpoint(&json)?; // restore exact state
 ```
 
-This is how `roko plan run --resume .roko/state/executor.json` works. The
-executor snapshots state after every task completion, so if the process crashes
-mid-plan, you can resume from the last checkpoint.
+This is the in-memory checkpoint primitive for library consumers. Runner-v2
+persists its checksummed envelope to `.roko/state/state-snapshot.json` after
+every task completion; resume it with
+`roko plan run plans/ --engine runner-v2 --resume-plan`.
 
 ### WorkflowEngine
 
@@ -1256,20 +1269,25 @@ Source: `crates/roko-agent/src/dispatcher/mod.rs`
 
 ### The ToolDispatcher Pipeline
 
-When an agent makes a tool call during its turn, every call passes through a
-fixed 8-stage pipeline. Think of it like a middleware stack:
+When an agent makes a tool call during its turn, every call passes through one
+fail-closed pipeline with a universal bounded return seam:
 
 ```
-1. validate    -- JSON schema check against registry def
-2. resolve     -- look up ToolDef in registry by canonical name
-3. authorize   -- def.permission.satisfied_by(&role_perms)
-4. tool_selector -- profile-based allow/deny check (TOOL-03)
-5. hook_chain  -- sequential safety hooks, first rejection short-circuits
-6. handler     -- HandlerResolver.resolve(name) → ToolHandler.execute()
-                  raced against ctx.timeout + CancelToken
-7. truncate    -- cap Ok content at DEFAULT_MAX_RESULT_BYTES (16,384)
-8. result_cache -- optionally cache deterministic tool results
+1. identity    -- reject unbounded or control-bearing call/tool identifiers
+2. validate    -- JSON schema, registry, profile, and task allow/deny checks
+3. authorize   -- intersect role permissions with the ToolDef requirement
+4. safety      -- extension hooks, mandatory IFC/corrigibility hooks, and policy
+5. control     -- check durable immune cooldown/isolation before side effects
+6. handler     -- resolve and execute under timeout/cancellation; catch panics
+7. finalize    -- aggregate-cap and recursively scrub content/errors/artifacts
+8. recovery    -- apply contract recovery, then finalize the replacement again
+9. immune      -- screen every host-visible result through the five-stage Graph
+10. return     -- finalize once more and emit one sanitized terminal audit
 ```
+
+The dispatcher deliberately does not cache results: each invocation must observe
+the current authorization, immune-control, screening, and audit state. The
+`result_cache` module contains primitives for explicit higher-level owners only.
 
 <details>
 <summary>Batch dispatch and HandlerResolver</summary>
@@ -1281,12 +1299,14 @@ pub async fn dispatch_batch(
     &self,
     calls: Vec<ToolCall>,
     ctx: &ToolContext,
-) -> Vec<ToolResult>;
+) -> Vec<(ToolCall, ToolResult)>;
 ```
 
-Calls are partitioned by `ToolConcurrency`: `Parallel` tools run via
-`join_all`; `Serial` tools run sequentially to preserve shell-state ordering
-and avoid write-write races.
+At most 16 calls are accepted. Calls are partitioned by `ToolConcurrency`:
+`Parallel` tools use a bounded unordered stream and `Serial` tools run
+sequentially to preserve shell-state ordering and avoid write-write races. An
+accepted batch retains at most 8 MiB of aggregate result payload; an oversized
+batch is rejected before any handler runs.
 
 **HandlerResolver (Pluggable)**
 
@@ -1306,10 +1326,10 @@ dependency.
 pub struct ToolDispatcher {
     registry: Arc<dyn ToolRegistry>,
     resolver: Arc<dyn HandlerResolver>,
-    max_result_bytes: usize,         // default 16,384
-    safety: Option<SafetyLayer>,
-    tool_cache: Option<Mutex<ToolResultCache>>,
+    max_result_bytes: usize,         // default 65,536
+    safety: SafetyLayer,
     hook_chain: Option<SafetyHookChain>,
+    production_hook_chain: Option<SafetyHookChain>,
     tool_selector: Option<ToolSelector>,
 }
 ```
@@ -1318,15 +1338,21 @@ pub struct ToolDispatcher {
 
 ### Agent Backends
 
-Five LLM backends share a common `Agent` trait interface:
+Eleven LLM backends share a common `Agent` trait interface:
 
 | Backend | Use case |
 |---|---|
 | Claude CLI | Default: spawns `claude` subprocess, streams JSON |
-| Claude API | Direct API calls, streaming, prompt caching |
-| Gemini | Google Gemini via REST, includes free-tier shadow runner |
+| Anthropic API | Direct API calls, streaming, prompt caching |
+| OpenAI-compat | Any OpenAI-compatible endpoint |
+| Cursor ACP | Cursor Agent Client Protocol |
+| Cursor CLI | Cursor `agent` CLI subprocess (ACP JSON-RPC over stdio) |
+| Gemini API | Google Gemini via REST, includes free-tier shadow runner |
+| Gemini CLI | Google `gemini` CLI subprocess |
+| Cerebras | Cerebras inference API |
 | Perplexity | Web-search-grounded research queries |
-| OpenAI-compat | Any OpenAI-compatible endpoint (Ollama, Codex, local) |
+| Hermes | Hermes gateway (HTTP, CLI one-shot, or ACP) |
+| OpenClaw | OpenClaw inference runtime (CLI one-shot or ACP) |
 
 ---
 
@@ -1589,7 +1615,7 @@ semantic clustering during dream consolidation (Section 16).
 
 ### 14.2 CFactor (Catalyst Factor)
 
-C-factor measures how many downstream engrams an engram enabled. It answers
+C-factor measures how many downstream signals a signal enabled. It answers
 the question: "did this particular task unlock a lot of subsequent work, or
 was it a dead end?"
 
@@ -1600,7 +1626,7 @@ was it a dead end?"
 C-factor = (downstream_count - baseline) / baseline_stddev
 ```
 
-High C-factor → this engram was unusually catalytic. Used to:
+High C-factor → this signal was unusually catalytic. Used to:
 - Adjust routing rewards in `compute_routing_reward_v2`
 - Trigger replan on detected C-factor regressions
 - Influence Daimon behavioral state classification
@@ -1735,9 +1761,9 @@ pub struct RoutingDecisionLog {
 Source: `crates/roko-neuro/src/lib.rs`
 
 The durable knowledge store (`KnowledgeStore`/`NeuroStore`) is long-term
-memory. It is separate from the Engram substrate: knowledge entries are
+memory. It is separate from the Signal substrate: knowledge entries are
 distilled, validated observations extracted from multiple episodes, not raw
-signals. An Engram might record "this task failed with E0308"; a knowledge
+signals. A Signal might record "this task failed with E0308"; a knowledge
 entry records "type mismatches in trait impls often come from lifetime
 parameter omissions."
 
@@ -2284,22 +2310,22 @@ Source: `crates/roko-conductor/src/lib.rs`
 
 The Conductor watches signal streams and decides when to intervene: restart
 an agent, change model, or abort a plan. It is a `React` implementation
-composed of 10 independent watchers that each inspect the Engram stream for
+composed of 10 independent watchers that each inspect the Signal stream for
 different problems.
 
 > **Why 10 pure watchers?** Because each watcher is testable in isolation.
-> A watcher is a function from `&[Engram]` to `Vec<Engram>`. You can feed it
+> A watcher is a function from `&[Signal]` to `Vec<Signal>`. You can feed it
 > a known sequence of events and verify that it fires at the right moment.
 > No mocking, no side effects.
 
 ### Architecture
 
 ```
-Engram stream
+Signal stream
      │
      ├─── Watcher 1 (StuckDetector)      ┐
      ├─── Watcher 2 (AnomalyDetector)    │ all pure functions:
-     ├─── Watcher 3 (CircuitBreaker)     │ &[Engram] -> Vec<Engram>
+     ├─── Watcher 3 (CircuitBreaker)     │ &[Signal] -> Vec<Signal>
      ├─── Watcher 4 (BudgetGuardrail)    │
      ├─── Watcher 5 (HealthMonitor)      │ No side effects
      ├─── Watcher 6 (PatternDetector)    │
@@ -2507,6 +2533,15 @@ pub enum InferenceTier { T0, T1, T2 }
 
 Source: `crates/roko-agent/src/safety/`
 
+R04 adds a separate durable meta-agent lifecycle boundary. Proposals are persisted and
+owner-bound, activation requires R03 external arena evidence bound to the complete artifact,
+and authority cannot widen across tool, data, network, cost, spawn, expiry, or lineage
+limits. Activation and explicit role morph/rollback execute the canonical five-node
+Deference -> Switch -> Truth -> Impact -> Task Graph in exact order. Morphs narrow to the
+target role and can roll back only to the exact prior authority; deactivation is durable and
+requires descendants to be deactivated first. This boundary does not continuously wrap all
+Flows and is not Loop 4, ADAS, HGM, or autonomous generated execution.
+
 ### SafetyLayer
 
 Attached to `ToolDispatcher`. Runs before and after every tool invocation:
@@ -2602,10 +2637,10 @@ This section follows a request end-to-end to show how all the pieces connect.
 ### 24.1 Plan Execution Flow
 
 ```
-roko plan run plans/
+roko plan run plans/ --engine runner-v2
        │
        ▼
-orchestrate.rs (PlanRunner)
+runner/event_loop.rs (runner v2)
   ├── discover_plans()        load tasks.toml files
   ├── ParallelExecutor        build UnifiedTaskDag
   └── For each task:
@@ -2705,12 +2740,12 @@ Before dispatching agent for task T:
            ┌───────────────▼──────────────────┐
            │            roko-agent             │
            │  ToolDispatcher + SafetyLayer     │
-           │  5 LLM backends                  │
+           │  11 LLM backends                 │
            └───────┬────────────────┬──────────┘
                    │ outcomes       │ tool calls
            ┌───────▼──────┐  ┌─────▼──────────┐
            │  roko-learn  │  │    roko-std     │
-           │  EpisodeLog  │  │  19 builtin     │
+           │  EpisodeLog  │  │  35 builtin     │
            │  Cascade     │  │  tool handlers  │
            │  Playbooks   │  └────────────────┘
            └───────┬──────┘
@@ -2735,16 +2770,34 @@ Before dispatching agent for task T:
 
 | Component | Path |
 |-----------|------|
-| Core traits (6 verbs) | `crates/roko-core/src/traits.rs` |
+| Core workflow traits (6 verbs) | `crates/roko-core/src/traits.rs` |
+| Connector lifecycle and metadata | `crates/roko-core/src/connector.rs` |
+| Supervised HTTP JSON connector runtime | `crates/roko-runtime/src/connector_runtime.rs` |
+| Authenticated connector control plane | `crates/roko-serve/src/routes/connectors.rs` |
+| Relay wire/recovery contracts | `crates/roko-core/src/wire_protocol.rs` |
+| Bounded relay server and delivery bus | `apps/agent-relay/src/lib.rs`, `apps/agent-relay/src/bus.rs` |
+| Supervised durable relay client | `crates/roko-agent-server/src/features/relay_client.rs` |
+| Durable exact-room subscription executor | `crates/roko-serve/src/subscription_relay.rs` |
+| Relay subscription status API | `crates/roko-serve/src/routes/subscriptions.rs` |
+| MCP/A2A/x402 payload contracts | `crates/roko-core/src/exoskeleton.rs` |
+| Marketplace state and attribution | `crates/roko-chain/src/marketplace.rs` |
+| Identity and knowledge registries | `crates/roko-chain/src/agent_registry.rs`, `crates/roko-chain/src/knowledge_registry.rs` |
+| Transport-neutral gossip registry | `crates/roko-chain/src/gossip.rs` |
+| Durable local arena state machine and outbox | `crates/roko-chain/src/arena.rs` |
+| Authorized arena lifecycle and settlement API | `crates/roko-serve/src/routes/arenas.rs` |
+| Five-head corrigibility Graph | `crates/roko-core/src/corrigibility.rs`, `crates/roko-graph/src/cells/corrigibility.rs` |
+| Meta-agent grant/lineage safety | `crates/roko-agent/src/safety/recursive.rs`, `crates/roko-agent/src/lifecycle.rs` |
+| Durable meta-agent lifecycle API | `crates/roko-serve/src/routes/meta.rs` |
+| DeFi product state machines | `crates/roko-chain/src/defi.rs` |
 | Foundation service traits | `crates/roko-core/src/foundation.rs` |
-| Engram type | `crates/roko-core/src/engram.rs` |
-| Universal loop | `crates/roko-core/src/loop_tick.rs` |
+| Signal type (Engram struct) | `crates/roko-core/src/engram.rs` |
+| Signal-selection helper (deprecated `loop_tick` compatibility API) | `crates/roko-core/src/loop_tick.rs` |
 | Affect primitives | `crates/roko-core/src/affect.rs` |
 | Cell supertrait | `crates/roko-core/src/cell.rs` |
 | PipelineStateV2 | `crates/roko-runtime/src/pipeline_state.rs` |
 | WorkflowEngine | `crates/roko-runtime/src/workflow_engine.rs` |
 | EffectDriver | `crates/roko-runtime/src/effect_driver.rs` |
-| PlanRunner (orchestrate) | `crates/roko-cli/src/orchestrate.rs` |
+| Plan runner v2 | `crates/roko-cli/src/runner/event_loop.rs` |
 | ToolDispatcher | `crates/roko-agent/src/dispatcher/mod.rs` |
 | Gate pipeline | `crates/roko-gate/src/gate_pipeline.rs` |
 | Adaptive thresholds | `crates/roko-gate/src/adaptive_threshold.rs` |

@@ -80,10 +80,24 @@ pub enum ContentBlock {
 }
 
 /// Image URL payload for multimodal messages.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImageUrl {
     /// Image source, typically a `data:` URL or remote HTTPS URL.
     pub url: String,
+}
+
+impl std::fmt::Debug for ImageUrl {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let url = if self.url.starts_with("data:") {
+            "<redacted data URI>"
+        } else {
+            &self.url
+        };
+        formatter
+            .debug_struct("ImageUrl")
+            .field("url", &url)
+            .finish()
+    }
 }
 
 /// Tool call payload attached to an assistant message.
@@ -394,6 +408,22 @@ pub enum ResponseFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_data_uri_debug_is_redacted_through_enclosing_chat_message() {
+        let sentinel = "c2Vuc2l0aXZlLWltYWdlLWJ5dGVz";
+        let message = ChatMessage::User {
+            content: MessageContent::Blocks(vec![ContentBlock::ImageUrl {
+                image_url: ImageUrl {
+                    url: format!("data:image/png;base64,{sentinel}"),
+                },
+            }]),
+        };
+
+        let debug = format!("{message:?}");
+        assert!(!debug.contains(sentinel));
+        assert!(debug.contains("redacted data URI"));
+    }
 
     #[test]
     fn fill_cost_from_pricing_computes_correctly() {

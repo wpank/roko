@@ -1,5 +1,8 @@
 # Docker Deployment
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Roko's container shape is one profile in a five-shape deployment model: laptop-local,
 > single-server, container, clustered, and edge. The same Rust binary powers them all;
 > Docker is the packaging layer for the container shape, not a fork of the runtime.

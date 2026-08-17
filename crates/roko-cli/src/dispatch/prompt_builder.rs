@@ -35,19 +35,24 @@
 //! neuro store and a tiny default budget — used by tests and CI smoke
 //! runs to keep prompt construction deterministic.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use roko_compose::{AttentionBidder, LearningBidder, RoleSystemPromptSpec, TaskContext};
-use roko_core::AgentRole;
+use parking_lot::RwLock;
+use roko_compose::{
+    AttentionBidder, CompositionManifest, CompositionStrategy, ContextChunk, ContextSource,
+    LearningBidder, PromptComposer, PromptSection as CanonicalPromptSection, RoleSystemPromptSpec,
+    TaskContext,
+};
+use roko_core::config::schema::ConfigCompositionStrategy;
+use roko_core::{AgentRole, Group, GroupId, GroupPheromone};
 use serde::{Deserialize, Serialize};
 
-use super::DispatchContext;
 use super::outcome::DispatchError;
 use super::prompt_cache::PromptCache;
-use crate::prompting::{PromptBuildOptions, build_role_system_prompt};
+use super::{DispatchContext, PromptExperimentContext};
 use crate::task_parser::TaskDef;
 
 /// Maximum tokens an assembled prompt may emit before deterministic
@@ -67,7 +72,9 @@ pub struct PromptContext {
     pub plan_id: String,
     /// Role label.
     pub role: String,
-    /// Workspace root used to resolve `.roko` learning stores.
+    /// Attempt working directory used for task-local workspace enrichment.
+    /// Durable prompt experiments use the explicit root path in
+    /// [`Self::prompt_experiment`] instead.
     pub workdir: PathBuf,
     /// Files in scope for this task (from `task.files`).
     pub files_in_scope: Vec<String>,
@@ -79,6 +86,9 @@ pub struct PromptContext {
     pub gate_feedback: Option<GateFeedback>,
     /// Attempt number (0 = first, > 0 = retry).
     pub attempt: u32,
+    /// Durable experiment identity and root-workspace store path for this
+    /// attempt, when prompt experiments are enabled.
+    pub prompt_experiment: Option<PromptExperimentContext>,
     /// Indented tree of `crates/*/src/` paths (truncated to 20 000 chars).
     pub workspace_map: String,
     /// Raw content of this plan's `tasks.toml` (truncated to 10 000 chars).
@@ -128,6 +138,7 @@ impl PromptContext {
                 .collect(),
             gate_feedback: ctx.gate_feedback.clone(),
             attempt: ctx.attempt,
+            prompt_experiment: ctx.prompt_experiment.clone(),
             workspace_map,
             tasks_toml,
             prd_excerpt,
@@ -643,6 +654,152 @@ pub struct PromptDiagnostics {
     pub playbook_ids: Vec<String>,
     /// Neuro knowledge ids surfaced (if any).
     pub knowledge_ids: Vec<String>,
+    /// Canonical source refs and score results produced by prompt composition.
+    #[serde(default)]
+    pub scored_signals: Vec<ScoredSignalDiagnostic>,
+    /// Raw-content-free canonical allocation receipt. This is retained until
+    /// the terminal gate outcome so the exact eligible bidders and selected
+    /// sections can receive learning feedback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composition_manifest: Option<CompositionManifest>,
+    /// Raw-content-free durable experiment assignments applied before
+    /// canonical scoring and composition.
+    #[serde(default)]
+    pub experiment_assignments: Vec<PromptExperimentAssignmentDiagnostic>,
+}
+
+/// One content-addressed prompt source and its serialized score result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScoredSignalDiagnostic {
+    /// Full content-addressed Signal reference.
+    pub signal_ref: String,
+    /// JSON-encoded [`roko_compose::CandidateScoreResult`].
+    pub score_result: String,
+}
+
+/// One durable prompt experiment assignment and whether its canonical section
+/// survived the composition budget.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptExperimentAssignmentDiagnostic {
+    /// Stable durable assignment id used by dispatch and terminal feedback.
+    pub assignment_id: String,
+    /// Experiment that selected the variant.
+    pub experiment_id: String,
+    /// Selected variant id. Raw variant content is intentionally omitted.
+    pub variant_id: String,
+    /// Canonical prompt section replaced by the assigned content snapshot.
+    pub section_name: String,
+    /// Content hash retained by the experiment store.
+    pub content_hash: String,
+    /// Whether this assigned section survived canonical composition.
+    pub included: bool,
+}
+
+/// Best-effort cleanup for a treatment bucket that was prepared successfully
+/// but could not produce a dispatchable prompt. The runner has not crossed the
+/// provider boundary yet, so abandoning here must not count a trial.
+fn abandon_prompt_experiment_after_assembly_error(
+    experiment: &PromptExperimentContext,
+    assignments: &[roko_learn::prompt_experiment::PromptExperimentAssignment],
+    stage: &'static str,
+) {
+    if assignments.is_empty() {
+        return;
+    }
+    if let Err(error) = roko_learn::prompt_experiment::ExperimentStore::settle_attempt(
+        &experiment.store_path,
+        &experiment.attempt_key,
+        roko_learn::prompt_experiment::AssignmentSettlement::Abandoned,
+    ) {
+        tracing::warn!(
+            plan_id = %experiment.attempt_key.plan_id,
+            task_id = %experiment.attempt_key.task_id,
+            attempt = experiment.attempt_key.attempt,
+            %stage,
+            %error,
+            "failed to abandon prompt-experiment treatment after prompt assembly error"
+        );
+    }
+}
+
+fn apply_prompt_experiment_assignments(
+    sections: &mut [CanonicalPromptSection],
+    assignments: &[roko_learn::prompt_experiment::PromptExperimentAssignment],
+    expected_attempt: &roko_learn::prompt_experiment::PromptAttemptKey,
+    expected_role: &str,
+) -> Result<(), DispatchError> {
+    let expected_role = expected_role.trim();
+    let mut section_indices = HashMap::new();
+    for (index, section) in sections.iter().enumerate() {
+        if section_indices
+            .insert(section.name.clone(), index)
+            .is_some()
+        {
+            return Err(DispatchError::PromptAssembly(format!(
+                "canonical prompt contains duplicate section name {:?}",
+                section.name
+            )));
+        }
+    }
+
+    let mut replaced_sections = HashSet::new();
+    for assignment in assignments {
+        if assignment.attempt_key != *expected_attempt {
+            return Err(DispatchError::PromptAssembly(format!(
+                "prompt experiment assignment {} belongs to a different attempt",
+                assignment.assignment_id
+            )));
+        }
+        if assignment
+            .role
+            .as_deref()
+            .is_some_and(|role| role != expected_role)
+        {
+            return Err(DispatchError::PromptAssembly(format!(
+                "prompt experiment assignment {} targets role {:?}, not {:?}",
+                assignment.assignment_id, assignment.role, expected_role
+            )));
+        }
+        if !replaced_sections.insert(assignment.section_name.clone()) {
+            return Err(DispatchError::PromptAssembly(format!(
+                "multiple prompt experiment assignments target canonical section {:?}",
+                assignment.section_name
+            )));
+        }
+        let Some(index) = section_indices.get(&assignment.section_name).copied() else {
+            return Err(DispatchError::PromptAssembly(format!(
+                "prompt experiment assignment {} targets unknown canonical section {:?}",
+                assignment.assignment_id, assignment.section_name
+            )));
+        };
+        let content = assignment.content_snapshot.as_ref().ok_or_else(|| {
+            DispatchError::PromptAssembly(format!(
+                "prompt experiment assignment {} has no content snapshot",
+                assignment.assignment_id
+            ))
+        })?;
+        let actual_content_hash = roko_core::ContentHash::of(content.as_bytes()).to_hex();
+        if actual_content_hash != assignment.content_hash {
+            return Err(DispatchError::PromptAssembly(format!(
+                "prompt experiment assignment {} content hash does not match its snapshot",
+                assignment.assignment_id
+            )));
+        }
+
+        // Deliberately mutate only content and attribution. Canonical policy
+        // metadata (stable section id, priority, cache layer, placement, cap,
+        // and bidder) must remain exactly as the role builder produced it.
+        let section = &mut sections[index];
+        section.content.clone_from(content);
+        section.source_type = Some("prompt_experiment".into());
+        section.source_id = Some(assignment.variant_id.clone());
+        section.provenance = Some(format!(
+            "prompt_experiment:{}:{}",
+            assignment.experiment_id, assignment.assignment_id
+        ));
+        section.experiment_id = Some(assignment.experiment_id.clone());
+    }
+    Ok(())
 }
 
 // ─── Source Plugins ────────────────────────────────────────────────────
@@ -842,80 +999,74 @@ fn build_runner_context(task: &TaskDef, ctx: &PromptContext) -> String {
 
 /// The file name for the persisted attention bidders store under `.roko/learn/`.
 pub const ATTENTION_BIDDERS_FILENAME: &str = "attention-bidders.json";
+const MAX_ATTENTION_BIDDERS_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Load persisted learning bidders from `.roko/learn/attention-bidders.json`.
 ///
-/// Returns an empty map (with a warning) if the file is missing or malformed,
-/// so prompt composition never fails hard on a missing store.
-pub fn load_attention_bidders(learn_dir: &Path) -> HashMap<AttentionBidder, LearningBidder> {
+/// A missing store is a valid cold start. Malformed, oversized, or internally
+/// inconsistent stores return an error so the caller can avoid overwriting
+/// forensic evidence with a new cold-start state.
+pub fn load_attention_bidders(
+    learn_dir: &Path,
+) -> std::io::Result<HashMap<AttentionBidder, LearningBidder>> {
     let path = learn_dir.join(ATTENTION_BIDDERS_FILENAME);
-    match std::fs::read_to_string(&path) {
-        Ok(contents) => match serde_json::from_str(&contents) {
-            Ok(bidders) => {
-                tracing::debug!(path = %path.display(), "loaded attention bidders");
-                bidders
-            }
-            Err(err) => {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %err,
-                    "malformed attention-bidders.json — starting with empty bidders"
-                );
-                HashMap::new()
-            }
-        },
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            tracing::debug!(path = %path.display(), "attention-bidders.json not found — starting fresh");
-            HashMap::new()
-        }
-        Err(err) => {
-            tracing::warn!(
-                path = %path.display(),
-                error = %err,
-                "failed to read attention-bidders.json — starting with empty bidders"
-            );
-            HashMap::new()
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(err) => return Err(err),
+    };
+    if metadata.len() > MAX_ATTENTION_BIDDERS_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "attention bidder store is {} bytes; limit is {MAX_ATTENTION_BIDDERS_BYTES}",
+                metadata.len()
+            ),
+        ));
+    }
+
+    let contents = std::fs::read_to_string(&path)?;
+    let bidders: HashMap<AttentionBidder, LearningBidder> = serde_json::from_str(&contents)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    for (key, bidder) in &bidders {
+        if bidder.subsystem_id != *key
+            || !bidder.prior_bid.is_finite()
+            || bidder.prior_bid < 0.0
+            || bidder.section_betas.values().any(|(alpha, beta)| {
+                !alpha.is_finite() || !beta.is_finite() || *alpha <= 0.0 || *beta <= 0.0
+            })
+            || bidder
+                .section_costs
+                .values()
+                .any(|stats| !stats.total_cost_usd.is_finite() || stats.total_cost_usd < 0.0)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "attention bidder store failed invariant validation",
+            ));
         }
     }
+    tracing::debug!(path = %path.display(), bidder_count = bidders.len(), "loaded attention bidders");
+    Ok(bidders)
 }
 
 /// Save learning bidders to `.roko/learn/attention-bidders.json`.
 ///
-/// Creates the learn directory if it does not exist. Errors are logged
-/// but do not propagate -- bidder persistence is best-effort.
+/// Creates the learn directory if it does not exist and atomically replaces
+/// the prior snapshot only after the complete JSON payload is durable.
 pub fn save_attention_bidders(
     learn_dir: &Path,
     bidders: &HashMap<AttentionBidder, LearningBidder>,
-) {
-    if let Err(err) = std::fs::create_dir_all(learn_dir) {
-        tracing::warn!(
-            path = %learn_dir.display(),
-            error = %err,
-            "failed to create learn directory for attention-bidders"
-        );
-        return;
-    }
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(learn_dir)?;
     let path = learn_dir.join(ATTENTION_BIDDERS_FILENAME);
-    match serde_json::to_string_pretty(bidders) {
-        Ok(json) => {
-            if let Err(err) = std::fs::write(&path, json) {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %err,
-                    "failed to write attention-bidders.json"
-                );
-            } else {
-                tracing::debug!(
-                    path = %path.display(),
-                    bidder_count = bidders.len(),
-                    "saved attention bidders"
-                );
-            }
-        }
-        Err(err) => {
-            tracing::warn!(error = %err, "failed to serialize attention bidders");
-        }
-    }
+    roko_fs::atomic_write_json(&path, bidders)?;
+    tracing::debug!(
+        path = %path.display(),
+        bidder_count = bidders.len(),
+        "saved attention bidders"
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -925,7 +1076,11 @@ pub struct PromptAssembler {
     /// Optional prompt context sources. `minimal()` leaves this empty.
     sources: Vec<Arc<dyn PromptSectionSource>>,
     /// Persisted learning bidders for prompt composition.
-    learning_bidders: HashMap<AttentionBidder, LearningBidder>,
+    learning_bidders: Arc<RwLock<HashMap<AttentionBidder, LearningBidder>>>,
+    /// Requested allocation strategy from `[prompt]` configuration.
+    composition_strategy: CompositionStrategy,
+    /// Eligible allocation rounds required before `Auto` selects VCG.
+    vcg_warmup_observations: u32,
     /// Learned section-effectiveness registry for the compose builder.
     ///
     /// When present, the canonical compose path adjusts section priorities
@@ -944,7 +1099,9 @@ impl PromptAssembler {
                 Arc::new(WorkdirPlaybookSource { cache: None }),
                 Arc::new(SectionEffectivenessSource { cache: None }),
             ],
-            learning_bidders: HashMap::new(),
+            learning_bidders: Arc::new(RwLock::new(HashMap::new())),
+            composition_strategy: CompositionStrategy::Auto,
+            vcg_warmup_observations: roko_compose::DEFAULT_VCG_WARMUP_OBSERVATIONS,
             section_effectiveness: None,
         }
     }
@@ -967,7 +1124,9 @@ impl PromptAssembler {
                 }),
                 Arc::new(SectionEffectivenessSource { cache: Some(cache) }),
             ],
-            learning_bidders: HashMap::new(),
+            learning_bidders: Arc::new(RwLock::new(HashMap::new())),
+            composition_strategy: CompositionStrategy::Auto,
+            vcg_warmup_observations: roko_compose::DEFAULT_VCG_WARMUP_OBSERVATIONS,
             section_effectiveness: Some(effectiveness),
         }
     }
@@ -978,7 +1137,9 @@ impl PromptAssembler {
         Self {
             token_budget: 8_000,
             sources: Vec::new(),
-            learning_bidders: HashMap::new(),
+            learning_bidders: Arc::new(RwLock::new(HashMap::new())),
+            composition_strategy: CompositionStrategy::Auto,
+            vcg_warmup_observations: roko_compose::DEFAULT_VCG_WARMUP_OBSERVATIONS,
             section_effectiveness: None,
         }
     }
@@ -995,36 +1156,75 @@ impl PromptAssembler {
         mut self,
         bidders: HashMap<AttentionBidder, LearningBidder>,
     ) -> Self {
-        self.learning_bidders = bidders;
+        self.learning_bidders = Arc::new(RwLock::new(bidders));
         self
     }
 
-    /// Read-only access to the current learning bidders.
+    /// Replace the current learning bidders without rebuilding the dispatcher
+    /// or discarding its prompt cache.
+    pub fn replace_learning_bidders(&self, bidders: HashMap<AttentionBidder, LearningBidder>) {
+        *self.learning_bidders.write() = bidders;
+    }
+
+    /// Snapshot the current learning bidders for durable persistence.
     #[must_use]
-    pub fn learning_bidders(&self) -> &HashMap<AttentionBidder, LearningBidder> {
-        &self.learning_bidders
+    pub fn learning_bidders(&self) -> HashMap<AttentionBidder, LearningBidder> {
+        self.learning_bidders.read().clone()
+    }
+
+    /// Apply one terminal gate outcome to the exact canonical composition
+    /// receipt produced for that attempt.
+    ///
+    /// Every eligible subsystem records one round, including bidders whose
+    /// sections lost the cold-start greedy allocation. Only included sections
+    /// update success/failure posteriors, avoiding false causal credit for
+    /// context the model never saw.
+    pub fn record_outcome(&self, diagnostics: &PromptDiagnostics, gate_passed: bool) {
+        let Some(manifest) = diagnostics.composition_manifest.as_ref() else {
+            return;
+        };
+
+        let eligible = manifest
+            .included
+            .iter()
+            .map(|section| section.bidder)
+            .chain(manifest.excluded.iter().map(|section| section.bidder))
+            .collect::<HashSet<_>>();
+        let mut bidders = self.learning_bidders.write();
+        for bidder_id in eligible {
+            bidders
+                .entry(bidder_id)
+                .or_insert_with(|| LearningBidder::new(bidder_id, 1.0))
+                .observe_round();
+        }
+        for section in &manifest.included {
+            bidders
+                .entry(section.bidder)
+                .or_insert_with(|| LearningBidder::new(section.bidder, 1.0))
+                .update(&section.name, true, gate_passed);
+        }
     }
 
     /// Set the composition strategy for VCG/density-greedy budget allocation.
-    ///
-    /// The canonical `build_role_system_prompt` path manages its own budget
-    /// internally; this knob is retained for forward-compatibility with
-    /// `factory.rs` callers. The value is currently ignored by `assemble()`.
+    /// The selected strategy is passed to the canonical [`PromptComposer`]
+    /// used by [`Self::assemble`].
     #[must_use]
-    pub fn with_composition_strategy(
-        self,
-        _strategy: roko_core::config::schema::ConfigCompositionStrategy,
-    ) -> Self {
+    pub fn with_composition_strategy(mut self, strategy: ConfigCompositionStrategy) -> Self {
+        self.composition_strategy = match strategy {
+            ConfigCompositionStrategy::Auto => CompositionStrategy::Auto,
+            ConfigCompositionStrategy::DensityGreedy => CompositionStrategy::DensityGreedy,
+            ConfigCompositionStrategy::WeightedSum => CompositionStrategy::WeightedSum,
+            ConfigCompositionStrategy::Vcg => CompositionStrategy::Vcg,
+        };
         self
     }
 
     /// Set the minimum bidder-observation count before VCG allocation activates.
-    ///
-    /// Retained for forward-compatibility with `factory.rs` callers. The value
-    /// is currently ignored by `assemble()` which delegates to the canonical
-    /// `build_role_system_prompt` path.
+    /// The threshold is passed to the canonical [`PromptComposer`] used by
+    /// [`Self::assemble`].
     #[must_use]
-    pub fn with_vcg_warmup_observations(self, _observations: u32) -> Self {
+    pub fn with_vcg_warmup_observations(mut self, observations: u32) -> Self {
+        self.vcg_warmup_observations = observations;
         self
     }
 
@@ -1114,6 +1314,9 @@ impl PromptAssembler {
             if !runner_context.is_empty() {
                 tc = tc.with_context(runner_context.clone());
             }
+            if !code_context.is_empty() {
+                tc = tc.with_domain_notes(code_context.join("\n\n"));
+            }
             tc
         };
 
@@ -1132,30 +1335,142 @@ impl PromptAssembler {
             })
             .unwrap_or_default();
 
-        // Build PromptBuildOptions, threading knowledge/playbook context and
-        // section-effectiveness through to the canonical compose builder.
-        //
-        // When the assembler has a section_effectiveness registry (loaded from
-        // the PromptCache or disk), the compose builder adjusts section
-        // priorities based on historical effectiveness data.
+        // Compose the canonical section Signals under the runner's actual
+        // token budget. The manifest is the authoritative scoring receipt:
+        // every entry carries the source Signal's content hash and the exact
+        // score result used by selection.
         let section_effectiveness = self.resolve_section_effectiveness(&ctx.workdir);
-        let options = PromptBuildOptions {
-            code_context,
-            section_effectiveness,
-            ..PromptBuildOptions::default()
+        let group_context = load_group_context(&ctx.workdir, &ctx.role, task, ctx);
+        let spec = RoleSystemPromptSpec::new(role, task_context, tools_csv)
+            .with_cache_markers()
+            .with_pheromones(&group_context);
+        let composer = PromptComposer::new()
+            .with_strategy(self.composition_strategy)
+            .with_vcg_warmup_observations(self.vcg_warmup_observations)
+            .with_learning_bidders(self.learning_bidders());
+        let mut canonical_sections = if let Some(registry) = section_effectiveness.as_ref() {
+            spec.build_sections_with_section_effectiveness(registry)
+        } else {
+            spec.build_sections()
         };
-
-        // Delegate to the canonical build_role_system_prompt path.
-        let system_prompt = build_role_system_prompt(role, task_context, tools_csv, options);
+        let experiment_assignments = if let Some(experiment) = &ctx.prompt_experiment {
+            let eligible_sections = canonical_sections
+                .iter()
+                .map(|section| section.name.as_str())
+                .collect::<Vec<_>>();
+            let assignments =
+                roko_learn::prompt_experiment::ExperimentStore::prepare_attempt_assignments(
+                    &experiment.store_path,
+                    &experiment.attempt_key,
+                    Some(ctx.role.as_str()),
+                    &eligible_sections,
+                )
+                .map_err(|error| DispatchError::PromptAssembly(error.to_string()))?;
+            if let Err(error) = apply_prompt_experiment_assignments(
+                &mut canonical_sections,
+                &assignments,
+                &experiment.attempt_key,
+                &ctx.role,
+            ) {
+                abandon_prompt_experiment_after_assembly_error(
+                    experiment,
+                    &assignments,
+                    "assignment_application",
+                );
+                return Err(error);
+            }
+            assignments
+        } else {
+            Vec::new()
+        };
+        let prompt_build = match spec.compose_build_from_sections_with_budget_and_composer(
+            canonical_sections,
+            self.token_budget as usize,
+            composer,
+        ) {
+            Ok(prompt_build) => prompt_build,
+            Err(error) => {
+                if let Some(experiment) = &ctx.prompt_experiment {
+                    abandon_prompt_experiment_after_assembly_error(
+                        experiment,
+                        &experiment_assignments,
+                        "canonical_composition",
+                    );
+                }
+                return Err(DispatchError::PromptAssembly(error.to_string()));
+            }
+        };
+        let experiment_assignment_diagnostics = experiment_assignments
+            .iter()
+            .map(|assignment| PromptExperimentAssignmentDiagnostic {
+                assignment_id: assignment.assignment_id.clone(),
+                experiment_id: assignment.experiment_id.clone(),
+                variant_id: assignment.variant_id.clone(),
+                section_name: assignment.section_name.clone(),
+                content_hash: assignment.content_hash.clone(),
+                included: prompt_build
+                    .composition_manifest
+                    .as_ref()
+                    .is_some_and(|manifest| {
+                        manifest
+                            .included
+                            .iter()
+                            .any(|section| section.name == assignment.section_name)
+                    }),
+            })
+            .collect::<Vec<_>>();
+        let composition_manifest = prompt_build.composition_manifest.clone();
+        let scored_signals = prompt_build
+            .composition_manifest
+            .as_ref()
+            .into_iter()
+            .flat_map(|manifest| &manifest.scored_signals)
+            .filter_map(|scored| {
+                serde_json::to_string(&scored.result)
+                    .ok()
+                    .map(|score_result| ScoredSignalDiagnostic {
+                        signal_ref: scored.signal_ref.clone(),
+                        score_result,
+                    })
+            })
+            .collect::<Vec<_>>();
+        let included_sections = composition_manifest.as_ref().map_or_else(
+            || {
+                source_sections
+                    .iter()
+                    .map(|section| section.name.clone())
+                    .collect()
+            },
+            |manifest| {
+                manifest
+                    .included
+                    .iter()
+                    .map(|section| section.name.clone())
+                    .collect()
+            },
+        );
+        let dropped_sections = composition_manifest
+            .as_ref()
+            .map_or_else(Vec::new, |manifest| {
+                manifest
+                    .excluded
+                    .iter()
+                    .map(|section| section.name.clone())
+                    .collect()
+            });
+        let system_prompt = prompt_build.prompt;
 
         // ── Diagnostics ───────────────────────────────────────────────────
         let estimated_tokens = (system_prompt.len() / 4).max(1) as u32;
         let diagnostics = PromptDiagnostics {
-            included_sections: source_sections.iter().map(|s| s.name.clone()).collect(),
-            dropped_sections: Vec::new(),
+            included_sections,
+            dropped_sections,
             estimated_tokens,
             playbook_ids,
             knowledge_ids,
+            scored_signals,
+            composition_manifest,
+            experiment_assignments: experiment_assignment_diagnostics,
         };
 
         // ── User prompt (unchanged) ────────────────────────────────────────
@@ -1305,7 +1620,12 @@ fn collect_neuro_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<Prompt
     let store = roko_neuro::KnowledgeStore::for_workdir(&ctx.workdir);
     // store.query -> read_all handles NotFound internally (returns empty Vec).
     let query = task_query_text(task, ctx);
-    let entries = store.query(&query, 5).ok()?;
+    // Group-tagged entries have a separate membership-gated auction path.
+    // Query extra candidates first so private group entries cannot crowd public
+    // workspace knowledge out of this section before filtering.
+    let mut entries = store.query(&query, 64).ok()?;
+    entries.retain(|entry| !is_group_scoped_knowledge(entry));
+    entries.truncate(3);
     if entries.is_empty() {
         return None;
     }
@@ -1378,7 +1698,7 @@ fn collect_episode_knowledge(task: &TaskDef, ctx: &PromptContext) -> Option<Prom
             .then_with(|| b.0.cmp(&a.0))
             .then_with(|| b.1.completed_at.cmp(&a.1.completed_at))
     });
-    scored.truncate(5);
+    scored.truncate(3);
 
     let ids = scored
         .iter()
@@ -1512,6 +1832,9 @@ fn collect_neuro_knowledge_cached(
     let mut scored: Vec<(usize, &roko_neuro::KnowledgeEntry)> = entries
         .iter()
         .filter_map(|entry| {
+            if is_group_scoped_knowledge(entry) {
+                return None;
+            }
             let haystack = format!(
                 "{} {} {}",
                 entry.content,
@@ -1718,23 +2041,227 @@ fn query_keywords(text: &str) -> HashSet<String> {
 }
 
 fn episode_paths(workdir: &Path) -> Vec<PathBuf> {
-    // Build paths through Workspace accessors where possible; fall back to
-    // raw construction only for the legacy memory path.
-    //
-    // Order: root (canonical) -> learn -> memory (legacy fallback only).
-    match roko_core::Workspace::open(workdir) {
-        Ok(ws) => vec![
-            ws.episodes_path(),
-            ws.learn_episodes_path(),
-            // Legacy fallback — retained for reading pre-migration data.
-            ws.memory_dir().join("episodes.jsonl"),
-        ],
-        Err(_) => vec![
-            workdir.join(".roko").join("episodes.jsonl"),
-            workdir.join(".roko").join("learn").join("episodes.jsonl"),
-            workdir.join(".roko").join("memory").join("episodes.jsonl"),
-        ],
+    vec![roko_learn::runtime_feedback::resolve_project_episode_path(
+        workdir,
+    )]
+}
+
+const MAX_GROUP_STATE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_GROUP_CONTEXT_CHUNKS: usize = 12;
+
+#[derive(Debug, Default, Deserialize)]
+struct GroupContextState {
+    #[serde(default)]
+    groups: BTreeMap<GroupId, Group>,
+    #[serde(default)]
+    pheromones: BTreeMap<GroupId, Vec<StoredGroupPheromone>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredGroupPheromone {
+    id: String,
+    pheromone: GroupPheromone,
+    balance: f64,
+    last_touched_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Load only the group context that the dispatched logical agent may read.
+///
+/// The runner currently identifies an agent by its logical role label. Group
+/// definitions that want prompt injection therefore use that label as the
+/// member `agent_id` (for example `implementer` or `reviewer`). Unknown,
+/// malformed, or oversized state fails closed and contributes no context.
+fn load_group_context(
+    workdir: &Path,
+    agent_id: &str,
+    task: &TaskDef,
+    ctx: &PromptContext,
+) -> Vec<ContextChunk> {
+    let Some(state) = read_group_context_state(workdir) else {
+        return Vec::new();
+    };
+    let accessible = state
+        .groups
+        .iter()
+        .filter(|(_, group)| group.can_read(agent_id))
+        .map(|(group_id, group)| (group_id.clone(), group))
+        .collect::<BTreeMap<_, _>>();
+    if accessible.is_empty() {
+        return Vec::new();
     }
+
+    let now = chrono::Utc::now();
+    let mut chunks = Vec::new();
+    for (group_id, group) in &accessible {
+        let Some(pheromones) = state.pheromones.get(group_id) else {
+            continue;
+        };
+        for stored in pheromones {
+            if &stored.pheromone.group_id != group_id {
+                continue;
+            }
+            let balance = current_pheromone_balance(
+                stored.balance,
+                stored.last_touched_at,
+                group.config.pheromone_decay_rate,
+                now,
+            );
+            if balance <= f64::EPSILON {
+                continue;
+            }
+            let metadata = truncate_chars(&stored.pheromone.metadata.to_string(), 300);
+            let position = stored
+                .pheromone
+                .position_hint
+                .as_deref()
+                .map_or_else(String::new, |hint| format!(" position={hint}"));
+            chunks.push(ContextChunk {
+                content: format!(
+                    "[Group {}] [{}] deposited_by={} balance={balance:.3}{position} metadata={metadata}",
+                    group.name, stored.pheromone.signal_type, stored.pheromone.depositor
+                ),
+                source: ContextSource::Pheromone {
+                    kind: stored.pheromone.signal_type.clone(),
+                    source: format!("{}:{}", group_id, stored.id),
+                },
+                relevance: balance,
+                track_record: Some(balance),
+                confidence: Some(balance),
+                recency: Some(datetime_recency(stored.pheromone.deposited_at, now)),
+                emotional_tag: None,
+            });
+        }
+    }
+
+    let query = task_query_text(task, ctx);
+    let keywords = query_keywords(&query);
+    let knowledge = roko_neuro::KnowledgeStore::for_workdir(workdir)
+        .read_all()
+        .unwrap_or_default();
+    for entry in knowledge {
+        let scoped_group_ids = knowledge_group_ids(&entry);
+        if scoped_group_ids.is_empty()
+            || scoped_group_ids
+                .iter()
+                .any(|group_id| !accessible.contains_key(group_id))
+        {
+            continue;
+        }
+        let Some(group_id) = scoped_group_ids.first() else {
+            continue;
+        };
+        let Some(group) = accessible.get(group_id) else {
+            continue;
+        };
+        let haystack = format!("{} {}", entry.content, entry.tags.join(" ")).to_ascii_lowercase();
+        let matches = keywords
+            .iter()
+            .filter(|keyword| haystack.contains(keyword.as_str()))
+            .count();
+        let lexical = if keywords.is_empty() {
+            0.0
+        } else {
+            matches as f64 / keywords.len() as f64
+        };
+        let confidence = entry.confidence.clamp(0.0, 1.0);
+        let relevance = (0.25 + lexical * 0.5 + confidence * 0.25).clamp(0.0, 1.0);
+        chunks.push(ContextChunk {
+            content: format!(
+                "[Group {} knowledge] {}",
+                group.name,
+                truncate_chars(&entry.content, 420)
+            ),
+            source: ContextSource::KnowledgeEntry {
+                entry_id: entry.id.clone(),
+                kind: format!("{:?}", entry.kind).to_ascii_lowercase(),
+                source: entry.source.clone(),
+            },
+            relevance,
+            track_record: Some(confidence),
+            confidence: Some(confidence),
+            recency: Some(datetime_recency(entry.created_at, now)),
+            emotional_tag: None,
+        });
+    }
+
+    chunks.sort_by(|left, right| {
+        right
+            .relevance
+            .total_cmp(&left.relevance)
+            .then_with(|| left.content.cmp(&right.content))
+    });
+    chunks.truncate(MAX_GROUP_CONTEXT_CHUNKS);
+    chunks
+}
+
+fn read_group_context_state(workdir: &Path) -> Option<GroupContextState> {
+    let path = workdir.join(".roko").join("groups").join("state.json");
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "group context state metadata failed");
+            return None;
+        }
+    };
+    if metadata.len() > MAX_GROUP_STATE_BYTES {
+        tracing::warn!(
+            path = %path.display(),
+            bytes = metadata.len(),
+            "group context state exceeds read limit"
+        );
+        return None;
+    }
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "group context state read failed");
+            return None;
+        }
+    };
+    match serde_json::from_str(&contents) {
+        Ok(state) => Some(state),
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "group context state decode failed");
+            None
+        }
+    }
+}
+
+fn current_pheromone_balance(
+    balance: f64,
+    last_touched_at: chrono::DateTime<chrono::Utc>,
+    decay_modifier: f64,
+    now: chrono::DateTime<chrono::Utc>,
+) -> f64 {
+    if !balance.is_finite() || !decay_modifier.is_finite() {
+        return 0.0;
+    }
+    let elapsed_hours = (now - last_touched_at).num_milliseconds().max(0) as f64 / 3_600_000.0;
+    let daily_rate = (0.01 * decay_modifier).clamp(0.0, 1.0);
+    (balance.clamp(0.0, 1.0) * (1.0 - daily_rate).powf(elapsed_hours / 24.0)).clamp(0.0, 1.0)
+}
+
+fn datetime_recency(
+    timestamp: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> f64 {
+    let age_hours = (now - timestamp).num_milliseconds().max(0) as f64 / 3_600_000.0;
+    0.5_f64.powf(age_hours / (7.0 * 24.0)).clamp(0.0, 1.0)
+}
+
+fn is_group_scoped_knowledge(entry: &roko_neuro::KnowledgeEntry) -> bool {
+    entry.tags.iter().any(|tag| tag.starts_with("group:"))
+}
+
+fn knowledge_group_ids(entry: &roko_neuro::KnowledgeEntry) -> Vec<GroupId> {
+    entry
+        .tags
+        .iter()
+        .filter_map(|tag| tag.strip_prefix("group:"))
+        .filter(|id| !id.is_empty())
+        .map(GroupId::new)
+        .collect()
 }
 
 fn playbook_text(playbook: &roko_learn::playbook::Playbook) -> String {
@@ -1792,7 +2319,14 @@ fn render_gate_feedback(feedback: &GateFeedback) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use chrono::Utc;
+    use roko_core::{CoordinationMode, GroupConfig, GroupMember, MemberPermissions, MemberRole};
+    use roko_learn::prompt_experiment::{
+        ExperimentStore, PromptAssignmentState, PromptAttemptKey, PromptExperiment, PromptVariant,
+    };
+    use std::path::{Path, PathBuf};
+
+    const ASSIGNED_ROLE_CONTENT: &str = "EXPERIMENT_ASSIGNED_ROLE_CONTENT";
 
     fn task() -> TaskDef {
         TaskDef {
@@ -1838,11 +2372,31 @@ mod tests {
             force_backend: None,
             budget_remaining_usd: 5.0,
             attempt: 0,
+            prompt_experiment: None,
             gate_feedback: None,
             routing_context: None,
             routing_bias: None,
             dependency_outputs: Vec::new(),
         }
+    }
+
+    fn save_role_identity_experiment(path: &Path) {
+        let mut experiment = PromptExperiment::new(
+            "role-identity-experiment",
+            "role_identity",
+            vec![PromptVariant {
+                id: "role-identity-variant".into(),
+                name: "Assigned role identity".into(),
+                section_name: "role_identity".into(),
+                content: ASSIGNED_ROLE_CONTENT.into(),
+                slug: None,
+                active: true,
+            }],
+        );
+        experiment.role = Some("implementer".into());
+        let mut store = ExperimentStore::new();
+        store.register(experiment);
+        store.save(path).expect("save experiment store");
     }
 
     #[test]
@@ -1881,6 +2435,400 @@ mod tests {
         );
         assert_eq!(p.tool_allowlist.as_deref().unwrap().len(), 2);
         assert!(p.diagnostics.estimated_tokens > 0);
+        assert!(!p.diagnostics.scored_signals.is_empty());
+        assert!(p.diagnostics.scored_signals.iter().all(|scored| {
+            roko_core::ContentHash::from_hex(&scored.signal_ref).is_some()
+                && serde_json::from_str::<roko_compose::CandidateScoreResult>(&scored.score_result)
+                    .is_ok()
+        }));
+        assert!(p.diagnostics.experiment_assignments.is_empty());
+    }
+
+    #[test]
+    fn no_attempt_experiment_context_preserves_prompt_and_store() {
+        let root = tempfile::tempdir().expect("root tempdir");
+        let attempt = tempfile::tempdir().expect("attempt worktree");
+        let store_path = root.path().join("experiments.json");
+        save_role_identity_experiment(&store_path);
+        let before = std::fs::read(&store_path).expect("read experiment store");
+        let mut dispatch_ctx = ctx();
+        dispatch_ctx.workdir = attempt.path().to_path_buf();
+
+        let prompt = PromptAssembler::minimal()
+            .assemble(&task(), &PromptContext::from_task(&task(), &dispatch_ctx))
+            .expect("baseline prompt");
+
+        assert!(!prompt.system_prompt.contains(ASSIGNED_ROLE_CONTENT));
+        assert!(prompt.diagnostics.experiment_assignments.is_empty());
+        assert_eq!(
+            std::fs::read(&store_path).expect("reread experiment store"),
+            before,
+            "assembly without attempt experiment context must not mutate the store"
+        );
+        assert!(
+            !attempt.path().join(".roko/learn/experiments.json").exists(),
+            "the attempt worktree must not receive an experiment store"
+        );
+    }
+
+    #[test]
+    fn durable_attempt_assignment_replaces_one_canonical_section_before_composition() {
+        let root = tempfile::tempdir().expect("root tempdir");
+        let attempt = tempfile::tempdir().expect("attempt worktree");
+        let store_path = root.path().join("experiments.json");
+        save_role_identity_experiment(&store_path);
+        let attempt_key = PromptAttemptKey {
+            run_id: "run-1".into(),
+            plan_id: "p".into(),
+            task_id: "t".into(),
+            attempt: 1,
+        };
+        let mut dispatch_ctx = ctx();
+        dispatch_ctx.workdir = attempt.path().to_path_buf();
+        dispatch_ctx.prompt_experiment = Some(PromptExperimentContext {
+            attempt_key,
+            store_path: store_path.clone(),
+        });
+        let prompt_ctx = PromptContext::from_task(&task(), &dispatch_ctx);
+        let assembler = PromptAssembler::minimal();
+
+        let first = assembler
+            .assemble(&task(), &prompt_ctx)
+            .expect("assigned prompt");
+        let second = assembler
+            .assemble(&task(), &prompt_ctx)
+            .expect("idempotently assigned prompt");
+
+        assert!(first.system_prompt.contains(ASSIGNED_ROLE_CONTENT));
+        assert_eq!(first.system_prompt, second.system_prompt);
+        assert_eq!(
+            first.diagnostics.experiment_assignments,
+            second.diagnostics.experiment_assignments
+        );
+        let [assignment] = first.diagnostics.experiment_assignments.as_slice() else {
+            panic!("expected one raw-content-free assignment diagnostic");
+        };
+        assert_eq!(assignment.experiment_id, "role-identity-experiment");
+        assert_eq!(assignment.variant_id, "role-identity-variant");
+        assert_eq!(assignment.section_name, "role_identity");
+        assert!(
+            assignment.included,
+            "critical role identity must be included"
+        );
+        let manifest = first
+            .diagnostics
+            .composition_manifest
+            .as_ref()
+            .expect("canonical manifest");
+        let role_identity = manifest
+            .included
+            .iter()
+            .find(|section| section.name == "role_identity")
+            .expect("included assigned role identity");
+        assert!(role_identity.action_id.contains("prompt-experiment"));
+        assert!(role_identity.action_id.contains("role-identity-variant"));
+        assert!(role_identity.action_id.contains("role-identity-experiment"));
+        let diagnostics_json =
+            serde_json::to_string(&first.diagnostics).expect("serialize diagnostics");
+        assert!(!diagnostics_json.contains(ASSIGNED_ROLE_CONTENT));
+        assert!(
+            !attempt.path().join(".roko/learn/experiments.json").exists(),
+            "assignment persistence must use the explicit root store path"
+        );
+    }
+
+    #[test]
+    fn assignment_application_error_abandons_prepared_treatment_without_trial() {
+        let root = tempfile::tempdir().expect("root tempdir");
+        let attempt = tempfile::tempdir().expect("attempt worktree");
+        let store_path = root.path().join("experiments.json");
+        save_role_identity_experiment(&store_path);
+        let attempt_key = PromptAttemptKey {
+            run_id: "run-invalid-assignment".into(),
+            plan_id: "p".into(),
+            task_id: "t".into(),
+            attempt: 1,
+        };
+        let mut dispatch_ctx = ctx();
+        dispatch_ctx.workdir = attempt.path().to_path_buf();
+        dispatch_ctx.prompt_experiment = Some(PromptExperimentContext {
+            attempt_key: attempt_key.clone(),
+            store_path: store_path.clone(),
+        });
+        let prompt_ctx = PromptContext::from_task(&task(), &dispatch_ctx);
+        let assembler = PromptAssembler::minimal();
+
+        assembler
+            .assemble(&task(), &prompt_ctx)
+            .expect("prepare a valid assignment bucket");
+
+        // Simulate a semantically inconsistent-but-decodable durable receipt.
+        // Preparation returns the existing bucket, then application must reject
+        // it and clean up the reservation without crossing the launch boundary.
+        let mut persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&store_path).expect("read prepared store"))
+                .expect("decode prepared store");
+        let buckets = persisted["attempt_assignments"]
+            .as_object_mut()
+            .expect("attempt assignment buckets");
+        let bucket = buckets.values_mut().next().expect("prepared bucket");
+        let assignment = bucket["assignments"]
+            .as_array_mut()
+            .and_then(|assignments| assignments.first_mut())
+            .expect("prepared assignment");
+        assignment["content_hash"] = serde_json::Value::String("corrupted-hash".into());
+        std::fs::write(
+            &store_path,
+            serde_json::to_vec_pretty(&persisted).expect("encode corrupt receipt"),
+        )
+        .expect("write corrupt receipt");
+
+        let error = assembler
+            .assemble(&task(), &prompt_ctx)
+            .expect_err("invalid assignment must fail prompt assembly");
+        assert!(error.to_string().contains("content hash"));
+
+        let store = ExperimentStore::load_strict(&store_path).expect("load abandoned store");
+        let [assignment] = store
+            .assignments_for_attempt(&attempt_key)
+            .expect("attempt assignment receipt")
+        else {
+            panic!("expected one assignment receipt");
+        };
+        assert_eq!(assignment.state, PromptAssignmentState::Abandoned);
+        assert!(assignment.content_snapshot.is_none());
+        assert_eq!(assignment.success, None);
+        assert_eq!(
+            store
+                .get("role-identity-experiment")
+                .expect("experiment")
+                .stats
+                .values()
+                .map(|stats| stats.trials)
+                .sum::<u64>(),
+            0
+        );
+    }
+
+    #[test]
+    fn explicit_vcg_config_reaches_the_canonical_composer() {
+        let assembler =
+            PromptAssembler::minimal().with_composition_strategy(ConfigCompositionStrategy::Vcg);
+        let pctx = PromptContext::from_task(&task(), &ctx());
+        let prompt = assembler.assemble(&task(), &pctx).unwrap();
+        let manifest = prompt
+            .diagnostics
+            .composition_manifest
+            .expect("canonical composition manifest");
+
+        assert_eq!(manifest.requested_strategy, CompositionStrategy::Vcg);
+        assert_eq!(manifest.selected_strategy, CompositionStrategy::Vcg);
+        assert!(manifest.vcg_diagnostics.is_some());
+    }
+
+    #[test]
+    fn terminal_feedback_warms_auto_from_greedy_to_vcg() {
+        let assembler = PromptAssembler::minimal()
+            .with_composition_strategy(ConfigCompositionStrategy::Auto)
+            .with_vcg_warmup_observations(1);
+        let pctx = PromptContext::from_task(&task(), &ctx());
+
+        let cold = assembler.assemble(&task(), &pctx).unwrap();
+        assert_eq!(
+            cold.diagnostics
+                .composition_manifest
+                .as_ref()
+                .expect("cold manifest")
+                .selected_strategy,
+            CompositionStrategy::DensityGreedy
+        );
+
+        assembler.record_outcome(&cold.diagnostics, true);
+        assert!(
+            assembler
+                .learning_bidders()
+                .values()
+                .all(|bidder| bidder.observation_count() >= 1)
+        );
+
+        let warm = assembler.assemble(&task(), &pctx).unwrap();
+        let manifest = warm
+            .diagnostics
+            .composition_manifest
+            .expect("warm manifest");
+        assert_eq!(manifest.requested_strategy, CompositionStrategy::Auto);
+        assert_eq!(manifest.selected_strategy, CompositionStrategy::Vcg);
+        assert!(manifest.vcg_diagnostics.is_some());
+    }
+
+    #[test]
+    fn attention_bidder_store_round_trips_learned_rounds_atomically() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut bidder = LearningBidder::new(AttentionBidder::TaskContext, 1.0);
+        bidder.observe_round();
+        bidder.update("task", true, true);
+        let bidders = HashMap::from([(AttentionBidder::TaskContext, bidder)]);
+
+        save_attention_bidders(temp.path(), &bidders).expect("save bidders");
+        let restored = load_attention_bidders(temp.path()).expect("load bidders");
+
+        assert_eq!(restored, bidders);
+        assert!(!temp.path().join("attention-bidders.tmp").exists());
+    }
+
+    #[test]
+    fn malformed_attention_bidder_store_fails_closed_without_overwrite() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(ATTENTION_BIDDERS_FILENAME);
+        let original = b"{ definitely-not-json";
+        std::fs::write(&path, original).expect("write malformed store");
+
+        let error = load_attention_bidders(temp.path()).expect_err("malformed store must fail");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(std::fs::read(path).expect("read original"), original);
+    }
+
+    #[test]
+    fn attention_bidder_store_rejects_mismatched_subsystem_identity() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let invalid = HashMap::from([(
+            AttentionBidder::Neuro,
+            LearningBidder::new(AttentionBidder::Research, 1.0),
+        )]);
+        roko_fs::atomic_write_json(&temp.path().join(ATTENTION_BIDDERS_FILENAME), &invalid)
+            .expect("write invalid store");
+
+        let error = load_attention_bidders(temp.path()).expect_err("identity mismatch must fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn group_context_is_membership_gated_and_not_leaked_through_neuro() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let now = Utc::now();
+        let readable_id = GroupId::new("grp-readable");
+        let hidden_id = GroupId::new("grp-hidden");
+        let readable = Group {
+            id: readable_id.clone(),
+            name: "review-room".into(),
+            description: String::new(),
+            owner: "owner-a".into(),
+            members: vec![GroupMember {
+                agent_id: "implementer".into(),
+                owner: "owner-a".into(),
+                role: MemberRole::Member,
+                permissions: MemberPermissions::FULL,
+                joined_at: now,
+            }],
+            coordination: CoordinationMode::Stigmergic,
+            config: GroupConfig::default(),
+            created_at: now,
+            updated_at: now,
+        };
+        let hidden = Group {
+            id: hidden_id.clone(),
+            name: "secret-room".into(),
+            description: String::new(),
+            owner: "owner-b".into(),
+            members: vec![GroupMember {
+                agent_id: "reviewer".into(),
+                owner: "owner-b".into(),
+                role: MemberRole::Member,
+                permissions: MemberPermissions::FULL,
+                joined_at: now,
+            }],
+            coordination: CoordinationMode::Stigmergic,
+            config: GroupConfig::default(),
+            created_at: now,
+            updated_at: now,
+        };
+        let state = serde_json::json!({
+            "version": 1,
+            "groups": {
+                (readable_id.as_str()): readable,
+                (hidden_id.as_str()): hidden,
+            },
+            "pheromones": {
+                (readable_id.as_str()): [{
+                    "id": "visible-pheromone",
+                    "pheromone": {
+                        "group_id": readable_id,
+                        "depositor": "implementer",
+                        "signal_type": "warning",
+                        "metadata": {"summary": "visible coordination signal"},
+                        "deposited_at": now,
+                    },
+                    "balance": 0.9,
+                    "last_touched_at": now,
+                }],
+                (hidden_id.as_str()): [{
+                    "id": "hidden-pheromone",
+                    "pheromone": {
+                        "group_id": hidden_id,
+                        "depositor": "reviewer",
+                        "signal_type": "threat",
+                        "metadata": {"summary": "must remain hidden"},
+                        "deposited_at": now,
+                    },
+                    "balance": 1.0,
+                    "last_touched_at": now,
+                }],
+            },
+        });
+        let group_dir = temp.path().join(".roko/groups");
+        std::fs::create_dir_all(&group_dir).expect("group dir");
+        std::fs::write(
+            group_dir.join("state.json"),
+            serde_json::to_vec_pretty(&state).expect("state json"),
+        )
+        .expect("write state");
+
+        let neuro_dir = temp.path().join(".roko/neuro");
+        std::fs::create_dir_all(&neuro_dir).expect("neuro dir");
+        let group_entry: roko_neuro::KnowledgeEntry = serde_json::from_value(serde_json::json!({
+            "id": "group-entry",
+            "content": "visible wiring group knowledge",
+            "confidence": 0.8,
+            "tags": [format!("group:{}", readable_id)],
+            "created_at": now,
+        }))
+        .expect("group entry");
+        let public_entry: roko_neuro::KnowledgeEntry = serde_json::from_value(serde_json::json!({
+            "id": "public-entry",
+            "content": "public wiring knowledge",
+            "confidence": 0.8,
+            "tags": ["wiring"],
+            "created_at": now,
+        }))
+        .expect("public entry");
+        std::fs::write(
+            neuro_dir.join("knowledge.jsonl"),
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&group_entry).expect("group knowledge json"),
+                serde_json::to_string(&public_entry).expect("public knowledge json")
+            ),
+        )
+        .expect("write knowledge");
+
+        let mut dispatch = ctx();
+        dispatch.workdir = temp.path().to_path_buf();
+        let prompt_ctx = PromptContext::from_task(&task(), &dispatch);
+        let chunks = load_group_context(temp.path(), "implementer", &task(), &prompt_ctx);
+        let rendered = chunks
+            .iter()
+            .map(|chunk| chunk.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("visible coordination signal"));
+        assert!(rendered.contains("visible wiring group knowledge"));
+        assert!(!rendered.contains("must remain hidden"));
+        assert!(load_group_context(temp.path(), "outsider", &task(), &prompt_ctx).is_empty());
+
+        let ordinary = collect_neuro_knowledge(&task(), &prompt_ctx).expect("public knowledge");
+        assert!(ordinary.body.contains("public wiring knowledge"));
+        assert!(!ordinary.body.contains("visible wiring group knowledge"));
     }
 
     #[test]
@@ -1912,18 +2860,20 @@ mod tests {
     }
 
     #[test]
-    fn token_budget_drops_lowest_priority_sections() {
-        // The canonical builder handles its own budget; this test verifies the
-        // assembler produces a non-empty system_prompt even under a tight budget.
+    fn token_budget_rejects_critical_sections_that_cannot_fit() {
+        // Critical sections are never silently truncated or dropped. An
+        // impossible budget must stop dispatch instead of claiming a prompt
+        // was assembled within the configured limit.
         let assembler = PromptAssembler::new().with_token_budget(40);
         let mut t = task();
         t.acceptance = vec!["a very long acceptance criterion that takes many tokens".into()];
         let pctx = PromptContext::from_task(&t, &ctx());
-        let p = assembler.assemble(&t, &pctx).unwrap();
-        // The canonical path always emits at least the role identity section.
+        let error = assembler
+            .assemble(&t, &pctx)
+            .expect_err("critical prompt sections exceed the budget");
         assert!(
-            !p.system_prompt.is_empty(),
-            "system_prompt should be non-empty even with a tight budget"
+            matches!(error, DispatchError::PromptAssembly(message) if message.contains("budget exceeded")),
+            "the canonical composer must surface its budget failure"
         );
     }
 
@@ -2027,6 +2977,7 @@ mod tests {
             verify_commands: vec!["cargo test".into()],
             gate_feedback: None,
             attempt: 0,
+            prompt_experiment: None,
             workspace_map: String::new(),
             tasks_toml: String::new(),
             prd_excerpt: String::new(),

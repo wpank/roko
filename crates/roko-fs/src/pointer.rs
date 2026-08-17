@@ -123,10 +123,10 @@ impl PointerStore {
                 let mut ids = Vec::new();
                 for entry in entries {
                     let entry = entry?;
-                    if entry.file_type()?.is_file() {
-                        if let Some(name) = entry.file_name().to_str() {
-                            ids.push(name.to_owned());
-                        }
+                    if entry.file_type()?.is_file()
+                        && let Some(name) = entry.file_name().to_str()
+                    {
+                        ids.push(name.to_owned());
                     }
                 }
                 ids.sort();

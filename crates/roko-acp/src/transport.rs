@@ -51,6 +51,27 @@ pub struct StdioTransport<R = Stdin, W = Stdout> {
     pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
 }
 
+/// Removes an outbound request from the shared pending registry when its
+/// waiting future completes or is cancelled.
+struct PendingRequestGuard {
+    request_id: u64,
+    pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
+}
+
+impl Drop for PendingRequestGuard {
+    fn drop(&mut self) {
+        match self.pending_requests.lock() {
+            Ok(mut pending) => {
+                pending.remove(&self.request_id);
+            }
+            Err(_) => warn!(
+                request_id = self.request_id,
+                "pending request registry poisoned during cancellation cleanup"
+            ),
+        }
+    }
+}
+
 impl<R, W> Clone for StdioTransport<R, W> {
     fn clone(&self) -> Self {
         Self {
@@ -173,6 +194,10 @@ where
             .lock()
             .map_err(|_| TransportError::PendingRequestsPoisoned)?
             .insert(request_id, sender);
+        let _pending_guard = PendingRequestGuard {
+            request_id,
+            pending_requests: Arc::clone(&self.pending_requests),
+        };
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_owned(),
@@ -181,13 +206,7 @@ where
             params: Some(params),
         };
 
-        if let Err(error) = self.write_message(&request).await {
-            self.pending_requests
-                .lock()
-                .map_err(|_| TransportError::PendingRequestsPoisoned)?
-                .remove(&request_id);
-            return Err(error);
-        }
+        self.write_message(&request).await?;
 
         receiver
             .await
@@ -303,5 +322,41 @@ mod tests {
         let notification: JsonRpcNotification =
             serde_json::from_str(&line).expect("parse notification payload");
         assert_eq!(notification.method, "session/update");
+    }
+
+    #[tokio::test]
+    async fn cancelled_outbound_request_cleans_pending_registry() {
+        let (client, server_writer) = duplex(1024);
+        let mut transport = StdioTransport::from_io(empty(), server_writer);
+        let pending = Arc::clone(&transport.pending_requests);
+
+        let request_task = tokio::spawn(async move {
+            transport
+                .send_request("session/request_permission", json!({}))
+                .await
+        });
+
+        let mut reader = BufReader::new(client);
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .await
+            .expect("read outbound request");
+        assert_eq!(pending.lock().expect("pending registry").len(), 1);
+
+        request_task.abort();
+        assert!(
+            request_task
+                .await
+                .expect_err("request should be aborted")
+                .is_cancelled()
+        );
+        assert!(
+            pending
+                .lock()
+                .expect("pending registry after abort")
+                .is_empty(),
+            "cancelling send_request must not leak a pending response sender"
+        );
     }
 }

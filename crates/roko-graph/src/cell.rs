@@ -7,7 +7,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use roko_core::{ProtocolId, Signal, error::Result};
+use roko_core::{PredictionRecord, ProtocolId, Signal, error::Result};
 
 /// Semantic version tuple for Cell implementations.
 pub type CellVersion = (u32, u32, u32);
@@ -35,6 +35,9 @@ pub struct CellContext {
     ///
     /// Set by the engine immediately before calling [`Cell::execute`].
     pub cell_id: Option<String>,
+    /// Effective capability intersection for this execution scope.
+    /// `None` preserves the unscoped workspace behavior.
+    pub capabilities: Option<roko_core::CapabilitySet>,
 }
 
 impl CellContext {
@@ -48,6 +51,7 @@ impl CellContext {
             deadline_ms: None,
             parent_graph_id: None,
             cell_id: None,
+            capabilities: None,
         }
     }
 
@@ -115,6 +119,13 @@ impl CellContext {
         self.cell_id = Some(id);
         self
     }
+
+    /// Builder: attach the effective Space/Graph capability intersection.
+    #[must_use]
+    pub fn with_capabilities(mut self, capabilities: roko_core::CapabilitySet) -> Self {
+        self.capabilities = Some(capabilities);
+        self
+    }
 }
 
 impl Default for CellContext {
@@ -168,6 +179,29 @@ pub trait Cell: Send + Sync + 'static {
     /// Describes the output type this cell produces. `None` means untyped (Any).
     fn output_schema(&self) -> Option<&roko_core::TypeSchema> {
         None
+    }
+
+    /// Predict the expected outcome before execution.
+    ///
+    /// Returning `Some` activates the Graph Engine's canonical
+    /// predict-publish-correct lifecycle for this Cell invocation.
+    fn predict(&self, input: &[Signal]) -> Option<PredictionRecord> {
+        let _ = input;
+        None
+    }
+
+    /// Compute a normalized calibration error after successful execution.
+    ///
+    /// Predictive Cells return `Some(error)` in `[0.0, 1.0]` when their
+    /// prediction schema supports a meaningful comparison with actual output.
+    fn calibration_error(&self, prediction: &PredictionRecord, actual: &[Signal]) -> Option<f64> {
+        let _ = (prediction, actual);
+        None
+    }
+
+    /// Receive the completed prediction and actual output for online learning.
+    fn correct(&self, prediction: &PredictionRecord, actual: &[Signal]) {
+        let _ = (prediction, actual);
     }
 
     /// Execute this cell with the given input signals, producing output signals.

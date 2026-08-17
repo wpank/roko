@@ -677,6 +677,7 @@ async fn run_workflow_engine_with_services(
 
     let config = WorkflowRunConfig {
         prompt: prompt.to_string(),
+        input_messages: Vec::new(),
         workdir: workdir.to_path_buf(),
         workflow,
         enabled_gates,
@@ -1276,10 +1277,10 @@ async fn latest_learning_episode(workdir: &Path) -> Result<Option<Episode>> {
 
 fn learning_episode_paths(workdir: &Path) -> Vec<PathBuf> {
     let roko = workdir.join(".roko");
-    // Prefer the learn-root log; keep root/memory locations as fallbacks.
+    // Prefer the canonical root log; keep pre-V3 locations as fallbacks.
     vec![
-        roko.join("learn").join("episodes.jsonl"),
         roko.join("episodes.jsonl"),
+        roko.join("learn").join("episodes.jsonl"),
         roko.join("memory").join("episodes.jsonl"),
     ]
 }
@@ -1427,9 +1428,9 @@ fn load_roko_config_models(workdir: &Path) -> Vec<String> {
 mod tests {
     use super::*;
     use roko_core::foundation::{
-        FeedbackEvent, FeedbackSink, GateConfig as WorkflowGateConfig, GateReport, GateRunner,
-        GateVerdict, ModelCallRequest, ModelCallResponse, ModelCaller, PromptAssembler, PromptSpec,
-        TokenUsage,
+        FeedbackEvent, FeedbackSink, GateClassification, GateConfig as WorkflowGateConfig,
+        GateReport, GateRunner, GateVerdict, ModelCallRequest, ModelCallResponse, ModelCaller,
+        PromptAssembler, PromptSpec, TokenUsage,
     };
     use tempfile::TempDir;
     use tokio::sync::Mutex as TokioMutex;
@@ -1515,6 +1516,7 @@ mod tests {
                     .into_iter()
                     .map(|gate_name| GateVerdict {
                         gate_name,
+                        classification: GateClassification::default(),
                         passed: true,
                         skipped: false,
                         skip_reason: None,
@@ -1623,6 +1625,7 @@ mod tests {
         let report = engine
             .run(WorkflowRunConfig {
                 prompt: prompt.to_string(),
+                input_messages: Vec::new(),
                 workdir: tempdir.path().to_path_buf(),
                 workflow: WorkflowConfig::express(),
                 enabled_gates: vec!["compile".to_string()],

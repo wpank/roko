@@ -334,7 +334,26 @@ pub struct ProviderConfig {
 /// rpm = 50
 /// tpm = 40000
 /// ```
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderNetworkPolicy {
+    /// Preserve the host's normal network access for provider subprocesses.
+    #[default]
+    Allow,
+    /// Deny all provider-subprocess network access, including loopback.
+    ///
+    /// Provider construction fails when no supported kernel-backed
+    /// confinement launcher is available.
+    Deny,
+}
+
+impl ProviderNetworkPolicy {
+    pub(crate) const fn is_allow(policy: &Self) -> bool {
+        matches!(policy, Self::Allow)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProviderLimits {
     /// Maximum requests per minute across all concurrent agents.
     ///
@@ -350,6 +369,31 @@ pub struct ProviderLimits {
     /// Set to 0 to disable TPM tracking.
     #[serde(default)]
     pub tpm: u64,
+    /// Maximum CPU time, in seconds, for each spawned provider process.
+    ///
+    /// When set, provider creation fails on platforms where the operating
+    /// system limit cannot be installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cpu_seconds: Option<u64>,
+    /// Maximum address-space bytes for each spawned provider process.
+    ///
+    /// An address-space ceiling is a conservative OS-enforced upper bound on
+    /// resident memory. It may reject large sparse mappings before RSS reaches
+    /// this value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rss_bytes: Option<u64>,
+    /// Maximum process count available to the provider subprocess.
+    ///
+    /// Unix implements this with `RLIMIT_NPROC`, whose accounting scope is the
+    /// provider's real user ID rather than only its process group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_processes: Option<u64>,
+    /// Network policy for every subprocess launched for this provider.
+    ///
+    /// `deny` requires macOS Seatbelt or Linux firejail+seccomp and never
+    /// silently degrades to unrestricted execution.
+    #[serde(default, skip_serializing_if = "ProviderNetworkPolicy::is_allow")]
+    pub network: ProviderNetworkPolicy,
 }
 
 pub(crate) const fn default_provider_timeout_ms() -> Option<u64> {
@@ -643,6 +687,33 @@ impl Default for PerplexityConfig {
 #[cfg(test)]
 mod model_profile_tests {
     use super::*;
+
+    #[test]
+    fn provider_process_limits_roundtrip_through_toml() {
+        let limits = ProviderLimits {
+            rpm: 50,
+            tpm: 40_000,
+            max_cpu_seconds: Some(120),
+            max_rss_bytes: Some(2_147_483_648),
+            max_processes: Some(8),
+            network: ProviderNetworkPolicy::Deny,
+        };
+
+        let encoded = toml::to_string(&limits).expect("serialize provider limits");
+        assert!(encoded.contains("network = \"deny\""));
+        let decoded: ProviderLimits = toml::from_str(&encoded).expect("deserialize limits");
+        assert_eq!(decoded, limits);
+    }
+
+    #[test]
+    fn provider_network_allow_is_the_compatible_default() {
+        let limits: ProviderLimits =
+            toml::from_str("rpm = 10\ntpm = 0\n").expect("deserialize legacy provider limits");
+        assert_eq!(limits.network, ProviderNetworkPolicy::Allow);
+
+        let encoded = toml::to_string(&limits).expect("serialize limits");
+        assert!(!encoded.contains("network"));
+    }
 
     #[test]
     fn model_profile_max_tool_iterations_roundtrips_through_toml() {

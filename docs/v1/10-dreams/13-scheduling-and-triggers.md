@@ -1,5 +1,8 @@
 # Dream Scheduling and Triggers
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L0 Runtime (scheduling), L4 Orchestration (idle detection)
 >
 > **Synapse Traits**: `Policy` (dream scheduling policy)
@@ -9,7 +12,8 @@
 > **Prerequisites**: [01-three-phase-cycle.md](01-three-phase-cycle.md)
 
 
-> **Implementation**: Scaffold
+> **Implementation**: Runtime-wired for adaptive idle, seven-field cron, episode count,
+> and manual execution. Bus-triggered and intensive backlog policies remain future work.
 
 > **See also**: `../../tmp/refinements/09-phase-2-implications.md`,
 > `../00-architecture/01-naming-and-glossary.md`
@@ -18,7 +22,10 @@
 
 ## Trigger Conditions
 
-Dreams in Roko are triggered by two mechanisms. Both are idle-based — dreams fire when the agent has capacity, not when a clock runs down. In the two-fabric model, Delta-speed consolidation is also Bus-aware: the runner can wake on `substrate.engram.stored` Pulses instead of relying on fixed polling.
+Dreams in daemon mode are triggered by adaptive idle, optional cron, and optional episode
+count policies; manual execution is also available. All automatic paths respect the idle
+boundary. The two-fabric Bus wakeup described later in this document remains a target, not
+current runtime behavior.
 
 ### 1. Idle-Time Trigger (Primary)
 
@@ -64,7 +71,7 @@ The scheduled trigger is the fallback cadence. In the two-fabric model, Delta-sp
 
 ```toml
 [dreams]
-scheduled_interval_hours = 4  # Dream every 4 hours regardless of idle state
+scheduled_cron = "0 0 */4 * * * *"  # seven-field expression, every four hours
 ```
 
 When the scheduled trigger fires during active task execution, the dream is queued and executed at the next available idle gap. Dreams never interrupt active tasks, and Pulse-triggered Delta wakeups still respect the same idle boundary before they run.
@@ -74,9 +81,9 @@ When the scheduled trigger fires during active task execution, the dream is queu
 The CLI provides a manual dream trigger for testing and development:
 
 ```bash
-roko dream run         # Fire a dream cycle now
-roko dream report      # Show the latest dream report
-roko dream history     # List all dream reports
+roko knowledge dream run       # Fire a dream cycle now
+roko knowledge dream report    # Show the latest dream report
+roko knowledge dream schedule  # Inspect the next automatic deadline
 ```
 
 ### 4. Dream Outputs
@@ -115,11 +122,13 @@ While dreams are not driven by any end-of-life trigger, their frequency does ada
 | Normal activity | 2–4 per day | Standard idle gaps between tasks |
 | High activity, many episodes | 4–8 per day | More episodes accumulate faster, reaching the threshold sooner |
 | Very high activity, no idle time | Scheduled only | Idle trigger never fires; scheduled trigger ensures periodic consolidation |
-| Large backlog (>50 unprocessed) | Intensive mode | Multiple dream cycles fire in sequence until the backlog is reduced below threshold |
+| Large backlog | Episode-count trigger | One cycle is scheduled at the configured threshold; back-to-back intensive draining remains future work |
 
 ### Intensive Consolidation Mode
 
-When the unprocessed episode count exceeds a high-water mark (default: 50 episodes), the dream scheduler enters intensive mode:
+> **Status:** Proposed; not implemented by the current resident scheduler.
+
+When the unprocessed episode count exceeds a high-water mark (default: 50 episodes), the proposed dream scheduler enters intensive mode:
 
 1. Dream cycles fire back-to-back until the backlog is reduced to the low-water mark (default: 10 episodes)
 2. Each cycle processes a batch of episodes (default: 10 per cycle)
@@ -156,7 +165,10 @@ Plan Executor                    Dream Scheduler
     |-- Task C starts ----------------->|
 ```
 
-The orchestrator calls `dream_runner.schedule()` after each task completion, but the scheduler is also fed by Bus notifications from `substrate.engram.stored`. If the scheduler returns `Some(Duration::ZERO)`, the dream fires immediately. If it returns `Some(d)` where `d > 0`, the orchestrator sets a timer. If it returns `None`, no dream is needed.
+The daemon starts a resident scheduler that observes active work, episode growth, elapsed
+idle time, and cron deadlines. It queues one pending cron fire while work is active and
+runs it at the next idle boundary. Bus notifications from `substrate.engram.stored` are
+still proposed.
 
 ---
 
@@ -173,17 +185,18 @@ idle_threshold_mins = 15
 # Minimum unprocessed episodes required before a dream can fire
 min_episodes_for_dream = 5
 
-# Fallback scheduled dreaming (0 = disabled)
-scheduled_interval_hours = 4
+# Optional seven-field cron cadence (omit to disable)
+scheduled_cron = "0 0 */4 * * * *"
+
+# Fire once this many unconsolidated episodes exist (0 = disabled)
+episode_count_trigger = 50
+
+# Adaptive idle-delay multipliers after high/low-quality reports
+quality_gain = 0.75
+quality_penalty = 1.25
 
 # Fraction of inference budget allocated to dreams
 budget_fraction = 0.15
-
-# Intensive mode high-water mark (triggers back-to-back dreams)
-intensive_threshold = 50
-
-# Intensive mode low-water mark (stops back-to-back dreams)
-intensive_low_water = 10
 
 # Episodes processed per dream cycle
 batch_size = 10

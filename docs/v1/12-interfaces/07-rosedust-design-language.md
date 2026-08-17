@@ -1,5 +1,8 @@
 # ROSEDUST Design Language
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The visual identity of Roko: rose tones, deliberate contrast, glass morphism, and luxury motion shared across TUI, the first-party Web Portal, and Spectre visualization. The browser surface is dark-led, but REF29 requires light, dark, and high-contrast variants over the same token system.
 
 

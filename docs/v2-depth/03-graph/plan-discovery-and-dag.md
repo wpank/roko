@@ -2,6 +2,8 @@
 
 > Depth for [03-GRAPH.md](../../unified/03-GRAPH.md). How plans are discovered on disk, parsed into structured metadata, and assembled into a cross-plan executable Graph where each task is a Cell.
 
+> **Implementation status (2026-08-17):** IMPLEMENTED. Plan discovery (filesystem scan, frontmatter parsing, layout detection) and DAG construction (cross-plan edges, topological sort, wave computation) are wired in runner-v2. The `UnifiedTaskDag` and `PlanDiscovery` types in `roko-cli/src/runner/task_dag.rs` are the production path. Optimization passes (fusion, culling, speculation, incremental recomputation) are spec-level design targets.
+
 ---
 
 ## What This Document Covers
@@ -285,13 +287,13 @@ The mori-diffs document (`02-PLAN-EXECUTION.md`) reveals several gaps between th
 
 **Sentinel-based resolution (not DAG).** The current runner v2 event loop uses sentinel task names (`"next"`, `"fix"`, `"regen-verify"`) instead of proper DAG resolution. It walks all tasks and picks the first whose `is_ready()` returns true -- a linear scan sorted by string ID, not topological order. No cycle detection, no parallelism within a plan, no cross-plan dependency enforcement.
 
-**No file-conflict inference at runtime.** `UnifiedTaskDag` exists in `roko-orchestrator` with file-overlap detection, but the runner v2 event loop does not use it. Tasks are dispatched one-at-a-time.
+**No file-conflict inference at runtime.** `UnifiedTaskDag` exists in `roko-cli::orchestrator` with file-overlap detection, but the runner v2 event loop does not use it. Tasks are dispatched one-at-a-time.
 
 **No wave computation at dispatch time.** Waves are computed by `UnifiedTaskDag::waves()` but not consulted by the event loop's tick cycle.
 
 **Advanced passes are aspirational.** Task fusion, speculative execution, graph partitioning, and incremental recomputation are designed but not implemented.
 
-**What IS wired:** Plan discovery (both layouts), frontmatter parsing, TOML task parsing, plan ranking, and basic topological sort in `roko-orchestrator/src/dag.rs`. The foundation exists; the gap is in the runner's use of it.
+**What IS wired:** Plan discovery (both layouts), frontmatter parsing, TOML task parsing, plan ranking, and basic topological sort in `crates/roko-cli/src/orchestrator/dag.rs`. The foundation exists; the gap is in the runner's use of it.
 
 ---
 

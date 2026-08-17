@@ -1,5 +1,8 @@
 # Collective Intelligence Metrics: Measuring Coordination Effectiveness
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L3 Harness (monitoring and measurement), L4 Orchestration (collective-level
 > analysis)
 >

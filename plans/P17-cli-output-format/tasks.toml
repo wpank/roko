@@ -1,8 +1,8 @@
 [meta]
 plan = "P17-cli-output-format"
 total = 6
-done = 0
-status = "ready"
+done = 6
+status = "done"
 max_parallel = 1
 
 # ─── T1: Create CliOutput wrapper ──────────────────────────────────────
@@ -10,7 +10,7 @@ max_parallel = 1
 [[task]]
 id = "T1"
 title = "Create CliOutput wrapper struct in cli_output.rs"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 60
@@ -93,7 +93,7 @@ fail_msg = "roko-cli must compile"
 [[task]]
 id = "T2"
 title = "Downgrade duplicate model slug warnings to debug level"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 10
@@ -145,7 +145,7 @@ fail_msg = "Config loader tests must pass"
 [[task]]
 id = "T3"
 title = "Replace eprintln! calls in run_simple_path with CliOutput"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 20
@@ -200,7 +200,7 @@ fail_msg = "roko-cli must compile"
 [[task]]
 id = "T4"
 title = "Replace eprintln! calls in standard and complex paths with CliOutput"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 60
@@ -265,7 +265,7 @@ fail_msg = "do_cmd tests must pass"
 [[task]]
 id = "T5"
 title = "Replace plan completion summary and failure details with output_format"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 60
@@ -343,7 +343,7 @@ fail_msg = "roko-cli must compile"
 [[task]]
 id = "T6"
 title = "Replace remaining eprintln! calls in do_cmd helper functions"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 30

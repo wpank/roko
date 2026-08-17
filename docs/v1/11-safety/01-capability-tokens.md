@@ -1,5 +1,8 @@
 # Capability-Gated Tools: Compile-Time Safety Enforcement
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L1 Framework (tool authorization), L3 Harness (gate verification)
 >
 > **Crate**: `roko-agent` (shipping: `AgentWarrant` + `Capability` enum; target: generic `Capability<T>`)

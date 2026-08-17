@@ -1,5 +1,5 @@
 import type { Scenario, ClickableScenario } from '../lib/scenarios';
-import type { ServerStatus } from '../hooks/useServerHealth';
+import type { ServerStatus } from '../app/DataHub';
 import './ScenarioPreview.css';
 
 interface ScenarioPreviewProps {
@@ -121,8 +121,6 @@ function ScenarioDiagram({ scenarioId }: { scenarioId: string }) {
       return <FlowDiagram />;
     case 'memory':
       return <TransferDiagram left="First run (fresh)" right="Second run (with knowledge)" />;
-    case 'isfr':
-      return <CategoryGrid items={['Lending', 'Staking', 'Aggregator', 'Validator']} />;
     case 'oracle':
       return <ChainBlocks />;
     case 'prd-research-loop':
@@ -160,7 +158,6 @@ function scenarioPaneNote(scenarioId: string): string | null {
     case 'cost': return 'Left pane: fixed model. Right pane: cascade routing. Watch costs diverge.';
     case 'pipeline': return 'Single pane shows classify → plan → code → validate in real time.';
     case 'memory': return 'Left pane: solve from scratch. Right pane: solve with prior knowledge.';
-    case 'isfr': return 'Four panes — one per agent. They run in parallel and feed a composite rate.';
     case 'oracle': return 'Left pane: data agent reads the chain. Right pane: strategy agent reads the analysis.';
     default: return null;
   }
@@ -172,7 +169,6 @@ function scenarioFeature(scenarioId: string): string {
     case 'cost': return 'Smart routing saves money';
     case 'pipeline': return 'Prompt → working code';
     case 'memory': return 'Knowledge reuse across runs';
-    case 'isfr': return '4 agents → 1 benchmark rate';
     case 'oracle': return 'Chain data → strategy';
     case 'prd-research-loop': return 'Full self-hosting loop';
     case 'race': return 'Cost comparison';

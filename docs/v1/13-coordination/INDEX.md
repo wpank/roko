@@ -1,5 +1,8 @@
 # Coordination: Stigmergy, Pheromones, and Collective Intelligence
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Topic**: 13-coordination
 >
 > **Scope**: Multi-agent coordination in Roko — stigmergy theory, digital pheromones,

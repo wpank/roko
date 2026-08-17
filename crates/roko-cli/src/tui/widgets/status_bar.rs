@@ -1,7 +1,8 @@
 //! Bottom status bar — ported from Mori.
 //!
-//! 4 sections: git info (branch + commit + age), heartbeat + pause indicator,
-//! plan progress + health summary, context-sensitive keybind hints.
+//! 5 sections: git info (branch + commit + age), heartbeat + pause indicator,
+//! plan progress + health summary, cost/budget utilization, and context-sensitive
+//! keybind hints.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -119,6 +120,25 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         ));
     }
 
+    // Keep aggregate spend visible on the literal bottom line. The F2 plan
+    // detail supplies the per-plan projection and per-task budget breakdown.
+    let aggregate_budget = state.aggregate_plan_budget();
+    if state.cost_dollars > 0.001 || aggregate_budget > 0.0 {
+        let cost = if aggregate_budget > 0.0 {
+            format!(
+                " ${:.2} / ${aggregate_budget:.2} ({:.0}%)",
+                state.cost_dollars,
+                state.cost_dollars / aggregate_budget * 100.0
+            )
+        } else {
+            format!(" ${:.2} / unlimited", state.cost_dollars)
+        };
+        spans.push(Span::styled(
+            cost,
+            Style::default().fg(Theme::BONE).bg(Theme::BG_SECONDARY),
+        ));
+    }
+
     spans.push(Span::styled(
         " \u{2502} ",
         Style::default().fg(Theme::ROSE_DIM).bg(Theme::BG_SECONDARY),
@@ -171,6 +191,16 @@ mod tests {
     use super::super::super::dashboard::DashboardData;
     use super::super::super::state::TuiState;
 
+    fn rendered_text(terminal: &Terminal<TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
     #[test]
     fn status_bar_renders_without_panic() {
         let data = DashboardData::default();
@@ -194,5 +224,20 @@ mod tests {
         let healthy = key_hints_for_tab(Tab::Dashboard, false);
         assert!(!healthy.contains("R:retry"));
         assert!(!healthy.contains("D:diag"));
+    }
+
+    #[test]
+    fn status_bar_renders_spend_budget_and_utilization() {
+        let mut state = TuiState::from_dashboard_data(&DashboardData::default());
+        state.cost_dollars = 2.5;
+        state.max_plan_budget_usd = 10.0;
+        state.plans.push(Default::default());
+        let backend = TestBackend::new(180, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_status_bar(frame, frame.area(), &state))
+            .unwrap();
+
+        assert!(rendered_text(&terminal).contains("$2.50 / $10.00 (25%)"));
     }
 }

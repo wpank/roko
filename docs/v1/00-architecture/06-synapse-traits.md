@@ -1,5 +1,8 @@
 # The Six Synapse Traits
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** This document keeps the Synapse trait model as a load-bearing part of Roko's
 > architecture, but no longer treats the historical "one noun, six verbs" mnemonic as the
 > complete story. Roko's kernel is better read as two mediums, durable Engram and ephemeral

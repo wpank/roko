@@ -1,6 +1,27 @@
 # 12 — Extension System
 
 > Extension = Cell that intercepts another Cell's pipeline. Every data flow through an Extension is tagged with its capability provenance via CaMeL IFC. Extensions cannot launder capabilities. 8 layers, 22 hooks, 6 decision enums, 5-tier packaging.
+> **Implementation status:** E32 MANIFEST COMPLETE (8/8) -- the current Rust Extension trait has 23 hooks across 8
+> layers, CaMeL IFC tags, manifest/plugin loading, dependency ordering, hook isolation,
+> circuit breaking, live HTTP status/detail routes, canonical tier/capability manifests,
+> three-root plugin resolution, executable declarative subprocess tools, verified atomic
+> registry install/publish, and CLI list/audit/install/publish are implemented. Declarative subprocesses enforce strict manifests, capability/context
+> admission, exact environment inheritance, canonical path boundaries, bounded concurrent
+> output, process-tree cleanup, and fail-closed kernel confinement through macOS Seatbelt or
+> Linux firejail/seccomp. A no-import WASM runtime enforces fuel, memory, module-size,
+> payload, path, and time limits through a typed JSON ABI for every current Rust hook.
+> Required fetch/load/validation/init failures abort runner and serve startup before work
+> or bind; optional failures are isolated and disabled. Claude/Codex CLI, Cursor/Hermes
+> ACP, and Runner-v2 Gemini CLI paths expose canonical handlers through authenticated
+> per-call MCP; Gemini uses native stream-JSON and task-scoped system settings. The relay accepts
+> allowlisted Ed25519 publishers and stores immutable signed versions atomically. Signed
+> schema-v2 packages bind semantic-version dependency ranges; relay backtracking selects
+> the highest compatible dependency-first graph with conflict/cycle rejection, and the CLI
+> revalidates that exact graph plus installed-version conflicts. Schema-v1/name-only packages
+> remain compatible. The aspirational WIT/Component-model Store/Bus/capability-hostcall ABI
+> and parity for OpenClaw and legacy one-shot adapters are separate roadmap items, not
+> requirements in the authoritative E32 task manifest; unsupported paths reject local plugin
+> runtimes rather than advertising unusable tools.
 
 **Subsumes**: Extension trait, hook chain, extension loading, extension registry, CaMeL IFC tag propagation, decision enums, fault isolation, dependency resolution.
 
@@ -125,11 +146,14 @@ Extensions follow the **5-tier SPI**. The tier determines sandboxing, distributi
 |---|---|---|---|
 | **1. Prompts** | Markdown/TOML front-matter declaring hook behavior | None (no execution) | Marketplace |
 | **2. Config** | TOML profile bundles that configure built-in Extensions | None | Marketplace |
-| **3. Declarative tools** | TOML manifests for subprocess/HTTP/MCP hooks, sandboxed | OS-level process isolation | Verified publishers |
-| **4. WASM** | Compiled WASM implementing Extension hooks | WASM sandbox (fuel-metered) | Marketplace (recommended) |
+| **3. Declarative tools** | TOML manifests for subprocess/HTTP/MCP hooks | Pre-spawn path/env/shell policy, cleared environment, timeout and kill-on-drop, plus fail-closed Seatbelt/firejail confinement | Verified publishers |
+| **4. WASM** | Compiled WASM implementing Extension hooks | No-import typed JSON ABI with fuel, memory, module, payload, path, and time limits | Signed relay registry (recommended) |
 | **5. Native Rust** | `impl Extension for MyExt` compiled in-tree | Process-level | In-tree only |
 
-Most third-party Extensions should target Tier 4 (WASM). Tiers 1-3 cover common cases without writing code. Tier 5 is reserved for built-in Extensions and trusted in-tree plugins.
+Tier 4 (WASM) is the recommended distribution target and its bounded core ABI is live for
+all 23 current Rust hooks. The Component/WIT Store/Bus/capability-hostcall ABI remains
+aspirational. Tiers 1-3 cover current authoring and declarative subprocess use cases. Tier 5
+is reserved for built-in Extensions and trusted in-tree plugins.
 
 ### TOML authoring
 
@@ -476,16 +500,17 @@ Check .roko/extensions/vuln-scanner/
 GET {relay_url}/registry/extensions/vuln-scanner
          |
          v
-Download to .roko/extensions/vuln-scanner/
+Download the signed package envelope to staging
          |
          v
-Verify SHA-256 checksum from registry manifest
+Verify publisher signature, SHA-256 checksum, identity, safe paths,
+capabilities, dependency declarations, and WASM ABI/resource bounds
          |
          v
-Verify CaMeL capability declarations match advertised
+Recursively fetch and verify missing dependencies
          |
          v
-Load per tier
+Atomically rename into .roko/extensions/vuln-scanner/ and load per tier
 ```
 
 ---
@@ -570,9 +595,9 @@ The `run()` method is not the primary execution path for Extensions. The runtime
 ```
 1. Load built-in Extensions (Tier 5)
 2. Load local Extensions from .roko/extensions/ (Tiers 1-4)
-3. Fetch registry Extensions (if referenced but not local)
-4. Validate SHA-256 checksums (registry Extensions)
-5. Validate CaMeL capability declarations against Space grants
+3. Fetch registry Extensions and dependencies (if referenced but not local)
+4. Validate signatures, checksums, identities, paths, capabilities, and WASM bounds
+5. Atomically expose verified files, then validate capabilities against Space grants
 6. Sort Extensions per layer:
    a. Topological sort by depends_on
    b. Stable sort by config order (within dependency groups)
@@ -707,7 +732,7 @@ The runtime passes this config to the Extension's `on_init` hook via `AgentConte
 | `roko-agent` | Extension loading, dependency resolution, hook dispatch, fault isolation, CaMeL tag propagation |
 | `roko-std` | Built-in Extension implementations (git, compiler, test-runner, camel-monitor, etc.) |
 | `roko-cli` | Extension configuration in roko.toml, profile defaults |
-| `roko-serve` | Extension status endpoints (`GET /api/extensions`) |
+| `roko-serve` | Live extension status endpoints (`GET /api/extensions`, `GET /api/extensions/{name}`) sharing the runner chain |
 | `roko-gate` | CaMeL IFC verification (see [doc-16](16-SECURITY.md)) |
 
 ---
@@ -716,7 +741,7 @@ The runtime passes this config to the Extension's `on_init` hook via `AgentConte
 
 | # | Criterion | Verification |
 |---|---|---|
-| EX-1 | Extension trait compiles with all 22 hooks and default no-op implementations | `cargo check` |
+| EX-1 | Extension trait compiles with all 23 hooks and default no-op implementations | `cargo check` |
 | EX-2 | `FilterDecision::Drop` silently discards Pulse (logged at DEBUG) | Unit test |
 | EX-3 | `FilterDecision::Transform` replaces Pulse content, preserves CaMeL tags | Unit test |
 | EX-4 | `ActionDecision::Block` halts action but Agent continues | Integration test |
@@ -729,7 +754,7 @@ The runtime passes this config to the Extension's `on_init` hook via `AgentConte
 | EX-11 | Cyclic dependency detected at startup with cycle description | Unit test |
 | EX-12 | Extensions sorted: by layer, then by dependency, then by config order | Unit test |
 | EX-13 | Built-in Extensions always load first | Integration test |
-| EX-14 | Registry fetch verifies SHA-256 checksum | Integration test |
+| EX-14 | Registry install verifies the signed envelope, checksum, identity, capabilities/dependencies, safe paths, WASM ABI, and recursively installs hard dependencies atomically | Integration test |
 | EX-15 | Shutdown hooks fire in reverse layer order | Integration test |
 | EX-16 | Extension hook errors do not crash the Agent | Integration test |
 | EX-17 | 5 consecutive hook failures disable the Extension | Integration test |
@@ -739,3 +764,4 @@ The runtime passes this config to the Extension's `on_init` hook via `AgentConte
 | EX-21 | L1 and L5 hooks receive Pulses, not Signals | Integration test |
 | EX-22 | CamelTag provenance chain intact after 3+ Extension hops | Unit test |
 | EX-23 | 5-tier SPI: WASM Extension loads and runs sandboxed | Integration test |
+| EX-24 | Relay publication rejects invalid bearer tokens, unauthorized signing keys, missing dependencies, and altered immutable versions; identical republishing is idempotent | Integration test |

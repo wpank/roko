@@ -1,5 +1,8 @@
 # Score: 7-Axis Appraisal
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** Every Engram in Roko carries a multi-dimensional quality score. The Score
 > struct provides a structured assessment across seven axes — four stable (confidence,
 > novelty, utility, reputation) and three extended (precision, salience, coherence). These

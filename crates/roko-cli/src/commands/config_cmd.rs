@@ -3,6 +3,7 @@
 
 use crate::*;
 use indexmap::IndexMap;
+use roko_core::tool::{ToolRegistry, ToolSource};
 use roko_fs::RokoLayout;
 use serde::Serialize;
 
@@ -664,20 +665,18 @@ pub(crate) async fn cmd_provider_test_all(workdir: &Path, json: bool) -> Result<
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-        {
-            if std::env::var(env_name)
+            && std::env::var(env_name)
                 .unwrap_or_default()
                 .trim()
                 .is_empty()
-            {
-                results.push(ProviderTestAllRow {
-                    provider: name.clone(),
-                    kind: provider.kind.to_string(),
-                    status: "SKIPPED (no key)".into(),
-                    duration_ms: None,
-                });
-                continue;
-            }
+        {
+            results.push(ProviderTestAllRow {
+                provider: name.clone(),
+                kind: provider.kind.to_string(),
+                status: "SKIPPED (no key)".into(),
+                duration_ms: None,
+            });
+            continue;
         }
         let started = Instant::now();
         match cmd_provider_test(workdir, Some(name.as_str()), None, None, false).await {
@@ -1084,6 +1083,7 @@ pub(crate) async fn cmd_plugin(cli: &Cli, cmd: PluginCmd) -> Result<i32> {
     let workdir = match &cmd {
         PluginCmd::List { workdir, .. } => workdir.clone(),
         PluginCmd::Install { workdir, .. } => workdir.clone(),
+        PluginCmd::Publish { workdir, .. } => workdir.clone(),
         PluginCmd::Remove { workdir, .. } => workdir.clone(),
         PluginCmd::Audit { workdir } => workdir.clone(),
     }
@@ -1091,16 +1091,15 @@ pub(crate) async fn cmd_plugin(cli: &Cli, cmd: PluginCmd) -> Result<i32> {
 
     match cmd {
         PluginCmd::List { json, .. } => {
+            let extensions_dir = RokoLayout::for_project(&workdir).extensions_dir();
             let plugins_dir = workdir.join("plugins");
             let roko_plugins = workdir.join(".roko").join("plugins");
-            let mut all_plugins = Vec::new();
-
-            for dir in [&plugins_dir, &roko_plugins] {
-                match roko_plugin::manifest::discover_plugins(dir) {
-                    Ok(found) => all_plugins.extend(found),
-                    Err(_) => {} // Directory doesn't exist — fine
-                }
-            }
+            let catalog = roko_cli::runner::extension_loader::resolve_plugin_tool_catalog(
+                &workdir,
+                &[],
+                &[],
+            )?;
+            let all_plugins = catalog.plugins();
 
             // Also honour the global --json flag.
             let emit_json = json || cli.json;
@@ -1111,6 +1110,12 @@ pub(crate) async fn cmd_plugin(cli: &Cli, cmd: PluginCmd) -> Result<i32> {
                     .map(|plugin| {
                         let m = &plugin.manifest;
                         let sandbox = m.effective_sandbox();
+                        let tools = catalog
+                            .registry()
+                            .by_extension(&m.plugin.name)
+                            .into_iter()
+                            .map(|tool| tool.name.clone())
+                            .collect::<Vec<_>>();
                         PluginListEntry {
                             name: m.plugin.name.clone(),
                             version: m.plugin.version.clone(),
@@ -1124,8 +1129,8 @@ pub(crate) async fn cmd_plugin(cli: &Cli, cmd: PluginCmd) -> Result<i32> {
                                 allowed_path_count: sandbox.allowed_paths.len(),
                                 denied_path_count: sandbox.denied_paths.len(),
                             },
-                            tool_count: m.tool_count(),
-                            tools: m.tools.iter().map(|t| t.name.clone()).collect(),
+                            tool_count: tools.len(),
+                            tools,
                             prompt_count: m.prompts.len(),
                             profile_count: m.profiles.len(),
                             trigger_count: m.triggers.len(),
@@ -1137,14 +1142,15 @@ pub(crate) async fn cmd_plugin(cli: &Cli, cmd: PluginCmd) -> Result<i32> {
             } else if all_plugins.is_empty() {
                 println!("no plugins found");
                 println!(
-                    "  search paths: {}, {}",
+                    "  search paths: {}, {}, {}",
+                    extensions_dir.display(),
                     plugins_dir.display(),
                     roko_plugins.display()
                 );
                 println!("  install a plugin with: roko plugin install <path>");
             } else {
                 println!("installed plugins ({}):", all_plugins.len());
-                for plugin in &all_plugins {
+                for plugin in all_plugins {
                     let m = &plugin.manifest;
                     let meta = &m.plugin;
                     let desc = meta.description.as_deref().unwrap_or("no description");
@@ -1172,14 +1178,17 @@ pub(crate) async fn cmd_plugin(cli: &Cli, cmd: PluginCmd) -> Result<i32> {
 
                     // Tool count and names.
                     if !m.tools.is_empty() {
+                        let tool_names = catalog
+                            .registry()
+                            .by_extension(&meta.name)
+                            .into_iter()
+                            .map(|tool| tool.name.as_str())
+                            .collect::<Vec<_>>();
                         println!(
-                            "    tools ({}): {}",
-                            m.tool_count(),
-                            m.tools
-                                .iter()
-                                .map(|t| t.name.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
+                            "    tools: {} (tier: {}) — {}",
+                            tool_names.len(),
+                            tier.label(),
+                            tool_names.join(", ")
                         );
                     }
                     if !m.prompts.is_empty() {
@@ -1211,6 +1220,39 @@ pub(crate) async fn cmd_plugin(cli: &Cli, cmd: PluginCmd) -> Result<i32> {
         PluginCmd::Install { source, .. } => {
             let source_path = std::path::Path::new(&source);
 
+            // A non-path source is a registry extension name. Registry
+            // installation validates checksum, identity, capabilities, and
+            // every package path before atomically exposing the directory.
+            if !source_path.exists() {
+                let config = roko_core::config::loader::load_config_unified(&workdir)
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                let registry_base =
+                    roko_cli::runner::extension_registry::registry_base_url(
+                        config.relay.url.as_deref(),
+                    )
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "cannot install registry extension `{source}`: configure relay.url or ROKO_EXTENSION_REGISTRY_URL"
+                        )
+                    })?;
+                let (name, requirement) =
+                    roko_cli::runner::extension_registry::parse_registry_selector(&source)
+                        .map_err(anyhow::Error::msg)?;
+                let installed =
+                    roko_cli::runner::extension_registry::install_registry_extension_requirement(
+                        &workdir,
+                        &name,
+                        &requirement,
+                        &registry_base,
+                    )
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                println!(
+                    "installed registry extension `{source}` to {}",
+                    installed.display()
+                );
+                return Ok(EXIT_SUCCESS);
+            }
+
             // Find the manifest file.
             let manifest_path = if source_path.is_file() {
                 source_path.to_path_buf()
@@ -1241,14 +1283,14 @@ pub(crate) async fn cmd_plugin(cli: &Cli, cmd: PluginCmd) -> Result<i32> {
             std::fs::copy(&manifest_path, &dest_manifest)?;
 
             // Copy the containing directory's files if source is a directory.
-            if source_path.is_dir() {
-                if let Ok(entries) = std::fs::read_dir(source_path) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.is_file() && path != manifest_path {
-                            let dest = install_dir.join(entry.file_name());
-                            std::fs::copy(&path, &dest)?;
-                        }
+            if source_path.is_dir()
+                && let Ok(entries) = std::fs::read_dir(source_path)
+            {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() && path != manifest_path {
+                        let dest = install_dir.join(entry.file_name());
+                        std::fs::copy(&path, &dest)?;
                     }
                 }
             }
@@ -1268,6 +1310,52 @@ pub(crate) async fn cmd_plugin(cli: &Cli, cmd: PluginCmd) -> Result<i32> {
             );
             Ok(EXIT_SUCCESS)
         }
+        PluginCmd::Publish {
+            source,
+            publisher,
+            registry,
+            ..
+        } => {
+            let source = source.canonicalize().with_context(|| {
+                format!("resolve extension source directory {}", source.display())
+            })?;
+            if !source.is_dir() {
+                anyhow::bail!(
+                    "extension publish source must be a directory: {}",
+                    source.display()
+                );
+            }
+            let config = roko_core::config::loader::load_config_unified(&workdir)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            let registry_base = registry
+                .or_else(|| {
+                    roko_cli::runner::extension_registry::registry_base_url(
+                        config.relay.url.as_deref(),
+                    )
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "configure relay.url, --registry, or ROKO_EXTENSION_REGISTRY_URL"
+                    )
+                })?;
+            let bearer_token = std::env::var("ROKO_EXTENSION_REGISTRY_PUBLISH_TOKEN")
+                .context("ROKO_EXTENSION_REGISTRY_PUBLISH_TOKEN is required")?;
+            let signing_key = std::env::var("ROKO_EXTENSION_REGISTRY_SIGNING_KEY")
+                .context("ROKO_EXTENSION_REGISTRY_SIGNING_KEY is required")?;
+            let package = roko_cli::runner::extension_registry::publish_registry_extension(
+                &source,
+                &publisher,
+                &bearer_token,
+                &signing_key,
+                &registry_base,
+            )
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            println!(
+                "published extension {}@{} as {} ({})",
+                package.name, package.version, package.publisher, package.sha256
+            );
+            Ok(EXIT_SUCCESS)
+        }
         PluginCmd::Remove { name, .. } => {
             let install_dir = workdir.join(".roko").join("plugins").join(&name);
             if !install_dir.exists() {
@@ -1281,22 +1369,39 @@ pub(crate) async fn cmd_plugin(cli: &Cli, cmd: PluginCmd) -> Result<i32> {
             Ok(EXIT_SUCCESS)
         }
         PluginCmd::Audit { .. } => {
-            let plugins_dir = workdir.join("plugins");
-            let roko_plugins = workdir.join(".roko").join("plugins");
-            let mut all_plugins = Vec::new();
-
-            for dir in [&plugins_dir, &roko_plugins] {
-                match roko_plugin::manifest::discover_plugins(dir) {
-                    Ok(found) => all_plugins.extend(found),
-                    Err(_) => {}
+            let catalog = match roko_cli::runner::extension_loader::resolve_plugin_tool_catalog(
+                &workdir,
+                &[],
+                &[],
+            ) {
+                Ok(catalog) => catalog,
+                Err(error) => {
+                    println!("plugin audit could not resolve the catalog: {error}");
+                    println!("catalog counts unavailable; audit failed closed");
+                    return Ok(EXIT_FAILURE);
                 }
-            }
+            };
+            let all_plugins = catalog.plugins();
+            let catalog_issues = catalog.validation_issues();
+            let builtin_unhandled = catalog_issues
+                .iter()
+                .filter(|issue| {
+                    let roko_std::tool::ToolValidationIssue::UnhandledTool { name } = issue else {
+                        return false;
+                    };
+                    catalog
+                        .registry()
+                        .get(name)
+                        .is_some_and(|tool| matches!(&tool.source, ToolSource::Builtin))
+                })
+                .count();
+            let mut tier_violations = 0_usize;
 
             if all_plugins.is_empty() {
                 println!("no plugins to audit");
             } else {
                 println!("plugin audit ({} plugins):", all_plugins.len());
-                for plugin in &all_plugins {
+                for plugin in all_plugins {
                     let m = &plugin.manifest;
                     println!("\n  {} v{}", m.plugin.name, m.plugin.version);
                     println!("    location: {}", plugin.base_dir.display());
@@ -1322,10 +1427,38 @@ pub(crate) async fn cmd_plugin(cli: &Cli, cmd: PluginCmd) -> Result<i32> {
                     );
 
                     // Tools with their commands (security audit)
+                    let capabilities = m.capabilities();
                     for tool in &m.tools {
+                        let mut violations = capabilities.denied_by(m.tier());
+                        if !capabilities.exec {
+                            violations.push("exec");
+                        }
+                        let uses_proxy = tool
+                            .env
+                            .keys()
+                            .any(|name| name.to_ascii_uppercase().contains("PROXY"));
+                        if uses_proxy && !capabilities.network_egress {
+                            violations.push("network_egress");
+                        }
+                        violations.sort_unstable();
+                        violations.dedup();
+                        if !violations.is_empty() {
+                            tier_violations += 1;
+                        }
                         println!(
-                            "    tool `{}`: `{}` (timeout: {}ms)",
-                            tool.name, tool.command, tool.timeout_ms
+                            "    tool `{}`: `{}` (timeout: {}ms){}",
+                            roko_cli::runner::extension_loader::declarative_to_tool_def(
+                                tool,
+                                &m.plugin.name,
+                            )
+                            .name,
+                            tool.command,
+                            tool.timeout_ms,
+                            if violations.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" [tier violation: {}]", violations.join(", "))
+                            }
                         );
                     }
 
@@ -1371,7 +1504,18 @@ pub(crate) async fn cmd_plugin(cli: &Cli, cmd: PluginCmd) -> Result<i32> {
                     }
                 }
             }
-            Ok(EXIT_SUCCESS)
+            for issue in &catalog_issues {
+                println!("  catalog: {issue}");
+            }
+            println!(
+                "{builtin_unhandled} builtins without handlers, {tier_violations} plugin tools exceeding tier, {} catalog issues",
+                catalog_issues.len()
+            );
+            if catalog_issues.is_empty() && tier_violations == 0 {
+                Ok(EXIT_SUCCESS)
+            } else {
+                Ok(EXIT_FAILURE)
+            }
         }
     }
 }

@@ -1,5 +1,8 @@
 # Active Inference State Space: Factorized Discrete POMDP
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > A 90-state tractable model that makes active inference practical - not modeling the world, but modeling the agent's epistemic situation.
 
 

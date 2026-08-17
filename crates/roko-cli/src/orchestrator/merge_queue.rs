@@ -714,6 +714,7 @@ impl MergeQueue {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
+#[allow(unused_must_use)]
 mod tests {
     use super::*;
 

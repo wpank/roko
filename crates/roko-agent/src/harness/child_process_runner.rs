@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use crate::process::env::{AgentEnv, apply_agent_env};
 use crate::process::group::set_process_group;
 use crate::process::kill::kill_tree;
+use crate::process::limits::{ResourceLimits, confined_command};
 use crate::process::registry::{register_spawned_pid, unregister_pid};
 
 use super::error::HarnessError;
@@ -93,6 +94,7 @@ pub struct ChildProcessRunner {
     name: String,
     /// Whether to print heartbeat messages during long runs.
     heartbeat_enabled: bool,
+    resource_limits: Option<ResourceLimits>,
 }
 
 impl ChildProcessRunner {
@@ -105,6 +107,7 @@ impl ChildProcessRunner {
             env: ScrubbedEnv::default(),
             name: String::new(),
             heartbeat_enabled: true,
+            resource_limits: None,
         }
     }
 
@@ -132,6 +135,12 @@ impl ChildProcessRunner {
         self
     }
 
+    /// Apply OS resource limits to every child spawned by this runner.
+    pub fn with_resource_limits(mut self, limits: ResourceLimits) -> Self {
+        self.resource_limits = Some(limits);
+        self
+    }
+
     /// Run a one-shot command, stream its output through a parser, and
     /// return the collected events.
     ///
@@ -154,7 +163,8 @@ impl ChildProcessRunner {
     ) -> Result<Vec<HarnessEvent>, HarnessError> {
         let started = Instant::now();
 
-        let mut cmd = Command::new(&self.program);
+        let mut cmd = confined_command(&self.program, self.resource_limits.as_ref())
+            .map_err(HarnessError::Io)?;
         cmd.args(args)
             .current_dir(&self.current_dir)
             .stdin(std::process::Stdio::piped())
@@ -164,14 +174,13 @@ impl ChildProcessRunner {
 
         set_process_group(&mut cmd);
         self.env.apply(&mut cmd);
-
         let mut child = cmd.spawn().map_err(HarnessError::Io)?;
 
         let pid = child.id();
-        if let Some(pid) = pid {
-            if track_pids() {
-                register_spawned_pid(pid);
-            }
+        if let Some(pid) = pid
+            && track_pids()
+        {
+            register_spawned_pid(pid);
         }
 
         // Write stdin if provided.
@@ -243,10 +252,10 @@ impl ChildProcessRunner {
         .await;
 
         // Clean up PID registration.
-        if let Some(pid) = pid {
-            if track_pids() {
-                unregister_pid(pid);
-            }
+        if let Some(pid) = pid
+            && track_pids()
+        {
+            unregister_pid(pid);
         }
 
         // Finalize the parser.
@@ -282,7 +291,8 @@ impl ChildProcessRunner {
     /// exit. The caller is responsible for driving I/O on the returned
     /// child's stdin/stdout/stderr.
     pub fn spawn_persistent(&self, args: &[&str]) -> Result<SpawnedChild, HarnessError> {
-        let mut cmd = Command::new(&self.program);
+        let mut cmd = confined_command(&self.program, self.resource_limits.as_ref())
+            .map_err(HarnessError::Io)?;
         cmd.args(args)
             .current_dir(&self.current_dir)
             .stdin(std::process::Stdio::piped())
@@ -292,14 +302,13 @@ impl ChildProcessRunner {
 
         set_process_group(&mut cmd);
         self.env.apply(&mut cmd);
-
         let child = cmd.spawn().map_err(HarnessError::Io)?;
 
         let pid = child.id();
-        if let Some(pid) = pid {
-            if track_pids() {
-                register_spawned_pid(pid);
-            }
+        if let Some(pid) = pid
+            && track_pids()
+        {
+            register_spawned_pid(pid);
         }
 
         Ok(SpawnedChild { child, pid })
@@ -309,6 +318,7 @@ impl ChildProcessRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use roko_core::config::provider::ProviderNetworkPolicy;
     use std::fs;
     use tempfile::tempdir;
 
@@ -372,6 +382,66 @@ mod tests {
         assert!(
             texts.iter().any(|t| t.contains("second line")),
             "expected 'second line' in output, got: {texts:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn workload_path_accepts_explicit_network_allow_policy() {
+        let dir = tempdir().unwrap();
+        let script = dir.path().join("allowed.sh");
+        write_script(&script, "#!/bin/sh\necho allowed\n");
+        let runner = ChildProcessRunner::new(script.as_os_str(), dir.path())
+            .with_resource_limits(ResourceLimits::default())
+            .with_heartbeat(false);
+        let mut parser = EchoParser;
+
+        let events = runner
+            .run_one_shot(&[], None, &mut parser, None)
+            .await
+            .expect("allowed workload should run without a confinement launcher");
+
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, HarnessEvent::Output(line) if line == "allowed"))
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[tokio::test]
+    async fn workload_network_denial_is_enforced_or_fails_closed() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback listener");
+        let address = listener.local_addr().expect("listener address");
+        let accept = tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_millis(750), listener.accept()).await
+        });
+        let limits = ResourceLimits {
+            network: ProviderNetworkPolicy::Deny,
+            ..Default::default()
+        };
+        let dir = tempdir().unwrap();
+        let runner = ChildProcessRunner::new("/usr/bin/curl", dir.path())
+            .with_resource_limits(limits)
+            .with_timeout(Duration::from_secs(1))
+            .with_heartbeat(false);
+        let url = format!("http://{address}/");
+        let mut parser = EchoAllParser;
+
+        let result = runner
+            .run_one_shot(
+                &["--silent", "--max-time", "0.5", &url],
+                None,
+                &mut parser,
+                None,
+            )
+            .await;
+
+        assert!(result.is_err(), "denied workload must not reach the server");
+        assert!(
+            accept.await.expect("accept task").is_err(),
+            "network-denied workload reached a loopback socket"
         );
     }
 

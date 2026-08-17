@@ -1,5 +1,8 @@
 # Current Status and 6 Solidity Contracts
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Summary of what is built, what is scaffolded, and what remains for Tier 6. Six planned Solidity contracts: Agent Registry (Identity), Reputation Registry, Marketplace (ERC-8183), Escrow, NUNCHI Token, and Validation Registry. All are Tier 6 deferred — blocked by Tier 5 completion.
 
 

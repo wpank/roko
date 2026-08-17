@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { getCssVar, hexToRgba } from '../lib/color';
 import { modelColor as paletteModelColor } from '../lib/palette';
-import { useLiveApi } from '../hooks/useLiveApi';
+import { useDataApi } from '../hooks/useDataApi';
 import { useBenchSSE } from '../hooks/useBenchSSE';
 import { useCanvasSetup } from '../hooks/useCanvasSetup';
 
@@ -126,7 +126,7 @@ export default function CostRace({ models, live = false, height = 260 }: CostRac
   const rafRef = useRef<number | null>(null);
   const valuesRef = useRef<Map<string, number>>(new Map());
   const [rows, setRows] = useState<CostRaceModel[]>([]);
-  const { get, isLive } = useLiveApi();
+  const { get, isLive } = useDataApi();
   const prefersReducedMotion = useMemo(
     () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
     [],

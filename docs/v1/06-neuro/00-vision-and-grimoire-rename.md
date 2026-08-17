@@ -1,5 +1,8 @@
 # Vision and the Grimoire-to-Neuro Rename
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Neuro is the agent's persistent, tiered, HDC-indexed knowledge system — a semantic wrapper around Substrate that adds knowledge-specific logic for classification, decay, and similarity search.
 
 

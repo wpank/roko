@@ -13,10 +13,10 @@
 //!
 //! ## Failure mode
 //!
-//! When validation fails the caller should refuse to resume and either
-//! discard the snapshot (clean restart) or alert the operator. The
-//! validator never silently "fixes" state; it only reports drift so the
-//! caller can decide whether to re-queue or force-resume.
+//! A snapshot that represents only plans outside the current invocation is
+//! stale workspace state and is ignored as a clean start. If any plan overlaps,
+//! validation remains strict: missing plans fail and drift is reported so the
+//! caller can re-queue or force-resume explicitly.
 //!
 //! ## Recovery integration
 //!
@@ -26,7 +26,7 @@
 //! from a crashed prior run is repaired before the new run begins
 //! appending to the same files.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -157,16 +157,14 @@ pub(crate) fn prepare_resume_with_force(
     force_resume: bool,
 ) -> Result<ResumeReport, ResumeError> {
     // Prefer the unified state snapshot; fall back to legacy run-state.json.
-    let snapshot: Option<RunStateSnapshot> = match load_state_snapshot(paths) {
+    let mut snapshot: Option<RunStateSnapshot> = match load_state_snapshot(paths) {
         Ok(Some(unified)) => {
             match serde_json::from_str::<RunStateSnapshot>(&unified.run_state_json) {
                 Ok(rs) => Some(rs),
                 Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        "failed to parse run_state_json from unified snapshot; trying legacy"
-                    );
-                    load_run_state(paths)?
+                    return Err(ResumeError::Other(anyhow::anyhow!(
+                        "failed to parse authoritative run_state_json from unified snapshot: {err}"
+                    )));
                 }
             }
         }
@@ -175,13 +173,34 @@ pub(crate) fn prepare_resume_with_force(
             load_run_state(paths)?
         }
         Err(err) => {
-            tracing::warn!(
-                error = %err,
-                "failed to load unified state snapshot; trying legacy"
-            );
-            load_run_state(paths)?
+            return Err(ResumeError::Other(err));
         }
     };
+    if let Some(prior) = snapshot.as_ref() {
+        if prior.schema_version > RUN_STATE_SCHEMA_VERSION {
+            return Err(ResumeError::UnsupportedSchema {
+                expected: RUN_STATE_SCHEMA_VERSION,
+                found: prior.schema_version,
+            });
+        }
+
+        let snapshot_plans = snapshot_plan_ids(prior, snapshot_fingerprints);
+        let current_plans: HashSet<&str> = plans.keys().map(String::as_str).collect();
+        if !snapshot_plans.is_empty()
+            && snapshot_plans
+                .iter()
+                .all(|plan_id| !current_plans.contains(plan_id.as_str()))
+        {
+            info!(
+                prior_run_id = %prior.run_id,
+                snapshot_plans = ?snapshot_plans,
+                current_plans = ?current_plans,
+                "ignoring stale run-state snapshot with no current-plan overlap"
+            );
+            snapshot = None;
+        }
+    }
+
     let mut report = ResumeReport {
         resumed: snapshot.is_some(),
         prior_run_id: snapshot.as_ref().map(|s| s.run_id.clone()),
@@ -197,13 +216,6 @@ pub(crate) fn prepare_resume_with_force(
     };
 
     if let Some(prior) = snapshot.as_ref() {
-        if prior.schema_version > RUN_STATE_SCHEMA_VERSION {
-            return Err(ResumeError::UnsupportedSchema {
-                expected: RUN_STATE_SCHEMA_VERSION,
-                found: prior.schema_version,
-            });
-        }
-
         if force_resume {
             info!(
                 prior_run_id = %prior.run_id,
@@ -271,6 +283,33 @@ pub(crate) fn prepare_resume_with_force(
     Ok(report)
 }
 
+/// Collect every plan identifier represented by a runner snapshot.
+///
+/// Fingerprints are the authoritative source for normal snapshots. The
+/// additional maps keep stale-snapshot detection useful for older or partial
+/// snapshots that predate complete fingerprint persistence.
+pub(crate) fn snapshot_plan_ids(
+    snapshot: &RunStateSnapshot,
+    fallback_fingerprints: &[TaskDefFingerprint],
+) -> HashSet<String> {
+    let mut ids = snapshot
+        .fingerprints
+        .iter()
+        .chain(fallback_fingerprints)
+        .map(|fingerprint| fingerprint.plan_id.clone())
+        .collect::<HashSet<_>>();
+    ids.extend(snapshot.completed_tasks.keys().cloned());
+    ids.extend(snapshot.failed_tasks.keys().cloned());
+    ids.extend(snapshot.plan_costs.keys().cloned());
+    ids.extend(
+        snapshot
+            .revised_tasks
+            .iter()
+            .map(|revision| revision.plan_id.clone()),
+    );
+    ids
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,8 +371,11 @@ mod tests {
             total_cost_usd: 0.0,
             total_agent_calls: 0,
             plan_costs: HashMap::new(),
+            task_usage: HashMap::new(),
+            accounted_usage_attempts: Vec::new(),
             completed_tasks: HashMap::new(),
             failed_tasks: HashMap::new(),
+            skipped_tasks: HashMap::new(),
             lifecycle: None,
             snapshot_fail_streak: 0,
             fingerprints: Vec::new(),
@@ -420,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_plan_in_current_run_is_an_error() {
+    fn completely_unrelated_snapshot_is_ignored() {
         let dir = tempdir().unwrap();
         let paths = paths_for(dir.path());
         let snap = snapshot_with_run_id("prior");
@@ -428,8 +470,25 @@ mod tests {
         let t = task("a", "A");
         let fp = TaskDefFingerprint::from_task(&t, "p1");
         let plans = HashMap::new(); // p1 not present
-        let err = prepare_resume(&paths, &plans, &[fp]).unwrap_err();
-        assert!(matches!(err, ResumeError::PlanMissing { .. }));
+        let report = prepare_resume(&paths, &plans, &[fp]).unwrap();
+        assert!(!report.resumed);
+        assert!(report.prior_run_id.is_none());
+    }
+
+    #[test]
+    fn partially_overlapping_snapshot_with_missing_plan_is_an_error() {
+        let dir = tempdir().unwrap();
+        let paths = paths_for(dir.path());
+        let snap = snapshot_with_run_id("prior");
+        super::super::persist::save_run_state(&paths, &snap).unwrap();
+        let current = task("a", "A");
+        let retained = TaskDefFingerprint::from_task(&current, "p1");
+        let missing = TaskDefFingerprint::from_task(&task("b", "B"), "p2");
+        let mut plans = HashMap::new();
+        plans.insert("p1".to_string(), vec![current]);
+
+        let err = prepare_resume(&paths, &plans, &[retained, missing]).unwrap_err();
+        assert!(matches!(err, ResumeError::PlanMissing { plan_id } if plan_id == "p2"));
     }
 
     #[test]

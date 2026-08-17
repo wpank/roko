@@ -1,5 +1,8 @@
 # CLI reference
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../v2/](../v2/) for the current reference.
+
+
 > **Abstract:** Complete reference for the `roko` command-line interface. Commands are grouped by category.
 
 > **Implementation**: Shipping

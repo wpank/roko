@@ -5,7 +5,8 @@
 //! ```text
 //! .roko/
 //!   runtime/        # pid files, sockets, locks
-//!   memory/         # episodes, playbook, skills
+//!   memory/         # legacy compatibility artifacts
+//!   episodes.jsonl  # canonical episode log
 //!   plans/          # enrichment artifacts per plan
 //!     {plan_id}/
 //!   runs/           # per-run metrics, traces, snapshots
@@ -20,6 +21,7 @@
 //! workspace boundary, with this module retained as a path catalog for
 //! crates that need direct layout versioning or migration helpers.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// On-disk format version for the `.roko/` directory.
@@ -40,11 +42,17 @@ pub enum LayoutVersion {
     /// - gate thresholds materialized to `learn/gate-thresholds.json`
     /// - `signals.jsonl` retained only as a legacy migration input
     V2 = 2,
+
+    /// Canonical episode storage:
+    /// - root `episodes.jsonl` is the only active episode sink
+    /// - `learn/episodes.jsonl` and `memory/episodes.jsonl` are migrated inputs
+    /// - malformed records are quarantined without discarding their bytes
+    V3 = 3,
 }
 
 impl LayoutVersion {
     /// The most recent version. New directories are initialized to this.
-    pub const CURRENT: Self = Self::V2;
+    pub const CURRENT: Self = Self::V3;
 
     /// Parse from the numeric value stored in `.roko/VERSION`.
     ///
@@ -54,6 +62,7 @@ impl LayoutVersion {
         match n {
             1 => Some(Self::V1),
             2 => Some(Self::V2),
+            3 => Some(Self::V3),
             _ => None,
         }
     }
@@ -245,11 +254,7 @@ impl RokoLayout {
         self.root.join("gate-verdicts.jsonl")
     }
 
-    /// `.roko/episodes.jsonl` — legacy root episode log.
-    ///
-    /// New layout-native episode storage lives at [`Self::episodes_path`].
-    /// This accessor preserves existing runtime behavior for call sites that
-    /// still consume the root log.
+    /// `.roko/episodes.jsonl` — canonical root episode log.
     #[must_use]
     pub fn root_episodes_path(&self) -> PathBuf {
         self.root.join("episodes.jsonl")
@@ -259,6 +264,14 @@ impl RokoLayout {
     #[must_use]
     pub fn events_jsonl_path(&self) -> PathBuf {
         self.root.join("events.jsonl")
+    }
+
+    /// `.roko/metrics/telemetry-observations.jsonl` — periodic Lens snapshots.
+    #[must_use]
+    pub fn telemetry_observations_path(&self) -> PathBuf {
+        self.root
+            .join("metrics")
+            .join("telemetry-observations.jsonl")
     }
 
     /// `.roko/roko.log` — main log file.
@@ -509,13 +522,29 @@ impl RokoLayout {
         }
         let version_path = self.version_file();
         if !version_path.exists() {
-            // Fresh workspace: write CURRENT version directly.
-            tokio::fs::write(&version_path, LayoutVersion::CURRENT.as_u32().to_string()).await?;
+            let has_historical_episodes = [
+                self.episodes_path(),
+                self.learn_dir().join("episodes.jsonl"),
+                self.memory_dir().join("episodes.jsonl"),
+            ]
+            .iter()
+            .any(|path| path.exists());
+            if has_historical_episodes {
+                self.migrate_v2_to_v3().await?;
+            } else {
+                // Fresh workspace: publish CURRENT directly.
+                self.write_version_atomic(LayoutVersion::CURRENT).await?;
+            }
         } else {
             // Existing workspace: check if migration is needed.
             let on_disk = self.read_version().await?;
-            if on_disk == Some(LayoutVersion::V1) {
-                self.migrate_v1_to_v2().await?;
+            match on_disk {
+                Some(LayoutVersion::V1) => {
+                    self.migrate_v1_to_v2().await?;
+                    self.migrate_v2_to_v3().await?;
+                }
+                Some(LayoutVersion::V2) => self.migrate_v2_to_v3().await?,
+                Some(LayoutVersion::V3) | None => {}
             }
         }
         Ok(())
@@ -555,9 +584,206 @@ impl RokoLayout {
             let legacy = self.root.join("signals.jsonl.v1-legacy");
             tokio::fs::rename(&signals, &legacy).await?;
         }
-        tokio::fs::write(self.version_file(), LayoutVersion::V2.as_u32().to_string()).await?;
+        self.write_version_atomic(LayoutVersion::V2).await?;
         Ok(())
     }
+
+    /// Migrate all historical episode roots into the canonical root log.
+    ///
+    /// Valid JSON objects are merged in root, learn, then memory order and
+    /// de-duplicated by `episode_id`, then `id`, then the legacy identity
+    /// fields. Exact source bytes are retained in sibling `.v2-legacy`
+    /// archives. Non-JSON records are encoded with their original bytes in
+    /// `episodes.jsonl.v3-malformed.jsonl` for operator recovery.
+    ///
+    /// The canonical replacement and version bump happen only after every
+    /// source has been archived. Re-running a completed migration is a no-op.
+    pub async fn migrate_v2_to_v3(&self) -> std::io::Result<()> {
+        if self.read_version().await? == Some(LayoutVersion::V3) {
+            return Ok(());
+        }
+
+        let canonical = self.episodes_path();
+        let learn = self.learn_dir().join("episodes.jsonl");
+        let memory = self.memory_dir().join("episodes.jsonl");
+        let sources = [
+            ("episodes.jsonl", canonical.clone()),
+            ("learn/episodes.jsonl", learn.clone()),
+            ("memory/episodes.jsonl", memory.clone()),
+        ];
+        let mut source_bytes = Vec::new();
+        for (label, path) in &sources {
+            match tokio::fs::read(path).await {
+                Ok(bytes) => source_bytes.push(((*label).to_string(), path.clone(), bytes)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+
+        for (_, path, bytes) in &source_bytes {
+            preserve_episode_source(path, bytes).await?;
+        }
+
+        let mut seen = HashSet::new();
+        let mut canonical_bytes = Vec::new();
+        let mut malformed = Vec::new();
+        for (label, _, bytes) in &source_bytes {
+            collect_episode_records(
+                label,
+                bytes,
+                &mut seen,
+                &mut canonical_bytes,
+                &mut malformed,
+            );
+        }
+
+        if !malformed.is_empty() {
+            write_malformed_quarantine(
+                &self.root.join("episodes.jsonl.v3-malformed.jsonl"),
+                &malformed,
+            )
+            .await?;
+        }
+        if !canonical_bytes.is_empty() || canonical.exists() {
+            let temporary = self.root.join("episodes.jsonl.v3.tmp");
+            tokio::fs::write(&temporary, &canonical_bytes).await?;
+            tokio::fs::rename(&temporary, &canonical).await?;
+        }
+
+        for legacy in [&learn, &memory] {
+            match tokio::fs::remove_file(legacy).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        self.write_version_atomic(LayoutVersion::V3).await?;
+        Ok(())
+    }
+
+    async fn write_version_atomic(&self, version: LayoutVersion) -> std::io::Result<()> {
+        let temporary = self.root.join("VERSION.tmp");
+        tokio::fs::write(&temporary, version.as_u32().to_string()).await?;
+        tokio::fs::rename(temporary, self.version_file()).await
+    }
+}
+
+fn episode_record_key(value: &serde_json::Value) -> Vec<u8> {
+    for field in ["episode_id", "id"] {
+        if let Some(id) = value.get(field).and_then(serde_json::Value::as_str)
+            && !id.is_empty()
+        {
+            return format!("id:{id}").into_bytes();
+        }
+    }
+    let identity_fields = ["agent_id", "task_id", "timestamp", "model"];
+    if identity_fields
+        .iter()
+        .any(|field| value.get(field).is_some())
+    {
+        let mut key = b"legacy:".to_vec();
+        for field in identity_fields {
+            if let Some(text) = value.get(field).and_then(serde_json::Value::as_str) {
+                key.extend_from_slice(text.as_bytes());
+            }
+            key.push(0);
+        }
+        return key;
+    }
+    let mut key = b"json:".to_vec();
+    key.extend(serde_json::to_vec(value).unwrap_or_default());
+    key
+}
+
+fn collect_episode_records(
+    source: &str,
+    bytes: &[u8],
+    seen: &mut HashSet<Vec<u8>>,
+    canonical: &mut Vec<u8>,
+    malformed: &mut Vec<(String, Vec<u8>)>,
+) {
+    for raw in bytes.split_inclusive(|byte| *byte == b'\n') {
+        let without_newline = raw.strip_suffix(b"\n").unwrap_or(raw);
+        let record = without_newline
+            .strip_suffix(b"\r")
+            .unwrap_or(without_newline);
+        if record.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        match serde_json::from_slice::<serde_json::Value>(record) {
+            Ok(value) if value.is_object() => {
+                if seen.insert(episode_record_key(&value)) {
+                    canonical.extend_from_slice(record);
+                    canonical.push(b'\n');
+                }
+            }
+            Ok(_) | Err(_) => malformed.push((source.to_string(), raw.to_vec())),
+        }
+    }
+}
+
+async fn preserve_episode_source(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut suffix = 0_u64;
+    loop {
+        let ending = if suffix == 0 {
+            ".v2-legacy".to_string()
+        } else {
+            format!(".v2-legacy.{suffix}")
+        };
+        let mut archived = path.as_os_str().to_os_string();
+        archived.push(ending);
+        let archived = PathBuf::from(archived);
+        match tokio::fs::read(&archived).await {
+            Ok(existing) if existing == bytes => return Ok(()),
+            Ok(_) => suffix = suffix.saturating_add(1),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return tokio::fs::write(archived, bytes).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+async fn write_malformed_quarantine(
+    path: &Path,
+    records: &[(String, Vec<u8>)],
+) -> std::io::Result<()> {
+    let mut existing = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    let mut seen = existing
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
+        .filter_map(|value| {
+            let source = value.get("source")?.as_str()?.to_string();
+            let bytes = value
+                .get("bytes")?
+                .as_array()?
+                .iter()
+                .map(|byte| u8::try_from(byte.as_u64()?).ok())
+                .collect::<Option<Vec<_>>>()?;
+            Some((source, bytes))
+        })
+        .collect::<HashSet<_>>();
+    for (source, bytes) in records {
+        if !seen.insert((source.clone(), bytes.clone())) {
+            continue;
+        }
+        let mut line = serde_json::to_vec(&serde_json::json!({
+            "source": source,
+            "bytes": bytes,
+        }))
+        .map_err(std::io::Error::other)?;
+        line.push(b'\n');
+        existing.extend(line);
+    }
+    let mut temporary = path.as_os_str().to_os_string();
+    temporary.push(".tmp");
+    let temporary = PathBuf::from(temporary);
+    tokio::fs::write(&temporary, existing).await?;
+    tokio::fs::rename(temporary, path).await
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -646,6 +872,10 @@ mod tests {
             layout.context_pack_cache_dir(),
             PathBuf::from("/c/.roko/cache/context-pack-cache")
         );
+        assert_eq!(
+            layout.telemetry_observations_path(),
+            PathBuf::from("/c/.roko/metrics/telemetry-observations.jsonl")
+        );
     }
 
     #[test]
@@ -714,14 +944,14 @@ mod tests {
         layout.ensure_dirs().await.expect("ensure dirs");
 
         let version = layout.read_version().await.expect("read version");
-        // A fresh workspace is written at CURRENT = V2.
-        assert_eq!(version, Some(LayoutVersion::V2));
+        assert_eq!(version, Some(LayoutVersion::V3));
     }
 
     #[test]
     fn layout_version_from_u32() {
         assert_eq!(LayoutVersion::from_u32(1), Some(LayoutVersion::V1));
         assert_eq!(LayoutVersion::from_u32(2), Some(LayoutVersion::V2));
+        assert_eq!(LayoutVersion::from_u32(3), Some(LayoutVersion::V3));
         assert_eq!(LayoutVersion::from_u32(0), None);
         assert_eq!(LayoutVersion::from_u32(999), None);
     }
@@ -730,15 +960,16 @@ mod tests {
     fn layout_version_as_u32() {
         assert_eq!(LayoutVersion::V1.as_u32(), 1);
         assert_eq!(LayoutVersion::V2.as_u32(), 2);
+        assert_eq!(LayoutVersion::V3.as_u32(), 3);
     }
 
     #[test]
-    fn layout_version_current_is_v2() {
-        assert_eq!(LayoutVersion::CURRENT, LayoutVersion::V2);
+    fn layout_version_current_is_v3() {
+        assert_eq!(LayoutVersion::CURRENT, LayoutVersion::V3);
     }
 
     #[tokio::test]
-    async fn ensure_dirs_migrates_v1_to_v2() {
+    async fn ensure_dirs_migrates_v1_through_v3() {
         let tmp = TempDir::new().expect("tempdir");
         let layout = RokoLayout::for_project(tmp.path());
 
@@ -752,7 +983,7 @@ mod tests {
         layout.ensure_dirs().await.expect("ensure_dirs migration");
 
         let version = layout.read_version().await.expect("read version");
-        assert_eq!(version, Some(LayoutVersion::V2));
+        assert_eq!(version, Some(LayoutVersion::V3));
 
         assert!(
             !layout.signals_path().exists(),
@@ -768,11 +999,138 @@ mod tests {
     async fn migrate_v1_to_v2_is_idempotent_when_no_signals_file() {
         let tmp = TempDir::new().expect("tempdir");
         let layout = RokoLayout::for_project(tmp.path());
-        layout.ensure_dirs().await.expect("ensure_dirs fresh");
+        for dir in &layout.top_level_dirs() {
+            std::fs::create_dir_all(dir).expect("create dir");
+        }
+        std::fs::write(layout.version_file(), "1").expect("write VERSION");
 
         layout.migrate_v1_to_v2().await.expect("migrate idempotent");
+        layout.migrate_v1_to_v2().await.expect("repeat migration");
 
         let version = layout.read_version().await.expect("read version");
         assert_eq!(version, Some(LayoutVersion::V2));
+    }
+
+    #[tokio::test]
+    async fn ensure_dirs_migrates_unversioned_legacy_episode_files() {
+        let tmp = TempDir::new().expect("tempdir");
+        let layout = RokoLayout::for_project(tmp.path());
+        std::fs::create_dir_all(layout.learn_dir()).expect("create learn dir");
+        std::fs::create_dir_all(layout.memory_dir()).expect("create memory dir");
+        std::fs::write(
+            layout.learn_dir().join("episodes.jsonl"),
+            b"{\"episode_id\":\"learn-unversioned\"}\n",
+        )
+        .expect("write learn episodes");
+        std::fs::write(
+            layout.memory_dir().join("episodes.jsonl"),
+            b"{\"episode_id\":\"memory-unversioned\"}\n",
+        )
+        .expect("write memory episodes");
+
+        layout.ensure_dirs().await.expect("ensure and migrate");
+
+        assert_eq!(
+            layout.read_version().await.expect("read version"),
+            Some(LayoutVersion::V3)
+        );
+        let canonical = std::fs::read_to_string(layout.episodes_path()).expect("read canonical");
+        assert!(canonical.contains("learn-unversioned"));
+        assert!(canonical.contains("memory-unversioned"));
+        assert!(!layout.learn_dir().join("episodes.jsonl").exists());
+        assert!(!layout.memory_dir().join("episodes.jsonl").exists());
+        assert!(!layout.root().join("VERSION.tmp").exists());
+    }
+
+    #[tokio::test]
+    async fn migrate_v2_to_v3_merges_deduplicates_quarantines_and_is_idempotent() {
+        let tmp = TempDir::new().expect("tempdir");
+        let layout = RokoLayout::for_project(tmp.path());
+        for dir in &layout.top_level_dirs() {
+            std::fs::create_dir_all(dir).expect("create dir");
+        }
+        std::fs::write(layout.version_file(), "2").expect("write VERSION");
+        std::fs::write(
+            layout.episodes_path(),
+            b"{\"episode_id\":\"root\"}\n{\"episode_id\":\"duplicate\",\"source\":\"root\"}\nnot-json\n",
+        )
+        .expect("write root episodes");
+        let learn = layout.learn_dir().join("episodes.jsonl");
+        std::fs::write(
+            &learn,
+            b"{\"episode_id\":\"learn\"}\n{\"id\":\"duplicate\",\"source\":\"learn\"}\n{broken\n",
+        )
+        .expect("write learn episodes");
+        let memory = layout.memory_dir().join("episodes.jsonl");
+        std::fs::write(&memory, b"{\"episode_id\":\"memory\"}\n").expect("write memory episodes");
+
+        layout.migrate_v2_to_v3().await.expect("migrate episodes");
+
+        assert_eq!(
+            layout.read_version().await.expect("read version"),
+            Some(LayoutVersion::V3)
+        );
+        let canonical = std::fs::read_to_string(layout.episodes_path()).expect("read canonical");
+        let rows = canonical.lines().collect::<Vec<_>>();
+        assert_eq!(rows.len(), 4);
+        assert!(rows.iter().any(|row| row.contains("\"root\"")));
+        assert!(rows.iter().any(|row| row.contains("\"learn\"")));
+        assert!(rows.iter().any(|row| row.contains("\"memory\"")));
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.contains("\"duplicate\""))
+                .count(),
+            1
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("\"source\":\"root\"")),
+            "canonical root must win duplicate IDs"
+        );
+        assert!(!learn.exists());
+        assert!(!memory.exists());
+        assert_eq!(
+            std::fs::read(layout.root().join("episodes.jsonl.v2-legacy"))
+                .expect("read root archive"),
+            b"{\"episode_id\":\"root\"}\n{\"episode_id\":\"duplicate\",\"source\":\"root\"}\nnot-json\n"
+        );
+        assert_eq!(
+            std::fs::read(layout.learn_dir().join("episodes.jsonl.v2-legacy"))
+                .expect("read learn archive"),
+            b"{\"episode_id\":\"learn\"}\n{\"id\":\"duplicate\",\"source\":\"learn\"}\n{broken\n"
+        );
+        assert_eq!(
+            std::fs::read(layout.memory_dir().join("episodes.jsonl.v2-legacy"))
+                .expect("read memory archive"),
+            b"{\"episode_id\":\"memory\"}\n"
+        );
+        let quarantine_path = layout.root().join("episodes.jsonl.v3-malformed.jsonl");
+        let quarantine = std::fs::read_to_string(&quarantine_path).expect("read quarantine");
+        let quarantined_bytes = quarantine
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("quarantine row"))
+            .map(|value| {
+                value["bytes"]
+                    .as_array()
+                    .expect("byte array")
+                    .iter()
+                    .map(|byte| byte.as_u64().expect("byte") as u8)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert!(quarantined_bytes.contains(&b"not-json\n".to_vec()));
+        assert!(quarantined_bytes.contains(&b"{broken\n".to_vec()));
+        assert!(!layout.root().join("VERSION.tmp").exists());
+
+        let canonical_before = std::fs::read(layout.episodes_path()).expect("read canonical");
+        let quarantine_before = std::fs::read(&quarantine_path).expect("read quarantine");
+        layout.migrate_v2_to_v3().await.expect("repeat migration");
+        assert_eq!(
+            std::fs::read(layout.episodes_path()).expect("read canonical"),
+            canonical_before
+        );
+        assert_eq!(
+            std::fs::read(quarantine_path).expect("read quarantine"),
+            quarantine_before
+        );
     }
 }

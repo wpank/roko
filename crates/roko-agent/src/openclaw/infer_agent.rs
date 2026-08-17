@@ -71,7 +71,10 @@ impl OpenClawInferAgent {
     /// current directory.
     pub fn new(config: OpenClawInferConfig) -> Result<Self, super::config::ConfigError> {
         let cwd = std::env::current_dir().unwrap_or_else(|_| "/tmp".into());
-        let runner = ChildProcessRunner::new(&config.binary, cwd).with_timeout(config.timeout);
+        let mut runner = ChildProcessRunner::new(&config.binary, cwd).with_timeout(config.timeout);
+        if let Some(limits) = &config.resource_limits {
+            runner = runner.with_resource_limits(limits.clone());
+        }
 
         let capabilities = HarnessCapabilities {
             one_shot: OneShotMode::CliCommand {

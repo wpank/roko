@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use roko_agent::testutil::{
     ParityBackend, run_error_path, run_happy_path, run_session_continuation, run_streaming,
     run_tool_call,

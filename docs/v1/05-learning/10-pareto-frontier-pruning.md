@@ -1,5 +1,8 @@
 # Pareto Frontier Pruning
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Crate:** `roko-learn` · **Module:** `pareto.rs`
 > **Wiring:** `CascadeRouter` calls `compute_pareto_frontier()` every 50 observations
 > **Implementation plan:** `modelrouting/08-learning-loops.md` (task 2G.11)

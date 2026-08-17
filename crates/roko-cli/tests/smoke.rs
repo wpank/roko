@@ -110,13 +110,36 @@ fn item_02_system_prompt_builder_renders_role_layers() {
 fn item_03_episode_logger_appends_memory_log() {
     let tmp = TempDir::new().expect("tempdir");
     init_workspace(tmp.path());
+    let mock_claude = tmp.path().join("mock-claude.sh");
+    write_executable(
+        &mock_claude,
+        r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"mock-ok"}}'
+"#,
+    );
+    let mock_command = mock_claude.to_string_lossy();
     fs::write(
         tmp.path().join("roko.toml"),
-        r#"
+        format!(
+            r#"
 [agent]
-command = "cat"
+default_model = "mock-model"
+command = {mock_command:?}
 args = []
 timeout_ms = 30000
+
+[providers.mock]
+kind = "claude_cli"
+command = {mock_command:?}
+timeout_ms = 30000
+
+[models.mock-model]
+provider = "mock"
+slug = "mock-model"
+context_window = 8192
+supports_tools = false
 
 [prompt]
 token_budget = 1000
@@ -127,7 +150,8 @@ kind = "shell"
 program = "true"
 args = []
 timeout_ms = 5000
-"#,
+"#
+        ),
     )
     .expect("write roko.toml");
 
@@ -264,9 +288,12 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"mcp-ok"}}}}'
         command: None,
         timeout_ms: Some(5_000),
         system_prompt: Some("system guidance".to_string()),
+        input_messages: Vec::new(),
         cached_content: None,
         tools: Some("Read,Edit".to_string()),
+        agent_contract: None,
         mcp_config: Some(mcp_config.clone()),
+        immune_root: Some(tmp.path().to_path_buf()),
         working_dir: Some(tmp.path().to_path_buf()),
         provider_semaphores: None,
         env: Vec::new(),
@@ -276,6 +303,9 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"mcp-ok"}}}}'
         dangerously_skip_permissions: false,
         name: "ux44-mcp-smoke".to_string(),
         pre_discovered_mcp_tools: None,
+        pre_discovered_mcp_runtime: None,
+        pre_discovered_local_tools: None,
+        local_tool_mcp_servers: None,
         rate_limiter: None,
     };
 
@@ -362,16 +392,37 @@ fn item_07_dashboard_text_renders_once() {
 
 #[tokio::test]
 async fn item_08_agent_sidecar_starts_and_reports_health() {
-    let port = pick_unused_port();
+    let (bound_tx, mut bound_rx) = tokio::sync::watch::channel(None);
     let server = AgentServer::builder()
         .agent_id("ux44-smoke-agent")
-        .bind(format!("127.0.0.1:{port}"))
+        .bind("127.0.0.1:0")
+        .on_start(move |addr, _card| {
+            let bound_tx = bound_tx.clone();
+            async move {
+                bound_tx
+                    .send(Some(addr))
+                    .map_err(|_| anyhow::anyhow!("publish bound agent-server address"))
+            }
+        })
         .build()
         .expect("build agent server");
 
     let task = tokio::spawn(async move { server.serve().await });
+    let bound_addr = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(addr) = *bound_rx.borrow() {
+                break addr;
+            }
+            bound_rx
+                .changed()
+                .await
+                .expect("agent-server startup channel remains open");
+        }
+    })
+    .await
+    .expect("agent server binds within five seconds");
     let response = wait_for_http_ok(
-        &format!("http://127.0.0.1:{port}/health"),
+        &format!("http://{bound_addr}/health"),
         Duration::from_secs(5),
     )
     .await;

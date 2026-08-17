@@ -1,5 +1,8 @@
 # PageRank for Symbol Importance
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Applying the PageRank algorithm to code dependency graphs to identify the most important symbols in a workspace — guiding context allocation and token budget prioritization.
 
 

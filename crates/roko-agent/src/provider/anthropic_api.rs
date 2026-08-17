@@ -100,7 +100,8 @@ impl ProviderAdapter for AnthropicApiAdapter {
         let mut agent = ClaudeAgent::new(api_key, model.slug.clone())
             .with_base_url(Self::base_url(provider))
             .with_timeout_ms(timeout_ms)
-            .with_max_tokens(max_tokens);
+            .with_max_tokens(max_tokens)
+            .with_input_messages(options.input_messages.clone());
 
         if let Some(headers) = &provider.extra_headers {
             agent = agent.with_extra_headers(headers.clone());

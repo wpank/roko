@@ -1,5 +1,8 @@
 # Roko Integration Guide
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../v2/](../v2/) for the current reference.
+
+
 Roko is a Rust toolkit for building agents that build themselves. This guide covers installation, configuration, the self-hosting workflow, and the HTTP control plane.
 
 ## Getting Started

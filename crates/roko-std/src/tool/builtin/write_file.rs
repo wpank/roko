@@ -81,13 +81,13 @@ impl ToolHandler for Handler {
             Ok(p) => p,
             Err(e) => return ToolResult::Err(e),
         };
-        if let Some(parent) = absolute.parent() {
-            if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                return ToolResult::Err(ToolError::Other(format!(
-                    "write_file: failed to create parent {}: {e}",
-                    parent.display()
-                )));
-            }
+        if let Some(parent) = absolute.parent()
+            && let Err(e) = tokio::fs::create_dir_all(parent).await
+        {
+            return ToolResult::Err(ToolError::Other(format!(
+                "write_file: failed to create parent {}: {e}",
+                parent.display()
+            )));
         }
 
         // §12.8: Atomic write via tmp+rename to prevent partial-write corruption.

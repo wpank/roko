@@ -37,14 +37,16 @@ pub mod conductor_adapter;
 pub mod deadlines;
 pub mod event_loop;
 pub mod extension_loader;
+pub mod extension_registry;
 pub mod gate_dispatch;
+pub mod github_workflow;
 pub mod inline_output;
 pub mod merge;
 pub mod output_sink;
 pub mod persist;
 pub mod plan_loader;
-pub mod pr_gate_update;
 pub mod projection;
+pub mod prompt_experiments;
 pub mod resume;
 pub mod snapshot_writer;
 pub mod sse_stream;
@@ -52,6 +54,7 @@ pub mod state;
 pub mod task_dag;
 pub mod tui_bridge;
 pub mod types;
+mod wasm_extension;
 
 // Re-export the primary entry points.
 pub use event_loop::{PlanReport, RunReport, run};

@@ -4,7 +4,8 @@ queue_kind = "architecture_implementation"
 iteration = 1
 total = 24
 done = 0
-status = "ready"
+status = "superseded"
+superseded_by = "architecture-production-residuals + accepted E01-E48 owners"
 max_parallel = 2
 estimated_total_minutes = 4320
 

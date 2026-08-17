@@ -1,6 +1,25 @@
 # 26 — Cross-Cut Functors
 
-> Cognitive cross-cuts (Memory, Daimon, Dreams) are endofunctors F: Signal -> Signal that transform the cognitive loop from the side. They do not occupy positions in the 7-step sequence — they modify it. Safety is a fourth endofunctor that operates at the capability level, outside VCG arbitration. Every cross-cut is a Cell specialization processing Signals through Bus and Store.
+> Cognitive cross-cuts (Memory, Daimon, Dreams) are endofunctors F: Signal -> Signal that transform the cognitive loop from the side. They do not occupy positions in the 7-step sequence — they modify it. Safety is a fourth endofunctor that operates at the capability level, outside VCG arbitration. The production abstraction is a generic signal-bundle enrichment adapter and does not depend on a concrete Cell type.
+
+> **Implementation status:** E44 COMPLETE (8/8 tasks, 2026-08-15). `roko-compose` now provides `CrossCutFunctor`, `EnrichedCell`, Memory/Daimon/Dreams/Safety functors, all six natural transformations, priority/VCG arbitration, and the dream-output consumer. `roko-cli` launches the non-blocking gate-failure cascade from failed gate completions. Default and HDC `roko-compose` checks and the `roko-cli` check pass; focused cross-cut tests cover composition order, live-store mutation, affect gating, dream publication, commuting transformations, arbitration, and safety pre-filtering.
+
+> The Rust snippets below explain the intended semantics. The authoritative production API is in `crates/roko-compose/src/{cross_cut,memory_functor,daimon_functor,dreams_functor,natural_transforms,safety_functor,auction}.rs`; conceptual names such as `MemoryCell` are not additional runtime types.
+
+### Current implementation sources and reading contract
+
+| Current surface | Authoritative source |
+|---|---|
+| `LoopStep`, `CrossCutContext`, `CrossCutFunctor`, `EnrichedCell` | `crates/roko-compose/src/cross_cut.rs` |
+| `MemoryFunctor`, `DaimonFunctor`, `DreamsFunctor`, `SafetyFunctor` | `crates/roko-compose/src/{memory_functor,daimon_functor,dreams_functor,safety_functor}.rs` |
+| Six transformations and gate-failure cascade | `crates/roko-compose/src/natural_transforms.rs` |
+| `CrossCutArbitrator`, priority, and second-price resolution | `crates/roko-compose/src/auction.rs` |
+| Runner launch of the failed-gate cascade | `crates/roko-cli/src/runner/event_loop.rs` |
+
+The `CrossCutFunctor`/`EnrichedCell` snippet in section 2 mirrors the production
+contract. Later `MemoryCell`, NREM/REM Cell, and cognitive-loop snippets are
+conceptual explanations of that contract; the E44 status table and the source
+paths above define the shipped boundary.
 
 **Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal, Pulse, demurrage, HDC fingerprint), [02-CELL](02-CELL.md) (Cell, protocols, predict-publish-correct), [03-GRAPH](03-GRAPH.md) (Graph composition), [05-AGENT](05-AGENT.md) (Agent lifecycle, cognitive loop), [06-MEMORY](06-MEMORY.md) (Knowledge Store, tiers, distillation), [16-SECURITY](16-SECURITY.md) (CaMeL IFC, capability grants)
 
@@ -14,7 +33,9 @@ The precise structure: each cross-cut is an **endofunctor F: Signal -> Signal** 
 
 This distinction matters because:
 1. **Cross-cuts compose independently.** You can enable Memory without Daimon, or Daimon without Dreams.
-2. **Cross-cuts do not change the loop's topology.** The Graph TOML stays the same 7 nodes. Extension Cells inject at hook points within those nodes.
+2. **Cross-cuts do not change the operation's topology.** Production
+   `EnrichedCell` wraps an inner operation with ordered pre/post hooks; the
+   seven-node Graph notation is the architectural model of that composition.
 3. **Cross-cuts can be tested independently.** Test Memory injection by running SENSE with and without F_memory.
 
 ---
@@ -42,7 +63,8 @@ An endofunctor F: **Sig** -> **Sig** maps:
 ///   pre_enrich(input)
 ///     -> cell.execute(enriched_input)
 ///       -> post_enrich(output)
-trait CrossCutFunctor: Send + Sync + 'static {
+#[async_trait]
+trait CrossCutFunctor<C = CrossCutContext>: Send + Sync + 'static {
     /// Identity: which cross-cut this is.
     fn name(&self) -> &str;
 
@@ -50,17 +72,22 @@ trait CrossCutFunctor: Send + Sync + 'static {
     async fn pre_enrich(
         &self,
         input: Vec<Signal>,
-        ctx: &CellContext,
-    ) -> Result<Vec<Signal>, CellError>;
+        ctx: &C,
+    ) -> CrossCutResult<Vec<Signal>>;
 
     /// Post-enrichment: transform output Signals after the Cell runs.
     async fn post_enrich(
         &self,
         output: Vec<Signal>,
-        ctx: &CellContext,
-    ) -> Result<Vec<Signal>, CellError>;
+        ctx: &C,
+    ) -> CrossCutResult<Vec<Signal>>;
+
+    /// Optimization hint; safety always returns false.
+    fn should_short_circuit(&self) -> bool;
 }
 ```
+
+`EnrichedCell` applies pre-hooks in declaration order, runs the inner operation once, and unwinds post-hooks in reverse order. The first functor is therefore the outermost wrapper.
 
 ### 2.3 The Three Functors
 
@@ -69,6 +96,19 @@ trait CrossCutFunctor: Send + Sync + 'static {
 | **Memory** | F_memory | Signal enriched with knowledge entries, HDC similarity scores, tier metadata | SENSE (knowledge retrieval), COMPOSE (context enrichment via VCG bids), VERIFY/REACT (consolidation feedback: reinforcement/weakening) |
 | **Daimon** | F_daimon | Signal annotated with PAD bias, somatic markers, behavioral state | ASSESS (score bias via PAD + somatic markers, tier selection), ACT (action gating via prospect value, risk tolerance) |
 | **Dreams** | F_dreams | Signal augmented with consolidated patterns, hypotheses, depotentiated affect | Delta speed (runs as its own loop); NREM replay + REM imagination + integration results feed into Memory and Daimon |
+
+### 2.4 Implemented Surface
+
+| E44 task | Production surface | Status |
+|---|---|---|
+| T01 | `CrossCutFunctor<C>`, `CrossCutContext`, `LoopStep`, `EnrichedCell` | Done |
+| T02 | `MemoryFunctor` over `Arc<KnowledgeStore>`; keyword retrieval plus HDC similarity under the `hdc` feature; Neuro recommendations; REACT reinforcement/weakening | Done |
+| T03 | `DaimonFunctor` over live `DaimonState`; PAD/somatic enrichment, tier escalation, risk deferral, prospect valuation | Done |
+| T04 | Per-tick identity `DreamsFunctor` and `DreamOutputConsumer` for KnowledgeStore, Daimon, and CascadeRouter publication | Done |
+| T05 | `eta_MN`, `eta_NM`, `eta_MD`, `eta_DM`, `eta_ND`, `eta_DN`, and `run_gate_failure_cascade` | Done |
+| T06 | `CrossCutArbitrator`, fixed-priority resolution, and same-level conflicting-bid second-price VCG | Done |
+| T07 | Always-active `SafetyFunctor`, capability default-deny, contract checks, and outer-wrapper composition | Done |
+| T08 | Failed gate completions spawn the Memory -> Daimon -> Dreams cascade without blocking the runner event loop | Done |
 
 ---
 
@@ -221,6 +261,8 @@ impl CrossCutFunctor for MemoryReact {
 
 ## 4. Daimon as Endofunctor (F_daimon)
 
+The canonical `roko_core::BehavioralState` vocabulary is `Engaged`, `Struggling`, `Coasting`, `Exploring`, `Focused`, and `Resting`. There are no `Neutral`, `Cautious`, or `Anxious` enum variants. In this chapter, "neutral" means the PAD short-circuit region (`|P|`, `|A|`, and `|D|` all below `0.1`), while cautious/anxious behavior is implemented as `Struggling` and/or PAD arousal/dominance threshold checks.
+
 ### 4.1 F_daimon on ASSESS
 
 The Daimon biases the ASSESS step by modulating Score weights and tier selection based on the PAD vector (Pleasure-Arousal-Dominance, Mehrabian 1996).
@@ -290,11 +332,12 @@ impl CrossCutFunctor for DaimonBiasAssess {
 
 ### 4.2 F_daimon on ACT
 
-The Daimon gates risky actions and applies prospect-theoretic value computation (Kahneman-Tversky). In the Cautious or Anxious behavioral state, high-risk actions are suppressed or deferred.
+The Daimon gates risky actions and applies prospect-theoretic value computation (Kahneman-Tversky). In the production implementation, high-risk actions are deferred when the state is `Struggling` or dominance is below the configured `struggling_entry_dominance` threshold.
 
 ```rust
 struct DaimonGateAct {
     daimon: Arc<DaimonState>,
+    thresholds: BehavioralStateThresholds,
 }
 
 impl CrossCutFunctor for DaimonGateAct {
@@ -308,24 +351,21 @@ impl CrossCutFunctor for DaimonGateAct {
         let action_plan = ActionPlan::from_signals(&input)?;
         let behavioral_state = self.daimon.behavioral_state();
 
-        match behavioral_state {
-            BehavioralState::Cautious | BehavioralState::Anxious => {
-                // Check action risk level
-                if action_plan.risk_level() > RiskLevel::Medium {
-                    // Inject deferral signal: delay high-risk action
-                    let mut enriched = input;
-                    enriched.push(Signal::metadata(
-                        "daimon.gate",
-                        serde_json::json!({
-                            "action": "defer",
-                            "reason": "behavioral state does not support high-risk action",
-                            "state": behavioral_state.as_str(),
-                        }),
-                    ));
-                    return Ok(enriched);
-                }
-            }
-            _ => {}
+        let pad = self.daimon.current_pad();
+        let cautious = behavioral_state == BehavioralState::Struggling
+            || pad.dominance < self.thresholds.struggling_entry_dominance;
+        if cautious && action_plan.risk_level() > RiskLevel::Medium {
+            // Inject deferral signal: delay high-risk action
+            let mut enriched = input;
+            enriched.push(Signal::metadata(
+                "daimon.gate",
+                serde_json::json!({
+                    "action": "defer",
+                    "reason": "affect state does not support high-risk action",
+                    "state": behavioral_state.as_str(),
+                }),
+            ));
+            return Ok(enriched);
         }
 
         Ok(input)
@@ -540,7 +580,7 @@ Daimon --eta_NM--> Memory --eta_MD--> Dreams
   +-------------eta_ND-----------------+
 ```
 
-The path Daimon -> Memory -> Dreams (knowledge outcomes are stored, then replayed in dreams) must produce the same result as Daimon -> Dreams (PAD directly triggers consolidation). This is enforced by the arbitration protocol: when both paths produce conflicting consolidation priorities, the arbitrator resolves based on the priority hierarchy.
+The path Daimon -> Memory -> Dreams (the assessment is stored, then offered for replay) produces the same episode IDs, consolidation priority, and delta-trigger decision as Daimon -> Dreams (PAD directly triggers consolidation). `eta_NM`, `eta_MD`, and `eta_ND` share this mapping, and focused tests assert that the triangle commutes; arbitration is not needed to repair a mismatch after the fact.
 
 ### 6.2 Gate Failure Cascade — Full 7-Step Example
 
@@ -553,8 +593,8 @@ When a gate fails, the natural transformations fire in sequence, demonstrating h
 2. F_memory(REACT): Memory weakens knowledge entries that were in context
        |                          (eta_MN: knowledge outcome -> PAD update)
        v
-3. F_daimon(ASSESS next tick): PAD is now shifted (pleasure down, arousal up)
-       |                          Daimon lowers escalation threshold
+3. eta_MN appraises the live Daimon immediately; the next ASSESS observes shifted PAD
+       |                          (pleasure down, arousal up)
        v
 4. F_daimon -> Dreams (eta_ND): If Daimon is Struggling, may trigger delta
        |
@@ -568,7 +608,7 @@ When a gate fails, the natural transformations fire in sequence, demonstrating h
 7. Dreams -> Daimon (eta_DN): Depotentiation reduces negative affect from failure
 ```
 
-This cascade is emergent from the functor composition rules, not hardcoded. Each step follows from the natural transformation definitions.
+The synchronous portion is encoded once in `run_gate_failure_cascade`: it weakens affected knowledge, applies `eta_MN`, persists `eta_NM`, and produces equal `eta_MD`/`eta_ND` replay inputs. On a failed gate completion, `roko-cli` invokes that helper in a spawned blocking worker. If the transformed assessment is `Struggling`, the worker runs a delta dream and publishes its report through `eta_DM` and `eta_DN`; failure is logged without changing the gate result or blocking the event loop.
 
 ---
 
@@ -658,63 +698,34 @@ VCG tiebreaking activates **only** when:
 2. Both have confidence **above 0.5** (low-confidence bids are ignored).
 3. The conflict affects a **Route or Compose** decision (not safety decisions — those always go to Daimon).
 
-### 7.4 Arbitration as a Cell
+### 7.4 Arbitration Adapter
 
-The arbitrator is implemented as a Cell specialization at layer L3 (Cognition) that intercepts the pipeline at ASSESS and COMPOSE:
+The production `CrossCutArbitrator` is an async `roko-compose` adapter. It enriches with Memory, Daimon, and Dreams, applies the mandatory Safety pre-filter, and only then parses and resolves recommendations. Safety is held as a `CrossCutFunctor` trait object but is structurally absent from `CrossCutId`, so it cannot enter VCG:
 
 ```rust
 struct CrossCutArbitrator {
-    memory: Arc<MemoryCell>,
-    daimon: Arc<DaimonState>,
-    dreams: Arc<DreamState>,
+    memory: Arc<MemoryFunctor>,
+    daimon: Arc<DaimonFunctor>,
+    dreams: Arc<DreamsFunctor>,
+    safety_filter: Arc<dyn CrossCutFunctor<CrossCutContext>>,
 }
 
-impl Cell for CrossCutArbitrator {
-    async fn execute(
+impl CrossCutArbitrator {
+    async fn arbitrate(
         &self,
-        input: Vec<Signal>,
-        ctx: &CellContext,
-    ) -> Result<Vec<Signal>, CellError> {
-        // Collect recommendations from each cross-cut
-        let memory_rec = self.memory.recommend(&input)?;
-        let daimon_rec = self.daimon.recommend(&input)?;
-        let dreams_rec = self.dreams.recommend(&input)?;
-
-        // Layer 1: priority hierarchy
-        if let Some(resolved) = resolve_by_priority(
-            daimon_rec.clone(),
-            memory_rec.clone(),
-            dreams_rec.clone(),
-        ) {
-            return Ok(resolved.into_signals());
-        }
-
-        // Layer 2: VCG auction
-        let mut bids = Vec::new();
-        if let Some(m) = memory_rec {
-            bids.push((CrossCutId::Memory, m.confidence, m));
-        }
-        if let Some(d) = daimon_rec {
-            bids.push((CrossCutId::Daimon, d.confidence, d));
-        }
-        if let Some(r) = dreams_rec {
-            bids.push((CrossCutId::Dreams, r.confidence, r));
-        }
-
-        let result = VcgAuction::resolve(&bids);
-
-        match result {
-            ArbitrationResult::Resolved { recommendation, attention_cost, .. } => {
-                // Log the arbitration for learning
-                ctx.bus().publish(Pulse::arbitration_resolved(
-                    &bids,
-                    &recommendation,
-                    attention_cost,
-                )).await?;
-                Ok(recommendation.into_signals())
-            }
-            ArbitrationResult::NoConflict => Ok(input),
-        }
+        mut input: Vec<Signal>,
+        ctx: &CrossCutContext,
+    ) -> CrossCutResult<CrossCutArbitration> {
+        input = self.memory.pre_enrich(input, ctx).await?;
+        input = self.daimon.pre_enrich(input, ctx).await?;
+        input = self.dreams.pre_enrich(input, ctx).await?;
+        let signals = self.safety_filter.pre_enrich(input, ctx).await?;
+        let recommendations = signals.iter()
+            .filter_map(CrossCutRecommendation::from_signal)
+            .collect::<Vec<_>>();
+        let result = resolve_by_priority(&recommendations)
+            .unwrap_or_else(|| resolve_by_vcg(&recommendations));
+        Ok(CrossCutArbitration { signals, result })
     }
 }
 ```
@@ -729,16 +740,15 @@ The three named cross-cuts (Memory, Daimon, Dreams) are the architectural ones. 
 
 Safety is an endofunctor that operates at the **capability level**, not the behavioral level:
 
-- **Filters SENSE output**: Remove Signals that reference forbidden capabilities
-- **Gates ASSESS decisions**: Reject route selections that violate safety contracts
-- **Constrains COMPOSE**: Redact Signals with safety labels from prompt context
-- **Blocks ACT**: Prevent tool calls that exceed capability grants
-- **Augments VERIFY**: Add safety-specific verification criteria
+- **Pre-filter on every loop step**: remove Signals requiring capabilities outside the active grant set; unknown or malformed capability names are denied by default
+- **Post-filter on every loop step**: remove Signals above the contract's taint ceiling or naming a tool outside its allowlist
+- **Warn on violations**: filtering emits warnings rather than turning a permissive contract into an execution error
+- **Wrap arbitration**: Safety runs before recommendation collection and never becomes a bidder
 
 ```rust
 struct SafetyFunctor {
-    contracts: Vec<AgentContract>,
-    capability_set: CapabilitySet,
+    contract: AgentContract,
+    grants: CapabilitySet,
 }
 
 impl CrossCutFunctor for SafetyFunctor {
@@ -747,45 +757,24 @@ impl CrossCutFunctor for SafetyFunctor {
     async fn pre_enrich(
         &self,
         input: Vec<Signal>,
-        ctx: &CellContext,
-    ) -> Result<Vec<Signal>, CellError> {
-        // CaMeL IFC: tag all Signals with capability provenance
-        let tagged = input.into_iter()
-            .map(|s| s.with_capability_tag(ctx.current_capability_scope()))
-            .collect::<Vec<_>>();
-
-        // Filter: remove Signals that require capabilities not in grant set
-        let filtered = tagged.into_iter()
-            .filter(|s| self.capability_set.permits(s.required_capabilities()))
-            .collect();
-
-        Ok(filtered)
+        _ctx: &CrossCutContext,
+    ) -> CrossCutResult<Vec<Signal>> {
+        Ok(input.into_iter()
+            .filter(|signal| self.capability_allowed(signal))
+            .collect())
     }
 
     async fn post_enrich(
         &self,
         output: Vec<Signal>,
-        ctx: &CellContext,
-    ) -> Result<Vec<Signal>, CellError> {
-        // Verify output against safety contracts
-        for contract in &self.contracts {
-            for signal in &output {
-                if !contract.permits(signal) {
-                    tracing::warn!(
-                        contract = %contract.name,
-                        signal_hash = %signal.content_hash(),
-                        "safety contract violation, filtering output"
-                    );
-                }
-            }
-        }
-
-        let safe_output = output.into_iter()
-            .filter(|s| self.contracts.iter().all(|c| c.permits(s)))
-            .collect();
-
-        Ok(safe_output)
+        _ctx: &CrossCutContext,
+    ) -> CrossCutResult<Vec<Signal>> {
+        Ok(output.into_iter()
+            .filter(|signal| self.contract_allowed(signal))
+            .collect())
     }
+
+    fn should_short_circuit(&self) -> bool { false }
 }
 ```
 
@@ -810,15 +799,15 @@ This means Safety never loses a "vote." It cannot be outbid. It is structurally 
 
 ## 9. Feedback Loops
 
-Five feedback loops ensure cross-cuts improve over time:
+The architecture defines five feedback loops. E44 implements the first three integration paths; automatic arbitration calibration and safety-contract evolution remain policy follow-ups rather than claims of this tranche:
 
-| Loop | What It Observes | What It Adjusts |
-|---|---|---|
-| **Memory reinforcement** | Gate pass/fail with knowledge entries in context | Demurrage balance of knowledge entries (reinforced on pass, weakened on fail). Entries that consistently lead to gate passes accumulate balance; unhelpful entries decay below cold threshold and are archived. |
-| **Daimon adaptation** | Prospect-theory-weighted outcomes (lambda=2.25, alpha=0.88) | PAD vector (pleasure, arousal, dominance). Losses shift pleasure down + arousal up more than equivalent gains shift them up + down. 15% contrarian retrieval prevents echo chambers. |
-| **Dream prioritization** | Prediction error magnitudes from Memory episodes | NREM replay ordering (highest PE replayed first, Mattar & Daw 2018). REM hypothesis generation rate (more hypotheses when PE variance is high). |
-| **Arbitration calibration** | VCG auction outcomes correlated with downstream gate results | Bidder confidence calibration. If a cross-cut consistently wins auctions but its recommendations lead to gate failures, its confidence estimates are too high — the system applies a discount factor. |
-| **Safety contract evolution** | Safety violations logged over time; false-positive rate | Contract refinement: tighten contracts with high violation rates, relax contracts with high false-positive rates. Manual review required for relaxation. |
+| Loop | What It Observes | What It Adjusts | Status |
+|---|---|---|---|
+| **Memory reinforcement** | Gate pass/fail with knowledge entries in context | Demurrage and prediction-utility state: pass uses gated reinforcement; fail records unsuccessful usage and utility | Implemented |
+| **Daimon adaptation** | Gate and prospect-theory-weighted task outcomes (`lambda=2.25`, `alpha=0.88`) | Live PAD and behavioral state; somatic retrieval keeps the configured 15% contrarian fraction | Implemented |
+| **Dream prioritization/publication** | Memory/Daimon replay inputs and completed `DreamCycleReport` values | Delta-dream input, consolidated KnowledgeStore entries, Daimon depotentiation, and routing advice | Implemented across `roko-dreams` and the E44 consumer |
+| **Arbitration calibration** | VCG outcomes correlated with downstream gate results | Future confidence discount for consistently wrong bidders | Design follow-up |
+| **Safety contract evolution** | Logged safety violations and reviewed false positives | Future contract refinement; any relaxation requires manual review | Design follow-up |
 
 ---
 
@@ -836,42 +825,43 @@ F_daimon runs after F_memory, so Daimon biases scores that already include knowl
 
 ### 10.2 Short-Circuit Optimization
 
-Each cross-cut functor adds pre/post enrichment to relevant Cells. With 3 cross-cuts and 7 loop steps, the maximum is 42 enrichment calls per tick. In practice, short-circuiting reduces this:
+Each cross-cut functor exposes pre/post enrichment. With four functors and seven loop steps, a caller that invokes every hook has at most 56 hook calls per tick; irrelevant hooks are identity transforms, and `should_short_circuit` is an optimization hint to the caller rather than an implicit skip inside `EnrichedCell`:
 
 - **F_memory** short-circuits when knowledge store is empty or query returns zero results
-- **F_daimon** short-circuits when PAD vector is in the Neutral region (|P|, |A|, |D| all < 0.1)
+- **F_daimon** short-circuits when PAD is in the neutral region (|P|, |A|, |D| all < 0.1); `Neutral` is not a `BehavioralState` variant
 - **F_dreams** short-circuits always (it does not inject per-tick; it runs on its own schedule)
 - **F_safety** never short-circuits (safety is always active)
 
-Typical overhead per tick: 2-4 active enrichment calls (not 42).
+The number of non-identity enrichments depends on the current loop step, memory hits, and PAD state.
 
 ---
 
 ## 11. Acceptance Criteria
 
-| Criterion | Verification |
+| Criterion | Current verification/status |
 |---|---|
-| `CrossCutFunctor` trait defined with pre_enrich/post_enrich | Unit test: implement a test functor, verify pre/post composition |
-| F_memory enriches SENSE with knowledge entries from HDC query | Integration test: populate store, run SENSE, verify knowledge in output |
-| F_memory enriches COMPOSE via VCG bids | Integration test: verify NeuroBidder/HeuristicBidder participate in auction |
-| F_memory REACT reinforces on gate pass, weakens on gate fail | Unit test: gate pass -> balance increases; gate fail -> balance decreases |
-| F_daimon biases ASSESS with PAD vector and somatic markers | Unit test: set PAD to anxious, verify tier escalation |
-| F_daimon gates ACT in Cautious/Anxious state | Unit test: Cautious + high-risk action -> defer Signal emitted |
-| F_daimon applies prospect value (lambda=2.25) on ACT outcome | Unit test: loss of 0.5 -> prospect_value = -2.25 * 0.5^0.88 |
-| F_dreams NREM replays episodes ordered by prediction error | Unit test: episodes with PE [0.1, 0.9, 0.5] -> replayed in [0.9, 0.5, 0.1] order |
-| F_dreams REM generates cross-domain hypotheses via HDC bundling | Integration test: two domain entries -> bundled vector -> analogy found |
-| F_dreams emotional depotentiation reduces negative PAD by 50% | Unit test: pleasure = -0.6 -> depotentiated to -0.3 |
-| 6 natural transformations wired (eta_MN, eta_NM, eta_MD, eta_DM, eta_ND, eta_DN) | Integration test: gate failure cascade fires all 7 steps |
-| Commuting triangle: Daimon->Memory->Dreams = Daimon->Dreams | Property test: both paths produce compatible consolidation results |
-| Priority hierarchy: Daimon > Memory > Dreams | Unit test: conflicting recommendations resolved by priority |
-| VCG invoked only when same level + both confidence > 0.5 | Unit test: different levels -> priority resolves; same level + one < 0.5 -> no VCG |
-| VCG second-price mechanism correct | Unit test: bids [0.8, 0.6, 0.3] -> winner pays 0.6 |
-| F_safety blocks capability violations before arbitration | Unit test: Signal requiring unauthorized capability -> filtered before VCG runs |
-| F_safety does not participate in VCG | Structural test: SafetyFunctor not passed to VcgAuction |
-| F_total = F_safety . F_arbitrated(F_memory, F_daimon, F_dreams) | Integration test: full pipeline with all 4 functors |
-| Short-circuit: empty knowledge store -> F_memory is identity | Unit test: empty store, verify no enrichment overhead |
-| Short-circuit: neutral PAD -> F_daimon is identity | Unit test: PAD = (0, 0, 0), verify no enrichment |
-| Feedback: arbitration calibration discounts consistently-wrong bidder | Integration test: cross-cut wins 5 auctions, all lead to gate fail -> confidence discount applied |
+| `CrossCutFunctor` trait and generic wrapper ordering | Focused unit test verifies forward pre-hooks and reverse post-hooks |
+| F_memory enriches SENSE from KnowledgeStore, including HDC retrieval when enabled | Real-store integration test covers retrieval metadata; the HDC path compiles under `--features hdc` |
+| F_memory enriches COMPOSE with auction recommendations | Real-store integration test verifies `AttentionBidder::Neuro` recommendation tags |
+| F_memory REACT reinforces on pass and weakens on fail | Real-store test verifies both mutations |
+| F_daimon biases ASSESS with PAD and somatic markers | Implemented with live `DaimonState`, `SomaticRetrieval`, configured thresholds, and 15% contrarian retrieval |
+| F_daimon escalates high-arousal/low-dominance ASSESS | Focused tier-escalation test |
+| F_daimon gates high-risk ACT while `Struggling` or below the dominance threshold | Focused deferral test using the canonical state vocabulary |
+| F_daimon applies prospect value (`lambda=2.25`, `alpha=0.88`) | Focused loss-asymmetry test |
+| Dreams NREM/REM cycle behavior | Owned by the existing `roko-dreams` engine; E44 does not duplicate it |
+| Dream output reaches Memory, Daimon, and routing | Real integration test verifies KnowledgeStore publication, Daimon cooling, and advice-biased CascadeRouter routing |
+| Six natural transformations are wired | Structural exports plus focused transformation and live cascade tests |
+| Commuting triangle: Daimon -> Memory -> Dreams = Daimon -> Dreams | Focused test asserts equal episode IDs, priority, and delta trigger |
+| Priority hierarchy | Focused test verifies safety-critical Daimon and Consolidated/Persistent Memory overrides |
+| VCG only considers conflicting Route/Compose recommendations at the same level with confidence > 0.5 | Focused eligibility/adversarial tests |
+| VCG second-price mechanism | Focused test verifies that the winner pays the runner-up confidence |
+| F_safety blocks capability violations before bid collection | Adversarial test filters a forbidden shell recommendation before arbitration |
+| F_safety never participates in VCG | Structural: `CrossCutId` contains only Memory, Daimon, and Dreams |
+| F_total = F_safety . F_arbitrated(F_memory, F_daimon, F_dreams) | Wrapper-order and full-arbitrator safety tests |
+| Short-circuit: empty memory or empty query | Focused empty-store/query test |
+| Short-circuit: neutral PAD region | Implemented predicate over all three PAD dimensions |
+| Failed gates start the cross-cut cascade without blocking the runner | `roko-cli` event-loop wiring compiles and uses `tokio::spawn` plus `spawn_blocking` |
+| Automatic arbitration-confidence calibration | Design follow-up; not part of E44 T01-T08 |
 
 ---
 
@@ -879,6 +869,7 @@ Typical overhead per tick: 2-4 active enrichment calls (not 42).
 
 | Version | Date | Changes |
 |---|---|---|
+| 3.1 | 2026-08-15 | E44 implementation complete: documented production functors, transformations, arbitration, safety ordering, runtime gate-failure cascade, canonical BehavioralState vocabulary, and verification boundaries. |
 | 3.0 | 2026-04-26 | Unified spec: full functorial treatment with CrossCutFunctor trait, 6 natural transformations, commuting triangle, VCG arbitration protocol, Safety as 4th functor, 5 feedback loops, short-circuit optimization, acceptance criteria. |
 | 2.0 | 2026-04-22 | Depth doc: cross-cut-functors.md with Rust code and category theory framing. |
 | 1.0 | 2026-04-18 | Initial agent runtime cross-cut design. |

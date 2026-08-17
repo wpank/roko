@@ -6,11 +6,35 @@
 
 **Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal/Pulse duality, demurrage, HDC fingerprints), [02-CELL](02-CELL.md) (9 protocols, predict-publish-correct, Verify redesign, EFE routing), [03-GRAPH](03-GRAPH.md) (Graph, Hot Graph, FanOut), [04-EXECUTION](04-EXECUTION.md) (Engine, Flow, snapshot/resume)
 
+> **Implementation status:** E23 COMPLETE (10/10 manifest) — lifecycle type-state, the
+> five-phase vitality tracker, CorticalState energy/EFE fields, cognitive-energy depletion
+> and recovery, adaptive timescales, energy/affect coupling, EFE routing, GoalTree,
+> SlotManager, revisioned mode owners, and phase/energy-aware runner dispatch are live.
+> Terminal skips survive restart, and focused lifecycle/phase/energy/goal tests pass. A
+> registered external Agent can publish the canonical lifecycle sample through the durable,
+> Agent-scoped ingress in [15-TELEMETRY](15-TELEMETRY.md); direct native owner publication
+> into that ingress remains broader product integration outside E23 acceptance.
+
+### Current implementation sources and reading contract
+
+| Surface | Current authority | Shipped boundary |
+|---|---|---|
+| Provisioning and runtime lifecycle | `crates/roko-agent/src/lifecycle.rs` | Two compile-time transition families, slots, and revisioned mode ownership |
+| Heartbeat and shared state | `crates/roko-runtime/src/heartbeat.rs`, `heartbeat_attention.rs` | Tick producers/scheduler, `AdaptiveClock`, `CorticalState`, probes, and context bidders |
+| Vitality, affect, energy, goals | `crates/roko-daimon/src/lib.rs` | Five `BehavioralPhase`s, hysteretic `VitalityTracker`, `CognitiveEnergy`, and `GoalTree` |
+| Context composition and feedback | `crates/roko-core/src/cognitive_workspace.rs`, `crates/roko-compose/src/{prompt,auction}.rs`, `crates/roko-learn/src/{prompt_experiment,section_outcome}.rs` | Raw-content-free prompt/context section audit rows, VCG/learning bidders, and durable attempt-scoped terminal feedback |
+
+Unless a block is explicitly labelled **Current implementation**, its graph,
+pipeline, profile, pseudocode, formula, or acceptance item is normative target
+design. In particular, the Hot-Graph presentation is an architectural model;
+the current heartbeat runtime schedules and publishes three tick classes but
+does not instantiate three independently snapshotted Graph Engine graphs.
+
 ---
 
 ## 1. Overview
 
-An **Agent** is the most complex specialization: a Space + Extensions + Memory + adaptive clock + vitality. Every agent -- in-process or remote -- runs the same core loop. The agent's cognitive pipeline is itself a Hot Graph, interpreted by the same Engine that runs all other Graphs.
+An **Agent** is the most complex specialization: a Space + Extensions + Memory + adaptive clock + vitality. The common loop below is the target architectural model. Current in-process and remote execution surfaces share contracts and telemetry, but do not all run one identical Graph Engine pipeline.
 
 ### Core framing
 
@@ -22,11 +46,11 @@ Agent = Space + Extensions + Memory + adaptive clock + vitality
 |---|---|---|
 | **Space** | Isolation boundary (Bus partition + Store partition) + capability grants | Space pattern |
 | **Extensions** | Interceptor Cells across 8 layers | Functor pattern (Signal endofunctors) |
-| **Memory** | Store-protocol Cell with demurrage + dreams | Memory specialization ([06-MEMORY](06-MEMORY.md)) |
-| **Adaptive clock** | Tick frequency control across 3 timescales | Three nested Hot Graphs |
+| **Memory** | Current `KnowledgeStore`/`NeuroStore`; unified `MemoryCell` is target | Memory specialization ([06-MEMORY](06-MEMORY.md)) |
+| **Adaptive clock** | Tick frequency control across 3 timescales | Current heartbeat scheduler; nested Hot Graphs are target |
 | **Vitality** | `remaining_budget / initial_budget` | Economic pressure scalar driving behavioral phases |
 
-The cognitive loop is a **Loop pattern** (Graph with feedback edge): the output of REFLECT feeds back into OBSERVE on the next tick. The three cognitive timescales (gamma, theta, delta) are three **Hot Graphs** running concurrently inside a single Agent -- not scheduling hints, not mode flags, but independent Graphs with independent failure isolation, budget accounting, and snapshot/resume.
+The cognitive loop is modelled as a **Loop pattern** (Graph with feedback edge): the output of REFLECT feeds back into OBSERVE on the next tick. In current code, `HeartbeatPolicy::run` owns independent Tokio intervals for gamma, theta, and delta and publishes typed tick events; `FrequencyScheduler` tracks cadence, health, cost, and throttling. Independent Graph failure domains and per-loop snapshots remain target integration.
 
 Cross-cuts -- Memory, Daimon (affect), Dreams, Safety -- are **Functor patterns**: Signal endofunctors that enrich or constrain Signals pre/post a Cell without changing the Graph's topology.
 
@@ -34,192 +58,162 @@ Cross-cuts -- Memory, Daimon (affect), Dreams, Safety -- are **Functor patterns*
 
 ## 2. Type-State Lifecycle
 
-Agent states are compile-time enforced. Each state restricts which operations are permitted. Calling a method unavailable in the current state is a type error, not a runtime error.
+**Current implementation.** `roko-agent` exposes two related compile-time
+transition families; it does not expose `Active`, `Dreaming`, or `Terminal`
+generic Agent states.
 
-```rust
-pub struct Agent<S: AgentState> {
-    pub id: AgentId,
-    pub config: AgentConfig,
-    pub space: Space,
-    pub extensions: ExtensionChain,
-    pub memory: MemoryCell,
-    pub clock: AdaptiveClock,
-    pub vitality: VitalityTracker,
-    pub energy: CognitiveEnergy,
-    pub cortical: Arc<CorticalState>,
-    pub slots: SlotManager,
-    _state: PhantomData<S>,
-}
+The provisioning wrapper resolves an extended manifest:
 
-pub struct Provisioning;
-pub struct Active;
-pub struct Dreaming;
-pub struct Terminal;
-
-pub trait AgentState: sealed::Sealed {}
-impl AgentState for Provisioning {}
-impl AgentState for Active {}
-impl AgentState for Dreaming {}
-impl AgentState for Terminal {}
+```text
+ProvisioningAgent<Unvalidated>
+  -> Validated -> ResourcesAllocated -> NeuroInitialized
+  -> RoutingConfigured -> ToolsLoaded -> MeshRegistered
+  -> ProvisioningReady -> RunningAgent
 ```
 
-### Transition table
+Only the method for the current marker exists: `validate`,
+`allocate_resources`, `init_neuro`, `configure_routing`, `load_tools`,
+`register_mesh`, `ready`, then `start_cognitive_loop`. `RunningAgent` is a
+serializable hand-off record; the concrete loop runner lives above this crate.
 
+The runtime lifecycle separately enforces:
+
+```text
+Initializing::validate
+  -> Bootstrapping::bootstrap_complete
+  -> Ready::start
+  -> Running::{drain | terminate}
+  -> Draining::complete_drain
+  -> Terminated
 ```
-Provisioning ──activate()──► Active
-Active ──────sleep()───────► Dreaming
-Dreaming ────wake()────────► Active
-Active ──────terminate()───► Terminal
-Dreaming ────terminate()───► Terminal
-```
 
-| Transition | Method | Precondition | Side effects |
-|---|---|---|---|
-| `Provisioning -> Active` | `activate()` | Extensions loaded, Space grants validated, Memory initialized | Emits `AgentStateTransition` Pulse; starts adaptive clock |
-| `Active -> Dreaming` | `sleep()` | Sleep pressure threshold met OR idle timeout | Pauses pipeline; triggers dream consolidation ([06-MEMORY](06-MEMORY.md) SS9) |
-| `Dreaming -> Active` | `wake()` | Dream cycle complete OR external interrupt | Resumes pipeline; integrates consolidated knowledge |
-| `Active -> Terminal` | `terminate()` | Budget exhausted OR explicit shutdown | Knowledge export; Episode flush; Extension shutdown (reverse order) |
-| `Dreaming -> Terminal` | `terminate()` | Budget exhausted during dream | Aborts dream; best-effort knowledge flush |
-
-### State-restricted operations
-
-| Operation | Provisioning | Active | Dreaming | Terminal |
-|---|---|---|---|---|
-| Load Extensions | Yes | No | No | No |
-| Run pipeline tick | No | Yes | No | No |
-| Execute tool calls | No | Yes | No | No |
-| Run dream cycle | No | No | Yes | No |
-| Query Memory | No | Yes | Yes (read-only) | No |
-| Export knowledge | No | Yes | Yes | Yes (flush) |
-| Receive messages | No | Yes | Queued | No |
-
-Attempting an operation in the wrong state is a compile error. The `Agent<Dreaming>` type simply does not have a `tick()` method.
+`Running::record_completed_tick` records caller-completed work. Dreams are a
+separate subsystem, not a lifecycle state in this machine. `AgentLifecycle`
+is the runtime-erased enum for heterogeneous storage.
 
 ---
 
 ## 3. Vitality
 
-Vitality is the economic pressure scalar: `remaining_budget / initial_budget`. It declines monotonically as the agent spends resources, creating five behavioral phases that modulate decision-making. Mortality is a feature, not a bug -- an agent that has never faced resource pressure has never learned to prioritize (cf. Jonas 1966, *The Phenomenon of Life*).
+Vitality is the economic pressure scalar: `remaining_budget / initial_budget`.
+Spending normally drives it downward through five behavioral phases, while the
+current API also permits replenishment. Mortality is a feature, not a bug -- an
+agent that has never faced resource pressure has never learned to prioritize
+(cf. Jonas 1966, *The Phenomenon of Life*).
+
+**Current implementation** (`crates/roko-daimon/src/lib.rs`):
 
 ```rust
 pub struct VitalityTracker {
-    pub initial_budget: Cost,
-    pub remaining_budget: Cost,
-    pub phase: VitalityPhase,
-}
-
-impl VitalityTracker {
-    pub fn vitality(&self) -> f64 {
-        self.remaining_budget.as_f64() / self.initial_budget.as_f64()
-    }
+    pub initial_budget: f64,
+    pub remaining_budget: f64,
+    pub last_phase: BehavioralPhase,
+    pub last_transition_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VitalityPhase {
-    Thriving,      // 1.0 - 0.7
-    Stable,        // 0.7 - 0.4
-    Conservation,  // 0.4 - 0.2
-    Declining,     // 0.2 - 0.05
-    Terminal,      // < 0.05
+pub enum BehavioralPhase {
+    Thriving,      // >= 0.8
+    Stable,        // >= 0.5
+    Conservation,  // >= 0.3
+    Declining,     // >= 0.1
+    Terminal,      // < 0.1
 }
 ```
 
+`update_remaining` applies a five-percentage-point hysteresis band. Vitality is
+not required to decline monotonically: callers may supply a higher remaining
+budget, capped at `initial_budget`.
+
 ### Phase behaviors
 
-| Phase | Vitality | EFE cost term | Compose budget | Verify criteria | Behavioral shift |
-|---|---|---|---|---|---|
-| **Thriving** | 1.0 - 0.7 | 1.0x (baseline) | Full allocation | Full rigor | Explore freely; invest in learning |
-| **Stable** | 0.7 - 0.4 | 1.2x (slight cost pressure) | 90% allocation | Full rigor | Balanced exploration/exploitation |
-| **Conservation** | 0.4 - 0.2 | 1.8x (strong cost pressure) | 60% allocation | Relaxed soft criteria | Favor known strategies; reduce exploration; prefer T0/T1 |
-| **Declining** | 0.2 - 0.05 | 3.0x (severe cost pressure) | 30% allocation | Minimum viable | Complete current task only; no speculative work; transfer knowledge |
-| **Terminal** | < 0.05 | N/A | 0 (sleepwalk) | Skip | Flush episodes; export knowledge; emit farewell Pulse; terminate |
+| Phase | Vitality | Highest EFE tier | Maximum active goals | Exploration |
+|---|---|---|---|---|
+| **Thriving** | >= 0.8 | T2 | Unbounded | Allowed |
+| **Stable** | >= 0.5 | T2 | 5 | Allowed |
+| **Conservation** | >= 0.3 | T1 | 3 | Allowed |
+| **Declining** | >= 0.1 | T0 | 1 | Disabled |
+| **Terminal** | < 0.1 | Dispatch disabled | 0 | Disabled |
 
 ### Phase transitions
 
-Phase transitions emit `AgentPhaseChange` Pulses on the Bus (topic `agent:{id}.phase.changed`). Extensions in L6 Meta can react via the `on_reflect()` hook.
-
-The vitality scalar is readable from `CorticalState` (section 4) as an `AtomicF64`, enabling sub-microsecond concurrent reads from any slot or Extension without locking.
+`VitalityTracker` itself returns the stable phase and updates its timestamp.
+Runner dispatch consumes that phase. A universal `AgentPhaseChange` Pulse on
+every owner transition remains an integration target. `CorticalState` stores
+resource health and cognitive-energy signals, not a direct atomic vitality field.
 
 ---
 
 ## 4. CorticalState
 
-CorticalState is the lock-free atomic shared perception surface. Multiple concurrent slots, Extensions, and Lenses read from CorticalState without synchronization overhead. Writes use atomic operations -- no mutexes, no contention.
+**Current implementation.** `CorticalState` is the atomic shared perception
+surface in `roko-runtime`. Continuous `f32` values are stored as `AtomicU32`
+bits; enum, flag, and counter channels use compact integer atomics. Fields are
+private and accessed through clamping getters/setters. A multi-field snapshot
+is explicitly eventually consistent.
 
 ```rust
 pub struct CorticalState {
-    // ── Continuous signals ──────────────────────────────────────
-    pub prediction_error: AtomicF64,     // current PE (0.0..=1.0)
-    pub vitality: AtomicF64,             // remaining_budget / initial_budget
-    pub confidence: AtomicF64,           // agent's self-assessed confidence
-
-    // ── Regime ─────────────────────────────────────────────────
-    pub regime: AtomicRegime,            // Calm | Normal | Volatile | Crisis
-
-    // ── Affect ─────────────────────────────────────────────────
-    pub affect: AtomicPAD,               // Pleasure / Arousal / Dominance
-
-    // ── Counters ───────────────────────────────────────────────
-    pub tick_count: AtomicU64,
-    pub episode_count: AtomicU64,
-    pub gate_pass_count: AtomicU64,
-    pub gate_fail_count: AtomicU64,
-
-    // ── Budget ─────────────────────────────────────────────────
-    pub budget_spent: AtomicU64,         // microdollars
-    pub budget_remaining: AtomicU64,     // microdollars
-
-    // ── Slot state ─────────────────────────────────────────────
-    pub active_slots: AtomicU32,
-    pub slot_states: Arc<[AtomicSlotState]>,
+    pleasure: AtomicU32,
+    arousal: AtomicU32,
+    dominance: AtomicU32,
+    primary_emotion: AtomicU8,
+    aggregate_accuracy: AtomicU32,
+    accuracy_trend: AtomicI8,
+    category_accuracies: [AtomicU32; 16],
+    surprise_rate: AtomicU32,
+    universe_size: AtomicU32,
+    active_count: AtomicU16,
+    pending_predictions: AtomicU32,
+    creative_mode: AtomicU8,
+    fragments_captured: AtomicU32,
+    last_novel_prediction_tick: AtomicU64,
+    regime: AtomicU8,
+    gas_gwei: AtomicU32,
+    resource_health: AtomicU32,
+    knowledge_health: AtomicU32,
+    performance_trend: AtomicU32,
+    behavioral_state: AtomicU8,
+    compounding_momentum: AtomicU32,
+    cognitive_energy: AtomicU32,
+    fatigue_penalty: AtomicU32,
+    efe_last_tier: AtomicU8,
 }
 ```
 
 ### Atomic types
 
-```rust
-pub struct AtomicF64(AtomicU64);        // f64 stored via to_bits/from_bits
-pub struct AtomicRegime(AtomicU8);      // Calm=0, Normal=1, Volatile=2, Crisis=3
-pub struct AtomicPAD {                   // Pleasure/Arousal/Dominance
-    pub pleasure: AtomicF64,             // -1.0..=1.0
-    pub arousal: AtomicF64,              // -1.0..=1.0
-    pub dominance: AtomicF64,            // -1.0..=1.0
-}
-```
+The public PAD type is `roko_primitives::PadVector` (`f64`), narrowed to
+`f32` only at this storage boundary. `Regime` and `BehavioralState` have
+explicit integer conversions.
 
 ### Read cost
 
-All reads are single atomic loads -- no CAS loops, no spinlocks. On x86-64 with `Ordering::Relaxed`, a CorticalState read completes in under 1 microsecond. This matters because the cognitive pipeline reads CorticalState on every tick, and multiple concurrent slots read it simultaneously.
+Individual channel reads are atomic loads, normally with `Ordering::Acquire`.
+No universal sub-microsecond guarantee is part of the API; that claim requires
+a benchmark on the target platform.
 
 ### Write protocol
 
-Only the pipeline's owner thread writes to CorticalState. Slots and Extensions read only. This single-writer / multiple-reader pattern eliminates write contention entirely.
+The type exposes thread-safe setters but does not encode a single-writer owner
+in Rust. Higher layers may impose that discipline as policy.
 
 ---
 
 ## 5. Multi-Slot State
 
-An Agent manages N named concurrent slots, each executing an independent task. Slots share the agent's global budget, Memory, CorticalState, and Extension chain, but maintain per-slot task assignment, scratchpad, and capability guards.
+**Current implementation.** `SlotManager` is a deterministic owner of named
+slot lifecycle state. It does not own budgets, Memory, CorticalState,
+scratchpads, task objects, or capability grants; those remain higher-layer or
+target integrations.
 
 ```rust
 pub struct SlotManager {
-    pub slots: Vec<Slot>,
-    pub max_slots: usize,
-    pub global_budget: Arc<VitalityTracker>,
-    pub global_memory: Arc<MemoryCell>,
-    pub global_cortical: Arc<CorticalState>,
+    slots: BTreeMap<String, SlotState>,
+    max_slots: usize,
 }
 
-pub struct Slot {
-    pub name: SlotName,
-    pub state: SlotState,
-    pub task: Option<TaskAssignment>,
-    pub scratchpad: Value,
-    pub capabilities: CapabilitySet,
-    pub local_context: Vec<Signal>,
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SlotState {
     Idle,
     Active,
@@ -228,9 +222,14 @@ pub enum SlotState {
 }
 ```
 
+`new`, `activate`, `block`, `complete`, and `reset` validate capacity, names,
+block reasons, and legal/idempotent transitions.
+
 ### Slot budget sharing
 
-All slots draw from the same global budget. The `VitalityTracker.remaining_budget` is backed by an `AtomicU64` (microdollars) to enable contention-free concurrent spending from multiple slots.
+Shared atomic budget ownership is a target integration. Current
+`VitalityTracker.remaining_budget` is an `f64` inside mutable `DaimonState`, not
+an `AtomicU64` inside `SlotManager`.
 
 **CAS commit protocol**: When a slot spends budget, it uses compare-and-swap (CAS) to atomically deduct:
 
@@ -253,9 +252,11 @@ loop {
 }
 ```
 
-This ensures no slot can overdraw the budget even under concurrent spending. The CAS loop is bounded (typically 1-2 iterations) because contention is low -- slots spend at human timescales, not nanosecond timescales.
+The CAS example above is design pseudocode; it is not the current slot-manager
+implementation and makes no bounded-retry guarantee.
 
-When one slot's spending causes a phase transition (e.g., Stable -> Conservation), all slots observe the new phase via CorticalState.
+Phase propagation from shared budget ownership into every slot remains target
+integration.
 
 ### Slot capability guards
 
@@ -290,9 +291,13 @@ pub enum AgentMode {
 
 ---
 
-## 7. Three Cognitive Timescales as Nested Hot Graphs
+## 7. Three Cognitive Timescales (current scheduler, target Hot Graphs)
 
-The three cognitive speeds -- gamma (reactive, ~5-15s), theta (reflective, ~75s), delta (consolidation, hours) -- are three distinct Hot Graphs running concurrently inside a single Agent. Each is a resident Graph that re-fires on its own clock, interpreted by the same Engine that runs task plans.
+Current production code has three tick classes and scheduler state. Gamma and
+theta intervals adapt within `ClockConfig` bounds; delta enters from idle,
+episode, schedule, or explicit conditions. The nested Hot-Graph topology below
+is the intended interpretation, not a claim of three current Graph Engine
+instances with independent snapshots.
 
 ```
 Agent
@@ -313,7 +318,7 @@ Agent
         role: dream consolidation, knowledge synthesis, pruning
 ```
 
-### Why three loops instead of one with a scheduler
+### Why three target loops instead of one scheduler
 
 A single loop with a "which timescale this tick?" decision conflates two concerns: clock frequency and cognitive purpose. Separating them gives:
 
@@ -324,13 +329,16 @@ A single loop with a "which timescale this tick?" decision conflates two concern
 
 ### Adaptive Clock
 
+**Current implementation.** One pure `AdaptiveClock` owns one timescale; the
+runtime policy/scheduler coordinates multiple instances or tick classes:
+
 ```rust
 pub struct AdaptiveClock {
-    pub gamma: Duration,      // fast: perception + reflexes (100ms - 500ms)
-    pub theta: Duration,      // medium: planning + execution (500ms - 16s)
-    pub delta: Duration,      // slow: consolidation + reflection (60s - 600s)
-    pub regime: Regime,
-    pub hysteresis_counter: u8,
+    timescale: CognitiveTimescale,
+    base_interval: Duration,
+    current_interval: Duration,
+    last_fired: Option<Instant>,
+    gamma_ticks_since_theta: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -353,7 +361,10 @@ pub enum Regime {
 
 ### Regime transitions
 
-Regime transitions require **3-tick hysteresis** to prevent oscillation. The system must observe 3 consecutive ticks of regime-qualifying conditions before transitioning. This prevents a single PE spike from triggering Crisis mode.
+The three-tick regime-transition algorithm below is target policy. Current
+`AdaptiveClock::adapt` applies a caller-supplied `Regime` immediately;
+behavioral and vitality trackers implement their own hysteresis where
+documented.
 
 ```rust
 impl AdaptiveClock {
@@ -413,9 +424,11 @@ impl AdaptiveClock {
 
 ---
 
-## 8. The 9-Step Pipeline as Hot Graph
+## 8. Target 9-Step Pipeline as Hot Graph
 
-The Agent's pipeline is a Hot Graph -- it stays resident and re-fires every tick. The same execution Engine that runs task Graphs interprets this pipeline.
+This pipeline is the normative cognitive decomposition. Current subsystems
+implement many stages, but one production Graph Engine instance does not yet
+own this exact nine-node resident graph.
 
 ```
 Step 1: OBSERVE     ──► Gather observations from environment + Bus + pheromones
@@ -773,7 +786,7 @@ The gamma loop fires every 100ms-500ms (base), adjusted by regime. Each tick run
 
 ```rust
 // Gamma loop per-tick pseudocode
-async fn gamma_tick(agent: &Agent<Active>) -> Result<()> {
+async fn gamma_tick(agent: &mut TargetAgentLoop) -> Result<()> {
     // Step 1: Run T0 probes
     let probe_results = agent.gamma_graph
         .execute_subgraph("gamma-probe-fanout", agent.cortical_snapshot())
@@ -1442,46 +1455,52 @@ pub struct EnergyCapacityModel {
 
 ## 16. CognitiveWorkspace (Compose Protocol)
 
-The CognitiveWorkspace assembles context for LLM inference using a VCG auction (Vickrey-Clarke-Groves) with 8+ bidders competing for limited token budget. Section effect tracking via beta-distribution posteriors learns which context sections correlate with gate success.
+**Current implementation.** `roko_core::CognitiveWorkspace` is a serializable
+audit object for one invocation. Its prompt/context section rows omit raw section
+content, while `TaskInvocationContract` deliberately retains the task title,
+files, and acceptance text. `roko-compose::PromptComposer` assembles
+`PromptSection`s and can use VCG after every active bidder is warm.
+`AttentionBidder` has nine variants. Learning feedback is terminal and
+section-scoped; the audit object itself does not own bidders or posterior state.
 
 ### VCG auction
 
 ```rust
 pub struct CognitiveWorkspace {
-    pub bidders: Vec<Box<dyn AttentionBidder>>,
-    pub token_budget: usize,
-    pub section_effects: BTreeMap<String, BetaDistribution>,
-}
-
-pub trait AttentionBidder: Send + Sync {
-    fn name(&self) -> &str;
-    fn bid(&self, context: &TaskContext) -> Vec<ContextBid>;
-}
-
-pub struct ContextBid {
-    pub section_name: String,
-    pub content: String,
-    pub token_count: usize,
-    pub value: f64,               // bidder's valuation
+    pub schema_version: u32,
+    pub workspace_id: String,
+    pub invocation_id: String,
+    pub task_contract: TaskInvocationContract,
+    pub role_profile: PolicyVersionRef,
+    pub prompt_policy: PolicyVersionRef,
+    pub context_policy: Option<ContextPolicyAuditRef>,
+    pub included_context_sections: Vec<ContextSectionAudit>,
+    pub rejected_context_candidates: Vec<ContextRejectionAudit>,
+    pub prompt_sections: Vec<PromptSectionAudit>,
+    pub model_choice: ModelChoice,
+    pub capability_grants: Vec<CapabilityGrant>,
+    // output, gate, review, and reward observations follow
 }
 ```
 
-### 8+ built-in bidders
+### Nine canonical bidder identities
 
 | Bidder | What it bids | Value signal |
 |---|---|---|
-| **NeuroBidder** | Knowledge Signals from Memory store | HDC similarity to task + demurrage balance |
-| **TaskBidder** | Task description, dependencies, constraints | Always bids; baseline context |
-| **ResearchBidder** | Research artifacts relevant to task | Recency + citation count |
-| **HeuristicBidder** | Matched heuristics with calibration scores | Calibration score (Brier) |
-| **EpisodeBidder** | Recent relevant episodes | HDC similarity + recency |
-| **PheromoneBidder** | Pheromone Pulse summaries for task context | Pheromone intensity |
-| **AffectBidder** | Somatic marker summaries | PAD distance to current state |
-| **SystemBidder** | System prompt, spec sections, domain profile | Always bids; infrastructure |
+| `Neuro` | Durable knowledge | Retrieval relevance, freshness, and learned value |
+| `Daimon` | Affect/somatic guidance | Current PAD and behavioral context |
+| `IterationMemory` | Recent turns/retries | Recency and task relevance |
+| `CodeIntelligence` | Files and symbols | Structural workspace relevance |
+| `PlaybookRules` | Skills and learned rules | Match and prior outcomes |
+| `Research` | Research artifacts | Task relevance and provenance |
+| `TaskContext` | Brief, plan, verification, PRD | Contract priority |
+| `Oracles` | Predictions and warnings | Forecast relevance |
+| `GroupContext` | Group knowledge/pheromones | Membership-scoped relevance |
 
 ### Section effect tracking
 
-Every context section is tracked by a beta-distribution posterior:
+`LearningBidder` stores beta-distribution posteriors outside the
+`CognitiveWorkspace` audit record:
 
 ```rust
 pub struct BetaDistribution {
@@ -1496,7 +1515,15 @@ impl BetaDistribution {
 }
 ```
 
-After each gate evaluation, the workspace updates beta distributions for all included sections. Sections with high `mean()` are boosted in future auctions; sections with low `mean()` are penalized.
+At an attempt's durable terminal outcome, included prompt sections may produce
+`SectionOutcomeRecord`s and included experiment assignments settle exactly
+once. Eligible bidders warm once per terminal prompt without giving excluded
+sections false success/failure credit. Attempt assignments are prepared during
+composition, marked dispatched immediately before actual CLI or Bridge launch,
+and settled from terminal facts; malformed durable experiment state fails
+closed. Exact provider-cost projection onto attempt-scoped treatments remains a
+separate follow-up, so terminal pass/fail posterior learning must not be
+described as exact provider-cost attribution.
 
 ### Novelty attenuation
 
@@ -1633,15 +1660,18 @@ The three-tier model draws from:
 
 ---
 
-## 21. Acceptance Criteria
+## 21. Target Acceptance Catalog
+
+This table preserves the research/spec backlog. It is not a current pass
+report; only the source-backed boundary at the top of this chapter is shipped.
 
 | # | Criterion | Verification |
 |---|---|---|
-| AG-1 | `Agent<Provisioning>` cannot call `tick()` (compile error) | Compile check: method does not exist on type |
-| AG-2 | `Agent<Active>` can call `tick()`, cannot call `load_extension()` | Compile check |
-| AG-3 | `Agent<Dreaming>` runs dream cycle but cannot execute tool calls | Compile check + integration test |
-| AG-4 | `Agent<Terminal>` flushes episodes and exports knowledge | Integration test |
-| AG-5 | Vitality phases transition at correct thresholds (0.7, 0.4, 0.2, 0.05) | Unit test |
+| AG-1 | `ProvisioningAgent` cannot skip its ordered marker stages | Compile check: methods exist only on the matching marker |
+| AG-2 | Runtime lifecycle follows Initializing → Bootstrapping → Ready → Running | Compile check |
+| AG-3 | Running drains orderly or terminates immediately; Dreams remain a separate subsystem | Unit/integration test |
+| AG-4 | Draining completes with an optional durable backup reference | Unit test |
+| AG-5 | Behavioral phases and 0.05 hysteresis follow 0.8/0.5/0.3/0.1 boundaries | Unit test |
 | AG-6 | Conservation phase reduces compose budget to 60% | Integration test: verify token budget |
 | AG-7 | Terminal phase triggers sleepwalk (no LLM calls) | Integration test |
 | AG-8 | CorticalState reads complete in < 1 microsecond | Benchmark |

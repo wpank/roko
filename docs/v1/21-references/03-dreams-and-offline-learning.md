@@ -1,5 +1,8 @@
 # Dreams and Offline Learning
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for offline consolidation, creative hypothesis generation, and sleep-time compute in the Roko Dreams subsystem.
 
 **Topic**: [References](./INDEX.md)

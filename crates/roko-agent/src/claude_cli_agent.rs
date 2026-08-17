@@ -10,8 +10,8 @@
 use crate::agent::{Agent, AgentResult};
 use crate::mcp::find_mcp_config;
 use crate::process::{
-    GRACE_STDIN_CLOSE_MS, benign_stderr_warn_once, classify_benign_stderr, kill_tree,
-    register_spawned_pid, set_process_group, unregister_pid,
+    GRACE_STDIN_CLOSE_MS, ResourceLimits, benign_stderr_warn_once, classify_benign_stderr,
+    confined_command, kill_tree, register_spawned_pid, set_process_group, unregister_pid,
 };
 use crate::usage::Usage;
 use async_trait::async_trait;
@@ -82,6 +82,7 @@ pub struct ClaudeCliAgent {
     bare_mode: bool,
     system_prompt: Option<String>,
     allowed_tools: Option<String>,
+    disallowed_tools: Option<String>,
     max_turns: Option<u32>,
     settings_json: String,
     extra_args: Vec<String>,
@@ -90,6 +91,7 @@ pub struct ClaudeCliAgent {
     resume: Option<String>,
     dangerously_skip_permissions: bool,
     timeout_ms: u64,
+    resource_limits: Option<ResourceLimits>,
     name: String,
 }
 
@@ -111,6 +113,7 @@ impl ClaudeCliAgent {
             bare_mode: true,
             system_prompt: None,
             allowed_tools: None,
+            disallowed_tools: None,
             max_turns: Some(OperatingFrequency::Theta.turn_limit()),
             settings_json: build_settings_json(),
             extra_args: Vec::new(),
@@ -119,6 +122,7 @@ impl ClaudeCliAgent {
             resume: None,
             dangerously_skip_permissions: true,
             timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
+            resource_limits: None,
             name: format!("claude-cli:{model}"),
         }
     }
@@ -137,6 +141,13 @@ impl ClaudeCliAgent {
         self
     }
 
+    /// Apply OS resource limits to the Claude subprocess.
+    #[must_use]
+    pub fn with_resource_limits(mut self, limits: ResourceLimits) -> Self {
+        self.resource_limits = Some(limits);
+        self
+    }
+
     /// Override the reasoning-effort label passed to Claude.
     #[must_use]
     pub fn with_effort(mut self, effort: impl Into<String>) -> Self {
@@ -151,7 +162,9 @@ impl ClaudeCliAgent {
         self
     }
 
-    /// Disable `--bare` if the caller wants the full Claude Code shell.
+    /// When enabled, replace Claude Code's built-in system prompt with the
+    /// caller-supplied prompt (or an empty prompt when none was supplied).
+    /// Disable this to append caller guidance to Claude's built-in prompt.
     #[must_use]
     pub const fn with_bare_mode(mut self, bare_mode: bool) -> Self {
         self.bare_mode = bare_mode;
@@ -176,6 +189,13 @@ impl ClaudeCliAgent {
     #[must_use]
     pub fn with_allowed_tools(mut self, tools: impl Into<String>) -> Self {
         self.allowed_tools = Some(tools.into());
+        self
+    }
+
+    /// Attach a Claude `--disallowed-tools` denylist.
+    #[must_use]
+    pub fn with_disallowed_tools(mut self, tools: impl Into<String>) -> Self {
+        self.disallowed_tools = Some(tools.into());
         self
     }
 
@@ -303,10 +323,12 @@ impl ClaudeCliAgent {
         })
     }
 
-    fn build_command(&self) -> Command {
-        let mut cmd = Command::new(&self.program);
+    fn build_command(&self) -> std::io::Result<Command> {
+        let mut cmd = confined_command(&self.program, self.resource_limits.as_ref())?;
         cmd.args(&self.extra_args);
-        // NOTE: --bare was removed from Claude CLI; skip it.
+        // Claude removed `--bare`, but `--system-prompt` provides the part of
+        // its contract Roko relies on: replacing Claude Code's built-in prompt
+        // instead of paying for it in addition to Roko's canonical prompt.
         cmd.arg("--print")
             .arg("--verbose")
             .arg("--output-format")
@@ -329,13 +351,22 @@ impl ClaudeCliAgent {
         {
             cmd.arg("--fallback-model").arg(fallback_model);
         }
-        if let Some(system_prompt) = &self.system_prompt {
+        if self.bare_mode {
+            cmd.arg("--system-prompt")
+                .arg(self.system_prompt.as_deref().unwrap_or_default());
+        } else if let Some(system_prompt) = &self.system_prompt {
             cmd.arg("--append-system-prompt").arg(system_prompt);
         }
-        if let Some(tools) = &self.allowed_tools
+        // `Some("")` is deliberate: Claude documents an empty `--tools`
+        // value as disabling all tools. Omitting the flag would instead make
+        // a restricted fallback permissive.
+        if let Some(tools) = &self.allowed_tools {
+            cmd.arg("--tools").arg(tools);
+        }
+        if let Some(tools) = &self.disallowed_tools
             && !tools.is_empty()
         {
-            cmd.arg("--tools").arg(tools);
+            cmd.arg("--disallowed-tools").arg(tools);
         }
         if let Some(mcp_config) = self.discovered_mcp_config() {
             cmd.arg("--mcp-config").arg(mcp_config);
@@ -359,7 +390,7 @@ impl ClaudeCliAgent {
         cmd.env("CARGO_BUILD_JOBS", "2");
         // Prevent "nested session" detection when spawning from within Claude Code.
         cmd.env_remove("CLAUDECODE");
-        cmd
+        Ok(cmd)
     }
 
     fn debug_enabled() -> bool {
@@ -630,7 +661,16 @@ impl Agent for ClaudeCliAgent {
             Err(reason) => return self.failure(input, &reason, started),
         };
 
-        let mut cmd = self.build_command();
+        let mut cmd = match self.build_command() {
+            Ok(command) => command,
+            Err(error) => {
+                return self.failure(
+                    input,
+                    &format!("process confinement unavailable: {error}"),
+                    started,
+                );
+            }
+        };
 
         let mut child = match cmd.spawn() {
             Ok(child) => child,
@@ -647,16 +687,16 @@ impl Agent for ClaudeCliAgent {
         let stdout_pipe = child.stdout.take();
         let stderr_pipe = child.stderr.take();
 
-        if let Some(mut stdin) = child.stdin.take() {
-            if let Err(e) = stdin.write_all(prompt_text.as_bytes()).await {
-                let _ = kill_tree(&mut child, Duration::from_millis(GRACE_STDIN_CLOSE_MS)).await;
-                if track_pids()
-                    && let Some(pid) = pid
-                {
-                    unregister_pid(pid);
-                }
-                return self.failure(input, &format!("stdin write failed: {e}"), started);
+        if let Some(mut stdin) = child.stdin.take()
+            && let Err(e) = stdin.write_all(prompt_text.as_bytes()).await
+        {
+            let _ = kill_tree(&mut child, Duration::from_millis(GRACE_STDIN_CLOSE_MS)).await;
+            if track_pids()
+                && let Some(pid) = pid
+            {
+                unregister_pid(pid);
             }
+            return self.failure(input, &format!("stdin write failed: {e}"), started);
         }
 
         tracing::info!(
@@ -1064,6 +1104,73 @@ mod tests {
         assert_eq!(usage, StreamUsage::default());
     }
 
+    #[test]
+    fn command_preserves_explicit_deny_all_and_emits_denylist() {
+        let command = ClaudeCliAgent::new("claude", ".", "claude-test-model")
+            .with_allowed_tools("")
+            .with_disallowed_tools("Bash,WebSearch")
+            .build_command()
+            .expect("build command");
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        let tools = args
+            .iter()
+            .position(|arg| arg == "--tools")
+            .expect("explicit deny-all flag");
+        assert_eq!(args[tools + 1], "");
+        let denied = args
+            .iter()
+            .position(|arg| arg == "--disallowed-tools")
+            .expect("denylist flag");
+        assert_eq!(args[denied + 1], "Bash,WebSearch");
+    }
+
+    #[test]
+    fn bare_mode_replaces_the_builtin_prompt_even_without_roko_guidance() {
+        let command = ClaudeCliAgent::new("claude", ".", "claude-test-model")
+            .with_bare_mode(true)
+            .build_command()
+            .expect("build command");
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        let system_prompt = args
+            .iter()
+            .position(|arg| arg == "--system-prompt")
+            .expect("replacement prompt flag");
+        assert_eq!(args[system_prompt + 1], "");
+        assert!(!args.iter().any(|arg| arg == "--append-system-prompt"));
+        assert!(!args.iter().any(|arg| arg == "--bare"));
+    }
+
+    #[test]
+    fn full_mode_appends_roko_guidance_to_the_builtin_prompt() {
+        let command = ClaudeCliAgent::new("claude", ".", "claude-test-model")
+            .with_bare_mode(false)
+            .with_system_prompt("system guidance")
+            .build_command()
+            .expect("build command");
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        let appended = args
+            .iter()
+            .position(|arg| arg == "--append-system-prompt")
+            .expect("append prompt flag");
+        assert_eq!(args[appended + 1], "system guidance");
+        assert!(!args.iter().any(|arg| arg == "--system-prompt"));
+    }
+
     #[tokio::test]
     async fn runs_fake_claude_binary_and_passes_flags() {
         let tmp = tempdir().unwrap();
@@ -1111,7 +1218,8 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"hello"}}}}'
         assert!(args_text.contains("medium"));
         assert!(args_text.contains("--max-turns"));
         assert!(args_text.contains("20"));
-        assert!(args_text.contains("--append-system-prompt"));
+        assert!(args_text.contains("--system-prompt"));
+        assert!(!args_text.contains("--append-system-prompt"));
         assert!(args_text.contains("system guidance"));
         assert!(args_text.contains("--settings"));
         assert!(args_text.contains("--dangerously-skip-permissions"));

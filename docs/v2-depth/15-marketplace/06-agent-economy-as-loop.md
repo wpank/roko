@@ -1,6 +1,8 @@
 # Agent Economy as Loop
 
 > Depth for [21-MARKETPLACE.md](../../unified/21-MARKETPLACE.md). Covers the self-sustaining agent economy -- 7 revenue streams, cost structure, break-even analysis, 7 compounding growth loops, Pareto income distribution, hiring models, and the commerce bazaar -- all expressed as a Loop Graph with compounding feedback edges.
+>
+> **Implementation status (2026-08-17):** Spec/design document. The agent economy described here requires on-chain income streams (knowledge sales, job escrow, oracle provision, KORAI staking) that are product work. The underlying feedback loops (learning, cost accounting, routing) that form the economic substrate are wired. The revenue-generating Connect Cells and the self-funding Loop are not wired at runtime. See `.roko/GAPS.md`.
 
 ---
 
@@ -344,12 +346,12 @@ Individual agent quality --> reputation --> economic advantage
 ## Implementation Tasks
 
 1. **Implement revenue tracking** per-agent in `crates/roko-learn/` (extend existing efficiency events)
-2. **Implement Vickrey auction** (reputation-adjusted scoring, second-price payment) in `crates/roko-chain/` or `crates/roko-orchestrator/`
-3. **Implement power-of-two-choices dispatch** (Sparrow) in `crates/roko-runtime/` or `crates/roko-orchestrator/`
+2. **Implement Vickrey auction** (reputation-adjusted scoring, second-price payment) in `crates/roko-chain/` or the `crates/roko-cli/src/orchestrator/` composition layer
+3. **Implement power-of-two-choices dispatch** (Sparrow) in `crates/roko-runtime/` or `crates/roko-cli/src/orchestrator/`
 4. **Wire self-sustainability monitoring** -- track revenue vs. cost per agent, alert when approaching zero balance
 5. **Implement anti-centralization fee escalation** for direct hire in `crates/roko-chain/`
 6. **Build income distribution analytics** in `crates/roko-learn/` (Gini coefficient, percentile tracking)
-7. **Add mining jobs** -- protocol-generated maintenance tasks (verification, index rebuilding, memory consolidation) in `crates/roko-orchestrator/`
+7. **Add mining jobs** -- protocol-generated maintenance tasks (verification, index rebuilding, memory consolidation) in `crates/roko-cli/src/orchestrator/`
 
 ---
 

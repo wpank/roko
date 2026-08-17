@@ -91,6 +91,9 @@ pub struct ProviderHealth {
     pub total_failures: u64,
     /// Timestamp of the most recent failure, in unix milliseconds.
     pub last_failure_at: Option<i64>,
+    /// Timestamp of the most recent success, in unix milliseconds.
+    #[serde(default)]
+    pub last_success_at: Option<i64>,
     /// Timestamp when the provider may be retried, in unix milliseconds.
     pub cooldown_until: Option<i64>,
     /// Rolling window of recent failures.
@@ -107,6 +110,7 @@ impl ProviderHealth {
     /// permanently locked out.
     pub fn record_success(&mut self) {
         self.total_requests = self.total_requests.saturating_add(1);
+        self.last_success_at = Some(unix_ms_now());
         self.consecutive_failures = 0;
         self.cooldown_until = None;
         if self.state == CircuitState::HalfOpen || self.state == CircuitState::Open {
@@ -432,6 +436,7 @@ fn new_provider_health(provider_id: &str) -> ProviderHealth {
         total_requests: 0,
         total_failures: 0,
         last_failure_at: None,
+        last_success_at: None,
         cooldown_until: None,
         failure_window: VecDeque::new(),
     }
@@ -517,6 +522,10 @@ impl ProviderStatus {
 /// call [`is_healthy`](Self::is_healthy) or
 /// [`filter_arms`](Self::filter_arms) before selecting the next provider.
 pub struct ProviderHealthTracker {
+    /// Optional persisted registry backing used by long-lived server runtimes.
+    /// Standalone trackers retain the original in-memory implementation so
+    /// callers can still configure custom thresholds and recovery windows.
+    registry: Option<Arc<ProviderHealthRegistry>>,
     /// Per-provider status, keyed by provider name.
     providers: RwLock<HashMap<String, ProviderStatus>>,
     /// Number of consecutive failures required to trip the breaker.
@@ -528,15 +537,28 @@ pub struct ProviderHealthTracker {
 impl ProviderHealthTracker {
     /// Create a tracker with default thresholds (3 failures, 120 s recovery).
     pub fn new() -> Self {
-        Self::with_config(3, Duration::from_secs(120))
+        Self::with_config(3, Duration::from_mins(2))
     }
 
     /// Create a tracker with custom thresholds.
     pub fn with_config(failure_threshold: u32, recovery_window: Duration) -> Self {
         Self {
+            registry: None,
             providers: RwLock::new(HashMap::new()),
             failure_threshold,
             recovery_window,
+        }
+    }
+
+    /// Create the serve-facing compatibility view over the canonical,
+    /// persisted provider-health registry.
+    #[must_use]
+    pub fn from_registry(registry: Arc<ProviderHealthRegistry>) -> Self {
+        Self {
+            registry: Some(registry),
+            providers: RwLock::new(HashMap::new()),
+            failure_threshold: 3,
+            recovery_window: Duration::from_mins(2),
         }
     }
 
@@ -546,6 +568,10 @@ impl ProviderHealthTracker {
     /// [`HealthState::Healthy`] regardless of current state.
     #[allow(clippy::significant_drop_tightening)]
     pub fn record_success(&self, provider: &str) {
+        if let Some(registry) = &self.registry {
+            registry.record_success(provider);
+            return;
+        }
         let now = Utc::now();
         let mut map = self.providers.write();
         let status = map
@@ -566,6 +592,10 @@ impl ProviderHealthTracker {
     /// [`HealthState::Unhealthy`].
     #[allow(clippy::significant_drop_tightening)]
     pub fn record_failure(&self, provider: &str) {
+        if let Some(registry) = &self.registry {
+            registry.record_failure(provider, ErrorClass::Unknown);
+            return;
+        }
         let now = Utc::now();
         let recovery_at = Instant::now() + self.recovery_window;
         let mut map = self.providers.write();
@@ -594,6 +624,9 @@ impl ProviderHealthTracker {
     /// - [`HealthState::Unhealthy`] not yet expired → `false`
     /// - Unknown provider → `true` (lazily treated as healthy).
     pub fn is_healthy(&self, provider: &str) -> bool {
+        if let Some(registry) = &self.registry {
+            return registry.is_available(provider);
+        }
         // Fast path: read lock only.
         {
             let map = self.providers.read();
@@ -678,17 +711,58 @@ impl ProviderHealthTracker {
 
     /// Return a snapshot of every tracked provider's status.
     pub fn snapshot(&self) -> Vec<ProviderStatus> {
+        if let Some(registry) = &self.registry {
+            return registry
+                .snapshot()
+                .into_values()
+                .map(provider_status_from_persisted)
+                .collect();
+        }
         self.providers.read().values().cloned().collect()
     }
 
     /// Return the current status for `provider`, defaulting to a healthy entry.
     #[must_use]
     pub fn get(&self, provider: &str) -> ProviderStatus {
+        if let Some(registry) = &self.registry {
+            return provider_status_from_persisted(registry.get(provider));
+        }
         self.providers
             .read()
             .get(provider)
             .cloned()
             .unwrap_or_else(|| ProviderStatus::new(provider.to_owned()))
+    }
+}
+
+fn provider_status_from_persisted(health: ProviderHealth) -> ProviderStatus {
+    let now_ms = unix_ms_now();
+    let state = match health.state {
+        CircuitState::Closed => HealthState::Healthy,
+        CircuitState::HalfOpen => HealthState::Probing,
+        CircuitState::Open => {
+            let remaining_ms = health
+                .cooldown_until
+                .unwrap_or(now_ms)
+                .saturating_sub(now_ms)
+                .max(0) as u64;
+            HealthState::Unhealthy {
+                recovery_at: Instant::now() + Duration::from_millis(remaining_ms),
+            }
+        }
+    };
+    ProviderStatus {
+        provider: health.provider_id,
+        state,
+        consecutive_failures: health.consecutive_failures,
+        last_failure_at: health
+            .last_failure_at
+            .and_then(DateTime::<Utc>::from_timestamp_millis),
+        last_success_at: health
+            .last_success_at
+            .and_then(DateTime::<Utc>::from_timestamp_millis),
+        total_attempts: health.total_requests,
+        total_successes: health.total_requests.saturating_sub(health.total_failures),
     }
 }
 
@@ -1023,6 +1097,7 @@ mod tests {
             total_requests: 42,
             total_failures: 7,
             last_failure_at: Some(1_725_000_000_000),
+            last_success_at: Some(1_724_999_000_000),
             cooldown_until: Some(1_725_000_030_000),
             failure_window: VecDeque::from(vec![
                 FailureRecord {
@@ -1058,6 +1133,7 @@ mod tests {
             total_requests: 0,
             total_failures: 0,
             last_failure_at: None,
+            last_success_at: None,
             cooldown_until: None,
             failure_window: VecDeque::new(),
         };
@@ -1089,6 +1165,7 @@ mod tests {
             total_requests: 0,
             total_failures: 0,
             last_failure_at: None,
+            last_success_at: None,
             cooldown_until: None,
             failure_window: VecDeque::new(),
         };
@@ -1474,6 +1551,7 @@ mod tests {
             total_requests: 100,
             total_failures: 20,
             last_failure_at: Some(3_000),
+            last_success_at: Some(2_000),
             cooldown_until: Some(33_000),
             failure_window: window,
         };
@@ -2079,5 +2157,26 @@ mod tests {
         );
         // Circuit should be open (threshold is 3).
         assert_eq!(entry.state, CircuitState::Open);
+    }
+
+    #[test]
+    fn compatibility_tracker_shares_persisted_registry_state() {
+        let registry = Arc::new(ProviderHealthRegistry::new());
+        let tracker = ProviderHealthTracker::from_registry(Arc::clone(&registry));
+
+        tracker.record_success("anthropic");
+        assert_eq!(registry.get("anthropic").total_requests, 1);
+
+        for _ in 0..3 {
+            registry.record_failure("anthropic", ErrorClass::AuthFailure);
+        }
+        let status = tracker.get("anthropic");
+        assert_eq!(status.total_attempts, 4);
+        assert_eq!(status.total_successes, 1);
+        assert!(matches!(status.state, HealthState::Unhealthy { .. }));
+
+        tracker.record_success("anthropic");
+        assert_eq!(registry.get("anthropic").state, CircuitState::Closed);
+        assert_eq!(tracker.get("anthropic").total_attempts, 5);
     }
 }

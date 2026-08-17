@@ -10,7 +10,12 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use roko_agent::rate_limit::{ProviderHealthChecker, ProviderRateLimiter};
 use roko_compose::SystemPromptBuilder;
+use roko_learn::{
+    budget::{BudgetAction, BudgetGuardrail},
+    provider_health::ProviderHealthRegistry,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::{Mutex, Notify};
@@ -18,8 +23,8 @@ use uuid::Uuid;
 
 use crate::types::{
     ClientCapabilities, CommandInput, ConfigOption, ConfigOptionType, ConfigOptionValue,
-    McpServerConfig, ModeInfo, ModesInfo, SESSION_NOT_FOUND, SessionInfo, SessionListResult,
-    SessionNewParams, SessionNewResult, SlashCommand,
+    McpServerConfig, ModeInfo, ModesInfo, SESSION_NOT_FOUND, SessionBudgetStatus, SessionInfo,
+    SessionListResult, SessionNewParams, SessionNewResult, SlashCommand,
 };
 use crate::workflow::WorkflowRun;
 
@@ -150,6 +155,9 @@ pub struct SessionConfigState {
     pub provider: String,
     /// Selected model key (maps to `[models.*]` in roko.toml).
     pub model: String,
+    /// Whether the provider or model was explicitly selected by the client.
+    #[serde(default)]
+    pub model_selection_explicit: bool,
     /// Effort level: low, medium, high, max.
     pub effort: String,
     /// Whether clippy gate is enabled.
@@ -170,6 +178,7 @@ impl Default for SessionConfigState {
             agent_mode: "code".to_owned(),
             provider: String::new(),
             model: String::new(),
+            model_selection_explicit: false,
             effort: "medium".to_owned(),
             clippy_enabled: true,
             tests_enabled: true,
@@ -286,6 +295,7 @@ impl SessionConfigState {
             agent_mode: "code".to_owned(),
             provider: default_provider,
             model: default_model,
+            model_selection_explicit: false,
             effort: config.agent.default_effort.clone(),
             clippy_enabled: config.gates.clippy_enabled,
             tests_enabled: !config.gates.skip_tests,
@@ -355,10 +365,42 @@ pub struct AcpSession {
     /// Files pinned into every turn's system prompt (session-scoped, not persisted to disk).
     #[serde(default)]
     pub pinned_context: Vec<PinnedFile>,
+    /// Configured session cost ceiling in USD; `None` means unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_budget_usd: Option<f64>,
+    /// Cost accumulated from completed ACP efficiency events.
+    #[serde(default)]
+    pub accumulated_cost_usd: f64,
+    /// Runtime-scoped provider health shared by ACP sessions.
+    #[serde(skip, default)]
+    pub(crate) provider_health_registry: Option<Arc<ProviderHealthRegistry>>,
+    /// Runtime-scoped configured RPM/TPM pool shared by ACP sessions.
+    #[serde(skip, default)]
+    pub(crate) provider_rate_limiter: Option<Arc<ProviderRateLimiter>>,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn configured_session_budget(roko_config: &roko_core::config::schema::RokoConfig) -> Option<f64> {
+    let limit = f64::from(roko_config.budget.max_plan_usd);
+    (limit.is_finite() && limit > 0.0).then_some(limit)
+}
+
+fn build_provider_rate_limiter(
+    roko_config: &roko_core::config::schema::RokoConfig,
+    health: &Arc<ProviderHealthRegistry>,
+) -> Arc<ProviderRateLimiter> {
+    let providers = roko_config.effective_providers();
+    let health_checker: Arc<dyn ProviderHealthChecker> = Arc::clone(health) as Arc<_>;
+    Arc::new(
+        ProviderRateLimiter::from_provider_configs(
+            roko_core::defaults::DEFAULT_PROVIDER_RPM,
+            providers.iter(),
+        )
+        .with_health_registry(health_checker),
+    )
 }
 
 impl AcpSession {
@@ -386,6 +428,10 @@ impl AcpSession {
             always_allowed: HashSet::new(),
             tools_enabled: true,
             pinned_context: Vec::new(),
+            cost_budget_usd: None,
+            accumulated_cost_usd: 0.0,
+            provider_health_registry: None,
+            provider_rate_limiter: None,
         }
     }
 
@@ -434,6 +480,10 @@ impl AcpSession {
             always_allowed: HashSet::new(),
             tools_enabled: true,
             pinned_context: Vec::new(),
+            cost_budget_usd: configured_session_budget(roko_config),
+            accumulated_cost_usd: 0.0,
+            provider_health_registry: None,
+            provider_rate_limiter: None,
         }
     }
 
@@ -475,14 +525,24 @@ impl AcpSession {
     pub fn save_workspace_trust(
         workdir: &std::path::Path,
         trust: &HashSet<crate::types::PermissionAction>,
-    ) {
+    ) -> Result<(), String> {
         let path = workdir.join(".roko/trust/permissions.json");
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "failed to create trust directory {}: {error}",
+                    parent.display()
+                )
+            })?;
         }
-        if let Ok(data) = serde_json::to_string_pretty(trust) {
-            let _ = std::fs::write(&path, data);
-        }
+        let data = serde_json::to_string_pretty(trust)
+            .map_err(|error| format!("failed to serialize workspace trust: {error}"))?;
+        std::fs::write(&path, data).map_err(|error| {
+            format!(
+                "failed to write workspace trust {}: {error}",
+                path.display()
+            )
+        })
     }
 
     /// Returns the session metadata used by `session/list`.
@@ -492,6 +552,7 @@ impl AcpSession {
             session_id: self.session_id.clone(),
             session_name: self.session_name.clone(),
             created_at: self.created_at.to_rfc3339(),
+            budget_status: self.budget_status(),
         }
     }
 
@@ -508,7 +569,72 @@ impl AcpSession {
             modes: Some(default_modes(&self.config_state.agent_mode)),
             config_options: options,
             warnings: self.warnings.clone(),
+            budget_status: self.budget_status(),
         }
+    }
+
+    /// Return the budget fields exposed on ACP session status surfaces.
+    #[must_use]
+    pub fn budget_status(&self) -> SessionBudgetStatus {
+        let Some(limit) = self.cost_budget_usd else {
+            return SessionBudgetStatus::default();
+        };
+        let spent = self.accumulated_cost_usd.max(0.0);
+        SessionBudgetStatus {
+            cost_budget_usd: Some(limit),
+            accumulated_cost_usd: Some(spent),
+            budget_remaining_usd: Some((limit - spent).max(0.0)),
+        }
+    }
+
+    /// Return whether the canonical budget guardrail rejects another paid turn.
+    #[must_use]
+    pub fn cost_budget_exceeded(&self) -> bool {
+        let Some(limit) = self.cost_budget_usd else {
+            return false;
+        };
+        let mut guardrail = BudgetGuardrail::new(0.0, limit, 0.0, 0.8);
+        matches!(
+            guardrail.record_cost(self.accumulated_cost_usd.max(0.0), "session"),
+            BudgetAction::Block
+        )
+    }
+
+    /// Accumulate the exact cost carried by a completed ACP efficiency event.
+    pub fn record_efficiency_cost(&mut self, cost_usd: f64) {
+        if cost_usd.is_finite() && cost_usd > 0.0 {
+            self.accumulated_cost_usd += cost_usd;
+        }
+    }
+
+    /// Attach the runtime-scoped provider health and RPM/TPM state.
+    pub(crate) fn attach_provider_runtime(
+        &mut self,
+        health: Arc<ProviderHealthRegistry>,
+        limiter: Arc<ProviderRateLimiter>,
+    ) {
+        self.provider_health_registry = Some(health);
+        self.provider_rate_limiter = Some(limiter);
+    }
+
+    /// Initialize canonical provider state for sessions constructed outside a
+    /// [`SessionManager`] (principally embedded callers and tests).
+    pub(crate) fn ensure_provider_runtime(
+        &mut self,
+        workdir: &Path,
+        roko_config: &roko_core::config::schema::RokoConfig,
+    ) {
+        if self.provider_health_registry.is_some() && self.provider_rate_limiter.is_some() {
+            return;
+        }
+        let health = Arc::new(ProviderHealthRegistry::load_or_new(
+            &workdir
+                .join(".roko")
+                .join("learn")
+                .join("provider-health.json"),
+        ));
+        let limiter = build_provider_rate_limiter(roko_config, &health);
+        self.attach_provider_runtime(health, limiter);
     }
 
     /// Returns the currently exposed ACP config options.
@@ -741,6 +867,7 @@ impl AcpSession {
                         return Err(format!("unknown provider '{s}'"));
                     }
                     self.config_state.provider = s.to_owned();
+                    self.config_state.model_selection_explicit = true;
                     // If the current model doesn't belong to the new provider,
                     // pick the first model for that provider.
                     let model_belongs = roko_config
@@ -767,6 +894,7 @@ impl AcpSession {
                         ));
                     }
                     self.config_state.model = s.to_owned();
+                    self.config_state.model_selection_explicit = true;
                 }
             }
             "effort" => {
@@ -826,6 +954,7 @@ impl AcpSession {
 
     /// Reconcile persisted provider/model selections with the current config.
     pub fn revalidate_config_state(&mut self, roko_config: &roko_core::config::schema::RokoConfig) {
+        self.cost_budget_usd = configured_session_budget(roko_config);
         let provider_valid = !self.config_state.provider.is_empty()
             && roko_config
                 .providers
@@ -845,6 +974,7 @@ impl AcpSession {
             }
             self.config_state.provider = replacement.provider;
             self.config_state.model = replacement.model;
+            self.config_state.model_selection_explicit = false;
             self.config_options = build_config_options(&self.config_state, roko_config);
             return;
         }
@@ -866,6 +996,7 @@ impl AcpSession {
                 );
             }
             self.config_state.model = replacement_model;
+            self.config_state.model_selection_explicit = false;
         }
 
         self.config_options = build_config_options(&self.config_state, roko_config);
@@ -885,6 +1016,7 @@ fn apply_session_new_overrides(
             Some(profile) => {
                 state.model = model_key.to_owned();
                 state.provider = profile.provider.clone();
+                state.model_selection_explicit = true;
             }
             None => warnings.push(format!(
                 "requested model '{}' is not declared in [models], using '{}'",
@@ -896,6 +1028,7 @@ fn apply_session_new_overrides(
     if let Some(provider_key) = provider.map(str::trim).filter(|value| !value.is_empty()) {
         if roko_config.providers.contains_key(provider_key) {
             state.provider = provider_key.to_owned();
+            state.model_selection_explicit = true;
             let model_belongs = roko_config
                 .models
                 .get(&state.model)
@@ -1021,26 +1154,49 @@ pub struct SessionManager {
     pub config_sources: Vec<String>,
     /// Human-readable startup warnings surfaced in the initialize response.
     pub startup_warnings: Vec<String>,
+    /// Canonical persisted provider circuit-breaker state shared by ACP sessions.
+    pub provider_health_registry: Arc<ProviderHealthRegistry>,
+    /// Canonical configured RPM/TPM pool shared by ACP sessions.
+    pub provider_rate_limiter: Arc<ProviderRateLimiter>,
 }
 
 impl SessionManager {
     /// Creates an empty session manager.
     #[must_use]
     pub fn new(workdir: PathBuf, roko_config: roko_core::config::schema::RokoConfig) -> Self {
+        let provider_health_registry = Arc::new(ProviderHealthRegistry::load_or_new(
+            &workdir
+                .join(".roko")
+                .join("learn")
+                .join("provider-health.json"),
+        ));
+        let provider_rate_limiter =
+            build_provider_rate_limiter(&roko_config, &provider_health_registry);
         Self {
             sessions: HashMap::new(),
             workdir,
             roko_config,
             config_sources: Vec::new(),
             startup_warnings: Vec::new(),
+            provider_health_registry,
+            provider_rate_limiter,
         }
     }
 
     /// Replace the loaded config used for new sessions and prompt dispatch.
     pub fn replace_roko_config(&mut self, roko_config: roko_core::config::schema::RokoConfig) {
+        let providers_changed = self.roko_config.providers != roko_config.providers;
         self.roko_config = roko_config;
+        if providers_changed {
+            self.provider_rate_limiter =
+                build_provider_rate_limiter(&self.roko_config, &self.provider_health_registry);
+        }
         for session in self.sessions.values_mut() {
             session.revalidate_config_state(&self.roko_config);
+            session.attach_provider_runtime(
+                Arc::clone(&self.provider_health_registry),
+                Arc::clone(&self.provider_rate_limiter),
+            );
         }
     }
 
@@ -1053,6 +1209,10 @@ impl SessionManager {
     pub fn revalidate_all_sessions(&mut self) {
         for session in self.sessions.values_mut() {
             session.revalidate_config_state(&self.roko_config);
+            session.attach_provider_runtime(
+                Arc::clone(&self.provider_health_registry),
+                Arc::clone(&self.provider_rate_limiter),
+            );
         }
     }
 
@@ -1071,6 +1231,10 @@ impl SessionManager {
     /// Creates and stores a new ACP session.
     pub fn create_session(&mut self, params: SessionNewParams) -> SessionNewResult {
         let mut session = AcpSession::new_with_config(params, &self.roko_config);
+        session.attach_provider_runtime(
+            Arc::clone(&self.provider_health_registry),
+            Arc::clone(&self.provider_rate_limiter),
+        );
         session.cached_conventions = AcpSession::load_conventions(&self.workdir);
         session.always_allowed = AcpSession::load_workspace_trust(&self.workdir);
         session.mcp_config_path = self.resolve_mcp_config_path();
@@ -1177,6 +1341,10 @@ impl SessionManager {
         let data = std::fs::read_to_string(&path).ok()?;
         let mut session: AcpSession = serde_json::from_str(&data).ok()?;
         session.revalidate_config_state(&self.roko_config);
+        session.attach_provider_runtime(
+            Arc::clone(&self.provider_health_registry),
+            Arc::clone(&self.provider_rate_limiter),
+        );
         session.cached_conventions = AcpSession::load_conventions(&self.workdir);
         session.always_allowed = AcpSession::load_workspace_trust(&self.workdir);
         Some(session)
@@ -1987,6 +2155,112 @@ context_window = 8192
         .expect("test config should parse")
     }
 
+    #[test]
+    fn cost_budget_status_persists_and_blocks_when_exhausted() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let config =
+            roko_core::config::schema::RokoConfig::from_toml("[budget]\nmax_plan_usd = 1.25\n")
+                .expect("parse budget config");
+        let mut sessions = SessionManager::new(tmp.path().to_path_buf(), config.clone());
+        let created = sessions.create_session(session_params("budgeted"));
+        assert_eq!(created.budget_status.cost_budget_usd, Some(1.25));
+        assert_eq!(created.budget_status.accumulated_cost_usd, Some(0.0));
+        assert_eq!(created.budget_status.budget_remaining_usd, Some(1.25));
+
+        let session_id = created.session_id;
+        let session = sessions
+            .get_session_mut(&session_id)
+            .expect("created session");
+        session.record_efficiency_cost(0.40);
+        assert!(!session.cost_budget_exceeded());
+        assert!((session.budget_status().budget_remaining_usd.unwrap() - 0.85).abs() < 1e-9);
+        sessions.persist_session(&session_id);
+        drop(sessions);
+
+        let mut resumed = SessionManager::new(tmp.path().to_path_buf(), config.clone());
+        resumed
+            .load_session(&session_id)
+            .expect("load persisted session");
+        let session = resumed
+            .get_session_mut(&session_id)
+            .expect("resumed session");
+        assert!((session.accumulated_cost_usd - 0.40).abs() < 1e-9);
+        session.record_efficiency_cost(0.85);
+        assert!(session.cost_budget_exceeded());
+        assert_eq!(session.budget_status().budget_remaining_usd, Some(0.0));
+        resumed.persist_session(&session_id);
+        drop(resumed);
+
+        let mut reloaded = SessionManager::new(tmp.path().to_path_buf(), config);
+        let result = reloaded
+            .load_session(&session_id)
+            .expect("reload exhausted session");
+        assert!(
+            (result
+                .budget_status
+                .accumulated_cost_usd
+                .expect("configured accumulated cost")
+                - 1.25)
+                .abs()
+                < 1e-9
+        );
+        assert_eq!(result.budget_status.budget_remaining_usd, Some(0.0));
+        assert!(
+            reloaded
+                .get_session(&session_id)
+                .expect("reloaded session")
+                .cost_budget_exceeded()
+        );
+    }
+
+    #[test]
+    fn cost_budget_unconfigured_is_unlimited_and_omitted() {
+        let session = AcpSession::new_with_config(
+            session_params("unlimited"),
+            &roko_core::config::schema::RokoConfig::default(),
+        );
+        assert!(!session.cost_budget_exceeded());
+        let value = serde_json::to_value(session.new_result()).expect("serialize session result");
+        assert!(value.get("costBudgetUsd").is_none());
+        assert!(value.get("accumulatedCostUsd").is_none());
+        assert!(value.get("budgetRemainingUsd").is_none());
+    }
+
+    #[test]
+    fn provider_runtime_state_is_shared_across_acp_sessions() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let mut sessions = SessionManager::new(
+            tmp.path().to_path_buf(),
+            roko_core::config::schema::RokoConfig::default(),
+        );
+        let first = sessions.create_session(session_params("first")).session_id;
+        let second = sessions.create_session(session_params("second")).session_id;
+        let first_health = sessions
+            .get_session(&first)
+            .and_then(|session| session.provider_health_registry.as_ref())
+            .expect("first health");
+        let second_health = sessions
+            .get_session(&second)
+            .and_then(|session| session.provider_health_registry.as_ref())
+            .expect("second health");
+        let first_limiter = sessions
+            .get_session(&first)
+            .and_then(|session| session.provider_rate_limiter.as_ref())
+            .expect("first limiter");
+        let second_limiter = sessions
+            .get_session(&second)
+            .and_then(|session| session.provider_rate_limiter.as_ref())
+            .expect("second limiter");
+
+        assert!(Arc::ptr_eq(first_health, second_health));
+        assert!(Arc::ptr_eq(first_limiter, second_limiter));
+        assert!(Arc::ptr_eq(
+            first_health,
+            &sessions.provider_health_registry
+        ));
+        assert!(Arc::ptr_eq(first_limiter, &sessions.provider_rate_limiter));
+    }
+
     fn write_persisted_session(workdir: &std::path::Path, session: &AcpSession) {
         let sessions_dir = workdir.join(".roko").join("sessions");
         std::fs::create_dir_all(&sessions_dir).expect("create sessions dir");
@@ -2032,8 +2306,24 @@ context_window = 8192
 
         assert!(session.config_state.provider.is_empty());
         assert!(session.config_state.model.is_empty());
+        assert!(!session.config_state.model_selection_explicit);
         assert!(option_values(&options, "provider").is_empty());
         assert!(option_values(&options, "model").is_empty());
+    }
+
+    #[test]
+    fn model_selection_explicit_defaults_false_for_older_serialized_state() {
+        let mut serialized =
+            serde_json::to_value(SessionConfigState::default()).expect("serialize config state");
+        serialized
+            .as_object_mut()
+            .expect("config state should serialize as an object")
+            .remove("modelSelectionExplicit");
+
+        let restored: SessionConfigState =
+            serde_json::from_value(serialized).expect("deserialize older config state");
+
+        assert!(!restored.model_selection_explicit);
     }
 
     #[test]
@@ -2054,6 +2344,89 @@ context_window = 8192
             option_values(&options, "model"),
             vec!["missing-key-model".to_owned()]
         );
+    }
+
+    #[test]
+    fn session_creation_tracks_only_valid_explicit_model_or_provider_selection() {
+        let config = config_with_two_providers();
+
+        let mut model_params = session_params("explicit-model");
+        model_params.model = Some("model-b".to_owned());
+        let model_session = AcpSession::new_with_config(model_params, &config);
+        assert!(model_session.config_state.model_selection_explicit);
+        assert_eq!(model_session.config_state.provider, "provider-b");
+        assert_eq!(model_session.config_state.model, "model-b");
+
+        let mut provider_params = session_params("explicit-provider");
+        provider_params.provider = Some("provider-b".to_owned());
+        let provider_session = AcpSession::new_with_config(provider_params, &config);
+        assert!(provider_session.config_state.model_selection_explicit);
+        assert_eq!(provider_session.config_state.provider, "provider-b");
+        assert_eq!(provider_session.config_state.model, "model-b");
+
+        let mut invalid_params = session_params("invalid-selection");
+        invalid_params.model = Some("missing-model".to_owned());
+        invalid_params.provider = Some("missing-provider".to_owned());
+        let invalid_session = AcpSession::new_with_config(invalid_params, &config);
+        assert!(!invalid_session.config_state.model_selection_explicit);
+        assert_eq!(invalid_session.config_state.provider, "provider-a");
+        assert_eq!(invalid_session.config_state.model, "model-a");
+    }
+
+    #[test]
+    fn update_config_arms_explicit_selection_only_after_valid_updates() {
+        let config = config_with_two_providers();
+        let mut session = AcpSession::new_with_config(session_params("explicit-update"), &config);
+        assert!(!session.config_state.model_selection_explicit);
+
+        session
+            .update_config(
+                "provider",
+                &serde_json::Value::String("missing-provider".to_owned()),
+                &config,
+            )
+            .unwrap_err();
+        assert!(!session.config_state.model_selection_explicit);
+
+        session
+            .update_config(
+                "model",
+                &serde_json::Value::String("missing-model".to_owned()),
+                &config,
+            )
+            .unwrap_err();
+        assert!(!session.config_state.model_selection_explicit);
+
+        session
+            .update_config(
+                "model",
+                &serde_json::Value::String("model-a".to_owned()),
+                &config,
+            )
+            .expect("current model is a valid explicit selection");
+        assert!(session.config_state.model_selection_explicit);
+
+        session
+            .update_config(
+                "provider",
+                &serde_json::Value::String("missing-provider".to_owned()),
+                &config,
+            )
+            .unwrap_err();
+        assert!(session.config_state.model_selection_explicit);
+
+        let mut provider_session =
+            AcpSession::new_with_config(session_params("explicit-provider-update"), &config);
+        provider_session
+            .update_config(
+                "provider",
+                &serde_json::Value::String("provider-b".to_owned()),
+                &config,
+            )
+            .expect("configured provider is a valid explicit selection");
+        assert!(provider_session.config_state.model_selection_explicit);
+        assert_eq!(provider_session.config_state.provider, "provider-b");
+        assert_eq!(provider_session.config_state.model, "model-b");
     }
 
     #[test]
@@ -2109,6 +2482,7 @@ context_window = 8192
         stale_session.session_id = "sess_stale_provider".to_owned();
         stale_session.config_state.provider = "removed-provider".to_owned();
         stale_session.config_state.model = "removed-model".to_owned();
+        stale_session.config_state.model_selection_explicit = true;
         write_persisted_session(tmp.path(), &stale_session);
 
         let mut manager = SessionManager::new(tmp.path().to_path_buf(), current_config);
@@ -2121,6 +2495,7 @@ context_window = 8192
 
         assert_eq!(loaded.config_state.provider, "current-provider");
         assert_eq!(loaded.config_state.model, "current-model");
+        assert!(!loaded.config_state.model_selection_explicit);
         assert_eq!(
             option_values(&loaded.config_options(), "provider"),
             vec!["current-provider".to_owned()]
@@ -2139,6 +2514,7 @@ context_window = 8192
         stale_session.session_id = "sess_stale_model".to_owned();
         stale_session.config_state.provider = "current-provider".to_owned();
         stale_session.config_state.model = "removed-model".to_owned();
+        stale_session.config_state.model_selection_explicit = true;
         write_persisted_session(tmp.path(), &stale_session);
 
         let mut manager = SessionManager::new(tmp.path().to_path_buf(), current_config);
@@ -2151,6 +2527,7 @@ context_window = 8192
 
         assert_eq!(loaded.config_state.provider, "current-provider");
         assert_eq!(loaded.config_state.model, "current-model");
+        assert!(!loaded.config_state.model_selection_explicit);
     }
 
     #[test]
@@ -2326,7 +2703,7 @@ context_window = 8192
         trust.insert(crate::types::PermissionAction::FileEdit);
         trust.insert(crate::types::PermissionAction::GitOperation);
 
-        AcpSession::save_workspace_trust(&workdir, &trust);
+        AcpSession::save_workspace_trust(&workdir, &trust).expect("save workspace trust");
         assert!(workdir.join(".roko/trust/permissions.json").exists());
 
         let mut manager = SessionManager::new(workdir, Default::default());

@@ -1,0 +1,266 @@
+[meta]
+plan = "architecture-production-residuals"
+queue_kind = "architecture_implementation"
+iteration = 2
+total = 4
+done = 4
+status = "done"
+max_parallel = 2
+estimated_total_minutes = 960
+supersedes = "architecture-core-queue"
+
+# This is the current-path remainder of the historical 24-task architecture
+# queue. Twenty old rows are accepted by E01-E48 or superseded by current
+# owners; demo plans are fixtures, not backlog. Keep these four product gaps
+# explicit until their live, durable adapters are accepted.
+
+[[task]]
+id = "R01-concrete-connector-runtime"
+title = "Implement supervised concrete connector adapters"
+description = "Turn the accepted Connect contract and descriptor registry into a live adapter runtime with at least one useful concrete transport, bounded reconnect/health supervision, secret-safe configuration, and authenticated lifecycle operations."
+role = "implementer"
+status = "done"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 700
+files = [
+    "crates/roko-core/src/connector.rs",
+    "crates/roko-runtime/src",
+    "crates/roko-serve/src/routes/connectors.rs",
+    "crates/roko-serve/src/state.rs",
+]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = ".roko/GAPS.md", why = "E29 accepted contract boundary and remaining concrete connector work" },
+    { path = "tmp/status-quo/backlog/plans/E29-connectivity-relay/tasks.toml", why = "accepted protocol contracts that the runtime must consume" },
+    { path = "crates/roko-core/src/connector.rs", why = "canonical Connect lifecycle and connector descriptors" },
+]
+symbols = ["Connect", "ConnectorRegistry", "ReconnectStrategy", "ConnectorHealth"]
+anti_patterns = [
+    "Do not add a second connector descriptor or health registry.",
+    "Do not persist raw connector credentials or expose them through status routes.",
+    "Do not claim a connector is connected before a real transport health check succeeds.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core -p roko-runtime -p roko-serve"
+fail_msg = "connector contracts, supervision, and serve lifecycle must compile together"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve --lib --no-run"
+fail_msg = "connector lifecycle tests must build"
+
+[task.acceptance_contract]
+version = 1
+
+[[task.acceptance_contract.gates]]
+id = "compile"
+kind = "compile"
+command = "cargo check -p roko-core -p roko-runtime -p roko-serve"
+required = true
+
+[task.acceptance_contract.no_stub]
+production_paths = ["crates/roko-serve/src/routes/connectors.rs"]
+
+[task.acceptance_contract.parity_ledger]
+required = true
+
+[[task.acceptance_contract.parity_ledger.rows]]
+requirement_id = "ARCH.RESIDUAL.connector-runtime"
+source_ref = ".roko/GAPS.md#recently-closed-epic-status"
+evidence_ref = "crates/roko-serve/src/routes/connectors.rs"
+
+[[task]]
+id = "R02-relay-replay-subscription-runtime"
+title = "Complete relay replay, routing, supervision, and subscription execution"
+description = "Connect the accepted relay envelopes and recovery contracts to a bounded live relay runtime with room routing, replay cursors, slow-consumer backpressure, reconnection supervision, and durable subscription execution."
+role = "implementer"
+status = "done"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 900
+files = [
+    "crates/roko-core/src/connector.rs",
+    "crates/roko-serve/src/relay.rs",
+    "crates/roko-serve/src/routes/relay_proxy.rs",
+    "crates/roko-serve/src/routes/subscriptions.rs",
+    "crates/roko-agent-server/src/features/relay_client.rs",
+    "crates/roko-agent-server/src/features/relay_subscriber.rs",
+]
+depends_on = ["R01-concrete-connector-runtime"]
+
+[task.context]
+read_files = [
+    { path = ".roko/GAPS.md", why = "E29 accepted boundary and explicit relay residuals" },
+    { path = "tmp/status-quo/backlog/plans/E29-connectivity-relay/tasks.toml", why = "canonical envelope, recovery, and backpressure contracts" },
+    { path = "crates/roko-serve/src/relay.rs", why = "current relay health and workspace registration runtime" },
+]
+symbols = ["RelayEnvelope", "ReplayRequest", "RelayBackpressure", "RelayRecoveryPolicy"]
+anti_patterns = [
+    "Do not introduce a second event vocabulary or relay service boundary.",
+    "Do not block producers on slow consumers or permit unbounded replay buffers.",
+    "Do not acknowledge a subscription event before its durable cursor or terminal result is recorded.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve -p roko-agent-server -p roko-runtime"
+fail_msg = "relay and subscription runtime must compile across producers and consumers"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve --lib --no-run && cargo test -p roko-agent-server --lib --no-run"
+fail_msg = "relay recovery and subscription tests must build"
+
+[task.acceptance_contract]
+version = 1
+
+[[task.acceptance_contract.gates]]
+id = "compile"
+kind = "compile"
+command = "cargo check -p roko-serve -p roko-agent-server -p roko-runtime"
+required = true
+
+[task.acceptance_contract.no_stub]
+production_paths = [
+    "crates/roko-serve/src/relay.rs",
+    "crates/roko-serve/src/routes/subscriptions.rs",
+]
+
+[task.acceptance_contract.parity_ledger]
+required = true
+
+[[task.acceptance_contract.parity_ledger.rows]]
+requirement_id = "ARCH.RESIDUAL.relay-replay-subscriptions"
+source_ref = ".roko/GAPS.md#recently-closed-epic-status"
+evidence_ref = "crates/roko-serve/src/subscription_relay.rs"
+
+[[task]]
+id = "R03-live-arena-service"
+title = "Replace arena contract stubs with a durable authorized service"
+description = "Adapt the accepted local arena state machine into restart-safe HTTP lifecycle and attempt execution, with external scoring evidence, authorization, cooldown/attempt enforcement, atomic settlement, leaderboard projection, and typed events."
+role = "implementer"
+status = "done"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 900
+files = [
+    "crates/roko-chain/src/arena.rs",
+    "crates/roko-gate/src/eval_generator.rs",
+    "crates/roko-serve/src/routes/arenas.rs",
+    "crates/roko-serve/src/state.rs",
+]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = ".roko/GAPS.md", why = "E40 accepted local boundary and live-service residual" },
+    { path = "tmp/status-quo/backlog/plans/E40-arenas-evals/tasks.toml", why = "accepted arena lifecycle and scoring contracts" },
+    { path = "crates/roko-serve/src/routes/arenas.rs", why = "current explicit 501 contract surface to replace" },
+]
+symbols = ["ArenaRegistry", "ArenaAttempt", "ScoringContract", "LeaderboardEntry"]
+anti_patterns = [
+    "Do not use LLM self-grading as ground truth.",
+    "Do not expose process-local arena state as durable production state.",
+    "Do not split settlement from persisted attempt terminalization.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain -p roko-gate -p roko-serve"
+fail_msg = "arena state, scoring, and HTTP service must compile together"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve --lib --no-run && cargo test -p roko-chain --lib --no-run"
+fail_msg = "arena lifecycle and route tests must build"
+
+[task.acceptance_contract]
+version = 1
+
+[[task.acceptance_contract.gates]]
+id = "compile"
+kind = "compile"
+command = "cargo check -p roko-chain -p roko-gate -p roko-serve"
+required = true
+
+[task.acceptance_contract.no_stub]
+production_paths = ["crates/roko-serve/src/routes/arenas.rs"]
+
+[task.acceptance_contract.parity_ledger]
+required = true
+
+[[task.acceptance_contract.parity_ledger.rows]]
+requirement_id = "ARCH.RESIDUAL.live-arena-service"
+source_ref = ".roko/GAPS.md#recently-closed-epic-status"
+evidence_ref = "crates/roko-serve/src/routes/arenas.rs"
+
+[[task]]
+id = "R04-meta-lineage-recursive-safety"
+title = "Implement bounded meta-agent lineage and recursive safety"
+description = "Build the missing meta-agent creation surface on the existing successor, metamorphosis, corrigibility, IFC, and capability contracts. Persist lineage and generation limits, prohibit permission widening, validate generated agents before activation, and enforce a mandatory recursive safety monitor."
+role = "implementer"
+status = "done"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 1000
+files = [
+    "crates/roko-agent/src/lifecycle.rs",
+    "crates/roko-agent/src/metamorphosis.rs",
+    "crates/roko-agent/src/safety",
+    "crates/roko-graph/src/cells/corrigibility.rs",
+    "crates/roko-serve/src/routes/meta.rs",
+]
+depends_on = ["R03-live-arena-service"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2/28-ROADMAP.md", why = "current recursive-safety and meta-agent roadmap boundary" },
+    { path = "crates/roko-agent/src/lifecycle.rs", why = "existing successor lineage and generation primitives" },
+    { path = "crates/roko-agent/src/metamorphosis.rs", why = "existing bounded role transition wrapper" },
+    { path = "crates/roko-graph/src/cells/corrigibility.rs", why = "mandatory five-head safety graph to compose, not duplicate" },
+]
+symbols = ["create_successor", "MorphableAgent", "corrigibility_pipeline_graph", "AgentContract"]
+anti_patterns = [
+    "Do not let a child widen its parent's tools, data, network, cost, or spawn authority.",
+    "Do not create a second corrigibility or taint system.",
+    "Do not allow unbounded generation depth, fan-out, retries, or cost.",
+    "Do not activate generated manifests before schema, safety, and acceptance validation succeeds.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-agent -p roko-core -p roko-graph -p roko-serve"
+fail_msg = "meta-agent lineage, recursive safety, and serve surfaces must compile together"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-agent --lib --no-run && cargo test -p roko-graph --lib --no-run"
+fail_msg = "lineage and recursive-safety tests must build"
+
+[task.acceptance_contract]
+version = 1
+
+[[task.acceptance_contract.gates]]
+id = "compile"
+kind = "compile"
+command = "cargo check -p roko-agent -p roko-core -p roko-graph -p roko-serve"
+required = true
+
+[task.acceptance_contract.no_stub]
+production_paths = [
+    "crates/roko-agent/src/safety",
+    "crates/roko-serve/src/routes/meta.rs",
+]
+
+[task.acceptance_contract.parity_ledger]
+required = true
+
+[[task.acceptance_contract.parity_ledger.rows]]
+requirement_id = "ARCH.RESIDUAL.meta-lineage-recursive-safety"
+source_ref = "docs/v2/28-ROADMAP.md#43-5-head-corrigibility"
+evidence_ref = "crates/roko-serve/src/routes/meta.rs"

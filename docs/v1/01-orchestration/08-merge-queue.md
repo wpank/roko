@@ -1,5 +1,8 @@
 # Merge Queue
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Module**: `roko-orchestrator/src/merge_queue.rs`
 > **Key type**: `MergeQueue`
 > **Tests**: 20 tests covering priority ordering, conflict detection, parallel

@@ -1,5 +1,8 @@
 # Somatic Markers (Damasio)
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Emotional memory as a fast heuristic — the k-d tree over the 8-dimensional strategy space that lets agents make sub-millisecond decisions before analytical reasoning engages.
 
 

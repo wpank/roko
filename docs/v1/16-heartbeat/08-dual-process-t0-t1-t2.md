@@ -1,5 +1,8 @@
 # Dual-Process Cognition: T0, T1, T2
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The LLM-Last architecture — most ticks are free, some are cheap, a few are expensive. Uncertainty determines compute investment.
 
 

@@ -9,7 +9,7 @@ import type {
   PipelineTask,
   PipelineTaskStatus,
 } from '../lib/prd-pipeline-types';
-import type { ServerStatus } from '../hooks/useServerHealth';
+import type { ServerStatus } from '../app/DataHub';
 import { ConfidenceMeter } from './inference';
 import './PrdPipelinePanel.css';
 

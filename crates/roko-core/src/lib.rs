@@ -95,12 +95,23 @@ pub mod dispatch_plan;
 pub mod domain_profile;
 pub mod engram;
 pub mod error;
+/// Payload contracts carried by MCP, A2A, and x402 transports.
+pub mod exoskeleton;
 pub mod extension;
 /// Feed trait for agent-produced data streams (Raw, Derived, Composite, Meta).
 pub mod feed;
+/// Feed-to-Bus routing over the canonical Bus contract.
+pub mod feed_bus_bridge;
+/// Runtime feed Cell primitives.
+pub mod feed_cell;
+/// Supervised feed lifecycle and discovery.
+pub mod feed_runtime;
+/// Built-in and derived feed implementations.
+pub mod feeds;
 /// Forensic replay engine for causal decision reconstruction (SAFE-12).
 pub mod forensic;
 pub mod foundation;
+pub mod groups;
 pub mod hash;
 /// Heartbeat protocol types for health monitoring.
 pub mod heartbeat;
@@ -108,12 +119,12 @@ pub mod heartbeat;
 pub mod immune;
 /// Atomic file I/O utilities for crash-safe state persistence.
 pub mod io;
-/// ISFRFeed — relay-to-bus bridge for ISFR rate data.
-pub mod isfr_feed;
 /// Marketplace job types shared between serve, TUI, and CLI.
 pub mod job;
 pub mod kind;
 pub mod language;
+pub mod lens_circuit_breaker;
+pub mod lens_registry;
 pub mod loop_tick;
 pub mod metric;
 pub mod namespace;
@@ -152,6 +163,7 @@ pub mod obs {
 }
 pub mod operating_frequency;
 pub mod phase;
+pub mod plugin;
 pub mod policy_manifest;
 pub mod polyglot;
 pub mod prediction;
@@ -159,6 +171,10 @@ pub mod project;
 pub mod provenance;
 pub mod pulse;
 pub mod query;
+/// Pure-data DAGs of score operations.
+pub mod recipe;
+/// Atomic TOML recipe persistence.
+pub mod recipe_store;
 /// Shared retention policy type for all data-management subsystems.
 pub mod retention;
 pub mod runtime_event;
@@ -169,6 +185,8 @@ pub mod shutdown;
 pub mod signal;
 pub mod signal_kinds;
 pub mod task;
+pub mod telemetry_observe;
+pub mod telemetry_projections;
 pub mod temperament;
 pub mod tool;
 pub mod traits;
@@ -177,6 +195,8 @@ pub mod traits;
 pub mod trigger;
 pub mod usage;
 pub mod verdict;
+/// Relay envelopes, room names, recovery, and backpressure contracts.
+pub mod wire_protocol;
 pub mod workspace;
 
 pub use affect::{BehavioralState, DaimonPolicy, EmotionalTag, PadVector};
@@ -194,7 +214,10 @@ pub use build::{BuildCommand, BuildSystem};
 pub use bus_backends::{
     BroadcastBus, BroadcastBusReceiver, BusErased, MemoryBus, MemoryBusReceiver, MultiBus,
 };
-pub use capabilities::{Capability, CapabilitySet, capabilities_for_taint};
+pub use capabilities::{
+    CachedCapabilityChecker, Capability, CapabilityCheck, CapabilitySet, CellCapabilities,
+    GraphAllowList, SpaceGrant, capabilities_for_taint, effective_capabilities,
+};
 pub use catalyst::{CatalystImpactSummary, CatalystScorer, CatalystSignalSource};
 pub use cell::*;
 pub use cfactor::{CFactorPolicy, CFactorSource, CFactorSummary};
@@ -227,17 +250,37 @@ pub use dispatch_plan::{
 pub use domain_profile::{DomainProfile, TypedContext};
 pub use engram::{Engram, EngramBuilder, GraduationError, HdcFingerprint, SignalStatus};
 pub use error::{Result, RokoError};
-pub use feed::{FeedAccess, FeedInfo, FeedKind, FeedRegistry, FeedRuntimeStatus};
+pub use feed::{
+    FeedAccess, FeedInfo, FeedKind, FeedPricingConfig, FeedRegistry, FeedRuntimeStatus,
+    PaymentProtocol, PricingTier, SessionPricing,
+};
+pub use feed_bus_bridge::{FeedBusBridge, FeedRouteStats};
+pub use feed_cell::{
+    ConnectorOps, FeedCell, FeedCellConfig, FeedPulse, FeedStatus, FeedTrigger, FeedTriggerOps,
+    MemoryFeedStore, NoopConnector, StoreOps, UnavailableTrigger,
+};
+pub use feed_runtime::{FeedHandle, ReconnectPolicy, RuntimeRegistry};
+pub use feeds::{
+    DerivedFeedCell, EpisodeOutcomeFeed, EpisodeOutcomeFeedConfig, FeedTransform, FileWatchFeed,
+    ProviderHealthFeed, ProviderHealthSample, ProviderHealthSnapshot,
+};
 pub use forensic::{
     ForensicReplay, ForensicReplayLogger, GateVerdictRecord, PolicyDecisionRecord, PolicyOutcome,
     ReconstructionStep, RouterAlternative, RouterDecisionRecord, ScoredReference, StepStatus,
 };
 pub use foundation::{
     BoxModelStream, ChatMessage as FoundationChatMessage, Effect, EffectExecutor, EffectOutcome,
-    EventConsumer, FeedbackEvent, FeedbackSink, GateConfig, GateReport, GateRunner, GateVerdict,
-    MessageRole, ModelCallRequest, ModelCallResponse, ModelCaller, ModelStreamEvent,
-    PromptAssembler, PromptSpec, ShellGateCommand, TokenUsage, model_call_failure_to_stream,
-    model_call_response_to_stream,
+    EventConsumer, FeedbackEvent, FeedbackSink, GateClassification, GateConfig, GateReport,
+    GateRunner, GateVerdict, MessageRole, ModelCallRequest, ModelCallResponse, ModelCaller,
+    ModelInputBlock, ModelInputImage, ModelInputMessage, ModelStreamEvent, PromptAssembler,
+    PromptSpec, ShellGateCommand, TokenUsage, model_call_failure_to_stream,
+    model_call_response_to_stream, validate_model_input_images, validate_model_input_messages,
+};
+pub use groups::{
+    AssignmentStrategy, CoordinationMode, Group, GroupConfig, GroupContextBidder, GroupEvent,
+    GroupId, GroupInvitation, GroupMember, GroupPheromone, InvitationId, InvitationStatus,
+    InviteRequest, InviteResponse, KnowledgePolicy, LeaderConfig, MemberPermissions, MemberRole,
+    PheromoneDeposit, PheromoneFieldSummary, PheromoneQuery, TaskAssignment, TaskCompletion,
 };
 pub use hash::ContentHash;
 pub use heartbeat::{
@@ -245,12 +288,18 @@ pub use heartbeat::{
     NetworkStats, SenderInfo,
 };
 pub use immune::{
-    AnomalyScore, ImmuneResponse, IncidentLink, IncidentRelation, QuarantineDecision,
-    QuarantineEntry, QuarantineStatus, QuarantineVault, ResponseAction,
+    AnomalyScore, DEFAULT_QUARANTINE_VAULT_CAPACITY, ImmuneAssessment, ImmuneContainment,
+    ImmunePerception, ImmunePipeline, ImmunePipelineResult, ImmuneResponse, ImmuneValidation,
+    IncidentLink, IncidentRelation, MAX_QUARANTINE_VAULT_BYTES, QuarantineDecision,
+    QuarantineEntry, QuarantineStatus, QuarantineVault, ResponseAction, ThreatSeverity,
 };
 pub use kind::{Kind, KindEntry, KindRegistry};
 pub use language::{Import, ImportKind, LanguageProvider, Symbol, SymbolKind, Visibility};
-pub use loop_tick::{TickConfig, TickOutcome, loop_tick, loop_tick_with_config};
+#[allow(deprecated)]
+pub use loop_tick::{
+    SignalSelectionOutcome, TickConfig, TickOutcome, loop_tick, loop_tick_with_config,
+    select_compose_verify_persist,
+};
 pub use metric::{ConfigHash, Headlines, TaskMetric, compute_headlines};
 pub use operating_frequency::{
     OperatingFrequency, OperatingFrequencyAffect, OperatingFrequencyScheduleContext,
@@ -259,11 +308,12 @@ pub use operating_frequency::{
 pub use phase::{FailureKind, PhaseKind, PlanPhase, is_monotonic_progression, valid_transitions};
 pub use policy_manifest::{
     BUILTIN_ROLE_POLICY_MANIFEST_PATH, BUILTIN_ROLE_POLICY_MANIFEST_TOML,
-    CURRENT_POLICY_MANIFEST_SCHEMA_VERSION, ContextPolicyRef, FallbackBehavior, GateExpectation,
-    InclusionMode, InclusionRule, MANIFEST_BACKED_BUILTIN_ROLE_IDS, ManifestError,
-    ManifestLookupError, ManifestValidationError, OutputFormat, OutputSchemaExpectation,
-    PolicyProvenance, PromptBudgetPolicy, PromptPolicy, PromptPolicySection, PromptSectionSource,
-    RolePolicyManifest, RoleProfile, RoleSafetyPolicy, SectionBudget, ToolCapabilityPolicy,
+    CURRENT_POLICY_MANIFEST_SCHEMA_VERSION, CapabilityDeclaration, ContextPolicyRef,
+    EffectiveCapabilities, FallbackBehavior, GateExpectation, InclusionMode, InclusionRule,
+    MANIFEST_BACKED_BUILTIN_ROLE_IDS, ManifestError, ManifestLookupError, ManifestValidationError,
+    OutputFormat, OutputSchemaExpectation, PolicyProvenance, PromptBudgetPolicy, PromptPolicy,
+    PromptPolicySection, PromptSectionSource, RolePolicyManifest, RoleProfile, RoleSafetyPolicy,
+    SectionBudget, ToolCapabilityPolicy, intersect_capabilities,
 };
 pub use polyglot::{PolyglotProject, detect_polyglot};
 pub use prediction::{
@@ -284,10 +334,12 @@ pub use provenance::{
 };
 pub use pulse::{PolicyOutputs, Pulse, PulseBuilder, Topic, TopicFilter};
 pub use query::{Budget, Query};
+pub use recipe::{Recipe, RecipeEdge, RecipeNode, ScoreOp};
+pub use recipe_store::RecipeStore;
 pub use roko_primitives::HdcVector;
 pub use runtime_event::{RuntimeEvent, ToolCallSummary, WorkflowOutcome};
 pub use score::Score;
-pub use signal::{Signal, SignalBuilder};
+pub use signal::{ArtifactKind, ArtifactLineage, ArtifactRef, Signal, SignalBuilder};
 pub use signal_kinds::*;
 pub use task::{
     GlobalTaskId, PlanStatus, Task, TaskCategory, TaskComplexityBand, TaskContextWeight,
@@ -309,8 +361,17 @@ pub use job::{
     JobProgressEntry, JobStats, JobStatus, JobSubmission, JobType, MarketplaceJob, PrdSummary,
     TaskSummary as JobTaskSummary,
 };
+pub use lens_registry::{LensConfig, LensRegistration, LensRegistry, parse_scope};
 pub use namespace::{
     Channel, ChannelDirection, CognitiveNamespace, NamespaceAcl, NamespaceRegistry, RateLimitConfig,
+};
+pub use telemetry_observe::{
+    AlertLevel, AnomalyDirection, AnomalyLevel, AnomalyPayload, BudgetAlertPayload, CFactorPayload,
+    CostReportPayload, DriftPayload, EfficiencyPayload, ErrorCategory, ErrorPayload,
+    LatencyPayload, LensScope, ObservableEvent, ObservableEventKind, PassFailCounts,
+    QualityPayload, TelemetryEventSink, TelemetryObserve, TrendDirection, TrendPayload,
+    UsagePayload, citation_reciprocity, delivery_rate, hdc_diversity, peer_prediction_accuracy,
+    turn_taking_entropy,
 };
 pub use temperament::Temperament;
 pub use tool::{
@@ -327,16 +388,20 @@ pub use traits::{
 };
 pub use trigger::{
     Author, BusTrigger, ChainEventTrigger, ConcurrencyPolicy, CronTrigger, Expr, FileWatchEvent,
-    FileWatchTrigger, GraphRef, InputFieldMapping, RateLimit, RateLimitAction, SecretRef,
-    SignalPatternTrigger, SignalRef, SpaceId, TRIGGER_AUTH_FAILED, TRIGGER_CREATED,
+    FileWatchTrigger, GRADUATION_EVENTS, GraphRef, InputFieldMapping, RateLimit, RateLimitAction,
+    SecretRef, SignalPatternTrigger, SignalRef, SpaceId, TRIGGER_AUTH_FAILED, TRIGGER_CREATED,
     TRIGGER_DELETED, TRIGGER_FIRED, TRIGGER_RATE_LIMITED, TraceId as TriggerTraceId, TriggerAuth,
-    TriggerBinding, TriggerEvent, TriggerFilter, TriggerGraduationPolicy, TriggerHandle, TriggerId,
-    TriggerInputMapping, TriggerKind, TriggerProtocol, TriggerSource, TriggerState, WebhookTrigger,
+    TriggerBinding, TriggerEvent, TriggerEventKind, TriggerFilter, TriggerGraduationPolicy,
+    TriggerHandle, TriggerHistory, TriggerHistoryRecord, TriggerId, TriggerInputMapping,
+    TriggerKind, TriggerProtocol, TriggerSource, TriggerState, WebhookTrigger,
+    load_trigger_history, trigger_topic,
 };
 // Note: The `Score` protocol trait (formerly `Scorer`) is NOT re-exported at
 // the crate root to avoid colliding with the `Score` value struct. Access it
 // via `roko_core::traits::Score` or import with an alias.
-pub use verdict::{Outcome, Selection, TestCount, Verdict};
+pub use verdict::{
+    Outcome, PublishPipelineResult, PublishStage, PublishStageResult, Selection, TestCount, Verdict,
+};
 #[allow(deprecated)]
 pub use workspace::Workspace;
 

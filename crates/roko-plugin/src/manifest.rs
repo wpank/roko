@@ -50,16 +50,28 @@
 //! include = ["*.rs"]
 //! ```
 
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::{Component, Path};
 
+pub use roko_core::plugin::{PluginCapability, PluginTier};
 use roko_core::{Result, RokoError};
+use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 
 // ─── TOML schema ────────────────────────────────────────────────────────
 
 /// Top-level TOML manifest that a plugin author writes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PluginManifestFile {
+    /// Explicit SDK tier. When absent, [`PluginManifestFile::tier`] infers it
+    /// from the manifest contents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<PluginTier>,
+    /// Capabilities required by this plugin. When absent, the minimum required
+    /// by the manifest contents is inferred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<PluginCapability>,
     /// Plugin metadata.
     pub plugin: PluginMeta,
     /// Tier 1: Prompt templates.
@@ -77,13 +89,14 @@ pub struct PluginManifestFile {
     /// Plugin dependencies (other plugins required).
     #[serde(default)]
     pub dependencies: Vec<PluginDependency>,
-    /// Optional sandbox configuration (overrides tier defaults).
-    #[serde(default)]
+    /// Default sandbox configuration for declarative tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<SandboxConfig>,
 }
 
 /// Plugin metadata section.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PluginMeta {
     /// Human-readable plugin name.
     pub name: String,
@@ -98,10 +111,11 @@ pub struct PluginMeta {
     /// Optional license.
     #[serde(default)]
     pub license: Option<String>,
-    /// Trust tier level (1-5). Mirrors [`roko_plugin::tool_registry::PluginTier`].
-    /// Defaults to `"sandboxed"` (tier 2) when not specified.
-    #[serde(default)]
-    pub tier: PluginTierLevel,
+    /// Legacy location for the SDK tier. New manifests should declare `tier`
+    /// at the top level. Retained to deserialize manifests produced by the
+    /// earlier schema without duplicating the tier type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<PluginTier>,
     /// Whether the plugin is enabled (wired into the runtime).
     /// Defaults to `true`.
     #[serde(default = "default_enabled")]
@@ -112,97 +126,37 @@ fn default_enabled() -> bool {
     true
 }
 
-/// Trust tier level for a plugin, declared in the manifest.
-///
-/// Mirrors the 5-tier SPI from `roko-plugin/src/tool_registry.rs`:
-///
-/// | Tier | Label | FS | Network | Secrets |
-/// |------|-------------|-----------|---------|---------|
-/// | 1 | Untrusted | none | no | no |
-/// | 2 | Sandboxed | read-only | no | no |
-/// | 3 | Standard | worktree | allow | no |
-/// | 4 | Trusted | full | full | yes |
-/// | 5 | Kernel | full | full | yes |
-#[derive(
-    Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum PluginTierLevel {
-    /// Tier 1: untrusted -- no filesystem, no network, no secrets.
-    Untrusted,
-    /// Tier 2: sandboxed -- read-only filesystem, no network.
-    #[default]
-    Sandboxed,
-    /// Tier 3: standard -- worktree-scoped filesystem, allowlisted network.
-    Standard,
-    /// Tier 4: trusted -- full filesystem, full network, secrets allowed.
-    Trusted,
-    /// Tier 5: kernel -- same trust as core.
-    Kernel,
-}
-
-impl PluginTierLevel {
-    /// Human-readable label.
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Untrusted => "untrusted",
-            Self::Sandboxed => "sandboxed",
-            Self::Standard => "standard",
-            Self::Trusted => "trusted",
-            Self::Kernel => "kernel",
-        }
-    }
-
-    /// Whether this tier allows network access.
-    #[must_use]
-    pub const fn allows_network(self) -> bool {
-        matches!(self, Self::Standard | Self::Trusted | Self::Kernel)
-    }
-
-    /// Whether this tier allows filesystem writes.
-    #[must_use]
-    pub const fn allows_fs_write(self) -> bool {
-        matches!(self, Self::Standard | Self::Trusted | Self::Kernel)
-    }
-
-    /// Whether this tier allows secret access.
-    #[must_use]
-    pub const fn allows_secrets(self) -> bool {
-        matches!(self, Self::Trusted | Self::Kernel)
-    }
-
-    /// Numeric tier level (1-5).
-    #[must_use]
-    pub const fn level(self) -> u8 {
-        match self {
-            Self::Untrusted => 1,
-            Self::Sandboxed => 2,
-            Self::Standard => 3,
-            Self::Trusted => 4,
-            Self::Kernel => 5,
-        }
-    }
-}
-
-/// Sandbox configuration for a plugin.
-///
-/// Optional section in the plugin manifest that overrides the tier defaults.
-/// When absent, sandbox policy is derived from the `tier` field.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Sandbox constraints for a plugin-declared tool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SandboxConfig {
-    /// Whether network access is allowed.
-    #[serde(default)]
-    pub network: bool,
-    /// Allowed filesystem paths (empty = no fs access).
+    /// Worktree-relative glob patterns the tool may access.
     #[serde(default)]
     pub allowed_paths: Vec<String>,
-    /// Denied filesystem paths.
+    /// Environment variable names the tool may read.
     #[serde(default)]
-    pub denied_paths: Vec<String>,
-    /// Whether secrets can be accessed.
+    pub env_allowlist: Vec<String>,
+    /// Maximum combined stdout/stderr bytes retained from the tool.
+    #[serde(default = "default_max_output_bytes")]
+    pub max_output_bytes: u64,
+    /// Whether shell metacharacters are explicitly permitted in `command`.
     #[serde(default)]
-    pub secrets: bool,
+    pub allow_shell_metacharacters: bool,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            allowed_paths: Vec::new(),
+            env_allowlist: Vec::new(),
+            max_output_bytes: default_max_output_bytes(),
+            allow_shell_metacharacters: false,
+        }
+    }
+}
+
+const fn default_max_output_bytes() -> u64 {
+    1024 * 1024
 }
 
 /// Tier 1: A prompt template that can be registered with the prompt system.
@@ -222,6 +176,7 @@ pub struct PromptTemplate {
 
 /// Tier 2: A bundle of tool allow/deny lists forming a profile.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolProfileBundle {
     /// Profile identifier (e.g., "read-only", "full-access").
     pub name: String,
@@ -238,6 +193,7 @@ pub struct ToolProfileBundle {
 
 /// Tier 3: A declarative tool backed by a shell command.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeclarativeTool {
     /// Tool name exposed to agents.
     pub name: String,
@@ -254,6 +210,9 @@ pub struct DeclarativeTool {
     /// Environment variables to set.
     #[serde(default)]
     pub env: std::collections::HashMap<String, String>,
+    /// Tool-specific sandbox override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<SandboxConfig>,
 }
 
 fn default_timeout() -> u64 {
@@ -266,7 +225,7 @@ fn default_webhook_scope() -> String {
 
 /// Event source trigger definition.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TriggerDef {
     /// Cron-scheduled trigger.
     Cron {
@@ -345,6 +304,7 @@ pub enum TriggerDef {
 
 /// Plugin dependency.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PluginDependency {
     /// Name of the required plugin.
     pub name: String,
@@ -391,6 +351,8 @@ fn validate_manifest(manifest: &PluginManifestFile) -> Result<()> {
         return Err(RokoError::config("plugin version must not be empty"));
     }
 
+    validate_privilege_declarations(manifest)?;
+
     // Validate prompt template names are unique.
     let mut prompt_names = std::collections::HashSet::new();
     for prompt in &manifest.prompts {
@@ -428,6 +390,7 @@ fn validate_manifest(manifest: &PluginManifestFile) -> Result<()> {
                 tool.name
             )));
         }
+        validate_declarative_tool(manifest, tool)?;
     }
 
     // Validate webhook trigger paths, scopes, and signal-match trigger kinds.
@@ -464,6 +427,125 @@ fn validate_manifest(manifest: &PluginManifestFile) -> Result<()> {
     Ok(())
 }
 
+fn validate_privilege_declarations(manifest: &PluginManifestFile) -> Result<()> {
+    if let (Some(tier), Some(legacy_tier)) = (manifest.tier, manifest.plugin.tier)
+        && tier != legacy_tier
+    {
+        return Err(RokoError::config(format!(
+            "plugin declares conflicting tiers `{}` and `{}`",
+            tier.label(),
+            legacy_tier.label()
+        )));
+    }
+
+    let tier = manifest.tier();
+    let capabilities = manifest.capabilities();
+    let denied = capabilities.denied_by(tier);
+    if !denied.is_empty() {
+        return Err(RokoError::config(format!(
+            "plugin tier `{}` does not permit declared capabilities: {}",
+            tier.label(),
+            denied.join(", ")
+        )));
+    }
+    if !manifest.tools.is_empty() && !capabilities.exec {
+        return Err(RokoError::config(
+            "plugins with declarative tools must declare the `exec` capability",
+        ));
+    }
+    if let Some(sandbox) = &manifest.sandbox {
+        validate_sandbox("plugin", sandbox)?;
+    }
+    Ok(())
+}
+
+fn validate_declarative_tool(manifest: &PluginManifestFile, tool: &DeclarativeTool) -> Result<()> {
+    let sandbox = tool.sandbox.as_ref().or(manifest.sandbox.as_ref());
+    if let Some(sandbox) = &tool.sandbox {
+        validate_sandbox(&format!("tool `{}`", tool.name), sandbox)?;
+    }
+    if let Some(working_dir) = tool.working_dir.as_deref() {
+        validate_relative_path(&format!("tool `{}` working_dir", tool.name), working_dir)?;
+        if sandbox.is_none_or(|config| config.allowed_paths.is_empty()) {
+            return Err(RokoError::config(format!(
+                "tool `{}` sets working_dir but its sandbox allowed_paths is empty",
+                tool.name
+            )));
+        }
+    }
+    if !sandbox.is_some_and(|config| config.allow_shell_metacharacters)
+        && let Some(found) = shell_metacharacter(&tool.command)
+    {
+        return Err(RokoError::config(format!(
+            "tool `{}` command contains shell metacharacter `{found}`; set \
+             allow_shell_metacharacters = true in its sandbox to permit it",
+            tool.name
+        )));
+    }
+    Ok(())
+}
+
+fn validate_sandbox(owner: &str, sandbox: &SandboxConfig) -> Result<()> {
+    let mut paths = std::collections::HashSet::new();
+    for allowed_path in &sandbox.allowed_paths {
+        validate_relative_path(&format!("{owner} sandbox allowed_paths"), allowed_path)?;
+        if !paths.insert(allowed_path) {
+            return Err(RokoError::config(format!(
+                "{owner} sandbox contains duplicate allowed path `{allowed_path}`"
+            )));
+        }
+    }
+
+    let mut env_names = std::collections::HashSet::new();
+    for name in &sandbox.env_allowlist {
+        if !valid_env_name(name) {
+            return Err(RokoError::config(format!(
+                "{owner} sandbox env_allowlist contains invalid variable name `{name}`"
+            )));
+        }
+        if !env_names.insert(name) {
+            return Err(RokoError::config(format!(
+                "{owner} sandbox contains duplicate env variable `{name}`"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_relative_path(owner: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        return Err(RokoError::config(format!("{owner} must not be empty")));
+    }
+    let path = Path::new(value);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(RokoError::config(format!(
+            "{owner} `{value}` must be worktree-relative and must not contain parent traversal"
+        )));
+    }
+    Ok(())
+}
+
+fn valid_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
+fn shell_metacharacter(command: &str) -> Option<&'static str> {
+    ["$(", "`", "|", ";"]
+        .into_iter()
+        .find(|candidate| command.contains(candidate))
+}
+
 /// Valid scope values for webhook trigger route requirements.
 ///
 /// Must stay in sync with the `known_static_scope` function in
@@ -476,6 +558,19 @@ const VALID_WEBHOOK_SCOPES: &[&str] = &[
     "plan:write",
     "terminal:write",
 ];
+
+/// Compatibility summary used by plugin status surfaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginSandboxSummary {
+    /// Whether the effective tier and declaration permit network egress.
+    pub network: bool,
+    /// Effective worktree-relative path patterns.
+    pub allowed_paths: Vec<String>,
+    /// Reserved compatibility field; manifest sandboxes are allowlist-only.
+    pub denied_paths: Vec<String>,
+    /// Whether the effective tier and declaration permit secret access.
+    pub secrets: bool,
+}
 
 impl PluginManifestFile {
     /// Extract the route-scope pairs declared by this plugin's webhook triggers.
@@ -495,28 +590,58 @@ impl PluginManifestFile {
     }
 
     /// Compute the effective sandbox summary for display.
-    ///
-    /// If an explicit `[sandbox]` is present it is used; otherwise defaults
-    /// are derived from the plugin's tier level.
     #[must_use]
-    pub fn effective_sandbox(&self) -> SandboxConfig {
-        if let Some(ref sandbox) = self.sandbox {
-            sandbox.clone()
-        } else {
-            let tier = self.plugin.tier;
-            SandboxConfig {
-                network: tier.allows_network(),
-                allowed_paths: Vec::new(),
-                denied_paths: Vec::new(),
-                secrets: tier.allows_secrets(),
-            }
+    pub fn effective_sandbox(&self) -> PluginSandboxSummary {
+        let tier = self.tier();
+        let capabilities = self.capabilities();
+        PluginSandboxSummary {
+            network: tier.allows_network() && capabilities.network_egress,
+            allowed_paths: self
+                .sandbox
+                .as_ref()
+                .map_or_else(Vec::new, |sandbox| sandbox.allowed_paths.clone()),
+            denied_paths: Vec::new(),
+            secrets: tier.allows_secrets() && capabilities.secrets,
         }
     }
 
-    /// The tier level declared (or defaulted) for this plugin.
+    /// Effective tier, using an explicit declaration or content inference.
     #[must_use]
-    pub fn tier(&self) -> PluginTierLevel {
-        self.plugin.tier
+    pub fn tier(&self) -> PluginTier {
+        self.tier.or(self.plugin.tier).unwrap_or({
+            if !self.tools.is_empty() {
+                PluginTier::Standard
+            } else if !self.profiles.is_empty() {
+                PluginTier::Sandboxed
+            } else if !self.prompts.is_empty() {
+                PluginTier::Untrusted
+            } else {
+                PluginTier::Sandboxed
+            }
+        })
+    }
+
+    /// Effective capability requirement, inferred for legacy manifests.
+    #[must_use]
+    pub fn capabilities(&self) -> PluginCapability {
+        self.capabilities.unwrap_or_else(|| {
+            if self.tools.is_empty() {
+                PluginCapability::default()
+            } else {
+                PluginCapability::declarative_tools()
+            }
+        })
+    }
+
+    /// Sandbox effective for one tool: its override, then the plugin default,
+    /// then the restrictive schema default.
+    #[must_use]
+    pub fn sandbox_for_tool(&self, tool: &DeclarativeTool) -> SandboxConfig {
+        tool.sandbox
+            .as_ref()
+            .or(self.sandbox.as_ref())
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Whether this plugin is wired (enabled) at runtime.
@@ -549,6 +674,181 @@ pub struct LoadedPlugin {
     pub manifest: PluginManifestFile,
     /// The directory containing the manifest file.
     pub base_dir: std::path::PathBuf,
+}
+
+/// Resolve discovered plugins into one deterministic runtime load order.
+///
+/// Duplicate names are collapsed to the highest semantic version. Equal
+/// versions retain the first discovered path, so callers control same-version
+/// root precedence through input order. Required dependencies must exist;
+/// dependency constraints are audited and warned when unsatisfied, matching
+/// the initial E32 compatibility policy. Dependencies always precede their
+/// dependents in the returned order.
+///
+/// # Errors
+///
+/// Returns an error for invalid plugin versions, missing required
+/// dependencies, or dependency cycles.
+#[allow(clippy::too_many_lines)] // Selection, validation, and ordering form one graph transaction.
+pub fn resolve_plugins(discovered: Vec<LoadedPlugin>) -> Result<Vec<LoadedPlugin>> {
+    let mut selected = BTreeMap::<String, LoadedPlugin>::new();
+
+    for candidate in discovered {
+        let name = candidate.manifest.plugin.name.clone();
+        let candidate_version = parse_plugin_version(&candidate)?;
+        match selected.get(&name) {
+            None => {
+                selected.insert(name, candidate);
+            }
+            Some(current) => {
+                let current_version = parse_plugin_version(current)?;
+                if candidate_version > current_version {
+                    tracing::warn!(
+                        plugin = %name,
+                        selected_version = %candidate.manifest.plugin.version,
+                        selected_path = %candidate.base_dir.display(),
+                        skipped_version = %current.manifest.plugin.version,
+                        skipped_path = %current.base_dir.display(),
+                        "plugin version conflict resolved to highest version"
+                    );
+                    selected.insert(name, candidate);
+                } else {
+                    tracing::warn!(
+                        plugin = %name,
+                        selected_version = %current.manifest.plugin.version,
+                        selected_path = %current.base_dir.display(),
+                        skipped_version = %candidate.manifest.plugin.version,
+                        skipped_path = %candidate.base_dir.display(),
+                        "plugin version conflict resolved to highest version"
+                    );
+                }
+            }
+        }
+    }
+
+    let mut in_degree = selected
+        .keys()
+        .map(|name| (name.clone(), 0_usize))
+        .collect::<HashMap<_, _>>();
+    let mut dependents = selected
+        .keys()
+        .map(|name| (name.clone(), Vec::<String>::new()))
+        .collect::<HashMap<_, _>>();
+
+    for (name, plugin) in &selected {
+        for dependency in &plugin.manifest.dependencies {
+            let Some(resolved_dependency) = selected.get(&dependency.name) else {
+                return Err(RokoError::invalid(format!(
+                    "plugin '{name}' depends on missing plugin '{}'",
+                    dependency.name
+                )));
+            };
+
+            if let Some(constraint) = dependency.version.as_deref() {
+                let actual = parse_plugin_version(resolved_dependency)?;
+                if !plugin_version_satisfies(&actual, constraint) {
+                    tracing::warn!(
+                        plugin = %name,
+                        dependency = %dependency.name,
+                        required = %constraint,
+                        resolved = %resolved_dependency.manifest.plugin.version,
+                        "resolved plugin dependency does not satisfy requested version"
+                    );
+                }
+            }
+
+            let Some(degree) = in_degree.get_mut(name) else {
+                return Err(RokoError::invalid(format!(
+                    "internal plugin resolution error: missing in-degree for '{name}'"
+                )));
+            };
+            *degree += 1;
+
+            let Some(downstream) = dependents.get_mut(&dependency.name) else {
+                return Err(RokoError::invalid(format!(
+                    "internal plugin resolution error: missing dependency node '{}'",
+                    dependency.name
+                )));
+            };
+            downstream.push(name.clone());
+        }
+    }
+
+    for names in dependents.values_mut() {
+        names.sort();
+    }
+
+    let mut ready = in_degree
+        .iter()
+        .filter_map(|(name, degree)| (*degree == 0).then_some(name.clone()))
+        .collect::<BTreeSet<_>>();
+    let mut ordered_names = Vec::with_capacity(selected.len());
+
+    while let Some(name) = ready.pop_first() {
+        ordered_names.push(name.clone());
+        if let Some(downstream) = dependents.get(&name) {
+            for dependent in downstream {
+                let Some(degree) = in_degree.get_mut(dependent) else {
+                    return Err(RokoError::invalid(format!(
+                        "internal plugin resolution error: missing dependent node '{dependent}'"
+                    )));
+                };
+                *degree = degree.saturating_sub(1);
+                if *degree == 0 {
+                    ready.insert(dependent.clone());
+                }
+            }
+        }
+    }
+
+    if ordered_names.len() != selected.len() {
+        let cyclic = in_degree
+            .into_iter()
+            .filter_map(|(name, degree)| (degree > 0).then_some(name))
+            .collect::<BTreeSet<_>>();
+        return Err(RokoError::invalid(format!(
+            "plugin dependency cycle detected among: {}",
+            cyclic.into_iter().collect::<Vec<_>>().join(", ")
+        )));
+    }
+
+    let mut resolved = Vec::with_capacity(ordered_names.len());
+    for name in ordered_names {
+        let Some(plugin) = selected.remove(&name) else {
+            return Err(RokoError::invalid(format!(
+                "internal plugin resolution error: selected plugin '{name}' disappeared"
+            )));
+        };
+        resolved.push(plugin);
+    }
+    Ok(resolved)
+}
+
+fn parse_plugin_version(plugin: &LoadedPlugin) -> Result<Version> {
+    Version::parse(&plugin.manifest.plugin.version).map_err(|error| {
+        RokoError::invalid(format!(
+            "plugin '{}' at {} has invalid semantic version '{}': {error}",
+            plugin.manifest.plugin.name,
+            plugin.base_dir.display(),
+            plugin.manifest.plugin.version
+        ))
+    })
+}
+
+fn plugin_version_satisfies(actual: &Version, constraint: &str) -> bool {
+    let constraint = constraint.trim();
+    if constraint.is_empty() {
+        return true;
+    }
+
+    if constraint
+        .chars()
+        .any(|character| matches!(character, '<' | '>' | '=' | '^' | '~' | '*' | ','))
+    {
+        return VersionReq::parse(constraint).is_ok_and(|requirement| requirement.matches(actual));
+    }
+
+    Version::parse(constraint).is_ok_and(|minimum| actual >= &minimum)
 }
 
 /// Discover and load all plugin manifests in a directory.
@@ -605,6 +905,29 @@ pub fn discover_plugins(dir: &Path) -> Result<Vec<LoadedPlugin>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn loaded_plugin(
+        name: &str,
+        version: &str,
+        dependencies: &[(&str, Option<&str>)],
+        base_dir: &str,
+    ) -> LoadedPlugin {
+        let mut manifest = parse_manifest(&format!(
+            "[plugin]\nname = \"{name}\"\nversion = \"{version}\"\n"
+        ))
+        .unwrap();
+        manifest.dependencies = dependencies
+            .iter()
+            .map(|(dependency, version)| PluginDependency {
+                name: (*dependency).to_string(),
+                version: version.map(str::to_string),
+            })
+            .collect();
+        LoadedPlugin {
+            manifest,
+            base_dir: base_dir.into(),
+        }
+    }
 
     const MINIMAL_MANIFEST: &str = r#"
 [plugin]
@@ -736,6 +1059,349 @@ version = "0.1.0"
         // Dependencies
         assert_eq!(manifest.dependencies.len(), 1);
         assert_eq!(manifest.dependencies[0].name, "base-tools");
+    }
+
+    #[test]
+    fn infers_tiers_and_tool_capability_for_legacy_manifests() {
+        let prompt = parse_manifest(
+            r#"
+[plugin]
+name = "prompt-plugin"
+version = "1.0.0"
+
+[[prompts]]
+name = "review"
+template = "Review this"
+"#,
+        )
+        .expect("prompt manifest parses");
+        assert_eq!(prompt.tier(), PluginTier::Untrusted);
+
+        let profile = parse_manifest(
+            r#"
+[plugin]
+name = "profile-plugin"
+version = "1.0.0"
+
+[[profiles]]
+name = "readonly"
+"#,
+        )
+        .expect("profile manifest parses");
+        assert_eq!(profile.tier(), PluginTier::Sandboxed);
+
+        let tools = parse_manifest(
+            r#"
+[plugin]
+name = "tool-plugin"
+version = "1.0.0"
+
+[[tools]]
+name = "check"
+description = "Run a check"
+command = "cargo check"
+"#,
+        )
+        .expect("tool manifest parses");
+        assert_eq!(tools.tier(), PluginTier::Standard);
+        assert!(tools.capabilities().exec);
+
+        let legacy = parse_manifest(
+            r#"
+[plugin]
+name = "legacy-plugin"
+version = "1.0.0"
+tier = "trusted"
+"#,
+        )
+        .expect("legacy nested tier parses");
+        assert_eq!(legacy.tier(), PluginTier::Trusted);
+    }
+
+    #[test]
+    fn explicit_tier_and_capabilities_roundtrip() {
+        let manifest = parse_manifest(
+            r#"
+tier = "trusted"
+
+[capabilities]
+filesystem_read = true
+filesystem_write = true
+network_egress = true
+secrets = true
+exec = true
+
+[plugin]
+name = "trusted-plugin"
+version = "1.0.0"
+"#,
+        )
+        .expect("explicit declarations parse");
+        assert_eq!(manifest.tier(), PluginTier::Trusted);
+        assert_eq!(
+            manifest.capabilities(),
+            PluginCapability {
+                filesystem_read: true,
+                filesystem_write: true,
+                network_egress: true,
+                secrets: true,
+                exec: true,
+            }
+        );
+
+        let serialized = toml::to_string_pretty(&manifest).expect("manifest serializes");
+        let reparsed = parse_manifest(&serialized).expect("serialized manifest reparses");
+        assert_eq!(manifest, reparsed);
+    }
+
+    #[test]
+    fn rejects_capabilities_outside_effective_tier() {
+        let error = parse_manifest(
+            r#"
+tier = "sandboxed"
+
+[capabilities]
+network_egress = true
+
+[plugin]
+name = "overprivileged"
+version = "1.0.0"
+"#,
+        )
+        .expect_err("sandboxed network capability must be rejected");
+        assert!(error.to_string().contains("network_egress"));
+
+        let missing_exec = parse_manifest(
+            r#"
+tier = "standard"
+
+[capabilities]
+filesystem_read = true
+
+[plugin]
+name = "missing-exec"
+version = "1.0.0"
+
+[[tools]]
+name = "check"
+description = "Run a check"
+command = "cargo check"
+"#,
+        )
+        .expect_err("declarative tools must require exec");
+        assert!(missing_exec.to_string().contains("`exec` capability"));
+    }
+
+    #[test]
+    fn sandbox_defaults_and_tool_override_deserialize() {
+        let manifest = parse_manifest(
+            r#"
+tier = "standard"
+
+[plugin]
+name = "sandboxed-tool"
+version = "1.0.0"
+
+[[tools]]
+name = "build"
+description = "Build the project"
+command = "cargo build | tee build.log"
+working_dir = "crates/roko-plugin"
+
+[tools.sandbox]
+allowed_paths = ["crates/roko-plugin/**"]
+env_allowlist = ["RUST_LOG"]
+allow_shell_metacharacters = true
+"#,
+        )
+        .expect("valid tool sandbox parses");
+        let sandbox = manifest.sandbox_for_tool(&manifest.tools[0]);
+        assert_eq!(sandbox.max_output_bytes, 1024 * 1024);
+        assert_eq!(sandbox.allowed_paths, vec!["crates/roko-plugin/**"]);
+        assert_eq!(sandbox.env_allowlist, vec!["RUST_LOG"]);
+        assert!(sandbox.allow_shell_metacharacters);
+    }
+
+    #[test]
+    fn sandbox_validation_fails_closed() {
+        let invalid_manifests = [
+            (
+                "absolute working directory",
+                r#"
+[plugin]
+name = "absolute"
+version = "1.0.0"
+
+[[tools]]
+name = "check"
+description = "Run a check"
+command = "cargo check"
+working_dir = "/tmp"
+
+[tools.sandbox]
+allowed_paths = ["tmp/**"]
+"#,
+            ),
+            (
+                "working directory without an allowlist",
+                r#"
+[plugin]
+name = "no-allowlist"
+version = "1.0.0"
+
+[[tools]]
+name = "check"
+description = "Run a check"
+command = "cargo check"
+working_dir = "crates/roko-plugin"
+"#,
+            ),
+            (
+                "shell metacharacter without opt-in",
+                r#"
+[plugin]
+name = "shell-meta"
+version = "1.0.0"
+
+[[tools]]
+name = "check"
+description = "Run checks"
+command = "cargo check; cargo test"
+"#,
+            ),
+            (
+                "path traversal",
+                r#"
+[plugin]
+name = "traversal"
+version = "1.0.0"
+
+[sandbox]
+allowed_paths = ["../secrets/**"]
+"#,
+            ),
+            (
+                "invalid environment name",
+                r#"
+[plugin]
+name = "bad-env"
+version = "1.0.0"
+
+[sandbox]
+env_allowlist = ["BAD-NAME"]
+"#,
+            ),
+        ];
+
+        for (case, content) in invalid_manifests {
+            assert!(parse_manifest(content).is_err(), "accepted {case}");
+        }
+    }
+
+    #[test]
+    fn security_sensitive_manifest_sections_reject_unknown_fields() {
+        let invalid_manifests = [
+            (
+                "misspelled top-level capabilities section",
+                r#"
+capabilties = { exec = true }
+
+[plugin]
+name = "bad-top-level"
+version = "1.0.0"
+"#,
+            ),
+            (
+                "unknown capability",
+                r#"
+[capabilities]
+execution = true
+
+[plugin]
+name = "bad-capability"
+version = "1.0.0"
+"#,
+            ),
+            (
+                "unknown sandbox control",
+                r#"
+[plugin]
+name = "bad-sandbox"
+version = "1.0.0"
+
+[sandbox]
+allow_shell = true
+"#,
+            ),
+            (
+                "misspelled enabled flag",
+                r#"
+[plugin]
+name = "bad-enabled"
+version = "1.0.0"
+enable = false
+"#,
+            ),
+            (
+                "misplaced tool output limit",
+                r#"
+[plugin]
+name = "bad-tool"
+version = "1.0.0"
+
+[[tools]]
+name = "check"
+description = "Run check"
+command = "printf ok"
+max_output_bytes = 1
+"#,
+            ),
+            (
+                "misspelled profile denylist",
+                r#"
+[plugin]
+name = "bad-profile"
+version = "1.0.0"
+
+[[profiles]]
+name = "restricted"
+denied_tool = ["bash"]
+"#,
+            ),
+            (
+                "misspelled webhook scope",
+                r#"
+[plugin]
+name = "bad-webhook"
+version = "1.0.0"
+
+[[triggers]]
+kind = "webhook"
+path = "/hook"
+scop = "read"
+"#,
+            ),
+            (
+                "misspelled dependency version",
+                r#"
+[plugin]
+name = "bad-dependency"
+version = "1.0.0"
+
+[[dependencies]]
+name = "required-plugin"
+verison = ">=2.0.0"
+"#,
+            ),
+        ];
+
+        for (case, content) in invalid_manifests {
+            let error = parse_manifest(content).expect_err(case);
+            assert!(
+                error.to_string().contains("unknown field"),
+                "unexpected error for {case}: {error}"
+            );
+        }
     }
 
     #[test]
@@ -939,5 +1605,89 @@ label = "Run backfill"
         let serialized = toml::to_string_pretty(&manifest).unwrap();
         let reparsed = parse_manifest(&serialized).unwrap();
         assert_eq!(manifest, reparsed);
+    }
+
+    #[test]
+    fn resolve_plugins_selects_highest_version_and_dependency_order() {
+        let resolved = resolve_plugins(vec![
+            loaded_plugin(
+                "consumer",
+                "1.0.0",
+                &[("shared", Some(">=2.0.0"))],
+                "/consumer",
+            ),
+            loaded_plugin("shared", "1.9.0", &[], "/workspace/shared"),
+            loaded_plugin("shared", "2.1.0", &[], "/installed/shared"),
+            loaded_plugin("independent", "1.0.0", &[], "/independent"),
+        ])
+        .unwrap();
+
+        let names = resolved
+            .iter()
+            .map(|plugin| plugin.manifest.plugin.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["independent", "shared", "consumer"]);
+        assert_eq!(resolved[1].manifest.plugin.version, "2.1.0");
+        assert_eq!(
+            resolved[1].base_dir,
+            std::path::PathBuf::from("/installed/shared")
+        );
+    }
+
+    #[test]
+    fn resolve_plugins_preserves_first_root_for_equal_versions() {
+        let resolved = resolve_plugins(vec![
+            loaded_plugin("same", "1.0.0", &[], "/preferred"),
+            loaded_plugin("same", "1.0.0", &[], "/later"),
+        ])
+        .unwrap();
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].base_dir, std::path::PathBuf::from("/preferred"));
+    }
+
+    #[test]
+    fn resolve_plugins_allows_version_mismatch_but_preserves_dependency_order() {
+        let resolved = resolve_plugins(vec![
+            loaded_plugin(
+                "consumer",
+                "1.0.0",
+                &[("shared", Some(">=3.0.0"))],
+                "/consumer",
+            ),
+            loaded_plugin("shared", "2.1.0", &[], "/shared"),
+        ])
+        .unwrap();
+
+        let names = resolved
+            .iter()
+            .map(|plugin| plugin.manifest.plugin.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["shared", "consumer"]);
+    }
+
+    #[test]
+    fn resolve_plugins_rejects_missing_dependencies_and_cycles() {
+        let missing = resolve_plugins(vec![loaded_plugin(
+            "consumer",
+            "1.0.0",
+            &[("missing", None)],
+            "/consumer",
+        )])
+        .unwrap_err();
+        assert!(missing.to_string().contains("missing plugin 'missing'"));
+
+        let cycle = resolve_plugins(vec![
+            loaded_plugin("a", "1.0.0", &[("b", None)], "/a"),
+            loaded_plugin("b", "1.0.0", &[("a", None)], "/b"),
+        ])
+        .unwrap_err();
+        assert!(cycle.to_string().contains("dependency cycle"));
+    }
+
+    #[test]
+    fn resolve_plugins_rejects_invalid_semantic_versions() {
+        let error = resolve_plugins(vec![loaded_plugin("bad", "latest", &[], "/bad")]).unwrap_err();
+        assert!(error.to_string().contains("invalid semantic version"));
     }
 }

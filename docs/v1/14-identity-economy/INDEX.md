@@ -1,5 +1,8 @@
 # 14 — Identity & Economy Layer
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Agent identity, reputation, knowledge marketplace, tokenomics, job market, clearing,
 > and regulatory compliance. Everything that makes agents economically accountable
 > participants in a collective intelligence network. This topic covers the external economy;

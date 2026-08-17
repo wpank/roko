@@ -188,8 +188,7 @@ impl CommandDashboardSnapshot {
     fn render_health_page_text(&self) -> String {
         let summary = self.health_summary();
         let cfactor = self.cfactor.as_ref().cloned().unwrap_or_default();
-        let trend =
-            cfactor_trend_arrow(&self.cfactor_history, Duration::from_secs(7 * 24 * 60 * 60));
+        let trend = cfactor_trend_arrow(&self.cfactor_history, Duration::from_hours(168));
         render_data_page(
             "Health",
             PageId::Health.slug(),

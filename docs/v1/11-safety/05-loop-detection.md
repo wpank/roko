@@ -1,5 +1,8 @@
 # Loop Detection and Secret Zeroization
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L1 Framework (loop guard), L3 Harness (circuit breaker), Cross-cut (Safety & Provenance)
 >
 > **Crate**: `roko-agent` (safety/rate_limit.rs), `roko-conductor` (circuit breaker), `roko-agent` (safety/scrub.rs)

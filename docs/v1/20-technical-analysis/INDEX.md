@@ -1,5 +1,8 @@
 # Topic 20: Technical Analysis — Universal Oracle Primitives
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > TA is NOT chain-only. It is a general-purpose prediction framework with domain-specific instances.
 
 **Prerequisites**: [00-architecture](../00-architecture/INDEX.md) for Synapse Architecture (Engram, 6 traits, 5 layers), [05-learning](../05-learning/INDEX.md) for cybernetic feedback loops and CascadeRouter, [06-neuro](../06-neuro/INDEX.md) for HDC knowledge encoding and tier progression

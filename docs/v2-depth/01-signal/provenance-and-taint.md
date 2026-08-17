@@ -2,6 +2,8 @@
 
 > Depth for [01-SIGNAL.md](../../unified/01-SIGNAL.md) &sect;8. Redesigns provenance as a lattice-based information flow control (IFC) system where taint propagation is join in a security lattice and custody records act as dependent-type witnesses.
 
+> **Implementation status (2026-08-17):** PARTIAL. The `Taint` enum in `roko-core/src/provenance.rs` implements the lattice concept with propagation semantics. Variant names diverge from this doc: code uses `LlmHallucination` (not `LlmGenerated`) and `UnverifiedSource` (not `ExternalFetch`). A separate `TaintLevel` enum (Public/Internal/Confidential/Secret) handles data classification. `CustodyGatedStore` and `AttestationLevel` are spec-only — the runtime uses provenance tracking but not the typed custody-gated Store wrapper.
+
 ---
 
 ## 1. The Information Flow Problem

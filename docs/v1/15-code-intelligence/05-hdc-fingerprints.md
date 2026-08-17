@@ -1,5 +1,8 @@
 # HDC Fingerprints for Structural Similarity
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > 10,240-bit hyperdimensional computing vectors that encode code structure into fixed-width binary fingerprints — enabling sub-microsecond similarity search without neural embeddings.
 
 

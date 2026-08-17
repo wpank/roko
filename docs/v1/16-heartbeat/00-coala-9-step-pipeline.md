@@ -1,5 +1,8 @@
 # CoALA 9-Step Cognitive Pipeline
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Historical note: this chapter began as a CoALA-derived 9-step description of the heartbeat. Roko's canonical universal loop is now the seven-step SENSE / ASSESS / COMPOSE / ACT / VERIFY / PERSIST + BROADCAST / REACT loop. See `tmp/refinements/05-loop-retold.md` and `docs/00-architecture/01-naming-and-glossary.md`.
 
 

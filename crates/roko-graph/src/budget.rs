@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{GraphError, Result};
 use crate::types::GraphConfig;
@@ -54,6 +55,32 @@ pub struct NodeCost {
     pub cost_usd: f64,
     /// Wall-clock time for this node.
     pub duration: Duration,
+}
+
+/// Serializable cumulative budget state for durable Hot Graph checkpoints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BudgetCheckpoint {
+    /// Total tokens consumed before the next tick.
+    pub tokens_used: u64,
+    /// Total cost stored exactly as microdollars.
+    pub cost_microdollars: u64,
+    /// Cumulative wall-clock time charged to the execution.
+    pub elapsed_ms: u64,
+    /// Per-node cost records retained for reporting after resume.
+    pub breakdown: Vec<NodeCostCheckpoint>,
+}
+
+/// Serializable form of one per-node budget record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeCostCheckpoint {
+    /// Node ID.
+    pub node_id: String,
+    /// Tokens consumed by this node.
+    pub tokens: u64,
+    /// Cost stored exactly as microdollars.
+    pub cost_microdollars: u64,
+    /// Execution duration in milliseconds.
+    pub duration_ms: u64,
 }
 
 impl BudgetTracker {
@@ -179,6 +206,47 @@ impl BudgetTracker {
     pub fn breakdown(&self) -> Vec<NodeCost> {
         self.breakdown.lock().clone()
     }
+
+    /// Capture cumulative usage for a durable Hot Graph checkpoint.
+    #[must_use]
+    pub fn checkpoint(&self) -> BudgetCheckpoint {
+        BudgetCheckpoint {
+            tokens_used: self.tokens_used(),
+            cost_microdollars: self.cost_microdollars.load(Ordering::Relaxed),
+            elapsed_ms: self.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+            breakdown: self
+                .breakdown()
+                .into_iter()
+                .map(|cost| NodeCostCheckpoint {
+                    node_id: cost.node_id,
+                    tokens: cost.tokens,
+                    cost_microdollars: (cost.cost_usd * 1_000_000.0) as u64,
+                    duration_ms: cost.duration.as_millis().try_into().unwrap_or(u64::MAX),
+                })
+                .collect(),
+        }
+    }
+
+    /// Restore cumulative usage from a validated durable checkpoint.
+    pub fn restore_checkpoint(&mut self, checkpoint: &BudgetCheckpoint) {
+        self.tokens_used
+            .store(checkpoint.tokens_used, Ordering::Relaxed);
+        self.cost_microdollars
+            .store(checkpoint.cost_microdollars, Ordering::Relaxed);
+        self.start_time = Instant::now()
+            .checked_sub(Duration::from_millis(checkpoint.elapsed_ms))
+            .unwrap_or_else(Instant::now);
+        *self.breakdown.lock() = checkpoint
+            .breakdown
+            .iter()
+            .map(|cost| NodeCost {
+                node_id: cost.node_id.clone(),
+                tokens: cost.tokens,
+                cost_usd: cost.cost_microdollars as f64 / 1_000_000.0,
+                duration: Duration::from_millis(cost.duration_ms),
+            })
+            .collect();
+    }
 }
 
 // ─── Hot Graph budget enforcement ────────────────────────────────────────────
@@ -271,6 +339,17 @@ impl BudgetEnforcer {
     #[must_use]
     pub fn breakdown(&self) -> Vec<NodeCost> {
         self.tracker.breakdown()
+    }
+
+    /// Capture cumulative usage for a durable Hot Graph checkpoint.
+    #[must_use]
+    pub fn checkpoint(&self) -> BudgetCheckpoint {
+        self.tracker.checkpoint()
+    }
+
+    /// Restore cumulative usage before placing the enforcer in a resumed loop.
+    pub fn restore_checkpoint(&mut self, checkpoint: &BudgetCheckpoint) {
+        self.tracker.restore_checkpoint(checkpoint);
     }
 }
 

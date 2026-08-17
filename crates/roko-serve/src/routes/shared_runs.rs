@@ -485,6 +485,7 @@ async fn run_shared_workflow(
     let workflow = workflow_config_for_name(request.workflow.as_deref().unwrap_or("express"));
     let config = WorkflowRunConfig {
         prompt,
+        input_messages: Vec::new(),
         workdir: state.workdir.clone(),
         workflow,
         enabled_gates: request.enabled_gates.unwrap_or_default(),

@@ -124,35 +124,35 @@ impl Store for MemorySubstrate {
 
 /// Pure function: does `signal` satisfy `query` at time `ctx.now_ms`?
 fn matches_query(signal: &Engram, q: &Query, ctx: &Context) -> bool {
-    if let Some(kinds) = &q.kinds {
-        if !kinds.contains(&signal.kind) {
-            return false;
-        }
+    if let Some(kinds) = &q.kinds
+        && !kinds.contains(&signal.kind)
+    {
+        return false;
     }
-    if let Some(author) = &q.author {
-        if &signal.provenance.author != author {
-            return false;
-        }
+    if let Some(author) = &q.author
+        && &signal.provenance.author != author
+    {
+        return false;
     }
-    if let Some(session) = &q.session {
-        if signal.provenance.session.as_ref() != Some(session) {
-            return false;
-        }
+    if let Some(session) = &q.session
+        && signal.provenance.session.as_ref() != Some(session)
+    {
+        return false;
     }
-    if let Some(since) = q.since_ms {
-        if signal.created_at_ms < since {
-            return false;
-        }
+    if let Some(since) = q.since_ms
+        && signal.created_at_ms < since
+    {
+        return false;
     }
-    if let Some(until) = q.until_ms {
-        if signal.created_at_ms > until {
-            return false;
-        }
+    if let Some(until) = q.until_ms
+        && signal.created_at_ms > until
+    {
+        return false;
     }
-    if let Some(min_w) = q.min_weight {
-        if signal.weight_at(ctx.now_ms) < min_w {
-            return false;
-        }
+    if let Some(min_w) = q.min_weight
+        && signal.weight_at(ctx.now_ms) < min_w
+    {
+        return false;
     }
     for (k, v) in &q.tags {
         match signal.tags.get(k) {

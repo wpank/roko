@@ -107,10 +107,10 @@ impl LanguageProvider for GoLanguageProvider {
             }
 
             // Single-line import: `import "fmt"` or `import alias "pkg"`.
-            if let Some(rest) = trimmed.strip_prefix("import ") {
-                if let Some(imp) = parse_go_import_line(rest.trim()) {
-                    imports.push(imp);
-                }
+            if let Some(rest) = trimmed.strip_prefix("import ")
+                && let Some(imp) = parse_go_import_line(rest.trim())
+            {
+                imports.push(imp);
             }
         }
 

@@ -1,8 +1,8 @@
 [meta]
 plan = "P15-error-recovery-wiring"
 total = 5
-done = 3
-status = "active"
+done = 5
+status = "done"
 max_parallel = 1
 
 # ── T1: Wire classify_agent_crash into runner-v2 handle_agent_failure ──
@@ -99,7 +99,7 @@ fail_msg = "roko-cli must compile cleanly"
 [[task]]
 id = "T2"
 title = "Wire classify_agent_crash into do_cmd.rs agent failure paths"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 20
@@ -163,7 +163,7 @@ fail_msg = "roko-cli must compile cleanly"
 [[task]]
 id = "T3"
 title = "Warn on silent roko.toml parse fallback in do_cmd.rs"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 20

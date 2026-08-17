@@ -1,5 +1,8 @@
 # Context Assembly from Code Search
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > How indexed code becomes LLM context — combining graph traversal, PageRank scoring, HDC similarity, and budget-aware composition to build the optimal context window for coding tasks.
 
 

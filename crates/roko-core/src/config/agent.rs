@@ -42,7 +42,8 @@ pub struct AgentConfig {
     /// Context window limit in thousands of tokens.
     #[serde(default = "default_context_limit_k")]
     pub context_limit_k: u32,
-    /// When true, agents use `--bare` (skip built-in system prompt).
+    /// When true, Claude CLI replaces its built-in system prompt with Roko's
+    /// canonical prompt instead of appending to it.
     #[serde(default = "default_true")]
     pub bare_mode: bool,
     /// Legacy agent command used when no provider registry is configured.

@@ -166,12 +166,12 @@ fn segment_match(pat: &[u8], text: &[u8]) -> bool {
                 continue;
             }
             if pat[pi] == b'[' {
-                if let Some((end, matched)) = class_match(&pat[pi..], text[ti]) {
-                    if matched {
-                        pi += end;
-                        ti += 1;
-                        continue;
-                    }
+                if let Some((end, matched)) = class_match(&pat[pi..], text[ti])
+                    && matched
+                {
+                    pi += end;
+                    ti += 1;
+                    continue;
                 }
             } else if pat[pi] == text[ti] {
                 pi += 1;

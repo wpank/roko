@@ -1,5 +1,8 @@
 # Behavioral State to Tier Routing
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > How the Daimon's behavioral state modulates the CascadeRouter's prediction error thresholds, creating a closed loop between emotional state and compute allocation.
 
 

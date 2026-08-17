@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useLiveApi } from '../../hooks/useLiveApi';
+import { useDataApi } from '../../hooks/useDataApi';
 import { useServerEventSubscription } from '../../hooks/useEventStream';
 import { useDebouncedRefetch } from '../../hooks/useDebouncedRefetch';
 import Pane from '../../components/Pane';
@@ -180,7 +180,7 @@ function HashChainViz({
 /* ── Component ───────────────────────────────────────────── */
 
 export default function IntegrityView() {
-  const { get } = useLiveApi();
+  const { get } = useDataApi();
   const [episodes, setEpisodes] = useState(0);
   const [gatesPassed, setGatesPassed] = useState(0);
   const [gatesFailed, setGatesFailed] = useState(0);
@@ -226,7 +226,7 @@ export default function IntegrityView() {
   // SSE-triggered refetch
   const debouncedRefetch = useDebouncedRefetch(fetchAll, 2000);
   useServerEventSubscription(
-    ['gate_result', 'episode'],
+    ['gate_result', 'episode_recorded'],
     debouncedRefetch,
   );
 

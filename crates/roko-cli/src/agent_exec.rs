@@ -292,12 +292,11 @@ pub async fn persist_capture_episode(
             .insert("provider".to_string(), serde_json::json!(provider.clone()));
     }
 
-    let learn_root = workdir.join(".roko").join("learn");
     let model_slugs = capture_runtime_model_slugs(&config, episode.model.as_str());
     let mut runtime = if model_slugs.is_empty() {
-        LearningRuntime::open_under(&learn_root).await
+        LearningRuntime::open_for_project(workdir).await
     } else {
-        LearningRuntime::open_under_with_models(&learn_root, model_slugs).await
+        LearningRuntime::open_for_project_with_models(workdir, model_slugs).await
     }
     .map_err(|e| anyhow::anyhow!("open learning runtime: {e}"))?;
     let distillation_workdir = workdir.to_path_buf();
@@ -414,11 +413,7 @@ mod tests {
         .await
         .expect("persist capture episode");
 
-        let episodes_path = tmp
-            .path()
-            .join(".roko")
-            .join("learn")
-            .join("episodes.jsonl");
+        let episodes_path = tmp.path().join(".roko").join("episodes.jsonl");
         let episodes = EpisodeLogger::read_all_lossy(&episodes_path).await.unwrap();
         assert_eq!(episodes.len(), 1);
         let episode = &episodes[0];
@@ -438,6 +433,13 @@ mod tests {
         assert_eq!(
             episode.extra.get("plan_id"),
             Some(&serde_json::json!("demo"))
+        );
+        assert!(
+            !tmp.path()
+                .join(".roko")
+                .join("learn")
+                .join("episodes.jsonl")
+                .exists()
         );
         assert!(
             !tmp.path()
@@ -487,13 +489,11 @@ tool_format = "openai_json"
         .await
         .expect("persist capture episode");
 
-        let episodes_path = tmp
-            .path()
-            .join(".roko")
-            .join("learn")
-            .join("episodes.jsonl");
+        let episodes_path = tmp.path().join(".roko").join("episodes.jsonl");
         let episodes = EpisodeLogger::read_all_lossy(&episodes_path).await.unwrap();
         assert_eq!(episodes.len(), 1);
+        assert!(!tmp.path().join(".roko/learn/episodes.jsonl").exists());
+        assert!(!tmp.path().join(".roko/memory/episodes.jsonl").exists());
         assert_eq!(episodes[0].model, "glm-5.1");
         assert_eq!(
             episodes[0].extra.get("provider"),

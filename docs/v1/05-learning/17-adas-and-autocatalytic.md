@@ -1,5 +1,8 @@
 # ADAS and Autocatalytic Thesis
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **PRD sources:** `refactoring-prd/09-innovations.md` §X–XI, `refactoring-prd/00-overview.md` (Autocatalytic Improvement)
 > **Academic basis:** Hu et al. ICLR 2025 (ADAS); Kauffman 1993 (autocatalytic sets); Chen et al. 2023 (EvoSkills); Loreto & Tria 2014 (Pólya urn); Reed's Law; Metcalfe's Law
 > **Legacy sources:** `agent-chain/09-exponential-flywheels.md`, `agent-chain/self-improvement-frameworks.md`

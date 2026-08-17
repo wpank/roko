@@ -1,5 +1,8 @@
 # Dreams: Vision and the Dream-as-Death Reframe
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: Cognitive Cross-Cut (injected into L0 Runtime scheduling, L1 Framework agent dispatch, L2 Scaffold context assembly)
 >
 > **Synapse Traits**: `Substrate` (dream outputs stored in NeuroStore), `Scorer` (replay utility scoring), `Gate` (staging buffer validation), `Policy` (dream scheduling policy)

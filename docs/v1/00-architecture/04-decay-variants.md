@@ -1,5 +1,8 @@
 # Decay Variants
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** This chapter documents a target-state demurrage extension for durable Engrams. Current shipping retention in the codebase is still time-based via the `Decay` enum; the balance-bearing model below is future work rather than current behavior. See also
 > [tmp/refinements/12-knowledge-demurrage.md](../../tmp/refinements/12-knowledge-demurrage.md)
 > and [01-naming-and-glossary.md](01-naming-and-glossary.md).

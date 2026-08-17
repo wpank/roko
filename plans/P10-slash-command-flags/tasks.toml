@@ -1,8 +1,8 @@
 [meta]
 plan = "P10-slash-command-flags"
 total = 5
-done = 0
-status = "ready"
+done = 5
+status = "done"
 max_parallel = 1
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -22,7 +22,7 @@ max_parallel = 1
 [[task]]
 id = "T1"
 title = "Fix /plan-resume to use --resume-plan flag"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5-20250514"
 max_loc = 5
@@ -95,7 +95,7 @@ fail_msg = "roko-acp crate must compile"
 [[task]]
 id = "T2"
 title = "Add --model flag passthrough to /plan-run command"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5-20250514"
 max_loc = 10
@@ -158,7 +158,7 @@ fail_msg = "roko-acp crate must compile"
 [[task]]
 id = "T3"
 title = "Register /develop as ACP slash command in session.rs"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5-20250514"
 max_loc = 15
@@ -231,7 +231,7 @@ fail_msg = "roko-acp crate must compile"
 [[task]]
 id = "T4"
 title = "Add /develop dispatch handler to bridge_events.rs"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5-20250514"
 max_loc = 20
@@ -303,7 +303,7 @@ fail_msg = "roko-acp crate must compile"
 [[task]]
 id = "T5"
 title = "Add test asserting /plan-resume uses --resume-plan flag"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5-20250514"
 max_loc = 30

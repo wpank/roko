@@ -54,6 +54,27 @@ pub struct CostRecord {
     pub session_id: String,
 }
 
+/// One payment entry for a paid feed request or metered session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaymentCostRecord {
+    /// ISO-8601 UTC timestamp.
+    pub timestamp: String,
+    /// Feed that incurred the payment.
+    pub feed_id: String,
+    /// Payment protocol (`"x402"` or `"mpp"`).
+    pub protocol: String,
+    /// Amount paid in KORAI.
+    pub amount_korai: f64,
+    /// Paying account or agent identifier.
+    pub payer: String,
+    /// Receiving account or agent identifier.
+    pub payee: String,
+    /// Session identifier, empty for per-request payments.
+    pub session_id: String,
+    /// Whether the payment has been settled.
+    pub settled: bool,
+}
+
 // ─── CostSummary ────────────────────────────────────────────────────────────
 
 /// Aggregate summary over a set of cost records.
@@ -75,6 +96,24 @@ pub struct CostSummary {
     pub avg_duration_ms: f64,
     /// Success rate.
     pub success_rate: f64,
+}
+
+/// Aggregate summary over payment cost records.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaymentSummary {
+    /// Total amount paid across all records.
+    pub total_korai: f64,
+    /// Number of payment records.
+    pub record_count: usize,
+    /// Total KORAI amount grouped by payment protocol.
+    pub by_protocol: HashMap<String, f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "record_type", content = "record", rename_all = "snake_case")]
+enum CostsJsonlRecord {
+    Llm(CostRecord),
+    Payment(PaymentCostRecord),
 }
 
 impl CostSummary {
@@ -471,6 +510,7 @@ impl Default for CostTable {
 /// Thread-safe via `parking_lot::RwLock`.
 pub struct CostsDb {
     records: RwLock<Vec<CostRecord>>,
+    payment_records: RwLock<Vec<PaymentCostRecord>>,
 }
 
 impl CostsDb {
@@ -478,6 +518,7 @@ impl CostsDb {
     pub const fn new() -> Self {
         Self {
             records: RwLock::new(Vec::new()),
+            payment_records: RwLock::new(Vec::new()),
         }
     }
 
@@ -491,6 +532,11 @@ impl CostsDb {
         self.records.write().extend(records);
     }
 
+    /// Insert a payment cost record independently of LLM request costs.
+    pub fn record_payment(&self, record: PaymentCostRecord) {
+        self.payment_records.write().push(record);
+    }
+
     /// Total number of records in the database.
     pub fn len(&self) -> usize {
         self.records.read().len()
@@ -498,12 +544,52 @@ impl CostsDb {
 
     /// Whether the database is empty.
     pub fn is_empty(&self) -> bool {
-        self.records.read().is_empty()
+        self.records.read().is_empty() && self.payment_records.read().is_empty()
     }
 
     /// Retrieve all records (clone).
     pub fn all(&self) -> Vec<CostRecord> {
         self.records.read().clone()
+    }
+
+    /// Retrieve all payment records (clone).
+    pub fn all_payments(&self) -> Vec<PaymentCostRecord> {
+        self.payment_records.read().clone()
+    }
+
+    /// Query payment records by feed identifier.
+    pub fn payments_by_feed(&self, feed_id: &str) -> Vec<PaymentCostRecord> {
+        self.payment_records
+            .read()
+            .iter()
+            .filter(|record| record.feed_id == feed_id)
+            .cloned()
+            .collect()
+    }
+
+    /// Query payment records by protocol name.
+    pub fn payments_by_protocol(&self, protocol: &str) -> Vec<PaymentCostRecord> {
+        self.payment_records
+            .read()
+            .iter()
+            .filter(|record| record.protocol == protocol)
+            .cloned()
+            .collect()
+    }
+
+    /// Compute aggregate payment totals and totals by protocol.
+    pub fn payment_summary(&self) -> PaymentSummary {
+        let records = self.payment_records.read();
+        let mut by_protocol = HashMap::new();
+        for record in records.iter() {
+            *by_protocol.entry(record.protocol.clone()).or_insert(0.0) += record.amount_korai;
+        }
+
+        PaymentSummary {
+            total_korai: records.iter().map(|record| record.amount_korai).sum(),
+            record_count: records.len(),
+            by_protocol,
+        }
     }
 
     /// Query records by model.
@@ -619,6 +705,7 @@ impl CostsDb {
     /// Clear all records.
     pub fn clear(&self) {
         self.records.write().clear();
+        self.payment_records.write().clear();
     }
 
     /// Export all records as JSONL text.
@@ -628,10 +715,16 @@ impl CostsDb {
     /// Returns an error if any record fails to serialize (should never
     /// happen in practice).
     pub fn to_jsonl(&self) -> Result<String, serde_json::Error> {
-        let snapshot = self.all();
+        let llm_snapshot = self.all();
+        let payment_snapshot = self.all_payments();
         let mut out = String::new();
-        for r in &snapshot {
-            let line = serde_json::to_string(r)?;
+        for record in llm_snapshot {
+            let line = serde_json::to_string(&CostsJsonlRecord::Llm(record))?;
+            out.push_str(&line);
+            out.push('\n');
+        }
+        for record in payment_snapshot {
+            let line = serde_json::to_string(&CostsJsonlRecord::Payment(record))?;
             out.push_str(&line);
             out.push('\n');
         }
@@ -643,18 +736,27 @@ impl CostsDb {
     /// Tolerant of corrupted lines — skips unparseable lines and returns the
     /// count of successfully imported records.
     pub fn from_jsonl(&self, text: &str) -> usize {
-        let mut parsed = Vec::new();
+        let mut llm_records = Vec::new();
+        let mut payment_records = Vec::new();
         for line in text.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
-            if let Ok(r) = serde_json::from_str::<CostRecord>(trimmed) {
-                parsed.push(r);
+            match serde_json::from_str::<CostsJsonlRecord>(trimmed) {
+                Ok(CostsJsonlRecord::Llm(record)) => llm_records.push(record),
+                Ok(CostsJsonlRecord::Payment(record)) => payment_records.push(record),
+                Err(_) => {
+                    // Backward compatibility with pre-tagged JSONL cost logs.
+                    if let Ok(record) = serde_json::from_str::<CostRecord>(trimmed) {
+                        llm_records.push(record);
+                    }
+                }
             }
         }
-        let count = parsed.len();
-        self.records.write().extend(parsed);
+        let count = llm_records.len() + payment_records.len();
+        self.records.write().extend(llm_records);
+        self.payment_records.write().extend(payment_records);
         count
     }
 }
@@ -735,6 +837,24 @@ fn make_test_record(
         duration_ms: 5000,
         success,
         session_id: "session-1".into(),
+    }
+}
+
+#[cfg(test)]
+fn make_payment_record(feed_id: &str, protocol: &str, amount_korai: f64) -> PaymentCostRecord {
+    PaymentCostRecord {
+        timestamp: "2026-08-15T12:00:00Z".into(),
+        feed_id: feed_id.into(),
+        protocol: protocol.into(),
+        amount_korai,
+        payer: "subscriber-1".into(),
+        payee: "provider-1".into(),
+        session_id: if protocol == "mpp" {
+            "session-42".into()
+        } else {
+            String::new()
+        },
+        settled: protocol == "x402",
     }
 }
 
@@ -1117,6 +1237,88 @@ mod tests {
 
         let imported = db.from_jsonl(&text);
         assert_eq!(imported, 2);
+    }
+
+    #[test]
+    fn costs_db_payment_records_are_separate_queryable_and_summarized() {
+        let db = CostsDb::new();
+        db.insert(make_test_record(
+            "sonnet",
+            "anthropic",
+            "Impl",
+            "p1",
+            0.5,
+            true,
+        ));
+        db.record_payment(make_payment_record("feed-a", "x402", 2.5));
+        db.record_payment(make_payment_record("feed-a", "mpp", 4.0));
+        db.record_payment(make_payment_record("feed-b", "x402", 1.5));
+
+        assert_eq!(db.len(), 1, "LLM records remain independently typed");
+        assert_eq!(db.all_payments().len(), 3);
+        assert_eq!(db.payments_by_feed("feed-a").len(), 2);
+        assert_eq!(db.payments_by_protocol("x402").len(), 2);
+        assert!(db.payments_by_protocol("unknown").is_empty());
+
+        let summary = db.payment_summary();
+        assert_eq!(summary.record_count, 3);
+        assert!((summary.total_korai - 8.0).abs() < f64::EPSILON);
+        assert_eq!(summary.by_protocol.get("x402"), Some(&4.0));
+        assert_eq!(summary.by_protocol.get("mpp"), Some(&4.0));
+    }
+
+    #[test]
+    fn costs_db_jsonl_roundtrips_tagged_llm_and_payment_records() {
+        let db = CostsDb::new();
+        db.insert(make_test_record(
+            "sonnet",
+            "anthropic",
+            "Impl",
+            "p1",
+            0.5,
+            true,
+        ));
+        db.record_payment(make_payment_record("feed-a", "mpp", 3.25));
+
+        let jsonl = db.to_jsonl().expect("serialize mixed cost records");
+        assert!(jsonl.contains("\"record_type\":\"llm\""));
+        assert!(jsonl.contains("\"record_type\":\"payment\""));
+
+        let restored = CostsDb::new();
+        assert_eq!(restored.from_jsonl(&jsonl), 2);
+        assert_eq!(restored.all(), db.all());
+        assert_eq!(restored.all_payments(), db.all_payments());
+
+        let legacy = serde_json::to_string(&make_test_record(
+            "haiku",
+            "anthropic",
+            "Review",
+            "p2",
+            0.1,
+            true,
+        ))
+        .expect("serialize legacy cost record");
+        assert_eq!(restored.from_jsonl(&legacy), 1);
+        assert_eq!(restored.len(), 2);
+    }
+
+    #[test]
+    fn costs_db_payment_only_database_is_not_empty_and_clear_removes_both_types() {
+        let db = CostsDb::new();
+        db.record_payment(make_payment_record("feed-a", "x402", 1.0));
+        assert!(!db.is_empty());
+
+        db.insert(make_test_record(
+            "sonnet",
+            "anthropic",
+            "Impl",
+            "p1",
+            0.5,
+            true,
+        ));
+        db.clear();
+        assert!(db.is_empty());
+        assert!(db.all_payments().is_empty());
     }
 
     #[test]

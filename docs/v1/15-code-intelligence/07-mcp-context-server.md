@@ -1,5 +1,8 @@
 # MCP Context Server Design
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Exposing code intelligence to agents via Model Context Protocol (MCP) tools — the agent-facing API for code search, symbol navigation, impact analysis, and context retrieval.
 
 

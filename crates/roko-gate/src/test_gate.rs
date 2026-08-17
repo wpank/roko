@@ -345,24 +345,24 @@ fn parse_npm_test_counts(output: &str) -> Option<TestCount> {
         // Pattern: first token is a number, second is passing/failing/pending.
         else {
             let words: Vec<&str> = t.split_whitespace().collect();
-            if words.len() >= 2 {
-                if let Ok(n) = words[0].parse::<u32>() {
-                    let keyword = words[1].trim_end_matches(|c: char| !c.is_alphabetic());
-                    match keyword {
-                        "passing" => {
-                            saw_summary = true;
-                            total.passed += n;
-                        }
-                        "failing" => {
-                            saw_summary = true;
-                            total.failed += n;
-                        }
-                        "pending" => {
-                            saw_summary = true;
-                            total.ignored += n;
-                        }
-                        _ => {}
+            if words.len() >= 2
+                && let Ok(n) = words[0].parse::<u32>()
+            {
+                let keyword = words[1].trim_end_matches(|c: char| !c.is_alphabetic());
+                match keyword {
+                    "passing" => {
+                        saw_summary = true;
+                        total.passed += n;
                     }
+                    "failing" => {
+                        saw_summary = true;
+                        total.failed += n;
+                    }
+                    "pending" => {
+                        saw_summary = true;
+                        total.ignored += n;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -374,12 +374,11 @@ fn parse_npm_test_counts(output: &str) -> Option<TestCount> {
 fn extract_jest_count(line: &str, label: &str) -> u32 {
     for segment in line.split(',') {
         let s = segment.trim();
-        if s.ends_with(label) {
-            if let Some(num_str) = s.split_whitespace().rev().nth(1) {
-                if let Ok(n) = num_str.parse::<u32>() {
-                    return n;
-                }
-            }
+        if s.ends_with(label)
+            && let Some(num_str) = s.split_whitespace().rev().nth(1)
+            && let Ok(n) = num_str.parse::<u32>()
+        {
+            return n;
         }
     }
     0
@@ -427,10 +426,11 @@ fn parse_pytest_counts(output: &str) -> Option<TestCount> {
 fn extract_pytest_label(line: &str, label: &str) -> u32 {
     let words: Vec<&str> = line.split_whitespace().collect();
     for (i, &word) in words.iter().enumerate() {
-        if (word == label || word.trim_end_matches(',') == label) && i > 0 {
-            if let Ok(n) = words[i - 1].parse::<u32>() {
-                return n;
-            }
+        if (word == label || word.trim_end_matches(',') == label)
+            && i > 0
+            && let Ok(n) = words[i - 1].parse::<u32>()
+        {
+            return n;
         }
     }
     0
@@ -440,12 +440,11 @@ fn extract_count(line: &str, label: &str) -> u32 {
     // Look for `<digits> <label>` or `<digits>; <label>`.
     for part in line.split(';') {
         let p = part.trim();
-        if let Some(rest) = p.strip_suffix(label).map(str::trim_end) {
-            if let Some(num_str) = rest.split_whitespace().last() {
-                if let Ok(n) = num_str.parse::<u32>() {
-                    return n;
-                }
-            }
+        if let Some(rest) = p.strip_suffix(label).map(str::trim_end)
+            && let Some(num_str) = rest.split_whitespace().last()
+            && let Ok(n) = num_str.parse::<u32>()
+        {
+            return n;
         }
     }
     0

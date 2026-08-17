@@ -1,10 +1,11 @@
-//! The universal loop — one function that composes the six verbs.
+//! A reusable signal selection, composition, verification, and persistence helper.
 //!
-//! Every operation in Roko reduces to calling [`loop_tick`] with different
-//! trait impls. Training the scaffold optimizer, picking a model, running a
-//! gate, assembling a prompt, claiming a bounty — all are [`loop_tick`]
-//! invocations with different substrates, scorers, gates, routers, composers,
-//! and policies.
+//! This module does **not** own Roko's production execution loop. It composes a
+//! useful subset of the core traits for callers that already own orchestration:
+//! query, route, compose, verify, persist, and react. It does not launch an
+//! agent/provider (ACT), publish to a Bus (BROADCAST), enforce iteration/time/
+//! cost limits, or replace the CLI `WorkflowEngine`, Runner-v2, or Graph
+//! runtimes.
 //!
 //! ```text
 //!   candidates = substrate.query(q, ctx)
@@ -18,12 +19,10 @@
 //!   if passed: substrate.put(composed) + policy.decide(stream, ctx)
 //! ```
 //!
-//! # Runtime status
-//!
-//! The current plan executor (`runner/event_loop.rs`) reimplements these
-//! steps inline rather than calling [`loop_tick`] directly. The Graph
-//! engine in `roko-graph` uses cell-based composition instead. Wiring
-//! `loop_tick` as the single dispatch path is tracked under E01/E22.
+//! The historical [`loop_tick`] name is retained as a deprecated compatibility
+//! alias. New code should call [`select_compose_verify_persist`] and should use
+//! a runtime-owned coordinator when ACT, BROADCAST, cancellation, or resource
+//! enforcement is required.
 
 use serde::{Deserialize, Serialize};
 
@@ -31,10 +30,15 @@ use crate::{
     Budget, Compose, Context, Engram, Query, React, Route, Store, Verdict, Verify, error::Result,
 };
 
-/// Configuration for a single tick of the universal loop (IF-04).
+/// Historical configuration accepted by [`loop_tick_with_config`].
 ///
-/// Controls limits and verbosity without changing the core loop logic.
-/// Use `TickConfig::default()` for unlimited execution.
+/// These fields were never enforced by this helper. The type remains readable
+/// for source compatibility; production limits belong to the runtime that owns
+/// provider execution and cancellation.
+#[deprecated(
+    since = "0.1.0",
+    note = "loop_tick is a compatibility helper and does not enforce TickConfig; use a runtime-owned coordinator"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TickConfig {
     /// Maximum number of turns (candidates examined) before stopping.
@@ -48,6 +52,7 @@ pub struct TickConfig {
     pub verbose: bool,
 }
 
+#[allow(deprecated)]
 impl Default for TickConfig {
     fn default() -> Self {
         Self {
@@ -59,6 +64,7 @@ impl Default for TickConfig {
     }
 }
 
+#[allow(deprecated)]
 impl TickConfig {
     /// Create a config with no limits (equivalent to `Default`).
     #[must_use]
@@ -95,9 +101,9 @@ impl TickConfig {
     }
 }
 
-/// What happened during one tick of the universal loop.
+/// Outcome of one signal selection/composition/verification/persistence pass.
 #[derive(Debug)]
-pub struct TickOutcome {
+pub struct SignalSelectionOutcome {
     /// How many candidates the substrate returned.
     pub candidates_examined: usize,
     /// The composed signal (if one was produced).
@@ -110,7 +116,7 @@ pub struct TickOutcome {
     pub written: Vec<crate::ContentHash>,
 }
 
-impl TickOutcome {
+impl SignalSelectionOutcome {
     /// Did this tick's work pass its gate?
     #[must_use]
     pub fn passed(&self) -> bool {
@@ -131,7 +137,7 @@ fn ensure_lineage(mut signal: Engram, parent: crate::ContentHash) -> Engram {
     signal
 }
 
-/// Run one tick of the universal loop.
+/// Select, compose, verify, persist, and react to one candidate Signal.
 ///
 /// # Steps
 ///
@@ -146,7 +152,7 @@ fn ensure_lineage(mut signal: Engram, parent: crate::ContentHash) -> Engram {
 /// Propagates errors from the substrate and composer. Verify failures are
 /// *not* errors — they return a failing [`Verdict`] in the outcome.
 #[allow(clippy::similar_names, clippy::too_many_arguments)]
-pub async fn loop_tick(
+pub async fn select_compose_verify_persist(
     substrate: &dyn Store,
     scorer: &dyn crate::traits::Score,
     router: &dyn Route,
@@ -156,51 +162,13 @@ pub async fn loop_tick(
     query: &Query,
     budget: &Budget,
     ctx: &Context,
-) -> Result<TickOutcome> {
-    loop_tick_with_config(
-        substrate,
-        scorer,
-        router,
-        composer,
-        gate,
-        policy,
-        query,
-        budget,
-        ctx,
-        &TickConfig::default(),
-    )
-    .await
-}
-
-/// Run one tick of the universal loop with explicit configuration.
-///
-/// Like [`loop_tick`] but accepts a [`TickConfig`] for controlling limits
-/// and verbosity. The `tick_config` parameter is consulted for verbose
-/// logging; budget and turn limits are advisory and should be enforced
-/// by the outer orchestration loop that calls this function repeatedly.
-///
-/// # Errors
-///
-/// Propagates errors from the substrate and composer.
-#[allow(clippy::similar_names, clippy::too_many_arguments)]
-pub async fn loop_tick_with_config(
-    substrate: &dyn Store,
-    scorer: &dyn crate::traits::Score,
-    router: &dyn Route,
-    composer: &dyn Compose,
-    gate: &dyn Verify,
-    policy: &dyn React,
-    query: &Query,
-    budget: &Budget,
-    ctx: &Context,
-    _tick_config: &TickConfig,
-) -> Result<TickOutcome> {
+) -> Result<SignalSelectionOutcome> {
     // 1. Query the substrate for candidates.
     let candidates = substrate.query(query, ctx).await?;
     let candidates_examined = candidates.len();
 
     if candidates.is_empty() {
-        return Ok(TickOutcome {
+        return Ok(SignalSelectionOutcome {
             candidates_examined: 0,
             composed: None,
             verdict: None,
@@ -211,7 +179,7 @@ pub async fn loop_tick_with_config(
 
     // 2. Route selects one candidate (or bails).
     let Some(selection) = router.select(&candidates, ctx) else {
-        return Ok(TickOutcome {
+        return Ok(SignalSelectionOutcome {
             candidates_examined,
             composed: None,
             verdict: None,
@@ -226,7 +194,7 @@ pub async fn loop_tick_with_config(
         .find(|s| s.id == selection.chosen)
         .cloned()
     else {
-        return Ok(TickOutcome {
+        return Ok(SignalSelectionOutcome {
             candidates_examined,
             composed: None,
             verdict: None,
@@ -258,13 +226,79 @@ pub async fn loop_tick_with_config(
         }
     }
 
-    Ok(TickOutcome {
+    Ok(SignalSelectionOutcome {
         candidates_examined,
         composed: Some(composed),
         verdict: Some(verdict),
         emitted,
         written,
     })
+}
+
+/// Historical outcome name retained for compatibility.
+#[deprecated(
+    since = "0.1.0",
+    note = "use SignalSelectionOutcome; this helper is not the production universal loop"
+)]
+pub type TickOutcome = SignalSelectionOutcome;
+
+/// Historical helper name retained for compatibility.
+///
+/// # Errors
+///
+/// Propagates errors from the substrate and composer.
+#[deprecated(
+    since = "0.1.0",
+    note = "use select_compose_verify_persist; production execution is owned by WorkflowEngine, Runner-v2, or Graph"
+)]
+#[allow(clippy::similar_names, clippy::too_many_arguments)]
+pub async fn loop_tick(
+    substrate: &dyn Store,
+    scorer: &dyn crate::traits::Score,
+    router: &dyn Route,
+    composer: &dyn Compose,
+    gate: &dyn Verify,
+    policy: &dyn React,
+    query: &Query,
+    budget: &Budget,
+    ctx: &Context,
+) -> Result<SignalSelectionOutcome> {
+    select_compose_verify_persist(
+        substrate, scorer, router, composer, gate, policy, query, budget, ctx,
+    )
+    .await
+}
+
+/// Historical configured helper retained for compatibility.
+///
+/// `tick_config` is intentionally ignored because this helper does not own an
+/// ACT loop, provider budget, or cancellation boundary.
+///
+/// # Errors
+///
+/// Propagates errors from the substrate and composer.
+#[deprecated(
+    since = "0.1.0",
+    note = "TickConfig was never enforced; use select_compose_verify_persist plus a runtime-owned coordinator"
+)]
+#[allow(deprecated)]
+#[allow(clippy::similar_names, clippy::too_many_arguments)]
+pub async fn loop_tick_with_config(
+    substrate: &dyn Store,
+    scorer: &dyn crate::traits::Score,
+    router: &dyn Route,
+    composer: &dyn Compose,
+    gate: &dyn Verify,
+    policy: &dyn React,
+    query: &Query,
+    budget: &Budget,
+    ctx: &Context,
+    _tick_config: &TickConfig,
+) -> Result<SignalSelectionOutcome> {
+    select_compose_verify_persist(
+        substrate, scorer, router, composer, gate, policy, query, budget, ctx,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -446,7 +480,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn loop_tick_adds_missing_upstream_lineage() {
+    async fn signal_selection_adds_missing_upstream_lineage() {
         let candidate = Engram::builder(Kind::Task)
             .body(Body::text("task"))
             .provenance(Provenance::trusted("source"))
@@ -466,7 +500,7 @@ mod tests {
         let budget = Budget::unlimited();
         let ctx = Context::now();
 
-        let outcome = loop_tick(
+        let outcome = select_compose_verify_persist(
             &substrate,
             &scorer,
             &router,

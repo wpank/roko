@@ -121,13 +121,12 @@ pub fn collect_descendants(root_pid: u32) -> Vec<u32> {
             if let Ok(output) = std::process::Command::new("pgrep")
                 .args(["-P", &parent.to_string()])
                 .output()
+                && output.status.success()
             {
-                if output.status.success() {
-                    for line in String::from_utf8_lossy(&output.stdout).lines() {
-                        if let Ok(pid) = line.trim().parse::<u32>() {
-                            descendants.push(pid);
-                            next_queue.push(pid);
-                        }
+                for line in String::from_utf8_lossy(&output.stdout).lines() {
+                    if let Ok(pid) = line.trim().parse::<u32>() {
+                        descendants.push(pid);
+                        next_queue.push(pid);
                     }
                 }
             }

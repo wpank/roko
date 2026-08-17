@@ -7,6 +7,7 @@ export function useWorkspaceActions() {
       serverWorkdir: s.serverWorkdir,
       workspace: s.workspace,
       ensureWorkspace: s.ensureWorkspace,
+      createWorkspace: s.createWorkspace,
       destroyWorkspace: s.destroyWorkspace,
     })),
   );

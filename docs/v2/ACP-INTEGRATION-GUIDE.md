@@ -1,5 +1,11 @@
 # ACP Integration Guide
 
+> **Implementation status (2026-08-15): E17 T01-T06 are live.** ACP has fail-closed
+> mutation consent, scoped prompt/model experiments, Anthropic session-MCP parity,
+> consent-derived tool ceilings, model-aware image advertisement/enforcement, audio
+> rejection, and a conformance capstone. Session USD budgets and health/rate-aware
+> provider selection remain open.
+
 ## What is this document?
 
 This guide explains how to build an editor plugin or IDE integration that talks
@@ -347,7 +353,7 @@ requests will fail.
     "agentCapabilities": {
       "loadSession": true,
       "promptCapabilities": {
-        "image": false,
+        "image": true,
         "audio": false,
         "embeddedContext": true
       },
@@ -365,6 +371,10 @@ requests will fail.
   }
 }
 ```
+
+`promptCapabilities.image` is computed from the resolved default model and dispatch
+transport; the `true` value above assumes a vision-capable supported API model. It is
+`false` for non-vision models and unsupported transports. `audio` remains `false`.
 
 </details>
 
@@ -422,7 +432,7 @@ pub struct AgentInfo {
 | Capability | Value | Notes |
 |---|---|---|
 | `loadSession` | `true` | Persisted sessions can be resumed |
-| `promptCapabilities.image` | `false` | Image input not supported |
+| `promptCapabilities.image` | model-dependent | Advertised and accepted only when the configured selected/default model supports vision |
 | `promptCapabilities.audio` | `false` | Audio input not supported |
 | `promptCapabilities.embeddedContext` | `true` | Resource/diff blocks supported |
 | `mcpCapabilities.http` | `true` | HTTP MCP servers supported |
@@ -529,6 +539,9 @@ Immediately after the response, Roko sends this notification:
 ```rust
 pub struct SessionNewParams {
     pub session_name: Option<String>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub effort: Option<String>,
     pub client_capabilities: Option<ClientCapabilities>,
     pub mcp_servers: Vec<McpServerConfig>,   // default: []
 }
@@ -698,6 +711,12 @@ in the text into inline file content injected into the system prompt.
 The server returns `-32001 SESSION_BUSY` if a prompt is already in-flight for
 this session.
 
+Adaptive cascade selection is an exact opt-in: `ROKO_ACP_CASCADE_SELECT=1`
+must be set and `.roko/learn/cascade-router.json` must already exist. It applies
+only to direct, non-pipeline, non-slash prompts when the session has no valid
+explicit model or provider selection. The dispatch log and episode metadata
+record the selected config key and cascade stage.
+
 <details>
 <summary>Full request/response example (with file context)</summary>
 
@@ -779,12 +798,29 @@ pub enum StopReason {
 
 </details>
 
+**Mutation tool permission flow**
+
+When a model requests `write_file`, `edit_file`, or `bash`, Roko pauses before
+the side effect and sends a server-to-client `session/request_permission` request.
+The editor must answer with one of the advertised options:
+
+- `allow_once` runs this call only.
+- `allow_always` runs it, stores the action in `.roko/trust/permissions.json`, and
+  suppresses later outbound prompts for that action in the workspace.
+- `reject_once` denies the call.
+
+Roko fails closed. A rejected or malformed response, client disconnect, matching
+`session/cancel`, transport failure, timeout, or dropped internal reply denies the
+tool without executing it. Read-only built-ins continue without an interactive prompt.
+
 **Slash commands**
 
 If the prompt text starts with `/`, Roko dispatches it as a slash command
-instead of forwarding it to the model. Slash commands are instant — they
-produce `agent_message_chunk` text events and return quickly, without writing
-episodes or querying the knowledge store.
+instead of forwarding it to the model. In-process commands return quickly.
+CLI-backed commands spawn a child process, stream stdout and stderr line by
+line, translate recognized `ROKO_PROGRESS` records into tool-call updates, and
+preserve unknown records as text. Cancellation terminates the child process
+tree. Slash commands do not write ACP episodes.
 
 | Command | Effect |
 |---|---|
@@ -805,6 +841,10 @@ to a different model, toggling Clippy checks, or changing the workflow. Returns
 the full updated options list so your editor can refresh its settings UI.
 
 The legacy alias `session/set_config_option` is also accepted.
+
+A valid provider or model update marks the session selection explicit, which
+prevents adaptive cascade override. Invalid selections are rejected and do not
+arm that precedence state.
 
 <details>
 <summary>Full request/response example</summary>
@@ -1299,15 +1339,15 @@ effort level, which quality gates to run, and what kind of workflow to use.
 
 | `optionId` | Category | Type | Valid values |
 |---|---|---|---|
+| `provider` | `agent` | select | Keys from `[providers.*]` in `roko.toml` |
 | `model` | `agent` | select | Keys from `[models.*]` in `roko.toml` |
 | `effort` | `agent` | select | `low`, `medium`, `high`, `max` |
-| `temperament` | `agent` | select | `conservative`, `balanced`, `aggressive`, `exploratory` |
-| `routing_mode` | `routing` | select | `auto_override`, `manual` |
 | `clippy` | `gates` | select | `on`, `off` |
 | `tests` | `gates` | select | `on`, `off` |
 | `workflow` | `execution` | select | `none`, `express`, `standard`, `full`, `auto` |
-| `review_strictness` | `execution` | select | `none`, `quick`, `standard`, `thorough` |
-| `max_iterations` | `execution` | select | `"1"`, `"2"`, `"3"` |
+
+`review_strictness` and `max_iterations` remain accepted and persisted update
+IDs for compatibility, but they are not currently advertised as editor options.
 
 <details>
 <summary>ConfigOption shape and server-side SessionConfigState</summary>
@@ -1336,10 +1376,10 @@ persisted with the session:
 ```rust
 pub struct SessionConfigState {
     pub agent_mode: String,       // "code" | "plan" | "research"
+    pub provider: String,         // provider key from roko.toml
     pub model: String,            // model key from roko.toml
+    pub model_selection_explicit: bool,
     pub effort: String,           // "low" | "medium" | "high" | "max"
-    pub temperament: String,      // "conservative" | "balanced" | "aggressive" | "exploratory"
-    pub routing_mode: String,     // "auto_override" | "manual"
     pub clippy_enabled: bool,
     pub tests_enabled: bool,
     pub workflow: String,         // "none" | "express" | "standard" | "full" | "auto"
@@ -1353,11 +1393,10 @@ pub struct SessionConfigState {
 | Field | Default |
 |---|---|
 | `agent_mode` | `"code"` |
-| `effort` | `"medium"` |
-| `temperament` | `"balanced"` |
-| `routing_mode` | `"auto_override"` |
-| `clippy_enabled` | `true` |
-| `tests_enabled` | `true` |
+| `provider` / `model` | Derived from ready configured providers and models |
+| `model_selection_explicit` | `false` |
+| `effort` | Derived from configuration (`"medium"` fallback) |
+| `clippy_enabled` / `tests_enabled` | Derived from gate configuration |
 | `workflow` | `"none"` |
 | `review_strictness` | `"none"` |
 | `max_iterations` | `2` |
@@ -1775,7 +1814,7 @@ dispatch can continue.
 
 ## 9. Episode Logging
 
-Every completed `session/prompt` (including pipeline dispatches) is appended
+Every completed non-slash direct or pipeline `session/prompt` is appended
 to `.roko/episodes.jsonl`. This is the same episode format used by Roko's
 orchestrator — it is the audit trail and learning input for the whole system.
 
@@ -1816,9 +1855,10 @@ The `extra` map contains:
 | `model` | resolved model slug |
 | `mode` | agent mode string |
 | `session_id` | session ID |
-| `routing_mode` | `"auto_override"` or `"manual"` |
 | `workflow` | workflow config string |
 | `provider_kind` | provider label |
+| `cascade_selected_model` | selected config key, only when ACP cascade selection ran |
+| `cascade_stage` | selected maturity stage, only when ACP cascade selection ran |
 
 The `kind` field encodes the dispatch type:
 - Single-agent: `"acp-dispatch"`
@@ -1835,16 +1875,13 @@ The `kind` field encodes the dispatch type:
 ## 10. roko.toml Configuration
 
 The ACP server loads `roko.toml` from the working directory at startup. This
-file controls the initial session config values — model selection, effort,
-gate settings, and routing. If the file is missing, Roko uses built-in defaults.
+file controls the initial session config values — provider/model selection,
+effort, and gate settings. If the file is missing, zero-config built-ins are
+available only for providers whose credentials or local runtime are ready.
 
 ```toml
 [agent]
 default_effort = "medium"    # Sets initial effort config option
-temperament = "balanced"     # Sets initial temperament config option
-
-[routing]
-mode = "auto_override"       # Sets initial routing_mode config option
 
 [gates]
 clippy_enabled = true        # Sets initial clippy option
@@ -1860,9 +1897,10 @@ slug = "claude-haiku-3-5"
 ```
 
 Model keys in `[models.*]` become the selectable values for the `model` config
-option. The server picks the first available key from this preference list at
-session creation: `glm51`, `glm4`, `kimi-k26`, `sonnet`, then alphabetical
-first key, then `"sonnet"` as the final fallback constant.
+option. At session creation, the server uses a ready `agent.default_model`,
+otherwise the first ready declared model, otherwise the first declared model.
+Use `ROKO_ACP_CASCADE_SELECT=1` to opt direct prompts into adaptive selection;
+an explicit session provider/model selection retains precedence.
 
 ### Running the server
 
@@ -2160,8 +2198,8 @@ default (workflow engine) path is the canonical one.
   *transports* (e.g. multiple TCP clients) are not. The `SessionManager` is
   not wrapped in `Arc<RwLock<_>>`.
 
-- **No image or audio input.** `promptCapabilities.image = false`,
-  `promptCapabilities.audio = false`.
+- **No audio input.** `promptCapabilities.audio = false` and audio blocks are rejected.
+  Image input is advertised and accepted only for a vision-capable selected/default model.
 
 - **WebSocket/SSE not on ACP path.** WebSocket and SSE streaming are available
   via the HTTP control plane (`roko serve` on `:6677`), not through the ACP

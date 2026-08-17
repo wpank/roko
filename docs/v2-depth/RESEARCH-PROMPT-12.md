@@ -14,7 +14,7 @@ You are helping a founder close the final preparation for a **Series A pitch to 
 
 **Nunchi** is two things:
 
-1. **Roko** — an open-source Rust agent runtime (18 crates, ~177K lines of code, Apache 2.0). Agents run through a 6-stage pipeline (OBSERVE → GATE → ASSEMBLE → INFER+TOOLS → REFLECT → CONSOLIDATE). A model router (CascadeRouter) learns which LLM to use per task, producing 10-30x cost reduction. An 11-gate verification pipeline validates output. A knowledge store accumulates what agents learn, with decay. Agents share knowledge through a common bus. The system develops itself — it reads PRDs, generates plans, dispatches Claude agents, validates with gates, persists results.
+1. **Roko** — an open-source Rust agent runtime (34 workspace members, ~800K LOC, Apache 2.0). Agents run through a 6-stage pipeline (OBSERVE → GATE → ASSEMBLE → INFER+TOOLS → REFLECT → CONSOLIDATE). A model router (CascadeRouter) learns which LLM to use per task, producing 10-30x cost reduction. An 11-gate verification pipeline validates output. A knowledge store accumulates what agents learn, with decay. Agents share knowledge through a common bus. The system develops itself — it reads PRDs, generates plans, dispatches Claude agents, validates with gates, persists results.
 
 2. **Nunchi Chain** — a sovereign EVM L1 blockchain (NOT a layer-2 or layer-3). Simplex consensus, ~50ms blocks via co-located Tokyo validators (same architecture as Hyperliquid). Native HDC precompile (~400 gas for 10,240-bit similarity search — 20-100x cheaper than Solidity). ERC-8004 agent identities with 7-domain reputation. On-chain knowledge substrate with demurrage-based pruning. ZK-HDC proofs (<1s proving). A cooperative clearing engine that turns every trade into a knowledge deposit ("clearing-as-inference").
 
@@ -122,7 +122,7 @@ Write the actual words for each of the 13 slides. Not a template. The real thing
 
 **Slide 7 (How It Works):** The 6-stage pipeline. But visual, not text. Show the predict-publish-correct loop with actual cost deltas.
 
-**Slide 8 (Traction):** Logos + community. Roko: 18 crates, 177K LOC, self-hosting loop operational. Design partner conversations with [Hebbia, Harvey, Decagon]. GitHub stats. If no external logos yet, show the self-hosting milestone: "Roko develops itself."
+**Slide 8 (Traction):** Logos + community. Roko: 34 workspace members, 800K LOC, self-hosting loop operational. Design partner conversations with [Hebbia, Harvey, Decagon]. GitHub stats. If no external logos yet, show the self-hosting milestone: "Roko develops itself."
 
 **Slide 9 (Cost Comparison):** $44.86 → $1.42. Honest waterfall: HAL baseline (no cache) → caching alone (4-5x) → routing (3x) → gating (2x) → full stack ($1.42, ~30x). "All raw data published. Third-party reproducible."
 
@@ -190,7 +190,7 @@ What haven't we thought of? Research:
 - What due diligence does a16z infra run between first meeting and term sheet?
 - Are there legal/structural issues with the dual-entity approach (Delaware C-corp + Foundation) that could surface?
 - Is there a "too early" risk? (No revenue, no customers, no live chain)
-- Is there a team risk? (Solo founder with 177K LOC — impressive but also a bus factor concern)
+- Is there a team risk? (Solo founder with 800K LOC — impressive but also a bus factor concern)
 - What questions does Sarah Wang's platform team ask during diligence?
 
 ## Output Format

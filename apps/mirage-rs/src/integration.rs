@@ -705,19 +705,23 @@ mod tests {
             let requests_for_thread = Arc::clone(&requests);
             let (shutdown_tx, shutdown_rx) = mpsc::channel();
             let handle = thread::spawn(move || {
+                let mut connection_attempts = 0_usize;
                 loop {
                     if shutdown_rx.try_recv().is_ok() {
                         break;
                     }
                     match listener.accept() {
                         Ok((mut stream, _)) => {
-                            let request_index =
-                                requests_for_thread.fetch_add(1, Ordering::SeqCst) + 1;
-                            if request_index <= failures_before_success {
+                            connection_attempts += 1;
+                            if connection_attempts <= failures_before_success {
                                 continue;
                             }
 
-                            read_http_request(&mut stream);
+                            if !read_http_request(&mut stream) {
+                                continue;
+                            }
+                            let request_index =
+                                requests_for_thread.fetch_add(1, Ordering::SeqCst) + 1;
                             let body = format!(
                                 r#"{{"jsonrpc":"2.0","id":1,"result":"0x{block_number:x}"}}"#
                             );
@@ -765,7 +769,7 @@ mod tests {
         }
     }
 
-    fn read_http_request(stream: &mut std::net::TcpStream) {
+    fn read_http_request(stream: &mut std::net::TcpStream) -> bool {
         stream
             .set_read_timeout(Some(Duration::from_millis(250)))
             .unwrap_or_else(|error| panic!("set mock upstream read timeout: {error}"));
@@ -804,6 +808,8 @@ mod tests {
                 Err(error) => panic!("read mock upstream request: {error}"),
             }
         }
+
+        expected_len.is_some_and(|len| request.len() >= len)
     }
 
     fn content_length(headers: &[u8]) -> usize {

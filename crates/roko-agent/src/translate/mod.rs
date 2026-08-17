@@ -212,12 +212,11 @@ impl BackendResponse {
                                 ev.pointer("/message/content").and_then(|x| x.as_array())
                             {
                                 for block in blocks {
-                                    if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                        if let Some(text) =
+                                    if block.get("type").and_then(|t| t.as_str()) == Some("text")
+                                        && let Some(text) =
                                             block.get("text").and_then(|t| t.as_str())
-                                        {
-                                            buf.push_str(text);
-                                        }
+                                    {
+                                        buf.push_str(text);
                                     }
                                 }
                             }
@@ -351,36 +350,36 @@ impl BackendResponse {
                 }
                 // Fall back to the last assistant event's usage (partial stream).
                 for ev in events.iter().rev() {
-                    if ev.get("type").and_then(|t| t.as_str()) == Some("assistant") {
-                        if let Some(usage) = ev.get("message").and_then(|msg| msg.get("usage")) {
-                            return Usage {
-                                input_tokens: usage
-                                    .get("input_tokens")
-                                    .and_then(serde_json::Value::as_u64)
-                                    .unwrap_or(0)
-                                    .min(u64::from(u32::MAX))
-                                    as u32,
-                                output_tokens: usage
-                                    .get("output_tokens")
-                                    .and_then(serde_json::Value::as_u64)
-                                    .unwrap_or(0)
-                                    .min(u64::from(u32::MAX))
-                                    as u32,
-                                cache_read_tokens: usage
-                                    .get("cache_read_input_tokens")
-                                    .and_then(serde_json::Value::as_u64)
-                                    .unwrap_or(0)
-                                    .min(u64::from(u32::MAX))
-                                    as u32,
-                                cache_create_tokens: usage
-                                    .get("cache_creation_input_tokens")
-                                    .and_then(serde_json::Value::as_u64)
-                                    .unwrap_or(0)
-                                    .min(u64::from(u32::MAX))
-                                    as u32,
-                                ..Default::default()
-                            };
-                        }
+                    if ev.get("type").and_then(|t| t.as_str()) == Some("assistant")
+                        && let Some(usage) = ev.get("message").and_then(|msg| msg.get("usage"))
+                    {
+                        return Usage {
+                            input_tokens: usage
+                                .get("input_tokens")
+                                .and_then(serde_json::Value::as_u64)
+                                .unwrap_or(0)
+                                .min(u64::from(u32::MAX))
+                                as u32,
+                            output_tokens: usage
+                                .get("output_tokens")
+                                .and_then(serde_json::Value::as_u64)
+                                .unwrap_or(0)
+                                .min(u64::from(u32::MAX))
+                                as u32,
+                            cache_read_tokens: usage
+                                .get("cache_read_input_tokens")
+                                .and_then(serde_json::Value::as_u64)
+                                .unwrap_or(0)
+                                .min(u64::from(u32::MAX))
+                                as u32,
+                            cache_create_tokens: usage
+                                .get("cache_creation_input_tokens")
+                                .and_then(serde_json::Value::as_u64)
+                                .unwrap_or(0)
+                                .min(u64::from(u32::MAX))
+                                as u32,
+                            ..Default::default()
+                        };
                     }
                 }
                 Usage::default()
@@ -424,23 +423,20 @@ impl BackendResponse {
                         let has_tool = events.iter().any(|e| {
                             // content_block_start with type=tool_use
                             if e.get("type").and_then(|t| t.as_str()) == Some("content_block_start")
+                                && let Some(block) = e.get("content_block")
                             {
-                                if let Some(block) = e.get("content_block") {
-                                    return block.get("type").and_then(|t| t.as_str())
-                                        == Some("tool_use");
-                                }
+                                return block.get("type").and_then(|t| t.as_str())
+                                    == Some("tool_use");
                             }
                             // assistant event with tool_use content blocks
-                            if e.get("type").and_then(|t| t.as_str()) == Some("assistant") {
-                                if let Some(content) = e
+                            if e.get("type").and_then(|t| t.as_str()) == Some("assistant")
+                                && let Some(content) = e
                                     .pointer("/message/content")
                                     .and_then(serde_json::Value::as_array)
-                                {
-                                    return content.iter().any(|block| {
-                                        block.get("type").and_then(|t| t.as_str())
-                                            == Some("tool_use")
-                                    });
-                                }
+                            {
+                                return content.iter().any(|block| {
+                                    block.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                                });
                             }
                             false
                         });

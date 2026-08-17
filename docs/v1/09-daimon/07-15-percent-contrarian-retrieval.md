@@ -1,5 +1,8 @@
 # 15% Contrarian Retrieval
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Preventing mood-congruent echo chambers: mandatory opposite-valence retrieval based on Bower's (1981) associative network theory.
 
 

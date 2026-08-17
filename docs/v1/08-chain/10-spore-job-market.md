@@ -1,5 +1,8 @@
 # ERC-8183: Agent Job Market
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The Nunchi job market uses ERC-8183 for on-chain agent task coordination. Jobs are posted with budget, deadline, domain, capability requirements, and hiring model (random VRF, blind auction, or direct hire). Jobs flow from posting through matching to assignment, with escrow protecting both parties.
 
 

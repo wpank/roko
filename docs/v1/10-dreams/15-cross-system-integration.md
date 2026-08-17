@@ -1,5 +1,8 @@
 # Cross-System Integration
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: All layers (L0–L4) — dreams integrate across the entire stack
 >
 > **Synapse Traits**: All six traits participate in dream integration at different points
@@ -504,7 +507,10 @@ Dream configuration flows from `roko.toml` through the standard Roko configurati
 auto_dream = true
 idle_threshold_mins = 15
 min_episodes_for_dream = 5
-scheduled_interval_hours = 4
+scheduled_cron = "0 0 */4 * * * *"
+episode_count_trigger = 50
+quality_gain = 0.75
+quality_penalty = 1.25
 budget_fraction = 0.15
 intensive_threshold = 50
 intensive_low_water = 10

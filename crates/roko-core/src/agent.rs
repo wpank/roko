@@ -21,9 +21,33 @@
 
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::fmt;
 
 use crate::config::schema::{ModelProfile, ProviderConfig, RokoConfig};
+
+/// User-controlled execution autonomy for one agent capability.
+///
+/// Structural evolution is intentionally not representable here: it follows
+/// the separate approval flow even when an agent otherwise has full autonomy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(u8)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomyLevel {
+    Observe = 0,
+    Suggest = 1,
+    ActReview = 2,
+    Guardrails = 3,
+    Full = 4,
+}
+
+/// Per-capability autonomy settings for an agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutonomyConfig {
+    pub agent_id: String,
+    pub per_capability: HashMap<String, AutonomyLevel>,
+    pub default_level: AutonomyLevel,
+}
 
 // ─── ProviderKind (which protocol family to use) ─────────────────────────
 
@@ -77,6 +101,19 @@ impl ProviderKind {
             Self::Hermes => "hermes",
             Self::OpenClaw => "openclaw",
         }
+    }
+
+    /// Whether this provider protocol has a native inline-image request path.
+    ///
+    /// CLI/ACP subprocess and harness protocols are deliberately excluded:
+    /// a model's abstract vision capability is not enough if its configured
+    /// transport cannot preserve the image bytes to the provider boundary.
+    #[must_use]
+    pub const fn supports_inline_images(self) -> bool {
+        matches!(
+            self,
+            Self::AnthropicApi | Self::OpenAiCompat | Self::GeminiApi
+        )
     }
 
     /// Derive the legacy [`AgentBackend`] from this provider kind.
@@ -486,10 +523,9 @@ pub fn score_model_for_task(
     if let (Some(max_cost), Some(model_cost)) = (
         requirements.max_cost_output_per_m,
         profile.cost_output_per_m,
-    ) {
-        if model_cost > max_cost {
-            return None;
-        }
+    ) && model_cost > max_cost
+    {
+        return None;
     }
 
     let mut score = 1.0;
@@ -530,10 +566,11 @@ pub fn score_model_for_task(
         _ => {}
     }
 
-    if let Some(max_latency_ms) = requirements.max_latency_ms {
-        if max_latency_ms <= 5_000 && !profile.supports_thinking {
-            score += 0.1;
-        }
+    if let Some(max_latency_ms) = requirements.max_latency_ms
+        && max_latency_ms <= 5_000
+        && !profile.supports_thinking
+    {
+        score += 0.1;
     }
 
     Some(score)
@@ -1668,5 +1705,23 @@ mod tests {
         // Config entry wins — custom slug, not the builtin one.
         assert_eq!(resolved.slug, "my-custom-sonnet-v1");
         assert_eq!(resolved.model_key, "sonnet");
+    }
+
+    #[test]
+    fn autonomy_levels_are_exactly_zero_through_four() {
+        assert_eq!(AutonomyLevel::Observe as u8, 0);
+        assert_eq!(AutonomyLevel::Suggest as u8, 1);
+        assert_eq!(AutonomyLevel::ActReview as u8, 2);
+        assert_eq!(AutonomyLevel::Guardrails as u8, 3);
+        assert_eq!(AutonomyLevel::Full as u8, 4);
+
+        let config = AutonomyConfig {
+            agent_id: "agent-1".into(),
+            per_capability: HashMap::from([("fs_read".into(), AutonomyLevel::Full)]),
+            default_level: AutonomyLevel::Observe,
+        };
+        let value = serde_json::to_value(&config).expect("serialize autonomy config");
+        assert_eq!(value["per_capability"]["fs_read"], "full");
+        assert_eq!(value["default_level"], "observe");
     }
 }

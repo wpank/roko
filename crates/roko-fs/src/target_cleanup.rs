@@ -13,7 +13,10 @@
 //!   Cargo lock contention.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+static CARGO_CLEAN_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 /// Metadata for a discovered `target/` directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +68,16 @@ pub async fn scan_target_dirs(root: &Path) -> std::io::Result<Vec<TargetDir>> {
     // Iterative DFS using an explicit stack to avoid async recursion.
     // We do not recurse into `target/` directories once found.
     let mut dirs_to_visit: Vec<PathBuf> = vec![root.to_path_buf()];
+    // Hidden directories are skipped below, but canonical runner worktrees
+    // live under `.roko/worktrees/` and are the primary cleanup target.
+    // Seed that directory explicitly without opening the rest of `.roko/`.
+    let canonical_worktrees = root.join(".roko").join("worktrees");
+    if tokio::fs::symlink_metadata(&canonical_worktrees)
+        .await
+        .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+    {
+        dirs_to_visit.push(canonical_worktrees);
+    }
 
     while let Some(dir) = dirs_to_visit.pop() {
         let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
@@ -72,14 +85,18 @@ pub async fn scan_target_dirs(root: &Path) -> std::io::Result<Vec<TargetDir>> {
         };
 
         while let Ok(Some(entry)) = entries.next_entry().await {
-            // Use entry.metadata() which does NOT follow symlinks.
+            // Check the directory entry type before metadata: `metadata()`
+            // follows symlinks on supported platforms, which could otherwise
+            // make a `target` symlink escape the workspace cleanup boundary.
+            let Ok(file_type) = entry.file_type().await else {
+                continue;
+            };
+            if file_type.is_symlink() || !file_type.is_dir() {
+                continue;
+            }
             let Ok(meta) = entry.metadata().await else {
                 continue;
             };
-
-            if !meta.is_dir() {
-                continue;
-            }
 
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
@@ -204,6 +221,10 @@ pub async fn clean_stale_targets(root: &Path, max_age_days: u32) -> std::io::Res
 /// Returns an error if the subprocess cannot be spawned, exits with a
 /// non-zero status, or produces unexpected output.
 pub async fn cargo_clean(workdir: &Path) -> std::io::Result<()> {
+    let _clean_guard = CARGO_CLEAN_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
     let output = tokio::process::Command::new("cargo")
         .arg("clean")
         .current_dir(workdir)
@@ -240,11 +261,16 @@ async fn compute_dir_size_bytes(path: &Path) -> u64 {
             continue;
         };
         while let Ok(Some(entry)) = entries.next_entry().await {
-            // Use entry.metadata() which does NOT follow symlinks.
+            let Ok(file_type) = entry.file_type().await else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
             let Ok(meta) = entry.metadata().await else {
                 continue;
             };
-            if meta.is_dir() {
+            if file_type.is_dir() {
                 stack.push(entry.path());
             } else {
                 total += meta.len();
@@ -309,6 +335,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scan_enters_canonical_hidden_roko_worktrees() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp
+            .path()
+            .join(".roko")
+            .join("worktrees")
+            .join("plan-a")
+            .join("target");
+        tokio::fs::create_dir_all(&target).await.unwrap();
+        write_file(&target, "artifact", b"data").await;
+
+        let dirs = scan_target_dirs(tmp.path()).await.unwrap();
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs[0].path, target);
+    }
+
+    #[tokio::test]
     async fn scan_does_not_recurse_into_target() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
@@ -335,6 +378,25 @@ mod tests {
 
         let dirs = scan_target_dirs(root).await.unwrap();
         assert!(dirs.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn scan_never_follows_target_symlink_outside_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        tokio::fs::write(outside.path().join("do-not-delete"), b"important")
+            .await
+            .unwrap();
+        symlink(outside.path(), root.path().join("target")).unwrap();
+
+        let dirs = scan_target_dirs(root.path()).await.unwrap();
+        assert!(dirs.is_empty());
+        let report = clean_stale_targets(root.path(), 0).await.unwrap();
+        assert_eq!(report.dirs_removed, 0);
+        assert!(outside.path().join("do-not-delete").exists());
     }
 
     #[tokio::test]

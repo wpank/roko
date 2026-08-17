@@ -1,5 +1,8 @@
 # 11 — Dual-Process Tier Routing
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Sub-doc 11 of **02-agents** · Roko Documentation
 >
 > This document describes the dual-process cognitive model (System 1 / System 2)

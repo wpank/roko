@@ -1,5 +1,8 @@
 # Spectre as Collective Display
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > How multiple Spectre creatures compose into a collective visualization — mesh topology, filament connections, pheromone fields, breathing synchronization, and C-Factor harmony encoding.
 
 

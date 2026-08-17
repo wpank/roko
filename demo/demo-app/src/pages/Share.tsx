@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router';
-import { useLiveApi } from '../hooks/useLiveApi';
+import { useDataApi } from '../hooks/useDataApi';
 import GateBar from '../components/GateBar';
 import './Share.css';
 
@@ -87,7 +87,7 @@ function CopyButton({ text }: { text: string }) {
 
 export default function SharePage() {
   const { token } = useParams<{ token: string }>();
-  const { get } = useLiveApi();
+  const { get } = useDataApi();
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [error, setError] = useState(false);
   const [loaded, setLoaded] = useState(false);

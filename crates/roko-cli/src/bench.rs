@@ -253,13 +253,14 @@ pub async fn run_swe_bench(options: SweBenchOptions) -> Result<SweBenchReport> {
     fs::create_dir_all(&run_root)?;
 
     let learn_root = options.workdir.join(".roko").join("learn");
-    let cfactor_before = if options.record_learning && learn_root.join("episodes.jsonl").exists() {
+    let canonical_episodes = options.workdir.join(".roko").join("episodes.jsonl");
+    let cfactor_before = if options.record_learning && canonical_episodes.exists() {
         refresh_cfactor_snapshot(&learn_root).await.ok()
     } else {
         None
     };
     let runtime = if options.record_learning {
-        Some(LearningRuntime::open_under(&learn_root).await?)
+        Some(LearningRuntime::open_for_project(&options.workdir).await?)
     } else {
         None
     };
@@ -984,7 +985,9 @@ mod tests {
         assert_eq!(report.tests_passed, 2);
         assert!(report.report_path.exists());
         assert!(report.run_path.exists());
-        assert!(tmp.path().join(".roko/learn/episodes.jsonl").exists());
+        assert!(tmp.path().join(".roko/episodes.jsonl").exists());
+        assert!(!tmp.path().join(".roko/learn/episodes.jsonl").exists());
+        assert!(!tmp.path().join(".roko/memory/episodes.jsonl").exists());
         assert!(tmp.path().join(".roko/learn/c-factor.jsonl").exists());
 
         let mut predictions = String::new();

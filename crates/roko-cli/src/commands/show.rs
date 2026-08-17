@@ -156,7 +156,7 @@ fn render_overview(state: &ShowState) -> String {
     if agent_rows.is_empty() {
         push_empty(
             &mut out,
-            "No agents found in .roko/state/executor.json or efficiency events.",
+            "No agents found in the durable Runner projection or efficiency events.",
         );
     } else {
         for row in agent_rows.iter().take(6) {
@@ -294,7 +294,7 @@ fn render_agents(state: &ShowState) -> String {
     if rows.is_empty() {
         push_empty(
             &mut out,
-            "No agents found in .roko/state/executor.json or .roko/learn/efficiency.jsonl.",
+            "No agents found in the durable Runner projection or .roko/learn/efficiency.jsonl.",
         );
     } else {
         for row in rows {
@@ -676,24 +676,28 @@ fn collect_work_items(
         }
     }
 
-    if let Some(current) = &data.current_plan_execution {
-        if !current.plan_id.is_empty() {
-            items.insert(
-                current.plan_id.clone(),
-                WorkItemSummary {
-                    id: current.plan_id.clone(),
-                    kind: String::from("current-plan"),
-                    status: String::from("running"),
-                    prompt: current.plan_title.clone(),
-                    tasks_done: Some(current.tasks_done),
-                    tasks_total: Some(current.tasks_total),
-                    cost_usd: plan_costs.get(&current.plan_id).copied(),
-                    created: None,
-                    source: layout.executor_snapshot(),
-                    modified_ms: path_modified_ms(&layout.executor_snapshot()),
-                },
-            );
-        }
+    if let Some(current) = &data.current_plan_execution
+        && !current.plan_id.is_empty()
+    {
+        let runner_source = data
+            .runner_projection_path()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| workdir.join(roko_runtime::STATE_SNAPSHOT_RELATIVE_PATH));
+        items.insert(
+            current.plan_id.clone(),
+            WorkItemSummary {
+                id: current.plan_id.clone(),
+                kind: String::from("current-plan"),
+                status: String::from("running"),
+                prompt: current.plan_title.clone(),
+                tasks_done: Some(current.tasks_done),
+                tasks_total: Some(current.tasks_total),
+                cost_usd: plan_costs.get(&current.plan_id).copied(),
+                created: None,
+                source: runner_source.clone(),
+                modified_ms: path_modified_ms(&runner_source),
+            },
+        );
     }
 
     let mut values = items.into_values().collect::<Vec<_>>();
@@ -930,6 +934,20 @@ fn header(state: &ShowState, title: &str) -> String {
     let _ = writeln!(out, "roko show {title}");
     let _ = writeln!(out, "workspace: {}", state.workdir.display());
     let _ = writeln!(out, "state: {}", state.layout.root().display());
+    let _ = writeln!(
+        out,
+        "runner projection: {}",
+        state.data.runner_projection_status()
+    );
+    if let Some(path) = state.data.runner_projection_path() {
+        let _ = writeln!(out, "runner source: {}", path.display());
+    }
+    if let Some(generation) = state.data.runner_projection_generation() {
+        let _ = writeln!(out, "runner generation: {generation}");
+    }
+    if let Some(error) = state.data.runner_projection_error() {
+        let _ = writeln!(out, "runner error: {error}");
+    }
     out
 }
 
@@ -1036,10 +1054,10 @@ fn value_number_path(value: &Value, paths: &[&[&str]]) -> Option<f64> {
         if let Some(number) = current.as_f64() {
             return Some(number);
         }
-        if let Some(text) = current.as_str() {
-            if let Ok(number) = text.parse::<f64>() {
-                return Some(number);
-            }
+        if let Some(text) = current.as_str()
+            && let Ok(number) = text.parse::<f64>()
+        {
+            return Some(number);
         }
     }
     None

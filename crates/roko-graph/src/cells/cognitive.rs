@@ -25,10 +25,10 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use roko_core::{Body, Kind, ProtocolId, Signal, TypeSchema, error::Result};
+use roko_core::{Body, Kind, PredictionRecord, ProtocolId, Signal, TypeSchema, error::Result};
 use tracing::trace;
 
 use crate::cell::{Cell, CellContext, CellVersion};
@@ -91,11 +91,11 @@ impl SenseCell {
         }
 
         // Condition 2: not deadline-proximate.
-        if let Some(remaining) = ctx.budget_remaining {
-            if remaining < DEADLINE_BUDGET_THRESHOLD_USD {
-                // Budget nearly exhausted -- run a full tick to flush pending work.
-                return false;
-            }
+        if let Some(remaining) = ctx.budget_remaining
+            && remaining < DEADLINE_BUDGET_THRESHOLD_USD
+        {
+            // Budget nearly exhausted -- run a full tick to flush pending work.
+            return false;
         }
 
         // Condition 3: React did not request a forced full tick.
@@ -185,6 +185,10 @@ pub struct AssessCell {
     input_schema: TypeSchema,
     /// Output type schema: produces scored agent messages.
     output_schema: TypeSchema,
+    /// Number of completed predict-correct cycles received by this instance.
+    calibration_observations: AtomicU64,
+    /// Cumulative normalized prediction error stored as millionths.
+    calibration_error_micros: AtomicU64,
 }
 
 impl AssessCell {
@@ -194,7 +198,21 @@ impl AssessCell {
         Self {
             input_schema: TypeSchema::OfKind(Kind::AgentMessage),
             output_schema: TypeSchema::OfKind(Kind::AgentMessage),
+            calibration_observations: AtomicU64::new(0),
+            calibration_error_micros: AtomicU64::new(0),
         }
+    }
+
+    /// Return the number of prediction corrections received by this instance.
+    #[must_use]
+    pub fn calibration_observations(&self) -> u64 {
+        self.calibration_observations.load(Ordering::Relaxed)
+    }
+
+    fn output_count_error(prediction: &PredictionRecord, actual: &[Signal]) -> Option<f64> {
+        let expected = prediction.predicted_outcome.get("output_count")?.as_u64()? as f64;
+        let observed = actual.len() as f64;
+        Some((expected - observed).abs() / expected.max(observed).max(1.0))
     }
 }
 
@@ -229,6 +247,34 @@ impl Cell for AssessCell {
     }
     fn output_schema(&self) -> Option<&TypeSchema> {
         Some(&self.output_schema)
+    }
+
+    fn predict(&self, input: &[Signal]) -> Option<PredictionRecord> {
+        Some(PredictionRecord {
+            cell_id: self.cell_id().to_string(),
+            predicted_outcome: serde_json::json!({"output_count": input.len()}),
+            confidence: 1.0,
+            timestamp_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| {
+                    duration.as_millis().try_into().unwrap_or(i64::MAX)
+                }),
+        })
+    }
+
+    fn calibration_error(&self, prediction: &PredictionRecord, actual: &[Signal]) -> Option<f64> {
+        Self::output_count_error(prediction, actual)
+    }
+
+    fn correct(&self, prediction: &PredictionRecord, actual: &[Signal]) {
+        if let Some(error) = Self::output_count_error(prediction, actual) {
+            self.calibration_observations
+                .fetch_add(1, Ordering::Relaxed);
+            self.calibration_error_micros.fetch_add(
+                (error.clamp(0.0, 1.0) * 1_000_000.0).round() as u64,
+                Ordering::Relaxed,
+            );
+        }
     }
 
     async fn execute(&self, input: Vec<Signal>, _ctx: &CellContext) -> Result<Vec<Signal>> {
@@ -419,7 +465,7 @@ impl Cell for VerifyCell {
         Some(0.0)
     }
     fn estimated_duration(&self) -> Option<Duration> {
-        Some(Duration::from_secs(60))
+        Some(Duration::from_mins(1))
     }
     fn input_schema(&self) -> Option<&TypeSchema> {
         Some(&self.input_schema)
@@ -718,5 +764,16 @@ mod tests {
             ReactCell::new().protocols(),
             vec![ProtocolId::React, ProtocolId::Trigger]
         );
+    }
+
+    #[test]
+    fn assess_cell_completes_predict_correct_calibration_cycle() {
+        let cell = AssessCell::new();
+        let input = vec![make_signal("first"), make_signal("second")];
+        let prediction = cell.predict(&input).expect("prediction");
+        assert_eq!(prediction.predicted_outcome["output_count"], 2);
+        assert_eq!(cell.calibration_error(&prediction, &input), Some(0.0));
+        cell.correct(&prediction, &input);
+        assert_eq!(cell.calibration_observations(), 1);
     }
 }

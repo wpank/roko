@@ -1,26 +1,48 @@
 # 01 — Signal and Pulse
 
 > Two mediums: Signal (durable) in Store, Pulse (ephemeral) on Bus. Graduation converts Pulse → Signal. Everything that flows through Roko is one or the other.
+> **Implementation status (2026-08): PARTIAL.** `roko_core::Signal` is the preferred
+> alias for the concrete `Engram` struct, `Pulse` is the ephemeral transport record,
+> and both projection directions are implemented. `BroadcastBus` is live-only;
+> `MemoryBus` provides caller-sized bounded replay with `VecDeque`; `MultiBus` fans out
+> through a `MemoryBus` primary. Distributed Bus backends and several economic and
+> algebraic mechanisms later in this chapter remain target design.
 
-**Subsumes**: Engram, Pulse/Envelope, Artifact, Knowledge Entry, Pheromone, Evidence, Feed event, Finding.
+**Current alias and target vocabulary**: `Signal` is currently the preferred name
+for the `Engram` Rust struct (`type Signal = Engram`). The broader target
+vocabulary also subsumes Artifact, Knowledge Entry, Pheromone, Evidence, feed
+event, and Finding concepts without claiming those distinct runtime records have
+already been replaced by `Engram`.
+
+### Current implementation sources and reading contract
+
+| Surface | Current authority | Shipped boundary |
+|---|---|---|
+| Signal identity and lifecycle | `crates/roko-core/src/engram.rs`, `hash.rs` | `Signal = Engram`, BLAKE3 identity, four `SignalStatus` tiers with checked forward-transition helpers, projection to Pulse |
+| Pulse and graduation | `crates/roko-core/src/pulse.rs` | Exact transport record and explicit `Pulse::graduate` path |
+| Score, Kind, provenance | `crates/roko-core/src/score.rs`, `kind.rs`, `provenance.rs` | Concrete field vocabulary; not every research mechanism below is wired to every producer |
+| Bus | `crates/roko-core/src/traits.rs`, `bus_backends.rs` | `BroadcastBus`, bounded-replay `MemoryBus`, and `MultiBus`; no universal configured ring size |
+
+Unless a later block is explicitly labelled **Current implementation**, its Rust
+snippet, formula, topic policy, or algebra is normative target/design material. That
+material is retained for rationale and future acceptance, but is not a claim that the
+named runtime type or integration exists today.
 
 ---
 
 ## 1. Two Mediums
 
-The system has two data shapes because reality has two timescales: things that persist and things that flow. The v1 spec claimed "one noun" (Signal) but the code already had two — `Engram` for durable data and `Envelope<E>` in `roko-runtime::event_bus` for ephemeral messages. This spec makes both first-class.
+The system has two data shapes because reality has two timescales: things that persist and things that flow. The v1 spec claimed "one noun" (Signal) but the code already had two — Signal (the preferred name; the Rust struct is `Engram`, with `type Signal = Engram` as the alias) for durable data and `Envelope<E>` in `roko-runtime::event_bus` for ephemeral messages. This spec makes both first-class.
 
 | Property | Signal (durable) | Pulse (ephemeral) |
 |---|---|---|
-| **Identity** | Content hash (SHA-256 of payload) | `(topic, seq)` tuple |
-| **Durability** | Store (`.roko/signals.jsonl`, knowledge store) | Ring buffer on Bus (~4,096 entries default) |
-| **Lineage** | Full `Vec<SignalRef>` provenance DAG | Optional `lineage_hint: Option<ContentHash>` |
-| **Scoring** | 5-dimensional Score | None |
-| **Retention** | Demurrage (Gesell 1916): balance decays unless actively used | Ring buffer eviction |
-| **HDC fingerprint** | 10,240-bit binary vector (1,280 bytes, Kanerva 2009) | None (too transient) |
-| **Taint** | Lattice-based IFC classification (see S10) | Inherited from source |
-| **Typical rate** | 1 Hz – 1 kHz | 1 Hz – 1 MHz |
-| **Typical lifetime** | Minutes to permanent | Milliseconds to seconds |
+| **Identity** | `ContentHash` computed with BLAKE3 over identity fields | Bus-scoped sequence plus topic |
+| **Durability** | Depends on the selected `Store`/substrate | None in `BroadcastBus`; last N records in `MemoryBus` |
+| **Lineage** | `Vec<ContentHash>` | Optional `lineage_hint: Option<ContentHash>` |
+| **Scoring** | Seven-axis `Score` | No score field |
+| **Retention** | `Decay`, balance, status, and store policy | Backend policy: live-only or bounded replay |
+| **HDC fingerprint** | Optional versioned `HdcFingerprint` | No fingerprint field |
+| **Provenance** | Typed `Provenance` plus optional attestation | No provenance field; use lineage/tags or graduate explicitly |
 
 They are **siblings, not parent-child**. A Signal is not "a Pulse that grew up." The only bridges are explicit:
 
@@ -31,49 +53,42 @@ They are **siblings, not parent-child**. A Signal is not "a Pulse that grew up."
 
 ## 2. Signal — The Durable Medium
 
+**Current implementation** (`crates/roko-core/src/engram.rs`):
+
 ```rust
-pub struct Signal {
-    // ── Identity ──────────────────────────────────────────────────
-    pub id: SignalId,                    // ULID, globally unique
-    pub content_hash: ContentHash,       // SHA-256 of canonical payload bytes
-    pub kind: Kind,                      // discriminant (see §4)
-
-    // ── Content ───────────────────────────────────────────────────
-    pub payload: Value,                  // serde_json::Value, schema-validated
-    pub schema: TypeSchema,              // structural type
-
-    // ── Scoring ───────────────────────────────────────────────────
-    pub score: Score,                    // 5-axis quality rating
-    pub confidence: f64,                 // 0.0..=1.0
-
-    // ── Demurrage ─────────────────────────────────────────────────
-    pub balance: f64,                    // starts at 1.0, decays via demurrage
-    pub demurrage_paid: f64,             // cumulative tax paid (monotonic)
-    pub last_touched_at: DateTime<Utc>,  // last retrieval, citation, or gate-pass
-    pub tier: Tier,                      // Transient | Working | Consolidated | Persistent
-    pub created_at: DateTime<Utc>,
-
-    // ── Lineage ───────────────────────────────────────────────────
-    pub source: Vec<SignalRef>,          // upstream Signals (provenance DAG)
-    pub provenance: Provenance,          // generation metadata, citations, taint, sources
-
-    // ── Embedding ─────────────────────────────────────────────────
-    pub hdc_fingerprint: HdcVector,      // 10,240-bit binary vector (1,280 bytes)
-
-    // ── Authorship ────────────────────────────────────────────────
-    pub author: Author,                  // agent ID, wallet address, or system
-    pub tags: Vec<String>,               // topic tags for discovery
+pub struct Engram {
+    pub id: ContentHash,
+    pub fingerprint: Option<HdcFingerprint>,
+    pub kind: Kind,
+    pub body: Body,
+    pub created_at_ms: i64,
+    pub decay: Decay,
+    pub provenance: Provenance,
+    pub score: Score,
+    pub lineage: Vec<ContentHash>,
+    pub tags: BTreeMap<String, String>,
+    pub attestation: Option<Attestation>,
+    pub emotional_tag: Option<EmotionalTag>,
+    pub balance: f64,
+    pub status: SignalStatus,
+    pub access_count: u32,
+    pub demurrage_paid: f64,
 }
+
+pub type Signal = Engram;
 ```
 
-**Mapping to code**: `Signal` maps 1:1 to `roko-core::Engram`. The Rust struct remains `Engram`; new code bridges with `type Signal = Engram;`.
+There is no separate ULID, `content_hash`, `payload`, `schema`, `confidence`,
+`author`, or `last_touched_at` field on this record. Those concepts are either
+represented by the fields above, nested in `Body`/`Provenance`/`Score`, or belong
+to a higher-level store.
 
 ### 2.1 The Signal Struct as an Algebraic Object
 
 The algebraic core lives in three fields:
 
-- `content_hash` participates in the **lineage monoid** (append-only DAG).
-- `hdc_fingerprint` participates in the **vector semiring** (bind + bundle).
+- `id` participates in the **lineage monoid** (append-only DAG).
+- `fingerprint`, when present, participates in the **vector semiring** (bind + bundle).
 - `kind` participates in the **kind lattice** (flat kinds join into Compound).
 
 These three algebraic structures are independent but interact at composition boundaries. **Identity is algebraically exact (hash monoid); similarity is algebraically approximate (vector semiring).**
@@ -82,28 +97,22 @@ These three algebraic structures are independent but interact at composition bou
 
 ## 3. Pulse — The Ephemeral Medium
 
+**Current implementation** (`crates/roko-core/src/pulse.rs`):
+
 ```rust
 pub struct Pulse {
-    pub seq: u64,                        // monotonic per Bus instance
-    pub topic: Topic,                    // hierarchical string (OpenTelemetry-style)
-    pub kind: Kind,                      // reused from Signal
-    pub body: Value,                     // payload
-    pub emitted_at_ms: i64,              // Unix ms, server clock
-    pub source: PulseSource,             // who emitted
-    pub lineage_hint: Option<ContentHash>, // back-reference to Signal context
-    pub trace_id: Option<TraceId>,       // distributed tracing
-}
-
-pub enum PulseSource {
-    Agent(AgentId),
-    Cell(CellRef),
-    Graph(GraphRef),
-    System,
-    External(String),
+    pub seq: u64,
+    pub topic: Topic,
+    pub kind: Kind,
+    pub body: Body,
+    pub created_at_ms: i64,
+    pub tags: BTreeMap<String, String>,
+    pub lineage_hint: Option<ContentHash>,
 }
 ```
 
-**Mapping to code**: Pulse replaces `Envelope<E>` in `roko-runtime::event_bus`.
+`Pulse` has no `source` or `trace_id` field. Runtime event envelopes remain a
+separate adapter shape rather than an alias of this record.
 
 ### Topic taxonomy
 
@@ -629,7 +638,6 @@ pub fn demurrage_tick(
 
     let floor = tier.cold_floor() as f64;
     if signal.balance < floor { signal.balance = floor; }
-    signal.last_touched_at = Utc::now();
 }
 ```
 
@@ -950,18 +958,25 @@ At 10,240 bits, approximation error is ~1% per operation (`1/sqrt(D)`). The semi
 
 ## 8. Content Addressing
 
-Signals are content-addressed via SHA-256:
+**Current implementation.** `ContentHash` is a 32-byte BLAKE3 digest. For a
+Signal, `Engram::content_hash()` hashes the kind identity key, canonical Body
+bytes, provenance identity fields, lineage, and ordered tags. Score, decay,
+timestamp, attestation, and emotional metadata do not change identity.
 
 ```rust
-impl Signal {
-    pub fn compute_hash(payload: &Value) -> ContentHash {
-        let canonical = serde_json::to_vec(payload).expect("serializable");
-        ContentHash(sha2::Sha256::digest(&canonical).into())
+impl Engram {
+    pub fn content_hash(&self) -> ContentHash {
+        // BLAKE3 over the documented identity fields; see the source for the
+        // exact canonical byte sequence.
+        // ...
     }
 }
 ```
 
-Enables: deduplication, integrity verification, lineage chain validation, semantic caching (5x cost reduction via content-addressed reuse across Flows), and on-chain commitments (hash on-chain, content off-chain).
+Enables: deduplication, integrity verification, lineage chain validation,
+content-addressed semantic-cache reuse across Flows, and on-chain commitments
+(hash on-chain, content off-chain). Any cache cost reduction is workload- and
+provider-dependent and requires measurement.
 
 ---
 
@@ -994,7 +1009,7 @@ Deterministic across deployments via BLAKE3-seeded `WordMemory`. Encoder version
 | **Bind** (XOR) | Role-filler binding | O(n) | Rachkovskij 2001 |
 | **Bundle** (majority) | Consensus: similar to all inputs | O(n*k) | Kanerva 2009 |
 | **Permute** (rotation) | Positional encoding | O(n) | Plate 2003 |
-| **Similarity** (Hamming) | Overlap via POPCNT | <1 us | Hardware |
+| **Similarity** (Hamming) | Overlap via POPCNT | O(vector words); benchmark per platform | Hardware |
 | **Resonate** | Factorize: recover constituents | O(n*k*iter) | Frady et al. 2020 |
 
 ### Cross-domain resonance
@@ -1006,12 +1021,14 @@ When Signals from different domains have similar HDC fingerprints, they share st
 | Property | HDC (10,240-bit binary) | Float (1536-d float32) |
 |---|---|---|
 | Size per vector | 1,280 bytes | 6,144 bytes |
-| Similarity cost | XOR + POPCNT (~1 ns) | Dot product (hundreds FLOPs) |
+| Similarity cost | XOR + POPCNT; platform-dependent | Dot product; platform-dependent |
 | Compositionality | Native (bind/bundle/permute/resonate) | Requires learned operations |
 | Privacy | Non-invertible after PP-HDC | Invertible via decoder |
 | Determinism | Identical seeds → identical vectors | Depends on model version |
 
-At 10,240 bits, **800K fingerprints fit in 1 GB RAM**; brute-force SIMD comparison is **<1 ms** for the full set. No external vector store needed.
+At 10,240 bits, raw fingerprint storage is 1,280 bytes per vector before
+container/index overhead. Search latency depends on corpus layout, instruction
+set, and hardware and must be benchmarked on the deployment target.
 
 ---
 
@@ -1232,60 +1249,45 @@ Graduation and projection are the only bridges between Pulse and Signal. Algebra
 
 ### 12.1 Graduation — Enrichment Functor (F: Pul → Sig)
 
+**Current implementation.** The public signature is exact; construction details
+remain in `crates/roko-core/src/pulse.rs`:
+
 ```rust
-/// Graduation preserves { kind, body, emitted_at_ms → created_at }.
-/// Adds: content_hash, hdc_fingerprint, score, balance, lineage, provenance, tier.
+/// Graduation preserves kind, body, and `created_at_ms`.
+/// It adds durable score, balance, provenance, status, identity, and audit tags.
 impl Pulse {
     pub fn graduate(
         &self, provenance: Provenance, initial_balance: f64,
         score: Score, tags: Vec<String>,
-    ) -> Signal {
-        Signal {
-            id: SignalId::new(),
-            content_hash: Signal::compute_hash(&self.body),
-            kind: self.kind.clone(),
-            payload: self.body.clone(),
-            score, confidence: score.confidence,
-            balance: initial_balance, demurrage_paid: 0.0,
-            last_touched_at: Utc::now(), tier: Tier::Transient,
-            created_at: DateTime::from_timestamp_millis(self.emitted_at_ms),
-            source: self.lineage_hint.iter().map(|h| SignalRef::from_hash(*h)).collect(),
-            provenance,
-            hdc_fingerprint: encode_signal_from_parts(&self.kind, &self.body),
-            author: Author::from_pulse_source(&self.source),
-            tags,
-            schema: TypeSchema::infer(&self.body),
-        }
-    }
+    ) -> Engram;
 }
 ```
 
+Graduation preserves kind, body, creation time, and existing tags; adds audit
+tags for topic and sequence; starts at `SignalStatus::Working`; and does not
+fabricate lineage. Fingerprinting is a separate operation.
+
 ### 12.2 Projection — Forgetful Functor (G: Sig → Pul)
 
+**Current implementation.** Projection preserves kind, Body, and tags, adds a
+`signal_author` tag, and records the Signal `id` as `lineage_hint`. The Pulse
+builder timestamps the projection; it does not copy the Signal creation time:
+
 ```rust
-/// Projection preserves { kind, body, created_at → emitted_at_ms }.
-/// Forgets: content_hash, hdc_fingerprint, score, balance, tier, full lineage, provenance.
 impl Signal {
-    pub fn to_pulse(&self, topic: Topic, seq: u64) -> Pulse {
-        Pulse {
-            seq, topic,
-            kind: self.kind.clone(),
-            body: self.payload.clone(),
-            emitted_at_ms: self.created_at.timestamp_millis(),
-            source: PulseSource::from_author(&self.author),
-            lineage_hint: Some(self.content_hash),
-            trace_id: None,
-        }
-    }
+    pub fn to_pulse(&self, topic: Topic, seq: u64) -> Pulse;
 }
 ```
 
 ### 12.3 The Round-Trip Property
 
-`project(graduate(pulse))` preserves `{ kind, body, emitted_at_ms }`.
-`graduate(project(signal))` produces a *different* Signal (new content_hash, new id). The projection functor is lossy; the graduation functor adds information not recoverable from the Pulse alone. This asymmetry is intentional.
+`project(graduate(pulse))` preserves kind and body, but projection assigns a new
+Pulse timestamp and adds audit tags. `graduate(project(signal))` reconstructs
+forgotten durable metadata from caller inputs and therefore does not generally
+preserve identity. Projection is lossy; graduation adds information not recoverable
+from the Pulse alone.
 
-### 12.4 The Store-Bus Adjunction
+### 12.4 The Store-Bus Adjunction (target algebra)
 
 Graduation and Projection form an **adjunction** `F -| G`:
 
@@ -1301,28 +1303,19 @@ Subscribing to store-write notifications on Bus is equivalent to querying Store 
 
 The **Bus** is the ephemeral transport fabric — a kernel-level pub/sub system alongside Store.
 
-```rust
-#[async_trait]
-pub trait Bus: Send + Sync {
-    async fn publish(&self, pulse: Pulse) -> Result<u64>;
-    fn subscribe(&self, filter: TopicFilter) -> PulseStream;
-    async fn replay_since(&self, since: u64, filter: &TopicFilter) -> Result<Vec<Pulse>>;
-    async fn current_seq(&self) -> Result<u64>;
-    fn ring_capacity(&self) -> usize;
-}
+**Current implementation** (`crates/roko-core/src/traits.rs`):
 
-pub enum TopicFilter {
-    Exact(Topic),
-    Glob(String),           // e.g., "agent:*:heartbeat"
-    AnyOf(Vec<Topic>),
-    All,
-    And(Box<TopicFilter>, Box<TopicFilter>),
-    Or(Box<TopicFilter>, Box<TopicFilter>),
-    Not(Box<TopicFilter>),
+```rust
+pub trait Bus: Send + Sync {
+    type Receiver: Send;
+    fn publish(&self, pulse: Pulse) -> Result<u64>;
+    fn subscribe(&self, filter: TopicFilter) -> Result<Self::Receiver>;
 }
 ```
 
-Bus is **broadcast**: every subscriber sees every matching Pulse. No queuing or redelivery. For critical data, graduate to Signal.
+Replay is a concrete `MemoryBus::replay_from` facility, not part of the generic
+`Bus` trait. `BroadcastBus` drops on a full subscriber channel and retains no
+history. For critical data, graduate explicitly to a durable record.
 
 ### Backpressure
 
@@ -1337,10 +1330,11 @@ Bus is **broadcast**: every subscriber sees every matching Pulse. No queuing or 
 
 | Backend | Scope | Status |
 |---|---|---|
-| `BroadcastBus` (`tokio::sync::broadcast`) | In-process | Ships immediately |
-| `MemoryBus` | Testing | Ships immediately |
-| `NatsBus` / `KafkaBus` | Multi-process | Phase 2 |
-| `ChainBus` | On-chain events | Phase 2+ |
+| `BroadcastBus` (per-subscriber Tokio MPSC) | In-process, live-only | Current |
+| `MemoryBus` (`VecDeque`) | In-process bounded replay | Current |
+| `MultiBus` | Primary replay bus plus best-effort fan-out | Current |
+| `NatsBus` / `KafkaBus` | Multi-process | Target |
+| `ChainBus` | On-chain events | Target |
 
 ### Why Bus is kernel-level
 
@@ -1362,7 +1356,10 @@ pub trait Store: Cell {
 }
 ```
 
-`query_similar` is native HDC similarity over stored Signals. No external vector store. At 10,240 bits and 800K entries, brute-force SIMD is <1 ms. `query_similar` respects demurrage — Signals below prune threshold are not returned.
+The target Store API makes HDC similarity native and applies retention policy to
+its results without requiring an external vector database. It makes no latency
+guarantee: corpus representation, substrate, instruction set, and hardware must
+be named by any supporting benchmark.
 
 ### Storage layout
 
@@ -1389,18 +1386,20 @@ Store and Bus are dual — two views of the same information flow:
 | Store (pull) | Bus (push) |
 |---|---|
 | Consumer initiates (`query`) | Producer initiates (`publish`) |
-| Durable (survives restart) | Ephemeral (bounded ring) |
+| Durable (survives restart) | Ephemeral (live-only or bounded ring, by backend) |
 | Identity is content hash | Identity is sequence number |
 | Supports similarity (`query_similar`) | Supports topic routing (`TopicFilter`) |
-| Retention is decay-based (demurrage) | Retention is capacity-based (ring eviction) |
+| Retention is store policy | Retention is absent or capacity-based |
 | Medium: Signal | Medium: Pulse |
 
-### Consistency Guarantees
+### Target consistency guarantees
 
 1. **Store-first**: graduation writes to Store before publishing downstream Pulses. If Store write fails, no Pulse emitted.
 2. **Projection-best-effort**: the projection Pulse after a Store write is best-effort. Signal is safe in Store regardless.
 3. **Idempotent graduation**: graduating the same Pulse twice produces the same SignalRef.
-4. **Ring eviction is not data loss**: graduated content is in Store. Un-graduated content was deemed ephemeral.
+4. **Ring eviction is not durable-store loss**: content already graduated to
+   Store remains available. An ungraduated Pulse can still be lost and must not
+   be described as durable.
 
 ### Catch-Up Strategy
 
@@ -1492,13 +1491,18 @@ Created (by Cell or external source)
 
 ---
 
-## 20. Acceptance Criteria
+## 20. Target Acceptance Catalog
+
+This table is a normative backlog, not a current pass report. Current shipped
+behavior is limited to the source-backed boundary at the top of this chapter;
+an item below becomes a present-tense guarantee only when a cited implementation
+test proves the exact contract.
 
 | Criterion | Verification |
 |---|---|
-| Signal struct compiles with `balance`, `demurrage_paid`, `last_touched_at`, `tier` | Compile check |
-| Pulse struct compiles with `seq`, `topic`, `kind`, `body`, `source`, `lineage_hint` | Compile check |
-| Content hash deterministic: same payload → same hash | Unit test |
+| Signal struct compiles with the exact `Engram` fields documented in §2 | Compile check |
+| Pulse struct compiles with `seq`, `topic`, `kind`, `body`, `created_at_ms`, `tags`, `lineage_hint` | Compile check |
+| Content hash deterministic: identical complete identity fields produce the same hash; kind, Body, provenance identity, lineage, and tags are covered | Unit test |
 | Demurrage: balance decreases over time, increases on reinforcement | Unit test with mock clock |
 | Novelty-weighted reinforcement: rare Signals get larger bonus | Unit test (two Signals at different HDC distances) |
 | Tier progression: 3 gate-passes promote Transient → Working | Integration test |
@@ -1510,7 +1514,7 @@ Created (by Cell or external source)
 | Bus replay: reconnecting subscriber receives missed Pulses within ring capacity | Integration test |
 | Graduation: `Pulse.graduate()` produces valid Signal with provenance | Unit test |
 | Projection: `Signal.to_pulse()` produces valid Pulse | Unit test |
-| Round-trip: `project(graduate(pulse))` preserves kind, body, timestamp | Unit test |
+| Current projection/graduation behavior: kind and Body survive; projection assigns a new Pulse timestamp, adds audit tags, and carries the Signal id as `lineage_hint` | Unit test |
 | Adjunction: graduation + projection notification equivalent to Store query | Integration test |
 | Store round-trip: put + get returns identical Signal | Integration test |
 | `Store.query_similar`: returns Signals ranked by HDC similarity | Integration test |

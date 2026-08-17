@@ -3,13 +3,15 @@
 //! These types define invariants, governance rules, and recovery actions that
 //! higher-level orchestration can evaluate with a low-latency policy check.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{LazyLock, RwLock};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use roko_core::corrigibility::{ActionContext, evaluate_action};
+use roko_core::extension::CamelTaintLevel;
 use roko_core::tool::{ExternalAction, ToolCall, ToolContext, ToolError, ToolResult};
 
 const CONTRACT_DIR: &str = "src/safety/contracts";
@@ -106,7 +108,7 @@ pub enum ContractLoadMode {
 }
 
 /// Behavioral contract for a specific agent role.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentContract {
     /// Role this contract applies to.
     #[serde(default)]
@@ -128,6 +130,29 @@ pub struct AgentContract {
     /// `ForbiddenTools` denylist in `governance`.
     #[serde(default)]
     pub allowed_tools: Option<Vec<String>>,
+    /// Maximum trust-origin taint this role accepts at an action boundary.
+    ///
+    /// Existing bundled assets omit the field, so deserialization defaults to
+    /// `External`. `Untrusted` inputs must be explicitly opted into.
+    #[serde(default = "default_max_taint_level")]
+    pub max_taint_level: CamelTaintLevel,
+}
+
+const fn default_max_taint_level() -> CamelTaintLevel {
+    CamelTaintLevel::External
+}
+
+impl Default for AgentContract {
+    fn default() -> Self {
+        Self {
+            role: String::new(),
+            invariants: Vec::new(),
+            governance: Vec::new(),
+            recovery: Vec::new(),
+            allowed_tools: None,
+            max_taint_level: default_max_taint_level(),
+        }
+    }
 }
 
 impl AgentContract {
@@ -140,6 +165,7 @@ impl AgentContract {
     pub fn permissive(role: impl Into<String>) -> Self {
         Self {
             role: role.into(),
+            max_taint_level: CamelTaintLevel::Untrusted,
             ..Self::default()
         }
     }
@@ -169,6 +195,7 @@ impl AgentContract {
                 action: RecoveryKind::Abort,
             }],
             allowed_tools: Some(Vec::new()),
+            max_taint_level: default_max_taint_level(),
         }
     }
 
@@ -198,10 +225,10 @@ impl AgentContract {
         validate_role(role)?;
 
         // Check cache first (read lock — cheap concurrent path).
-        if let Ok(guard) = CONTRACT_CACHE.read() {
-            if let Some(cached) = guard.get(role) {
-                return Ok(cached.clone());
-            }
+        if let Ok(guard) = CONTRACT_CACHE.read()
+            && let Some(cached) = guard.get(role)
+        {
+            return Ok(cached.clone());
         }
 
         let Some(asset) = bundled_contract_asset(role) else {
@@ -287,17 +314,17 @@ impl AgentContract {
     ///   `ForbiddenTools` denylist.
     #[must_use]
     pub fn permits_tool(&self, tool_name: &str) -> bool {
-        if let Some(ref allowed) = self.allowed_tools {
-            if !allowed.iter().any(|allowed_name| allowed_name == tool_name) {
-                return false;
-            }
+        if let Some(ref allowed) = self.allowed_tools
+            && !allowed.iter().any(|allowed_name| allowed_name == tool_name)
+        {
+            return false;
         }
 
         for rule in &self.governance {
-            if let GovernanceRule::ForbiddenTools(forbidden) = rule {
-                if forbidden.iter().any(|name| name == tool_name) {
-                    return false;
-                }
+            if let GovernanceRule::ForbiddenTools(forbidden) = rule
+                && forbidden.iter().any(|name| name == tool_name)
+            {
+                return false;
             }
         }
 
@@ -323,12 +350,74 @@ impl AgentContract {
         names
     }
 
+    /// Intersect this contract with task-scoped tool restrictions.
+    ///
+    /// Contract and task allowlists are both capabilities, so when both are
+    /// present their intersection is authoritative. Denylists are constraints,
+    /// so task denials are unioned with every `ForbiddenTools` rule and always
+    /// win over an allowlist. `Some([])` remains an explicit deny-all; callers
+    /// that use an empty task list to mean "unspecified" must pass `None`.
+    #[must_use]
+    pub fn with_tool_restrictions(
+        mut self,
+        task_allowed: Option<&[String]>,
+        task_denied: Option<&[String]>,
+    ) -> Self {
+        let task_allowed = task_allowed.map(normalized_tool_names);
+        let denied = self
+            .forbidden_tool_names()
+            .into_iter()
+            .chain(task_denied.into_iter().flatten().cloned())
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect::<BTreeSet<_>>();
+
+        let allowed = match (self.allowed_tools.take(), task_allowed) {
+            (None, None) => None,
+            (Some(contract), None) => Some(normalized_tool_names(&contract)),
+            (None, Some(task)) => Some(task),
+            (Some(contract), Some(task)) => {
+                let contract = normalized_tool_names(&contract);
+                Some(contract.intersection(&task).cloned().collect())
+            }
+        }
+        .map(|mut names| {
+            names.retain(|name| !denied.contains(name));
+            names.into_iter().collect()
+        });
+
+        self.allowed_tools = allowed;
+        if !denied.is_empty() {
+            // Preserve the declarative contract as the single enforcement
+            // source. Existing rules remain intact; this normalized rule also
+            // carries task denials into provider-backed dispatchers.
+            self.governance
+                .retain(|rule| !matches!(rule, GovernanceRule::ForbiddenTools(_)));
+            self.governance
+                .push(GovernanceRule::ForbiddenTools(denied.into_iter().collect()));
+        }
+        self
+    }
+
+    /// Whether this contract imposes a tool capability restriction.
+    #[must_use]
+    pub fn has_tool_restrictions(&self) -> bool {
+        self.allowed_tools.is_some() || !self.forbidden_tool_names().is_empty()
+    }
+
     /// Validate this contract against an inbound tool invocation.
     pub fn check_pre_execution(
         &self,
         call: &ToolCall,
         ctx: &ToolContext,
     ) -> Result<(), ContractViolation> {
+        // The compatibility entrypoint has no ToolDef, so apply taint to
+        // canonical privileged tools here. Dynamic-tool permission bits are
+        // enforced by SafetyLayer::check_pre_execution_with_def.
+        if is_privileged_call(call) {
+            self.check_taint_level(ctx.taint_level())?;
+        }
+
         // Capability intersection — `allowed_tools` is the binding allowlist
         // when set; reject before invariants/governance run so a denied tool
         // never observes any contract side effects.
@@ -351,6 +440,41 @@ impl AgentContract {
         Ok(())
     }
 
+    /// Reject data whose trust-origin taint exceeds this contract's ceiling.
+    pub fn check_taint_level(&self, taint_level: CamelTaintLevel) -> Result<(), ContractViolation> {
+        if taint_level > self.max_taint_level {
+            return Err(ContractViolation::new(
+                &self.role,
+                "MaxTaintLevel",
+                format!(
+                    "input taint `{taint_level}` exceeds contract maximum `{}`",
+                    self.max_taint_level
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Evaluate a non-tool action through the same immutable five-head
+    /// corrigibility ordering used by tool safety hooks.
+    pub fn check_dispatch_action(
+        &self,
+        action_description: &str,
+        context: &ActionContext,
+        taint_level: CamelTaintLevel,
+    ) -> Result<(), ContractViolation> {
+        self.check_taint_level(taint_level)?;
+        let decision = evaluate_action(action_description, context);
+        if let Some((head, reason)) = decision.first_veto() {
+            return Err(ContractViolation::new(
+                &self.role,
+                "Corrigibility",
+                format!("{:?} head vetoed action: {reason}", head),
+            ));
+        }
+        Ok(())
+    }
+
     /// Return the first configured recovery action that applies to `result`.
     #[must_use]
     pub fn applicable_recovery(&self, result: &ToolResult) -> Option<RecoveryAction> {
@@ -363,6 +487,21 @@ impl AgentContract {
             .find(|action| action.matches(err))
             .cloned()
     }
+}
+
+fn normalized_tool_names(names: &[String]) -> BTreeSet<String> {
+    names
+        .iter()
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn is_privileged_call(call: &ToolCall) -> bool {
+    NETWORK_TOOLS.contains(&call.name.as_str())
+        || EDIT_TOOLS.contains(&call.name.as_str())
+        || matches!(call.name.as_str(), "bash" | "run_tests" | "git")
 }
 
 /// Errors returned while loading a contract asset.
@@ -938,6 +1077,7 @@ mod tests {
             governance: Vec::new(),
             recovery: Vec::new(),
             allowed_tools: None,
+            max_taint_level: default_max_taint_level(),
         };
         let call = ToolCall::new(
             "call-token-bypass",
@@ -966,6 +1106,7 @@ mod tests {
             governance: Vec::new(),
             recovery: Vec::new(),
             allowed_tools: None,
+            max_taint_level: default_max_taint_level(),
         };
         let call = ToolCall::new(
             "call-gate-bypass",
@@ -991,6 +1132,7 @@ mod tests {
             governance: Vec::new(),
             recovery: Vec::new(),
             allowed_tools: None,
+            max_taint_level: default_max_taint_level(),
         };
         let call = ToolCall::new(
             "call-gated-commit",
@@ -1029,6 +1171,7 @@ mod tests {
             governance: vec![GovernanceRule::MaxCostPerTurn(0.01)],
             recovery: Vec::new(),
             allowed_tools: None,
+            max_taint_level: default_max_taint_level(),
         };
         let call = ToolCall::new(
             "call-cost-claim",
@@ -1051,6 +1194,7 @@ mod tests {
             governance: vec![GovernanceRule::MaxCostPerTurn(0.25)],
             recovery: Vec::new(),
             allowed_tools: None,
+            max_taint_level: default_max_taint_level(),
         };
         let actions = Arc::new(RwLock::new(vec![
             ExternalAction {
@@ -1093,6 +1237,7 @@ mod tests {
             governance: vec![GovernanceRule::RequireToolBeforeEdit("read_file".into())],
             recovery: Vec::new(),
             allowed_tools: None,
+            max_taint_level: default_max_taint_level(),
         };
         let actions = Arc::new(RwLock::new(vec![ExternalAction {
             service: "tool_dispatcher".into(),
@@ -1134,6 +1279,7 @@ mod tests {
             governance: vec![GovernanceRule::MaxConsecutiveFailures(3)],
             recovery: Vec::new(),
             allowed_tools: None,
+            max_taint_level: default_max_taint_level(),
         };
 
         // Build 3 consecutive failure actions.
@@ -1180,6 +1326,7 @@ mod tests {
             governance: vec![GovernanceRule::MaxConsecutiveFailures(3)],
             recovery: Vec::new(),
             allowed_tools: None,
+            max_taint_level: default_max_taint_level(),
         };
 
         // 2 failures, then 1 success, then 2 more failures = 2 trailing failures.
@@ -1278,6 +1425,7 @@ mod tests {
             governance: Vec::new(),
             recovery: Vec::new(),
             allowed_tools: Some(vec!["read_file".into(), "grep".into()]),
+            max_taint_level: default_max_taint_level(),
         };
         let ctx = ToolContext::new(
             "/tmp/contract-tests",
@@ -1384,5 +1532,78 @@ mod tests {
             ..AgentContract::default()
         };
         assert!(contract.forbidden_tool_names().is_empty());
+    }
+
+    #[test]
+    fn tool_restrictions_intersect_allowlists_and_union_denials() {
+        let contract = AgentContract {
+            role: "known-role".into(),
+            governance: vec![GovernanceRule::ForbiddenTools(vec!["bash".into()])],
+            allowed_tools: Some(vec!["read_file".into(), "grep".into(), "bash".into()]),
+            ..AgentContract::default()
+        }
+        .with_tool_restrictions(
+            Some(&["read_file".into(), "bash".into(), "write_file".into()]),
+            Some(&["write_file".into(), "web_fetch".into()]),
+        );
+
+        assert_eq!(contract.allowed_tools, Some(vec!["read_file".into()]));
+        assert_eq!(
+            contract.forbidden_tool_names(),
+            vec![
+                "bash".to_string(),
+                "web_fetch".to_string(),
+                "write_file".to_string(),
+            ]
+        );
+        assert!(contract.permits_tool("read_file"));
+        assert!(!contract.permits_tool("grep"));
+        assert!(!contract.permits_tool("bash"));
+    }
+
+    #[test]
+    fn restricted_fallback_stays_deny_all_after_task_restrictions() {
+        let contract = AgentContract::load_for_role_with_mode(
+            "unknown-runtime-role",
+            ContractLoadMode::RestrictedFallback,
+        )
+        .expect("restricted fallback")
+        .with_tool_restrictions(
+            Some(&["read_file".into(), "bash".into()]),
+            Some(&["bash".into()]),
+        );
+
+        assert_eq!(contract.allowed_tools.as_deref(), Some(&[][..]));
+        assert!(contract.has_tool_restrictions());
+        assert!(!contract.permits_tool("read_file"));
+        assert!(!contract.permits_tool("bash"));
+    }
+
+    #[test]
+    fn legacy_contract_defaults_to_external_taint_ceiling() {
+        let contract: AgentContract = serde_json::from_str(r#"{"role":"legacy"}"#).unwrap();
+        assert_eq!(contract.max_taint_level, CamelTaintLevel::External);
+    }
+
+    #[test]
+    fn untrusted_taint_blocks_privileged_but_not_read_only_calls() {
+        let contract = AgentContract::default();
+        let ctx = ToolContext::testing("/tmp").with_taint_level(CamelTaintLevel::Untrusted);
+        let read = ToolCall::new(
+            "read",
+            "read_file",
+            serde_json::json!({"path": "README.md"}),
+        );
+        let write = ToolCall::new(
+            "write",
+            "write_file",
+            serde_json::json!({"path": "owned.txt", "content": "payload"}),
+        );
+
+        assert!(contract.check_pre_execution(&read, &ctx).is_ok());
+        let violation = contract
+            .check_pre_execution(&write, &ctx)
+            .expect_err("untrusted write must fail closed");
+        assert_eq!(violation.rule, "MaxTaintLevel");
     }
 }

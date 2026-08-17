@@ -65,12 +65,16 @@ impl GeminiCompatAgent {
                 Value::String(cached_content.to_string()),
             );
         }
-        let inner = CodexAgent::new(api_key, &model.slug)
+        let mut inner = CodexAgent::new(api_key, &model.slug)
             .with_base_url(compat_base_url(&base_url))
             .with_timeout_ms(resolved_timeout_ms(options))
             .with_max_tokens(resolved_max_tokens(&model))
             .with_extra_body_params(extra_body_params)
+            .with_input_messages(options.input_messages.clone())
             .with_name(name);
+        if let Some(prompt) = &options.system_prompt {
+            inner = inner.with_system_prompt(prompt.clone());
+        }
         Self { inner }
     }
 }

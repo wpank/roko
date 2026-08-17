@@ -1,5 +1,8 @@
 # 00 — Tool Architecture
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Roko's tool system: ToolDef pattern, ToolContext, ToolResult, ToolExecutor, and the
 > principles governing how tools compose within the Synapse Architecture.
 > See also [tmp/refinements/25-domain-specific-agents.md](../../tmp/refinements/25-domain-specific-agents.md).

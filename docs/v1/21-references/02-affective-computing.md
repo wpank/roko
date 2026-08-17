@@ -1,5 +1,8 @@
 # Affective Computing
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for emotion modeling, somatic markers, and affect-modulated cognition in the Roko Daimon subsystem.
 
 **Topic**: [References](./INDEX.md)

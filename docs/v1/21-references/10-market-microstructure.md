@@ -1,5 +1,8 @@
 # Market Microstructure and DeFi Theory
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for automated market making, liquidity provision, vault mechanisms, and DeFi protocol design relevant to Roko's chain domain plugin.
 
 **Topic**: [References](./INDEX.md)

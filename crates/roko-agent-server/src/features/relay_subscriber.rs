@@ -4,22 +4,17 @@
 //! subscribe/unsubscribe/publish methods on [`RelayHandle`].  Callers can
 //! bundle a handle + their topic subscriptions into a single value that is
 //! easy to pass around without exposing the full relay-client API.
-//!
-//! Also provides [`ISFRTopicAdapter`], which adapts the relay [`TopicHandler`]
-//! interface to [`roko_core::isfr_feed::ISFRFeed`] so ISFR relay messages are
-//! automatically republished as Pulses on the local bus.
 
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use roko_core::isfr_feed::ISFRFeed;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use super::relay_client::{RelayHandle, TopicHandler};
 
 /// A received topic message.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TopicMessage {
     /// The topic the message arrived on.
     pub topic: String,
@@ -31,12 +26,34 @@ pub struct TopicMessage {
     pub publisher_id: Option<String>,
     /// Monotonically increasing sequence number assigned by the relay bus.
     pub seq: u64,
+    commit_tx: Option<oneshot::Sender<Result<()>>>,
+}
+
+impl TopicMessage {
+    /// Report that this message has been durably committed. The relay client
+    /// emits its consumer ACK only after this method succeeds.
+    pub fn commit(mut self) -> Result<()> {
+        self.commit_tx
+            .take()
+            .ok_or_else(|| anyhow!("relay topic message already completed"))?
+            .send(Ok(()))
+            .map_err(|_| anyhow!("relay durable handler stopped"))
+    }
+
+    /// Reject processing so the client reconnects from its previous cursor.
+    pub fn reject(mut self, error: impl Into<anyhow::Error>) -> Result<()> {
+        self.commit_tx
+            .take()
+            .ok_or_else(|| anyhow!("relay topic message already completed"))?
+            .send(Err(error.into()))
+            .map_err(|_| anyhow!("relay durable handler stopped"))
+    }
 }
 
 /// Receives topic messages through an mpsc channel and forwards them to a
-/// caller-supplied [`mpsc::UnboundedSender<TopicMessage>`].
+/// caller-supplied bounded [`mpsc::Sender<TopicMessage>`].
 struct ChannelTopicHandler {
-    tx: mpsc::UnboundedSender<TopicMessage>,
+    tx: mpsc::Sender<TopicMessage>,
 }
 
 #[async_trait]
@@ -48,16 +65,23 @@ impl TopicHandler for ChannelTopicHandler {
         payload: serde_json::Value,
         publisher_id: Option<&str>,
         seq: u64,
-    ) {
+    ) -> Result<()> {
+        let (commit_tx, commit_rx) = oneshot::channel();
         let msg = TopicMessage {
             topic: topic.to_owned(),
             msg_type: msg_type.to_owned(),
             payload,
             publisher_id: publisher_id.map(ToOwned::to_owned),
             seq,
+            commit_tx: Some(commit_tx),
         };
-        // A send error just means the receiver was dropped; nothing to do.
-        let _ = self.tx.send(msg);
+        self.tx
+            .send(msg)
+            .await
+            .map_err(|_| anyhow!("relay topic receiver dropped"))?;
+        commit_rx
+            .await
+            .map_err(|_| anyhow!("relay topic delivery was dropped without commit"))?
     }
 }
 
@@ -79,9 +103,10 @@ impl TopicHandler for ChannelTopicHandler {
 /// let (handler, mut rx) = RelaySubscriber::make_handler();
 /// // pass handler to relay_client::connect(…, Some(handler))
 /// let subscriber = RelaySubscriber::from_handle(relay_handle);
-/// subscriber.subscribe("isfr:rates")?;
+/// subscriber.subscribe("agent:updates")?;
 /// while let Some(msg) = rx.recv().await {
 ///     println!("topic={} seq={}", msg.topic, msg.seq);
+///     msg.commit()?;
 /// }
 /// # Ok(())
 /// # }
@@ -96,8 +121,16 @@ impl RelaySubscriber {
     /// Pass the returned `handler` to `relay_client::connect` as `topic_handler`.
     /// All incoming topic messages will be forwarded to the returned `receiver`.
     #[must_use]
-    pub fn make_handler() -> (Arc<dyn TopicHandler>, mpsc::UnboundedReceiver<TopicMessage>) {
-        let (tx, rx) = mpsc::unbounded_channel();
+    pub fn make_handler() -> (Arc<dyn TopicHandler>, mpsc::Receiver<TopicMessage>) {
+        Self::make_handler_with_capacity(64)
+    }
+
+    /// Create a handler with an explicit bounded delivery capacity.
+    #[must_use]
+    pub fn make_handler_with_capacity(
+        capacity: usize,
+    ) -> (Arc<dyn TopicHandler>, mpsc::Receiver<TopicMessage>) {
+        let (tx, rx) = mpsc::channel(capacity.clamp(1, 4_096));
         let handler: Arc<dyn TopicHandler> = Arc::new(ChannelTopicHandler { tx });
         (handler, rx)
     }
@@ -147,56 +180,5 @@ impl RelaySubscriber {
     #[must_use]
     pub fn handle(&self) -> &RelayHandle {
         &self.handle
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ISFRTopicAdapter
-// ---------------------------------------------------------------------------
-
-/// Adapts the relay [`TopicHandler`] interface to [`ISFRFeed`].
-///
-/// When the relay delivers a [`TopicMessage`] on an ISFR topic, this adapter
-/// calls [`ISFRFeed::handle_message`] which republishes the data as a
-/// [`roko_core::pulse::Pulse`] on the local bus.
-///
-/// # Usage
-///
-/// ```rust,ignore
-/// use std::sync::Arc;
-/// use roko_core::bus_backends::BroadcastBus;
-/// use roko_core::isfr_feed::ISFRFeed;
-/// use roko_agent_server::features::relay_subscriber::ISFRTopicAdapter;
-///
-/// let bus = Arc::new(BroadcastBus::new());
-/// let feed = Arc::new(ISFRFeed::new(bus));
-/// let handler = ISFRTopicAdapter::make_handler(feed);
-/// // pass `Some(handler)` to relay_client::connect(...)
-/// ```
-pub struct ISFRTopicAdapter {
-    feed: Arc<ISFRFeed>,
-}
-
-impl ISFRTopicAdapter {
-    /// Wrap an [`ISFRFeed`] in an [`Arc`] and return it as a boxed
-    /// [`TopicHandler`] ready to pass to `relay_client::connect`.
-    #[must_use]
-    pub fn make_handler(feed: Arc<ISFRFeed>) -> Arc<dyn TopicHandler> {
-        Arc::new(Self { feed })
-    }
-}
-
-#[async_trait]
-impl TopicHandler for ISFRTopicAdapter {
-    async fn on_topic_message(
-        &self,
-        topic: &str,
-        msg_type: &str,
-        payload: serde_json::Value,
-        publisher_id: Option<&str>,
-        seq: u64,
-    ) {
-        self.feed
-            .handle_message(topic, msg_type, payload, publisher_id, seq);
     }
 }

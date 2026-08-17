@@ -1,5 +1,8 @@
 # False Positive Math for HDC Similarity
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > With 10,240-bit BSC vectors, a threshold of 0.526 guarantees <1% false positive rate against a 100K vocabulary after Bonferroni correction — the recommended threshold for Neuro's cross-domain resonance detection.
 
 

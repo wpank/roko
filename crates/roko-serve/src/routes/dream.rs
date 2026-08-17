@@ -61,6 +61,7 @@ async fn dream_run(
                     auto_dream: true,
                     idle_threshold_mins: 0,
                     min_episodes_for_dream: 0,
+                    schedule: roko_dreams::DreamSchedulePolicy::default(),
                     agent: roko_dreams::DreamAgentConfig {
                         command: "cat".to_string(),
                         args: Vec::new(),

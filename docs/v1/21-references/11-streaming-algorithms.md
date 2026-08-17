@@ -1,5 +1,8 @@
 # Streaming Algorithms and Online Statistics
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for probabilistic data structures, adaptive windowing, online estimation, and streaming computation used in Roko's real-time monitoring.
 
 **Topic**: [References](./INDEX.md)

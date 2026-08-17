@@ -2,6 +2,11 @@
 
 > Depth for [22-REGISTRIES.md](../../unified/22-REGISTRIES.md). How payment protocols, clearing, and dispute resolution emerge from Connect, Verify, and Store Cells.
 
+> **ISFR DEPRECATED (2026-08-13):** The ISFR vertical is deprecated and scheduled
+> for removal. See `.roko/GAPS.md`. Section 2 (ISFR as a Score Cell) and related
+> ISFR clearing/settlement content below describe functionality that exists in
+> `roko-chain` source but is not wired at runtime and will be removed.
+
 This doc specifies the full payment lifecycle -- from the initial HTTP 402 handshake through off-chain state channels, cooperative clearing, on-chain settlement, and multi-level dispute resolution. Every component decomposes into standard Cell primitives: Connect Cells for payment protocol negotiation, Verify Cells for settlement validation, Score Cells for trust-weighted fact aggregation, and Compose Cells for optimal resource allocation. No new kernel types are introduced.
 
 ---

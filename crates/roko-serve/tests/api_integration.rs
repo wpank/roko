@@ -106,6 +106,7 @@ fn test_app_with_auth(api_key: &str) -> (tempfile::TempDir, axum::Router) {
         privy_workspace_id: None,
         privy_allowed_roles: Vec::new(),
         enforcement_mode: Default::default(),
+        ..ServeAuthConfig::default()
     };
     config.serve.auth = auth.clone();
     let deploy = Arc::from(create_backend("manual", None, None, None).expect("manual backend"));

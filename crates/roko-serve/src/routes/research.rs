@@ -382,7 +382,7 @@ fn build_analyze_prompt(workdir: &FsPath, context: &str) -> String {
     let _ = writeln!(prompt, "Workspace: {}", workdir.display());
     let _ = writeln!(
         prompt,
-        "Analyze .roko/memory/episodes.jsonl and .roko/engrams.jsonl, then write the results to {}.",
+        "Analyze .roko/episodes.jsonl and .roko/engrams.jsonl, then write the results to {}.",
         analysis_path.display()
     );
     let _ = writeln!(

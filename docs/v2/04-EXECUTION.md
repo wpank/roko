@@ -1,6 +1,30 @@
 # 04 — Execution Engine
 
 > A single runtime for ALL Graphs. Manages Flow lifecycle, Hot Graph ticking, deterministic replay via the Workflow/Activity split, failure strategies, resumability, budget enforcement, and concurrency. Every lifecycle event is a Pulse on Bus. The cognitive loop is a 7-Cell Hot Graph with T0 short-circuit handling ~80% of ticks at zero cost.
+> **Implementation status:** PARTIAL — GraphEngine provides sequential or bounded parallel
+> DAG execution, output flow between topological waves, Activity replay/recording, and
+> restart-durable Hot tick/output/budget state carry-over. FlowStatus tracking and the full
+> 9-step runner loop exist. Conditional routing is live across sequential, parallel,
+> snapshot-resume, and Flow paths, including normal untaken-branch semantics. Live
+> provider dispatch for converted plan tasks, graph-fingerprinted durable Activity
+> recording/CLI resume, seven typed cognitive Cells, five Verify Cells, a fixed immune
+> decision Graph, and T0 short-circuit are implemented. Hot checkpoints validate the graph
+> fingerprint, fsync Activity state, replay interrupted work without re-execution, restore
+> cumulative budgets, archive exact state on fresh/force, and surface persistence failures.
+> Converted plan execution now accounts for actual paid-call cost, enforces and reports a
+> shared per-plan ceiling, atomically persists reservations before dispatch, and restores an
+> exact schema-v2 cost sidecar on resume. Missing/corrupt/mismatched/crash-reserved state
+> fails closed. Parallel aggregate over-admission is closed; a single provider call can still
+> disclose more cost than its reservation because no provider-side maximum-cost API exists.
+> Runner-v2 gates/replan/approval/worktrees/merge/full-state-
+> persistence/cancellation parity remains incomplete.
+
+Runner-v2 provider dispatch also has a durable prompt-treatment boundary. A prompt
+experiment replaces its named canonical section before composition, then the exact final
+system/user prompt hash is committed after model/safety admission and before either runtime
+launches. Terminal settlement is an idempotent projection of typed lifecycle events;
+startup scans archived and live event generations to repair a crash between terminal
+persistence and learning feedback without replaying the provider effect.
 
 **Kernel primitives used**: Signal (data between Cells), Cell (computation), Graph (composition being executed), Bus (lifecycle Pulses, inter-loop communication), Store (Activity records, snapshots, episodes), Protocol (all 9 — Score, Verify, Route, Compose, React, Observe, Store, Connect, Trigger — invoked from loop Cells).
 
@@ -328,7 +352,11 @@ if decision.tier == CognitiveTier::T0Reflex && decision.selected.is_empty() {
 }
 ```
 
-This short-circuit is expressed as conditional edges in the Graph (see [03-GRAPH](03-GRAPH.md) S8). When the T0 short-circuit fires, REACT still runs (to update counters, check deadlines, emit heartbeats) but ACT/VERIFY/PERSIST are skipped entirely. Cost: $0.
+This short-circuit is intended to be expressed as conditional edges in the Graph (see
+[03-GRAPH](03-GRAPH.md) S8). The engine now executes explicit success, failure, always,
+and output-equality routes, but this full cognitive-loop branch and its arbitrary boolean
+condition remain aspirational. When implemented, REACT still runs (to update counters,
+check deadlines, emit heartbeats) while ACT/VERIFY/PERSIST are skipped. Cost: $0.
 
 ---
 
@@ -364,7 +392,8 @@ Hot Graphs ([03-GRAPH](03-GRAPH.md) S8) stay resident in memory and re-fire on e
 
 4. Retain exit node outputs for next tick
 
-5. Optionally checkpoint state to disk (periodic, not every tick)
+5. Fsync completed Activities, then atomically commit the fingerprinted Hot manifest,
+   retained tick state, next tick, and cumulative budget state
 
 6. Publish tick Pulse on agent:{id}.tick.completed
 ```
@@ -376,6 +405,13 @@ Between ticks, the Hot Flow retains:
 - Graph-level variables
 - Accumulated cost
 - CorticalState updates (via atomic writes)
+
+For resumable Hot Flows the first three items are restart-durable. A manifest is committed
+only after a successful tick; a crash after an Activity write but before manifest commit
+replays that Activity from the run-scoped log instead of invoking it again. Graph drift,
+corrupt/duplicate/future Activity records, or mismatched run state fail closed. Fresh or
+forced replacement archives the exact prior manifest and Activity log before starting a
+new run.
 
 ### Teardown
 
@@ -465,13 +501,13 @@ The worst case is a duplicate LLM call (if ACT completed but the Activity record
 
 ```bash
 # Start a plan
-roko plan run plans/my-plan/
+roko plan run plans/my-plan/ --engine runner-v2
 
 # Resume from the latest snapshot
-roko plan run plans/my-plan/ --resume .roko/state/executor.json
+roko plan run plans/my-plan/ --engine runner-v2 --resume-plan
 
-# Resume a specific snapshot
-roko plan run plans/my-plan/ --resume .roko/runs/<run-id>/state.json
+# The canonical crash-recovery snapshot is written here
+jq . .roko/state/state-snapshot.json
 ```
 
 ---

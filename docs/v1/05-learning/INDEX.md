@@ -1,5 +1,8 @@
 # 05 — Learning
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Crate:** `roko-learn` · **Path:** `crates/roko-learn/src/`
 > **Persistence root:** `.roko/learn/`
 > **Entry point:** `LearningRuntime` in `runtime_feedback.rs`

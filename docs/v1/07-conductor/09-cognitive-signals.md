@@ -1,5 +1,8 @@
 # Cognitive Signals
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Typed interrupts that carry semantic meaning. Not just "something
 > happened" but "pause execution," "reprioritize this task," "inject
 > this context," "escalate to a more capable model."

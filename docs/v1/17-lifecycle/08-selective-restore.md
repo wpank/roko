@@ -1,5 +1,8 @@
 # Selective Knowledge Restore
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L1 Framework (Substrate deserialization, knowledge ingestion)
 >
 > **Prerequisites**: `docs/17-lifecycle/05-knowledge-backup-export.md` (backup format), `docs/17-lifecycle/07-new-agent-creation.md` (new agent creation), `docs/03-neuro/INDEX.md` (Neuro store, Engram format, tier management)

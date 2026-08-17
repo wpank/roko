@@ -10,7 +10,7 @@
 
 The chain watcher is a background task that bridges on-chain state into the Bus. It subscribes to a chain RPC endpoint, watches for new blocks and specific contract events, decodes each event into a typed payload, and publishes it as a Pulse on the Bus. Agents never connect directly to the chain RPC -- they subscribe to `chain.{chain_id}` topics and receive decoded events without running their own watchers.
 
-The watcher runs alongside other chain subsystems (ISFR keeper, witness engine) as a long-lived tokio task. On startup it seeds its position by querying `eth_blockNumber`, backfills the most recent 20 blocks for continuity, then enters its poll loop.
+The watcher runs alongside other chain subsystems (~~ISFR keeper~~ (deprecated), witness engine) as a long-lived tokio task. On startup it seeds its position by querying `eth_blockNumber`, backfills the most recent 20 blocks for continuity, then enters its poll loop.
 
 ```
 Chain RPC                 BlockWatcher                  Bus
@@ -78,8 +78,8 @@ The chain watcher decodes events from three on-chain contract families. Each eve
 | MultiAgentMarket | `JobAwarded(uint256,uint128)` | `chain.{id}` | `job_awarded` |
 | MultiAgentMarket | `JobSubmitted(uint256,bytes32)` | `chain.{id}` | `job_submitted` |
 | MultiAgentMarket | `JobResolved(uint256,uint8)` | `chain.{id}` | `job_resolved` |
-| ISFROracle | `RateSubmitted(uint256,uint256,uint256,address)` | `chain.{id}` | `rate_submitted` |
-| ISFROracle | `RangeClosed(uint256,uint256,uint256)` | `chain.{id}` | `range_closed` |
+| ISFROracle (DEPRECATED) | `RateSubmitted(uint256,uint256,uint256,address)` | `chain.{id}` | `rate_submitted` |
+| ISFROracle (DEPRECATED) | `RangeClosed(uint256,uint256,uint256)` | `chain.{id}` | `range_closed` |
 
 All events share the same topic namespace (`chain.{chain_id}`). Agents subscribe to the topic and filter on `msg_type` to select relevant events.
 
@@ -107,7 +107,7 @@ pub struct ContractEventInfo {
 }
 ```
 
-### 4.1 Example: RateSubmitted decode
+### 4.1 Example: RateSubmitted decode (DEPRECATED -- ISFROracle is scheduled for removal)
 
 When the ISFROracle contract emits `RateSubmitted`, the watcher extracts `epochId` from `topic1` and ABI-decodes `compositeBps` and `confidenceBps` from the data segment.
 
@@ -274,7 +274,7 @@ contracts = [
 poll_interval_ms = 2000
 ```
 
-The ISFR keeper runs alongside the chain watcher as a separate background task. Its configuration lives in `[isfr]` and controls rate source polling independently of block watching.
+The ISFR keeper (DEPRECATED) runs alongside the chain watcher as a separate background task. Its configuration lives in `[isfr]` and controls rate source polling independently of block watching.
 
 ```toml
 [isfr]
@@ -299,13 +299,13 @@ pool_address = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
 | Crate | File | Responsibility |
 |---|---|---|
 | `roko-chain` | `src/block_watcher.rs` | `BlockWatcher` poll loop, block/tx/event processing, `ChainState` ring buffers, backoff |
-| `roko-chain` | `src/isfr_keeper.rs` | `ISFRKeeper` orchestrator, rate polling, composite aggregation, relay publication |
-| `roko-chain` | `src/isfr_sources/mod.rs` | `ISFRSource` trait, `CompositeRate`, `SourceReading`, weighted median |
-| `roko-chain` | `src/isfr_sources/aave_v3.rs` | Aave V3 lending rate source (alloy-backed) |
-| `roko-chain` | `src/isfr_sources/compound_v3.rs` | Compound V3 lending rate source (alloy-backed) |
-| `roko-chain` | `src/isfr_sources/ethena.rs` | Ethena sUSDe structured yield source (alloy-backed) |
-| `roko-chain` | `src/isfr_sources/lido.rs` | Lido stETH staking rate source (alloy-backed) |
-| `roko-chain` | `src/isfr_sources/mock.rs` | `MockSource` (dev/test) and `OfflineSource` (unreachable RPC fallback) |
+| `roko-chain` | `src/isfr_keeper.rs` | `ISFRKeeper` orchestrator, rate polling, composite aggregation, relay publication (DEPRECATED) |
+| `roko-chain` | `src/isfr_sources/mod.rs` | `ISFRSource` trait, `CompositeRate`, `SourceReading`, weighted median (DEPRECATED) |
+| `roko-chain` | `src/isfr_sources/aave_v3.rs` | Aave V3 lending rate source (alloy-backed) (DEPRECATED) |
+| `roko-chain` | `src/isfr_sources/compound_v3.rs` | Compound V3 lending rate source (alloy-backed) (DEPRECATED) |
+| `roko-chain` | `src/isfr_sources/ethena.rs` | Ethena sUSDe structured yield source (alloy-backed) (DEPRECATED) |
+| `roko-chain` | `src/isfr_sources/lido.rs` | Lido stETH staking rate source (alloy-backed) (DEPRECATED) |
+| `roko-chain` | `src/isfr_sources/mock.rs` | `MockSource` (dev/test) and `OfflineSource` (unreachable RPC fallback) (DEPRECATED) |
 | `roko-chain` | `src/observer.rs` | `BlockObserver` with address filtering for targeted event watching |
 | `roko-core` | `src/config/chain.rs` | `ChainConfig`, `RelayConfig`, `ISFRSection` TOML deserialization |
 | `roko-serve` | `src/state.rs` | `AppState` holds `Arc<ChainState>` for REST endpoint access |

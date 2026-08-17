@@ -1,5 +1,8 @@
 # Academic Foundations — Complete Citation Catalog
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: Cross-cut (provides theoretical grounding for all layers)
 >
 > **Prerequisites**: None — this document is a reference. Read any sub-doc first for context.

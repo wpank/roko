@@ -4,23 +4,93 @@ use std::sync::{Arc, OnceLock};
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::HeaderName;
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::http::{HeaderMap, Method, Request};
+use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use chrono::Utc;
+use roko_chain::x402::{PaymentAuthorization, PaymentRequest};
 use roko_core::config::{ApiKeyEntry, ServeAuthConfig};
+use roko_core::feed::{FeedAccess, FeedInfo};
 use roko_core::obs::LogScrubber;
 use sha2::{Digest, Sha256};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::error::ApiError;
 use crate::rbac::{Permission, Role, enforce_permission};
+use crate::routes::auth::{AgentCapability, AgentCredentialClaims, parse_rfc3339};
 use crate::state::AppState;
 
 static UNSAFE_PUBLIC_CORS_WARNING: OnceLock<()> = OnceLock::new();
+
+/// Header containing an ERC-3009 payment authorization as JSON.
+pub const X_PAYMENT_AUTHORIZATION: &str = "x-payment-authorization";
+
+/// Header carrying the same payment challenge returned in an HTTP 402 body.
+pub const X_PAYMENT_REQUEST: &str = "x-payment-request";
+
+/// Verify the structural x402 authorization required to read a paid feed.
+///
+/// Public and private feeds bypass the payment cell. Signature verification is
+/// deliberately deferred to the chain settlement layer; this boundary checks
+/// only JSON shape and that the authorized value covers the advertised price.
+// Axum handlers consume `Response` directly on denial; boxing it here would only move the
+// allocation and complicate every caller without reducing the HTTP response itself.
+#[allow(clippy::result_large_err)]
+pub fn require_payment(feed: &FeedInfo, headers: &HeaderMap) -> Result<(), Response> {
+    if feed.access != FeedAccess::Paid {
+        return Ok(());
+    }
+
+    let required_amount = feed
+        .pricing
+        .as_ref()
+        .map(|pricing| {
+            let adjusted = pricing.per_request_cost * pricing.tier.price_multiplier();
+            if adjusted.is_finite() && adjusted > 0.0 {
+                adjusted.ceil() as u128
+            } else {
+                0
+            }
+        })
+        .unwrap_or(1);
+    if required_amount == 0 {
+        return Ok(());
+    }
+
+    let now = u64::try_from(Utc::now().timestamp()).unwrap_or(0);
+    let challenge = PaymentRequest {
+        recipient: feed.agent_id.clone(),
+        amount: required_amount,
+        token: "KORAI".to_string(),
+        nonce: u128::from(now),
+        deadline: now.saturating_add(600),
+        reason: format!("paid feed access: {}", feed.id),
+    };
+
+    let authorization = headers
+        .get(X_PAYMENT_AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| serde_json::from_str::<PaymentAuthorization>(value).ok());
+
+    match authorization {
+        Some(authorization) if authorization.value >= required_amount => Ok(()),
+        _ => Err(payment_required(challenge)),
+    }
+}
+
+fn payment_required(challenge: PaymentRequest) -> Response {
+    let challenge_header = serde_json::to_string(&challenge)
+        .ok()
+        .and_then(|value| HeaderValue::from_str(&value).ok());
+    let mut response = (StatusCode::PAYMENT_REQUIRED, axum::Json(challenge)).into_response();
+    if let Some(value) = challenge_header {
+        response.headers_mut().insert(X_PAYMENT_REQUEST, value);
+    }
+    response
+}
 
 // ── Extension route whitelist ─────────────────────────────────────────────────
 //
@@ -144,6 +214,8 @@ pub enum AuthMethod {
     Jwt,
     /// Authenticated via a non-JWT bearer token.
     Bearer,
+    /// Authenticated via a deployment-scoped worker callback token.
+    WorkerToken,
 }
 
 impl AuthMethod {
@@ -153,8 +225,19 @@ impl AuthMethod {
             Self::ApiKey => "api_key",
             Self::Jwt => "jwt",
             Self::Bearer => "bearer",
+            Self::WorkerToken => "worker_token",
         }
     }
+}
+
+fn worker_callback_id<'a>(method: &Method, path: &'a str) -> Option<&'a str> {
+    if method != Method::POST {
+        return None;
+    }
+    path.strip_prefix("/api/deployments/")
+        .or_else(|| path.strip_prefix("/deployments/"))?
+        .strip_suffix("/callback")
+        .filter(|id| !id.is_empty() && !id.contains('/'))
 }
 
 /// Authenticated caller context injected into request extensions.
@@ -170,6 +253,10 @@ pub struct AuthContext {
     /// Optional user/key identifier.
     pub user_id: Option<String>,
 }
+
+/// Agent identity authenticated from either modern or legacy agent credentials.
+#[derive(Debug, Clone)]
+struct AuthenticatedAgentId(String);
 
 /// Compute the hex-encoded SHA-256 hash of a plaintext API key.
 pub fn hash_api_key(plaintext: &str) -> String {
@@ -203,13 +290,14 @@ enum ApiKeyMatchResult<'a> {
 /// key from a wrong key, enabling the `X-Key-Expired` response header.
 fn match_api_key_entry<'a>(token: &str, entries: &'a [ApiKeyEntry]) -> ApiKeyMatchResult<'a> {
     let token_hash = hash_api_key(token);
-    let now = Utc::now().to_rfc3339();
+    let now = Utc::now();
 
     for entry in entries {
         // Check current key hash.
         if entry.key_hash == token_hash {
             if let Some(ref expires) = entry.expires_at {
-                if *expires < now {
+                // Malformed persisted expiry data fails closed.
+                if parse_rfc3339(expires).is_none_or(|expires| expires <= now) {
                     return ApiKeyMatchResult::Expired(entry);
                 }
             }
@@ -217,7 +305,9 @@ fn match_api_key_entry<'a>(token: &str, entries: &'a [ApiKeyEntry]) -> ApiKeyMat
         }
         // Check previous (rotated) hashes still within their grace period.
         for (prev_hash, grace_expires) in &entry.previous_key_hashes {
-            if prev_hash == &token_hash && grace_expires.as_str() >= now.as_str() {
+            if prev_hash == &token_hash
+                && parse_rfc3339(grace_expires).is_some_and(|expires| expires > now)
+            {
                 return ApiKeyMatchResult::GracePeriod(entry);
             }
         }
@@ -260,7 +350,7 @@ enum ApiKeyAuthResult {
     /// Authentication succeeded.
     Ok(AuthMethod, String, Option<String>),
     /// The token matched a key that has expired.
-    KeyExpired,
+    KeyExpired(String),
     /// The token did not match any key.
     NoMatch,
 }
@@ -271,9 +361,14 @@ enum ApiKeyAuthResult {
 ///
 /// This function handles API-key-based auth only — Privy JWT verification
 /// is handled asynchronously by [`try_privy_jwt`].
-fn authenticate_api_key(token: &str, auth: &ServeAuthConfig, via_header: bool) -> ApiKeyAuthResult {
+fn authenticate_api_key(
+    token: &str,
+    auth: &ServeAuthConfig,
+    entries: &[ApiKeyEntry],
+    via_header: bool,
+) -> ApiKeyAuthResult {
     // 1. Try named API keys first.
-    match match_api_key_entry(token, &auth.api_keys) {
+    match match_api_key_entry(token, entries) {
         ApiKeyMatchResult::Valid(entry) | ApiKeyMatchResult::GracePeriod(entry) => {
             let method = if via_header {
                 AuthMethod::ApiKey
@@ -284,8 +379,8 @@ fn authenticate_api_key(token: &str, auth: &ServeAuthConfig, via_header: bool) -
             };
             return ApiKeyAuthResult::Ok(method, entry.scope.clone(), Some(entry.name.clone()));
         }
-        ApiKeyMatchResult::Expired(_) => {
-            return ApiKeyAuthResult::KeyExpired;
+        ApiKeyMatchResult::Expired(entry) => {
+            return ApiKeyAuthResult::KeyExpired(entry.name.clone());
         }
         ApiKeyMatchResult::NotFound => {}
     }
@@ -399,36 +494,6 @@ async fn try_agent_token(
     None
 }
 
-/// Update the `last_used_at` timestamp for a named API key (best-effort).
-///
-/// Reads `.roko/api-keys.json`, updates the matching entry, and writes it back.
-/// Errors are silently swallowed — key tracking must not block or fail requests.
-fn update_last_used_at(workdir: &std::path::Path, key_name: &str) {
-    let path = workdir.join(".roko").join("api-keys.json");
-    let data = match std::fs::read_to_string(&path) {
-        Ok(d) => d,
-        Err(_) => return,
-    };
-    let mut keys: Vec<roko_core::config::ApiKeyEntry> = match serde_json::from_str(&data) {
-        Ok(k) => k,
-        Err(_) => return,
-    };
-    let now = Utc::now().to_rfc3339();
-    let mut updated = false;
-    for key in &mut keys {
-        if key.name == key_name {
-            key.last_used_at = Some(now.clone());
-            updated = true;
-            break;
-        }
-    }
-    if updated {
-        if let Ok(serialized) = serde_json::to_string_pretty(&keys) {
-            let _ = std::fs::write(&path, serialized);
-        }
-    }
-}
-
 /// Validate a `roko_agent_`-prefixed bearer token against the stored agent
 /// token registry (`.roko/agent-tokens.json`).
 ///
@@ -437,54 +502,57 @@ fn update_last_used_at(workdir: &std::path::Path, key_name: &str) {
 async fn try_named_agent_token(
     token: &str,
     state: &Arc<AppState>,
-) -> Option<(AuthMethod, String, Option<String>)> {
-    let path = state.workdir.join(".roko").join("agent-tokens.json");
-    let data = tokio::fs::read_to_string(&path).await.ok()?;
-    let tokens: Vec<serde_json::Value> = serde_json::from_str(&data).ok()?;
-    let token_hash = hash_api_key(token);
-    let now = Utc::now().to_rfc3339();
-    for entry in &tokens {
-        let stored_hash = entry.get("token_hash")?.as_str()?;
-        if stored_hash != token_hash {
-            continue;
-        }
-        // Reject revoked tokens.
-        if entry
-            .get("revoked")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        {
-            return None;
-        }
-        // Reject expired tokens.
-        if let Some(expires) = entry.get("expires_at").and_then(|v| v.as_str()) {
-            if expires < now.as_str() {
-                return None;
-            }
-        }
-        let agent_id = entry.get("agent_id")?.as_str()?.to_string();
-        // Build a scope string from capabilities (first capability wins for now).
-        let scope = entry
-            .get("capabilities")
-            .and_then(|v| v.as_array())
-            .and_then(|caps| caps.first())
-            .and_then(|c| c.as_str())
-            .map(capability_to_scope)
-            .unwrap_or("agent:write");
-        return Some((AuthMethod::Bearer, scope.to_string(), Some(agent_id)));
-    }
-    None
+) -> Option<AgentCredentialClaims> {
+    state.auth_registry.authenticate_agent_secret(token).await
 }
 
-/// Map an `AgentCapability` string to a scope string.
-fn capability_to_scope(cap: &str) -> &'static str {
-    match cap {
-        "Inference" => "agent:write",
-        "Tools" => "agent:write",
-        "BusPublish" => "agent:write",
-        "StoreWrite" => "write",
-        "StoreRead" => "read",
-        _ => "agent:write",
+/// Resolve the concrete capability needed for an agent-token request.
+/// Unclassified routes return `None` and fail closed for agent tokens.
+fn required_agent_capability(method: &Method, path: &str) -> Option<AgentCapability> {
+    if agent_observation_target(method, path).is_some() {
+        Some(AgentCapability::BusPublish)
+    } else if path.starts_with("/api/inference") || path.starts_with("/inference") {
+        Some(AgentCapability::Inference)
+    } else if path.starts_with("/api/rpc") || path.starts_with("/rpc") {
+        Some(AgentCapability::Tools)
+    } else if path.starts_with("/api/events/ingest")
+        || path.starts_with("/events/ingest")
+        || path == "/relay"
+        || path.starts_with("/relay/")
+    {
+        Some(AgentCapability::BusPublish)
+    } else if path.starts_with("/api/neuro/query") || path.starts_with("/neuro/query") {
+        Some(AgentCapability::StoreRead)
+    } else if path.starts_with("/api/neuro") || path.starts_with("/neuro") {
+        if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
+            Some(AgentCapability::StoreRead)
+        } else {
+            Some(AgentCapability::StoreWrite)
+        }
+    } else if path.starts_with("/api/learning") || path.starts_with("/learning") {
+        Some(AgentCapability::StoreRead)
+    } else {
+        None
+    }
+}
+
+fn agent_observation_target<'a>(method: &Method, path: &'a str) -> Option<&'a str> {
+    if *method != Method::POST {
+        return None;
+    }
+    path.strip_prefix("/api/agents/")
+        .or_else(|| path.strip_prefix("/agents/"))?
+        .strip_suffix("/observation")
+        .filter(|agent| !agent.is_empty() && !agent.contains('/'))
+}
+
+fn is_relay_delegation_endpoint(method: &Method, path: &str) -> bool {
+    *method == Method::POST && matches!(path, "/api/relay-tokens" | "/relay-tokens")
+}
+
+fn append_auth_audit(state: &AppState, event: crate::auth_audit::AuthAuditEvent) {
+    if let Some(log) = state.auth_audit.as_ref() {
+        log.append(&event);
     }
 }
 
@@ -501,12 +569,14 @@ fn expired_key_response() -> Response {
 
 /// Require a matching API credential for the request to continue.
 ///
-/// Supports five credential sources (checked in order):
-/// 1. `X-Api-Key` header (API key only)
-/// 2. `Authorization: Bearer roko_agent_*` — agent bearer tokens (T02)
-/// 3. `Authorization: Bearer <token>` matched against API keys
-/// 4. `Authorization: Bearer <jwt>` verified via Privy JWKS
-/// 5. Named API keys from `api_keys` list (SHA-256 hash comparison)
+/// Supports callback-scoped credentials on the worker callback route, then
+/// five user/agent credential sources:
+/// 1. `X-Roko-Worker-Token` on `POST /api/deployments/:id/callback`
+/// 2. `X-Api-Key` header (API key only)
+/// 3. `Authorization: Bearer roko_agent_*` — agent bearer tokens (T02)
+/// 4. `Authorization: Bearer <token>` matched against API keys
+/// 5. `Authorization: Bearer <jwt>` verified via Privy JWKS
+/// 6. Named API keys from `api_keys` list (SHA-256 hash comparison)
 ///
 /// On success, injects [`AuthContext`] into request extensions so downstream
 /// routes can inspect the caller's scope and identity.
@@ -519,54 +589,42 @@ pub async fn require_api_key(
     next: Next,
 ) -> Result<Response, ApiError> {
     let auth = state.load_roko_config().serve.auth.clone();
+    let named_api_keys = state.auth_registry.api_keys_snapshot().await;
+    let route_label = format!("{} {}", req.method(), req.uri().path());
 
-    let (auth_method, ctx, key_name_for_tracking) = match api_credential(req.headers()) {
-        ApiCredential::XApiKey(supplied) => match authenticate_api_key(supplied, &auth, true) {
-            ApiKeyAuthResult::Ok(method, scope, user_id) => {
-                let name = user_id.clone();
-                (
-                    method,
-                    AuthContext {
-                        method,
-                        scope,
-                        user_id,
-                    },
-                    name,
-                )
-            }
-            ApiKeyAuthResult::KeyExpired => {
-                return Ok(expired_key_response());
-            }
-            ApiKeyAuthResult::NoMatch => {
-                return Err(ApiError::unauthorized(
-                    "invalid or missing X-Api-Key header",
-                ));
-            }
-        },
-        ApiCredential::Bearer(supplied) => {
-            // Detect agent tokens by their `roko_agent_` prefix and route them
-            // to the dedicated agent token validator (T02).
-            if supplied.starts_with("roko_agent_") {
-                if let Some((method, scope, user_id)) =
-                    try_named_agent_token(supplied, &state).await
-                {
-                    (
-                        method,
-                        AuthContext {
-                            method,
-                            scope,
-                            user_id,
-                        },
-                        None,
-                    )
-                } else {
-                    return Err(ApiError::unauthorized(
-                        "invalid or expired agent bearer token",
-                    ));
-                }
-            } else {
-                // Try API key (sync) → per-agent sidecar token (async) → Privy JWT (async).
-                match authenticate_api_key(supplied, &auth, false) {
+    // Worker callbacks authenticate with their own narrowly-scoped token, not
+    // a user-facing API key. Validate it here so an auth-enabled server does
+    // not reject the worker before the callback handler can perform the same
+    // fail-closed verification.
+    if let Some(callback_id) = worker_callback_id(req.method(), req.uri().path()) {
+        let supplied = req
+            .headers()
+            .get("X-Roko-Worker-Token")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        if let Some(deployment_id) =
+            super::deployments::authenticate_worker_callback_token(&state, callback_id, supplied)
+                .await
+        {
+            let method = AuthMethod::WorkerToken;
+            req.extensions_mut().insert(AuthContext {
+                method,
+                scope: "write".to_string(),
+                user_id: Some(format!("worker:{deployment_id}")),
+            });
+            let mut response = next.run(req).await;
+            response.headers_mut().insert(
+                "X-Auth-Method",
+                axum::http::HeaderValue::from_static(method.header_value()),
+            );
+            return Ok(response);
+        }
+    }
+
+    let (auth_method, ctx, key_name_for_tracking, agent_context) =
+        match api_credential(req.headers()) {
+            ApiCredential::XApiKey(supplied) => {
+                match authenticate_api_key(supplied, &auth, &named_api_keys, true) {
                     ApiKeyAuthResult::Ok(method, scope, user_id) => {
                         let name = user_id.clone();
                         (
@@ -577,65 +635,236 @@ pub async fn require_api_key(
                                 user_id,
                             },
                             name,
+                            None,
                         )
                     }
-                    ApiKeyAuthResult::KeyExpired => {
+                    ApiKeyAuthResult::KeyExpired(name) => {
+                        append_auth_audit(
+                            &state,
+                            crate::auth_audit::AuthAuditEvent::new(
+                                format!("api-key:{name}"),
+                                crate::auth_audit::AuthAuditAction::KeyExpired,
+                                route_label.clone(),
+                                crate::auth_audit::AuthOutcome::Denied,
+                            ),
+                        );
                         return Ok(expired_key_response());
                     }
                     ApiKeyAuthResult::NoMatch => {
-                        if let Some((method, scope, user_id)) =
-                            try_agent_token(supplied, &state).await
-                        {
+                        return Err(ApiError::unauthorized(
+                            "invalid or missing X-Api-Key header",
+                        ));
+                    }
+                }
+            }
+            ApiCredential::Bearer(supplied) => {
+                // Detect agent tokens by their `roko_agent_` prefix and route them
+                // to the dedicated agent token validator (T02).
+                if supplied.starts_with("roko_agent_") {
+                    if let Some(agent) = try_named_agent_token(supplied, &state).await {
+                        req.extensions_mut()
+                            .insert(AuthenticatedAgentId(agent.agent_id.clone()));
+                        (
+                            AuthMethod::Bearer,
+                            AuthContext {
+                                method: AuthMethod::Bearer,
+                                scope: "agent:capability".to_string(),
+                                user_id: Some(agent.agent_id.clone()),
+                            },
+                            None,
+                            Some(agent),
+                        )
+                    } else {
+                        return Err(ApiError::unauthorized(
+                            "invalid or expired agent bearer token",
+                        ));
+                    }
+                } else if supplied.starts_with("roko_relay_") {
+                    match state
+                        .auth_registry
+                        .authenticate_relay_secret(supplied)
+                        .await
+                    {
+                        Ok(agent) => {
+                            req.extensions_mut()
+                                .insert(AuthenticatedAgentId(agent.agent_id.clone()));
                             (
-                                method,
+                                AuthMethod::Bearer,
                                 AuthContext {
-                                    method,
-                                    scope,
-                                    user_id,
+                                    method: AuthMethod::Bearer,
+                                    scope: "agent:capability".to_string(),
+                                    user_id: Some(agent.agent_id.clone()),
                                 },
                                 None,
+                                Some(agent),
                             )
-                        } else if let Some((method, scope, user_id)) =
-                            try_privy_jwt(supplied, &auth, &state).await
-                        {
-                            (
-                                method,
-                                AuthContext {
-                                    method,
-                                    scope,
-                                    user_id,
-                                },
-                                None,
-                            )
-                        } else {
+                        }
+                        Err(_) => {
                             return Err(ApiError::unauthorized(
-                                "invalid or missing Authorization bearer token",
+                                "invalid or expired agent bearer token",
                             ));
+                        }
+                    }
+                } else {
+                    // Try API key (sync) → per-agent sidecar token (async) → Privy JWT (async).
+                    match authenticate_api_key(supplied, &auth, &named_api_keys, false) {
+                        ApiKeyAuthResult::Ok(method, scope, user_id) => {
+                            let name = user_id.clone();
+                            (
+                                method,
+                                AuthContext {
+                                    method,
+                                    scope,
+                                    user_id,
+                                },
+                                name,
+                                None,
+                            )
+                        }
+                        ApiKeyAuthResult::KeyExpired(name) => {
+                            append_auth_audit(
+                                &state,
+                                crate::auth_audit::AuthAuditEvent::new(
+                                    format!("api-key:{name}"),
+                                    crate::auth_audit::AuthAuditAction::KeyExpired,
+                                    route_label.clone(),
+                                    crate::auth_audit::AuthOutcome::Denied,
+                                ),
+                            );
+                            return Ok(expired_key_response());
+                        }
+                        ApiKeyAuthResult::NoMatch => {
+                            if let Some((method, scope, user_id)) =
+                                try_agent_token(supplied, &state).await
+                            {
+                                if let Some(agent_id) = user_id.clone() {
+                                    req.extensions_mut().insert(AuthenticatedAgentId(agent_id));
+                                }
+                                (
+                                    method,
+                                    AuthContext {
+                                        method,
+                                        scope,
+                                        user_id,
+                                    },
+                                    None,
+                                    None,
+                                )
+                            } else if let Some((method, scope, user_id)) =
+                                try_privy_jwt(supplied, &auth, &state).await
+                            {
+                                (
+                                    method,
+                                    AuthContext {
+                                        method,
+                                        scope,
+                                        user_id,
+                                    },
+                                    None,
+                                    None,
+                                )
+                            } else {
+                                return Err(ApiError::unauthorized(
+                                    "invalid or missing Authorization bearer token",
+                                ));
+                            }
                         }
                     }
                 }
             }
-        }
-        ApiCredential::InvalidXApiKey => {
-            return Err(ApiError::unauthorized(
-                "invalid or missing X-Api-Key header",
-            ));
-        }
-        ApiCredential::InvalidAuthorization => {
-            return Err(ApiError::unauthorized(
-                "invalid or missing Authorization bearer token",
-            ));
-        }
-        ApiCredential::Missing => {
-            return Err(ApiError::unauthorized(
-                "missing X-Api-Key header or Authorization bearer token",
-            ));
-        }
-    };
+            ApiCredential::InvalidXApiKey => {
+                return Err(ApiError::unauthorized(
+                    "invalid or missing X-Api-Key header",
+                ));
+            }
+            ApiCredential::InvalidAuthorization => {
+                return Err(ApiError::unauthorized(
+                    "invalid or missing Authorization bearer token",
+                ));
+            }
+            ApiCredential::Missing => {
+                return Err(ApiError::unauthorized(
+                    "missing X-Api-Key header or Authorization bearer token",
+                ));
+            }
+        };
 
-    // Update last_used_at for named API keys (best-effort, non-blocking).
+    if let Some(target_agent) = agent_observation_target(req.method(), req.uri().path()) {
+        if let Some(authenticated_agent) = req.extensions().get::<AuthenticatedAgentId>() {
+            if authenticated_agent.0 != target_agent {
+                return Err(ApiError::forbidden(format!(
+                    "agent credential for `{}` cannot publish observations for `{target_agent}`",
+                    authenticated_agent.0
+                )));
+            }
+        }
+    }
+
+    // Persist usage through the same locked registry used by rotation/revocation.
     if let Some(ref key_name) = key_name_for_tracking {
-        update_last_used_at(&state.workdir, key_name);
+        if let Err(error) = state.auth_registry.record_api_key_use(key_name).await {
+            tracing::warn!(key = %key_name, error = %error, "failed to persist API-key usage");
+        }
+        append_auth_audit(
+            &state,
+            crate::auth_audit::AuthAuditEvent::new(
+                format!("api-key:{key_name}"),
+                crate::auth_audit::AuthAuditAction::TokenUsed,
+                route_label.clone(),
+                crate::auth_audit::AuthOutcome::Success,
+            ),
+        );
+    }
+
+    // Agent tokens are fail-closed outside their concrete capability routes.
+    if let Some(agent) = agent_context {
+        let required = required_agent_capability(req.method(), req.uri().path());
+        let delegation = is_relay_delegation_endpoint(req.method(), req.uri().path());
+        let allowed =
+            delegation || required.is_some_and(|required| agent.capabilities.contains(&required));
+        if !allowed {
+            let required_label = required
+                .map(|capability| format!("{capability:?}"))
+                .unwrap_or_else(|| "unclassified".to_string());
+            append_auth_audit(
+                &state,
+                crate::auth_audit::AuthAuditEvent::new(
+                    format!("agent:{}", agent.agent_id),
+                    crate::auth_audit::AuthAuditAction::PermissionDenied,
+                    route_label.clone(),
+                    crate::auth_audit::AuthOutcome::Denied,
+                )
+                .with_meta("required_capability", required_label.clone())
+                .with_meta("token_id", agent.token_id.clone()),
+            );
+            return Err(ApiError {
+                status: axum::http::StatusCode::FORBIDDEN,
+                code: "insufficient_capability".to_string(),
+                message: format!(
+                    "agent token lacks capability '{required_label}' for {route_label}"
+                ),
+                details: Some(Box::new(serde_json::json!({
+                    "required_capability": required_label,
+                    "route": route_label,
+                }))),
+            });
+        }
+
+        let capability_label = required
+            .map(|capability| format!("{capability:?}"))
+            .unwrap_or_else(|| "Delegate".to_string());
+        append_auth_audit(
+            &state,
+            crate::auth_audit::AuthAuditEvent::new(
+                format!("agent:{}", agent.agent_id),
+                crate::auth_audit::AuthAuditAction::TokenUsed,
+                route_label.clone(),
+                crate::auth_audit::AuthOutcome::Success,
+            )
+            .with_meta("capability", capability_label)
+            .with_meta("token_id", agent.token_id.clone()),
+        );
+        req.extensions_mut().insert(agent);
     }
 
     // Inject identity headers so downstream handlers (team.rs, etc.)
@@ -705,6 +934,10 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
         scope: "agent:write",
     },
     RouteScopeEntry {
+        prefix: "/api/meta",
+        scope: "agent:write",
+    },
+    RouteScopeEntry {
         prefix: "/relay",
         scope: "agent:write",
     },
@@ -734,6 +967,14 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
     RouteScopeEntry {
         prefix: "/api/jobs",
         scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/marketplace",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/registries",
+        scope: "admin",
     },
     RouteScopeEntry {
         prefix: "/api/run",
@@ -768,7 +1009,15 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
         scope: "write",
     },
     RouteScopeEntry {
+        prefix: "/api/signals",
+        scope: "write",
+    },
+    RouteScopeEntry {
         prefix: "/api/inference",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/gateway",
         scope: "write",
     },
     RouteScopeEntry {
@@ -784,12 +1033,38 @@ pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
         scope: "write",
     },
     RouteScopeEntry {
+        prefix: "/api/groups",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/arenas",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/defi",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/invitations",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/recipes",
+        scope: "write",
+    },
+    RouteScopeEntry {
         prefix: "/api/rpc",
         scope: "write",
     },
     RouteScopeEntry {
         prefix: "/api/vision-loop",
         scope: "write",
+    },
+    // Authenticated JWT invitees may accept an invitation without already
+    // holding TeamManage. The handler itself rejects non-JWT identities.
+    RouteScopeEntry {
+        prefix: "/api/team/join",
+        scope: "read",
     },
     RouteScopeEntry {
         prefix: "/api/team",
@@ -834,14 +1109,25 @@ pub(crate) fn required_scope_for(method: &Method, path: &str) -> &'static str {
     if method == Method::GET || method == Method::HEAD || method == Method::OPTIONS {
         return "read";
     }
+    // Middleware on the nested API router can observe `/registries/...`
+    // rather than the externally visible `/api/registries/...`. Match both
+    // forms so an admin route never falls back to the weaker generic write
+    // scope merely because Axum stripped the nest prefix.
+    let nested_path = (!path.starts_with("/api/")).then(|| format!("/api{path}"));
     // 1. Static first-party manifest (O(n), n ≤ ~30 entries).
     for entry in ROUTE_SCOPE_MANIFEST {
-        if path.starts_with(entry.prefix) {
+        if path.starts_with(entry.prefix)
+            || nested_path
+                .as_deref()
+                .is_some_and(|path| path.starts_with(entry.prefix))
+        {
             return entry.scope;
         }
     }
     // 2. Extension routes registered at startup with an explicit scope.
-    if let Some(ext_scope) = extension_scope_for(path) {
+    if let Some(ext_scope) =
+        extension_scope_for(path).or_else(|| nested_path.as_deref().and_then(extension_scope_for))
+    {
         return known_static_scope(ext_scope);
     }
     // 3. Fail-closed: any unclassified mutating route gets the sentinel scope
@@ -855,7 +1141,7 @@ pub(crate) fn required_scope_for(method: &Method, path: &str) -> &'static str {
 /// fallback sentinel does not change runtime behaviour — it is only detectable
 /// by the regression test.
 fn is_scope_sufficient(has: &str, required: &str) -> bool {
-    if has == "admin" {
+    if matches!(has, "owner" | "admin") {
         return true;
     }
     if required == "read" {
@@ -880,7 +1166,7 @@ fn is_scope_sufficient(has: &str, required: &str) -> bool {
 /// Opens the audit log on each call. Errors are swallowed — audit logging
 /// must never block or fail a request.
 fn emit_enforcement_audit(
-    workdir: &std::path::Path,
+    state: &AppState,
     actor: &str,
     action: crate::auth_audit::AuthAuditAction,
     route: &str,
@@ -891,10 +1177,7 @@ fn emit_enforcement_audit(
     let event = crate::auth_audit::AuthAuditEvent::new(actor, action, route, outcome)
         .with_meta("scope_has", scope_has)
         .with_meta("scope_required", scope_required);
-    match crate::auth_audit::open_audit_log(workdir) {
-        Ok(log) => log.append(&event),
-        Err(e) => tracing::warn!(error = %e, "auth_audit: could not open audit log"),
-    }
+    append_auth_audit(state, event);
 }
 
 /// Enforce scope requirements on mutating routes.
@@ -916,6 +1199,12 @@ pub async fn require_scope(
 ) -> Result<Response, ApiError> {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
+
+    // Named agent tokens were authorized against a concrete capability by
+    // `require_api_key`; do not reinterpret them through coarse user scopes.
+    if req.extensions().get::<AgentCredentialClaims>().is_some() {
+        return Ok(next.run(req).await);
+    }
 
     // Read-only methods bypass scope checks.
     if method == Method::GET || method == Method::HEAD || method == Method::OPTIONS {
@@ -953,7 +1242,7 @@ pub async fn require_scope(
             "auth_audit: permission denied",
         );
         emit_enforcement_audit(
-            &state.workdir,
+            &state,
             &actor,
             crate::auth_audit::AuthAuditAction::PermissionDenied,
             &route_label,
@@ -990,7 +1279,7 @@ pub async fn require_scope(
         "auth_audit: permission granted",
     );
     emit_enforcement_audit(
-        &state.workdir,
+        &state,
         &actor,
         crate::auth_audit::AuthAuditAction::PermissionGranted,
         &route_label,
@@ -1059,6 +1348,13 @@ pub fn require_permission(
     move |req: Request<Body>, next: Next| {
         let required = required;
         Box::pin(async move {
+            // Route groups contain both read and mutation handlers. RBAC
+            // permissions gate mutations; read-only methods remain governed
+            // by the scope middleware's `read` classification.
+            if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
+                return Ok(next.run(req).await);
+            }
+
             let (role, actor) = match req.extensions().get::<AuthContext>() {
                 Some(ctx) => (
                     scope_to_role(&ctx.scope),
@@ -1240,6 +1536,7 @@ pub async fn scrub_secrets(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::Extension;
     use axum::Router;
     use axum::http::StatusCode;
     use axum::http::header::AUTHORIZATION;
@@ -1252,6 +1549,7 @@ mod tests {
 
     use crate::deploy::manual::ManualBackend;
     use crate::runtime::NoOpRuntime;
+    use crate::state::AgentRegistrationRecord;
 
     /// Build a test router that echoes the provided body, with the scrub
     /// middleware wired in.
@@ -1286,13 +1584,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn worker_callback_path_matches_before_and_after_axum_nesting() {
+        assert_eq!(
+            worker_callback_id(&Method::POST, "/api/deployments/callback-123/callback"),
+            Some("callback-123")
+        );
+        assert_eq!(
+            worker_callback_id(&Method::POST, "/deployments/callback-123/callback"),
+            Some("callback-123")
+        );
+        assert_eq!(
+            worker_callback_id(&Method::GET, "/api/deployments/callback-123/callback"),
+            None
+        );
+        assert_eq!(
+            worker_callback_id(&Method::POST, "/api/deployments/callback-123/task"),
+            None
+        );
+    }
+
     fn make_test_state(auth: ServeAuthConfig) -> Arc<AppState> {
         let tempdir = tempdir().expect("invariant: tempdir creates");
+        make_test_state_at(tempdir.path(), auth)
+    }
+
+    fn make_test_state_at(path: &std::path::Path, auth: ServeAuthConfig) -> Arc<AppState> {
         let mut config = RokoConfig::default();
         config.serve.auth = auth;
         Arc::new(
             AppState::new(
-                tempdir.path().to_path_buf(),
+                path.to_path_buf(),
                 Arc::new(NoOpRuntime),
                 config,
                 Arc::new(ManualBackend::default()),
@@ -1394,6 +1716,386 @@ mod tests {
 
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(body["message"], "invalid or missing X-Api-Key header");
+    }
+
+    #[tokio::test]
+    async fn named_api_key_use_is_persisted_and_audited() {
+        let dir = tempdir().expect("tempdir");
+        let plaintext = "tracked-api-key";
+        let auth = keyed_auth("tracked", plaintext, "admin");
+        let state = make_test_state_at(dir.path(), auth);
+        let app = Router::new()
+            .route("/api/status", get(|| async { StatusCode::NO_CONTENT }))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                require_api_key,
+            ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/status")
+                    .header("X-Api-Key", plaintext)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let keys = state.auth_registry.api_keys_snapshot().await;
+        assert!(keys[0].last_used_at.is_some());
+        let events = state
+            .auth_audit
+            .as_ref()
+            .expect("audit log")
+            .query(None, None, None, None)
+            .expect("query audit");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].action,
+            crate::auth_audit::AuthAuditAction::TokenUsed
+        );
+        assert_eq!(events[0].actor, "api-key:tracked");
+    }
+
+    #[tokio::test]
+    async fn expired_named_key_returns_header_and_audits_rejection() {
+        let dir = tempdir().expect("tempdir");
+        let plaintext = "expired-api-key";
+        let mut auth = keyed_auth("expired", plaintext, "admin");
+        auth.api_keys[0].expires_at =
+            Some((Utc::now() - chrono::Duration::minutes(1)).to_rfc3339());
+        let state = make_test_state_at(dir.path(), auth);
+        let app = Router::new()
+            .route("/api/status", get(|| async { StatusCode::NO_CONTENT }))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                require_api_key,
+            ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/status")
+                    .header("X-Api-Key", plaintext)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers()["x-key-expired"], "true");
+        let events = state
+            .auth_audit
+            .as_ref()
+            .expect("audit log")
+            .query(None, None, None, None)
+            .expect("query audit");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].action,
+            crate::auth_audit::AuthAuditAction::KeyExpired
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_capabilities_are_order_independent_and_fail_closed() {
+        let dir = tempdir().expect("tempdir");
+        let state = make_test_state_at(dir.path(), ServeAuthConfig::default());
+        let plaintext = "roko_agent_capability-test";
+        state
+            .auth_registry
+            .insert_agent_token(crate::routes::auth::AgentToken {
+                token_id: "token-1".to_string(),
+                agent_id: "agent-1".to_string(),
+                // Inference is deliberately second: authorization must not
+                // depend on capability ordering.
+                capabilities: vec![AgentCapability::StoreRead, AgentCapability::Inference],
+                issued_at: Utc::now().to_rfc3339(),
+                expires_at: Utc::now() + chrono::Duration::hours(1),
+                revoked: false,
+                token_hash: hash_api_key(plaintext),
+            })
+            .await
+            .expect("insert agent token");
+        let app = Router::new()
+            .route(
+                "/api/inference/complete",
+                post(|| async { StatusCode::NO_CONTENT }),
+            )
+            .route(
+                "/api/events/ingest",
+                post(|| async { StatusCode::NO_CONTENT }),
+            )
+            .route(
+                "/api/agent-tokens",
+                post(|| async { StatusCode::NO_CONTENT }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                require_scope,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                require_api_key,
+            ));
+        let request = |path: &'static str| {
+            Request::builder()
+                .method(Method::POST)
+                .uri(path)
+                .header(AUTHORIZATION, format!("Bearer {plaintext}"))
+                .body(Body::empty())
+                .expect("request")
+        };
+
+        let allowed = app
+            .clone()
+            .oneshot(request("/api/inference/complete"))
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), StatusCode::NO_CONTENT);
+        let missing = app
+            .clone()
+            .oneshot(request("/api/events/ingest"))
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::FORBIDDEN);
+        let self_issue = app.oneshot(request("/api/agent-tokens")).await.unwrap();
+        assert_eq!(self_issue.status(), StatusCode::FORBIDDEN);
+
+        let events = state
+            .auth_audit
+            .as_ref()
+            .expect("audit log")
+            .query(None, None, None, None)
+            .expect("query audit");
+        assert_eq!(events.len(), 3);
+        assert_eq!(
+            events[0].action,
+            crate::auth_audit::AuthAuditAction::TokenUsed
+        );
+        assert_eq!(
+            events[1].action,
+            crate::auth_audit::AuthAuditAction::PermissionDenied
+        );
+        assert_eq!(
+            events[2].action,
+            crate::auth_audit::AuthAuditAction::PermissionDenied
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_observation_auth_requires_bus_publish_and_matching_agent_identity() {
+        let dir = tempdir().expect("tempdir");
+        let state = make_test_state_at(dir.path(), ServeAuthConfig::default());
+        for agent_id in ["agent-1", "agent-2"] {
+            state
+                .upsert_discovered_agent(AgentRegistrationRecord {
+                    agent_id: agent_id.to_string(),
+                    ..Default::default()
+                })
+                .await;
+        }
+
+        let named_secret = "roko_agent_observation-test";
+        state
+            .auth_registry
+            .insert_agent_token(crate::routes::auth::AgentToken {
+                token_id: "observation-token".to_string(),
+                agent_id: "agent-1".to_string(),
+                capabilities: vec![AgentCapability::BusPublish],
+                issued_at: Utc::now().to_rfc3339(),
+                expires_at: Utc::now() + chrono::Duration::hours(1),
+                revoked: false,
+                token_hash: hash_api_key(named_secret),
+            })
+            .await
+            .expect("insert observation agent token");
+        let legacy_secret = state
+            .rotate_agent_token("agent-1")
+            .await
+            .expect("issue legacy agent token")
+            .token;
+
+        let app = Router::new()
+            .route(
+                "/api/agents/{id}/observation",
+                post(|| async { StatusCode::NO_CONTENT }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                require_scope,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                require_api_key,
+            ));
+        let request = |agent: &'static str, secret: &str| {
+            Request::post(format!("/api/agents/{agent}/observation"))
+                .header(AUTHORIZATION, format!("Bearer {secret}"))
+                .body(Body::empty())
+                .expect("agent observation request")
+        };
+
+        assert_eq!(
+            app.clone()
+                .oneshot(request("agent-1", named_secret))
+                .await
+                .expect("modern token own-agent response")
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(request("agent-2", named_secret))
+                .await
+                .expect("modern token cross-agent response")
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(request("agent-1", &legacy_secret))
+                .await
+                .expect("legacy token own-agent response")
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            app.oneshot(request("agent-2", &legacy_secret))
+                .await
+                .expect("legacy token cross-agent response")
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_bearer_uses_target_identity_and_narrowed_route_capabilities() {
+        let dir = tempdir().expect("tempdir");
+        let state = make_test_state_at(dir.path(), ServeAuthConfig::default());
+        let root_secret = "roko_agent_relay-root";
+        state
+            .auth_registry
+            .insert_agent_token(crate::routes::auth::AgentToken {
+                token_id: "relay-root-token".to_string(),
+                agent_id: "relay-root-agent".to_string(),
+                capabilities: vec![AgentCapability::Inference, AgentCapability::BusPublish],
+                issued_at: Utc::now().to_rfc3339(),
+                expires_at: Utc::now() + chrono::Duration::hours(1),
+                revoked: false,
+                token_hash: hash_api_key(root_secret),
+            })
+            .await
+            .expect("insert root token");
+        let root = state
+            .auth_registry
+            .authenticate_agent_secret(root_secret)
+            .await
+            .expect("authenticate root");
+        let (_relay, relay_secret) = state
+            .auth_registry
+            .issue_relay_token(
+                &root,
+                &crate::routes::auth::IssueRelayTokenRequest {
+                    target_agent_id: "delegated-agent".to_string(),
+                    delegated_capabilities: vec![AgentCapability::Inference],
+                    max_depth: Some(2),
+                    ttl_secs: 300,
+                },
+            )
+            .await
+            .expect("issue relay");
+
+        let app = Router::new()
+            .route(
+                "/api/inference/complete",
+                post(|Extension(context): Extension<AuthContext>| async move {
+                    assert_eq!(context.user_id.as_deref(), Some("delegated-agent"));
+                    StatusCode::NO_CONTENT
+                }),
+            )
+            .route(
+                "/api/events/ingest",
+                post(|| async { StatusCode::NO_CONTENT }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                require_scope,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                require_api_key,
+            ));
+        let request = |path: &'static str| {
+            Request::post(path)
+                .header(AUTHORIZATION, format!("Bearer {relay_secret}"))
+                .body(Body::empty())
+                .expect("relay request")
+        };
+
+        let allowed = app
+            .clone()
+            .oneshot(request("/api/inference/complete"))
+            .await
+            .expect("allowed response");
+        assert_eq!(allowed.status(), StatusCode::NO_CONTENT);
+        let denied = app
+            .oneshot(request("/api/events/ingest"))
+            .await
+            .expect("denied response");
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn concrete_agent_capability_mapping_covers_each_capability() {
+        assert_eq!(
+            required_agent_capability(&Method::POST, "/api/inference/complete"),
+            Some(AgentCapability::Inference)
+        );
+        assert_eq!(
+            required_agent_capability(&Method::POST, "/api/rpc"),
+            Some(AgentCapability::Tools)
+        );
+        assert_eq!(
+            required_agent_capability(&Method::POST, "/api/events/ingest"),
+            Some(AgentCapability::BusPublish)
+        );
+        assert_eq!(
+            required_agent_capability(&Method::POST, "/api/agents/agent-1/observation"),
+            Some(AgentCapability::BusPublish)
+        );
+        assert_eq!(
+            required_agent_capability(&Method::POST, "/api/neuro/write"),
+            Some(AgentCapability::StoreWrite)
+        );
+        assert_eq!(
+            required_agent_capability(&Method::POST, "/api/neuro/query"),
+            Some(AgentCapability::StoreRead)
+        );
+        assert_eq!(
+            required_agent_capability(&Method::POST, "/api/agent-tokens"),
+            None
+        );
+    }
+
+    #[test]
+    fn api_key_expiry_uses_parsed_instants_not_string_ordering() {
+        let plaintext = "offset-expiry-key";
+        let mut auth = keyed_auth("offset-expiry", plaintext, "admin");
+        // This timestamp has a lexically later calendar day than UTC now in
+        // some offsets, but represents an instant one minute in the past.
+        let expired = Utc::now() - chrono::Duration::minutes(1);
+        auth.api_keys[0].expires_at = Some(
+            expired
+                .with_timezone(&chrono::FixedOffset::east_opt(14 * 3600).unwrap())
+                .to_rfc3339(),
+        );
+        assert!(matches!(
+            match_api_key_entry(plaintext, &auth.api_keys),
+            ApiKeyMatchResult::Expired(_)
+        ));
     }
 
     #[tokio::test]
@@ -1832,6 +2534,41 @@ mod tests {
     }
 
     #[test]
+    fn registry_reads_require_read_and_mutations_require_admin() {
+        assert_eq!(
+            required_scope_for(&Method::GET, "/api/registries/passports"),
+            "read"
+        );
+        for (method, path) in [
+            (Method::POST, "/api/registries/passports"),
+            (Method::POST, "/api/registries/passports/1/transfer"),
+            (Method::PUT, "/api/registries/passports/1/metadata"),
+            (Method::POST, "/api/registries/passports/1/delegations"),
+            (Method::DELETE, "/api/registries/passports/1/delegations/2"),
+            (Method::POST, "/api/registries/knowledge"),
+            (Method::POST, "/api/registries/knowledge/abc/validate"),
+            (Method::POST, "/api/registries/knowledge/abc/challenge"),
+            (
+                Method::POST,
+                "/api/registries/knowledge/challenges/abc/resolve",
+            ),
+            (Method::POST, "/api/registries/indexer/sync"),
+            (Method::POST, "/api/registries/indexer/rebuild"),
+        ] {
+            assert_eq!(
+                required_scope_for(&method, path),
+                "admin",
+                "{method} {path}"
+            );
+            assert_eq!(
+                required_scope_for(&method, path.trim_start_matches("/api")),
+                "admin",
+                "nested {method} {path}"
+            );
+        }
+    }
+
+    #[test]
     fn required_scope_for_post_secrets_is_admin() {
         assert_eq!(required_scope_for(&Method::POST, "/api/secrets"), "admin");
     }
@@ -2193,6 +2930,12 @@ mod tests {
         (Method::POST, "/api/agents/123/start"),
         (Method::POST, "/api/agents/123/restart"),
         (Method::POST, "/api/agents/123/token"),
+        // --- /api/meta (agent:write) ---
+        (Method::POST, "/api/meta/agents"),
+        (Method::POST, "/api/meta/agents/123/validate"),
+        (Method::POST, "/api/meta/agents/123/morph"),
+        (Method::POST, "/api/meta/agents/123/morph/rollback"),
+        (Method::POST, "/api/meta/agents/123/deactivate"),
         // --- /api/api-keys (admin) ---
         (Method::POST, "/api/api-keys"),
         (Method::DELETE, "/api/api-keys/test-key"),
@@ -2270,6 +3013,10 @@ mod tests {
         // --- /api/inference (write) ---
         (Method::POST, "/api/inference/complete"),
         (Method::POST, "/api/inference/batch/submit"),
+        // --- /api/gateway (write) ---
+        (Method::POST, "/api/gateway/inference"),
+        (Method::POST, "/api/gateway/batch/submit"),
+        (Method::POST, "/api/gateway/batch/flush"),
         // --- /api/bench (write) ---
         (Method::POST, "/api/bench/run"),
         (Method::POST, "/api/bench/runs"),
@@ -2284,12 +3031,66 @@ mod tests {
         // --- /api/feeds (write) ---
         (Method::POST, "/api/feeds"),
         (Method::DELETE, "/api/feeds/123"),
+        (Method::POST, "/api/feeds/start/file-watch-roko-dir"),
+        (Method::POST, "/api/feeds/stop/file-watch-roko-dir"),
+        // --- /api/recipes (write) ---
+        (Method::POST, "/api/recipes"),
+        (Method::DELETE, "/api/recipes/blend"),
+        (Method::POST, "/api/recipes/blend/evaluate"),
+        // --- /api/groups and invitations (write) ---
+        (Method::POST, "/api/groups"),
+        (Method::PATCH, "/api/groups/grp-123"),
+        (Method::DELETE, "/api/groups/grp-123"),
+        (Method::POST, "/api/groups/grp-123/invite"),
+        (Method::PATCH, "/api/groups/grp-123/members/agent-1"),
+        (Method::DELETE, "/api/groups/grp-123/members/agent-1"),
+        (Method::POST, "/api/groups/grp-123/knowledge"),
+        (Method::POST, "/api/groups/grp-123/pheromones"),
+        (Method::POST, "/api/groups/grp-123/message"),
+        (Method::POST, "/api/invitations/inv-123/accept"),
+        (Method::POST, "/api/invitations/inv-123/reject"),
+        // --- /api/marketplace (write; handlers remain explicit E38 stubs) ---
+        (Method::POST, "/api/marketplace/publish"),
+        (Method::POST, "/api/marketplace/fork"),
+        // --- /api/registries (admin; durable local lifecycle/indexer control) ---
+        (Method::POST, "/api/registries/passports"),
+        (Method::POST, "/api/registries/passports/1/transfer"),
+        (Method::PUT, "/api/registries/passports/1/metadata"),
+        (Method::POST, "/api/registries/passports/1/delegations"),
+        (Method::DELETE, "/api/registries/passports/1/delegations/2"),
+        (Method::POST, "/api/registries/knowledge"),
+        (Method::POST, "/api/registries/knowledge/abc/validate"),
+        (Method::POST, "/api/registries/knowledge/abc/challenge"),
+        (
+            Method::POST,
+            "/api/registries/knowledge/challenges/abc/resolve",
+        ),
+        (Method::POST, "/api/registries/indexer/sync"),
+        (Method::POST, "/api/registries/indexer/rebuild"),
+        // --- /api/arenas (write; durable lifecycle and settlement) ---
+        (Method::POST, "/api/arenas"),
+        (Method::PATCH, "/api/arenas/arena-123"),
+        (Method::POST, "/api/arenas/arena-123/attempts"),
+        (
+            Method::POST,
+            "/api/arenas/arena-123/attempts/attempt-1/submit",
+        ),
+        (
+            Method::POST,
+            "/api/arenas/arena-123/attempts/attempt-1/settle",
+        ),
+        // --- /api/defi (write; handlers remain explicit E41 stubs) ---
+        (Method::POST, "/api/defi/bonds"),
+        (Method::POST, "/api/defi/options/price"),
+        (Method::POST, "/api/defi/insurance"),
+        (Method::POST, "/api/defi/insurance/policy-123/claims"),
         // --- /api/rpc (write) ---
         (Method::POST, "/api/rpc"),
         // --- /api/vision-loop (write) ---
         (Method::POST, "/api/vision-loop"),
         (Method::POST, "/api/vision-loop/run123/cancel"),
         // --- /api/team (write) ---
+        (Method::POST, "/api/team/join"),
         (Method::POST, "/api/team/invite"),
         (Method::PUT, "/api/team/members/did:test"),
         (Method::DELETE, "/api/team/members/did:test"),

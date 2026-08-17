@@ -1,10 +1,57 @@
 # 06 — Memory and Knowledge
 
-> Memory = Store-protocol Cell with demurrage + tier progression + HDC retrieval + heuristic lifecycle + dream consolidation. Knowledge is a living substrate: Signals decay unless actively used, heuristics carry mandatory falsifiers, and worldviews emerge from co-citation.
+> Current local memory is `roko_neuro::KnowledgeStore`, implementing the
+> `NeuroStore` lifecycle over durable `KnowledgeEntry` records. A unified
+> Store-protocol `MemoryCell`, universal Signal storage, and distributed memory
+> are target architecture.
 
-**Subsumes**: Knowledge Entry (now Signal), Pheromone (now Pulse), InsightStore, PheromoneRegistry, dream consolidation, AntiKnowledge, knowledge decay, Heuristic lifecycle, Resonator Networks, Temporal Knowledge Graph.
+**Current distinction and target unification**: `KnowledgeEntry` is the current
+`roko-neuro` persistence record and remains distinct from core `Engram`/`Signal`.
+The target vocabulary unifies their lifecycle concepts and models Pheromone as
+Pulse; InsightStore, PheromoneRegistry, resonator networks, and the full temporal
+knowledge graph remain target surfaces.
 
 **Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal/Pulse duality, demurrage, Kind system, HDC fingerprints), [02-CELL](02-CELL.md) (Store protocol, Verify redesign, Score protocol, React protocol), [03-GRAPH](03-GRAPH.md) (Graph, Loop), [05-AGENT](05-AGENT.md) (CognitiveWorkspace, somatic markers, 9-step pipeline)
+
+> **Implementation status (2026-08): PARTIALLY SHIPPED.** The local, file-backed
+> runtime lifecycle described below is implemented; the complete Signal/Cell and
+> distributed protocol remains roadmap.
+>
+> **Shipped now:** `roko-neuro::KnowledgeStore` persists typed `KnowledgeEntry`
+> records (including Heuristic and AntiKnowledge), confidence decay, fixed-per-sweep
+> balance demurrage, fixed reinforcement (`0.05/0.10/0.15/0.08/0.12` for
+> Retrieved/Cited/Gated/Surprised/AgentQuoted), seven-day depleted-balance freezing,
+> configurable four-tier promotion/demotion, falsifier survival/immunity/discrediting,
+> optional Allen-interval indexing, and feature-gated HDC role/filler queries and
+> cross-domain resonance detection. Runtime gate completions distill passed patterns
+> as Heuristics and failures as AntiKnowledge, deduplicate/reinforce prior entries,
+> inject the top three matches into later prompts, and run progression/demurrage at
+> successful plan completion. Idle dream cycles now merge groups of three or more
+> same-kind entries sharing at least two tags, freeze their sources, promote the
+> merged entry by one tier, then run decay, demurrage, and freeze-before-delete GC.
+>
+> **Still roadmap:** a `MemoryCell` implementing the unified Store protocol over
+> canonical `Signal`/`Kind`, the full Gesell-Shannon ODE and per-Kind rate table,
+> retrieval-count novelty accounting, validator-quorum freeze/challenge and Bus
+> events, Worldview/co-citation and resonator networks, durable temporal validity
+> epochs, distributed/on-chain synchronization, and the HTTP/consortium interfaces.
+> Falsifiers are attached automatically by the runtime distiller and dream merger,
+> but are not yet enforced for every externally constructed Heuristic.
+
+### Current implementation sources and reading contract
+
+| Current surface | Authoritative source |
+|---|---|
+| Knowledge kinds, tiers, entries, and `NeuroStore` | `crates/roko-neuro/src/lib.rs` |
+| Durable store, decay, demurrage, reinforcement, and lifecycle | `crates/roko-neuro/src/knowledge_store.rs` |
+| Optional epochs, millisecond intervals, and Allen relations | `crates/roko-neuro/src/temporal.rs` |
+| Idle dream-cycle orchestration and reports | `crates/roko-dreams/src/cycle.rs` |
+| Runtime distillation and prompt retrieval | `crates/roko-cli/src/runner/event_loop.rs`, `crates/roko-cli/src/dispatch/prompt_builder.rs` |
+
+Unless a section is explicitly labeled **Current implementation**, its Rust,
+Solidity, TOML, endpoint, formula, and acceptance snippets are normative target
+design. They preserve the research rationale; they do not define a second shipped
+API beside the sources above.
 
 ---
 
@@ -19,36 +66,40 @@ Four consequences compound over time:
 3. **No quality signal.** A hallucinated claim and a gate-validated insight sit at the same confidence level. Without provenance tracking, unreliable knowledge contaminates reliable knowledge.
 4. **No sharing.** A thousand agents solving related problems independently discover the same patterns. The hundredth agent to learn "run clippy before committing Rust code" pays the same discovery cost as the first.
 
-Memory treats knowledge as a living substrate instead of a dead archive. Signals decay via demurrage unless actively used, consolidate through dream cycles, get validated by peers, and flow across the network through stigmergic coordination.
+The current store treats knowledge as a living substrate instead of a dead archive:
+entries decay, receive usage reinforcement, progress through tiers, and can be
+consolidated by dream cycles. Peer validation and network-wide stigmergic flow are
+target extensions.
 
 ---
 
 ## 2. Memory as Specialization
 
-In the unified vocabulary, **Memory** is a Store-protocol Cell with demurrage, tier progression, dream consolidation, and HDC-based retrieval (see [00-INDEX](00-INDEX.md) specializations table).
+### Current implementation
 
-```rust
-pub struct MemoryConfig {
-    pub store_path: PathBuf,
-    pub max_entries: usize,
-    pub demurrage_config: DemurrageConfig,
-    pub tier_config: TierConfig,
-    pub anti_knowledge: AntiKnowledgeConfig,
-    pub dream_config: DreamConfig,
-    pub heuristic_config: HeuristicConfig,
-}
-```
+`KnowledgeStore` implements `NeuroStore`, whose storage lifecycle is
+`init / query / query_similar / ingest / decay / gc`, with confidence and usage
+updates. `KnowledgeEntry` supports the six current `KnowledgeKind` variants
+(`Insight`, `Heuristic`, `AntiKnowledge`, `Warning`, `CausalLink`, and
+`StrategyFragment`) and four `KnowledgeTier` variants (`Transient`, `Working`,
+`Consolidated`, and `Persistent`).
 
-A Memory Cell manages the knowledge lifecycle:
+The current local store manages this lifecycle:
 
-1. **Ingest** -- New Signals enter at Transient tier with initial balance 1.0.
+1. **Ingest** -- New knowledge entries enter the durable local store.
 2. **Retrieve** -- HDC similarity search + multi-dimensional scoring.
 3. **Demurrage** -- Balance decays unless actively used (retrieved, cited, gate-passed, surprised).
 4. **Promote/Demote** -- Based on gate validation results and balance thresholds.
 5. **Consolidate** -- Dream cycles compress episodes into durable knowledge (section 9).
-6. **Prune** -- Below cold threshold, archive to cold storage.
+6. **Garbage collect** -- Low-confidence records are removed after the store's
+   freeze-before-delete checks.
 
-The Memory Cell implements the Store protocol, meaning it conforms to `put / get / query / query_similar / prune` -- the same interface as FileStore or MemoryStore, but with demurrage semantics layered on top.
+### Target specialization
+
+The unified architecture models Memory as a Store-protocol Cell over canonical
+Signals, with demurrage, tier progression, dream consolidation, and HDC retrieval.
+That `MemoryCell` and its proposed `put / get / query / query_similar / prune`
+surface are not the current `NeuroStore` API.
 
 ---
 
@@ -56,21 +107,33 @@ The Memory Cell implements the Store protocol, meaning it conforms to `put / get
 
 **Demurrage replaces Ebbinghaus decay** (Gesell 1916). Instead of passive time-based forgetting, Signals pay a holding cost for occupying store space. Active use -- retrieval, citation, gate-pass, surprise -- restores balance. This is economic selection pressure on knowledge: unique, actively-useful insights stay warm; redundant or stale entries fade.
 
-### The balance field
+### Current balance state
 
-Every Signal carries a `balance` field (see [01-SIGNAL](01-SIGNAL.md)):
+Canonical `Engram` carries balance and cumulative demurrage state. The local
+knowledge runtime separately persists this subset on `KnowledgeEntry`:
 
 ```rust
-pub struct Signal {
+pub struct KnowledgeEntry {
     // ...
-    pub balance: f64,                    // starts at 1.0, decays via demurrage
-    pub demurrage_paid: f64,             // monotonic, for observability
-    pub last_touched_at: DateTime<Utc>,  // last reinforcement event
+    pub balance: f64,
+    pub frozen: bool,
+    pub balance_depleted_at: Option<DateTime<Utc>>,
+    pub frozen_at: Option<DateTime<Utc>>,
     // ...
 }
 ```
 
-### Rate law (Gesell-Shannon)
+### Current runtime balance model
+
+`KnowledgeEntry::apply_demurrage(elapsed_hours)` deducts
+`DEMURRAGE_RATE_PER_HOUR * elapsed_hours`. `KnowledgeStore::demurrage(tax_rate)`
+also supports a fixed sweep: the first depletion halves `half_life_days`, and an
+entry left depleted for more than seven days is frozen. The current
+`ReinforcementSignal` variants are `Retrieved`, `Cited`, `Gated`, `Surprised`, and
+`AgentQuoted`, with respective base values `0.05`, `0.10`, `0.15`, `0.08`, and
+`0.12`. This is not the complete ODE below.
+
+### Target rate law (Gesell-Shannon)
 
 The demurrage ODE combines a flat tax with an exponential decay term:
 
@@ -109,15 +172,15 @@ For an Insight with `r = 0.01`, `beta = 0.02`, `B_0 = 1.0`:
 
 The flat tax `r` ensures that even Signals with very low balance continue to lose value (preventing "zombie" Signals that hover near zero indefinitely). The exponential term `beta*B(t)` makes high-balance Signals pay more, creating progressive taxation that prevents knowledge hoarding.
 
-### Reinforcement kinds
+### Target reinforcement policy
 
 Active use restores balance. Each reinforcement kind has a different weight, and reinforcement is novelty-weighted (anti-hoarding mechanism):
 
 ```rust
-pub enum ReinforceKind {
+pub enum ReinforcementSignal {
     Retrieved,      // returned in a query
     Cited,          // in another Signal's source[] lineage
-    GatePassed,     // in context pack when gate passed
+    Gated,          // in context pack when gate passed
     Surprised,      // high prediction error in context (Shannon surprise as economic bonus)
     AgentQuoted,    // agent referenced in output
 }
@@ -131,7 +194,7 @@ pub enum ReinforceKind {
 | **Surprised** | `+0.20 * novelty` | Signal relevant to a high-PE observation (PE > 0.40) |
 | **AgentQuoted** | `+0.08 * novelty` | Signal's content was directly referenced in an agent's output |
 
-### Novelty-weighted reinforcement
+### Target novelty-weighted reinforcement
 
 ```
 novelty = 1 / (1 + ln(retrieval_count))
@@ -139,7 +202,7 @@ novelty = 1 / (1 + ln(retrieval_count))
 
 The first retrieval restores full balance (`novelty = 1.0`). The 10th restores ~0.30x. The 100th restores ~0.18x. This prevents a popular-but-mediocre Signal from staying warm purely through high retrieval frequency. Genuinely novel use (new context, new agent, new domain) resets the retrieval counter.
 
-### Per-Kind default rates (canonical)
+### Target per-Kind default rates (canonical)
 
 > **These are the canonical demurrage constants for the entire specification.** All other documents (including [07-LEARNING](07-LEARNING.md)) MUST reference this table rather than redeclare values. Any discrepancy is a bug in the referencing document.
 
@@ -155,13 +218,16 @@ The first retrieval restores full balance (`novelty = 1.0`). The 10th restores ~
 | Episode | 0.005 | 0.01 | ~90 days |
 | Worldview | 0.005 | 0.01 | ~90 days (half standard; see SS6) |
 
-### Cold threshold
+### Target cold-storage protocol
 
 When balance drops below `COLD_THRESHOLD` (default 0.05), the Signal enters cold storage. Body moves to slower storage; content hash stays valid; lineage preserved. **Thaw** restores balance to a starter value and is itself a Bus event (`knowledge.thawed`).
 
-### Frozen Signals
+### Current freezing and target quorum lifecycle
 
-Frozen Signals skip demurrage entirely -- they remain in the store at their current balance indefinitely. Freezing is a strong claim: it asserts that the knowledge is durable enough to exempt from economic pressure. The freeze/thaw lifecycle provides the full protocol.
+Current `KnowledgeEntry` records have `frozen`, `frozen_at`, and
+`balance_depleted_at`; `freeze()` and `thaw(starter_balance)` update that local
+state, and fixed demurrage skips frozen entries. The validator/quorum/evidence,
+challenge, CLI, Bus, and consortium lifecycle below is target design.
 
 ```rust
 pub struct FreezeState {
@@ -214,10 +280,13 @@ Pure time-based decay (Ebbinghaus) is recovered when no interactions occur: a Si
 
 ## 4. Four-Tier System
 
-Knowledge Signals progress through four tiers. Each tier applies a multiplier to the demurrage rate.
+### Current implementation
+
+`KnowledgeEntry` progresses through four `KnowledgeTier` values. The multiplier
+scales effective half-life, so lower values decay faster:
 
 ```rust
-pub enum Tier {
+pub enum KnowledgeTier {
     Transient,     // 0.1x multiplier -- decays 10x faster
     Working,       // 0.5x -- decays 2x faster
     Consolidated,  // 1.0x -- base rate
@@ -225,22 +294,25 @@ pub enum Tier {
 }
 ```
 
-### Progression criteria
+Default `TierProgressionConfig` uses these thresholds:
 
 | From | To | Requirement |
 |---|---|---|
-| Transient | Working | 3+ gate passes where this Signal was in the context pack |
-| Working | Consolidated | 5+ independent confirmations from different Agents or contexts |
-| Consolidated | Persistent | Consortium approval (3+ validators) OR manual freeze |
+| Transient | Working | `confirmation_count >= 2` and confidence `>= 0.5` |
+| Working | Consolidated | at least 3 distinct contexts and confidence `>= 0.6` |
+| Consolidated | Persistent | age `>= 30` days and confidence `>= 0.8` |
 
-### Demotion criteria
+With demotion enabled, current defaults are:
 
 | From | To | Requirement |
 |---|---|---|
-| Persistent | Consolidated | Unfreezing (manual or challenge upheld) |
-| Consolidated | Working | 2+ gate failures where this Signal was in the context pack |
-| Working | Transient | 3+ consecutive gate failures OR balance below 0.15 |
-| Transient | Cold | Balance below `COLD_THRESHOLD` (0.05) |
+| Persistent | Consolidated | entry is explicitly deprecated |
+| Consolidated | Working | confidence `< 0.3` |
+| Working | Transient | confidence `< 0.15` |
+
+The gate-count, validator-quorum, challenge, and consortium progression rules
+elsewhere in this chapter are target policy layered above this current local
+configuration.
 
 ---
 
@@ -334,9 +406,11 @@ Birth --> Test --> Calibrate --> Retire/Evolve
 
 ---
 
-## 6. Worldviews
+## 6. Target: Worldviews
 
-**Worldviews** emerge from co-citation clusters of heuristics with high calibration scores. They are not explicitly created -- they are discovered patterns in how heuristics reinforce each other.
+The target architecture has **Worldviews** emerge from co-citation clusters of
+heuristics with high calibration scores. The current `KnowledgeKind` enum has no
+`Worldview` variant, and `KnowledgeStore` does not yet persist this representation.
 
 ### How worldviews form
 
@@ -431,7 +505,10 @@ When a new Signal arrives whose HDC vector is similar to an existing AntiKnowled
 
 ---
 
-## 8. HDC Operations and Resonator Networks
+## 8. HDC Operations and Target Resonator Networks
+
+Feature-gated HDC encoding and similarity retrieval are current. The resonator
+network types and factorization policy below remain target design.
 
 The knowledge system encodes structured information as 10,240-bit binary vectors (Kanerva 2009). No floating point. No matrix multiply. No GPU.
 
@@ -443,7 +520,7 @@ pub struct HdcVector {
 }
 ```
 
-Implementation lives in `roko-primitives/src/hdc.rs`.
+Implementation lives in `crates/roko-primitives/src/hdc.rs`.
 
 ### Core operations
 
@@ -452,7 +529,7 @@ Implementation lives in `roko-primitives/src/hdc.rs`.
 | **Bind** (XOR) | Role-filler binding. Dissimilar to both inputs. Self-inverse. | O(n) | Rachkovskij 2001 |
 | **Bundle** (majority vote) | Aggregation. Similar to all inputs. | O(n*k) | Kanerva 2009 |
 | **Permute** (bit rotation) | Positional encoding. Cyclic left shift. | O(n) | Plate 2003 |
-| **Similarity** (Hamming) | Overlap via XOR + POPCNT. | < 1 us | Hardware |
+| **Similarity** (Hamming) | Overlap via XOR + POPCNT. | O(vector words); benchmark per platform | Hardware |
 | **Resonate** | Factorize: recover constituents from bundle. | O(n*k*iter) | Frady et al. 2020 |
 
 ### HDC algebra
@@ -465,7 +542,7 @@ The operations compose to encode structured information:
 
 **Positional encoding**: To encode sequences, permute by position: `bundle(permute(V_word1, 0), permute(V_word2, 1), permute(V_word3, 2))`.
 
-### Resonator Networks
+### Target: Resonator Networks
 
 **Resonator Networks** factorize bundled HDC vectors to recover their constituent parts (Frady et al. 2020). Given a bundle `B = bundle(bind(R1,F1), bind(R2,F2), bind(R3,F3))`, recover the original role-filler pairs.
 
@@ -492,27 +569,33 @@ impl ResonatorNetwork {
 3. **Cross-domain transfer**: Factorization reveals shared sub-structure across domains. An "API retry pattern" in networking and a "retry pattern" in database operations share the same abstract structure.
 4. **HDC cleanup**: During L3 consolidation (section 9), Resonator Networks factorize to identify patterns learned independently at higher tiers. Redundant bundles are pruned.
 
-### Performance targets
+### Unverified performance targets
+
+These are research goals, not measured guarantees in the current repository.
+Acceptance requires a reproducible benchmark on named hardware and corpus layout.
 
 | Operation | Target | Notes |
 |---|---|---|
-| Encode one vector | < 5 us | Seed + splitmix64 expansion |
-| Similarity (two vectors) | < 1 us | XOR + POPCNT, cache-friendly |
-| Search 1K patterns | < 100 us | Brute-force, no index needed |
-| Search 10K patterns | < 1 ms | Still brute-force at this scale |
-| Resonator factorization (3 roles) | < 10 ms | ~5-20 iterations |
+| Encode one vector | Benchmark required | Seed + splitmix64 expansion |
+| Similarity (two vectors) | Benchmark required | XOR + POPCNT, cache-friendly |
+| Search 1K patterns | Benchmark required | Brute-force, no index needed |
+| Search 10K patterns | Benchmark required | Corpus layout and hardware dominate |
+| Resonator factorization (3 roles) | Target benchmark required | Target type; iteration count is design-dependent |
 
 ### Why HDC instead of float embeddings
 
 | Property | HDC (10,240-bit binary) | Float (1536-d float32) |
 |---|---|---|
 | Size per vector | 1,280 bytes | 6,144 bytes |
-| Similarity cost | XOR + POPCNT (~1 ns) | Dot product (hundreds FLOPs) |
+| Similarity cost | XOR + POPCNT; platform-dependent | Dot product; platform-dependent |
 | Compositionality | Native (bind/bundle/permute/resonate) | Requires learned operations |
 | Privacy | Non-invertible after PP-HDC | Invertible via decoder |
 | Determinism | Identical seeds produce identical vectors | Depends on model version |
 
-At 10,240 bits, **800K fingerprints fit in 1 GB RAM**; brute-force SIMD comparison is **<1 ms** for the full set. No external vector store needed. (Cf. Levy & Gayler 2008 for VSA survey; Olshausen & Field 1996 for biological precedent.)
+At 10,240 bits, raw fingerprint storage is 1,280 bytes per vector before
+container/index overhead. Brute-force search latency must be measured for the
+deployment corpus and hardware. (Cf. Levy & Gayler 2008 for VSA survey;
+Olshausen & Field 1996 for biological precedent.)
 
 ---
 
@@ -551,6 +634,7 @@ pub enum DreamPhase {
 |---|---|---|
 | `idle_timeout` | 5 minutes | Agent has been idle for this duration |
 | `episode_threshold` | 50 | Unprocessed episodes exceed this count |
+| `scheduled_cron` | Off | Optional seven-field cron cadence; due work waits for the next idle boundary |
 | `manual` | N/A | Explicit `roko knowledge dream run` command |
 | `bus_signal` | Off | Signal on Bus topic triggers at delta timescale |
 
@@ -558,7 +642,17 @@ pub enum DreamPhase {
 
 ## 10. Temporal Knowledge Graph
 
-Roko's Store currently treats knowledge as effectively atemporal. Signals have `created_at` timestamps and demurrage that controls weight decay, but the knowledge itself has no explicit temporal structure. The temporal knowledge graph adds three components:
+### Current implementation
+
+`roko_neuro::temporal` already supplies an optional in-memory `TemporalIndex`,
+ordered `KnowledgeEpoch` records, half-open `TemporalInterval` values in epoch
+milliseconds, and all 13 `AllenRelation` variants. The index associates entry IDs
+with intervals and caches pairwise relations. It is not yet a durable, propagating
+temporal constraint graph.
+
+### Target extension
+
+The full temporal knowledge graph adds three components:
 
 1. Allen's 13 interval relations as a **constraint network** stored in Store.
 2. Event calculus (Kowalski-Sergot 1986) as **Cells**: HoldsAt, Initiates, Terminates.
@@ -569,69 +663,34 @@ Roko's Store currently treats knowledge as effectively atemporal. Signals have `
 Allen (1983) defined 13 mutually exclusive relations between time intervals. Every pair of temporal intervals satisfies exactly one. The relations form a JEME (jointly exhaustive, mutually exclusive) partition.
 
 ```rust
-/// Allen's 13 temporal interval relations.
-///
-/// For intervals X = [x_start, x_end] and Y = [y_start, y_end].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum AllenRelation {
-    Before,       // x_end < y_start
-    Meets,        // x_end == y_start
-    Overlaps,     // x_start < y_start < x_end < y_end
-    Starts,       // x_start == y_start, x_end < y_end
-    During,       // y_start < x_start, x_end < y_end
-    Finishes,     // x_end == y_end, x_start > y_start
-    Equals,       // x_start == y_start, x_end == y_end
-    After,        // inverse of Before
-    MetBy,        // inverse of Meets
-    OverlappedBy, // inverse of Overlaps
-    StartedBy,    // inverse of Starts
-    Contains,     // inverse of During
-    FinishedBy,   // inverse of Finishes
+    Before, After, Meets, MetBy, Overlaps, OverlappedBy, Contains,
+    During, Starts, StartedBy, Finishes, FinishedBy, Equal,
 }
 
-/// A time interval with nanosecond precision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A half-open interval `[start, end)` in epoch milliseconds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TemporalInterval {
-    pub start: i64,  // Unix nanos
-    pub end: i64,    // Unix nanos, or i64::MAX for "ongoing"
+    pub start: i64,
+    pub end: i64,
 }
 
 impl TemporalInterval {
-    pub const ONGOING: i64 = i64::MAX;
+    pub const fn new(start: i64, end: i64) -> Self { Self { start, end } }
 
-    /// Determine the Allen relation between self and other.
-    pub fn relation_to(&self, other: &Self) -> AllenRelation {
-        match (self.start.cmp(&other.start), self.end.cmp(&other.end),
-               self.end.cmp(&other.start), other.end.cmp(&self.start)) {
-            _ if self.end < other.start => AllenRelation::Before,
-            _ if self.end == other.start => AllenRelation::Meets,
-            _ if self.start > other.end => AllenRelation::After,
-            _ if self.start == other.end => AllenRelation::MetBy,
-            _ if self.start == other.start && self.end == other.end
-                => AllenRelation::Equals,
-            _ if self.start == other.start && self.end < other.end
-                => AllenRelation::Starts,
-            _ if self.start == other.start && self.end > other.end
-                => AllenRelation::StartedBy,
-            _ if self.end == other.end && self.start > other.start
-                => AllenRelation::Finishes,
-            _ if self.end == other.end && self.start < other.start
-                => AllenRelation::FinishedBy,
-            _ if self.start < other.start && self.end > other.start
-                && self.end < other.end => AllenRelation::Overlaps,
-            _ if other.start < self.start && other.end > self.start
-                && other.end < self.end => AllenRelation::OverlappedBy,
-            _ if self.start > other.start && self.end < other.end
-                => AllenRelation::During,
-            _ if self.start < other.start && self.end > other.end
-                => AllenRelation::Contains,
-            _ => unreachable!("all Allen relations covered"),
-        }
+    pub fn allen_relation(&self, other: &Self) -> AllenRelation {
+        AllenRelation::compute(self, other)
     }
 }
 ```
 
-### Constraint network
+The complete method set, including duration, containment, overlap, intersection,
+and hull helpers, is authoritative in `crates/roko-neuro/src/temporal.rs`.
+
+### Target: constraint network
 
 Allen's algebra supports constraint propagation: if A is Before B and B Overlaps C, we can infer the possible relations between A and C. This is stored in Store as a constraint network over Signal validity intervals.
 
@@ -661,7 +720,7 @@ impl AllenRelationSet {
 }
 ```
 
-### Constraint propagation Cell
+### Target: constraint propagation Cell
 
 ```rust
 /// Cell: Allen constraint propagation.
@@ -746,9 +805,12 @@ fn allen_compose(r1: AllenRelationSet, r2: AllenRelationSet) -> AllenRelationSet
 
 **Key property**: Allen's algebra is qualitative. It reasons about temporal ordering without requiring exact timestamps. This matters because many temporal facts are qualitative ("the refactor happened before the release") rather than exact.
 
-### 10.2 Event Calculus as Cells
+### 10.2 Target: Event Calculus as Cells
 
-The event calculus (Kowalski & Sergot 1986) models how the truth of properties ("fluents") changes in response to events. Three core axioms, each implemented as a Cell.
+The event calculus (Kowalski & Sergot 1986) models how the truth of properties
+("fluents") changes in response to events. This design proposes three Cells; the
+`Fluent`, `TemporalEvent`, HoldsAt, Initiates, and Terminates Cell types below are
+not current runtime types.
 
 ```rust
 /// A fluent: a time-varying property of the system.
@@ -781,7 +843,7 @@ pub struct TemporalEvent {
 
 **Terminates Cell (React protocol)**: When an event occurs, end the fluent. Closes the open interval on the current fluent value.
 
-### 10.3 Three-Tier Temporal Memory
+### 10.3 Target: Three-Tier Temporal Memory
 
 Inspired by Rasmussen et al. (2025, Zep/Graphiti), the temporal knowledge graph has three tiers, each a **Memory specialization** operating at a different timescale.
 
@@ -929,7 +991,7 @@ pub fn tier_progression(
 }
 ```
 
-### Temporal decay modulation
+### Target: temporal decay modulation
 
 Demurrage interacts with temporal validity. Active-interval Signals get slower demurrage; expired-interval Signals get faster demurrage.
 
@@ -962,15 +1024,19 @@ The interaction creates a natural lifecycle:
 - **Expired Signals**: high demurrage, rapidly losing balance, moving toward cold tier.
 - **Expired but in stable community**: moderate demurrage (community structure supports the Signal).
 
-### Temporal consistency (Verify Cell)
+### Target: temporal consistency (Verify Cell)
 
 New Signals that contradict the established timeline are flagged. The `TemporalConsistencyVerify` Cell checks whether adding a Signal's interval creates an inconsistency (empty AllenRelationSet after propagation). Inconsistency means the asserted timeline is self-contradictory -- a signal of memory poisoning or data corruption.
 
 ---
 
-## 11. Pheromone Mechanism
+## 11. Target: Pheromone Mechanism
 
-In the unified vocabulary, pheromones are **Pulses** (ephemeral) with a typed `PheromoneKind`, location hash, and intensity (Grasse 1959, first description of stigmergy in termite construction; Dorigo 1992, Ant Colony Optimization). They are not a separate primitive -- they are Pulses on the Bus that carry pheromone semantics.
+The unified design represents pheromones as **Pulses** with a typed
+`PheromoneKind`, location hash, and intensity (Grasse 1959, first description of
+stigmergy in termite construction; Dorigo 1992, Ant Colony Optimization). The
+current code has a `ContextSource::Pheromone` label but no typed pheromone runtime,
+registry, or Pulse retention/reinforcement policy.
 
 ### Pheromone types
 
@@ -993,7 +1059,11 @@ The pheromone mechanism implements digital stigmergy:
 
 ### Pheromone demurrage
 
-Pheromone intensity decays via the same demurrage mechanism, but as Pulses they live on the Bus ring buffer rather than in Store. Default half-life is 1 hour. Reinforcement resets the decay clock: when multiple Agents independently deposit pheromone Pulses at the same location hash, the cumulative signal is strong and persists longer.
+In the target policy, pheromone intensity decays via a Bus-backed bounded field
+rather than durable Store retention. Its proposed default half-life is one hour,
+and independent deposits at the same location reinforce the field. Current
+`BroadcastBus` is live-only and `MemoryBus` replay capacity is caller-supplied;
+neither backend implements this pheromone retention policy by itself.
 
 ### Pipeline integration
 
@@ -1006,7 +1076,11 @@ During the **Observe step** (step 1) of the 9-step pipeline ([05-AGENT](05-AGENT
 
 ---
 
-## 12. Knowledge in the 9-Step Pipeline
+## 12. Current Retrieval/Distillation and Target 9-Step Pipeline
+
+The runner currently retrieves local knowledge during prompt assembly and distills
+terminal gate outcomes into Heuristic or AntiKnowledge entries. The numbered
+nine-step flow and its Bus/on-chain/VCG details below describe the broader target.
 
 ### RETRIEVE (Step 2)
 
@@ -1034,7 +1108,7 @@ After execution and gating:
 
 ---
 
-## 13. On-Chain Integration
+## 13. Target: On-Chain Integration
 
 ### InsightStore (Solidity)
 
@@ -1089,9 +1163,11 @@ interface IPheromoneRegistry {
 
 Each on-chain entry is approximately 1,340 bytes. No natural language touches the chain -- content stored off-chain with on-chain hash commitment.
 
-### ChainConnectorCell (Connect protocol)
+### Target: ChainConnectorCell (Connect protocol)
 
-The `ChainConnectorCell` bridges the local Memory Store and the on-chain `IInsightStore`. It implements the Connect protocol, providing lifecycle-managed external I/O with health checks.
+The proposed `ChainConnectorCell` bridges the local Memory Store and the on-chain
+`IInsightStore`. Neither this connector nor the contracts below are current Rust
+runtime surfaces.
 
 ```rust
 /// Bridges local Store <-> on-chain IInsightStore.
@@ -1230,7 +1306,10 @@ impl ChainConnectorCell {
 
 ---
 
-## 14. API Endpoints
+## 14. Target: API Endpoints
+
+These routes are the desired HTTP surface, not a claim that `roko-serve` currently
+mounts every route listed here.
 
 ### Knowledge endpoints
 
@@ -1270,7 +1349,10 @@ GET    /api/pheromones/field               Full field state (for visualization)
 
 ---
 
-## 15. TOML Configuration
+## 15. Target: TOML Configuration
+
+This is a proposed unified configuration shape. It is not the exact current
+`roko-config` deserialization contract.
 
 ```toml
 [knowledge]
@@ -1322,8 +1404,13 @@ max_active = 10000
 expiry_threshold = 0.01
 
 [dreams]
-idle_timeout_mins = 5
-episode_threshold = 50
+auto_dream = true
+idle_threshold_mins = 15
+min_episodes_for_dream = 5
+scheduled_cron = "0 0 */4 * * * *"
+episode_count_trigger = 50
+quality_gain = 0.75
+quality_penalty = 1.25
 max_replay_episodes = 200
 counterfactual_budget = 20
 hindsight_enabled = true
@@ -1333,11 +1420,15 @@ promotion_confidence_floor = 0.7
 
 ---
 
-## 16. Acceptance Criteria
+## 16. Target Acceptance Catalog
+
+This table is a roadmap verification catalog. It mixes already exercised local
+store behavior with unimplemented distributed, temporal-graph, Cell, and
+consortium targets; it is not a shipped-feature checklist.
 
 | # | Criterion | Verification |
 |---|---|---|
-| MK-1 | Memory Cell implements Store protocol (put/get/query/query_similar/prune) | Unit test |
+| MK-1 | `KnowledgeStore` implements the current `NeuroStore` lifecycle; target `MemoryCell` implements unified Store | Unit and integration tests |
 | MK-2 | Knowledge Signals decay via demurrage with per-Kind rates | Unit test: compute balance at t=0, t=30d for Insight |
 | MK-3 | Tier multipliers applied correctly (Transient decays 10x faster) | Unit test |
 | MK-4 | Retrieval reinforces balance with novelty weighting | Unit test: retrieve 10 times, verify diminishing reinforcement |
@@ -1391,16 +1482,16 @@ promotion_confidence_floor = 0.7
 
 ---
 
-## 17. Crate Mapping
+## 17. Current and Target Crate Mapping
 
 | Crate | Responsibility |
 |---|---|
 | `roko-neuro` | Local knowledge store, tier progression, demurrage, retrieval scoring, AntiKnowledge, heuristic lifecycle |
-| `roko-primitives` | HdcVector (bind/bundle/permute/similarity), Resonator Networks, item memory |
+| `roko-primitives` | Current HDC primitives; target resonator-network factorization |
 | `roko-dreams` | Dream cycle orchestration, NREM replay, hindsight relabeling, REM imagination, threat rehearsal |
 | `roko-learn` | Episode logger, HDC fingerprinting, playbook store, efficiency tracking |
-| `roko-serve` | HTTP endpoints for knowledge, heuristic, and pheromone APIs |
-| `roko-chain` (phase 2) | On-chain InsightStore and PheromoneRegistry interactions, ChainConnectorCell |
+| `roko-serve` | Target unified knowledge, heuristic, and pheromone HTTP surface |
+| `roko-chain` (target phase 2) | On-chain InsightStore and PheromoneRegistry interactions, ChainConnectorCell |
 
 ---
 

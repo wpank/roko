@@ -1,5 +1,8 @@
 # 03 — Passport Tiers: Protocol / Sovereign / Worker / Edge
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Four tiers of Korai Passport define an agent's capabilities, responsibilities, staking
 > requirements, and governance participation. This document specifies each tier in full —
 > entry requirements, capability grants, rate limits, slashing exposure, upgrade paths,

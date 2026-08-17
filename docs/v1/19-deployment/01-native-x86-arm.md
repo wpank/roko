@@ -1,5 +1,8 @@
 # Native Deployment (x86_64 and aarch64)
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Native deployment is the default and highest-performance target for Roko. The full 36-workspace-member
 > workspace compiles to a single binary per product, with all features enabled, optimized for
 > the host architecture. This document covers build configuration, target triples, feature

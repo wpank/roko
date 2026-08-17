@@ -1,5 +1,8 @@
 # Protocol Standards
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Blockchain protocol standards, agent identity specifications, and interoperability protocols relevant to Roko's on-chain subsystems.
 
 **Topic**: [References](./INDEX.md)

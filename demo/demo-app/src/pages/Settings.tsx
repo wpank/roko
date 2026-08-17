@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { useRokoConfig } from '../hooks/useRokoConfig';
+import { useConfigController } from '../data/selectors';
 import { useToast } from '../components/Toast';
 import {
   flattenProviderModels,
@@ -101,7 +101,7 @@ function SaveToast({ visible, onDone }: { visible: boolean; onDone: () => void }
 
 export default function Settings() {
   const { fullConfig, providers, isLive, updateConfig } =
-    useRokoConfig();
+    useConfigController();
   const { toast } = useToast();
 
   // Local editing state

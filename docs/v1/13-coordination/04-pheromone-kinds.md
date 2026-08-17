@@ -1,5 +1,8 @@
 # Pheromone Kinds: The Taxonomy of Coordination Signals
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L1 Framework (type system definition), referenced by L2 Scaffold (context
 > enrichment) and L4 Orchestration (multi-agent coordination)
 >

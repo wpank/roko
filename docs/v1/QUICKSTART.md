@@ -1,5 +1,8 @@
 # Roko Quickstart
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../v2/](../v2/) for the current reference.
+
+
 > Four levels of depth. Start at Level 1, go as deep as you need.
 
 ---

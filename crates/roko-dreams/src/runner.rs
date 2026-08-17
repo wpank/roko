@@ -4,13 +4,15 @@
 //! that can be called from the CLI and from other workspace crates without
 //! reimplementing the consolidation logic.
 
+use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::future::Future;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use cron::Schedule;
@@ -23,7 +25,8 @@ use roko_core::foundation::{
 use roko_core::{Body, Context as RokoContext, Kind, Provenance, Signal};
 use roko_learn::{episode_logger::EpisodeLogger, playbook::PlaybookStore};
 use roko_neuro::{
-    KnowledgeStore,
+    DEFAULT_GC_MIN_CONFIDENCE, Falsifier, KnowledgeEntry, KnowledgeKind, KnowledgeStore,
+    KnowledgeTier,
     tier_progression::{InsightRecord, TierProgression as NeuroTierProgression},
 };
 use serde::{Deserialize, Serialize};
@@ -41,6 +44,21 @@ pub type Insight = InsightRecord;
 
 /// Public alias for the dream report written by consolidation.
 pub type DreamReport = DreamCycleReport;
+
+/// Metrics from the pure knowledge-compression phase of a dream cycle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsolidationReport {
+    /// Number of overlapping groups materialized as merged entries.
+    pub merge_count: usize,
+    /// Number of merged entries promoted above at least one source tier.
+    pub promoted: usize,
+    /// Number of entries processed by confidence decay.
+    pub decayed: usize,
+    /// Number of already-frozen dead entries permanently removed.
+    pub gc_removed: usize,
+    /// Wall-clock time spent in pure consolidation and maintenance.
+    pub elapsed: Duration,
+}
 
 /// Configuration for the external agent used during consolidation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,9 +173,12 @@ impl DreamAgentConfig {
             command: Some(self.command.clone()),
             timeout_ms: Some(self.timeout_ms),
             system_prompt: None,
+            input_messages: Vec::new(),
             cached_content: None,
             tools: None,
+            agent_contract: None,
             mcp_config: None,
+            immune_root: Some(workdir.to_path_buf()),
             working_dir: Some(workdir.to_path_buf()),
             provider_semaphores: None,
             env: self.env.clone(),
@@ -167,13 +188,16 @@ impl DreamAgentConfig {
             dangerously_skip_permissions: false,
             name,
             pre_discovered_mcp_tools: None,
+            pre_discovered_mcp_runtime: None,
+            pre_discovered_local_tools: None,
+            local_tool_mcp_servers: None,
             rate_limiter: None,
         }
     }
 }
 
 /// Scheduler and agent settings used by the runner and daemon loop.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DreamLoopConfig {
     /// Whether automatic dreaming is enabled.
     pub auto_dream: bool,
@@ -181,8 +205,25 @@ pub struct DreamLoopConfig {
     pub idle_threshold_mins: u64,
     /// Minimum number of new episodes required before dreaming.
     pub min_episodes_for_dream: usize,
+    /// Automatic scheduling controls. The top-level `auto_dream` and
+    /// `idle_threshold_mins` fields remain the compatibility authority for
+    /// enablement and idle cadence.
+    #[serde(default)]
+    pub schedule: DreamSchedulePolicy,
     /// Agent backend used to review the dream batch.
     pub agent: DreamAgentConfig,
+}
+
+impl DreamLoopConfig {
+    /// Resolve the effective scheduling policy while preserving the original
+    /// top-level daemon configuration fields as the compatibility authority.
+    #[must_use]
+    pub fn effective_schedule(&self) -> DreamSchedulePolicy {
+        let mut schedule = self.schedule.clone();
+        schedule.enabled = self.auto_dream && schedule.enabled;
+        schedule.idle_threshold_mins = self.idle_threshold_mins;
+        schedule
+    }
 }
 
 /// Backwards-compatible config alias for callers that want a shorter name.
@@ -417,6 +458,42 @@ impl Default for DreamSchedulePolicy {
 }
 
 impl DreamSchedulePolicy {
+    /// Validate values that would otherwise turn a configured trigger into a
+    /// silent no-op or produce an invalid adaptive delay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty/invalid cron expression or non-positive,
+    /// non-finite quality multipliers.
+    pub fn validate(&self) -> Result<()> {
+        if !self.quality_gain.is_finite() || self.quality_gain <= 0.0 {
+            bail!("dream schedule quality_gain must be finite and greater than zero");
+        }
+        if !self.quality_penalty.is_finite() || self.quality_penalty <= 0.0 {
+            bail!("dream schedule quality_penalty must be finite and greater than zero");
+        }
+        if let Some(expression) = self.scheduled_cron.as_deref() {
+            let expression = expression.trim();
+            if expression.is_empty() {
+                bail!("dream schedule scheduled_cron must not be empty");
+            }
+            Schedule::from_str(expression).with_context(|| {
+                format!("invalid dream schedule cron expression {expression:?}")
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Return the next configured cron instant strictly after `now`.
+    #[must_use]
+    pub fn next_cron_at(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        let expression = self.scheduled_cron.as_ref()?.trim();
+        if expression.is_empty() {
+            return None;
+        }
+        Schedule::from_str(expression).ok()?.after(&now).next()
+    }
+
     /// Return the adapted idle delay for the current dream quality.
     #[must_use]
     pub fn idle_delay(
@@ -447,12 +524,7 @@ impl DreamSchedulePolicy {
     /// Return the next cron fire delay, if a cron expression is configured.
     #[must_use]
     pub fn cron_delay(&self, now: DateTime<Utc>) -> Option<Duration> {
-        let expression = self.scheduled_cron.as_ref()?.trim();
-        if expression.is_empty() {
-            return None;
-        }
-        let schedule = Schedule::from_str(expression).ok()?;
-        let next = schedule.after(&now).next()?;
+        let next = self.next_cron_at(now)?;
         (next - now).to_std().ok()
     }
 
@@ -740,10 +812,14 @@ impl DreamRunner {
     /// Construct a dream runner for a working directory.
     #[must_use]
     pub fn new(workdir: impl Into<PathBuf>, config: DreamLoopConfig) -> Self {
+        let controls = DreamRuntimeControls {
+            schedule: config.effective_schedule(),
+            ..DreamRuntimeControls::default()
+        };
         Self {
             workdir: workdir.into(),
             config,
-            controls: DreamRuntimeControls::default(),
+            controls,
             model_caller: None,
         }
     }
@@ -824,6 +900,92 @@ impl DreamRunner {
     /// consolidated report.
     pub fn consolidate_now(&mut self) -> Result<DreamReport> {
         block_on(self.consolidate_async())
+    }
+
+    /// Compress overlapping durable knowledge without invoking a model.
+    pub fn consolidate(&self, store: &KnowledgeStore) -> Result<ConsolidationReport> {
+        let started = std::time::Instant::now();
+        let entries = store
+            .read_all()?
+            .into_iter()
+            .filter(|entry| !entry.frozen)
+            .collect::<Vec<_>>();
+        let mut visited = HashSet::new();
+        let mut merged_groups = Vec::new();
+
+        for start in 0..entries.len() {
+            if visited.contains(&start) {
+                continue;
+            }
+            visited.insert(start);
+            let mut queue = VecDeque::from([start]);
+            let mut component = Vec::new();
+            while let Some(index) = queue.pop_front() {
+                component.push(index);
+                for candidate in 0..entries.len() {
+                    if visited.contains(&candidate)
+                        || entries[candidate].kind != entries[index].kind
+                        || shared_tag_count(&entries[index], &entries[candidate]) < 2
+                    {
+                        continue;
+                    }
+                    visited.insert(candidate);
+                    queue.push_back(candidate);
+                }
+            }
+            if component.len() >= 3 {
+                merged_groups.push(component);
+            }
+        }
+
+        let mut merge_count = 0;
+        let mut promoted = 0;
+        let mut sources_to_freeze = HashSet::new();
+        for group in merged_groups {
+            let members = group
+                .iter()
+                .map(|index| &entries[*index])
+                .collect::<Vec<_>>();
+            let merged = merge_knowledge_group(&members);
+            let merged_id = merged.id.clone();
+            let source_ids = members
+                .iter()
+                .map(|entry| entry.id.clone())
+                .collect::<HashSet<_>>();
+            let was_promoted = members
+                .iter()
+                .any(|entry| entry.tier.multiplier() < merged.tier.multiplier());
+            if store.add_consolidated(merged)? {
+                sources_to_freeze.extend(
+                    source_ids
+                        .into_iter()
+                        .filter(|source_id| source_id != &merged_id),
+                );
+                merge_count += 1;
+                promoted += usize::from(was_promoted);
+            }
+        }
+
+        let decayed = store.decay()?;
+        let _ = store.demurrage(0.005)?;
+        let gc_removed = store.gc_with_freeze(DEFAULT_GC_MIN_CONFIDENCE)?;
+        if !sources_to_freeze.is_empty() {
+            store.update_entries(|entry| {
+                if sources_to_freeze.contains(&entry.id) && !entry.frozen {
+                    entry.freeze();
+                    true
+                } else {
+                    false
+                }
+            })?;
+        }
+        Ok(ConsolidationReport {
+            merge_count,
+            promoted,
+            decayed,
+            gc_removed,
+            elapsed: started.elapsed(),
+        })
     }
 
     /// Return the next time a dream should fire, if auto-dreaming is enabled
@@ -918,12 +1080,25 @@ impl DreamRunner {
                 .saturating_mul(self.controls.intensive.replay_multiplier as usize);
         }
 
+        let consolidation_store = Arc::clone(&knowledge);
         let mut cycle = DreamCycle::new(episodes, knowledge, playbooks, dispatcher);
         cycle.configure_threats(
             self.controls.threat_simulation,
             self.controls.threat_severity_floor,
         );
         let mut report = cycle.run_budgeted(&mut self.controls.budget).await?;
+        let consolidation = Self::consolidate(self, &consolidation_store)?;
+        report.knowledge_entries_written = report
+            .knowledge_entries_written
+            .saturating_add(consolidation.merge_count);
+        report.performance_notes.push(format!(
+            "Knowledge consolidation merged {}, promoted {}, decayed {}, and removed {} entries in {:?}.",
+            consolidation.merge_count,
+            consolidation.promoted,
+            consolidation.decayed,
+            consolidation.gc_removed,
+            consolidation.elapsed
+        ));
 
         // Mark intensive mode in the report.
         report.intensive_mode_active = intensive_active;
@@ -997,6 +1172,7 @@ impl Default for DreamRunner {
                 auto_dream: true,
                 idle_threshold_mins: 15,
                 min_episodes_for_dream: 5,
+                schedule: DreamSchedulePolicy::default(),
                 agent: DreamAgentConfig {
                     command: "cat".to_string(),
                     args: Vec::new(),
@@ -1079,15 +1255,6 @@ impl DreamEngine for DreamRunner {
             let cron_fire_at = now + chrono::Duration::from_std(cron_delay).ok()?;
             target = target.min(cron_fire_at);
         }
-        if let Some(report) = last_report.as_ref() {
-            if dream_quality_score(report) > 1.5 {
-                let adjusted = self
-                    .controls
-                    .schedule
-                    .idle_delay(Some(report), self.controls.budget.as_ref());
-                target = latest_episode + chrono::Duration::from_std(adjusted).ok()?;
-            }
-        }
         if let Some(delta_delay) = heartbeat.delta_due_in_secs {
             let delta_fire_at = now + chrono::Duration::seconds(delta_delay as i64);
             target = target.min(delta_fire_at);
@@ -1097,6 +1264,102 @@ impl DreamEngine for DreamRunner {
         } else {
             (target - now).to_std().ok()
         }
+    }
+}
+
+fn shared_tag_count(left: &KnowledgeEntry, right: &KnowledgeEntry) -> usize {
+    let left = left
+        .tags
+        .iter()
+        .map(|tag| tag.trim().to_ascii_lowercase())
+        .filter(|tag| !tag.is_empty())
+        .collect::<HashSet<_>>();
+    right
+        .tags
+        .iter()
+        .map(|tag| tag.trim().to_ascii_lowercase())
+        .filter(|tag| !tag.is_empty() && left.contains(tag))
+        .collect::<HashSet<_>>()
+        .len()
+}
+
+fn merge_knowledge_group(entries: &[&KnowledgeEntry]) -> KnowledgeEntry {
+    let kind = entries[0].kind;
+    let contents = entries
+        .iter()
+        .map(|entry| entry.content.trim())
+        .filter(|content| !content.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<BTreeSet<_>>();
+    let content = contents.into_iter().collect::<Vec<_>>().join("\n\n");
+    let tags = entries
+        .iter()
+        .flat_map(|entry| entry.tags.iter())
+        .map(|tag| tag.trim().to_ascii_lowercase())
+        .filter(|tag| !tag.is_empty())
+        .chain(std::iter::once("dream:consolidated".to_string()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let source_episodes = entries
+        .iter()
+        .flat_map(|entry| {
+            entry
+                .source_episodes
+                .iter()
+                .cloned()
+                .chain(std::iter::once(entry.id.clone()))
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let confidence =
+        entries.iter().map(|entry| entry.confidence).sum::<f64>() / entries.len() as f64;
+    let highest_tier = entries
+        .iter()
+        .map(|entry| entry.tier)
+        .max_by(|left, right| left.multiplier().total_cmp(&right.multiplier()))
+        .unwrap_or(KnowledgeTier::Transient);
+    let tier = match highest_tier {
+        KnowledgeTier::Transient => KnowledgeTier::Working,
+        KnowledgeTier::Working => KnowledgeTier::Consolidated,
+        KnowledgeTier::Consolidated => KnowledgeTier::Consolidated,
+        KnowledgeTier::Persistent => KnowledgeTier::Persistent,
+    };
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    kind.as_str().hash(&mut hasher);
+    content.hash(&mut hasher);
+    tags.hash(&mut hasher);
+    source_episodes.hash(&mut hasher);
+    let created_at = Utc::now();
+    let falsifier = matches!(
+        kind,
+        KnowledgeKind::Heuristic | KnowledgeKind::AntiKnowledge
+    )
+    .then(|| Falsifier {
+        predicate: content.clone(),
+        observations: 0,
+        violations: 0,
+        last_checked: created_at,
+        active: true,
+    });
+    KnowledgeEntry {
+        id: format!("dream_consolidated_{:016x}", hasher.finish()),
+        kind,
+        content,
+        confidence,
+        confidence_weight: if kind == KnowledgeKind::AntiKnowledge {
+            -confidence
+        } else {
+            confidence
+        },
+        source_episodes,
+        tags,
+        created_at,
+        half_life_days: kind.default_half_life_days(),
+        tier,
+        falsifier,
+        ..KnowledgeEntry::default()
     }
 }
 
@@ -1315,6 +1578,7 @@ impl Agent for DreamReviewAgent {
                         role: MessageRole::User,
                         content: prompt,
                     }],
+                    input_messages: Vec::new(),
                     max_tokens: None,
                     temperature: None,
                     role: Some("dream-review".to_string()),
@@ -1383,6 +1647,7 @@ mod tests {
             auto_dream: true,
             idle_threshold_mins: 15,
             min_episodes_for_dream: 1,
+            schedule: DreamSchedulePolicy::default(),
             agent: DreamAgentConfig {
                 command: "cat".to_string(),
                 args: Vec::new(),
@@ -1478,6 +1743,129 @@ mod tests {
         let delay = policy.trigger_delay(&DreamTrigger::Scheduled, None, None, now);
 
         assert_eq!(delay, Some(Duration::from_secs(45)));
+    }
+
+    #[test]
+    fn schedule_validation_rejects_invalid_runtime_configuration() {
+        let invalid_cron = DreamSchedulePolicy {
+            scheduled_cron: Some("not a cron expression".to_string()),
+            ..DreamSchedulePolicy::default()
+        };
+        assert!(invalid_cron.validate().is_err());
+
+        let invalid_multiplier = DreamSchedulePolicy {
+            quality_gain: 0.0,
+            ..DreamSchedulePolicy::default()
+        };
+        assert!(invalid_multiplier.validate().is_err());
+
+        let non_finite_multiplier = DreamSchedulePolicy {
+            quality_penalty: f64::NAN,
+            ..DreamSchedulePolicy::default()
+        };
+        assert!(non_finite_multiplier.validate().is_err());
+    }
+
+    #[test]
+    fn loop_config_keeps_compatibility_fields_authoritative() {
+        let mut config = test_loop_config();
+        config.auto_dream = false;
+        config.idle_threshold_mins = 42;
+        config.schedule.enabled = true;
+        config.schedule.idle_threshold_mins = 7;
+
+        let effective = config.effective_schedule();
+
+        assert!(!effective.enabled);
+        assert_eq!(effective.idle_threshold_mins, 42);
+    }
+
+    #[test]
+    fn loop_config_deserializes_legacy_shape_without_schedule() {
+        let config: DreamLoopConfig = serde_json::from_value(serde_json::json!({
+            "auto_dream": true,
+            "idle_threshold_mins": 27,
+            "min_episodes_for_dream": 4,
+            "agent": {
+                "command": "cat",
+                "args": [],
+                "model": null,
+                "bare_mode": true,
+                "effort": "medium",
+                "fallback_model": null,
+                "timeout_ms": 120000,
+                "env": []
+            }
+        }))
+        .expect("legacy loop config");
+
+        assert_eq!(config.schedule, DreamSchedulePolicy::default());
+        assert!(config.effective_schedule().enabled);
+        assert_eq!(config.effective_schedule().idle_threshold_mins, 27);
+    }
+
+    #[test]
+    fn runner_schedule_keeps_cron_ahead_of_quality_adjusted_idle_deadline() {
+        let tmp = TempDir::new().unwrap_or_else(|err| panic!("tempdir: {err}"));
+        let roko_dir = tmp.path().join(".roko");
+        let report_dir = roko_dir.join("dreams");
+        std::fs::create_dir_all(&report_dir).expect("create dream report directory");
+
+        let now = Utc::now();
+        let episode = episode_at("agent", "new-task", now - chrono::Duration::minutes(20));
+        let episode_line = format!(
+            "{}\n",
+            serde_json::to_string(&episode).expect("serialize episode")
+        );
+        std::fs::write(roko_dir.join("episodes.jsonl"), episode_line).expect("write episode log");
+
+        let report = DreamCycleReport {
+            started_at: now - chrono::Duration::minutes(40),
+            completed_at: now - chrono::Duration::minutes(30),
+            total_episodes: 1,
+            processed_episodes: 1,
+            processed_through: Some(now - chrono::Duration::minutes(40)),
+            analysis: roko_neuro::tier_progression::TierProgressionReport {
+                insights: Vec::new(),
+                heuristics: Vec::new(),
+                playbook: roko_neuro::tier_progression::PlaybookCompilation {
+                    markdown: String::new(),
+                    rules: Vec::new(),
+                },
+                falsifiers: Vec::new(),
+            },
+            cfactor_regression: None,
+            clusters: Vec::new(),
+            cross_episode_report: None,
+            routing_recommendations: 0,
+            knowledge_entries_written: 2,
+            playbooks_created: 0,
+            regressions_detected: Vec::new(),
+            strategy_hypotheses: Vec::new(),
+            performance_notes: Vec::new(),
+            hypnagogia_entries_count: 0,
+            staging_buffer_stats: None,
+            intensive_mode_active: false,
+            phase_budget_summary: None,
+        };
+        std::fs::write(
+            report_dir.join("dream-1.json"),
+            serde_json::to_vec(&report).expect("serialize report"),
+        )
+        .expect("write dream report");
+
+        let mut config = test_loop_config();
+        config.idle_threshold_mins = 60;
+        config.schedule.idle_threshold_mins = 60;
+        config.schedule.scheduled_cron = Some("0 * * * * * *".to_string());
+        let runner = DreamRunner::new(tmp.path(), config);
+
+        let delay = runner.schedule_next().expect("scheduled dream delay");
+
+        assert!(
+            delay <= Duration::from_secs(60),
+            "cron should win over the roughly 25-minute adapted idle delay, got {delay:?}"
+        );
     }
 
     #[test]
@@ -1635,5 +2023,78 @@ mod tests {
         assert!(config.is_dream_worthy(0.8, "gate_verdict"));
         assert!(!config.is_dream_worthy(0.5, "gate_verdict")); // below min_score
         assert!(!config.is_dream_worthy(0.8, "unknown_kind"));
+    }
+
+    fn consolidation_entry(id: &str, kind: KnowledgeKind, unique: &str) -> KnowledgeEntry {
+        KnowledgeEntry {
+            id: id.to_string(),
+            kind,
+            content: format!("Shared retry lesson with unique evidence {unique}"),
+            confidence: 0.75,
+            confidence_weight: 0.75,
+            source_episodes: vec![
+                format!("{id}-episode-a"),
+                format!("{id}-episode-b"),
+                format!("{id}-episode-c"),
+            ],
+            tags: vec![
+                "domain:runtime".to_string(),
+                "retry".to_string(),
+                unique.to_string(),
+            ],
+            tier: KnowledgeTier::Transient,
+            ..KnowledgeEntry::default()
+        }
+    }
+
+    #[test]
+    fn e24_consolidation_merges_freezes_and_promotes() {
+        let temp = TempDir::new().expect("tempdir");
+        let store = KnowledgeStore::new(temp.path().join("knowledge.jsonl"));
+        for (id, unique) in [("one", "alpha"), ("two", "beta"), ("three", "gamma")] {
+            store
+                .add_consolidated(consolidation_entry(id, KnowledgeKind::Insight, unique))
+                .expect("seed");
+        }
+        let runner = DreamRunner::new(temp.path(), test_loop_config());
+
+        let report = DreamRunner::consolidate(&runner, &store).expect("consolidate");
+
+        assert_eq!(report.merge_count, 1);
+        assert_eq!(report.promoted, 1);
+        let entries = store.read_all().expect("read");
+        assert_eq!(entries.iter().filter(|entry| entry.frozen).count(), 3);
+        let merged = entries
+            .iter()
+            .find(|entry| entry.id.starts_with("dream_consolidated_"))
+            .expect("merged entry");
+        assert_eq!(merged.tier, KnowledgeTier::Consolidated);
+        assert!(merged.content.contains("alpha"));
+        assert!(merged.content.contains("gamma"));
+    }
+
+    #[test]
+    fn e24_consolidation_never_merges_different_kinds() {
+        let temp = TempDir::new().expect("tempdir");
+        let store = KnowledgeStore::new(temp.path().join("knowledge.jsonl"));
+        for entry in [
+            consolidation_entry("one", KnowledgeKind::Insight, "alpha"),
+            consolidation_entry("two", KnowledgeKind::Insight, "beta"),
+            consolidation_entry("three", KnowledgeKind::Heuristic, "gamma"),
+        ] {
+            store.add_consolidated(entry).expect("seed");
+        }
+        let runner = DreamRunner::new(temp.path(), test_loop_config());
+
+        let report = DreamRunner::consolidate(&runner, &store).expect("consolidate");
+
+        assert_eq!(report.merge_count, 0);
+        assert!(
+            store
+                .read_all()
+                .expect("read")
+                .iter()
+                .all(|entry| !entry.frozen)
+        );
     }
 }

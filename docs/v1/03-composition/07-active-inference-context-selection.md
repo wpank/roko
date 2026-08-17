@@ -1,5 +1,8 @@
 # 07 — Active Inference for Context Selection
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Layer 2 Scaffold — Synapse Architecture
 > Status: **Scaffold** — Formula specified, implementation pending (E2 in 12a-cognitive-layer.md)
 > Canonical sources: `refactoring-prd/09-innovations.md` §XIX.B, Friston (2022)

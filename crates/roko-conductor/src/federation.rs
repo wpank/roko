@@ -261,7 +261,7 @@ mod tests {
         let cont = ConductorDecision::cont();
 
         for i in 0..4 {
-            pc.aggregate(&format!("t{i}"), &cont, i % 2 == 0);
+            let _ = pc.aggregate(&format!("t{i}"), &cont, i % 2 == 0);
         }
         // 2 failures out of 4 = 50% -> should trigger adjustment.
         let adj = pc.adjust_l2_thresholds();

@@ -278,7 +278,6 @@ to = "b"
 
 #[tokio::test]
 async fn engine_unknown_cell_type_reported() {
-    use roko_graph::cell::CellContext;
     use roko_graph::engine::GraphEngine;
     use roko_graph::loader;
     use roko_graph::registry::CellRegistry;

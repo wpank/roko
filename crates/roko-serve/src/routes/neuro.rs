@@ -1,10 +1,12 @@
 //! Neuro knowledge store query endpoint.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::extract::{Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use roko_core::ObservableEvent;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -48,11 +50,20 @@ async fn neuro_query(
     let layout = &state.layout;
     let store = roko_neuro::knowledge_store::KnowledgeStore::for_layout(layout);
 
+    let started = Instant::now();
     let results = store
         .query(&body.query, body.limit)
         .map_err(|e| ApiError::internal(format!("neuro query failed: {e}")))?;
 
     let total = results.len();
+    crate::emit_lens_observation(
+        &state,
+        ObservableEvent::MemoryRetrieved {
+            query: body.query.clone(),
+            results: total,
+            duration_ms: started.elapsed().as_millis() as u64,
+        },
+    );
     let entries: Vec<Value> = results
         .into_iter()
         .map(|entry| {
@@ -94,11 +105,20 @@ async fn knowledge_query(
     let layout = &state.layout;
     let store = roko_neuro::knowledge_store::KnowledgeStore::for_layout(layout);
 
+    let started = Instant::now();
     let results = store
         .query(&params.q, params.limit)
         .map_err(|e| ApiError::internal(format!("knowledge query failed: {e}")))?;
 
     let total = results.len();
+    crate::emit_lens_observation(
+        &state,
+        ObservableEvent::MemoryRetrieved {
+            query: params.q.clone(),
+            results: total,
+            duration_ms: started.elapsed().as_millis() as u64,
+        },
+    );
     let entries: Vec<Value> = results
         .into_iter()
         .map(|entry| {

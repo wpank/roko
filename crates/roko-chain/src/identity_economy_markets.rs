@@ -384,46 +384,6 @@ pub struct DeltaArtifact {
     pub evidence: Vec<u8>,
 }
 
-/// Inter-subjective floating-rate submission for a market and epoch.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct IsfrSubmission {
-    /// Submitter passport id.
-    pub submitter: u256,
-    /// Market identifier.
-    pub market_id: String,
-    /// Observed rate.
-    pub rate: f64,
-    /// Component vector that sums to the rate.
-    pub components: Vec<f64>,
-    /// Confidence assigned by the submitter.
-    pub confidence: f64,
-    /// Epoch identifier.
-    pub epoch_id: u64,
-    /// Signature over the submission.
-    pub signature: Signature,
-}
-
-/// Aggregated ISFR rate distributed for an epoch.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct IsfrAggregate {
-    /// Market identifier.
-    pub market_id: String,
-    /// Epoch identifier.
-    pub epoch_id: u64,
-    /// Median floating rate.
-    pub median_rate: f64,
-    /// Number of submissions used.
-    pub submission_count: u32,
-    /// Standard deviation of submissions.
-    pub std_deviation: f64,
-    /// Count of excluded outliers.
-    pub excluded_count: u32,
-    /// Aggregate timestamp.
-    pub timestamp: u64,
-    /// Hash or identifier of the TEE computation.
-    pub tee_attestation: [u8; 32],
-}
-
 /// Purchase record for a knowledge future.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FuturePurchase {

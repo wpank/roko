@@ -1,5 +1,8 @@
 # HDC Knowledge Encoding
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > How knowledge entries are encoded as 10,240-bit HDC vectors for similarity search, structured queries, and three-tier retrieval in Neuro.
 
 

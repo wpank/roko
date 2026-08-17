@@ -1,4 +1,5 @@
 import { SERVE_URL, WS_BASE } from './serve-url';
+import { api } from '../transport/api';
 import {
   normalizePipelineRouteTier,
   normalizePipelineTaskStatus,
@@ -112,19 +113,33 @@ export async function fetchWorkflowSnapshot(root: string, id = 'latest', retries
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const res = await fetch(`${SERVE_URL}/api/workflows/${encodeURIComponent(id)}?${workflowQuery(root)}`, {
-        signal: AbortSignal.timeout(3000),
-      });
-      serveReachable = true;
-      serveCheckTs = Date.now();
-      if (res.status === 404) return null;
-      if (res.status === 400 && attempt < retries) {
+      const res = await api.get<WorkflowSnapshot>(
+        `/api/workflows/${encodeURIComponent(id)}?${workflowQuery(root)}`,
+        AbortSignal.timeout(3000),
+      );
+      if (res.ok) {
+        serveReachable = true;
+        serveCheckTs = Date.now();
+        return res.data;
+      }
+
+      if (res.error.status > 0) {
+        serveReachable = true;
+        serveCheckTs = Date.now();
+      }
+      if (res.error.status === 404) return null;
+      if (res.error.status === 400 && attempt < retries) {
         // Workspace may not exist on server yet — wait and retry
         await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
         continue;
       }
-      if (!res.ok) return null;
-      return await res.json() as WorkflowSnapshot;
+      if (res.error.status > 0) return null;
+      if (attempt >= retries) {
+        serveReachable = false;
+        serveCheckTs = Date.now();
+        return null;
+      }
+      await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
     } catch {
       if (attempt >= retries) {
         serveReachable = false;
@@ -138,6 +153,9 @@ export async function fetchWorkflowSnapshot(root: string, id = 'latest', retries
 }
 
 export function openWorkflowSubscriptions(root: string, handlers: WorkflowSubscriptionHandlers): () => void {
+  // Unlike the app-wide dashboard and bench streams, workflow subscriptions
+  // are inherently session-scoped: both transports subscribe to one explicit
+  // workspace root and deliver that workflow's projection cursor/snapshot.
   let closed = false;
   let lastSnapshot = '';
   let latestLiveEventKey = '';

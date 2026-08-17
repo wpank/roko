@@ -1,11 +1,12 @@
 //! Shared workflow service construction for CLI, server, and ACP.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use roko_agent::{GatewayEventWriter, InferenceObserver, ModelCallService};
+use roko_agent::{GatewayEventWriter, InferenceObserver, ModelCallService, ProviderRateLimiter};
 use roko_compose::prompt_assembly_service::PromptAssemblyService;
 use roko_core::agent::resolve_model;
 use roko_core::config::schema::{RokoConfig, ToolsConfig};
@@ -19,6 +20,7 @@ use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::feedback_service::FeedbackService;
 use roko_learn::model_router::RoutingContext;
 use roko_learn::playbook::PlaybookStore;
+use roko_learn::provider_health::ProviderHealthRegistry;
 use roko_learn::section_effect::SectionEffectivenessRegistry;
 use roko_neuro::knowledge_store::KnowledgeStore;
 use roko_runtime::{JsonlLogger, effect_driver::EffectServices};
@@ -77,6 +79,8 @@ pub struct ServiceBundle {
     pub model: String,
     /// Concrete model-call gateway used by HTTP inference and workflow effects.
     pub model_call_service: Arc<ModelCallService>,
+    /// Canonical persisted circuit-breaker state shared by routing and APIs.
+    pub provider_health_registry: Arc<ProviderHealthRegistry>,
     /// Prompt assembly service exposed as the foundation trait.
     pub prompt_assembler: Arc<dyn PromptAssembler>,
     /// Feedback service exposed as the foundation trait.
@@ -165,16 +169,34 @@ impl ServiceFactory {
                 .collect()
         });
         let cost_table = roko_agent::CostTable::from_config_with_defaults(&workspace_config.models);
+        let provider_health_registry = Arc::new(ProviderHealthRegistry::load_or_new(
+            &config.roko_dir.join("learn").join("provider-health.json"),
+        ));
+        let health_checker: Arc<dyn roko_agent::ProviderHealthChecker> =
+            provider_health_registry.clone();
+        let rate_limiter = Arc::new(
+            ProviderRateLimiter::from_provider_configs(
+                60,
+                workspace_config.effective_providers().iter(),
+            )
+            .with_health_registry(health_checker),
+        );
         let routing_config = workspace_config.clone();
+        let routing_health_registry = Arc::clone(&provider_health_registry);
         let prompt_model_router = cascade_router.clone();
         let prompt_routing_config = workspace_config.clone();
+        let prompt_health_registry = Arc::clone(&provider_health_registry);
         let mut model_call_service = ModelCallService::new(model.clone())
             .with_config(workspace_config)
+            .with_working_dir(&config.workdir)
+            .with_immune_root(&config.workdir)
             .with_cost_table(cost_table)
             .with_feedback_sink(Arc::clone(&feedback_sink))
             .with_gateway_event_writer(Arc::new(GatewayEventWriter::for_workdir(&config.workdir)))
             .with_event_consumer(Arc::new(JsonlLogger::from_roko_dir(&config.roko_dir)))
             .with_knowledge_store(gateway_knowledge_query)
+            .with_provider_outcome_recorder(Arc::clone(&provider_health_registry))
+            .with_rate_limiter(rate_limiter)
             .with_run_id(config.run_id.unwrap_or_else(default_run_id));
         if let Some(cascade_router) = cascade_router {
             let model_router = Some(Arc::clone(&cascade_router));
@@ -184,6 +206,7 @@ impl ServiceFactory {
                     routed_model_for_role(
                         &routing_config,
                         model_router.as_ref(),
+                        Some(routing_health_registry.as_ref()),
                         agent_role_from_label(role.unwrap_or("implementer")),
                     )
                 });
@@ -213,6 +236,7 @@ impl ServiceFactory {
                 let selected_model = routed_model_for_role(
                     &prompt_routing_config,
                     prompt_model_router.as_ref(),
+                    Some(prompt_health_registry.as_ref()),
                     role,
                 );
                 context_window_tokens_for_model(&prompt_routing_config, &selected_model)
@@ -259,6 +283,7 @@ impl ServiceFactory {
         Ok(ServiceBundle {
             model,
             model_call_service,
+            provider_health_registry,
             prompt_assembler,
             feedback_sink,
             gate_runner,
@@ -270,6 +295,7 @@ impl ServiceFactory {
 fn routed_model_for_role(
     config: &RokoConfig,
     router: Option<&Arc<CascadeRouter>>,
+    health: Option<&ProviderHealthRegistry>,
     role: AgentRole,
 ) -> String {
     let Some(router) = router else {
@@ -283,7 +309,24 @@ fn routed_model_for_role(
     if candidates.is_empty() {
         candidates = config.model_slugs_for_cascade();
     }
+    if let Some(health) = health {
+        let model_providers = model_provider_map(config, &candidates);
+        candidates = router.filter_unhealthy(&candidates, health, &model_providers);
+    }
     router.explain_routing(&ctx, &candidates).selected_model
+}
+
+fn model_provider_map(config: &RokoConfig, candidates: &[String]) -> HashMap<String, String> {
+    let profiles = config.effective_models();
+    candidates
+        .iter()
+        .filter_map(|slug| {
+            profiles
+                .values()
+                .find(|profile| profile.slug == *slug)
+                .map(|profile| (slug.clone(), profile.provider.clone()))
+        })
+        .collect()
 }
 
 fn context_window_tokens_for_model(config: &RokoConfig, model_key: &str) -> usize {
@@ -398,4 +441,255 @@ fn default_run_id() -> String {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis());
     format!("service_factory_{millis}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use roko_core::agent::ProviderKind;
+    use roko_core::config::provider::ProviderConfig;
+    use roko_core::config::schema::ModelProfile;
+    use roko_core::foundation::{CachePolicy, ChatMessage, MessageRole, ModelCallRequest};
+    use roko_learn::provider_health::ErrorClass;
+    use tempfile::TempDir;
+
+    fn write_provider_script(tmp: &TempDir, name: &str, body: &str) -> PathBuf {
+        let path = tmp.path().join(name);
+        std::fs::write(&path, body).expect("write provider script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = std::fs::metadata(&path)
+                .expect("provider script metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&path, permissions).expect("chmod provider script");
+        }
+        path
+    }
+
+    fn add_cli_model(
+        config: &mut RokoConfig,
+        provider_id: &str,
+        model_key: &str,
+        model_slug: &str,
+        command: PathBuf,
+    ) {
+        config.providers.insert(
+            provider_id.to_string(),
+            ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                base_url: None,
+                api_key_env: None,
+                command: Some(command.display().to_string()),
+                args: None,
+                timeout_ms: Some(5_000),
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: None,
+                max_concurrent: None,
+                limits: None,
+            },
+        );
+        config.models.insert(
+            model_key.to_string(),
+            ModelProfile {
+                provider: provider_id.to_string(),
+                slug: model_slug.to_string(),
+                ..Default::default()
+            },
+        );
+    }
+
+    fn service_config(tmp: &TempDir, workspace_config: RokoConfig) -> ServiceConfig {
+        let mut config = ServiceConfig::production(tmp.path(), workspace_config);
+        config.affect_enabled = false;
+        config.cascade_enabled = false;
+        config.feedback_enabled = false;
+        config
+    }
+
+    fn request() -> ModelCallRequest {
+        ModelCallRequest {
+            messages: vec![ChatMessage {
+                role: MessageRole::User,
+                content: "exercise provider health wiring".to_string(),
+            }],
+            cache_policy: CachePolicy::Bypass,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn live_model_call_records_success_under_configured_provider_identity() {
+        let tmp = TempDir::new().expect("tempdir");
+        let script = write_provider_script(
+            &tmp,
+            "success-provider.sh",
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"provider-ok"}}'
+"#,
+        );
+
+        let mut workspace_config = RokoConfig::default();
+        workspace_config.providers.clear();
+        workspace_config.models.clear();
+        workspace_config.agent.default_model = "health-model".to_string();
+        workspace_config.agent.fallback_model = None;
+        workspace_config.agent.tier_models.clear();
+        add_cli_model(
+            &mut workspace_config,
+            "health-provider",
+            "health-model",
+            "health-model-v1",
+            script,
+        );
+
+        let bundle = ServiceFactory::build(service_config(&tmp, workspace_config))
+            .expect("build live workflow services");
+        assert_eq!(bundle.model, "health-model-v1");
+
+        let response = bundle
+            .model_call_service
+            .call(request())
+            .await
+            .expect("live provider call succeeds");
+        assert_eq!(response.model, "health-model-v1");
+        assert_eq!(response.content, "provider-ok");
+
+        let snapshot = bundle.provider_health_registry.snapshot();
+        assert_eq!(snapshot.len(), 1, "one live attempt must produce one key");
+        let health = snapshot
+            .get("health-provider")
+            .expect("configured provider identity recorded");
+        assert_eq!(
+            health.total_requests, 1,
+            "outcome must not be double-counted"
+        );
+        assert_eq!(health.total_failures, 0);
+        assert!(!snapshot.contains_key("health-model-v1"));
+    }
+
+    #[tokio::test]
+    async fn live_fallback_records_failure_and_success_for_exact_attempt_identities() {
+        let tmp = TempDir::new().expect("tempdir");
+        let primary = write_provider_script(
+            &tmp,
+            "primary-provider.sh",
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' 'temporarily unavailable' >&2
+exit 1
+"#,
+        );
+        let fallback = write_provider_script(
+            &tmp,
+            "fallback-provider.sh",
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"fallback-ok"}}'
+"#,
+        );
+
+        let mut workspace_config = RokoConfig::default();
+        workspace_config.providers.clear();
+        workspace_config.models.clear();
+        workspace_config.agent.default_model = "primary-model".to_string();
+        workspace_config.agent.fallback_model = Some("fallback-model".to_string());
+        workspace_config.agent.tier_models.clear();
+        add_cli_model(
+            &mut workspace_config,
+            "primary-provider",
+            "primary-model",
+            "primary-model-v1",
+            primary,
+        );
+        add_cli_model(
+            &mut workspace_config,
+            "fallback-provider",
+            "fallback-model",
+            "fallback-model-v1",
+            fallback,
+        );
+
+        let bundle = ServiceFactory::build(service_config(&tmp, workspace_config))
+            .expect("build live workflow services");
+        let response = bundle
+            .model_call_service
+            .call(request())
+            .await
+            .expect("fallback provider succeeds");
+        assert_eq!(response.model, "fallback-model-v1");
+        assert_eq!(response.content, "fallback-ok");
+
+        let snapshot = bundle.provider_health_registry.snapshot();
+        assert_eq!(snapshot.len(), 2);
+        let primary_health = snapshot
+            .get("primary-provider")
+            .expect("failed primary identity recorded");
+        assert_eq!(primary_health.total_requests, 1);
+        assert_eq!(primary_health.total_failures, 1);
+        assert_eq!(
+            primary_health
+                .failure_window
+                .back()
+                .map(|failure| failure.error_class),
+            Some(ErrorClass::ServerError)
+        );
+        let fallback_health = snapshot
+            .get("fallback-provider")
+            .expect("successful fallback identity recorded");
+        assert_eq!(fallback_health.total_requests, 1);
+        assert_eq!(fallback_health.total_failures, 0);
+        assert!(!snapshot.contains_key("primary-model-v1"));
+        assert!(!snapshot.contains_key("fallback-model-v1"));
+    }
+
+    #[test]
+    fn role_routing_excludes_open_providers() {
+        let mut config = RokoConfig::default();
+        config.models.clear();
+        config.models.insert(
+            "primary".to_string(),
+            ModelProfile {
+                provider: "unavailable-provider".to_string(),
+                slug: "claude-sonnet-4-6".to_string(),
+                ..Default::default()
+            },
+        );
+        config.models.insert(
+            "fallback".to_string(),
+            ModelProfile {
+                provider: "healthy-provider".to_string(),
+                slug: "gemini-2.5-flash".to_string(),
+                ..Default::default()
+            },
+        );
+        config.agent.default_model = "primary".to_string();
+        config.agent.fallback_model = Some("fallback".to_string());
+
+        let router = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".to_string(),
+            "gemini-2.5-flash".to_string(),
+        ]));
+        let health = ProviderHealthRegistry::new();
+        for _ in 0..3 {
+            health.record_failure("unavailable-provider", ErrorClass::AuthFailure);
+        }
+
+        assert_eq!(
+            routed_model_for_role(
+                &config,
+                Some(&router),
+                Some(&health),
+                AgentRole::Implementer,
+            ),
+            "gemini-2.5-flash"
+        );
+    }
 }

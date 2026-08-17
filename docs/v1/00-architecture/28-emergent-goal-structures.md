@@ -1,5 +1,8 @@
 # Emergent Goal Structures
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** Goals in Roko are not predefined hierarchies — they emerge from the interaction
 > of three forces: affect (what the agent *wants*), knowledge (what the agent *knows*), and
 > experience (what the agent has *done*). This document specifies a goal emergence engine that

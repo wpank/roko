@@ -14,7 +14,7 @@ The narrative arc is: **hook → problem → solution → proof → chain → id
 
 **What Nunchi is (two parts):**
 
-1. **Roko** — open-source Rust agent runtime (18 crates, ~177K LOC). Three primitives: Signal (durable, content-addressed, HDC-fingerprinted), Pulse (ephemeral on Bus), Cell (atomic computation implementing 9 protocols). Graph composition (TOML DAGs). Native 6-stage harness: OBSERVE → GATE → ASSEMBLE → INFER+TOOLS → REFLECT → CONSOLIDATE. CascadeRouter for model selection. 11-gate pipeline with adaptive thresholds. Every operator is a learner via predict-publish-correct on the Bus.
+1. **Roko** — open-source Rust agent runtime (34 workspace members, ~800K LOC). Three primitives: Signal (durable, content-addressed, HDC-fingerprinted), Pulse (ephemeral on Bus), Cell (atomic computation implementing 9 protocols). Graph composition (TOML DAGs). Native 6-stage harness: OBSERVE → GATE → ASSEMBLE → INFER+TOOLS → REFLECT → CONSOLIDATE. CascadeRouter for model selection. 11-gate pipeline with adaptive thresholds. Every operator is a learner via predict-publish-correct on the Bus.
 
 2. **Nunchi chain** — sovereign EVM L1 (NOT an L2/L3). Simplex consensus (Chan & Pass, IACR 2023/463). ~50ms blocks via co-located Tokyo validators (same architecture as Hyperliquid). reth/revm fork with native custom precompiles. HDC precompile at 0xA01 (~400 gas for top-K similarity search — 20-100x cheaper than Solidity). ERC-8004 agent identities (standard transferable, used to their fullest extent with 7-domain EMA reputation, ZK-HDC behavioral verification). On-chain knowledge substrate with demurrage-based pruning (agents query chain knowledge to inject context). ERC-8183 job market. ZK-HDC proofs (Circom + Groth16, <1s proving, ~250K gas verification).
 
@@ -61,7 +61,7 @@ The existing site at nunchi.network has 7 scroll sections with ROSEDUST dark aes
 6. **Collective**: "The thousandth agent joins smarter than the first." Particle field visualization. Agent count slider (100 agents). C-factor collective intelligence curve.
 7. **Chain**: "A library, not a ledger." Shows block visualization with knowledge deposits. Stats: 3.0 / 17 / 2928sec. Transaction list.
 8. **Proof**: "Run it, then run it again." Cold run terminal showing per-line costs ($0.012 cache miss, $0.011 miss, $0.009 retry, etc.). Chain mint panel (no deposits during cold run). "RUN WARM" button. Loop phase diagram (Cold → stages → awaiting warm).
-9. **CTA**: "The next agent to join inherits everything the last one learned." Three buttons: Open dashboard / Read the paper / GitHub. Footer: NUNCHI · ROKO © 2026 · v0.177K · 2026-04-26.
+9. **CTA**: "The next agent to join inherits everything the last one learned." Three buttons: Open dashboard / Read the paper / GitHub. Footer: NUNCHI · ROKO © 2026 · v0.800K · 2026-04-26.
 
 **What's WRONG with the current landing page for investor purposes:**
 - "Observe. Predict. Compound." is a tagline — not a value proposition. An investor who lands here doesn't know what this product DOES in the first 3 seconds.

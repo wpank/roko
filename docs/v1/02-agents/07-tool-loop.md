@@ -1,5 +1,8 @@
 # 07 — Tool Loop
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Sub-doc 07 of **02-agents** · Roko Documentation
 >
 > **Critical:** The ToolLoop already exists and works. It does NOT need to be
@@ -7,8 +10,8 @@
 > providers so they can use the existing loop.
 >
 > This document describes the `ToolLoop` multi-turn driver, the `LlmBackend`
-> trait, the `ToolDispatcher` 7-step pipeline, the `SafetyLayer` composition,
-> and the integration gap.
+> trait, the `ToolDispatcher` safety/finalization pipeline, the `SafetyLayer`
+> composition, and the integration gap.
 
 
 > **Implementation**: Shipping
@@ -623,6 +626,11 @@ impl SpeculativeExecutor {
 ---
 
 ## Tool Result Caching
+
+> **Historical design, not a shipping ToolDispatcher feature.** The current dispatcher
+> deliberately does not cache because every invocation must observe current authorization,
+> durable immune controls, screening, finalization, and terminal audit state. The types and
+> policies below remain a research sketch for a future explicitly owned cache layer.
 
 Research (ToolCacheAgent, ICLR 2026 submission; arXiv:2601.15335) shows that
 intelligent tool result caching achieves 1.69× latency speedup without

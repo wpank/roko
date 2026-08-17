@@ -1,5 +1,8 @@
 # 08 — x402 Micropayments
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > x402 is the Coinbase / Linux Foundation protocol for HTTP-native micropayments. Agents
 > pay for services by attaching ERC-3009 signed USDC authorizations to HTTP requests.
 > No session state, no deposits, no trust required. This document specifies the protocol

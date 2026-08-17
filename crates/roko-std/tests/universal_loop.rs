@@ -1,13 +1,13 @@
-//! Integration test: the universal loop wired end-to-end with real impls.
+//! Integration test: the signal-selection helper wired end-to-end with real impls.
 //!
-//! This proves the architecture works: seed a substrate with signals, run
-//! `loop_tick`, and observe that signals flow through all six verbs and land
-//! back in the substrate with provenance tracked.
+//! This proves the reusable query/route/compose/verify/persist/react helper:
+//! seed a substrate with signals, run `select_compose_verify_persist`, and
+//! observe that outputs land back in the substrate with provenance tracked.
 
 use async_trait::async_trait;
 use roko_core::{
     Body, Budget, Compose, Context, Decay, Engram, Kind, Provenance, Query, React, Result, Score,
-    Store, Verdict, Verify, loop_tick,
+    Store, Verdict, Verify, select_compose_verify_persist,
 };
 use roko_std::{FirstRouter, MemorySubstrate, NoOpPolicy};
 use std::sync::Arc;
@@ -166,8 +166,8 @@ async fn universal_loop_processes_a_signal_end_to_end() {
     let query = Query::of_kind(Kind::Task);
     let budget = Budget::unlimited();
 
-    // Run one tick of the universal loop.
-    let outcome = loop_tick(
+    // Run one signal-selection pass.
+    let outcome = select_compose_verify_persist(
         substrate.as_ref(),
         &scorer,
         &router,
@@ -179,7 +179,7 @@ async fn universal_loop_processes_a_signal_end_to_end() {
         &ctx,
     )
     .await
-    .expect("loop_tick succeeded");
+    .expect("signal selection succeeded");
 
     // Verify the shape of the outcome.
     assert_eq!(outcome.candidates_examined, 2, "2 tasks seeded");
@@ -207,7 +207,7 @@ async fn universal_loop_processes_a_signal_end_to_end() {
 }
 
 #[tokio::test]
-async fn loop_tick_does_nothing_when_query_matches_nothing() {
+async fn signal_selection_does_nothing_when_query_matches_nothing() {
     let substrate: Arc<dyn Store> = Arc::new(MemorySubstrate::new());
     let scorer = PriorityScorer;
     let router = FirstRouter;
@@ -220,7 +220,7 @@ async fn loop_tick_does_nothing_when_query_matches_nothing() {
     let query = Query::of_kind(Kind::Task);
     let budget = Budget::unlimited();
 
-    let outcome = loop_tick(
+    let outcome = select_compose_verify_persist(
         substrate.as_ref(),
         &scorer,
         &router,
@@ -291,7 +291,7 @@ async fn failing_gate_prevents_writeback() {
         .await
         .unwrap();
 
-    let outcome = loop_tick(
+    let outcome = select_compose_verify_persist(
         substrate.as_ref(),
         &scorer,
         &router,

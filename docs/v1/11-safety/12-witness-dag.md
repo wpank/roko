@@ -1,5 +1,8 @@
 # Witness DAG: Cryptographic Cognitive Traces
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L3 Harness (audit chain extension), L4 Orchestration (cross-agent verification)
 >
 > **Crate**: Target: `roko-gate` (extension of existing audit chain), integration with `roko-fs` (SQLite storage)

@@ -650,6 +650,7 @@ impl ChatAgentSession {
             model: self.model_call_model_key(),
             system: (!self.system_prompt.is_empty()).then(|| self.system_prompt.clone()),
             messages,
+            input_messages: Vec::new(),
             max_tokens: Some(4096),
             temperature: None,
             role: Some("chat".to_string()),
@@ -705,6 +706,8 @@ impl ChatAgentSession {
         let feedback = ChatFeedbackRuntime::new(&self.workdir, &config, &model_slug);
         let mut caller = ModelCallService::new(model_slug.clone())
             .with_config(config.clone())
+            .with_working_dir(&self.workdir)
+            .with_immune_root(&self.workdir)
             .with_feedback_sink(Arc::clone(&feedback.sink));
         if let Some(mcp_config) = self.mcp_config.clone() {
             caller = caller.with_mcp_config(mcp_config);

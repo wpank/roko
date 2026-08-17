@@ -168,9 +168,9 @@ Several nodes have **zero inbound or zero outbound edges** in the wired subgraph
 |---|---|---|
 | **Bus** | L0 | The Bus fabric has no wired consumer edges in the current system. `EventBus<E>` exists in code but is not yet the canonical transport path for cross-subsystem coordination. All current data flow uses direct function calls or Store. **This is the single largest integration gap.** |
 | **Hdc** | L0 | HDC vectors exist in `roko-primitives` but are not wired into the main execution loop. Episode fingerprinting is wired, but HDC-based retrieval in Compose and similarity-based Store queries are not. |
-| **DreamConsolidate** | Cross-cut | The Dreams subsystem has no wired edges to any other node. `DreamRunner` exists but is not triggered from any runtime path. |
+| **DreamConsolidate** | Cross-cut | Daemon mode now reaches `DreamRunner` through a resident adaptive-idle/cron/episode scheduler. The schedule still bypasses the canonical Trigger/Bus graph, and intensive backlog mode is not wired. |
 | **ChainConnect** | Domain | Chain integration is scaffold-only. No runtime path invokes chain operations. |
-| **ServeInterface** | L4 | `roko-serve` has ~85 routes but they read from the same Store as the CLI. No Bus-mediated live update path exists. |
+| **ServeInterface** | L4 | `roko-serve` has ~317 routes but they read from the same Store as the CLI. No Bus-mediated live update path exists. |
 
 ### 3.2 Sink nodes (inbound edges only, no outbound)
 

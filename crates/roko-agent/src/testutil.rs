@@ -6,11 +6,12 @@ use crate::dispatcher::{HandlerResolver, ToolDispatcher};
 use crate::exec::ExecAgent;
 use crate::http::{HttpPostError, HttpPoster};
 use crate::openai_compat_backend::OpenAiCompatLlmBackend;
+use crate::provider::ProviderError;
 use crate::rate_limit::ProviderRateLimiter;
 use crate::safety::SafetyLayer;
 use crate::streaming::StreamChunk;
 use crate::streaming::parse_sse_line;
-use crate::tool_loop::{LlmBackend, StopReason, ToolLoop};
+use crate::tool_loop::{LlmBackend, LlmError, StopReason, ToolLoop};
 use crate::translate::{
     BackendResponse, FinishReason, OpenAiTranslator, RenderedTools, SessionState, Translator,
 };
@@ -624,9 +625,18 @@ async fn run_llm_error_path(backend: ParityBackend) -> Result<(), String> {
     .ok_or_else(|| "error path unexpectedly succeeded".to_string())?;
 
     let rendered = error.to_string();
-    if !rendered.contains(&fixture.status.to_string()) {
+    let preserves_status = rendered.contains(&fixture.status.to_string())
+        || matches!(
+            (&error, fixture.status),
+            (
+                LlmError::Provider(ProviderError::RateLimit { .. }),
+                429 | 529
+            )
+        );
+    if !preserves_status {
         return Err(format!(
-            "error path did not preserve HTTP status: {rendered}"
+            "error path did not preserve or classify HTTP status {}: {rendered}",
+            fixture.status
         ));
     }
 

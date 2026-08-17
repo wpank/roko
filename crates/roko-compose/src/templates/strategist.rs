@@ -164,16 +164,16 @@ impl RolePromptTemplate for StrategistTemplate {
         }
 
         // 9. prior_reviews — Dynamic / High / End / hard_cap 10k (only on iteration 2+)
-        if input.iteration > 1 {
-            if let Some(ref reviews) = input.prior_reviews {
-                sections.push(
-                    PromptSection::new("prior_reviews", truncate(reviews, prior_reviews_cap))
-                        .with_priority(SectionPriority::High)
-                        .with_cache_layer(CacheLayer::Volatile)
-                        .with_placement(Placement::End)
-                        .with_hard_cap(prior_reviews_cap),
-                );
-            }
+        if input.iteration > 1
+            && let Some(ref reviews) = input.prior_reviews
+        {
+            sections.push(
+                PromptSection::new("prior_reviews", truncate(reviews, prior_reviews_cap))
+                    .with_priority(SectionPriority::High)
+                    .with_cache_layer(CacheLayer::Volatile)
+                    .with_placement(Placement::End)
+                    .with_hard_cap(prior_reviews_cap),
+            );
         }
 
         // 10. output_paths — System / High / End

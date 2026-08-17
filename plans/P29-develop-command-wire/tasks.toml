@@ -1,8 +1,8 @@
 [meta]
 plan = "P29-develop-command-wire"
 total = 3
-done = 0
-status = "ready"
+done = 3
+status = "done"
 max_parallel = 1
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -22,7 +22,7 @@ max_parallel = 1
 [[task]]
 id = "T1"
 title = "Acceptance roll-up: P10 owns develop registration"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "P10-slash-command-flags#T3"
 tier = "mechanical"
@@ -60,7 +60,7 @@ fail_msg = "Canonical owner acceptance tests must pass before this roll-up can b
 [[task]]
 id = "T2"
 title = "Acceptance roll-up: P10 owns develop dispatch"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "P10-slash-command-flags#T4"
 tier = "mechanical"
@@ -98,7 +98,7 @@ fail_msg = "Canonical owner acceptance tests must pass before this roll-up can b
 [[task]]
 id = "T3"
 title = "Skip re-generation in develop interactive mode when plan exists"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 25

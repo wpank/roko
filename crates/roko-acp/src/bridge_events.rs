@@ -7,7 +7,7 @@
 //! for provider-agnostic model calls.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     future::poll_fn,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
@@ -17,9 +17,10 @@ use std::{
 use async_trait::async_trait;
 use roko_agent::dispatcher::{HandlerResolver, ToolDispatcher};
 use roko_agent::mcp::{McpClient, StdioTransport as McpStdioTransport, mcp_to_tool_def};
-use roko_agent::safety::{SafetyLayer, ViolationSeverity};
+use roko_agent::rate_limit::{ProviderRateLimitSnapshot, ProviderRateLimiter};
+use roko_agent::safety::{DispatchSafetyContext, SafetyLayer, ViolationSeverity};
 use roko_agent::streaming::StreamChunk;
-use roko_agent::tool_loop::backends::create_openai_compat_backend;
+use roko_agent::tool_loop::backends::create_openai_compat_backend_with_limiter;
 use roko_agent::tool_loop::{StopReason as ToolLoopStopReason, ToolLoop};
 use roko_agent::translate::{OpenAiTranslator, StrictOpenAiTranslator, Translator};
 use roko_agent::{ModelCallService, ReqwestPoster};
@@ -32,13 +33,15 @@ use roko_core::config::schema::{ModelProfile, RokoConfig};
 #[cfg(test)]
 use roko_core::defaults::{DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS};
 use roko_core::defaults::{DEFAULT_MAX_TOOL_ITERATIONS, DEFAULT_MCP_DISCOVERY_TIMEOUT_SECS};
+use roko_core::extension::CamelTaintLevel;
 use roko_core::foundation::{
-    ChatMessage, MessageRole, ModelCallRequest, ModelCaller, ModelStreamEvent, TokenUsage,
+    ChatMessage, MessageRole, ModelCallRequest, ModelCaller, ModelInputBlock, ModelInputMessage,
+    ModelStreamEvent, TokenUsage, validate_model_input_messages,
 };
 use roko_core::task::{TaskCategory, TaskComplexityBand};
 use roko_core::tool::{
     NoopAuditSink, NoopMetricsSink, NoopTraceSink, ToolCall, ToolContext, ToolDef, ToolError,
-    ToolHandler, ToolResult, ToolSource, VecToolRegistry,
+    ToolHandler, ToolPermission, ToolResult, ToolSource, VecToolRegistry,
 };
 use roko_dreams::{load_dream_routing_advice, relevant_pattern_summaries};
 use roko_learn::{
@@ -48,6 +51,8 @@ use roko_learn::{
     episode_logger::{Episode, EpisodeLogger, Usage as EpUsage},
     model_router::RoutingContext,
     playbook::Playbook,
+    prompt_experiment::{ExperimentStatus, ExperimentStore},
+    provider_health::ProviderHealthRegistry,
 };
 use roko_neuro::{KnowledgeKind, KnowledgeQueryHit, KnowledgeTier};
 use thiserror::Error;
@@ -58,7 +63,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 
-use crate::builtin_tools::{acp_builtin_tools, compute_session_capabilities};
+use crate::builtin_tools::{acp_builtin_tools, tool_permission_request};
 use crate::event_forward::AcpEventForwarder;
 use crate::knowledge::{DispatchKnowledge, append_context, query_dispatch_knowledge};
 use crate::runner::run_with_workflow_engine;
@@ -66,11 +71,13 @@ use crate::{
     session::{AcpSession, CancelToken},
     transport::{StdioTransport, TransportError, TransportResult},
     types::{
-        ContentBlock, CostInfo, INTERNAL_ERROR, JsonRpcMessage, McpInitStatus, McpServerStatus,
-        PermissionAction, PermissionDecision, PermissionOptionKind, PermissionOutcome,
-        PermissionResponse, PermissionToolCall, PlanEntry, RequestPermissionParams, SESSION_BUSY,
-        SessionCancelParams, SessionPromptParams, SessionPromptResult, SessionUpdate, StopReason,
-        ToolCallKind, ToolCallStatus, UsageInfo,
+        ClientCapabilities, ContentBlock, CostInfo, INTERNAL_ERROR, INVALID_PARAMS, JsonRpcMessage,
+        McpInitStatus, McpServerStatus, PermissionAction, PermissionDecision, PermissionOptionKind,
+        PermissionOutcome, PermissionResponse, PermissionToolCall, PlanEntry,
+        RequestPermissionParams, SESSION_BUDGET_EXCEEDED, SESSION_BUSY, SessionCancelParams,
+        SessionPromptParams, SessionPromptResult, SessionUpdate, StopReason, ToolCallKind,
+        ToolCallStatus, UsageInfo, advertised_prompt_capabilities_for_model,
+        unsupported_prompt_content,
     },
 };
 
@@ -94,6 +101,19 @@ pub enum BridgeEventsError {
     /// A pipeline runner error.
     #[error("ACP pipeline error: {0}")]
     Pipeline(#[from] anyhow::Error),
+    /// Prompt content is not supported by the selected model/dispatch path.
+    #[error("unsupported ACP prompt content: {0}")]
+    UnsupportedPromptContent(String),
+    /// The persisted ACP session cost budget has been exhausted.
+    #[error(
+        "ACP session budget exceeded: spent ${accumulated_cost_usd:.6} of ${cost_budget_usd:.6} USD"
+    )]
+    BudgetExceeded {
+        /// Configured session ceiling in USD.
+        cost_budget_usd: f64,
+        /// Persisted spend accumulated by completed efficiency events.
+        accumulated_cost_usd: f64,
+    },
 }
 
 impl BridgeEventsError {
@@ -109,6 +129,16 @@ impl BridgeEventsError {
             Self::Transport(e) => Some((INTERNAL_ERROR, format!("transport error: {e}"))),
             Self::TaskJoin(e) => Some((INTERNAL_ERROR, format!("task failed: {e}"))),
             Self::Pipeline(e) => Some((INTERNAL_ERROR, format!("pipeline error: {e}"))),
+            Self::UnsupportedPromptContent(message) => Some((INVALID_PARAMS, message.clone())),
+            Self::BudgetExceeded {
+                cost_budget_usd,
+                accumulated_cost_usd,
+            } => Some((
+                SESSION_BUDGET_EXCEEDED,
+                format!(
+                    "ACP session budget exceeded: spent ${accumulated_cost_usd:.6} of ${cost_budget_usd:.6} USD; increase budget.max_plan_usd or start an unlimited session"
+                ),
+            )),
         }
     }
 }
@@ -120,6 +150,7 @@ pub type Result<T> = std::result::Result<T, BridgeEventsError>;
 const MAX_HISTORY_ASSISTANT_BYTES: usize = 10_240;
 
 static CASCADE_ROUTER_IO_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static EXPERIMENT_STORE_IO_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 // ── Cognitive events ─────────────────────────────────────────────────
 
@@ -223,6 +254,18 @@ impl PermissionReplyChannel {
             .expect("PermissionReplyChannel mutex poisoned")
             .is_none()
     }
+
+    /// Returns `true` when the requesting tool is no longer waiting for a
+    /// decision, for example because its dispatcher timeout elapsed.
+    #[must_use]
+    pub fn receiver_is_closed(&self) -> bool {
+        self.inner
+            .lock()
+            .expect("PermissionReplyChannel mutex poisoned")
+            .as_ref()
+            .map(tokio::sync::oneshot::Sender::is_closed)
+            .unwrap_or(true)
+    }
 }
 
 // ── Stream events → editor ───────────────────────────────────────────
@@ -295,9 +338,9 @@ async fn append_acp_episode(
     // When provided, overrides the pricing-table cost calculation with the
     // actual cost reported by the provider (e.g. from `WorkflowRunReport.cost`).
     cost_override: Option<f64>,
-    // T5: When cascade routing was used, record the selected model slug so it
-    // is visible via `roko learn episodes`.
-    cascade_selected_model: Option<String>,
+    // When cascade routing was used, retain both the selected config key and
+    // maturity stage so the decision is inspectable via `roko learn episodes`.
+    cascade_selection: Option<&AcpCascadeSelection>,
 ) {
     let resolved = resolve_model(roko_config, model_key);
     let elapsed = dispatch_started.elapsed();
@@ -384,11 +427,14 @@ async fn append_acp_episode(
         "provider_kind".to_string(),
         serde_json::json!(resolved.provider_kind.label()),
     );
-    // T5: Record cascade routing decision when cascade selection was active.
-    if let Some(ref slug) = cascade_selected_model {
+    if let Some(selection) = cascade_selection {
         episode.extra.insert(
             "cascade_selected_model".to_string(),
-            serde_json::json!(slug),
+            serde_json::json!(selection.model_key),
+        );
+        episode.extra.insert(
+            "cascade_stage".to_string(),
+            serde_json::json!(selection.stage),
         );
     }
 
@@ -428,8 +474,12 @@ async fn append_acp_episode(
     // Spawn background distillation so the knowledge store learns from each ACP interaction.
     let distill_workdir = workdir.to_path_buf();
     let distill_model = roko_config.agent.default_model.clone();
-    let distill_caller: Arc<dyn roko_core::foundation::ModelCaller> =
-        Arc::new(ModelCallService::new(distill_model).with_config(roko_config.clone()));
+    let distill_caller: Arc<dyn roko_core::foundation::ModelCaller> = Arc::new(
+        ModelCallService::new(distill_model)
+            .with_config(roko_config.clone())
+            .with_working_dir(workdir)
+            .with_immune_root(workdir),
+    );
     roko_neuro::spawn_episode_distillation(distill_workdir, episode, Some(distill_caller));
 
     // Auto-dream consolidation: after enough episodes accumulate, spawn a
@@ -489,6 +539,7 @@ fn maybe_spawn_dream_consolidation(workdir: &Path, config: &RokoConfig) {
         auto_dream: true,
         idle_threshold_mins: 0,
         min_episodes_for_dream: 1,
+        schedule: roko_dreams::DreamSchedulePolicy::default(),
         agent: roko_dreams::DreamAgentConfig {
             command: config
                 .agent
@@ -515,19 +566,16 @@ fn maybe_spawn_dream_consolidation(workdir: &Path, config: &RokoConfig) {
     });
 }
 
-/// Emit an [`AgentEfficiencyEvent`] to `.roko/learn/efficiency.jsonl`.
-///
-/// This is fire-and-forget: the write is spawned on a blocking thread so it
-/// never delays the response stream, and failures are logged but swallowed.
-fn emit_acp_efficiency_event(
-    workdir: &Path,
+/// Build the canonical efficiency event used for both learning telemetry and
+/// persisted ACP session spend accounting.
+fn acp_efficiency_event(
     session_id: &str,
     resolved: &ResolvedModel,
     dispatch_started: Instant,
     stream_result: Option<&StreamResult>,
     succeeded: bool,
     cost_override: Option<f64>,
-) {
+) -> AgentEfficiencyEvent {
     let elapsed_ms = dispatch_started.elapsed().as_millis() as u64;
     let usage = stream_result.and_then(|sr| sr.usage.as_ref());
 
@@ -552,7 +600,7 @@ fn emit_acp_efficiency_event(
 
     let outcome = if succeeded { "success" } else { "failure" }.to_string();
 
-    let event = AgentEfficiencyEvent {
+    AgentEfficiencyEvent {
         agent_id: session_id.to_string(),
         backend: resolved.provider_kind.label().to_string(),
         model: resolved.slug.clone(),
@@ -568,8 +616,14 @@ fn emit_acp_efficiency_event(
         outcome,
         timestamp: chrono::Utc::now().to_rfc3339(),
         ..AgentEfficiencyEvent::default()
-    };
+    }
+}
 
+/// Emit an [`AgentEfficiencyEvent`] to `.roko/learn/efficiency.jsonl`.
+///
+/// This is fire-and-forget: the write is spawned on a blocking thread so it
+/// never delays the response stream, and failures are logged but swallowed.
+fn emit_acp_efficiency_event(workdir: &Path, event: AgentEfficiencyEvent) {
     let path = workdir.join(".roko").join("learn").join("efficiency.jsonl");
 
     task::spawn_blocking(move || {
@@ -601,6 +655,48 @@ fn emit_acp_efficiency_event(
     });
 }
 
+fn acp_role_for_mode(mode: &str) -> AgentRole {
+    match mode {
+        "plan" => AgentRole::Strategist,
+        "research" => AgentRole::Researcher,
+        _ => AgentRole::Implementer,
+    }
+}
+
+/// Intersect the ACP client's session declarations with the selected role's
+/// permission ceiling. Interactive allow/always-allow decisions remain a
+/// separate per-call gate in `AcpBuiltinToolHandler`.
+fn derive_acp_tool_capabilities(
+    mode: &str,
+    client: &ClientCapabilities,
+    has_session_mcp: bool,
+    trusted_actions: &HashSet<PermissionAction>,
+) -> ToolPermission {
+    let role = acp_role_for_mode(mode).tool_permissions();
+    let fs = client.fs.as_ref();
+    let mcp = client.mcp_servers == Some(true) && has_session_mcp;
+    let write = fs.map_or_else(
+        || {
+            trusted_actions.contains(&PermissionAction::FileCreate)
+                || trusted_actions.contains(&PermissionAction::FileEdit)
+        },
+        |caps| caps.write_text_file,
+    );
+    let exec = client
+        .terminal
+        .unwrap_or_else(|| trusted_actions.contains(&PermissionAction::TerminalCommand));
+    ToolPermission {
+        read: role.read && (fs.is_some_and(|caps| caps.read_text_file) || mcp),
+        write: role.write && write,
+        exec: role.exec && exec,
+        git: role.git
+            && client
+                .terminal
+                .unwrap_or_else(|| trusted_actions.contains(&PermissionAction::GitOperation)),
+        network: role.network && mcp,
+    }
+}
+
 fn acp_routing_context(mode: &str, prompt: &str, effort: &str, workdir: &Path) -> RoutingContext {
     let _prompt_len = prompt.len();
     let task_category = if mode == "research" {
@@ -609,11 +705,7 @@ fn acp_routing_context(mode: &str, prompt: &str, effort: &str, workdir: &Path) -
         TaskCategory::Implementation
     };
 
-    let role = match mode {
-        "plan" => AgentRole::Strategist,
-        "research" => AgentRole::Researcher,
-        _ => AgentRole::Implementer,
-    };
+    let role = acp_role_for_mode(mode);
 
     // T4: Load DaimonState from disk so affect-based routing actually works.
     // Canonical path is .roko/daimon/affect.json; fall back to legacy
@@ -683,31 +775,245 @@ fn acp_dispatch_succeeded(
             .unwrap_or(false)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AcpExperimentAssignment {
+    experiment_id: String,
+    variant_id: String,
+    section_name: String,
+    content: String,
+    model_slug: Option<String>,
+}
+
+fn experiment_store_lock() -> std::sync::MutexGuard<'static, ()> {
+    EXPERIMENT_STORE_IO_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Select one running experiment deterministically for this ACP role.
+///
+/// The persisted map is intentionally sorted before selection so HashMap
+/// iteration order cannot change which experiment receives an ACP turn.
+fn assign_acp_experiment(path: &Path, mode: &str) -> Option<AcpExperimentAssignment> {
+    let _guard = experiment_store_lock();
+    let store = ExperimentStore::load_or_new(path);
+    let role = acp_role_for_mode(mode).label();
+    let mut experiments = store
+        .experiments()
+        .values()
+        .filter(|experiment| experiment.status == ExperimentStatus::Running)
+        .filter(|experiment| {
+            experiment.role.as_deref().is_none_or(|configured| {
+                configured.eq_ignore_ascii_case(mode) || configured.eq_ignore_ascii_case(role)
+            })
+        })
+        .collect::<Vec<_>>();
+    experiments.sort_by(|left, right| left.experiment_id.cmp(&right.experiment_id));
+    let experiment = experiments.first()?;
+    let variant = experiment.assign_variant()?;
+    Some(AcpExperimentAssignment {
+        experiment_id: experiment.experiment_id.clone(),
+        variant_id: variant.id.clone(),
+        section_name: experiment.section_name.clone(),
+        content: variant.content.clone(),
+        model_slug: variant.slug.clone().filter(|slug| !slug.trim().is_empty()),
+    })
+}
+
+fn experiment_model_key(
+    config: &RokoConfig,
+    assignment: &AcpExperimentAssignment,
+) -> Option<String> {
+    let requested = assignment.model_slug.as_deref()?.trim();
+    let models = config.effective_models();
+    if models.contains_key(requested) {
+        return Some(requested.to_string());
+    }
+    let mut matching = models
+        .iter()
+        .filter(|(_, profile)| profile.slug.trim() == requested)
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    matching.sort();
+    matching.into_iter().next()
+}
+
+fn applicable_acp_experiment(
+    config: &RokoConfig,
+    current_model_key: &str,
+    model_selection_explicit: bool,
+    assignment: Option<AcpExperimentAssignment>,
+) -> (Option<AcpExperimentAssignment>, Option<String>) {
+    let Some(assignment) = assignment else {
+        return (None, None);
+    };
+    if assignment.model_slug.is_none() {
+        return (Some(assignment), None);
+    }
+
+    let Some(candidate) = experiment_model_key(config, &assignment) else {
+        warn!(
+            experiment_id = %assignment.experiment_id,
+            variant_id = %assignment.variant_id,
+            model_slug = ?assignment.model_slug,
+            "skipping ACP experiment variant with unresolved model"
+        );
+        return (None, None);
+    };
+    if model_selection_explicit && resolve_model(config, current_model_key).model_key != candidate {
+        debug!(
+            experiment_id = %assignment.experiment_id,
+            variant_id = %assignment.variant_id,
+            experiment_model = %candidate,
+            selected_model = current_model_key,
+            "skipping ACP model experiment because the session model was explicitly selected"
+        );
+        return (None, None);
+    }
+
+    let model_override = (!model_selection_explicit).then_some(candidate);
+    (Some(assignment), model_override)
+}
+
+fn render_experiment_context(assignment: &AcpExperimentAssignment) -> String {
+    format!(
+        "ACP experiment `{}` variant `{}` for section `{}`:\n{}",
+        assignment.experiment_id,
+        assignment.variant_id,
+        assignment.section_name,
+        assignment.content.trim()
+    )
+}
+
+fn record_acp_experiment_outcome(
+    path: &Path,
+    assignment: &AcpExperimentAssignment,
+    success: bool,
+) -> std::io::Result<()> {
+    let _guard = experiment_store_lock();
+    ExperimentStore::transaction(path, |store| {
+        if !store.record_outcome_for_experiment(
+            &assignment.experiment_id,
+            &assignment.variant_id,
+            success,
+        ) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "experiment '{}' variant '{}' disappeared before outcome recording",
+                    assignment.experiment_id, assignment.variant_id
+                ),
+            ));
+        }
+        store.record_metric(
+            &assignment.experiment_id,
+            &assignment.variant_id,
+            if success { 1.0 } else { 0.0 },
+        );
+        Ok(())
+    })
+}
+
 fn cascade_router_model_slugs(roko_config: &RokoConfig, resolved_slug: &str) -> Vec<String> {
     let mut model_slugs = roko_config.models.keys().cloned().collect::<Vec<_>>();
     if model_slugs.is_empty() {
         model_slugs.push(resolved_slug.to_owned());
     }
+    model_slugs.sort();
     model_slugs
+}
+
+fn acp_model_providers(roko_config: &RokoConfig, model_keys: &[String]) -> HashMap<String, String> {
+    let models = roko_config.effective_models();
+    model_keys
+        .iter()
+        .filter_map(|key| {
+            models
+                .get(key)
+                .or_else(|| models.values().find(|profile| profile.slug == *key))
+                .map(|profile| (key.clone(), profile.provider.clone()))
+        })
+        .collect()
+}
+
+fn provider_near_rate_limit(snapshot: &ProviderRateLimitSnapshot) -> bool {
+    let rpm_pressured = snapshot.rpm_limit > 0
+        && snapshot.rpm_used.saturating_mul(5) >= u64::from(snapshot.rpm_limit).saturating_mul(4);
+    let tpm_pressured = snapshot.tpm_limit > 0
+        && snapshot.tpm_used.saturating_mul(5) >= snapshot.tpm_limit.saturating_mul(4);
+    rpm_pressured || tpm_pressured
+}
+
+fn rate_aware_model_candidates(
+    model_keys: Vec<String>,
+    model_providers: &HashMap<String, String>,
+    snapshots: &[ProviderRateLimitSnapshot],
+) -> (Vec<String>, Vec<String>) {
+    let pressured = snapshots
+        .iter()
+        .filter(|snapshot| provider_near_rate_limit(snapshot))
+        .map(|snapshot| snapshot.provider_id.clone())
+        .collect::<HashSet<_>>();
+    let preferred = model_keys
+        .iter()
+        .filter(|key| {
+            model_providers
+                .get(key.as_str())
+                .is_none_or(|provider| !pressured.contains(provider))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if preferred.is_empty() {
+        (model_keys, pressured.into_iter().collect())
+    } else {
+        (preferred, pressured.into_iter().collect())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AcpCascadeSelection {
+    model_key: String,
+    stage: String,
+}
+
+struct AcpCascadeRequest<'a> {
+    workdir: &'a Path,
+    roko_config: &'a RokoConfig,
+    mode: &'a str,
+    prompt: &'a str,
+    effort: &'a str,
+    resolved_slug: &'a str,
+    model_selection_explicit: bool,
+    provider_health: &'a ProviderHealthRegistry,
+    rate_limiter: &'a ProviderRateLimiter,
+}
+
+fn acp_cascade_selection_enabled() -> bool {
+    std::env::var_os("ROKO_ACP_CASCADE_SELECT").is_some_and(|value| value == "1")
 }
 
 /// Select a model for an ACP session using the cascade router.
 ///
-/// Returns `Some(slug)` when:
-/// 1. The `ROKO_ACP_CASCADE_SELECT` environment variable is set.
+/// Returns a model key and routing stage when:
+/// 1. `ROKO_ACP_CASCADE_SELECT=1` exactly.
 /// 2. The cascade router state file exists at `workdir/.roko/learn/cascade-router.json`.
 ///
 /// Returns `None` (leaving model selection to the caller) when the env var is
-/// absent or the router file does not yet exist (cold start).
-fn cascade_select_model(
-    workdir: &Path,
-    roko_config: &RokoConfig,
-    mode: &str,
-    prompt: &str,
-    effort: &str,
-    resolved_slug: &str,
-) -> Option<String> {
-    if std::env::var("ROKO_ACP_CASCADE_SELECT").is_err() {
+/// absent, disabled, or the router file does not yet exist (cold start).
+fn cascade_select_model(request: AcpCascadeRequest<'_>) -> Option<AcpCascadeSelection> {
+    let AcpCascadeRequest {
+        workdir,
+        roko_config,
+        mode,
+        prompt,
+        effort,
+        resolved_slug,
+        model_selection_explicit,
+        provider_health,
+        rate_limiter,
+    } = request;
+    if model_selection_explicit || !acp_cascade_selection_enabled() {
         return None;
     }
 
@@ -721,10 +1027,90 @@ fn cascade_select_model(
     }
 
     let model_slugs = cascade_router_model_slugs(roko_config, resolved_slug);
+    let initial_candidate_count = model_slugs.len();
+    let model_providers = acp_model_providers(roko_config, &model_slugs);
+    let (model_slugs, mut pressured_providers) =
+        rate_aware_model_candidates(model_slugs, &model_providers, &rate_limiter.snapshot());
+    let rate_candidates_filtered = model_slugs.len() < initial_candidate_count;
+    pressured_providers.sort();
+    let candidate_providers = model_slugs
+        .iter()
+        .filter_map(|model| model_providers.get(model))
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut degraded_providers = candidate_providers
+        .iter()
+        .filter(|provider| !provider_health.is_healthy(provider))
+        .cloned()
+        .collect::<Vec<_>>();
+    degraded_providers.sort();
+    let has_healthy_provider = candidate_providers
+        .iter()
+        .any(|provider| provider_health.is_healthy(provider));
     let router = CascadeRouter::load_or_new(&router_path, model_slugs);
     let ctx = acp_routing_context(mode, prompt, effort, workdir);
-    let cascade_model = router.route_with_cfactor(&ctx, None, None);
-    Some(cascade_model.primary.slug)
+    let cascade_model =
+        router.route_with_health_scored(&ctx, provider_health, &model_providers, None, None);
+    if rate_candidates_filtered {
+        info!(
+            selected_model = %cascade_model.primary.slug,
+            providers = ?pressured_providers,
+            reason = "RPM/TPM utilization at or above 80%",
+            "ACP adaptive routing deprioritized rate-pressured providers"
+        );
+    } else if !pressured_providers.is_empty() {
+        warn!(
+            selected_model = %cascade_model.primary.slug,
+            providers = ?pressured_providers,
+            reason = "all ACP candidates are near RPM/TPM limits",
+            "ACP adaptive routing retained least-bad rate-pressured candidates"
+        );
+    }
+    if !degraded_providers.is_empty() && has_healthy_provider {
+        info!(
+            selected_model = %cascade_model.primary.slug,
+            providers = ?degraded_providers,
+            reason = "canonical provider circuit health",
+            "ACP adaptive routing deprioritized degraded providers"
+        );
+    } else if !degraded_providers.is_empty() {
+        warn!(
+            selected_model = %cascade_model.primary.slug,
+            providers = ?degraded_providers,
+            reason = "all ACP candidates have open provider circuits",
+            "ACP adaptive routing retained least-bad degraded candidates"
+        );
+    }
+    Some(AcpCascadeSelection {
+        model_key: cascade_model.primary.slug,
+        stage: cascade_model.stage.label().to_owned(),
+    })
+}
+
+fn resolve_acp_dispatch_model(
+    roko_config: &RokoConfig,
+    requested_model_key: &str,
+    cascade_selection: Option<AcpCascadeSelection>,
+) -> (ResolvedModel, String, Option<AcpCascadeSelection>) {
+    let requested = resolve_model(roko_config, requested_model_key);
+    let requested_dispatch_key = requested.model_key.clone();
+    let Some(selection) = cascade_selection else {
+        return (requested, requested_dispatch_key, None);
+    };
+
+    let selected = resolve_model(roko_config, &selection.model_key);
+    if selected.profile.is_none() {
+        warn!(
+            requested_model = requested_model_key,
+            selected_model = %selection.model_key,
+            stage = %selection.stage,
+            "cascade router selected an unconfigured ACP model; retaining requested model"
+        );
+        return (requested, requested_dispatch_key, None);
+    }
+
+    let dispatch_model_key = selected.model_key.clone();
+    (selected, dispatch_model_key, Some(selection))
 }
 
 fn compute_acp_reward(success: bool, wall_ms: u64, output_tokens: Option<u64>) -> f64 {
@@ -757,8 +1143,8 @@ fn record_cascade_observation(
     wall_ms: u64,
     output_tokens: Option<u64>,
     model_slugs: Vec<String>,
-) {
-    drop(task::spawn_blocking(move || {
+) -> task::JoinHandle<()> {
+    task::spawn_blocking(move || {
         let _guard = CASCADE_ROUTER_IO_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
@@ -785,7 +1171,7 @@ fn record_cascade_observation(
                 "failed to persist cascade router after ACP observation"
             );
         }
-    }));
+    })
 }
 
 /// Truncate text to a session title: up to `max_len` chars, word-boundary aware.
@@ -925,12 +1311,22 @@ where
 
                         if matches!(decision, PermissionDecision::AlwaysAllow) {
                             session.grant_always_allow(action.clone());
-                            AcpSession::save_workspace_trust(workdir, &session.always_allowed);
-                            info!(
-                                session_id = %session.session_id,
-                                action = ?action,
-                                "permission permanently granted (always-allow persisted)"
-                            );
+                            match AcpSession::save_workspace_trust(
+                                workdir,
+                                &session.always_allowed,
+                            ) {
+                                Ok(()) => info!(
+                                    session_id = %session.session_id,
+                                    action = ?action,
+                                    "permission permanently granted (always-allow persisted)"
+                                ),
+                                Err(error) => warn!(
+                                    session_id = %session.session_id,
+                                    action = ?action,
+                                    error = %error,
+                                    "always-allow retained for this session but workspace persistence failed"
+                                ),
+                            }
                         }
 
                         return decision;
@@ -957,6 +1353,7 @@ where
                                 notification.params.unwrap_or(serde_json::Value::Null),
                             ) {
                                 Ok(params) if params.session_id == session.session_id => {
+                                    session.cancel_token.cancel();
                                     warn!(
                                         session_id = %session.session_id,
                                         "permission request cancelled by client; defaulting to Reject"
@@ -1016,11 +1413,65 @@ where
     }
 }
 
+/// Runs the editor round-trip while respecting both the enclosing prompt and
+/// tool-handler lifetimes. The handler-side receiver disappears when the tool
+/// dispatcher times out, so observing that state prevents the parent stream
+/// from waiting for the longer editor timeout after there is nobody to answer.
+async fn request_permission_for_event<R, W>(
+    transport: &mut StdioTransport<R, W>,
+    session: &mut AcpSession,
+    workdir: &Path,
+    payload: &PermissionRequestPayload,
+    reply: &PermissionReplyChannel,
+    cancel_token: &CancelToken,
+) -> PermissionDecision
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let session_id = session.session_id.clone();
+    let request = request_permission(
+        transport,
+        session,
+        workdir,
+        payload.action.clone(),
+        &payload.title,
+        &payload.detail,
+    );
+    tokio::pin!(request);
+
+    loop {
+        if reply.receiver_is_closed() {
+            warn!(
+                session_id = %session_id,
+                action = ?payload.action,
+                "permission requester stopped waiting; abandoning editor request"
+            );
+            return PermissionDecision::Reject;
+        }
+
+        tokio::select! {
+            decision = &mut request => return decision,
+            _ = cancel_token.cancelled() => {
+                warn!(
+                    session_id = %session_id,
+                    action = ?payload.action,
+                    "ACP prompt cancelled while waiting for editor permission"
+                );
+                return PermissionDecision::Reject;
+            }
+            () = tokio::time::sleep(Duration::from_millis(25)) => {}
+        }
+    }
+}
+
 /// Maps cognitive events to ACP `session/update` notifications and streams them to the editor.
 /// Returns both the prompt result and the accumulated assistant response text.
 pub async fn stream_events_to_editor<R, W>(
     transport: &mut StdioTransport<R, W>,
     session_id: &str,
+    session: &mut AcpSession,
+    workdir: &Path,
     mut events: mpsc::Receiver<CognitiveEvent>,
     cancel_token: &CancelToken,
 ) -> Result<StreamResult>
@@ -1107,18 +1558,21 @@ where
                         });
                     }
                     CognitiveEvent::PermissionRequest { payload, reply } => {
-                        // Auto-approve permission requests (fail-open).
-                        // A future iteration (E04-T14) can tighten this with
-                        // a real policy check or editor round-trip via
-                        // `request_permission()`.
-                        info!(
-                            session_id,
-                            action = ?payload.action,
-                            title = %payload.title,
-                            detail = %payload.detail,
-                            "auto-approving permission request (fail-open)"
-                        );
-                        let _ = reply.reply(PermissionDecision::Allow);
+                        let decision = request_permission_for_event(
+                            transport,
+                            session,
+                            workdir,
+                            &payload,
+                            &reply,
+                            cancel_token,
+                        )
+                        .await;
+                        if !reply.reply(decision) {
+                            warn!(
+                                session_id,
+                                "permission requester disappeared before receiving the decision"
+                            );
+                        }
                     }
                     CognitiveEvent::TokenChunk(ref text) => {
                         assistant_text.push_str(text);
@@ -1204,6 +1658,7 @@ where
         return Err(BridgeEventsError::SessionBusy(session.session_id.clone()));
     }
 
+    session.ensure_provider_runtime(workdir, roko_config);
     session.begin_prompt();
 
     let outcome =
@@ -1224,45 +1679,147 @@ where
     W: AsyncWrite + Unpin,
 {
     let prompt_text = extract_prompt_text(&params.prompt);
+    let prompt_has_images = params
+        .prompt
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Image { .. }));
     let model_key = session.config_state.model.clone();
     let is_slash_command = prompt_text.trim_start().starts_with('/');
-    let resolved = resolve_model(roko_config, &model_key);
-
-    // T2: Optionally override the resolved model via the cascade router when the
-    // user has not explicitly triggered a slash command.  The cascade_select_model
-    // call is a no-op when ROKO_ACP_CASCADE_SELECT is not set.
-    let (resolved, model_key_cascade_override) = if !is_slash_command {
-        if let Some(cascade_slug) = cascade_select_model(
-            workdir,
-            roko_config,
-            &session.config_state.agent_mode,
-            &prompt_text,
-            &session.config_state.effort,
-            &resolved.slug,
-        ) {
-            let cascade_resolved = resolve_model(roko_config, &cascade_slug);
-            if cascade_resolved.profile.is_some() {
-                info!(
-                    original = %model_key,
-                    cascade = %cascade_slug,
-                    "cascade router overriding model for ACP dispatch"
-                );
-                (cascade_resolved, Some(cascade_slug))
-            } else {
-                (resolved, None)
-            }
-        } else {
-            (resolved, None)
-        }
+    if !is_slash_command && session.cost_budget_exceeded() {
+        return Err(BridgeEventsError::BudgetExceeded {
+            cost_budget_usd: session.cost_budget_usd.unwrap_or_default(),
+            accumulated_cost_usd: session.accumulated_cost_usd,
+        });
+    }
+    let provider_health = Arc::clone(
+        session
+            .provider_health_registry
+            .as_ref()
+            .expect("ACP provider health initialized before prompt"),
+    );
+    let provider_rate_limiter = Arc::clone(
+        session
+            .provider_rate_limiter
+            .as_ref()
+            .expect("ACP provider rate limiter initialized before prompt"),
+    );
+    let experiment_path = workdir.join(".roko").join("learn").join("experiments.json");
+    let experiment_assignment = if is_slash_command {
+        None
     } else {
-        (resolved, None)
+        assign_acp_experiment(&experiment_path, &session.config_state.agent_mode)
+    };
+    let (experiment_assignment, experiment_model_key) = applicable_acp_experiment(
+        roko_config,
+        &model_key,
+        session.config_state.model_selection_explicit,
+        experiment_assignment,
+    );
+    let routing_model_key = experiment_model_key
+        .clone()
+        .unwrap_or_else(|| model_key.clone());
+    let requested_resolved = resolve_model(roko_config, &routing_model_key);
+
+    // Capture workflow config before model selection: cascade routing owns only
+    // direct single-agent prompts. Slash commands and workflow pipelines retain
+    // their explicitly selected/configured model behavior.
+    let workflow_config = session.config_state.workflow.clone();
+    let pipeline_template = if workflow_config == "auto" {
+        Some(crate::pipeline::WorkflowTemplate::auto_select(&prompt_text))
+    } else {
+        crate::pipeline::WorkflowTemplate::from_config(&workflow_config)
     };
 
+    let cascade_candidate = if !is_slash_command
+        && pipeline_template.is_none()
+        && !prompt_has_images
+        && !session.config_state.model_selection_explicit
+        && experiment_model_key.is_none()
+    {
+        cascade_select_model(AcpCascadeRequest {
+            workdir,
+            roko_config,
+            mode: &session.config_state.agent_mode,
+            prompt: &prompt_text,
+            effort: &session.config_state.effort,
+            resolved_slug: &requested_resolved.slug,
+            model_selection_explicit: session.config_state.model_selection_explicit,
+            provider_health: &provider_health,
+            rate_limiter: &provider_rate_limiter,
+        })
+    } else {
+        None
+    };
+    let (resolved, model_key_for_dispatch, cascade_selection) =
+        resolve_acp_dispatch_model(roko_config, &routing_model_key, cascade_candidate);
+
+    if let Some(assignment) = experiment_assignment.as_ref() {
+        info!(
+            experiment_id = %assignment.experiment_id,
+            variant_id = %assignment.variant_id,
+            section = %assignment.section_name,
+            model_override = ?experiment_model_key,
+            "assigned ACP experiment variant"
+        );
+    }
+
+    let pipeline_accepts_images =
+        pipeline_template.is_none() || std::env::var_os("ROKO_ACP_LEGACY").is_none();
+    let prompt_capabilities = advertised_prompt_capabilities_for_model(
+        resolved.provider_kind,
+        !is_slash_command
+            && pipeline_accepts_images
+            && resolved
+                .profile
+                .as_ref()
+                .is_some_and(|profile| profile.supports_vision),
+    );
+    if let Some(message) = unsupported_prompt_content(&params.prompt, &prompt_capabilities) {
+        if let Some(assignment) = experiment_assignment.as_ref()
+            && let Err(error) = record_acp_experiment_outcome(&experiment_path, assignment, false)
+        {
+            warn!(
+                experiment_id = %assignment.experiment_id,
+                variant_id = %assignment.variant_id,
+                error = %error,
+                "failed to persist rejected ACP experiment outcome"
+            );
+        }
+        return Err(BridgeEventsError::UnsupportedPromptContent(
+            message.to_string(),
+        ));
+    }
+
+    if prompt_has_images {
+        let probe = vec![ModelInputMessage::new(
+            MessageRole::User,
+            model_input_blocks_from_prompt(&params.prompt),
+        )];
+        validate_model_input_messages(&probe).map_err(|error| {
+            BridgeEventsError::UnsupportedPromptContent(format!("invalid image input: {error}"))
+        })?;
+    }
+
+    if let Some(selection) = cascade_selection.as_ref() {
+        if model_key_for_dispatch == requested_resolved.model_key {
+            debug!(
+                requested_model = %model_key,
+                selected_model = %model_key_for_dispatch,
+                stage = %selection.stage,
+                "cascade router retained requested model for ACP dispatch"
+            );
+        } else {
+            info!(
+                requested_model = %model_key,
+                selected_model = %model_key_for_dispatch,
+                stage = %selection.stage,
+                reason = "adaptive cascade selection",
+                "cascade router overriding model for ACP dispatch"
+            );
+        }
+    }
+
     let resolved_for_logging = resolved.clone();
-    // The config key used for cascade observation must match the router arms
-    // (which are keyed by config key, not wire slug).  Prefer the cascade
-    // override key when it was applied; fall back to the session model key.
-    let cascade_selected_slug = model_key_cascade_override.clone();
 
     debug!(
         session_id = %session.session_id,
@@ -1273,16 +1830,6 @@ where
         workdir = %workdir.display(),
         "handling ACP session prompt"
     );
-
-    // Capture workflow config before we decide whether context resolution is needed.
-    let workflow_config = session.config_state.workflow.clone();
-
-    // Check if a workflow pipeline should handle this prompt.
-    let pipeline_template = if workflow_config == "auto" {
-        Some(crate::pipeline::WorkflowTemplate::auto_select(&prompt_text))
-    } else {
-        crate::pipeline::WorkflowTemplate::from_config(&workflow_config)
-    };
 
     if !is_slash_command {
         session.push_user_turn(prompt_text.clone());
@@ -1333,6 +1880,9 @@ where
         let mut full_system = system_prompt.clone();
         full_system = append_context(&full_system, &file_context);
         full_system = append_context(&full_system, &knowledge_context);
+        if let Some(assignment) = experiment_assignment.as_ref() {
+            full_system = append_context(&full_system, &render_experiment_context(assignment));
+        }
         let mut msgs = session.build_messages_array(&full_system, &prompt_text);
         // If the prompt contains Image blocks, replace the last user message's
         // content with a multi-part content array in the appropriate format.
@@ -1341,9 +1891,20 @@ where
     } else {
         // Pipeline path: build a minimal user-message array so that image blocks
         // are preserved for any downstream consumer that inspects `messages`.
-        let mut msgs = vec![serde_json::json!({"role": "user", "content": prompt_text.clone()})];
+        let dispatch_prompt = experiment_assignment.as_ref().map_or_else(
+            || prompt_text.clone(),
+            |assignment| append_context(&prompt_text, &render_experiment_context(assignment)),
+        );
+        let mut msgs = vec![serde_json::json!({"role": "user", "content": dispatch_prompt})];
         inject_image_parts(&mut msgs, &params.prompt, resolved.provider_kind);
         msgs
+    };
+    let input_messages = if prompt_has_images {
+        model_input_messages_from_wire(&messages).map_err(|error| {
+            BridgeEventsError::UnsupportedPromptContent(format!("invalid image input: {error}"))
+        })?
+    } else {
+        Vec::new()
     };
 
     let (event_sender, event_receiver) = mpsc::channel(64);
@@ -1362,14 +1923,24 @@ where
     {
         emit_provenance_card(chain, &event_sender).await;
     }
-    let cancel_token = session.cancel_token.clone();
-    let session_id = session.session_id.clone();
+    let stream_cancel_token = session.cancel_token.clone();
+    let cancel_token = stream_cancel_token.clone();
+    let stream_session_id = session.session_id.clone();
+    let session_id = stream_session_id.clone();
+    let worktree_before = crate::runner::WorktreeChangeSnapshot::capture(workdir);
     let workdir = workdir.to_path_buf();
     let workdir_for_logging = workdir.clone();
     let roko_config = roko_config.clone();
     let roko_config_for_logging = roko_config.clone();
     let prompt_text_for_logging = prompt_text.clone();
-    let model_key_for_logging = model_key.clone();
+    let prompt_text_for_dispatch = experiment_assignment.as_ref().map_or_else(
+        || prompt_text.clone(),
+        |assignment| append_context(&prompt_text, &render_experiment_context(assignment)),
+    );
+    // The actual dispatched config key must drive provider construction,
+    // episode/cost attribution, and the router observation arm.
+    let model_key_for_logging = model_key_for_dispatch.clone();
+    let cascade_selection_for_logging = cascade_selection.clone();
     let dispatch_started = Instant::now();
     let is_pipeline_dispatch = pipeline_template.is_some();
 
@@ -1380,6 +1951,12 @@ where
     let session_mcp_servers = session.mcp_servers.clone();
     let session_mcp_config_path = session.mcp_config_path.clone();
     let session_tools_enabled = session.tools_enabled;
+    let session_tool_capabilities = derive_acp_tool_capabilities(
+        &session.config_state.agent_mode,
+        &session.client_capabilities,
+        !session_mcp_servers.is_empty(),
+        &session.always_allowed,
+    );
     // Effort level from the IDE dropdown (low/medium/high/max). Passed to
     // config_with_session_effort() at dispatch time so the provider backend
     // sees it as `agent.default_effort`. See that function's doc comment for
@@ -1389,12 +1966,14 @@ where
     let shared_run = session.shared_run.clone();
     // SP-1: build a restrictive layer per dispatch; missing contracts fall closed.
     let pre_dispatch_violation = {
-        let safety = SafetyLayer::with_defaults().with_role(&session.config_state.agent_mode);
-        match safety.pre_dispatch_check(
+        let safety =
+            SafetyLayer::from_config(&roko_config).with_role(&session.config_state.agent_mode);
+        match safety.pre_dispatch_check_with_context(
             &session.session_id,
             "session-prompt",
             &session.config_state.agent_mode,
             &workdir,
+            &DispatchSafetyContext::for_local_action(&prompt_text).with_network_requirement(true),
         ) {
             Ok(()) => None,
             Err(violation) => match violation.severity {
@@ -1449,9 +2028,9 @@ where
         if is_slash_command {
             return run_slash_command(
                 &session_id,
-                prompt_text.trim(),
+                prompt_text_for_dispatch.trim(),
                 &workdir,
-                model_key.clone(), // run_slash_command uses model_key, not the resolved slug.
+                model_key_for_dispatch.clone(),
                 cancel_token,
                 event_sender,
                 shared_run,
@@ -1464,7 +2043,7 @@ where
                 let legacy_run = shared_run.clone();
                 let result = crate::runner::run_workflow_pipeline(
                     &session_id,
-                    &prompt_text,
+                    &prompt_text_for_dispatch,
                     knowledge_context.clone(),
                     provenance_card.clone(),
                     &workdir,
@@ -1476,6 +2055,7 @@ where
                         review_strictness,
                         model_slug: resolved.slug.clone(),
                         mcp_config: write_session_mcp_config(&session_mcp_servers, &workdir),
+                        sandbox_level: roko_config.runner.sandbox_level,
                     },
                     cancel_token,
                     event_sender,
@@ -1513,11 +2093,15 @@ where
             let mcp_config_path = write_session_mcp_config(&session_mcp_servers, &workdir);
             let report = run_with_workflow_engine(
                 &session_id,
-                &prompt_text,
+                &prompt_text_for_dispatch,
                 &workdir,
                 workflow_template_name(&template),
-                mcp_config_path,
-                provenance_card,
+                crate::runner::WorkflowEngineOptions {
+                    model_key: model_key_for_dispatch,
+                    input_messages: input_messages.clone(),
+                    mcp_config: mcp_config_path,
+                    provenance_card,
+                },
                 event_sender,
             )
             .await?;
@@ -1545,7 +2129,8 @@ where
         let provider_kind = resolved.provider_kind;
 
         info!(
-            model_key = %model_key,
+            requested_model = %model_key,
+            model_key = %model_key_for_dispatch,
             slug = %resolved.slug,
             provider_kind = ?provider_kind,
             "resolved model for ACP prompt"
@@ -1559,12 +2144,16 @@ where
                 run_anthropic_cognitive_task(
                     &session_id,
                     &messages,
-                    &model_key,
+                    &model_key_for_dispatch,
                     &resolved.slug,
                     &roko_config,
+                    Arc::clone(&provider_health),
+                    Arc::clone(&provider_rate_limiter),
                     &workdir,
+                    &session_mcp_servers,
                     &session_effort,
                     session_tools_enabled,
+                    session_tool_capabilities,
                     cancel_token,
                     event_sender,
                 )
@@ -1576,13 +2165,16 @@ where
                 run_openai_compat_cognitive_task(
                     &session_id,
                     &messages,
-                    &model_key,
+                    &model_key_for_dispatch,
                     &roko_config,
+                    Arc::clone(&provider_health),
+                    Arc::clone(&provider_rate_limiter),
                     &workdir,
                     &session_mcp_servers,
                     session_mcp_config_path.as_deref(),
                     &session_effort,
                     session_tools_enabled,
+                    session_tool_capabilities,
                     cancel_token,
                     event_sender,
                 )
@@ -1591,11 +2183,13 @@ where
         }
     });
 
-    let stream_result = stream_events_to_editor(
+    let mut stream_result = stream_events_to_editor(
         transport,
-        &session.session_id,
+        &stream_session_id,
+        session,
+        &workdir_for_logging,
         event_receiver,
-        &session.cancel_token,
+        &stream_cancel_token,
     )
     .await;
 
@@ -1654,19 +2248,20 @@ where
     };
     let stream_error = stream_result.as_ref().err().map(|err| err.to_string());
 
-    if let Ok(ref sr) = stream_result
+    let post_dispatch_block = if let Ok(ref sr) = stream_result
         && !sr.assistant_text.is_empty()
     {
-        let safety = SafetyLayer::with_defaults().with_role(&session.config_state.agent_mode);
+        let changed_files = worktree_before.changed_files(&workdir_for_logging);
+        let safety = SafetyLayer::from_config(&roko_config_for_logging)
+            .with_role(&session.config_state.agent_mode);
         let violations = safety.post_dispatch_check(
             &session.session_id,
             "session-prompt",
             &session.config_state.agent_mode,
             &sr.assistant_text,
-            &[],
+            &changed_files,
         );
         for v in &violations {
-            // The response has already streamed; block-level findings are only logged here.
             match v.severity {
                 ViolationSeverity::Warn | ViolationSeverity::Block => {
                     warn!(
@@ -1678,6 +2273,19 @@ where
                 }
             }
         }
+        let block_messages = violations
+            .iter()
+            .filter(|violation| violation.severity == ViolationSeverity::Block)
+            .map(|violation| format!("{}: {}", violation.violation_type, violation.message))
+            .collect::<Vec<_>>();
+        (!block_messages.is_empty()).then(|| block_messages.join("; "))
+    } else {
+        None
+    };
+    if let Some(block_message) = post_dispatch_block {
+        stream_result = Err(BridgeEventsError::Pipeline(anyhow::anyhow!(
+            "ACP post-dispatch safety block: {block_message}"
+        )));
     }
 
     if !is_slash_command {
@@ -1698,19 +2306,9 @@ where
             task_error.as_deref(),
             stream_error.as_deref(),
             cost_override,
-            cascade_selected_slug.clone(),
+            cascade_selection_for_logging.as_ref(),
         )
         .await;
-
-        emit_acp_efficiency_event(
-            &workdir_for_logging,
-            &session.session_id,
-            &resolved_for_logging,
-            dispatch_started,
-            stream_result.as_ref().ok(),
-            task_error.is_none() && stream_error.is_none(),
-            cost_override,
-        );
 
         let stream_result_ref = stream_result.as_ref().ok();
         let dispatch_succeeded = acp_dispatch_succeeded(
@@ -1718,31 +2316,77 @@ where
             task_error.as_deref(),
             stream_error.as_deref(),
         );
-        let model_slugs =
-            cascade_router_model_slugs(&roko_config_for_logging, &resolved_for_logging.slug);
-        let routing_ctx = acp_routing_context(
-            &session.config_state.agent_mode,
-            &prompt_text_for_logging,
-            &session.config_state.effort,
-            &workdir_for_logging,
-        );
-        let output_tokens =
-            stream_result_ref.and_then(|sr| sr.usage.as_ref().map(|usage| usage.output_tokens));
-        // T3: Pass the config key (model_key_for_logging) not the wire slug so
-        // the observation key matches the router arms, which are also populated
-        // from config.models.keys().
-        record_cascade_observation(
-            workdir_for_logging
-                .join(".roko")
-                .join("learn")
-                .join("cascade-router.json"),
-            model_key_for_logging.clone(),
-            routing_ctx,
+        let efficiency_event = acp_efficiency_event(
+            &session.session_id,
+            &resolved_for_logging,
+            dispatch_started,
+            stream_result_ref,
             dispatch_succeeded,
-            dispatch_started.elapsed().as_millis() as u64,
-            output_tokens,
-            model_slugs,
+            cost_override,
         );
+        session.record_efficiency_cost(efficiency_event.cost_usd);
+        let budget_status = session.budget_status();
+        if let (Some(cost_budget_usd), Some(accumulated_cost_usd), Some(budget_remaining_usd)) = (
+            budget_status.cost_budget_usd,
+            budget_status.accumulated_cost_usd,
+            budget_status.budget_remaining_usd,
+        ) && let Err(error) = send_session_update(
+            transport,
+            &session.session_id,
+            SessionUpdate::BudgetStatusUpdate {
+                cost_budget_usd,
+                accumulated_cost_usd,
+                budget_remaining_usd,
+            },
+        )
+        .await
+        {
+            warn!(
+                session_id = %session.session_id,
+                error = %error,
+                "failed to send ACP budget status update"
+            );
+        }
+        emit_acp_efficiency_event(&workdir_for_logging, efficiency_event);
+
+        if let Some(assignment) = experiment_assignment.as_ref()
+            && let Err(error) =
+                record_acp_experiment_outcome(&experiment_path, assignment, dispatch_succeeded)
+        {
+            warn!(
+                experiment_id = %assignment.experiment_id,
+                variant_id = %assignment.variant_id,
+                error = %error,
+                "failed to persist ACP experiment outcome"
+            );
+        }
+
+        if !is_pipeline_dispatch {
+            let model_slugs =
+                cascade_router_model_slugs(&roko_config_for_logging, &resolved_for_logging.slug);
+            let routing_ctx = acp_routing_context(
+                &session.config_state.agent_mode,
+                &prompt_text_for_logging,
+                &session.config_state.effort,
+                &workdir_for_logging,
+            );
+            let output_tokens =
+                stream_result_ref.and_then(|sr| sr.usage.as_ref().map(|usage| usage.output_tokens));
+            // Observe only direct prompts here. Workflow services own their own
+            // provider feedback and recording them again would train the wrong arm.
+            drop(record_cascade_observation(
+                workdir_for_logging
+                    .join(".roko")
+                    .join("learn")
+                    .join("cascade-router.json"),
+                model_key_for_logging.clone(),
+                routing_ctx,
+                dispatch_succeeded,
+                dispatch_started.elapsed().as_millis() as u64,
+                output_tokens,
+                model_slugs,
+            ));
+        }
     }
 
     if let Some(join_error) = task_join_error {
@@ -1794,9 +2438,13 @@ async fn run_anthropic_cognitive_task(
     model_key: &str,
     slug: &str,
     roko_config: &RokoConfig,
+    provider_health: Arc<ProviderHealthRegistry>,
+    rate_limiter: Arc<ProviderRateLimiter>,
     workdir: &Path,
+    mcp_servers: &[crate::types::McpServerConfig],
     effort: &str,
     tools_enabled: bool,
+    tool_capabilities: ToolPermission,
     cancel_token: CancelToken,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> Result<()> {
@@ -1822,18 +2470,22 @@ async fn run_anthropic_cognitive_task(
         return Ok(());
     }
 
-    // Builtin tool-loop path: when tools are enabled, run the ToolLoop with
-    // Anthropic translator so the model can invoke read_file, bash, etc. and
-    // receive tool_result content blocks in a loop (up to 25 iterations).
-    if tools_enabled
-        && run_anthropic_builtin_tool_loop(
+    // Anthropic tool-loop path: register both enabled builtins and any tools
+    // attached through the ACP session's MCP servers.
+    if (tools_enabled || !mcp_servers.is_empty())
+        && run_anthropic_tool_loop(
             session_id,
             messages,
             model_key,
             slug,
             &config,
             workdir,
+            mcp_servers,
+            tools_enabled,
+            tool_capabilities,
             None, // single-agent chat path: all tools allowed
+            Arc::clone(&provider_health),
+            Arc::clone(&rate_limiter),
             cancel_token.clone(),
             event_sender.clone(),
         )
@@ -1844,15 +2496,20 @@ async fn run_anthropic_cognitive_task(
     }
 
     // Fallback: plain streaming with no tool execution loop.
-    let caller =
-        ModelCallService::new(model_key.to_string()).with_config(model_call_config.clone());
+    let caller = ModelCallService::new(model_key.to_string())
+        .with_config(model_call_config.clone())
+        .with_working_dir(workdir)
+        .with_immune_root(workdir)
+        .with_provider_outcome_recorder(provider_health)
+        .with_rate_limiter(rate_limiter);
     let tools = tools_enabled.then(acp_builtin_tools).unwrap_or_default();
-    let request = model_call_request_from_acp_messages(model_key, messages, tools);
+    let request = model_call_request_from_acp_messages(model_key, messages, tools)
+        .map_err(BridgeEventsError::UnsupportedPromptContent)?;
     stream_model_call_to_cognitive_events(session_id, &caller, request, cancel_token, event_sender)
         .await
 }
 
-/// Anthropic-native builtin tool loop.
+/// Anthropic-native builtin and session-MCP tool loop.
 ///
 /// Uses the Anthropic Messages API tool format (`tool_use` / `tool_result` content
 /// blocks) and the shared [`ToolLoop`] infrastructure. When the model emits
@@ -1864,67 +2521,22 @@ async fn run_anthropic_cognitive_task(
 /// if the caller should fall through to the plain streaming path, and `Ok(None)`
 /// if the Anthropic API key is not available.
 #[allow(clippy::too_many_arguments)]
-async fn run_anthropic_builtin_tool_loop(
+async fn run_anthropic_tool_loop(
     session_id: &str,
     messages: &[serde_json::Value],
     model_key: &str,
     slug: &str,
     roko_config: &RokoConfig,
     workdir: &Path,
+    mcp_servers: &[crate::types::McpServerConfig],
+    tools_enabled: bool,
+    tool_capabilities: ToolPermission,
     allowed_tools: Option<Vec<String>>,
+    provider_health: Arc<ProviderHealthRegistry>,
+    rate_limiter: Arc<ProviderRateLimiter>,
     cancel_token: CancelToken,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> Result<Option<bool>> {
-    // Resolve the Anthropic provider to get the API key.
-    let api_key = roko_config
-        .providers
-        .iter()
-        .find(|(_, p)| p.kind == ProviderKind::AnthropicApi)
-        .and_then(|(_, p)| p.resolve_api_key());
-
-    let Some(api_key) = api_key else {
-        debug!(
-            session_id,
-            model_key, "Anthropic builtin tool loop skipped: no API key"
-        );
-        return Ok(None);
-    };
-
-    let timeout_ms = roko_config
-        .providers
-        .iter()
-        .find(|(_, p)| p.kind == ProviderKind::AnthropicApi)
-        .and_then(|(_, p)| p.timeout_ms)
-        .unwrap_or(roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS);
-
-    // Build builtin tool definitions and handler map.
-    let tools = acp_builtin_tools();
-    if tools.is_empty() {
-        return Ok(Some(false));
-    }
-
-    let mut handlers: HashMap<String, Arc<dyn ToolHandler>> = HashMap::new();
-    for tool in &tools {
-        handlers.insert(
-            tool.name.clone(),
-            Arc::new(AcpBuiltinToolHandler {
-                tool_name: tool.name.clone(),
-                session_id: session_id.to_string(),
-                workdir: workdir.to_path_buf(),
-                event_sender: event_sender.clone(),
-            }),
-        );
-    }
-
-    let (backend, translator) =
-        roko_agent::provider::anthropic_api::tool_loop::create_anthropic_backend_simple(
-            api_key, slug, timeout_ms,
-        );
-
-    let registry = Arc::new(VecToolRegistry::from_tools(tools.clone()));
-    let resolver: Arc<dyn HandlerResolver> = Arc::new(AcpBuiltinHandlerResolver { handlers });
-    let dispatcher = Arc::new(ToolDispatcher::new(registry, resolver));
-
     let model_profile = roko_config
         .effective_models()
         .get(model_key)
@@ -1934,6 +2546,87 @@ async fn run_anthropic_builtin_tool_loop(
             context_window: 200_000,
             ..Default::default()
         });
+    let configured_provider_id =
+        (!model_profile.provider.trim().is_empty()).then_some(model_profile.provider.as_str());
+    let provider_entry = configured_provider_id
+        .and_then(|provider_id| {
+            roko_config
+                .providers
+                .get(provider_id)
+                .filter(|provider| provider.kind == ProviderKind::AnthropicApi)
+                .map(|provider| (provider_id, provider))
+        })
+        .or_else(|| {
+            roko_config
+                .providers
+                .iter()
+                .find(|(_, provider)| provider.kind == ProviderKind::AnthropicApi)
+                .map(|(provider_id, provider)| (provider_id.as_str(), provider))
+        });
+    let provider_id = provider_entry
+        .map(|(provider_id, _)| provider_id)
+        .unwrap_or(model_key);
+
+    // Resolve the API key from the exact provider named by the model profile
+    // whenever possible, matching the ID used for limiter/outcome accounting.
+    let api_key = provider_entry.and_then(|(_, provider)| provider.resolve_api_key());
+
+    let Some(api_key) = api_key else {
+        debug!(
+            session_id,
+            model_key, "Anthropic builtin tool loop skipped: no API key"
+        );
+        return Ok(None);
+    };
+
+    let timeout_ms = provider_entry
+        .and_then(|(_, provider)| provider.timeout_ms)
+        .unwrap_or(roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS);
+
+    let mut tools = Vec::new();
+    let mut handlers: HashMap<String, Arc<dyn ToolHandler>> = HashMap::new();
+    if tools_enabled {
+        tools = acp_builtin_tools();
+        for tool in &tools {
+            handlers.insert(
+                tool.name.clone(),
+                Arc::new(AcpBuiltinToolHandler {
+                    tool_name: tool.name.clone(),
+                    session_id: session_id.to_string(),
+                    workdir: workdir.to_path_buf(),
+                    event_sender: event_sender.clone(),
+                }),
+            );
+        }
+    }
+
+    if !mcp_servers.is_empty() {
+        let (mcp_state, statuses) =
+            setup_session_mcp_tools(session_id, mcp_servers, event_sender.clone()).await;
+        if !statuses.is_empty() {
+            send_cognitive_event(&event_sender, CognitiveEvent::McpStatus { statuses }).await;
+        }
+        tools.extend(mcp_state.tools);
+        handlers.extend(mcp_state.handlers);
+    }
+
+    if tools.is_empty() {
+        return Ok(Some(false));
+    }
+
+    let registry = Arc::new(VecToolRegistry::from_tools(tools.clone()));
+    let resolver: Arc<dyn HandlerResolver> = Arc::new(AcpMcpHandlerResolver { handlers });
+    let dispatcher = Arc::new(ToolDispatcher::new(registry, resolver));
+
+    let (backend, translator) =
+        roko_agent::provider::anthropic_api::tool_loop::create_anthropic_backend_with_runtime(
+            api_key,
+            slug,
+            provider_id,
+            timeout_ms,
+            rate_limiter,
+            provider_health,
+        );
     let context_limit = usize::try_from(model_profile.context_window).unwrap_or(usize::MAX);
 
     let tool_loop = ToolLoop::new(translator, dispatcher, backend)
@@ -1949,12 +2642,14 @@ async fn run_anthropic_builtin_tool_loop(
     let mut tool_context = ToolContext::new(
         workdir,
         Duration::from_secs(120),
-        compute_session_capabilities(&tools),
+        tool_capabilities,
         Arc::new(NoopAuditSink),
         Arc::new(NoopTraceSink),
         Arc::new(NoopMetricsSink),
         Arc::new(AcpToolCancelToken(cancel_token.clone())),
-    );
+    )
+    .with_immune_root(workdir)
+    .with_taint_level(CamelTaintLevel::External);
     tool_context.allowed_tools = allowed_tools;
 
     let output = tool_loop
@@ -2065,17 +2760,29 @@ fn model_call_request_from_acp_messages(
     model_key: &str,
     messages: &[serde_json::Value],
     tools: Vec<ToolDef>,
-) -> ModelCallRequest {
-    ModelCallRequest {
+) -> std::result::Result<ModelCallRequest, String> {
+    let structured = model_input_messages_from_wire(messages)?;
+    let input_messages = if structured.iter().any(|message| {
+        message
+            .content
+            .iter()
+            .any(|block| matches!(block, ModelInputBlock::Image { .. }))
+    }) {
+        structured
+    } else {
+        Vec::new()
+    };
+    Ok(ModelCallRequest {
         model: model_key.to_string(),
         messages: messages
             .iter()
             .filter_map(model_call_chat_message_from_acp)
             .collect(),
+        input_messages,
         caller: Some("acp".to_string()),
         tools,
         ..Default::default()
-    }
+    })
 }
 
 fn model_call_chat_message_from_acp(message: &serde_json::Value) -> Option<ChatMessage> {
@@ -2290,11 +2997,14 @@ async fn run_openai_compat_cognitive_task(
     messages: &[serde_json::Value],
     model_key: &str,
     roko_config: &RokoConfig,
+    provider_health: Arc<ProviderHealthRegistry>,
+    rate_limiter: Arc<ProviderRateLimiter>,
     workdir: &Path,
     mcp_servers: &[crate::types::McpServerConfig],
     mcp_config_path: Option<&Path>,
     effort: &str,
     tools_enabled: bool,
+    tool_capabilities: ToolPermission,
     cancel_token: CancelToken,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> Result<()> {
@@ -2323,6 +3033,8 @@ async fn run_openai_compat_cognitive_task(
             &resolved,
             workdir,
             mcp_servers,
+            Arc::clone(&rate_limiter),
+            tool_capabilities,
             None, // single-agent chat path: all tools allowed
             cancel_token.clone(),
             event_sender.clone(),
@@ -2342,6 +3054,8 @@ async fn run_openai_compat_cognitive_task(
             messages,
             &resolved,
             workdir,
+            Arc::clone(&rate_limiter),
+            tool_capabilities,
             None, // single-agent chat path: all tools allowed
             cancel_token.clone(),
             event_sender.clone(),
@@ -2355,14 +3069,20 @@ async fn run_openai_compat_cognitive_task(
     // Thread session MCP servers as a --mcp-config file for Claude CLI dispatch.
     // If no session-attached servers produced a written config, fall back to the
     // auto-discovered workspace `.mcp.json` path resolved at session creation time.
-    let mut caller = ModelCallService::new(model_key.to_string()).with_config(roko_config.clone());
+    let mut caller = ModelCallService::new(model_key.to_string())
+        .with_config(roko_config.clone())
+        .with_working_dir(workdir)
+        .with_immune_root(workdir)
+        .with_provider_outcome_recorder(provider_health)
+        .with_rate_limiter(rate_limiter);
     let resolved_mcp_path = write_session_mcp_config(mcp_servers, workdir)
         .or_else(|| mcp_config_path.map(PathBuf::from));
     if let Some(mcp_path) = resolved_mcp_path {
         caller = caller.with_mcp_config(mcp_path);
     }
     let tools = tools_enabled.then(acp_builtin_tools).unwrap_or_default();
-    let request = model_call_request_from_acp_messages(model_key, messages, tools);
+    let request = model_call_request_from_acp_messages(model_key, messages, tools)
+        .map_err(BridgeEventsError::UnsupportedPromptContent)?;
     stream_model_call_to_cognitive_events(session_id, &caller, request, cancel_token, event_sender)
         .await
 }
@@ -2415,6 +3135,8 @@ async fn run_openai_compat_mcp_tool_loop(
     resolved: &ResolvedModel,
     workdir: &Path,
     mcp_servers: &[crate::types::McpServerConfig],
+    rate_limiter: Arc<ProviderRateLimiter>,
+    tool_capabilities: ToolPermission,
     allowed_tools: Option<Vec<String>>,
     cancel_token: CancelToken,
     event_sender: mpsc::Sender<CognitiveEvent>,
@@ -2478,8 +3200,13 @@ async fn run_openai_compat_mcp_tool_loop(
     } else {
         Arc::new(OpenAiTranslator)
     };
-    let backend = create_openai_compat_backend(provider, model, Arc::new(ReqwestPoster::new()))
-        .map_err(|error| anyhow::anyhow!("create ACP MCP tool-loop backend: {error}"))?;
+    let backend = create_openai_compat_backend_with_limiter(
+        provider,
+        model,
+        Arc::new(ReqwestPoster::new()),
+        rate_limiter,
+    )
+    .map_err(|error| anyhow::anyhow!("create ACP MCP tool-loop backend: {error}"))?;
     let registry = Arc::new(VecToolRegistry::from_tools(mcp_state.tools.clone()));
     let resolver: Arc<dyn HandlerResolver> = Arc::new(AcpMcpHandlerResolver {
         handlers: mcp_state.handlers,
@@ -2498,12 +3225,14 @@ async fn run_openai_compat_mcp_tool_loop(
     let mut tool_context = ToolContext::new(
         workdir,
         Duration::from_secs(120),
-        compute_session_capabilities(&mcp_state.tools),
+        tool_capabilities,
         Arc::new(NoopAuditSink),
         Arc::new(NoopTraceSink),
         Arc::new(NoopMetricsSink),
         Arc::new(AcpToolCancelToken(cancel_token.clone())),
-    );
+    )
+    .with_immune_root(workdir)
+    .with_taint_level(CamelTaintLevel::External);
     tool_context.allowed_tools = allowed_tools;
 
     let output = tool_loop
@@ -2591,6 +3320,8 @@ async fn run_openai_compat_builtin_tool_loop(
     messages: &[serde_json::Value],
     resolved: &ResolvedModel,
     workdir: &Path,
+    rate_limiter: Arc<ProviderRateLimiter>,
+    tool_capabilities: ToolPermission,
     allowed_tools: Option<Vec<String>>,
     cancel_token: CancelToken,
     event_sender: mpsc::Sender<CognitiveEvent>,
@@ -2636,8 +3367,13 @@ async fn run_openai_compat_builtin_tool_loop(
     } else {
         Arc::new(OpenAiTranslator)
     };
-    let backend = create_openai_compat_backend(provider, model, Arc::new(ReqwestPoster::new()))
-        .map_err(|error| anyhow::anyhow!("create ACP builtin tool-loop backend: {error}"))?;
+    let backend = create_openai_compat_backend_with_limiter(
+        provider,
+        model,
+        Arc::new(ReqwestPoster::new()),
+        rate_limiter,
+    )
+    .map_err(|error| anyhow::anyhow!("create ACP builtin tool-loop backend: {error}"))?;
     let registry = Arc::new(VecToolRegistry::from_tools(tools.clone()));
     let resolver: Arc<dyn HandlerResolver> = Arc::new(AcpBuiltinHandlerResolver { handlers });
     let dispatcher = Arc::new(ToolDispatcher::new(registry, resolver));
@@ -2654,12 +3390,14 @@ async fn run_openai_compat_builtin_tool_loop(
     let mut tool_context = ToolContext::new(
         workdir,
         Duration::from_secs(120),
-        compute_session_capabilities(&tools),
+        tool_capabilities,
         Arc::new(NoopAuditSink),
         Arc::new(NoopTraceSink),
         Arc::new(NoopMetricsSink),
         Arc::new(AcpToolCancelToken(cancel_token.clone())),
-    );
+    )
+    .with_immune_root(workdir)
+    .with_taint_level(CamelTaintLevel::External);
     tool_context.allowed_tools = allowed_tools;
 
     let output = tool_loop
@@ -3158,6 +3896,48 @@ impl ToolHandler for AcpBuiltinToolHandler {
             session_id = %self.session_id,
             "ACP tool call allowed"
         );
+
+        if let Some((action, title, detail)) =
+            tool_permission_request(&self.tool_name, &call.arguments)
+        {
+            let (decision_sender, decision_receiver) = tokio::sync::oneshot::channel();
+            let request = CognitiveEvent::PermissionRequest {
+                payload: PermissionRequestPayload {
+                    action,
+                    title,
+                    detail,
+                },
+                reply: PermissionReplyChannel::new(decision_sender),
+            };
+
+            if self.event_sender.send(request).await.is_err() {
+                warn!(
+                    tool = %self.tool_name,
+                    session_id = %self.session_id,
+                    "ACP permission request could not reach the parent stream; denying tool"
+                );
+                return ToolResult::err(ToolError::PermissionDenied(format!(
+                    "tool '{}' requires editor approval",
+                    self.tool_name
+                )));
+            }
+
+            match decision_receiver.await {
+                Ok(PermissionDecision::Allow | PermissionDecision::AlwaysAllow) => {}
+                Ok(PermissionDecision::Reject) | Err(_) => {
+                    warn!(
+                        tool = %self.tool_name,
+                        session_id = %self.session_id,
+                        "ACP mutation tool denied by editor permission gate"
+                    );
+                    return ToolResult::err(ToolError::PermissionDenied(format!(
+                        "tool '{}' was not approved by the editor",
+                        self.tool_name
+                    )));
+                }
+            }
+        }
+
         let output = crate::builtin_tools::execute_acp_builtin_tool(
             &self.tool_name,
             &call.arguments,
@@ -3978,6 +4758,7 @@ Use the Workflow dropdown in the status bar to select, or:
                         review_strictness: "standard".to_string(),
                         model_slug: model_key.clone(),
                         mcp_config: None,
+                        sandbox_level: roko_core::config::schema::RunnerSandboxLevel::default(),
                     },
                     cancel_token,
                     event_sender,
@@ -3991,8 +4772,12 @@ Use the Workflow dropdown in the status bar to select, or:
                 args,
                 workdir,
                 "express",
-                None,
-                provenance_card,
+                crate::runner::WorkflowEngineOptions {
+                    model_key,
+                    mcp_config: None,
+                    provenance_card,
+                    input_messages: Vec::new(),
+                },
                 event_sender,
             )
             .await?;
@@ -4023,6 +4808,7 @@ Use the Workflow dropdown in the status bar to select, or:
                         review_strictness: "standard".to_string(),
                         model_slug: model_key.clone(),
                         mcp_config: None,
+                        sandbox_level: roko_core::config::schema::RunnerSandboxLevel::default(),
                     },
                     cancel_token,
                     event_sender,
@@ -4036,8 +4822,12 @@ Use the Workflow dropdown in the status bar to select, or:
                 args,
                 workdir,
                 "full",
-                None,
-                provenance_card,
+                crate::runner::WorkflowEngineOptions {
+                    model_key,
+                    mcp_config: None,
+                    provenance_card,
+                    input_messages: Vec::new(),
+                },
                 event_sender,
             )
             .await?;
@@ -4181,6 +4971,8 @@ Available commands (organized by Will's core loop):
     let mut child = match tokio::process::Command::new(&roko_bin)
         .args(&cli_args)
         .current_dir(workdir)
+        .env("ROKO_ACP_PROGRESS", "1")
+        .kill_on_drop(true)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -4188,45 +4980,111 @@ Available commands (organized by Will's core loop):
     {
         Ok(c) => c,
         Err(e) => {
+            let message = format!("Failed to run `roko {}`: {e}", cli_args.join(" "));
             let _ = event_sender
-                .send(CognitiveEvent::TokenChunk(format!(
-                    "Failed to run `roko {}`:\n{e}",
-                    cli_args.join(" ")
-                )))
-                .await;
-            let _ = event_sender
-                .send(CognitiveEvent::Complete {
-                    stop_reason: StopReason::EndTurn,
-                    usage: None,
+                .send(CognitiveEvent::Failure {
+                    message: message.clone(),
                 })
                 .await;
-            return Ok(());
+            return Err(anyhow::anyhow!(message).into());
         }
     };
 
-    // Interleave stdout and stderr reading.
-    let mut stdout_lines =
-        tokio::io::BufReader::new(child.stdout.take().expect("stdout was piped")).lines();
-    let mut stderr_lines =
-        tokio::io::BufReader::new(child.stderr.take().expect("stderr was piped")).lines();
+    let stdout = child.stdout.take().expect("stdout was piped");
+    let stderr = child.stderr.take().expect("stderr was piped");
+    let stream_outcome =
+        forward_slash_command_streams(session_id, stdout, stderr, &cancel_token, &event_sender)
+            .await;
+
+    let SlashCommandStreamOutcome::Completed { had_output } = stream_outcome else {
+        if let Err(error) =
+            roko_agent::process::kill_tree(&mut child, Duration::from_millis(200)).await
+        {
+            warn!(session_id, %error, "failed to terminate slash command process tree");
+        }
+        return Ok(());
+    };
+
+    let exit_status = tokio::select! {
+        _ = cancel_token.cancelled() => {
+            if let Err(error) =
+                roko_agent::process::kill_tree(&mut child, Duration::from_millis(200)).await
+            {
+                warn!(session_id, %error, "failed to terminate slash command process tree");
+            }
+            return Ok(());
+        }
+        status = child.wait() => status
+    };
+    let exit_status = exit_status.map_err(|error| {
+        anyhow::anyhow!("failed waiting for `roko {}`: {error}", cli_args.join(" "))
+    })?;
+    if !exit_status.success() {
+        let message = format!(
+            "`roko {}` exited with status {}",
+            cli_args.join(" "),
+            exit_status
+        );
+        let _ = event_sender
+            .send(CognitiveEvent::Failure {
+                message: message.clone(),
+            })
+            .await;
+        return Err(anyhow::anyhow!(message).into());
+    }
+    finish_slash_command_stream(command, had_output, &event_sender).await;
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlashCommandStreamOutcome {
+    Completed { had_output: bool },
+    Cancelled,
+}
+
+async fn forward_slash_command_streams<Stdout, Stderr>(
+    session_id: &str,
+    stdout: Stdout,
+    stderr: Stderr,
+    cancel_token: &CancelToken,
+    event_sender: &mpsc::Sender<CognitiveEvent>,
+) -> SlashCommandStreamOutcome
+where
+    Stdout: AsyncRead + Unpin,
+    Stderr: AsyncRead + Unpin,
+{
+    let mut stdout_lines = tokio::io::BufReader::new(stdout).lines();
+    let mut stderr_lines = tokio::io::BufReader::new(stderr).lines();
     let mut stdout_done = false;
     let mut stderr_done = false;
-    let mut output = String::new();
+    let mut had_output = false;
     let mut progress_task_counter: u64 = 0;
+    let mut progress_calls: HashMap<String, VecDeque<String>> = HashMap::new();
 
     loop {
+        if cancel_token.is_cancelled() {
+            close_progress_calls(&mut progress_calls, "cancelled", event_sender).await;
+            return SlashCommandStreamOutcome::Cancelled;
+        }
         if stdout_done && stderr_done {
             break;
         }
         tokio::select! {
             biased;
             _ = cancel_token.cancelled() => {
-                let _ = child.kill().await;
-                return Ok(());
+                close_progress_calls(
+                    &mut progress_calls,
+                    "cancelled",
+                    event_sender,
+                )
+                .await;
+                return SlashCommandStreamOutcome::Cancelled;
             }
             line = stdout_lines.next_line(), if !stdout_done => {
                 match line {
                     Ok(Some(l)) => {
+                        had_output = true;
                         if let Some(json_str) = l.strip_prefix("ROKO_PROGRESS: ") {
                             if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
                                 match value.get("type").and_then(|t| t.as_str()) {
@@ -4239,6 +5097,10 @@ Available commands (organized by Will's core loop):
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("unknown");
                                         let call_id = format!("progress-{}-{}", task_id, progress_task_counter);
+                                        progress_calls
+                                            .entry(task_id.to_owned())
+                                            .or_default()
+                                            .push_back(call_id.clone());
                                         let _ = event_sender.send(CognitiveEvent::ToolCallStart {
                                             tool_call_id: call_id,
                                             title: title.to_string(),
@@ -4256,7 +5118,11 @@ Available commands (organized by Will's core loop):
                                         let total = value.get("total")
                                             .and_then(|v| v.as_u64())
                                             .unwrap_or(0);
-                                        let call_id = format!("progress-{}-{}", task_id, progress_task_counter);
+                                        let call_id = pop_progress_call(
+                                            &mut progress_calls,
+                                            task_id,
+                                        )
+                                            .unwrap_or_else(|| format!("progress-{}-unmatched", task_id));
                                         let _ = event_sender.send(CognitiveEvent::ToolCallComplete {
                                             tool_call_id: call_id,
                                             status: ToolCallStatus::Completed,
@@ -4264,6 +5130,30 @@ Available commands (organized by Will's core loop):
                                                 text: format!("{}/{} tasks done", completed, total),
                                             }],
                                         }).await;
+                                    }
+                                    Some("task_failed") => {
+                                        let task_id = value.get("task_id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("unknown");
+                                        let error = value.get("error")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("task failed");
+                                        if let Some(call_id) = pop_progress_call(
+                                            &mut progress_calls,
+                                            task_id,
+                                        ) {
+                                            let _ = event_sender.send(CognitiveEvent::ToolCallComplete {
+                                                tool_call_id: call_id,
+                                                status: ToolCallStatus::Failed,
+                                                content: vec![ContentBlock::Text {
+                                                    text: error.to_owned(),
+                                                }],
+                                            }).await;
+                                        } else {
+                                            let _ = event_sender
+                                                .send(CognitiveEvent::TokenChunk(format!("{l}\n")))
+                                                .await;
+                                        }
                                     }
                                     Some("agent_started") => {
                                         let provider = value.get("provider")
@@ -4277,19 +5167,20 @@ Available commands (organized by Will's core loop):
                                         )).await;
                                     }
                                     _ => {
-                                        // Unknown progress type — pass through as text
-                                        output.push_str(&l);
-                                        output.push('\n');
+                                        let _ = event_sender
+                                            .send(CognitiveEvent::TokenChunk(format!("{l}\n")))
+                                            .await;
                                     }
                                 }
                             } else {
-                                // JSON parse failed — pass through as plain text
-                                output.push_str(&l);
-                                output.push('\n');
+                                let _ = event_sender
+                                    .send(CognitiveEvent::TokenChunk(format!("{l}\n")))
+                                    .await;
                             }
                         } else {
-                            output.push_str(&l);
-                            output.push('\n');
+                            let _ = event_sender
+                                .send(CognitiveEvent::TokenChunk(format!("{l}\n")))
+                                .await;
                         }
                     }
                     Ok(None) => stdout_done = true,
@@ -4302,7 +5193,10 @@ Available commands (organized by Will's core loop):
             line = stderr_lines.next_line(), if !stderr_done => {
                 match line {
                     Ok(Some(l)) => {
-                        output.push_str(&format!("\x1b[2m{}\x1b[0m\n", l));
+                        had_output = true;
+                        let _ = event_sender
+                            .send(CognitiveEvent::TokenChunk(format!("\x1b[2m{l}\x1b[0m\n")))
+                            .await;
                     }
                     Ok(None) => stderr_done = true,
                     Err(e) => {
@@ -4314,21 +5208,66 @@ Available commands (organized by Will's core loop):
         }
     }
 
-    let _ = child.wait().await;
+    close_progress_calls(
+        &mut progress_calls,
+        "progress stream ended before task completion",
+        event_sender,
+    )
+    .await;
+    SlashCommandStreamOutcome::Completed { had_output }
+}
 
-    if output.is_empty() {
-        output = format!("/{command} completed (no output)");
+fn pop_progress_call(
+    progress_calls: &mut HashMap<String, VecDeque<String>>,
+    task_id: &str,
+) -> Option<String> {
+    let call_id = progress_calls.get_mut(task_id)?.pop_front();
+    if progress_calls.get(task_id).is_some_and(VecDeque::is_empty) {
+        progress_calls.remove(task_id);
     }
+    call_id
+}
 
-    let _ = event_sender.send(CognitiveEvent::TokenChunk(output)).await;
+async fn close_progress_calls(
+    progress_calls: &mut HashMap<String, VecDeque<String>>,
+    reason: &str,
+    event_sender: &mpsc::Sender<CognitiveEvent>,
+) {
+    let call_ids = progress_calls
+        .drain()
+        .flat_map(|(_, calls)| calls)
+        .collect::<Vec<_>>();
+    for tool_call_id in call_ids {
+        let _ = event_sender
+            .send(CognitiveEvent::ToolCallComplete {
+                tool_call_id,
+                status: ToolCallStatus::Failed,
+                content: vec![ContentBlock::Text {
+                    text: reason.to_owned(),
+                }],
+            })
+            .await;
+    }
+}
+
+async fn finish_slash_command_stream(
+    command: &str,
+    had_output: bool,
+    event_sender: &mpsc::Sender<CognitiveEvent>,
+) {
+    if !had_output {
+        let _ = event_sender
+            .send(CognitiveEvent::TokenChunk(format!(
+                "/{command} completed (no output)"
+            )))
+            .await;
+    }
     let _ = event_sender
         .send(CognitiveEvent::Complete {
             stop_reason: StopReason::EndTurn,
             usage: None,
         })
         .await;
-
-    Ok(())
 }
 
 /// Runs a raw shell command (for /build, /test, /clippy) and streams each
@@ -4603,6 +5542,27 @@ fn extract_prompt_text(prompt: &[ContentBlock]) -> String {
         .join("\n")
 }
 
+fn model_input_blocks_from_prompt(prompt: &[ContentBlock]) -> Vec<ModelInputBlock> {
+    prompt
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } if !text.is_empty() => {
+                Some(ModelInputBlock::text(text.clone()))
+            }
+            ContentBlock::Image { data, mime_type } => {
+                Some(ModelInputBlock::image(mime_type.clone(), data.clone()))
+            }
+            ContentBlock::Diff { path, diff, .. } => Some(ModelInputBlock::text(format!(
+                "diff {path}:\n{}",
+                diff.as_deref().unwrap_or("")
+            ))),
+            ContentBlock::Text { .. } | ContentBlock::Resource { .. } | ContentBlock::Unknown => {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Builds an OpenAI-compatible content array from prompt blocks, converting
 /// `Image` blocks into `image_url` content parts with inline data URIs.
 /// Returns `None` when no images are present (caller can use a plain string).
@@ -4614,18 +5574,17 @@ fn build_openai_content_parts(prompt: &[ContentBlock]) -> Option<Vec<serde_json:
         return None;
     }
     let mut parts = Vec::new();
-    for block in prompt {
+    for block in model_input_blocks_from_prompt(prompt) {
         match block {
-            ContentBlock::Text { text } if !text.is_empty() => {
+            ModelInputBlock::Text { text } => {
                 parts.push(serde_json::json!({"type": "text", "text": text}));
             }
-            ContentBlock::Image { data, mime_type } => {
+            ModelInputBlock::Image { data, media_type } => {
                 parts.push(serde_json::json!({
                     "type": "image_url",
-                    "image_url": { "url": format!("data:{mime_type};base64,{data}") }
+                    "image_url": { "url": format!("data:{media_type};base64,{data}") }
                 }));
             }
-            _ => {}
         }
     }
     Some(parts)
@@ -4641,22 +5600,21 @@ fn build_anthropic_content_parts(prompt: &[ContentBlock]) -> Option<Vec<serde_js
         return None;
     }
     let mut parts = Vec::new();
-    for block in prompt {
+    for block in model_input_blocks_from_prompt(prompt) {
         match block {
-            ContentBlock::Text { text } if !text.is_empty() => {
+            ModelInputBlock::Text { text } => {
                 parts.push(serde_json::json!({"type": "text", "text": text}));
             }
-            ContentBlock::Image { data, mime_type } => {
+            ModelInputBlock::Image { data, media_type } => {
                 parts.push(serde_json::json!({
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": mime_type,
+                        "media_type": media_type,
                         "data": data,
                     }
                 }));
             }
-            _ => {}
         }
     }
     Some(parts)
@@ -4670,17 +5628,120 @@ fn inject_image_parts(
     prompt: &[ContentBlock],
     provider_kind: ProviderKind,
 ) {
-    let image_parts = if provider_kind == ProviderKind::AnthropicApi {
+    let mut image_parts = if provider_kind == ProviderKind::AnthropicApi {
         build_anthropic_content_parts(prompt)
     } else {
         build_openai_content_parts(prompt)
     };
-    if let Some(parts) = image_parts
-        && let Some(last) = msgs.last_mut()
+    if let Some(last) = msgs.last_mut()
         && last.get("role").and_then(|v| v.as_str()) == Some("user")
+        && let Some(parts) = image_parts.as_mut()
     {
-        last["content"] = serde_json::Value::Array(parts);
+        let prompt_text = extract_prompt_text(prompt);
+        if let Some(existing) = last.get("content").and_then(serde_json::Value::as_str)
+            && let Some(suffix) = existing.strip_prefix(&prompt_text)
+            && !suffix.is_empty()
+        {
+            parts.push(serde_json::json!({"type": "text", "text": suffix}));
+        }
+        last["content"] = serde_json::Value::Array(std::mem::take(parts));
     }
+}
+
+fn model_input_messages_from_wire(
+    messages: &[serde_json::Value],
+) -> std::result::Result<Vec<ModelInputMessage>, String> {
+    let mut structured = Vec::with_capacity(messages.len());
+    for (message_index, message) in messages.iter().enumerate() {
+        let role = match message.get("role").and_then(serde_json::Value::as_str) {
+            Some("system") => MessageRole::System,
+            Some("user") => MessageRole::User,
+            Some("assistant") => MessageRole::Assistant,
+            Some(other) => {
+                return Err(format!(
+                    "message {} has unsupported role {other:?}",
+                    message_index + 1
+                ));
+            }
+            None => return Err(format!("message {} has no role", message_index + 1)),
+        };
+        let content = message
+            .get("content")
+            .ok_or_else(|| format!("message {} has no content", message_index + 1))?;
+        let blocks = if let Some(text) = content.as_str() {
+            vec![ModelInputBlock::text(text)]
+        } else if let Some(parts) = content.as_array() {
+            parts
+                .iter()
+                .enumerate()
+                .map(|(part_index, part)| {
+                    match part.get("type").and_then(serde_json::Value::as_str) {
+                        Some("text") => part
+                            .get("text")
+                            .and_then(serde_json::Value::as_str)
+                            .map(|text| ModelInputBlock::text(text.to_string()))
+                            .ok_or_else(|| {
+                                format!(
+                                    "message {} part {} has no text",
+                                    message_index + 1,
+                                    part_index + 1
+                                )
+                            }),
+                        Some("image") => {
+                            let source = part.get("source").ok_or_else(|| {
+                                format!(
+                                    "message {} image part {} has no source",
+                                    message_index + 1,
+                                    part_index + 1
+                                )
+                            })?;
+                            let media_type = source
+                                .get("media_type")
+                                .and_then(serde_json::Value::as_str)
+                                .ok_or_else(|| "Anthropic image has no media_type".to_string())?;
+                            let data = source
+                                .get("data")
+                                .and_then(serde_json::Value::as_str)
+                                .ok_or_else(|| "Anthropic image has no data".to_string())?;
+                            Ok(ModelInputBlock::image(media_type, data))
+                        }
+                        Some("image_url") => {
+                            let uri = part
+                                .pointer("/image_url/url")
+                                .and_then(serde_json::Value::as_str)
+                                .ok_or_else(|| "OpenAI image has no data URI".to_string())?;
+                            let encoded = uri.strip_prefix("data:").ok_or_else(|| {
+                                "OpenAI image URL is not an inline data URI".to_string()
+                            })?;
+                            let (media_type, data) =
+                                encoded.split_once(";base64,").ok_or_else(|| {
+                                    "OpenAI image data URI is not base64 encoded".to_string()
+                                })?;
+                            Ok(ModelInputBlock::image(media_type, data))
+                        }
+                        Some(other) => Err(format!(
+                            "message {} part {} has unsupported type {other:?}",
+                            message_index + 1,
+                            part_index + 1
+                        )),
+                        None => Err(format!(
+                            "message {} part {} has no type",
+                            message_index + 1,
+                            part_index + 1
+                        )),
+                    }
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        } else {
+            return Err(format!(
+                "message {} content is neither text nor an array",
+                message_index + 1
+            ));
+        };
+        structured.push(ModelInputMessage::new(role, blocks));
+    }
+    validate_model_input_messages(&structured)?;
+    Ok(structured)
 }
 
 /// Extracts `file://` URIs from Resource blocks in the prompt.
@@ -5013,10 +6074,10 @@ mod tests {
                 json!({"role": "system", "content": "system text"}),
                 json!({"role": "user", "content": "hello"}),
                 json!({"role": "assistant", "content": "hi"}),
-                json!({"role": "unknown", "content": "skip"}),
             ],
             Vec::new(),
-        );
+        )
+        .expect("valid ACP messages");
 
         assert_eq!(request.model, "claude-sonnet-4-6");
         assert_eq!(request.caller.as_deref(), Some("acp"));
@@ -5027,6 +6088,88 @@ mod tests {
         assert_eq!(request.messages[1].content, "hello");
         assert_eq!(request.messages[2].role, MessageRole::Assistant);
         assert_eq!(request.messages[2].content, "hi");
+    }
+
+    #[test]
+    fn acp_prompt_conversions_preserve_text_image_diff_order() {
+        let prompt = vec![
+            ContentBlock::Text {
+                text: "before".to_string(),
+            },
+            ContentBlock::Image {
+                data: "aGVsbG8=".to_string(),
+                mime_type: "image/png".to_string(),
+            },
+            ContentBlock::Diff {
+                path: "src/lib.rs".to_string(),
+                old_text: None,
+                new_text: None,
+                diff: Some("+added".to_string()),
+            },
+            ContentBlock::Text {
+                text: "after".to_string(),
+            },
+        ];
+
+        let anthropic = build_anthropic_content_parts(&prompt).expect("Anthropic parts");
+        assert_eq!(anthropic[0]["text"], "before");
+        assert_eq!(anthropic[1]["source"]["data"], "aGVsbG8=");
+        assert_eq!(anthropic[2]["text"], "diff src/lib.rs:\n+added");
+        assert_eq!(anthropic[3]["text"], "after");
+
+        let openai = build_openai_content_parts(&prompt).expect("OpenAI parts");
+        assert_eq!(openai[0]["text"], "before");
+        assert_eq!(
+            openai[1]["image_url"]["url"],
+            "data:image/png;base64,aGVsbG8="
+        );
+        assert_eq!(openai[2]["text"], "diff src/lib.rs:\n+added");
+        assert_eq!(openai[3]["text"], "after");
+    }
+
+    #[test]
+    fn acp_wire_round_trip_retains_multimodal_request_and_rejects_invalid_data() {
+        let request = model_call_request_from_acp_messages(
+            "gpt-4o",
+            &[json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "before"},
+                    {"type": "image_url", "image_url": {
+                        "url": "data:image/webp;base64,aGVsbG8="
+                    }},
+                    {"type": "text", "text": "after"}
+                ]
+            })],
+            Vec::new(),
+        )
+        .expect("valid image request");
+        assert_eq!(request.input_messages.len(), 1);
+        assert!(matches!(
+            &request.input_messages[0].content[0],
+            ModelInputBlock::Text { text } if text == "before"
+        ));
+        assert!(matches!(
+            &request.input_messages[0].content[1],
+            ModelInputBlock::Image { media_type, data }
+                if media_type == "image/webp" && data == "aGVsbG8="
+        ));
+        assert!(matches!(
+            &request.input_messages[0].content[2],
+            ModelInputBlock::Text { text } if text == "after"
+        ));
+
+        let invalid = model_call_request_from_acp_messages(
+            "gpt-4o",
+            &[json!({
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {
+                    "url": "data:image/png;base64,not base64"
+                }}]
+            })],
+            Vec::new(),
+        );
+        assert!(invalid.is_err());
     }
 
     #[test]
@@ -5059,6 +6202,415 @@ mod tests {
         );
         assert!(first.len() <= 64);
         assert!(second.len() <= 64);
+    }
+
+    #[tokio::test]
+    async fn anthropic_session_mcp_tools() {
+        let server = r#"
+            IFS= read -r initialize
+            printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
+            IFS= read -r list_tools
+            printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","description":"Echo input","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}}]}}'
+        "#;
+        let session = AcpSession::new(SessionNewParams {
+            session_name: None,
+            client_capabilities: Some(ClientCapabilities {
+                mcp_servers: Some(true),
+                ..Default::default()
+            }),
+            model: Some("anthropic-test".to_string()),
+            provider: Some("anthropic".to_string()),
+            effort: None,
+            mcp_servers: vec![crate::types::McpServerConfig {
+                name: "fixture".to_string(),
+                transport: crate::types::McpTransport::Stdio {
+                    command: "sh".to_string(),
+                    args: vec!["-c".to_string(), server.to_string()],
+                },
+                discovery_timeout_ms: Some(1_000),
+            }],
+        });
+        let (event_sender, _event_receiver) = mpsc::channel(4);
+
+        let (runtime, statuses) =
+            setup_session_mcp_tools(&session.session_id, &session.mcp_servers, event_sender).await;
+
+        assert_eq!(statuses, vec![McpServerStatus::ready("fixture", 1)]);
+        assert_eq!(runtime.tools.len(), 1);
+        assert_eq!(runtime.tools[0].name, "fixture_echo");
+        assert!(runtime.handlers.contains_key("fixture_echo"));
+    }
+
+    #[tokio::test]
+    async fn capabilities_reflect_session() {
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let declined = ClientCapabilities {
+            fs: Some(crate::types::FsCapabilities {
+                read_text_file: true,
+                write_text_file: false,
+            }),
+            terminal: Some(false),
+            mcp_servers: Some(false),
+        };
+        let capabilities = derive_acp_tool_capabilities("code", &declined, false, &HashSet::new());
+        assert!(capabilities.read);
+        assert!(!capabilities.write);
+        assert!(!capabilities.exec);
+
+        let registry = Arc::new(VecToolRegistry::from_tools(acp_builtin_tools()));
+        let resolver: Arc<dyn HandlerResolver> = Arc::new(AcpBuiltinHandlerResolver {
+            handlers: HashMap::new(),
+        });
+        let dispatcher = ToolDispatcher::new(registry, resolver);
+        let mut context = ToolContext::testing(tmp.path());
+        context.capabilities = capabilities;
+
+        for call in [
+            ToolCall::new(
+                "write-declined",
+                "write_file",
+                json!({"path": "blocked.txt", "content": "blocked"}),
+            ),
+            ToolCall::new("exec-declined", "bash", json!({"command": "true"})),
+        ] {
+            let result = dispatcher.dispatch(call, &context).await;
+            assert!(matches!(
+                result,
+                ToolResult::Err(ToolError::PermissionDenied(message))
+                    if message.contains("role grants")
+            ));
+        }
+        assert!(!tmp.path().join("blocked.txt").exists());
+
+        let missing = derive_acp_tool_capabilities(
+            "code",
+            &ClientCapabilities::default(),
+            false,
+            &HashSet::new(),
+        );
+        assert_eq!(missing, ToolPermission::default());
+
+        let elevated_client = ClientCapabilities {
+            fs: Some(crate::types::FsCapabilities {
+                read_text_file: true,
+                write_text_file: true,
+            }),
+            terminal: Some(true),
+            mcp_servers: Some(true),
+        };
+        let plan = derive_acp_tool_capabilities("plan", &elevated_client, true, &HashSet::new());
+        assert!(plan.read);
+        assert!(!plan.write);
+        assert!(!plan.exec);
+    }
+
+    #[tokio::test]
+    async fn acp_conformance() {
+        use roko_learn::prompt_experiment::{PromptExperiment, PromptVariant};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // Consent: the permission event must arrive before the handler can
+        // mutate the worktree, and Reject must leave no side effect.
+        let target = tmp.path().join("permission-rejected.txt");
+        let (permission_tx, mut permission_rx) = mpsc::channel(4);
+        let handler = AcpBuiltinToolHandler {
+            tool_name: "write_file".into(),
+            session_id: "conformance-session".into(),
+            workdir: tmp.path().to_path_buf(),
+            event_sender: permission_tx,
+        };
+        let context = ToolContext::testing(tmp.path());
+        let write_task = tokio::spawn(async move {
+            handler
+                .execute(
+                    ToolCall::new(
+                        "conformance-write",
+                        "write_file",
+                        json!({"path": "permission-rejected.txt", "content": "blocked"}),
+                    ),
+                    &context,
+                )
+                .await
+        });
+        let event = permission_rx.recv().await.expect("permission event");
+        assert!(!target.exists(), "permission must precede the write");
+        match event {
+            CognitiveEvent::PermissionRequest { reply, .. } => {
+                assert!(reply.reply(PermissionDecision::Reject));
+            }
+            other => panic!("expected permission request, got {other:?}"),
+        }
+        assert!(matches!(
+            write_task.await.expect("join rejected write"),
+            ToolResult::Err(ToolError::PermissionDenied(_))
+        ));
+        assert!(!target.exists(), "Reject must block the write");
+
+        // Experiments: apply both content and model selection, then record the
+        // outcome against the assigned experiment even when variant ids overlap.
+        let experiment_path = tmp.path().join(".roko/learn/experiments.json");
+        std::fs::create_dir_all(experiment_path.parent().expect("experiment parent"))
+            .expect("create experiment parent");
+        let variant = |content: &str, slug: Option<&str>| PromptVariant {
+            id: "shared".into(),
+            name: "shared".into(),
+            section_name: "constraints".into(),
+            content: content.into(),
+            slug: slug.map(str::to_string),
+            active: true,
+        };
+        let mut store = ExperimentStore::new();
+        store.register(PromptExperiment::new(
+            "exp-z",
+            "other",
+            vec![variant("wrong experiment", None)],
+        ));
+        store.register(PromptExperiment::new(
+            "exp-a",
+            "constraints",
+            vec![variant("Use the ACP variant.", Some("vision-wire"))],
+        ));
+        store.save(&experiment_path).expect("save experiments");
+        let assignment = assign_acp_experiment(&experiment_path, "code").expect("assignment");
+        let mut config = RokoConfig::default();
+        config.models.insert(
+            "vision-key".into(),
+            ModelProfile {
+                slug: "vision-wire".into(),
+                supports_vision: true,
+                ..ModelProfile::default()
+            },
+        );
+        let (assignment, model_override) =
+            applicable_acp_experiment(&config, "default", false, Some(assignment));
+        let assignment = assignment.expect("applicable assignment");
+        assert_eq!(model_override.as_deref(), Some("vision-key"));
+        assert!(render_experiment_context(&assignment).contains("Use the ACP variant."));
+        record_acp_experiment_outcome(&experiment_path, &assignment, true)
+            .expect("record scoped outcome");
+        let recorded = ExperimentStore::load_or_new(&experiment_path);
+        assert_eq!(
+            recorded.get("exp-a").expect("exp-a").stats["shared"].trials,
+            1
+        );
+        assert_eq!(
+            recorded.get("exp-z").expect("exp-z").stats["shared"].trials,
+            0
+        );
+
+        // MCP: an Anthropic-shaped session attachment discovers and exposes
+        // the fixture tool without a network service.
+        let server = r#"
+            IFS= read -r initialize
+            printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
+            IFS= read -r list_tools
+            printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}}]}}'
+        "#;
+        let mcp_session = AcpSession::new(SessionNewParams {
+            session_name: None,
+            client_capabilities: Some(ClientCapabilities {
+                mcp_servers: Some(true),
+                ..Default::default()
+            }),
+            model: Some("anthropic-test".into()),
+            provider: Some("anthropic".into()),
+            effort: None,
+            mcp_servers: vec![crate::types::McpServerConfig {
+                name: "fixture".into(),
+                transport: crate::types::McpTransport::Stdio {
+                    command: "sh".into(),
+                    args: vec!["-c".into(), server.into()],
+                },
+                discovery_timeout_ms: Some(1_000),
+            }],
+        });
+        let (mcp_tx, _mcp_rx) = mpsc::channel(4);
+        let (runtime, statuses) =
+            setup_session_mcp_tools(&mcp_session.session_id, &mcp_session.mcp_servers, mcp_tx)
+                .await;
+        assert_eq!(statuses, vec![McpServerStatus::ready("fixture", 1)]);
+        assert_eq!(runtime.tools[0].name, "fixture_echo");
+        assert!(runtime.handlers.contains_key("fixture_echo"));
+
+        // Capabilities: advertised media support and the ToolContext ceiling
+        // must agree with their enforcement helpers.
+        let prompt_caps = crate::types::advertised_prompt_capabilities(true);
+        let image = vec![ContentBlock::Image {
+            data: "aGVsbG8=".into(),
+            mime_type: "image/png".into(),
+        }];
+        let audio = vec![
+            serde_json::from_value::<ContentBlock>(json!({
+                "type": "audio", "data": "aGVsbG8=", "mimeType": "audio/wav"
+            }))
+            .expect("deserialize audio fail-closed"),
+        ];
+        assert!(prompt_caps.image && !prompt_caps.audio);
+        assert!(unsupported_prompt_content(&image, &prompt_caps).is_none());
+        assert!(build_anthropic_content_parts(&image).is_some());
+        assert!(unsupported_prompt_content(&audio, &prompt_caps).is_some());
+
+        let declined = ClientCapabilities {
+            fs: Some(crate::types::FsCapabilities {
+                read_text_file: true,
+                write_text_file: false,
+            }),
+            terminal: Some(false),
+            mcp_servers: Some(false),
+        };
+        let capabilities = derive_acp_tool_capabilities("code", &declined, false, &HashSet::new());
+        let registry = Arc::new(VecToolRegistry::from_tools(acp_builtin_tools()));
+        let resolver: Arc<dyn HandlerResolver> = Arc::new(AcpBuiltinHandlerResolver {
+            handlers: HashMap::new(),
+        });
+        let dispatcher = ToolDispatcher::new(registry, resolver);
+        let mut denied_context = ToolContext::testing(tmp.path());
+        denied_context.capabilities = capabilities;
+        let denied = dispatcher
+            .dispatch(
+                ToolCall::new(
+                    "capability-write",
+                    "write_file",
+                    json!({"path": "capability-blocked.txt", "content": "blocked"}),
+                ),
+                &denied_context,
+            )
+            .await;
+        assert!(matches!(
+            denied,
+            ToolResult::Err(ToolError::PermissionDenied(_))
+        ));
+        assert!(!tmp.path().join("capability-blocked.txt").exists());
+    }
+
+    #[test]
+    fn experiment_assignment_selects_applies_and_records_acp_variant() {
+        use roko_learn::prompt_experiment::{PromptExperiment, PromptVariant};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(".roko/learn/experiments.json");
+        std::fs::create_dir_all(path.parent().expect("experiment parent"))
+            .expect("create experiment parent");
+
+        let variant = |id: &str, content: &str, slug: Option<&str>| PromptVariant {
+            id: id.to_string(),
+            name: id.to_string(),
+            section_name: "constraints".to_string(),
+            content: content.to_string(),
+            slug: slug.map(str::to_string),
+            active: true,
+        };
+        let mut store = ExperimentStore::new();
+        store.register(PromptExperiment::new(
+            "exp-b",
+            "style",
+            vec![variant("b", "later", None)],
+        ));
+        store.register(PromptExperiment::new(
+            "exp-a",
+            "constraints",
+            vec![variant(
+                "a",
+                "Use the selected constraint.",
+                Some("vision-model"),
+            )],
+        ));
+        store.save(&path).expect("save experiments");
+
+        let assignment = assign_acp_experiment(&path, "code").expect("active assignment");
+        assert_eq!(assignment.experiment_id, "exp-a");
+        assert_eq!(assignment.variant_id, "a");
+        assert!(render_experiment_context(&assignment).contains("Use the selected constraint."));
+
+        let mut config = RokoConfig::default();
+        config.models.insert(
+            "configured-vision".to_string(),
+            ModelProfile {
+                slug: "vision-model".to_string(),
+                ..ModelProfile::default()
+            },
+        );
+        assert_eq!(
+            experiment_model_key(&config, &assignment).as_deref(),
+            Some("configured-vision")
+        );
+
+        record_acp_experiment_outcome(&path, &assignment, true).expect("record outcome");
+        let recorded = ExperimentStore::load_or_new(&path);
+        let stats = &recorded.get("exp-a").expect("experiment").stats["a"];
+        assert_eq!(stats.trials, 1);
+        assert_eq!(stats.successes, 1);
+        let persisted = std::fs::read_to_string(&path).expect("read experiments");
+        assert!(persisted.contains("metric_stats"));
+    }
+
+    #[test]
+    fn concurrent_acp_and_external_experiment_writers_preserve_all_outcomes() {
+        use roko_learn::prompt_experiment::{PromptExperiment, PromptVariant};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(".roko/learn/experiments.json");
+        std::fs::create_dir_all(path.parent().expect("experiment parent"))
+            .expect("create experiment parent");
+        let mut store = ExperimentStore::new();
+        store.register(PromptExperiment::new(
+            "concurrent-exp",
+            "constraints",
+            vec![PromptVariant {
+                id: "variant".to_string(),
+                name: "Variant".to_string(),
+                section_name: "constraints".to_string(),
+                content: "Concurrent content".to_string(),
+                slug: None,
+                active: true,
+            }],
+        ));
+        store.save(&path).expect("seed experiments");
+        let assignment = AcpExperimentAssignment {
+            experiment_id: "concurrent-exp".to_string(),
+            variant_id: "variant".to_string(),
+            section_name: "constraints".to_string(),
+            content: "Concurrent content".to_string(),
+            model_slug: None,
+        };
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+
+        let acp_path = path.clone();
+        let acp_assignment = assignment.clone();
+        let acp_barrier = barrier.clone();
+        let acp_writer = std::thread::spawn(move || {
+            acp_barrier.wait();
+            for _ in 0..20 {
+                record_acp_experiment_outcome(&acp_path, &acp_assignment, true)
+                    .expect("record ACP outcome");
+            }
+        });
+        let external_path = path.clone();
+        let external_barrier = barrier.clone();
+        let external_writer = std::thread::spawn(move || {
+            external_barrier.wait();
+            for _ in 0..20 {
+                ExperimentStore::transaction(&external_path, |store| {
+                    if !store.record_outcome_for_experiment("concurrent-exp", "variant", true) {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "missing concurrent experiment",
+                        ));
+                    }
+                    Ok(())
+                })
+                .expect("record external outcome");
+            }
+        });
+        barrier.wait();
+        acp_writer.join().expect("ACP writer joins");
+        external_writer.join().expect("external writer joins");
+
+        let committed = ExperimentStore::load_or_new(&path);
+        let stats = &committed.get("concurrent-exp").expect("experiment").stats["variant"];
+        assert_eq!(stats.trials, 40);
+        assert_eq!(stats.successes, 40);
     }
 
     #[test]
@@ -5264,6 +6816,7 @@ mod tests {
         let mut transport = StdioTransport::from_io(empty(), server);
         let mut reader = BufReader::new(client);
         let cancel_token = CancelToken::new();
+        let mut session = test_session("test-model", "none");
         let (sender, receiver) = mpsc::channel(8);
 
         sender
@@ -5286,8 +6839,15 @@ mod tests {
             .expect("send completion");
         drop(sender);
 
-        let result =
-            stream_events_to_editor(&mut transport, "sess_test", receiver, &cancel_token).await;
+        let result = stream_events_to_editor(
+            &mut transport,
+            "sess_test",
+            &mut session,
+            Path::new("."),
+            receiver,
+            &cancel_token,
+        )
+        .await;
         let result = result.expect("stream should succeed");
 
         assert_eq!(result.prompt_result.stop_reason, StopReason::EndTurn);
@@ -5328,6 +6888,7 @@ mod tests {
         let mut transport = StdioTransport::from_io(empty(), server);
         let mut reader = BufReader::new(client);
         let cancel_token = CancelToken::new();
+        let mut session = test_session("test-model", "none");
         let (sender, receiver) = mpsc::channel(8);
 
         sender
@@ -5345,8 +6906,15 @@ mod tests {
             .expect("send normal completion after failure");
         drop(sender);
 
-        let result =
-            stream_events_to_editor(&mut transport, "sess_failure", receiver, &cancel_token).await;
+        let result = stream_events_to_editor(
+            &mut transport,
+            "sess_failure",
+            &mut session,
+            Path::new("."),
+            receiver,
+            &cancel_token,
+        )
+        .await;
         let result = result.expect("failure should still return a prompt result");
 
         assert_eq!(result.prompt_result.stop_reason, StopReason::EndTurn);
@@ -5375,14 +6943,21 @@ mod tests {
         let (_client, server) = duplex(1024);
         let mut transport = StdioTransport::from_io(empty(), server);
         let cancel_token = CancelToken::new();
+        let mut session = test_session("test-model", "none");
         let (_sender, receiver) = mpsc::channel(1);
 
         cancel_token.cancel();
 
-        let result =
-            stream_events_to_editor(&mut transport, "sess_cancel", receiver, &cancel_token)
-                .await
-                .expect("cancelled prompt should still return a result");
+        let result = stream_events_to_editor(
+            &mut transport,
+            "sess_cancel",
+            &mut session,
+            Path::new("."),
+            receiver,
+            &cancel_token,
+        )
+        .await
+        .expect("cancelled prompt should still return a result");
 
         assert_eq!(result.prompt_result.stop_reason, StopReason::Cancelled);
     }
@@ -5426,6 +7001,60 @@ mod tests {
                 format!("session '{session_id}' already has an active prompt")
             ))
         );
+    }
+
+    #[tokio::test]
+    async fn cost_budget_exhaustion_rejects_before_provider_dispatch() {
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let mut transport = StdioTransport::from_io(empty(), tokio::io::sink());
+        let mut session = test_session("model-a", "none");
+        session.cost_budget_usd = Some(1.0);
+        session.accumulated_cost_usd = 1.0;
+        let session_id = session.session_id.clone();
+
+        let error = handle_session_prompt(
+            &mut transport,
+            &mut session,
+            SessionPromptParams {
+                session_id,
+                prompt: vec![ContentBlock::Text {
+                    text: "this must never dispatch".to_owned(),
+                }],
+                include_context: false,
+            },
+            tmp.path(),
+            &RokoConfig::default(),
+        )
+        .await
+        .expect_err("exhausted budget must reject the turn");
+
+        let (code, message) = error.rpc_error().expect("structured budget error");
+        assert_eq!(code, SESSION_BUDGET_EXCEEDED);
+        assert!(message.contains("budget exceeded"));
+        assert!(session.conversation_history.is_empty());
+        assert!(!session.is_busy());
+        assert!(!tmp.path().join(".roko/learn/efficiency.jsonl").exists());
+    }
+
+    #[test]
+    fn cost_budget_accumulates_exact_efficiency_event_cost() {
+        let mut session = test_session("model-a", "none");
+        session.cost_budget_usd = Some(1.0);
+        let resolved = resolve_model(&RokoConfig::default(), "model-a");
+        let event = acp_efficiency_event(
+            &session.session_id,
+            &resolved,
+            Instant::now(),
+            None,
+            true,
+            Some(0.375),
+        );
+
+        session.record_efficiency_cost(event.cost_usd);
+
+        assert_eq!(event.cost_usd, 0.375);
+        assert_eq!(session.accumulated_cost_usd, 0.375);
+        assert_eq!(session.budget_status().budget_remaining_usd, Some(0.625));
     }
 
     #[tokio::test]
@@ -5490,6 +7119,82 @@ mod tests {
         assert_eq!(decision, PermissionDecision::AlwaysAllow);
         assert!(session.always_allowed.contains(&action));
         assert!(AcpSession::load_workspace_trust(&workdir).contains(&action));
+
+        // The persisted session grant suppresses the next equivalent prompt.
+        // A transport with no readable client is intentional: reaching it
+        // would reject immediately and prove the pre-grant was not consulted.
+        let mut disconnected = StdioTransport::from_io(empty(), tokio::io::sink());
+        let repeated = request_permission(
+            &mut disconnected,
+            &mut session,
+            &workdir,
+            action,
+            "Allow code agent to edit files?",
+            "The code agent may read and modify files.",
+        )
+        .await;
+        assert_eq!(repeated, PermissionDecision::Allow);
+    }
+
+    #[tokio::test]
+    async fn stream_events_to_editor_routes_permission_request_to_editor() {
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let workdir = tmp.path().to_path_buf();
+        let mut session = test_session("test-model", "none");
+        let session_id = session.session_id.clone();
+        let cancel_token = session.cancel_token.clone();
+        let (client, server) = duplex(4096);
+        let (server_reader, server_writer) = tokio::io::split(server);
+        let mut transport = StdioTransport::from_io(server_reader, server_writer);
+        let (event_sender, event_receiver) = mpsc::channel(4);
+        let (decision_sender, decision_receiver) = tokio::sync::oneshot::channel();
+
+        event_sender
+            .send(CognitiveEvent::PermissionRequest {
+                payload: PermissionRequestPayload {
+                    action: PermissionAction::FileEdit,
+                    title: "Write result.txt".to_owned(),
+                    detail: "Allow this ACP turn to write the requested file?".to_owned(),
+                },
+                reply: PermissionReplyChannel::new(decision_sender),
+            })
+            .await
+            .expect("queue permission event");
+        event_sender
+            .send(CognitiveEvent::Complete {
+                stop_reason: StopReason::EndTurn,
+                usage: None,
+            })
+            .await
+            .expect("queue completion event");
+        drop(event_sender);
+
+        let ((), stream_result) = tokio::join!(
+            reply_to_permission_request(
+                client,
+                json!({ "outcome": { "type": "selected", "optionId": "allow_once" } })
+            ),
+            stream_events_to_editor(
+                &mut transport,
+                &session_id,
+                &mut session,
+                &workdir,
+                event_receiver,
+                &cancel_token,
+            ),
+        );
+
+        assert_eq!(
+            decision_receiver.await.expect("receive editor decision"),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            stream_result
+                .expect("permission stream should complete")
+                .prompt_result
+                .stop_reason,
+            StopReason::EndTurn
+        );
     }
 
     #[tokio::test]
@@ -5547,6 +7252,10 @@ mod tests {
             }),
         };
         let dispatch_started = Instant::now();
+        let cascade_selection = AcpCascadeSelection {
+            model_key: "claude-sonnet-4-6".to_owned(),
+            stage: "confidence".to_owned(),
+        };
 
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
 
@@ -5563,7 +7272,7 @@ mod tests {
             None,
             None,
             None,
-            None,
+            Some(&cascade_selection),
         )
         .await;
 
@@ -5582,7 +7291,15 @@ mod tests {
             episode.extra.get("session_id"),
             Some(&json!(episode.task_id.clone()))
         );
-        assert!(episode.extra.get("routing_mode").is_none());
+        assert_eq!(
+            episode.extra.get("cascade_selected_model"),
+            Some(&json!("claude-sonnet-4-6"))
+        );
+        assert_eq!(
+            episode.extra.get("cascade_stage"),
+            Some(&json!("confidence"))
+        );
+        assert!(!episode.extra.contains_key("routing_mode"));
         assert!(episode.usage.wall_ms > 0);
         assert_eq!(episode.tokens_used, 12);
         assert_eq!(episode.usage.input_tokens, 5);
@@ -5662,6 +7379,32 @@ mod tests {
     }
 
     #[test]
+    fn acp_routing_context_loads_canonical_daimon_affect() {
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let daimon_dir = tmp.path().join(".roko/daimon");
+        std::fs::create_dir_all(&daimon_dir).expect("create daimon dir");
+        std::fs::write(
+            daimon_dir.join("affect.json"),
+            serde_json::json!({
+                "state": {
+                    "confidence": 0.23,
+                    "behavioral_state": "struggling"
+                }
+            })
+            .to_string(),
+        )
+        .expect("write affect state");
+
+        let context = acp_routing_context("code", "repair failure", "high", tmp.path());
+
+        assert!((context.daimon_policy.affect_confidence - 0.23).abs() < f64::EPSILON);
+        assert_eq!(
+            context.daimon_policy.behavioral_state,
+            roko_core::BehavioralState::Struggling
+        );
+    }
+
+    #[test]
     fn acp_dispatch_reward_distinguishes_success_and_failure() {
         assert_eq!(compute_acp_reward(false, 200, Some(120)), 0.0);
         assert!(compute_acp_reward(true, 1_000, Some(1_000)) > 0.9);
@@ -5673,6 +7416,78 @@ mod tests {
         let config = RokoConfig::default();
         let slugs = cascade_router_model_slugs(&config, "fallback-slug");
         assert_eq!(slugs, vec!["fallback-slug".to_string()]);
+    }
+
+    #[test]
+    fn cascade_router_model_slugs_are_deterministically_sorted() {
+        let mut config = RokoConfig::default();
+        config
+            .models
+            .insert("z-model".to_owned(), ModelProfile::default());
+        config
+            .models
+            .insert("a-model".to_owned(), ModelProfile::default());
+
+        assert_eq!(
+            cascade_router_model_slugs(&config, "unused"),
+            vec!["a-model".to_owned(), "z-model".to_owned()]
+        );
+    }
+
+    #[test]
+    fn resolved_acp_dispatch_uses_the_cascade_config_key() {
+        let mut config = RokoConfig::default();
+        config.models.insert(
+            "requested".to_owned(),
+            ModelProfile {
+                slug: "wire-requested".to_owned(),
+                ..ModelProfile::default()
+            },
+        );
+        config.models.insert(
+            "selected".to_owned(),
+            ModelProfile {
+                slug: "wire-selected".to_owned(),
+                ..ModelProfile::default()
+            },
+        );
+
+        let selection = AcpCascadeSelection {
+            model_key: "selected".to_owned(),
+            stage: "confidence".to_owned(),
+        };
+        let (resolved, dispatch_key, retained) =
+            resolve_acp_dispatch_model(&config, "requested", Some(selection.clone()));
+
+        assert_eq!(dispatch_key, "selected");
+        assert_eq!(resolved.model_key, "selected");
+        assert_eq!(resolved.slug, "wire-selected");
+        assert_eq!(retained, Some(selection));
+    }
+
+    #[test]
+    fn resolved_acp_dispatch_rejects_an_unconfigured_cascade_key() {
+        let mut config = RokoConfig::default();
+        config.models.insert(
+            "requested".to_owned(),
+            ModelProfile {
+                slug: "wire-requested".to_owned(),
+                ..ModelProfile::default()
+            },
+        );
+
+        let (resolved, dispatch_key, retained) = resolve_acp_dispatch_model(
+            &config,
+            "requested",
+            Some(AcpCascadeSelection {
+                model_key: "not-configured".to_owned(),
+                stage: "ucb".to_owned(),
+            }),
+        );
+
+        assert_eq!(dispatch_key, "requested");
+        assert_eq!(resolved.model_key, "requested");
+        assert!(retained.is_none());
     }
 
     #[test]
@@ -5761,6 +7576,7 @@ mod tests {
             id: "dispatch-chain".into(),
             name: "dispatch-chain".into(),
             goal: "Reuse the proven dispatch path for similar tasks".into(),
+            when_pattern: Some("dispatch path".into()),
             steps: Vec::new(),
             success_count: 3,
             failure_count: 1,
@@ -6001,6 +7817,649 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn permission_prompt_precedes_write() {
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let target = tmp.path().join("permission-gated.txt");
+        let mut session = test_session("test-model", "none");
+        let session_id = session.session_id.clone();
+        let cancel_token = session.cancel_token.clone();
+        let (client, server) = duplex(4096);
+        let (server_reader, server_writer) = tokio::io::split(server);
+        let mut transport = StdioTransport::from_io(server_reader, server_writer);
+        let (event_sender, event_receiver) = mpsc::channel(16);
+
+        let handler = AcpBuiltinToolHandler {
+            tool_name: "write_file".into(),
+            session_id: session_id.clone(),
+            workdir: tmp.path().to_path_buf(),
+            event_sender: event_sender.clone(),
+        };
+        let context = ToolContext::testing(tmp.path());
+        let handler_task = tokio::spawn(async move {
+            handler
+                .execute(
+                    ToolCall {
+                        id: "wire-reject-write".into(),
+                        name: "write_file".into(),
+                        arguments: json!({
+                            "path": "permission-gated.txt",
+                            "content": "must not be written"
+                        }),
+                        request_ts_ms: 0,
+                    },
+                    &context,
+                )
+                .await
+        });
+        let completion_sender = event_sender.clone();
+        let (editor_release_sender, editor_release_receiver) = tokio::sync::oneshot::channel();
+        let completion_task = tokio::spawn(async move {
+            let result = handler_task.await.expect("join permission-gated handler");
+            completion_sender
+                .send(CognitiveEvent::Complete {
+                    stop_reason: StopReason::EndTurn,
+                    usage: None,
+                })
+                .await
+                .expect("queue completion after rejected tool");
+            let _ = editor_release_sender.send(());
+            result
+        });
+        drop(event_sender);
+
+        let editor = async {
+            let mut reader = BufReader::new(client);
+            let mut line = String::new();
+            reader
+                .read_line(&mut line)
+                .await
+                .expect("read outbound permission request");
+            let request: serde_json::Value =
+                serde_json::from_str(&line).expect("parse permission request");
+            assert_eq!(request["method"], json!("session/request_permission"));
+            assert!(!target.exists(), "permission must precede the write");
+
+            let response = json!({
+                "jsonrpc": "2.0",
+                "id": request["id"].clone(),
+                "result": {
+                    "outcome": { "type": "selected", "optionId": "reject_once" }
+                }
+            });
+            let mut client = reader.into_inner();
+            client
+                .write_all(
+                    serde_json::to_string(&response)
+                        .expect("serialize response")
+                        .as_bytes(),
+                )
+                .await
+                .expect("write permission rejection");
+            client.write_all(b"\n").await.expect("write newline");
+            client.flush().await.expect("flush permission rejection");
+            let _ = editor_release_receiver.await;
+        };
+
+        let ((), stream_result) = tokio::join!(
+            editor,
+            stream_events_to_editor(
+                &mut transport,
+                &session_id,
+                &mut session,
+                tmp.path(),
+                event_receiver,
+                &cancel_token,
+            )
+        );
+        let tool_result = completion_task.await.expect("join completion task");
+
+        assert!(matches!(
+            tool_result,
+            ToolResult::Err(ToolError::PermissionDenied(_))
+        ));
+        assert!(
+            !target.exists(),
+            "wire-level rejection must block the write"
+        );
+        assert_eq!(
+            stream_result
+                .expect("permission stream should complete")
+                .prompt_result
+                .stop_reason,
+            StopReason::EndTurn
+        );
+    }
+
+    #[tokio::test]
+    async fn permission_wait_cancellation_is_bounded() {
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let target = tmp.path().join("cancelled-permission.txt");
+        let mut session = test_session("test-model", "none");
+        let session_id = session.session_id.clone();
+        let cancel_token = session.cancel_token.clone();
+        let (client, server) = duplex(4096);
+        let (server_reader, server_writer) = tokio::io::split(server);
+        let mut transport = StdioTransport::from_io(server_reader, server_writer);
+        let (event_sender, event_receiver) = mpsc::channel(16);
+
+        let handler = AcpBuiltinToolHandler {
+            tool_name: "write_file".into(),
+            session_id: session_id.clone(),
+            workdir: tmp.path().to_path_buf(),
+            event_sender: event_sender.clone(),
+        };
+        let context = ToolContext::testing(tmp.path());
+        let handler_task = tokio::spawn(async move {
+            handler
+                .execute(
+                    ToolCall {
+                        id: "cancelled-write".into(),
+                        name: "write_file".into(),
+                        arguments: json!({
+                            "path": "cancelled-permission.txt",
+                            "content": "must not be written"
+                        }),
+                        request_ts_ms: 0,
+                    },
+                    &context,
+                )
+                .await
+        });
+        drop(event_sender);
+
+        let editor_session_id = session_id.clone();
+        let editor = async move {
+            let mut reader = BufReader::new(client);
+            let mut line = String::new();
+            reader
+                .read_line(&mut line)
+                .await
+                .expect("read outbound permission request");
+            let request: serde_json::Value =
+                serde_json::from_str(&line).expect("parse permission request");
+            assert_eq!(request["method"], json!("session/request_permission"));
+
+            let cancel = json!({
+                "jsonrpc": "2.0",
+                "method": "session/cancel",
+                "params": { "sessionId": editor_session_id }
+            });
+            let mut client = reader.into_inner();
+            client
+                .write_all(
+                    serde_json::to_string(&cancel)
+                        .expect("serialize cancel")
+                        .as_bytes(),
+                )
+                .await
+                .expect("write session cancel");
+            client.write_all(b"\n").await.expect("write newline");
+            client.flush().await.expect("flush session cancel");
+        };
+
+        let joined = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(
+                editor,
+                stream_events_to_editor(
+                    &mut transport,
+                    &session_id,
+                    &mut session,
+                    tmp.path(),
+                    event_receiver,
+                    &cancel_token,
+                )
+            )
+        })
+        .await
+        .expect("permission cancellation must not wait for the editor timeout");
+        let ((), stream_result) = joined;
+        let tool_result = handler_task.await.expect("join cancelled handler");
+
+        assert!(matches!(
+            tool_result,
+            ToolResult::Err(ToolError::PermissionDenied(_))
+        ));
+        assert_eq!(
+            stream_result
+                .expect("cancelled permission stream should return a prompt result")
+                .prompt_result
+                .stop_reason,
+            StopReason::Cancelled
+        );
+        assert!(cancel_token.is_cancelled());
+        assert!(
+            !target.exists(),
+            "cancelled permission must block the write"
+        );
+    }
+
+    #[tokio::test]
+    async fn permission_wait_abandons_when_requester_times_out() {
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let mut session = test_session("test-model", "none");
+        let session_id = session.session_id.clone();
+        let cancel_token = session.cancel_token.clone();
+        let (client, server) = duplex(4096);
+        let (server_reader, server_writer) = tokio::io::split(server);
+        let mut transport = StdioTransport::from_io(server_reader, server_writer);
+        let (event_sender, event_receiver) = mpsc::channel(4);
+        let (decision_sender, decision_receiver) = tokio::sync::oneshot::channel();
+        let (request_seen_sender, request_seen_receiver) = tokio::sync::oneshot::channel();
+
+        event_sender
+            .send(CognitiveEvent::PermissionRequest {
+                payload: PermissionRequestPayload {
+                    action: PermissionAction::FileCreate,
+                    title: "Write timed-out.txt".to_owned(),
+                    detail: "Allow this ACP turn to write the requested file?".to_owned(),
+                },
+                reply: PermissionReplyChannel::new(decision_sender),
+            })
+            .await
+            .expect("queue permission event");
+        event_sender
+            .send(CognitiveEvent::Complete {
+                stop_reason: StopReason::EndTurn,
+                usage: None,
+            })
+            .await
+            .expect("queue completion event");
+        drop(event_sender);
+
+        let editor = async move {
+            let mut reader = BufReader::new(client);
+            let mut line = String::new();
+            reader
+                .read_line(&mut line)
+                .await
+                .expect("read outbound permission request");
+            let request: serde_json::Value =
+                serde_json::from_str(&line).expect("parse permission request");
+            assert_eq!(request["method"], json!("session/request_permission"));
+            request_seen_sender
+                .send(())
+                .expect("signal request observed");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        let requester_timeout = async move {
+            request_seen_receiver
+                .await
+                .expect("request should be observed");
+            drop(decision_receiver);
+        };
+
+        let ((), (), stream_result) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(
+                editor,
+                requester_timeout,
+                stream_events_to_editor(
+                    &mut transport,
+                    &session_id,
+                    &mut session,
+                    tmp.path(),
+                    event_receiver,
+                    &cancel_token,
+                )
+            )
+        })
+        .await
+        .expect("requester timeout must abandon the longer editor wait");
+
+        assert_eq!(
+            stream_result
+                .expect("stream should continue after abandoned permission request")
+                .prompt_result
+                .stop_reason,
+            StopReason::EndTurn
+        );
+    }
+
+    #[tokio::test]
+    async fn acp_builtin_permission_decisions_gate_write() {
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let target = tmp.path().join("permission-gated.txt");
+        let call = || ToolCall {
+            id: "permission-write".into(),
+            name: "write_file".into(),
+            arguments: json!({
+                "path": "permission-gated.txt",
+                "content": "written only after approval"
+            }),
+            request_ts_ms: 0,
+        };
+
+        // Reject: the request is observable before any side effect and the
+        // target remains absent after the handler returns.
+        let (reject_sender, mut reject_events) = mpsc::channel(16);
+        let reject_handler = AcpBuiltinToolHandler {
+            tool_name: "write_file".into(),
+            session_id: "permission-reject".into(),
+            workdir: tmp.path().to_path_buf(),
+            event_sender: reject_sender,
+        };
+        let reject_context = ToolContext::testing(tmp.path());
+        let reject_task =
+            tokio::spawn(async move { reject_handler.execute(call(), &reject_context).await });
+        let reject_reply = match reject_events.recv().await.expect("permission request") {
+            CognitiveEvent::PermissionRequest { payload, reply } => {
+                assert_eq!(payload.action, PermissionAction::FileCreate);
+                assert!(!target.exists(), "permission must precede the write");
+                reply
+            }
+            other => panic!("expected permission request, got {other:?}"),
+        };
+        assert!(reject_reply.reply(PermissionDecision::Reject));
+        let rejected = reject_task.await.expect("join rejected write");
+        assert!(matches!(
+            rejected,
+            ToolResult::Err(ToolError::PermissionDenied(_))
+        ));
+        assert!(!target.exists(), "rejected write must have no side effect");
+
+        // Allow: execution resumes only after the positive decision.
+        let (allow_sender, mut allow_events) = mpsc::channel(16);
+        let allow_handler = AcpBuiltinToolHandler {
+            tool_name: "write_file".into(),
+            session_id: "permission-allow".into(),
+            workdir: tmp.path().to_path_buf(),
+            event_sender: allow_sender,
+        };
+        let allow_context = ToolContext::testing(tmp.path());
+        let allow_task =
+            tokio::spawn(async move { allow_handler.execute(call(), &allow_context).await });
+        let allow_reply = match allow_events.recv().await.expect("permission request") {
+            CognitiveEvent::PermissionRequest { reply, .. } => {
+                assert!(!target.exists(), "permission must precede the write");
+                reply
+            }
+            other => panic!("expected permission request, got {other:?}"),
+        };
+        assert!(allow_reply.reply(PermissionDecision::Allow));
+        let allowed = allow_task.await.expect("join allowed write");
+        assert!(allowed.is_ok());
+        assert_eq!(
+            tokio::fs::read_to_string(&target)
+                .await
+                .expect("allowed write should create target"),
+            "written only after approval"
+        );
+
+        // A dropped parent reply is a prompt denial, not a hang or fail-open.
+        tokio::fs::remove_file(&target)
+            .await
+            .expect("remove target before dropped-reply case");
+        let (drop_sender, mut drop_events) = mpsc::channel(16);
+        let drop_handler = AcpBuiltinToolHandler {
+            tool_name: "write_file".into(),
+            session_id: "permission-dropped".into(),
+            workdir: tmp.path().to_path_buf(),
+            event_sender: drop_sender,
+        };
+        let drop_context = ToolContext::testing(tmp.path());
+        let drop_task =
+            tokio::spawn(async move { drop_handler.execute(call(), &drop_context).await });
+        match drop_events.recv().await.expect("permission request") {
+            CognitiveEvent::PermissionRequest { reply, .. } => drop(reply),
+            other => panic!("expected permission request, got {other:?}"),
+        }
+        let dropped = tokio::time::timeout(Duration::from_secs(1), drop_task)
+            .await
+            .expect("dropped reply must not hang")
+            .expect("join dropped-reply write");
+        assert!(matches!(
+            dropped,
+            ToolResult::Err(ToolError::PermissionDenied(_))
+        ));
+        assert!(!target.exists(), "dropped reply must not execute the write");
+    }
+
+    #[tokio::test]
+    async fn slash_command_streaming_forwards_stdout_and_stderr_before_eof() {
+        let (mut stdout_writer, stdout_reader) = duplex(1024);
+        let (mut stderr_writer, stderr_reader) = duplex(1024);
+        let (event_sender, mut event_receiver) = mpsc::channel(8);
+        let cancel = CancelToken::new();
+        let cancel_for_task = cancel.clone();
+        let stream_task = tokio::spawn(async move {
+            forward_slash_command_streams(
+                "stream-test",
+                stdout_reader,
+                stderr_reader,
+                &cancel_for_task,
+                &event_sender,
+            )
+            .await
+        });
+
+        stdout_writer
+            .write_all(b"first line\n")
+            .await
+            .expect("write stdout");
+        stdout_writer.flush().await.expect("flush stdout");
+        let first = tokio::time::timeout(Duration::from_secs(1), event_receiver.recv())
+            .await
+            .expect("stdout delivered before eof")
+            .expect("stdout event");
+        assert!(matches!(first, CognitiveEvent::TokenChunk(text) if text == "first line\n"));
+
+        stderr_writer
+            .write_all(b"warning\n")
+            .await
+            .expect("write stderr");
+        stderr_writer.flush().await.expect("flush stderr");
+        let second = tokio::time::timeout(Duration::from_secs(1), event_receiver.recv())
+            .await
+            .expect("stderr delivered before eof")
+            .expect("stderr event");
+        assert!(matches!(
+            second,
+            CognitiveEvent::TokenChunk(text) if text == "\x1b[2mwarning\x1b[0m\n"
+        ));
+
+        drop(stdout_writer);
+        drop(stderr_writer);
+        assert_eq!(
+            stream_task.await.expect("stream task"),
+            SlashCommandStreamOutcome::Completed { had_output: true }
+        );
+    }
+
+    #[tokio::test]
+    async fn slash_command_streaming_preserves_unknown_progress_and_correlates_tasks() {
+        let (mut stdout_writer, stdout_reader) = duplex(4096);
+        let (stderr_writer, stderr_reader) = duplex(64);
+        drop(stderr_writer);
+        let (event_sender, mut event_receiver) = mpsc::channel(16);
+        let cancel = CancelToken::new();
+        let cancel_for_task = cancel.clone();
+        let stream_task = tokio::spawn(async move {
+            forward_slash_command_streams(
+                "progress-test",
+                stdout_reader,
+                stderr_reader,
+                &cancel_for_task,
+                &event_sender,
+            )
+            .await
+        });
+
+        stdout_writer
+            .write_all(
+                b"ROKO_PROGRESS: {not-json}\nROKO_PROGRESS: {\"type\":\"future_event\"}\nROKO_PROGRESS: {\"type\":\"task_started\",\"task_id\":\"A\",\"title\":\"alpha\"}\nROKO_PROGRESS: {\"type\":\"task_started\",\"task_id\":\"B\",\"title\":\"beta\"}\nROKO_PROGRESS: {\"type\":\"task_completed\",\"task_id\":\"A\",\"completed\":1,\"total\":2}\n",
+            )
+            .await
+            .expect("write progress lines");
+        drop(stdout_writer);
+
+        assert_eq!(
+            stream_task.await.expect("stream task"),
+            SlashCommandStreamOutcome::Completed { had_output: true }
+        );
+
+        let mut events = Vec::new();
+        while let Ok(event) = event_receiver.try_recv() {
+            events.push(event);
+        }
+        assert!(matches!(
+            &events[0],
+            CognitiveEvent::TokenChunk(text) if text == "ROKO_PROGRESS: {not-json}\n"
+        ));
+        assert!(matches!(
+            &events[1],
+            CognitiveEvent::TokenChunk(text) if text.contains("future_event")
+        ));
+        assert!(matches!(
+            &events[2],
+            CognitiveEvent::ToolCallStart { tool_call_id, .. } if tool_call_id == "progress-A-1"
+        ));
+        assert!(matches!(
+            &events[3],
+            CognitiveEvent::ToolCallStart { tool_call_id, .. } if tool_call_id == "progress-B-2"
+        ));
+        assert!(matches!(
+            &events[4],
+            CognitiveEvent::ToolCallComplete { tool_call_id, .. } if tool_call_id == "progress-A-1"
+        ));
+        assert!(matches!(
+            &events[5],
+            CognitiveEvent::ToolCallComplete {
+                tool_call_id,
+                status: ToolCallStatus::Failed,
+                ..
+            } if tool_call_id == "progress-B-2"
+        ));
+    }
+
+    #[tokio::test]
+    async fn slash_command_streaming_failure_closes_attempt_before_retry() {
+        let (mut stdout_writer, stdout_reader) = duplex(4096);
+        let (stderr_writer, stderr_reader) = duplex(64);
+        drop(stderr_writer);
+        let (event_sender, mut event_receiver) = mpsc::channel(16);
+        let cancel = CancelToken::new();
+        let cancel_for_task = cancel.clone();
+        let stream_task = tokio::spawn(async move {
+            forward_slash_command_streams(
+                "retry-test",
+                stdout_reader,
+                stderr_reader,
+                &cancel_for_task,
+                &event_sender,
+            )
+            .await
+        });
+
+        stdout_writer
+            .write_all(
+                b"ROKO_PROGRESS: {\"type\":\"task_started\",\"task_id\":\"A\",\"title\":\"first\"}\nROKO_PROGRESS: {\"type\":\"task_failed\",\"task_id\":\"A\",\"error\":\"retry me\"}\nROKO_PROGRESS: {\"type\":\"task_started\",\"task_id\":\"A\",\"title\":\"retry\"}\nROKO_PROGRESS: {\"type\":\"task_completed\",\"task_id\":\"A\",\"completed\":1,\"total\":1}\n",
+            )
+            .await
+            .expect("write progress lines");
+        drop(stdout_writer);
+
+        assert_eq!(
+            stream_task.await.expect("stream task"),
+            SlashCommandStreamOutcome::Completed { had_output: true }
+        );
+        let mut events = Vec::new();
+        while let Ok(event) = event_receiver.try_recv() {
+            events.push(event);
+        }
+        assert!(matches!(
+            &events[0],
+            CognitiveEvent::ToolCallStart { tool_call_id, .. }
+                if tool_call_id == "progress-A-1"
+        ));
+        assert!(matches!(
+            &events[1],
+            CognitiveEvent::ToolCallComplete {
+                tool_call_id,
+                status: ToolCallStatus::Failed,
+                content,
+            } if tool_call_id == "progress-A-1"
+                && matches!(content.as_slice(), [ContentBlock::Text { text }] if text == "retry me")
+        ));
+        assert!(matches!(
+            &events[2],
+            CognitiveEvent::ToolCallStart { tool_call_id, .. }
+                if tool_call_id == "progress-A-2"
+        ));
+        assert!(matches!(
+            &events[3],
+            CognitiveEvent::ToolCallComplete {
+                tool_call_id,
+                status: ToolCallStatus::Completed,
+                ..
+            } if tool_call_id == "progress-A-2"
+        ));
+    }
+
+    #[tokio::test]
+    async fn slash_command_empty_output_emits_one_fallback_then_completion() {
+        let (event_sender, mut event_receiver) = mpsc::channel(4);
+        finish_slash_command_stream("plan-run", false, &event_sender).await;
+
+        assert!(matches!(
+            event_receiver.recv().await,
+            Some(CognitiveEvent::TokenChunk(text)) if text == "/plan-run completed (no output)"
+        ));
+        assert!(matches!(
+            event_receiver.recv().await,
+            Some(CognitiveEvent::Complete { .. })
+        ));
+        assert!(event_receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn slash_command_streaming_cancellation_does_not_emit_completion() {
+        let (mut stdout_writer, stdout_reader) = duplex(512);
+        let (_stderr_writer, stderr_reader) = duplex(64);
+        let (event_sender, mut event_receiver) = mpsc::channel(8);
+        let cancel = CancelToken::new();
+        let cancel_for_task = cancel.clone();
+        let stream_task = tokio::spawn(async move {
+            forward_slash_command_streams(
+                "cancel-test",
+                stdout_reader,
+                stderr_reader,
+                &cancel_for_task,
+                &event_sender,
+            )
+            .await
+        });
+
+        stdout_writer
+            .write_all(
+                b"ROKO_PROGRESS: {\"type\":\"task_started\",\"task_id\":\"A\",\"title\":\"alpha\"}\n",
+            )
+            .await
+            .expect("write task start");
+        assert!(matches!(
+            event_receiver.recv().await,
+            Some(CognitiveEvent::ToolCallStart { tool_call_id, .. })
+                if tool_call_id == "progress-A-1"
+        ));
+        cancel.cancel();
+        assert_eq!(
+            stream_task.await.expect("stream task"),
+            SlashCommandStreamOutcome::Cancelled
+        );
+        assert!(matches!(
+            event_receiver.recv().await,
+            Some(CognitiveEvent::ToolCallComplete {
+                tool_call_id,
+                status: ToolCallStatus::Failed,
+                content,
+            }) if tool_call_id == "progress-A-1"
+                && matches!(content.as_slice(), [ContentBlock::Text { text }] if text == "cancelled")
+        ));
+        assert!(!matches!(
+            event_receiver.try_recv(),
+            Ok(CognitiveEvent::Complete { .. })
+        ));
+    }
+
     // ── T6: cascade_select_model tests ───────────────────────────────────────
     //
     // Tests that mutate the `ROKO_ACP_CASCADE_SELECT` env var share a module-level
@@ -6010,6 +8469,23 @@ mod tests {
 
     fn cascade_env_lock() -> &'static std::sync::Mutex<()> {
         CASCADE_ENV_LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
+    fn test_provider_runtime(
+        config: &RokoConfig,
+    ) -> (Arc<ProviderHealthRegistry>, Arc<ProviderRateLimiter>) {
+        let health = Arc::new(ProviderHealthRegistry::new());
+        let health_checker: Arc<dyn roko_agent::rate_limit::ProviderHealthChecker> =
+            Arc::clone(&health) as Arc<_>;
+        let providers = config.effective_providers();
+        let limiter = Arc::new(
+            ProviderRateLimiter::from_provider_configs(
+                roko_core::defaults::DEFAULT_PROVIDER_RPM,
+                providers.iter(),
+            )
+            .with_health_registry(health_checker),
+        );
+        (health, limiter)
     }
 
     /// cascade_select_model returns None when the ROKO_ACP_CASCADE_SELECT env
@@ -6024,14 +8500,18 @@ mod tests {
         let tmp = tempfile::tempdir().expect("create tmpdir");
         let workdir = tmp.path();
         let config = RokoConfig::default();
-        let result = cascade_select_model(
+        let (health, limiter) = test_provider_runtime(&config);
+        let result = cascade_select_model(AcpCascadeRequest {
             workdir,
-            &config,
-            "code",
-            "fix a bug",
-            "medium",
-            "claude-sonnet-4-6",
-        );
+            roko_config: &config,
+            mode: "code",
+            prompt: "fix a bug",
+            effort: "medium",
+            resolved_slug: "claude-sonnet-4-6",
+            model_selection_explicit: false,
+            provider_health: &health,
+            rate_limiter: &limiter,
+        });
         assert!(
             result.is_none(),
             "should return None when env var is not set"
@@ -6056,20 +8536,54 @@ mod tests {
         // and mutates ROKO_ACP_CASCADE_SELECT concurrently.
         unsafe { std::env::set_var("ROKO_ACP_CASCADE_SELECT", "1") };
         let config = RokoConfig::default();
-        let result = cascade_select_model(
+        let (health, limiter) = test_provider_runtime(&config);
+        let result = cascade_select_model(AcpCascadeRequest {
             workdir,
-            &config,
-            "code",
-            "fix a bug",
-            "medium",
-            "claude-sonnet-4-6",
-        );
+            roko_config: &config,
+            mode: "code",
+            prompt: "fix a bug",
+            effort: "medium",
+            resolved_slug: "claude-sonnet-4-6",
+            model_selection_explicit: false,
+            provider_health: &health,
+            rate_limiter: &limiter,
+        });
         unsafe { std::env::remove_var("ROKO_ACP_CASCADE_SELECT") };
 
         assert!(
             result.is_none(),
             "should return None when router file is absent"
         );
+    }
+
+    #[test]
+    fn cascade_select_model_requires_exact_opt_in_value() {
+        let _guard = cascade_env_lock().lock().expect("acquire env lock");
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let router_dir = tmp.path().join(".roko").join("learn");
+        std::fs::create_dir_all(&router_dir).expect("create router dir");
+        CascadeRouter::new(vec!["model-a".to_owned()])
+            .save(&router_dir.join("cascade-router.json"))
+            .expect("save router state");
+
+        // SAFETY: serialized by cascade_env_lock.
+        unsafe { std::env::set_var("ROKO_ACP_CASCADE_SELECT", "0") };
+        let config = RokoConfig::default();
+        let (health, limiter) = test_provider_runtime(&config);
+        let result = cascade_select_model(AcpCascadeRequest {
+            workdir: tmp.path(),
+            roko_config: &config,
+            mode: "code",
+            prompt: "fix a bug",
+            effort: "medium",
+            resolved_slug: "model-a",
+            model_selection_explicit: false,
+            provider_health: &health,
+            rate_limiter: &limiter,
+        });
+        unsafe { std::env::remove_var("ROKO_ACP_CASCADE_SELECT") };
+
+        assert!(result.is_none(), "presence alone must not enable routing");
     }
 
     /// cascade_select_model returns Some when the env var is set and a valid
@@ -6095,24 +8609,126 @@ mod tests {
         // and mutates ROKO_ACP_CASCADE_SELECT concurrently.
         unsafe { std::env::set_var("ROKO_ACP_CASCADE_SELECT", "1") };
         let config = RokoConfig::default();
-        let result = cascade_select_model(
+        let (health, limiter) = test_provider_runtime(&config);
+        let result = cascade_select_model(AcpCascadeRequest {
             workdir,
-            &config,
-            "code",
-            "add unit tests",
-            "medium",
-            &model_key,
-        );
+            roko_config: &config,
+            mode: "code",
+            prompt: "add unit tests",
+            effort: "medium",
+            resolved_slug: &model_key,
+            model_selection_explicit: false,
+            provider_health: &health,
+            rate_limiter: &limiter,
+        });
         unsafe { std::env::remove_var("ROKO_ACP_CASCADE_SELECT") };
 
         assert!(
             result.is_some(),
             "should return Some when router file exists"
         );
-        // The slug must be a non-empty string.
+        let result = result.expect("selection");
+        assert_eq!(result.model_key, model_key);
+        assert_eq!(result.stage, "static");
+    }
+
+    #[tokio::test]
+    async fn rate_limit_provider_selection_prefers_healthy_capacity_and_honors_explicit_model() {
+        let config = RokoConfig::from_toml(
+            r#"
+[agent]
+default_model = "model-a"
+
+[providers.provider-a]
+kind = "openai_compat"
+base_url = "https://a.example/v1"
+[providers.provider-a.limits]
+rpm = 1
+tpm = 1000
+
+[providers.provider-b]
+kind = "openai_compat"
+base_url = "https://b.example/v1"
+[providers.provider-b.limits]
+rpm = 100
+tpm = 100000
+
+[models.model-a]
+provider = "provider-a"
+slug = "wire-a"
+context_window = 8192
+
+[models.model-b]
+provider = "provider-b"
+slug = "wire-b"
+context_window = 8192
+"#,
+        )
+        .expect("parse provider selection config");
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let router_dir = tmp.path().join(".roko/learn");
+        std::fs::create_dir_all(&router_dir).expect("create router dir");
+        CascadeRouter::new(vec!["model-a".to_owned(), "model-b".to_owned()])
+            .save(&router_dir.join("cascade-router.json"))
+            .expect("save router state");
+        let (health, limiter) = test_provider_runtime(&config);
+
+        // Consume provider-a's one-RPM configured window. ACP selection reads
+        // this canonical limiter snapshot and retains provider-b as capacity.
+        limiter.acquire("provider-a").await;
+
+        let _guard = cascade_env_lock().lock().expect("acquire env lock");
+        // SAFETY: serialized with every other cascade env mutation in this module.
+        unsafe { std::env::set_var("ROKO_ACP_CASCADE_SELECT", "1") };
+        let automatic = cascade_select_model(AcpCascadeRequest {
+            workdir: tmp.path(),
+            roko_config: &config,
+            mode: "code",
+            prompt: "fix a provider issue",
+            effort: "medium",
+            resolved_slug: "model-a",
+            model_selection_explicit: false,
+            provider_health: &health,
+            rate_limiter: &limiter,
+        })
+        .expect("automatic adaptive selection");
+        let explicit = cascade_select_model(AcpCascadeRequest {
+            workdir: tmp.path(),
+            roko_config: &config,
+            mode: "code",
+            prompt: "fix a provider issue",
+            effort: "medium",
+            resolved_slug: "model-a",
+            model_selection_explicit: true,
+            provider_health: &health,
+            rate_limiter: &limiter,
+        });
+        let (degraded_health, fresh_limiter) = test_provider_runtime(&config);
+        for _ in 0..3 {
+            degraded_health.record_failure(
+                "provider-a",
+                roko_learn::provider_health::ErrorClass::RateLimit,
+            );
+        }
+        let health_aware = cascade_select_model(AcpCascadeRequest {
+            workdir: tmp.path(),
+            roko_config: &config,
+            mode: "code",
+            prompt: "fix a provider issue",
+            effort: "medium",
+            resolved_slug: "model-a",
+            model_selection_explicit: false,
+            provider_health: &degraded_health,
+            rate_limiter: &fresh_limiter,
+        })
+        .expect("health-aware adaptive selection");
+        unsafe { std::env::remove_var("ROKO_ACP_CASCADE_SELECT") };
+
+        assert_eq!(automatic.model_key, "model-b");
+        assert_eq!(health_aware.model_key, "model-b");
         assert!(
-            !result.unwrap().is_empty(),
-            "returned slug must not be empty"
+            explicit.is_none(),
+            "explicit model selection must bypass adaptation"
         );
     }
 
@@ -6120,8 +8736,8 @@ mod tests {
     /// not the wire slug (resolved_for_logging.slug).  This test verifies the
     /// exact-match path works: config keys that were registered with the router
     /// are always found via model_index_for_slug regardless of family aliasing.
-    #[test]
-    fn cascade_observation_uses_config_key_not_wire_slug() {
+    #[tokio::test]
+    async fn cascade_observation_updates_the_dispatched_config_key() {
         use roko_learn::cascade_router::CascadeRouter;
 
         let tmp = tempfile::tempdir().expect("create tmpdir");
@@ -6137,22 +8753,21 @@ mod tests {
         let router = CascadeRouter::new(vec![config_key.clone()]);
         router.save(&router_path).expect("save initial router");
 
+        record_cascade_observation(
+            router_path.clone(),
+            config_key.clone(),
+            RoutingContext::default(),
+            true,
+            1_000,
+            Some(250),
+            vec![config_key.clone()],
+        )
+        .await
+        .expect("observation task");
+
         let router_loaded = CascadeRouter::load_or_new(&router_path, vec![config_key.clone()]);
-
-        // The config key (exact match) must be found.
-        assert!(
-            router_loaded.model_index_for_slug(&config_key).is_some(),
-            "config key must match a router arm via exact match"
-        );
-
-        // A completely different slug that has no family overlap must NOT be found.
-        // This proves T3 is correct: if we had passed a wire slug that doesn't
-        // match the config key, the observation would be silently dropped.
-        assert!(
-            router_loaded
-                .model_index_for_slug("completely-different-vendor-model")
-                .is_none(),
-            "unrelated slug must not match when it shares no family with the config key"
-        );
+        let stats = router_loaded.observation_snapshot();
+        assert_eq!(stats.get(&config_key).map(|entry| entry.trials), Some(1));
+        assert_eq!(stats.get(&config_key).map(|entry| entry.successes), Some(1));
     }
 }

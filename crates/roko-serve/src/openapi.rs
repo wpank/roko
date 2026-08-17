@@ -14,7 +14,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::{OpenApi, ToSchema};
 
+use crate::agent_lifecycle::{
+    AgentObservationCommit, AgentRuntimeObservation, AgentSlotObservation, CompletedAgentTick,
+    ObservedAgentMode, ObservedAgentRegime, ObservedLifecycleState, ObservedSlotState,
+    ObservedVitalityPhase,
+};
 use crate::state::AppState;
+use crate::subscription_relay::{
+    ReconciliationRecord, RelayStreamBinding, ServeRelayConnectionStatus, SubscriptionRelayStatus,
+};
 
 /// Build the OpenAPI routes served under `/api`.
 pub fn routes() -> Router<Arc<AppState>> {
@@ -48,7 +56,9 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         (name = "providers", description = "Provider and routing endpoints"),
         (name = "learning", description = "Learning and cascade endpoints"),
         (name = "aggregator", description = "Aggregation and knowledge endpoints"),
-        (name = "diagnosis", description = "Diagnosis endpoints")
+        (name = "diagnosis", description = "Diagnosis endpoints"),
+        (name = "extensions", description = "Loaded extension metadata and health"),
+        (name = "surfaces", description = "Typed StateHub-backed surface projections")
     ),
     paths(
         health,
@@ -78,6 +88,7 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         receive_callback,
         list_managed_agents,
         register_agent,
+        observe_agent_lifecycle,
         get_agent,
         stop_agent,
         agent_episodes,
@@ -95,6 +106,7 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         update_config,
         reload_config,
         list_subscriptions,
+        relay_subscription_status,
         create_subscription,
         update_subscription,
         delete_subscription,
@@ -137,7 +149,14 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         list_knowledge_kinds,
         list_tasks,
         task_stats,
-        get_task
+        get_task,
+        list_extensions,
+        get_extension,
+        workbench_surface,
+        inbox_surface,
+        canvas_surface,
+        minimap_surface,
+        autonomy_surface
     ),
     components(schemas(
         ApiErrorResponse,
@@ -155,11 +174,24 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         TemplateCreateRequest,
         TemplateDeployRequest,
         AgentRegisterRequest,
+        AgentRuntimeObservation,
+        AgentObservationCommit,
+        AgentSlotObservation,
+        CompletedAgentTick,
+        ObservedAgentMode,
+        ObservedAgentRegime,
+        ObservedLifecycleState,
+        ObservedSlotState,
+        ObservedVitalityPhase,
         AgentMessageRequest,
         TopicRequest,
         ConfigUpdateRequest,
         SubscriptionCreateRequest,
         SubscriptionUpdateRequest,
+        ReconciliationRecord,
+        RelayStreamBinding,
+        ServeRelayConnectionStatus,
+        SubscriptionRelayStatus,
         PrdIdeaRequest,
         DeploymentCallbackRequest,
         WebhookPayload,
@@ -268,6 +300,11 @@ doc_get!(dashboard, "/dashboard", "status");
 doc_get!(episodes, "/episodes", "status");
 doc_get!(signals, "/signals", "status");
 doc_get_param!(operation_status, "/operations/{id}", "status", "id");
+doc_get!(workbench_surface, "/projections/workbench", "surfaces");
+doc_get!(inbox_surface, "/projections/inbox", "surfaces");
+doc_get!(canvas_surface, "/projections/canvas", "surfaces");
+doc_get!(minimap_surface, "/projections/minimap", "surfaces");
+doc_get!(autonomy_surface, "/projections/autonomy", "surfaces");
 
 doc_get!(list_plans, "/plans", "plans");
 doc_get_param!(get_plan, "/plans/{id}", "plans", "id");
@@ -302,6 +339,21 @@ doc_post_value!(
 
 doc_get!(list_managed_agents, "/managed-agents", "agents");
 doc_post_value!(register_agent, "/agents/register", "agents");
+#[utoipa::path(
+    post,
+    path = "/agents/{id}/observation",
+    tag = "agents",
+    params(("id" = String, Path, description = "Registered agent identifier")),
+    request_body = AgentRuntimeObservation,
+    responses(
+        (status = 200, description = "Observation committed", body = AgentObservationCommit),
+        (status = 400, description = "Invalid observation", body = ApiErrorResponse),
+        (status = 404, description = "Agent not found", body = ApiErrorResponse),
+        (status = 409, description = "Stale or conflicting sequence", body = ApiErrorResponse),
+        (status = 500, description = "Durable commit failed", body = ApiErrorResponse)
+    )
+)]
+fn observe_agent_lifecycle() {}
 doc_get_param!(get_agent, "/agents/{id}", "agents", "id");
 doc_post_value!(stop_agent, "/agents/{id}/stop", "agents");
 doc_get_param!(agent_episodes, "/agents/{id}/episodes", "agents", "id");
@@ -322,6 +374,17 @@ doc_put_value!(update_config, "/config", "config");
 doc_post_value!(reload_config, "/config/reload", "config");
 
 doc_get!(list_subscriptions, "/subscriptions", "subscriptions");
+#[utoipa::path(
+    get,
+    path = "/subscriptions/relay/status",
+    tag = "subscriptions",
+    responses(
+        (status = 200, description = "Durable relay subscription consumer status", body = SubscriptionRelayStatus),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Insufficient scope", body = ApiErrorResponse)
+    )
+)]
+fn relay_subscription_status() {}
 doc_post_value!(create_subscription, "/subscriptions", "subscriptions");
 doc_put_value!(update_subscription, "/subscriptions/{id}", "subscriptions");
 doc_delete!(delete_subscription, "/subscriptions/{id}", "subscriptions");
@@ -405,6 +468,8 @@ doc_get!(list_knowledge_kinds, "/knowledge/kinds", "aggregator");
 doc_get!(list_tasks, "/tasks", "aggregator");
 doc_get!(task_stats, "/tasks/stats", "aggregator");
 doc_get_param!(get_task, "/tasks/{id}", "aggregator", "id");
+doc_get!(list_extensions, "/extensions", "extensions");
+doc_get_param!(get_extension, "/extensions/{name}", "extensions", "name");
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ApiErrorResponse {
@@ -624,5 +689,16 @@ mod tests {
         let payload: Value = serde_json::from_slice(&body).expect("parse response body");
         assert_eq!(payload["openapi"], "3.1.0");
         assert!(payload["paths"]["/plans"].is_object());
+        assert!(payload["paths"]["/agents/{id}/observation"]["post"].is_object());
+        assert!(payload["paths"]["/subscriptions/relay/status"]["get"].is_object());
+        for surface in ["workbench", "inbox", "canvas", "minimap", "autonomy"] {
+            assert!(
+                payload["paths"][format!("/projections/{surface}")]["get"].is_object(),
+                "missing OpenAPI surface path {surface}"
+            );
+        }
+        assert!(payload["components"]["schemas"]["AgentRuntimeObservation"].is_object());
+        assert!(payload["components"]["schemas"]["AgentObservationCommit"].is_object());
+        assert!(payload["components"]["schemas"]["SubscriptionRelayStatus"].is_object());
     }
 }

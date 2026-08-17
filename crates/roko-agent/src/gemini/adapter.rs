@@ -7,7 +7,6 @@ use super::compat::GeminiCompatAgent;
 use super::embed::GeminiEmbedAgent;
 use super::native::GeminiNativeAgent;
 use crate::agent::Agent;
-use crate::dispatcher::HandlerResolver;
 use crate::http::ReqwestPoster;
 use crate::provider::openai_compat::{max_tokens_for_model, tool_registry_for_options};
 use crate::provider::{
@@ -16,7 +15,7 @@ use crate::provider::{
 };
 use crate::safety::SafetyLayer;
 use crate::tool_loop::backends::create_tool_loop_backend;
-use crate::tool_loop::{OpenAiCompatBackend, ToolLoop, ToolLoopAgent};
+use crate::tool_loop::{MultimodalInputFormat, OpenAiCompatBackend, ToolLoop, ToolLoopAgent};
 use crate::translate::{GeminiTranslator, OpenAiTranslator, Translator};
 use roko_core::agent::ProviderKind;
 #[cfg(test)]
@@ -44,9 +43,7 @@ fn gemini_tool_loop_agent(
     model: &ModelProfile,
     options: &AgentOptions,
 ) -> Result<Box<dyn Agent>, AgentCreationError> {
-    let (registry, tools) = tool_registry_for_options(model, options)?;
-    let resolver: Arc<dyn HandlerResolver> =
-        Arc::new(|name: &str| roko_std::tool::handlers::handler_for(name));
+    let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
     let dispatcher = build_tool_dispatcher(registry, resolver);
     let translator: Arc<dyn Translator> = Arc::new(OpenAiTranslator);
     let timeout_ms = options.timeout_ms.unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
@@ -60,6 +57,7 @@ fn gemini_tool_loop_agent(
 
     let backend = OpenAiCompatBackend::new(api_key, model.slug.clone())
         .with_provider_id(model.provider.clone())
+        .with_supports_vision(model.supports_vision)
         .with_base_url(gemini_tool_loop_base_url(
             provider.base_url.as_deref().unwrap_or(DEFAULT_BASE_URL),
         ))
@@ -82,12 +80,17 @@ fn gemini_tool_loop_agent(
 
     let mut agent = ToolLoopAgent::new(tool_loop)
         .with_tools(tools)
-        .with_name(name);
+        .with_name(name)
+        .with_input_messages(options.input_messages.clone())
+        .with_multimodal_input_format(MultimodalInputFormat::OpenAi);
     if let Some(prompt) = &options.system_prompt {
         agent = agent.with_system_prompt(prompt.clone());
     }
     if let Some(ref dir) = options.working_dir {
         agent = agent.with_worktree_path(dir.clone());
+    }
+    if let Some(root) = options.effective_immune_root() {
+        agent = agent.with_immune_root(root);
     }
 
     Ok(Box::new(agent))
@@ -98,9 +101,7 @@ fn gemini_native_tool_loop_agent(
     model: &ModelProfile,
     options: &AgentOptions,
 ) -> Result<Box<dyn Agent>, AgentCreationError> {
-    let (registry, tools) = tool_registry_for_options(model, options)?;
-    let resolver: Arc<dyn HandlerResolver> =
-        Arc::new(|name: &str| roko_std::tool::handlers::handler_for(name));
+    let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
     let dispatcher = build_tool_dispatcher(registry, resolver);
     let translator: Arc<dyn Translator> = Arc::new(GeminiTranslator);
     let backend =
@@ -119,12 +120,17 @@ fn gemini_native_tool_loop_agent(
 
     let mut agent = ToolLoopAgent::new(tool_loop)
         .with_tools(tools)
-        .with_name(name);
+        .with_name(name)
+        .with_input_messages(options.input_messages.clone())
+        .with_multimodal_input_format(MultimodalInputFormat::Gemini);
     if let Some(prompt) = &options.system_prompt {
         agent = agent.with_system_prompt(prompt.clone());
     }
     if let Some(ref dir) = options.working_dir {
         agent = agent.with_worktree_path(dir.clone());
+    }
+    if let Some(root) = options.effective_immune_root() {
+        agent = agent.with_immune_root(root);
     }
 
     Ok(Box::new(agent))

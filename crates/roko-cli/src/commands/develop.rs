@@ -106,11 +106,11 @@ pub(crate) async fn cmd_develop(
         None
     };
 
-    if let Some(ref plans) = existing_plans {
-        if !show_plan_approval(plans) {
-            eprintln!("\u{25b8} Aborted.");
-            return Ok(EXIT_SUCCESS);
-        }
+    if let Some(ref plans) = existing_plans
+        && !show_plan_approval(plans)
+    {
+        eprintln!("\u{25b8} Aborted.");
+        return Ok(EXIT_SUCCESS);
     }
 
     eprintln!("\u{25b8} Executing plan...");

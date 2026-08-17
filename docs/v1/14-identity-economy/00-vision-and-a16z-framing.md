@@ -1,5 +1,8 @@
 # 00 — Vision & a16z Series A Framing
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Roko is a cognitive agent operating system: agents that build themselves, share knowledge,
 > coordinate through stigmergy, and trade intelligence on-chain. This document frames the
 > identity and economy layer for a Series A conversation — what it is, why it matters, how

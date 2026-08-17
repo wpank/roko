@@ -4,18 +4,26 @@ on:
   push:
     branches: [main]
     paths:
-      - "plans/**/*.toml"
-      - "tmp/status-quo/**/tasks.toml"
+      - "**/tasks.toml"
+      - "plans/INDEX.md"
+      - "plans/_meta/IMPLEMENTATION_ORDER.md"
       - ".github/workflows/plan-validate.yml"
       - "crates/roko-cli/src/commands/plan.rs"
+      - "crates/roko-cli/src/index.rs"
+      - "crates/roko-cli/src/main.rs"
       - "crates/roko-cli/src/plan_validate.rs"
+      - "crates/roko-cli/src/workspace_paths.rs"
   pull_request:
     paths:
-      - "plans/**/*.toml"
-      - "tmp/status-quo/**/tasks.toml"
+      - "**/tasks.toml"
+      - "plans/INDEX.md"
+      - "plans/_meta/IMPLEMENTATION_ORDER.md"
       - ".github/workflows/plan-validate.yml"
       - "crates/roko-cli/src/commands/plan.rs"
+      - "crates/roko-cli/src/index.rs"
+      - "crates/roko-cli/src/main.rs"
       - "crates/roko-cli/src/plan_validate.rs"
+      - "crates/roko-cli/src/workspace_paths.rs"
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,7 +39,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build roko-cli
         run: cargo build -p roko-cli
-      - name: Validate plans/
-        run: cargo run -p roko-cli -- plan validate --strict plans/
-      - name: Validate tmp/status-quo/backlog/plans/
-        run: cargo run -p roko-cli -- plan validate --strict tmp/status-quo/backlog/plans/
+      - name: Discover and validate every tracked plan directory
+        shell: bash
+        run: |
+          mapfile -t plan_dirs < <(
+            git ls-files |
+              awk '/(^|\/)tasks\.toml$/{sub("/tasks.toml$", ""); print}' |
+              sort -u
+          )
+
+          if (( ${#plan_dirs[@]} == 0 )); then
+            echo "No tracked tasks.toml files found." >&2
+            exit 1
+          fi
+
+          for plan_dir in "${plan_dirs[@]}"; do
+            echo "Validating ${plan_dir}/tasks.toml"
+            target/debug/roko plan validate "$plan_dir"
+          done
+      - name: Reject generated plans index drift without rewriting it
+        run: target/debug/roko plan index --check --workdir .

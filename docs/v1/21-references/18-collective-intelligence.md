@@ -1,5 +1,8 @@
 # Collective Intelligence
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for group intelligence, C-Factor measurement, superlinear scaling, and turn-taking equality in Roko's Collective system.
 
 **Topic**: [References](./INDEX.md)

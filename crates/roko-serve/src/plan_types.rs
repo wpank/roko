@@ -70,6 +70,10 @@ pub struct PlanTask {
     pub id: String,
     /// Human-readable task description.
     pub description: String,
+    /// Complexity tier used for cost projection and budget allocation.
+    pub tier: String,
+    /// Optional preferred model used when inferring an omitted tier.
+    pub model_hint: Option<String>,
     /// IDs of tasks that must complete before this task can start.
     pub depends_on: Vec<String>,
     /// Files or paths expected to be touched by the task.

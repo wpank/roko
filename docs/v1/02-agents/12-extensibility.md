@@ -1,5 +1,8 @@
 # 12 — Extensibility and SDK
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Sub-doc 12 of **02-agents** · Roko Documentation
 >
 > This document describes how to add new agent backends, new provider

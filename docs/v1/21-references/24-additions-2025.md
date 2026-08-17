@@ -1,5 +1,8 @@
 # 2025 Additions — Cross-Domain Research Frontiers
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Cutting-edge 2024-2025 research across cognitive architecture agents, multi-agent coordination, HDC applications, active inference, affect computing, knowledge consolidation, formal verification for AI, TDA for time series, mechanism design for AI economies, and stigmergy. Each citation links to the Roko subsystem it validates.
 
 **Topic**: [References](./INDEX.md)

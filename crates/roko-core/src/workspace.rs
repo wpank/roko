@@ -258,10 +258,19 @@ impl Workspace {
         self.root.join(".roko/runner-stderr.log")
     }
 
-    /// `.roko/learn/episodes.jsonl` — episode log under learn directory.
+    /// `.roko/learn/episodes.jsonl` — legacy pre-V3 episode log.
+    #[must_use]
+    pub fn legacy_learn_episodes_path(&self) -> PathBuf {
+        self.root.join(".roko/learn/episodes.jsonl")
+    }
+
+    /// `.roko/learn/episodes.jsonl` — legacy pre-V3 episode log.
+    #[deprecated(
+        note = "use episodes_path() for writes or legacy_learn_episodes_path() for migration"
+    )]
     #[must_use]
     pub fn learn_episodes_path(&self) -> PathBuf {
-        self.root.join(".roko/learn/episodes.jsonl")
+        self.legacy_learn_episodes_path()
     }
 
     /// `.roko/engrams.jsonl` — the main engram log.
@@ -376,7 +385,7 @@ mod tests {
             tmp.path().join(".roko/runner-stderr.log")
         );
         assert_eq!(
-            ws.learn_episodes_path(),
+            ws.legacy_learn_episodes_path(),
             tmp.path().join(".roko/learn/episodes.jsonl")
         );
         assert_eq!(ws.engrams_path(), tmp.path().join(".roko/engrams.jsonl"));

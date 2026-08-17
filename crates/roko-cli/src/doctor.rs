@@ -106,6 +106,8 @@ pub struct DoctorReport {
     pub healthy: bool,
     pub summary: DoctorSummary,
     pub checks: Vec<DoctorCheck>,
+    /// Structured E47 disk report for JSON/API/TUI consumers.
+    pub disk_health: DiskHealthReport,
 }
 
 impl DoctorReport {
@@ -191,13 +193,18 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     checks.push(check_node_version());
     checks.push(check_serve_auth(&loaded_config));
     checks.push(check_serve_health(options.serve_url.as_deref(), &loaded_config).await?);
+    let conductor = load_conductor_config(&workdir, options.config_override.as_deref());
+    checks.push(check_dead_conductor_config(&conductor));
     checks.push(check_v2_abstractions());
     checks.extend(check_state_layout_audit(&workdir));
+    checks.extend(check_config_freshness(&workdir));
     checks.extend(check_harness_providers(&loaded_config));
     checks.extend(check_mcp_allowlist(&workdir, &loaded_config));
     checks.push(check_orphaned_tmp_files(&workdir));
     checks.push(check_plans_dir_conflict(&workdir));
-    checks.push(check_disk_health(&workdir));
+    let resources = load_resources_config(&workdir, options.config_override.as_deref());
+    let (disk_health_check, disk_health) = check_disk_health(&workdir, &resources).await;
+    checks.push(disk_health_check);
     checks.push(check_target_staleness(&workdir));
 
     let summary = DoctorSummary::from_checks(&checks);
@@ -214,7 +221,108 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
         healthy: summary.fail == 0,
         summary,
         checks,
+        disk_health,
     })
+}
+
+fn check_config_freshness(workdir: &Path) -> Vec<DoctorCheck> {
+    let path = workdir
+        .join(".roko")
+        .join("state")
+        .join("config-freshness.json");
+    let freshness = roko_core::config::hot_reload::ConfigFreshness::load(&path);
+    roko_core::config::hot_reload::config_freshness_diagnostics(
+        &freshness,
+        roko_core::config::hot_reload::DEFAULT_CONFIG_STALENESS_DAYS,
+    )
+    .into_iter()
+    .map(|diagnostic| DoctorCheck {
+        id: diagnostic.key.replace('.', "_"),
+        status: DoctorStatus::Warn,
+        message: diagnostic.message,
+        detail: Some(
+            "stale config remains valid, but its assumptions should be reviewed".to_string(),
+        ),
+        path: Some(path.display().to_string()),
+        url: None,
+        fix: Some("review the section and refresh its config freshness timestamp".to_string()),
+    })
+    .collect()
+}
+
+fn load_resources_config(
+    workdir: &Path,
+    config_override: Option<&Path>,
+) -> roko_core::config::ResourcesConfig {
+    if let Some(path) = config_override
+        && let Ok(text) = std::fs::read_to_string(path)
+        && let Ok(config) = roko_core::config::schema::RokoConfig::from_toml(&text)
+    {
+        return config.resources;
+    }
+
+    roko_core::config::loader::load_config_validated_with_options(
+        workdir,
+        &roko_core::config::loader::LoadOptions::default(),
+    )
+    .map(|loaded| loaded.config().resources.clone())
+    .unwrap_or_default()
+}
+
+fn load_conductor_config(
+    workdir: &Path,
+    config_override: Option<&Path>,
+) -> roko_core::config::schema::ConductorConfig {
+    if let Some(path) = config_override
+        && let Ok(text) = std::fs::read_to_string(path)
+        && let Ok(config) = roko_core::config::schema::RokoConfig::from_toml(&text)
+    {
+        return config.conductor;
+    }
+
+    roko_core::config::loader::load_config_validated_with_options(
+        workdir,
+        &roko_core::config::loader::LoadOptions::default(),
+    )
+    .map(|loaded| loaded.config().conductor.clone())
+    .unwrap_or_default()
+}
+
+fn check_dead_conductor_config(
+    conductor: &roko_core::config::schema::ConductorConfig,
+) -> DoctorCheck {
+    let context_pressure_enabled = conductor.context_pressure_enabled;
+    DoctorCheck {
+        id: "dead_conductor_config".to_string(),
+        status: if context_pressure_enabled {
+            DoctorStatus::Warn
+        } else {
+            DoctorStatus::Ok
+        },
+        message: if context_pressure_enabled {
+            "runtime-dead runner-v2 context-pressure setting is enabled".to_string()
+        } else {
+            "runtime-dead runner-v2 context-pressure setting is inactive".to_string()
+        },
+        detail: Some(
+            "conductor.context_pressure_enabled is retained for compatibility but runner-v2 does not yet feed TokenUsage into its conductor ring; conductor.watchers.* threshold overrides are runtime-live"
+                .to_string(),
+        ),
+        path: None,
+        url: None,
+        fix: context_pressure_enabled
+            .then(|| "remove conductor.context_pressure_enabled or set it to false".to_string()),
+    }
+}
+
+/// Run only the workspace disk/resource diagnostics used by `roko doctor disk`.
+///
+/// Unlike the full doctor, this does not probe providers, local toolchains, or
+/// the HTTP control plane.
+pub async fn run_disk_doctor(workdir: &Path, config_override: Option<&Path>) -> DiskHealthReport {
+    let resources = load_resources_config(workdir, config_override);
+    let (_, report) = check_disk_health(workdir, &resources).await;
+    report
 }
 
 fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<LoadedConfig> {
@@ -762,14 +870,19 @@ fn check_configured_provider_keys(loaded_config: &LoadedConfig) -> Vec<DoctorChe
         }];
     };
 
-    // Collect providers that require an API key (non-CLI kinds).
+    // Collect only HTTP API providers. Several non-Anthropic providers also
+    // use CLI/ACP transports and intentionally have no `api_key_env`.
     let api_providers: Vec<(&String, &roko_core::config::schema::ProviderConfig)> = config
         .providers
         .iter()
         .filter(|(_, p)| {
-            !matches!(
+            matches!(
                 p.kind,
-                ProviderKind::ClaudeCli | ProviderKind::Hermes | ProviderKind::OpenClaw
+                ProviderKind::AnthropicApi
+                    | ProviderKind::OpenAiCompat
+                    | ProviderKind::PerplexityApi
+                    | ProviderKind::GeminiApi
+                    | ProviderKind::CerebrasApi
             )
         })
         .collect();
@@ -786,6 +899,7 @@ fn check_configured_provider_keys(loaded_config: &LoadedConfig) -> Vec<DoctorChe
         }];
     }
 
+    let provider_count = api_providers.len();
     let mut checks = Vec::new();
     for (id, provider) in api_providers {
         let Some(env_name) = provider.api_key_env.as_deref() else {
@@ -817,6 +931,36 @@ fn check_configured_provider_keys(loaded_config: &LoadedConfig) -> Vec<DoctorChe
             },
         });
     }
+    let key_check_count = checks.len();
+    let missing_keys = checks
+        .iter()
+        .filter(|check| check.status == DoctorStatus::Warn)
+        .count();
+    checks.push(DoctorCheck {
+        id: "provider_api_keys".to_string(),
+        status: if missing_keys == 0 {
+            DoctorStatus::Ok
+        } else {
+            DoctorStatus::Warn
+        },
+        message: if key_check_count == 0 {
+            format!(
+                "{provider_count} API provider(s) configured without environment-key authentication"
+            )
+        } else if missing_keys == 0 {
+            format!("all {key_check_count} configured provider API key(s) are set")
+        } else {
+            format!("{missing_keys} of {key_check_count} configured provider API key(s) are unset")
+        },
+        detail: None,
+        path: None,
+        url: None,
+        fix: if missing_keys == 0 {
+            None
+        } else {
+            Some("set the provider API key environment variables reported above".to_string())
+        },
+    });
     checks
 }
 
@@ -1104,7 +1248,7 @@ fn check_v2_abstractions() -> DoctorCheck {
 /// Audit the `.roko/` state layout for version, canonical, and legacy files.
 ///
 /// Produces up to three checks:
-/// - `state_layout_version` -- verifies `.roko/VERSION` is V2 (current).
+/// - `state_layout_version` -- verifies `.roko/VERSION` is current.
 /// - `state_canonical_files` -- lists which E02 canonical files are present.
 /// - `state_legacy_files` -- flags legacy files left over from V1 layouts.
 ///
@@ -1140,22 +1284,33 @@ fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
             .and_then(LayoutVersion::from_u32);
 
         match on_disk {
-            Some(LayoutVersion::V2) => DoctorCheck {
+            Some(LayoutVersion::V3) => DoctorCheck {
                 id: "state_layout_version".to_string(),
                 status: DoctorStatus::Ok,
-                message: "storage layout is V2 (current)".to_string(),
+                message: "storage layout is V3 (current)".to_string(),
                 detail: None,
                 path: Some(version_path.display().to_string()),
                 url: None,
                 fix: None,
+            },
+            Some(LayoutVersion::V2) => DoctorCheck {
+                id: "state_layout_version".to_string(),
+                status: DoctorStatus::Warn,
+                message: "storage layout is V2 (outdated)".to_string(),
+                detail: Some(
+                    "V2->V3 migration merges root/learn/memory episode logs into the canonical root log"
+                        .to_string(),
+                ),
+                path: Some(version_path.display().to_string()),
+                url: None,
+                fix: Some("roko init".to_string()),
             },
             Some(LayoutVersion::V1) => DoctorCheck {
                 id: "state_layout_version".to_string(),
                 status: DoctorStatus::Warn,
                 message: "storage layout is V1 (outdated)".to_string(),
                 detail: Some(
-                    "V1->V2 migration moves signals.jsonl to signals.jsonl.v1-legacy \
-                     and bumps VERSION to 2"
+                    "V1->V3 migration preserves legacy signals and converges episode storage"
                         .to_string(),
                 ),
                 path: Some(version_path.display().to_string()),
@@ -1181,7 +1336,7 @@ fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
     checks.push(version_check);
 
     // -- 2. Canonical E02 files -----------------------------------------------
-    // These are the paths that all E02 writers now target in V2.
+    // These are the paths that current writers target.
     let canonical_paths: &[(&str, PathBuf)] = &[
         ("episodes.jsonl", layout.root_episodes_path()),
         (
@@ -1211,10 +1366,7 @@ fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
         DoctorCheck {
             id: "state_canonical_files".to_string(),
             status: DoctorStatus::Ok,
-            message: format!(
-                "all {} canonical V2 storage files are present",
-                present.len()
-            ),
+            message: format!("all {} canonical storage files are present", present.len()),
             detail: Some(present.join(", ")),
             path: Some(layout.root().display().to_string()),
             url: None,
@@ -1225,7 +1377,7 @@ fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
             id: "state_canonical_files".to_string(),
             status: DoctorStatus::Ok,
             message: format!(
-                "{} canonical V2 files present, {} absent (normal for new workspaces)",
+                "{} canonical files present, {} absent (normal for new workspaces)",
                 present.len(),
                 absent.len()
             ),
@@ -1245,10 +1397,14 @@ fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
     };
     checks.push(canonical_check);
 
-    // -- 3. Legacy V1 files ---------------------------------------------------
-    // Files that should not exist in a migrated V2 workspace.
+    // -- 3. Legacy files ------------------------------------------------------
+    // Files that should not exist in a migrated current workspace.
     let legacy_paths: &[(&str, PathBuf)] = &[
         ("signals.jsonl", layout.signals_path()),
+        (
+            "learn/episodes.jsonl",
+            layout.learn_dir().join("episodes.jsonl"),
+        ),
         (
             "memory/episodes.jsonl",
             layout.memory_dir().join("episodes.jsonl"),
@@ -1271,7 +1427,7 @@ fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
         DoctorCheck {
             id: "state_legacy_files".to_string(),
             status: DoctorStatus::Ok,
-            message: "no legacy V1 storage files detected".to_string(),
+            message: "no legacy storage files detected".to_string(),
             detail: None,
             path: Some(layout.root().display().to_string()),
             url: None,
@@ -1281,7 +1437,7 @@ fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
         DoctorCheck {
             id: "state_legacy_files".to_string(),
             status: DoctorStatus::Warn,
-            message: format!("{} legacy V1 storage file(s) detected", legacy_found.len()),
+            message: format!("{} legacy storage file(s) detected", legacy_found.len()),
             detail: Some(format!(
                 "legacy files (safe to remove after migration): {}",
                 legacy_found.join(", ")
@@ -1627,51 +1783,91 @@ fn check_orphaned_tmp_files(workdir: &Path) -> DoctorCheck {
 pub struct DiskHealthReport {
     /// Approximate free disk space in MB at the workspace mount point.
     pub free_disk_mb: Option<u64>,
-    /// Whether free disk is below the 5 GB warning threshold.
+    /// Whether free disk is below `ResourcesConfig.warn_disk_mb`.
     pub low_disk: bool,
     /// Directories found under `.roko/worktrees/` that look orphaned
     /// (i.e. not tracked by any running plan).
     pub orphaned_worktree_dirs: Vec<String>,
-    /// JSONL files in `.roko/` that exceed 100 MB.
+    /// Live JSONL files at or above `ResourcesConfig.log_rotation_max_mb`.
     pub large_jsonl_files: Vec<String>,
-    /// Size of the `target/` directory in MB, if it exists.
-    pub target_dir_mb: Option<u64>,
+    /// Stale target directories selected by the configured age policy.
+    pub stale_target_dirs: Vec<DiskTargetFinding>,
+    /// Aggregate size of all discovered target directories in MB.
+    pub total_target_mb: u64,
+    /// Aggregate size of `.roko/` in MB.
+    pub roko_dir_mb: u64,
+    /// Number of checkout directories present under `.roko/worktrees/`.
+    pub worktree_count: usize,
+    /// Aggregate size of checkout directories under `.roko/worktrees/` in MB.
+    pub worktree_total_mb: u64,
+    /// Effective configured JSONL rotation threshold in MB.
+    pub log_rotation_max_mb: u64,
 }
 
-/// Threshold below which free disk space triggers a warning, in MB.
-const WARN_DISK_FREE_MB: u64 = 5_120; // 5 GB
-/// JSONL files in `.roko/` larger than this are flagged, in bytes.
-const LARGE_JSONL_BYTES: u64 = 100 * 1_024 * 1_024; // 100 MB
+impl DiskHealthReport {
+    /// Render the focused `roko doctor disk` report.
+    #[must_use]
+    pub fn render_human(&self) -> String {
+        let mut out = String::from("doctor disk\n");
+        let free = self
+            .free_disk_mb
+            .map_or_else(|| "unavailable".to_string(), |mb| format!("{mb} MB"));
+        let _ = writeln!(&mut out, "free disk: {free}");
+        let _ = writeln!(&mut out, ".roko size: {} MB", self.roko_dir_mb);
+        let _ = writeln!(
+            &mut out,
+            "targets: {} MB total; {} stale",
+            self.total_target_mb,
+            self.stale_target_dirs.len()
+        );
+        let _ = writeln!(
+            &mut out,
+            "worktrees: {} ({} MB); {} orphaned",
+            self.worktree_count,
+            self.worktree_total_mb,
+            self.orphaned_worktree_dirs.len()
+        );
+        let _ = writeln!(
+            &mut out,
+            "large JSONL: {} (threshold {} MB)",
+            self.large_jsonl_files.len(),
+            self.log_rotation_max_mb
+        );
+
+        for target in &self.stale_target_dirs {
+            let _ = writeln!(
+                &mut out,
+                "[stale target] {} — {} MB, {} days old",
+                target.path, target.size_mb, target.age_days
+            );
+            let _ = writeln!(
+                &mut out,
+                "    → cargo clean --manifest-path {}/Cargo.toml",
+                target.path.trim_end_matches("/target")
+            );
+        }
+        for path in &self.orphaned_worktree_dirs {
+            let _ = writeln!(&mut out, "[orphaned worktree] {path}");
+            let _ = writeln!(&mut out, "    → git worktree prune");
+        }
+        for path in &self.large_jsonl_files {
+            let _ = writeln!(&mut out, "[large JSONL] {path}");
+            let _ = writeln!(&mut out, "    → roko knowledge gc");
+        }
+        out
+    }
+}
+
+/// One stale Rust build-artifact finding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DiskTargetFinding {
+    pub path: String,
+    pub size_mb: u64,
+    pub age_days: u32,
+}
+
 /// `target/` directories larger than this trigger a warning, in MB.
 const WARN_TARGET_MB: u64 = 10_240; // 10 GB
-
-/// Query available disk space at `path`'s mount point using `sysinfo`.
-///
-/// Returns `None` when no matching disk is found or sysinfo is unsupported.
-fn available_disk_mb(path: &Path) -> Option<u64> {
-    use sysinfo::{DiskRefreshKind, Disks};
-
-    let disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::nothing().with_storage());
-
-    // Walk candidate mount points from most-specific to least-specific.
-    // Canonicalize to avoid symlink mismatches.
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-
-    let mut best_mount: Option<(&std::path::Path, u64)> = None;
-    for disk in disks.list() {
-        let mount = disk.mount_point();
-        if canonical.starts_with(mount) {
-            let mount_len = mount.as_os_str().len();
-            let is_better = best_mount.map_or(true, |(_, prev_len)| mount_len > prev_len as usize);
-            if is_better {
-                let avail_mb = disk.available_space() / (1024 * 1024);
-                best_mount = Some((mount, avail_mb as u64));
-            }
-        }
-    }
-
-    best_mount.map(|(_, mb)| mb)
-}
 
 /// Recursively compute the total size of a directory tree in bytes.
 ///
@@ -1682,10 +1878,13 @@ fn dir_size_bytes(path: &Path) -> u64 {
     };
     let mut total: u64 = 0;
     for entry in entries.flatten() {
-        let metadata = match entry.metadata() {
+        let metadata = match std::fs::symlink_metadata(entry.path()) {
             Ok(m) => m,
             Err(_) => continue,
         };
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
         if metadata.is_dir() {
             total += dir_size_bytes(&entry.path());
         } else {
@@ -1695,62 +1894,89 @@ fn dir_size_bytes(path: &Path) -> u64 {
     total
 }
 
-/// Check available disk space, orphaned worktree directories, and oversized JSONL logs.
-fn check_disk_health(workdir: &Path) -> DoctorCheck {
-    let free_mb = available_disk_mb(workdir);
-    let low_disk = free_mb.map_or(false, |mb| mb < WARN_DISK_FREE_MB);
+/// Check available disk space, stale targets, orphaned worktrees, and oversized JSONL logs.
+async fn check_disk_health(
+    workdir: &Path,
+    resources: &roko_core::config::ResourcesConfig,
+) -> (DoctorCheck, DiskHealthReport) {
+    let free_mb = roko_fs::available_disk_mb(workdir).ok();
+    let low_disk = free_mb.is_some_and(|mb| mb < resources.warn_disk_mb);
 
-    // Scan .roko/worktrees/ for directories that exist on disk.  The doctor
-    // does not have a live WorktreeManager, so we report all subdirectories as
-    // potentially orphaned — the user can prune them with `git worktree prune`.
+    // Compare on-disk checkout directories with Git's authoritative worktree
+    // list. This avoids reporting every healthy live checkout as orphaned.
     let worktrees_dir = workdir.join(".roko").join("worktrees");
-    let orphaned: Vec<String> = if worktrees_dir.is_dir() {
+    let checkout_dirs = if worktrees_dir.is_dir() {
         std::fs::read_dir(&worktrees_dir)
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .filter(|e| e.path().is_dir())
-                    .map(|e| e.path().display().to_string())
-                    .collect()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| {
+                std::fs::symlink_metadata(entry.path())
+                    .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
             })
-            .unwrap_or_default()
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>()
     } else {
-        vec![]
+        Vec::new()
     };
+    let tracked = git_worktree_paths(workdir);
+    let orphaned = checkout_dirs
+        .iter()
+        .filter(|path| {
+            let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| (*path).clone());
+            !tracked.contains(&canonical)
+        })
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
 
-    // Find JSONL files in .roko/ that exceed 100 MB.
-    let roko_dir = workdir.join(".roko");
-    let large_jsonl: Vec<String> = if roko_dir.is_dir() {
-        std::fs::read_dir(&roko_dir)
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .filter(|e| {
-                        e.path()
-                            .extension()
-                            .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
-                            && e.metadata()
-                                .map(|m| m.len() > LARGE_JSONL_BYTES)
-                                .unwrap_or(false)
-                    })
-                    .map(|e| e.path().display().to_string())
-                    .collect()
-            })
-            .unwrap_or_default()
-    } else {
-        vec![]
-    };
+    let layout = RokoLayout::for_project(workdir);
+    let large_threshold = resources.log_rotation_max_mb.saturating_mul(1024 * 1024);
+    let large_jsonl = roko_fs::log_rotation::rotatable_jsonl_paths(&layout)
+        .into_iter()
+        .filter(|path| {
+            std::fs::metadata(path).is_ok_and(|metadata| metadata.len() >= large_threshold)
+        })
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+
+    let target_dirs = roko_fs::scan_target_dirs(workdir).await.unwrap_or_default();
+    let stale_targets = target_dirs
+        .iter()
+        .filter(|target| target.age_days() >= resources.target_max_age_days)
+        .map(|target| DiskTargetFinding {
+            path: target.path.display().to_string(),
+            size_mb: target.size_bytes / (1024 * 1024),
+            age_days: target.age_days(),
+        })
+        .collect::<Vec<_>>();
+    let total_target_mb = target_dirs
+        .iter()
+        .map(|target| target.size_bytes)
+        .sum::<u64>()
+        / (1024 * 1024);
+    let worktree_total_mb = checkout_dirs
+        .iter()
+        .map(|path| dir_size_bytes(path))
+        .sum::<u64>()
+        / (1024 * 1024);
+    let roko_dir_mb = dir_size_bytes(layout.root()) / (1024 * 1024);
 
     let disk_health = DiskHealthReport {
         free_disk_mb: free_mb,
         low_disk,
         orphaned_worktree_dirs: orphaned.clone(),
         large_jsonl_files: large_jsonl.clone(),
-        target_dir_mb: None, // filled separately by check_target_staleness
+        stale_target_dirs: stale_targets.clone(),
+        total_target_mb,
+        roko_dir_mb,
+        worktree_count: checkout_dirs.len(),
+        worktree_total_mb,
+        log_rotation_max_mb: resources.log_rotation_max_mb,
     };
 
     // Determine overall status.
-    let has_warn = low_disk || !orphaned.is_empty() || !large_jsonl.is_empty();
+    let has_warn =
+        low_disk || !orphaned.is_empty() || !large_jsonl.is_empty() || !stale_targets.is_empty();
     let status = if has_warn {
         DoctorStatus::Warn
     } else {
@@ -1772,13 +1998,26 @@ fn check_disk_health(workdir: &Path) -> DoctorCheck {
     }
     if !large_jsonl.is_empty() {
         detail_parts.push(format!(
-            "{} JSONL file{} over 100 MB",
+            "{} JSONL file{} at/over {} MB",
             large_jsonl.len(),
-            if large_jsonl.len() == 1 { "" } else { "s" }
+            if large_jsonl.len() == 1 { "" } else { "s" },
+            resources.log_rotation_max_mb,
         ));
     }
+    if !stale_targets.is_empty() {
+        detail_parts.push(format!(
+            "{} stale target dir{} ({} MB total targets)",
+            stale_targets.len(),
+            if stale_targets.len() == 1 { "" } else { "s" },
+            total_target_mb,
+        ));
+    }
+    detail_parts.push(format!(
+        ".roko: {roko_dir_mb} MB; worktrees: {} dirs / {worktree_total_mb} MB",
+        checkout_dirs.len()
+    ));
 
-    let fix = if low_disk || !orphaned.is_empty() || !large_jsonl.is_empty() {
+    let fix = if has_warn {
         let mut fixes: Vec<&str> = Vec::new();
         if low_disk {
             fixes.push("free disk space before running plans");
@@ -1788,6 +2027,9 @@ fn check_disk_health(workdir: &Path) -> DoctorCheck {
         }
         if !large_jsonl.is_empty() {
             fixes.push("roko knowledge gc");
+        }
+        if !stale_targets.is_empty() {
+            fixes.push("cargo clean --manifest-path <stale-worktree>/Cargo.toml");
         }
         Some(fixes.join("; "))
     } else {
@@ -1801,9 +2043,7 @@ fn check_disk_health(workdir: &Path) -> DoctorCheck {
         Some(detail_parts.join(", "))
     };
 
-    let _ = disk_health; // constructed for future HTTP/TUI use; data surfaced via detail
-
-    DoctorCheck {
+    let check = DoctorCheck {
         id: "disk_health".to_string(),
         status,
         message: if has_warn {
@@ -1815,7 +2055,27 @@ fn check_disk_health(workdir: &Path) -> DoctorCheck {
         path: Some(workdir.display().to_string()),
         url: None,
         fix,
+    };
+    (check, disk_health)
+}
+
+fn git_worktree_paths(workdir: &Path) -> std::collections::HashSet<PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(workdir)
+        .output();
+    let Ok(output) = output else {
+        return std::collections::HashSet::new();
+    };
+    if !output.status.success() {
+        return std::collections::HashSet::new();
     }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+        .collect()
 }
 
 /// Check the size of the `target/` build artifact directory.
@@ -1917,6 +2177,26 @@ fn check_plans_dir_conflict(workdir: &Path) -> DoctorCheck {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn config_freshness_check_displays_stale_section() {
+        let dir = tempdir().expect("tempdir");
+        let state_dir = dir.path().join(".roko").join("state");
+        std::fs::create_dir_all(&state_dir).expect("create state dir");
+        let mut freshness = roko_core::config::hot_reload::ConfigFreshness::default();
+        freshness.section_timestamps.insert(
+            "budget".to_string(),
+            chrono::Utc::now() - chrono::Duration::days(31),
+        );
+        freshness
+            .save(&state_dir.join("config-freshness.json"))
+            .expect("save freshness");
+
+        let checks = check_config_freshness(dir.path());
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, DoctorStatus::Warn);
+        assert!(checks[0].message.contains("budget"));
+    }
 
     fn write_project_config(workdir: &Path, config: Config) {
         std::fs::write(
@@ -2041,6 +2321,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn disk_health_uses_resource_policy_and_scans_learning_logs_and_worktree_targets() {
+        let temp = tempdir().unwrap();
+        let layout = RokoLayout::for_project(temp.path());
+        layout.ensure_dirs().await.unwrap();
+        let learning_log = layout.learn_dir().join("provider-outcomes.jsonl");
+        tokio::fs::write(&learning_log, "{}\n").await.unwrap();
+        let target = temp.path().join(".roko/worktrees/plan-a/target");
+        tokio::fs::create_dir_all(&target).await.unwrap();
+        tokio::fs::write(target.join("artifact"), b"data")
+            .await
+            .unwrap();
+
+        let resources = roko_core::config::ResourcesConfig {
+            log_rotation_max_mb: 0,
+            target_max_age_days: 0,
+            ..Default::default()
+        };
+        let (check, report) = check_disk_health(temp.path(), &resources).await;
+
+        assert_eq!(check.status, DoctorStatus::Warn);
+        assert_eq!(report.log_rotation_max_mb, 0);
+        assert!(
+            report
+                .large_jsonl_files
+                .contains(&learning_log.display().to_string())
+        );
+        assert_eq!(report.worktree_count, 1);
+        assert!(
+            report
+                .stale_target_dirs
+                .iter()
+                .any(|finding| finding.path == target.display().to_string())
+        );
+    }
+
+    #[tokio::test]
     async fn failing_checks_have_fix_lines_in_human_output() {
         let temp = tempdir().unwrap();
         let report = run_doctor(&DoctorOptions {
@@ -2147,8 +2463,8 @@ mod tests {
             "missing claude_cli check"
         );
         assert!(
-            check_ids.contains(&"anthropic_api_key"),
-            "missing anthropic_api_key check"
+            check_ids.contains(&"provider_api_keys"),
+            "missing provider_api_keys check"
         );
         assert!(
             check_ids.contains(&"rust_version"),
@@ -2175,6 +2491,21 @@ mod tests {
                 .message
                 .contains("phase 1 protocol abstractions are reachable")
         );
+    }
+
+    #[test]
+    fn doctor_dead_config_warns_for_inert_context_pressure_without_deprecating_watchers() {
+        let mut conductor = roko_core::config::schema::ConductorConfig::default();
+        conductor.context_pressure_enabled = true;
+
+        let check = check_dead_conductor_config(&conductor);
+
+        assert_eq!(check.id, "dead_conductor_config");
+        assert_eq!(check.status, DoctorStatus::Warn);
+        let detail = check.detail.expect("deprecation detail");
+        assert!(detail.contains("context_pressure_enabled"));
+        assert!(detail.contains("runtime-live"));
+        assert!(check.fix.is_some());
     }
 
     #[tokio::test]
@@ -2559,9 +2890,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn state_layout_audit_v2_workspace_is_clean() {
+    async fn state_layout_audit_v3_workspace_is_clean() {
         let temp = tempdir().unwrap();
-        // Bootstrap a fresh V2 workspace.
+        // Bootstrap a fresh current workspace.
         RokoLayout::for_project(temp.path())
             .ensure_dirs()
             .await
@@ -2577,7 +2908,7 @@ mod tests {
         assert_eq!(
             version_check.status,
             DoctorStatus::Ok,
-            "V2 workspace should have Ok version check"
+            "V3 workspace should have Ok version check"
         );
 
         let legacy_check = checks
@@ -2587,7 +2918,33 @@ mod tests {
         assert_eq!(
             legacy_check.status,
             DoctorStatus::Ok,
-            "fresh V2 workspace should have no legacy files"
+            "fresh V3 workspace should have no legacy files"
+        );
+    }
+
+    #[tokio::test]
+    async fn state_layout_audit_classifies_learn_episode_log_as_legacy() {
+        let temp = tempdir().unwrap();
+        let layout = RokoLayout::for_project(temp.path());
+        layout.ensure_dirs().await.expect("ensure dirs");
+        std::fs::write(
+            layout.learn_dir().join("episodes.jsonl"),
+            "{\"episode_id\":\"legacy-learn\"}\n",
+        )
+        .expect("write legacy learn episodes");
+
+        let checks = check_state_layout_audit(temp.path());
+        let legacy_check = checks
+            .iter()
+            .find(|check| check.id == "state_legacy_files")
+            .expect("legacy check");
+
+        assert_eq!(legacy_check.status, DoctorStatus::Warn);
+        assert!(
+            legacy_check
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("learn/episodes.jsonl"))
         );
     }
 

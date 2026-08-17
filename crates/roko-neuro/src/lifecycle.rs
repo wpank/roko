@@ -11,7 +11,7 @@ use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Utc};
 use roko_learn::episode_logger::{Episode, EpisodeGateVerdict};
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,9 @@ use crate::admission::{
 use crate::tier_progression::{
     HeuristicDemotionRecord, HeuristicObservation, HeuristicStore, TierProgression,
 };
-use crate::{KnowledgeEntry, KnowledgeKind, KnowledgeStore, KnowledgeTier, ReinforcementSignal};
+use crate::{
+    Falsifier, KnowledgeEntry, KnowledgeKind, KnowledgeStore, KnowledgeTier, ReinforcementSignal,
+};
 use crate::{SourceChannel, apply_source_discount};
 
 /// Default append-only lifecycle receipt file under `.roko/neuro/`.
@@ -43,6 +45,9 @@ pub struct KnowledgeLifecycleConfig {
     /// Whether observations that miss the light gate should still be submitted
     /// to the full evidence-based admission store as candidates.
     pub submit_full_admission_on_defer: bool,
+    /// Whether HDC resonances should create discounted cross-domain entries.
+    #[serde(default)]
+    pub auto_cross_domain_transfer: bool,
 }
 
 impl Default for KnowledgeLifecycleConfig {
@@ -52,8 +57,50 @@ impl Default for KnowledgeLifecycleConfig {
             reinforcement_novelty: 0.5,
             promote_context_entries: true,
             submit_full_admission_on_defer: true,
+            auto_cross_domain_transfer: false,
         }
     }
+}
+
+/// Outcome of distilling one completed episode reflection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DistillationResult {
+    /// Durable entry ID, including the ID of a reinforced duplicate.
+    Admitted(String),
+    /// Preserved as a candidate pending more evidence.
+    Deferred,
+    /// Rejected with a stable human-readable reason.
+    Rejected(String),
+}
+
+/// Aggregate result of batch episode distillation.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct BatchDistillationReport {
+    /// Per-input outcomes in input order.
+    pub results: Vec<DistillationResult>,
+    /// Number admitted or deduplicated into durable knowledge.
+    pub admitted: usize,
+    /// Number deferred for more evidence.
+    pub deferred: usize,
+    /// Number rejected.
+    pub rejected: usize,
+}
+
+/// One detected analogy between two knowledge domains.
+#[cfg(feature = "hdc")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CrossDomainTransfer {
+    /// Durable ID of the source analogy.
+    pub source_entry_id: String,
+    /// Domain where the source was learned.
+    pub source_domain: String,
+    /// Domain to which it may transfer.
+    pub target_domain: String,
+    /// HDC similarity supporting the analogy.
+    pub similarity: f64,
+    /// Created entry ID when automatic transfer was enabled and admitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transferred_entry_id: Option<String>,
 }
 
 /// Runtime observation accepted by the knowledge lifecycle.
@@ -326,12 +373,11 @@ impl RuntimeKnowledgeLifecycle {
 
         let promotion_updates = if self.config.promote_context_entries {
             let mut promotion_ids = context_ids;
-            if admission_path == RuntimeAdmissionPath::LightAdmitted
-                || admission_path == RuntimeAdmissionPath::FullAdmitted
+            if (admission_path == RuntimeAdmissionPath::LightAdmitted
+                || admission_path == RuntimeAdmissionPath::FullAdmitted)
+                && let Some(id) = candidate_entry_id.as_ref()
             {
-                if let Some(id) = candidate_entry_id.as_ref() {
-                    promotion_ids.push(id.clone());
-                }
+                promotion_ids.push(id.clone());
             }
             promote_runtime_entries(&self.knowledge_store, &promotion_ids, &observation)?
         } else {
@@ -363,6 +409,219 @@ impl RuntimeKnowledgeLifecycle {
         };
         append_jsonl(&self.lifecycle_path, &record)?;
         Ok(record)
+    }
+
+    /// Distill an agent reflection from a completed runtime episode.
+    pub fn distill_from_episode(
+        &self,
+        observation: &RuntimeEpisodeObservation,
+        reflection: &str,
+    ) -> Result<DistillationResult> {
+        let reflection = reflection.trim();
+        if reflection.is_empty() {
+            return Ok(DistillationResult::Rejected(
+                "reflection is empty".to_string(),
+            ));
+        }
+
+        let kind = if observation.gate_passed {
+            KnowledgeKind::Heuristic
+        } else {
+            KnowledgeKind::AntiKnowledge
+        };
+        let mut tags = observation.task_tags.clone();
+        if let Some(task_type) = observation.task_type.as_deref().and_then(non_empty) {
+            tags.push(format!("task:{}", normalize_tag(&task_type)));
+        }
+        if let Some(model) = observation.model.as_deref().and_then(non_empty) {
+            tags.push(format!("model:{}", normalize_tag(&model)));
+        }
+        tags.push(kind.as_str().to_string());
+        tags = dedupe(tags);
+        let source_episodes = vec![observation.episode_id.clone()];
+        let mut entry = KnowledgeEntry {
+            id: derive_runtime_knowledge_id(kind, reflection, &source_episodes, &tags),
+            kind,
+            source: Some("runtime:distillation".to_string()),
+            content: reflection.to_string(),
+            confidence: 0.6,
+            confidence_weight: if kind == KnowledgeKind::AntiKnowledge {
+                -0.6
+            } else {
+                0.6
+            },
+            source_episodes,
+            tags,
+            source_model: observation.model.clone(),
+            model_generality: if observation.model.is_some() {
+                0.0
+            } else {
+                1.0
+            },
+            created_at: observation.observed_at,
+            half_life_days: kind.default_half_life_days(),
+            tier: KnowledgeTier::Transient,
+            confirmation_count: u32::from(observation.gate_passed),
+            distinct_contexts: distinct_contexts(observation),
+            falsifier: Some(Falsifier {
+                predicate: reflection.to_string(),
+                observations: 0,
+                violations: 0,
+                last_checked: observation.observed_at,
+                active: true,
+            }),
+            ..KnowledgeEntry::default()
+        };
+
+        if let Some(existing) = self.knowledge_store.find_similar_entry(&entry, 0.8)? {
+            self.knowledge_store.reinforce(
+                &existing.id,
+                if observation.gate_passed {
+                    ReinforcementSignal::Gated
+                } else {
+                    ReinforcementSignal::Surprised
+                },
+            )?;
+            return Ok(DistillationResult::Admitted(existing.id));
+        }
+
+        let similarity = self.knowledge_store.max_similarity(&entry)?;
+        let source_trust = observation.source_channel.discount_factor();
+        if self
+            .config
+            .light_gate
+            .evaluate(entry.confidence, similarity, source_trust)
+        {
+            apply_source_discount(std::slice::from_mut(&mut entry), observation.source_channel);
+            let entry_id = entry.id.clone();
+            self.knowledge_store.ingest(vec![entry])?;
+            let persisted = self
+                .knowledge_store
+                .read_all()?
+                .into_iter()
+                .any(|entry| entry.id == entry_id);
+            return if persisted {
+                Ok(DistillationResult::Admitted(entry_id))
+            } else {
+                Ok(DistillationResult::Rejected(
+                    "durable A-MAC admission rejected the distilled entry".to_string(),
+                ))
+            };
+        }
+
+        if !self.config.submit_full_admission_on_defer {
+            return Ok(DistillationResult::Deferred);
+        }
+        let mut evidence_observation = observation.clone();
+        evidence_observation.agent_output = reflection.to_string();
+        let decision = self
+            .admission_store
+            .submit_candidate(candidate_for_observation(&evidence_observation, &entry))?;
+        Ok(match decision.outcome {
+            KnowledgeAdmissionOutcome::Admitted => DistillationResult::Admitted(entry.id),
+            KnowledgeAdmissionOutcome::Deferred => DistillationResult::Deferred,
+            KnowledgeAdmissionOutcome::Rejected | KnowledgeAdmissionOutcome::Suppressed => {
+                DistillationResult::Rejected(format!("{:?}", decision.reason))
+            }
+        })
+    }
+
+    /// Distill multiple episode/reflection pairs in order.
+    pub fn batch_distill(
+        &self,
+        observations: &[RuntimeEpisodeObservation],
+        reflections: &[String],
+    ) -> Result<BatchDistillationReport> {
+        ensure!(
+            observations.len() == reflections.len(),
+            "observations and reflections must have equal lengths"
+        );
+        let mut report = BatchDistillationReport::default();
+        for (observation, reflection) in observations.iter().zip(reflections) {
+            let result = self.distill_from_episode(observation, reflection)?;
+            match &result {
+                DistillationResult::Admitted(_) => report.admitted += 1,
+                DistillationResult::Deferred => report.deferred += 1,
+                DistillationResult::Rejected(_) => report.rejected += 1,
+            }
+            report.results.push(result);
+        }
+        Ok(report)
+    }
+
+    /// Discover cross-domain HDC resonances and optionally materialize them.
+    #[cfg(feature = "hdc")]
+    pub fn detect_cross_domain_transfers(
+        &self,
+        store: &KnowledgeStore,
+    ) -> Result<Vec<CrossDomainTransfer>> {
+        let entries = store
+            .read_all()?
+            .into_iter()
+            .map(|entry| (entry.id.clone(), entry))
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut transfers = Vec::new();
+        for pair in store.find_resonances(0.526)? {
+            let Some(entry_a) = entries.get(&pair.entry_a) else {
+                continue;
+            };
+            let Some(entry_b) = entries.get(&pair.entry_b) else {
+                continue;
+            };
+            let (source, source_domain, target_domain) = if entry_a.confidence >= entry_b.confidence
+            {
+                (entry_a, pair.domain_a.clone(), pair.domain_b.clone())
+            } else {
+                (entry_b, pair.domain_b.clone(), pair.domain_a.clone())
+            };
+            if source.confidence < 0.5
+                || source.source_model.as_deref() == Some("cross_domain_transfer")
+                || source_domain == target_domain
+            {
+                continue;
+            }
+
+            let mut transfer = CrossDomainTransfer {
+                source_entry_id: source.id.clone(),
+                source_domain,
+                target_domain: target_domain.clone(),
+                similarity: pair.similarity,
+                transferred_entry_id: None,
+            };
+            if self.config.auto_cross_domain_transfer {
+                let mut candidate = source.clone();
+                candidate.id = cross_domain_entry_id(&source.id, &target_domain);
+                candidate.content = format!(
+                    "Cross-domain transfer to {target_domain}: {}",
+                    source.content
+                );
+                candidate.tags.retain(|tag| !tag.starts_with("domain:"));
+                candidate.tags.push(format!("domain:{target_domain}"));
+                candidate.tags.push("cross_domain_transfer".to_string());
+                candidate.source = Some("cross-domain-transfer".to_string());
+                candidate.source_model = Some("cross_domain_transfer".to_string());
+                candidate.confidence = (source.confidence * 0.7).clamp(0.0, 1.0);
+                candidate.confidence_weight =
+                    candidate.confidence_weight.signum() * candidate.confidence;
+                candidate.created_at = Utc::now();
+                candidate.tier = KnowledgeTier::Transient;
+                candidate.confirmation_count = 0;
+                candidate.distinct_contexts.clear();
+                candidate.balance = 1.0;
+                candidate.balance_depleted_at = None;
+                candidate.frozen = false;
+                candidate.frozen_at = None;
+                candidate.hdc_vector = None;
+                if !entries.contains_key(&candidate.id) {
+                    let id = candidate.id.clone();
+                    if store.add_cross_domain_transfer(candidate)? {
+                        transfer.transferred_entry_id = Some(id);
+                    }
+                }
+            }
+            transfers.push(transfer);
+        }
+        Ok(transfers)
     }
 
     /// Read append-only lifecycle receipts.
@@ -441,6 +700,8 @@ fn build_runtime_entry(observation: &RuntimeEpisodeObservation) -> Option<Knowle
         id: derive_runtime_knowledge_id(kind, &summary, &source_episodes, &tags),
         kind,
         source: Some("runtime:gate_verdict".to_string()),
+        origin_taint: Default::default(),
+        classification: Default::default(),
         content: summary,
         confidence,
         confidence_weight: confidence,
@@ -467,6 +728,9 @@ fn build_runtime_entry(observation: &RuntimeEpisodeObservation) -> Option<Knowle
         deprecated: false,
         balance: 1.0,
         frozen: false,
+        balance_depleted_at: None,
+        frozen_at: None,
+        falsifier: None,
         catalytic_score: 0,
     })
 }
@@ -884,6 +1148,14 @@ fn derive_runtime_knowledge_id(
     format!("runtime_{:016x}", hasher.finish())
 }
 
+#[cfg(feature = "hdc")]
+fn cross_domain_entry_id(source_id: &str, target_domain: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source_id.hash(&mut hasher);
+    target_domain.hash(&mut hasher);
+    format!("cross_domain_{:016x}", hasher.finish())
+}
+
 fn episode_source_id(episode: &Episode) -> &str {
     if episode.episode_id.trim().is_empty() {
         &episode.id
@@ -997,4 +1269,165 @@ where
         }
     }
     Ok(values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn observation(id: &str, passed: bool) -> RuntimeEpisodeObservation {
+        RuntimeEpisodeObservation {
+            episode_id: id.to_string(),
+            task_id: "E24-T05".to_string(),
+            plan_id: Some("E24-memory-advanced".to_string()),
+            task_type: Some("rust".to_string()),
+            model: Some("test-model".to_string()),
+            agent_id: Some("implementer".to_string()),
+            gate_passed: passed,
+            gate_verdicts: vec![EpisodeGateVerdict::new("test", passed)],
+            gate_output: if passed {
+                "all tests passed".to_string()
+            } else {
+                "retry loop exceeded its bound".to_string()
+            },
+            agent_output: String::new(),
+            context_entry_ids: Vec::new(),
+            task_tags: vec!["memory".to_string(), "lifecycle".to_string()],
+            source_channel: SourceChannel::GateVerdict,
+            observed_at: Utc::now(),
+        }
+    }
+
+    fn lifecycle(temp: &TempDir) -> RuntimeKnowledgeLifecycle {
+        RuntimeKnowledgeLifecycle::for_workdir(temp.path())
+    }
+
+    #[test]
+    fn e24_distill_pass_creates_heuristic() {
+        let temp = TempDir::new().expect("tempdir");
+        let lifecycle = lifecycle(&temp);
+        let result = lifecycle
+            .distill_from_episode(
+                &observation("episode-pass", true),
+                "Bound retries and verify after each attempt",
+            )
+            .expect("distill");
+        assert!(matches!(result, DistillationResult::Admitted(_)));
+        let entries = lifecycle.knowledge_store().read_all().expect("read");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, KnowledgeKind::Heuristic);
+        assert_eq!(entries[0].confidence, 0.57);
+        assert!(entries[0].falsifier.is_some());
+    }
+
+    #[test]
+    fn e24_distill_failure_creates_anti_knowledge() {
+        let temp = TempDir::new().expect("tempdir");
+        let lifecycle = lifecycle(&temp);
+        let result = lifecycle
+            .distill_from_episode(
+                &observation("episode-fail", false),
+                "Unbounded retries hide the original verification failure",
+            )
+            .expect("distill");
+        assert!(matches!(result, DistillationResult::Admitted(_)));
+        let entries = lifecycle.knowledge_store().read_all().expect("read");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, KnowledgeKind::AntiKnowledge);
+        assert!(entries[0].falsifier.is_some());
+    }
+
+    #[test]
+    fn e24_distill_deduplicates_and_reinforces() {
+        let temp = TempDir::new().expect("tempdir");
+        let lifecycle = lifecycle(&temp);
+        let reflection = "Bound retries and verify after each attempt";
+        let first = lifecycle
+            .distill_from_episode(&observation("episode-one", true), reflection)
+            .expect("first");
+        let first_id = match first {
+            DistillationResult::Admitted(id) => id,
+            other => panic!("unexpected result: {other:?}"),
+        };
+        let before = lifecycle.knowledge_store().read_all().expect("read")[0].balance;
+        let second = lifecycle
+            .distill_from_episode(&observation("episode-two", true), reflection)
+            .expect("second");
+        assert_eq!(second, DistillationResult::Admitted(first_id));
+        let entries = lifecycle.knowledge_store().read_all().expect("read");
+        assert_eq!(entries.len(), 1);
+        assert!((entries[0].balance - before - 0.15).abs() < 1e-9);
+    }
+
+    #[test]
+    fn e24_batch_distill_rejects_length_mismatch() {
+        let temp = TempDir::new().expect("tempdir");
+        let lifecycle = lifecycle(&temp);
+        assert!(
+            lifecycle
+                .batch_distill(&[observation("episode", true)], &[])
+                .is_err()
+        );
+    }
+
+    #[cfg(feature = "hdc")]
+    #[test]
+    fn e24_cross_domain_transfer_is_opt_in_and_idempotent() {
+        use roko_primitives::hdc::HdcVector;
+
+        let temp = TempDir::new().expect("tempdir");
+        let store = KnowledgeStore::for_workdir(temp.path());
+        let vector = HdcVector::from_seed(b"shared-structure")
+            .to_bytes()
+            .to_vec();
+        for (id, domain, confidence) in
+            [("source", "networking", 0.8), ("analogy", "database", 0.7)]
+        {
+            store
+                .add(KnowledgeEntry {
+                    id: id.to_string(),
+                    kind: KnowledgeKind::AntiKnowledge,
+                    content: format!("Bounded backoff structure for {domain}"),
+                    confidence,
+                    confidence_weight: -confidence,
+                    source_episodes: vec![format!("episode-{id}")],
+                    tags: vec![format!("domain:{domain}"), "bounded-backoff".to_string()],
+                    hdc_vector: Some(vector.clone()),
+                    ..KnowledgeEntry::default()
+                })
+                .expect("seed");
+        }
+
+        let disabled = RuntimeKnowledgeLifecycle::for_workdir(temp.path());
+        let detected = disabled
+            .detect_cross_domain_transfers(&store)
+            .expect("detect");
+        assert_eq!(detected.len(), 1);
+        assert!(detected[0].transferred_entry_id.is_none());
+        assert_eq!(store.read_all().expect("read").len(), 2);
+
+        let enabled = RuntimeKnowledgeLifecycle::for_workdir(temp.path()).with_config(
+            KnowledgeLifecycleConfig {
+                auto_cross_domain_transfer: true,
+                ..KnowledgeLifecycleConfig::default()
+            },
+        );
+        let created = enabled
+            .detect_cross_domain_transfers(&store)
+            .expect("transfer");
+        assert!(created[0].transferred_entry_id.is_some());
+        let after_first = store.read_all().expect("read");
+        assert_eq!(after_first.len(), 3);
+        let transferred = after_first
+            .iter()
+            .find(|entry| entry.source_model.as_deref() == Some("cross_domain_transfer"))
+            .expect("transferred");
+        assert!((transferred.confidence - 0.56).abs() < 1e-9);
+
+        enabled
+            .detect_cross_domain_transfers(&store)
+            .expect("repeat");
+        assert_eq!(store.read_all().expect("read").len(), 3);
+    }
 }

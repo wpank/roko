@@ -195,20 +195,19 @@ impl Verify for TxSimGate {
         }
 
         // Gas-buffer check (only when both gas_limit and gas_buffer_pct are set).
-        if self.config.gas_buffer_pct > 0 {
-            if let Some(ceiling) = self.gas_ceiling(&tx) {
-                if outcome.gas_used > ceiling {
-                    return Verdict::fail(
-                        self.name.clone(),
-                        format!(
-                            "gas over buffer: used {} > allowed {}",
-                            outcome.gas_used, ceiling
-                        ),
-                    )
-                    .with_detail(detail)
-                    .with_duration(elapsed_ms(started));
-                }
-            }
+        if self.config.gas_buffer_pct > 0
+            && let Some(ceiling) = self.gas_ceiling(&tx)
+            && outcome.gas_used > ceiling
+        {
+            return Verdict::fail(
+                self.name.clone(),
+                format!(
+                    "gas over buffer: used {} > allowed {}",
+                    outcome.gas_used, ceiling
+                ),
+            )
+            .with_detail(detail)
+            .with_duration(elapsed_ms(started));
         }
 
         Verdict::pass(self.name.clone())

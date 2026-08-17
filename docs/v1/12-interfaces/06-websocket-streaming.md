@@ -1,5 +1,8 @@
 # WebSocket, SSE, and gRPC Realtime Surface
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** This chapter documents the target-state shared realtime protocol. Today, Roko ships WebSocket and SSE endpoints in `roko-serve`; gRPC is deferred. The useful near-term work is to harden the existing transports and document their shared cursor and replay behavior clearly.
 
 > **Implementation**: Partial today, broader protocol target-state

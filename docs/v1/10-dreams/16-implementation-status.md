@@ -1,5 +1,8 @@
 # Implementation Status and Roadmap
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: All layers (L0–L4)
 >
 > **Crate**: `roko-dreams` (primary), `roko-golem` (legacy scaffold, to be dissolved), `roko-learn` (supporting infrastructure)
@@ -194,15 +197,16 @@ The implementation plan at `/Users/will/dev/nunchi/roko/roko/tmp/implementation-
 
 ### G1: Episode Replay Scheduler
 
-**Status**: Partially implemented
+**Status**: Runtime-wired for the bounded resident policy
 
 The scheduling logic exists in `DreamEngine::schedule()` in `runner.rs`. What remains:
 
 | Item | Status |
 |------|--------|
 | Idle-time trigger (primary) | **Implemented** — checks `idle_threshold_mins` against episode timestamps |
-| Scheduled trigger (secondary) | **Not implemented** — `scheduled_interval_hours` config exists in spec but not in code |
-| Manual trigger (CLI) | **Not implemented** — `roko dream run` CLI command not yet wired |
+| Scheduled trigger (secondary) | **Implemented** — optional validated seven-field `scheduled_cron`; a due fire queues until idle |
+| Episode-count trigger | **Implemented** — optional `episode_count_trigger`, subject to the minimum-episode boundary |
+| Manual trigger (CLI) | **Implemented** — `roko knowledge dream run`; schedule inspection is also wired |
 | Intensive consolidation mode | **Not implemented** — backlog high/low water marks not coded |
 
 ### G2: Episode Re-evaluation

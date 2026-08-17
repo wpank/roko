@@ -1,5 +1,8 @@
 # Dependency Graph
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Directed symbol dependency graph with forward/reverse traversal — the structural backbone for impact analysis, context prioritization, and PageRank scoring.
 
 

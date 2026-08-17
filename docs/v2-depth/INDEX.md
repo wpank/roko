@@ -2,6 +2,26 @@
 
 > Mapping from `docs/` (422 files, 8.8MB) to the unified depth structure.
 > See [GUIDE.md](GUIDE.md) for how to add content.
+>
+> **Last updated:** 2026-08-13
+
+> **ISFR DEPRECATED (2026-08-13):** The ISFR vertical is deprecated and scheduled
+> for removal. See `.roko/GAPS.md`. Docs in 12-connectivity, 15-marketplace, and
+> 18-registries that describe ISFR as active are historical — the code exists but
+> is not wired at runtime and will be removed.
+
+---
+
+## Implementation Status (approximate)
+
+| Section | Depth dirs | Status |
+|---|---|---|
+| Kernel | 00-04 | ~75% implemented |
+| Cognition | 05-07 | ~30% implemented |
+| Infrastructure | 08-14 | ~40% implemented |
+| Operations | 15-19 | ~35% implemented |
+| Economy | 20-24 | ~15% implemented (ISFR deprecated) |
+| Meta | 25-28 | ~55% implemented |
 
 ---
 
@@ -32,7 +52,7 @@
 
 | Source doc | Topic | Status |
 |---|---|---|
-| `docs/00-architecture/02-engram-data-type.md` | Engram (Signal) struct internals | **Absorbed** → `signal-algebra.md` |
+| `docs/00-architecture/02-engram-data-type.md` | Signal struct internals (legacy name: Engram) | **Absorbed** → `signal-algebra.md` |
 | `docs/00-architecture/02b-pulse-ephemeral-event.md` | Pulse (ephemeral Signal) | **Absorbed** → `signal-algebra.md` |
 | `docs/00-architecture/03-score-7-axis-appraisal.md` | 7-axis score model | **Absorbed** → `scoring-and-calibration.md` |
 | `docs/00-architecture/04-decay-variants.md` | Decay variant algorithms | **Absorbed** → `demurrage-economics.md` |
@@ -338,91 +358,91 @@ No additional `docs/` sources beyond spec coverage.
 | `docs/14-identity-economy/10-korai-tokenomics.md` | Korai tokenomics | Pending |
 | `docs/14-identity-economy/11-vickrey-reputation-auction.md` | Vickrey reputation auction | Pending |
 | `docs/14-identity-economy/12-three-hiring-models.md` | Three hiring models | Pending |
-| `docs/14-identity-economy/13-isfr-clearing-settlement.md` | ISFR clearing/settlement | Pending |
+| `docs/14-identity-economy/13-isfr-clearing-settlement.md` | ISFR clearing/settlement (DEPRECATED) | Pending |
 | `docs/14-identity-economy/14-knowledge-futures-market.md` | Knowledge futures market | Pending |
 
 ### [16-surfaces/](16-surfaces/) — Interface Detail
 
 | Source doc | Topic | Status |
 |---|---|---|
-| `docs/12-interfaces/00-cli-overview.md` | CLI overview | Pending |
-| `docs/12-interfaces/01-cli-command-reference.md` | CLI command reference | Pending |
-| `docs/12-interfaces/02-roko-new-scaffolders.md` | Scaffolders | Pending |
-| `docs/12-interfaces/03-progressive-help-and-explain.md` | Progressive help | Pending |
-| `docs/12-interfaces/05-http-api-roko-serve.md` | HTTP API | Pending |
-| `docs/12-interfaces/06-websocket-streaming.md` | WebSocket streaming | Pending |
-| `docs/12-interfaces/07-rosedust-design-language.md` | Rosedust design language | Pending |
-| `docs/12-interfaces/08-tui-main-layout.md` | TUI main layout | Pending |
-| `docs/12-interfaces/09-tui-29-screens.md` | TUI 29 screens | Pending |
-| `docs/12-interfaces/10-spectre-creature-visualization.md` | Spectre creature visualization | Pending |
-| `docs/12-interfaces/11-spectre-rendering-per-interface.md` | Spectre rendering | Pending |
-| `docs/12-interfaces/12-spectre-as-collective-display.md` | Spectre collective display | Pending |
-| `docs/12-interfaces/13-web-portal.md` | Web portal | Pending |
-| `docs/12-interfaces/14-agent-onboarding-flow.md` | Agent onboarding | Pending |
-| `docs/12-interfaces/15-generative-interfaces-a2ui.md` | Generative interfaces (A2UI) | Pending |
-| `docs/12-interfaces/16-sonification-reframed.md` | Sonification | Pending |
-| `docs/12-interfaces/18-ux-innovation-proposals.md` | UX innovation proposals | Pending |
-| `docs/12-interfaces/19-rust-sdk-developer-ux.md` | Rust SDK developer UX | Pending |
-| `docs/12-interfaces/20-ide-integration-strategy.md` | IDE integration | Pending |
-| `docs/12-interfaces/21-user-ux-running-agents.md` | User UX running agents | Pending |
-| `docs/12-interfaces/22-statehub-projection-layer.md` | StateHub projection layer | Pending |
-| `docs/12-interfaces/23-rich-ux-primitives.md` | Rich UX primitives | Pending |
-| `docs/CLI-REFERENCE.md` | CLI reference | Pending |
-| `docs/API-REFERENCE.md` | API reference | Pending |
-| `docs/QUICKSTART.md` | Quickstart guide | Pending |
-| `docs/INTEGRATION-GUIDE.md` | Integration guide | Pending |
-| `docs/BENCHMARKS.md` | Benchmarks | Pending |
+| `docs/12-interfaces/00-cli-overview.md` | CLI overview | **Absorbed** → `02-cli-and-command-graph.md` |
+| `docs/12-interfaces/01-cli-command-reference.md` | CLI command reference | **Absorbed** → `02-cli-and-command-graph.md` |
+| `docs/12-interfaces/02-roko-new-scaffolders.md` | Scaffolders | **Absorbed** → `02-cli-and-command-graph.md` |
+| `docs/12-interfaces/03-progressive-help-and-explain.md` | Progressive help | **Absorbed** → `02-cli-and-command-graph.md` |
+| `docs/12-interfaces/05-http-api-roko-serve.md` | HTTP API | **Absorbed** → `05-http-api-and-realtime.md` |
+| `docs/12-interfaces/06-websocket-streaming.md` | WebSocket streaming | **Absorbed** → `05-http-api-and-realtime.md` |
+| `docs/12-interfaces/07-rosedust-design-language.md` | Rosedust design language | **Absorbed** → `04-rosedust-and-spectre.md` |
+| `docs/12-interfaces/08-tui-main-layout.md` | TUI main layout | **Absorbed** → `03-tui-screen-architecture.md` |
+| `docs/12-interfaces/09-tui-29-screens.md` | TUI 29 screens | **Absorbed** → `03-tui-screen-architecture.md` |
+| `docs/12-interfaces/10-spectre-creature-visualization.md` | Spectre creature visualization | **Absorbed** → `04-rosedust-and-spectre.md` |
+| `docs/12-interfaces/11-spectre-rendering-per-interface.md` | Spectre rendering | **Absorbed** → `04-rosedust-and-spectre.md` |
+| `docs/12-interfaces/12-spectre-as-collective-display.md` | Spectre collective display | **Absorbed** → `04-rosedust-and-spectre.md` |
+| `docs/12-interfaces/13-web-portal.md` | Web portal | **Absorbed** → `05-http-api-and-realtime.md` |
+| `docs/12-interfaces/14-agent-onboarding-flow.md` | Agent onboarding | **Absorbed** → `07-developer-experience-and-onboarding.md` |
+| `docs/12-interfaces/15-generative-interfaces-a2ui.md` | Generative interfaces (A2UI) | **Absorbed** → `06-generative-interfaces-and-a2ui.md` |
+| `docs/12-interfaces/16-sonification-reframed.md` | Sonification | **Absorbed** → `06-generative-interfaces-and-a2ui.md` |
+| `docs/12-interfaces/18-ux-innovation-proposals.md` | UX innovation proposals | **Absorbed** → `06-generative-interfaces-and-a2ui.md` |
+| `docs/12-interfaces/19-rust-sdk-developer-ux.md` | Rust SDK developer UX | **Absorbed** → `07-developer-experience-and-onboarding.md` |
+| `docs/12-interfaces/20-ide-integration-strategy.md` | IDE integration | **Absorbed** → `07-developer-experience-and-onboarding.md` |
+| `docs/12-interfaces/21-user-ux-running-agents.md` | User UX running agents | **Absorbed** → `01-surfaces-as-lens-composition.md` |
+| `docs/12-interfaces/22-statehub-projection-layer.md` | StateHub projection layer | **Absorbed** → `01-surfaces-as-lens-composition.md` |
+| `docs/12-interfaces/23-rich-ux-primitives.md` | Rich UX primitives | **Absorbed** → `06-generative-interfaces-and-a2ui.md` |
+| `docs/CLI-REFERENCE.md` | CLI reference | **Absorbed** → `02-cli-and-command-graph.md` |
+| `docs/API-REFERENCE.md` | API reference | **Absorbed** → `05-http-api-and-realtime.md` |
+| `docs/QUICKSTART.md` | Quickstart guide | **Absorbed** → `07-developer-experience-and-onboarding.md` |
+| `docs/INTEGRATION-GUIDE.md` | Integration guide | **Absorbed** → `07-developer-experience-and-onboarding.md` |
+| `docs/BENCHMARKS.md` | Benchmarks | **Absorbed** → `05-http-api-and-realtime.md` |
 
 ### [17-security/](17-security/) — Safety Detail
 
 | Source doc | Topic | Status |
 |---|---|---|
-| `docs/11-safety/00-defense-in-depth.md` | Defense in depth | Pending |
-| `docs/11-safety/01-capability-tokens.md` | Capability tokens | Pending |
-| `docs/11-safety/02-audit-chain.md` | Audit chain | Pending |
-| `docs/11-safety/03-taint-tracking.md` | Taint tracking | Pending |
-| `docs/11-safety/04-permits-allowlists.md` | Permits and allowlists | Pending |
-| `docs/11-safety/05-loop-detection.md` | Loop detection | Pending |
-| `docs/11-safety/06-sandboxing.md` | Sandboxing | Pending |
-| `docs/11-safety/07-prompt-security.md` | Prompt security | Pending |
-| `docs/11-safety/08-threat-model.md` | Threat model | Pending |
-| `docs/11-safety/09-adaptive-risk.md` | Adaptive risk | Pending |
-| `docs/11-safety/10-mev-protection.md` | MEV protection | Pending |
-| `docs/11-safety/11-temporal-logic.md` | Temporal logic | Pending |
-| `docs/11-safety/12-witness-dag.md` | Witness DAG | Pending |
-| `docs/11-safety/13-formal-verification.md` | Formal verification | Pending |
-| `docs/11-safety/14-cognitive-kernel-safety.md` | Cognitive kernel safety | Pending |
-| `docs/11-safety/15-forensic-ai.md` | Forensic AI | Pending |
+| `docs/11-safety/00-defense-in-depth.md` | Defense in depth | **Absorbed** → `02-defense-in-depth-as-pipeline.md` |
+| `docs/11-safety/01-capability-tokens.md` | Capability tokens | **Absorbed** → `03-capability-taint-and-ifc.md` |
+| `docs/11-safety/02-audit-chain.md` | Audit chain | **Absorbed** → `04-audit-witness-and-forensics.md` |
+| `docs/11-safety/03-taint-tracking.md` | Taint tracking | **Absorbed** → `03-capability-taint-and-ifc.md` |
+| `docs/11-safety/04-permits-allowlists.md` | Permits and allowlists | **Absorbed** → `02-defense-in-depth-as-pipeline.md` |
+| `docs/11-safety/05-loop-detection.md` | Loop detection | **Absorbed** → `05-adaptive-risk-as-loop.md` |
+| `docs/11-safety/06-sandboxing.md` | Sandboxing | **Absorbed** → `02-defense-in-depth-as-pipeline.md` |
+| `docs/11-safety/07-prompt-security.md` | Prompt security | **Absorbed** → `06-prompt-security-and-camel.md` |
+| `docs/11-safety/08-threat-model.md` | Threat model | **Absorbed** → `06-prompt-security-and-camel.md` |
+| `docs/11-safety/09-adaptive-risk.md` | Adaptive risk | **Absorbed** → `05-adaptive-risk-as-loop.md` |
+| `docs/11-safety/10-mev-protection.md` | MEV protection | **Absorbed** → `07-cognitive-kernel-and-formal-methods.md` |
+| `docs/11-safety/11-temporal-logic.md` | Temporal logic | **Absorbed** → `05-adaptive-risk-as-loop.md` |
+| `docs/11-safety/12-witness-dag.md` | Witness DAG | **Absorbed** → `04-audit-witness-and-forensics.md` |
+| `docs/11-safety/13-formal-verification.md` | Formal verification | **Absorbed** → `07-cognitive-kernel-and-formal-methods.md` |
+| `docs/11-safety/14-cognitive-kernel-safety.md` | Cognitive kernel safety | **Absorbed** → `07-cognitive-kernel-and-formal-methods.md` |
+| `docs/11-safety/15-forensic-ai.md` | Forensic AI | **Absorbed** → `04-audit-witness-and-forensics.md` |
 | `docs/00-architecture/26-cognitive-immune-system.md` | Cognitive immune system | **Absorbed** → `immune-system-as-graph.md` |
 
 ### [18-registries/](18-registries/) — Chain Detail
 
 | Source doc | Topic | Status |
 |---|---|---|
-| `docs/08-chain/00-vision-and-framing.md` | Chain vision | Pending |
-| `docs/08-chain/01-korai-chain-spec.md` | Korai chain spec | Pending |
-| `docs/08-chain/02-korai-token-economics.md` | Token economics | Pending |
-| `docs/08-chain/03-hdc-on-chain-precompile.md` | HDC on-chain precompile | Pending |
-| `docs/08-chain/04-korai-passport-erc-721-soulbound.md` | ERC-721 soulbound passport | Pending |
-| `docs/08-chain/05-ventriloquist-defense.md` | Ventriloquist defense | Pending |
-| `docs/08-chain/06-erc-8004-registries.md` | ERC-8004 registries | Pending |
-| `docs/08-chain/07-4-tier-gossip-architecture.md` | 4-tier gossip architecture | Pending |
-| `docs/08-chain/08-eight-gossip-topics.md` | 8 gossip topics | Pending |
-| `docs/08-chain/09-peer-scoring-3-layer.md` | 3-layer peer scoring | Pending |
-| `docs/08-chain/10-spore-job-market.md` | Spore job market | Pending |
-| `docs/08-chain/11-sparrow-power-of-two-choices.md` | Sparrow power-of-two-choices | Pending |
-| `docs/08-chain/12-three-hiring-models.md` | Three hiring models | Pending |
-| `docs/08-chain/13-vickrey-reputation-auction.md` | Vickrey reputation auction | Pending |
-| `docs/08-chain/14-reputation-system-7-domain.md` | 7-domain reputation system | Pending |
-| `docs/08-chain/15-chainwitness-event-watching.md` | ChainWitness event watching | Pending |
-| `docs/08-chain/16-triage-curiosity-midas.md` | Triage curiosity Midas | Pending |
-| `docs/08-chain/17-chain-client-wallet-traits.md` | Chain client wallet traits | Pending |
-| `docs/08-chain/18-mirage-rs-evm-simulator.md` | mirage-rs EVM simulator | Pending |
-| `docs/08-chain/19-chain-agent-heartbeat.md` | Chain agent heartbeat | Pending |
-| `docs/08-chain/20-x402-micropayments.md` | x402 micropayments | Pending |
-| `docs/08-chain/21-isfr-clearing-settlement.md` | ISFR clearing/settlement | Pending |
-| `docs/08-chain/22-valhalla-privacy-layer.md` | Valhalla privacy layer | Pending |
-| `docs/08-chain/23-knowledge-futures-market.md` | Knowledge futures market | Pending |
+| `docs/08-chain/00-vision-and-framing.md` | Chain vision | **Absorbed** → `01-chain-as-domain-plugin.md` |
+| `docs/08-chain/01-korai-chain-spec.md` | Korai chain spec | **Absorbed** → `01-chain-as-domain-plugin.md` |
+| `docs/08-chain/02-korai-token-economics.md` | Token economics | **Absorbed** → `01-chain-as-domain-plugin.md` |
+| `docs/08-chain/03-hdc-on-chain-precompile.md` | HDC on-chain precompile | **Absorbed** → `02-hdc-on-chain-and-verification.md` |
+| `docs/08-chain/04-korai-passport-erc-721-soulbound.md` | ERC-721 soulbound passport | **Absorbed** → `07-gossip-and-privacy.md` |
+| `docs/08-chain/05-ventriloquist-defense.md` | Ventriloquist defense | **Absorbed** → `07-gossip-and-privacy.md` |
+| `docs/08-chain/06-erc-8004-registries.md` | ERC-8004 registries | **Absorbed** → `01-chain-as-domain-plugin.md` |
+| `docs/08-chain/07-4-tier-gossip-architecture.md` | 4-tier gossip architecture | **Absorbed** → `07-gossip-and-privacy.md` |
+| `docs/08-chain/08-eight-gossip-topics.md` | 8 gossip topics | **Absorbed** → `07-gossip-and-privacy.md` |
+| `docs/08-chain/09-peer-scoring-3-layer.md` | 3-layer peer scoring | **Absorbed** → `04-reputation-and-peer-scoring.md` |
+| `docs/08-chain/10-spore-job-market.md` | Spore job market | **Absorbed** → `03-job-market-and-hiring.md` |
+| `docs/08-chain/11-sparrow-power-of-two-choices.md` | Sparrow power-of-two-choices | **Absorbed** → `03-job-market-and-hiring.md` |
+| `docs/08-chain/12-three-hiring-models.md` | Three hiring models | **Absorbed** → `03-job-market-and-hiring.md` |
+| `docs/08-chain/13-vickrey-reputation-auction.md` | Vickrey reputation auction | **Absorbed** → `04-reputation-and-peer-scoring.md` |
+| `docs/08-chain/14-reputation-system-7-domain.md` | 7-domain reputation system | **Absorbed** → `04-reputation-and-peer-scoring.md` |
+| `docs/08-chain/15-chainwitness-event-watching.md` | ChainWitness event watching | **Absorbed** → `05-chain-witness-and-triage.md` |
+| `docs/08-chain/16-triage-curiosity-midas.md` | Triage curiosity Midas | **Absorbed** → `05-chain-witness-and-triage.md` |
+| `docs/08-chain/17-chain-client-wallet-traits.md` | Chain client wallet traits | **Absorbed** → `05-chain-witness-and-triage.md` |
+| `docs/08-chain/18-mirage-rs-evm-simulator.md` | mirage-rs EVM simulator | **Absorbed** → `08-simulation-and-liveness.md` |
+| `docs/08-chain/19-chain-agent-heartbeat.md` | Chain agent heartbeat | **Absorbed** → `08-simulation-and-liveness.md` |
+| `docs/08-chain/20-x402-micropayments.md` | x402 micropayments | **Absorbed** → `06-payments-and-settlement.md` |
+| `docs/08-chain/21-isfr-clearing-settlement.md` | ISFR clearing/settlement (DEPRECATED) | **Absorbed** → `06-payments-and-settlement.md` |
+| `docs/08-chain/22-valhalla-privacy-layer.md` | Valhalla privacy layer | **Absorbed** → `07-gossip-and-privacy.md` |
+| `docs/08-chain/23-knowledge-futures-market.md` | Knowledge futures market | **Absorbed** → `06-payments-and-settlement.md` |
 
 ### [19-arenas/](19-arenas/) — Arena Detail
 

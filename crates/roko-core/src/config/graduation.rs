@@ -168,7 +168,7 @@ impl GraduationConfig {
         }
         // Sampling: graduate every Nth pulse (deterministic on seq)
         match min_sample {
-            Some(n) => seq % (n as u64) == 0,
+            Some(n) => seq.is_multiple_of(n as u64),
             None => false,
         }
     }

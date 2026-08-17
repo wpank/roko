@@ -227,16 +227,15 @@ pub fn decide(
                     a.similarity
                         .partial_cmp(&b.similarity)
                         .unwrap_or(std::cmp::Ordering::Equal)
-                }) {
-                    if top.similarity >= 0.55 {
-                        out.push(Reaction::confirm_insight(
-                            top.id.clone(),
-                            format!(
-                                "wisdom pheromone {} aligns with insight {} (sim={:.2})",
-                                p.id, top.id, top.similarity
-                            ),
-                        ));
-                    }
+                }) && top.similarity >= 0.55
+                {
+                    out.push(Reaction::confirm_insight(
+                        top.id.clone(),
+                        format!(
+                            "wisdom pheromone {} aligns with insight {} (sim={:.2})",
+                            p.id, top.id, top.similarity
+                        ),
+                    ));
                 }
             }
             _ => {}
@@ -283,7 +282,7 @@ pub fn decide(
             // Only one watcher should challenge; use id hash modulo to spread
             let last_char = i.id.chars().last().unwrap_or('0');
             let hash = (last_char as u32).wrapping_mul(2654435761);
-            if (hash % 13) == 0 && watcher_id.contains("consensus") {
+            if hash.is_multiple_of(13) && watcher_id.contains("consensus") {
                 out.push(Reaction::challenge_insight(
                     i.id.clone(),
                     format!(
@@ -391,22 +390,23 @@ pub fn decide(
     if insights.len() >= 5 {
         let first_kind = &insights[0].kind;
         let all_same = insights.iter().take(8).all(|i| i.kind == *first_kind);
-        if all_same {
-            if let Some(weakest) = insights.iter().min_by(|a, b| {
+        if all_same
+            && let Some(weakest) = insights.iter().min_by(|a, b| {
                 a.weight
                     .partial_cmp(&b.weight)
                     .unwrap_or(std::cmp::Ordering::Equal)
-            }) {
-                if weakest.confirmations >= 1 {
-                    out.push(Reaction::challenge_insight(
-                        weakest.id.clone(),
-                        format!(
-                            "diversity challenge: {} consecutive '{}' insights — testing weakest (w={:.2})",
-                            insights.len().min(8), first_kind, weakest.weight
-                        ),
-                    ));
-                }
-            }
+            })
+            && weakest.confirmations >= 1
+        {
+            out.push(Reaction::challenge_insight(
+                weakest.id.clone(),
+                format!(
+                    "diversity challenge: {} consecutive '{}' insights — testing weakest (w={:.2})",
+                    insights.len().min(8),
+                    first_kind,
+                    weakest.weight
+                ),
+            ));
         }
     }
 

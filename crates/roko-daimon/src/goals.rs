@@ -94,6 +94,12 @@ pub struct GoalNode {
     pub progress: f64,
     /// Status of the goal.
     pub status: GoalStatus,
+    /// Successful task outcomes attributed to this goal.
+    #[serde(default)]
+    pub success_count: u64,
+    /// Failed task outcomes attributed to this goal.
+    #[serde(default)]
+    pub failure_count: u64,
     /// Child goal IDs forming a sub-goal hierarchy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<String>,
@@ -131,6 +137,8 @@ impl GoalNode {
             priority: priority.clamp(0.0, 1.0),
             progress: 0.0,
             status: GoalStatus::Active,
+            success_count: 0,
+            failure_count: 0,
             children: Vec::new(),
             parent: None,
             created_at: now,
@@ -164,9 +172,35 @@ impl GoalNode {
     pub fn should_prune(&self, prune_threshold: f64) -> bool {
         self.priority < prune_threshold && self.status == GoalStatus::Active
     }
+
+    /// Apply one task outcome to an active goal.
+    pub fn update_outcome(&mut self, succeeded: bool, reward: f64, completion_threshold: f64) {
+        if self.status != GoalStatus::Active {
+            return;
+        }
+        let reward = if reward.is_finite() { reward } else { 0.0 };
+        if succeeded {
+            self.success_count = self.success_count.saturating_add(1);
+            self.priority = (self.priority + reward.max(0.0) * 0.05).clamp(0.0, 1.0);
+            let progress_delta = (0.20 + reward.max(0.0) * 0.05).clamp(0.05, 0.50);
+            self.progress = (self.progress + progress_delta).clamp(0.0, 1.0);
+            if self.success_count >= 3 || self.progress >= completion_threshold {
+                self.status = GoalStatus::Completed;
+            }
+        } else {
+            self.failure_count = self.failure_count.saturating_add(1);
+            self.priority = (self.priority - 0.10 - reward.min(0.0).abs() * 0.05).clamp(0.0, 1.0);
+            self.progress = (self.progress - 0.10).max(0.0);
+            if self.failure_count >= 3 && self.failure_count > self.success_count {
+                self.status = GoalStatus::Pruned;
+            }
+        }
+        self.updated_at = Utc::now();
+    }
 }
 
 /// Hierarchical goal structure managing seeds, active goals, and completed goals.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GoalTree {
     /// Seeds awaiting promotion.
     seeds: Vec<GoalSeed>,
@@ -239,6 +273,34 @@ impl GoalTree {
         promoted
     }
 
+    /// Promote one externally owned seed when this tree's thresholds are met.
+    pub fn promote_seed(&mut self, seed: &GoalSeed) -> bool {
+        if !seed.is_promotable(self.min_observations, self.min_score)
+            || self.nodes.contains_key(&seed.id)
+        {
+            return false;
+        }
+        let node = self.node_from_seed(seed);
+        self.nodes.insert(node.id.clone(), node);
+        true
+    }
+
+    /// Reinforce an already promoted pattern without creating a duplicate seed.
+    pub fn reinforce_pattern(&mut self, pattern: &str, reward: f64) -> bool {
+        let Some(goal) = self
+            .nodes
+            .values_mut()
+            .find(|goal| goal.description == pattern)
+        else {
+            return false;
+        };
+        if reward.is_finite() && matches!(goal.status, GoalStatus::Active | GoalStatus::Suspended) {
+            goal.priority = (goal.priority + reward * 0.01).clamp(0.0, 1.0);
+            goal.updated_at = Utc::now();
+        }
+        true
+    }
+
     /// Prune low-priority goals and seeds. Returns count of pruned items.
     pub fn prune(&mut self) -> usize {
         let mut pruned = 0;
@@ -287,8 +349,52 @@ impl GoalTree {
             b.priority
                 .partial_cmp(&a.priority)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
         });
         goals
+    }
+
+    /// Iterate over all goals regardless of status.
+    pub fn goals(&self) -> impl ExactSizeIterator<Item = &GoalNode> {
+        self.nodes.values()
+    }
+
+    /// Apply one outcome to every currently active goal.
+    pub fn update_active_goals(&mut self, succeeded: bool, reward: f64) {
+        for goal in self.nodes.values_mut().filter(|goal| goal.is_active()) {
+            goal.update_outcome(succeeded, reward, self.completion_threshold);
+        }
+    }
+
+    /// Enforce the operational phase's active-goal limit.
+    ///
+    /// Highest-priority suspended goals reactivate when capacity grows; excess
+    /// active goals are suspended rather than pruned.
+    pub fn enforce_active_limit(&mut self, limit: Option<usize>) {
+        let mut candidates = self
+            .nodes
+            .values()
+            .filter(|goal| matches!(goal.status, GoalStatus::Active | GoalStatus::Suspended))
+            .map(|goal| (goal.id.clone(), goal.priority))
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            right
+                .1
+                .partial_cmp(&left.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        let active_limit = limit.unwrap_or(candidates.len()).min(candidates.len());
+        for (index, (id, _)) in candidates.into_iter().enumerate() {
+            if let Some(goal) = self.nodes.get_mut(&id) {
+                goal.status = if index < active_limit {
+                    GoalStatus::Active
+                } else {
+                    GoalStatus::Suspended
+                };
+                goal.updated_at = Utc::now();
+            }
+        }
     }
 
     /// All root goals (no parent).
@@ -330,15 +436,20 @@ impl GoalTree {
         // Borrow workaround: split the mutation.
         let child_id_owned = child_id.to_string();
         let parent_id_owned = parent_id.to_string();
-        if let Some(parent) = self.nodes.get_mut(&parent_id_owned) {
-            if !parent.children.contains(&child_id_owned) {
-                parent.add_child(&child_id_owned);
-            }
+        if let Some(parent) = self.nodes.get_mut(&parent_id_owned)
+            && !parent.children.contains(&child_id_owned)
+        {
+            parent.add_child(&child_id_owned);
         }
         if let Some(child) = self.nodes.get_mut(&child_id_owned) {
             child.parent = Some(parent_id_owned);
         }
         true
+    }
+
+    fn node_from_seed(&self, seed: &GoalSeed) -> GoalNode {
+        let priority = (seed.score / (self.min_score * 3.0)).clamp(0.0, 1.0);
+        GoalNode::from_seed(seed, priority)
     }
 }
 
@@ -508,6 +619,47 @@ mod tests {
         let active = tree.active_goals();
         assert_eq!(active.len(), 2);
         assert!(active[0].priority >= active[1].priority);
+    }
+
+    #[test]
+    fn outcome_counts_drive_completion_and_pruning() {
+        let seed = GoalSeed::new("goal", "goal");
+        let mut successful = GoalNode::from_seed(&seed, 0.5);
+        for _ in 0..3 {
+            successful.update_outcome(true, 1.0, 0.95);
+        }
+        assert_eq!(successful.success_count, 3);
+        assert_eq!(successful.status, GoalStatus::Completed);
+
+        let mut failing = GoalNode::from_seed(&seed, 0.5);
+        for _ in 0..3 {
+            failing.update_outcome(false, -1.0, 0.95);
+        }
+        assert_eq!(failing.failure_count, 3);
+        assert_eq!(failing.status, GoalStatus::Pruned);
+    }
+
+    #[test]
+    fn active_limit_suspends_low_priority_and_reactivates_without_pruning() {
+        let mut tree = GoalTree::new(1, 1.0, 0.95, 0.0);
+        tree.observe("low", "low", 1.0);
+        tree.observe("medium", "medium", 5.0);
+        tree.observe("high", "high", 10.0);
+        tree.promote_seeds();
+
+        tree.enforce_active_limit(Some(2));
+        assert_eq!(tree.active_goals().len(), 2);
+        assert_eq!(
+            tree.get("low").map(|goal| goal.status),
+            Some(GoalStatus::Suspended)
+        );
+
+        tree.enforce_active_limit(None);
+        assert_eq!(tree.active_goals().len(), 3);
+        assert_eq!(
+            tree.get("low").map(|goal| goal.status),
+            Some(GoalStatus::Active)
+        );
     }
 
     #[test]

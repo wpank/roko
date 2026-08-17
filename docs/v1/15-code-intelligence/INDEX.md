@@ -1,5 +1,8 @@
 # Code Intelligence
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Structural understanding of source code for cognitive agents — parsing, symbol graphs, HDC fingerprints, search, and context assembly via the `roko-index` crate and `roko-lang-*` language providers.
 
 **Part of**: [Roko PRD](../INDEX.md)

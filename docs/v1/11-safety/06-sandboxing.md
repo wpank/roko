@@ -1,5 +1,8 @@
 # Sandboxing: Worktree Isolation and Process Containment
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer:** L0 Runtime, L1 Framework, L4 Orchestration
 >
 > **Cross-cut:** Safety & Provenance

@@ -752,11 +752,11 @@ impl HybridDB {
             return Ok(bytecode);
         }
         for account in self.dirty.accounts.values() {
-            if account.code_hash == Some(code_hash) {
-                if let Some(code) = account.code.clone() {
-                    self.bytecode_cache.lock().insert(code_hash, code.clone());
-                    return Ok(code);
-                }
+            if account.code_hash == Some(code_hash)
+                && let Some(code) = account.code.clone()
+            {
+                self.bytecode_cache.lock().insert(code_hash, code.clone());
+                return Ok(code);
             }
         }
         let bytecode = self
@@ -775,10 +775,10 @@ impl HybridDB {
     /// Returns upstream storage-fetching or parsing errors when the slot is
     /// not already satisfied by the dirty layer or read cache.
     pub fn storage(&mut self, address: Address, index: U256) -> Result<U256> {
-        if let Some(dirty) = self.dirty.accounts.get(&address) {
-            if let Some(value) = dirty.storage.get(&index) {
-                return Ok(*value);
-            }
+        if let Some(dirty) = self.dirty.accounts.get(&address)
+            && let Some(value) = dirty.storage.get(&index)
+        {
+            return Ok(*value);
         }
         if let Some(value) = self.read_cache.get_storage(&address, &index) {
             return Ok(value);
@@ -862,20 +862,20 @@ impl DatabaseCommit for HybridDB {
                 }
                 continue;
             }
-            if account.is_created() {
-                if let Some(old) = self.dirty.accounts.remove(&address) {
-                    self.dirty.total_dirty_slots = self
-                        .dirty
-                        .total_dirty_slots
-                        .saturating_sub(old.storage.len() as u64);
-                }
+            if account.is_created()
+                && let Some(old) = self.dirty.accounts.remove(&address)
+            {
+                self.dirty.total_dirty_slots = self
+                    .dirty
+                    .total_dirty_slots
+                    .saturating_sub(old.storage.len() as u64);
             }
             self.set_balance(address, account.info.balance);
             self.set_nonce(address, account.info.nonce);
-            if let Some(code) = account.info.code.clone() {
-                if !code.is_empty() {
-                    self.set_code(address, Bytecode::new_raw(code.bytecode().clone()));
-                }
+            if let Some(code) = account.info.code.clone()
+                && !code.is_empty()
+            {
+                self.set_code(address, Bytecode::new_raw(code.bytecode().clone()));
             }
             for (key, slot) in account.storage {
                 if slot.is_changed() {
@@ -1520,10 +1520,10 @@ fn state_diff_from_dirty_maps(
 
     let keys: HashSet<Address> = before.keys().chain(after.keys()).copied().collect();
     for addr in keys {
-        if let Some(after_acc) = after.get(&addr) {
-            if let Some(adiff) = account_diff_from_dirty_change(before.get(&addr), after_acc) {
-                diff.accounts.insert(addr, adiff);
-            }
+        if let Some(after_acc) = after.get(&addr)
+            && let Some(adiff) = account_diff_from_dirty_change(before.get(&addr), after_acc)
+        {
+            diff.accounts.insert(addr, adiff);
         }
     }
     diff

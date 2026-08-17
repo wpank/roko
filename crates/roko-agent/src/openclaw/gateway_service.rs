@@ -66,6 +66,7 @@ pub struct OpenClawGatewayService {
 
     /// Cached endpoint string for `endpoint()` to return `Option<&str>`.
     endpoint_str: String,
+    resource_limits: Option<crate::process::ResourceLimits>,
 }
 
 impl OpenClawGatewayService {
@@ -81,6 +82,7 @@ impl OpenClawGatewayService {
             pid_file: home.join(".openclaw").join("gateway.pid"),
             cached_pid: AtomicU32::new(0),
             endpoint_str: format!("ws://127.0.0.1:{ws_port}"),
+            resource_limits: None,
         }
     }
 
@@ -88,6 +90,12 @@ impl OpenClawGatewayService {
     pub fn with_port(mut self, port: u16) -> Self {
         self.ws_port = port;
         self.endpoint_str = format!("ws://127.0.0.1:{port}");
+        self
+    }
+
+    /// Apply OS resource limits to a gateway started by this service.
+    pub fn with_resource_limits(mut self, limits: crate::process::ResourceLimits) -> Self {
+        self.resource_limits = Some(limits);
         self
     }
 
@@ -194,7 +202,8 @@ impl HarnessService for OpenClawGatewayService {
         }
 
         // Spawn `openclaw gateway` as a background process.
-        let mut cmd = tokio::process::Command::new(&self.binary);
+        let mut cmd = crate::process::confined_command(&self.binary, self.resource_limits.as_ref())
+            .map_err(HarnessError::Io)?;
         cmd.arg("gateway");
         cmd.stdout(std::process::Stdio::null());
         cmd.stderr(std::process::Stdio::null());

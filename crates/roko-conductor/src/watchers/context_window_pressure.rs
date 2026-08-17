@@ -8,8 +8,8 @@
 //! Uses a lookback window (`PRESSURE_LOOKBACK = 3`) over recent `TokenUsage`
 //! signals instead of checking only the most recent signal.
 //!
-//! Emits `conductor.intervention` signals; `orchestrate.rs` must subscribe to
-//! react. Enable only after wiring a subscriber in the runner event loop.
+//! Emits `conductor.intervention` signals; runner v2 must subscribe and react.
+//! Enable only after wiring that consumer in the event loop.
 //!
 //! The watcher requires `Kind::TokenUsage` signals in the conductor's signal
 //! stream. These are emitted by the orchestrator after each agent dispatch
@@ -172,10 +172,10 @@ impl React for ContextWindowPressureWatcher {
 
 impl ContextWindowPressureWatcher {
     fn extract_usage(&self, signal: &Signal) -> Option<(f64, f64)> {
-        if let Ok(event) = signal.body.as_json::<AgentEfficiencyEvent>() {
-            if let Some(total) = self.context_window_tokens(&event.model) {
-                return Some((event.total_prompt_tokens as f64, total as f64));
-            }
+        if let Ok(event) = signal.body.as_json::<AgentEfficiencyEvent>()
+            && let Some(total) = self.context_window_tokens(&event.model)
+        {
+            return Some((event.total_prompt_tokens as f64, total as f64));
         }
 
         let used = signal.tag(TOKENS_USED_TAG)?.parse().ok()?;

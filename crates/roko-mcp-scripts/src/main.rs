@@ -186,11 +186,11 @@ fn handle_list_scripts(config: &AppConfig) -> Value {
 }
 
 async fn execute_script(config: &AppConfig, name: &str, args: &[String]) -> ScriptExecution {
-    if let Some(&idx) = config.scripts_by_name.get(name) {
-        if let Some(script) = config.scripts.get(idx) {
-            return execute_resolved_script(config, script.path.clone(), script.root.clone(), args)
-                .await;
-        }
+    if let Some(&idx) = config.scripts_by_name.get(name)
+        && let Some(script) = config.scripts.get(idx)
+    {
+        return execute_resolved_script(config, script.path.clone(), script.root.clone(), args)
+            .await;
     }
 
     let resolved = match resolve_script_path(&config.script_roots, name) {
@@ -524,7 +524,7 @@ impl AppConfig {
             .filter(|value| !value.trim().is_empty())
             .map(parse_timeout_secs)
             .transpose()?
-            .map_or_else(|| Duration::from_secs(60), Duration::from_secs);
+            .map_or_else(|| Duration::from_mins(1), Duration::from_secs);
         let mut env_allowlist = env::var("ROKO_MCP_SCRIPTS_ENV_ALLOWLIST")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -631,7 +631,8 @@ mod tests {
         let script = scripts_dir.join("hello.sh");
         fs::write(&script, "#!/bin/sh\necho hello\n").expect("write script");
 
-        let resolved = resolve_script_path(&[scripts_dir.clone()], "hello").expect("resolved");
+        let resolved =
+            resolve_script_path(std::slice::from_ref(&scripts_dir), "hello").expect("resolved");
         assert_eq!(
             resolved.path,
             fs::canonicalize(script).expect("canonical script")

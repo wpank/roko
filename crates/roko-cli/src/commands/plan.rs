@@ -161,6 +161,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             workdir,
         } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let _workspace_lock =
+                roko_cli::workspace_lock::acquire_workspace_lock(&wd.join(".roko"))?;
             let plan = Plan::new(plan_id.clone(), title, description);
             plan.validate()
                 .map_err(|errs| anyhow!("plan validation failed: {}", errs.join("; ")))?;
@@ -217,6 +219,19 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             };
             cmd_plan_validate(&plans_dir, &workdir, strict, json || cli.json)
         }
+        PlanCmd::Index { check, workdir } => {
+            let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            if check {
+                roko_cli::index::check_plans_index(&workdir)?;
+            } else {
+                roko_cli::index::rebuild_plans_index(&workdir)?;
+            }
+            if !cli.quiet {
+                let status = if check { "current" } else { "rebuilt" };
+                println!("plans index {status}");
+            }
+            Ok(EXIT_SUCCESS)
+        }
         PlanCmd::Run {
             plans_dir,
             engine,
@@ -252,28 +267,42 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 return Ok(exit_code);
             }
 
+            // Cross-plan Graph semantics belong to the exact set selected by
+            // `plan_loader` (one root plan, or the root's immediate plans),
+            // not to the generic validator's recursive file discovery. Run
+            // this preflight before both dry-run and workspace-lock mutation.
+            validate_graph_selected_plans_before_run(engine, &resolved_plans_dir)?;
+
             // ── Dry-run mode: parse plans + show summary without executing ──
             if dry_run {
                 return cmd_plan_dry_run(&resolved_plans_dir, cli).await;
             }
 
-            // ── Graph Engine path (default) ──
-            if matches!(engine, PlanEngine::Graph) {
-                // Warn about unsupported flags on the Graph Engine path.
-                if resume_plan.is_some() {
-                    eprintln!(
-                        "Note: --resume-plan is not yet supported by the Graph Engine; snapshots will be ignored."
-                    );
-                }
+            validate_graph_execution_options(engine, approval)?;
 
-                return cmd_plan_run_engine(&resolved_plans_dir, &wd, cli).await;
+            // Both execution engines mutate shared workspace/runtime state.
+            // Hold one guard across the complete selected engine lifetime.
+            let _lock = roko_cli::workspace_lock::acquire_workspace_lock(layout.root())?;
+
+            // ── Graph Engine path (explicit opt-in) ──
+            if matches!(engine, PlanEngine::Graph) {
+                return cmd_plan_run_engine(
+                    &resolved_plans_dir,
+                    &wd,
+                    cli,
+                    resume_plan.as_deref(),
+                    fresh,
+                    force_resume,
+                    max_retries,
+                    max_tasks,
+                    budget_override,
+                    no_budget,
+                )
+                .await;
             }
 
             // ── Runner v2 path ──
             {
-                // Acquire exclusive workspace lock before mutating state.
-                let _lock = roko_cli::workspace_lock::acquire_workspace_lock(layout.root())?;
-
                 if fresh {
                     let ts = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -359,22 +388,28 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 .max(1);
                 let state_hub = roko_cli::state_hub::shared_state_hub();
 
-                // Runner v2 auto-resumes from .roko/state/executor.json if it exists.
-                // Explicit --resume-plan paths are honored by copying to the standard location.
-                if !fresh {
-                    if let Some(ref snap_path) = resume_plan {
-                        let snap_path = if snap_path.is_relative() {
-                            wd.join(snap_path)
-                        } else {
-                            snap_path.clone()
-                        };
-                        let standard = layout.executor_snapshot();
-                        if snap_path != standard && snap_path.exists() {
-                            if let Some(parent) = standard.parent() {
-                                let _ = std::fs::create_dir_all(parent);
-                            }
-                            let _ = std::fs::copy(&snap_path, &standard);
+                // Runner v2 auto-resumes from the authoritative unified snapshot,
+                // with executor.json retained only as a NotFound compatibility path.
+                // Explicit legacy executor paths remain legacy; every other
+                // explicit snapshot is installed at the unified location.
+                if !fresh && let Some(ref snap_path) = resume_plan {
+                    let snap_path = if snap_path.is_relative() {
+                        wd.join(snap_path)
+                    } else {
+                        snap_path.clone()
+                    };
+                    let standard = if snap_path.file_name().and_then(|name| name.to_str())
+                        == Some("executor.json")
+                    {
+                        layout.executor_snapshot()
+                    } else {
+                        layout.state_dir().join("state-snapshot.json")
+                    };
+                    if snap_path != standard && snap_path.exists() {
+                        if let Some(parent) = standard.parent() {
+                            let _ = std::fs::create_dir_all(parent);
                         }
+                        let _ = std::fs::copy(&snap_path, &standard);
                     }
                 }
 
@@ -589,27 +624,35 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     feedback_facade: Some(feedback_facade),
                     projection: Some(projection),
                     http_event_sink: None,
-                    output_sink: if !approval && !cli.quiet && !cli.json {
-                        if roko_cli::inline::should_use_inline() {
-                            std::sync::Arc::new(roko_cli::runner::output_sink::StderrSink::new())
-                                as std::sync::Arc<dyn roko_cli::runner::output_sink::RunOutputSink>
+                    output_sink: {
+                        let human_sink: std::sync::Arc<
+                            dyn roko_cli::runner::output_sink::RunOutputSink,
+                        > = if !approval && !cli.quiet && !cli.json {
+                            if roko_cli::inline::should_use_inline() {
+                                std::sync::Arc::new(roko_cli::runner::output_sink::StderrSink::new())
+                            } else {
+                                std::sync::Arc::new(
+                                    roko_cli::runner::output_sink::FormattedStderrSink::new(
+                                        cli.color.should_color(),
+                                    ),
+                                )
+                            }
                         } else {
-                            std::sync::Arc::new(
-                                roko_cli::runner::output_sink::FormattedStderrSink::new(
-                                    cli.color.should_color(),
-                                ),
-                            )
-                                as std::sync::Arc<dyn roko_cli::runner::output_sink::RunOutputSink>
-                        }
-                    } else {
-                        std::sync::Arc::new(roko_cli::runner::output_sink::NoopSink)
-                            as std::sync::Arc<dyn roko_cli::runner::output_sink::RunOutputSink>
+                            std::sync::Arc::new(roko_cli::runner::output_sink::NoopSink)
+                        };
+                        roko_cli::runner::output_sink::with_acp_progress_sink(
+                            human_sink,
+                            roko_cli::runner::output_sink::is_acp_progress_enabled(
+                                std::env::var("ROKO_ACP_PROGRESS").ok().as_deref(),
+                            ),
+                        )
                     },
                     warm_cache: true,
                     metrics: Some(metrics.clone()),
                     obs_sinks: None,
                     conductor: Some(std::sync::Arc::new(conductor)),
                     conductor_ring: Some(conductor_ring),
+                    github_ops: None,
                 };
 
                 // Optionally spawn the approval TUI.
@@ -741,6 +784,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                                 "tokens_in": tc.tokens_in,
                                 "tokens_out": tc.tokens_out,
                                 "cost_usd": tc.cost_usd,
+                                "budget_usd": tc.budget_usd,
+                                "budget_exhausted": tc.budget_exhausted,
                                 "agent_calls": tc.agent_calls,
                                 "outcome": tc.outcome,
                             })).collect::<Vec<_>>(),
@@ -843,6 +888,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             use roko_cli::agent_exec::{AgentExecEpisode, AgentExecOpts, run_agent_logged};
 
             let workdir = std::env::current_dir().context("resolve cwd")?;
+            let _workspace_lock =
+                roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
             let gw = load_gateway_env(&workdir);
 
             // --from-notes: read .roko/notes/, cluster, generate one plan per cluster.
@@ -1056,6 +1103,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             use roko_cli::agent_exec::{AgentExecEpisode, AgentExecOpts, run_agent_logged};
 
             let workdir = std::env::current_dir().context("resolve cwd")?;
+            let _workspace_lock =
+                roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
             let tasks_path = plan_dir.join("tasks.toml");
             if !tasks_path.exists() {
                 anyhow::bail!("No tasks.toml found in {}", plan_dir.display());
@@ -1335,10 +1384,10 @@ pub(crate) async fn cmd_plan_dry_run(plans_dir: &Path, cli: &Cli) -> Result<i32>
         };
 
         total_tasks += task_count;
-        if let Some(ref fm) = plan.frontmatter {
-            if let Some(mins) = fm.estimated_minutes {
-                total_estimated_minutes += mins;
-            }
+        if let Some(ref fm) = plan.frontmatter
+            && let Some(mins) = fm.estimated_minutes
+        {
+            total_estimated_minutes += mins;
         }
 
         plan_summaries.push(json!({
@@ -1759,6 +1808,145 @@ fn format_pre_validation_context(
     }
 }
 
+/// Collect and validate the plan-level dependency graph used by the Graph
+/// Engine host. A single-plan graph cannot represent `depends_on_plan`, so the
+/// host enforces those dependencies before constructing or dispatching one.
+fn graph_plan_execution_order(
+    plans: &[roko_cli::runner::plan_loader::Plan],
+) -> Result<(
+    Vec<String>,
+    std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+)> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut plan_ids = BTreeSet::new();
+    for plan in plans {
+        if !plan_ids.insert(plan.id.as_str()) {
+            anyhow::bail!(
+                "Graph selected plan set contains duplicate plan ID '{}'",
+                plan.id
+            );
+        }
+    }
+
+    let dependencies = plans
+        .iter()
+        .map(|plan| {
+            let dependencies = plan
+                .tasks
+                .tasks
+                .iter()
+                .flat_map(|task| task.depends_on_plan.iter().cloned())
+                .collect::<BTreeSet<_>>();
+            (plan.id.clone(), dependencies)
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let order = graph_plan_topological_order(&dependencies)?;
+    Ok((order, dependencies))
+}
+
+/// Validate the exact Graph plan set before any execution-only side effects.
+///
+/// Graph dry-run follows the same cross-plan dependency rules as execution.
+/// The engine validates the freshly loaded set again under its workspace lock
+/// to fail closed if plan files change between preflight and execution.
+fn validate_graph_selected_plans_before_run(engine: PlanEngine, plans_dir: &Path) -> Result<()> {
+    if matches!(engine, PlanEngine::Graph) {
+        let plans = roko_cli::runner::plan_loader::load_plans(plans_dir)?;
+        graph_plan_execution_order(&plans)?;
+    }
+    Ok(())
+}
+
+/// Reject Graph options whose promised enforcement is not implemented.
+///
+/// The caller invokes this before acquiring the workspace lock or constructing
+/// any provider so `--approval` can never degrade into warning-and-continue.
+fn validate_graph_execution_options(engine: PlanEngine, approval: bool) -> Result<()> {
+    if matches!(engine, PlanEngine::Graph) && approval {
+        anyhow::bail!(
+            "--approval is not yet supported by the Graph Engine; no Graph work was dispatched"
+        );
+    }
+    Ok(())
+}
+
+fn graph_plan_topological_order(
+    dependencies: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+) -> Result<Vec<String>> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut indegree = BTreeMap::new();
+    let mut dependents = BTreeMap::<String, BTreeSet<String>>::new();
+    for (plan_id, plan_dependencies) in dependencies {
+        for dependency in plan_dependencies {
+            if dependency == plan_id {
+                anyhow::bail!("Graph plan '{plan_id}' cannot depend on itself");
+            }
+            if !dependencies.contains_key(dependency) {
+                anyhow::bail!(
+                    "Graph plan '{plan_id}' depends on unknown plan '{dependency}' in the selected plan set"
+                );
+            }
+            dependents
+                .entry(dependency.clone())
+                .or_default()
+                .insert(plan_id.clone());
+        }
+        indegree.insert(plan_id.clone(), plan_dependencies.len());
+    }
+
+    let mut ready = indegree
+        .iter()
+        .filter_map(|(plan_id, degree)| (*degree == 0).then_some(plan_id.clone()))
+        .collect::<BTreeSet<_>>();
+    let mut order = Vec::with_capacity(dependencies.len());
+    while let Some(plan_id) = ready.iter().next().cloned() {
+        ready.remove(&plan_id);
+        order.push(plan_id.clone());
+
+        if let Some(plan_dependents) = dependents.get(&plan_id) {
+            for dependent in plan_dependents {
+                let Some(degree) = indegree.get_mut(dependent) else {
+                    anyhow::bail!("Graph plan dependency index is inconsistent for '{dependent}'");
+                };
+                *degree = degree.saturating_sub(1);
+                if *degree == 0 {
+                    ready.insert(dependent.clone());
+                }
+            }
+        }
+    }
+
+    if order.len() != dependencies.len() {
+        let cycle = indegree
+            .into_iter()
+            .filter_map(|(plan_id, degree)| (degree > 0).then_some(plan_id))
+            .collect::<Vec<_>>();
+        anyhow::bail!(
+            "Graph plan dependency cycle involving: {}",
+            cycle.join(", ")
+        );
+    }
+
+    Ok(order)
+}
+
+fn unsatisfied_graph_plan_dependencies(
+    plan_id: &str,
+    dependencies: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    outcomes: &std::collections::BTreeMap<String, bool>,
+) -> Vec<String> {
+    dependencies
+        .get(plan_id)
+        .into_iter()
+        .flatten()
+        .filter(|dependency| outcomes.get(*dependency) != Some(&true))
+        .cloned()
+        .collect()
+}
+
 /// Execute plans via the Graph Engine path.
 ///
 /// Loads plans using the Runner v2 plan_loader, converts each to a Graph
@@ -1766,20 +1954,104 @@ fn format_pre_validation_context(
 /// GraphEngine with the default cell registry.
 async fn cmd_plan_run_engine(
     plans_dir: &std::path::Path,
-    _workdir: &std::path::Path,
+    workdir: &std::path::Path,
     cli: &Cli,
+    resume_plan: Option<&std::path::Path>,
+    fresh: bool,
+    force_resume: bool,
+    max_retries: Option<u32>,
+    max_tasks: usize,
+    budget_override: Option<f64>,
+    no_budget: bool,
 ) -> Result<i32> {
+    use std::sync::Arc;
+
     use roko_graph::cell::CellContext;
+    use roko_graph::cells::{TaskDispatcher, TaskExecutorCell};
     use roko_graph::convert::{PlanTaskInfo, plan_to_graph};
     use roko_graph::engine::GraphEngine;
 
     let plans = roko_cli::runner::plan_loader::load_plans(plans_dir)?;
+    // Validate the complete selected set before initializing extensions or
+    // launching a provider. This makes missing and cyclic cross-plan
+    // dependencies fail closed without partially executing the batch.
+    let (plan_execution_order, plan_dependencies) = graph_plan_execution_order(&plans)?;
+
+    // Build the same provider/config/extension foundation used by runner-v2.
+    // Graph tasks are Activities, but they must still share rate limits,
+    // health state, prompt context, MCP/plugin handlers, and safety contracts.
+    let mut roko_config = roko_core::config::loader::load_config_validated(workdir)
+        .map_err(|error| anyhow!("load Graph runtime config: {error}"))?
+        .into_config();
+    roko_core::config::loader::normalize_and_validate_dispatch_models(&mut roko_config)
+        .context("validate model configuration before Graph dispatch")?;
+    let (plan_budget_ceiling, budget_override_active) = resolve_budget_ceiling(
+        budget_override,
+        no_budget,
+        f64::from(roko_config.budget.max_plan_usd),
+    );
+    if !roko_config.agent.default_model.trim().is_empty() {
+        crate::commands::util::preflight_provider_for_model(
+            &roko_config,
+            &roko_config.agent.default_model,
+        )?;
+    }
+    let graph_run_config = roko_cli::runner::RunConfig::from_roko_config(
+        workdir.to_path_buf(),
+        plans_dir.to_path_buf(),
+        roko_config.clone(),
+    );
+    roko_cli::runner::event_loop::initialize_extensions(graph_run_config.extension_chain.as_ref())
+        .await?;
+
+    let roko_config = Arc::new(roko_config);
+    let prompt_cache = Arc::new(roko_cli::dispatch::PromptCache::load(workdir));
+    let mut shared_factory = roko_cli::dispatch::SharedAgentFactory::new(
+        Arc::clone(&roko_config),
+        roko_config.agent.mcp_config.as_ref(),
+        graph_run_config.cascade_router.clone(),
+        Some(prompt_cache),
+    )
+    .await
+    .with_health_registry(Arc::new(
+        roko_learn::provider_health::ProviderHealthRegistry::load_or_new(
+            &RokoLayout::for_project(workdir)
+                .learn_dir()
+                .join("provider-health.json"),
+        ),
+    ));
+    let plugin_catalog = roko_cli::runner::extension_loader::resolve_plugin_tool_catalog(
+        workdir,
+        &roko_config.agent.extensions,
+        &[],
+    )?;
+    if !plugin_catalog.plugin_tools().is_empty() {
+        shared_factory = shared_factory.with_local_tool_runtime(plugin_catalog.local_runtime());
+    }
+    let shared_factory = Arc::new(shared_factory);
+    let graph_task_dispatcher = Arc::new(
+        roko_cli::graph_task_dispatch::GraphTaskDispatcher::new(
+            Arc::clone(&shared_factory),
+            Arc::clone(&roko_config),
+            workdir.to_path_buf(),
+        )
+        .with_plan_budget(
+            plan_budget_ceiling,
+            f64::from(roko_config.budget.max_turn_usd),
+            budget_override_active,
+        ),
+    );
+    let task_dispatcher: Arc<dyn TaskDispatcher> = graph_task_dispatcher.clone();
+    let graph_telemetry: Arc<dyn roko_core::TelemetryEventSink> =
+        Arc::new(roko_cli::runner::event_loop::StateHubTelemetrySink::new(
+            roko_cli::state_hub::shared_state_hub().sender(),
+        ));
 
     let total_tasks: usize = plans.iter().map(|p| p.tasks.tasks.len()).sum();
     let plan_count = plans.len();
 
     if !cli.quiet && !cli.json {
-        let plan_names: Vec<&str> = plans.iter().map(|p| p.id.as_str()).collect();
+        let plan_names: Vec<&str> = plan_execution_order.iter().map(String::as_str).collect();
         eprintln!(
             "\u{25b8} Running plan{} via Graph Engine ({} task{}): {}",
             if plan_count == 1 { "" } else { "s" },
@@ -1791,15 +2063,27 @@ async fn cmd_plan_run_engine(
 
     let mut all_succeeded = true;
     let mut total_output_count = 0usize;
-    let dry_run_stub = true;
+    let mut plan_outcomes = std::collections::BTreeMap::<String, bool>::new();
 
-    if !cli.quiet && !cli.json {
-        eprintln!(
-            "  warning: Graph Engine plan execution is currently a dry-run stub; no agents or LLMs will be dispatched."
-        );
-    }
+    for plan_id in &plan_execution_order {
+        let plan = plans
+            .iter()
+            .find(|plan| &plan.id == plan_id)
+            .ok_or_else(|| anyhow!("Graph execution order references unloaded plan '{plan_id}'"))?;
+        let unsatisfied =
+            unsatisfied_graph_plan_dependencies(&plan.id, &plan_dependencies, &plan_outcomes);
+        if !unsatisfied.is_empty() {
+            eprintln!(
+                "  blocked: plan '{}' prerequisite plan{} did not succeed: {}",
+                plan.id,
+                if unsatisfied.len() == 1 { "" } else { "s" },
+                unsatisfied.join(", "),
+            );
+            plan_outcomes.insert(plan.id.clone(), false);
+            all_succeeded = false;
+            continue;
+        }
 
-    for plan in &plans {
         if !cli.quiet && !cli.json {
             eprintln!(
                 "  Running plan '{}' via Graph Engine ({} tasks)...",
@@ -1824,7 +2108,7 @@ async fn cmd_plan_run_engine(
                     depends_on: t.depends_on.clone(),
                     depends_on_plan: t.depends_on_plan.clone(),
                     timeout_secs: t.timeout_secs,
-                    max_retries: t.max_retries,
+                    max_retries: max_retries.unwrap_or(t.max_retries),
                     domain: t.domain.as_ref().map(|d| format!("{d:?}")),
                     sequence: t.sequence,
                     full_config_json: serde_json::to_value(t).unwrap_or_default(),
@@ -1833,7 +2117,11 @@ async fn cmd_plan_run_engine(
             })
             .collect();
 
-        let max_parallel = plan.tasks.meta.max_parallel;
+        let max_parallel = if max_tasks > 0 {
+            u32::try_from(max_tasks).unwrap_or(u32::MAX)
+        } else {
+            plan.tasks.meta.max_parallel
+        };
         let plan_dir_str = plan.dir.display().to_string();
 
         let graph = match plan_to_graph(&plan.id, &plan_dir_str, &tasks, max_parallel) {
@@ -1843,14 +2131,37 @@ async fn cmd_plan_run_engine(
                     "  error: failed to convert plan '{}' to graph: {e}",
                     plan.id
                 );
+                plan_outcomes.insert(plan.id.clone(), false);
                 all_succeeded = false;
                 continue;
             }
         };
 
-        let registry = roko_graph::default_registry();
-        let engine = GraphEngine::new(graph, registry);
-        let ctx = CellContext::new();
+        let mut registry = roko_graph::default_registry();
+        let plan_dispatcher = Arc::clone(&task_dispatcher);
+        registry.register("task-executor", move |config| {
+            Box::new(TaskExecutorCell::live(config, Arc::clone(&plan_dispatcher)))
+        });
+        let mut checkpoint = roko_cli::graph_checkpoint::prepare_graph_checkpoint(
+            workdir,
+            resume_plan,
+            &plan.id,
+            plan_count,
+            &graph,
+            fresh,
+            force_resume,
+        )?;
+        let run_id = checkpoint.run_id().to_string();
+        let replayed_entries = checkpoint.replayed_entries();
+        graph_task_dispatcher
+            .attach_plan_budget_checkpoint(&plan.id, checkpoint.take_cost_ledger())?;
+        let mut engine = GraphEngine::new(graph, registry)
+            .with_recorder(checkpoint.take_recorder())
+            .with_telemetry(Arc::clone(&graph_telemetry));
+        if let Some(replayer) = checkpoint.take_replayer() {
+            engine = engine.with_replayer(replayer);
+        }
+        let ctx = CellContext::new().with_run_id(run_id);
 
         // Validate before running.
         let issues = engine.validate();
@@ -1859,8 +2170,20 @@ async fn cmd_plan_run_engine(
             for issue in &issues {
                 eprintln!("    - {issue}");
             }
+            plan_outcomes.insert(plan.id.clone(), false);
             all_succeeded = false;
+            checkpoint.finish(false)?;
             continue;
+        }
+
+        if replayed_entries > 0 && !cli.quiet && !cli.json {
+            eprintln!(
+                "  Resuming plan '{}' with {} completed task output{} from {}",
+                plan.id,
+                replayed_entries,
+                if replayed_entries == 1 { "" } else { "s" },
+                checkpoint.paths().manifest.display(),
+            );
         }
 
         match engine.execute(&ctx).await {
@@ -1871,11 +2194,11 @@ async fn cmd_plan_run_engine(
                     .map(|r| r.output_count)
                     .sum::<usize>();
                 total_output_count += output_count;
+                let budget = graph_task_dispatcher.plan_budget_snapshot(&plan.id);
+                let execution_succeeded = output.success && !budget.dispatch_blocked;
 
                 if !cli.quiet && !cli.json {
-                    let status = if dry_run_stub && output.success {
-                        "DRY-RUN"
-                    } else if output.success {
+                    let status = if execution_succeeded {
                         "SUCCESS"
                     } else {
                         "FAILED"
@@ -1887,15 +2210,64 @@ async fn cmd_plan_run_engine(
                         output_count,
                         status,
                     );
+                    if budget.exhausted {
+                        let ceiling = budget.ceiling_usd.unwrap_or_default();
+                        if budget.dispatch_blocked {
+                            eprintln!(
+                                "  Plan '{}' budget exhausted: ${:.4} >= ${ceiling:.4}",
+                                plan.id, budget.spent_usd,
+                            );
+                        } else {
+                            eprintln!(
+                                "  Plan '{}' budget exhausted: ${:.4} >= ${ceiling:.4}; explicit override active, continuing",
+                                plan.id, budget.spent_usd,
+                            );
+                        }
+                    }
                 }
-                if !output.success {
+                if !execution_succeeded {
                     all_succeeded = false;
                 }
+                plan_outcomes.insert(plan.id.clone(), execution_succeeded);
+                checkpoint.finish(execution_succeeded)?;
             }
             Err(e) => {
                 eprintln!("  error: plan '{}' execution failed: {e}", plan.id);
+                plan_outcomes.insert(plan.id.clone(), false);
                 all_succeeded = false;
+                checkpoint.finish(false)?;
             }
+        }
+    }
+
+    let plan_budgets = plans
+        .iter()
+        .map(|plan| {
+            let budget = graph_task_dispatcher.plan_budget_snapshot(&plan.id);
+            serde_json::json!({
+                "plan_id": plan.id,
+                "spent_usd": budget.spent_usd,
+                "reserved_usd": budget.reserved_usd,
+                "ceiling_usd": budget.ceiling_usd,
+                "exhausted": budget.exhausted,
+                "dispatch_blocked": budget.dispatch_blocked,
+            })
+        })
+        .collect::<Vec<_>>();
+    let total_cost_usd = plans
+        .iter()
+        .map(|plan| {
+            graph_task_dispatcher
+                .plan_budget_snapshot(&plan.id)
+                .spent_usd
+        })
+        .sum::<f64>();
+
+    if let Some(extension_chain) = graph_run_config.extension_chain.as_ref() {
+        let mut chain = extension_chain.lock().await;
+        for (name, error) in chain.shutdown_all().await {
+            eprintln!("  warning: extension '{name}' shutdown failed: {error}");
+            all_succeeded = false;
         }
     }
 
@@ -1904,21 +2276,24 @@ async fn cmd_plan_run_engine(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "engine": "graph",
-                "dry_run": dry_run_stub,
+                "dry_run": false,
                 "succeeded": all_succeeded,
                 "plan_count": plan_count,
                 "total_tasks": total_tasks,
                 "total_outputs": total_output_count,
+                "total_cost_usd": total_cost_usd,
+                "plan_budgets": plan_budgets,
             }))
             .unwrap_or_default()
         );
     } else if !cli.quiet {
         eprintln!(
-            "\n\u{25b8} Graph Engine complete (dry-run stub): {} plan{}, {} tasks, {} output signals",
+            "\n\u{25b8} Graph Engine complete: {} plan{}, {} tasks, {} output signals, ${:.4}",
             plan_count,
             if plan_count == 1 { "" } else { "s" },
             total_tasks,
             total_output_count,
+            total_cost_usd,
         );
     }
 
@@ -1960,6 +2335,32 @@ pub(crate) fn resolve_budget_ceiling(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    fn graph_test_plan(id: &str, dependencies: &[&str]) -> roko_cli::runner::plan_loader::Plan {
+        let mut tasks = roko_cli::task_parser::TasksFile::parse_str(
+            r#"
+[meta]
+plan = "test-plan"
+
+[[task]]
+id = "T1"
+title = "Test task"
+role = "researcher"
+"#,
+        )
+        .expect("parse graph test plan");
+        tasks.meta.plan = id.to_string();
+        tasks.tasks[0].depends_on_plan = dependencies
+            .iter()
+            .map(|dependency| (*dependency).to_string())
+            .collect();
+        roko_cli::runner::plan_loader::Plan {
+            id: id.to_string(),
+            dir: PathBuf::from(id),
+            tasks,
+            prd_excerpt: String::new(),
+        }
+    }
 
     #[test]
     fn read_executor_state_returns_none_without_snapshot() {
@@ -2048,5 +2449,173 @@ mod tests {
             "override should ignore config"
         );
         assert!(bypass);
+    }
+
+    #[test]
+    fn graph_plan_order_honors_dependencies_before_lexical_order() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let dependencies = BTreeMap::from([
+            (
+                "a-consumer".to_string(),
+                BTreeSet::from(["z-foundation".to_string()]),
+            ),
+            ("m-independent".to_string(), BTreeSet::new()),
+            ("z-foundation".to_string(), BTreeSet::new()),
+        ]);
+
+        let order = graph_plan_topological_order(&dependencies).expect("valid plan graph");
+        assert_eq!(order, ["m-independent", "z-foundation", "a-consumer"]);
+    }
+
+    #[test]
+    fn graph_plan_order_rejects_unknown_dependency_before_dispatch() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let dependencies = BTreeMap::from([(
+            "consumer".to_string(),
+            BTreeSet::from(["missing-foundation".to_string()]),
+        )]);
+
+        let error = graph_plan_topological_order(&dependencies).expect_err("unknown plan");
+        assert!(
+            error
+                .to_string()
+                .contains("unknown plan 'missing-foundation'")
+        );
+    }
+
+    #[test]
+    fn graph_plan_order_rejects_self_dependency_before_dispatch() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let dependencies = BTreeMap::from([(
+            "self-dependent".to_string(),
+            BTreeSet::from(["self-dependent".to_string()]),
+        )]);
+
+        let error = graph_plan_topological_order(&dependencies).expect_err("self dependency");
+        assert!(
+            error
+                .to_string()
+                .contains("plan 'self-dependent' cannot depend on itself")
+        );
+    }
+
+    #[test]
+    fn graph_plan_order_rejects_duplicate_plan_ids_before_collection() {
+        let plans = [
+            graph_test_plan("duplicate", &[]),
+            graph_test_plan("duplicate", &[]),
+        ];
+
+        let error = graph_plan_execution_order(&plans).expect_err("duplicate plan ID");
+        assert!(error.to_string().contains("duplicate plan ID 'duplicate'"));
+    }
+
+    #[test]
+    fn graph_plan_order_rejects_cross_plan_cycle_before_dispatch() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let dependencies = BTreeMap::from([
+            ("plan-a".to_string(), BTreeSet::from(["plan-b".to_string()])),
+            ("plan-b".to_string(), BTreeSet::from(["plan-a".to_string()])),
+        ]);
+
+        let error = graph_plan_topological_order(&dependencies).expect_err("dependency cycle");
+        assert!(error.to_string().contains("dependency cycle"));
+        assert!(error.to_string().contains("plan-a, plan-b"));
+    }
+
+    #[test]
+    fn graph_plan_failure_blocks_downstream_plan() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let dependencies = BTreeMap::from([
+            ("foundation".to_string(), BTreeSet::new()),
+            (
+                "consumer".to_string(),
+                BTreeSet::from(["foundation".to_string()]),
+            ),
+        ]);
+        let failed = BTreeMap::from([("foundation".to_string(), false)]);
+        assert_eq!(
+            unsatisfied_graph_plan_dependencies("consumer", &dependencies, &failed),
+            ["foundation"]
+        );
+
+        let succeeded = BTreeMap::from([("foundation".to_string(), true)]);
+        assert!(
+            unsatisfied_graph_plan_dependencies("consumer", &dependencies, &succeeded).is_empty()
+        );
+    }
+
+    #[test]
+    fn graph_plan_failure_blocks_transitive_downstream_plans() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let dependencies = BTreeMap::from([
+            ("foundation".to_string(), BTreeSet::new()),
+            (
+                "middle".to_string(),
+                BTreeSet::from(["foundation".to_string()]),
+            ),
+            (
+                "consumer".to_string(),
+                BTreeSet::from(["middle".to_string()]),
+            ),
+        ]);
+        let mut outcomes = BTreeMap::from([("foundation".to_string(), false)]);
+
+        assert_eq!(
+            unsatisfied_graph_plan_dependencies("middle", &dependencies, &outcomes),
+            ["foundation"]
+        );
+        outcomes.insert("middle".to_string(), false);
+        assert_eq!(
+            unsatisfied_graph_plan_dependencies("consumer", &dependencies, &outcomes),
+            ["middle"]
+        );
+    }
+
+    #[test]
+    fn graph_selected_plan_preflight_runs_without_creating_workspace_lock() {
+        let workspace = tempdir().expect("tempdir");
+        let plans_dir = workspace.path().join("plans");
+        let consumer_dir = plans_dir.join("consumer");
+        std::fs::create_dir_all(&consumer_dir).expect("create consumer plan directory");
+        std::fs::write(
+            consumer_dir.join("tasks.toml"),
+            r#"
+[meta]
+plan = "consumer"
+
+[[task]]
+id = "T1"
+title = "Consume foundation"
+role = "researcher"
+depends_on_plan = ["missing-foundation"]
+"#,
+        )
+        .expect("write consumer plan");
+        let lock_path = workspace.path().join(".roko/runtime/roko.lock");
+
+        let error = validate_graph_selected_plans_before_run(PlanEngine::Graph, &plans_dir)
+            .expect_err("unknown selected dependency");
+
+        assert!(error.to_string().contains("missing-foundation"));
+        assert!(
+            !lock_path.exists(),
+            "Graph preflight must not create a lock"
+        );
+    }
+
+    #[test]
+    fn graph_approval_fails_closed_instead_of_dispatching_unapproved_work() {
+        let error = validate_graph_execution_options(PlanEngine::Graph, true)
+            .expect_err("unsupported Graph approval must fail closed");
+        assert!(error.to_string().contains("no Graph work was dispatched"));
+        assert!(validate_graph_execution_options(PlanEngine::Graph, false).is_ok());
+        assert!(validate_graph_execution_options(PlanEngine::RunnerV2, true).is_ok());
     }
 }

@@ -1,5 +1,8 @@
 # 11 — Vickrey Reputation-Adjusted Auction
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The job market uses a Vickrey (second-price) auction modified by reputation. This creates
 > a truthful mechanism where high-reputation agents are naturally favored without
 > distorting incentives. This document specifies the auction formula, the truthfulness

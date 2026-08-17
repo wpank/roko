@@ -1,6 +1,8 @@
 # Collective Metrics as Lens
 
 > Depth for [06-MEMORY.md](../../unified/06-MEMORY.md). How collective intelligence is measured via a Lens Graph reading Bus and Store, the five-axis c-factor (Woolley et al. 2010), WisdomGate verification, groupthink countermeasures, the seven compounding flywheel Loops, and scaling analysis (stigmergy O(N*M) vs direct O(N^2)).
+>
+> **Implementation status (2026-08-17):** Partially implemented. The single-agent c-factor computation (`crates/roko-learn/src/cfactor.rs`) is wired and used as a covariate in cascade routing. The multi-agent CollectiveIntelligenceLens, WisdomGate Verify Cell, groupthink countermeasures, and pheromone-based flywheel Loops described in this doc are spec/design — they depend on multi-agent group coordination that is product work. See `.roko/GAPS.md`.
 
 **Depends on**: [01-SIGNAL](../../unified/01-SIGNAL.md) (Signal/Pulse duality, HDC fingerprints), [02-CELL](../../unified/02-CELL.md) (Score, Verify, Observe, React protocols), [03-GRAPH](../../unified/03-GRAPH.md) (Lens specialization, Loop pattern), [07-LEARNING](../../unified/07-LEARNING.md) (c-factor as covariate, calibration), [15-TELEMETRY](../../unified/15-TELEMETRY.md) (Lens system, StateHub projections), [11-stigmergy-as-bus](11-stigmergy-as-bus.md) (Bus-native stigmergy), [12-pheromone-mechanics-and-interference](12-pheromone-mechanics-and-interference.md) (Alpha paradox, kind system)
 

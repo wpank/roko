@@ -1,5 +1,8 @@
 # Generational and Evolutionary Systems
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for evolutionary computation, cultural evolution, knowledge compression, and generational learning relevant to Roko's knowledge lifecycle and EvoSkills.
 
 **Topic**: [References](./INDEX.md)

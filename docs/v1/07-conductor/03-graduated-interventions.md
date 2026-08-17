@@ -1,5 +1,8 @@
 # Graduated Interventions
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Three actions. No nudges. Continue, Restart, or Fail.
 > The Conductor decides; it does not suggest.
 

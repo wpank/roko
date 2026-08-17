@@ -4,7 +4,8 @@
 //! `roko_core::config::loader` which is called by `cmd_show_effective`.
 
 use roko_core::config::loader::{
-    redact_secrets_in_toml_str as redact_secrets_in_toml, serialize_effective_redacted,
+    REDACTED_MARKER, redact_secrets_in_toml_str as redact_secrets_in_toml,
+    serialize_effective_redacted,
 };
 use roko_core::config::schema::RokoConfig;
 
@@ -63,8 +64,8 @@ fn config_show_effective_redacts_secret() {
 
     // The mask placeholder must appear for non-empty fields.
     assert!(
-        output.contains("****"),
-        "redacted fields must show '****'; got:\n{output}"
+        output.contains(REDACTED_MARKER),
+        "redacted fields must show the stable marker; got:\n{output}"
     );
 }
 
@@ -104,9 +105,9 @@ enabled = true
 api_key = ""
 "#;
     let output = redact_secrets_in_toml(toml_str);
-    // The empty string should remain empty (or omitted) — NOT become "****".
+    // The empty string should remain empty (or omitted), not become the marker.
     assert!(
-        !output.contains("****"),
+        !output.contains(REDACTED_MARKER),
         "empty secret fields must not be masked; got:\n{output}"
     );
 }

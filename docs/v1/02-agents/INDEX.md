@@ -1,5 +1,8 @@
 # 02 — Agents
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Topic index for the Roko agent system documentation.
 >
 > This topic covers the `Agent` trait, provider registry, provider adapters,

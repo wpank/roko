@@ -1,5 +1,8 @@
 # Somatic Technical Analysis and Emergent Multiscale Intelligence
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Somatic TA uses Damasio's somatic marker hypothesis to create "gut feelings" about TA patterns. Emergent multiscale intelligence measures integrated information (IIT Phi) across the TA subsystems, detecting when the whole is greater than the sum of its parts.
 
 

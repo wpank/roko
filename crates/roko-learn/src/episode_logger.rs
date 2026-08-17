@@ -37,8 +37,6 @@ use roko_core::{EmotionalTag, Signal};
 use roko_primitives::hdc::{HdcVector, text_fingerprint};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::fs::OpenOptions;
-use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex as AsyncMutex;
 
 /// Maximum serialized size (in bytes) of a single episode's `extra`
@@ -984,6 +982,8 @@ pub struct EpisodeLogger {
 #[derive(Debug)]
 struct LoggerInner {
     path: PathBuf,
+    /// Canonical E47 size threshold, in MiB.
+    rotation_max_mb: u64,
     /// Counter of successful appends — protected by `parking_lot` for
     /// synchronous introspection even off the tokio runtime.
     writes: SyncMutex<u64>,
@@ -997,9 +997,19 @@ impl EpisodeLogger {
     /// on first `append`.
     #[must_use]
     pub fn new(path: impl AsRef<Path>) -> Self {
+        Self::with_rotation_max_mb(
+            path,
+            roko_core::config::ResourcesConfig::default().log_rotation_max_mb,
+        )
+    }
+
+    /// Create a logger with an explicit E47 rotation threshold.
+    #[must_use]
+    pub fn with_rotation_max_mb(path: impl AsRef<Path>, rotation_max_mb: u64) -> Self {
         Self {
             inner: Arc::new(LoggerInner {
                 path: path.as_ref().to_path_buf(),
+                rotation_max_mb,
                 writes: SyncMutex::new(0),
                 write_gate: AsyncMutex::new(()),
             }),
@@ -1043,24 +1053,17 @@ impl EpisodeLogger {
         // Serialize writers within this process so concurrent appends
         // cannot interleave bytes across a single JSONL record.
         let gate = self.inner.write_gate.lock().await;
-        // Size-based rotation: once the live file is past the
-        // threshold, push it onto the rotation chain so the JSONL we
-        // open is fresh.
-        crate::jsonl_rotation::rotate_if_needed(
-            &self.inner.path,
-            crate::jsonl_rotation::DEFAULT_ROTATION_THRESHOLD_BYTES,
-        )
-        .await?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.inner.path)
-            .await?;
-        file.write_all(line.as_bytes()).await?;
-        file.flush().await?;
-        // Durability: a crash mid-write can leave at most a partial
-        // trailing line, which the reader tolerates.
-        file.sync_all().await?;
+        let path = self.inner.path.clone();
+        let max_mb = self.inner.rotation_max_mb;
+        tokio::task::spawn_blocking(move || {
+            roko_fs::log_rotation::append_jsonl_line_sync(&path, line.as_bytes(), max_mb)
+        })
+        .await
+        .map_err(|error| {
+            LoggerError::Io(std::io::Error::other(format!(
+                "episode append task failed: {error}"
+            )))
+        })??;
         drop(gate);
         *self.inner.writes.lock() += 1;
         Ok(())
@@ -1082,23 +1085,23 @@ impl EpisodeLogger {
     /// unparseable line.
     pub async fn read_all(path: impl AsRef<Path>) -> Result<Vec<Episode>, LoggerError> {
         let path = path.as_ref();
-        let bytes = match tokio::fs::read(path).await {
-            Ok(b) => b,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(err) => return Err(LoggerError::Io(err)),
-        };
-        let text = String::from_utf8_lossy(&bytes);
         let mut out = Vec::new();
-        for (idx, raw) in text.lines().enumerate() {
-            if raw.trim().is_empty() {
-                continue;
+        let mut line_number = 0usize;
+        for generation in episode_generation_paths(path).await? {
+            let bytes = tokio::fs::read(generation).await?;
+            let text = String::from_utf8_lossy(&bytes);
+            for raw in text.lines() {
+                if raw.trim().is_empty() {
+                    continue;
+                }
+                line_number += 1;
+                let episode: Episode =
+                    serde_json::from_str(raw).map_err(|source| LoggerError::Parse {
+                        line: line_number,
+                        source,
+                    })?;
+                out.push(episode);
             }
-            let episode: Episode =
-                serde_json::from_str(raw).map_err(|source| LoggerError::Parse {
-                    line: idx + 1,
-                    source,
-                })?;
-            out.push(episode);
         }
         Ok(out)
     }
@@ -1112,19 +1115,17 @@ impl EpisodeLogger {
     /// are swallowed.
     pub async fn read_all_lossy(path: impl AsRef<Path>) -> Result<Vec<Episode>, LoggerError> {
         let path = path.as_ref();
-        let bytes = match tokio::fs::read(path).await {
-            Ok(b) => b,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(err) => return Err(LoggerError::Io(err)),
-        };
-        let text = String::from_utf8_lossy(&bytes);
         let mut out = Vec::new();
-        for raw in text.lines() {
-            if raw.trim().is_empty() {
-                continue;
-            }
-            if let Ok(ep) = serde_json::from_str::<Episode>(raw) {
-                out.push(ep);
+        for generation in episode_generation_paths(path).await? {
+            let bytes = tokio::fs::read(generation).await?;
+            let text = String::from_utf8_lossy(&bytes);
+            for raw in text.lines() {
+                if raw.trim().is_empty() {
+                    continue;
+                }
+                if let Ok(ep) = serde_json::from_str::<Episode>(raw) {
+                    out.push(ep);
+                }
             }
         }
         Ok(out)
@@ -1231,35 +1232,29 @@ impl EpisodeLogger {
         let after = survivors.len();
         let removed = before.saturating_sub(after);
 
-        // Write survivors to a temporary sibling.
-        let compacting_path = self.inner.path.with_extension("compacting");
-        {
-            let mut file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&compacting_path)
-                .await?;
-            for ep in &survivors {
-                let mut line = serde_json::to_string(ep)?;
-                line.push('\n');
-                file.write_all(line.as_bytes()).await?;
-            }
-            file.flush().await?;
-            file.sync_all().await?;
+        let mut replacement = Vec::new();
+        for ep in &survivors {
+            serde_json::to_writer(&mut replacement, ep)?;
+            replacement.push(b'\n');
         }
 
-        // Compute bytes reclaimed.
-        let original_size = tokio::fs::metadata(&self.inner.path)
-            .await
-            .map_or(0, |m| m.len());
-        let new_size = tokio::fs::metadata(&compacting_path)
-            .await
-            .map_or(0, |m| m.len());
-        let bytes_reclaimed = original_size.saturating_sub(new_size);
-
-        // Atomic rename over the original.
-        tokio::fs::rename(&compacting_path, &self.inner.path).await?;
+        let original_size = episode_generation_paths(&self.inner.path)
+            .await?
+            .into_iter()
+            .filter_map(|path| std::fs::metadata(path).ok())
+            .map(|metadata| metadata.len())
+            .sum::<u64>();
+        let bytes_reclaimed = original_size.saturating_sub(replacement.len() as u64);
+        let path = self.inner.path.clone();
+        tokio::task::spawn_blocking(move || {
+            roko_fs::log_rotation::replace_jsonl_generations_sync(&path, &replacement)
+        })
+        .await
+        .map_err(|error| {
+            LoggerError::Io(std::io::Error::other(format!(
+                "episode compaction task failed: {error}"
+            )))
+        })??;
 
         Ok(CompactStats {
             before,
@@ -1268,6 +1263,14 @@ impl EpisodeLogger {
             bytes_reclaimed,
         })
     }
+}
+
+async fn episode_generation_paths(path: &Path) -> Result<Vec<PathBuf>, LoggerError> {
+    let mut paths = roko_fs::log_rotation::discover_archives(path).await?;
+    if path.is_file() {
+        paths.push(path.to_path_buf());
+    }
+    Ok(paths)
 }
 
 /// Age-based + size-based retention configuration.
@@ -1375,6 +1378,32 @@ mod tests {
         assert!(all[0].success);
         assert_eq!(all[0].gate_verdicts.len(), 1);
         assert_eq!(all[0].gate_verdicts[0].gate, "compile");
+    }
+
+    #[tokio::test]
+    async fn read_all_includes_timestamped_archives_before_live_generation() {
+        let (dir, path) = tmp_log();
+        let archive = dir.path().join("episodes.20260101T000000Z.jsonl");
+        let old = sample("agent-old", "task-old", true);
+        let live = sample("agent-live", "task-live", true);
+        tokio::fs::write(
+            &archive,
+            format!("{}\n", serde_json::to_string(&old).unwrap()),
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            &path,
+            format!("{}\n", serde_json::to_string(&live).unwrap()),
+        )
+        .await
+        .unwrap();
+
+        let all = EpisodeLogger::read_all(&path).await.unwrap();
+
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].agent_id, "agent-old");
+        assert_eq!(all[1].agent_id, "agent-live");
     }
 
     #[tokio::test]

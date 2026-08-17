@@ -1,5 +1,8 @@
 # Stigmergy Scaling: How Coordination Costs Grow
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L4 Orchestration (scaling analysis), L0 Runtime (resource management)
 >
 > **Synapse traits**: All six — scaling affects every trait's performance characteristics

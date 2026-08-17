@@ -2,15 +2,20 @@
  * DataHub selectors — thin hooks that read individual slices from the
  * centralised Zustand store.
  *
- * These coexist with the legacy context-based hooks (useServerHealth,
- * useLiveApi, useRokoConfig, useWorkspace). Consumers should migrate to
- * these selectors; the old hooks are marked @deprecated.
+ * Components read shared state through these hooks rather than mounting
+ * parallel context providers and duplicate REST/SSE owners.
  *
  * Implementation task: A1.6
  */
 
 import { useDataHub } from '../app/DataHub';
+import { useCallback, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
+import { api } from '../transport/api';
+import {
+  groupConfigModels,
+  type RawConfigModels,
+} from '../lib/config-models';
 
 // ── Connection / health ─────────────────────────────────────────────
 
@@ -20,6 +25,21 @@ export const useServerConnected = () =>
 
 /** Raw server status enum. */
 export const useServerStatus = () => useDataHub((s) => s.serverStatus);
+
+/** DataHub health state plus an explicit singleton-client refresh action. */
+export const useServerHealthController = () => {
+  const { status, setStatus } = useDataHub(
+    useShallow((s) => ({
+      status: s.serverStatus,
+      setStatus: s.setServerStatus,
+    })),
+  );
+  const checkNow = useCallback(async () => {
+    const snapshot = await api.probe(true);
+    setStatus(snapshot.reachable ? 'connected' : 'disconnected');
+  }, [setStatus]);
+  return { status, checkNow };
+};
 
 /** SSE transport status. */
 export const useSseStatus = () => useDataHub((s) => s.sseStatus);
@@ -60,6 +80,34 @@ export const useConfigSlice = () =>
     })),
   );
 
+/** Complete config read/write controller backed by the canonical DataHub. */
+export const useConfigController = () => {
+  const slice = useDataHub(
+    useShallow((s) => ({
+      config: s.config,
+      defaultModel: s.defaultModel,
+      defaultBackend: s.defaultBackend,
+      isLive: s.serverStatus === 'connected',
+      lastSaved: s.lastConfigSavedAt,
+      updateModelConfig: s.updateModelConfig,
+      updateConfig: s.updateConfig,
+      refreshConfig: s.fetchConfig,
+    })),
+  );
+  const providers = useMemo(
+    () => groupConfigModels(
+      slice.config?.models as RawConfigModels | undefined,
+      slice.config?.providers as Record<string, { kind: string }> | undefined,
+    ),
+    [slice.config],
+  );
+  return {
+    ...slice,
+    fullConfig: slice.config ?? {},
+    providers,
+  };
+};
+
 // ── Workspace ───────────────────────────────────────────────────────
 
 /** Server working directory (null until fetched). */
@@ -75,6 +123,7 @@ export const useWorkspaceSlice = () =>
       serverWorkdir: s.serverWorkdir,
       workspace: s.workspace,
       ensureWorkspace: s.ensureWorkspace,
+      createWorkspace: s.createWorkspace,
       destroyWorkspace: s.destroyWorkspace,
       fetchServerWorkdir: s.fetchServerWorkdir,
     })),
@@ -156,45 +205,4 @@ export const useBenchSlice = () =>
       fetchBenchSuites: s.fetchBenchSuites,
       fetchBenchModels: s.fetchBenchModels,
     })),
-  );
-
-// ── ISFR ────────────────────────────────────────────────────────────
-
-/** Current ISFR composite rate (null until first computation). */
-export const useIsfrCurrentRate = () => useDataHub((s) => s.isfrCurrentRate);
-
-/** ISFR rate history ring buffer. */
-export const useIsfrHistory = () => useDataHub((s) => s.isfrHistory);
-
-/** ISFR source health list. */
-export const useIsfrSources = () => useDataHub((s) => s.isfrSources);
-
-/** ISFR keeper running/stopped/unknown. */
-export const useIsfrKeeperStatus = () => useDataHub((s) => s.isfrKeeperStatus);
-
-/** Full ISFR slice for dashboard tiles. */
-export const useIsfrSlice = () =>
-  useDataHub(
-    useShallow((s) => ({
-      currentRate: s.isfrCurrentRate,
-      history: s.isfrHistory,
-      sources: s.isfrSources,
-      keeperStatus: s.isfrKeeperStatus,
-      fetchIsfrStatus: s.fetchIsfrStatus,
-      fetchIsfrCurrent: s.fetchIsfrCurrent,
-      fetchIsfrHistory: s.fetchIsfrHistory,
-      fetchIsfrSources: s.fetchIsfrSources,
-    })),
-  );
-
-/** Derived: composite rate as percentage (bps / 100). */
-export const useIsfrCompositePercent = () =>
-  useDataHub((s) =>
-    s.isfrCurrentRate ? s.isfrCurrentRate.compositeBps / 100 : null,
-  );
-
-/** Derived: number of live (healthy) sources. */
-export const useIsfrHealthySourceCount = () =>
-  useDataHub(
-    (s) => s.isfrSources.filter((src) => src.health === 'live').length,
   );

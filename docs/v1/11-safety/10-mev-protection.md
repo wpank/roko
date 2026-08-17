@@ -1,5 +1,8 @@
 # MEV Detection and Protection (Chain Domain)
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L3 Harness (pre-flight simulation), L5 (chain-specific threat detection)
 >
 > **Crate**: Target: `roko-chain` (MEV detection), chain-domain safety extensions

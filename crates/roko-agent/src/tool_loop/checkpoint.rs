@@ -8,9 +8,14 @@
 use roko_core::Result;
 use roko_core::tool::ToolCall;
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::Path;
 
+use crate::dispatcher::truncate::bounded_serialized_bytes;
 use crate::translate::SessionState;
+
+/// Absolute on-disk and in-memory serialization limit for a checkpoint.
+pub const MAX_CHECKPOINT_BYTES: usize = 8 * 1024 * 1024;
 
 /// Serializable snapshot of a [`ToolLoop`](super::ToolLoop) mid-execution.
 ///
@@ -18,6 +23,7 @@ use crate::translate::SessionState;
 /// [`StopReason::Stop`](super::StopReason::Stop) (i.e. the normal
 /// "final answer" path).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Checkpoint {
     /// Number of tool-call iterations completed before this snapshot.
     pub iterations: usize,
@@ -57,33 +63,47 @@ impl Checkpoint {
     ///
     /// # Errors
     ///
-    /// Returns a serialization error if any field fails to serialize.
-    pub fn to_bytes(&self) -> serde_json::Result<Vec<u8>> {
-        serde_json::to_vec(self)
+    /// Returns an error if serialization fails or the fixed checkpoint byte
+    /// budget would be exceeded.
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        bounded_serialized_bytes(self, MAX_CHECKPOINT_BYTES).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "tool-loop checkpoint exceeds fixed byte budget",
+            )
+            .into()
+        })
     }
 
     /// Deserialize from JSON bytes.
     ///
     /// # Errors
     ///
-    /// Returns a deserialization error if the bytes are not a valid
-    /// `Checkpoint`.
-    pub fn from_bytes(bytes: &[u8]) -> serde_json::Result<Self> {
-        serde_json::from_slice(bytes)
+    /// Returns an error if the bytes exceed the fixed budget or are not a
+    /// valid exact `Checkpoint` wire shape.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() > MAX_CHECKPOINT_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "tool-loop checkpoint exceeds fixed byte budget",
+            )
+            .into());
+        }
+        Ok(serde_json::from_slice(bytes)?)
     }
 
-    /// Persist the checkpoint to disk as formatted JSON.
+    /// Persist the checkpoint to disk as bounded atomic JSON.
     ///
     /// # Errors
     ///
     /// Returns an error if serialization fails, the parent directory
     /// cannot be created, or the file cannot be written.
     pub fn save(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, json)?;
+        // Serialize and enforce the ceiling before touching an existing file.
+        // The sibling staging file + rename keeps readers from observing a
+        // partial checkpoint after a crash or concurrent read.
+        let bytes = self.to_bytes()?;
+        roko_fs::atomic_write_bytes(path, &bytes)?;
         Ok(())
     }
 
@@ -93,9 +113,18 @@ impl Checkpoint {
     ///
     /// Returns an error if the file cannot be read or the JSON is invalid.
     pub fn load(path: &Path) -> Result<Self> {
-        let json = std::fs::read_to_string(path)?;
-        let cp: Self = serde_json::from_str(&json)?;
-        Ok(cp)
+        let file = std::fs::File::open(path)?;
+        if file.metadata()?.len() > MAX_CHECKPOINT_BYTES as u64 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "tool-loop checkpoint exceeds fixed byte budget",
+            )
+            .into());
+        }
+        let mut bytes = Vec::new();
+        file.take(MAX_CHECKPOINT_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        Self::from_bytes(&bytes)
     }
 }
 
@@ -150,5 +179,64 @@ mod tests {
         assert_eq!(loaded.tool_calls.len(), 1);
         assert_eq!(loaded.tool_calls[0].name, "echo");
         assert_eq!(loaded.messages, cp.messages);
+    }
+
+    #[test]
+    fn malformed_and_oversized_checkpoint_loads_fail_without_rewriting_source() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("checkpoint.json");
+
+        let malformed = b"{\"iterations\":not-json}".to_vec();
+        std::fs::write(&path, &malformed).expect("write malformed checkpoint");
+        assert!(Checkpoint::load(&path).is_err());
+        assert_eq!(std::fs::read(&path).expect("read malformed"), malformed);
+
+        let oversized = vec![b'x'; MAX_CHECKPOINT_BYTES + 1];
+        std::fs::write(&path, &oversized).expect("write oversized checkpoint");
+        assert!(Checkpoint::load(&path).is_err());
+        assert_eq!(
+            std::fs::metadata(&path).expect("oversized metadata").len(),
+            oversized.len() as u64
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("read oversized checkpoint"),
+            oversized
+        );
+    }
+
+    #[test]
+    fn oversized_checkpoint_save_preserves_last_valid_atomic_snapshot() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("checkpoint.json");
+        let valid = Checkpoint::new(1, vec![], vec![serde_json::json!({"role": "user"})]);
+        valid.save(&path).expect("save valid checkpoint");
+        let before = std::fs::read(&path).expect("read valid checkpoint");
+
+        let oversized = Checkpoint::new(
+            2,
+            vec![],
+            vec![serde_json::json!({"content": "x".repeat(MAX_CHECKPOINT_BYTES)})],
+        );
+        assert!(oversized.save(&path).is_err());
+        assert_eq!(
+            std::fs::read(&path).expect("read preserved checkpoint"),
+            before
+        );
+        assert_eq!(
+            Checkpoint::load(&path).expect("load preserved").iterations,
+            1
+        );
+    }
+
+    #[test]
+    fn checkpoint_wire_rejects_unknown_fields() {
+        let raw = serde_json::json!({
+            "iterations": 0,
+            "tool_calls": [],
+            "messages": [],
+            "session": {},
+            "unexpected": "must fail closed",
+        });
+        assert!(Checkpoint::from_bytes(raw.to_string().as_bytes()).is_err());
     }
 }

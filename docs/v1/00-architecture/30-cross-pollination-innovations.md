@@ -1,5 +1,8 @@
 # Cross-Pollination Innovations
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** Eight innovations that emerge from composing Roko's cognitive subsystems in novel ways.
 > Each connects two or more orthogonal systems—Daimon, Neuro, Dreams, coordination,
 > code intelligence, learning, safety—to produce capabilities no single subsystem provides.

@@ -1,5 +1,8 @@
 # ALMA Three-Layer Temporal Model
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The three-layer emotional architecture: Emotion (seconds), Mood (hours), and Personality (lifetime) — how they interact and update within the Daimon.
 
 

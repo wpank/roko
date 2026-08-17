@@ -1,5 +1,8 @@
 # Stuck Detection and Meta-Cognition
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Six heuristics for detecting stuck agents. A MetaCognitionHook
 > that wraps them into a periodic self-assessment: "Am I stuck?
 > Am I thrashing? Should I escalate?"

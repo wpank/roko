@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::github_ops::GitHubOps;
 use roko_agent::SafetyLayer;
 use roko_core::config::TimeoutConfig;
 use roko_core::config::schema::RokoConfig;
@@ -18,6 +19,10 @@ use roko_core::defaults::{
     DEFAULT_RUNNER_RETRY_BACKOFF_SHIFT_CAP, MODEL_FOCUSED,
 };
 use roko_fs::RokoLayout;
+
+const fn default_true() -> bool {
+    true
+}
 
 /// Effective plan wall-clock timeout in seconds.
 ///
@@ -1019,6 +1024,10 @@ pub enum RunnerEvent {
         model: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         provider: String,
+        /// Whether this terminal is eligible to update a dispatched prompt
+        /// experiment. False for failures before a provider actually starts.
+        #[serde(default = "default_true")]
+        prompt_experiment_observation_eligible: bool,
     },
     #[serde(rename = "task.attempt.cancellation_requested")]
     TaskAttemptCancellationRequested {
@@ -1139,6 +1148,10 @@ pub enum RunnerEvent {
         dropped_sections: Vec<String>,
         knowledge_ids: Vec<String>,
         playbook_ids: Vec<String>,
+        /// Raw-content-free durable prompt experiment assignments applied to
+        /// canonical sections for this attempt.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        experiment_assignments: Vec<crate::dispatch::PromptExperimentAssignmentDiagnostic>,
     },
     #[serde(rename = "merge.backend.completed")]
     MergeBackendCompleted {
@@ -1346,6 +1359,7 @@ impl RunnerEvent {
             phase_durations: TaskPhaseDurations::default(),
             model: model.into(),
             provider: provider.into(),
+            prompt_experiment_observation_eligible: true,
         }
     }
 
@@ -1370,6 +1384,7 @@ impl RunnerEvent {
             phase_durations,
             model: model.into(),
             provider: provider.into(),
+            prompt_experiment_observation_eligible: true,
         }
     }
 
@@ -1538,6 +1553,7 @@ impl RunnerEvent {
             dropped_sections: diagnostics.dropped_sections,
             knowledge_ids: diagnostics.knowledge_ids,
             playbook_ids: diagnostics.playbook_ids,
+            experiment_assignments: diagnostics.experiment_assignments,
         }
     }
 
@@ -1773,6 +1789,9 @@ pub struct PromptAssemblyDiagnostics {
     pub estimated_tokens: u32,
     pub knowledge_ids: Vec<String>,
     pub playbook_ids: Vec<String>,
+    /// Attempt-keyed assignments without raw prompt content.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub experiment_assignments: Vec<crate::dispatch::PromptExperimentAssignmentDiagnostic>,
 }
 
 /// Aggregate counters used to emit `run.completed`.
@@ -1945,6 +1964,9 @@ pub struct RunConfig {
     /// and consumed by [`self.conductor`] during periodic supervision ticks
     /// (E08-T04). Must be `Some` when `conductor` is `Some`.
     pub conductor_ring: Option<super::conductor_adapter::ConductorRing>,
+    /// Optional GitHub operations override. Tests inject a mock here; normal
+    /// runs construct a live adapter from `[github]`, with a no-op fallback.
+    pub github_ops: Option<Arc<dyn GitHubOps>>,
 }
 
 impl RunConfig {
@@ -1997,10 +2019,35 @@ impl RunConfig {
             &router_path,
             model_slugs,
         ));
+        let registry_base =
+            super::extension_registry::registry_base_url(roko_config.relay.url.as_deref());
+        let registry_failures = super::extension_registry::fetch_missing_registry_extensions(
+            &workdir,
+            &roko_config.agent.extensions,
+            registry_base.as_deref(),
+        )
+        .into_iter()
+        .map(
+            |(extension, message)| super::extension_loader::ExtensionStartupFailure {
+                extension,
+                stage: "registry_fetch",
+                message,
+            },
+        )
+        .collect();
         let mut ext_chain = roko_core::extension::ExtensionChain::new();
         let ext_names = &roko_config.agent.extensions;
-        let ext_count =
-            super::extension_loader::load_extensions(&workdir, ext_names, &mut ext_chain);
+        let ext_report = super::extension_loader::load_extensions_for_startup(
+            &workdir,
+            ext_names,
+            &[],
+            &mut ext_chain,
+            registry_failures,
+        );
+        let ext_count = ext_report.loaded;
+        for failure in &ext_report.required_failures {
+            tracing::error!(error = %failure, "required extension startup failure recorded");
+        }
         if ext_count > 0 {
             tracing::info!(count = ext_count, "loaded plugin extensions into chain");
         }
@@ -2089,6 +2136,7 @@ impl RunConfig {
             obs_sinks: None,
             conductor: Some(Arc::new(conductor)),
             conductor_ring: Some(conductor_ring),
+            github_ops: None,
         }
     }
 }
@@ -2139,6 +2187,7 @@ impl Default for RunConfig {
             obs_sinks: None,
             conductor: None,
             conductor_ring: None,
+            github_ops: None,
         }
     }
 }
@@ -2167,6 +2216,7 @@ impl std::fmt::Debug for RunConfig {
             .field("no_budget", &self.no_budget)
             .field("force_resume", &self.force_resume)
             .field("force_disk_check", &self.force_disk_check)
+            .field("github_ops", &self.github_ops.as_ref().map(|_| ".."))
             .field(
                 "extension_chain",
                 &self.extension_chain.as_ref().map(|_| ".."),

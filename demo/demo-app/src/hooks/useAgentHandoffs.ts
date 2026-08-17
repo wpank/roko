@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback } from 'react';
 import { useServerEventSubscription } from './useEventStream';
+import type { DashboardEvent } from '../transport/types';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,26 +27,8 @@ export interface UseAgentHandoffsResult {
 // SSE event shapes
 // ---------------------------------------------------------------------------
 
-interface AgentSpawnedEvent {
-  type: 'AgentSpawned';
-  agent_name: string;
-  role: string;
-  task_id: string;
-}
-
-interface AgentCompletedEvent {
-  type: 'AgentCompleted';
-  agent_name: string;
-  task_id: string;
-  success: boolean;
-}
-
-interface TaskAssignedEvent {
-  type: 'TaskAssigned';
-  task_id: string;
-  agent_name: string;
-  plan_id: string;
-}
+type AgentSpawnedEvent = Extract<DashboardEvent, { type: 'agent_spawned' }>;
+type AgentCompletedEvent = Extract<DashboardEvent, { type: 'agent_completed' }>;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -58,27 +41,25 @@ const MAX_HANDOFFS = 20;
 // ---------------------------------------------------------------------------
 
 /**
- * Derives agent handoff events from SSE AgentSpawned / TaskAssigned /
- * AgentCompleted events. Each AgentSpawned creates a pending handoff from
- * the orchestrator to the spawned agent. TaskAssigned transitions it to
- * active, and AgentCompleted marks it done or error.
+ * Derives agent handoffs from the canonical DashboardEvent agent lifecycle.
+ * A spawn is active immediately; completion closes the matching handoff.
  */
 export function useAgentHandoffs(): UseAgentHandoffsResult {
   const [handoffs, setHandoffs] = useState<HandoffEntry[]>([]);
 
   useServerEventSubscription(
-    ['AgentSpawned', 'AgentCompleted', 'TaskAssigned'],
+    ['agent_spawned', 'agent_completed'],
     useCallback((event: Record<string, unknown>) => {
       const e = event as { type: string };
 
-      if (e.type === 'AgentSpawned') {
+      if (e.type === 'agent_spawned') {
         const ev = event as unknown as AgentSpawnedEvent;
         const entry: HandoffEntry = {
-          id: `handoff-${ev.agent_name}-${Date.now()}`,
+          id: `handoff-${ev.agent_id}-${Date.now()}`,
           from: { name: 'orchestrator', role: 'dispatcher', status: 'working' },
-          to: { name: ev.agent_name, role: ev.role, status: 'idle' },
-          status: 'pending',
-          label: `Spawning ${ev.agent_name}`,
+          to: { name: ev.agent_id, role: ev.role, status: 'working' },
+          status: 'active',
+          label: ev.task_id || `Running ${ev.agent_id}`,
           taskId: ev.task_id,
           timestamp: Date.now(),
         };
@@ -88,34 +69,17 @@ export function useAgentHandoffs(): UseAgentHandoffsResult {
         });
       }
 
-      if (e.type === 'TaskAssigned') {
-        const ev = event as unknown as TaskAssignedEvent;
-        setHandoffs((prev) =>
-          prev.map((h) => {
-            if (h.to.name === ev.agent_name && h.status === 'pending') {
-              return {
-                ...h,
-                status: 'active' as const,
-                label: ev.task_id,
-                to: { ...h.to, status: 'working' as const },
-              };
-            }
-            return h;
-          }),
-        );
-      }
-
-      if (e.type === 'AgentCompleted') {
+      if (e.type === 'agent_completed') {
         const ev = event as unknown as AgentCompletedEvent;
         setHandoffs((prev) =>
           prev.map((h) => {
             if (
-              h.to.name === ev.agent_name &&
+              h.to.name === ev.agent_id &&
               (h.status === 'active' || h.status === 'pending')
             ) {
               return {
                 ...h,
-                status: ev.success ? ('done' as const) : ('error' as const),
+                status: 'done' as const,
                 to: { ...h.to, status: 'done' as const },
                 from: { ...h.from, status: 'idle' as const },
               };

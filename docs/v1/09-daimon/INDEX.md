@@ -1,5 +1,8 @@
 # Topic 09: Daimon — Affect Engine
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The agent's internal cognitive-emotional state tracker: PAD vector, ALMA temporal model, OCC/Scherer appraisal, somatic markers, behavioral states, and compute allocation feedback loops.
 
 ---

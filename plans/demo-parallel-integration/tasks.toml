@@ -2,7 +2,7 @@
 plan = "demo-parallel-integration"
 total = 3
 done = 0
-status = "ready"
+status = "fixture"
 max_parallel = 2
 skip_enrichment = true
 estimated_total_minutes = 4

@@ -130,8 +130,8 @@ fn golden_all_shipped_tools_present() {
     // that reflects the active feature set).
     assert_eq!(ROKO_BUILTIN_TOOLS.len(), TOOL_COUNT);
 
-    // The 16 std tools and 4 ISFR tools are always present.
-    let std_and_isfr = [
+    // The 16 standard tools are always present.
+    let std_tools = [
         "read_file",
         "write_file",
         "edit_file",
@@ -148,13 +148,8 @@ fn golden_all_shipped_tools_present() {
         "exit_plan_mode",
         "apply_patch",
         "run_tests",
-        // ISFR domain tools
-        "isfr.read_rates",
-        "isfr.read_rate_history",
-        "isfr.oracle_status",
-        "isfr.source_status",
     ];
-    for name in std_and_isfr {
+    for name in std_tools {
         assert_golden(name);
     }
 

@@ -1,5 +1,8 @@
 # Active Inference for Compute Allocation
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Expected Free Energy (EFE) determines how much cognitive resource an agent invests on each tick — zero hyperparameters, pure information-theoretic optimization.
 
 

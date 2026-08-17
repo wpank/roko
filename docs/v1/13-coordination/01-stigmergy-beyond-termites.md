@@ -1,5 +1,8 @@
 # Stigmergy Beyond Termites: Coordination Patterns Across Domains
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L4 Orchestration (coordination theory), with examples touching all layers L0–L4
 >
 > **Synapse traits**: All six traits appear in the examples below — stigmergy is the universal

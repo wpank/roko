@@ -263,7 +263,7 @@ impl ErrorPatternStore {
     /// Returns the underlying [`std::io::Error`] if the parent directory
     /// cannot be created, serialization fails, or the filesystem write fails.
     pub fn save(&mut self, path: &Path) -> Result<(), std::io::Error> {
-        self.gc(Duration::from_secs(90 * 24 * 3600), 10_000);
+        self.gc(Duration::from_hours(2160), 10_000);
         roko_fs::atomic_write_json(path, self)
     }
 

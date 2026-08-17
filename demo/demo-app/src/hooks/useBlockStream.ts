@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { MIRAGE_WS_URL, SERVE_URL } from '../lib/serve-url';
+import { MIRAGE_WS_URL } from '../lib/serve-url';
+import { api } from '../transport/api';
 
 export interface BlockInfo {
   number: number;
@@ -50,15 +51,15 @@ export function useBlockStream(enabled = true): UseBlockStreamResult {
 
     async function pollViaServe() {
       try {
-        const res = await fetch(`${SERVE_URL}/api/chain/status`, {
-          signal: AbortSignal.timeout(2000),
-        });
+        const res = await api.get<{ block_number?: number }>(
+          '/api/chain/status',
+          AbortSignal.timeout(2000),
+        );
         if (!res.ok) {
           setConnected(false);
           return;
         }
-        const status = await res.json() as { block_number?: number };
-        const number = Number(status.block_number ?? 0);
+        const number = Number(res.data.block_number ?? 0);
         if (!Number.isFinite(number) || number <= 0) {
           setConnected(false);
           return;
@@ -89,7 +90,9 @@ export function useBlockStream(enabled = true): UseBlockStreamResult {
 
     const wsUrl: string = directMirageWs;
 
-    // Derive HTTP URL from WS URL for pre-flight check
+    // Mirage is a distinct JSON-RPC backend rather than roko-serve, so this
+    // preflight intentionally does not use the singleton Roko REST client.
+    // Derive HTTP URL from WS URL for pre-flight check.
     const httpUrl = wsUrl.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
 
     async function preflight(): Promise<boolean> {

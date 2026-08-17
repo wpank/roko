@@ -1,5 +1,8 @@
 # Threat Simulation Theory and Adversarial Dreaming
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: Cognitive Cross-Cut (L3 Harness monitoring integration)
 >
 > **Synapse Traits**: `Gate` (threat verification), `Policy` (adversarial scenario generation)

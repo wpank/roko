@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use roko_core::config::schema::ModelProfile;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
+use roko_core::extension::CamelTaintLevel;
 use serde_json::Value;
 
 use crate::gemini::native::{
@@ -19,6 +20,7 @@ use crate::gemini::wire::{
 #[cfg(test)]
 use crate::http::HttpPostError;
 use crate::http::{HttpPoster, ReqwestPoster};
+use crate::multimodal::wire_messages_contain_images;
 use crate::provider::{AgentOptions, ProviderError};
 use crate::safety::SafetyLayer;
 use crate::tool_loop::{LlmBackend, LlmError, StreamEvent, StreamEventKind, TurnConfig};
@@ -120,12 +122,12 @@ impl GeminiNativeBackend {
                         });
                     }
                     // Text block
-                    if let Some(text) = block.get("text").and_then(Value::as_str) {
-                        if !text.is_empty() {
-                            return Some(Part::Text {
-                                text: text.to_string(),
-                            });
-                        }
+                    if let Some(text) = block.get("text").and_then(Value::as_str)
+                        && !text.is_empty()
+                    {
+                        return Some(Part::Text {
+                            text: text.to_string(),
+                        });
                     }
                     None
                 })
@@ -200,6 +202,11 @@ impl GeminiNativeBackend {
         messages: &[Value],
         tools: &RenderedTools,
     ) -> Result<GenerateContentRequest, LlmError> {
+        if !self.supports_vision && wire_messages_contain_images(messages) {
+            return Err(LlmError::Backend(
+                "model does not support inline image input".into(),
+            ));
+        }
         Ok(build_generate_content_request(
             self.translate_messages(messages),
             Self::system_instruction(messages),
@@ -231,13 +238,13 @@ impl LlmBackend for GeminiNativeBackend {
         )
         .await
         .map_err(|err| {
-            if let Some(status) = err.status {
-                if status == 429 || status == 529 {
-                    let retry_ms = err.retry_after_secs.map(|s| s * 1000);
-                    return LlmError::Provider(ProviderError::RateLimit {
-                        retry_after_ms: retry_ms,
-                    });
-                }
+            if let Some(status) = err.status
+                && (status == 429 || status == 529)
+            {
+                let retry_ms = err.retry_after_secs.map(|s| s * 1000);
+                return LlmError::Provider(ProviderError::RateLimit {
+                    retry_after_ms: retry_ms,
+                });
             }
             LlmError::Network(err.to_string())
         })?;
@@ -252,7 +259,8 @@ impl LlmBackend for GeminiNativeBackend {
         let calls = GeminiTranslator
             .parse_calls(&response)
             .map_err(|err| LlmError::Backend(format!("parse tool calls for safety: {err}")))?;
-        let tool_ctx = ToolContext::testing(std::env::current_dir().unwrap_or_else(|_| ".".into()));
+        let tool_ctx = ToolContext::testing(std::env::current_dir().unwrap_or_else(|_| ".".into()))
+            .with_taint_level(CamelTaintLevel::External);
         for call in &calls {
             if let Err(err) = self.safety.check_pre_execution(call, &tool_ctx) {
                 return Err(LlmError::Backend(format!(
@@ -557,6 +565,30 @@ mod tests {
             use_max_completion_tokens: false,
             tier: None,
         }
+    }
+
+    #[test]
+    fn gemini_native_backend_rejects_images_for_non_vision_model() {
+        let backend = GeminiNativeBackend::new(
+            "test-key".to_string(),
+            "https://generativelanguage.googleapis.com".to_string(),
+            tool_model(),
+            &AgentOptions::default(),
+            SafetyLayer::with_defaults(),
+        );
+        let result = backend.build_request(
+            &[json!({
+                "role": "user",
+                "parts": [{"inlineData": {
+                    "mimeType": "image/png", "data": "aGVsbG8="
+                }}]
+            })],
+            &RenderedTools::JsonArray(json!([])),
+        );
+
+        assert!(
+            matches!(result, Err(LlmError::Backend(message)) if message.contains("does not support"))
+        );
     }
 
     #[tokio::test]

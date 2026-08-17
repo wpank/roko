@@ -936,7 +936,6 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn gate_fail_on_warning_when_configured() {
-        let gate = MevGate::new().fail_on_warning(true);
         let mut bots = HashMap::new();
         bots.insert("0xsusbot".to_string(), "sus".to_string());
         // A back-run from a known bot → Warning → should fail when fail_on_warning.

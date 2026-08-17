@@ -1,5 +1,8 @@
 # Pheromone Scope: Local, Mesh, and Global Propagation
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L1 Framework (scope enum definition), L0 Runtime (local persistence), L4
 > Orchestration (mesh and global propagation)
 >

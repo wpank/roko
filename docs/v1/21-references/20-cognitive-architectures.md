@@ -1,5 +1,8 @@
 # Cognitive Architectures
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for cognitive agent architectures, dual-process theory, and computational cognitive science that inform Roko's Synapse Architecture.
 
 **Topic**: [References](./INDEX.md)

@@ -3,6 +3,7 @@
 //! All observers (ACP adapter, SSE adapter, JSONL logger, TUI bridge)
 //! consume these via `EventBus<RuntimeEvent>`.
 
+use crate::agent::AutonomyLevel;
 use crate::foundation::TokenUsage;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -52,6 +53,63 @@ pub enum WorkflowOutcome {
 pub struct ToolCallSummary {
     pub name: String,
     pub result_preview: String,
+}
+
+/// User actions emitted by named surfaces.
+///
+/// These are kept separate from engine-emitted [`RuntimeEvent`] values so a
+/// transport can authorize commands before translating them into effects.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+pub enum SurfaceEvent {
+    TaskAssign {
+        graph: String,
+        inputs: serde_json::Value,
+        budget: Option<f64>,
+        deadline: Option<DateTime<Utc>>,
+    },
+    SlotFill {
+        agent_id: String,
+        slot_index: usize,
+        cell_ref: String,
+    },
+    MacroAdjust {
+        run_id: String,
+        macro_name: String,
+        new_value: serde_json::Value,
+    },
+    FlowCancel {
+        run_id: String,
+    },
+    FlowPause {
+        run_id: String,
+    },
+    FlowResume {
+        run_id: String,
+    },
+    HumanRespond {
+        run_id: String,
+        cell_id: String,
+        response: serde_json::Value,
+    },
+    AutonomyLevelChange {
+        agent_id: String,
+        capability: String,
+        new_level: AutonomyLevel,
+    },
+    CapabilityGrant {
+        agent_id: String,
+        capability: String,
+        constraints: serde_json::Value,
+    },
+    CapabilityRevoke {
+        agent_id: String,
+        capability: String,
+    },
+    BulkAutonomySet {
+        agent_id: String,
+        level: AutonomyLevel,
+    },
 }
 
 /// Every event the workflow engine can emit.
@@ -363,6 +421,31 @@ mod tests {
         };
 
         assert!(outcome.to_string().contains("abc123"));
+    }
+
+    #[test]
+    fn surface_events_have_separate_tagged_contracts() {
+        let event = SurfaceEvent::AutonomyLevelChange {
+            agent_id: "agent-1".into(),
+            capability: "fs_read".into(),
+            new_level: AutonomyLevel::Full,
+        };
+        let value = serde_json::to_value(&event).expect("serialize surface event");
+        assert_eq!(value["kind"], "autonomy_level_change");
+        assert_eq!(value["data"]["new_level"], "full");
+        let decoded: SurfaceEvent = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(decoded, event);
+
+        let task = SurfaceEvent::TaskAssign {
+            graph: "release".into(),
+            inputs: serde_json::json!({"sha": "abc"}),
+            budget: Some(2.5),
+            deadline: None,
+        };
+        assert_eq!(
+            serde_json::to_value(task).expect("serialize task")["kind"],
+            "task_assign"
+        );
     }
 
     #[test]

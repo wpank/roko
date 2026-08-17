@@ -42,10 +42,12 @@
 //! mirage-rs, can be adapted behind the same traits, but no dedicated mirage
 //! backend ships here today.
 
-/// Agent Registry with soulbound ERC-721 passports (CHAIN-02).
+/// Agent Registry with transferable ERC-8004 passports (CHAIN-02).
 pub mod agent_registry;
 #[cfg(feature = "alloy-backend")]
 pub mod alloy_impl;
+/// Arena definitions, lifecycle registry, leaderboards, and prize escrow.
+pub mod arena;
 /// Poll-based block watcher for streaming chain data via event bus.
 #[cfg(feature = "alloy-backend")]
 pub mod block_watcher;
@@ -53,20 +55,19 @@ pub mod chain_profile;
 pub mod client;
 /// Collusion ring detection via assignment graph clique analysis (P2-11).
 pub mod collusion;
+/// Local DeFi product types, lifecycle registries, pricing, and rate effects.
+pub mod defi;
 pub mod futures_market;
 pub mod gate;
+/// Local gossip peer-discovery table and transport-neutral message types.
+pub mod gossip;
 pub mod heartbeat_ext;
 pub mod identity_economy_identity;
 pub mod identity_economy_markets;
-pub mod isfr;
-/// ISFR contract bootstrap — deployment sequence and verification for dev chains.
-pub mod isfr_bootstrap;
-/// ISFR Keeper orchestrator — polls rate sources, computes composite, publishes.
-pub mod isfr_keeper;
-/// On-chain rate submission to ISFROracle contract.
-pub mod isfr_oracle_submit;
-/// Pluggable rate source trait + MockSource for ISFR keeper.
-pub mod isfr_sources;
+/// Read-only registry client and restart-safe normalized event indexer.
+pub mod indexer;
+/// Knowledge publication, validation, challenge, and staleness state machine.
+pub mod knowledge_registry;
 /// KORAI token with lazy demurrage (CHAIN-01).
 pub mod korai_token;
 /// Spore job marketplace with escrow and 3 hiring models (CHAIN-04).
@@ -88,7 +89,9 @@ pub mod validation_registry;
 pub mod wallet;
 pub mod witness;
 
-pub use agent_registry::AgentRegistry;
+pub use agent_registry::{
+    AgentRegistry, AgentRegistryEvent, AgentRegistrySnapshot, DelegationCaveat, TransferRecord,
+};
 pub use client::ChainClient;
 pub use futures_market::{FuturesMarket, FuturesMarketConfig};
 pub use gate::{
@@ -96,22 +99,34 @@ pub use gate::{
     MevSeverity, MockTxSimulator, SandwichBundle, SimulationOutcome, TxSimGate, TxSimGateConfig,
     TxSimulator, WalletCheck, WalletGate, WalletGateConfig,
 };
+pub use gossip::{GossipMessage, PeerInfo, PeerRegistry, RegisterPeerOutcome};
 pub use heartbeat_ext::{
     ChainHeartbeatExtension, ChainPreActResult, PolicyCageConfig, PolicyCageState, PolicyViolation,
     SimulateResult, SleepwalkerConfig, ValidateResult, ViolationSeverity,
 };
-pub use isfr::{IsfrConfig, IsfrRegistry};
+pub use indexer::{
+    EventIndexer, EventIndexerConfig, EventQuery as RegistryEventQuery, IndexedEvent,
+    IndexerCheckpoint, IndexerError, IndexerStatus, RegistryClient, RegistryContract, SyncOutcome,
+};
+pub use knowledge_registry::{
+    Challenge as KnowledgeChallenge, EntryState as KnowledgeEntryState, KnowledgeRegistry,
+    KnowledgeRegistryConfig, KnowledgeRegistryEntry, KnowledgeRegistrySnapshot,
+    ReputationEffect as KnowledgeReputationEffect, ResolutionMode,
+};
 pub use korai_token::{KoraiToken, KoraiTokenConfig};
 pub use marketplace::{
-    AssignmentResult, EscrowEntry, JobState, Marketplace, MarketplaceConfig, MarketplaceError,
-    MarketplaceJob, SettlementResult,
+    AssignmentResult, CreatorRevenue, EscrowEntry, ExpirationResult, ForkChainEntry, JobState,
+    Marketplace, MarketplaceConfig, MarketplaceError, MarketplaceJob,
+    ReputationEffect as MarketplaceReputationEffect, SettlementResult, TakeRateSchedule,
 };
 pub use mock::{MockChainClient, MockChainWallet, paired_mocks};
 pub use observer::{
     AddressFilter, BlockObserver, BlockObserverConfig, BlockTracker, ObservedEvent,
 };
 pub use phase2::*;
-pub use reputation_registry::ReputationRegistry;
+pub use reputation_registry::{
+    PricingTierResult, ReputationRegistry, ReputationTraceRank, resolve_pricing_tier,
+};
 pub use triage::{
     EventEnrichment, MidasRScorer, TriageAction, TriageConfig, TriagePipeline, TriageResult,
 };
@@ -128,6 +143,7 @@ pub use witness::{ChainWitnessEngine, verify_on_chain, witness_on_chain};
 /// HTTP 402 micropayment protocol with state channels (CHAIN-08).
 pub mod x402;
 pub use x402::{
-    BalanceProof, ChannelLifecycle, ChannelSettlement, PaymentAuthorization, PaymentRequest,
+    BalanceProof, ChannelLifecycle, ChannelSettlement, MppError, MppSession, MppSessionManager,
+    MppSessionState, MppSettlement, PaymentAuthorization, PaymentRequest, SettlementBatch,
     StateChannel, VerificationStatus, X402Config, X402Error, X402Manager,
 };

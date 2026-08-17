@@ -1,5 +1,8 @@
 # Sonification (Behavioral State Audio)
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Ambient generative music driven by agent behavioral states — the Eno mandate, five musical layers, behavioral state presets, and the emotional harmonic vocabulary. No mortality, no requiem. Music reflects cognitive engagement, not lifecycle endings.
 
 

@@ -1,5 +1,8 @@
 # Knowledge Query API
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The NeuroStore trait defines the storage and retrieval interface for Neuro's persistent knowledge — init, query, ingest, decay, and gc — with the KnowledgeStore JSONL implementation as the primary backend.
 
 

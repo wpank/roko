@@ -2,7 +2,25 @@
 
 > Publish, discover, install, fork, rate, and attribute Cells, Graphs, Racks, and Knowledge Bundles in a community marketplace. Composition over isolation. Trust by evidence. DAW composability: Criteria as plugins, Profiles as presets, fork as fundamental. Transparent take-rates. Creator ownership. On-chain attribution via ERC-8004. Backend services expressed as Cell specializations. Publish and install flows expressed as Pipeline Graphs of Verify Cells.
 
+> **Implementation status:** PARTIAL — the E38 artifact-marketplace **contract/stub tranche is complete (9/9)**, alongside the existing job marketplace. Core artifact identity and lineage types, five package tiers, publish-result contracts, take-rate accounting, in-memory fork traversal, upstream TraceRank attribution, and deterministic three-layer capability intersection are implemented and tested. The HTTP and `roko market` surfaces are intentional stubs: browse/search return empty results and publish/fork commands do not persist or execute a pipeline. Durable artifact storage and indexing, real publish/install pipelines, signatures/checksums, CI verification, WASM execution, ratings/trending, account policy, UI, and ERC-8004 anchoring remain product work.
+
 **Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal lineage, content addressing), [02-CELL](02-CELL.md) (Cell protocol, Verify), [03-GRAPH](03-GRAPH.md) (Graph, Pipeline pattern), [15-TELEMETRY](15-TELEMETRY.md) (UsageLens, TrendLens), [16-SECURITY](16-SECURITY.md) (capability intersection), [19-CONFIG](19-CONFIG.md) (5-tier SPI, TOML schemas), [22-REGISTRIES](22-REGISTRIES.md) (ERC-8004 attribution)
+
+---
+
+## Current implementation boundary (E38)
+
+| Surface | Current implementation | Deliberate boundary |
+|---|---|---|
+| Artifact model | 11 `ArtifactKind` variants, canonical `ArtifactRef`, and serializable `ArtifactLineage` | No storage record, license model, or chain attestation adapter |
+| Package SPI | Exact `Prompt`, `ConfigProfile`, `Declarative`, `Wasm`, `NativeRust` metadata tiers | Classification only; this tranche does not add a WASM runtime or sandbox |
+| Publish flow | Six stage identifiers plus per-stage and aggregate result contracts | No stage executes verification or storage yet |
+| Economics | Integer-cent free band, non-retroactive take, and creator revenue totals | No ledger, payout, tax, or billing integration |
+| Forking and attribution | In-memory, cycle-safe ancestor traversal and fork-success TraceRank edges | No durable fork DAG or ERC-8004 call |
+| Capabilities | Ordered, fail-closed Cell ∩ Graph ∩ Space computation | No runtime enforcement added by E38 |
+| HTTP and CLI | Auth-classified route shapes and seven `roko market` commands | Contract stubs only; mutations acknowledge without persistence |
+
+This boundary is narrower than the end-state acceptance matrix in §17. A completed E38 task means its contract or explicitly requested stub exists and is verified; it does not mean the marketplace product is launch-ready.
 
 ---
 
@@ -144,6 +162,8 @@ type  = "MarkdownClassifyCell"
 | Friction | Lowest | Low | Medium | Medium | Highest |
 
 The visual editor ([20-SURFACES](20-SURFACES.md)) only writes TOML (Tiers 1-3). WASM and Rust tiers require build tools.
+
+The implemented Rust metadata uses `PackageTier::{Prompt, ConfigProfile, Declarative, Wasm, NativeRust}`. Serialization emits `prompt` and `config_profile`; the earlier `prompts` and `config` spellings remain accepted as read-only compatibility aliases.
 
 ---
 
@@ -303,12 +323,11 @@ Every fork records lineage through `Signal.source` (the same content-addressed l
 pub struct ArtifactLineage {
     pub forked_from: Option<ArtifactRef>,
     pub composed_from: Vec<ArtifactRef>,
-    pub forked_at: DateTime<Utc>,
-    pub onchain_attestation: Option<ERC8004Ref>,
+    pub forked_at: Option<DateTime<Utc>>,
 }
 ```
 
-Lineage is publicly visible. On-chain lineage (via ERC-8004) provides cryptographic proof.
+The core lineage contract is chain-independent. Public persistence and the optional ERC-8004 attestation are future adapter concerns; neither is implied by this data type.
 
 ### 6.4 License
 
@@ -395,6 +414,8 @@ to   = "store"
 
 ### 7.2 Publish Pipeline Cells
 
+E38 defines the six corresponding `PublishStage` variants and their `Verdict`-carrying result envelopes. The executable cells and graph below remain the target design.
+
 Each Cell in the pipeline implements the Verify protocol. Typed I/O:
 
 | Cell | Input | Output | Rejects When |
@@ -441,6 +462,8 @@ Publish is also available via Dashboard ("Publish" button in the visual editor),
 ---
 
 ## 8. Browse and Discovery
+
+The E38 server exposes the browse, search, detail, publish, and fork route shapes. Reads currently return explicit empty/not-found stub payloads; publish returns `201` and fork returns `200` with `status: "not_implemented"`. No durable index or mutation is wired yet.
 
 ### 8.1 Faceted browse
 
@@ -692,6 +715,8 @@ Published artifacts depending on vulnerable Cells receive automatic banners. Mai
 ---
 
 ## 11. Forking with Lineage Chain
+
+`roko-chain` currently provides cycle-safe, in-memory `fork_artifact` recording and root-to-leaf `fork_chain` traversal. This proves lineage semantics but is not a durable marketplace database or on-chain attestation.
 
 ### Local fork
 
@@ -968,6 +993,8 @@ Auth (GitHub OAuth + JWT) uses the auth Pipeline from [17-AUTH](17-AUTH.md). CDN
 
 ## 16. CLI Surface
 
+E38 wires `browse`, `show`, `install`, `uninstall`, `fork`, `publish`, and `verify` into clap. Each command deliberately prints `roko market <cmd>: not yet implemented` and exits successfully; the additional end-state commands shown below are not wired by this tranche.
+
 ```
 roko market browse [--query <q>] [--tag <t>] [--kind <k>] [--featured]
 roko market show <ref>
@@ -988,6 +1015,8 @@ roko market revenue [--period 30d]           # creator revenue summary
 ---
 
 ## 17. Acceptance Criteria
+
+The following product acceptance criteria describe the target marketplace. E38 directly covers only the data contracts and algorithm/unit boundaries identified above; staging, database, CI, UI, and on-chain criteria remain deferred.
 
 | Criterion | Verification |
 |---|---|

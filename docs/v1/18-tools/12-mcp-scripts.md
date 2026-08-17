@@ -1,5 +1,8 @@
 # 12 — roko-mcp-scripts
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Config-driven tool wrappers: scripts.toml format, executor, discovery,
 > collaboration scripts, knowledge-base scripts.
 

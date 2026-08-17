@@ -1,5 +1,8 @@
 # Good Regulator and the Self-Model
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > "Every good regulator of a system must be a model of that system."
 > — Conant & Ashby (1970)
 >

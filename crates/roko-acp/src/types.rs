@@ -1,5 +1,6 @@
 //! ACP protocol types (JSON-RPC messages, session types, update types).
 
+use roko_core::agent::ProviderKind;
 use serde::{Deserialize, Serialize};
 
 /// ACP protocol version supported by this crate.
@@ -28,6 +29,9 @@ pub const SESSION_NOT_FOUND: i32 = -32000;
 
 /// ACP session busy error code.
 pub const SESSION_BUSY: i32 = -32001;
+
+/// ACP session cost budget exhausted error code.
+pub const SESSION_BUDGET_EXCEEDED: i32 = -32002;
 
 /// A JSON-RPC 2.0 message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -228,6 +232,50 @@ pub struct PromptCapabilities {
     pub embedded_context: bool,
 }
 
+/// Build the prompt capabilities advertised by ACP from the selected model's
+/// dispatch support. Audio remains disabled until ACP has a concrete audio
+/// content block and provider conversion path.
+#[must_use]
+pub const fn advertised_prompt_capabilities(model_supports_vision: bool) -> PromptCapabilities {
+    PromptCapabilities {
+        image: model_supports_vision,
+        audio: false,
+        embedded_context: true,
+    }
+}
+
+/// Build truthful ACP media capabilities from both the model and its selected
+/// provider protocol. A vision model behind a text-only subprocess transport
+/// must not expose an image upload affordance.
+#[must_use]
+pub const fn advertised_prompt_capabilities_for_model(
+    provider_kind: ProviderKind,
+    model_supports_vision: bool,
+) -> PromptCapabilities {
+    advertised_prompt_capabilities(model_supports_vision && provider_kind.supports_inline_images())
+}
+
+/// Return a client-facing reason when prompt content exceeds the capabilities
+/// advertised for the selected model and dispatch path.
+#[must_use]
+pub fn unsupported_prompt_content(
+    prompt: &[ContentBlock],
+    capabilities: &PromptCapabilities,
+) -> Option<&'static str> {
+    for block in prompt {
+        match block {
+            ContentBlock::Image { .. } if !capabilities.image => {
+                return Some("image input is not supported by the selected model");
+            }
+            ContentBlock::Unknown => {
+                return Some("audio or unknown prompt content is not supported");
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// MCP transport capabilities supported by the agent.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -386,6 +434,26 @@ pub struct SessionNewResult {
     /// Non-fatal warnings produced while creating or loading the session.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Current persisted USD budget status for this session.
+    #[serde(flatten)]
+    pub budget_status: SessionBudgetStatus,
+}
+
+/// Persisted cost budget status exposed by ACP session responses.
+///
+/// All fields are omitted when the session has no configured USD ceiling.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionBudgetStatus {
+    /// Configured session cost ceiling in USD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_budget_usd: Option<f64>,
+    /// Cost accumulated by completed ACP efficiency events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accumulated_cost_usd: Option<f64>,
+    /// Spend still available before new paid turns are rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_remaining_usd: Option<f64>,
 }
 
 /// Metadata about the available session modes.
@@ -448,7 +516,7 @@ pub enum StopReason {
 }
 
 /// ACP prompt content block.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum ContentBlock {
     /// A plain text content block.
@@ -488,6 +556,36 @@ pub enum ContentBlock {
     /// Prevents deserialization failures when the ACP spec adds new types.
     #[serde(other)]
     Unknown,
+}
+
+impl std::fmt::Debug for ContentBlock {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Text { text } => formatter.debug_struct("Text").field("text", text).finish(),
+            Self::Resource { resource } => formatter
+                .debug_struct("Resource")
+                .field("resource", resource)
+                .finish(),
+            Self::Image { data, mime_type } => formatter
+                .debug_struct("Image")
+                .field("mime_type", mime_type)
+                .field("encoded_len", &data.len())
+                .finish(),
+            Self::Diff {
+                path,
+                old_text,
+                new_text,
+                diff,
+            } => formatter
+                .debug_struct("Diff")
+                .field("path", path)
+                .field("old_text", old_text)
+                .field("new_text", new_text)
+                .field("diff", diff)
+                .finish(),
+            Self::Unknown => formatter.write_str("Unknown"),
+        }
+    }
 }
 
 /// Reference to an ACP resource.
@@ -579,6 +677,15 @@ pub enum SessionUpdate {
         /// Optional cost information.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cost: Option<CostInfo>,
+    },
+    /// Persisted session cost budget status after a paid turn.
+    BudgetStatusUpdate {
+        /// Configured session cost ceiling in USD.
+        cost_budget_usd: f64,
+        /// Cost accumulated by completed ACP efficiency events.
+        accumulated_cost_usd: f64,
+        /// Spend still available before new paid turns are rejected.
+        budget_remaining_usd: f64,
     },
     /// Session metadata update.
     SessionInfoUpdate {
@@ -879,6 +986,9 @@ pub struct SessionInfo {
     pub session_name: Option<String>,
     /// RFC 3339 creation timestamp.
     pub created_at: String,
+    /// Current persisted USD budget status for this session.
+    #[serde(flatten)]
+    pub budget_status: SessionBudgetStatus,
 }
 
 /// Parameters for `session/load`.
@@ -1097,6 +1207,29 @@ mod tests {
     }
 
     #[test]
+    fn image_debug_redacts_base64_in_block_and_enclosing_prompt_params() {
+        let sentinel = "c2Vuc2l0aXZlLWltYWdlLWJ5dGVz";
+        let block = ContentBlock::Image {
+            data: sentinel.to_string(),
+            mime_type: "image/png".to_string(),
+        };
+
+        let block_debug = format!("{block:?}");
+        assert!(!block_debug.contains(sentinel));
+        assert!(block_debug.contains("image/png"));
+        assert!(block_debug.contains("encoded_len"));
+
+        let params = SessionPromptParams {
+            session_id: "session-1".to_string(),
+            prompt: vec![block],
+            include_context: false,
+        };
+        let params_debug = format!("{params:?}");
+        assert!(!params_debug.contains(sentinel));
+        assert!(params_debug.contains("image/png"));
+    }
+
+    #[test]
     fn content_block_session_update_agent_message_chunk_round_trip() {
         let update = SessionUpdate::AgentMessageChunk {
             content: ContentBlock::Text {
@@ -1219,5 +1352,39 @@ mod tests {
                 "project:/workspace/roko.toml"
             ])
         );
+    }
+
+    #[test]
+    fn advertised_prompt_capabilities_match_dispatch() {
+        let text = vec![ContentBlock::Text {
+            text: "hello".to_string(),
+        }];
+        let image = vec![ContentBlock::Image {
+            data: "aGVsbG8=".to_string(),
+            mime_type: "image/png".to_string(),
+        }];
+        let audio = vec![
+            serde_json::from_value::<ContentBlock>(json!({
+                "type": "audio",
+                "data": "aGVsbG8=",
+                "mimeType": "audio/wav"
+            }))
+            .expect("deserialize future audio block fail-closed"),
+        ];
+
+        let vision = advertised_prompt_capabilities(true);
+        assert!(vision.image);
+        assert!(!vision.audio);
+        assert!(unsupported_prompt_content(&text, &vision).is_none());
+        assert!(unsupported_prompt_content(&image, &vision).is_none());
+        assert!(unsupported_prompt_content(&audio, &vision).is_some());
+
+        let text_only = advertised_prompt_capabilities(false);
+        assert!(!text_only.image);
+        assert!(unsupported_prompt_content(&image, &text_only).is_some());
+
+        assert!(advertised_prompt_capabilities_for_model(ProviderKind::AnthropicApi, true).image);
+        assert!(!advertised_prompt_capabilities_for_model(ProviderKind::ClaudeCli, true).image);
+        assert!(!advertised_prompt_capabilities_for_model(ProviderKind::OpenAiCompat, false).image);
     }
 }

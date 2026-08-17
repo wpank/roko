@@ -1,6 +1,13 @@
 # 15-marketplace — Depth Index
 
-> Depth for [21-MARKETPLACE.md](../../unified/21-MARKETPLACE.md). Agent identity, reputation, knowledge commerce, payment protocols, and self-sustaining economic loops — all expressed as compositions of Signal, Cell, Graph, Store, and Bus.
+> Depth for [21-MARKETPLACE.md](../../unified/21-MARKETPLACE.md). Agent identity, reputation, knowledge commerce, payment protocols, and self-sustaining economic loops -- all expressed as compositions of Signal, Cell, Graph, Store, and Bus.
+>
+> **Last updated:** 2026-08-13
+>
+> **ISFR DEPRECATED (2026-08-13):** The ISFR vertical is deprecated and scheduled
+> for removal. See `.roko/GAPS.md`. The ISFR clearing/settlement source doc
+> (`docs/14-identity-economy/13-isfr-clearing-settlement.md`) absorbed into doc 04
+> describes functionality that is not wired at runtime.
 
 ---
 
@@ -50,7 +57,7 @@
 |---|---|---|
 | `docs/14-identity-economy/07-mpp-machine-payment-protocol.md` | **Absorbed** | [04-payment-protocols-as-connect.md](04-payment-protocols-as-connect.md) |
 | `docs/14-identity-economy/08-x402-micropayments.md` | **Absorbed** | [04-payment-protocols-as-connect.md](04-payment-protocols-as-connect.md) |
-| `docs/14-identity-economy/13-isfr-clearing-settlement.md` | **Absorbed** | [04-payment-protocols-as-connect.md](04-payment-protocols-as-connect.md) |
+| `docs/14-identity-economy/13-isfr-clearing-settlement.md` | **Absorbed** (DEPRECATED) | [04-payment-protocols-as-connect.md](04-payment-protocols-as-connect.md) |
 
 ### Economy and tokenomics
 

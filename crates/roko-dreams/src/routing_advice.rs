@@ -108,21 +108,19 @@ pub fn generate_routing_advice(
             majority_model.clone(),
             majority_category.clone(),
             majority_complexity.clone(),
-        ) {
-            if let Some((recommended_model, deprioritize)) =
-                recommendation_for_model(&model, success_rate)
-            {
-                recommendations.push(RoutingRecommendation {
-                    task_category: category,
-                    complexity_band: complexity,
-                    recommended_model,
-                    deprioritize,
-                    confidence: f64::from(pattern.coherence).clamp(0.0, 1.0),
-                    supporting_episodes: cluster_episodes.len(),
-                    recommended_model_success_rate: success_rate,
-                    pattern_signature: pattern.signature,
-                });
-            }
+        ) && let Some((recommended_model, deprioritize)) =
+            recommendation_for_model(&model, success_rate)
+        {
+            recommendations.push(RoutingRecommendation {
+                task_category: category,
+                complexity_band: complexity,
+                recommended_model,
+                deprioritize,
+                confidence: f64::from(pattern.coherence).clamp(0.0, 1.0),
+                supporting_episodes: cluster_episodes.len(),
+                recommended_model_success_rate: success_rate,
+                pattern_signature: pattern.signature,
+            });
         }
 
         pattern_summaries.push(PatternSummary {

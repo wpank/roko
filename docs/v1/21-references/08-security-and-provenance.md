@@ -1,5 +1,8 @@
 # Security and Provenance
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for agent safety, adversarial robustness, capability-based security, content provenance, and regulatory compliance in Roko's safety layer.
 
 **Topic**: [References](./INDEX.md)

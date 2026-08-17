@@ -1,5 +1,8 @@
 # Process Supervision Wiring
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Every spawned process is a supervised entity. The ProcessSupervisor
 > owns the full lifecycle: spawn, monitor, timeout, kill, cleanup.
 > Unsupervised processes become orphans. Orphans consume resources

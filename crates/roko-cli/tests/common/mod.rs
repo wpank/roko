@@ -447,7 +447,11 @@ pub fn spawn_roko_agent_serve_on_random_port(
 
 pub async fn wait_for_http_ok(url: &str, timeout: Duration) -> reqwest::Response {
     let deadline = Instant::now() + timeout;
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(timeout.min(Duration::from_millis(250)))
+        .timeout(timeout.min(Duration::from_secs(1)))
+        .build()
+        .expect("build smoke-test HTTP client");
 
     loop {
         let last_error = match client.get(url).send().await {

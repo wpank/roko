@@ -1,5 +1,8 @@
 # Knowledge Backup and Restore
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Users control knowledge lifecycle through a four-step BACKUP→DELETE→CREATE→RESTORE process, replacing the legacy succession model with explicit, auditable data management.
 
 

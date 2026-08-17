@@ -5,6 +5,18 @@
 
 use crossterm::event::KeyCode;
 
+/// Stable v2 surface identities rendered through the existing tab shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum V2Surface {
+    Workbench,
+    Canvas,
+    Flows,
+    Inbox,
+    Knowledge,
+    System,
+    Agents,
+}
+
 /// Top-level TUI tabs, mapped to F1-F10.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tab {
@@ -44,6 +56,19 @@ impl Tab {
         Tab::Atelier,
         Tab::Learning,
     ];
+
+    /// Named v2 surfaces contributed by this legacy tab.
+    #[must_use]
+    pub fn v2_surfaces(self) -> Vec<V2Surface> {
+        match self {
+            Self::Dashboard => vec![V2Surface::Workbench, V2Surface::Inbox],
+            Self::Plans => vec![V2Surface::Canvas, V2Surface::Flows],
+            Self::Agents => vec![V2Surface::Agents],
+            Self::Config => vec![V2Surface::System],
+            Self::Inspect => vec![V2Surface::Knowledge],
+            Self::Git | Self::Logs | Self::Marketplace | Self::Atelier | Self::Learning => vec![],
+        }
+    }
 
     /// The function key that activates this tab.
     #[must_use]
@@ -208,5 +233,19 @@ mod tests {
         for (i, tab) in Tab::ALL.iter().enumerate() {
             assert_eq!(tab.index(), i);
         }
+    }
+
+    #[test]
+    fn v2_surface_mapping_covers_every_surface_without_changing_tabs() {
+        let mapped = Tab::ALL
+            .into_iter()
+            .flat_map(Tab::v2_surfaces)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(mapped.len(), 7);
+        assert_eq!(
+            Tab::Dashboard.v2_surfaces(),
+            vec![V2Surface::Workbench, V2Surface::Inbox]
+        );
+        assert_eq!(Tab::ALL.len(), 10);
     }
 }

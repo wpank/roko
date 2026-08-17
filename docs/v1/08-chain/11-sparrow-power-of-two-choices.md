@@ -1,5 +1,8 @@
 # Sparrow: Power-of-Two-Choices Dispatch
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Sparrow is the fast-path dispatch protocol for urgent jobs. It uses the power-of-two-choices algorithm: probe 2 random eligible agents, assign the job to the one with lower load. Achieves O(log log N) maximum load with O(1) communication cost per assignment. Used for RandomVRF hiring model.
 
 

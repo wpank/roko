@@ -1,9 +1,8 @@
-//! STATUS: NOT WIRED -- built but no non-test runtime caller.
-//!
 //! Event-driven fan-out from the runtime event bus into learning systems.
 //!
-//! STATUS: WIRED — spawned as a `tokio::spawn` background task in
-//! `orchestrate.rs::run_task_plans_inner()` during plan execution.
+//! Spawned by runner v2's event loop during plan execution. Provider health
+//! is intentionally excluded: live dispatch call sites record it directly so
+//! lossy or replayed bus events cannot duplicate circuit-breaker outcomes.
 //!
 //! The current event schema does not carry full turn identity on every event,
 //! so this subscriber keeps the latest started turn in memory and uses it to
@@ -15,8 +14,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
-use tokio::fs::OpenOptions;
-use tokio::io::AsyncWriteExt;
 use tokio::sync::broadcast;
 
 use roko_agent::chat_types::FinishReason;
@@ -29,7 +26,6 @@ use crate::costs_db::{CostsDb, create_cost_record};
 use crate::efficiency::{AgentEfficiencyEvent, ToolCallMeta};
 use crate::events::AgentEvent;
 use crate::latency::LatencyRegistry;
-use crate::provider_health::ProviderHealthRegistry;
 use crate::verdict_scorer::{VerdictHistory, VerdictRecord};
 
 #[derive(Debug, Clone)]
@@ -71,7 +67,6 @@ impl ActiveTurn {
 /// Consume `AgentEvent`s and update the learning subsystems that depend on them.
 pub async fn run_learning_subscriber(
     mut rx: broadcast::Receiver<AgentEvent>,
-    health: Arc<ProviderHealthRegistry>,
     latency: Arc<LatencyRegistry>,
     router: Arc<CascadeRouter>,
     anomaly: Arc<Mutex<AnomalyDetector>>,
@@ -145,7 +140,6 @@ pub async fn run_learning_subscriber(
                 };
 
                 let success = gate_passed.unwrap_or(false);
-                health.record_success(&turn_ctx.provider);
                 let _ = router.record_confidence_outcome(&turn_ctx.model, success);
 
                 let cost_record = create_cost_record(
@@ -214,13 +208,7 @@ pub async fn run_learning_subscriber(
                     );
                 }
             }
-            AgentEvent::ProviderError {
-                provider_id,
-                error_class,
-                ..
-            } => {
-                health.record_failure(&provider_id, error_class);
-            }
+            AgentEvent::ProviderError { .. } => {}
             AgentEvent::ToolCallExecuted {
                 tool_name,
                 duration_ms,
@@ -293,16 +281,19 @@ async fn append_efficiency_event(path: &Path, event: &AgentEfficiencyEvent) -> i
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    let mut line = serde_json::to_string(event)
+    let line = serde_json::to_string(event)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-    line.push('\n');
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .await?;
-    file.write_all(line.as_bytes()).await
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        roko_fs::log_rotation::append_jsonl_line_sync(
+            &path,
+            line.as_bytes(),
+            roko_core::config::ResourcesConfig::default().log_rotation_max_mb,
+        )
+    })
+    .await
+    .map_err(|error| io::Error::other(format!("efficiency append task failed: {error}")))??;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -318,7 +309,6 @@ mod tests {
     use crate::costs_db::CostsDb;
     use crate::events::AgentEvent;
     use crate::latency::LatencyRegistry;
-    use crate::provider_health::{ErrorClass, ProviderHealthRegistry};
     use crate::runtime_feedback::read_efficiency_events;
     use roko_agent::Usage;
     use roko_agent::chat_types::FinishReason;
@@ -330,7 +320,6 @@ mod tests {
         let efficiency_path = tempdir.path().join("efficiency.jsonl");
         let router_persist_path = tempdir.path().join("cascade-router.json");
 
-        let health = Arc::new(ProviderHealthRegistry::new());
         let latency = Arc::new(LatencyRegistry::new());
         let router = Arc::new(CascadeRouter::new(vec!["glm-5.1".to_string()]));
         let anomaly = Arc::new(Mutex::new(AnomalyDetector::new(1_700_000_000_000)));
@@ -338,7 +327,6 @@ mod tests {
 
         let handle = tokio::spawn(run_learning_subscriber(
             rx,
-            Arc::clone(&health),
             Arc::clone(&latency),
             Arc::clone(&router),
             Arc::clone(&anomaly),
@@ -402,12 +390,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn event_subscriber_routes_provider_errors_and_tool_latency() {
+    async fn event_subscriber_records_tool_latency_without_provider_health_side_effects() {
         let (tx, rx) = broadcast::channel(16);
         let tempdir = TempDir::new().expect("tempdir");
         let efficiency_path = tempdir.path().join("efficiency.jsonl");
 
-        let health = Arc::new(ProviderHealthRegistry::new());
         let latency = Arc::new(LatencyRegistry::new());
         let router = Arc::new(CascadeRouter::new(vec!["glm-5.1".to_string()]));
         let anomaly = Arc::new(Mutex::new(AnomalyDetector::new(1_700_000_000_000)));
@@ -415,7 +402,6 @@ mod tests {
 
         let handle = tokio::spawn(run_learning_subscriber(
             rx,
-            Arc::clone(&health),
             Arc::clone(&latency),
             router,
             anomaly,
@@ -438,33 +424,12 @@ mod tests {
             result_tokens: 64,
         })
         .expect("tool call");
-        tx.send(AgentEvent::ProviderError {
-            provider_id: "zai".into(),
-            error_class: ErrorClass::RateLimit,
-            status: 429,
-        })
-        .expect("provider error");
-        tx.send(AgentEvent::ProviderError {
-            provider_id: "zai".into(),
-            error_class: ErrorClass::RateLimit,
-            status: 429,
-        })
-        .expect("provider error");
-        tx.send(AgentEvent::ProviderError {
-            provider_id: "zai".into(),
-            error_class: ErrorClass::RateLimit,
-            status: 429,
-        })
-        .expect("provider error");
-
         drop(tx);
         handle.await.expect("subscriber task");
 
         let stats = latency.get("glm-5.1", "zai").expect("latency stats");
         assert_eq!(stats.observations, 1);
         assert_eq!(stats.recent_latencies, vec![50.0]);
-
-        assert!(!health.is_available("zai"));
     }
 
     #[tokio::test]
@@ -474,7 +439,6 @@ mod tests {
         let efficiency_path = tempdir.path().join("efficiency.jsonl");
         let router_persist_path = tempdir.path().join("cascade-router.json");
 
-        let health = Arc::new(ProviderHealthRegistry::new());
         let latency = Arc::new(LatencyRegistry::new());
         let router = Arc::new(CascadeRouter::new(vec!["overconfident-model".to_string()]));
         let anomaly = Arc::new(Mutex::new(AnomalyDetector::new(1_700_000_000_000)));
@@ -482,7 +446,6 @@ mod tests {
 
         let handle = tokio::spawn(run_learning_subscriber(
             rx,
-            Arc::clone(&health),
             Arc::clone(&latency),
             Arc::clone(&router),
             Arc::clone(&anomaly),

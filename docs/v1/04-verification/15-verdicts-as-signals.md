@@ -1,5 +1,8 @@
 # Verdicts as signals
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Layer 3 Harness -- Verification as Cognition
 > Status: **Specification** -- gate verdict emission wired, signal re-entry planned
 > Canonical source: `crates/roko-gate/`, `crates/roko-core/src/kind.rs` (Kind::GateVerdict)

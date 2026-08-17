@@ -2,6 +2,12 @@
 
 Depth for [00-INDEX.md](../../unified/00-INDEX.md)
 
+> **Last updated:** 2026-08-13
+>
+> **ISFR DEPRECATED (2026-08-13):** The ISFR vertical is deprecated and scheduled
+> for removal. See `.roko/GAPS.md`. Cross-references to ISFR in integration-topology
+> and implementation-readiness docs are historical.
+
 ---
 
 ## Source docs (13)

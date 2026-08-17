@@ -19,13 +19,14 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use roko_core::{
+    ContentHash,
     config::schema::ModelProfile,
     tool::{ToolCall, ToolContext, ToolDef},
 };
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::dispatcher::ToolDispatcher;
+use crate::dispatcher::{ToolDispatcher, validate_tool_call_ingress};
 use crate::introspection::{Intervention, MetacognitiveMonitor, Turn};
 use crate::lifecycle::{BudgetStatus, BudgetTracker, CognitiveTier, TurnCostRecord};
 use crate::provider::ProviderError;
@@ -77,7 +78,7 @@ pub mod max_iter;
 pub mod prune;
 pub mod result_msg;
 
-pub use agent_wrapper::ToolLoopAgent;
+pub use agent_wrapper::{MultimodalInputFormat, ToolLoopAgent};
 pub use backends::OpenAiCompatBackend;
 pub use checkpoint::Checkpoint;
 pub use max_iter::DEFAULT_MAX_ITERATIONS;
@@ -859,6 +860,26 @@ impl ToolLoop {
         .await
     }
 
+    /// Run a fresh non-streaming tool loop from an already-built message history.
+    pub async fn run_messages(
+        &self,
+        messages: Vec<Value>,
+        tools: &[ToolDef],
+        ctx: &ToolContext,
+    ) -> ToolLoopOutput {
+        self.run_inner_with_mcp_errors(
+            messages,
+            0,
+            Vec::new(),
+            Usage::default(),
+            tools,
+            ctx,
+            None,
+            SessionState::default(),
+        )
+        .await
+    }
+
     /// Resume a tool loop from a previously saved [`Checkpoint`].
     pub async fn resume(
         &self,
@@ -1062,6 +1083,21 @@ impl ToolLoop {
             let calls = match self.translator.parse_calls(&response) {
                 Ok(c) => c,
                 Err(e) => {
+                    let (error_class, error_hash) = match &e {
+                        crate::translate::TranslatorError::Malformed(detail) => (
+                            "malformed",
+                            Some(ContentHash::of(detail.as_bytes()).to_string()),
+                        ),
+                        crate::translate::TranslatorError::UnsupportedFormat(_) => {
+                            ("unsupported_format", None)
+                        }
+                    };
+                    tracing::warn!(
+                        iteration = iterations,
+                        error_class,
+                        error_hash = ?error_hash,
+                        "tool_loop: provider tool-call parsing failed"
+                    );
                     let cp = Checkpoint::new(iterations, all_calls.clone(), messages)
                         .with_session(session.clone());
                     return ToolLoopOutput {
@@ -1069,13 +1105,41 @@ impl ToolLoop {
                         iterations,
                         tool_calls: all_calls,
                         total_usage,
-                        stop_reason: StopReason::BackendError(format!("parse: {e}")),
+                        stop_reason: StopReason::BackendError(
+                            "provider tool-call response could not be parsed".to_string(),
+                        ),
                         checkpoint: Some(cp),
                         turn_traces,
                         mcp_errors: Vec::new(),
                     };
                 }
             };
+
+            // Provider tool calls are attacker-controlled ingress. Validate
+            // identity and fixed serialized byte/count ceilings before any
+            // assistant render, diagnostic, clone, callback, or checkpoint
+            // can retain their contents.
+            if let Err(reason) = validate_tool_call_ingress(&calls) {
+                self.clear_checkpoint_file();
+                tracing::warn!(
+                    iteration = iterations,
+                    num_calls = calls.len(),
+                    reason,
+                    "tool_loop: provider tool-call frame rejected by ingress policy"
+                );
+                return ToolLoopOutput {
+                    final_text: String::new(),
+                    iterations,
+                    tool_calls: all_calls,
+                    total_usage,
+                    stop_reason: StopReason::BackendError(
+                        "provider tool-call frame rejected by ingress policy".to_string(),
+                    ),
+                    checkpoint: None,
+                    turn_traces,
+                    mcp_errors: Vec::new(),
+                };
+            }
 
             // No tool calls -> final answer.
             if calls.is_empty() {
@@ -1141,11 +1205,14 @@ impl ToolLoop {
             }
 
             // Dispatch tool calls (§36.41 parallel/serial batching).
-            let call_names: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
+            let tool_name_hashes = calls
+                .iter()
+                .map(|call| ContentHash::of(call.name.as_bytes()).to_string())
+                .collect::<Vec<_>>();
             tracing::info!(
                 iteration = iterations,
                 num_calls = calls.len(),
-                tools = ?call_names,
+                tool_name_hashes = ?tool_name_hashes,
                 "tool_loop: dispatching tool calls"
             );
             let current_calls = calls.clone();
@@ -1513,11 +1580,101 @@ mod tests {
         }
     }
 
+    struct CountingIngressHandler {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ToolHandler for CountingIngressHandler {
+        fn name(&self) -> &str {
+            "echo"
+        }
+
+        async fn execute(&self, _call: ToolCall, _ctx: &ToolContext) -> ToolResult {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            ToolResult::text("handler executed")
+        }
+    }
+
+    struct IngressObservingTranslator {
+        assistant_renders: Arc<AtomicUsize>,
+    }
+
+    impl Translator for IngressObservingTranslator {
+        fn format(&self) -> ToolFormat {
+            MockTranslator.format()
+        }
+
+        fn render_tools(&self, tools: &[ToolDef]) -> RenderedTools {
+            MockTranslator.render_tools(tools)
+        }
+
+        fn parse_calls(
+            &self,
+            response: &BackendResponse,
+        ) -> Result<Vec<ToolCall>, TranslatorError> {
+            MockTranslator.parse_calls(response)
+        }
+
+        fn render_results(&self, results: &[(ToolCall, ToolResult)]) -> RenderedResults {
+            MockTranslator.render_results(results)
+        }
+
+        fn render_assistant_message(
+            &self,
+            response: &BackendResponse,
+        ) -> Option<serde_json::Value> {
+            self.assistant_renders.fetch_add(1, Ordering::SeqCst);
+            MockTranslator.render_assistant_message(response)
+        }
+    }
+
+    struct SecretMalformedTranslator;
+
+    impl Translator for SecretMalformedTranslator {
+        fn format(&self) -> ToolFormat {
+            ToolFormat::OpenAiJson
+        }
+
+        fn render_tools(&self, _tools: &[ToolDef]) -> RenderedTools {
+            RenderedTools::JsonArray(serde_json::json!([]))
+        }
+
+        fn parse_calls(
+            &self,
+            _response: &BackendResponse,
+        ) -> Result<Vec<ToolCall>, TranslatorError> {
+            Err(TranslatorError::Malformed(
+                "PASSWORD=parse-error-secret".to_string(),
+            ))
+        }
+
+        fn render_results(&self, _results: &[(ToolCall, ToolResult)]) -> RenderedResults {
+            RenderedResults::JsonMessages(serde_json::json!([]))
+        }
+    }
+
     // ─── Mock backends ───────────────────────────────────────────────
 
     /// Always returns a response with no tool calls.
     struct FinalAnswerBackend {
         text: String,
+    }
+
+    struct FixedToolFrameBackend {
+        response: serde_json::Value,
+    }
+
+    #[async_trait]
+    impl LlmBackend for FixedToolFrameBackend {
+        async fn send_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &SessionState,
+        ) -> Result<BackendResponse, LlmError> {
+            Ok(BackendResponse::Json(self.response.clone()))
+        }
     }
 
     #[async_trait]
@@ -2047,6 +2204,162 @@ mod tests {
         assert!(out.tool_calls.is_empty());
         assert_eq!(out.final_text, "done");
         assert!(out.checkpoint.is_none());
+    }
+
+    #[tokio::test]
+    async fn hostile_tool_frames_stop_before_render_handler_callback_or_checkpoint() {
+        let secret = "PASSWORD=tool-frame-secret";
+        let oversized_argument = format!("{secret}{}", "x".repeat(300 * 1024));
+        let aggregate_calls = (0..5)
+            .map(|index| {
+                serde_json::json!({
+                    "id": format!("aggregate-{index}"),
+                    "name": "echo",
+                    "arguments": {"payload": "x".repeat(220 * 1024)},
+                })
+            })
+            .collect::<Vec<_>>();
+        let too_many_calls = (0..17)
+            .map(|index| {
+                serde_json::json!({
+                    "id": format!("count-{index}"),
+                    "name": "echo",
+                    "arguments": {},
+                })
+            })
+            .collect::<Vec<_>>();
+        let responses = vec![
+            serde_json::json!({
+                "assistant_message": {"role": "assistant", "content": secret},
+                "tool_calls": [{
+                    "id": format!("bad\n{secret}"),
+                    "name": "echo",
+                    "arguments": {"secret": secret},
+                }],
+            }),
+            serde_json::json!({
+                "assistant_message": {"role": "assistant", "content": secret},
+                "tool_calls": [{
+                    "id": "PASSWORD=tool-frame-secret",
+                    "name": "echo",
+                    "arguments": {},
+                }],
+            }),
+            serde_json::json!({
+                "assistant_message": {"role": "assistant", "content": secret},
+                "tool_calls": [{
+                    "id": "secret-shaped-name",
+                    "name": "TOKEN:tool-frame-secret",
+                    "arguments": {},
+                }],
+            }),
+            serde_json::json!({
+                "assistant_message": {"role": "assistant", "content": secret},
+                "tool_calls": [{
+                    "id": "oversized-call",
+                    "name": "echo",
+                    "arguments": {"payload": oversized_argument},
+                }],
+            }),
+            serde_json::json!({
+                "assistant_message": {"role": "assistant", "content": secret},
+                "tool_calls": aggregate_calls,
+            }),
+            serde_json::json!({
+                "assistant_message": {"role": "assistant", "content": secret},
+                "tool_calls": too_many_calls,
+            }),
+        ];
+
+        for (index, response) in responses.into_iter().enumerate() {
+            let handler_calls = Arc::new(AtomicUsize::new(0));
+            let render_calls = Arc::new(AtomicUsize::new(0));
+            let callback_calls = Arc::new(AtomicUsize::new(0));
+            let registry: Arc<dyn roko_core::tool::ToolRegistry> =
+                Arc::new(VecToolRegistry::from_tools(test_tools()));
+            let handler_calls_for_resolver = Arc::clone(&handler_calls);
+            let resolver: Arc<dyn HandlerResolver> =
+                Arc::new(move |name: &str| -> Option<Arc<dyn ToolHandler>> {
+                    (name == "echo").then(|| {
+                        Arc::new(CountingIngressHandler {
+                            calls: Arc::clone(&handler_calls_for_resolver),
+                        }) as Arc<dyn ToolHandler>
+                    })
+                });
+            let dispatcher = Arc::new(ToolDispatcher::new(registry, resolver));
+            let translator: Arc<dyn Translator> = Arc::new(IngressObservingTranslator {
+                assistant_renders: Arc::clone(&render_calls),
+            });
+            let callback_calls_for_loop = Arc::clone(&callback_calls);
+            let checkpoint_dir = tempfile::tempdir().expect("checkpoint tempdir");
+            let checkpoint_path = checkpoint_dir.path().join(format!("hostile-{index}.json"));
+            let tool_loop = ToolLoop::new(
+                translator,
+                dispatcher,
+                Arc::new(FixedToolFrameBackend { response }),
+            )
+            .with_checkpoint_path(checkpoint_path.clone())
+            .with_on_turn(Arc::new(move |_| {
+                callback_calls_for_loop.fetch_add(1, Ordering::SeqCst);
+            }));
+
+            let output = tool_loop
+                .run(
+                    "system",
+                    "user",
+                    &test_tools(),
+                    &ToolContext::testing("/tmp"),
+                )
+                .await;
+            assert_eq!(
+                output.stop_reason,
+                StopReason::BackendError(
+                    "provider tool-call frame rejected by ingress policy".to_string()
+                )
+            );
+            assert_eq!(handler_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(render_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(callback_calls.load(Ordering::SeqCst), 0);
+            assert!(output.tool_calls.is_empty());
+            assert!(output.turn_traces.is_empty());
+            assert!(output.checkpoint.is_none());
+            assert!(!checkpoint_path.exists());
+            let visible = format!("{output:?}");
+            assert!(!visible.contains(secret));
+            assert!(!visible.contains("tool-frame-secret"));
+        }
+    }
+
+    #[tokio::test]
+    async fn translator_failure_never_reflects_remote_parse_payload() {
+        let registry: Arc<dyn roko_core::tool::ToolRegistry> =
+            Arc::new(VecToolRegistry::from_tools(test_tools()));
+        let resolver: Arc<dyn HandlerResolver> =
+            Arc::new(|_name: &str| -> Option<Arc<dyn ToolHandler>> { None });
+        let tool_loop = ToolLoop::new(
+            Arc::new(SecretMalformedTranslator),
+            Arc::new(ToolDispatcher::new(registry, resolver)),
+            Arc::new(FinalAnswerBackend {
+                text: "unused".to_string(),
+            }),
+        );
+
+        let output = tool_loop
+            .run(
+                "system",
+                "user",
+                &test_tools(),
+                &ToolContext::testing("/tmp"),
+            )
+            .await;
+        assert_eq!(
+            output.stop_reason,
+            StopReason::BackendError("provider tool-call response could not be parsed".to_string())
+        );
+        assert!(output.tool_calls.is_empty());
+        assert!(output.turn_traces.is_empty());
+        assert!(output.checkpoint.is_some());
+        assert!(!format!("{output:?}").contains("parse-error-secret"));
     }
 
     #[tokio::test]

@@ -1,4 +1,4 @@
-//! Meta monitoring agents (#12, #13, #15).
+//! Meta monitoring agents.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -72,83 +72,6 @@ impl FeedAgent for AgentMonitorAgent {
 }
 
 // ---------------------------------------------------------------------------
-// #13 — Confidence Scorer
-// ---------------------------------------------------------------------------
-
-pub struct ConfidenceScorerAgent;
-
-impl FeedAgent for ConfidenceScorerAgent {
-    fn agent_id(&self) -> &'static str {
-        "isfr-confidence"
-    }
-    fn display_name(&self) -> &'static str {
-        "Confidence Scorer"
-    }
-    fn capabilities(&self) -> Vec<&str> {
-        vec!["isfr", "confidence", "health"]
-    }
-    fn feeds(&self) -> Vec<FeedDescriptor> {
-        vec![FeedDescriptor {
-            feed_id: "isfr-confidence".into(),
-            topic: "feed:isfr:confidence".into(),
-            name: "Source Confidence".into(),
-            description: "Per-source health decomposition and confidence score".into(),
-            kind: "derived".into(),
-            rate: "15s".into(),
-            schema: None,
-        }]
-    }
-    fn run(
-        self: Arc<Self>,
-        ctx: FeedAgentContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
-        Box::pin(async move {
-            let mut tick = interval(Duration::from_secs(15));
-            loop {
-                tokio::select! {
-                    _ = ctx.cancel.cancelled() => break,
-                    _ = tick.tick() => {
-                        let sources = ctx.state.isfr.sources.read().await;
-                        if sources.is_empty() {
-                            continue;
-                        }
-                        let total = sources.len();
-                        let live = sources.iter().filter(|s| s.health == "live").count();
-                        let stale = sources.iter().filter(|s| s.health == "stale").count();
-                        let offline = sources.iter().filter(|s| s.health == "offline").count();
-                        let confidence_pct = if total > 0 { (live as f64 / total as f64) * 100.0 } else { 0.0 };
-
-                        let source_details: Vec<serde_json::Value> = sources.iter().map(|s| {
-                            json!({
-                                "name": s.name,
-                                "health": s.health,
-                                "weight": s.weight,
-                                "last_rate_bps": s.last_rate_bps,
-                            })
-                        }).collect();
-
-                        let payload = json!({
-                            "confidence_pct": confidence_pct,
-                            "total_sources": total,
-                            "live": live,
-                            "stale": stale,
-                            "offline": offline,
-                            "sources": source_details,
-                        });
-                        ctx.publish_tick(
-                            self.agent_id(),
-                            "isfr-confidence",
-                            "feed:isfr:confidence",
-                            payload,
-                        );
-                    }
-                }
-            }
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
 // #15 — Relay Stats Agent
 // ---------------------------------------------------------------------------
 
@@ -206,6 +129,71 @@ impl FeedAgent for RelayStatsAgent {
                             "feed:meta:relay",
                             payload,
                         );
+                    }
+                }
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// System heartbeat
+// ---------------------------------------------------------------------------
+
+pub struct SystemHeartbeatAgent;
+
+impl FeedAgent for SystemHeartbeatAgent {
+    fn agent_id(&self) -> &'static str {
+        "system-heartbeat"
+    }
+    fn display_name(&self) -> &'static str {
+        "System Heartbeat"
+    }
+    fn capabilities(&self) -> Vec<&str> {
+        vec!["meta", "heartbeat", "health"]
+    }
+    fn feeds(&self) -> Vec<FeedDescriptor> {
+        vec![FeedDescriptor {
+            feed_id: "meta-heartbeat".into(),
+            topic: "feed:meta:heartbeat".into(),
+            name: "System Heartbeat".into(),
+            description: "Aggregate system health: uptime, feed agent count, event throughput"
+                .into(),
+            kind: "meta".into(),
+            rate: "5s".into(),
+            schema: None,
+        }]
+    }
+    fn run(
+        self: Arc<Self>,
+        ctx: FeedAgentContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            let mut tick = interval(Duration::from_secs(5));
+            let start = std::time::Instant::now();
+            let mut tick_count: u64 = 0;
+            loop {
+                tokio::select! {
+                    _ = ctx.cancel.cancelled() => break,
+                    _ = tick.tick() => {
+                        tick_count += 1;
+                        let uptime_secs = start.elapsed().as_secs();
+                        let catalog = ctx.state.feed_agent_catalog.read().await;
+                        let active_agents = catalog.agents.len();
+                        let total_feeds = catalog.feeds.len();
+                        let msgs_per_sec = catalog.messages_per_sec;
+                        drop(catalog);
+                        let agent_count = ctx.state.agent_count.load(std::sync::atomic::Ordering::Relaxed);
+                        let payload = json!({
+                            "uptime_secs": uptime_secs,
+                            "uptime_human": format!("{}h {}m {}s", uptime_secs / 3600, (uptime_secs % 3600) / 60, uptime_secs % 60),
+                            "feed_agents_active": active_agents,
+                            "total_feeds": total_feeds,
+                            "relay_agents": agent_count,
+                            "est_msgs_per_sec": msgs_per_sec,
+                            "heartbeat_seq": tick_count,
+                        });
+                        ctx.publish_tick(self.agent_id(), "meta-heartbeat", "feed:meta:heartbeat", payload);
                     }
                 }
             }

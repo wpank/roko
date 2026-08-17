@@ -1,5 +1,8 @@
 # Snapshot Optimization
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Zero-copy rkyv snapshots and memory-mapped index files for sub-millisecond startup — eliminating the cold-start penalty for code intelligence.
 
 

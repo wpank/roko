@@ -1,5 +1,8 @@
 # 15-16 — Agent Templates
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > 18 agent templates with full definitions: system prompts, triggers, MCP servers,
 > gate pipelines, experiment configurations, subscription patterns.
 

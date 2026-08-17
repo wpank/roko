@@ -98,10 +98,10 @@ impl ToolsConfig {
         }
 
         // Check domain-specific exclusion.
-        if let Some(profile) = self.profiles.get(domain) {
-            if profile.excluded_tools.iter().any(|t| t == tool_name) {
-                return false;
-            }
+        if let Some(profile) = self.profiles.get(domain)
+            && profile.excluded_tools.iter().any(|t| t == tool_name)
+        {
+            return false;
         }
 
         true

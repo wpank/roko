@@ -1,5 +1,8 @@
 # Spectre Rendering Per Interface
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > How the Spectre creature is rendered across four interfaces: TUI ASCII art, Web Portal WebGL, CLI inline, and API JSON state. Same data model, four renderers.
 
 

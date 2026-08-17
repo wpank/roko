@@ -1,7 +1,7 @@
 //! Structured auth audit trail.
 //!
 //! Every authentication and authorisation event is appended as a JSONL record
-//! to `.roko/audit/auth.jsonl`.  The writer is append-only and best-effort:
+//! to `.roko/auth-audit.jsonl`.  The writer is append-only and best-effort:
 //! individual write failures are logged but never propagate to callers.
 //!
 //! ## Record format
@@ -47,8 +47,9 @@ pub enum AuthAuditAction {
     TokenIssued,
     /// A token/key was explicitly revoked.
     TokenRevoked,
-    /// A key was rotated (old hash retired, new one issued).
-    KeyRotated,
+    /// A key or token was rotated (old hash retired, new one issued).
+    #[serde(alias = "KeyRotated")]
+    TokenRotated,
     /// A token/key was accepted for a request (used successfully).
     TokenUsed,
     /// A permission check passed.
@@ -74,7 +75,7 @@ impl AuthAuditAction {
             Self::Login => "Login",
             Self::TokenIssued => "TokenIssued",
             Self::TokenRevoked => "TokenRevoked",
-            Self::KeyRotated => "KeyRotated",
+            Self::TokenRotated => "TokenRotated",
             Self::TokenUsed => "TokenUsed",
             Self::PermissionGranted => "PermissionGranted",
             Self::PermissionDenied => "PermissionDenied",
@@ -101,7 +102,7 @@ pub enum AuthOutcome {
 
 /// A single structured auth audit record.
 ///
-/// Appended as a JSONL line to `.roko/audit/auth.jsonl`.
+/// Appended as a JSONL line to `.roko/auth-audit.jsonl`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthAuditEvent {
     /// ISO 8601 UTC timestamp when the event occurred.
@@ -361,14 +362,14 @@ impl AuthAuditLog {
 
 /// Open the auth audit log at the canonical path under `workdir`.
 ///
-/// Creates `.roko/audit/auth.jsonl` (and any missing parent directories).
+/// Creates `.roko/auth-audit.jsonl` (and any missing parent directories).
 ///
 /// # Errors
 ///
 /// Returns `std::io::Error` if the file or its parent directory cannot be
 /// created.
 pub fn open_audit_log(workdir: &Path) -> std::io::Result<AuthAuditLog> {
-    let path = workdir.join(".roko").join("audit").join("auth.jsonl");
+    let path = workdir.join(".roko").join("auth-audit.jsonl");
     AuthAuditLog::open(path)
 }
 
@@ -377,7 +378,7 @@ pub fn open_audit_log_with_retention(
     workdir: &Path,
     retention_days: u64,
 ) -> std::io::Result<AuthAuditLog> {
-    let path = workdir.join(".roko").join("audit").join("auth.jsonl");
+    let path = workdir.join(".roko").join("auth-audit.jsonl");
     AuthAuditLog::open_with_retention(path, retention_days)
 }
 
@@ -460,7 +461,7 @@ mod tests {
 
         log.append(&sample_event(AuthAuditAction::Login, AuthOutcome::Success));
         log.append(&sample_event(
-            AuthAuditAction::KeyRotated,
+            AuthAuditAction::TokenRotated,
             AuthOutcome::Success,
         ));
         log.append(&sample_event(
@@ -603,6 +604,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let log = open_audit_log(dir.path()).unwrap();
         assert!(log.path().parent().unwrap().exists());
+        assert_eq!(log.path(), dir.path().join(".roko/auth-audit.jsonl"));
     }
 
     #[test]

@@ -4,7 +4,7 @@ import type { InsightEvent, AgentInfo } from './KnowledgeFlowPanel';
 import type { EfficiencyMetric } from './EfficiencyBar';
 import type { BlockData } from './ChainActivityPanel';
 import type { AgentPosition } from './LivePositionsPanel';
-import type { ServerStatus } from '../hooks/useServerHealth';
+import type { ServerStatus } from '../app/DataHub';
 import type { LearningStats } from '../hooks/useLearningStats';
 import type { HandoffEntry } from '../hooks/useAgentHandoffs';
 
@@ -17,7 +17,6 @@ import PrdPipelinePanel from './PrdPipelinePanel';
 import KnowledgeFlowPanel from './KnowledgeFlowPanel';
 import EfficiencyBar from './EfficiencyBar';
 import ChainIntelPanel from './ChainIntelPanel';
-import ISFRPanel from './ISFRPanel';
 import CostComparisonPanel, { EMPTY_RUN_METRICS, type RunMetrics } from './CostComparisonPanel';
 import MemoryTransferPanel from './MemoryTransferPanel';
 import OracleFlowPanel from './OracleFlowPanel';
@@ -285,46 +284,6 @@ export default function SidebarRenderer(props: SidebarRendererProps) {
         <RevealWhen visible={logEntries.length > 0} mode="clip">
           <Pane title="LOG" flat>
             <CommandLog entries={logEntries} maxHeight="180px" />
-          </Pane>
-        </RevealWhen>
-
-        <InferenceTracePanel
-          calls={traceCalls}
-          totals={traceTotals}
-          costSeries={traceCostSeries}
-        />
-        <RevealWhen visible={scenarioComplete} mode="blur">
-          <ProvenanceCard
-            model={stats.model}
-            cost={stats.cost}
-            tokens={stats.tokens}
-            duration={stats.time}
-          />
-        </RevealWhen>
-      </>
-    );
-  }
-
-  // ── ISFR scenario (also matches legacy 'isfr-agents') ────────
-  if (scenarioId === 'isfr' || scenarioId === 'isfr-agents') {
-    return (
-      <>
-        <RevealWhen visible={timelineSteps.length > 0} mode="slide-up">
-          <Pane title="TIMELINE" flat>
-            <Timeline steps={timelineSteps} />
-          </Pane>
-        </RevealWhen>
-
-        <RevealWhen visible={ciInsights.length > 0 || chainConnected} mode="scale">
-          <ISFRPanel
-            insights={ciInsights}
-            connected={chainConnected}
-          />
-        </RevealWhen>
-
-        <RevealWhen visible={logEntries.length > 0} mode="clip">
-          <Pane title="LOG" flat>
-            <CommandLog entries={logEntries} maxHeight="140px" />
           </Pane>
         </RevealWhen>
 

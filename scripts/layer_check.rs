@@ -36,14 +36,13 @@ struct ArchitectureFinding {
 fn extract_layers(metadata: &cargo_metadata::Metadata) -> HashMap<String, u32> {
     let mut layers = HashMap::new();
     for package in &metadata.packages {
-        if let Some(roko_meta) = package.metadata.get("roko") {
-            if let Some(layer) = roko_meta
+        if let Some(roko_meta) = package.metadata.get("roko")
+            && let Some(layer) = roko_meta
                 .get("layer")
                 .and_then(serde_json::value::Value::as_u64)
                 .and_then(|layer| u32::try_from(layer).ok())
-            {
-                layers.insert(package.name.as_ref().to_string(), layer);
-            }
+        {
+            layers.insert(package.name.as_ref().to_string(), layer);
         }
     }
     layers
@@ -373,10 +372,10 @@ fn path_attrs(path: &Path) -> Result<Vec<String>> {
         if !trimmed.starts_with("#[path") {
             continue;
         }
-        if let Some(start) = trimmed.find('"') {
-            if let Some(end) = trimmed[start + 1..].find('"') {
-                attrs.push(trimmed[start + 1..start + 1 + end].to_string());
-            }
+        if let Some(start) = trimmed.find('"')
+            && let Some(end) = trimmed[start + 1..].find('"')
+        {
+            attrs.push(trimmed[start + 1..start + 1 + end].to_string());
         }
     }
     Ok(attrs)

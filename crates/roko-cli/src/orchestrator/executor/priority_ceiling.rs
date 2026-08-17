@@ -20,7 +20,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! use roko_orchestrator::executor::priority_ceiling::*;
+//! use roko_cli::orchestrator::executor::priority_ceiling::*;
 //!
 //! let plans = vec![
 //!     PlanResourceInfo { plan_id: "a".into(), priority: 10, resources: vec![ResourceId::MergeQueueSlot] },

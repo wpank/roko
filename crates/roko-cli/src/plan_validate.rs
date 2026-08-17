@@ -463,10 +463,10 @@ fn validate_tasks_file(
         .collect::<HashSet<_>>();
 
     for task in &tasks {
-        if let Some(task_id) = normalized_field(task.task_id.as_deref()) {
-            if !seen_ids.insert(task_id.to_string()) {
-                duplicate_ids.insert(task_id.to_string());
-            }
+        if let Some(task_id) = normalized_field(task.task_id.as_deref())
+            && !seen_ids.insert(task_id.to_string())
+        {
+            duplicate_ids.insert(task_id.to_string());
         }
     }
 
@@ -589,20 +589,20 @@ fn validate_tasks_file(
                     ),
                 });
             }
-            if let Some(known_models) = models {
-                if !model_is_known(normalized, known_models) {
-                    diagnostics.push(Diagnostic {
-                        severity: Severity::Warning,
-                        rule_id: "PLAN_009".to_string(),
-                        plan_id: Some(plan_id.clone()),
-                        task_id: task.task_id.clone(),
-                        message: format!(
-                            "task '{}' uses model '{}' which is not configured in roko.toml",
-                            task.label(),
-                            model
-                        ),
-                    });
-                }
+            if let Some(known_models) = models
+                && !model_is_known(normalized, known_models)
+            {
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule_id: "PLAN_009".to_string(),
+                    plan_id: Some(plan_id.clone()),
+                    task_id: task.task_id.clone(),
+                    message: format!(
+                        "task '{}' uses model '{}' which is not configured in roko.toml",
+                        task.label(),
+                        model
+                    ),
+                });
             }
         }
     }

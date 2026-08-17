@@ -451,7 +451,9 @@ impl Engram {
         EngramBuilder::new(kind)
             .body(body)
             .lineage([self.id])
-            .provenance(Provenance::agent("derived"))
+            .provenance(
+                Provenance::agent("derived").with_taint_level(self.provenance.effective_taint()),
+            )
     }
 
     /// Emit a derived gate verdict signal with explicit verdict defaults.
@@ -464,7 +466,9 @@ impl Engram {
             .body(body)
             .decay(Decay::GATE_VERDICT)
             .lineage(self.derived_lineage())
-            .provenance(Provenance::agent("derived"));
+            .provenance(
+                Provenance::agent("derived").with_taint_level(self.provenance.effective_taint()),
+            );
 
         for (key, value) in &self.tags {
             builder = builder.tag(key.clone(), value.clone());
@@ -880,6 +884,21 @@ mod tests {
     }
 
     #[test]
+    fn derive_cannot_lower_parent_taint_classification() {
+        let parent = Engram::builder(Kind::Task)
+            .body(Body::text("classified parent"))
+            .provenance(Provenance::external("webhook").with_taint_level(crate::TaintLevel::Secret))
+            .build();
+
+        let child = parent.derive(Kind::Prompt, Body::text("derived")).build();
+
+        assert_eq!(
+            child.provenance.effective_taint(),
+            crate::TaintLevel::Secret
+        );
+    }
+
+    #[test]
     fn derive_verdict_preserves_lineage_tags_and_decay() {
         let ancestor = Engram::builder(Kind::Prompt)
             .body(Body::text("ancestor"))
@@ -905,6 +924,22 @@ mod tests {
         assert_eq!(child.tag("plan_id"), Some("plan-42"));
         assert_eq!(child.tag("passed"), Some("true"));
         assert_eq!(child.tag("gate"), Some("test"));
+    }
+
+    #[test]
+    fn derive_verdict_cannot_lower_parent_taint_classification() {
+        let parent = Engram::builder(Kind::Task)
+            .provenance(
+                Provenance::user("operator").with_taint_level(crate::TaintLevel::Confidential),
+            )
+            .build();
+
+        let verdict = parent.derive_verdict(Body::text("pass")).build();
+
+        assert_eq!(
+            verdict.provenance.effective_taint(),
+            crate::TaintLevel::Confidential
+        );
     }
 
     #[test]

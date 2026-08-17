@@ -1,5 +1,8 @@
 # Peer Scoring: 3-Layer Model
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Three layers of peer scoring protect the gossip network: protocol-level (GossipSub v1.1 mesh scoring), application-level (domain-specific behavior scoring), and economic-level (stake-weighted trust). Combined score determines mesh membership, message priority, and job eligibility.
 
 

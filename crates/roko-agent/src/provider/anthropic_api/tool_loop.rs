@@ -11,14 +11,15 @@ use serde_json::{Value, json};
 
 use crate::agent::Agent;
 use crate::claude_agent::{AnthropicTool, DEFAULT_ANTHROPIC_VERSION, DEFAULT_BASE_URL};
-use crate::dispatcher::HandlerResolver;
 use crate::http::{HttpPoster, ReqwestPoster};
+use crate::model_call_service::{ProviderOutcomeRecorder, provider_error_kind};
 use crate::provider::openai_compat::tool_registry_for_options;
 use crate::provider::{
     AgentCreationError, AgentOptions, ProviderError, ProviderSemaphores, build_tool_dispatcher,
     map_provider_error, tool_loop_max_iterations_for_profile,
 };
-use crate::tool_loop::{LlmBackend, LlmError, ToolLoop, ToolLoopAgent};
+use crate::rate_limit::ProviderRateLimiter;
+use crate::tool_loop::{LlmBackend, LlmError, MultimodalInputFormat, ToolLoop, ToolLoopAgent};
 use crate::translate::{
     BackendResponse, RenderedResults, RenderedTools, SessionState, Translator, TranslatorError,
 };
@@ -33,9 +34,7 @@ pub(super) fn create_tool_loop_agent(
     model: &ModelProfile,
     options: &AgentOptions,
 ) -> Result<Box<dyn Agent>, AgentCreationError> {
-    let (registry, tools) = tool_registry_for_options(model, options)?;
-    let resolver: Arc<dyn HandlerResolver> =
-        Arc::new(|name: &str| roko_std::tool::handlers::handler_for(name));
+    let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
     let dispatcher = build_tool_dispatcher(registry, resolver);
     let translator: Arc<dyn Translator> = Arc::new(AnthropicTranslator);
     let backend = create_tool_loop_backend_with_api_key(
@@ -59,12 +58,17 @@ pub(super) fn create_tool_loop_agent(
 
     let mut agent = ToolLoopAgent::new(tool_loop)
         .with_tools(tools)
-        .with_name(name);
+        .with_name(name)
+        .with_input_messages(options.input_messages.clone())
+        .with_multimodal_input_format(MultimodalInputFormat::Anthropic);
     if let Some(prompt) = &options.system_prompt {
         agent = agent.with_system_prompt(prompt.clone());
     }
     if let Some(ref dir) = options.working_dir {
         agent = agent.with_worktree_path(dir.clone());
+    }
+    if let Some(root) = options.effective_immune_root() {
+        agent = agent.with_immune_root(root);
     }
 
     Ok(Box::new(agent))
@@ -92,6 +96,28 @@ pub fn create_anthropic_backend_simple(
     timeout_ms: u64,
 ) -> (Arc<dyn LlmBackend>, Arc<dyn Translator>) {
     let backend = AnthropicMessagesBackend::new(api_key, model).with_timeout_ms(timeout_ms);
+    let translator: Arc<dyn Translator> = Arc::new(AnthropicTranslator);
+    (Arc::new(backend), translator)
+}
+
+/// Create an Anthropic Messages backend that shares the caller's canonical
+/// provider limiter and circuit-breaker outcome recorder.
+///
+/// The backend applies both dependencies to every HTTP turn in a native tool
+/// loop, rather than only once around the outer multi-turn agent invocation.
+pub fn create_anthropic_backend_with_runtime(
+    api_key: String,
+    model: &str,
+    provider_id: &str,
+    timeout_ms: u64,
+    rate_limiter: Arc<ProviderRateLimiter>,
+    outcome_recorder: Arc<dyn ProviderOutcomeRecorder>,
+) -> (Arc<dyn LlmBackend>, Arc<dyn Translator>) {
+    let backend = AnthropicMessagesBackend::new(api_key, model)
+        .with_provider_id(provider_id)
+        .with_timeout_ms(timeout_ms)
+        .with_rate_limiter(rate_limiter)
+        .with_outcome_recorder(outcome_recorder);
     let translator: Arc<dyn Translator> = Arc::new(AnthropicTranslator);
     (Arc::new(backend), translator)
 }
@@ -126,6 +152,9 @@ fn create_tool_loop_backend_with_api_key(
     }
     if let Some(provider_semaphores) = options.provider_semaphores.clone() {
         backend = backend.with_provider_semaphores(provider_semaphores);
+    }
+    if let Some(rate_limiter) = options.rate_limiter.clone() {
+        backend = backend.with_rate_limiter(rate_limiter);
     }
 
     Ok(Arc::new(backend))
@@ -238,6 +267,8 @@ struct AnthropicMessagesBackend {
     max_tokens: u32,
     extra_headers: Vec<(String, String)>,
     provider_semaphores: Option<Arc<ProviderSemaphores>>,
+    rate_limiter: Option<Arc<ProviderRateLimiter>>,
+    outcome_recorder: Option<Arc<dyn ProviderOutcomeRecorder>>,
     poster: Box<dyn HttpPoster>,
     /// Environment variable name for the API key (used in error messages).
     api_key_env: Option<String>,
@@ -255,6 +286,8 @@ impl AnthropicMessagesBackend {
             max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
             extra_headers: Vec::new(),
             provider_semaphores: None,
+            rate_limiter: None,
+            outcome_recorder: None,
             poster: Box::new(ReqwestPoster::new()),
             api_key_env: None,
         }
@@ -297,6 +330,16 @@ impl AnthropicMessagesBackend {
         self
     }
 
+    fn with_rate_limiter(mut self, rate_limiter: Arc<ProviderRateLimiter>) -> Self {
+        self.rate_limiter = Some(rate_limiter);
+        self
+    }
+
+    fn with_outcome_recorder(mut self, outcome_recorder: Arc<dyn ProviderOutcomeRecorder>) -> Self {
+        self.outcome_recorder = Some(outcome_recorder);
+        self
+    }
+
     fn with_poster(mut self, poster: Box<dyn HttpPoster>) -> Self {
         self.poster = poster;
         self
@@ -334,8 +377,17 @@ impl AnthropicMessagesBackend {
             };
 
             if role == "system" {
-                if let Some(content) = message.get("content").and_then(Value::as_str) {
-                    system_prompt.push(content.to_string());
+                if let Some(content) = message.get("content") {
+                    if let Some(text) = content.as_str() {
+                        system_prompt.push(text.to_string());
+                    } else if let Some(parts) = content.as_array() {
+                        system_prompt.extend(parts.iter().filter_map(|part| {
+                            (part.get("type").and_then(Value::as_str) == Some("text"))
+                                .then(|| part.get("text").and_then(Value::as_str))
+                                .flatten()
+                                .map(str::to_string)
+                        }));
+                    }
                 }
                 continue;
             }
@@ -383,6 +435,26 @@ impl AnthropicMessagesBackend {
             "usage": usage,
         })
     }
+
+    fn record_failure(&self, error: &LlmError) {
+        let Some(recorder) = &self.outcome_recorder else {
+            return;
+        };
+        let kind = match error {
+            LlmError::Provider(ProviderError::RateLimit { .. }) => "rate_limit",
+            LlmError::Provider(ProviderError::AuthFailure) => "auth_failure",
+            LlmError::Provider(ProviderError::Timeout) | LlmError::Timeout(_) => "timeout",
+            LlmError::Provider(ProviderError::ServerError(_)) => "server_error",
+            LlmError::Provider(ProviderError::ContentPolicy) => "content_policy",
+            LlmError::Provider(ProviderError::ContextOverflow) => "context_overflow",
+            LlmError::Provider(ProviderError::ModelNotFound) => "model_not_found",
+            LlmError::Provider(ProviderError::Other(message))
+            | LlmError::Backend(message)
+            | LlmError::Network(message) => provider_error_kind(message),
+            LlmError::RetriesExhausted => "retries_exhausted",
+        };
+        recorder.record_provider_failure(&self.provider_id, kind);
+    }
 }
 
 #[async_trait]
@@ -401,7 +473,15 @@ impl LlmBackend for AnthropicMessagesBackend {
         };
 
         let body_bytes = self.build_body(messages, tools)?;
-        let raw = self
+        if let Some(limiter) = &self.rate_limiter
+            && limiter.try_acquire(&self.provider_id).await.is_err()
+        {
+            return Err(LlmError::Provider(ProviderError::RateLimit {
+                retry_after_ms: None,
+            }));
+        }
+
+        let raw = match self
             .poster
             .post_json(
                 &self.endpoint(),
@@ -410,30 +490,58 @@ impl LlmBackend for AnthropicMessagesBackend {
                 self.timeout_ms,
             )
             .await
-            .map_err(|err| {
+        {
+            Ok(raw) => raw,
+            Err(err) => {
                 // Propagate Retry-After from 429/529 as structured error so the
                 // retry policy (E01-T12) can honour the provider's wait hint.
-                if let Some(s) = err.status {
-                    if s == 429 || s == 529 {
-                        return LlmError::Provider(ProviderError::RateLimit {
-                            retry_after_ms: err.retry_after_secs.map(|sec| sec * 1000),
-                        });
-                    }
-                }
-                let decorated = map_provider_error(
-                    ProviderKind::AnthropicApi,
+                let mapped = if let Some(s) = err.status
+                    && (s == 429 || s == 529)
+                {
+                    LlmError::Provider(ProviderError::RateLimit {
+                        retry_after_ms: err.retry_after_secs.map(|sec| sec * 1000),
+                    })
+                } else {
+                    let decorated = map_provider_error(
+                        ProviderKind::AnthropicApi,
+                        &self.provider_id,
+                        self.api_key_env.as_deref(),
+                        Some(&self.base_url),
+                        &err,
+                    );
+                    LlmError::Network(decorated)
+                };
+                self.record_failure(&mapped);
+                return Err(mapped);
+            }
+        };
+
+        let json: Value = match serde_json::from_str(&raw) {
+            Ok(json) => json,
+            Err(err) => {
+                let mapped = LlmError::Backend(format!("parse response: {err}"));
+                self.record_failure(&mapped);
+                return Err(mapped);
+            }
+        };
+
+        let response = BackendResponse::Json(Self::normalize_response(json));
+        if let Some(limiter) = &self.rate_limiter {
+            let usage = response.extract_usage();
+            limiter
+                .record_tokens(
                     &self.provider_id,
-                    self.api_key_env.as_deref(),
-                    Some(&self.base_url),
-                    &err,
-                );
-                LlmError::Network(decorated)
-            })?;
-
-        let json: Value = serde_json::from_str(&raw)
-            .map_err(|err| LlmError::Backend(format!("parse response: {err}")))?;
-
-        Ok(BackendResponse::Json(Self::normalize_response(json)))
+                    usage
+                        .input_tokens
+                        .saturating_add(usage.output_tokens)
+                        .into(),
+                )
+                .await;
+        }
+        if let Some(recorder) = &self.outcome_recorder {
+            recorder.record_provider_success(&self.provider_id);
+        }
+        Ok(response)
     }
 
     fn extract_session(&self, response: &BackendResponse) -> SessionState {
@@ -502,7 +610,6 @@ fn normalize_usage(usage: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dispatcher::HandlerResolver;
     use crate::http::HttpPostError;
     use crate::provider::AgentOptions;
     use crate::provider::openai_compat::tool_registry_for_options;
@@ -525,6 +632,28 @@ mod tests {
     struct MockPoster {
         responses: Mutex<VecDeque<Result<String, HttpPostError>>>,
         requests: Mutex<Vec<RecordedRequest>>,
+    }
+
+    #[derive(Default)]
+    struct RecordingOutcomes {
+        successes: Mutex<Vec<String>>,
+        failures: Mutex<Vec<(String, String)>>,
+    }
+
+    impl ProviderOutcomeRecorder for RecordingOutcomes {
+        fn record_provider_success(&self, provider_id: &str) {
+            self.successes
+                .lock()
+                .expect("success lock")
+                .push(provider_id.to_string());
+        }
+
+        fn record_provider_failure(&self, provider_id: &str, error_kind: &str) {
+            self.failures
+                .lock()
+                .expect("failure lock")
+                .push((provider_id.to_string(), error_kind.to_string()));
+        }
     }
 
     impl MockPoster {
@@ -604,6 +733,40 @@ mod tests {
         assert_eq!(msgs[0]["content"][0]["tool_use_id"], "call-1");
     }
 
+    #[test]
+    fn backend_lifts_structured_system_and_preserves_image_blocks() {
+        let backend = AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6");
+        let messages = vec![
+            json!({
+                "role": "system",
+                "content": [{"type": "text", "text": "structured system"}]
+            }),
+            json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "before"},
+                    {"type": "image", "source": {
+                        "type": "base64", "media_type": "image/png", "data": "aGVsbG8="
+                    }},
+                    {"type": "text", "text": "after"}
+                ]
+            }),
+        ];
+        let body = backend
+            .build_body(&messages, &RenderedTools::JsonArray(json!([])))
+            .expect("build body");
+        let request: Value = serde_json::from_slice(&body).expect("request json");
+
+        assert_eq!(request["system"], "structured system");
+        assert_eq!(request["messages"].as_array().map(Vec::len), Some(1));
+        assert_eq!(request["messages"][0]["content"][0]["text"], "before");
+        assert_eq!(
+            request["messages"][0]["content"][1]["source"]["data"],
+            "aGVsbG8="
+        );
+        assert_eq!(request["messages"][0]["content"][2]["text"], "after");
+    }
+
     #[tokio::test]
     async fn backend_normalizes_anthropic_responses_for_tool_loop() {
         let poster = MockPoster::new(vec![Ok(json!({
@@ -647,6 +810,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_backend_applies_shared_rate_and_outcome_hooks_per_turn() {
+        use crate::rate_limit::ProviderLimits;
+
+        let success = json!({
+            "id": "msg_ok",
+            "model": "claude-sonnet-4-6",
+            "stop_reason": "end_turn",
+            "content": [{ "type": "text", "text": "ok" }],
+            "usage": {
+                "input_tokens": 11,
+                "output_tokens": 22,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0
+            }
+        })
+        .to_string();
+        let poster = MockPoster::new(vec![
+            Ok(success),
+            Err(HttpPostError::http(429, "rate limited")),
+        ]);
+        let limiter = Arc::new(ProviderRateLimiter::with_provider_limits(
+            60_000,
+            HashMap::from([(
+                "anthropic-primary".to_string(),
+                ProviderLimits {
+                    rpm: 60_000,
+                    tpm: 1_000_000,
+                },
+            )]),
+        ));
+        let outcomes = Arc::new(RecordingOutcomes::default());
+        let backend = AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6")
+            .with_provider_id("anthropic-primary")
+            .with_base_url("https://example.test")
+            .with_rate_limiter(Arc::clone(&limiter))
+            .with_outcome_recorder(outcomes.clone())
+            .with_poster(Box::new(poster));
+        let messages = [json!({"role": "user", "content": "hi"})];
+        let tools = RenderedTools::JsonArray(json!([]));
+
+        backend
+            .send_turn(&messages, &tools, &SessionState::default())
+            .await
+            .expect("successful turn");
+        let error = backend
+            .send_turn(&messages, &tools, &SessionState::default())
+            .await
+            .expect_err("rate-limited turn");
+
+        assert!(matches!(
+            error,
+            LlmError::Provider(ProviderError::RateLimit { .. })
+        ));
+        assert_eq!(
+            outcomes.successes.lock().expect("success lock").as_slice(),
+            ["anthropic-primary"]
+        );
+        assert_eq!(
+            outcomes.failures.lock().expect("failure lock").as_slice(),
+            [("anthropic-primary".to_string(), "rate_limit".to_string())]
+        );
+        let snapshot = limiter
+            .snapshot()
+            .into_iter()
+            .find(|snapshot| snapshot.provider_id == "anthropic-primary")
+            .expect("configured provider snapshot");
+        assert_eq!(snapshot.rpm_used, 2);
+        assert_eq!(snapshot.tpm_used, 33);
+    }
+
+    #[tokio::test]
     async fn tool_loop_agent_executes_anthropic_tool_calls() {
         let first_response = json!({
             "id": "msg_1",
@@ -680,7 +914,7 @@ mod tests {
         .to_string();
         let poster = MockPoster::new(vec![Ok(first_response), Ok(second_response)]);
 
-        let (registry, tools) = tool_registry_for_options(
+        let (registry, tools, resolver) = tool_registry_for_options(
             &ModelProfile {
                 provider: "anthropic".to_string(),
                 slug: "claude-sonnet-4-6".to_string(),
@@ -695,8 +929,6 @@ mod tests {
             },
         )
         .expect("tools");
-        let resolver: Arc<dyn HandlerResolver> =
-            Arc::new(|name: &str| roko_std::tool::handlers::handler_for(name));
         let dispatcher = build_tool_dispatcher(registry, resolver);
         let backend = AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6")
             .with_base_url("https://example.test")

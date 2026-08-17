@@ -1,6 +1,10 @@
 # Relay Wire Protocol
 
 > Depth for [11-CONNECTIVITY.md](../../v2/11-CONNECTIVITY.md). Frame-level specification for the WebSocket relay: connection lifecycle, frame types, envelope structure, sequencing, ring buffer semantics, and request/response bridging.
+>
+> **Note:** Examples in this doc use `isfr.rates` as a sample topic. The ISFR
+> vertical is deprecated (2026-08-13) and scheduled for removal. The relay wire
+> protocol itself is not affected -- only the ISFR-specific topics will be removed.
 
 **Depends on**: [01-SIGNAL](../../v2/01-SIGNAL.md) (Signal/Pulse duality, Bus), [09-FEEDS](../../v2/09-FEEDS.md) (Feed registration, Pulse streams), [10-GROUPS](../../v2/10-GROUPS.md) (Group Bus partitions)
 
@@ -444,7 +448,7 @@ The messages endpoint reads from the ring buffer without creating a subscription
 | File | Responsibility |
 |---|---|
 | `src/features/relay_client.rs` | `RelayHandle` for connecting as a client, sending frames, subscribing |
-| `src/features/relay_subscriber.rs` | `RelaySubscriber` (high-level pub/sub API), `ISFRTopicAdapter` (bridges relay messages to ISFR feed Pulses) |
+| `src/features/relay_subscriber.rs` | `RelaySubscriber` (high-level pub/sub API) |
 | `src/registration.rs` | Workspace registration on startup |
 
 ### 9.3 Dependency Direction
@@ -459,4 +463,4 @@ crates/roko-agent-server   (relay client, depends on roko-core for Pulse types)
 crates/roko-serve          (registers workspace with relay on startup)
 ```
 
-The relay binary has no dependency on any `roko-*` crate. It is a generic WebSocket pub/sub server. All Roko-specific semantics (ISFR feeds, Pulse conversion, Signal graduation) happen on the client side in `roko-agent-server`.
+The relay binary has no dependency on any `roko-*` crate. It is a generic WebSocket pub/sub server. All Roko-specific semantics (Pulse conversion, Signal graduation) happen on the client side in `roko-agent-server`.

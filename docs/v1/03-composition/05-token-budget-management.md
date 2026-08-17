@@ -1,5 +1,8 @@
 # 05 — Token Budget Management
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Layer 2 Scaffold — Synapse Architecture
 > Status: **Implemented** — `roko-compose::budget` (270 lines) + `roko-compose::templates::common` (347 lines)
 > Canonical source: `crates/roko-compose/src/budget.rs`, `crates/roko-compose/src/templates/common.rs`

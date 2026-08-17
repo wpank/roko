@@ -4,7 +4,9 @@
 //! and runs them according to `GateConfig`.
 
 use async_trait::async_trait;
-use roko_core::foundation::{GateConfig, GateReport, GateRunner, GateVerdict, ShellGateCommand};
+use roko_core::foundation::{
+    GateClassification, GateConfig, GateReport, GateRunner, GateVerdict, ShellGateCommand,
+};
 use roko_core::{Body, Context, Kind, Result, RokoError, Signal, Verdict, Verify};
 use std::sync::{Arc, Mutex};
 
@@ -132,13 +134,23 @@ fn skipped_gate_verdict(
     output: impl Into<String>,
     skip_reason: impl Into<String>,
 ) -> GateVerdict {
+    let classification = classification_for_gate(&gate_name);
     GateVerdict {
         gate_name,
+        classification,
         passed: false,
         skipped: true,
         skip_reason: Some(skip_reason.into()),
         output: output.into(),
         duration_ms: 0,
+    }
+}
+
+fn classification_for_gate(gate_name: &str) -> GateClassification {
+    GateClassification {
+        canonical_rung: crate::registry::rung_for_gate_name(gate_name)
+            .map(|rung| rung.as_index() as u8),
+        deterministic: crate::registry::is_deterministic_gate(gate_name),
     }
 }
 
@@ -358,6 +370,7 @@ impl GateRunner for GateService {
 }
 
 fn to_gate_verdict(gate_name: String, verdict: Verdict) -> GateVerdict {
+    let classification = classification_for_gate(&gate_name);
     let output = verdict
         .error_digest
         .filter(|output| !output.is_empty())
@@ -366,6 +379,7 @@ fn to_gate_verdict(gate_name: String, verdict: Verdict) -> GateVerdict {
 
     GateVerdict {
         gate_name,
+        classification,
         passed: verdict.passed,
         skipped: false,
         skip_reason: None,
@@ -390,6 +404,35 @@ mod tests {
         assert_eq!(GateService::rung_for_name("custom:shell"), Some(5));
         assert_eq!(GateService::rung_for_name("judge"), Some(6));
         assert_eq!(GateService::rung_for_name("nonexistent"), None);
+    }
+
+    #[test]
+    fn verdict_classification_comes_from_the_canonical_registry() {
+        assert_eq!(
+            classification_for_gate("compile:cargo"),
+            GateClassification {
+                canonical_rung: Some(0),
+                deterministic: true,
+            }
+        );
+        assert_eq!(
+            classification_for_gate("test"),
+            GateClassification {
+                canonical_rung: Some(2),
+                deterministic: true,
+            }
+        );
+        assert_eq!(
+            classification_for_gate("diff"),
+            GateClassification {
+                canonical_rung: None,
+                deterministic: false,
+            }
+        );
+        assert_eq!(
+            classification_for_gate("unknown"),
+            GateClassification::default()
+        );
     }
 
     #[test]
@@ -524,6 +567,7 @@ mod tests {
         assert!(verdict.skipped);
         assert_eq!(verdict.skip_reason.as_deref(), Some("not wired"));
         assert!(verdict.output.starts_with("Skipped:"));
+        assert_eq!(verdict.classification, GateClassification::default());
     }
 
     #[test]
@@ -536,6 +580,13 @@ mod tests {
         assert_eq!(gate_verdict.skip_reason, None);
         assert_eq!(gate_verdict.output, "ok");
         assert_eq!(gate_verdict.duration_ms, 7);
+        assert_eq!(
+            gate_verdict.classification,
+            GateClassification {
+                canonical_rung: Some(0),
+                deterministic: true,
+            }
+        );
     }
 
     #[test]

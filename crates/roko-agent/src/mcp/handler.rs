@@ -143,20 +143,20 @@ impl<T: Transport + 'static> ToolHandler for McpToolHandler<T> {
         {
             Ok(result) => {
                 // Record server-reported tool errors (isError=true) as well.
-                if result.is_error {
-                    if let Some(ref acc) = self.error_accumulator {
-                        let content = mcp_result_text(&result.content);
-                        acc.record(
-                            self.server_name(),
-                            &self.exposed_name,
-                            if content.is_empty() {
-                                "tool returned an error".to_string()
-                            } else {
-                                content.clone()
-                            },
-                            false,
-                        );
-                    }
+                if result.is_error
+                    && let Some(ref acc) = self.error_accumulator
+                {
+                    let content = mcp_result_text(&result.content);
+                    acc.record(
+                        self.server_name(),
+                        &self.exposed_name,
+                        if content.is_empty() {
+                            "tool returned an error".to_string()
+                        } else {
+                            content.clone()
+                        },
+                        false,
+                    );
                 }
                 render_mcp_result(&self.exposed_name, result)
             }
@@ -243,7 +243,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl Transport for Arc<MockTransport> {
+    impl Transport for MockTransport {
         async fn roundtrip(
             &self,
             request: &McpRequest,

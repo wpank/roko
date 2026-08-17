@@ -154,10 +154,10 @@ impl KnowledgeStore {
         let id = entry.id;
         let vector = entry.vector;
         self.hdc.insert(id, vector, entry.weight);
-        if let Some(hnsw) = self.hnsw.as_mut() {
-            if self.entries.len() + 1 >= self.hnsw_threshold {
-                hnsw.insert(id, vector, entry.weight);
-            }
+        if let Some(hnsw) = self.hnsw.as_mut()
+            && self.entries.len() + 1 >= self.hnsw_threshold
+        {
+            hnsw.insert(id, vector, entry.weight);
         }
         self.entries.insert(id, entry);
         PostOutcome::Accepted { id }
@@ -270,11 +270,11 @@ impl KnowledgeStore {
     /// brute-force HDC.
     #[must_use]
     pub fn search(&self, query: &HdcVector, k: usize) -> Vec<Hit> {
-        if let Some(hnsw) = self.hnsw.as_ref() {
-            if self.entries.len() >= self.hnsw_threshold {
-                let ef = (k * 4).max(40);
-                return hnsw.search(query, k, ef);
-            }
+        if let Some(hnsw) = self.hnsw.as_ref()
+            && self.entries.len() >= self.hnsw_threshold
+        {
+            let ef = (k * 4).max(40);
+            return hnsw.search(query, k, ef);
         }
         self.hdc.top_k(query, k)
     }

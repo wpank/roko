@@ -1,6 +1,8 @@
 # Stigmergy as Bus
 
 > Depth for [06-MEMORY.md](../../unified/06-MEMORY.md). How indirect coordination emerges from the Bus fabric and Pulse lifecycle rather than requiring dedicated pheromone infrastructure.
+>
+> **Implementation status (2026-08-17):** Spec/design document. The Bus and Store primitives that underpin stigmergy are wired. Multi-agent group coordination via pheromone Pulses, scoped Bus partitions, and cross-agent stigmergic protocols are product work not yet wired at runtime. See `.roko/GAPS.md`.
 
 **Depends on**: [01-SIGNAL](../../unified/01-SIGNAL.md) (Signal/Pulse duality, demurrage, Kind), [02-CELL](../../unified/02-CELL.md) (Cell, React, Observe, Route protocols), [03-GRAPH](../../unified/03-GRAPH.md) (Graph topologies, Loop), [10-GROUPS](../../unified/10-GROUPS.md) (Group, CoordinationMode, Bus partitions), [store-and-bus-duality](../02-block/store-and-bus-duality.md) (graduation/projection bridges), [c-factor-as-lens](../10-learning-loops/c-factor-as-lens.md) (collective intelligence Lens)
 

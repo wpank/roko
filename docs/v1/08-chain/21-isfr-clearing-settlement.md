@@ -1,5 +1,8 @@
 # ISFR: Clearing and Settlement
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > ISFR (Intersubjective Fact Registry) provides collective fact validation and price discovery. The clearing mechanism uses a QP (Quadratic Programming) solver with bisection (O(80n)) to find market-clearing prices. Clearing certificates carry KKT optimality proofs verifiable on-chain.
 
 

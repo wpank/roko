@@ -1,5 +1,8 @@
 # Cognitive Kernel Primitives: Safety Implications
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L0 Runtime (kernel primitives), L1 Framework (capability enforcement), L3 Harness (signal-based intervention)
 >
 > **Crate**: Cross-cutting: `roko-runtime` (scheduling, signals), `roko-core` (namespaces, syscalls), `roko-agent` (enforcement)

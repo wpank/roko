@@ -1,5 +1,8 @@
 # Scorer, Gate, Router, Composer, Policy — The Five Operational Traits
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** This document specifies the five non-fabric operators after REF04. Roko's
 > kernel is two mediums (`Engram`, `Pulse`) moving through two fabrics (`Substrate`, `Bus`),
 > with six operators acting on them. The five operators here generalize over `Datum` or Pulse

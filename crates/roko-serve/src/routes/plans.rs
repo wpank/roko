@@ -16,6 +16,8 @@ use crate::extract::{RequestPayload, ValidJson, validate_with_validator};
 use crate::plan_types::{Plan, PlanTask};
 use crate::runtime::RunResult;
 use crate::state::{AppState, OperationHandle, OperationStatus, PlanHandle};
+use roko_core::agent::resolve_model;
+use roko_learn::cost_projection::{CompletedTask, CostProjector, RemainingTask};
 use roko_runtime::cancel::CancelToken;
 
 pub fn routes() -> Router<Arc<AppState>> {
@@ -141,6 +143,10 @@ struct CreateTaskEntry {
     id: String,
     #[serde(default)]
     description: String,
+    #[serde(default = "default_task_tier")]
+    tier: String,
+    #[serde(default)]
+    model_hint: Option<String>,
     #[serde(default)]
     #[validate(custom(function = "crate::extract::validate_string_items_non_blank"))]
     depends_on: Vec<String>,
@@ -161,6 +167,8 @@ async fn create_plan(
         plan.add_task(PlanTask {
             id: t.id,
             description: t.description,
+            tier: t.tier,
+            model_hint: t.model_hint,
             depends_on: t.depends_on,
             files: t.files,
             completed: false,
@@ -213,7 +221,6 @@ async fn execute_plan(
         )));
     }
 
-    let state_for_task = Arc::clone(&state);
     let handle = tokio::spawn({
         let plan_id = plan_id.clone();
         async move {
@@ -221,12 +228,8 @@ async fn execute_plan(
                 plan_id: plan_id.clone(),
             });
             let success = match runtime.run_once(&workdir, &prompt).await {
-                Ok(RunResult { success, .. }) => {
-                    state_for_task.provider_health.record_success("default");
-                    success
-                }
+                Ok(RunResult { success, .. }) => success,
                 Err(err) => {
-                    state_for_task.provider_health.record_failure("default");
                     bus.publish(ServerEvent::Error {
                         message: format!("plan execution failed for {plan_id}: {err}"),
                     });
@@ -377,7 +380,6 @@ async fn resume_plan(
     }
 
     let cancel = CancelToken::new();
-    let state_for_task = Arc::clone(&state);
     let handle = tokio::spawn({
         let plan_id = plan_id.clone();
         async move {
@@ -385,12 +387,8 @@ async fn resume_plan(
                 plan_id: plan_id.clone(),
             });
             let success = match runtime.run_once(&workdir, &prompt).await {
-                Ok(RunResult { success, .. }) => {
-                    state_for_task.provider_health.record_success("default");
-                    success
-                }
+                Ok(RunResult { success, .. }) => success,
                 Err(err) => {
-                    state_for_task.provider_health.record_failure("default");
                     bus.publish(ServerEvent::Error {
                         message: format!("plan resume failed for {plan_id}: {err}"),
                     });
@@ -462,7 +460,7 @@ async fn plan_gates(
 /// `GET /api/plans/{id}/costs` -- cost breakdown from efficiency events.
 ///
 /// Reads `.roko/learn/efficiency.jsonl`, filters by plan_id, and returns
-/// per-task cost breakdown plus totals.
+/// per-task cost breakdown, remaining-cost projection, and budget status.
 async fn plan_costs(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -470,7 +468,7 @@ async fn plan_costs(
     validate_path_segment(&id, "plan id")?;
 
     // Verify the plan exists on disk.
-    let _plan = find_plan(&state.workdir, &id).await?;
+    let plan = find_plan(&state.workdir, &id).await?;
 
     // Read efficiency events from the learning log.
     let efficiency_path = state
@@ -530,27 +528,115 @@ async fn plan_costs(
         }
     }
 
-    let mut tasks: Vec<Value> = task_costs
-        .into_iter()
-        .map(|(task_id, (cost, input, output, model))| {
+    let mut projector = CostProjector::new();
+    for (task_id, (cost, _, _, model)) in &task_costs {
+        let tier = plan
+            .tasks
+            .iter()
+            .find(|task| task.id == *task_id)
+            .map_or("focused", |task| task.tier.as_str());
+        projector.record_completed(&CompletedTask {
+            tier: tier.to_string(),
+            model: model.clone(),
+            cost_usd: *cost,
+        });
+    }
+    let remaining = plan
+        .tasks
+        .iter()
+        .filter(|task| !task.completed && !task_costs.contains_key(&task.id))
+        .map(|task| RemainingTask {
+            tier: task.tier.clone(),
+            model_hint: task.model_hint.clone().unwrap_or_default(),
+        })
+        .collect::<Vec<_>>();
+    let config = state.load_roko_config();
+    let default_model = resolve_model(&config, &config.agent.default_model).slug;
+    let projection = projector.project_remaining_cost(&remaining, &default_model);
+    let projected_total_usd = projection.projected_total_usd();
+    let budget_limit_usd = f64::from(config.budget.max_plan_usd);
+    let budget_enabled = budget_limit_usd > 0.0;
+    let budget_remaining_usd = budget_enabled.then(|| (budget_limit_usd - total_cost).max(0.0));
+    let budget_utilization = budget_enabled.then(|| total_cost / budget_limit_usd);
+    let budget_status = if !budget_enabled {
+        "unlimited"
+    } else if total_cost >= budget_limit_usd {
+        "exceeded"
+    } else if projected_total_usd > budget_limit_usd {
+        "projected_exceeded"
+    } else if total_cost / budget_limit_usd >= 0.8 {
+        "warning"
+    } else {
+        "ok"
+    };
+
+    let mut tasks: Vec<Value> = plan
+        .tasks
+        .iter()
+        .map(|task| {
+            let (cost, input, output, model) =
+                task_costs.get(&task.id).cloned().unwrap_or_default();
+            let task_budget = config
+                .budget
+                .task_limit_usd(&task.tier, task.model_hint.as_deref());
             json!({
-                "task_id": task_id,
+                "id": task.id,
+                "task_id": task.id,
+                "tier": task.tier,
+                "spent": cost,
+                "budget": (task_budget > 0.0).then_some(task_budget),
                 "cost_usd": cost,
                 "input_tokens": input,
                 "output_tokens": output,
                 "model": model,
+                "budget_exhausted": task_budget > 0.0 && cost >= task_budget,
             })
         })
         .collect();
     tasks.sort_by(|a, b| a["task_id"].as_str().cmp(&b["task_id"].as_str()));
 
+    let mut provider_health = state
+        .provider_health_registry
+        .snapshot()
+        .into_values()
+        .map(|health| {
+            json!({
+                "id": health.provider_id,
+                "state": health.state,
+                "cooldown_until_ms": health.cooldown_until,
+            })
+        })
+        .collect::<Vec<_>>();
+    provider_health.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
+
     Ok(Json(json!({
         "plan_id": id,
+        "plan_spent": total_cost,
+        "plan_budget": budget_enabled.then_some(budget_limit_usd),
+        "task_costs": tasks,
+        "provider_health": provider_health,
         "total_cost_usd": total_cost,
         "total_input_tokens": total_input,
         "total_output_tokens": total_output,
         "task_count": tasks.len(),
         "tasks": tasks,
+        "projection": {
+            "optimistic_remaining_usd": projection.optimistic_usd,
+            "expected_remaining_usd": projection.expected_usd,
+            "pessimistic_remaining_usd": projection.pessimistic_usd,
+            "projected_total_usd": projected_total_usd,
+            "tasks_completed": projection.tasks_completed,
+            "tasks_remaining": projection.tasks_remaining,
+            "confidence": projection.confidence,
+        },
+        "budget": {
+            "enabled": budget_enabled,
+            "limit_usd": budget_enabled.then_some(budget_limit_usd),
+            "remaining_usd": budget_remaining_usd,
+            "utilization": budget_utilization,
+            "status": budget_status,
+            "projected_exceeded": budget_enabled && projection.exceeds_budget(budget_limit_usd),
+        },
     })))
 }
 
@@ -603,7 +689,6 @@ async fn plan_chat(
     let workdir = state.workdir.clone();
     let plan_id = id.clone();
 
-    let state_for_task = Arc::clone(&state);
     let op_id_inner = op_id.clone();
     let handle = tokio::spawn(async move {
         let success = match runtime.run_once(&workdir, &prompt).await {
@@ -634,11 +719,9 @@ async fn plan_chat(
                         }
                     }
                 }
-                state_for_task.provider_health.record_success("default");
                 success
             }
             Err(err) => {
-                state_for_task.provider_health.record_failure("default");
                 bus.publish(ServerEvent::Error {
                     message: format!("plan chat failed for {plan_id}: {err}"),
                 });
@@ -1274,17 +1357,12 @@ async fn generate_plan(
     let kind = format!("plan_generate:{slug}");
     let slug_for_task = slug.clone();
 
-    let state_for_task = Arc::clone(&state);
     let handle = tokio::spawn({
         let op_id = op_id.clone();
         async move {
             let success = match runtime.run_once(&workdir, &prompt).await {
-                Ok(RunResult { success, .. }) => {
-                    state_for_task.provider_health.record_success("default");
-                    success
-                }
+                Ok(RunResult { success, .. }) => success,
                 Err(err) => {
-                    state_for_task.provider_health.record_failure("default");
                     bus.publish(ServerEvent::Error {
                         message: format!("plan generation failed for {slug_for_task}: {err}"),
                     });
@@ -1349,6 +1427,10 @@ async fn load_plan_file(path: &std::path::Path) -> Result<Plan, ApiError> {
         id: String,
         #[serde(default)]
         description: String,
+        #[serde(default = "default_task_tier")]
+        tier: String,
+        #[serde(default)]
+        model_hint: Option<String>,
         #[serde(default)]
         depends_on: Vec<String>,
         #[serde(default)]
@@ -1375,6 +1457,8 @@ async fn load_plan_file(path: &std::path::Path) -> Result<Plan, ApiError> {
         plan.add_task(PlanTask {
             id: t.id,
             description: t.description,
+            tier: t.tier,
+            model_hint: t.model_hint,
             depends_on: t.depends_on,
             files: t.files,
             completed: t.completed,
@@ -1401,12 +1485,18 @@ fn plan_to_json(plan: &Plan) -> Value {
         "tasks": plan.tasks.iter().map(|t| json!({
             "id": t.id,
             "description": t.description,
+            "tier": t.tier,
+            "model_hint": t.model_hint,
             "depends_on": t.depends_on,
             "files": t.files,
             "completed": t.completed,
             "status": task_status(t),
         })).collect::<Vec<_>>(),
     })
+}
+
+fn default_task_tier() -> String {
+    "focused".to_string()
 }
 
 async fn find_prd(
@@ -1616,6 +1706,8 @@ mod tests {
                 description: "task".into(),
                 depends_on: vec![],
                 files: vec![],
+                tier: "standard".into(),
+                model_hint: None,
             }],
         };
 
@@ -1763,6 +1855,93 @@ mod tests {
         assert_eq!(calls[0].0, state.workdir);
         assert!(calls[0].1.contains(".roko/prd/published/demo.md"));
         assert!(calls[0].1.contains("Build the widget."));
+    }
+
+    #[tokio::test]
+    async fn plan_costs_reports_projection_and_budget_status() {
+        let (_dir, state) = test_state();
+        let mut config = (*state.load_roko_config()).clone();
+        config.budget.max_plan_usd = 0.27;
+        config.budget.max_task_usd = 1.0;
+        state.roko_config.store(Arc::new(config));
+        state.provider_health_registry.record_success("anthropic");
+
+        let plans_dir = state.workdir.join(".roko").join("plans");
+        let learn_dir = state.workdir.join(".roko").join("learn");
+        tokio::fs::create_dir_all(&plans_dir)
+            .await
+            .expect("create plans dir");
+        tokio::fs::create_dir_all(&learn_dir)
+            .await
+            .expect("create learn dir");
+        tokio::fs::write(
+            plans_dir.join("cost-demo.json"),
+            serde_json::to_vec_pretty(&json!({
+                "id": "cost-demo",
+                "title": "Cost demo",
+                "description": "Exercise live cost reporting",
+                "tasks": [
+                    {
+                        "id": "T1",
+                        "description": "completed task",
+                        "tier": "mechanical",
+                        "model_hint": "claude-haiku-4-5",
+                        "depends_on": [],
+                        "files": [],
+                        "completed": true
+                    },
+                    {
+                        "id": "T2",
+                        "description": "remaining task",
+                        "depends_on": ["T1"],
+                        "files": [],
+                        "completed": false
+                    }
+                ]
+            }))
+            .expect("serialize plan"),
+        )
+        .await
+        .expect("write plan");
+        tokio::fs::write(
+            learn_dir.join("efficiency.jsonl"),
+            serde_json::to_string(&json!({
+                "plan_id": "cost-demo",
+                "task_id": "T1",
+                "model": "claude-sonnet-4-6",
+                "cost_usd": 0.25,
+                "input_tokens": 1000,
+                "output_tokens": 500
+            }))
+            .expect("serialize efficiency event"),
+        )
+        .await
+        .expect("write efficiency log");
+
+        let Json(payload) = plan_costs(State(state), Path("cost-demo".into()))
+            .await
+            .expect("cost report");
+
+        assert_eq!(payload["total_cost_usd"], 0.25);
+        assert_eq!(payload["plan_spent"], 0.25);
+        assert_eq!(payload["task_costs"][0]["spent"], 0.25);
+        assert!((payload["task_costs"][0]["budget"].as_f64().unwrap() - 0.2).abs() < 1e-6);
+        assert_eq!(payload["task_costs"][0]["budget_exhausted"], true);
+        assert_eq!(payload["provider_health"][0]["id"], "anthropic");
+        assert_eq!(payload["projection"]["tasks_completed"], 1);
+        assert_eq!(payload["projection"]["tasks_remaining"], 1);
+        assert!(
+            payload["projection"]["projected_total_usd"]
+                .as_f64()
+                .expect("projected total")
+                > 0.25
+        );
+        let limit = payload["budget"]["limit_usd"]
+            .as_f64()
+            .expect("budget limit");
+        assert!((limit - 0.27).abs() < 1e-6);
+        assert_eq!(payload["budget"]["status"], "projected_exceeded");
+        assert_eq!(payload["budget"]["projected_exceeded"], true);
     }
 
     #[tokio::test]

@@ -24,7 +24,7 @@
 //! # }
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -195,7 +195,11 @@ pub struct Playbook {
     pub name: String,
     /// The goal this playbook tries to achieve.
     pub goal: String,
+    /// Optional case-insensitive keyword pattern describing when to apply it.
+    #[serde(default)]
+    pub when_pattern: Option<String>,
     /// Ordered list of steps.
+    #[serde(alias = "then_steps")]
     pub steps: Vec<PlaybookStep>,
     /// Number of successful completions recorded via
     /// [`PlaybookStore::record_outcome`].
@@ -221,6 +225,7 @@ impl Playbook {
             id,
             name,
             goal: goal.into(),
+            when_pattern: None,
             steps: Vec::new(),
             success_count: 0,
             failure_count: 0,
@@ -354,6 +359,7 @@ pub fn extract_playbook_from_episode(
         truncate_chars(prompt_source, 200),
     );
     playbook.name = format!("Learned: {}", truncate_chars(prompt_source, 60));
+    playbook.when_pattern = Some(prompt_source.to_string());
     playbook.steps = steps;
     playbook.success_count = 1;
     playbook.failure_count = 0;
@@ -482,6 +488,9 @@ fn merge_playbooks(mut existing: Playbook, incoming: &Playbook) -> Playbook {
     }
     if existing.goal.trim().is_empty() && !incoming.goal.trim().is_empty() {
         existing.goal = incoming.goal.clone();
+    }
+    if existing.when_pattern.is_none() {
+        existing.when_pattern.clone_from(&incoming.when_pattern);
     }
     if incoming.steps.len() > existing.steps.len() {
         existing.steps = incoming.steps.clone();
@@ -842,6 +851,109 @@ impl PlaybookStore {
         Ok(ranked)
     }
 
+    /// Match explicit when/then playbooks against a task description.
+    ///
+    /// Results are ranked by keyword overlap multiplied by historical success
+    /// rate. Records without a `when_pattern` remain readable but do not
+    /// participate in active matching.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot be listed.
+    pub async fn match_playbooks(
+        &self,
+        task_description: &str,
+        limit: usize,
+    ) -> io::Result<Vec<Playbook>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut matched = self
+            .list()
+            .await?
+            .into_iter()
+            .filter_map(|playbook| {
+                let overlap = keyword_overlap(playbook.when_pattern.as_deref()?, task_description);
+                (overlap > 0.0).then(|| {
+                    let score = overlap * playbook.success_rate().unwrap_or(0.5);
+                    (score, playbook)
+                })
+            })
+            .collect::<Vec<_>>();
+        matched.sort_by(|(score_a, a), (score_b, b)| {
+            score_b.total_cmp(score_a).then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(matched
+            .into_iter()
+            .take(limit)
+            .map(|(_, playbook)| playbook)
+            .collect())
+    }
+
+    /// Match playbooks and reject strategies that conflict with active rules.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if persisted playbooks cannot be read.
+    pub async fn match_with_rules(
+        &self,
+        task_description: &str,
+        rules: &crate::playbook_rules::PlaybookRules,
+        limit: usize,
+    ) -> io::Result<Vec<Playbook>> {
+        use crate::playbook_rules::MatchContext;
+
+        let words = normalized_words(task_description);
+        let files = words
+            .iter()
+            .filter(|word| word.contains('/') || word.contains('.'))
+            .cloned()
+            .collect();
+        let ctx = MatchContext {
+            files,
+            tags: words.into_iter().collect(),
+            category: None,
+            error_signature: None,
+            role: "implementer".into(),
+        };
+        let selected_rules = rules.select(&ctx, usize::MAX);
+        let confidence = if selected_rules.is_empty() {
+            1.0
+        } else {
+            selected_rules
+                .iter()
+                .map(|rule| rule.confidence)
+                .sum::<f64>()
+                / selected_rules.len() as f64
+        };
+        let mut matched = self
+            .match_playbooks(task_description, usize::MAX)
+            .await?
+            .into_iter()
+            .filter(|playbook| {
+                !selected_rules
+                    .iter()
+                    .any(|rule| playbook_conflicts(playbook, &rule.body))
+            })
+            .map(|playbook| {
+                let overlap = keyword_overlap(
+                    playbook.when_pattern.as_deref().unwrap_or_default(),
+                    task_description,
+                );
+                let score = overlap * playbook.success_rate().unwrap_or(0.5) * confidence;
+                (score, playbook)
+            })
+            .collect::<Vec<_>>();
+        matched.sort_by(|(score_a, a), (score_b, b)| {
+            score_b.total_cmp(score_a).then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(matched
+            .into_iter()
+            .take(limit)
+            .map(|(_, playbook)| playbook)
+            .collect())
+    }
+
     async fn rank_playbooks(&self, query: &str) -> io::Result<Vec<Playbook>> {
         let query = normalize_query(query);
         let query_terms = tokenize(&query);
@@ -1014,6 +1126,59 @@ impl PlaybookStore {
             (score >= PLAYBOOK_MERGE_THRESHOLD).then_some(candidate)
         }))
     }
+}
+
+/// Fraction of distinct pattern words present in `text`.
+#[must_use]
+pub fn keyword_overlap(pattern: &str, text: &str) -> f64 {
+    let pattern_words = normalized_words(pattern);
+    if pattern_words.is_empty() {
+        return 0.0;
+    }
+    let text_words = normalized_words(text);
+    pattern_words.intersection(&text_words).count() as f64 / pattern_words.len() as f64
+}
+
+fn normalized_words(text: &str) -> HashSet<String> {
+    text.split(|character: char| {
+        !character.is_alphanumeric() && character != '/' && character != '.'
+    })
+    .filter(|word| !word.is_empty())
+    .map(str::to_lowercase)
+    .collect()
+}
+
+fn playbook_conflicts(playbook: &Playbook, rule_body: &str) -> bool {
+    let body = rule_body.to_lowercase();
+    let strategy = std::iter::once(playbook.goal.as_str())
+        .chain(
+            playbook
+                .steps
+                .iter()
+                .flat_map(|step| [step.description.as_str(), step.action_kind.as_str()]),
+        )
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    for marker in ["avoid ", "do not use ", "never use "] {
+        let Some(start) = body.find(marker) else {
+            continue;
+        };
+        let forbidden = body[start + marker.len()..]
+            .split(|character: char| !character.is_alphanumeric() && character != '_')
+            .next()
+            .unwrap_or_default();
+        if !forbidden.is_empty()
+            && strategy.split_whitespace().any(|word| {
+                word.trim_matches(|character: char| {
+                    !character.is_alphanumeric() && character != '_'
+                }) == forbidden
+            })
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn normalize_query(text: &str) -> String {
@@ -1700,5 +1865,27 @@ mod tests {
         assert!(store.delete("gone").await.expect("delete"));
         assert!(store.load("gone").await.expect("load").is_none());
         assert!(!store.delete("gone").await.expect("delete again"));
+    }
+
+    #[tokio::test]
+    async fn when_then_matching_ranks_overlap_and_success() {
+        let tmp = TempDir::new().expect("tempdir");
+        let store = PlaybookStore::new(tmp.path());
+        let mut broad = sample_playbook("broad");
+        broad.when_pattern = Some("rust compile test".into());
+        broad.success_count = 8;
+        broad.failure_count = 2;
+        let mut narrow = sample_playbook("narrow");
+        narrow.when_pattern = Some("python deploy".into());
+        narrow.success_count = 10;
+        store.save(&broad).await.expect("save broad");
+        store.save(&narrow).await.expect("save narrow");
+
+        let matched = store
+            .match_playbooks("Fix the Rust compile failure and run tests", 3)
+            .await
+            .expect("match");
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].id, "broad");
     }
 }

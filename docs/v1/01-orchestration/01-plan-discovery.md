@@ -1,5 +1,8 @@
 # Plan Discovery
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Module**: `roko-orchestrator/src/plan_discovery.rs`
 > **Entry point**: `discover_plans(plans_dir: &Path) -> Result<Vec<PlanInfo>, DiscoveryError>`
 > **CLI command**: `roko plan list` (lists discovered plans), `roko plan run <dir>` (discovers then executes)

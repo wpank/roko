@@ -71,6 +71,36 @@ pub enum DisciplineState {
     Banned,
 }
 
+/// Reputation-derived commercial pricing tier for an agent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PricingTierResult {
+    /// Stable tier name understood by payment-layer callers.
+    pub tier_name: String,
+    /// Multiplier applied to a feed's base price.
+    pub price_multiplier: f64,
+    /// Mean of the seven effective reputation-domain scores.
+    pub aggregate_score: f64,
+    /// Discipline state at the time the tier was resolved.
+    pub discipline: String,
+}
+
+/// Five-axis reputation score used by routing and marketplace trust surfaces.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReputationTraceRank {
+    /// Stability across participated reputation domains.
+    pub consistency: f64,
+    /// Number of participated domains, saturating at ten.
+    pub breadth: f64,
+    /// Strongest decay-adjusted domain score.
+    pub depth: f64,
+    /// Exponential freshness of the newest participated domain.
+    pub recency: f64,
+    /// Current feedback-weight signal after collusion dilution.
+    pub collaboration: f64,
+    /// Weighted aggregate of all five dimensions.
+    pub composite: f64,
+}
+
 /// Violation types that trigger reputation slashing.
 ///
 /// Aligned with spec (`docs/08-chain/04-korai-passport-erc-721-soulbound.md` lines 85-93).
@@ -566,6 +596,77 @@ impl ReputationRegistry {
             .unwrap_or_default()
     }
 
+    /// Compute reputation-specific TraceRank from an agent's domain records.
+    ///
+    /// This is distinct from `trace_rank.rs`, which propagates trust over a
+    /// payment graph. All dimensions are normalized to `[0, 1]` before the
+    /// fixed-weight composite is calculated.
+    #[must_use]
+    pub fn compute_trace_rank(agent: &AgentReputation, now: u64) -> ReputationTraceRank {
+        let mut participated: Vec<_> = agent
+            .domains
+            .iter()
+            .filter(|(_, domain)| domain.job_count > 0)
+            .collect();
+        participated.sort_by_key(|(domain, _)| *domain);
+
+        let consistency = if participated.is_empty() {
+            0.0
+        } else {
+            let mean = participated
+                .iter()
+                .map(|(_, domain)| domain.effective_score(now))
+                .sum::<f64>()
+                / participated.len() as f64;
+            let variance = participated
+                .iter()
+                .map(|(_, domain)| {
+                    let delta = domain.effective_score(now) - mean;
+                    delta * delta
+                })
+                .sum::<f64>()
+                / participated.len() as f64;
+            (1.0 - variance.sqrt()).clamp(0.0, 1.0)
+        };
+        let breadth = (participated.len() as f64 / 10.0).min(1.0);
+        let depth = participated
+            .iter()
+            .map(|(_, domain)| domain.effective_score(now))
+            .fold(0.0_f64, f64::max)
+            .clamp(0.0, 1.0);
+        let recency = participated
+            .iter()
+            .map(|(_, domain)| domain.last_update)
+            .max()
+            .map_or(0.0, |last_update| {
+                let elapsed_days = now.saturating_sub(last_update) as f64 / 86_400.0;
+                (-0.03 * elapsed_days).exp().clamp(0.0, 1.0)
+            });
+        let collaboration = agent.feedback_weight(now).clamp(0.0, 1.0);
+        let composite = 0.25 * consistency
+            + 0.15 * breadth
+            + 0.25 * depth
+            + 0.20 * recency
+            + 0.15 * collaboration;
+
+        ReputationTraceRank {
+            consistency,
+            breadth,
+            depth,
+            recency,
+            collaboration,
+            composite,
+        }
+    }
+
+    /// Read reputation-specific TraceRank for a registered passport.
+    #[must_use]
+    pub fn get_trace_rank(&self, passport_id: u256, now: u64) -> Option<ReputationTraceRank> {
+        self.records
+            .get(&passport_id)
+            .map(|agent| Self::compute_trace_rank(agent, now))
+    }
+
     /// Get the feedback weight for an agent acting as a rater.
     pub fn feedback_weight(&self, passport_id: u256, now: u64) -> f64 {
         self.records
@@ -711,6 +812,47 @@ impl ReputationRegistry {
     /// Number of registered agents.
     pub fn agent_count(&self) -> usize {
         self.records.len()
+    }
+}
+
+/// Resolve an agent's reputation and discipline into a payment pricing tier.
+///
+/// Discipline takes precedence over the aggregate score: agents outside good
+/// standing receive the `Free` tier, which has a zero multiplier and therefore
+/// cannot sell paid access.
+pub fn resolve_pricing_tier(
+    registry: &ReputationRegistry,
+    passport_id: u256,
+    now: u64,
+) -> PricingTierResult {
+    let aggregate_score = REPUTATION_DOMAINS
+        .iter()
+        .map(|domain| registry.get_score(passport_id, domain, now))
+        .sum::<f64>()
+        / REPUTATION_DOMAINS.len() as f64;
+    let discipline = registry.discipline_state(passport_id, now);
+
+    pricing_tier_for(aggregate_score, discipline)
+}
+
+fn pricing_tier_for(aggregate_score: f64, discipline: DisciplineState) -> PricingTierResult {
+    let (tier_name, price_multiplier) = if discipline != DisciplineState::GoodStanding {
+        ("Free", 0.0)
+    } else if aggregate_score < 0.4 {
+        ("Starter", 0.5)
+    } else if aggregate_score < 0.6 {
+        ("Standard", 1.0)
+    } else if aggregate_score < 0.8 {
+        ("Professional", 1.5)
+    } else {
+        ("Enterprise", 2.0)
+    };
+
+    PricingTierResult {
+        tier_name: tier_name.to_string(),
+        price_multiplier,
+        aggregate_score,
+        discipline: format!("{discipline:?}"),
     }
 }
 
@@ -1175,5 +1317,106 @@ mod tests {
             registry.recovery_status(1, now),
             RecoveryStatus::NotApplicable
         );
+    }
+
+    #[test]
+    fn pricing_tier_boundaries_are_exact() {
+        let cases = [
+            (0.399_999, "Starter", 0.5),
+            (0.4, "Standard", 1.0),
+            (0.599_999, "Standard", 1.0),
+            (0.6, "Professional", 1.5),
+            (0.799_999, "Professional", 1.5),
+            (0.8, "Enterprise", 2.0),
+        ];
+
+        for (score, expected_name, expected_multiplier) in cases {
+            let result = pricing_tier_for(score, DisciplineState::GoodStanding);
+            assert_eq!(result.tier_name, expected_name);
+            assert!((result.price_multiplier - expected_multiplier).abs() < f64::EPSILON);
+            assert!((result.aggregate_score - score).abs() < f64::EPSILON);
+            assert_eq!(result.discipline, "GoodStanding");
+        }
+    }
+
+    #[test]
+    fn pricing_tier_resolution_uses_all_domains_and_discipline_gate() {
+        let mut registry = ReputationRegistry::new();
+        let now = 1_000_000;
+        registry.register_agent(7, now);
+
+        let standard = resolve_pricing_tier(&registry, 7, now);
+        assert_eq!(standard.tier_name, "Standard");
+        assert!((standard.aggregate_score - 0.5).abs() < f64::EPSILON);
+
+        registry.ban_agent(7, now);
+        let banned = resolve_pricing_tier(&registry, 7, now);
+        assert_eq!(banned.tier_name, "Free");
+        assert_eq!(banned.price_multiplier, 0.0);
+        assert_eq!(banned.discipline, "Banned");
+
+        for state in [
+            DisciplineState::Probation,
+            DisciplineState::Suspended,
+            DisciplineState::Banned,
+        ] {
+            assert_eq!(pricing_tier_for(0.95, state).tier_name, "Free");
+        }
+    }
+
+    #[test]
+    fn reputation_trace_rank_uses_exact_five_axis_weights() {
+        let mut registry = ReputationRegistry::new();
+        let now = 1_000_000;
+        registry.register_agent(7, now);
+        let agent = registry.records.get_mut(&7).unwrap();
+        let coding = agent.domains.get_mut("coding").unwrap();
+        coding.score = 0.8;
+        coding.job_count = 3;
+        coding.last_update = now;
+        let security = agent.domains.get_mut("security").unwrap();
+        security.score = 0.6;
+        security.job_count = 2;
+        security.last_update = now;
+
+        let rank = registry.get_trace_rank(7, now).unwrap();
+        assert!((rank.consistency - 0.9).abs() < 1e-12);
+        assert!((rank.breadth - 0.2).abs() < 1e-12);
+        assert!((rank.depth - 0.8).abs() < 1e-12);
+        assert!((rank.recency - 1.0).abs() < 1e-12);
+        assert!((rank.collaboration - 1.0).abs() < 1e-12);
+        assert!((rank.composite - 0.805).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reputation_trace_rank_handles_unknown_and_inactive_agents() {
+        let mut registry = ReputationRegistry::new();
+        assert!(registry.get_trace_rank(99, 100).is_none());
+        registry.register_agent(7, 100);
+        let rank = registry.get_trace_rank(7, 100).unwrap();
+        assert_eq!(rank.consistency, 0.0);
+        assert_eq!(rank.breadth, 0.0);
+        assert_eq!(rank.depth, 0.0);
+        assert_eq!(rank.recency, 0.0);
+        assert_eq!(rank.collaboration, 1.0);
+        assert!((rank.composite - 0.15).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn reputation_trace_rank_recency_and_collusion_decay() {
+        let mut registry = ReputationRegistry::new();
+        let now = 10 * 86_400;
+        registry.register_agent(7, 0);
+        let agent = registry.records.get_mut(&7).unwrap();
+        let coding = agent.domains.get_mut("coding").unwrap();
+        coding.score = 0.7;
+        coding.job_count = 1;
+        coding.last_update = 0;
+        agent.apply_collusion_dilution(now);
+
+        let rank = registry.get_trace_rank(7, now).unwrap();
+        assert!((rank.recency - (-0.3_f64).exp()).abs() < 1e-12);
+        assert!((rank.collaboration - 0.5).abs() < f64::EPSILON);
+        assert!((0.0..=1.0).contains(&rank.composite));
     }
 }

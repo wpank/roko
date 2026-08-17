@@ -457,6 +457,8 @@ const MARGINAL_VALUE_STOP_RATIO: f64 = 0.5;
 const CONTRARIAN_RETRIEVAL_RATIO: f64 = 0.15;
 const CONTRARIAN_NEUTRAL_BAND: f64 = 0.1;
 const DEDUP_SIMILARITY_THRESHOLD: f64 = 0.85;
+#[cfg(feature = "hdc")]
+const HDC_RELEVANCE_THRESHOLD: f64 = 0.525;
 
 impl ContextAssembler {
     /// Create a new assembler with the default 4K gathered-context budget.
@@ -1146,7 +1148,14 @@ fn keyword_overlap(left: &str, right: &str) -> f64 {
 fn semantic_similarity(left: &str, right: &str) -> f64 {
     let left_vec = text_fingerprint(left);
     let right_vec = text_fingerprint(right);
-    left_vec.similarity(&right_vec) as f64
+    let raw_hdc_similarity = left_vec.similarity(&right_vec) as f64;
+    let calibrated_hdc_similarity = if raw_hdc_similarity >= HDC_RELEVANCE_THRESHOLD {
+        ((raw_hdc_similarity - 0.5) * 2.0).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+
+    keyword_overlap(left, right).max(calibrated_hdc_similarity)
 }
 
 #[cfg(not(feature = "hdc"))]
@@ -2023,6 +2032,8 @@ mod tests {
                 id: "k1".into(),
                 kind: KnowledgeKind::Insight,
                 source: None,
+                origin_taint: Default::default(),
+                classification: Default::default(),
                 content: "Prompt assembly should keep high-value context near the edges.".into(),
                 confidence: 0.9,
                 confidence_weight: 0.9,
@@ -2046,6 +2057,9 @@ mod tests {
                 deprecated: false,
                 balance: 1.0,
                 frozen: false,
+                balance_depleted_at: None,
+                frozen_at: None,
+                falsifier: None,
                 catalytic_score: 0,
             })
             .expect("add knowledge");
@@ -2128,6 +2142,8 @@ mod tests {
                 id: "k-somatic".into(),
                 kind: KnowledgeKind::Warning,
                 source: None,
+                origin_taint: Default::default(),
+                classification: Default::default(),
                 content: "Check rollback health before retrying".into(),
                 confidence: 0.9,
                 confidence_weight: 0.9,
@@ -2151,6 +2167,9 @@ mod tests {
                 deprecated: false,
                 balance: 1.0,
                 frozen: false,
+                balance_depleted_at: None,
+                frozen_at: None,
+                falsifier: None,
                 catalytic_score: 0,
             })
             .expect("add knowledge");
@@ -2188,6 +2207,8 @@ mod tests {
                 id: "recent-proc".into(),
                 kind: KnowledgeKind::StrategyFragment,
                 source: None,
+                origin_taint: Default::default(),
+                classification: Default::default(),
                 content: "Use the rollback command after each migration".into(),
                 confidence: 0.9,
                 confidence_weight: 0.9,
@@ -2211,6 +2232,9 @@ mod tests {
                 deprecated: false,
                 balance: 1.0,
                 frozen: false,
+                balance_depleted_at: None,
+                frozen_at: None,
+                falsifier: None,
                 catalytic_score: 0,
             })
             .expect("add strategy fragment");
@@ -2219,6 +2243,8 @@ mod tests {
                 id: "older-anti".into(),
                 kind: KnowledgeKind::AntiKnowledge,
                 source: None,
+                origin_taint: Default::default(),
+                classification: Default::default(),
                 content: "Never deploy without a rollback plan".into(),
                 confidence: 0.9,
                 confidence_weight: -0.9,
@@ -2242,6 +2268,9 @@ mod tests {
                 deprecated: false,
                 balance: 1.0,
                 frozen: false,
+                balance_depleted_at: None,
+                frozen_at: None,
+                falsifier: None,
                 catalytic_score: 0,
             })
             .expect("add anti-knowledge");
@@ -2250,6 +2279,8 @@ mod tests {
                 id: "neutral-fact".into(),
                 kind: KnowledgeKind::Insight,
                 source: None,
+                origin_taint: Default::default(),
+                classification: Default::default(),
                 content: "Deployments happen on weekdays".into(),
                 confidence: 0.9,
                 confidence_weight: 0.9,
@@ -2273,6 +2304,9 @@ mod tests {
                 deprecated: false,
                 balance: 1.0,
                 frozen: false,
+                balance_depleted_at: None,
+                frozen_at: None,
+                falsifier: None,
                 catalytic_score: 0,
             })
             .expect("add insight");
@@ -2461,6 +2495,8 @@ mod tests {
                     id: format!("anti-{idx}"),
                     kind: KnowledgeKind::AntiKnowledge,
                     source: None,
+                    origin_taint: Default::default(),
+                    classification: Default::default(),
                     content: format!("Never skip rollback validation {idx}"),
                     confidence: 0.95,
                     confidence_weight: -0.95,
@@ -2484,6 +2520,9 @@ mod tests {
                     deprecated: false,
                     balance: 1.0,
                     frozen: false,
+                    balance_depleted_at: None,
+                    frozen_at: None,
+                    falsifier: None,
                     catalytic_score: 0,
                 })
                 .expect("add anti-knowledge");
@@ -2494,6 +2533,8 @@ mod tests {
                 id: "strategy-positive".into(),
                 kind: KnowledgeKind::StrategyFragment,
                 source: None,
+                origin_taint: Default::default(),
+                classification: Default::default(),
                 content: "Run the rollback command immediately after migration verification".into(),
                 confidence: 0.9,
                 confidence_weight: 0.9,
@@ -2517,6 +2558,9 @@ mod tests {
                 deprecated: false,
                 balance: 1.0,
                 frozen: false,
+                balance_depleted_at: None,
+                frozen_at: None,
+                falsifier: None,
                 catalytic_score: 0,
             })
             .expect("add strategy");
@@ -2574,6 +2618,8 @@ mod tests {
                     id: format!("heur-{idx}"),
                     kind: KnowledgeKind::Heuristic,
                     source: None,
+                    origin_taint: Default::default(),
+                    classification: Default::default(),
                     content: format!("Use the proven rollout sequence {idx}"),
                     confidence: 0.95,
                     confidence_weight: 0.95,
@@ -2597,6 +2643,9 @@ mod tests {
                     deprecated: false,
                     balance: 1.0,
                     frozen: false,
+                    balance_depleted_at: None,
+                    frozen_at: None,
+                    falsifier: None,
                     catalytic_score: 0,
                 })
                 .expect("add heuristic");
@@ -2607,6 +2656,8 @@ mod tests {
                 id: "warning-contrarian".into(),
                 kind: KnowledgeKind::Warning,
                 source: None,
+                origin_taint: Default::default(),
+                classification: Default::default(),
                 content: "Avoid deploying without first checking rollback health".into(),
                 confidence: 0.9,
                 confidence_weight: 0.9,
@@ -2630,6 +2681,9 @@ mod tests {
                 deprecated: false,
                 balance: 1.0,
                 frozen: false,
+                balance_depleted_at: None,
+                frozen_at: None,
+                falsifier: None,
                 catalytic_score: 0,
             })
             .expect("add warning");

@@ -12,10 +12,10 @@ use serde::Deserialize;
 use super::schema::{
     AgentConfig, BudgetConfig, CURRENT_SCHEMA_VERSION, ChainConfig, ColdStorageConfig,
     ConductorConfig, CoreRunnerConfig, DeployConfig, FeedAgentsConfig, GatesConfig, GeminiConfig,
-    GitHubConfig, GithubWebhookConfig, ISFRSection, LearningConfig, PerplexityConfig,
-    PipelineConfig, PrdConfig, ProjectConfig, RelayConfig, ResourcesConfig, RokoConfig,
-    RoleOverride, RoutingConfig, SchedulerConfig, ServeConfig, ServerConfig, ToolsConfig,
-    TuiConfig, ValidationConfig, WatcherConfig, WebhooksConfig,
+    GitHubConfig, GithubWebhookConfig, LearningConfig, PerplexityConfig, PipelineConfig, PrdConfig,
+    ProjectConfig, RelayConfig, ResourcesConfig, RokoConfig, RoleOverride, RoutingConfig,
+    SchedulerConfig, ServeConfig, ServerConfig, StateHubConfig, ToolsConfig, TuiConfig,
+    ValidationConfig, WatcherConfig, WebhooksConfig,
 };
 
 /// Subset of Mori's `ConfigState` that we recognize.
@@ -102,6 +102,7 @@ fn convert(m: &MoriConfig) -> RokoConfig {
         watcher: WatcherConfig::default(),
         learning: convert_learning(m),
         tui: TuiConfig::default(),
+        statehub: StateHubConfig::default(),
         serve: ServeConfig::default(),
         scheduler: SchedulerConfig::default(),
         webhooks: WebhooksConfig {
@@ -110,6 +111,7 @@ fn convert(m: &MoriConfig) -> RokoConfig {
         github: GitHubConfig::default(),
         providers: IndexMap::new(),
         models: IndexMap::new(),
+        profiles: HashMap::new(),
         subscriptions: Vec::new(),
         server: ServerConfig::default(),
         deploy: DeployConfig::default(),
@@ -119,11 +121,11 @@ fn convert(m: &MoriConfig) -> RokoConfig {
         relay: RelayConfig::default(),
         tools: ToolsConfig::default(),
         resources: ResourcesConfig::default(),
-        isfr: ISFRSection::default(),
         feed_agents: FeedAgentsConfig::default(),
         runner: CoreRunnerConfig::default(),
         timeouts: super::timeouts::TimeoutConfig::default(),
         agents: Vec::new(),
+        groups: Vec::new(),
         validation: ValidationConfig::default(),
         graduation: crate::config::graduation::GraduationConfig::default(),
         cold_storage: ColdStorageConfig::default(),
@@ -258,6 +260,7 @@ fn convert_learning(m: &MoriConfig) -> LearningConfig {
         use_lookahead_router: d.use_lookahead_router,
         lookahead_threshold: d.lookahead_threshold,
         override_learning_dampening: d.override_learning_dampening,
+        gate_threshold_flush_interval: d.gate_threshold_flush_interval,
     }
 }
 

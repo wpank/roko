@@ -1,5 +1,8 @@
 # 08 — The 5-Stage Assembly Pipeline: Query → Score → Deduplicate → Budget → Format
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Layer 2 Scaffold — Synapse Architecture
 > Status: **Partially Implemented** — Stages 1-2 in ContextAssembler, Stage 3 (compress), Stages 4-5 in PromptComposer
 > Canonical sources: `refactoring-prd/02-five-layers.md`, `12a-cognitive-layer.md` §E

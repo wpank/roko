@@ -146,11 +146,11 @@ impl ClaudeStreamJsonParser {
 
             // ── content_block_delta ────────────────────────────────
             "content_block_delta" => {
-                if let Some(delta) = event.get("delta") {
-                    if let Some(text) = delta.get("text").and_then(Value::as_str) {
-                        self.text_bytes += text.len();
-                        out.push(HarnessEvent::Output(text.to_string()));
-                    }
+                if let Some(delta) = event.get("delta")
+                    && let Some(text) = delta.get("text").and_then(Value::as_str)
+                {
+                    self.text_bytes += text.len();
+                    out.push(HarnessEvent::Output(text.to_string()));
                 }
             }
 

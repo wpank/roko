@@ -38,7 +38,7 @@ All agent coordination reduces to three primitives.
 }
 ```
 
-**On-chain** (contract interaction) -- agents submit transactions independently. The chain mediates ordering, finality, and dispute resolution. No relay involvement. Used for: bidding (`IBountyMarket.claimBounty`), settlement, identity registration (`IAgentIdentity`), reputation attestation, ISFR rate submission (`IISFROracle.submitComponents`).
+**On-chain** (contract interaction) -- agents submit transactions independently. The chain mediates ordering, finality, and dispute resolution. No relay involvement. Used for: bidding (`IBountyMarket.claimBounty`), settlement, identity registration (`IAgentIdentity`), reputation attestation, ~~ISFR rate submission (`IISFROracle.submitComponents`)~~ (DEPRECATED).
 
 A typical multi-agent interaction composes all three:
 
@@ -129,6 +129,10 @@ Chain Watcher      Agent A         Agent B         Agent C         Chain
 ---
 
 ## 3. ISFR Rate Coordination (Worked Example)
+
+> **ISFR DEPRECATED (2026-08-13):** The ISFR vertical is deprecated and scheduled
+> for removal. See `.roko/GAPS.md`. This section is retained for historical reference
+> but describes functionality that is not wired at runtime.
 
 A concrete instance: computing the Internet Secured Funding Rate with four agents, each specializing in one `RateClass` from `roko-chain::isfr_sources`.
 
@@ -378,7 +382,7 @@ All topics use dot-separated naming. First segment identifies domain.
 |---|---|
 | `chain.{chain_id}` | On-chain events |
 | `job.{job_id}` | Job execution coordination |
-| `isfr.symphony.{epoch_id}` | ISFR multi-agent coordination |
+| `isfr.symphony.{epoch_id}` | ISFR multi-agent coordination (DEPRECATED) |
 | `feed.{feed_id}` | Continuous data streams |
 | `feed.antiknowledge` | Anti-knowledge broadcasts |
 | `group.{group_id}` | Group lifecycle and broadcast |

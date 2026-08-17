@@ -1,5 +1,8 @@
 # Morphogenetic Specialization: Turing Reaction-Diffusion for Role Emergence
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L4 Orchestration (multi-agent role coordination), with cross-cuts into L1
 > Framework (agent type system) and L3 Harness (monitoring specialization health)
 >

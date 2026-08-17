@@ -1,5 +1,8 @@
 # The Bus Transport Fabric
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** This document describes Bus as the target transport fabric and kernel primitive
 > of the runtime. It publishes, subscribes to, and replays Pulses through topics and bounded
 > ring buffers. It is the sibling of `Substrate`, and together they form the two-fabric kernel

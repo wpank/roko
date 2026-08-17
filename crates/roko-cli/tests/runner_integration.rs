@@ -233,6 +233,7 @@ async fn end_to_end_dag_merge_projection_pipeline() {
         governance: Vec::new(),
         recovery: Vec::new(),
         allowed_tools: Some(vec!["read_file".into()]),
+        max_taint_level: roko_core::extension::CamelTaintLevel::External,
     };
     assert!(role.permits_tool("read_file"));
     assert!(!role.permits_tool("write_file"));
@@ -361,6 +362,7 @@ fn allowed_tools_intersects_with_forbidden_tools_correctly() {
         governance: vec![GovernanceRule::ForbiddenTools(vec!["bash".into()])],
         recovery: Vec::new(),
         allowed_tools: Some(vec!["bash".into(), "read_file".into()]),
+        max_taint_level: roko_core::extension::CamelTaintLevel::External,
     };
     assert!(
         !contract.permits_tool("bash"),
@@ -382,6 +384,7 @@ fn agent_contract_check_pre_execution_rejects_unknown_tool() {
         governance: Vec::new(),
         recovery: Vec::new(),
         allowed_tools: Some(vec!["read_file".into()]),
+        max_taint_level: roko_core::extension::CamelTaintLevel::External,
     };
     let ctx = ToolContext::new(
         "/tmp/integration-tests",

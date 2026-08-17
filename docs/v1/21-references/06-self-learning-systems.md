@@ -1,5 +1,8 @@
 # Self-Learning Systems
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for agent self-improvement, experiential learning, skill evolution, and metacognitive loops in Roko's learning subsystems.
 
 **Topic**: [References](./INDEX.md)

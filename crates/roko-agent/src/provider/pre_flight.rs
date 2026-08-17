@@ -117,13 +117,13 @@ fn check_single_provider(
                 None
             };
             let command = provider.command.as_deref().or(default_cmd);
-            if let Some(command) = command {
-                if !binary_on_path(command) {
-                    issues.push(ProviderReadinessIssue {
-                        provider_name: provider_name.to_string(),
-                        message: format!("Cursor command '{}' not found on PATH.", command),
-                    });
-                }
+            if let Some(command) = command
+                && !binary_on_path(command)
+            {
+                issues.push(ProviderReadinessIssue {
+                    provider_name: provider_name.to_string(),
+                    message: format!("Cursor command '{}' not found on PATH.", command),
+                });
             }
         }
         ProviderKind::GeminiCli => {

@@ -1,5 +1,8 @@
 # 02 — Korai Passport: Soulbound Agent Identity
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The Korai Passport is an ERC-721 soulbound NFT that serves as every agent's on-chain
 > identity. This document specifies the full struct definition, each field's purpose and
 > encoding, the lifecycle from minting to potential revocation, and the security properties

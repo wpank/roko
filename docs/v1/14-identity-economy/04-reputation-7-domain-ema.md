@@ -1,5 +1,8 @@
 # 04 — 7-Domain EMA Reputation System
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Reputation in Roko is not a single number. It is a 7-domain vector, each domain scored
 > independently using Exponential Moving Average (EMA) with adaptive smoothing, 30-day
 > half-life decay, and a graduated discipline system. This document specifies the full

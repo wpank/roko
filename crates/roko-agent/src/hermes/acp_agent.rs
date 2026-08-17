@@ -19,6 +19,7 @@ use crate::harness::{
     CancelMode, HarnessAdapter, HarnessCapabilities, McpMode, OneShotMode, ProbeError,
     SessionResumeMode, StreamingMode, ToolInjection, TransportFlavor,
 };
+use crate::process::ResourceLimits;
 use crate::streaming::StreamChunk;
 use crate::usage::Usage;
 use roko_core::{Body, Context, Kind, Provenance, Signal};
@@ -42,6 +43,8 @@ pub struct HermesAcpConfig {
     pub timeout: Duration,
     /// Optional MCP server configuration to pass to the session.
     pub mcp_servers: Option<serde_json::Value>,
+    /// Optional OS-enforced limits for the ACP subprocess.
+    pub resource_limits: Option<ResourceLimits>,
 }
 
 impl Default for HermesAcpConfig {
@@ -53,6 +56,7 @@ impl Default for HermesAcpConfig {
             model_hint: None,
             timeout: Duration::from_secs(120),
             mcp_servers: None,
+            resource_limits: None,
         }
     }
 }
@@ -78,7 +82,10 @@ impl HermesAcpAgent {
     /// Create a new Hermes ACP agent from config.
     #[must_use]
     pub fn new(config: HermesAcpConfig) -> Self {
-        let client = AcpStdioClient::hermes(&config.binary, config.cwd.clone());
+        let mut client = AcpStdioClient::hermes(&config.binary, config.cwd.clone());
+        if let Some(limits) = &config.resource_limits {
+            client = client.with_resource_limits(limits.clone());
+        }
         Self {
             client: tokio::sync::Mutex::new(client),
             capabilities: Self::build_capabilities(),
@@ -255,12 +262,12 @@ impl Agent for HermesAcpAgent {
         let mut client = self.client.lock().await;
 
         // Connect if not alive.
-        if !client.is_alive() {
-            if let Err(e) = client.connect().await {
-                let msg = format!("hermes ACP connect failed: {e}");
-                tracing::error!("{msg}");
-                return AgentResult::fail(self.build_error_output(input, &msg));
-            }
+        if !client.is_alive()
+            && let Err(e) = client.connect().await
+        {
+            let msg = format!("hermes ACP connect failed: {e}");
+            tracing::error!("{msg}");
+            return AgentResult::fail(self.build_error_output(input, &msg));
         }
 
         // Create session.
@@ -359,11 +366,9 @@ impl Agent for HermesAcpAgent {
                                     .get("result")
                                     .and_then(|r| r.get("text"))
                                     .and_then(|t| t.as_str())
-                                {
-                                    if output_text.is_empty() {
+                                    && output_text.is_empty() {
                                         output_text.push_str(text);
                                     }
-                                }
                                 break;
                             }
                             None => {
@@ -449,13 +454,13 @@ impl Agent for HermesAcpAgent {
         let mut client = self.client.lock().await;
 
         // Connect if not alive.
-        if !client.is_alive() {
-            if let Err(e) = client.connect().await {
-                let msg = format!("hermes ACP connect failed: {e}");
-                tracing::error!("{msg}");
-                let _ = event_tx.send(StreamChunk::Error(msg.clone())).await;
-                return AgentResult::fail(self.build_error_output(input, &msg));
-            }
+        if !client.is_alive()
+            && let Err(e) = client.connect().await
+        {
+            let msg = format!("hermes ACP connect failed: {e}");
+            tracing::error!("{msg}");
+            let _ = event_tx.send(StreamChunk::Error(msg.clone())).await;
+            return AgentResult::fail(self.build_error_output(input, &msg));
         }
 
         // Create session.
@@ -579,14 +584,12 @@ impl Agent for HermesAcpAgent {
                                     .get("result")
                                     .and_then(|r| r.get("text"))
                                     .and_then(|t| t.as_str())
-                                {
-                                    if output_text.is_empty() {
+                                    && output_text.is_empty() {
                                         output_text.push_str(text);
                                         let _ = event_tx
                                             .send(StreamChunk::ContentDelta(text.to_string()))
                                             .await;
                                     }
-                                }
                                 let _ = event_tx
                                     .send(StreamChunk::Done(FinishReason::Stop))
                                     .await;
@@ -679,9 +682,14 @@ impl HarnessAdapter for HermesAcpAgent {
     }
 
     async fn probe(&self) -> Result<(), ProbeError> {
-        crate::hermes::probe::probe_hermes(&self.config.binary, None)
-            .await
-            .map(|_| ())
+        crate::hermes::probe::probe_hermes_with_limits(
+            &self.config.binary,
+            None,
+            self.config.resource_limits.as_ref(),
+            self.config.timeout,
+        )
+        .await
+        .map(|_| ())
     }
 }
 

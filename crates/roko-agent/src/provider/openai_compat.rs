@@ -17,7 +17,7 @@
 //! - `reasoning_content` must be carried forward in conversation history when
 //!   building the next turn.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 
@@ -25,13 +25,13 @@ use crate::Agent;
 use crate::codex_agent::CodexAgent;
 use crate::dispatcher::HandlerResolver;
 use crate::http::ReqwestPoster;
-use crate::mcp::{DynamicToolRegistry, McpConfig, discover_mcp_tools};
+use crate::mcp::{DynamicToolRegistry as McpDynamicToolRegistry, McpConfig, discover_mcp_runtime};
 use crate::provider::{
     AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, build_tool_dispatcher,
     tool_limit_for_temperament, tool_loop_max_iterations_for_profile,
 };
 use crate::tool_loop::backends::create_openai_compat_backend;
-use crate::tool_loop::{ToolLoop, ToolLoopAgent};
+use crate::tool_loop::{MultimodalInputFormat, ToolLoop, ToolLoopAgent};
 use crate::translate::capability::cap_tools_for_profile;
 use crate::translate::{OpenAiTranslator, Translator};
 use roko_core::agent::ProviderKind;
@@ -40,8 +40,8 @@ use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
 use roko_core::defaults::{DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_REQUEST_TIMEOUT_MS};
 use roko_core::tool::aliases::canonical_of_claude;
-use roko_core::tool::{ToolDef, ToolRegistry, VecToolRegistry};
-use roko_std::StaticToolRegistry;
+use roko_core::tool::{ToolDef, ToolRegistry, ToolSource, VecToolRegistry};
+use roko_std::{DynamicToolRegistry as LocalToolRegistry, StaticToolRegistry};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -265,13 +265,24 @@ fn parse_allowed_tools_csv(csv: Option<&str>) -> Option<HashSet<String>> {
     (!allowed.is_empty()).then_some(allowed)
 }
 
-fn block_on<F>(future: F) -> Result<F::Output, AgentCreationError>
+struct McpRuntimeOwner(std::sync::Mutex<Option<tokio::runtime::Runtime>>);
+
+impl Drop for McpRuntimeOwner {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.lock().expect("MCP runtime owner lock").take() {
+            runtime.shutdown_background();
+        }
+    }
+}
+
+fn block_on<F>(future: F) -> Result<(F::Output, Arc<dyn Send + Sync>), AgentCreationError>
 where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
     let build_rt = || {
-        tokio::runtime::Builder::new_current_thread()
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
             .enable_all()
             .build()
             .map_err(|e| {
@@ -284,7 +295,10 @@ where
     if tokio::runtime::Handle::try_current().is_ok() {
         std::thread::spawn(move || {
             let rt = build_rt()?;
-            Ok(rt.block_on(future))
+            let output = rt.block_on(future);
+            let owner: Arc<dyn Send + Sync> =
+                Arc::new(McpRuntimeOwner(std::sync::Mutex::new(Some(rt))));
+            Ok((output, owner))
         })
         .join()
         .unwrap_or_else(|_| {
@@ -294,20 +308,25 @@ where
         })
     } else {
         let rt = build_rt()?;
-        Ok(rt.block_on(future))
+        let output = rt.block_on(future);
+        let owner: Arc<dyn Send + Sync> =
+            Arc::new(McpRuntimeOwner(std::sync::Mutex::new(Some(rt))));
+        Ok((output, owner))
     }
 }
 
-fn add_mcp_tools_to_registry(registry: &mut DynamicToolRegistry, mcp_tools: Vec<ToolDef>) {
-    let mut by_server: HashMap<String, Vec<ToolDef>> = HashMap::new();
+fn add_mcp_tools_to_registry(registry: &mut McpDynamicToolRegistry, mcp_tools: Vec<ToolDef>) {
+    let mut by_server: BTreeMap<String, Vec<ToolDef>> = BTreeMap::new();
 
     for tool in mcp_tools {
-        let server = tool
-            .name
-            .split("__")
-            .next()
-            .unwrap_or("unknown")
-            .to_string();
+        let server = match &tool.source {
+            roko_core::tool::ToolSource::Mcp { server } => server.clone(),
+            _ => tool
+                .name
+                .split_once('.')
+                .map_or("unknown", |(server, _)| server)
+                .to_string(),
+        };
         by_server.entry(server).or_default().push(tool);
     }
 
@@ -327,13 +346,78 @@ fn add_mcp_tools_to_registry(registry: &mut DynamicToolRegistry, mcp_tools: Vec<
 pub(crate) fn tool_registry_for_options(
     model: &ModelProfile,
     options: &AgentOptions,
-) -> Result<(Arc<dyn ToolRegistry>, Vec<ToolDef>), AgentCreationError> {
-    let base = StaticToolRegistry::new();
-    let mut registry = DynamicToolRegistry::new(&base);
+) -> Result<
+    (
+        Arc<dyn ToolRegistry>,
+        Vec<ToolDef>,
+        Arc<dyn HandlerResolver>,
+    ),
+    AgentCreationError,
+> {
+    let static_base = StaticToolRegistry::new();
+    // The shared static catalog also contains definition-only GitHub MCP
+    // schemas. Seed the executable provider catalog only with locally-backed
+    // definitions; live MCP definitions are layered in below with their
+    // retained clients.
+    let local_builtin_tools = static_base
+        .all()
+        .iter()
+        .filter(|tool| !matches!(&tool.source, ToolSource::Mcp { .. }))
+        .cloned()
+        .collect();
+    let mut local_registry = LocalToolRegistry::from_tools(local_builtin_tools);
+    let builtin_resolver: Arc<dyn HandlerResolver> =
+        Arc::new(|name: &str| roko_std::tool::handlers::handler_for(name));
+    let static_resolver = if let Some(local_runtime) = &options.pre_discovered_local_tools {
+        let incorrectly_sourced = local_runtime
+            .tools()
+            .iter()
+            .filter(|tool| matches!(&tool.source, ToolSource::Mcp { .. }))
+            .map(|tool| tool.name.clone())
+            .collect::<Vec<_>>();
+        if !incorrectly_sourced.is_empty() {
+            return Err(AgentCreationError::MissingConfig(format!(
+                "local tool runtime contains MCP definitions without retained MCP clients: {}",
+                incorrectly_sourced.join(", ")
+            )));
+        }
+        let missing = local_runtime.missing_handlers();
+        if !missing.is_empty() {
+            return Err(AgentCreationError::MissingConfig(format!(
+                "local tool catalog contains definitions without executable handlers: {}",
+                missing.join(", ")
+            )));
+        }
+        local_registry.register_all(local_runtime.tools().iter().cloned());
+        local_runtime.resolver(builtin_resolver)
+    } else {
+        builtin_resolver
+    };
+    let mut registry = McpDynamicToolRegistry::new(&local_registry);
+    let mut mcp_runtime = options.pre_discovered_mcp_runtime.clone();
 
-    // Use pre-discovered MCP tools when available, skipping the expensive
-    // block_on + OS thread MCP discovery entirely.
-    if let Some(pre_discovered) = &options.pre_discovered_mcp_tools {
+    // A runtime bundle is the preferred path: it retains both definitions and
+    // initialized clients. Definition-only tools remain supported for schema
+    // rendering callers, but cannot create executable MCP handlers.
+    if let Some(runtime) = &mcp_runtime {
+        let unexecutable = runtime.unexecutable_tools();
+        if !unexecutable.is_empty() {
+            return Err(AgentCreationError::MissingConfig(format!(
+                "MCP runtime contains definitions without initialized clients: {}",
+                unexecutable.join(", ")
+            )));
+        }
+        add_mcp_tools_to_registry(&mut registry, runtime.tools().as_ref().clone());
+    } else if let Some(pre_discovered) = &options.pre_discovered_mcp_tools {
+        if pre_discovered
+            .iter()
+            .any(|tool| matches!(&tool.source, roko_core::tool::ToolSource::Mcp { .. }))
+        {
+            return Err(AgentCreationError::MissingConfig(
+                "pre-discovered MCP definitions require pre_discovered_mcp_runtime so advertised tools retain executable clients"
+                    .to_string(),
+            ));
+        }
         add_mcp_tools_to_registry(&mut registry, pre_discovered.as_ref().clone());
     } else if let Some(mcp_config_path) = &options.mcp_config {
         let mcp_config = McpConfig::load(mcp_config_path).map_err(|err| {
@@ -342,31 +426,73 @@ pub(crate) fn tool_registry_for_options(
                 mcp_config_path.display()
             ))
         })?;
-        let mcp_tools =
-            block_on(async move { discover_mcp_tools(&mcp_config).await })?.map_err(|err| {
+        let (runtime, owner) = block_on(async move { discover_mcp_runtime(&mcp_config).await })?;
+        let runtime = runtime
+            .map_err(|err| {
                 AgentCreationError::MissingConfig(format!(
                     "mcp tool discovery from {} failed: {err}",
                     mcp_config_path.display()
                 ))
-            })?;
-        add_mcp_tools_to_registry(&mut registry, mcp_tools);
+            })?
+            .with_owner(owner);
+        add_mcp_tools_to_registry(&mut registry, runtime.tools().as_ref().clone());
+        mcp_runtime = Some(Arc::new(runtime));
     }
 
-    let allowed = parse_allowed_tools_csv(options.tools.as_deref());
+    // Structured contracts take precedence over the legacy CSV. In
+    // particular, `Some([])` must remain an empty set rather than collapsing
+    // to `None` (which means unrestricted in the legacy parser).
+    let allowed = options
+        .agent_contract
+        .as_ref()
+        .and_then(|contract| contract.allowed_tools.as_ref())
+        .map(|tools| tools.iter().cloned().collect::<HashSet<_>>())
+        .or_else(|| parse_allowed_tools_csv(options.tools.as_deref()));
+    let denied = options
+        .agent_contract
+        .as_ref()
+        .map(|contract| {
+            contract
+                .forbidden_tool_names()
+                .into_iter()
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
     let tools: Vec<ToolDef> = registry
         .all()
         .iter()
         .filter(|tool| {
-            allowed
-                .as_ref()
-                .is_none_or(|allowed| allowed.contains(tool.name.as_str()))
+            !denied.contains(tool.name.as_str())
+                && allowed
+                    .as_ref()
+                    .is_none_or(|allowed| allowed.contains(tool.name.as_str()))
         })
         .cloned()
         .collect();
-    let mut tools = cap_tools_for_profile(model, tools);
+    // User-configured plugin/MCP tools must survive model tool-count caps;
+    // otherwise a complete builtin catalog can silently truncate every
+    // extension appended after it. Preserve deterministic order within each
+    // class while placing runtime-contributed definitions first.
+    let (mut plugin_tools, non_plugin_tools): (Vec<_>, Vec<_>) = tools
+        .into_iter()
+        .partition(|tool| matches!(&tool.source, roko_core::tool::ToolSource::Plugin { .. }));
+    let (runtime_tools, builtin_tools): (Vec<_>, Vec<_>) = non_plugin_tools
+        .into_iter()
+        .partition(|tool| !matches!(&tool.source, roko_core::tool::ToolSource::Builtin));
+    plugin_tools.extend(runtime_tools);
+    plugin_tools.extend(builtin_tools);
+    let mut tools = cap_tools_for_profile(model, plugin_tools);
     tools.truncate(tool_limit_for_temperament(tools.len()));
 
-    Ok((Arc::new(VecToolRegistry::from_tools(tools.clone())), tools))
+    let resolver = mcp_runtime.map_or(static_resolver.clone(), |runtime| {
+        runtime.resolver(static_resolver)
+    });
+
+    Ok((
+        Arc::new(VecToolRegistry::from_tools(tools.clone())),
+        tools,
+        resolver,
+    ))
 }
 
 fn default_agent_name(model: &ModelProfile, options: &AgentOptions) -> String {
@@ -400,9 +526,7 @@ impl ProviderAdapter for OpenAiCompatAdapter {
         let agent_name = default_agent_name(model, options);
 
         if model.supports_tools {
-            let (registry, tools) = tool_registry_for_options(model, options)?;
-            let resolver: Arc<dyn HandlerResolver> =
-                Arc::new(|name: &str| roko_std::tool::handlers::handler_for(name));
+            let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
             let dispatcher = build_tool_dispatcher(registry, resolver);
             let translator: Arc<dyn Translator> = Arc::new(OpenAiTranslator);
             let mut tool_loop_provider = provider.clone();
@@ -419,12 +543,17 @@ impl ProviderAdapter for OpenAiCompatAdapter {
 
             let mut agent = ToolLoopAgent::new(tool_loop)
                 .with_tools(tools)
-                .with_name(agent_name);
+                .with_name(agent_name)
+                .with_input_messages(options.input_messages.clone())
+                .with_multimodal_input_format(MultimodalInputFormat::OpenAi);
             if let Some(prompt) = &options.system_prompt {
                 agent = agent.with_system_prompt(prompt.clone());
             }
             if let Some(ref dir) = options.working_dir {
                 agent = agent.with_worktree_path(dir.clone());
+            }
+            if let Some(root) = options.effective_immune_root() {
+                agent = agent.with_immune_root(root);
             }
 
             return Ok(Box::new(agent));
@@ -439,7 +568,12 @@ impl ProviderAdapter for OpenAiCompatAdapter {
             )
             .with_extra_headers(extra_headers)
             .with_extra_body_params(extra_body_params)
+            .with_input_messages(options.input_messages.clone())
             .with_name(agent_name);
+
+        if let Some(prompt) = &options.system_prompt {
+            agent = agent.with_system_prompt(prompt.clone());
+        }
 
         if let Some(provider_semaphores) = options.provider_semaphores.clone() {
             agent = agent.with_provider_semaphores(model.provider.clone(), provider_semaphores);
@@ -492,7 +626,14 @@ impl ProviderAdapter for OpenAiCompatAdapter {
 mod tests {
     use super::*;
     use crate::http::{HttpPostError, HttpPoster};
+    use crate::mcp::client::McpError;
+    use crate::mcp::{
+        McpClient, McpRequest, McpResponse, McpRuntime, McpRuntimeTransport, Transport,
+    };
+    use crate::provider::LocalToolRuntime;
+    use roko_core::tool::{ToolCategory, ToolPermission};
     use roko_core::{Body, Context, Kind, Signal};
+    use std::collections::HashMap;
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -692,6 +833,40 @@ mod tests {
             *self.captured.lock().expect("capture lock") = Some(request);
             Ok(self.response.clone())
         }
+    }
+
+    #[derive(Debug)]
+    struct UnusedMcpTransport;
+
+    #[async_trait::async_trait]
+    impl Transport for UnusedMcpTransport {
+        async fn roundtrip(&self, _request: &McpRequest) -> Result<McpResponse, McpError> {
+            Err(McpError::Transport(
+                "test transport must not be called".to_string(),
+            ))
+        }
+    }
+
+    fn live_mcp_runtime(tools: Vec<ToolDef>, server: &str) -> Arc<McpRuntime> {
+        let transport: McpRuntimeTransport = Arc::new(UnusedMcpTransport);
+        let client = Arc::new(McpClient::new(transport));
+        Arc::new(McpRuntime::from_clients(
+            tools,
+            HashMap::from([(server.to_string(), client)]),
+        ))
+    }
+
+    fn plugin_tool(name: &str, plugin: &str) -> ToolDef {
+        let mut tool = ToolDef::new(
+            name,
+            "test plugin tool",
+            ToolCategory::Exec,
+            ToolPermission::executes(),
+        );
+        tool.source = ToolSource::Plugin {
+            name: plugin.to_string(),
+        };
+        tool
     }
 
     #[tokio::test]
@@ -1113,23 +1288,48 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires functional MCP stdio subprocess; environment-sensitive"]
-    async fn mcp_bridge_http() {
-        let response = serde_json::json!({
-            "id": "chatcmpl-test",
+    async fn mcp_bridge_http_executes_discovered_tool_through_live_client() {
+        let first_response = serde_json::json!({
+            "id": "chatcmpl-mcp-1",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call-mcp-1",
+                        "type": "function",
+                        "function": {
+                            "name": "local__DOT__echo",
+                            "arguments": "{\"text\":\"hello\"}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {
+                "prompt_tokens": 12,
+                "completion_tokens": 3,
+                "total_tokens": 15
+            }
+        })
+        .to_string();
+        let second_response = serde_json::json!({
+            "id": "chatcmpl-mcp-2",
             "choices": [{
                 "index": 0,
                 "message": {"role": "assistant", "content": "mcp-ok"},
                 "finish_reason": "stop"
             }],
             "usage": {
-                "prompt_tokens": 12,
-                "completion_tokens": 6,
-                "total_tokens": 18
+                "prompt_tokens": 18,
+                "completion_tokens": 3,
+                "total_tokens": 21
             }
         })
         .to_string();
-        let (base_url, captured, handle) = spawn_chat_server(response);
+        let (base_url, captured, handle) =
+            spawn_chat_server_sequence(vec![first_response, second_response]);
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let server_script = tmp.path().join("mcp-server.sh");
@@ -1143,7 +1343,10 @@ while IFS= read -r line; do
       printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
       ;;
     *'"method":"tools/list"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","description":"Echo from MCP","inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}}]}}'
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","description":"Echo from MCP","inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]},"annotations":{"readOnlyHint":true}}]}}'
+      ;;
+    *'"method":"tools/call"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"echoed-by-mcp"}],"isError":false}}'
       ;;
     *)
       printf '%s\n' '{"jsonrpc":"2.0","id":999,"result":{}}'
@@ -1189,7 +1392,7 @@ done
             supports_thinking: true,
             supports_vision: false,
             supports_web_search: false,
-            supports_mcp_tools: false,
+            supports_mcp_tools: true,
             supports_partial: false,
             provider_routing: None,
             tool_format: "openai_json".to_string(),
@@ -1197,7 +1400,7 @@ done
             cost_output_per_m: None,
             cost_cache_read_per_m: None,
             cost_cache_write_per_m: None,
-            max_tools: None,
+            max_tools: Some(128),
             tokenizer_ratio: None,
             ..Default::default()
         };
@@ -1214,26 +1417,334 @@ done
         assert!(result.success);
         assert_eq!(result.output.body.as_text().unwrap_or(""), "mcp-ok");
 
-        let request = captured
-            .lock()
-            .expect("capture lock")
-            .take()
-            .expect("captured request");
-        let body = request.split("\r\n\r\n").nth(1).expect("request body");
-        let parsed: Value = serde_json::from_str(body).expect("json request body");
-        let tools = parsed["tools"].as_array().expect("tools array");
+        let requests = captured.lock().expect("capture lock").clone();
+        assert_eq!(requests.len(), 2, "MCP tool loop needs two model turns");
+        let first_body = requests[0]
+            .split("\r\n\r\n")
+            .nth(1)
+            .expect("first request body");
+        let first: Value = serde_json::from_str(first_body).expect("first request json");
+        let tools = first["tools"].as_array().expect("tools array");
+        let tool_names = tools
+            .iter()
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .collect::<Vec<_>>();
 
-        assert!(tools.iter().any(|tool| {
-            tool["function"]["name"].as_str() == Some("local.echo")
-                && tool["function"]["description"].as_str() == Some("Echo from MCP")
-        }));
+        assert!(
+            tools.iter().any(|tool| {
+                tool["function"]["name"].as_str() == Some("local__DOT__echo")
+                    && tool["function"]["description"].as_str() == Some("Echo from MCP")
+            }),
+            "advertised tools: {tool_names:?}"
+        );
         assert!(
             tools
                 .iter()
                 .any(|tool| tool["function"]["name"].as_str() == Some("ls"))
         );
 
+        let second_body = requests[1]
+            .split("\r\n\r\n")
+            .nth(1)
+            .expect("second request body");
+        let second: Value = serde_json::from_str(second_body).expect("second request json");
+        let tool_message = second["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .find(|message| message["role"] == "tool")
+            .expect("MCP tool result message");
+        assert_eq!(tool_message["tool_call_id"], "call-mcp-1");
+        assert_eq!(tool_message["content"], "echoed-by-mcp");
+
         handle.join().expect("server thread");
+    }
+
+    #[test]
+    fn definition_only_mcp_tools_are_rejected_instead_of_advertised_without_handlers() {
+        let definition = crate::mcp::mcp_to_tool_def(
+            &crate::mcp::McpToolDef {
+                name: "echo".to_string(),
+                description: Some("Echo".to_string()),
+                input_schema: None,
+                annotations: None,
+            },
+            "local",
+        );
+        let options = AgentOptions {
+            pre_discovered_mcp_tools: Some(Arc::new(vec![definition])),
+            ..Default::default()
+        };
+
+        let error = match tool_registry_for_options(&ModelProfile::default(), &options) {
+            Ok(_) => panic!("definition-only MCP tool must not be advertised"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("pre_discovered_mcp_runtime"));
+    }
+
+    #[test]
+    fn no_mcp_runtime_omits_definition_only_static_mcp_tools() {
+        let (_, tools, resolver) =
+            tool_registry_for_options(&ModelProfile::default(), &AgentOptions::default())
+                .expect("local executable catalog");
+
+        assert!(
+            tools
+                .iter()
+                .all(|tool| !matches!(&tool.source, ToolSource::Mcp { .. })),
+            "definition-only MCP tools were advertised: {:?}",
+            tools
+                .iter()
+                .filter(|tool| matches!(&tool.source, ToolSource::Mcp { .. }))
+                .map(|tool| &tool.name)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            tools
+                .iter()
+                .all(|tool| resolver.resolve(&tool.name).is_some())
+        );
+        assert!(!tools.iter().any(|tool| tool.name == "github.list_prs"));
+    }
+
+    #[test]
+    fn mcp_runtime_without_client_is_rejected() {
+        let definition = crate::mcp::mcp_to_tool_def(
+            &crate::mcp::McpToolDef {
+                name: "echo".to_string(),
+                description: Some("Echo".to_string()),
+                input_schema: None,
+                annotations: None,
+            },
+            "missing",
+        );
+        let options = AgentOptions {
+            pre_discovered_mcp_runtime: Some(Arc::new(McpRuntime::from_clients(
+                vec![definition],
+                HashMap::new(),
+            ))),
+            ..Default::default()
+        };
+
+        let error = match tool_registry_for_options(&ModelProfile::default(), &options) {
+            Ok(_) => panic!("clientless MCP runtime must not be advertised"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("missing.echo"));
+        assert!(error.to_string().contains("initialized clients"));
+    }
+
+    #[test]
+    fn plugin_definitions_and_handlers_win_builtin_and_mcp_collisions() {
+        let plugin_tools = vec![
+            plugin_tool("read_file", "override"),
+            plugin_tool("live.remote", "override"),
+        ];
+        let local_resolver: Arc<dyn HandlerResolver> = Arc::new(|name: &str| match name {
+            "read_file" => roko_std::tool::handlers::handler_for("grep"),
+            "live.remote" => roko_std::tool::handlers::handler_for("ls"),
+            _ => None,
+        });
+        let mcp_tool = crate::mcp::mcp_to_tool_def(
+            &crate::mcp::McpToolDef {
+                name: "remote".to_string(),
+                description: Some("colliding MCP tool".to_string()),
+                input_schema: None,
+                annotations: None,
+            },
+            "live",
+        );
+        let options = AgentOptions {
+            pre_discovered_local_tools: Some(Arc::new(LocalToolRuntime::new(
+                plugin_tools,
+                local_resolver,
+            ))),
+            pre_discovered_mcp_runtime: Some(live_mcp_runtime(vec![mcp_tool], "live")),
+            ..Default::default()
+        };
+        let model = ModelProfile {
+            slug: "glm-5.1".to_string(),
+            max_tools: Some(128),
+            ..Default::default()
+        };
+
+        let (_, tools, resolver) =
+            tool_registry_for_options(&model, &options).expect("collision-safe catalog");
+
+        for name in ["read_file", "live.remote"] {
+            let matches = tools
+                .iter()
+                .filter(|tool| tool.name == name)
+                .collect::<Vec<_>>();
+            assert_eq!(matches.len(), 1, "{name} should be deduplicated");
+            assert!(matches!(
+                &matches[0].source,
+                ToolSource::Plugin { name } if name == "override"
+            ));
+        }
+        assert_eq!(
+            resolver
+                .resolve("read_file")
+                .expect("plugin handler")
+                .name(),
+            "grep"
+        );
+        assert_eq!(
+            resolver
+                .resolve("live.remote")
+                .expect("plugin handler")
+                .name(),
+            "ls"
+        );
+    }
+
+    #[test]
+    fn model_cap_prioritizes_plugins_then_live_mcp_then_builtins() {
+        let plugin_tools = vec![plugin_tool("one.run", "one"), plugin_tool("two.run", "two")];
+        let local_resolver: Arc<dyn HandlerResolver> = Arc::new(|name: &str| {
+            matches!(name, "one.run" | "two.run")
+                .then(|| roko_std::tool::handlers::handler_for("ls"))
+                .flatten()
+        });
+        let mcp_tools = ["first", "second"]
+            .into_iter()
+            .map(|name| {
+                crate::mcp::mcp_to_tool_def(
+                    &crate::mcp::McpToolDef {
+                        name: name.to_string(),
+                        description: None,
+                        input_schema: None,
+                        annotations: None,
+                    },
+                    "live",
+                )
+            })
+            .collect::<Vec<_>>();
+        let options = AgentOptions {
+            pre_discovered_local_tools: Some(Arc::new(LocalToolRuntime::new(
+                plugin_tools,
+                local_resolver,
+            ))),
+            pre_discovered_mcp_runtime: Some(live_mcp_runtime(mcp_tools, "live")),
+            ..Default::default()
+        };
+        let model = ModelProfile {
+            slug: "glm-5.1".to_string(),
+            max_tools: Some(3),
+            ..Default::default()
+        };
+
+        let (_, tools, _) = tool_registry_for_options(&model, &options).expect("capped catalog");
+        let names = tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["one.run", "two.run", "live.first"]);
+        assert!(matches!(&tools[0].source, ToolSource::Plugin { .. }));
+        assert!(matches!(&tools[1].source, ToolSource::Plugin { .. }));
+        assert!(matches!(&tools[2].source, ToolSource::Mcp { .. }));
+    }
+
+    #[test]
+    fn local_tool_runtime_preserves_definition_and_executable_resolver() {
+        let mut tool = ToolDef::new(
+            "example.echo",
+            "local plugin echo",
+            ToolCategory::Exec,
+            ToolPermission::executes(),
+        );
+        tool.source = ToolSource::Plugin {
+            name: "example".to_string(),
+        };
+        let local_resolver: Arc<dyn HandlerResolver> = Arc::new(|name: &str| {
+            (name == "example.echo")
+                .then(|| roko_std::tool::handlers::handler_for("read_file"))
+                .flatten()
+        });
+        let options = AgentOptions {
+            pre_discovered_local_tools: Some(Arc::new(LocalToolRuntime::new(
+                vec![tool],
+                local_resolver,
+            ))),
+            ..Default::default()
+        };
+
+        let (registry, tools, resolver) =
+            tool_registry_for_options(&ModelProfile::default(), &options)
+                .expect("local runtime should compose with provider registry");
+
+        assert!(
+            registry.get("example.echo").is_some(),
+            "advertised tools: {:?}",
+            tools.iter().map(|tool| &tool.name).collect::<Vec<_>>()
+        );
+        assert!(tools.iter().any(|tool| tool.name == "example.echo"));
+        assert!(resolver.resolve("example.echo").is_some());
+    }
+
+    #[test]
+    fn local_tool_runtime_fails_closed_when_handler_is_missing() {
+        let mut tool = ToolDef::new(
+            "orphan.run",
+            "must not be advertised",
+            ToolCategory::Exec,
+            ToolPermission::executes(),
+        );
+        tool.source = ToolSource::Plugin {
+            name: "orphan".to_string(),
+        };
+        let options = AgentOptions {
+            pre_discovered_local_tools: Some(Arc::new(LocalToolRuntime::new(
+                vec![tool],
+                Arc::new(|_: &str| None),
+            ))),
+            ..Default::default()
+        };
+
+        let error = match tool_registry_for_options(&ModelProfile::default(), &options) {
+            Ok(_) => panic!("handlerless local tool must not be advertised"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("orphan.run"));
+    }
+
+    #[test]
+    fn structured_contract_filters_bridge_tool_registry_with_deny_precedence() {
+        use crate::safety::contract::{AgentContract, GovernanceRule};
+
+        let options = AgentOptions {
+            agent_contract: Some(AgentContract {
+                role: "known-role".into(),
+                allowed_tools: Some(vec!["read_file".into(), "grep".into(), "bash".into()]),
+                governance: vec![GovernanceRule::ForbiddenTools(vec!["bash".into()])],
+                ..AgentContract::default()
+            }),
+            ..AgentOptions::default()
+        };
+
+        let (_, tools, _) = tool_registry_for_options(&ModelProfile::default(), &options)
+            .expect("filtered registry");
+        let names = tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["read_file", "grep"]);
+    }
+
+    #[test]
+    fn restricted_contract_advertises_no_bridge_tools() {
+        use crate::safety::contract::AgentContract;
+
+        let options = AgentOptions {
+            agent_contract: Some(AgentContract::restricted("unknown-role")),
+            ..AgentOptions::default()
+        };
+
+        let (_, tools, _) = tool_registry_for_options(&ModelProfile::default(), &options)
+            .expect("deny-all registry");
+        assert!(tools.is_empty(), "deny-all must advertise zero tools");
     }
 
     #[tokio::test]

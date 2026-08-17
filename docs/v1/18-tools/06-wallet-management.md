@@ -1,5 +1,8 @@
 # 06 — Wallet Management
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Three custody modes (Delegation, Embedded, LocalKey), WalletHandle abstraction,
 > session key management, wallet providers, identity NFT custody.
 

@@ -94,10 +94,8 @@ mod tests {
         command.args(["-c", &script]);
 
         let task = tokio::spawn(output(command));
-        wait_for_file(&root_path).await;
-        wait_for_file(&child_path).await;
-        let root = read_pid(&root_path);
-        let child = read_pid(&child_path);
+        let root = wait_for_pid(&root_path).await;
+        let child = wait_for_pid(&child_path).await;
 
         task.abort();
         let error = task.await.expect_err("command task should be cancelled");
@@ -107,22 +105,16 @@ mod tests {
         wait_for_exit(child).await;
     }
 
-    async fn wait_for_file(path: &Path) {
+    async fn wait_for_pid(path: &Path) -> u32 {
         for _ in 0..100 {
-            if path.is_file() {
-                return;
+            if let Ok(contents) = std::fs::read_to_string(path)
+                && let Ok(pid) = contents.trim().parse()
+            {
+                return pid;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("timed out waiting for {}", path.display());
-    }
-
-    fn read_pid(path: &Path) -> u32 {
-        std::fs::read_to_string(path)
-            .expect("read pid")
-            .trim()
-            .parse()
-            .expect("parse pid")
+        panic!("timed out waiting for a PID in {}", path.display());
     }
 
     async fn wait_for_exit(pid: u32) {

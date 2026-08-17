@@ -14,10 +14,8 @@ pub(crate) struct KnowledgeHdcEncoder;
 /// `role XOR filler` creates a composite vector that preserves structure.
 /// Bundling multiple role-filler pairs produces a single vector that can be
 /// queried by unbinding any role to recover its filler.
-#[cfg(test)]
 pub(crate) struct RoleFillerEncoder;
 
-#[cfg(test)]
 impl RoleFillerEncoder {
     /// Encode a set of role-filler string pairs into a single composite HDC vector.
     ///
@@ -36,6 +34,7 @@ impl RoleFillerEncoder {
     }
 
     /// Extract the filler for a given role by unbinding (XOR is its own inverse).
+    #[cfg(test)]
     pub(crate) fn query_role(composite: &HdcVector, role: &str) -> HdcVector {
         composite.bind(&role_hv(role))
     }
@@ -43,19 +42,18 @@ impl RoleFillerEncoder {
 
 /// A pair of knowledge entries from different domains whose HDC vectors
 /// are highly similar, indicating a structural analogy.
-#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ResonancePair {
+pub struct ResonancePair {
     /// ID of the first entry.
-    pub(crate) entry_a: String,
+    pub entry_a: String,
     /// ID of the second entry.
-    pub(crate) entry_b: String,
+    pub entry_b: String,
     /// Hamming similarity between the two entries' HDC vectors.
-    pub(crate) similarity: f64,
+    pub similarity: f64,
     /// Domain of the first entry.
-    pub(crate) domain_a: String,
+    pub domain_a: String,
     /// Domain of the second entry.
-    pub(crate) domain_b: String,
+    pub domain_b: String,
 }
 
 /// Detects resonant patterns across knowledge domains.
@@ -64,7 +62,6 @@ pub(crate) struct ResonancePair {
 /// despite coming from different source domains. This is a cross-domain
 /// analogy detector: retry logic in networking is structurally similar
 /// to retry logic in a database crate.
-#[cfg(test)]
 pub(crate) struct ResonanceDetector {
     /// Minimum similarity to consider a pair resonant.
     min_similarity: f64,
@@ -72,7 +69,6 @@ pub(crate) struct ResonanceDetector {
     max_results: usize,
 }
 
-#[cfg(test)]
 impl Default for ResonanceDetector {
     fn default() -> Self {
         Self {
@@ -82,7 +78,6 @@ impl Default for ResonanceDetector {
     }
 }
 
-#[cfg(test)]
 impl ResonanceDetector {
     /// Create a detector with the given similarity threshold and result cap.
     pub(crate) fn new(min_similarity: f64, max_results: usize) -> Self {
@@ -104,7 +99,12 @@ impl ResonanceDetector {
         let encoded: Vec<(HdcVector, String)> = entries
             .iter()
             .map(|e| {
-                let hv = encoder.encode_entry(e);
+                let hv = e
+                    .hdc_vector
+                    .as_deref()
+                    .and_then(|bytes| <[u8; 1280]>::try_from(bytes).ok())
+                    .map(|bytes| HdcVector::from_bytes(&bytes))
+                    .unwrap_or_else(|| encoder.encode_entry(e));
                 let domain = extract_domain(e);
                 (hv, domain)
             })
@@ -147,8 +147,7 @@ impl ResonanceDetector {
 ///
 /// Looks for a `domain:X` structured tag first, falls back to `source`,
 /// then defaults to the knowledge kind as a domain label.
-#[cfg(test)]
-fn extract_domain(entry: &KnowledgeEntry) -> String {
+pub(crate) fn extract_domain(entry: &KnowledgeEntry) -> String {
     if let Some(domain) = first_structured_tag_value(&entry.tags, "domain") {
         return domain;
     }
@@ -458,6 +457,8 @@ mod tests {
             id: id.to_string(),
             kind,
             source: None,
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: content.to_string(),
             confidence: 0.8,
             confidence_weight: 1.0,
@@ -478,6 +479,9 @@ mod tests {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         }
     }

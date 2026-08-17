@@ -4,7 +4,7 @@
 //! Reads its configuration from environment variables:
 //! - `ROKO_TEMPLATE_JSON`: Base64-encoded [`AgentTemplate`] JSON
 //! - `ROKO_CONTROL_PLANE_URL`: Optional callback URL for result reporting
-//! - `ROKO_DEPLOYMENT_ID`: Deployment identifier for callbacks
+//! - `ROKO_DEPLOYMENT_ID`: Opaque callback-routing identifier
 //! - `ROKO_WORKER_CALLBACK_TOKEN`: Shared secret sent as `X-Roko-Worker-Token` on callbacks
 //! - `PORT`: Listen port (Railway injects this)
 
@@ -27,7 +27,7 @@ pub struct WorkerState {
     pub template: AgentTemplate,
     /// Optional control plane URL for callbacks.
     pub control_plane_url: Option<String>,
-    /// Deployment ID for callback identification.
+    /// Opaque callback-routing ID supplied by the control plane.
     pub deployment_id: Option<String>,
     /// Shared secret sent as `X-Roko-Worker-Token` with every callback request.
     /// Validated by the control plane's `receive_callback` handler.

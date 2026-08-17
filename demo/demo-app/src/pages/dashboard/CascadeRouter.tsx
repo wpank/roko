@@ -6,7 +6,7 @@ import {
   AnimatedHeaderCell,
   TableEmptyState,
 } from '../../components/AnimatedTable';
-import { useLiveApi } from '../../hooks/useLiveApi';
+import { useDataApi } from '../../hooks/useDataApi';
 import { getCssVar } from '../../lib/color';
 import { roleColor } from '../../lib/palette';
 import { useServerEventSubscription } from '../../hooks/useEventStream';
@@ -131,7 +131,7 @@ function ModelConfidenceChart({ rows, height = 200 }: { rows: [string, Confidenc
 type CRSortKey = 'model' | 'confidence' | 'successes' | 'trials' | 'cost';
 
 export default function CascadeRouter() {
-  const { get } = useLiveApi();
+  const { get } = useDataApi();
   const [state, setState] = useState<CascadeState>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -166,7 +166,7 @@ export default function CascadeRouter() {
   // SSE-triggered refetch
   const debouncedRefetch = useDebouncedRefetch(fetchState, 2000);
   useServerEventSubscription(
-    ['inference_completed'],
+    ['cascade_router_updated'],
     debouncedRefetch,
   );
 

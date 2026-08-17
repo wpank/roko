@@ -299,24 +299,21 @@ impl Verify for WalletGate {
         }
 
         // Strict nonce check: only when the tx pins a nonce.
-        if self.config.strict_nonce {
-            if let Some(got) = tx.nonce {
-                match self.wallet.nonce().await {
-                    Ok(expected) if expected != got => {
-                        return Verdict::fail(
-                            self.name.clone(),
-                            format!("nonce gap: expected {expected}, got {got}"),
-                        )
+        if self.config.strict_nonce
+            && let Some(got) = tx.nonce
+        {
+            match self.wallet.nonce().await {
+                Ok(expected) if expected != got => {
+                    return Verdict::fail(
+                        self.name.clone(),
+                        format!("nonce gap: expected {expected}, got {got}"),
+                    )
+                    .with_duration(elapsed_ms(started));
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    return Verdict::fail(self.name.clone(), format!("nonce lookup failed: {e}"))
                         .with_duration(elapsed_ms(started));
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        return Verdict::fail(
-                            self.name.clone(),
-                            format!("nonce lookup failed: {e}"),
-                        )
-                        .with_duration(elapsed_ms(started));
-                    }
                 }
             }
         }

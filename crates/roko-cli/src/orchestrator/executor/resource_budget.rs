@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn full_budget_blocks_when_exhausted() {
-        let mut budget = FullResourceBudget {
+        let budget = FullResourceBudget {
             agent_slots: ResourcePool::new(1),
             cost_budget: CostBudget {
                 total_usd: 10.0,
@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn full_budget_blocks_when_no_agent_slots() {
-        let mut budget = FullResourceBudget {
+        let budget = FullResourceBudget {
             agent_slots: ResourcePool::new(0),
             ..FullResourceBudget::default()
         };

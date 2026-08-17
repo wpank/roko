@@ -1,6 +1,13 @@
 # 13 — Trigger System
 
 > Event-driven Graph firing. Triggers listen for events, evaluate filters, and start Flows. Every trigger event is a Pulse on Bus. Triggers are persistent, declarative, and composable. Conductor watchers provide 10 battle-tested detection rules for agent stalls, loops, and resource exhaustion.
+> **Implementation status:** IMPLEMENTED -- protocol types, persistent bindings, a
+> long-lived coordinator, all seven sources, authenticated dynamic webhooks, mapped
+> payload-to-root-Cell Signals, live Graph execution, filters, rate/concurrency policy,
+> Space partition/visibility/capability enforcement, shared Pulse delivery, durable CLI/API
+> history, IANA/DST cron scheduling, CA-verified mTLS webhook identity, and bundled
+> watcher-to-raw-EVM ABI decoding with automatic finality promotion, canonical-hash
+> checks, bounded reorg replay, invalidation, and idempotency are implemented.
 
 **Subsumes**: Cron jobs, webhooks, file watchers, event subscriptions, manual triggers, chain event listeners, conductor watchers, intervention system.
 

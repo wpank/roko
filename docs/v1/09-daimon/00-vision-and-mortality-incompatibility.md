@@ -1,5 +1,8 @@
 # Vision and Mortality Incompatibility
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The Daimon is a cognitive performance affect engine — NOT a mortality anxiety system. This document explains what Daimon is, what it is not, and why the new architecture explicitly removes mortality framing.
 
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useLiveApi } from '../../hooks/useLiveApi';
+import { useDataApi } from '../../hooks/useDataApi';
 import { useServerEventSubscription } from '../../hooks/useEventStream';
 import { useDebouncedRefetch } from '../../hooks/useDebouncedRefetch';
 import { fmtUptime } from '../../lib/format';
@@ -61,7 +61,7 @@ export default function Explorer() {
   const gateSparkRef = useRef<HTMLCanvasElement>(null);
   const durSparkRef = useRef<HTMLCanvasElement>(null);
 
-  const { get } = useLiveApi();
+  const { get } = useDataApi();
 
   /* ── data fetch ── */
   const refresh = useCallback(async () => {
@@ -101,7 +101,7 @@ export default function Explorer() {
   // SSE-triggered refetch
   const debouncedRefetch = useDebouncedRefetch(refresh, 2000);
   useServerEventSubscription(
-    ['episode', 'task_completed', 'gate_result', 'agent_spawned'],
+    ['episode_recorded', 'task_completed', 'gate_result', 'agent_spawned'],
     debouncedRefetch,
   );
 

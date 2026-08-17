@@ -1,22 +1,35 @@
-//! Connector management routes.
+//! Authenticated connector transport lifecycle routes.
 //!
-//! - `GET    /api/connectors`              — list all connectors
-//! - `POST   /api/connectors`              — register a connector
-//! - `DELETE /api/connectors/{name}`       — unregister a connector
-//! - `GET    /api/connectors/{name}/health` — health status for a single connector
+//! - `GET    /api/connectors` — list canonical secret-free descriptors
+//! - `POST   /api/connectors` — register and supervise an HTTP JSON transport
+//! - `DELETE /api/connectors/{name}` — disconnect and unregister
+//! - `GET    /api/connectors/{name}/health` — perform a real health check
+//! - `POST   /api/connectors/{name}/restart` — reset bounded reconnect supervision
+//! - `POST   /api/connectors/{name}/query` — perform a GET-style query
+//! - `POST   /api/connectors/{name}/execute` — perform a POST-style execution
 
+use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
-use axum::routing::get;
+use axum::body::Body;
+use axum::extract::{ConnectInfo as PeerConnectInfo, Path, State};
+use axum::http::{Request, StatusCode};
+use axum::middleware::Next;
+use axum::response::Response;
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::Utc;
-use roko_core::connector::{ConnectorHealth, ConnectorInfo, ConnectorKind, ConnectorStatus};
+use roko_core::connector::{
+    ConnectConfig, ConnectorHealth, ConnectorInfo, ConnectorKind, ConnectorManifest,
+    ExecuteRequest, ExecuteResponse, QueryRequest, QueryResponse, ReconnectStrategy,
+};
+use roko_runtime::{
+    ConnectorRuntimeStatus, ConnectorSupervisionStatus, ConnectorSupervisorOptions,
+};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::error::ApiError;
+use crate::routes::middleware::AuthContext;
 use crate::state::AppState;
 
 pub fn routes() -> Router<Arc<AppState>> {
@@ -27,17 +40,53 @@ pub fn routes() -> Router<Arc<AppState>> {
             axum::routing::delete(delete_connector),
         )
         .route("/connectors/{name}/health", get(connector_health))
+        .route("/connectors/{name}/restart", post(restart_connector))
+        .route("/connectors/{name}/query", post(query_connector))
+        .route("/connectors/{name}/execute", post(execute_connector))
+        .route_layer(axum::middleware::from_fn(require_connector_access))
 }
 
-// ── Request / Response types ──────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct CreateConnectorRequest {
     name: String,
     kind: ConnectorKind,
     endpoint: String,
     #[serde(default)]
-    metadata: Value,
+    auth: Option<String>,
+    #[serde(default)]
+    headers: Option<HashMap<String, String>>,
+    #[serde(default = "default_timeout_ms")]
+    timeout_ms: u64,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    capabilities: Vec<String>,
+    #[serde(default = "default_health_interval_secs")]
+    health_interval_secs: u64,
+    #[serde(default = "default_reconnect_strategy")]
+    reconnect_strategy: ReconnectStrategy,
+    #[serde(default = "default_reconnect_attempts")]
+    max_reconnect_attempts: u32,
+}
+
+const fn default_timeout_ms() -> u64 {
+    5_000
+}
+
+const fn default_health_interval_secs() -> u64 {
+    30
+}
+
+const fn default_reconnect_attempts() -> u32 {
+    3
+}
+
+fn default_reconnect_strategy() -> ReconnectStrategy {
+    ReconnectStrategy::ExponentialBackoff {
+        base_ms: 250,
+        max_ms: 30_000,
+        jitter: true,
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -53,316 +102,278 @@ struct DeleteConnectorResponse {
     deleted: bool,
 }
 
-// ── Handlers ──────────────────────────────────────────────────────
+#[derive(Debug, Serialize)]
+struct ConnectorHealthResponse {
+    health: ConnectorHealth,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    supervisor: Option<ConnectorSupervisionStatus>,
+}
 
-/// `GET /api/connectors` — list all registered connectors.
-async fn list_connectors(State(state): State<Arc<AppState>>) -> Json<ConnectorListResponse> {
-    let reg = state.connectors.read().await;
-    let connectors: Vec<ConnectorInfo> = reg.list().to_vec();
+/// `GET /api/connectors` — list canonical descriptors without transport config.
+async fn list_connectors(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<ConnectorListResponse>, ApiError> {
+    let registry = state.connectors.read().await;
+    let connectors = registry.list().to_vec();
     let total = connectors.len();
-    let healthy = reg.healthy_count();
-    Json(ConnectorListResponse {
+    let healthy = registry.healthy_count();
+    Ok(Json(ConnectorListResponse {
         connectors,
         total,
         healthy,
-    })
+    }))
 }
 
-/// `POST /api/connectors` — register a new connector.
+/// `POST /api/connectors` — register a supervised concrete HTTP transport.
 async fn create_connector(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<CreateConnectorRequest>,
-) -> Result<(StatusCode, Json<ConnectorInfo>), ApiError> {
-    if req.name.trim().is_empty() {
-        return Err(ApiError::bad_request("connector name must not be empty"));
-    }
-    if req.endpoint.trim().is_empty() {
-        return Err(ApiError::bad_request(
-            "connector endpoint must not be empty",
-        ));
-    }
-
-    let now = Utc::now();
-    let info = ConnectorInfo {
-        name: req.name,
-        kind: req.kind,
-        health: ConnectorHealth {
-            status: ConnectorStatus::Connected,
-            latency_ms: 0,
-            last_check: now,
-        },
-        created_at: now,
-        metadata: req.metadata,
+    Json(request): Json<CreateConnectorRequest>,
+) -> Result<(StatusCode, Json<ConnectorRuntimeStatus>), ApiError> {
+    let manifest = ConnectorManifest {
+        name: request.name,
+        kind: request.kind,
+        version: "1".to_owned(),
+        description: request.description,
+        config_schema: None,
+        capabilities: request.capabilities,
+        health_interval_secs: request.health_interval_secs,
+        reconnect_strategy: request.reconnect_strategy,
     };
-
-    let mut reg = state.connectors.write().await;
-    reg.register(info.clone());
-
-    Ok((StatusCode::CREATED, Json(info)))
+    let config = ConnectConfig {
+        endpoint: request.endpoint,
+        auth: request.auth,
+        headers: request.headers,
+        timeout_ms: request.timeout_ms,
+    };
+    let status = state
+        .connector_runtime
+        .register_http(
+            manifest,
+            config,
+            ConnectorSupervisorOptions {
+                max_reconnect_attempts: request.max_reconnect_attempts,
+            },
+        )
+        .await
+        .map_err(connector_error)?;
+    Ok((StatusCode::CREATED, Json(status)))
 }
 
-/// `DELETE /api/connectors/{name}` — unregister a connector.
+/// `DELETE /api/connectors/{name}` — gracefully disconnect and unregister.
 async fn delete_connector(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Result<Json<DeleteConnectorResponse>, ApiError> {
-    let mut reg = state.connectors.write().await;
-    let deleted = reg.unregister(&name);
+    let mut deleted = state
+        .connector_runtime
+        .unregister(&name)
+        .await
+        .map_err(connector_error)?;
+    if !deleted {
+        // Descriptor-only built-ins still use the canonical registry and can
+        // be removed even though they have no concrete transport lifecycle.
+        deleted = state.connectors.write().await.unregister(&name);
+    }
     if !deleted {
         return Err(ApiError::not_found(format!("connector '{name}' not found")));
     }
     Ok(Json(DeleteConnectorResponse { name, deleted }))
 }
 
-/// `GET /api/connectors/{name}/health` — health status for one connector.
+/// `GET /api/connectors/{name}/health` — run transport health when managed.
 async fn connector_health(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
-) -> Result<Json<ConnectorHealth>, ApiError> {
-    let reg = state.connectors.read().await;
-    let info = reg
+) -> Result<Json<ConnectorHealthResponse>, ApiError> {
+    if state.connector_runtime.status(&name).await.is_ok() {
+        let status = state
+            .connector_runtime
+            .refresh_health(&name)
+            .await
+            .map_err(connector_error)?;
+        return Ok(Json(ConnectorHealthResponse {
+            health: status.connector.health,
+            supervisor: Some(status.supervisor),
+        }));
+    }
+    let health = state
+        .connectors
+        .read()
+        .await
         .get(&name)
+        .map(|info| info.health.clone())
         .ok_or_else(|| ApiError::not_found(format!("connector '{name}' not found")))?;
-    Ok(Json(info.health.clone()))
+    Ok(Json(ConnectorHealthResponse {
+        health,
+        supervisor: None,
+    }))
+}
+
+/// `POST /api/connectors/{name}/restart` — reset bounds and reconnect.
+async fn restart_connector(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<ConnectorRuntimeStatus>, ApiError> {
+    ensure_managed(&state, &name).await?;
+    state
+        .connector_runtime
+        .restart(&name)
+        .await
+        .map(Json)
+        .map_err(connector_error)
+}
+
+/// `POST /api/connectors/{name}/query` — issue an idempotent GET-style request.
+async fn query_connector(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(request): Json<QueryRequest>,
+) -> Result<Json<QueryResponse>, ApiError> {
+    ensure_managed(&state, &name).await?;
+    state
+        .connector_runtime
+        .query(&name, request)
+        .await
+        .map(Json)
+        .map_err(connector_error)
+}
+
+/// `POST /api/connectors/{name}/execute` — issue a mutating POST-style request.
+async fn execute_connector(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(request): Json<ExecuteRequest>,
+) -> Result<Json<ExecuteResponse>, ApiError> {
+    ensure_managed(&state, &name).await?;
+    state
+        .connector_runtime
+        .execute(&name, request)
+        .await
+        .map(Json)
+        .map_err(connector_error)
+}
+
+async fn ensure_managed(state: &AppState, name: &str) -> Result<(), ApiError> {
+    state
+        .connector_runtime
+        .status(name)
+        .await
+        .map(|_| ())
+        .map_err(|_| ApiError::not_found(format!("managed connector '{name}' not found")))
+}
+
+async fn require_connector_access(
+    request: Request<Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let authenticated = request.extensions().get::<AuthContext>().is_some();
+    let loopback = request
+        .extensions()
+        .get::<PeerConnectInfo<SocketAddr>>()
+        .is_some_and(|peer| peer.0.ip().is_loopback());
+    if !authenticated && !loopback {
+        return Err(ApiError::forbidden(
+            "connector lifecycle requires authentication or a loopback connection",
+        ));
+    }
+    Ok(next.run(request).await)
+}
+
+fn connector_error(error: roko_core::RokoError) -> ApiError {
+    match error {
+        roko_core::RokoError::Invalid(message) | roko_core::RokoError::User(message) => {
+            ApiError::bad_request(message)
+        }
+        roko_core::RokoError::PermissionDenied(_) => {
+            ApiError::forbidden("connector transport authorization failed")
+        }
+        roko_core::RokoError::Transport(_)
+        | roko_core::RokoError::Timeout { .. }
+        | roko_core::RokoError::RateLimited(_) => ApiError {
+            status: StatusCode::BAD_GATEWAY,
+            code: "connector_transport_error".to_owned(),
+            message: "connector transport operation failed".to_owned(),
+            details: None,
+        },
+        _ => ApiError::internal("connector lifecycle operation failed"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use axum::body::{Body, to_bytes};
+    use axum::body::Body;
     use axum::http::Request;
-    use roko_core::config::schema::RokoConfig;
+    use axum::middleware::from_fn;
     use tower::ServiceExt;
 
-    use crate::deploy::create_backend;
-    use crate::runtime::NoOpRuntime;
+    use crate::routes::middleware::AuthMethod;
 
-    fn test_state(workdir: std::path::PathBuf) -> Arc<AppState> {
-        let deploy_backend =
-            Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
-        Arc::new(
-            AppState::new(
-                workdir,
-                Arc::new(NoOpRuntime),
-                RokoConfig::default(),
-                deploy_backend,
-            )
-            .expect("AppState::new"),
-        )
+    fn guarded_app() -> Router {
+        Router::new()
+            .route("/", get(|| async { StatusCode::NO_CONTENT }))
+            .route_layer(from_fn(require_connector_access))
+    }
+
+    fn request() -> Request<Body> {
+        Request::builder()
+            .uri("/")
+            .body(Body::empty())
+            .expect("guard request")
     }
 
     #[tokio::test]
-    async fn list_connectors_empty() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
-        let state = test_state(dir.path().to_path_buf());
-
-        let response = routes()
-            .with_state(state)
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/connectors")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
+    async fn connector_routes_fail_closed_without_authentication_or_peer_identity() {
+        let response = guarded_app()
+            .oneshot(request())
             .await
-            .expect("response");
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body");
-        let payload: ConnectorListResponse = serde_json::from_slice(&body).expect("parse");
-        assert!(payload.connectors.is_empty());
-        assert_eq!(payload.total, 0);
-        assert_eq!(payload.healthy, 0);
+            .expect("guard response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
-    async fn create_then_list_connectors() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
-        let state = test_state(dir.path().to_path_buf());
-
-        let app = routes().with_state(Arc::clone(&state));
-
-        // Create a connector.
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/connectors")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "name": "my-api",
-                            "kind": "api",
-                            "endpoint": "https://example.com/api"
-                        }))
-                        .unwrap(),
-                    ))
-                    .expect("request"),
-            )
+    async fn connector_routes_reject_non_loopback_unauthenticated_peers() {
+        let mut request = request();
+        request.extensions_mut().insert(PeerConnectInfo(
+            "198.51.100.8:49152"
+                .parse::<SocketAddr>()
+                .expect("remote peer"),
+        ));
+        let response = guarded_app()
+            .oneshot(request)
             .await
-            .expect("response");
-
-        assert_eq!(response.status(), StatusCode::CREATED);
-        let body = to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body");
-        let created: ConnectorInfo = serde_json::from_slice(&body).expect("parse");
-        assert_eq!(created.name, "my-api");
-
-        // List should show 1 connector.
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/connectors")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body");
-        let payload: ConnectorListResponse = serde_json::from_slice(&body).expect("parse");
-        assert_eq!(payload.total, 1);
-        assert_eq!(payload.healthy, 1);
-        assert_eq!(payload.connectors[0].name, "my-api");
+            .expect("guard response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
-    async fn delete_connector_success() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
-        let state = test_state(dir.path().to_path_buf());
-        let app = routes().with_state(Arc::clone(&state));
-
-        // Create first.
-        let _ = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/connectors")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"name":"rmv","kind":"mcp","endpoint":"stdio://test"}"#,
-                    ))
-                    .expect("request"),
-            )
+    async fn connector_routes_allow_loopback_when_global_auth_is_disabled() {
+        let mut request = request();
+        request.extensions_mut().insert(PeerConnectInfo(
+            "127.0.0.1:49152"
+                .parse::<SocketAddr>()
+                .expect("loopback peer"),
+        ));
+        let response = guarded_app()
+            .oneshot(request)
             .await
-            .expect("response");
-
-        // Delete.
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("DELETE")
-                    .uri("/connectors/rmv")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body");
-        let payload: DeleteConnectorResponse = serde_json::from_slice(&body).expect("parse");
-        assert!(payload.deleted);
+            .expect("guard response");
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
-    async fn delete_connector_not_found() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
-        let state = test_state(dir.path().to_path_buf());
-
-        let response = routes()
-            .with_state(state)
-            .oneshot(
-                Request::builder()
-                    .method("DELETE")
-                    .uri("/connectors/ghost")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
+    async fn connector_routes_allow_a_globally_authenticated_request() {
+        let mut request = request();
+        request.extensions_mut().insert(AuthContext {
+            method: AuthMethod::ApiKey,
+            scope: "admin".to_owned(),
+            user_id: Some("connector-test".to_owned()),
+        });
+        let response = guarded_app()
+            .oneshot(request)
             .await
-            .expect("response");
-
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn health_returns_status() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
-        let state = test_state(dir.path().to_path_buf());
-        let app = routes().with_state(Arc::clone(&state));
-
-        // Register.
-        let _ = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/connectors")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"name":"hc","kind":"database","endpoint":"postgres://localhost"}"#,
-                    ))
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-
-        // Check health.
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/connectors/hc/health")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body");
-        let health: ConnectorHealth = serde_json::from_slice(&body).expect("parse");
-        assert_eq!(health.status, ConnectorStatus::Connected);
-    }
-
-    #[tokio::test]
-    async fn health_not_found() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
-        let state = test_state(dir.path().to_path_buf());
-
-        let response = routes()
-            .with_state(state)
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/connectors/nope/health")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            .expect("guard response");
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 }

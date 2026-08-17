@@ -1,3 +1,5 @@
+#![allow(dead_code, missing_docs)]
+
 mod mock_provider;
 
 use std::sync::{Arc, Mutex};

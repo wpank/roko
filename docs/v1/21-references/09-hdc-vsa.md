@@ -1,5 +1,8 @@
 # Hyperdimensional Computing and Vector Symbolic Architectures
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for HDC/VSA: the 10,240-bit Binary Spatter Code algebra, learned hashing, similarity search, and HDC-based knowledge representation in Roko.
 
 **Topic**: [References](./INDEX.md)

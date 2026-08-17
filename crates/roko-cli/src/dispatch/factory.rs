@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use roko_agent::AgentRuntimeEvent;
-use roko_agent::mcp::{McpConfig, discover_mcp_tools};
-use roko_agent::provider::ProviderSemaphores;
+use roko_agent::mcp::{McpConfig, McpRuntime, discover_mcp_runtime};
+use roko_agent::provider::{LocalToolRuntime, ProviderSemaphores};
 use roko_agent::rate_limit::ProviderRateLimiter;
 use roko_compose::{AttentionBidder, LearningBidder};
 use roko_core::config::schema::RokoConfig;
@@ -19,9 +19,13 @@ use roko_core::tool::ToolDef;
 use roko_learn::provider_health::ProviderHealthRegistry;
 use tokio::sync::mpsc;
 
+use crate::dispatch_v2::CliPluginMcpConfig;
 use crate::dispatch_v2::{
-    AgentDispatchRequest, AgentDispatcherV2, ProviderDispatchResolver, ProviderRuntime,
+    AgentDispatchRequest, AgentDispatcherV2, AgentResultDispatch, DispatchV2Error,
+    ProviderDispatchResolver, ProviderRuntime,
 };
+
+use super::plugin_mcp::CliPluginMcpBridge;
 
 use super::{
     AgentResultBridge, Dispatcher, PromptAssembler, PromptCache, ResolvedAgentRuntime, WarmPool,
@@ -32,14 +36,21 @@ use super::{
 /// Constructed once at the start of a plan run.  The factory owns:
 ///
 /// - **`ProviderSemaphores`** — concurrency limits per provider (no longer rebuilt per task).
-/// - **`mcp_tools`** — MCP tool definitions discovered once via async (no `block_on` / OS thread).
+/// - **`mcp_runtime`** — MCP definitions and initialized execution clients discovered once.
 /// - **`Dispatcher`** — model routing + prompt assembly + warm pool (stateless, reusable).
 /// - **`ProviderDispatchResolver`** — model → provider resolution.
 #[derive(Debug)]
 pub struct SharedAgentFactory {
     config: Arc<RokoConfig>,
     semaphores: Arc<ProviderSemaphores>,
-    mcp_tools: Option<Arc<Vec<ToolDef>>>,
+    mcp_runtime: Option<Arc<McpRuntime>>,
+    /// Declarative plugin definitions paired with their live handlers.
+    local_tool_runtime: Option<Arc<LocalToolRuntime>>,
+    /// Loopback bridge used only by opaque CLI provider subprocesses.
+    cli_plugin_mcp_bridge: Option<CliPluginMcpBridge>,
+    /// Startup failure retained so CLI resolution can reject rather than
+    /// silently advertising a provider without plugin handler parity.
+    cli_plugin_mcp_error: Option<String>,
     dispatcher: Dispatcher,
     resolver: ProviderDispatchResolver,
     /// Runtime-scoped per-provider rate limiter built from `[providers.<name>].limits`.
@@ -50,12 +61,10 @@ pub struct SharedAgentFactory {
     rate_limiter: Arc<ProviderRateLimiter>,
     /// Runtime-scoped provider health registry shared across routing and outcome recording.
     ///
-    /// The same `Arc` is used by:
-    /// - `AgentDispatcherV2` to record real LLM provider outcomes (success / typed failures).
-    /// - The learning event subscriber to persist health state across plan runs.
-    ///
-    /// Sharing one Arc guarantees that outcomes recorded by dispatch are immediately
-    /// visible to the next routing decision. (E48-T05 Arc identity invariant)
+    /// The same `Arc` is used by `AgentDispatcherV2` for bridge calls and by
+    /// the runner terminal path for CLI calls. Provider outcomes are recorded
+    /// directly at those call sites; the learning event subscriber deliberately
+    /// does not mirror them through the event bus.
     pub health_registry: Arc<ProviderHealthRegistry>,
 }
 
@@ -75,12 +84,15 @@ impl SharedAgentFactory {
         let providers = config.effective_providers();
         let semaphores = Arc::new(ProviderSemaphores::new(&providers));
 
-        let mcp_tools = match mcp_config_path {
+        let mcp_runtime = match mcp_config_path {
             Some(path) => match McpConfig::load(path) {
-                Ok(mcp_config) => match discover_mcp_tools(&mcp_config).await {
-                    Ok(tools) => {
-                        tracing::info!(tool_count = tools.len(), "factory: MCP tools discovered");
-                        Some(Arc::new(tools))
+                Ok(mcp_config) => match discover_mcp_runtime(&mcp_config).await {
+                    Ok(runtime) => {
+                        tracing::info!(
+                            tool_count = runtime.tools().len(),
+                            "factory: MCP tools discovered"
+                        );
+                        Some(Arc::new(runtime))
                     }
                     Err(err) => {
                         tracing::warn!(
@@ -123,18 +135,18 @@ impl SharedAgentFactory {
             config.effective_providers().iter(),
         ));
 
-        // Build one shared provider health registry for the duration of this run.
-        // The same Arc is passed to:
-        //   - AgentDispatcherV2 outcome recording (updates circuit state after each call)
-        //   - The learning event subscriber (persists health state to disk)
-        // All components must share the identical Arc so outcomes are immediately visible
-        // to the next routing decision. (E48-T05 Arc identity invariant)
+        // Callers can replace this with a persisted workspace registry via
+        // `with_health_registry`. Keeping construction local preserves the
+        // factory's use in path-free unit tests.
         let health_registry = Arc::new(ProviderHealthRegistry::new());
 
         Self {
             config,
             semaphores,
-            mcp_tools,
+            mcp_runtime,
+            local_tool_runtime: None,
+            cli_plugin_mcp_bridge: None,
+            cli_plugin_mcp_error: None,
             dispatcher,
             resolver,
             rate_limiter,
@@ -147,14 +159,59 @@ impl SharedAgentFactory {
         &self.dispatcher
     }
 
+    /// Use a caller-owned provider health registry for all subsequent
+    /// dispatches from this factory.
+    ///
+    /// Runner v2 supplies the persisted workspace registry here so bridge and
+    /// CLI provider outcomes share one circuit-breaker state.
+    #[must_use]
+    pub fn with_health_registry(mut self, registry: Arc<ProviderHealthRegistry>) -> Self {
+        self.health_registry = registry;
+        self
+    }
+
+    /// Attach the canonical declarative-plugin runtime to every provider
+    /// bridge spawned by this factory.
+    #[must_use]
+    pub fn with_local_tool_runtime(mut self, runtime: Arc<LocalToolRuntime>) -> Self {
+        match CliPluginMcpBridge::start(Arc::clone(&runtime), Arc::clone(&self.config)) {
+            Ok(bridge) => {
+                self.cli_plugin_mcp_bridge = Some(bridge);
+                self.cli_plugin_mcp_error = None;
+            }
+            Err(error) => {
+                tracing::error!(%error, "CLI plugin MCP bridge unavailable");
+                self.cli_plugin_mcp_bridge = None;
+                self.cli_plugin_mcp_error = Some(error);
+            }
+        }
+        self.local_tool_runtime = Some(runtime);
+        self
+    }
+
+    /// Mint a contract-scoped MCP bridge configuration for one CLI task.
+    #[must_use]
+    pub fn cli_plugin_mcp_config(
+        &self,
+        worktree: &std::path::Path,
+        immune_root: &std::path::Path,
+        contract: &roko_agent::safety::contract::AgentContract,
+    ) -> Option<CliPluginMcpConfig> {
+        self.cli_plugin_mcp_bridge
+            .as_ref()
+            .and_then(|bridge| bridge.session_config(worktree, immune_root, contract))
+    }
+
     /// Swap the prompt assembler's cache without rebuilding expensive factory
     /// components (semaphores, MCP tools, resolver).
     ///
     /// Called after gate failures or when the periodic staleness check fires.
     pub fn update_prompt_cache(&mut self, cache: Arc<PromptCache>) {
+        let learning_bidders = self.dispatcher.prompt_assembler().learning_bidders();
         let assembler = PromptAssembler::with_cache(cache)
             .with_composition_strategy(self.config.prompt.composition_strategy)
-            .with_vcg_warmup_observations(self.config.prompt.vcg_warmup_observations);
+            .with_vcg_warmup_observations(self.config.prompt.vcg_warmup_observations)
+            .with_learning_bidders(learning_bidders);
         self.dispatcher = Dispatcher::new(
             self.dispatcher.cascade_router_arc(),
             assembler,
@@ -168,22 +225,28 @@ impl SharedAgentFactory {
     /// The bidders are passed to `PromptComposer::with_learning_bidders` when the
     /// runner-v2 prompt path is routed through the canonical compose surface.
     pub fn set_learning_bidders(&mut self, bidders: HashMap<AttentionBidder, LearningBidder>) {
-        let cascade = self.dispatcher.cascade_router_arc();
-        let assembler = PromptAssembler::new()
-            .with_composition_strategy(self.config.prompt.composition_strategy)
-            .with_vcg_warmup_observations(self.config.prompt.vcg_warmup_observations)
-            .with_learning_bidders(bidders);
-        self.dispatcher = Dispatcher::new(cascade, assembler, WarmPool::new(2));
+        self.dispatcher
+            .prompt_assembler()
+            .replace_learning_bidders(bidders);
     }
 
     /// Resolve the runtime for a model key.
     pub fn resolve_runtime(&self, model_key: &str) -> Result<ResolvedAgentRuntime, String> {
         let spec = self.resolver.resolve(model_key);
         match spec.runtime {
-            ProviderRuntime::Cli(provider) => Ok(ResolvedAgentRuntime::Cli {
-                model: spec.model_slug,
-                cli_provider: Some(provider),
-            }),
+            ProviderRuntime::Cli(provider) => {
+                if self.local_tool_runtime.is_some()
+                    && let Some(error) = &self.cli_plugin_mcp_error
+                {
+                    return Err(format!(
+                        "model `{model_key}` requires CLI plugin handler parity, but the local MCP bridge failed: {error}"
+                    ));
+                }
+                Ok(ResolvedAgentRuntime::Cli {
+                    model: spec.model_slug,
+                    cli_provider: Some(provider),
+                })
+            }
             ProviderRuntime::AgentResultBridge { .. } => Ok(ResolvedAgentRuntime::Bridge {
                 model: spec.model_slug,
                 provider_id: spec.provider_id,
@@ -196,6 +259,42 @@ impl SharedAgentFactory {
         }
     }
 
+    /// Run one provider dispatch through the factory's shared runtime state.
+    ///
+    /// This is the synchronous-result counterpart to
+    /// [`Self::spawn_shared_agent_bridge`]. It preserves the same semaphores,
+    /// rate limits, provider-health registry, pre-discovered MCP runtime, and
+    /// declarative plugin handlers for callers such as Graph Activity Cells
+    /// that await a concrete output Signal.
+    pub async fn run_shared_agent_bridge(
+        &self,
+        request: AgentDispatchRequest,
+    ) -> Result<AgentResultDispatch, DispatchV2Error> {
+        let local_tool_mcp = request.agent_contract.as_ref().and_then(|contract| {
+            self.cli_plugin_mcp_config(
+                &request.workdir,
+                request.immune_root.as_deref().unwrap_or(&request.workdir),
+                contract,
+            )
+        });
+        let local_tool_mcp_bridge_ready =
+            self.cli_plugin_mcp_bridge.is_some() && request.agent_contract.is_some();
+        let dispatcher =
+            AgentDispatcherV2::with_shared(Arc::clone(&self.config), Arc::clone(&self.semaphores))
+                .with_rate_limiter(Arc::clone(&self.rate_limiter))
+                .with_health_registry(Arc::clone(&self.health_registry));
+
+        dispatcher
+            .run_agent_result_bridge_with_tools_and_cli_mcp(
+                request,
+                self.mcp_runtime.clone(),
+                self.local_tool_runtime.clone(),
+                local_tool_mcp,
+                local_tool_mcp_bridge_ready,
+            )
+            .await
+    }
+
     /// Spawn an API/provider-backed agent using shared semaphores and
     /// pre-discovered MCP tools.
     pub fn spawn_shared_agent_bridge(
@@ -203,9 +302,19 @@ impl SharedAgentFactory {
         request: AgentDispatchRequest,
         event_tx: mpsc::Sender<AgentRuntimeEvent>,
     ) -> tokio::task::JoinHandle<()> {
+        let local_tool_mcp = request.agent_contract.as_ref().and_then(|contract| {
+            self.cli_plugin_mcp_config(
+                &request.workdir,
+                request.immune_root.as_deref().unwrap_or(&request.workdir),
+                contract,
+            )
+        });
+        let local_tool_mcp_bridge_ready =
+            self.cli_plugin_mcp_bridge.is_some() && request.agent_contract.is_some();
         let config = Arc::clone(&self.config);
         let semaphores = Arc::clone(&self.semaphores);
-        let mcp_tools = self.mcp_tools.clone();
+        let mcp_runtime = self.mcp_runtime.clone();
+        let local_tool_runtime = self.local_tool_runtime.clone();
         let rate_limiter = Arc::clone(&self.rate_limiter);
         let health_registry = Arc::clone(&self.health_registry);
 
@@ -214,7 +323,13 @@ impl SharedAgentFactory {
                 .with_rate_limiter(rate_limiter)
                 .with_health_registry(health_registry);
             match dispatcher
-                .run_agent_result_bridge_with_mcp(request, mcp_tools)
+                .run_agent_result_bridge_with_tools_and_cli_mcp(
+                    request,
+                    mcp_runtime,
+                    local_tool_runtime,
+                    local_tool_mcp,
+                    local_tool_mcp_bridge_ready,
+                )
                 .await
             {
                 Ok(dispatch) => {
@@ -240,6 +355,6 @@ impl SharedAgentFactory {
 
     /// Pre-discovered MCP tools, if available.
     pub fn mcp_tools(&self) -> Option<&Arc<Vec<ToolDef>>> {
-        self.mcp_tools.as_ref()
+        self.mcp_runtime.as_ref().map(|runtime| runtime.tools())
     }
 }

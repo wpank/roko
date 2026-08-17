@@ -1,6 +1,8 @@
 # Payment Protocols as Connect Cells
 
 > Depth for [21-MARKETPLACE.md](../../unified/21-MARKETPLACE.md). Covers the 3-layer payment stack (x402, MPP, ERC-8183), Shared Payment Tokens, multi-rail support, cost transparency, and the self-funding agent loop -- all expressed as Connect Cells with economic semantics.
+>
+> **Implementation status (2026-08-17):** Partially implemented. x402 batching, MPP sessions, and cost persistence are wired (E36 8/8). The paid-feed 402 enforcement and dashboard cost events are wired. ERC-8183 on-chain escrow, multi-rail settlement, and the self-funding loop requiring on-chain income streams are product work. The ISFR clearing/settlement subsystem (previously absorbed into this doc) is deprecated and removed. See `.roko/GAPS.md`.
 
 ---
 

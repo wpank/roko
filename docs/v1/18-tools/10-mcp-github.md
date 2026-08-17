@@ -1,5 +1,8 @@
 # 10 — roko-mcp-github
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > 17 GitHub API tools: PR operations, issue management, repository tools, CI integration.
 > Full JSON Schema specifications.
 

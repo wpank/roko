@@ -90,11 +90,23 @@ pub struct Deployment {
     pub url: Option<String>,
     /// When the deployment was created.
     pub created_at: DateTime<Utc>,
-    /// Callback credential: the worker must present this token via
-    /// `X-Roko-Worker-Signature` when posting to the `/callback` endpoint.
-    /// Never serialized to disk or API responses.
+    /// Opaque control-plane ID used by the worker callback URL.
+    ///
+    /// This is generated before the backend starts the worker, unlike `id`,
+    /// which is allocated by the deployment provider. It is not a credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback_id: Option<String>,
+    /// In-memory callback credential. The worker presents this token via
+    /// `X-Roko-Worker-Token` when posting to the `/callback` endpoint.
+    /// Never serialized to disk.
     #[serde(skip)]
     pub callback_token: Option<String>,
+    /// SHA-256 verifier for `callback_token`.
+    ///
+    /// Persisting the verifier lets callbacks remain authenticated after a
+    /// control-plane restart without persisting the bearer credential itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback_token_hash: Option<String>,
 }
 
 /// Status of a deployment.

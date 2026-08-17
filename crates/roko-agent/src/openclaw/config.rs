@@ -5,6 +5,8 @@
 use std::ffi::OsString;
 use std::time::Duration;
 
+use crate::process::ResourceLimits;
+
 /// Top-level OpenClaw configuration, dispatched by `transport` field.
 #[derive(Clone, Debug)]
 pub enum OpenClawConfig {
@@ -59,6 +61,8 @@ pub struct OpenClawInferConfig {
     /// After this duration, SIGTERM is sent, then SIGKILL after a
     /// 5-second grace period.
     pub timeout: Duration,
+    /// Optional OS-enforced limits for the infer subprocess.
+    pub resource_limits: Option<ResourceLimits>,
 }
 
 impl Default for OpenClawInferConfig {
@@ -71,6 +75,7 @@ impl Default for OpenClawInferConfig {
             transport_hint: TransportHint::Auto,
             extra_args: vec!["--json".to_string()],
             timeout: Duration::from_millis(90_000),
+            resource_limits: None,
         }
     }
 }

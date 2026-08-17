@@ -1,29 +1,30 @@
 # 24 -- DeFi Infrastructure
 
-> The economic substrate. ISFR oracle, yield perpetuals, cooperative clearing, multi-chain data aggregation, and agent DeFi capabilities. All DeFi types are domain-specific Cell specializations implementing standard protocols. Every trade flows through the DeFiRiskEngine (a Verify-protocol Cell) before execution.
+> Target architecture for the economic substrate: yield perpetuals, cooperative clearing, multi-chain data aggregation, and agent DeFi capabilities. In a future live execution path, all DeFi types are domain-specific Cell specializations implementing standard protocols and every trade flows through the DeFiRiskEngine (a Verify-protocol Cell) before execution. The shipped E41 local registries do not yet have that runtime wiring.
+
+> **Implementation status (2026-08-16): PARTIAL — E41 complete (8/8).** `roko-chain::defi` now ships local instrument types, checked bond and insurance lifecycles, reputation-option pricing, synthetic-index valuation, and provider-neutral market-rate effects. `roko-daimon` ships the two pure affect-sizing functions. The eight product HTTP paths are authenticated, scope/RBAC-classified **501 contract stubs**, not live product APIs. Yield perpetuals, cooperative clearing, venue adapters, durable/on-chain adapters, and `DeFiRiskEngine` remain ASPIRATIONAL with zero runtime callers. The former benchmark-rate vertical was removed in 2026-08 and is not a dependency of the shipped product primitives.
 
 **Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal/Pulse for trade events), [02-CELL](02-CELL.md) (Cell trait, Verify protocol for risk checks), [03-GRAPH](03-GRAPH.md) (Graph composition for trading pipelines), [05-AGENT](05-AGENT.md) (Agent runtime, daimon affect engine), [07-LEARNING](07-LEARNING.md) (continuous P&L reward, cascade router updates), [13-TRIGGERS](13-TRIGGERS.md) (heartbeat clock for tick processing), [22-REGISTRIES](22-REGISTRIES.md) (on-chain contract anchoring)
 
 ---
 
-## 1. Design Constraints
+## 1. Target Live-Execution Design Constraints
 
-1. **Safety first, speed second.** Every DeFi operation flows through the DeFiRiskEngine (a Verify-protocol Cell) before execution. No agent can bypass position limits, drawdown caps, or MEV protection.
+1. **Safety first, speed second.** Every future live DeFi operation must flow through the DeFiRiskEngine (a Verify-protocol Cell) before execution. No live adapter may let an agent bypass position limits, drawdown caps, or MEV protection. The current local E41 registries are below this future adapter boundary.
 2. **Continuous reward, not binary.** DeFi outcomes produce P&L -- a continuous Signal. The learning pipeline ([doc-07](07-LEARNING.md)) replaces binary gate-pass reward with risk-adjusted return.
 3. **Venue-agnostic execution.** Agents interact with DeFi protocols through a VenueAdapter trait (a Cell specialization). Adding a new protocol means implementing one Cell, not rewriting agent logic.
-4. **Affect modulation is real.** Position sizing passes through the daimon affect engine. Losses are weighted 2.25x per prospect theory (Tversky & Kahneman 1992). This prevents agents from doubling down after drawdowns.
-5. **Multi-chain by default.** ISFR components come from Ethereum, Base, and Arbitrum. The system aggregates cross-chain data into a single rate.
+4. **Affect modulation is required for future live sizing.** Live position sizing must pass through the daimon affect engine. E41 ships the pure functions, but no runtime caller is wired yet. Losses are weighted 2.25x per prospect theory (Tversky & Kahneman 1992).
+5. **Multi-chain by default.** Market data may come from Ethereum, Base, and Arbitrum. The system normalizes cross-chain observations before use.
 6. **Simulation before execution.** Trades run through mirage-rs fork simulation before hitting live chains. The `TxSimulator` trait abstracts this.
 
 ---
 
 ## 2. Kernel Mapping
 
-All DeFi types are domain-specific Cell specializations. No new kernel primitives are introduced.
+The target live architecture maps DeFi components to domain-specific Cell specializations and introduces no new kernel primitives. The shipped E41 local structs do not yet implement Cell protocols; the mapping below remains the integration target.
 
 | DeFi Concept | Kernel Primitive | Protocol | Notes |
 |---|---|---|---|
-| ISFR Oracle | Cell | Score + Verify | Produces rated Signals (ISFR snapshots) with ground truth from chain state |
 | Yield Perpetual | Signal (Position kind) | -- | Position state tracked as Signals in Store, anchored on-chain |
 | ClearingHouse | Cell | Compose | VCG welfare-maximizing settlement = Compose-protocol clearing |
 | VenueAdapter | Cell | Act | Protocol-normalized execution: swap, add/remove liquidity, quote |
@@ -36,136 +37,64 @@ All DeFi types are domain-specific Cell specializations. No new kernel primitive
 
 ---
 
-## 3. ISFR Oracle
+## 3. Product Primitives (E41, Local Runtime)
 
-The Internet Secured Funding Rate is a benchmark rate computed from DeFi lending markets. It answers the question: what is the risk-free rate of return available on-chain right now?
+The shipped `roko-chain::defi` module provides deterministic local models for five instrument kinds: reputation bonds, reputation options, knowledge futures, insurance policies, and synthetic indices. An `Instrument` records its 32-byte ID, issuer, collateral, block interval, lifecycle state, and tagged product parameters. These models are suitable for local simulation and testing; they are not backed by a deployed contract or durable server repository.
 
-ISFR is the reference rate for yield perpetuals, agent compensation models, and cost-of-capital calculations across the system.
+| E41 surface | Shipped boundary | Still deferred |
+|---|---|---|
+| Instrument model | Five tagged kinds and shared lifecycle states | Contract deployment and durable repository |
+| Bonds | Checked issuance, coupons, maturity, settlement, default, collateral accounting | Actor authorization and transfer execution |
+| Reputation options | Black-Scholes call/put, volatility, finite Greeks | Order book, exercise, and settlement |
+| Insurance | Premium purchase, buyer-bound claims, review, one payout, residual collateral release | Reviewer authorization and evidence oracle |
+| Synthetic indices | Exact inputs, weighted valuation, atomic cadence-gated rebalance, bounded history | Source adapters and automated rebalancing |
+| Rate effects | Provider-neutral bond/index observations | Downstream provider/curve integration |
+| HTTP | Eight authenticated scope/RBAC-classified structured-501 contracts | Live handlers, persistence, risk checks, execution |
 
-### 3.1 Rate Computation
+### 3.1 Reputation Bonds
 
-ISFR aggregates weighted lending rates from major DeFi protocols. Each protocol supplies a "component" -- a lending rate for a specific stablecoin market. Components are weighted by TVL (total value locked) in each market.
+`BondRegistry` enforces a checked `Active -> Matured -> Settled` path and an expiry-gated `Defaulted` path. Issuance is fully collateralized by default. Coupon and collateral amounts use `u256` (the Phase 2 `u128` alias); decimal rates are converted to billionth-rate fixed point and applied with overflow-safe quotient/remainder arithmetic. Coupons are gated by elapsed blocks since the last actual payment, so a late payment cannot be replayed to catch up multiple coupons in one block, and they cannot be paid on non-active bonds. Settlement requires repayment of at least face value, while default seizes the remaining collateral.
 
-The aggregation uses a **dual-median** approach: for each validator, compute the TVL-weighted median of submitted components; then take the median across all validator submissions. This resists outlier manipulation -- a single corrupted rate source cannot skew the benchmark.
+### 3.2 Reputation Options
 
-```
-ISFR = median_across_validators(
-    for each validator v:
-        tvl_weighted_median(v.components)
-)
-```
+`ReputationOptionPricer` implements vanilla European call and put pricing with the Black-Scholes formula and Abramowitz-Stegun normal-CDF approximation. Time converts from blocks using 2,628,000 blocks per year (approximately 12 seconds per block). Zero-time and zero-volatility cases use deterministic intrinsic/discounted-intrinsic values, and malformed inputs return finite zero values. Historical volatility is the annualized sample standard deviation of block-spaced log returns. Call Greeks include delta, gamma, theta, and vega.
 
-### 3.2 Components
+### 3.3 Knowledge Futures
 
-| Component | Source Chain | Market | Weight Basis |
-|---|---|---|---|
-| Aave USDC | Ethereum | aUSDC supply rate | TVL in Aave USDC pool |
-| Aave USDT | Ethereum | aUSDT supply rate | TVL in Aave USDT pool |
-| Compound USDC | Ethereum | cUSDC supply rate | TVL in Compound USDC pool |
-| Morpho USDC | Ethereum | Morpho optimizer rate | TVL in Morpho USDC vault |
-| Aave USDC (Base) | Base | aUSDC supply rate | TVL in Aave Base USDC |
-| Aave USDC (Arb) | Arbitrum | aUSDC supply rate | TVL in Aave Arbitrum USDC |
+`FutureParams` defines the local instrument terms (`knowledge_spec`, optional target HDC, delivery block, and minimum quality) without duplicating the existing futures-market lifecycle. E41 adds the tagged product representation only; the existing futures market remains the execution owner.
 
-Additional components can be registered through governance. The minimum component count for a valid ISFR update is 3.
+### 3.4 Insurance Policies
 
-### 3.3 Update Cadence
+`InsuranceRegistry` requires issuer collateral to cover the declared payout. A claim can be filed only by a buyer that paid the fixed-point minimum premium, only before policy expiry, and only for the canonical covered event. One claim per insured buyer and one paid claim per policy are enforced. Review transitions are `Filed -> UnderReview -> Approved/Rejected`; payment is allowed only from `Approved`, deducts the contractual deductible, and settles the policy.
 
-ISFR updates every 8 hours under normal conditions. An immediate update triggers when the computed rate deviates from the current on-chain rate by more than 50 basis points. Validators can also force an update through a quorum vote.
+### 3.5 Synthetic Indices
 
-### 3.4 Solidity Interface
+`SyntheticIndexRegistry` validates non-negative finite component weights summing to one within `0.01`, unique canonical domains, and exact one-to-one valuation inputs. Rebalances cannot occur before the declared block cadence and cannot silently add or remove domains. Valuation history is capped at 1,000 entries.
 
-```solidity
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+`IndexSource` is provider-neutral: `ReputationRegistry`, `ArenaLeaderboard(name)`, `MarketRate(provider_key)`, or `Custom(key)`. Component values are supplied by the caller; the registry does not fetch remote data.
 
-interface IISFROracle {
-    struct Component {
-        bytes32 sourceId;       // Protocol identifier (e.g., keccak256("aave-usdc-eth"))
-        uint256 rate;           // Rate in basis points (1 bps = 0.01%)
-        uint256 tvl;            // TVL in USD (18 decimals)
-        uint64  chain;          // Source chain ID
-        uint64  timestamp;      // When the rate was observed
-    }
+### 3.6 Provider-Neutral Market-Rate Observations
 
-    struct RateSnapshot {
-        uint256 rate;           // ISFR in basis points
-        uint64  timestamp;      // When this snapshot was computed
-        uint64  blockNumber;    // Block at which it was recorded
-        uint8   componentCount; // Number of components used
-        bytes32 merkleRoot;     // Merkle root of component data
-    }
+Active bonds and valued active indices can produce `DefiRateEffect` observations for downstream consumers. Bond keys use `bond.{issuer_domain}.coupon_rate`, with confidence derived from the collateral ratio. Index keys use `index.{stable_instrument_id}.weighted_value`; the stable ID is used because the current index schema has no name field. Callers may route these effects to any market-data, curve, or risk system. There is no direct clearing-provider dependency.
 
-    /// Submit a batch of rate components for aggregation.
-    /// Only callable by registered validators.
-    function submitComponents(Component[] calldata components) external;
+### 3.7 Verification Boundary
 
-    /// Trigger aggregation. Reverts if quorum not met or cadence not elapsed.
-    function aggregate() external;
+E41 unit coverage includes full-range `u128` monetary arithmetic, premature and duplicate lifecycle operations, option parity and degenerate inputs, buyer authorization, policy expiry, exact index-domain matching, atomic rebalance failure, rebalance cadence, and rate-effect projection. Registry clocks advance monotonically through their setter, but these remain process-local simulation structures rather than consensus state.
 
-    /// Current ISFR rate snapshot.
-    function getCurrentRate() external view returns (RateSnapshot memory);
-
-    /// Historical rate at a specific block.
-    function getRateAt(uint64 blockNumber) external view returns (RateSnapshot memory);
-
-    /// All components used in the most recent aggregation.
-    function getComponents() external view returns (Component[] memory);
-
-    /// Whether an update is due (cadence elapsed or deviation exceeded).
-    function isUpdateDue() external view returns (bool);
-
-    // Events
-    event ComponentSubmitted(address indexed validator, bytes32 sourceId, uint256 rate);
-    event RateAggregated(uint256 rate, uint64 timestamp, uint8 componentCount);
-    event DeviationTriggered(uint256 oldRate, uint256 newRate, uint256 deviationBps);
-}
-```
-
-### 3.5 Rust Types
-
-```rust
-/// A single lending rate observation from a DeFi protocol.
-/// Implemented as a Cell producing Score-protocol Signals.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IsfrComponent {
-    /// Protocol identifier (e.g., "aave-usdc-eth").
-    pub source_id: String,
-    /// Annualized lending rate as a decimal (e.g., 0.0435 for 4.35%).
-    pub rate: f64,
-    /// Total value locked in USD.
-    pub tvl_usd: f64,
-    /// Source chain ID.
-    pub chain_id: u64,
-    /// Observation timestamp (Unix seconds).
-    pub observed_at: u64,
-}
-
-/// Aggregated ISFR snapshot. Stored as a Signal in the Store.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IsfrSnapshot {
-    /// ISFR as a decimal (e.g., 0.0412 for 4.12%).
-    pub rate: f64,
-    /// Components used in this aggregation.
-    pub components: Vec<IsfrComponent>,
-    /// Block number at which this snapshot was recorded.
-    pub block_number: u64,
-    /// Snapshot timestamp (Unix seconds).
-    pub timestamp: u64,
-}
-```
+Lifecycle methods validate state and economic invariants, not caller identity. A future live adapter owns issuer, reviewer, and claimant authorization, as well as durable transactions, risk-engine admission, and on-chain execution. Calling these local registries directly must not be treated as an authorization boundary.
 
 ---
 
 ## 4. Yield Perpetuals
 
-Perpetual contracts that settle against the ISFR. A yield perpetual lets a user take a long or short position on the direction of on-chain lending rates. Long = betting rates go up. Short = betting rates go down.
+Perpetual contracts settle against an explicitly configured external benchmark. A yield perpetual lets a user take a long or short position on the direction of on-chain lending rates. Long = betting rates go up. Short = betting rates go down.
 
 Yield perpetuals are the primary tradable instrument in the system. Agents and humans can open, close, and manage positions. Clearing happens cooperatively at regular intervals.
 
 ### 4.1 Position Lifecycle
 
 1. **Open**: Agent or user submits an `openPosition` call with side (long/short), size, and collateral.
-2. **Mark**: Between clearing rounds, positions accrue unrealized P&L based on the current ISFR vs. their entry rate.
+2. **Mark**: Between clearing rounds, positions accrue unrealized P&L based on the configured benchmark versus their entry rate.
 3. **Settle**: During a clearing round, funding payments flow between longs and shorts based on rate movement.
 4. **Close**: Agent or user closes the position, realizing P&L and reclaiming remaining collateral.
 
@@ -196,7 +125,7 @@ interface IClearingHouse {
         address owner;
         bool    isLong;
         uint256 size;           // Notional in USDC (18 decimals)
-        uint256 entryRate;      // ISFR at entry (basis points)
+        uint256 entryRate;      // External benchmark at entry (basis points)
         uint256 collateral;     // Posted collateral in USDC (18 decimals)
         uint64  openedAtBlock;
         uint64  lastSettledBlock;
@@ -204,7 +133,7 @@ interface IClearingHouse {
 
     struct ClearingRound {
         uint128 roundId;
-        uint256 clearingRate;   // ISFR snapshot used for this round
+        uint256 clearingRate;   // External benchmark snapshot used for this round
         uint256 totalLongSize;
         uint256 totalShortSize;
         uint256 fundingPaid;    // Total funding transferred this round
@@ -264,13 +193,13 @@ pub struct YieldPerpPosition {
     pub is_long: bool,
     /// Notional size in USD.
     pub size_usd: f64,
-    /// ISFR at entry as a decimal.
+    /// External benchmark at entry as a decimal.
     pub entry_rate: f64,
     /// Current collateral in USD.
     pub collateral_usd: f64,
     /// Block at which the position was opened.
     pub opened_at_block: u64,
-    /// Unrealized P&L based on current ISFR.
+    /// Unrealized P&L based on the current external benchmark.
     pub unrealized_pnl_usd: f64,
     /// Current margin ratio (collateral / notional).
     pub margin_ratio: f64,
@@ -292,7 +221,7 @@ pub struct ClearingRoundSummary {
 
 ## 5. Multi-Chain Data Architecture
 
-ISFR components come from protocols deployed across multiple EVM chains. Agents need cross-chain data to compute accurate rates, monitor positions across chains, and (eventually) execute cross-chain strategies.
+Agents need cross-chain data to observe rates, monitor positions across chains, and eventually execute cross-chain strategies.
 
 ### 5.1 Architecture
 
@@ -302,7 +231,7 @@ Ethereum RPC ──────┐
 Base RPC ───────────┼──> ChainDataAggregator (Graph) ──> Store (CorticalState)
                     |         |
 Arbitrum RPC ───────┘         |
-                              ├──> ISFR Oracle Cell (components)
+                              ├──> Strategy and risk inputs
                               └──> Agent context (multi-chain state)
 ```
 
@@ -378,8 +307,8 @@ pub struct ChainDataAggregator {
 }
 
 impl ChainDataAggregator {
-    /// Collect ISFR components from all connected chains.
-    pub async fn collect_isfr_components(&self) -> Result<Vec<IsfrComponent>> { ... }
+    /// Collect normalized rate observations from all connected chains.
+    pub async fn collect_rate_observations(&self) -> Result<Vec<RateObservation>> { ... }
 
     /// Health status of all chain connections.
     pub fn chain_health(&self) -> Vec<(u64, ChainHealth)> { ... }
@@ -690,21 +619,6 @@ All DeFi events flow through the Bus as Pulses ([doc-01](01-SIGNAL.md)) and are 
 ### 7.1 Event Payloads
 
 ```json
-{
-    "type": "isfr.updated",
-    "payload": {
-        "rate": 0.0412,
-        "previous_rate": 0.0398,
-        "change_bps": 14,
-        "component_count": 6,
-        "block_number": 19847231,
-        "timestamp": 1714003200
-    }
-}
-```
-
-```json
-{
     "type": "position.opened",
     "payload": {
         "position_id": 4827,
@@ -789,8 +703,6 @@ All DeFi events flow through the Bus as Pulses ([doc-01](01-SIGNAL.md)) and are 
 
 | Event | Emitted By | Consumed By |
 |---|---|---|
-| `isfr.updated` | ISFROracle contract / ChainDataAggregator | Dashboard, yield perp mark-to-market, agent context |
-| `isfr.deviation_triggered` | ISFROracle contract | Dashboard (alert), clearing house |
 | `position.opened` | ClearingHouse contract | Dashboard, risk engine, TradingReflect |
 | `position.closed` | ClearingHouse contract | Dashboard, TradingReflect, learning pipeline |
 | `position.liquidated` | ClearingHouse contract | Dashboard (alert), risk engine |
@@ -799,7 +711,7 @@ All DeFi events flow through the Bus as Pulses ([doc-01](01-SIGNAL.md)) and are 
 | `risk.drawdown_warning` | DeFiRiskEngine | Dashboard (alert), agent trading logic |
 | `risk.mev_detected` | MEV detection module | Dashboard (alert), risk engine |
 | `risk.daily_limit_hit` | DeFiRiskEngine | Dashboard (alert), trading halt |
-| `chain.health_changed` | ChainDataAggregator | Dashboard, ISFR oracle |
+| `chain.health_changed` | ChainDataAggregator | Dashboard, risk engine |
 | `collateral.added` | ClearingHouse contract | Dashboard, risk engine |
 | `collateral.removed` | ClearingHouse contract | Dashboard, risk engine |
 
@@ -809,38 +721,20 @@ All DeFi events flow through the Bus as Pulses ([doc-01](01-SIGNAL.md)) and are 
 
 Routes served by `roko-serve` on the control plane. These feed the Treasury section of the dashboard and provide programmatic access for external integrations.
 
-### 8.1 ISFR Endpoints
+### 8.1 Product Endpoint Contracts (E41)
 
-| Method | Path | Description |
+The following authenticated paths are reserved and scope/RBAC-classified. Every handler currently returns HTTP 501 with `{"status":"not_implemented","message":"DeFi product endpoints are Phase 2"}`. They must not be treated as live storage, pricing, execution, or risk APIs.
+
+| Method | Path | Current behavior |
 |---|---|---|
-| `GET` | `/api/defi/isfr` | Current ISFR rate with all components |
-| `GET` | `/api/defi/isfr/history?window={24h,7d,30d}` | Historical ISFR snapshots |
-| `GET` | `/api/defi/isfr/components` | Current component breakdown with TVL weights |
-| `GET` | `/api/defi/isfr/curves` | Derived forward rate curve and term structure |
-
-**Response: `GET /api/defi/isfr`**
-
-```json
-{
-    "rate": 0.0412,
-    "rate_bps": 412,
-    "change_24h_bps": 14,
-    "change_7d_bps": -8,
-    "last_update": "2026-04-24T08:00:00Z",
-    "last_update_block": 19847231,
-    "component_count": 6,
-    "components": [
-        {
-            "source_id": "aave-usdc-eth",
-            "rate": 0.0435,
-            "tvl_usd": 2400000000,
-            "weight": 0.32,
-            "chain_id": 1,
-            "chain_name": "Ethereum"
-        }
-    ]
-}
-```
+| `GET` | `/api/defi/instruments` | Authenticated structured 501 |
+| `POST` | `/api/defi/bonds` | Authenticated write + `PlanExecute`; structured 501 |
+| `GET` | `/api/defi/bonds/{id}` | Authenticated structured 501 |
+| `POST` | `/api/defi/options/price` | Authenticated write + `PlanExecute`; structured 501 |
+| `POST` | `/api/defi/insurance` | Authenticated write + `PlanExecute`; structured 501 |
+| `POST` | `/api/defi/insurance/{id}/claims` | Authenticated write + `PlanExecute`; structured 501 |
+| `GET` | `/api/defi/indices` | Authenticated structured 501 |
+| `GET` | `/api/defi/risk/portfolio` | Authenticated structured 501 |
 
 ### 8.2 Position Endpoints
 
@@ -885,7 +779,7 @@ The heartbeat clock ([doc-13](13-TRIGGERS.md)) drives DeFi tick processing. Chai
 |---|---|---|---|
 | **Gamma** | 1-5s | Price feed ingestion, MEV detection, liquidation monitoring | `defi-gamma-tick` |
 | **Theta** | 5-60s | Strategy evaluation, position sizing, trade execution | `defi-theta-tick` |
-| **Delta** | 120s | Portfolio rebalancing, ISFR update checks, risk report generation | `defi-delta-tick` |
+| **Delta** | 120s | Portfolio rebalancing and risk report generation | `defi-delta-tick` |
 
 ---
 
@@ -896,7 +790,7 @@ TradingReflect events feed into the learning pipeline, which distributes continu
 - **Cascade router** ([doc-08](08-GATEWAY.md)): Updates arm weights based on model-specific trade outcomes. If model X consistently produces better Sharpe ratios, the router routes more trading tasks to model X.
 - **Episode logger**: Records trade-level data in episode `extra` map, including entry/exit prices, hold duration, gas costs, and slippage.
 - **Playbook store**: Updates per-playbook win/loss counters and P&L. Playbooks that produce negative P&L decay via demurrage.
-- **Indicator accuracy**: Validates indicator predictions against realized outcomes. An indicator that predicted "rate increase" is scored against the actual ISFR movement.
+- **Indicator accuracy**: Validates indicator predictions against realized benchmark movement.
 
 ---
 
@@ -917,11 +811,6 @@ The `prospect_value` function (section 6.4) maps realized P&L to affect updates.
 
 [defi]
 enabled = true
-
-[defi.isfr]
-update_cadence_hours = 8
-deviation_trigger_bps = 50
-min_components = 3
 
 [defi.clearing]
 interval_blocks = 150
@@ -958,7 +847,7 @@ max_size_multiplier = 1.5
 
 The control plane hosts:
 - **ChainDataAggregator** (multi-chain WebSocket connections) -- a Graph of ChainDataSource Cells
-- **ISFR computation and caching** -- ISFROracle Cell producing snapshot Signals
+- **Normalized chain-data cache** -- inputs for strategy and risk Cells
 - **Risk engine state** -- DeFiRiskEngine Cell with persistent drawdown tracking
 - **Learning pipeline** -- TradingReflect store, indicator accuracy, regime tracker
 - **DeFi API routes** -- served by `roko-serve` on :6677
@@ -979,10 +868,6 @@ This isolation means a misbehaving trading agent cannot affect other agents or t
 
 | Criterion | Verification |
 |---|---|
-| ISFR dual-median aggregation produces correct rate from 6 components | Unit test: 6 known components -> expected ISFR, verify median-of-medians |
-| ISFR deviation trigger fires when rate moves > 50bps | Unit test: inject rate shift > 50bps, verify immediate update |
-| ISFR minimum component count enforced (3) | Unit test: submit 2 components, verify aggregation reverts |
-| IISFROracle contract: submitComponents, aggregate, getCurrentRate | Integration test: deploy, submit, aggregate, read back |
 | Yield perpetual position lifecycle: open -> mark -> settle -> close | Integration test: full position lifecycle with P&L verification |
 | Initial margin (10%) and maintenance margin (5%) enforced | Unit test: open position with insufficient collateral -> rejected |
 | Liquidation triggers at maintenance margin, 2% bonus to liquidator | Unit test: position below 5% margin -> liquidatable, bonus computed |

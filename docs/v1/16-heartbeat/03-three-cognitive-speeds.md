@@ -1,5 +1,8 @@
 # Three Cognitive Speeds: Gamma, Theta, Delta
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Named after EEG frequency bands, three concurrent timescales govern all agent cognition — reactive perception, reflective planning, and offline consolidation.
 
 

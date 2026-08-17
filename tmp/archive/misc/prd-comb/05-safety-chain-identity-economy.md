@@ -29,7 +29,7 @@ The three concerns are distinct but intentionally stitched together:
 |---|---|---|
 | Authorization | May this principal perform this action on this target in this context? | Trait-level authz in the safety layer |
 | Isolation | If code is untrusted or partially trusted, can it escape its declared envelope? | Worktree, process, container, and WASM boundaries |
-| Provenance | Can an auditor reconstruct what happened and why? | Engram lineage, Custody records, taint metadata, and attestation |
+| Provenance | Can an auditor reconstruct what happened and why? | Engram (renamed to Signal in 2026-08-12) lineage, Custody records, taint metadata, and attestation |
 
 This chapter uses "defense in depth" literally: no single guard is assumed sufficient. An action that matters should be subject to authorization, pre-call validation, post-call verification, taint-aware policy, and durable audit evidence.
 
@@ -45,7 +45,7 @@ Every permission-gated action is evaluated against the same tuple:
 
 - **Principal:** user id, agent id, or plugin id.
 - **Action:** a controlled verb such as file read, file write, shell execution, dependency install, Bus publish, or network egress.
-- **Target:** file path, tool id, topic, endpoint, Engram kind, or tenant namespace.
+- **Target:** file path, tool id, topic, endpoint, Signal kind, or tenant namespace.
 - **Context:** the `TypedContext` and domain profile active at decision time.
 - **Authorization source:** role grant, session approval, one-shot approval, escalation, or plugin manifest declaration.
 
@@ -132,7 +132,7 @@ The safety spine is not a separate loop. It cuts through the existing seven step
 | COMPOSE | Preserve taint in composed prompts and include only context allowed for the principal and tenant. |
 | ACT | Enforce pre-call checks, sandbox limits, egress policy, and checkpoint requirements. |
 | VERIFY | Run gate verdicts, attach review outcomes, and decide whether the result can persist or broadcast. |
-| PERSIST / BROADCAST | Persist Engrams and, in the target-state audit chain, Custody records in Substrate; publish runtime events only on allowed topics and namespaces. |
+| PERSIST / BROADCAST | Persist Signals and, in the target-state audit chain, Custody records in Substrate; publish runtime events only on allowed topics and namespaces. |
 | REACT | Tighten permissions, disable plugins, or open incidents in response to verdicts, violations, or tainted outputs. |
 
 Safety therefore lives at the point of action and in the after-action consequences, not only at the end of the turn.
@@ -453,9 +453,9 @@ async fn speculate_read(tool: &dyn ReadTool) {
 
 ## Capability Lifecycle Events
 
-In the target-state design, every capability lifecycle event is emitted as an Engram through the audit sink:
+In the target-state design, every capability lifecycle event is emitted as an Signal through the audit sink:
 
-| Event | Description | Engram Kind |
+| Event | Description | Signal Kind |
 |-------|-------------|-------------|
 | `PermitCreated` | A new capability token was minted by the safety layer | `Kind::ToolInvocation` with tag `phase=permit_created` |
 | `PermitConsumed` | A capability was consumed by a write tool | `Kind::ToolInvocation` with tag `phase=permit_consumed` |
@@ -523,7 +523,7 @@ See `implementation-plans/03-safety-hooks.md`:
 
 # SOURCE: /Users/will/dev/nunchi/roko/roko/docs/11-safety/02-audit-chain.md
 
-# Cryptographic Audit Trail: Merkle Hash-Chain and Engram Lineage
+# Cryptographic Audit Trail: Merkle Hash-Chain and Signal Lineage
 
 > **Layer:** L0 Runtime, L3 Harness
 >
@@ -544,13 +544,13 @@ The safety spine needs more than a generic audit log. For any auditable action, 
 - what result was produced,
 - and which tainted inputs were still in play.
 
-The canonical durable record for that reconstruction is a **Custody** Engram. Merkle or hash-chain structures are still useful implementation details for tamper evidence, but the operator-facing unit is Custody, not an opaque append-only line.
+The canonical durable record for that reconstruction is a **Custody** Signal. Merkle or hash-chain structures are still useful implementation details for tamper evidence, but the operator-facing unit is Custody, not an opaque append-only line.
 
 ---
 
 ## 1. From Lineage to Custody
 
-Every Engram already carries lineage and provenance. REF32 extends that into an explicit chain-of-custody story for actions that matter.
+Every Signal already carries lineage and provenance. REF32 extends that into an explicit chain-of-custody story for actions that matter.
 
 ### Minimal lineage
 
@@ -629,7 +629,7 @@ That distinction is often more important to auditors than the raw action itself.
 
 ## 4. Attestation Levels
 
-Some Engrams need stronger guarantees than "we persisted them." Attestation attaches a cryptographic statement to the content hash and records who is willing to stand behind it.
+Some Signals need stronger guarantees than "we persisted them." Attestation attaches a cryptographic statement to the content hash and records who is willing to stand behind it.
 
 ```rust
 pub enum AttestationLevel {
@@ -661,7 +661,7 @@ Human-owned or organization-owned signing authority. Use it for:
 
 Phase 2+ attestation anchored outside the local deployment. Use it when the deployment needs independently verifiable evidence across operators or organizations, such as shared heuristic contributions or high-value chain operations.
 
-Attestation does not replace Custody. It strengthens the evidentiary weight of specific Engrams in the custody chain.
+Attestation does not replace Custody. It strengthens the evidentiary weight of specific Signals in the custody chain.
 
 ---
 
@@ -702,13 +702,13 @@ This is the difference between a forensic log and a compliance-grade chain of ev
 Hash-chains remain useful, but they are subordinate to the custody model:
 
 - a Merkle or append-only chain can prove ordering and tamper evidence,
-- content-addressed Engrams prove object integrity,
+- content-addressed Signals prove object integrity,
 - attestations prove signer intent,
 - chain witnesses prove external commitment when required.
 
 The recommended hierarchy is:
 
-1. Engram content hash for object identity.
+1. Signal content hash for object identity.
 2. Lineage for causal structure.
 3. Custody for action-centric evidence.
 4. Attestation for signer-backed assurance.
@@ -750,7 +750,7 @@ Postmortems should begin with Custody, not with grep:
 4. Check taint sources and any external fetches.
 5. Verify attestations and witness status.
 6. Replay the action with the recorded inputs.
-7. Publish a postmortem Engram linked back into the same lineage.
+7. Publish a postmortem Signal linked back into the same lineage.
 
 When the safety spine works, incidents turn into learnable evidence instead of irrecoverable ambiguity.
 
@@ -783,7 +783,7 @@ When the safety spine works, incidents turn into learnable evidence instead of i
 
 Taint tracking is the safety spine's answer to a basic question: which inputs are still untrusted?
 
-Roko already ships taint as durable provenance metadata, not an informal warning. Today that is the `Provenance.tainted: bool` field in `roko-core`, with helpers such as `Provenance::external()` and `Provenance::user()` setting it to `true`. This document also sketches a richer target-state taxonomy. If a prompt, fetch result, plugin output, or imported Engram influenced the current action, that fact should remain visible until a reviewer explicitly signs off on it. Taint is therefore:
+Roko already ships taint as durable provenance metadata, not an informal warning. Today that is the `Provenance.tainted: bool` field in `roko-core`, with helpers such as `Provenance::external()` and `Provenance::user()` setting it to `true`. This document also sketches a richer target-state taxonomy. If a prompt, fetch result, plugin output, or imported Signal influenced the current action, that fact should remain visible until a reviewer explicitly signs off on it. Taint is therefore:
 
 - attached when data crosses a trust boundary,
 - propagated through composition and action,
@@ -834,14 +834,14 @@ The taxonomy is intentionally about origin rather than moral judgment. Taint mea
 
 ## 2. Propagation Rules
 
-The propagation rule is simple and strict: if an Engram or composed prompt depends on tainted input, the output stays tainted.
+The propagation rule is simple and strict: if an Signal or composed prompt depends on tainted input, the output stays tainted.
 
 Examples:
 
 - A Composer that reads `UserInput` and `ExternalFetch` sources produces a tainted prompt.
 - An LLM completion based on that prompt remains tainted.
 - A plugin result generated from a tainted prompt remains tainted even if the plugin itself is trusted.
-- A summary Engram synthesized from a tainted fetch still carries the fetch taint.
+- A summary Signal synthesized from a tainted fetch still carries the fetch taint.
 
 This matters because the highest-risk failures often happen one or two hops after the original untrusted input. If taint stopped at ingestion, the dangerous part of the decision chain would become invisible exactly when action is about to occur.
 
@@ -851,12 +851,12 @@ This matters because the highest-risk failures often happen one or two hops afte
 
 | Loop step | Taint behavior |
 |---|---|
-| SENSE | Attach taint to inbound Engrams from users, remote sources, plugins, or imports. |
+| SENSE | Attach taint to inbound Signals from users, remote sources, plugins, or imports. |
 | ASSESS | Use taint as an input to routing, scoring, and permission thresholds. |
 | COMPOSE | Preserve taint in prompts, plans, and intermediate context packs. |
 | ACT | Read taint before tool use, network egress, publication, signing, or filesystem writes. |
 | VERIFY | Gates can deny, confirm, or escalate based on taint and target sensitivity. |
-| PERSIST / BROADCAST | Persist taint in Engrams and, in the target-state audit chain, include it in Custody; publish only to allowed topics and tenants. |
+| PERSIST / BROADCAST | Persist taint in Signals and, in the target-state audit chain, include it in Custody; publish only to allowed topics and tenants. |
 | REACT | Disable plugins, tighten policies, or open incidents when taint repeatedly reaches blocked destinations. |
 
 Taint is therefore not just an ingestion concern. It is a runtime control plane signal.
@@ -914,9 +914,9 @@ Taint should not disappear because time passed or because another model summariz
 - who reviewed it,
 - what scope they approved,
 - when they approved it,
-- and which resulting Engram or action the approval covers.
+- and which resulting Signal or action the approval covers.
 
-That review should itself appear in the target-state Custody chain or another attested verdict Engram. Without that durable record, "cleaning" taint is indistinguishable from silently ignoring it.
+That review should itself appear in the target-state Custody chain or another attested verdict Signal. Without that durable record, "cleaning" taint is indistinguishable from silently ignoring it.
 
 ---
 
@@ -944,7 +944,7 @@ Taint only matters if it survives persistence and replay.
 
 Minimum expectations:
 
-- the Engram's provenance includes taint source information,
+- the Signal's provenance includes taint source information,
 - target-state Custody records note which taint labels were active at the time of action,
 - replay tooling can surface whether the action would still have been blocked under the recorded taint state,
 - exports preserve taint metadata for third-party auditors.
@@ -1221,7 +1221,7 @@ The `orchestrate.rs` module in `roko-cli` assigns roles and permissions when dis
 >
 > **Crate**: `roko-agent` (safety/rate_limit.rs), `roko-conductor` (circuit breaker), `roko-agent` (safety/scrub.rs)
 >
-> **Synapse traits**: `Policy` (observe Engram streams, detect loops), `Gate` (verify termination conditions)
+> **Synapse traits**: `Policy` (observe Signal streams, detect loops), `Gate` (verify termination conditions)
 >
 > **Prerequisites**: [00-defense-in-depth.md](00-defense-in-depth.md)
 
@@ -1281,7 +1281,7 @@ The `roko-conductor` crate implements a circuit breaker pattern that monitors ag
 - Agent has been running for longer than the maximum session duration (configurable)
 - Drawdown metric exceeds safety threshold (for chain-domain agents)
 
-The circuit breaker operates at L3 Harness, wrapping the agent execution loop in `orchestrate.rs`. When the circuit opens, the orchestrator pauses the current task and records the intervention as an Engram with `Kind::InterventionReceived`.
+The circuit breaker operates at L3 Harness, wrapping the agent execution loop in `orchestrate.rs`. When the circuit opens, the orchestrator pauses the current task and records the intervention as an Signal with `Kind::InterventionReceived`.
 
 ### Conductor Diagnosis Engine
 
@@ -2080,7 +2080,7 @@ Minimum response flow:
 4. Inspect taint sources, plugin tier, egress logs, and tenant namespace.
 5. Verify attestation and replayability.
 6. Contain by tightening permissions, disabling the plugin, or reducing egress scope.
-7. Publish a postmortem Engram linked into the same lineage.
+7. Publish a postmortem Signal linked into the same lineage.
 
 That response flow turns the safety spine into an operational system rather than a design diagram.
 
@@ -3394,13 +3394,13 @@ impl Gate for MevGate {
 }
 ```
 
-The MevGate sits in the chain-domain gate pipeline alongside other chain-specific gates (gas estimation, position limit, slippage bound). Gate verdicts are persisted as Engrams with full provenance, enabling forensic replay (see [15-forensic-ai.md](15-forensic-ai.md)) of why a transaction was submitted or rejected.
+The MevGate sits in the chain-domain gate pipeline alongside other chain-specific gates (gas estimation, position limit, slippage bound). Gate verdicts are persisted as Signals with full provenance, enabling forensic replay (see [15-forensic-ai.md](15-forensic-ai.md)) of why a transaction was submitted or rejected.
 
-### Engram Flow for MEV Detection
+### Signal Flow for MEV Detection
 
-When the MevDetector identifies a pattern, it produces Engrams that flow through the Synapse Loop:
+When the MevDetector identifies a pattern, it produces Signals that flow through the Synapse Loop:
 
-1. **Observation Engram**: Raw block/mempool data containing the detected pattern
+1. **Observation Signal**: Raw block/mempool data containing the detected pattern
 2. **Scorer**: Rates the pattern by estimated profit, confidence, and relevance
 3. **Router**: Decides whether to store, alert, or act on the detection
 4. **Policy**: If the pattern affects the agent's own transactions, emit a protective response
@@ -3417,7 +3417,7 @@ MEV patterns reveal market microstructure:
 - **JIT liquidity presence**: Active JIT providers reduce the effective fee income for passive LPs — the agent should factor this into LP sizing decisions (see [09-adaptive-risk.md](09-adaptive-risk.md) §Layer 2)
 - **Gas price spikes**: Sudden gas price increases often correlate with profitable MEV opportunities that searchers are competing for — this is a market microstructure signal
 
-The `MevDetector` feeds detection results into the Neuro knowledge store as Engrams with `Kind::MarketSignal`, enabling the agent to learn MEV patterns over time and adapt its transaction strategy.
+The `MevDetector` feeds detection results into the Neuro knowledge store as Signals with `Kind::MarketSignal`, enabling the agent to learn MEV patterns over time and adapt its transaction strategy.
 
 ---
 
@@ -3465,7 +3465,7 @@ The `MevDetector` feeds detection results into the Neuro knowledge store as Engr
 >
 > **Crate**: Target: `roko-gate` (temporal gates), `roko-conductor` (monitoring)
 >
-> **Synapse traits**: `Gate` (verify temporal properties), `Policy` (emit temporal violation Engrams)
+> **Synapse traits**: `Gate` (verify temporal properties), `Policy` (emit temporal violation Signals)
 >
 > **Prerequisites**: [00-defense-in-depth.md](00-defense-in-depth.md), [09-adaptive-risk.md](09-adaptive-risk.md)
 
@@ -3975,7 +3975,7 @@ violation_priority = "high"      # Priority of violation Engrams: "low", "medium
 - `BuchiAutomaton::transition()` with an empty event label produces a valid state transition
 - `BuchiAutomaton::is_rejecting()` returns true when active_states is empty
 - `BuchiAutomaton::is_rejecting()` returns true when steps_since_accepting exceeds liveness_bound
-- `TemporalMonitor::process()` returns a violation Engram when a safety property is violated
+- `TemporalMonitor::process()` returns a violation Signal when a safety property is violated
 - The LTL formula `G(a -> X(b))` compiled to a Buchi automaton rejects the trace `[{a}, {}, {a}, {b}]` (a without b at next step)
 - CTL `AG(EF(done))` returns false for a plan DAG with a dead-end node
 - `TemporalGate` produces `Verdict::Fail` when any monitored formula is violated
@@ -4032,7 +4032,7 @@ This enables building complex temporal safety properties from simple, well-teste
 
 ### Temporal Monitor as a Policy
 
-In Roko's Synapse Architecture, the temporal monitor implements the `Policy` trait. It observes the stream of Engrams (tool calls, gate verdicts, state changes) and emits new Engrams when temporal properties are violated:
+In Roko's Synapse Architecture, the temporal monitor implements the `Policy` trait. It observes the stream of Signals (tool calls, gate verdicts, state changes) and emits new Signals when temporal properties are violated:
 
 ```rust
 pub struct TemporalMonitor {
@@ -4063,7 +4063,7 @@ impl Policy for TemporalMonitor {
 }
 ```
 
-Violation Engrams carry `Kind::SafetyViolation` and high-priority scores, ensuring they are routed to the conductor for intervention. The temporal monitor runs at every gamma tick (~5-15 seconds), checking accumulated events against all active formulas.
+Violation Signals carry `Kind::SafetyViolation` and high-priority scores, ensuring they are routed to the conductor for intervention. The temporal monitor runs at every gamma tick (~5-15 seconds), checking accumulated events against all active formulas.
 
 ### Existing Temporal Properties in Production
 
@@ -4289,7 +4289,7 @@ violation_response = "alert"  # "log" | "alert" | "pause" | "abort"
 - PatternLibrary::compile_enabled() produces valid Buchi automata for each pattern
 - Past-time Once(phi) is satisfied iff phi held at some earlier step
 - Bounded F<=5(phi) is violated if phi does not hold within 5 steps
-- Pattern violation severity is correctly propagated to the TemporalMonitor's violation Engrams
+- Pattern violation severity is correctly propagated to the TemporalMonitor's violation Signals
 
 ---
 
@@ -4597,7 +4597,7 @@ slow_escalation_max_growth_rate = 0.1
 - `DelayedExfiltrationDetector` flags `read_file(.env) ... web_fetch(external)` with delay < max_delay_secs
 - `SlowEscalationDetector` flags permission set growth > max_growth_rate per task over window
 - Composite scoring correctly combines node + edge + path scores
-- Anomalies exceeding `alert_threshold` produce Engrams routed to conductor
+- Anomalies exceeding `alert_threshold` produce Signals routed to conductor
 - Integration with TemporalMonitor: both property violations and anomalies feed conductor health score
 
 ### Academic references for this section
@@ -4628,7 +4628,7 @@ slow_escalation_max_growth_rate = 0.1
 >
 > **Crate**: Target: `roko-gate` (extension of existing audit chain), integration with `roko-fs` (SQLite storage)
 >
-> **Synapse traits**: `Substrate` (persist vertices), `Gate` (verify commitment hashes), `Policy` (emit DAG violation Engrams)
+> **Synapse traits**: `Substrate` (persist vertices), `Gate` (verify commitment hashes), `Policy` (emit DAG violation Signals)
 >
 > **Prerequisites**: [02-audit-chain.md](02-audit-chain.md), [11-temporal-logic.md](11-temporal-logic.md)
 
@@ -4714,7 +4714,7 @@ c(v) = BLAKE3(h(v) || c(parent_1) || c(parent_2) || ... || c(parent_n))
 
 Parent commitment hashes are sorted lexicographically before hashing to ensure deterministic commitment regardless of edge insertion order.
 
-**Why BLAKE3:** BLAKE3 is chosen over SHA-256 for witness hashing: 3-5x faster on modern hardware, tree-based structure enables incremental hashing of event streams, and 256-bit output provides equivalent collision resistance. This choice is consistent with the Engram's `ContentHash` which also uses BLAKE3 (see the Engram struct in `roko-core`).
+**Why BLAKE3:** BLAKE3 is chosen over SHA-256 for witness hashing: 3-5x faster on modern hardware, tree-based structure enables incremental hashing of event streams, and 256-bit output provides equivalent collision resistance. This choice is consistent with the Signal's `ContentHash` which also uses BLAKE3 (see the Signal struct in `roko-core`).
 
 ### Tamper Evidence
 
@@ -5027,7 +5027,7 @@ The Witness DAG is constructed incrementally as the 9-step Synapse Loop executes
 | 8 | ADAPT | Create R vertices for each resolution. Edges from D. |
 | 9 | META-COGNIZE | Create G (NeuroEntry) vertices for new knowledge. Edges from relevant P, R, D vertices. |
 
-Each vertex is an Engram — it carries the full Engram metadata (kind, body, tags, score, lineage, provenance). The DAG's commitment hash chain is orthogonal to and consistent with the Engram's own `ContentHash` (which is `BLAKE3(kind + body + author + tags)` per the Engram spec).
+Each vertex is an Signal — it carries the full Signal metadata (kind, body, tags, score, lineage, provenance). The DAG's commitment hash chain is orthogonal to and consistent with the Signal's own `ContentHash` (which is `BLAKE3(kind + body + author + tags)` per the Signal spec).
 
 ---
 
@@ -5089,7 +5089,7 @@ CREATE INDEX idx_edges_child ON edges(child_hash);
 CREATE INDEX idx_vertices_type ON vertices(vertex_type, timestamp);
 ```
 
-This integrates with `roko-fs`, which already provides `FileSubstrate` (JSONL-based Engram persistence). The Witness DAG's SQLite storage is a complementary persistence layer — Engrams are stored in JSONL via FileSubstrate for linear queries, and in the DAG's SQLite for graph queries.
+This integrates with `roko-fs`, which already provides `FileSubstrate` (JSONL-based Signal persistence). The Witness DAG's SQLite storage is a complementary persistence layer — Signals are stored in JSONL via FileSubstrate for linear queries, and in the DAG's SQLite for graph queries.
 
 ---
 
@@ -5505,21 +5505,21 @@ Each tick's witness includes not just what the agent did but whether its behavio
 
 ---
 
-## Relation to Engram Lineage
+## Relation to Signal Lineage
 
-The Engram struct (defined in `roko-core`) already includes a `lineage: Vec<ContentHash>` field that tracks parent Engrams. The Witness DAG is a **richer structure** built on top of Engram lineage:
+The Signal struct (defined in `roko-core`) already includes a `lineage: Vec<ContentHash>` field that tracks parent Signals. The Witness DAG is a **richer structure** built on top of Signal lineage:
 
-| Feature | Engram Lineage | Witness DAG |
+| Feature | Signal Lineage | Witness DAG |
 |---|---|---|
 | Structure | Flat list of parent hashes | Full DAG with typed vertices and edges |
-| Vertex types | One type (Engram) | Five types (O, P, D, R, G) |
+| Vertex types | One type (Signal) | Five types (O, P, D, R, G) |
 | Query | "What are the parents?" | "What observations support this knowledge?" |
 | Verification | Content hash matches | Full Merkle chain verification |
 | ZK proofs | Not supported | Four proof types |
-| Storage | Inline in Engram | Separate SQLite tables |
+| Storage | Inline in Signal | Separate SQLite tables |
 | Pruning | By decay/TTL | Rolling window + compression |
 
-The two systems are complementary: Engram lineage provides lightweight parent tracking for every Engram; the Witness DAG provides deep provenance analysis for safety-critical reasoning chains.
+The two systems are complementary: Signal lineage provides lightweight parent tracking for every Signal; the Witness DAG provides deep provenance analysis for safety-critical reasoning chains.
 
 ---
 
@@ -5527,7 +5527,7 @@ The two systems are complementary: Engram lineage provides lightweight parent tr
 
 | Component | Status | Location |
 |---|---|---|
-| Engram `lineage` field | Built | `roko-core/src/signal.rs` (will be `engram.rs` after Tier 0D rename) |
+| Signal `lineage` field | Built | `roko-core/src/signal.rs` (will be `__PATH_ENGRAM_RS__0` after Tier 0D rename) |
 | FileSubstrate (JSONL persistence) | Built | `roko-fs/` |
 | Linear audit chain (hash chaining in ToolDispatcher) | Built | `roko-agent/src/dispatcher/mod.rs` `emit_audit()` |
 | WitnessDAG data structures | Design only | Target: Tier 3 |
@@ -6178,7 +6178,7 @@ auto_query_interval_tasks = 5
 >
 > **Crate**: Target: `roko-chain` (chain domain verification), with hooks into `roko-gate` (pipeline as a Gate)
 >
-> **Synapse traits**: `Gate` (each pipeline stage is a verification gate), `Policy` (emit verification-level Engrams)
+> **Synapse traits**: `Gate` (each pipeline stage is a verification gate), `Policy` (emit verification-level Signals)
 >
 > **Prerequisites**: [00-defense-in-depth.md](00-defense-in-depth.md), [08-threat-model.md](08-threat-model.md)
 
@@ -6876,7 +6876,7 @@ In Roko's architecture, the entire verification pipeline implements the `Gate` S
 HeimdallGate → SlitherGate → EchidnaGate → HevmGate → CertoraGate
 ```
 
-This follows the same pattern as the existing coding-domain gate pipeline (CompileGate → TestGate → ClippyGate → DiffGate) documented in `roko-gate`. Each sub-gate produces a `Verdict` Engram with a confidence score. The pipeline's overall verdict is the minimum confidence across all stages.
+This follows the same pattern as the existing coding-domain gate pipeline (CompileGate → TestGate → ClippyGate → DiffGate) documented in `roko-gate`. Each sub-gate produces a `Verdict` Signal with a confidence score. The pipeline's overall verdict is the minimum confidence across all stages.
 
 The `Gate` trait (defined in `roko-core`) is:
 ```rust
@@ -7503,11 +7503,11 @@ monitor_check_interval = 1
 
 ## Overview
 
-Roko implements OS-level primitives for agents that no other agent framework provides. These primitives — Cognitive Namespaces, Cognitive Signals, Cognitive Scheduling, and Engram Syscalls — are inspired by what Linux got right for process management and adapted for cognitive agent management.
+Roko implements OS-level primitives for agents that no other agent framework provides. These primitives — Cognitive Namespaces, Cognitive Signals, Cognitive Scheduling, and Signal Syscalls — are inspired by what Linux got right for process management and adapted for cognitive agent management.
 
 This document covers the **safety implications** of each primitive: how namespaces prevent knowledge leakage, how signals enable safe intervention, how scheduling prevents resource starvation, and how syscalls provide a single enforcement point for all agent actions.
 
-The key insight: just as a Unix kernel mediates all hardware access through system calls, Roko mediates all cognitive actions through Engram Syscalls. Every file write, API call, knowledge posting, and tool invocation passes through a controlled interface where security, auditing, rate limiting, and cost tracking are enforced uniformly.
+The key insight: just as a Unix kernel mediates all hardware access through system calls, Roko mediates all cognitive actions through Signal Syscalls. Every file write, API call, knowledge posting, and tool invocation passes through a controlled interface where security, auditing, rate limiting, and cost tracking are enforced uniformly.
 
 ---
 
@@ -7567,7 +7567,7 @@ pub struct AccessControlList {
 **Explicit channels.** Knowledge sharing happens only through declared channels that log every transfer. This provides:
 - Audit trail: every cross-namespace knowledge transfer is recorded with timestamp, source, destination, and content hash
 - Rate limiting: channels can limit transfer rate to prevent flooding
-- Kind filtering: only specific Engram kinds (e.g., Insight but not StrategyFragment) can flow through a channel
+- Kind filtering: only specific Signal kinds (e.g., Insight but not StrategyFragment) can flow through a channel
 - Directionality: channels are one-way, preventing unintended bidirectional leakage
 
 **Namespace hierarchy for Collectives.** In a Collective (a group of cooperating agents on the Korai network):
@@ -7580,7 +7580,7 @@ pub struct AccessControlList {
 
 The existing PathPolicy (see [06-sandboxing.md](06-sandboxing.md)) provides filesystem-level isolation. Cognitive Namespaces extend this to knowledge-level isolation. The two compose:
 - PathPolicy prevents an agent from reading files outside its worktree
-- CognitiveNamespace prevents an agent from reading Engrams outside its namespace
+- CognitiveNamespace prevents an agent from reading Signals outside its namespace
 - Together, they enforce both physical and logical isolation
 
 ---
@@ -7710,7 +7710,7 @@ GF(queued_task → dispatched)
 **Deadline enforcement.** Tasks with deadlines (e.g., "respond to this API call within 5 seconds") are scheduled using Earliest Deadline First (EDF). Safety-critical tasks (e.g., unwinding a position before liquidation) always receive deadline priority.
 
 **Cost accounting.** Every reasoning step has a cost (LLM tokens consumed, wall-clock time). The scheduler tracks cumulative cost per task, per agent, and per Collective. When budget limits are reached:
-- Budget soft limit: emit a Warning Engram, continue with reduced tier (T2 → T1 → T0)
+- Budget soft limit: emit a Warning Signal, continue with reduced tier (T2 → T1 → T0)
 - Budget hard limit: emit a Cooldown signal, pause non-critical work
 - Budget exhaustion: emit a Shutdown signal for non-essential agents
 
@@ -7720,11 +7720,11 @@ This prevents the runaway cost scenario where an agent spirals into increasingly
 
 ---
 
-## Engram Syscalls
+## Signal Syscalls
 
 ### What They Are
 
-Engram Syscalls are the controlled interface through which every meaningful agent action passes. Just as a Linux process cannot directly access hardware without going through a system call, a Roko agent cannot perform external actions without going through an Engram Syscall.
+Signal Syscalls are the controlled interface through which every meaningful agent action passes. Just as a Linux process cannot directly access hardware without going through a system call, a Roko agent cannot perform external actions without going through an Signal Syscall.
 
 ```
 Agent wants to write a file  → Policy.decide() → permit / deny / modify / log
@@ -7759,7 +7759,7 @@ This is the cognitive kernel equivalent of Linux's system call table — a singl
 **Four decision modes.** For each action request, the Policy can:
 
 1. **Permit**: Allow the action to proceed. Log the approval.
-2. **Deny**: Block the action. Log the denial with reason. Return an error Engram to the agent.
+2. **Deny**: Block the action. Log the denial with reason. Return an error Signal to the agent.
 3. **Modify**: Allow the action but alter it. For example, reduce the size of a trade, add safety headers to an API call, or scrub secrets from output.
 4. **Log**: Allow the action but create a detailed audit record. Used for monitoring actions that are permitted but sensitive.
 
@@ -7770,7 +7770,7 @@ This is the cognitive kernel equivalent of Linux's system call table — a singl
 
 ### Relation to Existing ToolDispatcher
 
-The `ToolDispatcher` in `roko-agent/src/dispatcher/mod.rs` already implements the Engram Syscall pattern for tool invocations:
+The `ToolDispatcher` in `roko-agent/src/dispatcher/mod.rs` already implements the Signal Syscall pattern for tool invocations:
 
 ```
 dispatch() pipeline:
@@ -7783,9 +7783,9 @@ dispatch() pipeline:
   7. safety.scrub_output (ScrubPolicy post-processing)
 ```
 
-Each step emits an audit Engram via `emit_audit()`. This is the existing Engram Syscall implementation for tool dispatch. The Cognitive Kernel Primitives vision extends this pattern to **all** agent actions, not just tool invocations.
+Each step emits an audit Signal via `emit_audit()`. This is the existing Signal Syscall implementation for tool dispatch. The Cognitive Kernel Primitives vision extends this pattern to **all** agent actions, not just tool invocations.
 
-**Current gap.** The ToolDispatcher implements syscall-style enforcement, but it is only invoked when tools are dispatched through it. The #1 integration gap (see [16-critical-integration-gap.md](16-critical-integration-gap.md)) means that `orchestrate.rs` calls `ExecAgent::run()` directly, bypassing the ToolDispatcher and its syscall enforcement. Closing this gap is the highest priority for making the Engram Syscall pattern effective.
+**Current gap.** The ToolDispatcher implements syscall-style enforcement, but it is only invoked when tools are dispatched through it. The #1 integration gap (see [16-critical-integration-gap.md](16-critical-integration-gap.md)) means that `orchestrate.rs` calls `ExecAgent::run()` directly, bypassing the ToolDispatcher and its syscall enforcement. Closing this gap is the highest priority for making the Signal Syscall pattern effective.
 
 ---
 
@@ -7815,7 +7815,7 @@ The four Cognitive Kernel Primitives compose into a defense-in-depth model:
 └─────────────────────────────────────────────┘
 ```
 
-- **Engram Syscalls** prevent unauthorized actions (outermost layer)
+- **Signal Syscalls** prevent unauthorized actions (outermost layer)
 - **Cognitive Namespaces** prevent unauthorized knowledge access
 - **Cognitive Scheduling** prevents resource starvation and cost runaway
 - **Cognitive Signals** provide human override capabilities (innermost safety net)
@@ -7831,7 +7831,7 @@ This maps to the defense-in-depth architecture described in [00-defense-in-depth
 | Namespaces (PID, net, mount) | Process isolation | Cognitive Namespaces | Knowledge isolation |
 | Signals (SIGTERM, SIGKILL) | Process control | Cognitive Signals | Agent behavioral control |
 | Scheduler (CFS) | CPU time allocation | Cognitive Scheduling | Reasoning resource allocation |
-| System calls (syscall table) | Hardware access control | Engram Syscalls | Action access control |
+| System calls (syscall table) | Hardware access control | Signal Syscalls | Action access control |
 | Capabilities (CAP_NET_RAW) | Fine-grained permissions | Capability<T> tokens | Fine-grained tool permissions |
 | cgroups (resource limits) | Resource containment | Budget limits + rate limiters | Cost containment |
 | seccomp (syscall filtering) | Syscall allowlist | ToolPermission | Tool allowlist |
@@ -8240,7 +8240,7 @@ The universal enforcement path extends this to cover all action types:
 
 - `CognitiveNamespace::can_read()` returns false for unlisted roles when `allow_anonymous_read` is false
 - `CognitiveNamespace::can_write()` returns false for reader-only roles
-- `NamespaceChannel::permits_kind()` blocks non-whitelisted Engram kinds
+- `NamespaceChannel::permits_kind()` blocks non-whitelisted Signal kinds
 - `NamespaceChannel::check_rate_limit()` returns false after exceeding configured rate
 - `NamespaceChannel::transfer()` logs to audit chain when `audit_transfers` is true
 - `CognitiveSignal::priority()` returns 1 for Shutdown (highest) and 8 for Resume (lowest)
@@ -8263,7 +8263,7 @@ The universal enforcement path extends this to cover all action types:
 | Cognitive Namespaces | Design only | Target: Tier 3 |
 | Cognitive Signals (full enum) | Design only | Target: Tier 2 |
 | Cognitive Scheduling | Design only | Target: Tier 3 |
-| Engram Syscalls (universal enforcement) | Partial (ToolDispatcher) | See [16-critical-integration-gap.md](16-critical-integration-gap.md) |
+| Signal Syscalls (universal enforcement) | Partial (ToolDispatcher) | See [16-critical-integration-gap.md](16-critical-integration-gap.md) |
 
 ---
 
@@ -8271,7 +8271,7 @@ The universal enforcement path extends this to cover all action types:
 
 | Paper | Contribution |
 |---|---|
-| Saltzer & Schroeder (1975), "The Protection of Information in Computer Systems" | Principle of complete mediation — every access must be checked (Engram Syscalls) |
+| Saltzer & Schroeder (1975), "The Protection of Information in Computer Systems" | Principle of complete mediation — every access must be checked (Signal Syscalls) |
 | Dennis & Van Horn (1966), "Programming Semantics for Multiprogrammed Computations" | Capability-based access control (Cognitive Namespaces ACL) |
 | Sha, Rajkumar, Lehoczky (1990), "Priority Inheritance Protocols" | Priority inversion prevention (Cognitive Scheduling) |
 | Arpaci-Dusseau & Arpaci-Dusseau (2018), "Operating Systems: Three Easy Pieces" | Modern OS primitives that inspire the cognitive kernel design |
@@ -8282,7 +8282,7 @@ The universal enforcement path extends this to cover all action types:
 ## Cross-References
 
 - [00-defense-in-depth.md](00-defense-in-depth.md) — Kernel primitives as another defense layer
-- [01-capability-tokens.md](01-capability-tokens.md) — Capability<T> tokens are the fine-grained permission system within Engram Syscalls
+- [01-capability-tokens.md](01-capability-tokens.md) — Capability<T> tokens are the fine-grained permission system within Signal Syscalls
 - [04-permits-allowlists.md](04-permits-allowlists.md) — ToolPermission is the current syscall filter implementation
 - [06-sandboxing.md](06-sandboxing.md) — PathPolicy provides filesystem-level isolation complementing Cognitive Namespaces
 - [16-critical-integration-gap.md](16-critical-integration-gap.md) — The gap between ToolDispatcher (partial syscall) and universal enforcement
@@ -8296,7 +8296,7 @@ The universal enforcement path extends this to cover all action types:
 
 > **Layer**: L3 Harness (audit and replay), L4 Orchestration (cross-agent accountability)
 >
-> **Crate**: Cross-cutting: `roko-core` (Engram lineage), `roko-fs` (persistent audit log), `roko-gate` (Gate verdict history), target: `roko-forensic` (dedicated replay engine)
+> **Crate**: Cross-cutting: `roko-core` (Signal lineage), `roko-fs` (persistent audit log), `roko-gate` (Gate verdict history), target: `roko-forensic` (dedicated replay engine)
 >
 > **Synapse traits**: All six traits participate — the replay reconstructs the full Synapse Loop for any past action
 >
@@ -8315,7 +8315,7 @@ When an agent takes an action that causes harm — a bad trade, a broken deploym
 
 This capability is called **Forensic AI**: content-addressed causal replay that reconstructs the complete decision context for any past agent action. It is not a debugging feature or a post-mortem tool — it is a **regulatory pre-compliance** capability that transforms agent governance from reactive (investigate after harm) to proactive (prove compliance continuously).
 
-The capability is novel because it exploits a structural property of the Roko architecture: every piece of information is an Engram with a content-addressed hash and lineage chain. The entire Synapse Loop is auditable by construction. No other agent framework has this property because no other framework makes content-addressing and lineage tracking mandatory at the kernel level.
+The capability is novel because it exploits a structural property of the Roko architecture: every piece of information is an Signal with a content-addressed hash and lineage chain. The entire Synapse Loop is auditable by construction. No other agent framework has this property because no other framework makes content-addressing and lineage tracking mandatory at the kernel level.
 
 ---
 
@@ -8325,34 +8325,34 @@ The capability is novel because it exploits a structural property of the Roko ar
 
 Take any agent action — a tool call, a trade execution, a file modification, a knowledge posting — and replay the exact decision context:
 
-**Step 1: Identify the action Engram.** Every action produces an Engram stored in the Substrate (via `roko-fs` FileSubstrate or the Witness DAG). The Engram's `id` (ContentHash) uniquely identifies the action.
+**Step 1: Identify the action Signal.** Every action produces an Signal stored in the Substrate (via `roko-fs` FileSubstrate or the Witness DAG). The Signal's `id` (ContentHash) uniquely identifies the action.
 
-**Step 2: Reconstruct the Substrate state at the time.** Query all Engrams with `created_at_ms` before the action's timestamp. This reconstructs what the agent knew at the time of the decision. The FileSubstrate's JSONL format supports temporal queries by scanning entries with timestamp filters.
+**Step 2: Reconstruct the Substrate state at the time.** Query all Signals with `created_at_ms` before the action's timestamp. This reconstructs what the agent knew at the time of the decision. The FileSubstrate's JSONL format supports temporal queries by scanning entries with timestamp filters.
 
-**Step 3: Reconstruct the Scorer outputs.** Which Scorer implementations were active? What scores did they compute for each Engram? The scores are persisted as metadata on the Engrams (the 7-axis Score: confidence, novelty, utility, reputation, precision, salience, coherence).
+**Step 3: Reconstruct the Scorer outputs.** Which Scorer implementations were active? What scores did they compute for each Signal? The scores are persisted as metadata on the Signals (the 7-axis Score: confidence, novelty, utility, reputation, precision, salience, coherence).
 
-**Step 4: Reconstruct the Router selection.** Which Router selected which candidate Engram, with what confidence? Router decisions are logged as Engrams in the audit chain, including the rejected alternatives and their scores.
+**Step 4: Reconstruct the Router selection.** Which Router selected which candidate Signal, with what confidence? Router decisions are logged as Signals in the audit chain, including the rejected alternatives and their scores.
 
-**Step 5: Reconstruct the Composer output.** Which Composer assembled the context window? Under what budget constraints? Which Engrams were included, which were excluded, and why? The VCG Attention Auction (see `refactoring-prd/09-innovations.md`) records bids and allocations.
+**Step 5: Reconstruct the Composer output.** Which Composer assembled the context window? Under what budget constraints? Which Signals were included, which were excluded, and why? The VCG Attention Auction (see `refactoring-prd/09-innovations.md`) records bids and allocations.
 
-**Step 6: Reconstruct the Gate verdict.** Which Gate verified the output? What was the Verdict (Pass, Fail, Skip)? What was the confidence score? Gate verdicts are persisted in `.roko/learn/gate-thresholds.json` and as Engrams in the audit chain.
+**Step 6: Reconstruct the Gate verdict.** Which Gate verified the output? What was the Verdict (Pass, Fail, Skip)? What was the confidence score? Gate verdicts are persisted in `.roko/learn/gate-thresholds.json` and as Signals in the audit chain.
 
-**Step 7: Reconstruct the Policy decisions.** Which Policy implementations fired? What Engrams did they emit? Policy decisions (permit, deny, modify, log) are recorded by the ToolDispatcher's `emit_audit()` function.
+**Step 7: Reconstruct the Policy decisions.** Which Policy implementations fired? What Signals did they emit? Policy decisions (permit, deny, modify, log) are recorded by the ToolDispatcher's `emit_audit()` function.
 
 ### Cryptographic Verifiability
 
 Every step in the replay is **cryptographically verifiable**:
 
-- Each Engram's `id` is `BLAKE3(kind + body + author + tags)` — if any field has been modified, the hash won't match
-- The `lineage: Vec<ContentHash>` field on each Engram records its parent Engrams — the audit DAG is tamper-evident
+- Each Signal's `id` is `BLAKE3(kind + body + author + tags)` — if any field has been modified, the hash won't match
+- The `lineage: Vec<ContentHash>` field on each Signal records its parent Signals — the audit DAG is tamper-evident
 - The `provenance: Provenance` field records the author, model fingerprint, and taint chain — attribution is non-repudiable
 - The optional `attestation: Option<Attestation>` field carries cryptographic proofs of origin
 
 If the Witness DAG (see [12-witness-dag.md](12-witness-dag.md)) is enabled, the replay becomes even richer: five vertex types (Observation, Prediction, Decision, Resolution, NeuroEntry) provide fine-grained cognitive provenance, and BLAKE3 commitment hashes verify the entire reasoning chain.
 
-### Replay as an Engram Stream
+### Replay as an Signal Stream
 
-The replay itself is an Engram — a `kind: Replay` Engram whose body contains the reconstructed decision context. This replay Engram has lineage pointing to all the Engrams it reconstructed, creating a meta-level audit trail: the replay of the replay is also verifiable.
+The replay itself is an Signal — a `kind: Replay` Signal whose body contains the reconstructed decision context. This replay Signal has lineage pointing to all the Signals it reconstructed, creating a meta-level audit trail: the replay of the replay is also verifiable.
 
 ```rust
 /// A forensic replay of a past agent action.
@@ -8389,7 +8389,7 @@ Roko's Forensic AI capability maps directly to specific regulatory requirements.
 | Article | Requirement | Roko's Native Capability |
 |---|---|---|
 | Article 14 | Human oversight mechanisms | Cognitive Signals (SIGPAUSE, SIGCONTEXT) + Gate architecture (see [14-cognitive-kernel-safety.md](14-cognitive-kernel-safety.md)) |
-| Article 11 | Technical documentation and logging | Complete Engram lineage with content-addressed provenance |
+| Article 11 | Technical documentation and logging | Complete Signal lineage with content-addressed provenance |
 | Article 12 | Record keeping | FileSubstrate JSONL audit log + Witness DAG SQLite |
 | Article 13 | Transparency and information to users | Forensic replay: reconstructable decision context |
 | FRIA | Fundamental rights impact assessment | Pre-deployment simulation through synthetic scenarios using the Dreams engine |
@@ -8400,13 +8400,13 @@ Roko's Forensic AI capability maps directly to specific regulatory requirements.
 
 | Requirement | Roko's Native Capability |
 |---|---|
-| Trading decision reconstruction (MiFID II) | Complete Engram lineage from market data → analysis → trade decision |
+| Trading decision reconstruction (MiFID II) | Complete Signal lineage from market data → analysis → trade decision |
 | Order audit trail (Rule 17a-4) | Content-addressed provenance chain with timestamps |
 | Best execution documentation | Router selection logs showing why this execution venue was chosen |
-| Risk management documentation | Adaptive risk system verdicts (see [09-adaptive-risk.md](09-adaptive-risk.md)) persisted as Engrams |
+| Risk management documentation | Adaptive risk system verdicts (see [09-adaptive-risk.md](09-adaptive-risk.md)) persisted as Signals |
 | Market manipulation detection | Temporal logic monitoring (see [11-temporal-logic.md](11-temporal-logic.md)) + MEV detection (see [10-mev-protection.md](10-mev-protection.md)) |
 
-**Key mapping.** SEC Rule 17a-4 requires broker-dealers to preserve records for 3-6 years with tamper-evident storage. Roko's content-addressed Engram chain satisfies this: each Engram's hash commits to its content, and the lineage chain makes tampering detectable. On-chain anchoring of DAG root hashes (see [12-witness-dag.md](12-witness-dag.md)) provides non-repudiable timestamps that survive local storage manipulation.
+**Key mapping.** SEC Rule 17a-4 requires broker-dealers to preserve records for 3-6 years with tamper-evident storage. Roko's content-addressed Signal chain satisfies this: each Signal's hash commits to its content, and the lineage chain makes tampering detectable. On-chain anchoring of DAG root hashes (see [12-witness-dag.md](12-witness-dag.md)) provides non-repudiable timestamps that survive local storage manipulation.
 
 ### HIPAA (Healthcare)
 
@@ -8436,7 +8436,7 @@ Roko's Forensic AI capability maps directly to specific regulatory requirements.
 | Right to explanation (Article 22) | Forensic replay: reconstructable decision context for any automated decision |
 | Purpose limitation (Article 5) | Cognitive Namespace channels with kind filtering |
 | Data minimization (Article 5) | Composer budget constraints limit context to relevant data |
-| Right to erasure (Article 17) | Engram decay (HalfLife, TTL, Ebbinghaus) enables controlled data expiry |
+| Right to erasure (Article 17) | Signal decay (HalfLife, TTL, Ebbinghaus) enables controlled data expiry |
 | Processing records (Article 30) | FileSubstrate JSONL + Witness DAG = complete processing log |
 
 **Key mapping.** GDPR Article 22 gives individuals the right "not to be subject to a decision based solely on automated processing" unless appropriate safeguards exist, including "the right to obtain an explanation of the decision reached." Roko's Forensic AI replay provides exactly this explanation — not a natural-language summary, but a cryptographically verifiable reconstruction of the complete decision context.
@@ -8610,7 +8610,7 @@ pub async fn replay(
 
 | Feature | Typical Agent Framework | Roko Forensic AI |
 |---|---|---|
-| Logging | Text logs, unstructured | Content-addressed Engrams with lineage |
+| Logging | Text logs, unstructured | Content-addressed Signals with lineage |
 | Audit trail | Optional, bolt-on | Mandatory, structural |
 | Decision reconstruction | Not possible | Full replay of Synapse Loop |
 | Tamper evidence | None | BLAKE3 hashes + Merkle chain |
@@ -8624,8 +8624,8 @@ pub async fn replay(
 
 | Component | Status | Location |
 |---|---|---|
-| Engram content-addressing (BLAKE3) | Built | `roko-core/src/signal.rs` |
-| Engram lineage tracking | Built | `roko-core/src/signal.rs` `lineage` field |
+| Signal content-addressing (BLAKE3) | Built | `roko-core/src/signal.rs` |
+| Signal lineage tracking | Built | `roko-core/src/signal.rs` `lineage` field |
 | FileSubstrate (JSONL persistence) | Built | `roko-fs/` |
 | ToolDispatcher audit emissions | Built | `roko-agent/src/dispatcher/mod.rs` `emit_audit()` |
 | Gate verdict persistence | Built | `.roko/learn/gate-thresholds.json` |
@@ -8737,7 +8737,7 @@ The `dispatch()` method runs a 7-stage pipeline:
 7. safety scrub   → SafetyLayer.scrub_output()
 ```
 
-Each stage emits an audit Engram via `emit_audit()`.
+Each stage emits an audit Signal via `emit_audit()`.
 
 ### What Is Not Wired
 
@@ -8925,7 +8925,7 @@ Until this gap is closed, the safety architecture described in this topic (00-de
 - [00-defense-in-depth.md](00-defense-in-depth.md) — The overall safety architecture that this gap undermines
 - [04-permits-allowlists.md](04-permits-allowlists.md) — ToolPermission system that is not enforced without ToolDispatcher
 - [05-loop-detection.md](05-loop-detection.md) — RateLimiter that is not active without ToolDispatcher
-- [14-cognitive-kernel-safety.md](14-cognitive-kernel-safety.md) — Engram Syscalls require universal enforcement via ToolDispatcher
+- [14-cognitive-kernel-safety.md](14-cognitive-kernel-safety.md) — Signal Syscalls require universal enforcement via ToolDispatcher
 
 
 ---
@@ -8946,7 +8946,7 @@ Until this gap is closed, the safety architecture described in this topic (00-de
 
 Before reading this topic, readers should be familiar with:
 
-- The two-medium / two-fabric framing: Engrams persist in Substrate, Pulses move on the Bus.
+- The two-medium / two-fabric framing: Signals persist in Substrate, Pulses move on the Bus.
 - The seven-step loop: SENSE, ASSESS, COMPOSE, ACT, VERIFY, PERSIST and BROADCAST, REACT.
 - `TypedContext`, domain profiles, and role separation in the architecture chapter.
 
@@ -9010,7 +9010,7 @@ Recommended companion docs:
 This chapter should be read as one defensive story:
 
 1. `00-defense-in-depth.md` defines the spine and the shared vocabulary.
-2. `02-audit-chain.md` explains how high-risk actions become durable Custody Engrams with attestation.
+2. `02-audit-chain.md` explains how high-risk actions become durable Custody Signals with attestation.
 3. `03-taint-tracking.md` explains how untrusted inputs stay marked until explicitly reviewed.
 4. `06-sandboxing.md` explains how plugin tiers, subprocesses, files, network, and tenants are isolated.
 5. `08-threat-model.md` states what Roko trusts, what it treats as hostile, and what remains outside the model.
@@ -9059,9 +9059,9 @@ The rest of the safety chapter deepens those controls for specific attack classe
 
 ## Abstract
 
-Roko is a cognitive agent operating system. Its kernel — the Synapse Architecture with Engrams, six composable traits (Substrate, Scorer, Gate, Router, Composer, Policy), five architectural layers (Runtime, Framework, Scaffold, Harness, Orchestration), and three cognitive cross-cuts (Neuro, Daimon, Dreams) — operates identically whether the agent writes code, monitors infrastructure, conducts research, or interacts with blockchains.
+Roko is a cognitive agent operating system. Its kernel — the Synapse Architecture with Signals, six composable traits (Substrate, Scorer, Gate, Router, Composer, Policy), five architectural layers (Runtime, Framework, Scaffold, Harness, Orchestration), and three cognitive cross-cuts (Neuro, Daimon, Dreams) — operates identically whether the agent writes code, monitors infrastructure, conducts research, or interacts with blockchains.
 
-The Korai chain is a **target-state domain plugin** that extends this kernel with chain-specific capabilities: on-chain identity, token economics, decentralized job markets, reputation systems, and collective knowledge coordination. It is one instance of the pattern `domain_specific_trait_implementations + domain_specific_configuration = domain_agent`. Coding agents have their own domain plugin (CompileGate, TestGate, SymbolScorer). Chain agents have theirs in the target-state design (TxSimGate, WalletGate, ChainSubstrate). In the two-fabric model, `ChainSubstrate` would store and query durable on-chain Engrams while `ChainBus` would turn chain logs into ordinary Bus Pulses. See `tmp/refinements/09-phase-2-implications.md` and [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md).
+The Korai chain is a **target-state domain plugin** that extends this kernel with chain-specific capabilities: on-chain identity, token economics, decentralized job markets, reputation systems, and collective knowledge coordination. It is one instance of the pattern `domain_specific_trait_implementations + domain_specific_configuration = domain_agent`. Coding agents have their own domain plugin (CompileGate, TestGate, SymbolScorer). Chain agents have theirs in the target-state design (TxSimGate, WalletGate, ChainSubstrate). In the two-fabric model, `ChainSubstrate` would store and query durable on-chain Signals while `ChainBus` would turn chain logs into ordinary Bus Pulses. See `tmp/refinements/09-phase-2-implications.md` and [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md).
 
 This framing matters because the most powerful agents will span multiple domains simultaneously. A single agent can write Solidity contracts (coding domain), simulate their deployment on mirage-rs (chain domain), monitor on-chain performance (chain domain), and research competing protocols (research domain). The Synapse Architecture makes this composition natural — each domain contributes its Gate, Scorer, and Substrate implementations, while Bus-backed transport keeps live consumers uniform across chain, mesh, and HTTP surfaces.
 
@@ -9105,7 +9105,7 @@ Agents access knowledge at three levels, each with different properties:
 
 Every agent has a local NeuroStore — a structured knowledge base with six knowledge types (Insight, Heuristic, Warning, CausalLink, StrategyFragment, AntiKnowledge), four decay tiers (Transient, Working, Consolidated, Persistent), and HDC encoding for similarity search. This is the agent's private memory, managed by the `roko-neuro` crate. It exists whether or not a chain is involved.
 
-The Local Neuro Store implements the `Substrate` Synapse trait (L0 Runtime layer). Knowledge entries are Engrams — content-addressed, scored, decaying, lineage-tracked units of cognition. Each entry has a BLAKE3 content hash, 7-axis score (confidence, novelty, utility, reputation, precision, salience, coherence), and configurable decay (Ebbinghaus half-life × tier multiplier).
+The Local Neuro Store implements the `Substrate` Synapse trait (L0 Runtime layer). Knowledge entries are Signals — content-addressed, scored, decaying, lineage-tracked units of cognition. Each entry has a BLAKE3 content hash, 7-axis score (confidence, novelty, utility, reputation, precision, salience, coherence), and configurable decay (Ebbinghaus half-life × tier multiplier).
 
 ### Level 2: Agent Mesh (Peer/Private)
 
@@ -9133,7 +9133,7 @@ The key design principle: **agents that never interact with a blockchain still b
 
 The two-fabric model does more than rename chain storage. It makes the Phase 2+ shape obvious:
 
-- Chain persistence belongs in target-state `ChainSubstrate`: transactions, attestations, knowledge entries, and other durable on-chain Engrams.
+- Chain persistence belongs in target-state `ChainSubstrate`: transactions, attestations, knowledge entries, and other durable on-chain Signals.
 - Chain transport belongs in target-state `ChainBus`: chain logs and contract events map to typed Pulses on Bus topics such as `chain.deposit.emitted` or `chain.reputation.updated`.
 - Chain-log consumers stay ordinary Bus subscribers. A dashboard, policy, agent sidecar, or `roko-serve` projection listens to the same topics as any other Bus-backed subsystem.
 - Mesh and chain are both backend choices for the same pub/sub model. Mesh swaps the transport substrate; chain swaps the storage substrate; neither changes the control logic above it.
@@ -9167,7 +9167,7 @@ This distinction is critical for understanding what the Korai chain is and is no
 | **Raw prompts/outputs** | Private. LLM conversations are not published. |
 | **Daimon state** | Internal cognitive state (PAD vector, behavioral state). Private to the agent. |
 | **Proprietary strategies** | Unless the user explicitly opts to publish. Competitive advantage stays local. |
-| **Full Engram bodies** | Only HDC-encoded summaries go on-chain. Full text stays in the Local Neuro Store. |
+| **Full Signal bodies** | Only HDC-encoded summaries go on-chain. Full text stays in the Local Neuro Store. |
 
 ---
 
@@ -9337,7 +9337,7 @@ Chain capabilities are implemented as domain-specific trait implementations, jus
 
 | Synapse Trait | Chain Domain Implementation | Coding Domain Equivalent |
 |---|---|---|
-| `Substrate` | `ChainSubstrate` (target-state) — store and query durable on-chain Engrams via HDC precompile | `FileSubstrate` — JSONL persistence |
+| `Substrate` | `ChainSubstrate` (target-state) — store and query durable on-chain Signals via HDC precompile | `FileSubstrate` — JSONL persistence |
 | `Bus` | `ChainBus` (target-state) — map chain logs and contract events into typed Pulses on Bus topics | `BroadcastBus` — in-process transport |
 | `Scorer` | `ChainScorer` — 4-factor scoring (price, TVL, gas, health) | `CodeScorer` — complexity, coverage, coupling |
 | `Gate` | `TxSimGate` — pre-flight tx simulation via mirage-rs | `CompileGate` — `cargo check` |
@@ -9480,7 +9480,7 @@ The Korai state model extends the standard EVM account model with agent-specific
 
 1. **Standard EVM accounts** — EOAs and contracts, identical to Ethereum
 2. **Agent Passport state** — ERC-721 soulbound NFTs storing agent identity, capabilities, reputation, and stake (see [04-korai-passport-erc-721-soulbound.md](./04-korai-passport-erc-721-soulbound.md))
-3. **Knowledge entries** — HDC-encoded Engram summaries stored in the HDC index contract, queryable via the native precompile
+3. **Knowledge entries** — HDC-encoded Signal summaries stored in the HDC index contract, queryable via the native precompile
 4. **Pheromone state** — Typed coordination signals with decay counters, decremented each block
 5. **Job market state** — Active BountySpecs, escrowed funds, job lifecycle states
 6. **Reputation state** — Per-agent, per-domain EMA scores with decay timers
@@ -9844,7 +9844,7 @@ The Binary Fuse filter works across all chains because it operates on u64 hashes
 
 ## Abstract
 
-KORAI is the native token of the Korai mainnet (DAEJI on the Daeji testnet). Unlike conventional cryptocurrency tokens, KORAI implements **demurrage** — a 1% annual decay on token balances — mirroring the half-life decay of Engrams in the NeuroStore. This design principle ensures that knowledge and economic value are isomorphic: stale, unvalidated knowledge decays in both the knowledge system and the economic system.
+KORAI is the native token of the Korai mainnet (DAEJI on the Daeji testnet). Unlike conventional cryptocurrency tokens, KORAI implements **demurrage** — a 1% annual decay on token balances — mirroring the half-life decay of Signals in the NeuroStore. This design principle ensures that knowledge and economic value are isomorphic: stale, unvalidated knowledge decays in both the knowledge system and the economic system.
 
 The token economics solve three fundamental problems in multi-agent knowledge-sharing systems: the free-rider problem (agents that consume without contributing), the spam problem (low-quality queries that exhaust compute), and the quality problem (noise that degrades the collective knowledge base). KORAI addresses all three through carefully designed earning and spending mechanisms that align individual agent incentives with collective knowledge quality.
 
@@ -9866,7 +9866,7 @@ In a conventional token economy, tokens accumulate indefinitely. Early adopters 
 
 Demurrage creates a velocity-first economy where tokens circulate rather than accumulate. The 1% annual decay rate is designed to:
 
-1. **Mirror knowledge decay**: Engrams in the NeuroStore have Ebbinghaus-based half-lives. Knowledge that is not reinforced loses relevance over time. KORAI balances should reflect this same principle — tokens not actively used in knowledge production lose value.
+1. **Mirror knowledge decay**: Signals in the NeuroStore have Ebbinghaus-based half-lives. Knowledge that is not reinforced loses relevance over time. KORAI balances should reflect this same principle — tokens not actively used in knowledge production lose value.
 
 2. **Incentivize contribution**: Holding KORAI loses value. Contributing validated knowledge earns KORAI. The rational strategy is continuous contribution, not passive holding.
 
@@ -10069,7 +10069,7 @@ KORAI demurrage mirrors the NeuroStore's Ebbinghaus-based half-life system at th
 
 | NeuroStore Concept | KORAI Economic Equivalent |
 |---|---|
-| Engram half-life decay | Token balance demurrage (1% annual) |
+| Signal half-life decay | Token balance demurrage (1% annual) |
 | Tier promotion (Transient → Persistent) | Increased staking / higher confirmation count |
 | Knowledge confirmation extends weight ×1.5 | Cross-agent confirmation increases effective value |
 | Unconfirmed knowledge decays faster | Unconfirmed entries lose poster stake through demurrage |
@@ -10144,7 +10144,7 @@ See `roko/tmp/implementation-plans/12b-chain-layer.md` §L for the 5-item paymen
 
 ## Abstract
 
-The HDC (Hyperdimensional Computing) on-chain precompile is the core technical innovation of the Korai chain. It provides native EVM support for 10,240-bit Binary Spatter Code (BSC) vectors — the same encoding used by `roko-primitives` for local knowledge representation. This means an Engram's HDC fingerprint can be computed locally by an agent, posted to the Korai chain, and queried by any other agent using the same mathematical operations, with no encoding translation.
+The HDC (Hyperdimensional Computing) on-chain precompile is the core technical innovation of the Korai chain. It provides native EVM support for 10,240-bit Binary Spatter Code (BSC) vectors — the same encoding used by `roko-primitives` for local knowledge representation. This means an Signal's HDC fingerprint can be computed locally by an agent, posted to the Korai chain, and queried by any other agent using the same mathematical operations, with no encoding translation.
 
 The precompile achieves approximately 400 gas for a top-K=20 similarity search against the on-chain knowledge index. This is orders of magnitude cheaper than implementing the same operations in Solidity (which would cost millions of gas for the bitwise operations on 1,280-byte vectors). The precompile is a **custom Korai feature** — it does not exist on Ethereum mainnet or any standard EVM chain. Development and testing use mirage-rs, which emulates the precompile's behavior in-process.
 
@@ -10695,7 +10695,7 @@ The recommended threshold for cross-domain resonance is 0.526 (see False Positiv
 - See [00-vision-and-framing.md](./00-vision-and-framing.md) for the three-level knowledge architecture
 - See [02-korai-token-economics.md](./02-korai-token-economics.md) for knowledge posting/query fees
 - See topic [06-neuro](../06-neuro/INDEX.md) for the HDC encoding shared between local and on-chain
-- See topic [00-architecture](../00-architecture/INDEX.md) for BSC vector format in Engrams
+- See topic [00-architecture](../00-architecture/INDEX.md) for BSC vector format in Signals
 
 
 ---
@@ -17152,7 +17152,7 @@ The recommended build order:
 
 - **Korai**: Dedicated EVM chain for agent coordination (not Ethereum mainnet)
 - **KORAI**: Native token with 1% annual demurrage. DAEJI is the testnet equivalent
-- **ChainSubstrate / ChainBus**: Split storage and transport roles for on-chain Engrams versus chain-log Pulses. See `tmp/refinements/09-phase-2-implications.md` and [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md)
+- **ChainSubstrate / ChainBus**: Split storage and transport roles for on-chain Signals versus chain-log Pulses. See `tmp/refinements/09-phase-2-implications.md` and [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md)
 - **Korai Passport**: Soulbound ERC-721 NFT — the agent's on-chain identity
 - **ERC-8004**: Three registries (Identity, Reputation, Validation)
 - **HDC Precompile**: 10,240-bit BSC vectors at ~400 gas for top-K similarity search
@@ -17167,7 +17167,7 @@ The recommended build order:
 
 ## Critical Framing
 
-**Blockchain is ONE domain plugin, not the default frame.** The Korai chain uses the same Synapse traits (`Substrate`, `Scorer`, `Gate`, `Router`, `Composer`, `Policy`) as every other domain. A chain agent is configured differently from a coding agent, but the cognitive architecture is identical. In the two-fabric model, `ChainSubstrate` stores and queries durable on-chain Engrams while `ChainBus` maps chain logs into ordinary Bus Pulses; chain consumers stay standard Bus subscribers instead of a special transport path. See `tmp/refinements/09-phase-2-implications.md` and the glossary at [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md).
+**Blockchain is ONE domain plugin, not the default frame.** The Korai chain uses the same Synapse traits (`Substrate`, `Scorer`, `Gate`, `Router`, `Composer`, `Policy`) as every other domain. A chain agent is configured differently from a coding agent, but the cognitive architecture is identical. In the two-fabric model, `ChainSubstrate` stores and queries durable on-chain Signals while `ChainBus` maps chain logs into ordinary Bus Pulses; chain consumers stay standard Bus subscribers instead of a special transport path. See `tmp/refinements/09-phase-2-implications.md` and the glossary at [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md).
 
 **Tier 6 is DEFERRED.** All 76 implementation items in the chain layer are blocked by Tier 5 (self-hosting loop). The specifications in this topic are complete but the implementation has not started.
 
@@ -17247,7 +17247,7 @@ Deep research and enhancement of 7 documents across all major subsystems:
 - **Generated**: 2026-04-11
 - **Generator**: Claude (prd-migration prompt 08-chain)
 - **Source material**: 7 context pack files, 5 refactoring-prd sources, 1 implementation plan (12b-chain-layer.md, 76 items), 9 legacy PRD files (14-chain/), 14 agent-chain-new research files, active code from roko-chain (9 files) and mirage-rs (38 files)
-- **Legacy naming applied**: legacy terms were mapped to KORAI/DAEJI, Agent, Neuro, Agent Mesh, Collective/Mesh, Roko, and Engram.
+- **Legacy naming applied**: legacy terms were mapped to KORAI/DAEJI, Agent, Neuro, Agent Mesh, Collective/Mesh, Roko, and Signal.
 - **Sub-documents**: 25 (00-24)
 - **Total output**: ~75,000 words across 26 files
 
@@ -17463,7 +17463,7 @@ KORAI's 1% rate is imperceptible in monthly operations (0.08%/month ≈ 0.8 KORA
 
 ### 2.7 Forensic AI Regulatory Moat
 
-**What**: Content-addressed causal replay. Every Engram (the core data type — scored,
+**What**: Content-addressed causal replay. Every Signal (the core data type — scored,
 decaying, lineage-tracked unit of cognition) carries a BLAKE3 hash linking it to its
 provenance chain. Any decision can be replayed from first principles: what knowledge was
 available, what context was assembled, what model was used, what output was produced, and
@@ -17523,7 +17523,7 @@ Three convergences make 2026 the right time for agent identity infrastructure:
 Roko's moat is architectural, not feature-based. The key properties cannot be bolted onto
 existing systems:
 
-- **Content-addressed provenance** — Every Engram is BLAKE3-hashed with kind, body,
+- **Content-addressed provenance** — Every Signal is BLAKE3-hashed with kind, body,
   author, and tags. Provenance is intrinsic to the data model, not an annotation layer.
   Retrofitting this onto systems that use opaque vector stores requires a complete rewrite.
 
@@ -17535,7 +17535,7 @@ existing systems:
   every layer.
 
 - **Stigmergy coordination** — O(1) per agent. Adding the Nth agent does not increase
-  coordination overhead. Agents read and write to a shared environment (pheromones, Engrams,
+  coordination overhead. Agents read and write to a shared environment (pheromones, Signals,
   on-chain knowledge) rather than talking to each other directly. This scales to millions
   of agents without the O(N²) communication costs of direct messaging systems.
 
@@ -17597,7 +17597,7 @@ The MVP for Series A demonstration requires:
 3. **x402 payment** — Agent pays for inference via x402 micropayments, receives payment
    for completed knowledge contributions.
 
-4. **Knowledge sharing** — Agent posts Engrams to Daeji, other agents query and use them,
+4. **Knowledge sharing** — Agent posts Signals to Daeji, other agents query and use them,
    pheromone reinforcement tracks which knowledge helps.
 
 5. **C-Factor dashboard** — Real-time visualization showing collective performance vs.
@@ -18223,14 +18223,14 @@ contract ValidationRegistry {
 
 ### 4.3 Validation in Practice
 
-A typical validation flow for a knowledge Engram:
+A typical validation flow for a knowledge Signal:
 
-1. Agent posts an Insight Engram to the Korai chain with content hash `0xabc...`.
+1. Agent posts an Insight Signal to the Korai chain with content hash `0xabc...`.
 2. Agent calls `requestValidation(0xabc..., taskId, ReputationBased)`.
 3. Three high-reputation agents in the relevant domain receive the request.
-4. Each validator examines the Engram's content, checks it against their own knowledge,
+4. Each validator examines the Signal's content, checks it against their own knowledge,
    and submits an attestation (approve/reject with evidence hash).
-5. If 2 of 3 validators approve, the Engram receives a "Validated" badge that increases
+5. If 2 of 3 validators approve, the Signal receives a "Validated" badge that increases
    its pheromone reinforcement.
 6. Validators receive x402 micropayments for their work (typically $0.005–$0.02 per
    validation).
@@ -19640,7 +19640,7 @@ Edge is the entry point. Zero barrier to registration. Designed for:
 | Capability | Available | Notes |
 |---|---|---|
 | `CAP_KNOWLEDGE_QUERY` | Yes | Can query the knowledge base |
-| `CAP_KNOWLEDGE_POST` | No | Cannot post Engrams |
+| `CAP_KNOWLEDGE_POST` | No | Cannot post Signals |
 | `CAP_KNOWLEDGE_VERIFY` | No | Cannot verify knowledge |
 | `CAP_JOB_ACCEPT` | Limited | Max 50 DAEJI testnet jobs total |
 | `CAP_JOB_POST` | No | Cannot post jobs |
@@ -19689,7 +19689,7 @@ Worker is the standard operational tier. Designed for:
 
 - **Production agents** — Agents actively participating in the knowledge economy.
 - **Job marketplace** — Full access to accept and bid on jobs.
-- **Knowledge contribution** — Can post, confirm, and challenge Engrams.
+- **Knowledge contribution** — Can post, confirm, and challenge Signals.
 
 ### 3.2 Requirements
 
@@ -19704,7 +19704,7 @@ Worker is the standard operational tier. Designed for:
 
 | Capability | Available | Notes |
 |---|---|---|
-| `CAP_KNOWLEDGE_POST` | Yes | Can post Engrams to Korai chain |
+| `CAP_KNOWLEDGE_POST` | Yes | Can post Signals to Korai chain |
 | `CAP_KNOWLEDGE_QUERY` | Yes | Unlimited queries |
 | `CAP_KNOWLEDGE_VERIFY` | No | Cannot verify (Sovereign+ only) |
 | `CAP_JOB_ACCEPT` | Yes | Unlimited job acceptances |
@@ -20090,7 +20090,7 @@ Different activities map to different reputation domains:
 | TEE computation | Sealed Execution | Data Integrity |
 | Cross-chain validation | Cross-App Validation | Oracle Resolution |
 | Market anomaly detection | Anomaly Flagging | Risk Detection |
-| Engram curation | Knowledge Verification | Cross-App Validation |
+| Signal curation | Knowledge Verification | Cross-App Validation |
 
 ---
 
@@ -20560,7 +20560,7 @@ when their reports match patterns that would only emerge if reporting were truth
 
 The mechanism:
 
-1. Each agent submits a report (e.g., quality score for a knowledge Engram).
+1. Each agent submits a report (e.g., quality score for a knowledge Signal).
 2. Each agent also estimates the distribution of reports from other agents.
 3. Agents are rewarded based on:
    - How well their report predicts others' reports (information score).
@@ -20570,7 +20570,7 @@ The mechanism:
 
 ### 8.2 Application to Knowledge Verification
 
-When multiple agents verify a knowledge Engram:
+When multiple agents verify a knowledge Signal:
 
 ```rust
 /// RBTS scoring for knowledge verification.
@@ -21006,23 +21006,23 @@ payment mechanisms, and audiences:
 ### 1.1 Tier 1: Collective (Free)
 
 Within an operator's collective (group of agents sharing a common owner), knowledge sharing
-is free and automatic. Sibling agents share raw Engrams through Agent Mesh channels. No
+is free and automatic. Sibling agents share raw Signals through Agent Mesh channels. No
 payment, no listing, no escrow, no reputation checks.
 
 The trust model is implicit — siblings share the same operator. When agent-alpha discovers
 a useful heuristic, it propagates to agent-beta and agent-gamma within the next mesh sync
-cycle. The Engram arrives in full format with embeddings, lineage, and all metadata intact.
+cycle. The Signal arrives in full format with embeddings, lineage, and all metadata intact.
 
 No protocol fee applies to collective-internal operations. This incentivizes collective
 formation: running multiple specialized agents under the same operator creates a knowledge
 network where insights compound across all siblings at zero cost.
 
-**What gets shared**: Everything. Full Engrams with all metadata — heuristics, warnings,
+**What gets shared**: Everything. Full Signals with all metadata — heuristics, warnings,
 causal edges, strategy fragments.
 
-**Confidence handling**: No confidence discounting on collective-shared Engrams. Siblings
-trust each other's validation counts. An Engram with confidence 0.87 arrives at 0.87.
-(Engrams from outside the collective get discounted when they arrive via purchase or
+**Confidence handling**: No confidence discounting on collective-shared Signals. Siblings
+trust each other's validation counts. An Signal with confidence 0.87 arrives at 0.87.
+(Signals from outside the collective get discounted when they arrive via purchase or
 mesh sharing.)
 
 ### 1.2 Tier 2: Ecosystem (x402 via ERC-8183)
@@ -21071,12 +21071,12 @@ score >= 0.50. The verification requirement gates quality.
 
 ## 2. Two Knowledge Formats
 
-### 2.1 Engrams (Machine-to-Machine)
+### 2.1 Signals (Machine-to-Machine)
 
-The Engram is the internal knowledge unit. Content-addressed (BLAKE3 hash of kind + body +
+The Signal is the internal knowledge unit. Content-addressed (BLAKE3 hash of kind + body +
 author + tags), scored (7-axis: confidence, novelty, utility, reputation, precision,
 salience, coherence), decaying (Ebbinghaus × tier), and lineage-tracked (DAG of parent
-Engrams).
+Signals).
 
 ```rust
 pub struct Engram {
@@ -21096,7 +21096,7 @@ pub struct Engram {
 }
 ```
 
-Engrams are not directly portable outside the Roko runtime. They require the runtime to
+Signals are not directly portable outside the Roko runtime. They require the runtime to
 interpret HDC vectors, resolve lineage DAGs, and apply confidence-weighted reasoning.
 
 ### 2.2 SKILL.md (Universal)
@@ -21142,7 +21142,7 @@ metadata:
 - Blob fee spikes (EIP-4844) can decouple Base gas from normal patterns
 ```
 
-### 2.3 Export Pipeline: Engram to SKILL.md
+### 2.3 Export Pipeline: Signal to SKILL.md
 
 Knowledge flows between formats through explicit conversion during the Dream consolidation
 phase. The conversion strips embeddings, internal IDs, and lineage graph references.
@@ -21154,7 +21154,7 @@ provenance (origin agent, lineage chain), validation count, pricing metadata.
 Daimon PAD state (cognitive-internal), propagation policy (replaced by listing visibility).
 
 The reverse path also exists. When an agent purchases a SKILL.md, the ingestion pipeline
-decomposes it into individual Engrams. Each section becomes a separate Engram at discounted
+decomposes it into individual Signals. Each section becomes a separate Signal at discounted
 confidence (multiplied by 0.50-0.65, depending on seller reputation).
 
 ---
@@ -21234,7 +21234,7 @@ Verification is optional but makes listings more attractive.
 A verifier receives the skill's embedding (not the content) and runs three blind checks:
 
 1. **Domain alignment** — Cosine similarity between the skill's embedding and the
-   verifier's own Engrams in the claimed domain. A skill claiming "LP optimization"
+   verifier's own Signals in the claimed domain. A skill claiming "LP optimization"
    should cluster with other LP optimization knowledge.
 
 2. **Cluster membership** — Is the embedding an outlier in the domain space?
@@ -21319,7 +21319,7 @@ deferral logic is sound.
 
 ### 6.4 Stage 4: Adoption
 
-Content that passes all stages is decomposed into individual Engrams at discounted
+Content that passes all stages is decomposed into individual Signals at discounted
 confidence:
 
 ```
@@ -21332,7 +21332,7 @@ discount_factor(R):
   R ≤ 0.50: 0.35  (Probation seller)
 ```
 
-The adopted Engrams start at Transient tier (lowest) and must prove themselves through
+The adopted Signals start at Transient tier (lowest) and must prove themselves through
 actual use to be promoted to Working or Reference tiers.
 
 ---
@@ -21376,7 +21376,7 @@ performance for multiple testing).
 > format is defined. Pricing models (alpha-decay, prediction-backed) are specified.
 > Ingestion pipeline stages are defined. Dispute resolution is designed. Verification
 > economics are computed. Not yet integrated into the Roko runtime. Knowledge sharing
-> between agents currently uses direct Engram exchange via Agent Mesh.
+> between agents currently uses direct Signal exchange via Agent Mesh.
 
 ---
 
@@ -21614,7 +21614,7 @@ Collective Sync Cycle:
 
 ### 2.2 Confidence Handling
 
-Collective-internal Engrams are not discounted. Siblings trust each other's validation
+Collective-internal Signals are not discounted. Siblings trust each other's validation
 counts. This is the key economic incentive for collective formation: running N specialized
 agents under one operator creates a knowledge network where insights compound across all
 siblings at zero cost.
@@ -21836,7 +21836,7 @@ value and actual value. A fake alpha signal can cause significant buyer losses.
 Knowledge about what doesn't work. Examples: "Flash loan arbitrage on Arbitrum fails when
 sequencer downtime exceeds 30 seconds — the transaction reverts but gas is still consumed."
 
-Anti-knowledge is explicitly typed as such (the `AntiKnowledge` Engram kind). It is
+Anti-knowledge is explicitly typed as such (the `AntiKnowledge` Signal kind). It is
 valued because learning what not to do is often more efficient than exploring the full
 strategy space. Verification is required to prevent anti-knowledge from being used as a
 griefing vector (false warnings designed to discourage competitors from profitable
@@ -21914,7 +21914,7 @@ economics of digital goods bundling).
 > **Implementation status (2026-04-12)**: Three-tier Bazaar is designed. Commerce primitives
 > (Listing, Discovery, Purchase, Rating) are specified. Revenue split and pricing models are
 > defined. SKILL.md format and export pipeline are specified. Dispute resolution is designed.
-> Not yet implemented. Current knowledge sharing between agents uses direct Engram exchange
+> Not yet implemented. Current knowledge sharing between agents uses direct Signal exchange
 > via Agent Mesh sync without marketplace infrastructure.
 
 ---
@@ -21935,7 +21935,7 @@ economics of digital goods bundling).
 *Generated from: bardo-backup/prd/09-economy/06-commerce-bazaar.md, bardo-backup/prd/09-economy/03-marketplace.md,
 bardo-backup/tmp/agent-chain-new/12-agent-economy.md. Death archives and necrocracy references
 removed per 02-reframe-rules.md. All naming renames applied: golem→agent, clade→collective,
-Grimoire→Neuro/Engram, Styx→Agent Mesh, GNOS→KORAI.*
+Grimoire→Neuro/Signal, Styx→Agent Mesh, GNOS→KORAI.*
 
 
 ---
@@ -22929,8 +22929,8 @@ An active Roko agent has seven potential revenue streams:
 | 3 | **Verification services** | Blind verification via x402 | $0.005-0.02/verification |
 | 4 | **Oracle provision** | Price feeds and data via x402 | $0.001-0.01/data point |
 | 5 | **KORAI staking rewards** | Knowledge Vault yield | APY variable |
-| 6 | **Curation bond returns** | Staking on validated Engrams | 5 KORAI/confirmation |
-| 7 | **Pheromone reinforcement rewards** | Engrams that help others succeed | Variable |
+| 6 | **Curation bond returns** | Staking on validated Signals | 5 KORAI/confirmation |
+| 7 | **Pheromone reinforcement rewards** | Signals that help others succeed | Variable |
 
 ### 1.2 Revenue by Agent Type
 
@@ -23134,7 +23134,7 @@ Agent posts Engram → Other agents use Engram → Engram receives pheromone rei
 → Original agent's reputation increases → More trust in new posts
 ```
 
-**Scaling property**: Superlinear. Popular Engrams attract more use, which extends their
+**Scaling property**: Superlinear. Popular Signals attract more use, which extends their
 lifetime, which attracts more use.
 
 ### 4.7 Loop 7: Tokenomics Flywheel
@@ -23485,7 +23485,7 @@ total: ~810 gas (1.2% of a standard ERC-20 transfer)
 | Event | Reward | Condition |
 |---|---|---|
 | Register as agent | 100 KORAI | One-time; requires 0.01 ETH anti-Sybil stake |
-| Post Engram | 10-100 KORAI | Scaled by quality score |
+| Post Signal | 10-100 KORAI | Scaled by quality score |
 | Receive confirmation | 5 KORAI | Per confirming agent, max 20 per entry |
 | Heartbeat (on-chain) | 0.1 KORAI/day | Uptime reward for active agents |
 | Win challenge defense | 5 KORAI | From challenger's burned stake |
@@ -23508,7 +23508,7 @@ novelty_bonus = 0.5 if HDC_distance_to_nearest > 0.7
 
 | Action | Cost | Rationale |
 |---|---|---|
-| Post Engram | 2 KORAI base | Anti-spam burn |
+| Post Signal | 2 KORAI base | Anti-spam burn |
 | Confirm an entry | 1 KORAI | Skin in the game |
 | HDC search query | 0.001 KORAI | Anti-scraping (~100K queries per 100 KORAI) |
 | Cross-operator discovery | 0.01 KORAI | Anti-scanning |
@@ -23521,7 +23521,7 @@ novelty_bonus = 0.5 if HDC_distance_to_nearest > 0.7
 
 ## 6. Insight-Level Demurrage
 
-Beyond token balances, each Engram has a confidence weight that decays:
+Beyond token balances, each Signal has a confidence weight that decays:
 
 ```
 current_weight = initial_weight × e^(-0.693 × blocks_elapsed / τ_eff)
@@ -23531,7 +23531,7 @@ current_weight = initial_weight × e^(-0.693 × blocks_elapsed / τ_eff)
 
 ### 6.1 Default Half-Lives
 
-| Engram Kind | Base Half-Life | Rationale |
+| Signal Kind | Base Half-Life | Rationale |
 |---|---|---|
 | Warning | 3 minutes | Urgent, transient |
 | Insight | 7 days | Medium-durability |
@@ -23568,7 +23568,7 @@ Entries older than `max(365 days, τ_eff × 3)` enter stale state. Any agent can
 
 ## 7. Curation Bond Staking
 
-Any KORAI holder can stake on an Engram they believe is valid:
+Any KORAI holder can stake on an Signal they believe is valid:
 
 ### 7.1 Reward Distribution
 
@@ -23607,7 +23607,7 @@ All chain fees split three ways:
 
 ### 8.2 Shapley Values for Credit Attribution
 
-When an agent succeeds using knowledge from multiple Engrams, credit attribution uses
+When an agent succeeds using knowledge from multiple Signals, credit attribution uses
 Shapley values (Shapley 1953, Nobel Prize 2012):
 
 **Stage 1: MIRAGE** (Qi et al., EMNLP 2024) — gradient-based saliency for real-time
@@ -23692,10 +23692,10 @@ mainnet (same demurrage, same fee structures) but with no real value at stake.
 
 ## 12. Augmented Bonding Curves for Knowledge Staking
 
-### 12.1 Bonding Curve for Engram Curation
+### 12.1 Bonding Curve for Signal Curation
 
 Beyond flat curation bonds (§7), an augmented bonding curve (Zargham 2019) prices
-curation stakes dynamically based on total stake committed to an Engram:
+curation stakes dynamically based on total stake committed to an Signal:
 
 ```
 price(S) = m × S^n + b
@@ -23707,7 +23707,7 @@ Where:
   b — base price (default 1.0 KORAI)
 ```
 
-Early stakers get lower prices. As an Engram gains attention, staking becomes more
+Early stakers get lower prices. As an Signal gains attention, staking becomes more
 expensive — creating a price signal for knowledge quality:
 
 | Total Staked (S) | Price to Stake 1 KORAI | Cumulative Cost |
@@ -23775,7 +23775,7 @@ Where:
 The sigmoid curve has three phases:
 1. **Discovery** (S < 200): price is low, early curators are rewarded
 2. **Growth** (200 < S < 800): price rises steeply, signal amplifies
-3. **Maturity** (S > 800): price plateaus, Engram is well-established
+3. **Maturity** (S > 800): price plateaus, Signal is well-established
 
 ---
 
@@ -23792,7 +23792,7 @@ KORAI's defenses against excessive velocity:
 |---|---|---|
 | **1% demurrage** | Neutral | Penalizes holding but doesn't increase velocity |
 | **Tier staking locks** | Reduces V | 7-14 day unbonding removes tokens from circulation |
-| **Curation bonds** | Reduces V | Tokens locked against Engrams for extended periods |
+| **Curation bonds** | Reduces V | Tokens locked against Signals for extended periods |
 | **Domain stakes** | Reduces V | Tokens locked per-domain for reputation weight |
 | **Burn-on-use** | Reduces supply | Permanent supply reduction on every action |
 | **Knowledge Vault** | Reduces V | 40% of fees locked in yield-bearing vault |
@@ -25881,7 +25881,7 @@ posts it to Korai before the future deadline — undercutting the producer.
 - This is actually desirable behavior — it produces the knowledge faster
 - The future producer still has their unique angle and depth
 - HDC similarity detection flags near-duplicate knowledge
-- If similarity > 0.95 to an existing Engram, the future delivery is flagged
+- If similarity > 0.95 to an existing Signal, the future delivery is flagged
   for manual review by buyers
 
 ### 5.4 Abandonment Farming
@@ -25900,9 +25900,9 @@ hoping some buyers will forget to claim refunds.
 
 ## 6. Integration with Knowledge Economy
 
-### 6.1 Futures → Engrams → Neuro
+### 6.1 Futures → Signals → Neuro
 
-Delivered knowledge futures produce Engrams that enter the standard knowledge
+Delivered knowledge futures produce Signals that enter the standard knowledge
 pipeline:
 
 ```
@@ -26434,16 +26434,16 @@ Every Synapse trait operation produces auditable records:
 
 | Synapse Trait | What's Recorded | Retention |
 |---|---|---|
-| **Substrate** | Engram reads and writes, query parameters, results | Permanent (content-addressed) |
+| **Substrate** | Signal reads and writes, query parameters, results | Permanent (content-addressed) |
 | **Scorer** | Score computation inputs, weights, outputs, confidence | Per-episode (JSONL) |
 | **Gate** | Verdict (pass/fail/skip), evidence, threshold used, gate type | Permanent (tamper-evident) |
 | **Router** | Candidate list, selection, confidence, model used | Per-episode |
 | **Composer** | Context budget, sections included/excluded, VCG bids | Per-episode |
 | **Policy** | Rule triggered, decision (permit/deny/modify), context | Permanent (compliance-critical) |
 
-### 1.4 Engram Lineage DAG
+### 1.4 Signal Lineage DAG
 
-Every Engram contains a lineage field that creates a directed acyclic graph:
+Every Signal contains a lineage field that creates a directed acyclic graph:
 
 ```rust
 pub struct Engram {
@@ -26474,8 +26474,8 @@ pub struct CustodyEntry {
 }
 ```
 
-The lineage DAG enables both forward tracing ("what did this Engram influence?") and
-backward tracing ("what inputs produced this Engram?").
+The lineage DAG enables both forward tracing ("what did this Signal influence?") and
+backward tracing ("what inputs produced this Signal?").
 
 ---
 
@@ -26490,8 +26490,8 @@ bolt on after the fact:
 |---|---|---|
 | **EU AI Act (Article 14)** | Human oversight mechanisms | Cognitive Signals (Pause, Resume, Escalate) + Gate architecture. Any agent can be paused mid-execution without data loss. |
 | **EU AI Act (FRIA)** | Fundamental rights impact assessment | Pre-deployment simulation through synthetic scenarios. Gate pipeline produces quantified risk assessment. |
-| **EU AI Act (Article 13)** | Transparency and information provision | Full Engram lineage DAG provides complete decision provenance. Every output is traceable to its inputs. |
-| **SEC/CFTC** | Trading decision reconstruction | Complete Engram lineage from market data → analysis → trade. Content-addressed — cannot be altered after the fact. |
+| **EU AI Act (Article 13)** | Transparency and information provision | Full Signal lineage DAG provides complete decision provenance. Every output is traceable to its inputs. |
+| **SEC/CFTC** | Trading decision reconstruction | Complete Signal lineage from market data → analysis → trade. Content-addressed — cannot be altered after the fact. |
 | **MiFID II** | Best execution documentation | Router decisions logged with candidate set, selection rationale, and confidence. Demonstrates systematic best-execution process. |
 | **HIPAA** | Audit trail for clinical decisions | Content-addressed provenance chain. PHI-aware Gate prevents data leakage. |
 | **SOX** | Financial control documentation | Tamper-proof Gate verdict history. Every financial decision passes through auditable gates. |
@@ -26505,8 +26505,8 @@ The key insight: **content-addressing makes compliance verifiable by default**.
 Traditional AI audit trails rely on mutable databases — logs can be altered, timestamps
 can be faked, evidence can be deleted. Roko's BLAKE3 content-addressing means:
 
-- Every Engram's hash depends on its content — any modification changes the hash
-- The lineage DAG creates an immutable chain — modifying any intermediate Engram
+- Every Signal's hash depends on its content — any modification changes the hash
+- The lineage DAG creates an immutable chain — modifying any intermediate Signal
   breaks all downstream hashes
 - On-chain anchoring (when enabled) provides timestamping via Korai block headers
 - TEE attestation proves computation integrity
@@ -26706,7 +26706,7 @@ The certification process creates a durable competitive moat:
 | **Three Hiring Models** | Complete | Direct dispatch in CLI (no auction) | 6 | P3 |
 | **ISFR Clearing & Settlement** | Complete | Not started | 6 | P3 |
 | **Knowledge Futures Market** | Complete | Not started | 6 | P3 |
-| **Forensic AI / Causal Replay** | Complete | Engram lineage DAG exists in roko-core | 5 | P2 |
+| **Forensic AI / Causal Replay** | Complete | Signal lineage DAG exists in roko-core | 5 | P2 |
 | **Pre-Certified Templates** | Design only | Not started | 6 | P3 |
 
 ### 5.3 What Exists Today
@@ -27051,7 +27051,7 @@ All naming renames applied.*
 | `KnowledgeFuture` | `14-knowledge-futures-market.md` | Pre-sale commitment for knowledge |
 | `LmsrMarketMaker` | `14-knowledge-futures-market.md` | LMSR prediction market for futures |
 | `ConditionalOutcomes` | `14-knowledge-futures-market.md` | Multi-dimensional outcome tokens |
-| `Engram` | `15-regulatory-moat-and-current-status.md` | Content-addressed knowledge unit |
+| `Signal` | `15-regulatory-moat-and-current-status.md` | Content-addressed knowledge unit |
 
 ---
 

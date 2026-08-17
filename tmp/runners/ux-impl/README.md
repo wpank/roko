@@ -1,5 +1,12 @@
 # ux-impl Runner
 
+> **What is this?** A runner for UX implementation work derived from 12 plans in
+> `tmp/ux/implementation-plans/`. Covers mirage extraction, aggregator backends, chain
+> discovery, TUI event parity, MCP coverage, feature gating, agent backend parity, and
+> test hygiene. Includes both Codex-driven batches and manual tracks.
+>
+> **Last updated: 2026-08-13**
+
 Runs the 12 implementation plans from `tmp/ux/implementation-plans/`
 as Codex-driven batches against a fresh git worktree.
 

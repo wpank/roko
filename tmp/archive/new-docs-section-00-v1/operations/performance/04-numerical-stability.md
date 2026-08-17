@@ -23,7 +23,7 @@ accumulates over thousands of decay steps.
 
 ## Why Numerical Stability Matters for Roko
 
-The Score type is a 7-axis appraisal of an Engram: `[relevance, confidence, urgency,
+The Score type is a 7-axis appraisal of an Signal: `[relevance, confidence, urgency,
 novelty, utility, affect, social]`, each a `f32` in `[0.0, 1.0]`. Scores participate
 in:
 
@@ -31,11 +31,11 @@ in:
 2. **Gate threshold comparisons** — adaptive thresholds use EMAs of score values.
 3. **Decay** — all seven axes decay over time using configurable decay models.
 4. **HDC fingerprint weighting** — score components weight the HDC bundle operation.
-5. **Substrate GC triggering** — Engrams with all scores below a floor are GC'd.
+5. **Substrate GC triggering** — Signals with all scores below a floor are GC'd.
 
-With millions of Engrams accumulating over months of operation, even a tiny per-step
-numerical error compounds. An Engram whose `relevance` score should be 0.003 but rounds
-to 0.000 at step 5,000 is GC'd prematurely. An Engram that should be GC'd but rounds
+With millions of Signals accumulating over months of operation, even a tiny per-step
+numerical error compounds. An Signal whose `relevance` score should be 0.003 but rounds
+to 0.000 at step 5,000 is GC'd prematurely. An Signal that should be GC'd but rounds
 to 0.001 wastes substrate space indefinitely.
 
 ---
@@ -46,7 +46,7 @@ to 0.001 wastes substrate space indefinitely.
 |-------|------|-----------|
 | Score axis value | `f32` | 7 axes × 4 bytes = 28 bytes; fits in a cache line with other fields |
 | Score axis after arithmetic | `f32`, immediately clamped to `[0.0, 1.0]` | Prevents accumulation out of range |
-| Decay rate parameter (λ) | `f64` | Higher precision for the per-Engram parameter stored at creation time |
+| Decay rate parameter (λ) | `f64` | Higher precision for the per-Signal parameter stored at creation time |
 | Decay computation intermediate | `f64` | Downcast to `f32` only at the final assignment |
 | HDC vector component | `u8` / `u64` (packed bits) | Binary; no float arithmetic |
 | EMA accumulator | `f64` | Running mean must not lose precision over thousands of updates |
@@ -195,4 +195,4 @@ Tests check:
 ## Open Questions
 
 - Whether to offer an `f64` Score variant for workloads where precision is more important than cache efficiency is an open question.
-- Vectorised (SIMD) decay for batch Engram GC is planned but not yet implemented.
+- Vectorised (SIMD) decay for batch Signal GC is planned but not yet implemented.

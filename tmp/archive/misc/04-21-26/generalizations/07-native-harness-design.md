@@ -288,7 +288,7 @@ offers:
 
 ## Why Build From Scratch?
 
-1. **Cannot retrofit learning into a stateless loop.** The universal type (Engram),
+1. **Cannot retrofit learning into a stateless loop.** The universal type (Signal),
    substrate (durable store), and feedback loop (score→route→compose→act→verify→write→react)
    must be designed in, not bolted on.
 

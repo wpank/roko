@@ -121,7 +121,7 @@ Audit query:
 |---|---|---|
 | Predicate bypass | An action reaches execution without passing through the gate pipeline | Enforce gate evaluation as a mandatory step in the Cognitive Loop's ACT phase; fail-closed if skipped |
 | TypedContext spoofing | A malicious or buggy agent injects false values into TypedContext before gate evaluation | TypedContext is constructed by the orchestrator, not by the acting agent; agents cannot write to it |
-| Custody log overflow | High-frequency actions produce a very large Custody log quickly | Custody records are first-class Engrams subject to demurrage; old, low-priority records decay per S1 |
+| Custody log overflow | High-frequency actions produce a very large Custody log quickly | Custody records are first-class Signals subject to demurrage; old, low-priority records decay per S1 |
 | Profile version mismatch | An action is evaluated against an old profile version due to caching | Invalidate profile cache on version bump; re-load profile at session start |
 | Gate predicate error | A typed predicate throws an exception at evaluation time | Fail-closed: predicate errors produce Deny outcomes and write an error Custody record |
 
@@ -131,7 +131,7 @@ Audit query:
 
 - **S5** (Plugin SPI × Substrate × Bus): Domain profiles are installed via the Plugin SPI.
   S5 explains how profiles are loaded and activated; S10 explains what they do at runtime.
-- **S1** (Demurrage × HDC): Custody records are Engrams in Substrate. Over time, demurrage
+- **S1** (Demurrage × HDC): Custody records are Signals in Substrate. Over time, demurrage
   applies to them. Long-past audit records eventually decay unless they are flagged as
   long-retention by the domain profile.
 - **S3** (c-factor × Bus × HDC): If domain profiles restrict the pool of eligible agents, c-factor
@@ -143,7 +143,7 @@ Audit query:
 
 **Today**: Gate operator is Built. TypedContext exists in Scaffold form. Domain profiles as
 formalized install-able bundles do not exist. Custody records are not written to Substrate as
-first-class queryable Engrams.
+first-class queryable Signals.
 
 **Planned**: TypedContext gains required fields per domain profile. Domain profile versioning
 ships. The Gate operator writes Custody records to Substrate on every evaluation. Audit query

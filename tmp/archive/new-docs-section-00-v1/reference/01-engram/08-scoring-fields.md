@@ -1,6 +1,6 @@
-# Engram — Scoring Fields
+# Signal — Scoring Fields
 
-> The `score: Score` field records a 7-axis quality assessment of the Engram. It is not part of the identity hash and can be recomputed at any time.
+> The `score: Score` field records a 7-axis quality assessment of the Signal. It is not part of the identity hash and can be recomputed at any time.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -12,9 +12,9 @@
 
 ## TL;DR
 
-Every Engram carries a `Score` with up to 7 axes: confidence, novelty, utility,
+Every Signal carries a `Score` with up to 7 axes: confidence, novelty, utility,
 reputation (stable), and precision, salience, coherence (extended). The `score`
-field is mutable — Scorers recompute it without changing the Engram's identity.
+field is mutable — Scorers recompute it without changing the Signal's identity.
 Gate thresholds and Substrate GC priority are driven by the effective score.
 
 ---
@@ -23,11 +23,11 @@ Gate thresholds and Substrate GC priority are driven by the effective score.
 
 Score is intentionally separated from identity. A GateVerdict that was initially scored
 with low confidence can be re-evaluated after the prediction resolves, updating only
-the score without creating a new Engram. The substrate can then re-rank Engrams for
+the score without creating a new Signal. The substrate can then re-rank Signals for
 retrieval based on updated scores.
 
 The score is also separable from provenance: a `KnowledgeEntry` written by a low-trust
-author can be re-scored upward if chain-witnesses attest it. The Engram doesn't change;
+author can be re-scored upward if chain-witnesses attest it. The Signal doesn't change;
 only the score changes.
 
 ---
@@ -36,7 +36,7 @@ only the score changes.
 
 The `Score` type is specified in detail in
 [`../10-types/score/`](../10-types/score/README.md). This page covers only the
-attachment of Score to Engram.
+attachment of Score to Signal.
 
 ### The Score Field
 
@@ -72,7 +72,7 @@ let scored_engram = scorer_pipeline.score(raw_engram, &context)?;
 
 ### Score After Emission
 
-The Substrate's `update_score` method replaces an Engram's score in-place:
+The Substrate's `update_score` method replaces an Signal's score in-place:
 
 ```rust
 <!-- source: crates/roko-core/src/substrate.rs -->
@@ -101,7 +101,7 @@ For the complete specification of each axis, see
 |------|-------|---------|------------|
 | `confidence` | 0.0–1.0 | Yes | How certain is the source? |
 | `novelty` | 0.0–1.0 | Yes | Is this information new? |
-| `utility` | 0.0–1.0 | Yes | Did this Engram help? |
+| `utility` | 0.0–1.0 | Yes | Did this Signal help? |
 | `reputation` | 0.0–1.0 | Yes | How trusted is the author? |
 | `precision` | 0.0–1.0 | No (extended) | How specific and accurate? |
 | `salience` | 0.0–1.0 | No (extended) | How relevant to current task? |
@@ -128,14 +128,14 @@ For constants and extended-axis weighting, see
 
 ### Substrate GC
 
-When the Substrate runs garbage collection, Engrams with low effective scores are
-candidates for eviction ahead of Engrams with high scores. Combined with decay, this
+When the Substrate runs garbage collection, Signals with low effective scores are
+candidates for eviction ahead of Signals with high scores. Combined with decay, this
 means low-quality stale information is removed first.
 
 ### Retrieval Ranking
 
-Similarity searches return Engrams ranked by a combination of HDC similarity and
-effective score. A highly-similar but low-scored Engram ranks below a less-similar
+Similarity searches return Signals ranked by a combination of HDC similarity and
+effective score. A highly-similar but low-scored Signal ranks below a less-similar
 but high-scored one.
 
 ---

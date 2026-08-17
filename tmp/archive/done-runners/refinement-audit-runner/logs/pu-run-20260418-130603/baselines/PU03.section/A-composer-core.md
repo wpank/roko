@@ -25,7 +25,7 @@ pub trait Composer: Send + Sync {
     ) -> Result<Engram>;
 }
 ```
-Requires `Send + Sync`, synchronous (no I/O), deterministic. Takes a `&dyn Scorer` at call time (rather than consuming pre-scored engrams) so composition is always scoring-aware.
+Requires `Send + Sync`, synchronous (no I/O), deterministic. Takes a `&dyn Scorer` at call time (rather than consuming pre-scored signals) so composition is always scoring-aware.
 
 ### What exists
 Trait defined at `crates/roko-core/src/traits.rs:143-156` (NOT in `agent.rs` as doc claims):
@@ -48,12 +48,12 @@ pub trait Composer: Send + Sync {
 |--------|-----|------|-------|
 | Location | `roko-core/src/agent.rs` | `roko-core/src/traits.rs:143` | FILE DIFFERS |
 | Bounds | `Send + Sync` | `Send + Sync` | MATCH |
-| Input param name | `engrams` | `signals` | NAME ONLY (same type) |
-| Input type | `&[Engram]` | `&[Engram]` | MATCH |
+| Input param name | `signals` | `signals` | NAME ONLY (same type) |
+| Input type | `&[Signal]` | `&[Signal]` | MATCH |
 | Budget type | `&Budget` | `&Budget` | MATCH |
 | Scorer type | `&dyn Scorer` | `&dyn Scorer` | MATCH |
 | Context type | `&Context` | `&Context` | MATCH |
-| Return | `Result<Engram>` | `Result<Engram>` | MATCH |
+| Return | `Result<Signal>` | `Result<Signal>` | MATCH |
 | Extra method | — | `fn name(&self) -> &str` | ADDITION |
 
 Doc comment at `traits.rs:137-142` matches the "assembly layer" description (prompts from sections, context packs from fragments, transactions from operations) in doc 00. The `Composer` trait is re-exported from `crates/roko-core/src/lib.rs` and imported by `roko-compose` at `prompt.rs:6-9`.
@@ -64,7 +64,7 @@ There is no `crates/roko-core/src/composer.rs` file — all trait definitions li
 | ID | Gap | Where | Severity |
 |----|-----|-------|----------|
 | A.01.1 | Doc says trait lives in `agent.rs`; code puts it in `traits.rs` | doc 00 §1 vs traits.rs:143 | LOW (cosmetic, doc outdated) |
-| A.01.2 | Doc uses param name `engrams`; code uses `signals` | traits.rs:148 | LOW (semantics identical) |
+| A.01.2 | Doc uses param name `signals`; code uses `signals` | traits.rs:148 | LOW (semantics identical) |
 | A.01.3 | Doc omits the `name(&self) -> &str` method which code requires | traits.rs:155 | LOW (trivial addition) |
 
 ### Verify
@@ -622,7 +622,7 @@ Test `prompt_build_records_metadata` at `prompt.rs:1291-1303` covers all 4 sette
 | A.10.2 | `tokens_per_layer: HashMap<CacheLayer, usize>` not implemented (cache-analysis telemetry) | prompt.rs:828 vs doc 01 §4 | MEDIUM (cache analysis harder without it) |
 | A.10.3 | Field names renamed: doc `estimated_tokens`/`sections_included` vs code `tokens`/`sections_kept` | prompt.rs:838-840 | LOW (cosmetic) |
 | A.10.4 | Code has 4 additional fields (`prompt`, `context_strategy`, `cache_hit`, `playbook_hits`) inherited from Mori's PromptBuild — doc 01 §4 silent | prompt.rs:830-836 | LOW (doc outdated vs Mori parity) |
-| A.10.5 | `PromptBuild` is NOT produced by `PromptComposer::compose()` itself; it must be constructed separately by callers. VCG diagnostics are emitted as tags on the output Engram (prompt.rs:415-450) instead | prompt.rs vs doc 01 | MEDIUM (composer output carries metadata via tags, not PromptBuild) |
+| A.10.5 | `PromptBuild` is NOT produced by `PromptComposer::compose()` itself; it must be constructed separately by callers. VCG diagnostics are emitted as tags on the output Signal (prompt.rs:415-450) instead | prompt.rs vs doc 01 | MEDIUM (composer output carries metadata via tags, not PromptBuild) |
 
 ### Verify
 ```bash
@@ -649,7 +649,7 @@ grep -n 'pub struct PromptBuild\|pub fn new\|with_strategy\|with_cache_hit\|with
 ### Priority actions
 
 1. **P2 (doc update)** (A.04): Rename doc 01 §1.2 + doc 06 §4 CacheLayer variants from `System/Session/Task/Dynamic` to `Role/Workspace/Plan/Volatile` (code is authoritative per user's naming policy; code names are also more specific to Roko's model).
-2. **P2 (code addition)** (A.10.1, A.10.2): Extend `PromptBuild` with `dropped_names: Vec<String>` and `tokens_per_layer: HashMap<CacheLayer, usize>` — these debuggability fields are specified in doc 01 §4 and currently must be reconstructed from output Engram tags.
+2. **P2 (code addition)** (A.10.1, A.10.2): Extend `PromptBuild` with `dropped_names: Vec<String>` and `tokens_per_layer: HashMap<CacheLayer, usize>` — these debuggability fields are specified in doc 01 §4 and currently must be reconstructed from output Signal tags.
 3. **P2 (behavior reconciliation)** (A.07.2): Decide whether `PromptComposer` should truncate or error on critical-overflow. Doc 01 §2 Phase 4 says truncate; code errors. Either update the doc or add a truncation fallback path.
 4. **P3 (cache markers)** (A.07.3): Emit `<!-- roko:layer:N -->` transition markers in `render_sections()` so the inference gateway can place `cache_control` breakpoints per doc 01 §2 Phase 6.
 5. **P3 (doc refresh)** (A.07.4): Update doc 01's "772 lines, 18 tests" header to the current "1324 lines, 21 tests" and add a §2 note describing the VCG auction that supersedes the greedy-knapsack description.

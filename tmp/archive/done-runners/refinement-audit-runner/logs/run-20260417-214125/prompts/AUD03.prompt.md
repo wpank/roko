@@ -56,7 +56,7 @@ From the audit master summary — this is the recommended priority order.
 
 ## Ship Now (1-2 weeks total)
 
-1. Add HDC fingerprint field to Engram — `roko-core/src/engram.rs` — 1 day
+1. Add HDC fingerprint field to Signal — `roko-core/src/__PATH_ENGRAM_RS__0` — 1 day
 2. Unify event enums into `RokoEvent` — across 4 crates — 1 week
 3. Add generic `Bus<E>` trait to roko-core — ~100 lines — 2-3 days
 4. Clean up stale "Signal" references — traits.rs, README, kind.rs — 1 hour
@@ -147,7 +147,7 @@ Roko is a Rust workspace at `/Users/will/dev/nunchi/roko/roko/`.
 
 | Crate | Path | LOC | Status |
 |---|---|---|---|
-| roko-core | `crates/roko-core/` | kernel | Stable — Engram + 6 traits + config + tools |
+| roko-core | `crates/roko-core/` | kernel | Stable — Signal + 6 traits + config + tools |
 | roko-agent | `crates/roko-agent/` | large | 8 LLM backends, pools, MCP, tool loop, safety |
 | roko-agent-server | `crates/roko-agent-server/` | medium | Per-agent HTTP sidecar, real LLM dispatch |
 | roko-serve | `crates/roko-serve/` | 30K | HTTP control plane, 200+ routes, SSE, WebSocket |
@@ -176,7 +176,7 @@ Roko is a Rust workspace at `/Users/will/dev/nunchi/roko/roko/`.
 - Test functions: 3,761
 - orchestrate.rs: 17,087 lines
 - Event bus event types: exactly 2 (PlanRevision, PrdPublished)
-- Signal→Engram rename: 99.6% complete
+- Signal→Signal rename: 99.6% complete
 
 ## Concepts with 0 lines of code
 
@@ -248,7 +248,7 @@ Each refinement doc was read in full and checked against:
 - `crates/roko-learn/src/` (41 files, ~35K LOC) -- the working learning subsystem
 - `crates/roko-neuro/src/` (7 files) -- knowledge store, distiller, tier progression
 - `crates/roko-primitives/src/hdc.rs` -- existing 10,240-bit HDC implementation
-- `crates/roko-core/src/` -- Engram, Decay, Score, prediction, cfactor types
+- `crates/roko-core/src/` -- Signal, Decay, Score, prediction, cfactor types
 - `.roko/learn/` -- runtime data directory (currently empty)
 
 For each doc: a verdict, what is useful, what is overengineered, what the
@@ -327,10 +327,10 @@ ground-truth outcome signals for operators that don't have clean ones.
 
 ## Refinement 11: Hyperdimensional Substrate
 
-**Verdict: SHIP IT (the field on Engram) / DEFER (everything else)**
+**Verdict: SHIP IT (the field on Signal) / DEFER (everything else)**
 
 ### What it proposes
-Add `fingerprint: Option<HdcVector>` to every Engram. Build HDC-based
+Add `fingerprint: Option<HdcVector>` to every Signal. Build HDC-based
 similarity queries, consensus via bundle, stigmergic pheromones,
 compositional memory, analogy-driven retrieval, anti-hallucination gates,
 and agent identity fingerprints.
@@ -356,7 +356,7 @@ type has bind, bundle, permute, similarity, from_seed, serialization. The
 doc's "DefaultEncoder" sketch.
 
 ### What is useful
-- Adding `fingerprint: Option<HdcVector>` to Engram is the right move. It
+- Adding `fingerprint: Option<HdcVector>` to Signal is the right move. It
   is a small change with compounding benefits. The infrastructure to
   compute and store it already exists.
 - `query_similar()` on Substrate is genuinely valuable for retrieval.
@@ -367,7 +367,7 @@ doc's "DefaultEncoder" sketch.
   have yet. There are rarely multiple agents producing competing outputs
   for the same task in the current self-hosting workflow.
 - "Stigmergic pheromones as HDC vectors" (section 5.2) is an analogy
-  looking for an implementation. The existing `Decay::HalfLife` on Engrams
+  looking for an implementation. The existing `Decay::HalfLife` on Signals
   already serves the pheromone use case without HDC vectors.
 - "Agent identity fingerprints" (section 10) is interesting research but
   not useful for self-hosting. You don't need to detect "team formation"
@@ -379,12 +379,12 @@ doc's "DefaultEncoder" sketch.
   clippy, diff) catches real failures; this would catch vibes.
 
 ### Risk
-Low for the Engram field addition. The HDC primitives are well-tested.
+Low for the Engram (renamed to Signal in 2026-08-12) field addition. The HDC primitives are well-tested.
 The risk is scope creep: once the fingerprint exists, someone will want
 all 15 features in the doc, most of which aren't load-bearing yet.
 
 ### What to actually do
-1. Add `fingerprint: Option<HdcVector>` to `Engram`. Use existing
+1. Add `fingerprint: Option<HdcVector>` to `Signal`. Use existing
    `fingerprint()` from `roko-primitives` at Substrate `put()` time.
 2. Add `query_similar()` to `Substrate` trait, implement brute-force.
 3. Stop there. Consensus, stigmergy, analogy, anti-hallucination, and
@@ -397,7 +397,7 @@ all 15 features in the doc, most of which aren't load-bearing yet.
 **Verdict: SIMPLIFY**
 
 ### What it proposes
-Replace time-based decay with an economic model: Engrams carry a `balance`
+Replace time-based decay with an economic model: Signals carry a `balance`
 that costs holding fee per unit time but is reinforced by usage (cited,
 retrieved, gated, surprised, quoted). Novelty-weighted reinforcement via
 HDC neighbor similarity. Cold-tier graduation when balance hits floor.
@@ -428,7 +428,7 @@ identifies. However, `KnowledgeStore` already has confirmation-boosting
 ### What is overengineered
 - Novelty-weighted reinforcement via HDC neighbor similarity (section 3)
   adds a dependency on the HDC substrate that doesn't exist yet for
-  Engrams. It can be bolted on later; making it a prerequisite blocks
+  Signals. It can be bolted on later; making it a prerequisite blocks
   the simpler version.
 - `LearnedParam<T>` with demurrage on *policy parameters* (section 5) is
   elegant but premature. Roko doesn't have stable enough parameter values
@@ -441,8 +441,8 @@ identifies. However, `KnowledgeStore` already has confirmation-boosting
   is a recursive rabbit hole.
 
 ### Risk
-Medium. Adding `balance` to Engram is a schema change that touches
-everything that serializes Engrams. The rate law has tuning parameters
+Medium. Adding `balance` to Signal is a schema change that touches
+everything that serializes Signals. The rate law has tuning parameters
 (flat_tax, exp_decay) that will need empirical calibration -- if the
 defaults are wrong, either everything dies too fast or nothing ever fades.
 Both failure modes look the same at first: "the system doesn't learn."
@@ -667,12 +667,12 @@ progress. The system should ship one loop at a time and measure.
 
 ---
 
-## Refinement 16: Research Papers as Engrams, Replication Ledger
+## Refinement 16: Research Papers as Signals, Replication Ledger
 
 **Verdict: DEFER / SKEPTICAL**
 
 ### What it proposes
-A `Paper` Engram type with DOI, authors, claims. Each claim has a
+A `Paper` Signal type with DOI, authors, claims. Each claim has a
 structured `Hypothesis`, a `falsifier` Predicate, calibration, and a
 `ReplicationLedger` tracking divergence between paper-reported effects
 and Roko-observed effects. A `claim!` macro links config parameters to
@@ -771,7 +771,7 @@ which is why they undercount what exists.
 
 **Three are clearly useful (with simplification):**
 
-1. **Doc 11 (HDC field on Engram)** -- the single highest-value change.
+1. **Doc 11 (HDC field on Signal)** -- the single highest-value change.
    Adding `fingerprint: Option<HdcVector>` and `query_similar()` unlocks
    real capabilities with infrastructure that already exists. SHIP IT.
 
@@ -825,7 +825,7 @@ value independently; the composition is a bonus that arrives later.
 
 ### Recommended implementation order
 
-1. `fingerprint: Option<HdcVector>` on Engram + `query_similar()` (doc 11)
+1. `fingerprint: Option<HdcVector>` on Signal + `query_similar()` (doc 11)
 2. `Calibration` struct on `HeuristicRule` + post-episode updates (doc 14)
 3. `last_used_at` + `access_count` on knowledge/playbook entries (doc 12)
 4. North-star metric instrumentation (doc 15, section 9 only)
@@ -1025,7 +1025,7 @@ These emerged consistently across all 7 audit workstreams as high-value, low-ris
 
 | # | What | Where | Effort | Why |
 |---|---|---|---|---|
-| 1 | **Add HDC fingerprint field to Engram** | `roko-core/src/engram.rs` | 1 day | HdcVector exists (10,240-bit, tested). Episode fingerprinting already works. This is the single highest-value bridge between the learning and memory layers. |
+| 1 | **Add HDC fingerprint field to Signal** | `roko-core/src/__PATH_ENGRAM_RS__0` | 1 day | HdcVector exists (10,240-bit, tested). Episode fingerprinting already works. This is the single highest-value bridge between the learning and memory layers. |
 | 2 | **Unify event enums into `RokoEvent`** | Across 4 crates | 1 week | Four incompatible event enums (2x `AgentEvent`, `RokoEvent`, `ServerEvent`) is the real problem. Unify them. |
 | 3 | **Add generic `Bus<E>` trait to roko-core** | `roko-core/src/traits.rs` | 2-3 days | ~100 lines. Keep it generic (not Pulse-specific). Solves the layer violation. |
 | 4 | **Clean up stale "Signal" references** | traits.rs, README, kind.rs, CLAUDE.md | 1 hour | 40+ stale occurrences across docs and code comments. |
@@ -1087,7 +1087,7 @@ From the reality-check audit:
 | roko-serve routes | 200+ (not ~85) |
 | TUI code | 58K LOC |
 | roko-learn modules | 42 modules, 35,847 LOC |
-| Signal→Engram rename | 99.6% complete (4 real stragglers) |
+| Signal→Signal rename | 99.6% complete (4 real stragglers) |
 | Event bus event types | Exactly 2 (PlanRevision, PrdPublished) |
 | Demurrage in code | 0 lines |
 | Pulse in code | 0 lines |
@@ -1114,7 +1114,7 @@ Overall: **3.8 / 5**
 The diagnosis is correct. The prescription (Pulse, Datum, generalized operators, 7-step TickConfig) is overcomplicated. Fix: unify events, add generic Bus trait, update docs. ~1 week instead of 6-7 weeks.
 
 ### Learning (10-16): SIMPLIFY
-The docs undercount what already exists. roko-learn has 42 modules and 36K LOC. HDC fingerprint field on Engram is the highest-value change. Demurrage/worldviews/replication-ledger are premature.
+The docs undercount what already exists. roko-learn has 42 modules and 36K LOC. HDC fingerprint field on Signal is the highest-value change. Demurrage/worldviews/replication-ledger are premature.
 
 ### Moat (17-21): DEFER/SKEPTICAL
 Zero plugin authors, zero external users. The moat is aspirational. Plugin tier 3 (tool manifests) is useful later. Everything else waits.
@@ -1165,7 +1165,7 @@ Legend:
 | Ref | Title | Verdict | Audit note |
 |---|---|---|---|
 | REF01 | critique one noun | `keep` | The diagnosis is real: transport is under-modeled and the kernel story is too storage-centric. |
-| REF02 | Engram vs Pulse | `keep` | `Pulse` is a good transport noun if used to clarify the redesign rather than force a total renaming campaign. |
+| REF02 | Signal vs Pulse | `keep` | `Pulse` is a good transport noun if used to clarify the redesign rather than force a total renaming campaign. |
 | REF03 | Bus as first class | `keep` | This is the strongest foundational follow-up: unify and formalize transport. |
 | REF04 | operators generalized | `narrow` | Good local idea, bad universal law. Medium polymorphism should be proven operator by operator. |
 | REF05 | loop retold | `keep` | Useful as a reference architecture for the redesign, but should guide migration rather than dictate every interface immediately. |

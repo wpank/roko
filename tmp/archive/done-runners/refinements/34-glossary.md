@@ -35,8 +35,8 @@ implemented as predict-publish-correct Pulses across every operator.
 See `10-self-learning-cybernetic-loops.md` §2.
 
 **ACT** — Step 4 of the seven-step universal loop: execute the
-composed Engram as an LLM call, tool call, or chain call. Produces a
-stream of Pulses and typically a final AgentOutput Engram.
+composed Signal as an LLM call, tool call, or chain call. Produces a
+stream of Pulses and typically a final AgentOutput Signal.
 See `05-loop-retold.md` §3.
 
 **Agent** — A running process or session that drives the universal
@@ -52,7 +52,7 @@ hierarchy when a lower layer is failing (Beer's VSM term). Implemented
 as a Bus Pulse on a priority topic.
 See `10-self-learning-cybernetic-loops.md` §4.
 
-**Annotation** — A typed human-authored Engram attached to a target
+**Annotation** — A typed human-authored Signal attached to a target
 (episode, heuristic, plan, diff). Kinds: Note, Correction, Confirmation,
 Question, Followup. See `30-rich-ux-primitives.md` §3.
 
@@ -60,7 +60,7 @@ Question, Followup. See `30-rich-ux-primitives.md` §3.
 that picks the next action and records confidence.
 See `05-loop-retold.md` §3.
 
-**Attestation** — Cryptographic signature over an Engram's content
+**Attestation** — Cryptographic signature over an Signal's content
 hash. Levels: LocalAgent, OrgRole, ChainWitness.
 See `32-safety-sandbox-provenance.md` §8.
 
@@ -72,16 +72,16 @@ Allow/Confirm/Once/Deny/Escalate. See `32-safety-sandbox-provenance.md` §2.
 
 ## B
 
-**Balance** *(new)* — An Engram's demurrage-taxed attention credit.
+**Balance** *(new)* — An Signal's demurrage-taxed attention credit.
 Starts at 1.0; decays per time; restored by reinforcement.
 See `12-knowledge-demurrage.md` §2.
 
 **BROADCAST** — Step 6b of the seven-step loop (co-equal with
 PERSIST): publish Pulses to the Bus. See `05-loop-retold.md` §3.
 
-**Body** — Engram (or Pulse) payload. Variants: Text, Json, Bytes.
-Reused between Engram and Pulse so graduation is identity.
-See `02-engram-vs-pulse.md` §2.2.
+**Body** — Signal (or Pulse) payload. Variants: Text, Json, Bytes.
+Reused between Signal and Pulse so graduation is identity.
+See `02-signal-vs-pulse.md` §2.2.
 
 **Bus** *(promoted)* — Kernel trait for transport of Pulses; sibling
 to Substrate. Today a struct (`EventBus<E>`) in `roko-runtime`;
@@ -122,12 +122,12 @@ to Bus topics. See `09-phase-2-implications.md` §1.
 insights on-chain. Stubbed today; Phase 2+.
 
 **Chain witness** — An Ed25519 (or similar) signature attesting to an
-Engram's content, committed to a blockchain for cross-deployment
+Signal's content, committed to a blockchain for cross-deployment
 trust. See `32-safety-sandbox-provenance.md` §8,
 `09-phase-2-implications.md` §1.
 
 **Claim** *(new)* — Structured hypothesis derived from a Paper
-Engram; includes falsifier, context, effect size, calibration.
+Signal; includes falsifier, context, effect size, calibration.
 See `16-research-to-runtime.md` §3.
 
 **`claim!` macro** — Build-time macro resolving a ClaimId; produces
@@ -138,7 +138,7 @@ See `16-research-to-runtime.md` §6.
 plan/PRD/parent episode. Unit of c-factor measurement.
 See `13-collective-intelligence-c-factor.md` §2.1.
 
-**Cold tier** — Substrate region for Engrams whose balance hit zero
+**Cold tier** — Substrate region for Signals whose balance hit zero
 under demurrage. Content retained but on slower storage; hash still
 resolvable. See `12-knowledge-demurrage.md` §7.
 
@@ -147,17 +147,17 @@ validated heuristics. See `14-worldview-validation.md` §10,
 `18-competitive-moat.md` §2.2.
 
 **COMPOSE** — Step 3 of the seven-step loop; the Composer assembles
-a prompt Engram under a budget. See `05-loop-retold.md` §3.
+a prompt Signal under a budget. See `05-loop-retold.md` §3.
 
 **Composer** — One of the six operators. Takes a slice of Datum,
-produces an Engram (typically a Prompt). See `04-operators-generalized.md` §7.
+produces an Signal (typically a Prompt). See `04-operators-generalized.md` §7.
 
 **Consistency gate** — Stream-gate that detects semantic drift
-between an agent output and its cited Engram support via HDC.
+between an agent output and its cited Signal support via HDC.
 See `11-hyperdimensional-substrate.md` §8.
 
 **ContentHash** — BLAKE3(kind + body + author + tags). Unique
-identifier for Engrams. See `docs/00-architecture/02-engram-data-type.md`.
+identifier for Signals. See `docs/00-architecture/02-signal-data-type.md`.
 
 **Context** — Today: a struct passed to operator methods carrying
 sidecar state (ctx id, run env, etc.). See existing code.
@@ -174,11 +174,11 @@ See `25-domain-specific-agents.md` §8.2, `32-safety-sandbox-provenance.md` §5.
 and gates Actions. See `docs/00-architecture/13-cognitive-cross-cuts.md`,
 `09-phase-2-implications.md` §9.
 
-**`Datum`** *(new)* — Enum `Datum<'a> { Engram(&'a Engram), Pulse(&'a Pulse) }`
+**`Datum`** *(new)* — Enum `Datum<'a> { Signal(&'a Signal), Pulse(&'a Pulse) }`
 used by polymorphic operators. See `04-operators-generalized.md` §1,
 `08-code-sketches.md` §3.
 
-**Decay** — Engram decay curves: None, HalfLife, Ttl, Ebbinghaus.
+**Decay** — Signal decay curves: None, HalfLife, Ttl, Ebbinghaus.
 Being superseded by Demurrage for attention weighting.
 See `docs/00-architecture/05-decay.md`, `12-knowledge-demurrage.md` §10.
 
@@ -209,18 +209,18 @@ See `docs/00-architecture/10-dreams.md`, `09-phase-2-implications.md` §2.
 **Ebbinghaus** — A decay curve variant modeling forgetting curves.
 See `docs/00-architecture/05-decay.md`.
 
-**Engram** — Durable medium of Roko. Content-addressed, decayed,
-scored, lineage-bearing record. Home type in `roko-core/src/engram.rs`.
-See `02-engram-vs-pulse.md`.
+**Signal** — Durable medium of Roko. Content-addressed, decayed,
+scored, lineage-bearing record. Home type in `roko-core/src/__PATH_ENGRAM_RS__0`.
+See `02-signal-vs-pulse.md`.
 
-**EngramBuilder** — Builder for constructing Engrams. Adds
+**EngramBuilder** — Builder for constructing Signals. Adds
 fingerprint, lineage, score at build time. See existing code.
 
 **Envelope** *(historical, `roko-runtime`)* — Wrapper around generic
 event `E` carrying seq + timestamp. Being retired for `Pulse`.
-See `02-engram-vs-pulse.md` §2, `07-naming.md` §9.
+See `02-signal-vs-pulse.md` §2, `07-naming.md` §9.
 
-**Episode** — An Engram kind recording a full agent turn (inputs,
+**Episode** — An Signal kind recording a full agent turn (inputs,
 tool calls, output, verdicts). See existing code.
 
 **Event** *(historical, avoided as a type name)* — Too generic;
@@ -243,7 +243,7 @@ specifying what observable would refute it.
 See `14-worldview-validation.md` §2, `16-research-to-runtime.md` §13.
 
 **Fingerprint** *(new)* — 10,240-bit HDC vector attached to every
-Engram at put time; indexes similarity queries.
+Signal at put time; indexes similarity queries.
 See `11-hyperdimensional-substrate.md` §3.
 
 **Fleet** — Roster of agents (deployment-scoped). Formerly Clade.
@@ -256,17 +256,17 @@ See historical naming notes.
 **Gamma** — Fastest cognitive speed (5–15 s). Used by per-turn loops.
 See `docs/00-architecture/10-heartbeat.md`.
 
-**Gate** — One of six operators; verifies an Engram or Pulse window
+**Gate** — One of six operators; verifies an Signal or Pulse window
 against external truth. See `04-operators-generalized.md` §5.
 
-**GateVerdict** — Engram kind produced by a Gate. Body includes pass/fail,
+**GateVerdict** — Signal kind produced by a Gate. Body includes pass/fail,
 reason, evidence. See existing code.
 
 **Golem** *(historical)* — Old name for Agent. Retired.
 
-**Graduation** *(new)* — Converting a Pulse into an Engram for
+**Graduation** *(new)* — Converting a Pulse into an Signal for
 durable persistence. Canonical path from transport to audit DAG.
-See `02-engram-vs-pulse.md` §3, `08-code-sketches.md` §1.
+See `02-signal-vs-pulse.md` §3, `08-code-sketches.md` §1.
 
 **Grimoire** *(historical)* — Old name for Neuro. Retired.
 
@@ -289,7 +289,7 @@ See `11-hyperdimensional-substrate.md`.
 `heartbeat.theta.tick`, `heartbeat.delta.tick` Pulses.
 See `09-phase-2-implications.md` §7.
 
-**Heuristic** *(new)* — First-class Engram variant with
+**Heuristic** *(new)* — First-class Signal variant with
 preconditions, prediction, calibration, lineage, receipts.
 See `14-worldview-validation.md`.
 
@@ -302,7 +302,7 @@ See `11-hyperdimensional-substrate.md` §1.
 ## I
 
 **Identity fingerprint** — HDC vector characterizing an agent's
-recent Engrams; used for team discovery and diversity tracking.
+recent Signals; used for team discovery and diversity tracking.
 See `11-hyperdimensional-substrate.md` §10.
 
 **Intrinsic motivation** — Policy biasing attention toward high
@@ -313,7 +313,7 @@ prediction-error regions. See `10-self-learning-cybernetic-loops.md` §11.
 ## K
 
 **Kernel** *(Roko-specific)* — The set of types and traits in
-`roko-core` that every other crate depends on. Includes Engram,
+`roko-core` that every other crate depends on. Includes Signal,
 Pulse, Substrate, Bus, Scorer, Gate, Router, Composer, Policy.
 See `04-operators-generalized.md` §10.
 
@@ -332,7 +332,7 @@ of Styx. Phase 2+. See `09-phase-2-implications.md` §1.
 Harness, Orchestration. Strictly downward dependencies.
 See `docs/00-architecture/12-five-layer-taxonomy.md`.
 
-**Lineage** — `Vec<ContentHash>` on an Engram pointing at its parents
+**Lineage** — `Vec<ContentHash>` on an Signal pointing at its parents
 in the audit DAG. See existing code.
 
 **`loop_tick`** — The universal cognitive loop function in
@@ -389,20 +389,20 @@ See `10-self-learning-cybernetic-loops.md` §2.2.
 **PAD vector** — Pleasure-Arousal-Dominance affective state;
 maintained by Daimon. See `docs/00-architecture/09-daimon.md`.
 
-**Paper** *(new)* — Engram kind representing an academic paper,
+**Paper** *(new)* — Signal kind representing an academic paper,
 with DOI, authors, abstract, fingerprint, claims.
 See `16-research-to-runtime.md` §2.
 
-**PERSIST** — Step 6a of the seven-step loop; write an Engram to
+**PERSIST** — Step 6a of the seven-step loop; write an Signal to
 Substrate. See `05-loop-retold.md` §3.
 
-**Pheromone** — Engram kind used for stigmergic coordination between
+**Pheromone** — Signal kind used for stigmergic coordination between
 agents. See `09-phase-2-implications.md` §3.
 
-**Plan** — Engram kind representing a structured multi-task plan
+**Plan** — Signal kind representing a structured multi-task plan
 with DAG edges. See existing code.
 
-**Playbook** — Engram kind storing a distilled reusable action
+**Playbook** — Signal kind storing a distilled reusable action
 sequence. See existing code; relationship to heuristics in
 `14-worldview-validation.md` §1.
 
@@ -411,10 +411,10 @@ prompts, profiles, manifests, native, WASM.
 See `17-plugin-extension-architecture.md`.
 
 **Policy** — One of six operators; reacts to streams of Pulses,
-emits new Pulses and Engrams. See `04-operators-generalized.md` §8.
+emits new Pulses and Signals. See `04-operators-generalized.md` §8.
 
 **`PolicyOutputs`** *(new)* — Return type of `Policy::decide`;
-contains `{ pulses, engrams }`. See `04-operators-generalized.md` §8.
+contains `{ pulses, signals }`. See `04-operators-generalized.md` §8.
 
 **Prediction Pulse** *(new)* — Pulse on `prediction.*` topic
 emitted by an operator when it makes a decision; matched to a
@@ -437,11 +437,11 @@ a folding function. See `26-statehub-rearchitecture.md` §3.
 See `24-deployment-ux.md` §2, `25-domain-specific-agents.md` §9.
 
 **Provenance** — Full author/trust/taint/attestation record on an
-Engram. See existing code.
+Signal. See existing code.
 
 **Pulse** *(new)* — Ephemeral medium of Roko. Typed,
 sequence-numbered, topic-addressed, ring-buffered message.
-Lives on a Bus. Can graduate to Engram. See `02-engram-vs-pulse.md`.
+Lives on a Bus. Can graduate to Signal. See `02-signal-vs-pulse.md`.
 
 **`PulseSource`** *(new)* — Light origin attribution struct on
 every Pulse: `{ component, agent_id }`.
@@ -451,7 +451,7 @@ See `08-code-sketches.md` §1.
 
 ## Q
 
-**`query_similar`** *(new)* — Substrate method returning Engrams
+**`query_similar`** *(new)* — Substrate method returning Signals
 whose HDC fingerprint is within `radius` of a query fingerprint.
 See `11-hyperdimensional-substrate.md` §4.
 
@@ -460,9 +460,9 @@ See `11-hyperdimensional-substrate.md` §4.
 ## R
 
 **REACT** — Step 7 of the seven-step loop: Policy.decide produces
-new Pulses + Engrams. See `05-loop-retold.md` §3.
+new Pulses + Signals. See `05-loop-retold.md` §3.
 
-**Reinforcement** *(new, demurrage)* — Bonus to an Engram's balance
+**Reinforcement** *(new, demurrage)* — Bonus to an Signal's balance
 when it's cited, retrieved, gated, surprises, or agent-quoted.
 See `12-knowledge-demurrage.md` §2, §3.
 
@@ -490,7 +490,7 @@ Bus, Substrate. See `crates/roko-runtime/`.
 **Scaffold** — One of three deliverable surfaces. Roughly: the
 structure that agents compose within. See `docs/00-architecture/12-five-layer-taxonomy.md` L2.
 
-**Score** — 7-axis appraisal attached to an Engram by the Scorer.
+**Score** — 7-axis appraisal attached to an Signal by the Scorer.
 See `docs/00-architecture/04-seven-axis-score.md`.
 
 **Scorer** — One of six operators; computes Score for any Datum.
@@ -503,14 +503,14 @@ sources (Substrate, Bus, external I/O). See `05-loop-retold.md` §3.
 ephemeral unless graduated. Transcripts exportable.
 See `23-user-ux-running-agents.md` §12.
 
-**Signal** *(historical)* — Old name for Engram. Retired in 877:5
+**Signal** *(historical)* — Old name for Signal. Retired in 877:5
 rename. See `07-naming.md` §2.2.
 
 **SPI** — Service Provider Interface; the extension-point surface
 for plugins. See `17-plugin-extension-architecture.md`.
 
 **Stigmergy** — Indirect coordination via shared environment
-(Grassé 1959). Implemented as Pheromone Engrams + `mesh.pheromone.*`
+(Grassé 1959). Implemented as Pheromone Signals + `mesh.pheromone.*`
 Pulses. See `09-phase-2-implications.md` §3.
 
 **StateHub** *(promoted)* — Kernel projection layer. Today
@@ -520,7 +520,7 @@ See `26-statehub-rearchitecture.md`.
 **Styx** *(historical)* — Old name for Agent mesh. Split into
 Mesh and Korai.
 
-**Substrate** — Kernel trait for storage of Engrams.
+**Substrate** — Kernel trait for storage of Signals.
 See `docs/00-architecture/07-substrate-trait.md`, `03-bus-as-first-class.md` §1.
 
 **Swarm** — Collective of agents subscribed to the same topic set;
@@ -531,7 +531,7 @@ outputs union across agents. See `09-phase-2-implications.md` §6.
 ## T
 
 **Taint** — Metadata indicating untrusted input origin; propagates
-through derived Engrams. See `32-safety-sandbox-provenance.md` §7.
+through derived Signals. See `32-safety-sandbox-provenance.md` §7.
 
 **Theta** — Middle cognitive speed (~75 s). Used by the main plan-
 execute loop. See `docs/00-architecture/10-heartbeat.md`.
@@ -570,11 +570,11 @@ See `05-loop-retold.md`.
 ## V
 
 **Verdict** — Output of a Gate. Always materialized as a
-`GateVerdict` Engram so the audit DAG is preserved.
+`GateVerdict` Signal so the audit DAG is preserved.
 See `04-operators-generalized.md` §5.
 
 **VERIFY** — Step 5 of the seven-step loop: Gate (or stream-gate)
-verifies an Engram (or Pulse window) and emits a Verdict.
+verifies an Signal (or Pulse window) and emits a Verdict.
 See `05-loop-retold.md` §3.
 
 ---
@@ -590,7 +590,7 @@ bound; used by Calibration. See `14-worldview-validation.md` §2.
 
 **WisdomGate** — Gate enforcing Surowiecki's four conditions
 (diversity, independence, decentralization, aggregation) before
-a consensus Engram is finalized.
+a consensus Signal is finalized.
 See `13-collective-intelligence-c-factor.md` §4.
 
 **Worldview** *(new)* — Co-citation cluster of mutually-supporting
@@ -607,7 +607,7 @@ These appear in historical code or docs; do not use in new work.
 
 | Old | Replaced by | Reason |
 |---|---|---|
-| `Signal` (durable) | `Engram` | 877:5 rename already landed |
+| `Signal` (durable) | `Engram (renamed to Signal in 2026-08-12)` | 877:5 rename already landed |
 | `Signal` (ephemeral) | `Pulse` | Naming-cleanup cost too high to reclaim |
 | `EventBus<E>` | `Bus` trait + `Pulse` | Ad-hoc generic; not canonical |
 | `Envelope<E>` | `Pulse` | Implementation name leaked out |
@@ -617,7 +617,7 @@ These appear in historical code or docs; do not use in new work.
 | `Styx` | `Mesh` + `Korai` | Split into two clearer concepts |
 | `Grimoire` | `Neuro` | Less mystical |
 | `Clade` | `Fleet` | More conventional |
-| `decay` (field on Engram) | `balance` + `demurrage` | Demurrage supersedes time-only decay |
+| `decay` (field on Signal) | `balance` + `demurrage` | Demurrage supersedes time-only decay |
 
 ## Terms deliberately not defined here
 

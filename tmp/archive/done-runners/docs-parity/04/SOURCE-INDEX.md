@@ -21,9 +21,9 @@ Generated: 2026-04-18
 | Anchor | Why it matters |
 |---|---|
 | `crates/roko-core/src/traits.rs:102-108` | canonical `Gate` trait |
-| `crates/roko-core/src/engram.rs:131-136` | `Engram::derive(...)` lineage helper |
-| `crates/roko-core/src/engram.rs:161-173` | builder defaults (`Decay::None`, neutral score, empty lineage/tags) |
-| `crates/roko-core/src/engram.rs:185-187` | explicit `.decay(...)` setter |
+| `crates/roko-core/src/__PATH_ENGRAM_RS__0:131-136` | `Engram::derive(...)` lineage helper |
+| `crates/roko-core/src/__PATH_ENGRAM_RS__0:161-173` | builder defaults (`Decay::None`, neutral score, empty lineage/tags) |
+| `crates/roko-core/src/__PATH_ENGRAM_RS__0:185-187` | explicit `.decay(...)` setter |
 | `crates/roko-core/src/decay.rs:21-30` | `Decay::HalfLife` contract |
 | `crates/roko-core/src/decay.rs:57-86` | decay application behavior |
 | `crates/roko-core/src/decay.rs:104-107` | `Decay::WISDOM` = 24h half-life |
@@ -82,7 +82,7 @@ Generated: 2026-04-18
 | `crates/roko-cli/src/orchestrate.rs:4100-4104` | threshold load path |
 | `crates/roko-cli/src/orchestrate.rs:4563-4568` | threshold save path |
 | `crates/roko-cli/src/orchestrate.rs:12604-12732` | `run_gate_pipeline(...)` |
-| `crates/roko-cli/src/orchestrate.rs:12635-12646` | persisted `GateVerdict` engrams |
+| `crates/roko-cli/src/orchestrate.rs:12635-12646` | persisted `GateVerdict` signals |
 | `crates/roko-cli/src/orchestrate.rs:12706-12715` | conductor `Kind::GateVerdict` signal |
 | `crates/roko-cli/src/orchestrate.rs:12800-12805` | post-merge rung-3 follow-up |
 | `crates/roko-cli/src/orchestrate.rs:12913-12930` | `run_gate_rung(...)` wrapper |
@@ -116,7 +116,7 @@ Generated: 2026-04-18
 ## Stale Anchors To Remove
 
 - `orchestrate.rs:11144-11272` for `run_gate_pipeline`
-- `orchestrate.rs:11175-11185` for persisted verdict engrams
+- `orchestrate.rs:11175-11185` for persisted verdict signals
 - `orchestrate.rs:11246` for conductor `GateVerdict`
 - `orchestrate.rs:11339` for post-merge follow-up
 - `orchestrate.rs:11423-11461` as if it still contained the real rung mapping

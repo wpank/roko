@@ -14,7 +14,7 @@ Use this file for TUI completion work and dashboard/TUI parity checks.
 - [ ] Finish subview parity where enums already exist.
   - Provider Health
   - Model Comparison
-  - Engram DAG
+  - Signal DAG
   - Episode Replay
   - Knowledge Browse
 - [ ] Fix data refresh behavior before adding cosmetic widgets.

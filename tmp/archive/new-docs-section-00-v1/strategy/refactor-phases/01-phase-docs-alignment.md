@@ -21,7 +21,7 @@ Remove terminology drift from the architecture documentation and make the later 
 
 ## Scope
 
-- Rewrite foundational architecture chapters to the two-medium (`Engram` / `Pulse`) and two-fabric (`Substrate` / `Bus`) framing.
+- Rewrite foundational architecture chapters to the two-medium (`Signal` / `Pulse`) and two-fabric (`Substrate` / `Bus`) framing.
 - Remove stale equivalence disclaimers from the canonical narrative.
 - Ensure the glossary defines all load-bearing names once, with cross-references from every chapter that introduces them.
 - Synchronize loop, layer, and cross-cut terminology with the newer vocabulary.
@@ -39,12 +39,12 @@ If kernel work slips, the docs can still describe the intended shape; the chapte
 
 ## Deliverables
 
-1. Architecture chapters describe `Engram` as the durable medium and `Pulse` as its ephemeral sibling.
+1. Architecture chapters describe `Signal` as the durable medium and `Pulse` as its ephemeral sibling.
 2. `Bus` is treated as a kernel fabric, not a later proposal, across all relevant chapters.
 3. `Topic` and `TopicFilter` are named as first-class routing concepts with glossary entries.
 4. The universal loop chapter reads as seven steps with co-equal `PERSIST` and `BROADCAST`.
 5. The five-layer taxonomy places `Bus` at Layer 0 alongside `Substrate`.
-6. Glossary (`GLOSSARY.md`) has entries for: `Engram`, `Pulse`, `Bus`, `Topic`, `TopicFilter`, `Datum`, `PulseSource`.
+6. Glossary (`GLOSSARY.md`) has entries for: `Signal`, `Pulse`, `Bus`, `Topic`, `TopicFilter`, `Datum`, `PulseSource`.
 7. No canonical chapter still relies on a stale equivalence disclaimer as its primary explanation.
 
 ---
@@ -52,7 +52,7 @@ If kernel work slips, the docs can still describe the intended shape; the chapte
 ## Exit Criteria
 
 - [ ] The architecture chapter set consistently uses the two-medium / two-fabric framing.
-- [ ] `GLOSSARY.md` has entries for `Engram`, `Pulse`, `Bus`, `Topic`, and `TopicFilter`.
+- [ ] `GLOSSARY.md` has entries for `Signal`, `Pulse`, `Bus`, `Topic`, and `TopicFilter`.
 - [ ] The loop chapter (`reference/06-loop/`) and the layer chapter (`reference/08-layers/`) both reflect the seven-step / L0 Bus framing.
 - [ ] No canonical chapter still relies on the old equivalence disclaimer as its primary explanation.
 

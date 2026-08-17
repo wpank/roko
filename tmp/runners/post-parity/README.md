@@ -1,5 +1,13 @@
 # Post-Parity Runner
 
+> **What is this?** The largest runner (345 batches) covering full roko maturation after
+> the mega-parity milestone. Spans wiring fixes, architecture convergence, UX improvements,
+> safety hardening, observability, and GTM readiness. Includes deferred ACP items
+> (session concurrency, mood ring, dream journal, tournament). This is the comprehensive
+> runner for post-parity work.
+>
+> **Last updated: 2026-08-13**
+
 **Purpose**: Full roko maturation — from wiring fixes through architecture convergence to GTM readiness.
 **Assumes**: All 195 mega-parity batches landed on `wp-arch2`.
 **Approach**: Merged implementation plans (01-19) with existing post-parity wiring tasks, ordered by impact.

@@ -26,7 +26,7 @@
 | 14 | E14 | Providers & Tools | 10 | M1 | tasks.toml authored |
 | 15 | E15 | MCP Config & Passthrough | 7 | M1 | tasks.toml authored |
 | 16 | E16 | PRD Self-Hosting | 2 | M1 | tasks.toml authored |
-| 17 | E17 | ACP Completion | 6 | M2 | tasks.toml authored |
+| 17 | E17 | ACP Completion | 8 | M2 | tasks.toml authored |
 | 18 | E18 | Docs, Config, CI & Ops | 15 | M2 | tasks.toml authored |
 | 19 | E19 | Signal Protocol | 10 | Phase 1 | tasks.toml authored |
 | 20 | E20 | Cell Unification | 10 | Phase 1 | tasks.toml authored |
@@ -328,7 +328,7 @@ After E01 completes, these are independent and fully parallelizable:
 | Conductor | E08 | 9 | Yes |
 | Observability | E09 | 11 | Yes |
 | Frontend | E10 (after E03) | 7 | Yes |
-| ACP | E17 (after E04+E07+E15) | 6 | After deps |
+| ACP | E17 (after E04+E07+E15) | 8 | After deps |
 | Docs/CI/Ops | E18 | 15 | Mostly yes |
 | Security full | E04 (remaining) | ~14 | Yes |
 

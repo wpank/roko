@@ -32,7 +32,7 @@ and the roadmap assumes 5-7 engineers. Fix these.
 ## Current state (evidence)
 
 1. **Synergy matrix (REF31)**: 10 "load-bearing primitives" listed. Audit
-   found: Engram (YES), Pulse (NO), Bus trait (NO -- EventBus<E> struct exists),
+   found: Signal (YES), Pulse (NO), Bus trait (NO -- EventBus<E> struct exists),
    Substrate (YES), HDC (PARTIAL), Demurrage (NO), Heuristics (MINIMAL),
    c-factor (PARTIAL), Replication ledger (NO), Plugin SPI (NO). Score: 3 of 10
    exist meaningfully.
@@ -60,7 +60,7 @@ In `docs/00-architecture/34-synergy-integration-map.md`:
 - Add an implementation-status callout at the top listing which primitives
   actually exist:
   `> **Implementation status**: Of the 10 primitives in this matrix, 3 exist
-  > fully (Engram, Substrate, EventBus), 2 partially (HDC fingerprint,
+  > fully (Signal, Substrate, EventBus), 2 partially (HDC fingerprint,
   > c-factor), and 5 are target-state only (Pulse, Bus trait, Demurrage,
   > Heuristic commons, Replication ledger, Plugin SPI). Synergy cells
   > involving unbuilt primitives are aspirational.`
@@ -160,7 +160,7 @@ In `docs/00-architecture/35-consolidated-roadmap.md`:
 5. **Do not touch architecture foundation docs** (02b, 07b, 08, 09) -- those
    are AUD02's scope.
 6. **Do not touch interfaces/deployment docs** -- those are AUD05's scope.
-7. **Do not fix Signal->Engram references** -- that is AUD07's scope.
+7. **Do not fix Signal->Signal references** -- that is AUD07's scope.
 
 ## Done when
 

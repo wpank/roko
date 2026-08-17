@@ -20,7 +20,7 @@ pub trait Composer: Send + Sync {
 |---|---|---|
 | `system_prompt` | `String` | Assembled prompt |
 | `estimated_tokens` | `usize` | Token estimate |
-| `included_engrams` | `Vec<ContentHash>` | Engrams used |
+| `included_engrams` | `Vec<ContentHash>` | Signals used |
 
 ## `ComposerError` Variants
 

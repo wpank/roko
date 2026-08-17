@@ -1,5 +1,18 @@
 # Runtime Convergence + Demo Batches
 
+> **What is this?** The comprehensive convergence plan for migrating from
+> `orchestrate.rs` to the v2 WorkflowEngine. 87 batches across 13 tracks covering
+> foundation fixes, service enhancement, engine enhancement, CLI wiring, observability,
+> legacy retirement, demo features, integration tests, daimon refactoring, gateway
+> consolidation, knowledge feedback, security hardening, and layering firewalls.
+>
+> **Note (2026-08-13):** `orchestrate.rs` has been deleted. The feature-gate strategy
+> described here (Track R) was completed, and the legacy code is no longer in tree.
+> The Engram-to-Signal rename referenced in some Track K batches is also complete
+> (`pub type Signal = Engram` in roko-core).
+>
+> **Last updated: 2026-08-13**
+
 Runner: `tmp/runners/converge/run-converge.sh`
 Strategy: Feature-gate `orchestrate.rs` behind `legacy-orchestrate`, new engine default, `--engine legacy` for old path.
 

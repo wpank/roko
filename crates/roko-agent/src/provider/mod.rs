@@ -198,8 +198,13 @@ pub fn create_agent_for_model(
     // whether it was valid. Provider adapters and their inner agents receive
     // only the safe identity, so even an infallible construction path cannot
     // retain or later expose a rejected secret-shaped/control-bearing value.
+    //
+    // An empty name means "let the adapter choose" — skip the scrub so the
+    // adapter's default naming (e.g. `gemini-compat:{slug}`) is preserved.
     let requested_agent_id = options.name.clone();
-    options.name = safe_provider_agent_identity(&requested_agent_id).0;
+    if !requested_agent_id.is_empty() {
+        options.name = safe_provider_agent_identity(&requested_agent_id).0;
+    }
     roko_core::validate_model_input_messages(&options.input_messages)
         .map_err(AgentCreationError::InvalidImageInput)?;
     let has_images = crate::multimodal::contains_images(&options.input_messages);
@@ -340,9 +345,17 @@ pub fn create_agent_for_model(
             adapter.create_agent(&provider_config, &profile, &options)
         })
     })?;
+    // When no explicit agent ID was requested, use the adapter-chosen name
+    // (e.g. `gemini-compat:{slug}`) so the immune boundary inherits a valid
+    // identity instead of rejecting an empty string.
+    let effective_agent_id = if requested_agent_id.is_empty() {
+        agent.name().to_string()
+    } else {
+        requested_agent_id
+    };
     Ok(wrap_provider_agent(
         agent,
-        &requested_agent_id,
+        &effective_agent_id,
         options.effective_immune_root(),
     ))
 }

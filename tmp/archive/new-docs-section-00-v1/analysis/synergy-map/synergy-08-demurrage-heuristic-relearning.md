@@ -61,7 +61,7 @@ S2 is reactive; S8 is preventive. Together they form a complete confidence manag
 
 ### The economic intuition
 
-Demurrage on Engrams prevents memory from accumulating indefinitely (S1). Demurrage on heuristic
+Demurrage on Signals prevents memory from accumulating indefinitely (S1). Demurrage on heuristic
 confidence prevents *certainty* from accumulating indefinitely. The same economic primitive
 applies at two different levels of the architecture: the storage level (what records to keep)
 and the knowledge level (how confident to remain in a given rule).
@@ -121,9 +121,9 @@ The calibration subscriber is also target-state (see S2).
 
 - **S2** (Heuristics × Pulse × Bus): S8 is the complement of S2. S2 responds to evidence; S8
   responds to its absence. Both act on the same heuristic confidence weight.
-- **S1** (Demurrage × HDC): S1 applies demurrage to Engram persistence; S8 applies demurrage to
+- **S1** (Demurrage × HDC): S1 applies demurrage to Signal persistence; S8 applies demurrage to
   heuristic confidence. Same primitive, different target.
-- **S4** (Replication ledger × Heuristics × paper Engram): A falsified claim in the ledger
+- **S4** (Replication ledger × Heuristics × paper Signal): A falsified claim in the ledger
   lowers heuristic confidence via the ledger propagation mechanism. S8's decay serves the same
   direction but through a different pathway (temporal vs. evidence-driven).
 - **S6** (c-factor × Heuristics): Peer-model heuristics are subject to the same decay as world-
@@ -146,7 +146,7 @@ two forces are applied consistently on the same confidence value.
 ## Cross-References
 
 - [`analysis/synergy-map/synergy-02-heuristics-pulse-bus.md`](synergy-02-heuristics-pulse-bus.md) — S2: the evidence-driven complement of S8
-- [`analysis/synergy-map/synergy-01-demurrage-x-hdc.md`](synergy-01-demurrage-x-hdc.md) — S1: demurrage on Engrams (parallel application of the same primitive)
+- [`analysis/synergy-map/synergy-01-demurrage-x-hdc.md`](synergy-01-demurrage-x-hdc.md) — S1: demurrage on Signals (parallel application of the same primitive)
 - [`analysis/synergy-map/synergy-04-replication-living-research.md`](synergy-04-replication-living-research.md) — S4: ledger-driven confidence reduction (compare with temporal decay)
 - [`analysis/readiness-audit/subsystem-learning.md`](../readiness-audit/subsystem-learning.md) — learning gaps relevant to confidence management
 - [`analysis/synergy-map/99-master-synergy-table.md`](99-master-synergy-table.md) — synergy index

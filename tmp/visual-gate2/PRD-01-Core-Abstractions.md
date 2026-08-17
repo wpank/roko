@@ -14,7 +14,7 @@
 This document defines the kernel of the unified evaluation framework: the trait
 definitions, type system, and contracts that every other PRD builds on. Everything
 lives in `crates/roko-eval/`. No external dependencies beyond `roko-core` (for
-`Engram`, `Score`, `Verdict`, `Context`, `Verify`, `ContentHash`).
+`Signal`, `Score`, `Verdict`, `Context`, `Verify`, `ContentHash`).
 
 The three primitives:
 
@@ -1126,7 +1126,7 @@ impl Criterion for LegacyCriterion {
         let payload = GatePayload::in_dir(
             artifact.path.clone().unwrap_or_else(|| PathBuf::from("."))
         );
-        let signal = Engram::builder(Kind::Task)
+        let signal = Signal::builder(Kind::Task)
             .body(Body::from_json(&payload).map_err(|e| EvalError::Configuration {
                 message: format!("failed to serialize GatePayload: {e}"),
             })?)

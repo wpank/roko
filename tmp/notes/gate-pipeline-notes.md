@@ -1,5 +1,9 @@
 # Gate Pipeline Analysis
 
+> **STALE**: Analysis from May 2026. The 7-rung pipeline with adaptive EMA thresholds is
+> fully wired in `runner/gate_dispatch.rs`. See `crates/roko-gate/` for gate implementations.
+> Last updated: 2026-08-13
+
 ## Current 7-rung pipeline
 1. Format check (clippy)
 2. Compile gate

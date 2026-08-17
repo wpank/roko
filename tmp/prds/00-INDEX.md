@@ -1,5 +1,20 @@
 # Roko + Korai: Unified Architecture PRDs
 
+> **What is this?** PRDs (Product Requirement Documents) capture work items for roko.
+> Roko can read PRDs, generate implementation plans, and execute them via agents
+> (see `roko prd` and `roko plan` CLI subcommands).
+>
+> **Status of this directory:** These PRDs in `tmp/prds/` are **historical/reference
+> copies** from the original architecture design phase (mid-2026). The canonical,
+> machine-readable PRD storage is `.roko/prd/` (managed by `roko prd idea/draft/plan`
+> commands). Documents here should be treated as **archived design context**, not
+> as the active work queue.
+>
+> See [impl/STATUS.md](impl/STATUS.md) for an honest audit of which items are
+> wired vs. still stubbed. See `.roko/GAPS.md` for the canonical gap tracker.
+
+Last updated: 2026-08-13
+
 ## Document Set
 
 ### PRD Documents (Architecture & Design)

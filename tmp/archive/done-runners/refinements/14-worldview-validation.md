@@ -2,7 +2,7 @@
 
 > **TL;DR**: Agents don't just accumulate facts — they accumulate
 > *heuristics*, *priors*, and *mental models*. These are the most
-> valuable Engrams in the system and the most dangerous if stale.
+> valuable Signals in the system and the most dangerous if stale.
 > This doc proposes a structured type — `Heuristic` — with
 > explicit pre/post conditions, a track record, and a calibration
 > score. Every episode either reinforces, violates, or extends a
@@ -40,7 +40,7 @@ do, not what to do it with.
 
 ## 2. The `Heuristic` type
 
-A first-class Engram variant:
+A first-class Signal variant:
 
 ```rust
 pub struct Heuristic {
@@ -82,7 +82,7 @@ pub struct Calibration {
 ```
 
 `Predicate` is a small, extensible enum that can be matched against
-a situation Engram:
+a situation Signal:
 
 ```rust
 pub enum Predicate {
@@ -109,7 +109,7 @@ Heuristics are born three ways:
    distillation in `roko-learn`, but emitting a *precondition →
    prediction* rather than a sequence of steps.
 2. **Stated** by an agent explicitly: "I think X, because Y." The
-   agent writes a Heuristic Engram as a tool-call; other agents see
+   agent writes a Heuristic Signal as a tool-call; other agents see
    it; it enters the calibration loop.
 3. **Imported** from research (see `16-research-to-runtime.md`).
 
@@ -160,7 +160,7 @@ veterans with 200 until one fails.
 
 Heuristics don't get deleted. Their balance (see `12-knowledge-demurrage.md`)
 decays, they move to cold tier, but their hash remains valid so any
-Engram that cited them still has a resolvable lineage. *History is
+Signal that cited them still has a resolvable lineage. *History is
 preserved, attention is not owed*.
 
 ### 3.5 Evolution
@@ -290,7 +290,7 @@ No other framework offers this. It's net-new product surface area.
 
 ## 10. Sharing heuristics across deployments
 
-Because heuristics are content-addressed Engrams with calibration
+Because heuristics are content-addressed Signals with calibration
 metadata, they're *exportable and importable* between Roko
 instances:
 
@@ -324,7 +324,7 @@ lineage + HDC + active inference all being in the same system.
 
 Fast path:
 
-1. Add `Heuristic` Engram variant + `Predicate` enum. Two days.
+1. Add `Heuristic` Signal variant + `Predicate` enum. Two days.
 2. Wire heuristic retrieval into the Composer (prompt injection). One day.
 3. Wire Calibrator into the post-episode Policy pass. Two days.
 4. Implement co-citation-based Worldview clustering. One week.

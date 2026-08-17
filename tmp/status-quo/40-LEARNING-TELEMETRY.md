@@ -154,7 +154,7 @@ The `Episode` struct (`episode_logger.rs:169-269`) is a **bespoke append-only JS
 | `prompt_composition: Option<Value>` | — | which prompt sections/tokens/truncations produced the system prompt |
 | `extra: HashMap` | — | forward-compat bag, ≤ `MAX_EXTRA_BYTES` |
 
-**Three episode roots** (unchanged, the canonical-root defect): `.roko/episodes.jsonl` (Runner v2 `layout.root_episodes_path()` + orchestrate's direct logger `orchestrate.rs:12316`), `.roko/learn/episodes.jsonl` (LearningRuntime fan-out), `.roko/memory/episodes.jsonl` (🕰️ stale since 2026-05-02, nothing current writes). Same logical turn can land in ≥2 roots depending on dispatch surface.
+**Historical finding (resolved 2026-08-14):** three episode roots previously coexisted. Layout V3 now makes `.roko/episodes.jsonl` the sole active sink; migration merges and de-duplicates the former root/learn/memory records, quarantines malformed bytes, preserves source archives, and removes the obsolete active paths.
 
 ## V2-aligned
 
@@ -181,7 +181,7 @@ Same episode on different surfaces gets different learning treatment. Any naviga
 
 **Debt items:**
 - 11 stale `cascade-router.json.tmp.<pid>.<seq>` files still in `.roko/learn/` on 07-08 (10 zero-byte, 1×3224B, 1×5236B partial) — atomic-rename temp files leak on interrupted saves; no cleanup pass (see checklist).
-- **Triple episode roots** (draft claim confirmed): `.roko/episodes.jsonl` (Runner v2 `layout.root_episodes_path()`, `roko-fs/src/layout.rs:229-231`; plus orchestrate's direct logger `orchestrate.rs:12316`), `.roko/learn/episodes.jsonl` (LearningRuntime), `.roko/memory/episodes.jsonl` (stale since 2026-05-02 — a 🕰️ third root nothing current writes).
+- **Triple episode roots — resolved 2026-08-14:** layout V3 converges active access on `.roko/episodes.jsonl` and losslessly migrates the former learn/memory roots.
 - `roko learn tune gates|routing|budget` is a read-only viewer masquerading as a tuner (`commands/learn.rs:64-110`); CLAUDE.md advertises "Tune adaptive thresholds".
 - `#[deprecated] record_outcome` shim (`cascade_router.rs:1247-1253`) still awaiting caller migration.
 - 55-line crate-wide clippy allow block (`lib.rs:25-76`).

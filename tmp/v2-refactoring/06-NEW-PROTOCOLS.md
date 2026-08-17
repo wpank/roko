@@ -1,5 +1,15 @@
 # Phase 1C: New Protocol Traits — Observe, Connect, Trigger
 
+> **What is this?** Design for three new protocol traits that complete the v2 spec's
+> nine-protocol set. V1 has six protocols (Store, Score, Verify, Route, Compose, React);
+> these three (Observe, Connect, Trigger) formalize patterns that currently exist as
+> ad-hoc implementations scattered across crates.
+>
+> **Status:** Not started. Each trait should be added with at least one implementation
+> and a wire target (see 02-WIRING-STRATEGY.md).
+>
+> **Last updated: 2026-08-13**
+
 ## What Changes
 
 V2 defines 9 protocols. V1 has 6 (Store, Score, Verify, Route, Compose, React).

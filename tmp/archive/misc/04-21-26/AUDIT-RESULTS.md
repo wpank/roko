@@ -188,7 +188,7 @@ contract: numeric `frequency` and arbitrary numeric metrics under `metrics`.
 
 ### C3: Inspect sub-views (14/14)
 
-- [x] `render()` dispatches on `view_state.sub_tab` (0=overview, 1=engram, 2=episode, 3=knowledge)
+- [x] `render()` dispatches on `view_state.sub_tab` (0=overview, 1=signal, 2=episode, 3=knowledge)
 - [x] Overview sub_tab renders unchanged
 - [x] `render_engram_dag()` renders with truncated hashes and ASCII tree
 - [x] `render_engram_dag()` confidence bars — uses typed signal confidence with bounded scroll/selection helpers
@@ -268,7 +268,7 @@ All 10 items are in `/Users/will/dev/nunchi/nunchi-dashboard`, not verifiable fr
 ### 10-03: TUI polish and cross-surface verification (5/8)
 
 - [x] Continue TUI work in existing tab/subview model — F8/F9 tabs, marketplace/atelier views
-- [x] Finish subview parity (Provider Health, Model Comparison, Engram DAG, Episode Replay, Knowledge Browse) — all 5 implemented
+- [x] Finish subview parity (Provider Health, Model Comparison, Signal DAG, Episode Replay, Knowledge Browse) — all 5 implemented
 - [x] Fix data refresh before cosmetic widgets — incremental cursors, `JsonlCursor`, `DashboardDataStamps` fingerprinting
 - [ ] Add polish (command palette, density modes, widget ports, performance audits) — NOT implemented
 - [ ] Run cross-surface parity checks — `parity.rs` and `surface_inventory.rs` exist as documentation, not runtime verification

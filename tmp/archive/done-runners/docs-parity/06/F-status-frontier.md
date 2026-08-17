@@ -14,7 +14,7 @@ Audit-aligned status summary for doc `16`.
 
 ## Partial
 
-- HDC is real, but it is not yet a universal `Engram` field
+- HDC is real, but it is not yet a universal `Signal` field
 - neuro has HDC-backed query help internally, but `Substrate` still lacks
   `query_similar()`
 - the current docs mix real neuro runtime with a much larger target-state memory
@@ -33,7 +33,7 @@ Audit-aligned status summary for doc `16`.
 
 The frontier should now be described this way:
 
-- **worth shipping next**: HDC fingerprint on `Engram`
+- **worth shipping next**: HDC fingerprint on `Signal`
 - **worth documenting honestly**: `query_similar()` is not yet on `Substrate`
 - **worth deferring**: the larger resonance, worldview, exchange, and economic
   systems

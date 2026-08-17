@@ -1,5 +1,15 @@
 # Phase 3B: Graduation — Pulse → Signal Promotion
 
+> **What is this?** Design for the Graduation subsystem: policies that decide which
+> ephemeral Pulses on the Bus get promoted to durable Signals in the Store. This is the
+> formal bridge between the real-time event stream and the audit trail. Also covers
+> the predict-publish-correct learning loop.
+>
+> **Status:** Not started. Depends on Phase 2 (Graph + Engine). The
+> `calibration_policy` module in roko-learn is a partial precursor (built, 0 callers).
+>
+> **Last updated: 2026-08-13**
+
 ## What Is Graduation?
 
 Pulses are ephemeral events on the Bus. Signals are durable data in the Store.

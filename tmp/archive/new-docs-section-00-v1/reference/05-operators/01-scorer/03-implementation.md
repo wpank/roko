@@ -14,7 +14,7 @@
 ### `DefaultScorer`
 
 The standard, all-axes scorer. Computes all four stable axes using heuristics derived from
-the `Engram`'s fields, `Provenance`, and substrate context:
+the `Signal`'s fields, `Provenance`, and substrate context:
 
 - `confidence` — from `Provenance::attestation_level` and `Score` history.
 - `novelty` — from HDC fingerprint distance to nearest substrate records.
@@ -62,7 +62,7 @@ impl Scorer for ConstantScorer {
 
 ### `RecencyScorer`
 
-Sets `novelty` based on the `Engram`'s `created_at` timestamp — more recent engrams score
+Sets `novelty` based on the `Signal`'s `created_at` timestamp — more recent signals score
 higher novelty. Does not modify other axes.
 
 ---

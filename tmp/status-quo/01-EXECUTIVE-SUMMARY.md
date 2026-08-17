@@ -1,14 +1,14 @@
 # Executive Summary
 
-**Date**: 2026-07-08  
-**Branch**: `main` at `5852c93c05`  
+**Date**: 2026-08-13
+**Branch**: `status-quo/batch-2026-08-10`  
 **Verdict**: Roko has many real subsystems, but the project is in a half-migrated state. The single dominant issue is **engine drift** (see [95-ENGINE-DRIFT.md](95-ENGINE-DRIFT.md)): default `roko plan run` routes to a Graph Engine whose task executor is a dry-run stub that prints `SUCCESS` while spawning no agent, spending $0, and changing no code. A second, previously under-weighted theme is **security**: an unauthenticated relay proxy and a read-scope auth fallback are exploitable today ([75-SECURITY-AUTH-SCOPE-MATRIX.md](75-SECURITY-AUTH-SCOPE-MATRIX.md)).
 
 ## Current Truth
 
 Roko is best understood as three overlapping systems:
 
-1. **Runner v2** (`crates/roko-cli/src/runner/`, 19 files ~17K LOC) is the real live plan executor. It dispatches agents, gates, feedback sinks, snapshots, resume, merge queue, and StateHub/TUI integration. It is reached by `--engine runner-v2` and **implicitly** by `roko do`/`serve`/`prd`/`worker`. Its cross-cut hooks (daimon, dreams, learning, efficiency, neuro, gate dispatch) fire in `event_loop.rs`, so it is ~80% ported. Holdouts: the conductor supervision loop (`conductor_load` hardcoded `0.0`, `event_loop.rs:4258`), agent-driven gate-failure replan (prompt enrichment only, no `tasks.toml` rewrite), and worktree isolation (built in `roko-orchestrator`, unwired in the runner). See [92-RUNNER-V2-MODULE-FAMILY.md](92-RUNNER-V2-MODULE-FAMILY.md).
+1. **Runner v2** (`crates/roko-cli/src/runner/`, 24 files ~40K LOC) is the real live plan executor. It dispatches agents, gates, feedback sinks, snapshots, resume, merge queue, and StateHub/TUI integration. It is reached by `--engine runner-v2` and **implicitly** by `roko do`/`serve`/`prd`/`worker`. Its cross-cut hooks (daimon, dreams, learning, efficiency, neuro, gate dispatch) fire in `event_loop.rs`, so it is ~85%+ ported. Holdouts: the conductor supervision loop (`conductor_load` hardcoded `0.0`, `event_loop.rs:4258`), agent-driven gate-failure replan (prompt enrichment only, no `tasks.toml` rewrite), and worktree isolation (built in `roko-orchestrator`, unwired in the runner). See [92-RUNNER-V2-MODULE-FAMILY.md](92-RUNNER-V2-MODULE-FAMILY.md).
 2. **Graph Engine** (`crates/roko-graph/`) is the v2 target shape and is wired as the default `roko plan run` engine via Clap `default_value="graph"` (`main.rs:1362`, overriding the enum's own `#[default] RunnerV2` at `main.rs:1301`). Converted plan tasks run through `TaskExecutorCell` whose `dry_run` defaults to `true` (`task_executor.rs:32`) **and** whose live branch is "not yet implemented" (`:81-89`) — it emits a synthetic `task-output:stub:` engram instead of dispatching agents. A real `AgentCell` exists in the crate but is never registered.
 3. **Legacy orchestrate.rs** (~23.6K LOC) is `#[cfg(feature="legacy-orchestrate")]` (`lib.rs:90-95`), **dead-by-default**. It still contains cross-cutting ideas and old wiring, but it is not the strategic runtime path and is not in the default binary.
 
@@ -20,18 +20,20 @@ That means the old docs phrase "Roko can self-host with `roko plan run plans/`" 
 |---|---:|---|
 | Cargo workspace members | 35 | 31 crates under `crates/`, 3 apps under `apps/`, plus the `tests/` package. |
 | Canonical noun | `Engram` | There is **no `struct Signal`** — `Signal` is a compat re-export only; a second dead `Engram` lives in `roko-chain`. |
-| Builtin tool count | 37 | `TOOL_COUNT=37` (old docs say 19). |
-| `roko-serve` routes | ~270 | `.route(` declarations under `crates/roko-serve/src`; includes aliases and nested routers (old docs say ~85). |
-| LLM providers | 10 | Claude CLI/API, Codex, Cursor, OpenAI-compat, Ollama, Gemini, Perplexity, etc. |
+| Builtin tool count | 39 (56 w/ github) | `TOOL_COUNT=39` base, `56` with `github` feature (old docs say 19). |
+| `roko-serve` routes | ~317 | `.route(` declarations under `crates/roko-serve/src`; includes aliases and nested routers (old docs say ~85). |
+| LLM providers | 11 | Claude CLI/API, OpenAI-compat, Cursor (ACP+CLI), Perplexity, Gemini (API+CLI), Cerebras, Hermes, OpenClaw. |
 | TUI tabs | 10 | Old docs say F1–F7 / 7 tabs. |
-| Rust files | 1,285 | `rg --files -g '*.rs' -g '!target/**'`. |
-| Rust LOC | 728,694 | Includes checked-in large sources/tests; use trend, not as quality signal. |
-| Test attributes | 9,968 | `#[test]` and `#[tokio::test]` hits across `crates`, `apps`, `tests`; not a pass count. |
-| Whole-workspace raw route declarations | 337 | Includes serve, agent server, relay, Mirage, worker/auth routers, and tests. |
-| v1/v2/v2-depth markdown docs | 636 | Many are stale relative to current code. |
-| tmp md/toml/sh files | 6,707 | Includes scratch, source designs, migrations, and previous audits. |
+| Rust files | 1,492 | `rg --files -g '*.rs' -g '!target/**'`. |
+| Rust LOC | ~800K | Includes checked-in large sources/tests; use trend, not as quality signal. Actual wc -l count is ~1,038K including blanks/comments. |
+| Test attributes | 13,697 | `#[test]` and `#[tokio::test]` hits across `crates`, `apps`, `tests`; not a pass count. |
+| Whole-workspace raw route declarations | 684 | Includes serve, agent server, relay, Mirage, worker/auth routers, and tests. |
+| v1/v2/v2-depth markdown docs | 717 | Many are stale relative to current code. |
+| tmp md/toml/sh files | 7,277 | Includes scratch, source designs, migrations, and previous audits. |
 
 Duplicate-definition drift: `GateVerdict` is defined 4×, `RetentionPolicy` 3×, `Engram` twice (second dead copy in `roko-chain`). HDC is compiled out (`hdc_vector: null` per episode). The VCG prompt auction is unreachable at runtime. Chain **canonical consensus lives in a separate `daeji` repo**, not here.
+
+**2026-08-13 audit findings**: Codebase has grown ~42% since the July 2026 snapshot (728K -> ~800K LOC, 1,285 -> 1,492 Rust files, 9,968 -> 13,697 test attributes). Two new LLM providers (Hermes, OpenClaw) bring the total to 11. `roko-serve` routes grew from ~270 to ~317. ISFR routes are now marked deprecated. TOOL_COUNT is 39 base / 56 with github feature (was 37). Runner v2 grew from 19 files ~17K LOC to 24 files ~40K LOC. The three-engine situation (Runner v2 / Graph / orchestrate.rs) is unchanged: Runner v2 remains the production engine (~85%+), Graph is still the Clap default but hollow, orchestrate.rs is still dead-by-default behind a feature gate.
 
 ## What Is Real
 
@@ -44,7 +46,7 @@ Duplicate-definition drift: `GateVerdict` is defined 4×, `RetentionPolicy` 3×,
 - **Gates**: compile/clippy/test run for real, but the **adaptive-gate story is NOT live** ([101](101-TRACE-GATE-PIPELINE.md)). The live runner gate path uses `RungExecutionInputs::default()` and never calls `enrich_rung_config`; adaptive thresholds (SPC/CUSUM/EWMA), oracles 4-6, ratchet, and `VerdictPublisher` exist only on the dead `orchestrate.rs` `PlanRunner`. Live rungs 3-6 stub-pass `Verdict::pass`, EMA only updates rung 2, and `GateThresholds::save` is never called. Prior "gates live but uneven" nuance is downgraded: the adaptive apparatus is dark on `roko plan run`.
 - **Knowledge/dreams/daimon**: knowledge store, dream cycle, and Daimon state are substantive. **daimon and dreams ARE live in Runner v2** — daimon modulates dispatch per task and writes `affect.json`, and `DreamRunner` runs plan-completion consolidation — on `--engine runner-v2`/`serve`/`do`, **not** the default Graph engine ([96](96-TRACE-RUNNER-V2-EXECUTION.md) §13). Holdouts: cron/periodic dream trigger, routing-advice consumption. Not all feedback loops are closed (e.g. demurrage taxes confidence but income/reinforce is dead — balances stuck 0.0).
 - **Surfaces**: CLI, TUI dashboard, React demo app (embedded-served by `roko serve` via `rust-embed`, not standalone — [105](105-FRONTEND-DEMO-APP.md)), ACP, agent sidecar server, relay, and static demo artifacts all exist in different degrees of maturity.
-- **Chain/ISFR/jobs/deploy**: substantial code exists, but live chain use is optional/config-gated and several paths use mocks or local JSON state.
+- **Chain/ISFR/jobs/deploy**: substantial code exists, but live chain use is optional/config-gated and several paths use mocks or local JSON state. **As of 2026-08-13, ISFR routes are deprecated** (`crates/roko-serve/src/routes/isfr.rs:1` carries a `TODO(deprecation)` marker). The ISFR vertical (sources/keeper/oracle/bootstrap/serve) remains compiled-in but is not the strategic path; daeji devnet owns node/BFT/precompiles.
 
 ## P0 Problems
 
@@ -60,7 +62,7 @@ Duplicate-definition drift: `GateVerdict` is defined 4×, `RetentionPolicy` 3×,
 | Foundation contracts are fragmented | DispatchPlan, RunLedger, GateStatus, CommitOutcome, RoutingContext exist in pieces, not one canonical layer. |
 | Episode/event/state stores are split | Gate verdicts write `signals.jsonl` but dashboards read `engrams.jsonl` (empty panels); `events.jsonl` is 44 MB / 97% `feed_tick` firehose; the real snapshot is `state-snapshot.json` (serve still tries to READ `state/executor.json` → error); episodes triplicated (root/learn/memory). |
 | API/frontend contracts are not enforced | 4 frontend→serve 404s (share vs shared, bench/matrix, isfr/stream, ws/agents) plus camelCase/snake_case event drift. |
-| Docs overclaim or underclaim critical areas | CLAUDE/docs/v1/v2/tmp contain stale statements about engines, safety, route surfaces (~270 not ~85), chain, ACP, gates, counts (TOOL_COUNT=37 not 19), and the noun (Engram not Signal). |
+| Docs overclaim or underclaim critical areas | CLAUDE/docs/v1/v2/tmp contain stale statements about engines, safety, route surfaces (~317 not ~85), chain, ACP, gates, counts (TOOL_COUNT=39/56 not 19), and the noun (Engram not Signal). |
 
 ## Migration Shape
 

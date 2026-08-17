@@ -17,10 +17,10 @@ Key terms used below:
 
 - **Bus** — ephemeral message stream inside Roko (tool banners,
   token streams, gate results). See `03-bus-as-first-class.md`.
-- **Engram** — durable record: an episode, plan, heuristic, PRD.
-  See `02-engram-vs-pulse.md`.
+- **Signal** — durable record: an episode, plan, heuristic, PRD.
+  See `02-signal-vs-pulse.md`.
 - **Surface** — one of CLI / TUI / Chat / Web. Each one renders the
-  same verbs over the same Bus/Engram data.
+  same verbs over the same Bus/Signal data.
 - **Heuristic** — a named, calibrated belief the agent applies. See
   `14-worldview-validation.md`.
 
@@ -47,7 +47,7 @@ Propose a canonical verb set exposed by every surface:
 | **plan** | Propose a plan without executing |
 | **do** | Execute a plan or a single task |
 | **watch** | Stream progress of active work |
-| **inspect** | Drill into an episode, engram, or heuristic |
+| **inspect** | Drill into an episode, signal, or heuristic |
 | **replay** | Re-run a prior episode, optionally with changes |
 | **learn** | Browse / curate heuristics, playbooks, experiments |
 | **tune** | Change configuration, thresholds, routing |
@@ -282,8 +282,8 @@ and every extra keystroke is a papercut. First-class shortcuts:
 - **Named sessions** — `roko session use research-q2` attaches to a
   persistent session; the TUI title-bar shows the name; chat and
   Web auto-scope to it. `roko session list` shows recent sessions
-  ordered by last-touched. Sessions are Engrams too (see
-  `02-engram-vs-pulse.md` §4), so they replay cleanly.
+  ordered by last-touched. Sessions are Signals too (see
+  `02-signal-vs-pulse.md` §4), so they replay cleanly.
 - **Recent-prompt history** — `Ctrl+R` in CLI/Chat opens fuzzy
   history (scoped to the current session by default; `Ctrl+Ctrl+R`
   widens to all sessions). History is indexed by both prompt text

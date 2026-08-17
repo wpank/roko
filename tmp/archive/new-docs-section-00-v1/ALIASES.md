@@ -17,7 +17,7 @@
 | `StateHub` | `StateHub` | `[built]` | `StateHub` *is* both; currently the TUI hub, target-state the Bus+Substrate projection layer |
 | `Bus` | `EventBus<E>` | `[planned]` | `Bus` is the target-state abstraction; `EventBus<E>` is the live implementation today |
 | `Pulse` | *(no shipped term)* | `[planned]` | Replaces `Event`, `Envelope`, `Message`, `Signal` (ephemeral); no shipped type yet |
-| `Engram` | `Signal` (retired) | `[shipping]` | `Engram` is canonical; `Signal` appears in some older code paths as the struct name |
+| `Engram (renamed to Signal in 2026-08-12)` | `Signal` (retired) | `[shipping]` | `Signal` is canonical; `Signal` appears in some older code paths as the struct name |
 | `Agent` | `Golem` (retired) | `[shipping]` | `Agent` is canonical everywhere now |
 | `Fleet` | `Clade` (retired) | `[planned]` | `Fleet` not yet shipped; `Clade` is fully retired |
 | `Mesh` | `Styx` (retired) | `[planned]` | `Mesh` not yet shipped; `Styx` is fully retired |

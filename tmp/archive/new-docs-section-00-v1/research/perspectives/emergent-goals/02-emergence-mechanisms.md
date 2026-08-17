@@ -42,8 +42,8 @@ policy.
 explicit goal. Positive feedback loops act as de facto goal-setters: they consistently
 reinforce states in one direction until a constraint is hit.
 
-**Example**: A system that produces Engrams which trigger high-salience notifications,
-which trigger more processing, which produces more high-salience Engrams, will develop
+**Example**: A system that produces Signals which trigger high-salience notifications,
+which trigger more processing, which produces more high-salience Signals, will develop
 an effective goal of "produce high-salience content" through this feedback loop — even
 if no such goal was designed.
 
@@ -52,7 +52,7 @@ extremes of the reinforced dimension. The system converges to the state of maxim
 positive feedback, which becomes its de facto goal.
 
 **Countermeasure**: Introduce negative feedback to dampen runaway positive loops. In Roko,
-Policy throttling (caps on attention per topic, rate limits on specific Engram categories)
+Policy throttling (caps on attention per topic, rate limits on specific Signal categories)
 is the primary countermeasure.
 
 ---
@@ -103,9 +103,9 @@ specified invariants (property tests) serve as goal anchors.
 develop effective goals at local minima: the system stops exploring once it meets the threshold,
 and the threshold becomes its de facto goal.
 
-**Cognitive architecture analog**: Gate thresholds are satisficing criteria. An Engram that
+**Cognitive architecture analog**: Gate thresholds are satisficing criteria. An Signal that
 just barely passes the Gate has "succeeded" — it has no incentive to be higher quality.
-If the system consistently produces Engrams at the Gate threshold and no higher, the Gate
+If the system consistently produces Signals at the Gate threshold and no higher, the Gate
 threshold is the effective quality goal.
 
 This is a subtle but important observation: the Gate threshold sets a floor on quality, but

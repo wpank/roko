@@ -1,5 +1,32 @@
 # E2E Roko Dogfood Audit
 
+## What is this?
+
+A comprehensive end-to-end dogfood test of Roko conducted on 2026-04-28 in fresh temporary
+Rust workspaces. Covers 11 test paths: `init`, PRD draft/plan, plan validate/regenerate/run,
+`roko run` (v2 and legacy), positional one-shot prompts, provider tests, model routing,
+resume, status, and plan list/show. This audit established the M0-0 (Execution Contract
+Repair) prerequisite -- proving that model selection, generated plan schemas, gates, telemetry,
+and state views all need truthfulness fixes before higher-level features can be trusted.
+
+Last reviewed: 2026-08-12
+
+## Current status (as of 2026-08-12)
+
+| Finding | Status | Notes |
+|---|---|---|
+| Engram→Signal rename | **RESOLVED** | All runtime code uses `Signal` now. |
+| `eprintln!`→`tracing` | **RESOLVED** | Logging uses `tracing` macros. |
+| `.expect()`→errors | **PARTIALLY DONE** | Some hot paths converted. |
+| `orchestrate.rs` (referenced in paths 7b, 8) | **RESOLVED** | File deleted. Runner v2 (`event_loop.rs`) is sole path. |
+| `event_loop.rs` size | **STILL OPEN** | ~19.8K lines -- the god object problem persists. |
+| P0: Model selection not a contract | **PARTIALLY DONE** | Improved but not fully unified across all commands. |
+| P0: Generated plans not self-executable | **STILL OPEN** | Plan prompts still don't enforce `role` or full model keys. |
+| P0: Default runner path fails | **PARTIALLY DONE** | Config migration and provider routing improved. |
+| P0: Gates not truthful | **PARTIALLY DONE** | Some stub gates now report status; `shell:true` issue remains. |
+| P1: Telemetry not truthful | **PARTIALLY DONE** | Some cost extraction added; double-counting may persist. |
+| P1: Resume/status views disagree | **STILL OPEN** | Path normalization not fully resolved. |
+
 Date: 2026-04-28
 
 This is the end-to-end run requested on 2026-04-28. I ran Roko in fresh temporary

@@ -1,5 +1,9 @@
 # Prompt Assembly Profiling
 
+> **STALE**: Profiling results from May 2026. The 9-layer `SystemPromptBuilder` is wired via
+> `RoleSystemPromptSpec` in `runner/`. See `crates/roko-compose/src/system_prompt_builder.rs`.
+> Last updated: 2026-08-13
+
 ## SystemPromptBuilder (9 layers)
 1. Base persona
 2. Role-specific instructions

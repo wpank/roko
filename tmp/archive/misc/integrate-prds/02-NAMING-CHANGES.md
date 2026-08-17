@@ -84,17 +84,17 @@ roko-dreams:  roko-golem = { path = "../roko-golem", features = ["scaffold"] }
 roko-serve:   roko-golem = { path = "../roko-golem", features = ["scaffold"] }
 ```
 
-## Type Rename: Signal → Engram (Tier 0D — completed)
+## Type Rename: Signal → Signal (Tier 0D — completed)
 
 | Current | Target | Location |
 |---------|--------|----------|
-| `pub struct Signal` | `pub struct Engram` | `roko-core/src/engram.rs` |
-| `SignalBuilder` | `EngramBuilder` | `roko-core/src/engram.rs` |
-| `signal.rs` | `engram.rs` | File rename |
+| `pub struct Signal` | `pub struct Engram` | `roko-core/src/__PATH_ENGRAM_RS__0` |
+| `SignalBuilder` | `EngramBuilder` | `roko-core/src/__PATH_ENGRAM_RS__0` |
+| `signal.rs` | `__PATH_ENGRAM_RS__0` | File rename |
 | `Kind::Signal` | Keep or rename | Enum variant |
 | All `use roko_core::Signal` | `use roko_core::Engram` | Completed across Rust crates/apps |
 
-### Impact scope for Signal → Engram
+### Impact scope for Signal → Signal
 
 The Rust workspace has been updated. Remaining textual mentions of "Signal" are
 documentation / UI wording / domain-specific names and should be handled only

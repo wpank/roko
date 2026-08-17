@@ -1,6 +1,6 @@
 # Provenance — Propagation
 
-> How provenance flows when one Engram is derived from another via lineage links.
+> How provenance flows when one Signal is derived from another via lineage links.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -11,21 +11,21 @@
 
 ## TL;DR
 
-When Agent A creates a derived Engram from parent Engrams B and C, the derived Engram gets
+When Agent A creates a derived Signal from parent Signals B and C, the derived Signal gets
 its own `author` (Agent A), its own `trust` level (starts at `LocalAgent`), and inherits
-selected `taint` flags from parents. `author` is never inherited — each Engram has exactly
-one author. `trust` is never inherited — each Engram earns trust independently.
+selected `taint` flags from parents. `author` is never inherited — each Signal has exactly
+one author. `trust` is never inherited — each Signal earns trust independently.
 
 ---
 
 ## The Idea
 
 Derivation is common in Roko: an agent summarizes two KnowledgeEntries into a third, or
-combines a Plan and a ToolTrace into a Reflection. The derived Engram carries `lineage`
+combines a Plan and a ToolTrace into a Reflection. The derived Signal carries `lineage`
 links to its parents, but its authorship is the deriving agent, not the original authors.
 
-This design means that trust must be independently established for every new Engram. A chain
-of `ChainWitness` parents does not make a derived Engram `ChainWitness` — it must earn that
+This design means that trust must be independently established for every new Signal. A chain
+of `ChainWitness` parents does not make a derived Signal `ChainWitness` — it must earn that
 designation on its own.
 
 ---
@@ -34,7 +34,7 @@ designation on its own.
 
 | Field | Inherited? | Rule |
 |---|---|---|
-| `author` | No | Derived Engram's author is the deriving agent |
+| `author` | No | Derived Signal's author is the deriving agent |
 | `trust` | No | Starts at `LocalAgent`; must be escalated independently |
 | `taint` | Partially | See propagation rule below |
 
@@ -47,7 +47,7 @@ Only these two flags propagate from parent to child:
   inherit the hallucination.
 
 All other flags (`UnverifiedSource`, `OutdatedAt`, `SuspiciousContext`, `Custom`) are
-specific to the Engram where they were set and do **not** propagate.
+specific to the Signal where they were set and do **not** propagate.
 
 ```rust
 <!-- source: crates/roko-core/src/provenance.rs -->
@@ -117,8 +117,8 @@ derived:
 
 ## Invariants
 
-1. Derived Engram's `author` is always the deriving agent — never a parent's author.
-2. Derived Engram's `trust` starts at `LocalAgent` — never inherited.
+1. Derived Signal's `author` is always the deriving agent — never a parent's author.
+2. Derived Signal's `trust` starts at `LocalAgent` — never inherited.
 3. Only `CompromisedAuthor` and `PossibleHallucination` propagate from parents.
 4. If no propagating flags exist in any parent, derived `taint = None`.
 5. Lineage links (`engram.lineage`) record parent `ContentHash` values — they are
@@ -131,7 +131,7 @@ derived:
 | Failure | Cause | Recovery |
 |---|---|---|
 | Author incorrectly inherited | Builder copies parent provenance | Builder always requires explicit `author` field |
-| `CompromisedAuthor` not inherited | Taint propagation skipped | Substrate validates derived Engrams have correct taint inheritance |
+| `CompromisedAuthor` not inherited | Taint propagation skipped | Substrate validates derived Signals have correct taint inheritance |
 | Over-propagation of `UnverifiedSource` | Incorrect propagation logic | Unit tests verify `UnverifiedSource` does not appear in derived taint |
 
 ---
@@ -146,5 +146,5 @@ derived:
 ## See Also
 
 - [`03-taint-flags.md`](03-taint-flags.md) — full TaintFlag reference
-- [`06-trust-escalation.md`](06-trust-escalation.md) — how derived Engrams earn trust
+- [`06-trust-escalation.md`](06-trust-escalation.md) — how derived Signals earn trust
 - [`../../01-engram/06-lineage-dag.md`](../../01-engram/06-lineage-dag.md) — lineage DAG structure

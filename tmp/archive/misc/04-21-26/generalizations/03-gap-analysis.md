@@ -149,7 +149,7 @@ Coordination happens only via shared files (stigmergic, accidental).
 | Subsystem | Current State | Reusable? |
 |---|---|---|
 | Core traits (6 verbs) | Fully generic | YES — foundation stays |
-| Signal (Engram) | Domain-agnostic | YES — universal data type |
+| Signal (Signal) | Domain-agnostic | YES — universal data type |
 | Daimon (affect) | Working, orchestrator-side | YES — move into extension |
 | Neuro (knowledge) | Working, partial | YES — expose to agents |
 | Dreams (consolidation) | Working, basic cycle | YES — trigger from sleep pressure |

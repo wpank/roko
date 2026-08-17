@@ -28,7 +28,7 @@ Measured on CI (x86-64 Linux, no GPU) with `cargo bench`:
 | `HdcVector::hamming_distance()` | 48 ns | 52 ns | 65 ns | `bench_hdc_hamming` |
 | `HdcVector::bind()` (XOR) | 12 ns | 15 ns | 18 ns | `bench_hdc_bind` |
 | `HdcVector::bundle()` (majority) | 38 ns | 42 ns | 50 ns | `bench_hdc_bundle` |
-| Substrate JSONL append (1 Engram) | 8 µs | 25 µs | 60 µs | `bench_substrate_append` |
+| Substrate JSONL append (1 Signal) | 8 µs | 25 µs | 60 µs | `bench_substrate_append` |
 | Substrate JSONL append (batch 100) | 85 µs | 120 µs | 180 µs | `bench_substrate_batch` |
 | EventBus publish (1 subscriber) | 200 ns | 350 ns | 500 ns | `bench_bus_publish` |
 | EventBus publish (10 subscribers) | 800 ns | 1.2 µs | 2.0 µs | `bench_bus_publish_10` |

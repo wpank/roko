@@ -367,7 +367,7 @@ roko prd draft new "abstract-text-background"
   ────────────────────────────────────────
   Priority: Low
   Item: Message context thread persistence
-  Where: agent-server engram store
+  Where: agent-server signal store
 
   If you want, once the run completes I can turn
   items 1–4 into a follow-up batch file (T20–T23)
@@ -1280,7 +1280,7 @@ Here are some additional docs of research that I made from before as it relates 
   3. Add cybernetic loops. Every system should have a feedback path. What Lens observes it? What Loop tunes it? What knowledge
   does it consolidate?
   4. Find gaps. Where are missing feedback loops? Missing failure modes? Over-engineering or under-engineering?
-  5. Use unified vocabulary exclusively. Signal not Engram, Cell not Block/Module, Graph not Workflow, Pulse not Event, Bus not
+  5. Use unified vocabulary exclusively. Signal not Signal, Cell not Block/Module, Graph not Workflow, Pulse not Event, Bus not
   EventBus, demurrage not Ebbinghaus (unless comparing). See GUIDE.md vocabulary table.
 
   Output
@@ -1304,7 +1304,7 @@ Here are some additional docs of research that I made from before as it relates 
 
 
 
-This has misinformation fix it in here and fix the sources of where it came from. it is a native evm chain with simplex consensus, with ~50ms blockt tiems by doing co-location in tokyo similar to how hyperliquid does it. It also doesn't have soulbound agent passports - it only has erc 8004 identities, and those erc8004 identies are used to the fullest. also things arent named spore anymore. It's not really naemd anything, it's just a generalized job / task thign using erc 8183. Also this made mention of engram, which is not used anymore. Also for llm backends - there should be an additonal Roko specific harness as well. - it's mentioned in various docs in here: /Users/will/dev/nunchi/roko/roko/tmp/04-21-26 . Also I think there was a better way of doing things that didn't have things going to ipfs? generally it was the case that things mostly get stored in the chain's substrate, and have dummurage for getting pruned. So that roko agents also can query the distributed chain's knowledge as well to potentially inject context. Is that not the case? If not should iterate on things a little bit. Where in the source files did this information come from? Also the gates should be agnostic to things like cargo and rust things, they're language agnostic. the ventriolloqust isn't there either. Lots of this is outdated. You need to look at /Users/will/dev/nunchi/roko/roko/tmp/architecture and /Users/will/dev/nunchi/roko/roko/tmp/unified for latest information. Also this doesn't really cover the pitch deck landing page, nor demo in as much detail as it could be (those should be separate specific docs). ask me any questionf for clarification. 
+This has misinformation fix it in here and fix the sources of where it came from. it is a native evm chain with simplex consensus, with ~50ms blockt tiems by doing co-location in tokyo similar to how hyperliquid does it. It also doesn't have soulbound agent passports - it only has erc 8004 identities, and those erc8004 identies are used to the fullest. also things arent named spore anymore. It's not really naemd anything, it's just a generalized job / task thign using erc 8183. Also this made mention of signal, which is not used anymore. Also for llm backends - there should be an additonal Roko specific harness as well. - it's mentioned in various docs in here: /Users/will/dev/nunchi/roko/roko/tmp/04-21-26 . Also I think there was a better way of doing things that didn't have things going to ipfs? generally it was the case that things mostly get stored in the chain's substrate, and have dummurage for getting pruned. So that roko agents also can query the distributed chain's knowledge as well to potentially inject context. Is that not the case? If not should iterate on things a little bit. Where in the source files did this information come from? Also the gates should be agnostic to things like cargo and rust things, they're language agnostic. the ventriolloqust isn't there either. Lots of this is outdated. You need to look at /Users/will/dev/nunchi/roko/roko/tmp/architecture and /Users/will/dev/nunchi/roko/roko/tmp/unified for latest information. Also this doesn't really cover the pitch deck landing page, nor demo in as much detail as it could be (those should be separate specific docs). ask me any questionf for clarification. 
 
 
 
@@ -1351,7 +1351,7 @@ This has misinformation fix it in here and fix the sources of where it came from
     3. Add cybernetic loops. Every system should have a feedback path. What Lens observes it? What Loop tunes it? What knowledge                                            
     does it consolidate?                                                                                                                                                    
     4. Find gaps. Where are missing feedback loops? Missing failure modes? Over-engineering or under-engineering?                                                           
-    5. Use unified vocabulary exclusively. Signal not Engram, Cell not Block/Module, Graph not Workflow, Pulse not Event, Bus not                                           
+    5. Use unified vocabulary exclusively. Signal not Signal, Cell not Block/Module, Graph not Workflow, Pulse not Event, Bus not                                           
     EventBus, demurrage not Ebbinghaus (unless comparing). See GUIDE.md vocabulary table.                                                                                   
                                                                                                                                                                             
     Output                                                                                                                                                                  

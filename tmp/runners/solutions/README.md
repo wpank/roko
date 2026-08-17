@@ -1,5 +1,13 @@
 # Solutions Runner
 
+> **What is this?** The comprehensive 735-task backlog runner derived from the
+> `tmp/solutions/roko/tasks/` plan files (19 source files covering stability, orchestration,
+> dispatch, gates, prompts, learning, UX, ACP, performance, innovations, code debt, GTM,
+> testing, config, safety, observability, and cross-cutting concerns). This is the widest
+> runner; other runners (mega-parity, post-parity) are curated subsets.
+>
+> **Last updated: 2026-08-13**
+
 **Purpose**: drive the 735-task backlog enumerated in
 `tmp/solutions/roko/tasks/01-..19-..` (created 2026-04-29) to completion.
 

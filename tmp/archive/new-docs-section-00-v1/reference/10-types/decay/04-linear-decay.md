@@ -15,26 +15,26 @@
 Linear decay reduces the balance by a fixed `rate_per_sec` each second. The balance reaches
 zero after `initial_balance / rate_per_sec` seconds and does not go negative. It is the
 simplest possible time-based decay: no logarithm, no exponent, no epoch boundary — just a
-straight line to zero. Use it when the lifetime of an Engram is well-defined and predictable
+straight line to zero. Use it when the lifetime of an Signal is well-defined and predictable
 in advance (e.g., "this context is valid for exactly the next 30 minutes").
 
 ---
 
 ## The Idea
 
-Linear decay is the "best-before date" model. Given `rate_per_sec = 1/1800` the Engram
+Linear decay is the "best-before date" model. Given `rate_per_sec = 1/1800` the Signal
 has exactly 30 minutes of full weight, then zero. There is no tail — unlike exponential
 decay, it hits zero exactly at the end of its configured lifetime.
 
 This predictability is its main advantage and main limitation:
 
-**Advantage**: the GC scheduler can pre-compute exactly when an Engram will be GC-eligible
+**Advantage**: the GC scheduler can pre-compute exactly when an Signal will be GC-eligible
 without running any weight calculation. The expiry is `created_at_ms + (balance / rate_per_sec * 1000)`.
 
-**Limitation**: there is no way to extend the lifetime by retrieval. An Engram that is used
+**Limitation**: there is no way to extend the lifetime by retrieval. An Signal that is used
 heavily still expires at the same wall-clock time.
 
-For Engrams that should be extended by use, prefer [Demurrage](01-demurrage.md).
+For Signals that should be extended by use, prefer [Demurrage](01-demurrage.md).
 
 ---
 
@@ -122,13 +122,13 @@ impl Default for LinearDecayParams {
 
 ## Semantics
 
-Linear decay is **stateless with respect to retrieval**. Retrieving an Engram never changes
+Linear decay is **stateless with respect to retrieval**. Retrieving an Signal never changes
 its `rate_per_sec` or restores its balance. The only operation that mutates a
 `LinearDecayParams` is `apply_elapsed`.
 
 The Substrate calls `apply_elapsed` either:
 - Lazily at retrieval time (compute elapsed since last update, apply, update timestamp).
-- Eagerly in the compaction cycle (scan all linear-decayed Engrams, apply elapsed, GC zeros).
+- Eagerly in the compaction cycle (scan all linear-decayed Signals, apply elapsed, GC zeros).
 
 Roko uses the **lazy** strategy to avoid scanning on every compaction tick.
 
@@ -149,9 +149,9 @@ Roko uses the **lazy** strategy to avoid scanning on every compaction tick.
 
 | Failure | Cause | Recovery |
 |---|---|---|
-| Engram expires too early | `rate_per_sec` set too high | Use `remaining_secs()` to validate before storing |
-| Engram never expires | `rate_per_sec = 0.0` stored accidentally | Validate on construction; reject ≤ 0.0 |
-| GC misses an expired Engram | Lazy eviction not triggered (no retrieval) | Compaction cycle must scan and evict zero-balance Engrams |
+| Engram (renamed to Signal in 2026-08-12) expires too early | `rate_per_sec` set too high | Use `remaining_secs()` to validate before storing |
+| Signal never expires | `rate_per_sec = 0.0` stored accidentally | Validate on construction; reject ≤ 0.0 |
+| GC misses an expired Signal | Lazy eviction not triggered (no retrieval) | Compaction cycle must scan and evict zero-balance Signals |
 | Balance underflows to negative | Bug in caller computing elapsed | `max(0.0)` floor in `apply_elapsed` and `weight_at` prevents this |
 
 ---
@@ -184,4 +184,4 @@ Roko uses the **lazy** strategy to avoid scanning on every compaction tick.
 - [`00-overview.md`](00-overview.md) — all decay variants compared
 - [`02-exponential-decay.md`](02-exponential-decay.md) — continuous decay with a tail
 - [`05-custom-decay.md`](05-custom-decay.md) — for non-standard decay shapes
-- [`08-tier-matrix.md`](08-tier-matrix.md) — default models per Engram kind
+- [`08-tier-matrix.md`](08-tier-matrix.md) — default models per Signal kind

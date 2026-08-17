@@ -1,5 +1,32 @@
 # Demo Run Audit: PRD/Plan Generation Failure
 
+## What is this?
+
+An audit of three demo runs from 2026-04-28 where Roko generated PRDs and implementation plans
+for `system-prompt-wiring`. The runs revealed that PRD/plan generation is not grounded in the
+actual repository -- the agent produced confident greenfield architecture plans for functionality
+that already existed. This document catalogs nine findings (F0-F9) covering context-root
+contracts, artifact validation, telemetry gaps, and learning semantics. It provides the evidence
+base for the M0-B (grounded artifact generation) workstream in FINAL-SOLUTION.md.
+
+Last reviewed: 2026-08-12
+
+## Current status (as of 2026-08-12)
+
+| Finding | Status | Notes |
+|---|---|---|
+| Engram→Signal rename | **RESOLVED** | Runtime code now uses `Signal`. References to "engram" below reflect the April 2026 state. |
+| `eprintln!`→`tracing` | **RESOLVED** | Logging uses `tracing` macros now. |
+| `.expect()`→errors | **PARTIALLY DONE** | Some paths improved. |
+| `orchestrate.rs` references | **RESOLVED** | File deleted. Runner v2 (`event_loop.rs`) is sole execution path. |
+| `event_loop.rs` size | **STILL OPEN** | ~19.8K lines, still a god object. |
+| F0: Context-root contract | **STILL OPEN** | PRD/plan generation still lacks repo-root verification. |
+| F1-F4: PRD/plan grounding | **STILL OPEN** | No repository context pack or artifact validators built yet. |
+| F5: Tool log shallowness | **STILL OPEN** | Tool telemetry still minimal. |
+| F6: Token/cost as zero | **PARTIALLY DONE** | Some paths now extract usage from Claude CLI stream; not all. |
+| F7: Success = process success | **STILL OPEN** | No artifact-quality gate separating process from artifact outcomes. |
+| F8-F9: Knowledge seeds, transcripts | **STILL OPEN** | No sidecar transcripts or artifact-gated knowledge seeding. |
+
 Date: 2026-04-28
 
 Scope:
@@ -75,7 +102,7 @@ where prompt assembly and agent/runtime pieces already exist in these areas:
 - `crates/roko-agent/src/model_call_service.rs`
 - `crates/roko-runtime`
 - `crates/roko-cli/src/runner`
-- `crates/roko-cli/src/orchestrate.rs` as a legacy/donor path
+- `crates/roko-cli/src/runner/event_loop.rs` (runner v2; `orchestrate.rs` was deleted)
 
 ## Repeated Run Pattern
 
@@ -177,8 +204,9 @@ Minimum missing checks:
 - reject plans that do not mention any existing source file
 - reject plans where `plan.md` and `tasks.toml` disagree on total task count
 
-The latest `engrams.jsonl` recorded `task_count = 21`, while the generated metadata reported 20
-tasks. That mismatch is another sign the artifact path needs a consistency gate.
+The latest `signals.jsonl` (formerly `engrams.jsonl`) recorded `task_count = 21`, while the
+generated metadata reported 20 tasks. That mismatch is another sign the artifact path needs a
+consistency gate.
 
 ### F5: Tool logs are too shallow to be useful
 
@@ -354,7 +382,7 @@ Before accepting `plan.md` and `tasks.toml`, validate:
   - "stub Daimon"
 - all verification commands are executable and relevant
 - `meta.total` equals the task count
-- generated engram task count equals parsed task count
+- generated signal task count equals parsed task count
 
 ### 4. Change success and learning semantics
 

@@ -1,6 +1,6 @@
 # 102 — Spec-Debt Ledger (Concept-Level)
 
-> Status-quo pack · **DEEPER SECOND PASS** · verified against code **2026-07-08 at git HEAD `5852c93c05`** (branch `main`).
+> Status-quo pack · **DEEPER SECOND PASS** · verified against code **2026-07-08 at git HEAD `5852c93c05`** (branch `main`). Updated **2026-08-13** with ISFR deprecation and 25-agent audit corrections.
 > Scope: one exhaustive ledger of every named architectural concept across `docs/v2/` (28 sections) and `docs/v2-depth/` (22 sections), synthesizing 15/85/86/87 (v2 coverage), 18 (v2-depth coverage), and 02-SPEC-EVOLUTION into a single evidence-backed spec-debt register.
 > Method: every status is backed by an actual `rg` run over `crates/` + `apps/` at this HEAD (hit counts + a `file:line` or "0 hits"). Greps re-run this pass; deltas vs prior docs flagged inline.
 
@@ -289,3 +289,28 @@ rg -l 'PulseBus' crates/ apps/ | grep -v roko-core
 rg -n 'struct MetricRegistry' crates/roko-core/src/obs/metrics.rs
 rg -n 'pub trait Cell' crates/roko-core/src/cell.rs crates/roko-graph/src/cell.rs
 ```
+
+---
+
+## 2026-08-13 Status Update
+
+### ISFR Deprecation
+All ISFR-related spec concepts (IsfrComponent, IsfrSnapshot, ISFRKeeper, ISFROracle)
+are now DEPRECATED. The entire ISFR vertical is scheduled for removal.
+
+### Implementation status corrections from 25-agent audit:
+- docs/v2 chapter 10 (Groups): 0% — entirely aspirational
+- docs/v2 chapter 26 (Cross-Cuts): 0% — no CrossCutFunctor code exists
+- docs/v2 chapter 06 (Memory): ~5% — MemoryCell not implemented
+- docs/v2 chapter 08 (Gateway): ~30% — no roko-gateway crate
+- docs/v2 chapter 19 (Config): ~30% — Config-as-Signal not implemented
+- docs/v2 chapter 18 (Payments): Phase 2+ — zero runtime callers
+
+### Concepts confirmed as IMPLEMENTED:
+- CascadeRouter (3-stage Static→Confidence→LinUCB)
+- 5-head corrigibility ordering
+- Extension trait with 8 layers + CaMeL IFC
+- TriggerProtocol + TriggerBinding
+- 11 LLM backends with real dispatch
+- 39 builtin tools (56 with chain feature)
+- Plan-execute-gate-persist loop (end-to-end)

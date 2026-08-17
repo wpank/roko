@@ -4391,7 +4391,7 @@ r → run selected plan
 
 ---
 
-## Task C3: F7 sub-views (EngramDag, EpisodeReplay, KnowledgeBrowse)
+## Task C3: F7 sub-views (SignalDag, EpisodeReplay, KnowledgeBrowse)
 
 **Effort:** 4 hours
 **Stream:** C -- TUI
@@ -4410,23 +4410,23 @@ crates/roko-cli/src/tui/input.rs — add sub-view navigation keys
 
 **Step 1: Check existing SubView enum before writing any code**
 
-The `SubView` enum in `crates/roko-cli/src/tui/views/mod.rs` ALREADY declares `EngramDag`, `EpisodeReplay`, `KnowledgeBrowse`, `ProviderHealth`, and `ModelComparison`. The `SubView::for_tab()` dispatch is ALREADY wired.
+The `SubView` enum in `crates/roko-cli/src/tui/views/mod.rs` ALREADY declares `SignalDag`, `EpisodeReplay`, `KnowledgeBrowse`, `ProviderHealth`, and `ModelComparison`. The `SubView::for_tab()` dispatch is ALREADY wired.
 
 Do NOT create new sub-view enums. What is missing is the RENDERING CODE inside `context_view.rs` and `config_view.rs`.
 
 In `context_view.rs`, add a match on `view_state.sub_tab` (or whatever the existing field is named — read the file first) to dispatch to rendering functions:
-- `SubView::EngramDag` → call `render_engram_dag(f, area, data)`
+- `SubView::SignalDag` → call `render_signal_dag(f, area, data)`
 - `SubView::EpisodeReplay` → call `render_episode_replay(f, area, data)`
 - `SubView::KnowledgeBrowse` → call `render_knowledge_browse(f, area, data)`
 
 The local sub-view state type in `context_view.rs` may already exist. Check what `ContextSubView` variants are defined there (if any) before adding to it. If a `ContextSubView` enum already exists with these names, add the rendering — do not re-declare the enum.
 
-**Step 2: EngramDag sub-view**
+**Step 2: SignalDag sub-view**
 
-Reads `.roko/engrams.jsonl` (or equivalent knowledge store file). Renders as an ASCII tree showing dependency relationships.
+Reads `.roko/signals.jsonl` (or equivalent knowledge store file). Renders as an ASCII tree showing dependency relationships.
 
 ```
-Engrams:
+Signals:
   root
   ├─ "VCG auction design" (confidence: 0.92)
   │  ├─ "Context bidder impl" (0.87)
@@ -4438,7 +4438,7 @@ Engrams:
   └─ "Agent dispatch" (0.88)
 ```
 
-If the file does not exist, show: "No engrams recorded yet. Run tasks to build knowledge."
+If the file does not exist, show: "No signals recorded yet. Run tasks to build knowledge."
 
 **Step 3: EpisodeReplay sub-view**
 
@@ -4484,7 +4484,7 @@ Search: `/` to enter search mode, type to filter entries.
 
 Within the F7 (Context) tab:
 - `1` → Overview (existing)
-- `2` → EngramDag
+- `2` → SignalDag
 - `3` → EpisodeReplay
 - `4` → KnowledgeBrowse
 
@@ -4493,14 +4493,14 @@ Show keybind hints in the status bar when F7 is active.
 ### Mock tags
 
 ```rust
-// MOCK: engram dag builds tree from .roko/engrams.jsonl -- shows empty state if file missing
+// MOCK: signal dag builds tree from .roko/signals.jsonl -- shows empty state if file missing
 // MOCK: episode replay reads .roko/episodes.jsonl -- shows empty state if no episodes recorded
 // MOCK: knowledge browse reads .roko/memory/ -- shows empty state if directory empty
 ```
 
 ### Done when
 
-- [ ] Pressing `2` on F7 tab shows EngramDag view
+- [ ] Pressing `2` on F7 tab shows SignalDag view
 - [ ] Pressing `3` shows EpisodeReplay with step-through
 - [ ] Pressing `4` shows KnowledgeBrowse with confidence bars
 - [ ] `j`/`k` navigation works in EpisodeReplay

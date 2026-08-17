@@ -70,9 +70,9 @@ weight down.
 
 Nothing is lost has two implementation manifestations:
 
-1. **Everything produces an `Engram`** — every significant execution artifact, whether a
+1. **Everything produces an `Signal`** — every significant execution artifact, whether a
    task output, a gate verdict, a cost event, or a failure, is recorded as a scored,
-   content-addressed `Engram`. The `Engram` persists even when the agent's plan fails.
+   content-addressed `Signal`. The `Signal` persists even when the agent's plan fails.
 
 2. **Failure signals update learning** — the `roko-learn` subsystem's episode logger records
    the full execution trace including failures. Playbook rules, gate calibration, and bandit
@@ -80,7 +80,7 @@ Nothing is lost has two implementation manifestations:
 
 ### Examples
 
-- A gate pipeline that terminates at the Compile rung records the failure as an `Engram`
+- A gate pipeline that terminates at the Compile rung records the failure as an `Signal`
   tagged with `Kind::GateFailure`. The learning subsystem uses this to update the gate's
   adaptive threshold.
 - `roko-orchestrator`'s hash-chained event log records every state transition. When a crash
@@ -115,7 +115,7 @@ chooses composability because:
   No new trait has been needed since the Synapse Architecture was defined.
 - The `roko-gate` crate ships 11 gate implementations, but they are all implementations
   of the single `Gate` trait. A domain-specific gate is a new `struct` that implements
-  one method — `evaluate(&self, engram: &Engram) -> GateVerdict`.
+  one method — `evaluate(&self, signal: &Signal) -> GateVerdict`.
 - The `SystemPromptBuilder` is a `Composer` implementation, not a special-purpose type.
   A domain-specific prompt template is a new `Composer` implementation, not a new API.
 
@@ -167,7 +167,7 @@ system that never discards anything is overwhelmed by irrelevant historical data
 creates attention: the records that are most recent, most reinforced, or most novel remain
 available; the rest fade.
 
-Knowledge (encoded in `Neuro`) is different from data (encoded in individual `Engram`s).
+Knowledge (encoded in `Neuro`) is different from data (encoded in individual `Signal`s).
 Knowledge is the extracted, validated pattern — the heuristic, the causal link, the warning.
 Knowledge does not decay the way data does; it compounds as more evidence confirms it and
 migrates through validation tiers (Transient → Working → Consolidated → Persistent).

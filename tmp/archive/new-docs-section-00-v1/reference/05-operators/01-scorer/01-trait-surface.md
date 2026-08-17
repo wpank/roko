@@ -65,7 +65,7 @@ pub enum ScorerError {
 
 | Method | Signature | Mut? | Returns |
 |---|---|---|---|
-| `score` | `score(&self, engram: &Engram, prior: Score) -> Result<Score, ScorerError>` | No | Score or error |
+| `score` | `score(&self, signal: &Signal, prior: Score) -> Result<Score, ScorerError>` | No | Score or error |
 
 ---
 

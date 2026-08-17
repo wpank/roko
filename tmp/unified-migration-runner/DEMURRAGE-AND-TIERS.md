@@ -1,14 +1,31 @@
 # Demurrage + Tier Progression — Implementation Prompt
 
+> **Last updated: 2026-08-13**
+
+## What is this?
+
+This file is a self-contained implementation plan for adding demurrage (attention-weighted
+decay) and tier progression to Signals, part of the mori-to-roko migration. This is the
+economic foundation the unified spec builds on -- Signals cost to hold, forcing the system
+to prioritize actively useful knowledge.
+
+**Status: Pending.** Depends on the Cell trait + protocol renames (plan #5). Note: the
+struct formerly called `Engram` was renamed to `Signal` on 2026-08-12. References to
+`Engram` in code samples below should be read as `Signal`. The actual code file is still
+`crates/roko-core/src/engram.rs` with `pub struct Signal` and a `pub type Engram = Signal`
+compat alias.
+
+---
+
 > **Goal**: Add demurrage (attention-weighted decay) and tier progression to Signals.
-> This is the economic foundation the unified spec builds on — Signals cost to hold,
+> This is the economic foundation the unified spec builds on -- Signals cost to hold,
 > forcing the system to prioritize actively useful knowledge.
 >
 > **Spec**: `tmp/unified/01-SIGNAL.md` §6 (Demurrage), `tmp/unified/11-MEMORY-AND-KNOWLEDGE.md`
 
 ## Context
 
-Currently `Engram` has a `decay: Decay` field with simple time-based exponential decay.
+Currently `Signal` (formerly `Engram`, renamed 2026-08-12) has a `decay: Decay` field with simple time-based exponential decay.
 The unified spec replaces this with economic demurrage (Gesell 1916):
 
 - Signals have a `balance` that decreases over time
@@ -19,7 +36,7 @@ The unified spec replaces this with economic demurrage (Gesell 1916):
 
 ### Files to read first
 ```
-crates/roko-core/src/engram.rs           — current Engram struct
+crates/roko-core/src/engram.rs           — Signal struct (renamed from Engram 2026-08-12)
 crates/roko-core/src/kind.rs             — Kind enum
 tmp/unified/01-SIGNAL.md §6              — demurrage spec
 tmp/unified/11-MEMORY-AND-KNOWLEDGE.md   — tier progression, cold storage
@@ -31,9 +48,9 @@ crates/roko-neuro/src/tier.rs            — existing tier types (if any)
 
 ## Tasks
 
-### DT001 — Add demurrage fields to Engram
+### DT001 — Add demurrage fields to Signal
 
-**File**: `crates/roko-core/src/engram.rs`
+**File**: `crates/roko-core/src/engram.rs` (struct is `Signal`, file rename to `signal.rs` pending)
 
 **Steps**:
 1. Add new fields (with serde defaults for backwards compat):
@@ -87,7 +104,7 @@ crates/roko-neuro/src/tier.rs            — existing tier types (if any)
    /// - r = base_rate (constant drain, e.g., 0.001 per hour)
    /// - beta = proportional_rate (scales with balance, e.g., 0.01 per hour)
    /// - dt = elapsed hours since last_touched_at
-   pub fn apply_demurrage(signal: &mut Engram, now: DateTime<Utc>, config: &DemurrageConfig) {
+   pub fn apply_demurrage(signal: &mut Signal, now: DateTime<Utc>, config: &DemurrageConfig) {
        let dt = hours_since(signal.last_touched_at.unwrap_or(signal.created_at), now);
        let cost = config.base_rate * dt + config.proportional_rate * signal.balance * dt;
        let cost = cost.min(signal.balance);  // can't go negative
@@ -102,7 +119,7 @@ crates/roko-neuro/src/tier.rs            — existing tier types (if any)
        pub proportional_rate: f64,  // per hour, default 0.01
    }
    ```
-3. Implement `pub fn reinforce(signal: &mut Engram, amount: f64, now: DateTime<Utc>)`:
+3. Implement `pub fn reinforce(signal: &mut Signal, amount: f64, now: DateTime<Utc>)`:
    - Adds `amount` to balance
    - Updates `last_touched_at` to `now`
 
@@ -121,8 +138,8 @@ crates/roko-neuro/src/tier.rs            — existing tier types (if any)
    - Consolidated → Persistent: cited 25+ times, gate-verified, balance > 0.2
 2. Define demotion criteria:
    - Any tier → Transient: balance < 0.05
-3. Implement `pub fn evaluate_tier(signal: &Engram) -> SignalTier`
-4. Implement `pub fn maybe_promote(signal: &mut Engram) -> bool`
+3. Implement `pub fn evaluate_tier(signal: &Signal) -> SignalTier`
+4. Implement `pub fn maybe_promote(signal: &mut Signal) -> bool`
 
 ---
 
@@ -175,7 +192,7 @@ cargo test --workspace
 
 ## Expected Result
 
-- Engram has `balance`, `demurrage_paid`, `last_touched_at`, `tier` fields
+- Signal (formerly Engram) has `balance`, `demurrage_paid`, `last_touched_at`, `tier` fields
 - Retrieving knowledge reinforces it (balance goes up)
 - Unused knowledge decays (balance goes down via demurrage)
 - Knowledge below threshold gets archived

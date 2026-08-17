@@ -10,7 +10,7 @@ Quick reference for agents working on `04` verification parity.
 
 | What | Path | Why It Matters In Batch 04 |
 |------|------|----------------------------|
-| Core gate trait + engrams | `crates/roko-core/src/traits.rs`, `engram.rs`, `decay.rs`, `kind.rs` | gate contract, verdict-signal contract, decay defaults |
+| Core gate trait + signals | `crates/roko-core/src/traits.rs`, `__PATH_ENGRAM_RS__0`, `decay.rs`, `kind.rs` | gate contract, verdict-signal contract, decay defaults |
 | Gate crate entry | `crates/roko-gate/src/lib.rs` | module inventory and re-exports |
 | Rung selection | `crates/roko-gate/src/rung_selector.rs` | canonical `PlanComplexity`, `Rung`, `RungCaps`, `select_rungs` |
 | Gate pipeline | `crates/roko-gate/src/gate_pipeline.rs` | sequential verification composer currently bypassed by runtime |

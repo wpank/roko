@@ -7,7 +7,7 @@
 > mean IQ of members. Roko's multi-agent runtime is a laboratory for
 > measuring, optimizing, and mechanizing c. This doc proposes a
 > concrete operationalization: the *Bus* is the conversation floor,
-> Engrams are the artifacts, Pulses are the turns, and c-factor
+> Signals are the artifacts, Pulses are the turns, and c-factor
 > becomes a metric computed from their statistics. Improving it
 > becomes an objective the Policy layer can optimize directly.
 
@@ -121,7 +121,7 @@ measured empathy.**
 ### 3.3 Trust calibration
 
 Citation reciprocity and citation quality. An agent that cites another
-agent's Engram which later fails a gate loses trust-credit. Accrues
+agent's Signal which later fails a gate loses trust-credit. Accrues
 trust-credit for citations that pass. Trust is per-directed-pair and
 per-topic (agent A might trust B on Rust syntax, not on
 database-schema design).
@@ -157,7 +157,7 @@ pub struct WisdomGate {
 }
 ```
 
-Before a consensus Engram is finalized, its inputs must pass the
+Before a consensus Signal is finalized, its inputs must pass the
 WisdomGate. If 80% of inputs share a lineage ancestor, that's not a
 wisdom-of-crowds consensus — it's an echo chamber. **We can detect
 and refuse echo chambers structurally.**
@@ -175,7 +175,7 @@ cheat by averaging. HDC gives us four genuinely different options:
 3. **Weighted bundle**: each fingerprint multiplied by agent's trust
    score for the topic. Bayesian flavor.
 4. **Cleanup to codebook**: bundle, then snap to nearest known
-   Engram. Forces output to be *expressible* in existing vocabulary.
+   Signal. Forces output to be *expressible* in existing vocabulary.
 
 Each has different properties under different team compositions.
 Policy picks. Aggregation is no longer a hardcoded `mean()` but an
@@ -201,9 +201,9 @@ perspective and weight accordingly.
 
 ### 6.3 Minority report preservation
 
-Demurrage on *dissenting* Engrams is softer than on consenting
+Demurrage on *dissenting* Signals is softer than on consenting
 ones — we explicitly subsidize minority positions for longer. The
-Bus carries a `consensus_distance` tag; high-distance Engrams get a
+Bus carries a `consensus_distance` tag; high-distance Signals get a
 demurrage discount. This prevents the majority from simply starving
 minority views of attention-credit.
 

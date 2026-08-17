@@ -127,7 +127,7 @@ cargo test --workspace
 
 ---
 
-## Step 6: Signal → Engram rename (COMPLETED)
+## Step 6: Signal → Signal rename (COMPLETED)
 
 **Type**: Mechanical but massive scope
 **Risk**: Medium — 18 crates affected
@@ -135,9 +135,9 @@ cargo test --workspace
 
 ### Outcome
 
-- `roko-core/src/signal.rs` was renamed to `roko-core/src/engram.rs`
-- `Signal` / `SignalBuilder` were renamed to `Engram` / `EngramBuilder`
-- Consumers across the Rust workspace now use `Engram`
+- `roko-core/src/signal.rs` was renamed to `roko-core/src/__PATH_ENGRAM_RS__0`
+- `Signal` / `SignalBuilder` were renamed to `Signal` / `EngramBuilder`
+- Consumers across the Rust workspace now use `Signal`
 - The temporary compat alias was removed after the consumer sweep
 
 ### Verification
@@ -146,8 +146,8 @@ cargo test --workspace
 - `cargo test -p roko-core -- --nocapture`
 
 ### File rename
-- `roko-core/src/signal.rs` → `roko-core/src/engram.rs`
-- Update `mod signal;` → `mod engram;` in lib.rs
+- `roko-core/src/signal.rs` → `roko-core/src/__PATH_ENGRAM_RS__0`
+- Update `mod signal;` → `mod signal;` in lib.rs
 
 ---
 

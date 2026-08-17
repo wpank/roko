@@ -1,17 +1,17 @@
-# Engram Serialization Round-Trip
+# Signal Serialization Round-Trip
 
-> Serializing an Engram and deserializing it produces an identical Engram.
+> Serializing an Signal and deserializing it produces an identical Signal.
 
 **Crate**: `roko-core`
 **Test type**: Property-based (proptest)
-**Enforcement**: `serde` implementation on `Engram`
+**Enforcement**: `serde` implementation on `Signal`
 **Last reviewed**: 2026-04-19
 
 ---
 
 ## Statement
 
-For all valid Engrams E:
+For all valid Signals E:
 `deserialize(serialize(E)) == Ok(E)`
 
 And the converse: for all valid serialized byte strings B:

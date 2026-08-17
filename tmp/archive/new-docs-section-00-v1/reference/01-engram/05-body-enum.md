@@ -1,11 +1,11 @@
-# Engram — Body Enum
+# Signal — Body Enum
 
 > The Body enum holds the typed payload for each Kind variant. One Body variant per Kind.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
 **Depends on**: [Kind](04-kind-enum.md), [Body type](../10-types/body/00-overview.md)  
-**Used by**: all operators that process Engram content  
+**Used by**: all operators that process Signal content  
 **Last reviewed**: 2026-04-19
 
 ---

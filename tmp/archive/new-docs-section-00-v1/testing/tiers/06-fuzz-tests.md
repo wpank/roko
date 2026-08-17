@@ -19,7 +19,7 @@ Fuzz tests target the parsing and deserialization boundaries of Roko's data type
 
 | Target | Boundary | Invariant tested |
 |---|---|---|
-| `fuzz_engram_deserialize` | `Engram` deserialization | Must not panic on any input bytes |
+| `fuzz_engram_deserialize` | `Engram (renamed to Signal in 2026-08-12)` deserialization | Must not panic on any input bytes |
 | `fuzz_gate_input_parse` | `GateInput` construction | Must not panic; invalid inputs return `Err` |
 | `fuzz_plan_dag_parse` | Plan DAG JSON parsing | Must not panic; cycles detected |
 | `fuzz_content_hash_bytes` | `ContentHash::from_bytes` | Must not panic on any byte slice |

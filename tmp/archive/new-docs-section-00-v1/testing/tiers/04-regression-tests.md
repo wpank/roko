@@ -39,7 +39,7 @@ If a gate changes its verdict logic and a golden file diff appears, the PR must 
 
 ### 2. Serialization Golden Tests
 
-For Engram, Score, ContentHash, and GateInput, the serialized form (JSON/CBOR) is golden-tested to prevent accidental format changes that would break stored data.
+For Signal, Score, ContentHash, and GateInput, the serialized form (JSON/CBOR) is golden-tested to prevent accidental format changes that would break stored data.
 
 ```
 tests/golden/serialization/

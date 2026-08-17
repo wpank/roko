@@ -47,7 +47,7 @@ Three operations sit at the boundary of the trait model:
 | Operation | Current Implementation | Fit Quality |
 |---|---|---|
 | **Signal transformation** (e.g., summarize, translate) | `Composer::compose(&[single], &Budget::UNLIMITED, ...)` | Adequate. Budget parameter is unused but harmless. |
-| **Telemetry emission** (metrics, traces) | `Policy::decide(&[], ctx)` returning metric Engrams | Adequate. Empty stream input is awkward but functional. |
+| **Telemetry emission** (metrics, traces) | `Policy::decide(&[], ctx)` returning metric Signals | Adequate. Empty stream input is awkward but functional. |
 | **Batch verification** (verify N signals at once) | Loop calling `Gate::verify` N times | Adequate. External loop is standard; batch Gate would be premature optimization. |
 
 ---

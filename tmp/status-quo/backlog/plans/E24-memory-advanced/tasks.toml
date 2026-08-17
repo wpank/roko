@@ -1,8 +1,8 @@
 [meta]
 plan = "E24-memory-advanced"
 total = 10
-done = 0
-status = "ready"
+done = 10
+status = "done"
 max_parallel = 2
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -42,9 +42,9 @@ variants. Wire the new methods into the existing lifecycle flow.
 
 Do NOT replace the existing confidence decay -- demurrage is a complementary
 mechanism that modulates the effective half-life of entries based on usage."""
-status = "ready"
+status = "done"
 tier = "integrative"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 100
 files = ["crates/roko-neuro/src/knowledge_store.rs"]
 role = "implementer"
@@ -129,9 +129,9 @@ Gate both methods behind #[cfg(feature = "hdc")] like existing HDC code.
 Wire ResonanceDetector (hdc.rs:64-78) into a new method:
 find_resonances(&self, min_similarity: f64) -> Result<Vec<ResonancePair>>
 that scans all entries for cross-domain resonance patterns."""
-status = "ready"
+status = "done"
 tier = "focused"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 70
 files = ["crates/roko-neuro/src/knowledge_store.rs"]
 role = "implementer"
@@ -217,9 +217,9 @@ description = """Extend AntiKnowledge entries with a Falsifier lifecycle:
 This completes the v2 spec's "heuristics carry mandatory falsifiers" concept:
 an AntiKnowledge entry that repeatedly survives falsification attempts becomes
 more reliable, while one that is immediately violated loses credibility."""
-status = "ready"
+status = "done"
 tier = "focused"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 65
 files = ["crates/roko-neuro/src/lib.rs", "crates/roko-neuro/src/knowledge_store.rs"]
 role = "implementer"
@@ -307,9 +307,9 @@ Extend TemporalIndex with two utility methods needed by T04:
 
 Keep the TemporalIndex behind Option so it's opt-in -- callers that don't
 need temporal queries don't pay the memory cost."""
-status = "ready"
+status = "done"
 tier = "focused"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 100
 files = ["crates/roko-neuro/src/knowledge_store.rs", "crates/roko-neuro/src/temporal.rs"]
 role = "implementer"
@@ -397,9 +397,9 @@ distillation from completed episodes.
 This connects the episode-to-knowledge loop: agent completes task -> gate
 verifies -> episode recorded -> distillation extracts knowledge -> knowledge
 store persists."""
-status = "ready"
+status = "done"
 tier = "integrative"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 100
 files = ["crates/roko-neuro/src/lifecycle.rs"]
 role = "implementer"
@@ -476,9 +476,9 @@ KnowledgeStore during dream cycles.
    but before the report generation.
 
 Follow the existing DreamReport pattern (runner.rs:~350) for report structure."""
-status = "ready"
+status = "done"
 tier = "integrative"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 100
 files = ["crates/roko-dreams/src/runner.rs"]
 role = "implementer"
@@ -552,9 +552,9 @@ discovered and promoted during the lifecycle flow.
 
 4. Add a config option to KnowledgeLifecycleConfig:
    auto_cross_domain_transfer: bool (default false -- opt-in only)"""
-status = "ready"
+status = "done"
 tier = "focused"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 60
 files = ["crates/roko-neuro/src/lifecycle.rs"]
 role = "implementer"
@@ -623,9 +623,9 @@ thresholds and automatic demotion rules per the v2 spec.
 
 Wire into KnowledgeStore with a new method:
    apply_tier_progression(&self, config: &TierProgressionConfig) -> Result<TierProgressionReport>"""
-status = "ready"
+status = "done"
 tier = "focused"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 80
 files = [
     "crates/roko-neuro/src/tier_progression.rs",
@@ -672,17 +672,18 @@ command = "cargo check -p roko-neuro 2>&1"
 fail_msg = "roko-neuro must compile"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# E24-T09: Wire memory subsystem into orchestrate.rs runtime
+# E24-T09: Wire memory subsystem into the runner-v2 runtime
 # ─────────────────────────────────────────────────────────────────────────────
-# The orchestrate.rs runtime already queries the playbook store at dispatch time.
+# The runner-v2 runtime already queries the playbook store at dispatch time.
 # This task adds the full knowledge lifecycle integration: distillation after
 # each task, demurrage on schedule, and consolidation during dream periods.
 [[task]]
 id = "E24-T09"
-title = "Wire knowledge lifecycle and distillation into orchestrate.rs"
-description = """Wire the enhanced knowledge lifecycle from T01-T08 into orchestrate.rs:
+title = "Wire knowledge lifecycle and distillation into runner-v2"
+description = """Wire the enhanced knowledge lifecycle from T01-T08 into the current
+runner-v2 event loop and prompt builder:
 
-1. After each successful gate-pass in dispatch_agent_with (orchestrate.rs:15184):
+1. After each successful gate-pass in the runner event loop:
    - Create RuntimeEpisodeObservation from the task outcome
    - Call lifecycle_manager.distill_from_episode() (from T05)
    - Log the distillation result (Admitted/Deferred/Rejected)
@@ -703,24 +704,26 @@ description = """Wire the enhanced knowledge lifecycle from T01-T08 into orchest
 
 All changes must be backward-compatible: if KnowledgeStore is not configured
 in roko.toml, skip all knowledge lifecycle steps."""
-status = "ready"
+status = "done"
 tier = "integrative"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 80
-files = ["crates/roko-cli/src/orchestrate.rs"]
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs"]
 role = "implementer"
 depends_on = ["E24-T01", "E24-T05", "E24-T08"]
 domain = "memory"
 
 [task.context]
 read_files = [
-    { path = "crates/roko-cli/src/orchestrate.rs", lines = "15182-15220", why = "dispatch_agent_with: budget check, task loading -- add knowledge lifecycle after gate" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "6990-7070", why = "Current runner-v2 knowledge distillation, reinforcement, tier progression, and demurrage hooks" },
+    { path = "crates/roko-cli/src/dispatch/prompt_builder.rs", lines = "1330-1365", why = "Current prompt-time KnowledgeStore query and bounded context injection" },
     { path = "crates/roko-neuro/src/lifecycle.rs", lines = "59-80", why = "RuntimeEpisodeObservation fields for observation construction" },
     { path = "crates/roko-neuro/src/lifecycle.rs", lines = "34-57", why = "KnowledgeLifecycleConfig for initialization" },
     { path = "docs/v2/06-MEMORY.md", lines = "1-50", why = "Memory integration spec: distillation, demurrage, tier progression" },
 ]
 symbols = [
-    "dispatch_agent_with (orchestrate.rs:15184) -- main dispatch, add knowledge lifecycle hooks",
+    "runner/event_loop.rs -- terminal gate outcomes and plan-completion lifecycle hooks",
+    "dispatch/prompt_builder.rs -- pre-dispatch bounded knowledge retrieval",
     "RuntimeEpisodeObservation (lifecycle.rs:61) -- construct from task outcomes",
     "distill_from_episode (lifecycle.rs, from T05) -- episode-to-knowledge distillation",
     "apply_tier_progression (knowledge_store.rs, from T08) -- tier promotion/demotion sweep",
@@ -735,8 +738,8 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'distill_from_episode\\|knowledge_lifecycle\\|demurrage' crates/roko-cli/src/orchestrate.rs"
-fail_msg = "Knowledge lifecycle hooks must exist in orchestrate.rs"
+command = "grep -q 'distill_from_episode\\|demurrage' crates/roko-cli/src/runner/event_loop.rs && grep -q 'KnowledgeStore' crates/roko-cli/src/dispatch/prompt_builder.rs"
+fail_msg = "Knowledge lifecycle hooks must exist in runner-v2 and its prompt builder"
 
 [[task.verify]]
 phase = "compile"
@@ -774,9 +777,9 @@ Tests for lifecycle.rs:
 Tests for runner.rs (roko-dreams):
 14. consolidate merges entries with overlapping tags
 15. consolidate promotes merged entries by one tier level"""
-status = "ready"
+status = "done"
 tier = "focused"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 120
 files = [
     "crates/roko-neuro/src/knowledge_store.rs",

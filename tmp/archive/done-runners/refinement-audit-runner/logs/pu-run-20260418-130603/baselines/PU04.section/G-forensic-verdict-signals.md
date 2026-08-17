@@ -10,7 +10,7 @@ Parity analysis of `docs/04-verification/12-forensic-ai-causal-replay.md` and
 **Status**: DONE
 **Severity**: —
 **Doc claim**: Doc 12 §3 — every replay-chain element identified by BLAKE3 hash. Doc 12 §4.3 — `ArtifactStore` is content-addressed.
-**Reality**: `ArtifactStore` BLAKE3-keyed (C.01, C.06). `Engram` (Signal) uses `ContentHash` via roko-core. `FileSubstrate` persists signals to `.roko/signals.jsonl` with content hashing. Foundation layers exist.
+**Reality**: `ArtifactStore` BLAKE3-keyed (C.01, C.06). `Signal` (Signal) uses `ContentHash` via roko-core. `FileSubstrate` persists signals to `.roko/signals.jsonl` with content hashing. Foundation layers exist.
 
 ---
 
@@ -28,7 +28,7 @@ Parity analysis of `docs/04-verification/12-forensic-ai-causal-replay.md` and
 **Status**: DONE
 **Severity**: —
 **Doc claim**: Doc 12 §4.2 — `.roko/signals.jsonl` records every signal including gate verdicts with parent lineage.
-**Reality**: `FileSubstrate::open` at `orchestrate.rs:11172` (called during gate verdict emission path); path built at `orchestrate.rs:5156` (`signals_path: self.workdir.join(".roko").join("signals.jsonl")`). Engrams include `lineage` field for DAG chain.
+**Reality**: `FileSubstrate::open` at `orchestrate.rs:11172` (called during gate verdict emission path); path built at `orchestrate.rs:5156` (`signals_path: self.workdir.join(".roko").join("signals.jsonl")`). Signals include `lineage` field for DAG chain.
 
 ---
 
@@ -81,7 +81,7 @@ Parity analysis of `docs/04-verification/12-forensic-ai-causal-replay.md` and
 **Severity**: —
 **Doc claim**: Doc 15 §9 table — "Gate verdict emission in orchestrate.rs: Wired (verdicts logged to episodes)."
 **Reality**: `Kind::GateVerdict` is emitted from `orchestrate.rs` at two sites:
-- `orchestrate.rs:11177` — engram derived from task payload carrying serialized verdict JSON; written to `FileSubstrate`. Tagged with `gate`, `passed`, and implicitly lineage to task payload.
+- `orchestrate.rs:11177` — signal derived from task payload carrying serialized verdict JSON; written to `FileSubstrate`. Tagged with `gate`, `passed`, and implicitly lineage to task payload.
 - `orchestrate.rs:11246` — `Kind::GateVerdict` conductor signal emission with plan_id/rung/passed/duration_ms/test_count.
 
 State persistence: `orchestrate.rs:11191-11197` pushes `GateResult::from_verdict(verdict, rung)` onto the plan's `gate_results` vec in the executor state.
@@ -96,7 +96,7 @@ All three of the doc-§9 "wired" claims (signal, episodes, executor state) are b
 **Doc claim**: Doc 15 §2.2 — `verdict_to_signal` function with `Decay::HalfLife { 86_400_000 }`, lineage to task, tags for gate/passed/plan_id/task_id.
 **Reality**: The verdict signal emission at `orchestrate.rs:11175-11185` sets tags (`gate`, `passed`) and uses `.derive(...)` for lineage — so half of what doc describes is present. **But**: I could not find an explicit `Decay::HalfLife { 86_400_000 }` call on the verdict builder. The builder uses `Provenance::trusted("orchestrate")` without an explicit decay clause. Need to verify whether default decay matches the 24h half-life doc describes.
 **Notes**: Tags `plan_id` / `task_id` are set implicitly via the outer `payload_builder` (orchestrate.rs:11151-11152); the derived verdict inherits lineage but not those tags. Consumers querying by `tag("plan_id", ...)` may need explicit tag propagation.
-**Fix sketch**: Add explicit `.decay(Decay::HalfLife { half_life_ms: 86_400_000 })` and `.tag("plan_id", ...)` / `.tag("task_id", ...)` calls when building the verdict engram, matching doc §2.2 precisely.
+**Fix sketch**: Add explicit `.decay(Decay::HalfLife { half_life_ms: 86_400_000 })` and `.tag("plan_id", ...)` / `.tag("task_id", ...)` calls when building the verdict signal, matching doc §2.2 precisely.
 
 ---
 
@@ -148,7 +148,7 @@ Doc 15 is honest about its own status. This is the closest to accurate self-repo
 
 Doc 12 correctly describes itself as "foundations in place, full pipeline designed" and that matches the code. Content addressing (BLAKE3), append-only JSONL logs, and the signal DAG lineage are all real. What's missing is the replay **algorithm** that joins these data sources by task_id into a single causal chain and verifies hash integrity end-to-end. This is a tractable build (a single command that walks the three JSONL files), not a deep research problem.
 
-Doc 15's "verdicts as signals" core path is partially wired: `Kind::GateVerdict` engrams are written to `FileSubstrate` and the executor state, with lineage to the originating task (G.09). The signal path into downstream consumers (Scorer / Router / Composer / Dreams) is honestly marked as "not yet" in doc §9. Doc 15 §11–§14 (trend detection, co-failure clustering, replanning engine, predictive gate selection) are entirely design — zero code presence across the board.
+Doc 15's "verdicts as signals" core path is partially wired: `Kind::GateVerdict` signals are written to `FileSubstrate` and the executor state, with lineage to the originating task (G.09). The signal path into downstream consumers (Scorer / Router / Composer / Dreams) is honestly marked as "not yet" in doc §9. Doc 15 §11–§14 (trend detection, co-failure clustering, replanning engine, predictive gate selection) are entirely design — zero code presence across the board.
 
 **Recommendation**: Doc 12 §5 (replay algorithm) and Doc 15 §11–§14 should be prominently labeled as "Design — data foundations present, algorithms not started". G.10 should also state explicitly that the current builder path defaults to `Decay::None`, so the 24h verdict half-life is not active unless the signal emission path sets it.
 
@@ -166,7 +166,7 @@ Recommended slice:
 
 Acceptance criteria:
 
-- verdict engrams have an explicit, inspectable contract,
+- verdict signals have an explicit, inspectable contract,
 - lineage verification exists outside tests,
 - the patch does not turn into a full replay engine.
 

@@ -27,7 +27,7 @@ tags: [gaps, next-actions, prioritized, G1-G33, execution-order]
 |---|---|---|---|---|
 | **G6** | Implement active inference EFE scorer | 03 | Medium-High | Replace static SectionScorer |
 | **G7** | Wire 8 missing feedback loops | 05 | Medium (~495 LOC) | Close the learning loop |
-| **G8** | Execute Signal→Engram rename | 00 | Low (find/replace) | Eliminate spec/code divergence |
+| **G8** | Execute Signal→Signal rename | 00 | Low (find/replace) | Eliminate spec/code divergence |
 | **G9** | Wire PAD persistence to `.roko/daimon/affect.json` | 03, 09 | Low-Medium | Cross-session emotional continuity |
 | **G10** | Add tier field to `KnowledgeEntry` | 06 | Low | Enable tier-weighted decay |
 | **G11** | Fix half-life constants (30d defaults → spec values) | 06 | Low | Correct knowledge decay rates |

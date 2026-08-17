@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a synthesis report from a structured deep-research run. It is reference material
+> for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Measurement Frameworks, Proof Points, Risk Register, and 90-Day Execution Roadmap
 
 This document specifies how to measure whether a new agent coordination protocol delivers on its claims, what demonstrations will convince skeptical investors, what can go wrong in the first 90 days, and what must ship when. It is written from scratch for someone with zero prior context. Every metric, benchmark, citation, and timeline is explained as if the reader has never encountered any of the underlying research.

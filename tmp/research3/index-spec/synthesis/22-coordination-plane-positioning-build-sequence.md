@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a synthesis report from a structured deep-research run. It is reference material
+> for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Coordination Plane Positioning, Build Portfolio, and the 90-Day Wedge
 
 This document distills the strategic positioning, competitive map, build portfolio, and 90-day execution sequence required to convert Nunchi's research surface into a defensible go-to-market posture. It is written from scratch for a reader with no prior exposure to the project, the agent infrastructure landscape, or the prior research rounds. Every market figure, competitor positioning, and build artifact is sourced. The orientation: stop describing capabilities, start describing a category.

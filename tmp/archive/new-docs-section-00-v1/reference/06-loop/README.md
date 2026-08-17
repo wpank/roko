@@ -4,7 +4,7 @@
 > deterministic composition.
 
 **Status**: Shipping
-**Depends on**: [Engram](../01-engram/README.md), [Score](../10-types/score.md),
+**Depends on**: [Signal](../01-engram/README.md), [Score](../10-types/score.md),
 [Substrate](../03-substrate/README.md), [Bus](../04-bus/README.md),
 [Operators](../05-operators/README.md)
 
@@ -21,7 +21,7 @@
 | 04 | [COMPOSE](04-stage-compose.md) | Assemble the context window | Shipping |
 | 05 | [ACT](05-stage-act.md) | Execute — call model / tool / sub-agent | Shipping |
 | 06 | [VERIFY](06-stage-verify.md) | Gate the result against policy | Shipping |
-| 07 | [PERSIST](07-stage-persist.md) | Write outcome Engrams back to Substrate | Shipping |
+| 07 | [PERSIST](07-stage-persist.md) | Write outcome Signals back to Substrate | Shipping |
 | 08 | [REACT](08-stage-react.md) | Publish Pulses; trigger next tick | Shipping |
 | 09 | [loop\_tick() reference](09-loop-tick-code.md) | Canonical Rust implementation | Shipping |
 | 10 | [Dual-Process](10-dual-process.md) | T0/T1/T2 tiers; System 1 vs System 2 thinking | Shipping |

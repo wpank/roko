@@ -14,13 +14,13 @@ system, not concentrated at the boundary**.
 
 Current Roko concentrates most defense at the Gate. This is perimeter defense — effective
 when all threats arrive through the Gate. But threats can arise internally:
-- An agent produces hallucinatory Engrams that pass all validation.
+- An agent produces hallucinatory Signals that pass all validation.
 - A trusted source produces correct-looking but subtly false information.
-- Cascading errors from valid Engrams produce invalid synthesis outputs.
+- Cascading errors from valid Signals produce invalid synthesis outputs.
 
 **Implication**: Add post-Gate immune mechanisms:
 - Consequence monitoring (DAMP detection): flag synthesis outputs that exhibit error signatures.
-- Cross-Engram consistency checking: detect Engram clusters that contradict each other
+- Cross-Signal consistency checking: detect Signal clusters that contradict each other
   (the analog of lymph node surveillance).
 - Output immune review: before committing a synthesis result to the Substrate, run an
   "output innate immune check" analogous to the input Gate.
@@ -32,10 +32,10 @@ Implement explicit tolerance mechanisms to prevent cognitive autoimmunity:
   subjected to full Gate scrutiny. These should be carefully managed (trusted sources can
   be compromised) but high-volume trusted sources need fast paths.
 - **Established knowledge protection**: Neuro entries above a confidence threshold should
-  require multiple high-quality contradicting Engrams (not just one) before they are
+  require multiple high-quality contradicting Signals (not just one) before they are
   invalidated. Single contradictions trigger investigation, not immediate replacement.
 - **Core belief anchors**: the agent's fundamental goals, identity, and safety rules should
-  be protected against single-Engram overwrite — the cognitive equivalent of thymic selection.
+  be protected against single-Signal overwrite — the cognitive equivalent of thymic selection.
 
 ### 3. Build Immunological Memory into the Witness DAG
 
@@ -54,12 +54,12 @@ The biological immune system has a rich vocabulary for threat types: viral, bact
 fungal, parasitic, neoplastic. This vocabulary enables precise communication about threats.
 
 A cognitive immune system needs an analogous taxonomy:
-- **Adversarial injection**: externally crafted Engrams designed to corrupt behavior
-- **Cascading error**: internally generated Engrams that are individually valid but
+- **Adversarial injection**: externally crafted Signals designed to corrupt behavior
+- **Cascading error**: internally generated Signals that are individually valid but
   collectively misleading
-- **Goal corruption**: Engrams that subtly redirect goal structures
-- **Knowledge poisoning**: Engrams that introduce false beliefs into Neuro
-- **Context flooding**: high-volume low-value Engrams that crowd out legitimate signals
+- **Goal corruption**: Signals that subtly redirect goal structures
+- **Knowledge poisoning**: Signals that introduce false beliefs into Neuro
+- **Context flooding**: high-volume low-value Signals that crowd out legitimate signals
   (attention monopoly)
 
 Having names for these categories enables better monitoring, better escalation, and better

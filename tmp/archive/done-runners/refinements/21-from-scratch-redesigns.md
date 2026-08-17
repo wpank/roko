@@ -37,8 +37,8 @@ it is a tool.
 
 ### 2.1 `roko-core` kernel
 
-**Current**: 1 noun (Signal/Engram), 6 traits, stable shape.
-**Replace with**: 2 mediums (Engram + Pulse), 7 operators
+**Current**: 1 noun (Signal/Signal), 6 traits, stable shape.
+**Replace with**: 2 mediums (Signal + Pulse), 7 operators
 (Substrate, Bus, Scorer, Gate, Router, Composer, Policy), per `02`,
 `03`, `04`.
 **Unlocks**: Bus as first-class, unified operator trait over either
@@ -47,7 +47,7 @@ medium, coherent kernel.
 import updates. Public API break requires semver-major bump.
 **Worth it?**: Yes — the current framing actively misrepresents
 the system. Every week the current kernel persists, more code
-takes an implicit dependency on "Engram only" that later has to
+takes an implicit dependency on "Signal only" that later has to
 be undone.
 
 ### 2.2 `roko-learn` reorganization
@@ -114,7 +114,7 @@ for a slow month.
 template files, enrichment hooks.
 **Replace with**: a *query-driven* compose pipeline — the system
 prompt is not built from a fixed template, it's assembled from
-whichever Engrams match a query (role, situation fingerprint,
+whichever Signals match a query (role, situation fingerprint,
 relevant heuristics, recent episodes). Template is a query, not a
 string.
 
@@ -188,9 +188,9 @@ Build both old and new types for one release cycle. `--kernel=v2`
 flag exercises the new path. Gives time to shake out bugs without
 a hard cutover.
 
-### 6.2 Compatibility shim for Engram format
+### 6.2 Compatibility shim for Signal format
 
-Old Engrams on disk should load into the new kernel. A one-shot
+Old Signals on disk should load into the new kernel. A one-shot
 migration reader, not a dual-world permanent compat layer.
 
 ### 6.3 Extensive test parity
@@ -253,7 +253,7 @@ Even the most aggressive of the five candidates (2.1, kernel rewrite)
 keeps a lot intact. For the record, the things that *don't* change in
 each:
 
-- **Kernel rewrite (2.1)** — Engram struct and its persistence format.
+- **Kernel rewrite (2.1)** — Signal struct and its persistence format.
   BLAKE3 content hashing. The 7-axis Score. The Decay enum. Provenance
   and attestation shapes. The existing 131 trait impls mostly compile
   unchanged; signatures widen, bodies stay.

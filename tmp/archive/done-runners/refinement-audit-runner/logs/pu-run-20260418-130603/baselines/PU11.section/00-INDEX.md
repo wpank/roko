@@ -12,8 +12,8 @@ stack across two crates:
 
 Plus cross-crate consumers: `roko-agent/src/dispatcher/mod.rs`
 (ToolDispatcher), `roko-conductor` (circuit breaker + ghost turn +
-stuck detection), `roko-core/src/{provenance, engram}.rs`
-(Engram lineage), `roko-chain/src/gate/*` (WalletGate + TxSimGate),
+stuck detection), `roko-core/src/{provenance, signal}.rs`
+(Signal lineage), `roko-chain/src/gate/*` (WalletGate + TxSimGate),
 `roko-compose` (XML-delimited prompts).
 
 Generated: 2026-04-16
@@ -49,7 +49,7 @@ The frontier in topic 11 is:
 - advanced risk math (Kelly sizing, Beta-Binomial, 5D safety budgets, hierarchical delegation)
 - chain-domain safety (MEV detection, LTL Büchi automata, Witness DAG with 5 vertex types, Heimdall/Slither/Echidna/hevm/Certora/Kontrol pipeline) — Tier 6 deferred
 - academic prompt-security patterns (CaMeL dual-LLM, Ventriloquist on-chain)
-- cognitive kernel primitives (Namespaces, Cognitive Scheduling, Engram Syscalls)
+- cognitive kernel primitives (Namespaces, Cognitive Scheduling, Signal Syscalls)
 - forensic-AI compliance packaging (regulator-facing export generators)
 - advanced taint algebra (Denning lattice, FIDES, RTBAS, PFI, PCAS Datalog)
 
@@ -62,7 +62,7 @@ The work in this batch is therefore:
 5. **Frontier banner pass** on Docs 08, 09, 10, 11, 12, 13, 14, 15 (M6).
 6. **Housekeeping** (M7).
 
-If a task starts requiring new LTL / Büchi / CaMeL / Kelly / 5D-budget / cognitive-namespace / Engram-syscall code, stop and record the seam.
+If a task starts requiring new LTL / Büchi / CaMeL / Kelly / 5D-budget / cognitive-namespace / Signal-syscall code, stop and record the seam.
 
 Recommended single-agent serial order: `M1 -> M2 -> M3 -> M4 -> M5 -> M6 -> M7`
 
@@ -132,7 +132,7 @@ cover the immediate exposure.
 | D.01-D.08 | Attack trees, NIST/MITRE/STRIDE/OWASP/CSA-MAESTRO compliance mappings | NOT DONE | LOW |
 | D.11-D.15 | Kelly sizing, Beta-Binomial, 5D safety budgets, hierarchical delegation | NOT DONE | LOW |
 | E.01-E.12 | MEV detection, LTL Büchi, Witness DAG, formal-verification pipeline — all Tier 6 chain deferred | NOT DONE / PARTIAL | LOW |
-| F.01 / F.03 / F.04 | Cognitive kernel namespaces, cognitive scheduling, Engram syscalls | NOT DONE | LOW |
+| F.01 / F.03 / F.04 | Cognitive kernel namespaces, cognitive scheduling, Signal syscalls | NOT DONE | LOW |
 | F.06 / F.07 | Forensic-AI regulatory pre-compliance (EU AI Act / HIPAA / SOX / GDPR / SEC/CFTC) | NOT DONE | LOW |
 | C.12 | CaMeL dual-LLM (Debenedetti 2025) | NOT DONE | LOW |
 | C.13 | Ventriloquist on-chain (Korai chain Tier 6) | NOT DONE | LOW |
@@ -151,7 +151,7 @@ cover the immediate exposure.
 | A.08 | Role-based permission matrix via SafetyLayer.role | DONE |
 | A.09 | Task-level tool filters | DONE |
 | B.01 | AuditChain append-only hash-chain | DONE |
-| B.02 | Engram lineage DAG via ContentHash | DONE |
+| B.02 | Engram (renamed to Signal in 2026-08-12) lineage DAG via ContentHash | DONE |
 | B.05 | TaintTracker with mark / propagate / is_tainted | DONE |
 | C.01 | RateLimiter sliding window | DONE |
 | C.02 | Circuit breaker via conductor | DONE |
@@ -179,7 +179,7 @@ cover the immediate exposure.
 | NIST / MITRE / STRIDE-AI / OWASP compliance mappings | later compliance certification pass | no shipping code impact |
 | Kelly sizing / Beta-Binomial / 5D safety budgets | later adaptive-risk pass | Phase 2+ |
 | MEV / LTL / Witness DAG / formal-verification pipeline | Tier 6 chain activation | blocked on chain layer |
-| Cognitive kernel namespaces / Engram syscalls | later kernel redesign pass | fundamental redesign |
+| Cognitive kernel namespaces / Signal syscalls | later kernel redesign pass | fundamental redesign |
 | Forensic-AI regulatory export templates | later compliance packaging pass | positioning only |
 | CaMeL dual-LLM | later prompt-security pass | academic frontier |
 | Advanced Denning / FIDES / PFI / PCAS | later taint-deepening pass | shipping tracker suffices |

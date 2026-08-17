@@ -3567,7 +3567,7 @@ Use this file for TUI completion work and dashboard/TUI parity checks.
 - [ ] Finish subview parity where enums already exist.
   - Provider Health
   - Model Comparison
-  - Engram DAG
+  - Signal DAG
   - Episode Replay
   - Knowledge Browse
 - [ ] Fix data refresh behavior before adding cosmetic widgets.
@@ -6652,7 +6652,7 @@ nothing happen.
 
 **What needs to change:** Expand the dispatch loop to also match additional
 `ServerEvent` variants beyond `WebhookReceived`. Convert them to synthetic
-`Engram` signals that can be matched against subscription filters.
+`Signal` signals that can be matched against subscription filters.
 
 - [ ] **E-1** In `crates/roko-serve/src/dispatch.rs`, at the subscription
   dispatch loop (around line 1424), replace the single `let ... else { continue }`
@@ -6688,7 +6688,7 @@ nothing happen.
   };
   ```
 
-  NOTE: The exact `Engram` builder API may differ. Check
+  NOTE: The exact `Signal` builder API may differ. Check
   `crates/roko-core/src/signal.rs` for the actual construction method. The key
   requirement is that each event type produces a signal with a `kind` tag that
   subscription filters can match against.

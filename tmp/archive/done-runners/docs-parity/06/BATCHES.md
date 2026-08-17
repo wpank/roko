@@ -19,8 +19,8 @@ This parity bundle is for **documentation refresh only** under
 | Batch | Purpose | Write Scope | Verify Focus |
 |-------|---------|-------------|--------------|
 | `N1` | Refresh the overview and execution posture around the audit | `00-INDEX.md`, `BATCHES.md`, context-pack | `rg -n "HDC fingerprint|deferred|target-state" tmp/docs-parity/06` |
-| `N2` | Rewrite knowledge / tier / decay parity around what ships today | `A-knowledge-types-tiers-decay.md` | `rg -n "demurrage|tier progression|Engram" tmp/docs-parity/06/A-knowledge-types-tiers-decay.md` |
-| `N3` | Rewrite HDC parity around the real `HdcVector` and no-extra-crate story | `B-hdc-foundations-operations.md` | `rg -n "HdcVector|roko-hdc|Engram" tmp/docs-parity/06/B-hdc-foundations-operations.md` |
+| `N2` | Rewrite knowledge / tier / decay parity around what ships today | `A-knowledge-types-tiers-decay.md` | `rg -n "demurrage|tier progression|Engram (renamed to Signal in 2026-08-12)" tmp/docs-parity/06/A-knowledge-types-tiers-decay.md` |
+| `N3` | Rewrite HDC parity around the real `HdcVector` and no-extra-crate story | `B-hdc-foundations-operations.md` | `rg -n "HdcVector|roko-hdc|Signal" tmp/docs-parity/06/B-hdc-foundations-operations.md` |
 | `N4` | Refresh query / context docs and defer cross-domain transfer honestly | `C-query-crossdomain-context.md` | `rg -n "query_similar|Substrate|cross-domain|deferred" tmp/docs-parity/06/C-query-crossdomain-context.md` |
 | `N5` | Refresh distillation, somatic, exchange, and backup scope | `D-distillation-progression.md`, `E-somatic-exchange-backup.md` | `rg -n "Distiller|TierProgression|Library of Babel|deferred" tmp/docs-parity/06/D-distillation-progression.md tmp/docs-parity/06/E-somatic-exchange-backup.md` |
 | `N6` | Refresh frontier status, source anchors, audit log, and runner text | `F-status-frontier.md`, `SOURCE-INDEX.md`, `AUDIT-LOG.md`, `run-docs-parity.sh` | `bash -n tmp/docs-parity/06/run-docs-parity.sh` |
@@ -33,7 +33,7 @@ Owns the docs posture for PU06.
 
 Deliverables:
 
-- make HDC-on-Engram the top priority
+- make HDC-on-Signal the top priority
 - separate shipping vs partial vs deferred
 - update context-pack notes for a docs-only pass
 
@@ -48,7 +48,7 @@ Deliverables:
 
 - keep `KnowledgeEntry`, `KnowledgeKind`, and tier progression in present tense
 - keep demurrage and worldview language in target-state tense
-- point readers at Engram fingerprinting as the next bridge
+- point readers at Signal fingerprinting as the next bridge
 
 ### N3 — HDC Foundations
 
@@ -56,7 +56,7 @@ Deliverables:
 
 - state that `HdcVector` already exists and works
 - state that no separate `roko-hdc` crate is needed
-- narrow HDC work to retrieval / clustering and Engram fingerprinting
+- narrow HDC work to retrieval / clustering and Signal fingerprinting
 
 ### N4 — Query, Context, Cross-Domain
 

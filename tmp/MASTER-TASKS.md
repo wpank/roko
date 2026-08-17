@@ -1,7 +1,21 @@
+> **ARCHIVED — 2026-08-13**
+>
+> This file is **no longer maintained** and contains stale status information.
+> Many items marked `[ ]` here are actually resolved. For current status, see:
+>
+> - **`.roko/GAPS.md`** — Single source of truth for project status and gaps
+> - **`tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md`** — Agent execution protocol
+> - **`tmp/status-quo/00-INDEX.md`** — Status-quo pack navigation
+>
+> Do NOT update this file. It is preserved for historical reference only.
+
 # Master Task List
 
+> **What is this?** Master task list for roko development. Tasks are organized by priority and area.
+> Related: plans/INDEX.md (plan-level tracking), tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md (wave-level tracking), .roko/GAPS.md (gap tracking).
+
 > Single source of truth for all open work. ~150 lines, 7 sections.
-> Each item cites its source file. Updated 2026-04-26.
+> Each item cites its source file. Last updated: 2026-08-13.
 
 ---
 
@@ -38,13 +52,13 @@ Source: [`dogfood/09-MAY6-DEMO-BUILD.md`](dogfood/09-MAY6-DEMO-BUILD.md),
 Source: [`dogfood/00-INDEX.md`](dogfood/00-INDEX.md) — P1/P2/P3 open items
 
 - [ ] **#9** Enrichment timeout hardcode — one 120s hardcode remains in gate judge call
-- [ ] **M1** No streaming in non-approval path — runner v2 fixes this but only covers `--approval`
+- [x] **M1** Non-approval runner-v2 streams through its human output sink; ACP-backed slash subprocesses stream stdout/stderr immediately and emit structured progress with `ROKO_ACP_PROGRESS=1`
 - [ ] **M2** Model shows "-" in TUI — runner v2 passes `model: String::new()` instead of resolved model
 - [ ] **F5** Memory leak — unbounded `efficiency_events: Vec` never drained (9.5GB RSS)
 - [ ] **#12** Knowledge endpoint URL mismatch — uses `/neuro/` path, not `/knowledge/`
 - [ ] **#15** Enrichment artifacts empty — moot with `skip_enrichment` but unresolved
-- [ ] **S4** signals.jsonl dead path — conductor writes to `engrams.jsonl` instead
-- [ ] **S7** learn/ files stale in runner v2 — cascade-router.json and gate-thresholds.json not updated
+- [x] **S4** signals.jsonl dead path — conductor wrote to `engrams.jsonl` instead *(fixed: Engram-to-Signal rename in batch 2026-08-12)*
+- [x] **S7** runner/model-call feedback persists `cascade-router.json`; gate thresholds persist at the configured flush cadence
 
 ---
 
@@ -53,13 +67,13 @@ Source: [`dogfood/00-INDEX.md`](dogfood/00-INDEX.md) — P1/P2/P3 open items
 Source: [`dogfood/00-INDEX.md`](dogfood/00-INDEX.md) — "Rewrite: Plan Runner v2" section
 
 **Phases**
-- [ ] Phase C: Make runner v2 the default for all `plan run` (non-approval path still uses orchestrate.rs)
-- [ ] Phase D: Deprecate orchestrate.rs → `orchestrate_legacy.rs`
+- [x] Phase C: Runner v2 is the default for all `plan run` paths
+- [x] Phase D: The legacy orchestrator was removed; runner v2 is the sole plan runtime
 - [ ] Phase E: Align with unified spec (type renames, Activity recording)
 
 **Wiring gaps** (runner v2 vs orchestrate.rs)
-- [ ] CascadeRouter persistence — does not update `cascade-router.json`
-- [ ] AdaptiveThresholds persistence — does not update `gate-thresholds.json`
+- [x] CascadeRouter persistence — live outcomes update `cascade-router.json`
+- [x] AdaptiveThresholds persistence — configured boundary flush updates `gate-thresholds.json`
 - [ ] Replan-on-gate-failure — not wired in runner v2
 - [ ] Model field not forwarded to `tui.agent_spawned()` despite being resolved
 
@@ -80,10 +94,10 @@ Source: [`ux/ux-followup/00-INDEX.md`](ux/ux-followup/00-INDEX.md)
 - `04` t9-t19-residuals: 3 open (runner hardening)
 - `05` partially-wired: 4 open (Phase 2+ crates, MCP audit)
 - `06` agent-backends: 6 open (Codex/Cursor/cascade-router parity)
-- `07` spec-code-drift: 3 open (docs sweeps)
+- `07` spec-code-drift: 1 open (docs sweeps — docs/v2 reality sync DONE in batch 2026-08-12, docs/v1 deprecation headers DONE)
 - `08` phase-2-vision: 6 open (chain/dreams/full-TUI/HTTP roadmap)
 - `09` hygiene: 3 open (clippy docs, flaky tests, cascade router e2e)
-- `10` stale-docs: 5 open (terminology renames, old paths, banners)
+- `10` stale-docs: 3 open (old paths, banners — terminology renames DONE in batch 2026-08-12)
 - `12` tui-event-parity: 7 open (incremental tail-read, learning-data watcher)
 - `13` session-state-mgmt: 1 open (migration framework)
 - `14` observability: 1 open (per-gate timeline widget)
@@ -96,7 +110,7 @@ Source: [`unified-migration-runner/MASTER-CHECKLIST.md`](unified-migration-runne
 — 95 batches across 4 phases (0 done, 78 pending, 17 blocked)
 
 - Phase 0 (Prep): 10 batches — baseline, stubs, wiring
-- Phase 1 (Kernel): 27 batches — type renames, Pulse/Bus, React, Cell, demurrage
+- Phase 1 (Kernel): 27 batches — type renames (Engram-to-Signal DONE), Pulse/Bus, React, Cell, demurrage
 - Phase 2 (Engine): 27 batches — Graph executor, agent runtime, CognitiveWorkspace, surfaces
 - Phase 3 (Economy): 31 batches — CaMeL IFC, corrigibility, on-chain registries, arena, brain export
 

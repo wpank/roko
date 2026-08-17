@@ -1,8 +1,8 @@
 [meta]
 plan = "E27-feeds-system"
 total = 10
-done = 0
-status = "ready"
+done = 10
+status = "done"
 max_parallel = 3
 
 # ── T01: Feed Cell type — kernel decomposition of Connect+Trigger+Store ──
@@ -50,7 +50,7 @@ Note: Use existing ConnectorKind (connector.rs:24) and ConnectorStatus
 (connector.rs:41) from roko-core. Do not duplicate.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "architectural"
 files = ["crates/roko-core/src/feed_cell.rs"]
 depends_on = []
@@ -116,11 +116,11 @@ The existing FeedRegistry (feed.rs:81) stays as the static descriptor
 registry. RuntimeRegistry manages the running instances.
 
 Currently, runtime_feeds in AppState (roko-serve) returns hardcoded
-FeedRuntimeStatus for file-watch, provider-health, isfr-keeper. This
+FeedRuntimeStatus for file-watch, provider-health, and episode-outcome. This
 new RuntimeRegistry replaces that with actual feed lifecycle management.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-core/src/feed_runtime.rs"]
 depends_on = ["E27-T01"]
@@ -156,11 +156,11 @@ phase = "compile"
 command = "cargo check -p roko-core 2>&1"
 fail_msg = "roko-core must compile"
 
-# ── T03: Built-in feeds — file watcher, provider health, ISFR ──────
+# ── T03: Built-in feeds — file watcher, provider health, episode outcomes ──
 
 [[task]]
 id = "E27-T03"
-title = "Implement three built-in feed cells: file-watcher, provider-health, ISFR"
+title = "Implement three built-in feed cells: file-watcher, provider-health, episode-outcome"
 description = """
 Create concrete FeedCell implementations for the three feeds that are
 currently hardcoded in roko-serve AppState:
@@ -175,53 +175,52 @@ currently hardcoded in roko-serve AppState:
    - Filter: ignore .tmp files and partial writes
 
 2. ProviderHealthFeedCell (replaces "provider-health-feed"):
-   - Connect: read provider list from roko.toml config
-   - Trigger: poll each provider endpoint every 30 seconds
+   - Connect: read the canonical provider health registry
+   - Trigger: snapshot observed provider state every 30 seconds
    - Store: none (health is transient)
    - Topic: "provider.health"
    - Output pulse: { provider, status: Connected/Disconnected/Degraded, latency_ms }
 
-3. ISFRKeeperFeedCell (replaces "isfr-keeper"):
-   - Connect: read ISFR keeper config from roko.toml (isfr section)
-   - Trigger: compute ISFR rates every 60 seconds from episode log
-   - Store: append to .roko/learn/isfr.jsonl
-   - Topic: "isfr.rates"
-   - Output pulse: { rates: HashMap<String, f64>, computed_at }
+3. EpisodeOutcomeFeed (the rate-oracle/ISFR vertical was retired 2026-08-13):
+   - Connect: create/open the canonical append-only episode log
+   - Trigger: tail complete JSONL records every 60 seconds
+   - Store: none (the episode log is already durable)
+   - Topic: "episode.outcome"
+   - Output pulse: one structured episode record
 
 Each implements FeedCell (from T01) and can be registered with
 RuntimeRegistry (from T02).
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
-files = ["crates/roko-core/src/feeds/mod.rs", "crates/roko-core/src/feeds/file_watch.rs", "crates/roko-core/src/feeds/provider_health.rs", "crates/roko-core/src/feeds/isfr.rs"]
+files = ["crates/roko-core/src/feeds/mod.rs", "crates/roko-core/src/feeds/file_watch.rs", "crates/roko-core/src/feeds/provider_health.rs", "crates/roko-core/src/feeds/episode_outcome.rs"]
 depends_on = ["E27-T01", "E27-T02"]
 max_loc = 150
 
 [task.context]
 read_files = [
-  { path = "docs/v2/09-FEEDS.md", lines = "152-220", why = "Built-in feed examples: file-system, provider health, ISFR computation" },
-  { path = "crates/roko-serve/src/routes/feeds.rs", lines = "526-558", why = "list_runtime_feeds_returns_two_entries test — expected ids: file-watch-roko-dir, provider-health-feed, isfr-keeper" },
-  { path = "crates/roko-core/src/config/schema.rs", lines = "148-153", why = "ISFRSection (line 150), FeedAgentsConfig (line 153) in RokoConfig" },
+  { path = "docs/v2/09-FEEDS.md", lines = "152-220", why = "Built-in feed examples and lifecycle" },
+  { path = "crates/roko-serve/src/routes/feeds.rs", lines = "526-558", why = "runtime feed API tests" },
+  { path = "crates/roko-learn/src/provider_health.rs", lines = "181-305", why = "canonical persisted provider health registry" },
   { path = "crates/roko-core/src/connector.rs", lines = "40-49", why = "ConnectorStatus enum — Connected/Disconnected/Degraded for health checks" },
 ]
 symbols = [
   "FileWatchFeedCell — file system watcher for .roko/ directory changes",
   "ProviderHealthFeedCell — LLM provider health checker",
-  "ISFRKeeperFeedCell — Implied Success/Failure Rate computation feed",
-  "ISFRSection — ISFR config from roko.toml (config/schema.rs:150)",
+  "EpisodeOutcomeFeed — append-only episode record tail",
   "FeedAgentsConfig — feed agent config from roko.toml (config/schema.rs:153)",
   "ConnectorStatus — Connected/Disconnected/Degraded (connector.rs:41)",
 ]
 anti_patterns = [
   "Do NOT duplicate the file watcher logic from tui/fs_watch.rs — extract shared code or import it",
   "Do NOT poll more frequently than the debounce interval",
-  "Do NOT make provider health checks blocking — use reqwest with a 5-second timeout",
+  "Do NOT create shadow provider probes — read the canonical observed provider health registry",
 ]
 
 [[task.verify]]
 phase = "structural"
-command = "test -f crates/roko-core/src/feeds/file_watch.rs && test -f crates/roko-core/src/feeds/provider_health.rs && test -f crates/roko-core/src/feeds/isfr.rs"
+command = "test -f crates/roko-core/src/feeds/file_watch.rs && test -f crates/roko-core/src/feeds/provider_health.rs && test -f crates/roko-core/src/feeds/episode_outcome.rs"
 fail_msg = "Three built-in feed implementations must exist"
 
 [[task.verify]]
@@ -263,7 +262,7 @@ Disconnect: unsubscribe from all input_topics
 Health: connected when all input topics have produced at least one pulse
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-core/src/feeds/derived.rs"]
 depends_on = ["E27-T01"]
@@ -337,7 +336,7 @@ Recipe execution:
 Persistence: TOML file per recipe in .roko/recipes/
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-core/src/recipe.rs"]
 depends_on = []
@@ -403,7 +402,7 @@ Connect RuntimeRegistry (from T02) to AppState. Replace the hardcoded
 runtime_feeds field with the actual RuntimeRegistry.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-serve/src/routes/feeds.rs", "crates/roko-serve/src/state.rs"]
 depends_on = ["E27-T02", "E27-T03"]
@@ -474,10 +473,10 @@ Example output for `roko feed health`:
   ─────────────────────────────────────────────────────
   file-watch-roko-dir      connected   1,234     0.05 Hz
   provider-health-feed     connected   42        0.02 Hz
-  isfr-keeper              connected   7         0.02 Hz
+  episode-outcome-feed     connected   7         0.02 Hz
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-cli/src/commands/feed.rs"]
 depends_on = ["E27-T06"]
@@ -561,7 +560,7 @@ field = "cost_usd"
 ```
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-core/src/recipe_store.rs", "crates/roko-cli/src/commands/recipe.rs"]
 depends_on = ["E27-T05"]
@@ -625,7 +624,7 @@ Implementation:
 - fn route_pulse(feed_id, pulse, bus) — wraps and publishes
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-core/src/feed_bus_bridge.rs"]
 depends_on = ["E27-T01", "E27-T02"]
@@ -688,7 +687,7 @@ Use tempdir for all file-based tests. Use MockFeedCell that produces
 deterministic pulses on a timer.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-core/src/feed_runtime.rs", "crates/roko-core/src/recipe.rs", "crates/roko-serve/src/routes/feeds.rs"]
 depends_on = ["E27-T01", "E27-T02", "E27-T04", "E27-T05", "E27-T06"]

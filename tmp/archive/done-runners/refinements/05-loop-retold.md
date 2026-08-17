@@ -61,12 +61,12 @@ ephemeral things) that happen together, not in sequence.
 Cross-cuts (Neuro, Daimon, Dreams) are **not** loop steps. They are
 injected into specific steps:
 
-- **Neuro** contributes Engrams to step 1 (knowledge retrieval) and
+- **Neuro** contributes Signals to step 1 (knowledge retrieval) and
   step 3 (prompt enrichment), and consumes verdicts from step 5.
 - **Daimon** biases step 2 (affect-modulated routing) and gates step 4
   (behavioral-state transitions suppress or enable actions).
 - **Dreams** runs on its own Delta-speed loop, consuming recent
-  Engrams via Substrate and emitting consolidated ones back.
+  Signals via Substrate and emitting consolidated ones back.
 
 ## 3. Step-by-step
 
@@ -74,7 +74,7 @@ injected into specific steps:
 
 The runtime has three sensing primitives:
 
-**Substrate.query** — pull Engrams by filter. Used for durable
+**Substrate.query** — pull Signals by filter. Used for durable
 context: recent episodes, stored plans, knowledge entries, historical
 gate verdicts, cached tool results.
 
@@ -85,7 +85,7 @@ approval requests, cancellation, clock ticks.
 **External I/O** — read from sources that aren't yet either fabric:
 the LLM's WebSocket, a subprocess stdout, a filesystem watch, an
 incoming HTTP request on `roko-serve`. These immediately become Pulses
-(published to the Bus) and often graduate to Engrams.
+(published to the Bus) and often graduate to Signals.
 
 A step-1 implementation is typically a `select!` over one or more
 Bus receivers plus a periodic Substrate poll. The current `loop_tick`
@@ -94,7 +94,7 @@ this — it will generalize.
 
 ### Step 2 — ASSESS
 
-Combined score + route. The input is a slice of `Datum` (Engram or
+Combined score + route. The input is a slice of `Datum` (Signal or
 Pulse). The Scorer computes a multi-axis Score; the Router uses the
 scores (plus ctx-aware logic like cascade model selection or LinUCB
 bandit draws) to produce a `Selection` identifying the chosen item and
@@ -108,49 +108,49 @@ verify, closing the bandit learning loop.
 
 The Composer takes the selected `Datum`(s) plus any additional
 context (system prompt layers, tool descriptions, recent episodes) and
-assembles a composed Engram under a Budget. The composed Engram is
+assembles a composed Signal under a Budget. The composed Signal is
 typically `Kind::Prompt`. This is the step where token-budget
 awareness lives (per design principle P3 in doc 17).
 
 For non-LLM actions (e.g. a direct chain call, a filesystem op) the
-composed Engram describes the action fully enough for step 4 to
+composed Signal describes the action fully enough for step 4 to
 execute it without further context.
 
 ### Step 4 — ACT
 
-The runtime executes the action described by the Engram from step 3.
+The runtime executes the action described by the Signal from step 3.
 In the most common case this is an LLM call: publish `agent.process.spawned`,
 stream `agent.msg.chunk` Pulses as tokens arrive, publish
 `agent.turn.completed` when done. The final `AgentOutput` graduates to
-an Engram for step 5 to verify.
+an Signal for step 5 to verify.
 
 Other act paths:
 
 - Tool call → `tool.call.started` / `tool.call.completed` Pulses;
-  `ToolInvocation` Engram.
+  `ToolInvocation` Signal.
 - Chain transaction → `chain.tx.submitted` / `chain.tx.confirmed`
-  Pulses; `Transaction` Engram.
-- Filesystem op → `fs.op.completed` Pulse; `FsOp` Engram if auditable.
+  Pulses; `Transaction` Signal.
+- Filesystem op → `fs.op.completed` Pulse; `FsOp` Signal if auditable.
 
 ### Step 5 — VERIFY
 
-The Gate pipeline verifies the step-4 Engram. The pipeline itself is
+The Gate pipeline verifies the step-4 Signal. The pipeline itself is
 a Composer-composition-of-Gates specified in `roko-gate`. Each Gate
-emits a `GateVerdict` Engram; the pipeline's output is an aggregate
-Verdict that is itself an Engram.
+emits a `GateVerdict` Signal; the pipeline's output is an aggregate
+Verdict that is itself an Signal.
 
-**Stream-gates run in parallel** to the Engram-gates. A BudgetGate
+**Stream-gates run in parallel** to the Signal-gates. A BudgetGate
 watches `agent.tokens.used` Pulses during step 4 and can halt the
 step before completion if the budget trips.
 
 ### Step 6 — PERSIST & BROADCAST (co-equal)
 
-The step-5 Verdict Engram lands in the Substrate (lineage captured,
+The step-5 Verdict Signal lands in the Substrate (lineage captured,
 audit DAG updated). The same event is broadcast as a
 `gate.verdict.emitted` Pulse for subscribers that care about the
 live delivery.
 
-The composed Engram from step 3 also persists here if the caller
+The composed Signal from step 3 also persists here if the caller
 wants it (useful for prompt replay; can be gated by config since
 prompts can be large).
 
@@ -160,7 +160,7 @@ Policies subscribed to the relevant topics receive the new Pulses
 and decide. Typical reactions:
 
 - `EpisodePolicy` sees `gate.verdict.emitted`, accumulates a turn's
-  worth of Pulses, graduates an `Episode` Engram.
+  worth of Pulses, graduates an `Episode` Signal.
 - `CircuitBreakerPolicy` sees a streak of failed verdicts, publishes
   `conductor.circuit.tripped`.
 - `EfficiencyPolicy` sees token-usage Pulses, updates cascade-router
@@ -178,8 +178,8 @@ are frequencies at which the loop ticks, not different loops. Every
 speed runs these seven steps; what differs is:
 
 - **Sense scope**: Gamma senses only the last few seconds of Pulses +
-  hottest Engrams. Theta senses minutes of recent Pulses + recent
-  Engrams. Delta senses hours of Engrams (Pulses are long gone from
+  hottest Signals. Theta senses minutes of recent Pulses + recent
+  Signals. Delta senses hours of Signals (Pulses are long gone from
   the ring).
 - **Compose budget**: Gamma gets tight token budgets. Delta can
   afford long contexts (used by Dreams consolidation).
@@ -209,9 +209,9 @@ very different persistence costs.
 - §3 Step 2 — ASSESS (joint score+route)
 - §4 Step 3 — COMPOSE (prompt assembly under budget)
 - §5 Step 4 — ACT (LLM / tool / chain)
-- §6 Step 5 — VERIFY (Engram-gates + stream-gates)
+- §6 Step 5 — VERIFY (Signal-gates + stream-gates)
 - §7 Step 6 — PERSIST & BROADCAST (co-equal)
-- §8 Step 7 — REACT (Policy.decide → Pulses + Engrams)
+- §8 Step 7 — REACT (Policy.decide → Pulses + Signals)
 - §9 Cross-cuts inject into specific steps (not a ninth step)
 - §10 The loop at three speeds
 - §11 Shipping code: `loop_tick` with Bus integration
@@ -333,7 +333,7 @@ themselves:
   `gate.verdict.emitted` and `agent.turn.completed` Pulses to update
   PAD.
 - **Dreams** runs its own Delta-speed loop. It consumes recent
-  Engrams via Substrate scan and emits consolidated Engrams (plus
+  Signals via Substrate scan and emits consolidated Signals (plus
   `engram.promoted` Pulses). It doesn't share a tick with the main
   loop.
 

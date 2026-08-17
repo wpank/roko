@@ -10,8 +10,8 @@
 
 ### Checkpoint criteria
 
-- [ ] The architecture chapter set consistently uses the two-medium / two-fabric framing (`Engram`, `Pulse`, `Substrate`, `Bus`).
-- [ ] `GLOSSARY.md` has entries for `Engram`, `Pulse`, `Bus`, `Topic`, and `TopicFilter`.
+- [ ] The architecture chapter set consistently uses the two-medium / two-fabric framing (`Signal`, `Pulse`, `Substrate`, `Bus`).
+- [ ] `GLOSSARY.md` has entries for `Signal`, `Pulse`, `Bus`, `Topic`, and `TopicFilter`.
 - [ ] The loop chapter (`reference/06-loop/`) reflects the seven-step loop with co-equal `PERSIST` and `BROADCAST`.
 - [ ] The layer chapter (`reference/08-layers/`) places `Bus` at Layer 0 alongside `Substrate`.
 - [ ] No canonical chapter still relies on the old equivalence disclaimer as its primary explanation.

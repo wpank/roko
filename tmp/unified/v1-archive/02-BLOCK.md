@@ -270,7 +270,7 @@ pub struct ReactOutput {
 }
 ```
 
-React operates on Pulses (ephemeral), not Signals. This is a breaking change from the v1 spec where Policy took `&[Engram]`. The rationale: policies react to live events (heartbeats, gate verdicts, budget warnings), not stored artifacts.
+React operates on Pulses (ephemeral), not Signals. This is a breaking change from the v1 spec where Policy took `&[Signal]` (at that time called `Engram`, renamed to Signal in 2026-08-12). The rationale: policies react to live events (heartbeats, gate verdicts, budget warnings), not stored artifacts.
 
 **Built-in implementations**: SafetyReactor, BudgetReactor, EscalationReactor, CalibrationPolicy.
 

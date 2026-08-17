@@ -34,7 +34,7 @@ Generated: 2026-04-16.
 - F4 Git — "Git branch tree, commit graph, worktree list"
 - F5 Logs — "Scrollable log viewer with filtering"
 - F6 Config — "Config editor / effective config view"
-- F7 Inspect — "Engram DAG inspector, episode replay"
+- F7 Inspect — "Signal DAG inspector, episode replay"
 
 `Tab::ALL` array at `:30-38` enumerates them. File comment at `:1-4` explicitly cites "Mori-style TUI navigation".
 
@@ -140,11 +140,11 @@ Widget surface is deep. The 1,015-LOC `plan_tree.rs` alone indicates substantial
 
 ---
 
-## C.12 — Inspect tab (F7) Engram DAG + episode replay (Doc 09 §"Inspect Tab")
+## C.12 — Inspect tab (F7) Signal DAG + episode replay (Doc 09 §"Inspect Tab")
 
 **Status**: PARTIAL
 **Severity**: LOW
-**Doc claim**: F7 Inspect tab shows Engram DAG + episode replay UI.
+**Doc claim**: F7 Inspect tab shows Signal DAG + episode replay UI.
 **Reality**: F7 Inspect tab ships at `tabs.rs:22` per the tab enum. Whether the full DAG visualization + episode replay UI ships or is stub view is unverified — would require reading state.rs + dashboard.rs. Flag partial.
 
 ---

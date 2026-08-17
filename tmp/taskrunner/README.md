@@ -1,5 +1,20 @@
 # Task Runner — Parallel Agent Execution System
 
+> **What is this?** The original parallel agent execution system used before the
+> `parallel-template/` runner was built. This system ran 100 tasks across 4 batches of
+> parallel agents (opus) on the `wp-arch2` branch in May 2026. All 100 tasks completed
+> successfully. The taskrunner is now **historical reference** -- newer batch work uses
+> `tmp/runners/parallel-template/` instead. The task definitions, scripts, and wave
+> structure here document how the first large-scale parallel agent run was organized.
+>
+> **Key facts (2026-08-13):**
+> - All 100 tasks: **implemented** (see `STATUS.toml` and `PROGRESS.md`)
+> - Branch: `wp-arch2` (merged to main long ago)
+> - `orchestrate.rs` (referenced in some tasks): **deleted**
+> - Engram-to-Signal rename (task 037-038): **complete** (`pub type Signal = Engram`)
+>
+> **Last updated: 2026-08-13**
+
 ## Overview
 
 Run up to 20 agents in parallel to implement, test, wire, and verify tasks.

@@ -285,9 +285,9 @@ roko replay ep_12345 --override "demurrage.flat_tax=0.02"
 roko replay ep_12345 --audit > report.md
 ```
 
-Replay consumes the Engram + Pulse history of the episode (if the
+Replay consumes the Signal + Pulse history of the episode (if the
 ring hadn't wrapped on Pulses, a fresh subscribe — if it had,
-reconstructed from graduated Engrams). Operators walking through a
+reconstructed from graduated Signals). Operators walking through a
 postmortem use replay to answer "what did the agent know at this
 moment?"
 
@@ -330,7 +330,7 @@ For humans grepping logs:
 - Every log line that crosses a safety boundary includes
   `safety_decision=<decision>`.
 - Every cost-bearing action includes `usd=<amount>`.
-- Every Engram write includes `engram_kind` and `engram_hash`.
+- Every Signal write includes `engram_kind` and `engram_hash`.
 - Every Pulse publish includes `topic`.
 - Every gate verdict includes `gate`, `passed`.
 
@@ -362,8 +362,8 @@ Not all telemetry retains forever:
 - Traces: sampling rate configurable; default 10% sample; 100% sample
   on error.
 - Bus Pulses: ring-buffer retention (default 4096 per bus); graduated
-  Engrams persist per demurrage.
-- Engrams: demurrage-managed; see 12.
+  Signals persist per demurrage.
+- Signals: demurrage-managed; see 12.
 - Custody records: retained long-term (compliance-tier storage);
   optionally chain-witnessed (Phase 2+).
 

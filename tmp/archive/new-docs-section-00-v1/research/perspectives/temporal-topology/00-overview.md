@@ -61,8 +61,8 @@ that **evolve over time**:
 - Facts are consolidated (separate sub-graphs are linked by new bridging facts)
 
 The temporal evolution of the knowledge topology is governed by:
-1. The **ingestion process**: what new Engrams enter, at what rate, from what sources.
-2. The **decay process**: how older Engrams lose confidence and eventually expire.
+1. The **ingestion process**: what new Signals enter, at what rate, from what sources.
+2. The **decay process**: how older Signals lose confidence and eventually expire.
 3. The **consolidation process**: how Dreams distills and links existing knowledge.
 4. The **contradiction process**: how contradicting evidence reshapes the confidence landscape.
 

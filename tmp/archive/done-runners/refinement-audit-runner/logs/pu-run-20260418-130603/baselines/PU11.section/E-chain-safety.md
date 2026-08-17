@@ -75,14 +75,14 @@ Generated: 2026-04-16.
 **Status**: PARTIAL
 **Severity**: LOW
 **Doc claim**: Doc 12 (1,544 lines) specifies a BLAKE3-addressed DAG with 5 vertex types (Observation, Prediction, Decision, Resolution, NeuroEntry), ZK proofs, SQLite storage, on-chain anchoring.
-**Reality**: `roko-core::ContentHash` provides the BLAKE3-shaped primitive (cross-ref B.02). `Engram` carries parent hashes (batch 08 F.08 + B.02). The DAG shape is present implicitly via Engram lineage. What does NOT ship:
+**Reality**: `roko-core::ContentHash` provides the BLAKE3-shaped primitive (cross-ref B.02). `Signal` carries parent hashes (batch 08 F.08 + B.02). The DAG shape is present implicitly via Signal lineage. What does NOT ship:
 - Explicit 5-vertex-type enum (`Observation | Prediction | Decision | Resolution | NeuroEntry`)
-- SQLite-backed DAG storage (Engrams use JSONL via `roko-fs::FileSubstrate`)
+- SQLite-backed DAG storage (Signals use JSONL via `roko-fs::FileSubstrate`)
 - DAG query language (6 query types)
 - Datalog provenance queries via Datafrog
 - ZK proofs for strategy auditing
 - Safety-specific query patterns (TOCTOU, escalation chain, exfiltration, circular reasoning)
-**Fix sketch**: Doc 12 should mark itself `Implementation: Partial (content-addressing + lineage ship via Engram; explicit vertex types + SQLite + Datalog + ZK frontier)`.
+**Fix sketch**: Doc 12 should mark itself `Implementation: Partial (content-addressing + lineage ship via Signal; explicit vertex types + SQLite + Datalog + ZK frontier)`.
 
 ---
 
@@ -137,7 +137,7 @@ Generated: 2026-04-16.
 | Status | Count |
 |--------|-------|
 | DONE | 0 |
-| PARTIAL | 2 (E.07 Engram lineage + ContentHash ship, E.11 contract.rs module shell exists) |
+| PARTIAL | 2 (E.07 Signal lineage + ContentHash ship, E.11 contract.rs module shell exists) |
 | NOT DONE | 10 (E.01-E.06, E.08-E.10, E.12) |
 
 Section E is **almost entirely Tier-6 chain-deferred frontier**. It
@@ -149,9 +149,9 @@ implementation in this repo. The chain layer itself is Tier-6
 
 ## Agent Execution Notes
 
-### E.07 — Partial via Engram lineage
+### E.07 — Partial via Signal lineage
 
-Doc 12 is closer to partial than pure frontier because Engram
+Doc 12 is closer to partial than pure frontier because Signal
 lineage + ContentHash + on-chain witnessing all ship. The formal
 Witness DAG with explicit vertex types + SQLite + Datalog queries
 is the add-on that does not ship.
@@ -168,5 +168,5 @@ all bounded by the chain layer's Tier-6 status.
 Acceptance criteria:
 
 - Docs 10-13 carry Phase 2+ Tier 6 banners,
-- Doc 12 §"Witness DAG" cross-links to shipping Engram lineage as the minimal precursor,
+- Doc 12 §"Witness DAG" cross-links to shipping Signal lineage as the minimal precursor,
 - `contract.rs` read-through results noted.

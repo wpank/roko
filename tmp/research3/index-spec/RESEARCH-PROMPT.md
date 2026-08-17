@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is the prompt used to generate the deep research reports in the `synthesis/` subdirectory.
+> It is reference material (a prompt template), not an implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Research Prompt: Nunchi — Net-New Opportunities, Market Gaps, and Scaling Strategies
 
 ## Context for the researcher

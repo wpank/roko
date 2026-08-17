@@ -22,13 +22,13 @@
 
 **AntiKnowledge** — `[built]` — One of six `Neuro` knowledge types; encodes what the agent has learned *not* to do. Home: [`reference/README.md`](reference/README.md).
 
-**Attestation** — `[shipping]` — Trust level assigned to an `Engram`'s origin, ranging from `LocalAgent` through `ChainWitness`. Home: [`reference/01-engram/`](reference/01-engram/).
+**Attestation** — `[shipping]` — Trust level assigned to an `Signal`'s origin, ranging from `LocalAgent` through `ChainWitness`. Home: [`reference/01-engram/`](reference/01-engram/).
 
 ## B
 
-**BLAKE3** — `[shipping]` — Cryptographic hash function used to compute `ContentHash` for every `Engram`; enables content-addressed identity and deduplication. Home: [`reference/01-engram/`](reference/01-engram/).
+**BLAKE3** — `[shipping]` — Cryptographic hash function used to compute `ContentHash` for every `Signal`; enables content-addressed identity and deduplication. Home: [`reference/01-engram/`](reference/01-engram/).
 
-**Body** — `[shipping]` — Enum field on `Engram` encoding the actual payload variant (Code, Text, Json, Binary, etc.). Home: [`reference/10-types/`](reference/10-types/).
+**Body** — `[shipping]` — Enum field on `Signal` encoding the actual payload variant (Code, Text, Json, Binary, etc.). Home: [`reference/10-types/`](reference/10-types/).
 
 **Bardo** — `[retired]` — Former project name, retired in favor of `Roko`. See [`strategy/refinements/naming-history.md`](strategy/refinements/naming-history.md).
 
@@ -52,7 +52,7 @@
 
 **Compound AI Systems** — `[—]` — Berkeley AI Research thesis (Zaharia et al. 2024) that SOTA results come from multi-component systems, not individual models; foundational citation for Roko's architecture. Home: [`status/vision.md`](status/vision.md).
 
-**ContentHash** — `[shipping]` — BLAKE3-derived identity field on `Engram`; enables content-addressed deduplication and integrity verification. Home: [`reference/10-types/`](reference/10-types/).
+**ContentHash** — `[shipping]` — BLAKE3-derived identity field on `Signal`; enables content-addressed deduplication and integrity verification. Home: [`reference/10-types/`](reference/10-types/).
 
 **Conductor** — `[built]` — Cybernetic regulator implementing Good Regulator Theorem; 10 watchers, graduated interventions, EWMA anomaly detection, Yerkes-Dodson pressure dynamics. Home: [`reference/README.md`](reference/README.md).
 
@@ -62,13 +62,13 @@
 
 **Daimon** — `[built]` — Affect cross-cut implementing PAD vectors (Pleasure-Arousal-Dominance); modulates model tier selection, exploration rate, and compute allocation. Public alias: `AffectBias`. Home: [`reference/09-cross-cuts/`](reference/09-cross-cuts/).
 
-**Datum** — `[planned]` — Target-state polymorphic input type accepting either an `Engram` or a `Pulse`; eliminates one-off sum types in operator signatures. Home: [`reference/README.md`](reference/README.md).
+**Datum** — `[planned]` — Target-state polymorphic input type accepting either an `Signal` or a `Pulse`; eliminates one-off sum types in operator signatures. Home: [`reference/README.md`](reference/README.md).
 
-**Decay** — `[shipping]` — Time-variant attenuation applied to `Engram` scores; four variants: balance (demurrage), reinforcement, novelty weighting, and cold-tier freeze/thaw. Home: [`reference/10-types/`](reference/10-types/).
+**Decay** — `[shipping]` — Time-variant attenuation applied to `Signal` scores; four variants: balance (demurrage), reinforcement, novelty weighting, and cold-tier freeze/thaw. Home: [`reference/10-types/`](reference/10-types/).
 
 **Delta (δ)** — `[scaffold]` — Slowest cognitive speed; consolidation window of hours; used for offline learning, knowledge compression, and playbook construction. Home: [`reference/07-speeds/`](reference/07-speeds/).
 
-**Demurrage** — `[shipping]` — Preferred decay model; charges a holding fee on unused `Engram` balances rather than degrading the record, keeping active knowledge fresh. Home: [`reference/10-types/`](reference/10-types/).
+**Demurrage** — `[shipping]` — Preferred decay model; charges a holding fee on unused `Signal` balances rather than degrading the record, keeping active knowledge fresh. Home: [`reference/10-types/`](reference/10-types/).
 
 **Dreams** — `[scaffold]` — Delta-speed consolidation cross-cut; NREM replay, REM imagination, and slow consolidation. Transforms execution episodes into persistent `Neuro` knowledge. Home: [`reference/09-cross-cuts/`](reference/09-cross-cuts/).
 
@@ -76,7 +76,7 @@
 
 ## E
 
-**Engram** — `[shipping]` — The durable content-addressed record medium. Content-addressed via BLAKE3, 7-axis scored, four decay models, lineage DAG, attestation level. The fundamental noun of the Roko data model. Replaces the retired `Signal` (durable usage). Home: [`reference/01-engram/`](reference/01-engram/).
+**Signal** — `[shipping]` — The durable content-addressed record medium. Content-addressed via BLAKE3, 7-axis scored, four decay models, lineage DAG, attestation level. The fundamental noun of the Roko data model. Replaces the retired `Signal` (durable usage). Home: [`reference/01-engram/`](reference/01-engram/).
 
 **EventBus\<E\>** — `[shipping]` — Current live transport implementation; will be replaced by the `Bus` abstraction in target state. Home: [`reference/04-bus/`](reference/04-bus/).
 
@@ -110,13 +110,13 @@
 
 ## K
 
-**Kind** — `[shipping]` — Enum field on `Engram` classifying its semantic category (Task, Observation, Knowledge, Plan, Result, etc.). Home: [`reference/10-types/`](reference/10-types/).
+**Kind** — `[shipping]` — Enum field on `Signal` classifying its semantic category (Task, Observation, Knowledge, Plan, Result, etc.). Home: [`reference/10-types/`](reference/10-types/).
 
 **Korai** — `[built]` — The EVM-compatible chain for agent coordination; soulbound passports, reputation, job marketplace, HDC precompile, KORAI/DAEJI tokens. Blocked by chain deployment. See `Chain`. Home: [`reference/README.md`](reference/README.md).
 
 ## L
 
-**Lineage** — `[shipping]` — DAG field on `Engram` encoding the chain-of-thought / causal ancestry of a record. Enables forensic replay and causal attribution. Home: [`reference/01-engram/`](reference/01-engram/).
+**Lineage** — `[shipping]` — DAG field on `Signal` encoding the chain-of-thought / causal ancestry of a record. Enables forensic replay and causal attribution. Home: [`reference/01-engram/`](reference/01-engram/).
 
 ## M
 
@@ -130,7 +130,7 @@
 
 **Neuro** — `[built]` — Durable knowledge cross-cut; 6 knowledge types × 4 validation tiers, HDC-encoded. The agent's long-term memory. Replaces the retired `Grimoire`. Home: [`reference/09-cross-cuts/`](reference/09-cross-cuts/).
 
-**Novelty weighting** — `[shipping]` — Decay variant that boosts new `Engram` scores and allows them to decay faster; ensures fresh information gets attention before it ages. Home: [`reference/10-types/`](reference/10-types/).
+**Novelty weighting** — `[shipping]` — Decay variant that boosts new `Signal` scores and allows them to decay faster; ensures fresh information gets attention before it ages. Home: [`reference/10-types/`](reference/10-types/).
 
 ## P
 
@@ -138,7 +138,7 @@
 
 **ParallelExecutor** — `[shipping]` — Pure state machine in `roko-orchestrator`; schedules tasks from a cross-plan DAG, isolates work in git worktrees, serializes merges via conflict-aware queue. Home: [`reference/README.md`](reference/README.md).
 
-**PERSIST** — `[shipping]` — Step 7 of the universal loop; writes the verified output `Engram` to `Substrate`. Home: [`reference/06-loop/`](reference/06-loop/).
+**PERSIST** — `[shipping]` — Step 7 of the universal loop; writes the verified output `Signal` to `Substrate`. Home: [`reference/06-loop/`](reference/06-loop/).
 
 **Plan** — `[shipping]` — A DAG of tasks generated from a PRD; executed by `ParallelExecutor`. Home: [`reference/README.md`](reference/README.md).
 
@@ -146,15 +146,15 @@
 
 **PRD** — `[shipping]` — Product requirements document; the input to `roko prd`; Roko reads its own PRDs to generate self-improvement plans. Home: [`reference/README.md`](reference/README.md).
 
-**Provenance** — `[shipping]` — Durable audit context attached to an `Engram`: who created it, what tools were used, what Engrams it derived from. Home: [`reference/01-engram/`](reference/01-engram/).
+**Provenance** — `[shipping]` — Durable audit context attached to an `Signal`: who created it, what tools were used, what Signals it derived from. Home: [`reference/01-engram/`](reference/01-engram/).
 
-**Pulse** — `[planned]` — Target-state ephemeral transport medium; the counterpart to `Engram` for short-lived events. Replaces retired wire terms: `Event`, `Envelope`, `Message`, `Signal` (ephemeral usage). Home: [`reference/02-pulse/`](reference/02-pulse/).
+**Pulse** — `[planned]` — Target-state ephemeral transport medium; the counterpart to `Signal` for short-lived events. Replaces retired wire terms: `Event`, `Envelope`, `Message`, `Signal` (ephemeral usage). Home: [`reference/02-pulse/`](reference/02-pulse/).
 
 **PulseSource** — `[planned]` — Lightweight Pulse origin attribution; replaces overloaded provenance terms for ephemeral events. Home: [`reference/02-pulse/`](reference/02-pulse/).
 
 ## Q
 
-**QUERY** — `[shipping]` — Step 1 of the universal loop; retrieves candidate `Engram` records from `Substrate` for a task. Home: [`reference/06-loop/`](reference/06-loop/).
+**QUERY** — `[shipping]` — Step 1 of the universal loop; retrieves candidate `Signal` records from `Substrate` for a task. Home: [`reference/06-loop/`](reference/06-loop/).
 
 ## R
 
@@ -170,11 +170,11 @@
 
 **Scaffold** — `[—]` — (1) The harness wrapping an LLM that determines agent performance; the core subject of the scaffold thesis. (2) Implementation status tier: struct/trait stubs exist, no meaningful implementation. Context determines which sense is intended.
 
-**Score** — `[shipping]` — 7-axis appraisal value attached to every `Engram`: four stable axes (confidence, novelty, utility, reputation) + three extended (precision, salience, coherence). Home: [`reference/10-types/`](reference/10-types/).
+**Score** — `[shipping]` — 7-axis appraisal value attached to every `Signal`: four stable axes (confidence, novelty, utility, reputation) + three extended (precision, salience, coherence). Home: [`reference/10-types/`](reference/10-types/).
 
-**Scorer** — `[shipping]` — One of the six Synapse traits; computes `Score` for any `Engram`. Home: [`reference/05-operators/`](reference/05-operators/).
+**Scorer** — `[shipping]` — One of the six Synapse traits; computes `Score` for any `Signal`. Home: [`reference/05-operators/`](reference/05-operators/).
 
-**Signal** — `[retired]` — Former term used for both durable records (replaced by `Engram`) and wire events (replaced by `Pulse` in target state). Both uses retired. See [`strategy/refinements/naming-history.md`](strategy/refinements/naming-history.md).
+**Signal** — `[retired]` — Former term used for both durable records (replaced by `Signal`) and wire events (replaced by `Pulse` in target state). Both uses retired. See [`strategy/refinements/naming-history.md`](strategy/refinements/naming-history.md).
 
 **Situation** — `[planned]` — Public alias for `TypedContext`; the user-facing name for structured domain situation payloads. See `TypedContext`.
 
@@ -182,9 +182,9 @@
 
 **StrategyFragment** — `[built]` — One of six `Neuro` knowledge types; a partial strategy pattern extracted from successful execution episodes. Home: [`reference/README.md`](reference/README.md).
 
-**Substrate** — `[shipping]` — The durable storage fabric; one of the six Synapse traits. CRUD + similarity search on `Engram` records. Default implementation: `FileSubstrate`. Home: [`reference/03-substrate/`](reference/03-substrate/).
+**Substrate** — `[shipping]` — The durable storage fabric; one of the six Synapse traits. CRUD + similarity search on `Signal` records. Default implementation: `FileSubstrate`. Home: [`reference/03-substrate/`](reference/03-substrate/).
 
-**Synapse Architecture** — `[shipping]` — Roko's internal architecture: two mediums (Engram + Pulse), two fabrics (Substrate + Bus), six operator traits. Name reflects the design philosophy that simple connectors produce complex cognition. Home: [`status/vision.md`](status/vision.md).
+**Synapse Architecture** — `[shipping]` — Roko's internal architecture: two mediums (Signal + Pulse), two fabrics (Substrate + Bus), six operator traits. Name reflects the design philosophy that simple connectors produce complex cognition. Home: [`status/vision.md`](status/vision.md).
 
 **SystemPromptBuilder** — `[shipping]` — 7-layer prompt assembly component in `roko-compose`; handles template selection, Liu et al. U-shape placement, and token budget management. Home: [`reference/05-operators/`](reference/05-operators/).
 
@@ -192,7 +192,7 @@
 
 ## T
 
-**Taint** — `[shipping]` — One-way provenance flag on an `Engram`; marks records from untrusted or potentially compromised sources; cannot be removed. Home: [`reference/01-engram/`](reference/01-engram/).
+**Taint** — `[shipping]` — One-way provenance flag on an `Signal`; marks records from untrusted or potentially compromised sources; cannot be removed. Home: [`reference/01-engram/`](reference/01-engram/).
 
 **Theta (θ)** — `[shipping]` — Middle cognitive speed; reflective synthesis window of ~75 seconds; handles multi-step reasoning, context assembly, and plan evaluation. Home: [`reference/07-speeds/`](reference/07-speeds/).
 

@@ -1,8 +1,8 @@
 [meta]
 plan = "E35-auth-protocol"
 total = 8
-done = 0
-status = "ready"
+done = 8
+status = "done"
 max_parallel = 2
 
 # ─────────────────────────────────────────────────────────────────────
@@ -34,7 +34,7 @@ The config uses ApiKeyEntry and ServeAuthConfig from roko-core. Add:
     expiry timestamp).
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-serve/src/routes/auth.rs", "crates/roko-serve/src/routes/middleware.rs"]
 depends_on = []
@@ -109,7 +109,7 @@ need a distinct prefix to route to agent-specific validation. Add:
     validation, checking capabilities against the requested operation.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-serve/src/routes/auth.rs", "crates/roko-serve/src/routes/middleware.rs"]
 depends_on = ["E35-T01"]
@@ -183,7 +183,7 @@ on kid miss). Harden edge cases:
     tracing::warn! rather than failing all auth.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-serve/src/jwks.rs"]
 depends_on = []
@@ -250,7 +250,7 @@ Place in a new `crates/roko-serve/src/rbac.rs` module. Wire into the existing
 team.rs routes so that role changes are validated.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-serve/src/rbac.rs", "crates/roko-serve/src/lib.rs"]
 depends_on = []
@@ -322,7 +322,7 @@ The middleware sits between the existing auth middleware (which extracts identit
 and the route handler.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-serve/src/routes/middleware.rs", "crates/roko-serve/src/lib.rs"]
 depends_on = ["E35-T04"]
@@ -373,16 +373,18 @@ description = """
 Add relay token support from docs/v2/17-AUTH.md SS5.
 
 When agent A needs to delegate a subset of its capabilities to agent B, it issues
-a relay token. The relay token is strictly narrower than the parent:
+a relay token. The relay token can never be wider than the parent:
 
   - RelayToken struct: { token_id, parent_token_id, delegated_capabilities (Vec<AgentCapability>),
     target_agent_id, max_depth: u8, depth: u8, issued_at, expires_at }
   - POST /api/relay-tokens — issue a relay token. Requires a valid agent token.
-    Validates: delegated_capabilities is subset of parent, depth < max_depth.
+    Validates: delegated_capabilities is a subset of the parent and the parent
+    has remaining depth budget; the emitted child satisfies depth <= max_depth.
   - Capability narrowing: relay capabilities MUST be a subset of parent capabilities.
     The endpoint returns 400 if any requested capability is not in the parent.
-  - Depth limiting: max_depth decrements on each delegation. When depth reaches 0,
-    no further relay tokens can be issued from this token.
+  - Depth limiting: max_depth is an absolute, non-increasing ceiling and depth is
+    one-based below the root and increments on each delegation. The remaining
+    budget is max_depth - depth; when depth == max_depth, no child can be issued.
   - Validation: when a relay token is presented, verify the entire chain back to
     the root agent token. If any token in the chain is revoked, reject.
   - Revocation cascading: revoking a parent agent token invalidates all relay tokens
@@ -391,7 +393,7 @@ a relay token. The relay token is strictly narrower than the parent:
 Place relay token logic alongside agent tokens in auth.rs.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-serve/src/routes/auth.rs"]
 depends_on = ["E35-T02"]
@@ -461,7 +463,7 @@ acceptance and expiry. Add:
     invitations and remove them from storage
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-serve/src/routes/team.rs"]
 depends_on = ["E35-T04"]
@@ -534,7 +536,7 @@ flush. Follow this same pattern for auth audit:
 Do NOT include token secrets in audit logs — only token_id and 8-char hash prefix.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-serve/src/routes/auth.rs", "crates/roko-serve/src/routes/middleware.rs"]
 depends_on = ["E35-T01", "E35-T02", "E35-T05"]

@@ -1,6 +1,6 @@
 # Docs Convergence Plan
 
-**Verified**: 2026-07-08 against `main` @ `5852c93c05`.
+**Verified**: 2026-08-13 against `main` @ `9bd8f0c9a`.
 
 The docs are useful but inconsistent. This plan describes how to converge them without
 losing design history.
@@ -13,7 +13,7 @@ not reference each other, plus the code that matches none of them fully:
 | Layer | Location | Files | Vocabulary |
 |---|---|---|---|
 | v1 | `docs/v1/` | ~417 | Old (Engram, Gate, Substrate, Scorer) |
-| v2 | `docs/v2/` | 34 | New/target (Signal, Cell, Graph, Protocol) |
+| v2 | `docs/v2/` | 35 | New/target (Signal, Cell, Graph, Protocol) |
 | v2-depth | `docs/v2-depth/` | ~185 | Mixed (part absorbed from v1) |
 | tmp designs | `tmp/prds/`, `tmp/doc-convergence/**` | many | Old vocabulary, impl-oriented |
 | **code** | `crates/` | 35 members | **Engram**, `Engine`/Runner v2, feature-gated legacy `orchestrate.rs` |
@@ -31,9 +31,9 @@ The navigation layer and every convergence pass must foreground five threads ver
 `19-DOC-DRIFT-REGISTER.md`:
 
 1. Default `roko plan run` = Graph (dry-run stub); live engine is Runner v2 (`--engine runner-v2`).
-2. Core noun in code is `Engram`, not `Signal`.
+2. Core noun in code is `Signal` (aliased from `pub struct Engram` via `pub type Signal = Engram`).
 3. `orchestrate.rs` is legacy/feature-gated (`lib.rs:94`), not the runtime heart.
-4. Counts: 35 workspace members / 37 tools / ~728K LOC, not 18 / 19 / ~200K.
+4. Counts: 35 workspace members / 39 tools (56 with chain feature) / ~800K LOC, not 18 / 19 / ~200K.
 5. Surfaces: 10 TUI tabs, fail-closed safety, `roko knowledge`, `--bind/--port`, `/health`+`/ready`.
 
 ## Source Priority
@@ -132,6 +132,28 @@ Engram-vs-Signal code mismatch. Treat it as SCRATCH:
 - Check that stale phrases are banned unless marked historical, e.g. `permissive defaults`,
   `Graph default live`, `1 noun (Signal)` / `Everything is a Signal`, `F1-F7`, `roko neuro`,
   `--listen`, `/healthz`, `/readyz`, `18 crates`, `19 builtin tools`, `orchestrate.rs is wired`.
+
+## 2026-08-13 Consolidation Decision
+
+Based on the 25-agent audit, the following consolidation strategy was adopted:
+
+### Two-Layer System
+1. **`.roko/GAPS.md`** — Expanded into the human-facing single source of truth for project status. Contains: programme summary, active epic status, architectural gaps, ISFR deprecation tracking, deferred work, recently resolved items, P-plan status, stale metadata notes.
+
+2. **`tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md`** — Retained as agent-facing execution protocol. Contains: wave-by-wave task tracking, multi-agent scheduling protocol, git/worktree procedures, evidence contracts.
+
+### Archived Documents
+- `tmp/MASTER-TASKS.md` — ARCHIVED (dangerously stale, shows done items as open)
+- `tmp/status-quo/backlog/05-MASTER-CHECKLIST.md` — HISTORICAL (July 10 seed, never updated)
+- `tmp/dogfood/00-INDEX.md` — HISTORICAL (39/43 resolved)
+
+### Kept as Reference
+- `plans/INDEX.md` — Auto-generated plan view (with stale TOML warning)
+- `CLAUDE.md` — Onboarding doc (points to GAPS.md for details)
+- `tmp/status-quo/00-INDEX.md` — Status-quo pack navigation
+
+### New: ISFR Deprecation
+ISFR modules, tools, routes, and state are deprecated and tracked for removal in GAPS.md.
 
 ## Done Criteria
 

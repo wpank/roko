@@ -126,7 +126,7 @@ different combinations of scaffold capabilities for different domains:
 
 No two domains share the same gate suite, context assembly strategy, or learning signal.
 Roko achieves composability through the [Synapse Architecture](../reference/README.md): one
-data medium (`Engram`) and six verb traits (`Substrate`, `Scorer`, `Gate`, `Router`,
+data medium (`Signal`) and six verb traits (`Substrate`, `Scorer`, `Gate`, `Router`,
 `Composer`, `Policy`). A domain-specific agent assembles its scaffold by implementing the
 traits relevant to its domain and composing them in the universal cognitive loop.
 
@@ -161,11 +161,11 @@ All information in the system flows through exactly two mediums:
 
 | Medium | Status | Description |
 |---|---|---|
-| `Engram` | Shipping | Durable, content-addressed record. Persisted to `Substrate`. BLAKE3 hash identity. 7-axis scored. Four decay models. Lineage DAG for chain-of-thought. |
+| `Engram (renamed to Signal in 2026-08-12)` | Shipping | Durable, content-addressed record. Persisted to `Substrate`. BLAKE3 hash identity. 7-axis scored. Four decay models. Lineage DAG for chain-of-thought. |
 | `Pulse` | Planned | Ephemeral event stream. Routed through `Bus`. Short-lived, not persisted by default. Replaces `EventBus<E>` in target state. |
 
 This medium split — durable vs. ephemeral — is the foundational architectural decision. It
-separates the concerns of *what the agent knows* (Engram/Substrate) from *what is happening
+separates the concerns of *what the agent knows* (Signal/Substrate) from *what is happening
 right now* (Pulse/Bus), enabling independent scaling, different decay semantics, and
 different consistency guarantees for each.
 
@@ -175,7 +175,7 @@ The mediums move through two fabrics:
 
 | Fabric | Status | Description |
 |---|---|---|
-| `Substrate` | Shipping | Storage fabric. CRUD + similarity search on `Engram` records. JSONL `FileSubstrate` ships today; pluggable backends for vector DBs, S3, and distributed stores. |
+| `Substrate` | Shipping | Storage fabric. CRUD + similarity search on `Signal` records. JSONL `FileSubstrate` ships today; pluggable backends for vector DBs, S3, and distributed stores. |
 | `Bus` | Planned | Transport fabric. Routes `Pulse` events through `Topic` handles. Current implementation: `EventBus<E>`. |
 
 ### 3.3 Six Operators (the "Synapse" verbs)
@@ -185,8 +185,8 @@ six verbs that operate on the two mediums across the two fabrics:
 
 | Trait | Domain | Status | Role |
 |---|---|---|---|
-| `Substrate` | Storage | Shipping | Persist and retrieve `Engram` records |
-| `Scorer` | Appraisal | Shipping | Compute 7-axis `Score` for any `Engram` |
+| `Substrate` | Storage | Shipping | Persist and retrieve `Signal` records |
+| `Scorer` | Appraisal | Shipping | Compute 7-axis `Score` for any `Signal` |
 | `Gate` | Verification | Shipping | Binary accept/reject verdict on agent output |
 | `Router` | Dispatch | Shipping | Select model, agent, or execution path |
 | `Composer` | Context | Shipping | Assemble system prompts and context windows |
@@ -296,12 +296,12 @@ executing tasks.
 
 Roko reads its own product requirements, generates plans for improving itself, and executes
 those plans using its own agent infrastructure. A successful plan improvement feeds back as
-a new Engram, contributing to the knowledge base that future plans query. This is not a
+a new Signal, contributing to the knowledge base that future plans query. This is not a
 metaphor — as of 2026-04-17, the active development workflow for Roko codebase runs on Roko.
 
 ### 5.4 The Collective Loop (multi-agent)
 
-When multiple Roko agents share a `Substrate`, their Engrams become accessible to each
+When multiple Roko agents share a `Substrate`, their Signals become accessible to each
 other. A successful strategy learned by one agent propagates to others through the shared
 knowledge base. The C-Factor metric (collective intelligence quotient) measures how much
 faster the fleet solves problems together than any single agent solves them alone.
@@ -315,7 +315,7 @@ As of 2026-04-17 (per [`status/status.md`](status.md)):
 - **~322K Rust LOC** across 36 workspace members
 - **3,761 test functions** across the workspace
 - **Self-hosting loop**: operational — `roko prd` → `roko plan run` → gate → persist → resume
-- **Shipping**: Core Engram/Synapse layer, Orchestrator, Agents (5 backends), Composition,
+- **Shipping**: Core Signal/Synapse layer, Orchestrator, Agents (5 backends), Composition,
   Verification (11 gates), Learning, Safety, CLI/TUI/HTTP interfaces, Standard tools
 - **Built (not yet wired)**: Neuro, Conductor, Chain/Korai, Daimon
 - **Scaffold**: Dreams, Heartbeat, Coordination, Lifecycle

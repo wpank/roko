@@ -2,7 +2,7 @@
 
 | Item | Better Home | Keep In PU06 As |
 |------|-------------|-----------------|
-| HDC fingerprint field on `Engram` | Phase 3 code execution under `crates/` | top-priority follow-up note |
+| HDC fingerprint field on `Signal` | Phase 3 code execution under `crates/` | top-priority follow-up note |
 | `query_similar()` on `Substrate` | kernel / storage code follow-up | explicit missing capability note |
 | cross-domain resonance / analogy APIs | later neuro-transfer work | deferred marker |
 | demurrage and worldview systems | later memory-model work | target-state marker |

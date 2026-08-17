@@ -6,7 +6,7 @@
 
 **Status**: Shipping
 **Crate**: `roko-core`
-**Depends on**: [Engram](../01-engram/README.md), [Substrate](../03-substrate/README.md)
+**Depends on**: [Signal](../01-engram/README.md), [Substrate](../03-substrate/README.md)
 **Last reviewed**: 2026-04-19
 
 ---
@@ -54,7 +54,7 @@ Roko's architecture is organised along three axes:
 
 | Axis | Elements |
 |---|---|
-| **Mediums** | `Engram` (durable), `Pulse` (ephemeral, target-state) |
+| **Mediums** | `Engram (renamed to Signal in 2026-08-12)` (durable), `Pulse` (ephemeral, target-state) |
 | **Fabrics** | `Substrate` (storage), `Bus` (transport, target-state) |
 | **Operators** | Scorer, Gate, Router, Composer, Policy (the five cognitive transforms) |
 

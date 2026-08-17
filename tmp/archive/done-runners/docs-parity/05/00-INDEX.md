@@ -18,7 +18,7 @@ Generated: 2026-04-18
 - narrows the batch from "build the grand learning vision" to "describe the shipped runtime honestly",
 - separates **shipping**, **ship soon**, and **deferred** work,
 - keeps the highest-value follow-ups explicit:
-  - add an HDC fingerprint field to `Engram`,
+  - add an HDC fingerprint field to `Signal`,
   - harden learned-context matching,
   - make regression output slice-aware,
   - choose one canonical predictive-calibration path,
@@ -38,7 +38,7 @@ Generated: 2026-04-18
 
 ### Ship Soon
 
-- HDC fingerprint on `Engram` as the bridge between `roko-core`, `roko-neuro`, and `roko-learn`
+- HDC fingerprint on `Signal` as the bridge between `roko-core`, `roko-neuro`, and `roko-learn`
 - typed heuristic calibration struct layered onto the existing heuristic and tier-progression flow
 - making learned-context and regression outputs use richer signals already present in code
 

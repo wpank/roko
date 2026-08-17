@@ -14,7 +14,7 @@ What is already built, working, and wired. This is the foundation the roadmap bu
 
 | Crate | Unified Concepts | Status |
 |---|---|---|
-| `roko-core` | Signal (Engram), 6 protocols (Store/Score/Verify/Route/Compose/React) | Kernel, stable |
+| `roko-core` | Signal (formerly Engram, renamed to Signal in 2026-08-12), 6 protocols (Store/Score/Verify/Route/Compose/React) | Kernel, stable |
 | `roko-agent` | Agent specialization: 9-step pipeline, 5+ LLM backends, MCP, tool loop, safety | Dispatch wired |
 | `roko-orchestrator` | Graph execution (plan DAG, parallel executor, merge queue) | Wired via orchestrate.rs |
 | `roko-gate` | Verify protocol: 11 gates, 7-rung pipeline, adaptive thresholds | Wired, called per-task |
@@ -109,7 +109,7 @@ Promote Pulse and Bus to kernel-level, wire predict-publish-correct, add demurra
 
 | Task | Target | Size | Depends On |
 |---|---|---|---|
-| Add `balance`, `demurrage_paid`, `last_touched_at` fields to Engram | `crates/roko-core/src/engram.rs` | S | -- |
+| Add `balance`, `demurrage_paid`, `last_touched_at` fields to Signal | `crates/roko-core/src/engram.rs` | S | -- |
 | Implement demurrage rate law: `balance(t+dt) = balance(t) - r*dt - beta*balance(t)*dt` | `crates/roko-neuro/src/demurrage.rs` | M | Balance fields |
 | Implement reinforcement kinds (Retrieved, Cited, GatePassed, Surprised, AgentQuoted) | `crates/roko-neuro/src/demurrage.rs` | S | Demurrage |
 | Novelty-weighted reinforcement: `bonus * (1 - max_similarity)` | `crates/roko-neuro/src/demurrage.rs` | M | HDC index |
@@ -453,7 +453,7 @@ The unified vocabulary applies at the spec and documentation level. Existing Rus
 
 | Spec Name | Code Name | When to Rename |
 |---|---|---|
-| Signal | `Engram` | Phase 2 (when Graph engine provides migration point) |
+| Signal | `Engram` | **DONE** (2026-08-12) — struct is now `Signal`, `pub type Engram = Signal` alias retained |
 | Pulse | `Envelope<E>` | Phase 1 (promote to first-class) |
 | Bus | `EventBus` | Phase 1 (promote to kernel trait) |
 | Block | Module/trait impl | Phase 2 (Block trait introduced) |
@@ -467,7 +467,7 @@ The unified vocabulary applies at the spec and documentation level. Existing Rus
 | Observe | -- (new) | Phase 1 (new trait) |
 | Connect | `Connector` | Phase 1 (formalize existing) |
 | Trigger | -- (new) | Phase 1 (new trait) |
-| Demurrage | -- (new) | Phase 1 (add to Engram) |
+| Demurrage | -- (new) | Phase 1 (add to Signal) |
 | Heuristic | -- (new) | Phase 1 (new Kind variant) |
 
 ### 7.2 Plan-to-Graph Migration
@@ -509,7 +509,7 @@ Everything in this roadmap has prior art in the bardo codebase. Key references:
 
 ### Phase 1 Complete When
 
-- [ ] `Pulse` struct exists in roko-core as a first-class type alongside `Engram`
+- [ ] `Pulse` struct exists in roko-core as a first-class type alongside `Signal`
 - [ ] `Bus` trait exists in roko-core alongside `Substrate`
 - [ ] `BroadcastBus` implementation passes pub/sub integration tests
 - [ ] Block lifecycle events emitted as Pulses on Bus

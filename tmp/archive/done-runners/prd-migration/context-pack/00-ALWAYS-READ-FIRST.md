@@ -77,10 +77,10 @@ at 4× fewer tokens.
 
 ## Architectural summary (you must internalize this)
 
-### The Engram
+### The Signal
 
 Every piece of information in Roko — a task, a prompt, an LLM output, a gate verdict, a
-knowledge entry, a prediction, a tool trace — is an **Engram**. An Engram is a
+knowledge entry, a prediction, a tool trace — is an **Signal**. An Signal is a
 content-addressed, scored, decaying, lineage-tracked unit of cognition.
 
 The Rust struct (target; currently called `Signal` in code, rename is Tier 0D):
@@ -112,16 +112,16 @@ The Score is 7-axis (4 stable + 3 extended):
 ### The Six Synapse Traits
 
 Every capability in Roko is one of six composable traits — the "nodes" of the Synapse
-that process Engrams:
+that process Signals:
 
 | Trait | Role | Async? | Primary layer |
 |---|---|---|---|
-| `Substrate` | Persist and query Engrams | async | L0 Runtime |
-| `Scorer` | Rate Engrams along multiple axes | sync | L2 Scaffold |
-| `Gate` | Check Engrams against ground truth (returns `Verdict` directly) | async | L3 Harness |
-| `Router` | Choose best Engrams from candidates (+ `feedback()` method) | sync | L1 Framework |
-| `Composer` | Combine Engrams under budget constraints (takes `&dyn Scorer`) | sync | L2 Scaffold |
-| `Policy` | Observe Engram streams, emit new Engrams (batch input) | sync | L3-L4 |
+| `Substrate` | Persist and query Signals | async | L0 Runtime |
+| `Scorer` | Rate Signals along multiple axes | sync | L2 Scaffold |
+| `Gate` | Check Signals against ground truth (returns `Verdict` directly) | async | L3 Harness |
+| `Router` | Choose best Signals from candidates (+ `feedback()` method) | sync | L1 Framework |
+| `Composer` | Combine Signals under budget constraints (takes `&dyn Scorer`) | sync | L2 Scaffold |
+| `Policy` | Observe Signal streams, emit new Signals (batch input) | sync | L3-L4 |
 
 These traits are **distributed across layers** — they don't all live at one level. The
 architecture works because traits compose across layers rather than competing with them.
@@ -257,7 +257,7 @@ These are the frontier features covered in detail in
 |---|---|---|---|
 | Runtime | `roko-primitives` | Built | HDC vectors, Hamming similarity, shared types |
 | Runtime | `roko-runtime` | Built | Event bus, supervision, cancellation, adaptive clock |
-| Kernel | `roko-core` | Built (376 tests) | Engram + 6 Synapse traits |
+| Kernel | `roko-core` | Built (376 tests) | Engram (renamed to Signal in 2026-08-12) + 6 Synapse traits |
 | Framework | `roko-std` | Built (96 tests) | Default trait impls, 19 built-in tools |
 | Framework | `roko-agent` | Built (346 tests) | LLM backends, tool dispatch, MCP client |
 | Scaffold | `roko-compose` | Built (23 tests) | Prompt assembly, context engineering |

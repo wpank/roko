@@ -20,7 +20,7 @@ tags: [matrix, cross-reference, index, findings, improvements]
 | AA-02 | [02-finding-trait-sufficiency.md](./02-finding-trait-sufficiency.md) | Six Traits Are Sufficient | §2 | Low (stable) |
 | AA-03 | [03-finding-layer-taxonomy.md](./03-finding-layer-taxonomy.md) | Layer Taxonomy: One Violation, Six Unclassified | §3 | High (fix I1, I2, I3) |
 | AA-04 | [04-finding-cognitive-speeds.md](./04-finding-cognitive-speeds.md) | Three Cognitive Speeds: Clean Mapping | §4 | Low (stable) |
-| AA-05 | [05-finding-engram-universality.md](./05-finding-engram-universality.md) | Engram Is Genuinely Universal | §5 | Low (stable) |
+| AA-05 | [05-finding-signal-universality.md](./05-finding-signal-universality.md) | Engram (renamed to Signal in 2026-08-12) Is Genuinely Universal | §5 | Low (stable) |
 | AA-06 | [06-finding-crosscut-isolation.md](./06-finding-crosscut-isolation.md) | Cross-Cut Isolation Gaps | §6 | Medium (fix I6, I8) |
 | AA-07 | [07-finding-category-theory.md](./07-finding-category-theory.md) | Categorical Composability | §7 | Low (stable, long-term I11) |
 | AA-08 | [08-novel-proposals.md](./08-novel-proposals.md) | Three Novel Proposals | §8 | Mixed (see I5, I7, I9) |
@@ -38,7 +38,7 @@ Which findings motivate which improvements:
 | AA-02 Trait Sufficiency | — | — | — | — | — | — | — | — | ✓ | — | — |
 | AA-03 Layer Taxonomy | ✓ | ✓ | ✓ | — | — | — | — | — | — | — | — |
 | AA-04 Cognitive Speeds | — | — | — | — | — | — | ✓ | — | ✓ | — | — |
-| AA-05 Engram Universality | — | — | — | — | — | — | — | — | — | ✓ | — |
+| AA-05 Signal Universality | — | — | — | — | — | — | — | — | — | ✓ | — |
 | AA-06 Cross-Cut Isolation | ✓ | — | — | — | ✓ | ✓ | — | ✓ | — | — | — |
 | AA-07 Category Theory | ✓ | — | — | — | — | — | ✓ | ✓ | — | — | ✓ |
 | AA-08 Novel Proposals | — | — | — | — | ✓ | — | ✓ | — | ✓ | — | — |
@@ -55,7 +55,7 @@ Which findings are most relevant to which integration-map pairs:
 | AA-02 Trait Sufficiency | All pairs (trait boundary defines all integrations) |
 | AA-03 Layer Taxonomy | [conductor-x-orchestration](../integration-map/conductor-x-orchestration.md), [learning-x-verification](../integration-map/learning-x-verification.md) |
 | AA-04 Cognitive Speeds | [orchestration-x-learning](../integration-map/orchestration-x-learning.md), [dreams-x-neuro](../integration-map/dreams-x-neuro.md) |
-| AA-05 Engram Universality | [neuro-x-composition](../integration-map/neuro-x-composition.md), [code-intel-x-composition](../integration-map/code-intel-x-composition.md) |
+| AA-05 Signal Universality | [neuro-x-composition](../integration-map/neuro-x-composition.md), [code-intel-x-composition](../integration-map/code-intel-x-composition.md) |
 | AA-06 Cross-Cut Isolation | [daimon-x-orchestration](../integration-map/daimon-x-orchestration.md), [daimon-x-composition](../integration-map/daimon-x-composition.md), [dreams-x-neuro](../integration-map/dreams-x-neuro.md), [dreams-x-daimon](../integration-map/dreams-x-daimon.md) |
 | AA-07 Category Theory | [learning-x-verification](../integration-map/learning-x-verification.md), [neuro-x-learning](../integration-map/neuro-x-learning.md) |
 | AA-08 Novel Proposals | [learning-x-verification](../integration-map/learning-x-verification.md), [neuro-x-composition](../integration-map/neuro-x-composition.md), [learning-x-composition](../integration-map/learning-x-composition.md) |
@@ -73,7 +73,7 @@ Which architectural findings manifest in the readiness audit:
 | AA-06 Cross-Cut Isolation | Daimon not injected via trait object | G5, G9, G12 |
 | AA-06 Cross-Cut Isolation | Dreams→Neuro not wired | G15, G7 |
 | AA-08 Proposal 2 (gradient feedback) | Gate feedback not continuous | G7 (feedback loops) |
-| AA-09 Signal→Engram rename | Code-doc terminology divergence | G8 |
+| AA-09 Signal→Signal rename | Code-doc terminology divergence | G8 |
 | AA-09 Score axis mismatch | Documentation overpromises | (doc fix only) |
 
 ---
@@ -108,7 +108,7 @@ Week 4+ (Longer-horizon):
 Three areas where the architecture is **stable and needs no changes**:
 
 1. **Trait model** (AA-02): All six traits are correctly scoped. Do not add a seventh.
-2. **Engram universality** (AA-05): The universal type handles all current cases. No new types needed.
+2. **Signal universality** (AA-05): The universal type handles all current cases. No new types needed.
 3. **Category theory structure** (AA-07): The pipeline's compositional properties are sound. Preserve them in all new implementations.
 
 ---

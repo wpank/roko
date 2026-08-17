@@ -1,7 +1,7 @@
 # Gate Overview
 
 > The `Gate` operator produces a `Verdict` — Pass, Fail/Reject, or Abstain — for an
-> `Engram` and its `Score`. It is the cognitive loop's filter: nothing proceeds past a Gate
+> `Signal` and its `Score`. It is the cognitive loop's filter: nothing proceeds past a Gate
 > that returns `Reject`.
 
 **Status**: Shipping
@@ -14,14 +14,14 @@
 ## TL;DR
 
 A `Gate` answers one question: "Should this information proceed?" A `Pass` verdict lets the
-`Engram` continue to the Router. A `Reject` verdict stops the loop tick for this `Engram`.
+`Signal` continue to the Router. A `Reject` verdict stops the loop tick for this `Signal`.
 An `Abstain` means the gate has no opinion — let the next gate decide.
 
 ---
 
 ## Why a Gate?
 
-The Scorer tells you how good an `Engram` is. The Gate decides whether that is good enough.
+The Scorer tells you how good an `Signal` is. The Gate decides whether that is good enough.
 Scoring and filtering are distinct concerns:
 
 - **Scorer**: "This memory has confidence=0.3 and novelty=0.9."
@@ -39,8 +39,8 @@ Gate returns one of three verdicts, not simply pass/fail:
 
 | Verdict | Meaning |
 |---|---|
-| `Pass` | This gate approves the Engram. The pipeline continues. |
-| `Reject(reason)` | This gate rejects the Engram. The loop tick ends with `LoopOutcome::Rejected`. |
+| `Pass` | This gate approves the Signal. The pipeline continues. |
+| `Reject(reason)` | This gate rejects the Signal. The loop tick ends with `LoopOutcome::Rejected`. |
 | `Abstain` | This gate has no opinion. Skip to the next gate. |
 
 `Abstain` is not a failure — it is an explicit "not my decision." A gate that is not
@@ -70,7 +70,7 @@ Multiple `Gate` implementations are stacked into a pipeline. The loop calls gate
 the first `Reject` ends the pipeline; `Abstain` is skipped; `Pass` continues to the next
 gate. Only if all gates pass (or abstain) does the loop proceed to routing.
 
-This allows a 7-rung "gauntlet" where an `Engram` must pass: quality, safety, coherence,
+This allows a 7-rung "gauntlet" where an `Signal` must pass: quality, safety, coherence,
 freshness, authority, relevance, and domain gates before reaching the Router.
 
 See [Gate Composition](./09-gate-composition.md).

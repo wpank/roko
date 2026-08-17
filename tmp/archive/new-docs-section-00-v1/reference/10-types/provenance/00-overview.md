@@ -1,10 +1,10 @@
 # Provenance — Overview
 
-> The struct that records an Engram's origin: who created it, how much it is trusted, and any flags indicating unreliability.
+> The struct that records an Signal's origin: who created it, how much it is trusted, and any flags indicating unreliability.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
-**Depends on**: [Engram](../../01-engram/00-overview.md)  
+**Depends on**: [Signal](../../01-engram/00-overview.md)  
 **Used by**: [ContentHash](../content-hash/00-overview.md), [Score](../score/00-overview.md)  
 **Last reviewed**: 2026-04-19
 
@@ -12,23 +12,23 @@
 
 ## TL;DR
 
-`Provenance` is a three-field struct attached to every Engram: `author` (a string identifier
+`Provenance` is a three-field struct attached to every Signal: `author` (a string identifier
 for the creator), `trust` (a `TrustLevel` enum representing verification depth), and `taint`
-(an optional set of flags indicating that the Engram's content may be unreliable). Only
-`author` participates in the Engram's identity hash — `trust` and `taint` can be upgraded
-after creation without changing the Engram's identity.
+(an optional set of flags indicating that the Signal's content may be unreliable). Only
+`author` participates in the Signal's identity hash — `trust` and `taint` can be upgraded
+after creation without changing the Signal's identity.
 
 ---
 
 ## The Idea
 
-When an Engram arrives in the Substrate, the system needs to answer three questions:
+When an Signal arrives in the Substrate, the system needs to answer three questions:
 
 1. **Who made this?** — The `author` field.
 2. **Can it be trusted?** — The `trust` field.
 3. **Are there any red flags?** — The `taint` field.
 
-These questions are separable. An Engram's authorship is fixed at creation (it is part of
+These questions are separable. An Signal's authorship is fixed at creation (it is part of
 its identity). Its trust level can rise as it is verified by peers or committed to a chain.
 Its taint status can change as new evidence emerges (e.g., its author is later found to be
 compromised).
@@ -36,7 +36,7 @@ compromised).
 The design deliberately includes only `author` in the content hash. This means:
 - Verifying a piece of knowledge (`trust` upgrade) does not create a new identity.
 - Flagging knowledge as tainted (`taint` update) does not create a new identity.
-- The Engram's hash is stable for its entire lifetime.
+- The Signal's hash is stable for its entire lifetime.
 
 ---
 
@@ -67,7 +67,7 @@ pub struct Provenance {
 
 | Field | Type | In hash? | Mutable after creation? | Purpose |
 |---|---|---|---|---|
-| `author` | `String` | ✓ | No | Identity anchor — who produced this Engram |
+| `author` | `String` | ✓ | No | Identity anchor — who produced this Signal |
 | `trust` | `TrustLevel` | ✗ | Yes (escalation only) | Verification depth |
 | `taint` | `Option<BTreeSet<TaintFlag>>` | ✗ | Yes | Reliability flags |
 
@@ -90,7 +90,7 @@ let prov = Provenance {
 };
 ```
 
-**Tainted Engram from an unverified external source:**
+**Tainted Signal from an unverified external source:**
 ```rust
 let prov = Provenance {
     author: "external-ingest-42".into(),
@@ -105,7 +105,7 @@ let prov = Provenance {
 
 `TrustLevel` is one of the inputs to `Score::reputation`. A higher trust level contributes
 a higher reputation score. Taint flags can reduce the reputation component or cause a Gate
-to reject the Engram entirely. See [Score overview](../score/00-overview.md) for details.
+to reject the Signal entirely. See [Score overview](../score/00-overview.md) for details.
 
 ---
 

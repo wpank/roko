@@ -73,7 +73,7 @@ LIDA's attention codelets (Franklin et al. 2016) demonstrate that competitive at
 
 ### Cross-References
 - [AA-04: Cognitive Speeds](./04-finding-cognitive-speeds.md) — Coalition-based selection is more appropriate at Gamma speed (fast decisions under time pressure)
-- [AA-07: Category Theory](./07-finding-category-theory.md) — `CompetitiveRouter` is still a morphism `Vec<Signal> → Option<Selection>` in the Engram category; it does not break categorical structure
+- [AA-07: Category Theory](./07-finding-category-theory.md) — `CompetitiveRouter` is still a morphism `Vec<Signal> → Option<Selection>` in the Signal category; it does not break categorical structure
 - Integration pair: [neuro-x-composition](../integration-map/neuro-x-composition.md) — knowledge-scored coalitions reinforce knowledge injection
 
 ---
@@ -130,7 +130,7 @@ This enhancement modifies `loop_tick` behavior but preserves its signature. All 
 
 ### Cross-References
 - [AA-07: Category Theory](./07-finding-category-theory.md) — Verdict is a filtered monoid; gradient feedback preserves this structure while enriching the learning signal
-- [AA-06: Cross-Cut Isolation](./06-finding-crosscut-isolation.md) — The generated `Insight` Engram flows into `NeuroStore` — this is the Neuro→Learning feedback path
+- [AA-06: Cross-Cut Isolation](./06-finding-crosscut-isolation.md) — The generated `Insight` Signal flows into `NeuroStore` — this is the Neuro→Learning feedback path
 - Integration pairs: [learning-x-verification](../integration-map/learning-x-verification.md), [neuro-x-verification](../integration-map/neuro-x-verification.md)
 - Missing integration M14 in [24-cross-section-integration-map.md] relates: knowledge-informed thresholds complement gradient feedback
 

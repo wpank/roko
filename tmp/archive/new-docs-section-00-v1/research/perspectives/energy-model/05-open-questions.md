@@ -35,7 +35,7 @@
 1. **Landauer's principle for cognitive processing**: Landauer (1961) showed that erasing
    one bit of information requires a minimum energy of \( k_B T \ln 2 \) (about 3×10^{-21}
    J at room temperature). Does an analogous principle bound the energy cost of "forgetting"
-   (expiring) an Engram in a computational system?
+   (expiring) an Signal in a computational system?
 
 2. **Information geometry and cognitive efficiency**: Can the Fisher information metric
    on the space of cognitive states provide a measure of "geodesic" processing — the

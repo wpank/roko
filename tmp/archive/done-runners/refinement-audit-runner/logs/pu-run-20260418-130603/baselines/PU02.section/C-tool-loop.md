@@ -532,7 +532,7 @@ The `dispatch()` method at line 135 implements:
 8. **TRUNCATE** (line 290): `truncate_result(result, self.max_result_bytes)`
 9. **SCRUB** (line 292): `safety.scrub_output(result)` -- only if safety layer attached
 
-Each phase emits audit signals via `emit_audit()` (Engram signals with phase/status tags).
+Each phase emits audit signals via `emit_audit()` (Signal signals with phase/status tags).
 
 Actual pipeline is 9 steps (resolve handler is a separate step from resolve def). Doc numbered 8 steps. The code matches the doc's intent precisely -- it just has slightly different numbering because handler resolution is explicit.
 

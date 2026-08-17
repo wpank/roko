@@ -56,7 +56,7 @@ From the audit master summary — this is the recommended priority order.
 
 ## Ship Now (1-2 weeks total)
 
-1. Add HDC fingerprint field to Engram — `roko-core/src/engram.rs` — 1 day
+1. Add HDC fingerprint field to Signal — `roko-core/src/__PATH_ENGRAM_RS__0` — 1 day
 2. Unify event enums into `RokoEvent` — across 4 crates — 1 week
 3. Add generic `Bus<E>` trait to roko-core — ~100 lines — 2-3 days
 4. Clean up stale "Signal" references — traits.rs, README, kind.rs — 1 hour
@@ -147,7 +147,7 @@ Roko is a Rust workspace at `/Users/will/dev/nunchi/roko/roko/`.
 
 | Crate | Path | LOC | Status |
 |---|---|---|---|
-| roko-core | `crates/roko-core/` | kernel | Stable — Engram + 6 traits + config + tools |
+| roko-core | `crates/roko-core/` | kernel | Stable — Signal + 6 traits + config + tools |
 | roko-agent | `crates/roko-agent/` | large | 8 LLM backends, pools, MCP, tool loop, safety |
 | roko-agent-server | `crates/roko-agent-server/` | medium | Per-agent HTTP sidecar, real LLM dispatch |
 | roko-serve | `crates/roko-serve/` | 30K | HTTP control plane, 200+ routes, SSE, WebSocket |
@@ -176,7 +176,7 @@ Roko is a Rust workspace at `/Users/will/dev/nunchi/roko/roko/`.
 - Test functions: 3,761
 - orchestrate.rs: 17,087 lines
 - Event bus event types: exactly 2 (PlanRevision, PrdPublished)
-- Signal→Engram rename: 99.6% complete
+- Signal→Signal rename: 99.6% complete
 
 ## Concepts with 0 lines of code
 
@@ -244,11 +244,11 @@ and codebase reality checks.
 
 ---
 
-## 1. Signal -> Engram Rename
+## 1. Signal -> Signal Rename
 
 **Refinement claim**: "877:5 ratio, essentially complete."
 
-**Reality**: **Confirmed, mostly accurate.** The actual ratio today is ~926 Engram occurrences
+**Reality**: **Confirmed, mostly accurate.** The actual ratio today is ~926 Signal occurrences
 across 134 files vs. 11 "Signal" occurrences across 6 files. The remaining 11 Signal references
 break down as:
 
@@ -258,13 +258,13 @@ break down as:
 | `roko-neuro/src/context.rs` | 2 | Enum variant `SourceFamily::Signal` and match arm -- **straggler** |
 | `roko-compose/src/system_prompt_builder.rs` | 1 | String literal `"Signal"` in a prompt template -- **straggler** |
 | `roko-compose/src/context_provider.rs` | 1 | String literal `"Signal"` in a prompt template -- **straggler** |
-| `roko-cli/src/plan_generate.rs` | 1 | Test assertion: `prompt.contains("Signal -> Engram")` -- meta-reference |
+| `roko-cli/src/plan_generate.rs` | 1 | Test assertion: `prompt.contains("Signal -> Signal")` -- meta-reference |
 | `roko-cli/src/tui/views/dashboard_view.rs` | 1 | UI column header `"Signal"` -- **straggler** |
 
 **Verdict**: 4 real stragglers out of 926+ usages. The rename is ~99.6% complete. The 4
 stragglers are cosmetic (string literals in prompts and UI headers), not structural. No
 `struct Signal` or `type Signal` remains anywhere in the codebase. The core type in
-`roko-core/src/engram.rs` is `pub struct Engram` with BLAKE3 content-hashing, decay functions,
+`roko-core/src/__PATH_ENGRAM_RS__0` is `pub struct Engram` with BLAKE3 content-hashing, decay functions,
 lineage DAG, multi-axis scoring, and attestation support (451 lines, 15 tests). This is a
 real, fully-fleshed data type, not a stub.
 
@@ -1038,7 +1038,7 @@ seamless.
 **File:** `/Users/will/dev/nunchi/roko/roko/docs/19-deployment/INDEX.md`
 
 Good structure. The five deployment shapes (laptop, single-server, container, clustered, edge)
-are consistent throughout. The Key Concepts section (lines 34-42) integrates Engram, Pulse,
+are consistent throughout. The Key Concepts section (lines 34-42) integrates Signal, Pulse,
 Bus, StateHub, and profiles cleanly.
 
 **Issues:**
@@ -1057,7 +1057,7 @@ Bus, StateHub, and profiles cleanly.
 One of the best-integrated refinement docs. REF33 content is woven into a coherent operator
 story. The Roko-specific metrics table (lines 109-124) is concretely useful. The
 "Replay and Time-Travel" section (lines 181-196) connects deployment concerns to the
-Bus/Engram model naturally.
+Bus/Signal model naturally.
 
 **Score: 5/5**
 
@@ -1067,7 +1067,7 @@ Bus/Engram model naturally.
 
 ### Issue A: "Signal" still appears in active code and docs (HIGH)
 
-The glossary correctly marks `Signal` as retired in favor of `Engram`. However, **`Signal`
+The glossary correctly marks `Signal` as retired in favor of `Signal`. However, **`Signal`
 still appears as a live Rust type name** in code snippets across at least 8 docs:
 
 | File | Context |
@@ -1083,7 +1083,7 @@ still appears as a live Rust type name** in code snippets across at least 8 docs
 
 These docs were NOT updated by the refinements runner because they predate the glossary
 changes. The scaffolder doc (02-roko-new-scaffolders.md) explicitly notes "will be renamed to
-Engram in Tier 0D" (line 128), which is at least honest. But the conductor, orchestration,
+Signal in Tier 0D" (line 128), which is at least honest. But the conductor, orchestration,
 forensic, and CLI-REFERENCE docs use `Signal` without any qualification.
 
 **This is the biggest terminology hygiene gap in the tree.** The refinements correctly updated
@@ -1223,7 +1223,7 @@ These emerged consistently across all 7 audit workstreams as high-value, low-ris
 
 | # | What | Where | Effort | Why |
 |---|---|---|---|---|
-| 1 | **Add HDC fingerprint field to Engram** | `roko-core/src/engram.rs` | 1 day | HdcVector exists (10,240-bit, tested). Episode fingerprinting already works. This is the single highest-value bridge between the learning and memory layers. |
+| 1 | **Add HDC fingerprint field to Signal** | `roko-core/src/__PATH_ENGRAM_RS__0` | 1 day | HdcVector exists (10,240-bit, tested). Episode fingerprinting already works. This is the single highest-value bridge between the learning and memory layers. |
 | 2 | **Unify event enums into `RokoEvent`** | Across 4 crates | 1 week | Four incompatible event enums (2x `AgentEvent`, `RokoEvent`, `ServerEvent`) is the real problem. Unify them. |
 | 3 | **Add generic `Bus<E>` trait to roko-core** | `roko-core/src/traits.rs` | 2-3 days | ~100 lines. Keep it generic (not Pulse-specific). Solves the layer violation. |
 | 4 | **Clean up stale "Signal" references** | traits.rs, README, kind.rs, CLAUDE.md | 1 hour | 40+ stale occurrences across docs and code comments. |
@@ -1285,7 +1285,7 @@ From the reality-check audit:
 | roko-serve routes | 200+ (not ~85) |
 | TUI code | 58K LOC |
 | roko-learn modules | 42 modules, 35,847 LOC |
-| Signal→Engram rename | 99.6% complete (4 real stragglers) |
+| Signal→Signal rename | 99.6% complete (4 real stragglers) |
 | Event bus event types | Exactly 2 (PlanRevision, PrdPublished) |
 | Demurrage in code | 0 lines |
 | Pulse in code | 0 lines |
@@ -1312,7 +1312,7 @@ Overall: **3.8 / 5**
 The diagnosis is correct. The prescription (Pulse, Datum, generalized operators, 7-step TickConfig) is overcomplicated. Fix: unify events, add generic Bus trait, update docs. ~1 week instead of 6-7 weeks.
 
 ### Learning (10-16): SIMPLIFY
-The docs undercount what already exists. roko-learn has 42 modules and 36K LOC. HDC fingerprint field on Engram is the highest-value change. Demurrage/worldviews/replication-ledger are premature.
+The docs undercount what already exists. roko-learn has 42 modules and 36K LOC. HDC fingerprint field on Signal is the highest-value change. Demurrage/worldviews/replication-ledger are premature.
 
 ### Moat (17-21): DEFER/SKEPTICAL
 Zero plugin authors, zero external users. The moat is aspirational. Plugin tier 3 (tool manifests) is useful later. Everything else waits.
@@ -1363,7 +1363,7 @@ Legend:
 | Ref | Title | Verdict | Audit note |
 |---|---|---|---|
 | REF01 | critique one noun | `keep` | The diagnosis is real: transport is under-modeled and the kernel story is too storage-centric. |
-| REF02 | Engram vs Pulse | `keep` | `Pulse` is a good transport noun if used to clarify the redesign rather than force a total renaming campaign. |
+| REF02 | Engram (renamed to Signal in 2026-08-12) vs Pulse | `keep` | `Pulse` is a good transport noun if used to clarify the redesign rather than force a total renaming campaign. |
 | REF03 | Bus as first class | `keep` | This is the strongest foundational follow-up: unify and formalize transport. |
 | REF04 | operators generalized | `narrow` | Good local idea, bad universal law. Medium polymorphism should be proven operator by operator. |
 | REF05 | loop retold | `keep` | Useful as a reference architecture for the redesign, but should guide migration rather than dictate every interface immediately. |
@@ -1486,13 +1486,13 @@ For the Signal sweep, also read:
 
 Fix factual errors found by the codebase reality check across the entire docs
 tree. Three categories: (1) Replace stale `Signal` type references with
-`Engram`, (2) Fix incorrect LOC/crate/route counts wherever they appear,
+`Signal`, (2) Fix incorrect LOC/crate/route counts wherever they appear,
 (3) Mark 0-code concepts as planned wherever they are presented in present
 tense.
 
 ## Current state (evidence)
 
-### Category 1: Signal -> Engram stragglers
+### Category 1: Signal -> Signal stragglers
 
 The doc quality audit found `Signal` still used as a live Rust type in code
 snippets across at least 8 pre-existing docs that the refinements-runner did
@@ -1539,35 +1539,35 @@ The reality check confirmed these have zero code:
 | Claim / Paper | 0 |
 | Replication ledger | 0 |
 | Plugin SPI / roko-spi | 0 |
-| Graduation (Pulse -> Engram) | 0 |
+| Graduation (Pulse -> Signal) | 0 |
 
-Any doc that describes these in present tense ("Engrams carry demurrage
+Any doc that describes these in present tense ("Signals carry demurrage
 balance", "Pulse types flow through the Bus") needs qualifying. Previous
 batches (AUD02-AUD06) handle specific sections; this batch catches any
 remaining instances across the full tree.
 
 ## Implementation
 
-### 1. Signal -> Engram sweep
+### 1. Signal -> Signal sweep
 
 For each file listed in the table above:
 
-- Replace `Signal` with `Engram` in Rust code snippets
-- Replace `signal` with `engram` in variable names within code snippets
+- Replace `Signal` with `Signal` in Rust code snippets
+- Replace `signal` with `signal` in variable names within code snippets
 - Replace `Signal::builder` with `Engram::builder`
-- Replace `&[Signal]` with `&[Engram]`
-- Replace `Vec<Signal>` with `Vec<Engram>`
-- Replace `use roko_core::{..., Signal, ...}` with `use roko_core::{..., Engram, ...}`
-- In prose, replace "Signal hash" with "Engram hash", "Signal kind" with
-  "Engram kind", etc.
-- If a doc has a note like "will be renamed to Engram in Tier 0D", remove that
+- Replace `&[Signal]` with `&[Signal]`
+- Replace `Vec<Signal>` with `Vec<Signal>`
+- Replace `use roko_core::{..., Signal, ...}` with `use roko_core::{..., Signal, ...}`
+- In prose, replace "Signal hash" with "Signal hash", "Signal kind" with
+  "Signal kind", etc.
+- If a doc has a note like "will be renamed to Signal in Tier 0D", remove that
   note since the rename is complete
 
 Also search for any OTHER docs not in the audit's list that still use `Signal`
 as a type name. Run a search across `docs/` for the pattern. Exclude:
 - The glossary's "Retired Terms" table (which correctly lists Signal as retired)
 - Unix signal references (SIGTERM, SIGKILL) which are unrelated
-- Meta-references ("the Signal -> Engram rename is complete")
+- Meta-references ("the Signal -> Signal rename is complete")
 
 ### 2. Fix stale numbers across all docs
 
@@ -1585,7 +1585,7 @@ changed.
 
 Search `docs/` for present-tense usage of the 0-code concepts listed above.
 Focus on claims like:
-- "Engrams carry demurrage balance"
+- "Signals carry demurrage balance"
 - "Pulse messages flow through..."
 - "The Bus trait provides..."
 - "Datum abstracts over..."
@@ -1614,7 +1614,7 @@ Tertiary (0-code qualifiers):
 
 ## Rules
 
-1. **Signal -> Engram is mechanical.** Do not rewrite surrounding prose. Just
+1. **Signal -> Signal is mechanical.** Do not rewrite surrounding prose. Just
    swap the type name and update variable names in code snippets.
 2. **Number fixes are mechanical.** Replace old number with new number. Do not
    rewrite surrounding context.
@@ -1640,6 +1640,6 @@ Tertiary (0-code qualifiers):
   a qualifier
 - All edits are mechanical (type swap, number swap, brief qualifier) -- no
   prose rewrites
-- Final message lists: (a) number of files with Signal->Engram fixes, (b) number
+- Final message lists: (a) number of files with Signal->Signal fixes, (b) number
   of files with stale numbers fixed, (c) number of files with 0-code qualifiers
   added, (d) the full list of files edited

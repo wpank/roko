@@ -46,7 +46,7 @@ Nunchi has two operator surfaces: a web dashboard and a terminal UI. Both must s
 
 The dashboard (`nunchi-dashboard`) is a React 19 SPA contaminated with mock data. Mock agents, mock insights, mock stats -- all hardcoded and mixed into live responses. The layout is a fixed three-column grid that breaks below 1100px. The routing is a useState switch statement. Auth is a plaintext password. Fourteen polling timers fire concurrently without deduplication. Half the buttons have no click handlers. The ResearchPanel runs a simulated lifecycle using setTimeout chains that never touch the API result.
 
-The TUI (ratatui, `crates/roko-cli/src/tui/`) is in better shape. Seven tabs (F1-F7) render real data from disk files and the roko-serve API. The ROSEDUST theme, PostFX pipeline, and atmosphere system all work. But F6 and F7 have declared sub-views (ProviderHealth, ModelComparison, EngramDag, EpisodeReplay, KnowledgeBrowse) that are never rendered. The plan tree ignores two of its parameters. The log view rebuilds its unified log O(N) per frame. There is no streaming -- the TUI polls 7 disk files and re-parses them each tick.
+The TUI (ratatui, `crates/roko-cli/src/tui/`) is in better shape. Seven tabs (F1-F7) render real data from disk files and the roko-serve API. The ROSEDUST theme, PostFX pipeline, and atmosphere system all work. But F6 and F7 have declared sub-views (ProviderHealth, ModelComparison, SignalDag, EpisodeReplay, KnowledgeBrowse) that are never rendered. The plan tree ignores two of its parameters. The log view rebuilds its unified log O(N) per frame. There is no streaming -- the TUI polls 7 disk files and re-parses them each tick.
 
 This PRD defines the target state for both surfaces. It introduces three concepts:
 
@@ -1552,7 +1552,7 @@ TUI: F3 Agents sub-view (braille density map). See `widgets/braille.rs` for rend
 
 #### 7.4.3 Knowledge graph
 
-**Purpose:** Browse the knowledge store -- engrams organized by kind, with relationships and decay visualization.
+**Purpose:** Browse the knowledge store -- signals organized by kind, with relationships and decay visualization.
 **TUI mapping:** F7 Inspect sub-view 4 (Knowledge Browser). See Task 3.3 in IMPL-10.
 **Dashboard route:** `/network/knowledge`
 
@@ -3182,7 +3182,7 @@ These are declared in the TUI code but never rendered:
 |------------|----------|-------------------|
 | F6 Config | ProviderHealth | `GET /api/providers` + per-provider health bars |
 | F6 Config | ModelComparison | Cost/speed/quality comparison across configured models |
-| F7 Inspect | EngramDag | Browse engram graph by hash chain (like `roko replay`) |
+| F7 Inspect | SignalDag | Browse signal graph by hash chain (like `roko replay`) |
 | F7 Inspect | EpisodeReplay | Step through episodes chronologically with gate results |
 | F7 Inspect | KnowledgeBrowse | Browse knowledge store by kind and freshness |
 
@@ -3193,7 +3193,7 @@ F7 Inspect sub-views are accessed via number keys 1-5 when F7 is the active tab:
 | Key | Sub-view | Content | Status |
 |-----|----------|---------|--------|
 | 1 | System Health (default) | Token burn, cost by model, cascade router, alerts | EXISTING |
-| 2 | Engram DAG | Interactive engram dependency graph | NEW -- Task 3.3 in IMPL-10 |
+| 2 | Signal DAG | Interactive signal dependency graph | NEW -- Task 3.3 in IMPL-10 |
 | 3 | Episode Replay | Step-through episode turns with gate results | NEW -- Task 3.3 in IMPL-10 |
 | 4 | Knowledge Browser | Searchable neuro store by kind and freshness | NEW -- Task 3.3 in IMPL-10 |
 | 5 | Conductor | Watcher status, circuit breakers, interventions | NEW -- move from F1 sub-tab |
@@ -3201,7 +3201,7 @@ F7 Inspect sub-views are accessed via number keys 1-5 when F7 is the active tab:
 Notes on this reorganization:
 - Costs data (token burn, cost by model, cascade router) remains on the default System Health sub-view (sub-view 1). It is not moved.
 - Conductor data moves from being embedded as a sub-section of F1 Dashboard to its own dedicated F7 sub-view (sub-view 5). The F1 Dashboard retains the regime badge and aggregate status dot but does not show watcher detail.
-- Sub-views 2, 3, and 4 correspond to the stubbed `EngramDag`, `EpisodeReplay`, and `KnowledgeBrowse` variants in the existing `SubView` enum.
+- Sub-views 2, 3, and 4 correspond to the stubbed `SignalDag`, `EpisodeReplay`, and `KnowledgeBrowse` variants in the existing `SubView` enum.
 
 ### 12.3 Existing bugs to fix
 
@@ -3248,7 +3248,7 @@ Enhancements:
 
 ### 12.6 Streaming migration
 
-Current state: TUI polls 7 disk files (episodes.jsonl, engrams.jsonl, efficiency.jsonl, gate-thresholds.json, cascade-router.json, experiments.json, plan files) and re-parses them each tick.
+Current state: TUI polls 7 disk files (episodes.jsonl, signals.jsonl, efficiency.jsonl, gate-thresholds.json, cascade-router.json, experiments.json, plan files) and re-parses them each tick.
 
 Target state: TUI connects to roko-serve WS `/ws` and receives events in real-time. Disk polling becomes a fallback for when roko-serve is not running.
 

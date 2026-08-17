@@ -105,7 +105,7 @@ These are given; the system does not need to produce them from scratch.
 The processes that form the potentially-autocatalytic set include:
 - **Roko agents** that execute tasks (code review, documentation, refactoring)
 - **Neuro** (knowledge layer) that provides context enabling agents to execute tasks correctly
-- **Scorer + Gate** that selects which Engrams are worth acting on
+- **Scorer + Gate** that selects which Signals are worth acting on
 - **Dreams** (delta-speed consolidation) that distills learned patterns into durable knowledge
 - **Daimon** that provides goal-direction (what to improve)
 - **Test harness** that validates outputs and feeds error signals back
@@ -121,7 +121,7 @@ Currently (Phase 1), the system has partial autocatalytic closure:
 - Neuro knowledge about the codebase enables agents to make context-appropriate edits
 
 But the set is not yet fully closed:
-- The scorer is not yet trained by agent-produced Engrams (it uses hand-coded heuristics)
+- The scorer is not yet trained by agent-produced Signals (it uses hand-coded heuristics)
 - Dreams consolidation does not yet feed back into agent strategy
 - Human steering (task delegation, goal setting) is still required for most loops
 

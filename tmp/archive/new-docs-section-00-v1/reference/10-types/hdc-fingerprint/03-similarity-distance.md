@@ -58,7 +58,7 @@ pub const NEAR_DUPLICATE_SIMILARITY: f64 = 0.95;
 
 | Hamming distance | Similarity | Semantic interpretation |
 |---|---|---|
-| 0 | 1.000 | Identical tokens (same Engram or exact duplicate) |
+| 0 | 1.000 | Identical tokens (same Signal or exact duplicate) |
 | ≤ 128 | ≥ 0.987 | Near-identical phrasing |
 | ≤ 512 | ≥ 0.950 | Near-duplicate; same concept, minor variation |
 | 512–2048 | 0.80–0.95 | Related topic; not duplicate |
@@ -77,7 +77,7 @@ On Apple M-series (NEON instructions):
   ≈ 62 million comparisons per second
 ```
 
-This enables brute-force nearest-neighbor search over ~10,000 Engrams in ~160 µs.
+This enables brute-force nearest-neighbor search over ~10,000 Signals in ~160 µs.
 For larger Substrates, an HDC index (bucketed by popcount bands) reduces this further.
 
 ---

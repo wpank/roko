@@ -43,7 +43,7 @@ an entire architecture section is fully implemented.
 
 | Claim Area | Anchor | Use To Verify |
 |------------|--------|---------------|
-| Engram is the live durable kernel noun | `crates/roko-core/src/engram.rs:39` | The durable kernel surface is `Engram` |
+| Engram (renamed to Signal in 2026-08-12) is the live durable kernel noun | `crates/roko-core/src/__PATH_ENGRAM_RS__0:39` | The durable kernel surface is `Signal` |
 | Six core traits are live | `crates/roko-core/src/traits.rs:34`, `:78`, `:102`, `:124`, `:143`, `:166` | Keep the six-trait story grounded; do not promote `Datum` to a live trait surface |
 | `loop_tick()` is shared, but not universal | `crates/roko-core/src/loop_tick.rs:77` | Wording should stay partial rather than claiming a single universal loop owner |
 | Three operating frequencies are live | `crates/roko-core/src/operating_frequency.rs:16` | Gamma / Theta / Delta are safe current-state language |

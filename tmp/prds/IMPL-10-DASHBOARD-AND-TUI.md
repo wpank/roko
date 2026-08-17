@@ -16,7 +16,7 @@ This plan covers three workstreams that depend on each other:
 
 2. **Dashboard complete redesign** -- rebuild the web dashboard from scratch. The current codebase mixes mock data with live API calls, has no router, runs 14+ polling timers, and stores a plaintext password in main.jsx. Every component gets a full rewrite.
 
-3. **TUI enhancements** -- add missing tabs (F8 Marketplace, F9 Atelier), implement the stubbed sub-views (ProviderHealth, ModelComparison, EngramDag, EpisodeReplay, KnowledgeBrowse), fix bugs in existing views, and port bardo-era widgets.
+3. **TUI enhancements** -- add missing tabs (F8 Marketplace, F9 Atelier), implement the stubbed sub-views (ProviderHealth, ModelComparison, SignalDag, EpisodeReplay, KnowledgeBrowse), fix bugs in existing views, and port bardo-era widgets.
 
 ## Ground truth
 
@@ -1613,7 +1613,7 @@ Remove all `setTimeout` simulation. Every interaction hits a real API endpoint.
 
 **Knowledge graph page:**
 - Interactive graph of the InsightStore
-- Nodes are engrams/knowledge entries
+- Nodes are signals/knowledge entries
 - Edges are provenance links
 - Search bar to filter by keyword or domain
 - Click a node to see full content in ContextPanel
@@ -1879,7 +1879,7 @@ The `SubView` enum declares 20 variants across 7 tabs. Of these, 5 are declared 
 |---|---|---|---|
 | `ProviderHealth` | F6 Config | Same as ConfigEditor | Implement in Task 3.2 |
 | `ModelComparison` | F6 Config | Same as ConfigEditor | Implement in Task 3.2 |
-| `EngramDag` | F7 Inspect | Same as default | Implement in Task 3.3 |
+| `SignalDag` | F7 Inspect | Same as default | Implement in Task 3.3 |
 | `EpisodeReplay` | F7 Inspect | Same as default | Implement in Task 3.3 |
 | `KnowledgeBrowse` | F7 Inspect | Same as default | Implement in Task 3.3 |
 
@@ -1905,7 +1905,7 @@ Same pattern in `context_view.rs`:
 pub fn render(frame: &mut Frame<'_>, area: Rect, ...) {
     let sub = view_state.active_sub_view(Tab::Inspect);
     match sub {
-        SubView::EngramDag => render_engram_dag(frame, area, ...),
+        SubView::SignalDag => render_signal_dag(frame, area, ...),
         SubView::EpisodeReplay => render_episode_replay(frame, area, ...),
         SubView::KnowledgeBrowse => render_knowledge_browse(frame, area, ...),
         _ => render_health_and_costs(frame, area, ...),
@@ -1980,30 +1980,30 @@ fn render_model_comparison(frame: &mut Frame<'_>, area: Rect, data: &DashboardDa
 
 ---
 
-### Task 3.3: F7 sub-views -- EngramDag, EpisodeReplay, KnowledgeBrowse
+### Task 3.3: F7 sub-views -- SignalDag, EpisodeReplay, KnowledgeBrowse
 
 **Effort:** 3 days
 **Dependencies:** Task 3.1
 
 **Files to modify:**
 - `crates/roko-cli/src/tui/views/context_view.rs` -- implement three sub-views
-- `crates/roko-cli/src/tui/dashboard.rs` -- add engram, episode, knowledge data
+- `crates/roko-cli/src/tui/dashboard.rs` -- add signal, episode, knowledge data
 
 **What to implement:**
 
-**EngramDag sub-view:**
+**SignalDag sub-view:**
 
-Renders an ASCII-art directed graph of engrams and their provenance links. Read from `.roko/engrams.jsonl`.
+Renders an ASCII-art directed graph of signals and their provenance links. Read from `.roko/signals.jsonl`.
 
-Layout: two-panel. Left 40%: list of engrams (newest first) with kind badge (Signal, Insight, Memory). Right 60%: selected engram detail showing content, provenance chain (what signal triggered it, what it produced), and metadata.
+Layout: two-panel. Left 40%: list of signals (newest first) with kind badge (Signal, Insight, Memory). Right 60%: selected signal detail showing content, provenance chain (what signal triggered it, what it produced), and metadata.
 
-Navigation: Up/Down to select engram, Enter to expand, Tab to switch panels.
+Navigation: Up/Down to select signal, Enter to expand, Tab to switch panels.
 
 ```rust
-fn render_engram_dag(frame: &mut Frame<'_>, area: Rect, data: &DashboardData, ...) {
+fn render_signal_dag(frame: &mut Frame<'_>, area: Rect, data: &DashboardData, ...) {
     let panels = Layout::horizontal([Pct(40), Pct(60)]).split(area);
-    render_engram_list(frame, panels[0], &data.engrams, selected_idx, theme);
-    render_engram_detail(frame, panels[1], selected_engram, theme);
+    render_signal_list(frame, panels[0], &data.signals, selected_idx, theme);
+    render_signal_detail(frame, panels[1], selected_signal, theme);
 }
 ```
 
@@ -2047,10 +2047,10 @@ fn render_knowledge_browse(frame: &mut Frame<'_>, area: Rect, data: &DashboardDa
 ```
 
 **Acceptance criteria:**
-- [ ] F7 + key "1" shows EngramDag with real engram data
+- [ ] F7 + key "1" shows SignalDag with real signal data
 - [ ] F7 + key "2" shows EpisodeReplay with real episode data
 - [ ] F7 + key "3" shows KnowledgeBrowse with real neuro store data
-- [ ] Engram list scrolls and updates when new engrams appear
+- [ ] Signal list scrolls and updates when new signals appear
 - [ ] Episode replay steps through turns with correct timing
 - [ ] Knowledge search filters entries in real-time
 - [ ] All sub-views handle empty data gracefully
@@ -2540,7 +2540,7 @@ Built-in commands:
 - "Switch to Crisis mode" (Ctrl+3)
 - "Show provider health" (F6 + 2)
 - "Show model comparison" (F6 + 3)
-- "Show engram DAG" (F7 + 1)
+- "Show signal DAG" (F7 + 1)
 - "Show episode replay" (F7 + 2)
 - "Show knowledge browser" (F7 + 3)
 

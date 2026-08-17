@@ -38,14 +38,14 @@ mkdir -p /Users/will/dev/nunchi/roko/roko/docs/test-smoke
 Minimum 20 lines. Must contain:
 - An H1 heading starting with `# `
 - A reference to each of the 3 sub-doc filenames below (e.g., `00-engram.md`)
-- The words: Roko, Engram, Synapse
+- The words: Roko, Signal, Synapse
 - At least 2 citations (e.g., "Meta-Harness Lee et al. 2026", "Kanerva 2009")
 
 ### File 2: `/Users/will/dev/nunchi/roko/roko/docs/test-smoke/00-engram.md`
 
-Minimum 40 lines. Content: the Engram data type. Must contain:
+Minimum 40 lines. Content: the Signal data type. Must contain:
 - An H1 heading
-- A brief explanation of what an Engram is, written for a zero-context reader
+- A brief explanation of what an Signal is, written for a zero-context reader
 - The 7 Score axes in order (confidence, novelty, utility, reputation, precision, salience, coherence)
 - At least one verbatim quote or Rust snippet from `refactoring-prd/01-synapse-architecture.md`
 - The word "Roko" at least once
@@ -67,7 +67,7 @@ Minimum 40 lines. Content: the naming map. Must contain:
 - Table or list showing at least 5 old→new renames (Bardo→Roko, Golem→Agent, etc.)
 - Explicit statement that Clade → Collective / Mesh (NOT "fleet")
 - Explicit statement that GNOS is replaced by KORAI (mainnet) / DAEJI (testnet)
-- The words "Roko", "Engram", "Synapse"
+- The words "Roko", "Signal", "Synapse"
 
 ## Step 4 — Self-check before finishing
 
@@ -75,7 +75,7 @@ Before you finish, make sure:
 - [ ] All 4 files exist at the absolute paths above
 - [ ] Each file meets its minimum line count
 - [ ] INDEX.md references all 3 sub-docs by filename
-- [ ] The words Roko, Engram, Synapse all appear somewhere in the topic
+- [ ] The words Roko, Signal, Synapse all appear somewhere in the topic
 - [ ] No forbidden terms (Thanatopsis, Necrocracy, GNOS token, Thriving → Terminal, terminal requiem) appear anywhere
 - [ ] At least 3 citation-like patterns total across all files (e.g., "Lee et al. 2026", "arXiv:2309.02427", "Kanerva 2009")
 

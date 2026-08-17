@@ -26,7 +26,7 @@ tags: [agents, composition, system-prompt, context-assembly, wired]
 1. Every agent execution is preceded by a composition call — no bare agent execution without a built system prompt.
 2. The composition budget (`Budget`) constrains token count for the system prompt; agents receive the composed result within budget.
 3. System prompts are deterministic for the same input (no hidden statefulness in builder).
-4. The `Kind::Prompt` Engram is logged with its content hash, enabling replay.
+4. The `Kind::Prompt` Signal is logged with its content hash, enabling replay.
 
 ## Failure Modes
 

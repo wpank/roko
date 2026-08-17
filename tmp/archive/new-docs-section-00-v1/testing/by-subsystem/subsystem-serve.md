@@ -41,7 +41,7 @@ Not reported in the 2026-04-17 audit. `roko-serve` is listed as Shipping but its
 - `POST /plan/run` starts a plan and returns a plan ID.
 - `GET /plan/{id}/status` returns the current plan status.
 - `POST /plan/{id}/cancel` cancels a running plan.
-- `GET /engrams/{id}` returns an Engram by content hash.
+- `GET /engrams/{id}` returns an Signal by content hash.
 - `GET /health` returns 200 OK when the system is healthy.
 
 ---

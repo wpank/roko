@@ -230,7 +230,7 @@ rg -n "ExperimentStore|prompt_experiment|model_experiment|cascade_router" crates
 
 If a batch discovers work in any of these buckets, defer it immediately:
 
-- `Engram` HDC fingerprint bridge,
+- `Signal` HDC fingerprint bridge,
 - new router families,
 - new memory-economy models,
 - worldview / replication-ledger systems,

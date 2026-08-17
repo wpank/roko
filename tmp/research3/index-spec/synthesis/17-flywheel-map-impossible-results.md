@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a synthesis report from a structured deep-research run. It is reference material
+> for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Compounding Flywheel Map, Arena-of-One Capabilities, and Impossible Results
 
 This document explains why an integrated technology stack -- combining hyperdimensional computing (HDC), stigmergic coordination, active inference, self-evolution, zero-knowledge proofs, and economic bonding -- creates capabilities that no competitor can replicate. It maps the compounding loops that make the system self-reinforcing, catalogs the formally impossible results that constrain what can and cannot be built, and positions the competitive landscape as it stands in mid-2026. It is written from scratch for a reader with zero prior context.

@@ -1,19 +1,19 @@
-# Engram — Kind Enum
+# Signal — Kind Enum
 
-> The Kind discriminant tells every operator what category of information an Engram represents and how to interpret its Body.
+> The Kind discriminant tells every operator what category of information an Signal represents and how to interpret its Body.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
 **Depends on**: [Kind type overview](../10-types/kind/00-overview.md)  
-**Used by**: every operator that reads Engrams  
+**Used by**: every operator that reads Signals  
 **Last reviewed**: 2026-04-19
 
 ---
 
 ## TL;DR
 
-Kind is the Engram's category tag. It is a required field, included in the identity hash,
-and determines which Body variant is valid for that Engram. When you write a Scorer, Gate,
+Kind is the Signal's category tag. It is a required field, included in the identity hash,
+and determines which Body variant is valid for that Signal. When you write a Scorer, Gate,
 or Router that processes only certain kinds of information, you match on Kind. The full
 variant list, descriptions, and a decision tree for choosing the right Kind live in this
 file.
@@ -22,12 +22,12 @@ file.
 
 ## The Idea
 
-Without Kind, consumers would have to inspect the Body to figure out what an Engram
+Without Kind, consumers would have to inspect the Body to figure out what an Signal
 represents. That couples the reader to the payload format. Kind separates "what is this"
-from "what does it contain," so operators can filter and route Engrams without
+from "what does it contain," so operators can filter and route Signals without
 deserializing the Body.
 
-Kind also determines what operations are semantically meaningful on an Engram. Scoring
+Kind also determines what operations are semantically meaningful on an Signal. Scoring
 novelty is defined differently for a `KnowledgeEntry` versus a `GateVerdict`. Decay
 schedules differ between ephemeral `ToolTrace` entries and long-lived `KnowledgeEntry`
 entries. Kind carries that semantic intent.
@@ -103,7 +103,7 @@ text, the model used, and token counts.
 
 **Typical decay**: Exponential or Demurrage — outputs become stale as context evolves.  
 **Typical score**: High utility if the output passed gates; low if rejected.  
-**Lineage**: References the `Plan` or `ContextAssembly` Engram that produced it.
+**Lineage**: References the `Plan` or `ContextAssembly` Signal that produced it.
 
 ---
 
@@ -158,7 +158,7 @@ reading, code test result. Observations are the substrate's ground truth input.
 
 **Typical decay**: Fast exponential — observations age quickly.  
 **Typical score**: High novelty if first observation of a pattern; low if routine.  
-**Lineage**: Empty (root Engrams).
+**Lineage**: Empty (root Signals).
 
 ---
 
@@ -180,7 +180,7 @@ performance metrics.
 
 **Typical decay**: Slow exponential or Demurrage — episodes are valuable for learning.  
 **Typical score**: Utility reflects episode success rate.  
-**Lineage**: References all `GateVerdict` and `AgentOutput` Engrams from the session.
+**Lineage**: References all `GateVerdict` and `AgentOutput` Signals from the session.
 
 ---
 
@@ -216,11 +216,11 @@ A numeric measurement snapshot: latency, token count, gate pass rate, memory usa
 
 ### `Kind::ContextAssembly`
 
-A record of what context was assembled for a particular prompt: which Engrams were
+A record of what context was assembled for a particular prompt: which Signals were
 retrieved, what was included, what was excluded, and why.
 
 **Typical decay**: Tied to the `AgentOutput` it produced.  
-**Lineage**: References all Engrams that contributed to the context window.
+**Lineage**: References all Signals that contributed to the context window.
 
 ---
 
@@ -238,7 +238,7 @@ A record of which LLM model was selected for a task, by which router, and why.
 A structured error report: subsystem, error type, message, backtrace hash, recovery action.
 
 **Typical decay**: Moderate — errors feed into calibration and learning.  
-**Lineage**: References the Engram that was being processed when the error occurred.
+**Lineage**: References the Signal that was being processed when the error occurred.
 
 ---
 
@@ -282,7 +282,7 @@ Is the Engram produced by an LLM call?
 
 1. `body` variant must match `kind` (enforced by `EngramBuilder`)
 2. `Kind::Custom(s)` where `s.is_empty()` is invalid
-3. Kind is included in the identity hash; changing Kind produces a new Engram
+3. Kind is included in the identity hash; changing Kind produces a new Signal
 
 ---
 

@@ -450,7 +450,7 @@ cargo test -p roko-chain
 
 **Spec** (doc 08 `docs/18-tools/08-service-integrations.md`): Three-layer architecture for connecting to external platforms:
 1. **Layer 1: Event Reception** — webhook endpoints (GitHub, Slack), polling adapters (Linear, chain events), WebSocket streams (chain data, Slack Socket Mode)
-2. **Layer 2: Agent Execution** — Event -> Engram conversion, template matching (which agent handles this?), agent spawn with ToolContext
+2. **Layer 2: Agent Execution** — Event -> Signal conversion, template matching (which agent handles this?), agent spawn with ToolContext
 3. **Layer 3: MCP Tool Adapters** — github.* tools (via roko-mcp-github), slack.* tools (via roko-mcp-slack), scripts.* tools (via roko-mcp-scripts)
 
 Chain domain services: MetaMask Snap (wallet), Uniswap Trading API (DEX), Venice (inference), Bankr (banking), AgentCash (payments). Operations adapters: Slack (messaging), GitHub (code), Linear (project management).
@@ -459,7 +459,7 @@ Chain domain services: MetaMask Snap (wallet), Uniswap Trading API (DEX), Venice
 
 **Current code**: Full three-layer implementation exists.
 - Layer 1: `crates/roko-serve/src/routes/webhooks.rs` — GitHub, Slack, generic webhook endpoints with HMAC signature verification.
-- Layer 2: `crates/roko-serve/src/dispatch.rs` — `dispatch_loop()` matches Engram signals to subscriptions via `SubscriptionRegistry::find_matching()`, dispatches to agent templates.
+- Layer 2: `crates/roko-serve/src/dispatch.rs` — `dispatch_loop()` matches Signal signals to subscriptions via `SubscriptionRegistry::find_matching()`, dispatches to agent templates.
 - Layer 3: `roko-mcp-github` (19 tools), `roko-mcp-slack` (9 tools), `roko-mcp-scripts` (dynamic tools).
 - Registry: `crates/roko-serve/src/integrations.rs` — `IntegrationRegistry` catalogs all integrations with structural/decorative classification.
 - API: `GET /api/integrations`, `GET /api/integrations/:name` expose the catalog.
@@ -472,8 +472,8 @@ Chain domain services: MetaMask Snap (wallet), Uniswap Trading API (DEX), Venice
 **Depends on**: TOOL-01 (MCP servers for Layer 3), TOOL-08 (event source triggers)
 **Accept when**:
 - [x] Webhook receiver route exists for at least GitHub
-- [x] Incoming webhooks converted to Engrams
-- [x] Engrams matched to agent templates for dispatch
+- [x] Incoming webhooks converted to Signals
+- [x] Signals matched to agent templates for dispatch
 - [x] `cargo test -p roko-serve` passes
 **Verify**:
 ```bash

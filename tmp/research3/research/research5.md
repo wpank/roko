@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a methodological blueprint for cross-domain research synthesis (round 5).
+> It is reference material for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # A Cross-Domain Blueprint for Synthesizing an Unspecified Research Topic
 
 When the topic is still undefined, the most rigorous way to do “deep research” is to separate the job into four linked layers: a **systematic map** of the field, a **judgment layer** that distinguishes consensus from controversy, a **translation layer** that asks what can be built or tested in 12–18 months, and a **portfolio layer** that chooses collaborators, funders, and publication or deployment paths. That structure aligns well with reporting guidance such as PRISMA 2020, with systematic mapping methods for structuring a field, and with rapid-review guidance for keeping fast-moving areas current. citeturn11search0turn11search5turn11search11turn11search3

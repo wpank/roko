@@ -4,7 +4,7 @@ section: analysis
 subsection: architectural-analysis
 id: aa-09
 source: 23-architectural-analysis-improvements.md (§9)
-tags: [inconsistencies, documentation, code-doc-mismatch, roko-fs, score-axes, signal-engram]
+tags: [inconsistencies, documentation, code-doc-mismatch, roko-fs, score-axes, signal-signal]
 ---
 
 # Finding: Documentation and Code-Doc Inconsistencies
@@ -41,7 +41,7 @@ Source file 23 (§9) identifies 5 documentation inconsistencies and 4 code-docum
 
 **Root cause**: `Substrate` is assigned to L0 Runtime. Therefore `roko-fs` (which implements `FileSubstrate`) should be L0 Runtime, not L3 Harness.
 
-**Resolution**: Move `roko-fs` to L0 Runtime in the five-layer taxonomy documentation. Its sole purpose is persistent storage of Engrams — the canonical L0 responsibility.
+**Resolution**: Move `roko-fs` to L0 Runtime in the five-layer taxonomy documentation. Its sole purpose is persistent storage of Signals — the canonical L0 responsibility.
 
 **Impact**: Medium. The layer taxonomy is the canonical reference for architectural decisions. Having `roko-fs` in the wrong layer misleads any developer reasoning about layer boundaries.
 
@@ -81,7 +81,7 @@ Source file 23 (§9) identifies 5 documentation inconsistencies and 4 code-docum
 
 | Location | Claim |
 |---|---|
-| `02-engram-data-type.md` | References "7-axis appraisal" |
+| `02-signal-data-type.md` | References "7-axis appraisal" |
 | `roko-core` code (`Score` struct) | 4 axes: `confidence`, `novelty`, `utility`, `reputation` |
 
 **Root cause**: The architecture originally specified 7 axes (4 stable + 3 extended). The 3 extended axes were not implemented.
@@ -96,17 +96,17 @@ Source file 23 (§9) identifies 5 documentation inconsistencies and 4 code-docum
 
 ## Part 2: Code-Documentation Mismatches (4 items)
 
-### CM-1: Data Type Name — Engram vs Signal
+### CM-1: Data Type Name — Signal vs Signal
 
 | Documentation | Code |
 |---|---|
-| "Engram" (canonical architecture term) | `Signal` (Rust struct name) |
+| "Signal" (canonical architecture term) | `Signal` (Rust struct name) |
 
 **Impact**: **None** — the divergence is explicitly documented in `01-naming-and-glossary.md`. This is an intentional naming divergence, not an inconsistency.
 
-**Note**: The rename from `Signal` to `Engram` is planned (see Readiness Audit, Gap G8). Until it executes, both names refer to the same struct. When reading code, `Signal` = Engram.
+**Note**: The rename from `Signal` to `Signal` is planned (see Readiness Audit, Gap G8). Until it executes, both names refer to the same struct. When reading code, `Signal` = Signal.
 
-**See**: Readiness Audit finding [RA-01: Architecture](../readiness-audit/subsystem-architecture.md): "Signal→Engram rename (Tier 0D) documented but unexecuted."
+**See**: Readiness Audit finding [RA-01: Architecture](../readiness-audit/subsystem-architecture.md): "Signal→Signal rename (Tier 0D) documented but unexecuted."
 
 ---
 
@@ -124,9 +124,9 @@ This is the code-dimension of DI-5 above. The `Score` struct in `roko-core` has 
 
 | Documentation | Code | Impact |
 |---|---|---|
-| `attestation` field specified in Engram/Signal docs | Not present in `Signal` struct | **Low** — Phase 2+ feature |
+| `attestation` field specified in Signal/Signal docs | Not present in `Signal` struct | **Low** — Phase 2+ feature |
 
-The attestation field enables cryptographic signing of Engrams for multi-agent trust scenarios. It is correctly documented as a future feature but the absence may mislead developers looking for it.
+The attestation field enables cryptographic signing of Signals for multi-agent trust scenarios. It is correctly documented as a future feature but the absence may mislead developers looking for it.
 
 ---
 

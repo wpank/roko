@@ -1,18 +1,18 @@
-# Engram — Builder Pattern
+# Signal — Builder Pattern
 
-> EngramBuilder is the only supported way to construct a new Engram. It computes the ContentHash and fingerprint, enforces invariants, and provides ergonomic defaults.
+> EngramBuilder is the only supported way to construct a new Signal. It computes the ContentHash and fingerprint, enforces invariants, and provides ergonomic defaults.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
 **Depends on**: [Struct reference](01-struct-reference.md)  
-**Used by**: every component that emits Engrams  
+**Used by**: every component that emits Signals  
 **Last reviewed**: 2026-04-19
 
 ---
 
 ## TL;DR
 
-Never construct `Engram` directly. Use `EngramBuilder`. The builder computes the
+Never construct `Signal` directly. Use `EngramBuilder`. The builder computes the
 `id` and `fingerprint` automatically, validates Kind-Body consistency, and fills
 in defaults for optional fields. All required fields must be set before `build()`
 or the call returns `Err`.
@@ -21,13 +21,13 @@ or the call returns `Err`.
 
 ## The Idea
 
-`Engram` has ten fields, most of which have sensible defaults. Direct struct
+`Signal` has ten fields, most of which have sensible defaults. Direct struct
 construction forces callers to supply all fields explicitly, or forget one and get
 a wrong `id` because the hash computation wasn't run. `EngramBuilder` makes the
 right thing easy and the wrong thing a compile error.
 
 The builder also centralises the hash and fingerprint computation. There is exactly
-one place in the codebase where `id = blake3(...)` is called for Engrams: inside
+one place in the codebase where `id = blake3(...)` is called for Signals: inside
 `EngramBuilder::build()`.
 
 ---
@@ -85,9 +85,9 @@ impl EngramBuilder {
 |-------|---------|
 | `created_at_ms` | `SystemTime::now()` as Unix ms |
 | `decay` | `Decay::Demurrage(DemurrageParams::default())` |
-| `provenance` | `Provenance::anonymous()` — must be overridden for production Engrams |
+| `provenance` | `Provenance::anonymous()` — must be overridden for production Signals |
 | `score` | `Score::default()` — all axes at 0.5 |
-| `lineage` | `vec![]` — root Engram |
+| `lineage` | `vec![]` — root Signal |
 | `tags` | `BTreeMap::new()` — no metadata |
 | `skip_fingerprint` | `false` — compute fingerprint |
 
@@ -194,7 +194,7 @@ let knowledge = EngramBuilder::new()
 
 ## Invariants
 
-1. `EngramBuilder::build()` is the only valid way to construct an Engram with a correct id
+1. `EngramBuilder::build()` is the only valid way to construct an Signal with a correct id
 2. `body` variant must match `kind`
 3. `skip_fingerprint()` is test-only; production code must not call it
 
@@ -214,6 +214,6 @@ let knowledge = EngramBuilder::new()
 
 ## See Also
 
-- [`01-struct-reference.md`](01-struct-reference.md) — the Engram struct
+- [`01-struct-reference.md`](01-struct-reference.md) — the Signal struct
 - [`12-invariants.md`](12-invariants.md) — invariants enforced here
 - [`13-examples.md`](13-examples.md) — more complete examples

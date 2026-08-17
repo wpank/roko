@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is an analysis of a VC call with Emergent Ventures (April 2026). It is reference material
+> for pitch/strategy planning, not an implementation plan.
+>
+> Last updated: 2026-08-13
+
 # VC Call Analysis: Nunchi <> Praneeth Srikanti (Emergent Ventures)
 
 **Date:** April 30, 2026

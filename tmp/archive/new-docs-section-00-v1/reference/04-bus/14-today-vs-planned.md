@@ -99,7 +99,7 @@ Topic routing replaces in-subscriber filtering.
 ## What Does Not Change
 
 - The cognitive loop structure and step names remain the same.
-- `Engram` and `Substrate` are unaffected.
+- `Signal` and `Substrate` are unaffected.
 - Agent configuration files remain compatible.
 - Existing operator traits (`Scorer`, `Gate`, etc.) do not need to change unless they
   directly call `EventBus<E>`.

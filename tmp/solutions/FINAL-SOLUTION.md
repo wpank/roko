@@ -1,5 +1,32 @@
 # Final Solution: Shortest Path To Mori Parity
 
+## What is this?
+
+This document is the canonical solution plan for reaching Mori parity. It was created on
+2026-04-28 after three analysis passes (the initial solution, the review agent's corrections,
+and the E2E dogfood results). It describes the root causes of first-mile failures in interactive
+chat and PRD/plan generation, the M0-0/M0-1 fix sequence, the ChatAgentSession architecture,
+and the acceptance criteria for calling Roko self-hosting-ready.
+
+Last reviewed: 2026-08-12
+
+## Current status (as of 2026-08-12)
+
+The following findings from this document have been addressed in subsequent batch work:
+
+| Finding | Status | Notes |
+|---|---|---|
+| Engram→Signal rename | **RESOLVED** | Completed in batch 2026-08-12. All runtime code uses `Signal`. |
+| `eprintln!`→`tracing` migration | **RESOLVED** | Completed in batch 2026-08-12. |
+| `.expect()`→proper error handling | **PARTIALLY DONE** | Some hot paths converted; others remain. |
+| `orchestrate.rs` god object (8000+ lines) | **RESOLVED** | File deleted. Runner v2 (`event_loop.rs`) is the sole execution path. |
+| `event_loop.rs` size | **STILL OPEN** | Now ~19.8K lines. The "god object" problem migrated from `orchestrate.rs` to `event_loop.rs`. |
+| M0-0 execution contract repair | **PARTIALLY DONE** | Model selection improved but not fully unified across all commands. |
+| Cost tracking ($0.00 for all episodes) | **PARTIALLY DONE** | Some paths now extract usage; PRD/plan paths may still under-report. |
+| Interactive chat (`dispatch_direct.rs`) | **STILL OPEN** | ChatAgentSession not yet implemented. |
+| PRD/plan grounding and validation | **STILL OPEN** | Repository context pack and artifact validators not yet built. |
+| Demo UI truth surface (M0-1) | **STILL OPEN** | Demo-app still mixes live/fallback data. |
+
 Date: 2026-04-28 (third pass)
 
 This supersedes `solution-ACTUAL.md` by incorporating the review agent's corrections and the
@@ -276,8 +303,8 @@ Batch 1 and Batch 4:
 - PRD/plan generation should receive a bounded repo context pack before the model runs
 - Generated PRDs should include a repository-grounding section
 - Generated plans should fail validation if they create duplicate crates or cite no existing files
-- `orchestrate.rs` can remain a donor/reference for legacy behavior, but new first-mile work
-  should not target it as the primary place for new runtime logic
+- `orchestrate.rs` has been deleted (as of 2026-08-12). All runtime logic lives in
+  `runner/event_loop.rs`. New work should target the runner, not recreate a legacy path
 
 ## Acceptance Criteria
 

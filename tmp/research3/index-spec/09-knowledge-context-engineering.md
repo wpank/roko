@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a complete reference for the knowledge subsystem and context engineering architecture.
+> It is reference material, not an implementation plan.
+>
+> Last updated: 2026-08-13
+
 # 09 -- Knowledge and Context Engineering
 
 > A complete reference for the knowledge subsystem and context engineering

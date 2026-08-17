@@ -54,7 +54,7 @@ preceding record. This creates a hash chain where:
 | `TaskFailed` | A task failed (all retries exhausted) |
 | `GateVerdict` | A gate produced a verdict (Pass or Fail) |
 | `AgentTurn` | An agent turn completed (LLM response received) |
-| `EngramPersisted` | An Engram was written to the Substrate |
+| `EngramPersisted` | An Engram (renamed to Signal in 2026-08-12) was written to the Substrate |
 | `ExecutorSnapshot` | A full executor state snapshot was written |
 | `ProcessStart` | The Roko process started |
 | `ProcessShutdown` | The Roko process shut down gracefully |

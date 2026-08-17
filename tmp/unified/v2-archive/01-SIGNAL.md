@@ -2,13 +2,13 @@
 
 > Two mediums: Signal (durable) in Store, Pulse (ephemeral) on Bus. Graduation converts Pulse → Signal. Everything that flows through Roko is one or the other.
 
-**Subsumes**: Engram, Pulse/Envelope, Artifact, Knowledge Entry, Pheromone, Evidence, Feed event, Finding.
+**Subsumes**: Signal (formerly Engram, renamed to Signal in 2026-08-12), Pulse/Envelope, Artifact, Knowledge Entry, Pheromone, Evidence, Feed event, Finding.
 
 ---
 
 ## 1. Two Mediums
 
-The system has two data shapes because reality has two timescales: things that persist and things that flow. The v1 spec claimed "one noun" (Signal) but the code already had two — `Engram` for durable data and `Envelope<E>` in `roko-runtime::event_bus` for ephemeral messages. This spec makes both first-class.
+The system has two data shapes because reality has two timescales: things that persist and things that flow. The v1 spec claimed "one noun" (Signal) but the code already had two — `Signal` (at that time called `Engram`) for durable data and `Envelope<E>` in `roko-runtime::event_bus` for ephemeral messages. This spec makes both first-class.
 
 | Property | Signal (durable) | Pulse (ephemeral) |
 |---|---|---|
@@ -65,7 +65,7 @@ pub struct Signal {
 }
 ```
 
-**Mapping to code**: `Signal` maps 1:1 to `roko-core::Engram`. The Rust struct remains `Engram`; new code bridges with `type Signal = Engram;`.
+**Mapping to code**: `Signal` maps 1:1 to `roko-core::Signal` (the Rust struct was renamed from `Engram` to `Signal` in 2026-08-12; `pub type Engram = Signal` backward-compat alias retained).
 
 ---
 

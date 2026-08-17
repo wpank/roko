@@ -48,7 +48,7 @@
 | **E14** | Providers & Tools | 7 | M1 | E01 | P13, P09 (=E14 alias), P28 (partial) | Honest dispatch path: retries retry, tools survive, 37 advertised == executable. |
 | **E15** | MCP Config & Passthrough | 6 | M1 | — (soft P25) | P25 (partial; E15-T4 supersedes P25-T4) | Make MCP passthrough actually deliver tools (`{"mcpServers":{}}` normalizer + env + parity). |
 | **E16** | PRD Self-Hosting | 2 | M1 | E01, E14 (=P09) | P08 + P09 + P23 (13 tasks cover ~90%) | Close the generative front-half loop (idea→draft→research→plan); 2 gap tasks only. |
-| **E17** | ACP Completion | 6 | M2 | **E04** (permission), **E07** (learning), **E15** (MCP) | P19/P21/P22/P25/P28 (substrate) | Make an editor ACP turn behave like a `plan run` turn: consent-gated, learning-informed, MCP-equipped, honest. |
+| **E17** | ACP Completion | 6 (historical; current manifest 8) | M2 | **E04** (permission), **E07** (learning), **E15** (MCP) | P19/P21/P22/P25/P28 (substrate) | Make an editor ACP turn behave like a `plan run` turn: consent-gated, learning-informed, MCP-equipped, honest. |
 | **E18** | Docs, Config, CI & Ops | 13 | M2 | E01 (doc rewrites); own T05–T08 fixes | P17/P20/P30/P32/P33 (adjacent) | Make the repo trustworthy + shippable: fix CI gates, secrets, MSRV, then rewrite the lying docs. |
 
 **Epic task total: 149** (executable native tasks across E01–E18). See §6 for the grand total incl. `plans/`.

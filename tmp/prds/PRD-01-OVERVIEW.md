@@ -534,16 +534,14 @@ This glossary defines every term used across the PRD set. Terms are grouped by s
 
 ### Core primitives
 
-**Engram.** The universal data type in Roko. A content-addressed (BLAKE3 hash), scored, decaying unit of knowledge. Every piece of information that flows through the system -- a task, a prompt, an LLM output, a gate verdict, a knowledge entry -- is an Engram. Content addressing means the same piece of knowledge has the same identity whether it lives on disk, in memory, or on chain. Engrams carry provenance (who created it, what model, what context), lineage (parent Engrams that contributed to it), and scores (relevance, novelty, utility). This is the atom of the system.
-
-**Signal.** An event-sourced record that captures a state change in the system. Signals are the nouns of the architecture -- they represent observations, actions, outcomes, and metadata. Every signal is typed, timestamped, and stored in a content-addressed DAG (directed acyclic graph). Signals compose into traces that reconstruct any sequence of decisions.
+**Signal.** The universal data type in Roko. A content-addressed (BLAKE3 hash), scored, decaying unit of knowledge. Every piece of information that flows through the system -- a task, a prompt, an LLM output, a gate verdict, a knowledge entry -- is a Signal. Content addressing means the same piece of knowledge has the same identity whether it lives on disk, in memory, or on chain. Signals carry provenance (who created it, what model, what context), lineage (parent Signals that contributed to it), and scores (relevance, novelty, utility). Signals are typed, timestamped, and stored in a content-addressed DAG (directed acyclic graph). They compose into traces that reconstruct any sequence of decisions. This is the atom of the system. (Note: the codebase file is `engram.rs` for backward compatibility, but the type is documented and used as "Signal" throughout.)
 
 **Synapse traits.** The six composable interfaces that define the cognitive loop. Every cognitive operation in Roko maps to one of these traits:
 
 | Trait | Role | What it does |
 |-------|------|-------------|
-| **Substrate** | Store | Persist and query Engrams -- memory, file, or on-chain |
-| **Scorer** | Evaluate | Rank Engrams by relevance, novelty, utility, and source reputation |
+| **Substrate** | Store | Persist and query Signals -- memory, file, or on-chain |
+| **Scorer** | Evaluate | Rank Signals by relevance, novelty, utility, and source reputation |
 | **Gate** | Verify | Check output against external ground truth -- compiler, test suite, blockchain state |
 | **Router** | Select | Choose the best candidate via cascade routing, bandit selection, or active inference |
 | **Composer** | Integrate | Build the context window under token budget constraints |

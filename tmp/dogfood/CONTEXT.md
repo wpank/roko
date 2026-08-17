@@ -1,191 +1,178 @@
-# Dogfood Context — Updated 2026-04-26 (Session 2)
+# Dogfood Context
 
-> This document is the "state of the world" for someone picking up this work
-> with zero context. Read this first, then dig into the files it references.
+> **Last updated**: 2026-08-13
+>
+> **What is this?** This document is the "state of the world" for someone picking up
+> dogfood-related work with zero context. Read this first, then dig into the files it
+> references.
+>
+> "Dogfooding" means roko developing itself: running `roko plan run` against real
+> implementation plans, recording what breaks, fixing it, and iterating. This folder
+> is the QA log from that process.
+
+## Current status (2026-08-13)
+
+- **39 of 43 dogfood findings are RESOLVED.** All P0/P1/P2 issues are fixed.
+- **4 items remain OPEN** -- 3 P3 polish + 1 runner v2 spec alignment (Phase E).
+- **orchestrate.rs has been DELETED.** Runner v2 (`runner/event_loop.rs`, ~19,846 lines)
+  is now the sole plan execution engine. All orchestrate.rs references in this folder are historical.
+- **event_loop.rs (~19,846 lines) is the current god-object concern.** It absorbed
+  orchestrate.rs's functionality and has the same decomposition problem.
+- **Engram-to-Signal rename: DONE (2026-08-12).** `pub type Signal = Engram` alias landed in
+  `crates/roko-core/src/engram.rs` with a `signal.rs` re-export module. The underlying struct
+  is still named `Engram` and `engrams.jsonl` is still the file name on disk (~29 files), but
+  new code can use `Signal` everywhere. Full struct rename deferred to Phase 1 (Cell trait).
+- **contextual_bandit.rs came back as dead code.** Removed in April 2026 (1,372 LOC) but
+  re-added by a batch agent run. Lives in `roko-learn/src/contextual_bandit.rs`, only
+  referenced from one test. No production callers.
+- **All 6 critical dogfood fixes from 2026-04-26 are RESOLVED** (force_shutdown self-kill,
+  executor.json persistence, efficiency event flush, model fallback, implementation dispatch,
+  test compilation).
+- **The May 6 a16z demo** (files 09, 11, 12) is historical -- that date has passed.
+- **Runner v2 streaming, TUI, and persistence all work.** The core dogfood workflow
+  (`prd idea -> prd draft -> prd plan -> plan run -> dashboard`) is fully operational.
 
 ---
 
 ## What is Roko
 
-Roko is a Rust toolkit (18 crates, ~177K LOC) for building agents that build themselves. It reads PRDs, generates implementation plans, executes tasks via Claude/Codex agents, validates results through gate pipelines, and persists everything. The core entry point is `crates/roko-cli/src/main.rs`. The orchestration engine lives in `crates/roko-cli/src/orchestrate.rs` (~21K lines).
+Roko is a Rust toolkit (18 crates, ~177K LOC) for building agents that build themselves.
+It reads PRDs, generates implementation plans, executes tasks via Claude/Codex agents,
+validates results through gate pipelines, and persists everything.
+
+Key entry points:
+- **CLI main**: `crates/roko-cli/src/main.rs`
+- **Plan runner (current)**: `crates/roko-cli/src/runner/event_loop.rs` (~19,846 lines)
+- **Runner module**: `crates/roko-cli/src/runner/` (25 files)
+- **Agent dispatcher**: `crates/roko-agent/src/dispatcher/mod.rs`
 
 The self-hosting workflow:
 ```
-roko prd idea "..." → roko prd draft → roko prd plan <slug> → roko plan run plans/ → roko dashboard
+roko prd idea "..." -> roko prd draft -> roko prd plan <slug> -> roko plan run plans/ -> roko dashboard
 ```
-
-## Branch: `wp-arch2`
-
-All work is on this branch. Multiple Claude sessions have been working on it. The git status has significant unstaged changes across roko-cli, roko-core, roko-learn, and roko-serve.
 
 ---
 
 ## What happened across sessions
 
-### Session 1 (earlier on 2026-04-26)
+### Session 1 (2026-04-26, earlier in the day)
 
-Killed a hung roko process (11.5GB RAM). Audited dogfood findings from 3 real plan-runner executions. Fixed 6 critical issues (force_shutdown self-kill, no executor.json persistence, efficiency events not flushed, model fallback to haiku, implementation phase never dispatching, test compilation). Created `07-consolidated-open-issues.md` with all remaining issues. Updated `00-INDEX.md` to 21/56 done.
+Killed a hung roko process (11.5GB RAM). Audited dogfood findings from 3 real plan-runner
+executions. Fixed 6 critical issues (force_shutdown self-kill, no executor.json persistence,
+efficiency events not flushed, model fallback to haiku, implementation phase never dispatching,
+test compilation). Created consolidated open issues doc. Updated checklist to 21/56 done.
 
-### Session 2 (this session, 2026-04-26)
+### Session 2 (2026-04-26, later)
 
 #### 1. Audited the roko-trustworthy runner
 
-The `roko-trustworthy` runner was a 24-batch (RT00-RT23) overnight Codex run that added trustworthiness infrastructure to the codebase. All 24 batches passed. The implementations are real -- well-typed, tested, mostly wired. Found 6 gaps:
+The `roko-trustworthy` runner was a 24-batch overnight Codex run that added trustworthiness
+infrastructure. All 24 batches passed. Found 6 gaps:
 
-| Gap | Status | Detail |
-|-----|--------|--------|
-| `ContextualBanditPolicy` dead code | **Removed** | 1,372 LOC. `UcbBandit` in gateway.rs handles model selection instead. |
-| `CognitiveWorkspace` not wired | Open | Types + builder exist in roko-core/roko-compose but orchestrate.rs never produces one. |
-| `ExtensionChain` always empty | Open | Hooks called at 5 points in orchestrate.rs but chain has no extensions (no loader/factory). |
-| Warm-agent pooling absent | Open | `reuse_policy_id` field exists but no process reuse. Deferred by design. |
-| `prd_prompt.rs` bardo paths | Open | Hardcoded `/Users/will/dev/uniswap/bardo/prd/` in live agent prompts (lines 152-154). |
-| E2E test is `#[ignore]` | Open | Needs mock fixture. Acceptable. |
-
-Confirmed several AUDIT.md issues were already fixed:
-- CascadeRouter cached via RwLock (not per-request disk I/O)
-- Config uses ArcSwap (lock-free reads)
-- RoutingContext accepts caller hints (not hardcoded)
-- KnowledgeAdmissionController wired in production
-
-The runner folder was archived to `tmp/archive/roko-trustworthy/`.
+| Gap | Status |
+|-----|--------|
+| `ContextualBanditPolicy` dead code | RESOLVED -- removed 1,372 LOC |
+| `CognitiveWorkspace` not wired | OPEN -- types exist but runner never produces one |
+| `ExtensionChain` always empty | OPEN -- hooks called but chain has no extensions |
+| Warm-agent pooling absent | OPEN -- `reuse_policy_id` field exists but no process reuse |
+| `prd_prompt.rs` bardo paths | OPEN -- hardcoded bardo paths in live agent prompts |
+| E2E test is `#[ignore]` | OPEN -- needs mock fixture |
 
 #### 2. Removed 4,808 lines of dead code from roko-learn
 
-8 modules with zero production callers:
+8 modules with zero production callers were removed: `contextual_bandit.rs` (1,372 LOC),
+`bandit_research.rs` (862), `causal.rs` (699), `shapley.rs` (518), `resonant_patterns.rs` (373),
+`kalman.rs` (354), `adversarial.rs` (321), `signal_metabolism.rs` (309). Recoverable from git history.
+Reintegration notes at `tmp/backlog/removed-learn-modules.md`.
 
-| Module | Lines | Why removed |
-|--------|-------|-------------|
-| `contextual_bandit.rs` | 1,372 | Superseded by `UcbBandit` in gateway.rs |
-| `bandit_research.rs` | 862 | Doc-parity shells, not production |
-| `causal.rs` | 699 | TA-08 theoretical, no signal pipeline |
-| `shapley.rs` | 518 | P1-08, no multi-agent credit surface |
-| `resonant_patterns.rs` | 373 | TA-09 theoretical, no integration point |
-| `kalman.rs` | 354 | P2-10, no oracle pipeline |
-| `adversarial.rs` | 321 | TA-10, no signal validation surface |
-| `signal_metabolism.rs` | 309 | TA-07, no metabolism runtime |
+### Post-April 2026 changes
 
-Reintegration notes: `tmp/backlog/removed-learn-modules.md`. Recoverable from git history.
-
-**Known issue:** A linter/IDE hook keeps reverting `crates/roko-learn/src/lib.rs` to add back the deleted module declarations. The .rs files are gone from disk. If you see compile errors, remove these `pub mod` lines from lib.rs: `adversarial`, `bandit_research`, `causal`, `contextual_bandit`, `kalman`, `resonant_patterns`, `shapley`, `signal_metabolism`.
+- **orchestrate.rs was DELETED.** Runner v2 became the sole execution path (Phase D complete).
+- **Runner v2 was made the default** for all `plan run` invocations, not just `--approval` mode.
+- **event_loop.rs grew to ~19,846 lines**, absorbing orchestrate.rs functionality. This is the
+  new god-object concern.
+- **All P1/P2 items were resolved** through runner v2 and subsequent fix batches.
+- **Engram-to-Signal rename landed (2026-08-12).** `pub type Signal = Engram` alias + `signal.rs`
+  re-export module. The underlying struct is still `Engram` and `engrams.jsonl` is still on disk,
+  but new code can import `Signal`. Full struct rename deferred to Phase 1.
+- **contextual_bandit.rs re-appeared.** Was removed in April 2026 (1,372 LOC dead code) but a
+  batch agent run re-added it. Still dead code -- only referenced from one test, no prod callers.
 
 ---
 
 ## The dogfood folder (tmp/dogfood/)
 
-This folder is the QA log from dogfooding Roko -- actually running `roko plan run` and recording what breaks. Comes from 3 real executions.
+This folder is the QA log from dogfooding Roko -- actually running `roko plan run` and
+recording what breaks. Comes from 3 real executions on 2026-04-26.
 
 ### Read in this order
 
-| # | File | What | Current? |
-|---|------|------|----------|
-| 1 | **00-INDEX.md** | Master checklist, 56 items. **Start here.** | YES |
-| 2 | **07-consolidated-open-issues.md** | All unresolved issues (C1-C6, H1-H4, M1-M5) | YES |
-| 3 | **05-mori-vs-roko-agent-wiring.md** | Root cause: Roko batches agent output, Mori streamed. Why TUI is blind. | KEY DOCUMENT |
-| 4 | **10-RUNTIME-FIXES.md** | Fix batches by impact (6 batches) | YES |
-| 5 | **08-statehub-tui-audit.md** | 7 disconnects in StateHub→TUI data flow, 9 concrete fixes | YES |
-| 6 | **07-orchestrate-analysis.md** | 21K-line god object decomposition plan | Superseded by Runner v2 |
-| 7 | **09-MAY6-DEMO-BUILD.md** | Demo spec for May 6 a16z pitch | ACTIVE |
-| 8 | **12-DECK-AND-MEMO.md** | 13-slide deck + memo spec | ACTIVE |
-| 9 | **11-LANDING-PAGE-UPDATES.md** | nunchi.network cleanup | ACTIVE |
-| 10 | **archive/resolved-2026-04-26.md** | 7+ fixed issues (TUI crash, skip_enrichment, health endpoint, etc.) | Historical |
-| 11 | **CONTEXT.md** | This file | YES |
+| # | File | What | Status |
+|---|------|------|--------|
+| 1 | **00-INDEX.md** | Master checklist (43 items, 39 done, 4 open). Start here. | CURRENT |
+| 2 | **CONTEXT.md** | This file -- state of the world for new sessions | CURRENT |
+| 3 | **STATE-OF-THE-WORLD.md** | Comprehensive project state doc (written 2026-04-26, updated 2026-08-13) | CORRECTED (see note below) |
+| 4 | **09-MAY6-DEMO-BUILD.md** | Demo spec for May 6 a16z pitch | HISTORICAL (date passed) |
+| 5 | **12-DECK-AND-MEMO.md** | 13-slide deck + memo spec | HISTORICAL (date passed) |
+| 6 | **11-LANDING-PAGE-UPDATES.md** | nunchi.network cleanup | HISTORICAL (date passed) |
+| 7 | **archive/** | Historical run logs, superseded consolidations | REFERENCE ONLY |
 
-Files 01-04, 06 are historical run logs. Still useful for root cause context but findings are consolidated in 07.
-
----
-
-## The broader tmp/ landscape
-
-~80 items have accumulated. Here's what matters:
-
-### Current authority documents (read these)
-
-| Folder | What |
-|--------|------|
-| `tmp/learnings2/` | 11-doc briefing set: architecture, strategy, business, research, competitive intel, roadmap. For investors and team onboarding. |
-| `tmp/unified/` | Protocol specification v2.0. 3 fundamentals (Signal/Cell/Graph), 9 protocols, 10 specializations. The spec authority. |
-| `tmp/unified-depth/` | Deep algorithmic backing for each section of unified spec. |
-| `tmp/architecture/` | 21 implementation-focused specs (gateway, auth, knowledge, groups, arenas, dashboard). |
-| `tmp/dogfood/` | This folder. Dogfood findings, fixes, demo prep. |
-
-### Implementation roadmaps (active)
-
-| Folder | What |
-|--------|------|
-| `tmp/unified-migration/` | 4-phase migration checklist: current arch → unified spec |
-| `tmp/unified-migration-runner/` | Agent-driven refactoring infrastructure (prompts, context packs, runner script) |
-| `tmp/backlog/` | Removed code documentation with reintegration notes |
-
-### Detailed specs (active but secondary)
-
-| Folder | What |
-|--------|------|
-| `tmp/workflow/` | 12 PRDs for unified workflow subsystem |
-| `tmp/visual-gate2/` | 10 PRDs for unified evaluation framework (supersedes visual-gate/) |
-| `tmp/deck/` | Series A pitch materials + screenshots |
-| `tmp/research/` | 15 research docs feeding strategy |
-| `tmp/depth/` | Behavioral spec v1.0 (superseded by unified/ v2.0) |
-
-### Historical / safe to ignore
-
-`tmp/learnings/` (superseded by learnings2), `tmp/docs-gaps/`, `tmp/docs-parity*/`, `tmp/refinements*/`, `tmp/tui*/`, `tmp/prd-*/`, `tmp/run-*.sh`, `tmp/logs/`, `tmp/MASTER-*.md`, `tmp/MORI-*.md`, `tmp/sdb-spec/`, `tmp/ux*/`, `tmp/04-*-26/`, `tmp/agent-registry/`, `tmp/integrate-prds/`, `tmp/contracts/`, `tmp/defi/`, `tmp/a2a/`, root-level `.md` files (session notes, old designs, PR drafts).
+**STATE-OF-THE-WORLD.md note**: Originally written 2026-04-26, updated 2026-08-13 with
+corrections. Key updates: orchestrate.rs marked as DELETED, event_loop.rs line counts
+corrected, all P0/P1/P2 marked RESOLVED, Engram-to-Signal status updated, demo sections
+marked HISTORICAL. Useful for understanding the architectural journey and design rationale.
 
 ---
 
 ## Open threads (priority order)
 
-### Thread 1: Dogfood runtime issues
-- **Where:** `tmp/dogfood/07-consolidated-open-issues.md`, `00-INDEX.md`
-- **Status:** All P0s fixed. 6 critical + 4 high issues remain.
-- **Key blocker:** Agent output pipeline is batch-only, not streaming. TUI is blind during runs. See `05-mori-vs-roko-agent-wiring.md`.
-- **Fix roadmap:** `tmp/dogfood/10-RUNTIME-FIXES.md` (6 batches)
-- **Next step:** Do another `roko plan run` to see if the P0 fixes hold and find the next layer of issues.
+### Thread 1: event_loop.rs decomposition
 
-### Thread 2: Dead code / built-but-not-wired
-- **Done:** 8 modules removed from roko-learn (4,808 LOC). See `tmp/backlog/removed-learn-modules.md`.
-- **Still open:**
-  - `CognitiveWorkspace` -- types in roko-core + roko-compose, builder exists, event log persistence exists, orchestrate.rs never calls any of it
+- **Where**: `crates/roko-cli/src/runner/event_loop.rs` (~19,846 lines)
+- **Status**: OPEN. This file replaced orchestrate.rs but has grown to similar size.
+- **Impact**: Same problems as orchestrate.rs -- hard to work on in parallel, merge conflicts,
+  too many responsibilities in one file.
+- **Next step**: Plan a decomposition similar to what was done for orchestrate.rs.
+
+### Thread 2: Runner v2 missing persistence
+
+- **Where**: `00-INDEX.md` items S4, S7
+- **Status**: OPEN. Runner v2 does not write to `cascade-router.json`, `gate-thresholds.json`,
+  or fire replan-on-gate-failure. These were orchestrate.rs features that didn't survive the transition.
+- **Impact**: Cascade router and gate threshold learning are degraded (they don't persist between runs).
+
+### Thread 3: Engram-to-Signal rename
+
+- **Where**: `crates/roko-core/src/engram.rs`, ~29 files referencing `engrams.jsonl`
+- **Status**: PARTIALLY DONE (2026-08-12). `pub type Signal = Engram` alias landed. New code
+  can use `Signal` everywhere. The underlying struct is still `Engram` and `engrams.jsonl` is
+  still the file name on disk. Full struct rename and file-path rename deferred to Phase 1.
+- **Impact**: Terminology gap narrowed -- new code uses `Signal`, old code still says `Engram`.
+
+### Thread 4: Dead code / built-but-not-wired
+
+- **Done**: 8 modules removed from roko-learn (4,808 LOC) in April 2026.
+- **Regressed**: `contextual_bandit.rs` (1,372 LOC) was re-added by a batch agent run. It
+  exists in `roko-learn/src/contextual_bandit.rs` and is only referenced from one test
+  (`phase0_wiring.rs`). No production callers. Should be removed again.
+- **Still open**:
+  - `CognitiveWorkspace` -- types in roko-core + roko-compose, builder exists, runner never produces one
   - `ExtensionChain` -- hooks called at 5 points but chain always empty (no extension loader)
-  - `prd_prompt.rs:152-154` -- hardcoded bardo paths in live agent prompts
-
-### Thread 3: orchestrate.rs decomposition / Runner v2
-- **Where:** `tmp/dogfood/07-orchestrate-analysis.md` (v1 decomposition), `tmp/unified/22-PLAN-RUNNER-V2.md` (v2 spec)
-- **Status:** 21K-line god object (250 methods). v2 spec written (~2,400-line event-driven replacement).
-- **Impact:** Every dogfood fix touches this file. Decomposition or rewrite would unblock parallel work.
-
-### Thread 4: Unified spec migration
-- **Where:** `tmp/unified-migration/` (checklist), `tmp/unified-migration-runner/` (automation)
-- **Status:** Roadmap written, runner infrastructure built, not yet executing.
-- **What:** Rename Engram→Signal, wire 9 protocols, add Graph engine.
-
-### Thread 5: Demo (May 6 a16z)
-- **Where:** `tmp/dogfood/09-MAY6-DEMO-BUILD.md`
-- **What:** `nunchi` CLI wrapper, `nunchi agents list/audit/resume/replay`, pre-warmed LLM cache, backup tiers.
-- **Deadline:** May 6, 2026.
-
-### Thread 6: Pitch materials (May 1)
-- **Where:** `tmp/dogfood/12-DECK-AND-MEMO.md`, `11-LANDING-PAGE-UPDATES.md`
-- **What:** 13-slide deck, 2,000-word memo, landing page cleanup.
-- **Deadline:** May 1, 2026.
-
-### Thread 7: Memory leak
-- **Where:** Referenced in `06-run2-deep-findings.md` (F5), `07-consolidated-open-issues.md` (H1)
-- **Status:** Open. 9.5-11.5GB RSS after ~17 minutes. Needs DHAT or similar profiling.
-- **Impact:** Blocks long-running dogfood sessions.
+  - `prd_prompt.rs` -- hardcoded bardo paths in live agent prompts
 
 ---
 
 ## Key patterns to know
 
-1. **"Built but never wired"** — The codebase has many things implemented but not called. AgentOutput events existed but were never emitted. Always check if something is actually called, not just defined.
+1. **"Built but never wired"** -- The codebase has many things implemented but not called. AgentOutput events existed but were never emitted. Always check if something is actually called, not just defined.
 
-2. **Two event systems** — `ServerEvent` (for HTTP SSE) and `DashboardEvent` (for TUI). Overlap but lossy conversion between them (see D5 in `08-statehub-tui-audit.md`).
+2. **Two event systems** -- `ServerEvent` (for HTTP SSE) and `DashboardEvent` (for TUI). Overlap but lossy conversion between them.
 
-3. **Plans dir ambiguity** — Plans can be in `plans/` (top-level) or `.roko/plans/` (roko data dir). Several bugs came from code only checking one path.
+3. **Plans dir ambiguity** -- Plans can be in `plans/` (top-level) or `.roko/plans/` (roko data dir). Several bugs came from code only checking one path.
 
-4. **Batch, not streaming** — Roko waits for agent process exit, reads all output at once. Mori parsed output line-by-line with `--output-format stream-json`. This is why the TUI is blind during runs.
+4. **Streaming is now wired** -- Runner v2 uses `--output-format stream-json` and parses output line-by-line. This fixed the "TUI is blind" problem that dominated early dogfood findings.
 
-5. **lib.rs linter conflict** — An IDE hook keeps reverting module declaration removals in `crates/roko-learn/src/lib.rs`. The source files for 8 modules are deleted from disk. If compile fails with "file not found" for adversarial, bandit_research, causal, contextual_bandit, kalman, resonant_patterns, shapley, or signal_metabolism — remove those `pub mod` lines from lib.rs.
+5. **God-object migration** -- orchestrate.rs (21K lines) was replaced by event_loop.rs, which is now ~19,800 lines. The pattern of "one file absorbs everything" keeps recurring.
 
 ---
 
@@ -194,9 +181,10 @@ Files 01-04, 06 are historical run logs. Still useful for root cause context but
 | What | Path | Notes |
 |------|------|-------|
 | CLI entry point | `crates/roko-cli/src/main.rs` | |
-| Orchestrator (21K lines) | `crates/roko-cli/src/orchestrate.rs` | `PlanRunner` struct, the god object |
+| Plan runner (current) | `crates/roko-cli/src/runner/event_loop.rs` | ~19,846 lines, the current god-object |
+| Runner module | `crates/roko-cli/src/runner/` | 25 files |
 | State machine | `crates/roko-orchestrator/src/executor/state_machine.rs` | Phase transitions |
-| Agent dispatcher | `crates/roko-agent/src/dispatcher/mod.rs` | Batch dispatch (not streaming) |
+| Agent dispatcher | `crates/roko-agent/src/dispatcher/mod.rs` | Now streams (not batch) |
 | Cascade router | `crates/roko-learn/src/cascade_router.rs` | 3-stage model selection |
 | Episode logger | `crates/roko-learn/src/episode_logger.rs` | |
 | Efficiency writer | `crates/roko-learn/src/runtime_feedback.rs` | |
@@ -205,8 +193,8 @@ Files 01-04, 06 are historical run logs. Still useful for root cause context but
 | Dashboard events | `crates/roko-core/src/dashboard_snapshot.rs` | `DashboardEvent`, `TaskState` |
 | HTTP server | `crates/roko-serve/src/routes/` | ~85 routes on :6677 |
 | Process supervisor | `crates/roko-runtime/src/process.rs` | |
-| Trustworthy audit (archived) | `tmp/archive/roko-trustworthy/AUDIT.md` | 20 findings, most addressed |
-| Removed code notes | `tmp/backlog/removed-learn-modules.md` | 8 modules, reintegration guide |
+| Engram/Signal type | `crates/roko-core/src/engram.rs` | `pub type Signal = Engram` alias landed 2026-08-12; struct still named `Engram` |
+| Signal re-exports | `crates/roko-core/src/signal.rs` | Convenience re-export module for the Signal alias |
 
 ## How to test
 
@@ -217,5 +205,5 @@ cargo clippy --workspace --no-deps -- -D warnings
 cargo test --workspace
 
 # Dogfood run
-cargo run -p roko-cli -- plan run .roko/plans/unified-migration-phase0 --approval
+cargo run -p roko-cli -- plan run .roko/plans/ --approval
 ```

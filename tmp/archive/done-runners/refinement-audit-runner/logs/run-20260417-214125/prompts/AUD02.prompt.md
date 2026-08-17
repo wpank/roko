@@ -56,7 +56,7 @@ From the audit master summary — this is the recommended priority order.
 
 ## Ship Now (1-2 weeks total)
 
-1. Add HDC fingerprint field to Engram — `roko-core/src/engram.rs` — 1 day
+1. Add HDC fingerprint field to Signal — `roko-core/src/__PATH_ENGRAM_RS__0` — 1 day
 2. Unify event enums into `RokoEvent` — across 4 crates — 1 week
 3. Add generic `Bus<E>` trait to roko-core — ~100 lines — 2-3 days
 4. Clean up stale "Signal" references — traits.rs, README, kind.rs — 1 hour
@@ -147,7 +147,7 @@ Roko is a Rust workspace at `/Users/will/dev/nunchi/roko/roko/`.
 
 | Crate | Path | LOC | Status |
 |---|---|---|---|
-| roko-core | `crates/roko-core/` | kernel | Stable — Engram + 6 traits + config + tools |
+| roko-core | `crates/roko-core/` | kernel | Stable — Signal + 6 traits + config + tools |
 | roko-agent | `crates/roko-agent/` | large | 8 LLM backends, pools, MCP, tool loop, safety |
 | roko-agent-server | `crates/roko-agent-server/` | medium | Per-agent HTTP sidecar, real LLM dispatch |
 | roko-serve | `crates/roko-serve/` | 30K | HTTP control plane, 200+ routes, SSE, WebSocket |
@@ -176,7 +176,7 @@ Roko is a Rust workspace at `/Users/will/dev/nunchi/roko/roko/`.
 - Test functions: 3,761
 - orchestrate.rs: 17,087 lines
 - Event bus event types: exactly 2 (PlanRevision, PrdPublished)
-- Signal→Engram rename: 99.6% complete
+- Signal→Signal rename: 99.6% complete
 
 ## Concepts with 0 lines of code
 
@@ -304,7 +304,7 @@ inputs as a baseline assertion.
    could fix that by unifying the enums without introducing Pulse at all.
 
 3. **Problem E (idle Signal name)** — the audit of the codebase shows the
-   rename Signal -> Engram is indeed done (only `CatalystSignalSource`
+   rename Signal -> Signal is indeed done (only `CatalystSignalSource`
    remains in `roko-core/src/lib.rs` exports, plus doc comments in
    `Substrate` trait still say "signal" 6+ times). But reclaiming "Signal"
    for a new purpose is a documentation maintenance nightmare, and the
@@ -337,20 +337,20 @@ is not the absence of Pulse — it's the absence of discipline.
 
 ---
 
-## 02 — Two Mediums: Engram (Durable) and Pulse (Ephemeral)
+## 02 — Two Mediums: Signal (Durable) and Pulse (Ephemeral)
 
 **Verdict: OVERCOMPLICATED**
 
 ### Diagnosis accuracy
 
 The split between durable and ephemeral data is real. Token stream chunks
-should not be Engrams. Heartbeat ticks should not be Engrams. The
+should not be Signals. Heartbeat ticks should not be Signals. The
 diagnosis is correct.
 
 ### What is wrong with the proposed solution
 
-1. **Pulse reuses `Kind` and `Body` from Engram.** This sounds elegant but
-   creates a semantic mismatch. `Kind::GateVerdict` on an Engram means
+1. **Pulse reuses `Kind` and `Body` from Signal.** This sounds elegant but
+   creates a semantic mismatch. `Kind::GateVerdict` on an Signal means
    "this is a verified, hashed, lineage-bearing gate result." The same
    `Kind::GateVerdict` on a Pulse means "this is an ephemeral notification
    that a gate ran." These are different things wearing the same name. When
@@ -361,7 +361,7 @@ diagnosis is correct.
 2. **`Pulse::graduate()` is a factory method pretending to be a conversion.**
    The method takes `provenance`, `decay`, `score`, and `tags` — four
    fields the Pulse does not have. This is not "graduating" an existing
-   datum; it's constructing a new Engram that happens to share `kind` and
+   datum; it's constructing a new Signal that happens to share `kind` and
    `body` with a Pulse. You could get the same result with
    `Engram::builder(pulse.kind).body(pulse.body).build()`, which is
    shorter and makes the construction explicit.
@@ -372,10 +372,10 @@ diagnosis is correct.
    adding correctness.
 
 4. **The `lineage_hint: Option<ContentHash>` field** is a half-measure. An
-   Engram has `lineage: Vec<ContentHash>` (multiple parents); a Pulse gets
+   Signal has `lineage: Vec<ContentHash>` (multiple parents); a Pulse gets
    a single optional hint. If lineage matters, why limit it to one? If it
    does not, why carry it at all? The answer ("some Pulses contextualize an
-   Engram") is better handled by including the Engram hash in the Pulse's
+   Signal") is better handled by including the Signal hash in the Pulse's
    `body` JSON, not by adding a structural field.
 
 ### What is actually needed
@@ -457,10 +457,10 @@ The `roko-conductor -> roko-learn` layer violation is real. Confirmed:
 
 ### What the proposal does
 
-Changes every trait signature to accept `Datum<'a>` (either Engram or
-Pulse) instead of just `&Engram`. Adds `score_engram` / `score_pulse`
-pairs to every trait. Changes Policy from `&[Engram]` to `&[Pulse]`.
-Introduces `PolicyOutputs { pulses: Vec<Pulse>, engrams: Vec<Engram> }`.
+Changes every trait signature to accept `Datum<'a>` (either Signal or
+Pulse) instead of just `&Signal`. Adds `score_engram` / `score_pulse`
+pairs to every trait. Changes Policy from `&[Signal]` to `&[Pulse]`.
+Introduces `PolicyOutputs { pulses: Vec<Pulse>, signals: Vec<Signal> }`.
 
 ### Problems
 
@@ -478,7 +478,7 @@ Introduces `PolicyOutputs { pulses: Vec<Pulse>, engrams: Vec<Engram> }`.
    flexibility.
 
 3. **The Policy signature change is breaking for every existing
-   implementation.** `decide(&[Engram], ctx) -> Vec<Engram>` changes to
+   implementation.** `decide(&[Signal], ctx) -> Vec<Signal>` changes to
    `decide(&[Pulse], ctx) -> PolicyOutputs`. The doc acknowledges this is
    "the most consequential signature change" and proposes a shim. A shim
    that persists through a migration window is architecture debt being
@@ -486,7 +486,7 @@ Introduces `PolicyOutputs { pulses: Vec<Pulse>, engrams: Vec<Engram> }`.
 
 4. **The "generalized Router" with `select_pulse` returning
    `Option<Selection>` does not make sense.** A Selection in the current
-   code carries a `ContentHash` of the chosen Engram. Pulses do not have
+   code carries a `ContentHash` of the chosen Signal. Pulses do not have
    content hashes. The Selection type would need to change too, which
    ripples further.
 
@@ -496,9 +496,9 @@ If Pulse exists (which I argue against, per 02), the traits that need it
 should get it:
 - **Policy**: yes, change to accept events/pulses. This is the one trait
   that genuinely wants to react to live streams.
-- **Gate, Scorer, Router, Composer**: leave them on `&Engram`. They
+- **Gate, Scorer, Router, Composer**: leave them on `&Signal`. They
   operate on durable data. If you need to verify a stream, graduate the
-  stream into a synthetic Engram first (which the existing code already
+  stream into a synthetic Signal first (which the existing code already
   does implicitly).
 
 Do not generalize all six traits to save one or two future call sites.
@@ -617,7 +617,7 @@ Do not generalize all six traits to save one or two future call sites.
 
 ### What is right
 
-1. **`Engram` stays.** Correct. 877 occurrences. The rename is done and
+1. **`Signal` stays.** Correct. 877 occurrences. The rename is done and
    should not be revisited.
 
 2. **Do not reclaim `Signal`.** Correct. The rename history would make
@@ -718,7 +718,7 @@ Do not generalize all six traits to save one or two future call sites.
 2. **Dreams subscribing to `substrate.engram.stored`** is a clean pattern.
    Reactive consolidation instead of polling.
 
-3. **Stigmergy as Engram+Pulse** is elegant on paper.
+3. **Stigmergy as Signal+Pulse** is elegant on paper.
 
 4. **HTTP control plane as Bus projection** matches what `roko-serve`
    already does with `ServerEvent`. The SSE/WebSocket endpoints are
@@ -764,7 +764,7 @@ The critique (01) correctly identifies real problems:
 - Four incompatible event enums
 - `roko-conductor -> roko-learn` layer violation
 - `Policy::decide(&[], ctx)` anti-pattern in production code
-- Stale "Signal = Engram" references in docs
+- Stale "Signal = Signal" references in docs
 
 The prescription (02-08) proposes a 6-7 week refactor introducing two new
 kernel types (Pulse, Datum), one new kernel trait (Bus), signature changes
@@ -776,8 +776,8 @@ with targeted fixes.
 ### 2. The Pulse type solves a real problem the wrong way
 
 The real problem: ephemeral messages (token chunks, heartbeats, UI
-refreshes) should not be Engrams. The right fix is: do not make them
-Engrams. The current code already does not make them Engrams — it sends
+refreshes) should not be Signals. The right fix is: do not make them
+Signals. The current code already does not make them Signals — it sends
 them on `EventBus<AgentEvent>` and `EventBus<RokoEvent>`. The problem is
 not the absence of a Pulse type; it is the proliferation of incompatible
 event enums. Unify the enums. Document the pattern. Move on.
@@ -806,7 +806,7 @@ The codebase still has "signal" references in:
 - `crates/roko-core/src/traits.rs` — Substrate trait doc comments say
   "Store a signal" (line 35), "Retrieve a signal" (line 38), etc.
 - `crates/roko-core/README.md:3` — "One noun (`Signal`)"
-- `crates/roko-core/src/kind.rs:1` — "Engram kinds -- what a signal
+- `crates/roko-core/src/kind.rs:1` — "Signal kinds -- what a signal
   represents"
 - `CLAUDE.md:59` — "1 noun (Signal)"
 
@@ -842,7 +842,7 @@ genuine architectural insight:
 
 - The event bus is an L0 primitive that deserves trait-level recognition.
 - The conductor/learn dependency should be inverted via pub/sub.
-- Policy's current signature (`&[Engram]`) does not match how policies
+- Policy's current signature (`&[Signal]`) does not match how policies
   actually consume data in the runtime.
 - The 9-step loop should be 7 steps.
 - "One noun, six verbs" is no longer an accurate summary of the system.
@@ -864,7 +864,7 @@ flagging: do not update docs to describe Pulse until Pulse exists in code.
 | Doc | Verdict | Key finding |
 |-----|---------|-------------|
 | 01 — Critique | PARTIALLY AGREE | Diagnosis is correct; predictions 1 and 3 confirmed, prediction 2 weaker than claimed |
-| 02 — Engram vs Pulse | OVERCOMPLICATED | Pulse solves a real problem the wrong way; unified RokoEvent enum is simpler |
+| 02 — Signal vs Pulse | OVERCOMPLICATED | Pulse solves a real problem the wrong way; unified RokoEvent enum is simpler |
 | 03 — Bus as First-Class | PARTIALLY AGREE | Bus trait in roko-core is right; but keep generic, keep minimal |
 | 04 — Operators Generalized | OVERCOMPLICATED | Datum enum and dual signatures are premature; only Policy actually needs change |
 | 05 — Loop Retold | PARTIALLY AGREE | 7-step revision is correct; TickConfig struct is overengineered |
@@ -1063,7 +1063,7 @@ These emerged consistently across all 7 audit workstreams as high-value, low-ris
 
 | # | What | Where | Effort | Why |
 |---|---|---|---|---|
-| 1 | **Add HDC fingerprint field to Engram** | `roko-core/src/engram.rs` | 1 day | HdcVector exists (10,240-bit, tested). Episode fingerprinting already works. This is the single highest-value bridge between the learning and memory layers. |
+| 1 | **Add HDC fingerprint field to Signal** | `roko-core/src/__PATH_ENGRAM_RS__0` | 1 day | HdcVector exists (10,240-bit, tested). Episode fingerprinting already works. This is the single highest-value bridge between the learning and memory layers. |
 | 2 | **Unify event enums into `RokoEvent`** | Across 4 crates | 1 week | Four incompatible event enums (2x `AgentEvent`, `RokoEvent`, `ServerEvent`) is the real problem. Unify them. |
 | 3 | **Add generic `Bus<E>` trait to roko-core** | `roko-core/src/traits.rs` | 2-3 days | ~100 lines. Keep it generic (not Pulse-specific). Solves the layer violation. |
 | 4 | **Clean up stale "Signal" references** | traits.rs, README, kind.rs, CLAUDE.md | 1 hour | 40+ stale occurrences across docs and code comments. |
@@ -1125,7 +1125,7 @@ From the reality-check audit:
 | roko-serve routes | 200+ (not ~85) |
 | TUI code | 58K LOC |
 | roko-learn modules | 42 modules, 35,847 LOC |
-| Signal→Engram rename | 99.6% complete (4 real stragglers) |
+| Signal→Signal rename | 99.6% complete (4 real stragglers) |
 | Event bus event types | Exactly 2 (PlanRevision, PrdPublished) |
 | Demurrage in code | 0 lines |
 | Pulse in code | 0 lines |
@@ -1152,7 +1152,7 @@ Overall: **3.8 / 5**
 The diagnosis is correct. The prescription (Pulse, Datum, generalized operators, 7-step TickConfig) is overcomplicated. Fix: unify events, add generic Bus trait, update docs. ~1 week instead of 6-7 weeks.
 
 ### Learning (10-16): SIMPLIFY
-The docs undercount what already exists. roko-learn has 42 modules and 36K LOC. HDC fingerprint field on Engram is the highest-value change. Demurrage/worldviews/replication-ledger are premature.
+The docs undercount what already exists. roko-learn has 42 modules and 36K LOC. HDC fingerprint field on Signal is the highest-value change. Demurrage/worldviews/replication-ledger are premature.
 
 ### Moat (17-21): DEFER/SKEPTICAL
 Zero plugin authors, zero external users. The moat is aspirational. Plugin tier 3 (tool manifests) is useful later. Everything else waits.
@@ -1203,7 +1203,7 @@ Legend:
 | Ref | Title | Verdict | Audit note |
 |---|---|---|---|
 | REF01 | critique one noun | `keep` | The diagnosis is real: transport is under-modeled and the kernel story is too storage-centric. |
-| REF02 | Engram vs Pulse | `keep` | `Pulse` is a good transport noun if used to clarify the redesign rather than force a total renaming campaign. |
+| REF02 | Engram (renamed to Signal in 2026-08-12) vs Pulse | `keep` | `Pulse` is a good transport noun if used to clarify the redesign rather than force a total renaming campaign. |
 | REF03 | Bus as first class | `keep` | This is the strongest foundational follow-up: unify and formalize transport. |
 | REF04 | operators generalized | `narrow` | Good local idea, bad universal law. Medium polymorphism should be proven operator by operator. |
 | REF05 | loop retold | `keep` | Useful as a reference architecture for the redesign, but should guide migration rather than dictate every interface immediately. |
@@ -1341,7 +1341,7 @@ The audit found these specific problems in the architecture docs:
 
 3. **`08-scorer-gate-router-composer-policy.md`** describes `Datum` as the
    universal input type for operators. Reality: no `Datum` type exists. Operators
-   take `&[Engram]` today.
+   take `&[Signal]` today.
 
 4. **`12-five-layer-taxonomy.md`** line 221 says `roko-core, roko-bus, roko-hdc,
    and roko-spi are the only kernel-tier crates` (present tense). Reality:
@@ -1381,7 +1381,7 @@ In `docs/00-architecture/07b-bus-transport-fabric.md`:
 In `docs/00-architecture/08-scorer-gate-router-composer-policy.md`:
 - Where `Datum` is introduced as the operator input type, add a note:
   `> **Note**: `Datum` is a target-state abstraction. Current operators accept
-  > `&[Engram]` directly. The medium-polymorphic `Datum` wrapper is planned
+  > `&[Signal]` directly. The medium-polymorphic `Datum` wrapper is planned
   > but not yet implemented.`
 
 ### 4. Fix five-layer taxonomy crate claims
@@ -1429,7 +1429,7 @@ In `docs/00-architecture/09-universal-cognitive-loop.md`:
    "Built" (code exists, not fully wired), "Target-state" (described in docs,
    no code).
 4. **Do not touch the glossary.** Glossary fixes are AUD06's scope.
-5. **Do not fix Signal->Engram references.** That is AUD07's scope.
+5. **Do not fix Signal->Signal references.** That is AUD07's scope.
 6. **Do not change the architecture narrative.** The two-medium, two-fabric
    story is the intended target architecture. Just qualify what is current vs.
    what is planned.

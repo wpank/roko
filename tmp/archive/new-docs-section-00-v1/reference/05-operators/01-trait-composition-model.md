@@ -61,7 +61,7 @@ pub fn loop_tick(
 
 ### Stacking Scorers
 
-Multiple `Scorer` implementations are called in sequence. Each receives the `Engram` and the
+Multiple `Scorer` implementations are called in sequence. Each receives the `Signal` and the
 accumulated `Score` from the previous scorer:
 
 ```rust
@@ -77,7 +77,7 @@ earlier scorers. The last scorer's output is the final `Score` for the loop tick
 ### Stacking Gates
 
 Multiple `Gate` implementations form a pipeline. The loop calls each gate in order; if any
-returns `Reject`, the engram is rejected without calling the remaining gates:
+returns `Reject`, the signal is rejected without calling the remaining gates:
 
 ```rust
 // source: crates/roko-gate/src/lib.rs

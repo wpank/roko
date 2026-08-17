@@ -1,6 +1,6 @@
 # Backend: In-Memory (`MemorySubstrate`)
 
-> `MemorySubstrate` stores all `Engram`s in a heap `HashMap`. No I/O. Zero latency. Lost
+> `MemorySubstrate` stores all `Signal`s in a heap `HashMap`. No I/O. Zero latency. Lost
 > on process exit. The default backend for tests and short-lived agents.
 
 **Status**: Shipping
@@ -12,7 +12,7 @@
 
 ## TL;DR
 
-`MemorySubstrate` is a `HashMap<ContentHash, Engram>` with an HDC index array. All
+`MemorySubstrate` is a `HashMap<ContentHash, Signal>` with an HDC index array. All
 operations are sub-microsecond. Data is not persisted; the store resets each run. Use for
 tests and agents where persistence is handled externally.
 

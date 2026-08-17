@@ -108,7 +108,7 @@ Naming drift (`retrieve`/`exists` vs doc's `get`/`contains`) is cosmetic.
 **Doc claim**: Doc 04 §8 lists 4 places content-addressing appears: `ArtifactStore` / `Signal` / `FileSubstrate` / Episode logs, all BLAKE3 except episodes.
 **Reality**:
 - `ArtifactStore` → BLAKE3 via `ContentHash::of` (confirmed above).
-- `Signal`/`Engram` → uses `ContentHash` via `roko-core`; orchestrate at `orchestrate.rs:11175-11185` builds `Kind::GateVerdict` engrams with `.derive(...)` (hash chain).
+- `Signal`/`Signal` → uses `ContentHash` via `roko-core`; orchestrate at `orchestrate.rs:11175-11185` builds `Kind::GateVerdict` signals with `.derive(...)` (hash chain).
 - `FileSubstrate` → see G.05 for signals.jsonl path; content hashing there via `Engram::builder` lineage.
 - Episodes → `.roko/episodes.jsonl` is sequential (no hash), confirmed in `roko-learn/src/episode_logger.rs:90-217`.
 

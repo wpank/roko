@@ -31,7 +31,7 @@ Audit-corrected parity view of `docs/05-learning/01-playbook-system.md` and `02-
 
 - richer `MatchContext` population from the orchestrator
 - a typed heuristic calibration struct layered onto the existing heuristic/tier flow
-- HDC fingerprint on `Engram` as the clean bridge into knowledge retrieval
+- HDC fingerprint on `Signal` as the clean bridge into knowledge retrieval
 
 ### Deferred
 
@@ -50,7 +50,7 @@ When touching the knowledge-tier docs:
 
 ## Batch-Ready Follow-Ups
 
-- carry forward: HDC fingerprint bridge on `Engram`
+- carry forward: HDC fingerprint bridge on `Signal`
 - `L1`: populate richer learned-context metadata in the main orchestrator path
 
 ## Source Anchors

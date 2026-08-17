@@ -1,5 +1,15 @@
 # Converge Followup Batches
 
+> **What is this?** Batch definitions for follow-up work from the runtime convergence
+> deep audit. Covers contract repair, engine semantics, service wiring, entry-point
+> convergence, legacy retirement, and proof/enforcement tests. 33 batches across 6 waves.
+>
+> **Note (2026-08-13):** Several batches reference `orchestrate.rs` (e.g., Wave D D03,
+> Wave E E01-E05). That file has been deleted; these batches are historical.
+> The runner event loop (`crates/roko-cli/src/runner/event_loop.rs`) replaced it.
+>
+> **Last updated: 2026-08-13**
+
 Runner: `tmp/runners/converge-followup/run.sh`
 Source: `tmp/subsystem-audits/converge-runner/DEEP-AUDIT.md` (Section 6)
 

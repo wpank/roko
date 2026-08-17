@@ -15,8 +15,8 @@
 
 A handful of terms recur throughout this doc. Brief definitions:
 
-- **Engram** — durable, BLAKE3-addressed record (episode, heuristic,
-  plan, claim). Lives in a `Substrate`. See `02-engram-vs-pulse.md`.
+- **Signal** — durable, BLAKE3-addressed record (episode, heuristic,
+  plan, claim). Lives in a `Substrate`. See `02-signal-vs-pulse.md`.
 - **Pulse** — ephemeral, sequenced in-flight message on the `Bus`.
   See `03-bus-as-first-class.md`.
 - **Substrate / Bus** — the two kernel fabrics: durable store vs
@@ -326,10 +326,10 @@ make Roko feel like a first-class cargo citizen.
 Rust's type system is expressive enough that *signatures alone*
 can carry intent. Some opinions:
 
-### 9.1 `Engram` vs `&Engram` vs `EngramHash`
+### 9.1 `Signal` vs `&Signal` vs `EngramHash`
 
-- Take `&Engram` when you read.
-- Take `Engram` when you'll mutate and return.
+- Take `&Signal` when you read.
+- Take `Signal` when you'll mutate and return.
 - Take `EngramHash` when you want to defer resolution.
 
 Don't mix these casually. The right choice saves allocations and

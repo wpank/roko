@@ -1,5 +1,18 @@
 # Phase 2 — Graph Engine + Agent Runtime
 
+> **Last updated: 2026-08-13**
+
+## What is this?
+
+Phase 2 of the mori-to-roko migration: replace the plan executor with a proper Graph
+engine and upgrade the agent runtime. This phase introduces type-state Agent lifecycle,
+CognitiveWorkspace, StateHub, Surfaces, Rack, the 5-tier SPI, and Marketplace v1.
+
+**Status**: Pending -- depends on Phase 1 completion. Phase 0 is mostly done (runner v2
+DONE, main.rs decomposition DONE, serve routes consolidation DONE). Phase 1 is partially
+done (Engram->Signal rename DONE 2026-08-12, Pulse struct exists, remaining trait renames
+and Cell trait pending).
+
 > Replace the plan executor with a proper Graph engine. Introduce type-state Agent lifecycle, CognitiveWorkspace, StateHub, Surfaces, Rack, the 5-tier SPI, and Marketplace v1.
 
 **Spec source**: `tmp/unified/21-ROADMAP.md` §3 (Phase 2)

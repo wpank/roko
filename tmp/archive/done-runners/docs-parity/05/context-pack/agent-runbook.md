@@ -19,7 +19,7 @@ Keep the learning parity materials honest about what already ships. Prefer small
 
 - Treat shipped modules as the default: `active_inference`, `prediction`, `cascade_router`, `prompt_experiment`, `drift`, `pattern_discovery`, `runtime_feedback`, `efficiency`, and `regression` already exist.
 - Treat `roko-neuro/src/tier_progression.rs` as the canonical proof that tier progression is real.
-- Treat the `Engram` HDC fingerprint field as the highest-value nearby bridge, but keep it as a carry-forward unless the batch explicitly owns it.
+- Treat the `Signal` HDC fingerprint field as the highest-value nearby bridge, but keep it as a carry-forward unless the batch explicitly owns it.
 - For memory freshness, prefer `last_used` and `access_count` extensions over a full demurrage model.
 - Academic framing is never acceptance evidence; runtime behavior and file references are.
 

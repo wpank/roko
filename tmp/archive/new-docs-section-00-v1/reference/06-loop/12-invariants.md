@@ -20,12 +20,12 @@ Violating any of them is a bug in `loop_tick()` or in a stage implementation.
 
 ## The Invariants
 
-### INV-1: Every tick produces at least one Engram write
+### INV-1: Every tick produces at least one Signal write
 
 **Formal statement**: `result.provenance_id.is_valid()` is always `true`.
 
-No tick may complete without writing a Provenance Engram to the Substrate. Even if
-every stage fails, the Provenance Engram records that the tick was attempted, what
+No tick may complete without writing a Provenance Signal to the Substrate. Even if
+every stage fails, the Provenance Signal records that the tick was attempted, what
 the stimulus was, and where it failed.
 
 **Where enforced**: PERSIST stage. If `substrate.put(provenance_engram)` fails, the
@@ -42,7 +42,7 @@ attempts are not recorded.
 **Formal statement**: if `act_output.is_ok()`, then `verify_result` was computed from
 that output before `persist` was called.
 
-The Outcome Engram's `verified` field is set by VERIFY. An Outcome Engram with
+The Outcome Signal's `verified` field is set by VERIFY. An Outcome Signal with
 `verified = true` that was not actually verified is a data corruption.
 
 **Where enforced**: the `loop_tick()` function structure. VERIFY is called before
@@ -54,7 +54,7 @@ output would make decisions based on bad data.
 
 ---
 
-### INV-3: A HardFail in VERIFY produces no Outcome Engram
+### INV-3: A HardFail in VERIFY produces no Outcome Signal
 
 **Formal statement**: if `verify_result.verdict == HardFail`, then
 `result.outcome_id.is_none()`.
@@ -62,7 +62,7 @@ output would make decisions based on bad data.
 Output that fails a hard gate must not enter the Substrate, even partially.
 
 **Where enforced**: PERSIST stage. If `VerifyResult.verdict` is HardFail, PERSIST
-skips writing the Outcome Engram and writes only the Provenance + Failure Engrams.
+skips writing the Outcome Signal and writes only the Provenance + Failure Signals.
 
 **Rationale**: Partial persistence of failed output is dangerous. A future QUERY might
 surface it, SCORE might rank it highly (it has valid HDC fingerprint), and COMPOSE
@@ -108,7 +108,7 @@ ran, after that stage completes.
 
 **Rationale**: Performance invariants (see [Performance](14-performance.md)) can only
 be monitored if timing data is collected. The metrics record is also included in the
-Provenance Engram for post-hoc analysis.
+Provenance Signal for post-hoc analysis.
 
 ---
 

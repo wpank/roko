@@ -1,4 +1,4 @@
-# Batch REF04 — Generalize six operators over Datum (Engram|Pulse)
+# Batch REF04 — Generalize six operators over Datum (Signal|Pulse)
 
 **Refinement source**: `tmp/refinements/04-operators-generalized.md` (injected above under
 "Canonical refinement source"). That source is the authoritative proposal;
@@ -53,6 +53,6 @@ Follow all rules in `context-pack/00-REFINEMENTS-RULES.md`:
 ## Done when
 
 - Diff gate + scope gate + terminology gate + required-term gate all pass.
-- Commit ready with message `refinements(REF04): Generalize six operators over Datum (Engram|Pulse)`.
+- Commit ready with message `refinements(REF04): Generalize six operators over Datum (Signal|Pulse)`.
 - Final message lists: files changed, any new files added, any retired
   disclaimers removed, cross-references added, follow-ups identified.

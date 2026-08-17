@@ -15,12 +15,12 @@
 ## What Is a Pulse?
 
 A Pulse is a lightweight, ephemeral event that carries signals between components without
-being stored as an Engram. Where an Engram is a durable record that persists in the
+being stored as an Signal. Where an Signal is a durable record that persists in the
 Substrate, a Pulse is a transient message that is delivered to subscribers and then
-discarded (unless it meets the conditions for graduation into an Engram).
+discarded (unless it meets the conditions for graduation into an Signal).
 
 The key distinction:
-- **Engram**: durable, content-addressed, scored, decaying, in the Substrate.
+- **Signal**: durable, content-addressed, scored, decaying, in the Substrate.
 - **Pulse**: ephemeral, routed, transient, on the Bus.
 
 ---
@@ -29,10 +29,10 @@ The key distinction:
 
 | # | Page | What it covers | Status |
 |---|------|----------------|--------|
-| [00](00-overview.md) | Overview | What Pulse is; Engram vs Pulse distinction | Specified |
+| [00](00-overview.md) | Overview | What Pulse is; Signal vs Pulse distinction | Specified |
 | [01](01-specification.md) | Specification | Pulse struct, fields, lifecycle | Specified |
 | [02](02-topics-and-filters.md) | Topics & filters | Topic and TopicFilter routing | Specified |
-| [03](03-graduation-rules.md) | Graduation rules | When a Pulse becomes an Engram | Specified |
+| [03](03-graduation-rules.md) | Graduation rules | When a Pulse becomes an Signal | Specified |
 | [04](04-pulse-sources.md) | Pulse sources | PulseSource origin attribution | Specified |
 | [05](05-today-vs-planned.md) | Today vs. planned | EventBus today; Pulse/Bus target; migration | — |
 | [06](06-examples.md) | Examples | Example Pulses and routing | Specified |
@@ -50,5 +50,5 @@ The key distinction:
 
 ## See Also
 
-- [`reference/01-engram/README.md`](../01-engram/README.md) — durable records (Engram)
+- [`reference/01-engram/README.md`](../01-engram/README.md) — durable records (Signal)
 - [`reference/04-bus/README.md`](../04-bus/README.md) — the Bus transport fabric (planned)

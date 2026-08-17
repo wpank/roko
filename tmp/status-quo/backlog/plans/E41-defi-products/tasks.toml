@@ -1,8 +1,8 @@
 [meta]
 plan = "E41-defi-products"
 total = 8
-done = 0
-status = "ready"
+done = 8
+status = "done"
 max_parallel = 2
 
 # ─── T01: Implement DeFi product types and instrument definitions ────────────
@@ -32,13 +32,14 @@ Types to implement:
    * IndexParams { components: Vec<IndexComponent>, rebalance_freq_blocks: u64 }
 5. IndexComponent struct: domain (String), weight (f64), source (IndexSource).
 6. IndexSource enum: ReputationRegistry, ArenaLeaderboard(String),
-   IsfrRate(String), Custom(String).
+   MarketRate(String), Custom(String). MarketRate is provider-neutral and does
+   not depend on a removed benchmark implementation.
 
 Create crates/roko-chain/src/defi.rs and add `pub mod defi;` to lib.rs.
 All types derive Debug, Clone, Serialize, Deserialize.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = [
   "crates/roko-chain/src/defi.rs",
@@ -106,7 +107,7 @@ Implement:
 9. At least 3 tests: issue + mature + settle, coupon payment, default seizure.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-chain/src/defi.rs"]
 depends_on = ["E41-T01"]
@@ -174,7 +175,7 @@ Implement:
 5. At least 3 tests: call pricing, put-call parity, zero-volatility edge case.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-chain/src/defi.rs"]
 depends_on = ["E41-T01"]
@@ -182,7 +183,7 @@ max_loc = 100
 
 [task.context]
 read_files = [
-  { path = "crates/roko-chain/src/isfr.rs", lines = "1-55", why = "Pattern for math-heavy module: weighted median, statistical computation" },
+  { path = "crates/roko-chain/src/nelson_siegel.rs", lines = "1-80", why = "Pattern for math-heavy rate and statistical computation" },
   { path = "crates/roko-compose/src/auction.rs", lines = "246-284", why = "Statistical helpers: hash_to_unit, pearson_correlation — pattern for math utilities" },
   { path = "docs/v2/24-DEFI.md", lines = "120-180", why = "Option pricing spec, Black-Scholes approximation, Greeks definitions" },
 ]
@@ -243,7 +244,7 @@ Implement:
 10. At least 3 tests: policy lifecycle, claim approval, duplicate claim rejection.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-chain/src/defi.rs"]
 depends_on = ["E41-T01"]
@@ -309,7 +310,7 @@ Implement:
 8. At least 2 tests: create + value + rebalance, weight normalization check.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-chain/src/defi.rs"]
 depends_on = ["E41-T01"]
@@ -319,16 +320,16 @@ max_loc = 100
 read_files = [
   { path = "crates/roko-chain/src/defi.rs", lines = "1-50", why = "IndexComponent, IndexSource, InstrumentParams::IndexParams from T01" },
   { path = "crates/roko-chain/src/reputation_registry.rs", lines = "1-50", why = "7 reputation domains — potential IndexSource::ReputationRegistry data" },
-  { path = "crates/roko-chain/src/isfr.rs", lines = "1-55", why = "IsfrConfig — potential IndexSource::IsfrRate data" },
+  { path = "crates/roko-chain/src/arena.rs", lines = "1-80", why = "Arena leaderboard types used by a provider-neutral index source" },
   { path = "docs/v2/24-DEFI.md", lines = "260-320", why = "Synthetic index spec, weight normalization, rebalance rules" },
 ]
 symbols = [
   "IndexComponent (defi.rs from T01) — domain, weight, source fields",
-  "IndexSource (defi.rs from T01) — ReputationRegistry, ArenaLeaderboard, IsfrRate, Custom",
+  "IndexSource (defi.rs from T01) — ReputationRegistry, ArenaLeaderboard, MarketRate, Custom",
   "InstrumentParams::IndexParams (defi.rs from T01) — components and rebalance_freq",
 ]
 anti_patterns = [
-  "Do NOT fetch live data from reputation/ISFR — component_values are passed in externally",
+  "Do NOT fetch live data from providers — component_values are passed in externally",
   "Do NOT allow rebalance more frequently than rebalance_freq_blocks",
   "Do NOT store unlimited valuation history — cap at 1000 entries (ring buffer or truncate)",
 ]
@@ -376,7 +377,7 @@ Add as standalone pub functions in roko-daimon/src/lib.rs. These do NOT modify
 DaimonState — they are pure computations.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "mechanical"
 files = ["crates/roko-daimon/src/lib.rs"]
 depends_on = []
@@ -414,14 +415,15 @@ phase = "test"
 command = "cargo test -p roko-daimon -- prospect 2>&1"
 fail_msg = "prospect_value tests must pass"
 
-# ─── T07: Integrate DeFi product effects with ISFR rates ─────────────────────
+# ─── T07: Project provider-neutral DeFi market-rate observations ─────────────
 
 [[task]]
 id = "E41-T07"
-title = "Add DeFi rate effects to ISFR system"
+title = "Add provider-neutral DeFi market-rate observation effects"
 description = """
-Per spec 24-DEFI.md section 5 (ISFR Integration), DeFi product events generate
-rate observations fed into ISFR for collective rate discovery.
+Per spec 24-DEFI.md section 3.6 (Market-rate observations), DeFi product events
+generate provider-neutral observations. The former benchmark-rate vertical was
+removed on 2026-08-13 and must not be reintroduced.
 
 Implement:
 1. DefiRateEffect struct: market_id (String), rate (f64), source_instrument_id
@@ -432,15 +434,17 @@ Implement:
    rate = coupon_rate, confidence based on collateral ratio (higher = more confident).
 3. SyntheticIndexRegistry method: index_rate_effects(&self) -> Vec<DefiRateEffect>
    — for each index with recent valuation, emit: market_id =
-   "index.{index_name}.weighted_value", rate = weighted_value.
+   "index.{stable_index_id}.weighted_value", rate = weighted_value. Instrument
+   IDs are used because the current index schema has no name field.
 4. Helper: InstrumentKind::to_market_prefix(&self) -> &str
    ("bond", "option", "future", "insurance", "index").
 5. At least 2 tests: bond rate effect generation, index rate effect generation.
 
-These DefiRateEffects can be submitted to IsfrClearing::submit() by the caller.
+Callers may route DefiRateEffects to any market-data, curve, or risk consumer.
+The chain module has no direct dependency on an external clearing provider.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-chain/src/defi.rs"]
 depends_on = ["E41-T02", "E41-T05"]
@@ -448,19 +452,18 @@ max_loc = 60
 
 [task.context]
 read_files = [
-  { path = "crates/roko-chain/src/isfr.rs", lines = "1-55", why = "IsfrConfig, ISFR submission types — target for rate effects" },
   { path = "crates/roko-chain/src/defi.rs", lines = "1-50", why = "BondRegistry and SyntheticIndexRegistry from previous tasks" },
-  { path = "docs/v2/24-DEFI.md", lines = "380-420", why = "ISFR integration: rate observation emission from DeFi products" },
+  { path = "crates/roko-chain/src/nelson_siegel.rs", lines = "1-80", why = "Provider-neutral rate term-structure consumer pattern" },
+  { path = "docs/v2/24-DEFI.md", lines = "40-140", why = "Product primitives and provider-neutral observation boundary" },
 ]
 symbols = [
-  "IsfrConfig (isfr.rs:29) — epoch_duration_secs, min_reputation for rate observations",
   "BondRegistry (defi.rs from T02) — bonds with coupon_rate as rate source",
   "SyntheticIndexRegistry (defi.rs from T05) — valuations as rate source",
   "InstrumentKind (defi.rs from T01) — to_market_prefix helper source",
 ]
 anti_patterns = [
-  "Do NOT call IsfrClearing directly — return Vec<DefiRateEffect> for the caller to submit",
-  "Do NOT create ISFR dependency in roko-chain — DefiRateEffect is a chain-layer type",
+  "Do NOT call a clearing or market-data provider directly — return Vec<DefiRateEffect> for the caller to route",
+  "Do NOT recreate the removed benchmark-rate vertical — DefiRateEffect is provider-neutral",
   "Do NOT emit rates for non-Active instruments",
 ]
 
@@ -506,7 +509,7 @@ Handlers return 501 Not Implemented with JSON:
 Follow the existing route pattern: `pub fn routes() -> Router<Arc<AppState>>`.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = [
   "crates/roko-serve/src/routes/defi.rs",

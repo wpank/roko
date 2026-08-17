@@ -1,6 +1,6 @@
 # HDC Fingerprint
 
-> The 10,240-bit hyperdimensional binary vector that encodes an Engram's semantic content for approximate similarity search.
+> The 10,240-bit hyperdimensional binary vector that encodes an Signal's semantic content for approximate similarity search.
 
 ## Contents
 
@@ -22,5 +22,5 @@ For readers building a deduplication pipeline: 03 → 06.
 
 ## See also
 
-- [`../../01-engram/03-hdc-fingerprint.md`](../../01-engram/03-hdc-fingerprint.md) — fingerprint in Engram context
+- [`../../01-engram/03-hdc-fingerprint.md`](../../01-engram/03-hdc-fingerprint.md) — fingerprint in Signal context
 - [`../content-hash/`](../content-hash/) — the complementary identity hash

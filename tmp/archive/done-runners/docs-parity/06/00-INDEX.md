@@ -16,7 +16,7 @@ The audit conclusion is simple:
 - `HdcVector` is already real in `roko-primitives` as a **345 LOC**, tested,
   10,240-bit implementation.
 - the highest-value next neuro change is still **adding an HDC fingerprint field
-  to `Engram`** in `roko-core/src/engram.rs`.
+  to `Signal`** in `roko-core/src/__PATH_ENGRAM_RS__0`.
 - cross-domain resonance, Library of Babel exchange, demurrage economics,
   worldview organization, and mesh backup/publish flows are **not** shipped and
   must be labeled as deferred or target-state.
@@ -35,7 +35,7 @@ The audit conclusion is simple:
 
 - `ContextAssembler` exists, but this batch treats its production wiring as a
   separate code-execution follow-up
-- HDC is available in neuro and learning, but not yet universal on `Engram`
+- HDC is available in neuro and learning, but not yet universal on `Signal`
 - query APIs exist in `roko-neuro`, but `Substrate` does **not** expose
   `query_similar()`
 
@@ -50,7 +50,7 @@ The audit conclusion is simple:
 
 ## Top Priorities
 
-1. **HDC on Engram**: add a fingerprint field to `Engram` and make HDC a shared
+1. **HDC on Signal**: add a fingerprint field to `Signal` and make HDC a shared
    kernel-level capability instead of a neuro-only detail.
 2. **Truth in docs**: keep `query_similar()` and cross-domain transfer labeled as
    not yet on `Substrate`.
@@ -77,7 +77,7 @@ PU06 is successful when:
 
 - every parity file under `tmp/docs-parity/06/` describes current neuro/HDC
   reality in present tense,
-- HDC-on-Engram is called out as the highest-value next step,
+- HDC-on-Signal is called out as the highest-value next step,
 - `query_similar()` and cross-domain transfer are clearly marked as not yet on
   `Substrate`,
 - and all exchange, demurrage, worldview, and backup claims are narrowed to

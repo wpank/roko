@@ -1,5 +1,7 @@
 # Dead Code Audit — Delete vs Wire vs Keep
 
+> **Last updated: 2026-08-13**
+
 ## Decision Framework
 
 For each piece of floating code, one of three decisions:
@@ -12,18 +14,14 @@ For each piece of floating code, one of three decisions:
 
 "Keep" means: add a status comment, don't delete, but don't pretend it's wired.
 
-## orchestrate.rs — 23,331 lines
+## orchestrate.rs — 23,331 lines -- DELETED
 
-**Decision: DELETE (feature-gate is already done, remove entirely when confident)**
+**Decision: DELETE** -- **DONE (2026-07, E12-T07)**
 
-- Already behind `legacy-orchestrate` feature, not enabled by default
-- Runner v2 replaced it completely
-- Keeping it adds confusion: AI assistants reference it, new contributors think it's active
-- The useful patterns (system prompt builder integration, episode logging) are
-  already reimplemented in Runner v2 or roko-compose
-
-**Action**: After confirming nothing depends on it, remove the file and feature flag.
-Keep a note in CLAUDE.md about the removal.
+- File has been deleted entirely. Not feature-gated, not present in the tree.
+- Runner v2 replaced it completely.
+- All useful patterns (system prompt builder integration, episode logging) were
+  reimplemented in Runner v2 or roko-compose before deletion.
 
 ## roko-runtime (8 floating modules)
 
@@ -93,18 +91,18 @@ context assembly. Tag as "wire into MCP" until that happens.
 
 | Item | Decision | Reasoning |
 |------|----------|-----------|
-| roko-calc | DELETE | Empty skeleton, no purpose |
+| ~~roko-calc~~ | ~~DELETE~~ | **DONE** -- deleted, was empty skeleton |
 | roko-acp | KEEP (tag) | Agent Compute Protocol — Phase 2+ |
 | VCG auction | KEEP (tag) | Built in roko-compose, needs Engine to replace greedy path |
 | Safety contracts | WIRE | Can wire NOW: load YAML contracts, enforce at dispatch |
 
 ## Summary
 
-| Decision | Count | LOC estimate |
-|----------|-------|-------------|
-| DELETE | 2 items | ~23.5K (orchestrate.rs + roko-calc) |
-| WIRE NOW | 10 items | ~2K (small integrations) |
-| KEEP (tag) | 18 items | ~5K (needs Engine or Phase 2+) |
+| Decision | Count | LOC estimate | Status |
+|----------|-------|-------------|--------|
+| DELETE | 2 items | ~23.5K (orchestrate.rs + roko-calc) | **DONE** -- both deleted |
+| WIRE NOW | 10 items | ~2K (small integrations) | Not started |
+| KEEP (tag) | 18 items | ~5K (needs Engine or Phase 2+) | Not started |
 
 ## Wiring Priority (items that can be wired NOW)
 

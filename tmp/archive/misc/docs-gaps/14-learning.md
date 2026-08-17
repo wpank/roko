@@ -461,7 +461,7 @@ cargo test -p roko-learn
 ### LEARN-11: Research-to-runtime pipeline
 - [x] Implement Paper -> Claim -> Heuristic -> Trial -> Ledger pipeline
 
-**Spec** (doc 20): Paper Engrams, Claims with falsifiers, replication ledger, claim!() macro.
+**Spec** (doc 20): Paper Signals, Claims with falsifiers, replication ledger, claim!() macro.
 **Current code**: Not implemented. Explicitly Phase 2+. Closest infrastructure: `Heuristic` at `crates/roko-learn/src/heuristics.rs:234`, `KnowledgeEntry` at `crates/roko-neuro/src/lib.rs:216`, `KnowledgeKind` enum includes knowledge types that could represent Papers/Claims.
 **What to change**: Create `crates/roko-learn/src/research_pipeline.rs` with `Paper`, `Claim`, `Trial`, `ReplicationLedger` types. Implement ingestion from research docs, claim extraction with falsifiers, trial tracking, and ledger persistence. Optionally add `claim!()` macro for inline claim definitions.
 **Reference files**:

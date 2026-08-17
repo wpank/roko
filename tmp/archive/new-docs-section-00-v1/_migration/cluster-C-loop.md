@@ -37,7 +37,7 @@ Each stage deserves real treatment"), every stage was expanded into its own page
 | COMPOSE stage | `04-stage-compose.md` (new: token budget table, CoT scaffold, examples) |
 | ACT stage | `05-stage-act.md` (new: policy pre-check, timeouts, examples) |
 | VERIFY stage | `06-stage-verify.md` (new: 7-gate pipeline, hard/soft taxonomy, examples) |
-| PERSIST stage | `07-stage-persist.md` (new: 3 Engram types per tick, examples) |
+| PERSIST stage | `07-stage-persist.md` (new: 3 Signal types per tick, examples) |
 | REACT stage | `08-stage-react.md` (new: Pulse table, scheduling modifiers, examples) |
 | `loop_tick()` code | `09-loop-tick-code.md` (expanded: full TickContext, error contract, test patterns) |
 | (new) | `12-invariants.md` — 7 named invariants with enforcement locations |

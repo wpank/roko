@@ -1,5 +1,16 @@
 # Demo IDE Issue 4: Per-Agent MCP Config, Not A Hosted Gateway
 
+> **What is this?** A design response to demo-ide issue #4, which proposed a
+> Nunchi-hosted MCP gateway as the default way for hosted agents to access MCP
+> tools. This doc argues for the opposite default: per-agent MCP config
+> materialized into the agent's runtime (`.mcp.json`, env vars), with a
+> Nunchi-hosted gateway as an optional managed product, not the foundation.
+> This position is **settled** -- roko uses per-agent MCP config via
+> `agent.mcp_config` in `roko.toml` and `.roko/mcp-config.json` discovery.
+> See decision #1 in `05-decisions.md`.
+>
+> Last updated: 2026-08-13
+
 Date: 2026-05-08
 Source: https://github.com/Nunchi-trade/demo-ide/issues/4
 

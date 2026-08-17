@@ -1,5 +1,15 @@
 # Site Generation Mega-Prompt
 
+> **What is this?** The primary prompt document for generating complete ROSEDUST-themed
+> HTML sites. Feed this to an LLM along with `01-ROSEDUST-DESIGN-SYSTEM.md` and
+> `07-THREEJS-COMPONENT-LIBRARY.md` as context. It specifies the full page structure,
+> quality checklist, and topic-specific addons (agent/AI product, technical docs,
+> design system showcase).
+>
+> **Adoption status (2026-08-13):** This mega-prompt was used to generate all 14 HTML
+> site iterations catalogued in `06-SITE-CATALOGUE.md`. It is the canonical recipe for
+> producing new ROSEDUST pages.
+
 Use this as a complete prompt (or split into sections) when asking an LLM to generate a full Three.js / WebGL interactive documentation site.
 
 ---
@@ -249,3 +259,7 @@ import * as THREE from "three";
 </body>
 </html>
 ```
+
+---
+
+*Last updated: 2026-08-13*

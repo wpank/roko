@@ -1,6 +1,6 @@
 # HDC Fingerprint — Encoding Pipeline
 
-> How an Engram's Body content is converted into an HdcVector by the HDC encoder.
+> How an Signal's Body content is converted into an HdcVector by the HDC encoder.
 
 **Status**: Shipping  
 **Crate**: `bardo-primitives`  

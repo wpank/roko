@@ -10,7 +10,7 @@
 **Related components**: [Decay variants](../../../reference/10-types/decay.md),
 [Decay tier matrix](../../../reference/10-types/decay.md),
 [Neuro cross-cut](../../../reference/09-cross-cuts/README.md),
-[Engram](../../../reference/01-engram/README.md)
+[Signal](../../../reference/01-engram/README.md)
 
 ---
 
@@ -20,7 +20,7 @@
 2. [`01-knowledge-as-topology.md`](01-knowledge-as-topology.md) — topological spaces, manifolds, connectivity
 3. [`02-temporal-shape.md`](02-temporal-shape.md) — how knowledge evolves as a space over time
 4. [`03-decay-as-topological-operator.md`](03-decay-as-topological-operator.md) — decay reshapes the topology
-5. [`04-roko-application.md`](04-roko-application.md) — mapping to Engram stores, Neuro, decay models
+5. [`04-roko-application.md`](04-roko-application.md) — mapping to Signal stores, Neuro, decay models
 6. [`05-implications.md`](05-implications.md) — design decisions
 7. [`06-open-questions.md`](06-open-questions.md)
 

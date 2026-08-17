@@ -1,6 +1,6 @@
 # HDC Fingerprint — Encoder Versioning
 
-> How the system manages encoder upgrades without invalidating existing Engram identities.
+> How the system manages encoder upgrades without invalidating existing Signal identities.
 
 **Status**: Shipping  
 **Crate**: `bardo-primitives`  
@@ -14,10 +14,10 @@
 The `encoder_version: u32` field on `HdcFingerprint` tracks which version of the HDC
 encoder produced the vector. When the encoder is upgraded (e.g., improved tokenization),
 the version number increments. Old fingerprints are not invalidated — they remain valid
-under their version. New Engrams get fingerprints under the new version. The Substrate
-re-encodes old Engrams lazily (on access) or eagerly (via a background migration job).
+under their version. New Signals get fingerprints under the new version. The Substrate
+re-encodes old Signals lazily (on access) or eagerly (via a background migration job).
 Because `fingerprint` is excluded from the `ContentHash`, re-encoding never changes an
-Engram's identity.
+Signal's identity.
 
 ---
 
@@ -34,10 +34,10 @@ by making cross-version comparison an error.
 
 | Phase | Action |
 |---|---|
-| **Active** | Current production version; used for all new Engrams |
-| **Legacy** | Older version; existing Engrams have valid fingerprints but no new ones are produced |
+| **Active** | Current production version; used for all new Signals |
+| **Legacy** | Older version; existing Signals have valid fingerprints but no new ones are produced |
 | **Deprecated** | Legacy version scheduled for re-encoding; background job queued |
-| **Retired** | All Engrams re-encoded; version no longer present in Substrate |
+| **Retired** | All Signals re-encoded; version no longer present in Substrate |
 
 ---
 
@@ -108,9 +108,9 @@ pub const CURRENT_ENCODER_VERSION: u32 = 1;
 ## Invariants
 
 1. `encoder_version` in a stored `HdcFingerprint` equals the version that produced the vector.
-2. Changing `fingerprint` on an Engram does not change its `ContentHash`.
+2. Changing `fingerprint` on an Signal does not change its `ContentHash`.
 3. Cross-version comparison is rejected by `similarity_checked()`.
-4. Re-encoding uses the Engram's original `Body` — no lossy intermediate step.
+4. Re-encoding uses the Signal's original `Body` — no lossy intermediate step.
 5. The current version constant in `bardo-primitives` is the source of truth for new encodings.
 
 ---

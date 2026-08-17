@@ -1,5 +1,9 @@
 # Master DAG — Task dependencies and wave assignments
 #
+# What is this?
+# The dependency graph for the original taskrunner's 100 tasks. Historical
+# reference -- all tasks completed in May 2026. See STATUS.toml for final state.
+#
 # This file defines:
 # - All tasks (by ID)
 # - Dependencies between tasks (blocked_by)
@@ -8,6 +12,8 @@
 #
 # Tasks are populated separately in tasks/*.md files.
 # This file is the dependency graph only.
+#
+# Last updated: 2026-08-13 (header added; DAG unchanged from 2026-05-06)
 
 [meta]
 version = "1.0"

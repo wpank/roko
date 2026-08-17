@@ -104,7 +104,7 @@ Default timeouts:
 
 If the target does not respond within the timeout, ACT returns `ActError::Timeout`.
 The tick then proceeds to VERIFY, which will fail the result, causing PERSIST to
-record a `act.timeout` Engram.
+record a `act.timeout` Signal.
 
 ---
 
@@ -112,7 +112,7 @@ record a `act.timeout` Engram.
 
 | Failure | Cause | Recovery |
 |---|---|---|
-| `ActError::PolicyBlock` | Policy blocked the execution | Record `act.blocked` Engram; tick ends cleanly |
+| `ActError::PolicyBlock` | Policy blocked the execution | Record `act.blocked` Signal; tick ends cleanly |
 | `ActError::Timeout` | Target did not respond in time | Proceed to VERIFY with null output; VERIFY fails gracefully |
 | `ActError::ModelError` | API returned 4xx/5xx | Retry once with exponential backoff; if still fails, abort tick |
 | `ActError::CostExceeded` | Estimated cost > budget | Policy blocks before call is made |
@@ -149,7 +149,7 @@ recorded for budget accounting.
 An agent in a sandboxed environment is configured with a policy that blocks all
 `web_search` tool calls. ACT receives a context for `tool=web_search`, calls
 `policy.pre_act()`, gets `PolicyDecision::Block`. ACT returns `PolicyBlock` without
-calling the tool. The tick ends with a `act.blocked` Engram.
+calling the tool. The tick ends with a `act.blocked` Signal.
 
 ### 3. Sub-agent dispatch
 

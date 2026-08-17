@@ -4,7 +4,7 @@
 > continuously, not as a one-time inspiration. This doc proposes a
 > typed pipeline — `Paper → Claim → Heuristic → Trial → Calibration`
 > — where every cited result becomes a testable hypothesis in the
-> running system. Papers are Engrams; claims are candidate
+> running system. Papers are Signals; claims are candidate
 > Heuristics; trials are episodes; calibrations are published.
 > Over time, the system builds an empirical map of which academic
 > findings hold up *in its actual deployment*. This is
@@ -14,7 +14,7 @@
 > Kanerva, active inference from Friston, c-factor from Woolley, demurrage
 > from Gesell. Today that influence is folklore: someone read a paper and
 > wrote some code. This doc promotes *the paper itself* to a first-class
-> Engram, *the claim* to a testable hypothesis with a falsifier, and
+> Signal, *the claim* to a testable hypothesis with a falsifier, and
 > *the system's own trials* to continuous re-replication. Read 14
 > (heuristics) first; this is heuristic infrastructure specialized to
 > academic provenance.
@@ -41,7 +41,7 @@ we're violating a precondition the paper stated.
 The pipeline proposed here keeps papers and their claims *alive and
 testable*.
 
-## 2. Paper as Engram
+## 2. Paper as Signal
 
 ```rust
 pub struct Paper {
@@ -74,7 +74,7 @@ pub struct PaperProvenance {
 }
 ```
 
-Paper Engrams live in the same Substrate as everything else. They
+Paper Signals live in the same Substrate as everything else. They
 get content-addressed hashes. Heuristics and episodes can cite them
 in lineage.
 
@@ -140,7 +140,7 @@ impl From<Claim> for Heuristic {
 
 The same lifecycle from `14-worldview-validation.md` applies:
 trials, confirmations, violations, refinement, retirement. The only
-difference is lineage points back to a Paper Engram, and the
+difference is lineage points back to a Paper Signal, and the
 calibration diverges from the paper's reported effect over time —
 this divergence *is the interesting signal*.
 
@@ -199,14 +199,14 @@ Three ingestion lanes:
 
 ### 7.1 Manual
 
-A human (or agent) reads a paper, creates the Paper Engram, drafts
+A human (or agent) reads a paper, creates the Paper Signal, drafts
 Claims. Highest-quality ingestion; appropriate for foundational
 work.
 
 ### 7.2 Agent-curated
 
 An agent in "researcher" role crawls a source (arxiv daily digest,
-Papers With Code trending), drafts Paper+Claim Engrams, publishes
+Papers With Code trending), drafts Paper+Claim Signals, publishes
 them to a Bus topic `research.candidate`. Other agents review and
 either promote to `research.approved` or reject.
 
@@ -242,7 +242,7 @@ The proposal includes importing ~40 foundational claims at launch:
 - Gesell 1916 on demurrage.
 - Hofstadter 1979 on strange loops (for self-modeling).
 
-Each gets a Paper Engram and 1–3 Claims, with a falsifier stated
+Each gets a Paper Signal and 1–3 Claims, with a falsifier stated
 explicitly. This becomes the starter heuristic library every new
 deployment inherits. Calibration against each deployment's reality
 takes over from there.
@@ -288,7 +288,7 @@ applied with a very different flavor.
 
 ## 12. Minimal viable implementation
 
-1. Paper + Claim Engram types. One day.
+1. Paper + Claim Signal types. One day.
 2. Starter kit of 20 canonical papers, manually authored. Three days
    of librarian work.
 3. Research-role agent that reviews arxiv daily. One week.
@@ -308,7 +308,7 @@ share three properties:
 
 1. **Observable from runtime signals.** A falsifier that requires
    a lab experiment Roko can't run is useless. Rewrite as a
-   condition on Engrams, Pulses, or metrics.
+   condition on Signals, Pulses, or metrics.
 2. **Time-bounded.** A prediction that takes 10 years to fail isn't
    useful to a runtime that iterates daily. Frame falsifiers as
    "over the next N trials / N days, [observable] should hold."

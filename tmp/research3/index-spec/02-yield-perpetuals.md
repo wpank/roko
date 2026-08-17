@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a comprehensive reference for yield perpetual instruments.
+> It is reference material for the ISFR product vertical, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Yield Perpetuals: A Comprehensive Reference
 
 ## What This Document Covers

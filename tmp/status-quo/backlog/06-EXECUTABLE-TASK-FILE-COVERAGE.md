@@ -47,27 +47,27 @@ per-epic plans.
 
 ### v2 Spec Implementation (E19–E45)
 
-| Epic | Plan directory | Tasks | Remaining gaps |
+| Epic | Plan directory | Tasks | Manifest `done` |
 |---|---|---:|---:|
-| E19 | `tmp/status-quo/backlog/plans/E19-signal-protocol` | 10 | 0 |
-| E20 | `tmp/status-quo/backlog/plans/E20-cell-unification` | 10 | 0 |
-| E21 | `tmp/status-quo/backlog/plans/E21-graph-engine` | 10 | 0 |
-| E22 | `tmp/status-quo/backlog/plans/E22-execution-runtime` | 10 | 0 |
-| E23 | `tmp/status-quo/backlog/plans/E23-agent-cognitive-autonomy` | 10 | 0 |
+| E19 | `tmp/status-quo/backlog/plans/E19-signal-protocol` | 10 | 10 |
+| E20 | `tmp/status-quo/backlog/plans/E20-cell-unification` | 10 | 10 |
+| E21 | `tmp/status-quo/backlog/plans/E21-graph-engine` | 10 | 7 |
+| E22 | `tmp/status-quo/backlog/plans/E22-execution-runtime` | 10 | 9 |
+| E23 | `tmp/status-quo/backlog/plans/E23-agent-cognitive-autonomy` | 10 | 10 |
 | E24 | `tmp/status-quo/backlog/plans/E24-memory-advanced` | 10 | 0 |
 | E25 | `tmp/status-quo/backlog/plans/E25-learning-loops-advanced` | 10 | 0 |
 | E26 | `tmp/status-quo/backlog/plans/E26-inference-gateway` | 12 | 0 |
 | E27 | `tmp/status-quo/backlog/plans/E27-feeds-system` | 10 | 0 |
 | E28 | `tmp/status-quo/backlog/plans/E28-groups-coordination` | 8 | 0 |
 | E29 | `tmp/status-quo/backlog/plans/E29-connectivity-relay` | 9 | 0 |
-| E30 | `tmp/status-quo/backlog/plans/E30-extension-system` | 9 | 0 |
-| E31 | `tmp/status-quo/backlog/plans/E31-trigger-system` | 8 | 0 |
-| E32 | `tmp/status-quo/backlog/plans/E32-tool-plugin-ecosystem` | 8 | 0 |
-| E33 | `tmp/status-quo/backlog/plans/E33-telemetry-lens` | 9 | 0 |
-| E34 | `tmp/status-quo/backlog/plans/E34-security-ifc` | 8 | 0 |
-| E35 | `tmp/status-quo/backlog/plans/E35-auth-protocol` | 8 | 0 |
+| E30 | `tmp/status-quo/backlog/plans/E30-extension-system` | 9 | 9 |
+| E31 | `tmp/status-quo/backlog/plans/E31-trigger-system` | 8 | 8 |
+| E32 | `tmp/status-quo/backlog/plans/E32-tool-plugin-ecosystem` | 8 | 8 |
+| E33 | `tmp/status-quo/backlog/plans/E33-telemetry-lens` | 9 | 9 |
+| E34 | `tmp/status-quo/backlog/plans/E34-security-ifc` | 8 | 8 |
+| E35 | `tmp/status-quo/backlog/plans/E35-auth-protocol` | 8 | 8 |
 | E36 | `tmp/status-quo/backlog/plans/E36-payments` | 8 | 0 |
-| E37 | `tmp/status-quo/backlog/plans/E37-surfaces` | 9 | 0 |
+| E37 | `tmp/status-quo/backlog/plans/E37-surfaces` | 9 | 9 |
 | E38 | `tmp/status-quo/backlog/plans/E38-marketplace` | 9 | 0 |
 | E39 | `tmp/status-quo/backlog/plans/E39-registries-identity` | 8 | 0 |
 | E40 | `tmp/status-quo/backlog/plans/E40-arenas-evals` | 8 | 0 |
@@ -75,8 +75,8 @@ per-epic plans.
 | E42 | `tmp/status-quo/backlog/plans/E42-config-evolution` | 8 | 0 |
 | E43 | `tmp/status-quo/backlog/plans/E43-deployment-portability` | 8 | 0 |
 | E44 | `tmp/status-quo/backlog/plans/E44-cross-cut-functors` | 8 | 0 |
-| E45 | `tmp/status-quo/backlog/plans/E45-orchestrator-mori-parity` | 10 | 0 |
-| **E19–E45 subtotal** |  | **243** | **0** |
+| E45 | `tmp/status-quo/backlog/plans/E45-orchestrator-mori-parity` | 10 | 1 |
+| **E19–E45 subtotal** |  | **243** | **97** |
 
 ### Operational Capabilities (E46–E48)
 

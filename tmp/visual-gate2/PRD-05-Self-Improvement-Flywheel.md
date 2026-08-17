@@ -155,7 +155,7 @@ Traces are JSONL at `.roko/eval/traces.jsonl`. Append-only, matching the
 `EpisodeLogger` pattern. Crash mid-write corrupts at most one line. Reader
 is tolerant of malformed lines.
 
-Traces are also promoted to engrams via `Engram::builder(Kind::EvalTrace)` for
+Traces are also promoted to signals via `Signal::builder(Kind::EvalTrace)` for
 integration with the signal DAG and the `roko-neuro` knowledge store.
 
 ---

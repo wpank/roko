@@ -1,15 +1,21 @@
 # Source Doc Manifest
 
-Generated on 2026-07-07 from the checked-out markdown files under `docs/v1`, `docs/v2`, and `docs/v2-depth`. This is an ownership manifest, not a claim that each source is current.
+> **Disposition: CURRENT OWNERSHIP MANIFEST (2026-08-17).** This file classifies the
+> exact checked-out `docs/v1`, `docs/v2`, and `docs/v2-depth` source corpus and maps each
+> source to one reconciliation owner. It is not implementation-status evidence.
+
+Generated on 2026-07-07 and reconciled on 2026-08-17 from the checked-out Markdown files
+under `docs/v1`, `docs/v2`, and `docs/v2-depth`. This is an ownership manifest, not a
+claim that each source is current.
 
 ## Counts
 
 | Source | Markdown files |
 |---|---:|
 | `docs/v1` | 417 |
-| `docs/v2` | 34 |
+| `docs/v2` | 35 |
 | `docs/v2-depth` | 185 |
-| Total | 636 |
+| Total | 637 |
 
 ## Status Tags
 
@@ -659,6 +665,7 @@ Generated on 2026-07-07 from the checked-out markdown files under `docs/v1`, `do
 | `docs/v2/API-REFERENCE.md` | Roko HTTP API Reference | `migration-design` | `15-V2-COVERAGE.md` |
 | `docs/v2/ARCHITECTURE-GUIDE.md` | Roko v2 Architecture Guide | `migration-design` | `15-V2-COVERAGE.md` |
 | `docs/v2/CLI-REFERENCE.md` | Roko CLI Reference | `migration-design` | `15-V2-COVERAGE.md` |
+| `docs/v2/GITHUB-INTEGRATION.md` | GitHub Integration | `migration-design` | `15-V2-COVERAGE.md` |
 | `docs/v2/INTEGRATION-GUIDE.md` | Roko Integration Guide | `migration-design` | `15-V2-COVERAGE.md` |
 
 ## Maintenance Checklist

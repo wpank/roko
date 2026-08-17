@@ -77,7 +77,7 @@ Follow `context-pack/01-naming-map.md` strictly. Common replacements:
 - Styx → Agent Mesh / Mesh
 - GNOS → KORAI (mainnet) / DAEJI (testnet)
 - Clade → Collective / Mesh (**NOT fleet**)
-- Signal (architecture noun) → Engram
+- Signal (architecture noun) → Signal
 - "1 noun 6 verbs" → Synapse Architecture
 - golem.toml → roko.toml
 - All `golem-*`, `bardo-*`, `mori-*` crate names → `roko-*`
@@ -118,12 +118,12 @@ When describing a feature, always note which layer it lives at.
 ## Rule 8 — INTEGRATE SYNAPSE ARCHITECTURE LANGUAGE
 
 Every capability flows through one of the 6 Synapse traits:
-- `Substrate` — store and query Engrams
-- `Scorer` — rate Engrams
-- `Gate` — verify Engrams against ground truth
+- `Substrate` — store and query Signals
+- `Scorer` — rate Signals
+- `Gate` — verify Signals against ground truth
 - `Router` — select best candidate
-- `Composer` — combine Engrams under budget
-- `Policy` — observe Engram streams, emit new Engrams
+- `Composer` — combine Signals under budget
+- `Policy` — observe Signal streams, emit new Signals
 
 When describing a feature, identify which trait(s) it implements or uses.
 

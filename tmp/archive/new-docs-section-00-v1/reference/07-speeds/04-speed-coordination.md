@@ -44,8 +44,8 @@ An agent does not "switch" between speeds in a mutually exclusive way. Instead:
 └─────────────────────────────────────────────────────┘
 ```
 
-The two loops share the Substrate but do not share a mutex. Delta reads Engrams and
-writes updated versions; the real-time loop reads and writes Engrams as part of normal
+The two loops share the Substrate but do not share a mutex. Delta reads Signals and
+writes updated versions; the real-time loop reads and writes Signals as part of normal
 tick processing. Substrate-level write ordering is managed by the substrate
 implementation (sled's MVCC, Postgres transactions).
 

@@ -1,8 +1,8 @@
 [meta]
 plan = "E32-tool-plugin-ecosystem"
 total = 8
-done = 0
-status = "ready"
+done = 8
+status = "done"
 max_parallel = 2
 
 # ── T01: Formalize 5-tier Plugin SDK types in roko-plugin ───────────────
@@ -32,7 +32,7 @@ validate_manifest (line 234) verify that declared capabilities are a subset of
 what the tier permits.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-plugin/src/manifest.rs"]
 depends_on = []
@@ -105,7 +105,7 @@ Also implement validate_args for DynamicToolRegistry by delegating to the inner
 StaticToolRegistry for builtins and doing basic type-check for plugin tools.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-std/src/tool/registry.rs"]
 depends_on = ["E32-T01"]
@@ -180,7 +180,7 @@ its DeclarativeTool entries are converted and added to a DynamicToolRegistry
 carry a Vec<ToolDef> of the converted tools for later registration.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-cli/src/runner/extension_loader.rs"]
 depends_on = ["E32-T02"]
@@ -247,7 +247,7 @@ The existing check_plugin_tier (line 111) handles individual Capability checks.
 The new function wraps it for the multi-capability case specific to tools.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-agent/src/safety/capabilities.rs"]
 depends_on = ["E32-T01"]
@@ -316,7 +316,7 @@ The runtime enforcement (actually sandboxing execution) is future work — this
 task adds the configuration model and validation only.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-plugin/src/manifest.rs"]
 depends_on = ["E32-T01"]
@@ -390,7 +390,7 @@ If adding a direct dependency is undesirable, use simple string comparison of
 major.minor.patch components.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-plugin/src/manifest.rs"]
 depends_on = ["E32-T05"]
@@ -456,7 +456,7 @@ Do NOT add a test that asserts zero unhandled — that would fail today. Instead
 assert the count matches the known gap (21 = 17 chain + 4 ISFR).
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-std/src/tool/handlers.rs"]
 depends_on = []
@@ -525,7 +525,7 @@ The discover_plugins call at line 1071 scans plugins/ and .roko/plugins/. The
 extension_loader scans .roko/extensions/ — audit should cover all three directories.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-cli/src/commands/config_cmd.rs"]
 depends_on = ["E32-T02", "E32-T07"]

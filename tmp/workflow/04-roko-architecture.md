@@ -51,7 +51,7 @@ vs mori's 3 backends (Claude, Codex, Cursor), roko has 6 provider kinds.
 
 ```rust
 pub trait Agent: Send + Sync {
-    async fn run(&self, input: &Engram, ctx: &Context) -> AgentResult;
+    async fn run(&self, input: &Signal, ctx: &Context) -> AgentResult;
     fn name(&self) -> &str;
     fn backend_id(&self) -> &'static str { "unknown" }
     fn supports_streaming(&self) -> bool { false }
@@ -218,8 +218,8 @@ loop {
 
 ## Inter-Agent Communication
 
-### Signal System (Engrams)
-Core data unit: `Engram` -- typed, content-hashed signal in `.roko/signals.jsonl`.
+### Signal System
+Core data unit: `Signal` (formerly Engram, renamed to Signal in 2026-08-12) -- typed, content-hashed signal in `.roko/signals.jsonl`.
 Each has Kind, Body, Provenance, lineage (parent hashes), tags.
 
 ### Episode Logging

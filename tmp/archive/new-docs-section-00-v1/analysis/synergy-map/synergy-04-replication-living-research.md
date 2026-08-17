@@ -1,13 +1,13 @@
-# S4 — Replication ledger × Heuristics × paper Engram → Living research
+# S4 — Replication ledger × Heuristics × paper Signal → Living research
 
-> Papers live as Engrams. Claims extracted from them become heuristics. The replication ledger
+> Papers live as Signals. Claims extracted from them become heuristics. The replication ledger
 > records which claims have held up under test and which have been falsified. Research becomes
 > runtime material: a claim is not a static citation but a living object whose status updates as
 > evidence arrives.
 
 **Status**: Analysis — target-state synergy  
-**Primitives involved**: P9 Replication ledger × P7 Heuristics × P1 Engram (paper variant)  
-**Reality check**: P1 Engram storage is Shipping; P7 Heuristics are Scaffold; P9 Replication
+**Primitives involved**: P9 Replication ledger × P7 Heuristics × P1 Signal (paper variant)  
+**Reality check**: P1 Signal storage is Shipping; P7 Heuristics are Scaffold; P9 Replication
 ledger is Specified (no shipped implementation). The full synergy is target-state.  
 **Last reviewed**: 2026-04-19
 
@@ -19,7 +19,7 @@ ledger is Specified (no shipped implementation). The full synergy is target-stat
 |---|---|
 | [P9 Replication ledger](../../research/) | Tracks claims, evidence, and falsification history; provides a machine-readable provenance chain from claim to evidence |
 | [P7 Heuristics + falsifiers](../../subsystems/) | The runtime form of a claim: a predicate with confidence and a falsifier condition that links back to the ledger |
-| [P1 Engram (paper variant)](../../reference/01-engram/) | The durable record that represents a research paper; holds the paper's content, metadata, and the HDC fingerprint used for similarity search |
+| [P1 Signal (paper variant)](../../reference/01-engram/) | The durable record that represents a research paper; holds the paper's content, metadata, and the HDC fingerprint used for similarity search |
 
 ---
 
@@ -37,8 +37,8 @@ This creates two failure modes:
 
 ### How it works
 
-1. **Ingestion**: A paper enters the system as a paper Engram. The HDC fingerprint of its
-   abstract is computed. The Engram is stored in Substrate.
+1. **Ingestion**: A paper enters the system as a paper Signal. The HDC fingerprint of its
+   abstract is computed. The Signal is stored in Substrate.
 2. **Claim extraction**: Key claims in the paper are extracted (manually or by a claim-extraction
    agent) and entered into the Replication ledger as claims with status `Unconfirmed`.
 3. **Heuristic lift**: Each claim in the ledger whose confidence crosses a threshold is
@@ -57,7 +57,7 @@ evidence arrives. Research becomes runtime material.
 
 ### Why each primitive is necessary
 
-- Without the paper Engram, there is no durable anchor for the provenance chain. Claims float
+- Without the paper Signal, there is no durable anchor for the provenance chain. Claims float
   without a source.
 - Without the Replication ledger, calibration updates to heuristics are local and invisible to
   the research layer. There is no accumulated evidence record.
@@ -95,7 +95,7 @@ Ledger status propagation:
    heuristic is orphaned from its provenance.
 2. Ledger status flows one-way to heuristics: a Weakened claim can only reduce the linked
    heuristic's confidence, not raise it. Confidence recovery requires new confirming evidence.
-3. A paper Engram is never modified after ingestion — it is an immutable record. The ledger is
+3. A paper Signal is never modified after ingestion — it is an immutable record. The ledger is
    the mutable view of the claims it contains.
 4. The replication score is evidence-weighted: a single experiment cannot drive a claim from
    `Unconfirmed` to `Falsified` unless the evidence strength is explicitly high.
@@ -122,8 +122,8 @@ Ledger status propagation:
 - **S8** (Demurrage × Heuristics × calibration): S8 softens confidence when evidence is sparse.
   S4 provides the mechanism for that absence of evidence to be connected back to the ledger's
   replication record.
-- **S1** (Demurrage × HDC): If a paper Engram's claims are all falsified, demurrage will
-  eventually evict the Engram from Substrate — but only after the ledger has marked the claims
+- **S1** (Demurrage × HDC): If a paper Signal's claims are all falsified, demurrage will
+  eventually evict the Signal from Substrate — but only after the ledger has marked the claims
   as falsified and the linked heuristics have been quarantined. The pruning is semantically
   informed, not just temporal.
 
@@ -131,7 +131,7 @@ Ledger status propagation:
 
 ## Today vs. Planned
 
-**Today**: Papers can be stored as Engrams. Heuristics can be stored as Substrate records.
+**Today**: Papers can be stored as Signals. Heuristics can be stored as Substrate records.
 No Replication ledger exists. Calibration is manual. There is no claim-lift mechanism.
 
 **Planned**: Replication ledger (P9) ships as a structured store. Claim-extraction tooling
@@ -153,7 +153,7 @@ Heuristics subscriber.
 
 ## Open Questions
 
-- What is the minimal claim schema? At minimum: claim text, source Engram ID, extraction
+- What is the minimal claim schema? At minimum: claim text, source Signal ID, extraction
   method, initial confidence, replication score. Are there other required fields?
 - Should the lift threshold be global or per-domain? Domain-specific lift thresholds would
   allow safety-critical domains to require higher evidence before a claim becomes a heuristic.

@@ -1,6 +1,6 @@
-# Decay — Engram Temporal Dynamics
+# Decay — Signal Temporal Dynamics
 
-> The Decay type governs how an Engram's weight changes over time. This folder is the canonical reference.
+> The Decay type governs how an Signal's weight changes over time. This folder is the canonical reference.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -10,10 +10,10 @@
 
 ## What Is Decay?
 
-Every Engram has a `decay: Decay` field that determines how its effective weight evolves
+Every Signal has a `decay: Decay` field that determines how its effective weight evolves
 over time. A weight of 1.0 means "full strength." A weight approaching 0.0 means "nearly
-gone." The Substrate multiplies an Engram's score by its decay weight at retrieval time.
-Engrams at or near 0.0 are GC candidates.
+gone." The Substrate multiplies an Signal's score by its decay weight at retrieval time.
+Signals at or near 0.0 are GC candidates.
 
 The primary model is **Demurrage**: an idle tax plus reinforcement on retrieval. The system
 rewards knowledge that is used and penalizes knowledge that sits idle.
@@ -24,7 +24,7 @@ rewards knowledge that is used and penalizes knowledge that sits idle.
 
 | # | Page | What it covers | Status |
 |---|------|----------------|--------|
-| [00](00-overview.md) | Overview | Why Engrams decay; demurrage framing | Shipping |
+| [00](00-overview.md) | Overview | Why Signals decay; demurrage framing | Shipping |
 | [01](01-demurrage.md) | Demurrage | balance, idle-tax, reinforcement | Shipping |
 | [02](02-exponential-decay.md) | Exponential | Classic half-life decay | Shipping |
 | [03](03-step-decay.md) | Step decay | Epoch-based drops | Shipping |
@@ -43,10 +43,10 @@ rewards knowledge that is used and penalizes knowledge that sits idle.
 
 **First time:** 00 → 01 → 08  
 **Implementing a new decay model:** 05 → 09 → 10  
-**Debugging stale Engrams:** 08 → 07 → 09  
+**Debugging stale Signals:** 08 → 07 → 09  
 
 ---
 
 ## See Also
 
-- [`reference/01-engram/09-decay-fields.md`](../../01-engram/09-decay-fields.md) — decay field on Engram
+- [`reference/01-engram/09-decay-fields.md`](../../01-engram/09-decay-fields.md) — decay field on Signal

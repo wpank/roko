@@ -16,7 +16,7 @@ the sub-agent's result with the original question.
 
 **Candidate solutions**:
 - "Context continuation": store the partially-assembled context from the original tick
-  as a special Engram, and resume COMPOSE from there when the result arrives.
+  as a special Signal, and resume COMPOSE from there when the result arrives.
 - Accept the current approach as-is; the redundant QUERY/SCORE pass is cheap.
 
 ---

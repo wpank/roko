@@ -24,7 +24,7 @@ by the subscriber delivery window.
 
 Pulses need to be as lightweight as possible. Every additional field on a Pulse is overhead
 paid on every event in the system. The design goal: a Pulse should be smaller than an
-Engram by one order of magnitude.
+Signal by one order of magnitude.
 
 ---
 
@@ -100,7 +100,7 @@ impl CorrelationId {
 2. **Routing**: The Bus looks up all subscriptions matching `pulse.topic` and `TopicFilter`.
 3. **Delivery**: The Bus delivers the Pulse to each matching subscriber's handler.
 4. **Graduation or discard**: Each subscriber either:
-   - Graduates the Pulse to an Engram (builds an `EngramBuilder` from the payload and inserts into Substrate), or
+   - Graduates the Pulse to an Signal (builds an `EngramBuilder` from the payload and inserts into Substrate), or
    - Discards the Pulse (does nothing further).
 5. **Drop**: After all subscribers have processed or timed out, the Pulse is dropped.
 
@@ -111,10 +111,10 @@ impl CorrelationId {
 - **Not content-addressed.** Two Pulses with identical content are not the same Pulse.
 - **Not scored.** Pulses carry no quality axes.
 - **Not decaying.** Pulses live for their delivery window only.
-- **Not in the lineage DAG.** A graduated Engram may reference the `correlation_id` in tags,
+- **Not in the lineage DAG.** A graduated Signal may reference the `correlation_id` in tags,
   but the Pulse itself is not a lineage parent.
 - **Not retrievable.** Once a Pulse is delivered and dropped, it is gone. If you need to
-  query it later, it should have been graduated to an Engram.
+  query it later, it should have been graduated to an Signal.
 
 ---
 
@@ -123,7 +123,7 @@ impl CorrelationId {
 1. `emitted_at_ms > 0`
 2. `topic` must be a valid Topic (non-empty, valid format)
 3. Pulses are not stored in the Substrate
-4. Pulses do not appear in the Engram lineage DAG
+4. Pulses do not appear in the Signal lineage DAG
 
 ---
 
@@ -140,5 +140,5 @@ impl CorrelationId {
 ## See Also
 
 - [`02-topics-and-filters.md`](02-topics-and-filters.md) — routing by Topic and TopicFilter
-- [`03-graduation-rules.md`](03-graduation-rules.md) — when to convert a Pulse to an Engram
+- [`03-graduation-rules.md`](03-graduation-rules.md) — when to convert a Pulse to an Signal
 - [`05-today-vs-planned.md`](05-today-vs-planned.md) — current EventBus vs. this spec

@@ -85,7 +85,7 @@ file layout") but functionally it is an L0 Runtime crate. It implements `FileSub
 which is a `Substrate` trait implementation — and Substrate is assigned to L0.
 
 **Resolution**: Move `roko-fs` to L0 Runtime in the documentation. Its sole purpose is
-persistent storage of Engrams, which is the canonical L0 responsibility.
+persistent storage of Signals, which is the canonical L0 responsibility.
 
 ---
 

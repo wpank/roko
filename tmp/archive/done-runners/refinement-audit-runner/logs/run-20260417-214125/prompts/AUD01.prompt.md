@@ -56,7 +56,7 @@ From the audit master summary — this is the recommended priority order.
 
 ## Ship Now (1-2 weeks total)
 
-1. Add HDC fingerprint field to Engram — `roko-core/src/engram.rs` — 1 day
+1. Add HDC fingerprint field to Signal — `roko-core/src/__PATH_ENGRAM_RS__0` — 1 day
 2. Unify event enums into `RokoEvent` — across 4 crates — 1 week
 3. Add generic `Bus<E>` trait to roko-core — ~100 lines — 2-3 days
 4. Clean up stale "Signal" references — traits.rs, README, kind.rs — 1 hour
@@ -147,7 +147,7 @@ Roko is a Rust workspace at `/Users/will/dev/nunchi/roko/roko/`.
 
 | Crate | Path | LOC | Status |
 |---|---|---|---|
-| roko-core | `crates/roko-core/` | kernel | Stable — Engram + 6 traits + config + tools |
+| roko-core | `crates/roko-core/` | kernel | Stable — Signal + 6 traits + config + tools |
 | roko-agent | `crates/roko-agent/` | large | 8 LLM backends, pools, MCP, tool loop, safety |
 | roko-agent-server | `crates/roko-agent-server/` | medium | Per-agent HTTP sidecar, real LLM dispatch |
 | roko-serve | `crates/roko-serve/` | 30K | HTTP control plane, 200+ routes, SSE, WebSocket |
@@ -176,7 +176,7 @@ Roko is a Rust workspace at `/Users/will/dev/nunchi/roko/roko/`.
 - Test functions: 3,761
 - orchestrate.rs: 17,087 lines
 - Event bus event types: exactly 2 (PlanRevision, PrdPublished)
-- Signal→Engram rename: 99.6% complete
+- Signal→Signal rename: 99.6% complete
 
 ## Concepts with 0 lines of code
 
@@ -257,7 +257,7 @@ These emerged consistently across all 7 audit workstreams as high-value, low-ris
 
 | # | What | Where | Effort | Why |
 |---|---|---|---|---|
-| 1 | **Add HDC fingerprint field to Engram** | `roko-core/src/engram.rs` | 1 day | HdcVector exists (10,240-bit, tested). Episode fingerprinting already works. This is the single highest-value bridge between the learning and memory layers. |
+| 1 | **Add HDC fingerprint field to Signal** | `roko-core/src/__PATH_ENGRAM_RS__0` | 1 day | HdcVector exists (10,240-bit, tested). Episode fingerprinting already works. This is the single highest-value bridge between the learning and memory layers. |
 | 2 | **Unify event enums into `RokoEvent`** | Across 4 crates | 1 week | Four incompatible event enums (2x `AgentEvent`, `RokoEvent`, `ServerEvent`) is the real problem. Unify them. |
 | 3 | **Add generic `Bus<E>` trait to roko-core** | `roko-core/src/traits.rs` | 2-3 days | ~100 lines. Keep it generic (not Pulse-specific). Solves the layer violation. |
 | 4 | **Clean up stale "Signal" references** | traits.rs, README, kind.rs, CLAUDE.md | 1 hour | 40+ stale occurrences across docs and code comments. |
@@ -319,7 +319,7 @@ From the reality-check audit:
 | roko-serve routes | 200+ (not ~85) |
 | TUI code | 58K LOC |
 | roko-learn modules | 42 modules, 35,847 LOC |
-| Signal→Engram rename | 99.6% complete (4 real stragglers) |
+| Signal→Signal rename | 99.6% complete (4 real stragglers) |
 | Event bus event types | Exactly 2 (PlanRevision, PrdPublished) |
 | Demurrage in code | 0 lines |
 | Pulse in code | 0 lines |
@@ -346,7 +346,7 @@ Overall: **3.8 / 5**
 The diagnosis is correct. The prescription (Pulse, Datum, generalized operators, 7-step TickConfig) is overcomplicated. Fix: unify events, add generic Bus trait, update docs. ~1 week instead of 6-7 weeks.
 
 ### Learning (10-16): SIMPLIFY
-The docs undercount what already exists. roko-learn has 42 modules and 36K LOC. HDC fingerprint field on Engram is the highest-value change. Demurrage/worldviews/replication-ledger are premature.
+The docs undercount what already exists. roko-learn has 42 modules and 36K LOC. HDC fingerprint field on Signal is the highest-value change. Demurrage/worldviews/replication-ledger are premature.
 
 ### Moat (17-21): DEFER/SKEPTICAL
 Zero plugin authors, zero external users. The moat is aspirational. Plugin tier 3 (tool manifests) is useful later. Everything else waits.
@@ -579,7 +579,7 @@ Legend:
 | Ref | Title | Verdict | Audit note |
 |---|---|---|---|
 | REF01 | critique one noun | `keep` | The diagnosis is real: transport is under-modeled and the kernel story is too storage-centric. |
-| REF02 | Engram vs Pulse | `keep` | `Pulse` is a good transport noun if used to clarify the redesign rather than force a total renaming campaign. |
+| REF02 | Engram (renamed to Signal in 2026-08-12) vs Pulse | `keep` | `Pulse` is a good transport noun if used to clarify the redesign rather than force a total renaming campaign. |
 | REF03 | Bus as first class | `keep` | This is the strongest foundational follow-up: unify and formalize transport. |
 | REF04 | operators generalized | `narrow` | Good local idea, bad universal law. Medium polymorphism should be proven operator by operator. |
 | REF05 | loop retold | `keep` | Useful as a reference architecture for the redesign, but should guide migration rather than dictate every interface immediately. |

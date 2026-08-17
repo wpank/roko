@@ -1,6 +1,6 @@
-# GC Preserves Living Engrams
+# GC Preserves Living Signals
 
-> Garbage collection must never delete an Engram whose decay score is above the GC threshold.
+> Garbage collection must never delete an Signal whose decay score is above the GC threshold.
 
 **Crate**: `roko-fs`
 **Test type**: Unit test
@@ -13,17 +13,17 @@
 
 For all substrates S and GC threshold θ in [0, 1]:
 
-After `gc(S, θ)`: for all Engrams E in S_before where `E.decay_score(now) > θ`: E is still in S_after.
+After `gc(S, θ)`: for all Signals E in S_before where `E.decay_score(now) > θ`: E is still in S_after.
 
-GC may only remove Engrams where `E.decay_score(now) ≤ θ`.
+GC may only remove Signals where `E.decay_score(now) ≤ θ`.
 
 ---
 
 ## Why It Matters
 
-GC is the only operation that permanently removes data from the substrate. A GC that incorrectly removes living Engrams would cause:
+GC is the only operation that permanently removes data from the substrate. A GC that incorrectly removes living Signals would cause:
 - Knowledge loss: a Neuro item promoted to Persistent could be GC'd if the decay model were not respected.
-- Broken lineage: a parent Engram that is GC'd leaves orphaned children.
+- Broken lineage: a parent Signal that is GC'd leaves orphaned children.
 - Silent data loss: the orchestrator might look up a task record that no longer exists.
 
 ---

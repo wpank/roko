@@ -9,8 +9,8 @@ your job is to propagate its substance into the canonical `docs/` tree.
 You MAY touch any file under `docs/**` if the refinement applies.
 Primary candidates:
 
-- `docs/06-neuro/` — document HDC-per-Engram, encoder plurality, similarity/consensus/analogy.
-- `docs/00-architecture/02-engram-data-type.md` — add fingerprint field.
+- `docs/06-neuro/` — document HDC-per-Signal, encoder plurality, similarity/consensus/analogy.
+- `docs/00-architecture/02-signal-data-type.md` — add fingerprint field.
 - `docs/00-architecture/07-substrate-trait.md` — document query_similar.
 - `docs/00-architecture/27-temporal-knowledge-topology.md` — HDC-cluster-driven tier progression.
 

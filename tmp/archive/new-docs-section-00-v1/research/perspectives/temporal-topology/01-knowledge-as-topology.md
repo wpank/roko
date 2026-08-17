@@ -14,7 +14,7 @@ precise.
 
 A knowledge graph becomes a metric space when we define a distance function over facts.
 Natural distance definitions include:
-- **Hop distance**: the length of the shortest path between two facts in the Engram graph.
+- **Hop distance**: the length of the shortest path between two facts in the Signal graph.
 - **Semantic distance**: the Hamming distance between the HDC vectors representing two facts
   (directly computable in Roko's Neuro layer).
 - **Temporal distance**: the difference in timestamps between two facts.
@@ -38,12 +38,12 @@ other node. A knowledge graph with many connected components is **fragmented**: 
 cannot reason across the boundaries between components.
 
 **Example**: An agent knows about European history and separately about machine learning,
-but has no Engrams that connect the two domains. If asked "how did WW2 influence the
+but has no Signals that connect the two domains. If asked "how did WW2 influence the
 development of early neural networks" (a question that bridges the components), the agent
 cannot retrieve bridging context because no bridging context exists.
 
 Fragmentationoccurs naturally when the agent's experience is domain-siloed. Dreams
-consolidation can create bridges by forming summary Engrams that connect disparate domains.
+consolidation can create bridges by forming summary Signals that connect disparate domains.
 
 ### Hubs and Bridges
 
@@ -98,8 +98,8 @@ looks like Euclidean space but may have global curvature and non-trivial topolog
 
 The HDC vector space in Roko's Neuro layer is a high-dimensional binary space that, when
 projected into continuous space, supports manifold analysis. Clusters of semantically
-related Engrams form curved manifold-like regions. Decay affects the manifold by eroding
-the density of points (Engrams) in specific regions.
+related Signals form curved manifold-like regions. Decay affects the manifold by eroding
+the density of points (Signals) in specific regions.
 
 Manifold topology provides tools for understanding:
 - **Knowledge holes**: regions of semantic space not represented in the knowledge base

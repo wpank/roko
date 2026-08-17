@@ -19,7 +19,7 @@
 
 Dreams runs exclusively during Delta ticks. It has two phases modeled after sleep
 neuroscience: **replay** (NREM-like, consolidating recent experiences) and
-**imagination** (REM-like, generating novel `Kind::Imagined` Engrams by composing
+**imagination** (REM-like, generating novel `Kind::Imagined` Signals by composing
 existing knowledge with HDC algebra). Dreams is the mechanism by which the agent
 learns during rest rather than only during active processing.
 
@@ -35,16 +35,16 @@ disparate memories, or emotion processing.
 
 Roko's Dreams subsystem implements computational analogs of both:
 
-- **NREM replay** — take recent Engrams (last 24 h), re-run them through a simplified
+- **NREM replay** — take recent Signals (last 24 h), re-run them through a simplified
   SCORE pass with the current world model, and update routing priors based on what
   "would have happened" if the agent had encountered them today. This is the
   consolidation function: making recent experience available for efficient future
   retrieval.
 
-- **REM imagination** — compose pairs or triplets of existing Engrams using HDC
-  bind/bundle operations to generate new Engrams that encode relationships the agent
+- **REM imagination** — compose pairs or triplets of existing Signals using HDC
+  bind/bundle operations to generate new Signals that encode relationships the agent
   has not explicitly seen. These are marked `Kind::Imagined` and have low initial
-  trust. Over time, if imagined Engrams prove useful (high utility EMA), their trust
+  trust. Over time, if imagined Signals prove useful (high utility EMA), their trust
   is promoted.
 
 ---
@@ -93,7 +93,7 @@ of the vivid imagery that occurs at sleep onset. During hypnagogia, the agent:
 - Uses a slightly higher temperature (if model-assisted) to encourage divergent
   combinations
 
-This is the "creativity" mode of Dreams. The resulting Engrams are more novel but also
+This is the "creativity" mode of Dreams. The resulting Signals are more novel but also
 less reliable — they need time (real-time usage) to demonstrate utility before their
 trust is promoted.
 
@@ -107,10 +107,10 @@ Dreams participates only in Delta ticks:
 |---|---|
 | QUERY | Requests full 24 h lookback for replay candidates |
 | SCORE | Re-scores candidates with current weights |
-| PERSIST | Writes updated Engrams (replay) and new imagined Engrams (REM) |
+| PERSIST | Writes updated Signals (replay) and new imagined Signals (REM) |
 
 Dreams does not participate in Gamma or Theta ticks. Its influence on real-time
-processing comes through the Engrams it writes and the routing priors it updates.
+processing comes through the Signals it writes and the routing priors it updates.
 
 ---
 

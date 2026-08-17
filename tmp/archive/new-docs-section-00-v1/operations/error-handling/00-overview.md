@@ -36,7 +36,7 @@ This means:
    it is, not just what exception was thrown.
 2. **Recovery is data, not code.** The recovery strategy for a failure class is a
    configuration and policy concern, not an inline `catch` block.
-3. **Failures are observable.** Every verdict is persisted as an Engram and emitted as a
+3. **Failures are observable.** Every verdict is persisted as an Signal and emitted as a
    Pulse. There is no silent failure.
 4. **Unhandled failures are bugs.** If the system receives a failure verdict that it
    does not know how to handle, that is a bug in the error taxonomy or the recovery

@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a synthesis report from a structured deep-research run. It is reference material
+> for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Adversarial Robustness, Safety, and Self-Evolution Risk
 
 This document analyzes the adversarial threat landscape facing autonomous AI agent systems that modify their own code, accumulate persistent memory, coordinate through shared knowledge stores, and interact with external tool ecosystems. It is written for someone with no prior context on the Roko/Korai platform. Every claim is grounded in published research with arXiv identifiers or CVE numbers. The document concludes with a concrete architectural response -- a three-pillar anti-collapse stack that addresses failure modes no single published system handles in combination.

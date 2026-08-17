@@ -35,7 +35,7 @@ distributed across the architecture.
 
 Top next step:
 
-1. add an HDC fingerprint field to `Engram`
+1. add an HDC fingerprint field to `Signal`
 2. compute it when the kernel object is stored or emitted
 3. make later similarity search build on that shared field
 
@@ -50,5 +50,5 @@ Top next step:
 ## Doc Posture
 
 - talk about HDC primitives in present tense
-- talk about HDC-on-Engram as the next concrete step
+- talk about HDC-on-Signal as the next concrete step
 - talk about advanced HDC search, consensus, and analogy as deferred

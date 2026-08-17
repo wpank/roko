@@ -346,7 +346,7 @@ Completion expectations, per cursor position:
 - After `roko <TAB>` → subcommand list.
 - After `roko plan <TAB>` → `list`, `show`, `create`, `run`, `pause`.
 - After `roko plan show <TAB>` → current plan IDs (discovered from `.roko/plans/`).
-- After `roko inspect <TAB>` → all Engram hashes with brief descriptions,
+- After `roko inspect <TAB>` → all Signal hashes with brief descriptions,
   prefix-filtered.
 - After `roko ask --role <TAB>` → role names from current profile.
 - After `roko config set <TAB>` → dotted keys from current roko.toml.

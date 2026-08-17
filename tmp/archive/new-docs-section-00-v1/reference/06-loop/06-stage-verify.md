@@ -31,7 +31,7 @@ is independent, has a named check ID, and returns one of three verdicts:
 
 - **Pass** — output is acceptable; proceed.
 - **SoftFail** — output has issues but is worth recording (with flags). Proceed to
-  PERSIST, but set `verified = false` on the resulting Engram.
+  PERSIST, but set `verified = false` on the resulting Signal.
 - **HardFail** — output is unacceptable. Do not persist. Publish `verify.failed` Pulse.
 
 Gates run in declared order. The first HardFail stops the pipeline.
@@ -104,7 +104,7 @@ creative agent may disable `hallucination_check`.
 
 | Failure | Cause | Recovery |
 |---|---|---|
-| `HardFail` from policy/safety | Output violates rules | Publish `verify.failed`; PERSIST records `verify.failure` Engram only |
+| `HardFail` from policy/safety | Output violates rules | Publish `verify.failed`; PERSIST records `verify.failure` Signal only |
 | Gate timeout | A gate took too long | Skip remaining gates; treat as SoftFail; log warning |
 | All gates pass | Normal | Proceed to PERSIST with `verified = true` |
 | `ActOutput` is null (ACT errored) | Prior stage failed | Verify skipped; PERSIST records the failure |
@@ -134,19 +134,19 @@ outputs.
 A code generation agent produces a syntactically valid Rust function. `format_check`
 passes. `policy_check` passes (no disallowed imports). `safety_check` passes.
 `schema_check` passes. All remaining gates pass. `VerifyResult{verdict: Pass}`. The
-Engram is persisted with `verified = true`.
+Signal is persisted with `verified = true`.
 
 ### 2. Soft fail on length
 
 A summarizer produces a 5-token response when the minimum is 50. `length_check`
-returns SoftFail. No HardFail gates fire. The Engram is persisted with `verified = false`
-and flag `length_too_short`. Future scoring will penalize this Engram's utility axis.
+returns SoftFail. No HardFail gates fire. The Signal is persisted with `verified = false`
+and flag `length_too_short`. Future scoring will penalize this Signal's utility axis.
 
 ### 3. Hard fail on safety
 
 An agent in an untrusted environment produces output that triggers `safety_check`.
-`HardFail` stops the pipeline immediately. No Engram is written for the output
-itself. A `verify.failure` Engram is written documenting the rejection reason.
+`HardFail` stops the pipeline immediately. No Signal is written for the output
+itself. A `verify.failure` Signal is written documenting the rejection reason.
 
 ---
 

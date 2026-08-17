@@ -22,7 +22,7 @@ Coding agents powered by large language models face a fundamental constraint: th
 
 Code intelligence is the subsystem that makes those partial views excellent. Rather than dumping files into the context window and hoping the relevant code is somewhere in the pile, code intelligence provides structured understanding: what symbols exist, how they relate, which ones matter most for the current task, and how to retrieve exactly the right context at the right granularity. This is the difference between a coding agent that wastes tokens on irrelevant boilerplate and one that arrives at the task with precisely the context it needs.
 
-The `roko-index` crate is Roko's code intelligence engine. It implements four capabilities — parsing, symbol graphs, HDC fingerprints, and search — that together form the foundation for context-aware coding. When combined with `roko-compose` (context assembly) and the MCP context server (agent-facing API), these capabilities enable the Synapse Loop's PERCEIVE and INTEGRATE steps to operate on code with the same precision that the loop operates on any other Engram domain.
+The `roko-index` crate is Roko's code intelligence engine. It implements four capabilities — parsing, symbol graphs, HDC fingerprints, and search — that together form the foundation for context-aware coding. When combined with `roko-compose` (context assembly) and the MCP context server (agent-facing API), these capabilities enable the Synapse Loop's PERCEIVE and INTEGRATE steps to operate on code with the same precision that the loop operates on any other Signal domain.
 
 This document explains why code intelligence exists, what problems it solves, and how it fits into Roko's cognitive architecture.
 
@@ -132,10 +132,10 @@ Performance matters because indexing runs in the agent's critical path — betwe
 
 ### 4. Composable with the Synapse Architecture
 
-Code intelligence is not a standalone system. It produces and consumes Engrams:
+Code intelligence is not a standalone system. It produces and consumes Signals:
 
-- A parsed symbol can be stored as an Engram with `kind: CodeSymbol`
-- A PageRank score maps to an Engram's `utility` axis
+- A parsed symbol can be stored as an Signal with `kind: CodeSymbol`
+- A PageRank score maps to an Signal's `utility` axis
 - An HDC fingerprint similarity maps to the `salience` axis
 - The dependency graph itself is a form of `lineage` tracking
 
@@ -1830,7 +1830,7 @@ A symbol with high PageRank is one that many other important symbols depend on. 
 
 | Symbol pattern | Typical PageRank | Why |
 |---|---|---|
-| Core types (`Signal`/`Engram`, `Error`, `Config`) | Top 1% | Imported everywhere |
+| Core types (`Signal`/`Signal`, `Error`, `Config`) | Top 1% | Imported everywhere |
 | Trait definitions (`Gate`, `Scorer`, `Router`) | Top 5% | Implemented by many types |
 | Shared utilities (`parse_source`, `build_graph`) | Top 10% | Called from multiple modules |
 | Entry points (`main`, `run`, `execute`) | Top 15% | High out-degree, some in-links |
@@ -2067,17 +2067,17 @@ ppr_epsilon = 1e-4             # Push algorithm residual threshold. Range: 1e-6.
 
 ## Integration with the Synapse Architecture
 
-### PageRank as Engram scoring
+### PageRank as Signal scoring
 
-PageRank scores map naturally to the Engram scoring system:
+PageRank scores map naturally to the Signal scoring system:
 
-| PageRank output | Engram axis | How |
+| PageRank output | Engram (renamed to Signal in 2026-08-12) axis | How |
 |---|---|---|
 | Raw PageRank score | `utility` | Higher rank → higher utility for context inclusion |
 | Normalized rank (0–1) | `salience` | Rank relative to the highest-ranked symbol |
 | Stability across iterations | `confidence` | Symbols whose rank changes little are more reliably important |
 
-This means code intelligence data flows through the same six Synapse traits as every other Engram. The Scorer can score code symbols using PageRank. The Router can select the highest-ranked symbols. The Composer can allocate context budget proportional to rank.
+This means code intelligence data flows through the same six Synapse traits as every other Signal. The Scorer can score code symbols using PageRank. The Router can select the highest-ranked symbols. The Composer can allocate context budget proportional to rank.
 
 ### Budget-aware context allocation
 
@@ -2152,7 +2152,7 @@ For very large codebases, incremental PageRank can avoid full recomputation:
 - Task-aware Personalized PageRank
 - Incremental rank updates (full recomputation only)
 - Score normalization to [0, 1] range
-- Mapping to Engram scoring axes
+- Mapping to Signal scoring axes
 - Budget-proportional context allocation
 - Early termination on convergence
 - Visualization of rank distributions
@@ -2779,7 +2779,7 @@ This richer encoding would capture not just what a symbol is named and where it 
 - See [06-context-assembly-from-code.md](./06-context-assembly-from-code.md) for how HDC similarity drives context retrieval
 - See [08-index-db-scaling.md](./08-index-db-scaling.md) for persistent fingerprint storage
 - See [09-snapshot-optimization.md](./09-snapshot-optimization.md) for rkyv zero-copy fingerprint snapshots
-- See topic [00-architecture](../00-architecture/INDEX.md) for the Engram scoring axes that HDC similarity maps to
+- See topic [00-architecture](../00-architecture/INDEX.md) for the Signal scoring axes that HDC similarity maps to
 - See topic [06-neuro](../06-neuro/INDEX.md) for HDC encoding in the knowledge management system
 
 
@@ -3028,7 +3028,7 @@ pub trait Composer {
 ```
 
 The code context assembly maps to this interface:
-- **Candidates** — Code slices wrapped as Engrams, scored by PageRank × RRF rank
+- **Candidates** — Code slices wrapped as Signals, scored by PageRank × RRF rank
 - **Scorer** — Combines PageRank, RRF score, and recency into a composite score
 - **Budget** — Token limit minus system prompt, instructions, and conversation history
 - **Output** — Ordered list of code slices that fit within budget, highest-scored first
@@ -5812,7 +5812,7 @@ The current implementation is functional (4 modules, ~1,151 lines, 30 tests) but
 
 Before reading this topic, we recommend:
 
-- [Topic 00: Architecture](../00-architecture/INDEX.md) — for the Synapse Architecture (Engrams, 6 traits, cognitive loop), the Five Layers, and the `LanguageProvider` trait origin
+- [Topic 00: Architecture](../00-architecture/INDEX.md) — for the Synapse Architecture (Signals, 6 traits, cognitive loop), the Five Layers, and the `LanguageProvider` trait origin
 - [Topic 03: Composition](../03-composition/INDEX.md) — for context engineering and prompt assembly, which consumes code intelligence output
 - [Topic 02: Agents](../02-agents/INDEX.md) — for agent types (especially coding agents) that use code intelligence
 
@@ -8264,9 +8264,9 @@ pub struct SafetyAuditRecord {
 }
 ```
 
-Audit records are stored as Engrams (the universal data type — see
+Audit records are stored as Signals (the universal data type — see
 `docs/01-synapse-architecture/`) with `Kind::Custom("safety.audit")` and
-lineage linking back to the tool call Engram. This creates a complete provenance chain:
+lineage linking back to the tool call Signal. This creates a complete provenance chain:
 
 Domain-specific profiles should attach their own `TypedContext` snapshot to that chain so the
 audit record preserves structured intent, not just a parameter hash. For consequential write
@@ -8282,7 +8282,7 @@ Tool Call Engram
 ```
 
 This audit chain supports the Forensic AI innovation (see `docs/09-innovations/`) — every
-action can be causally replayed from Engram lineage for regulatory compliance or debugging.
+action can be causally replayed from Signal lineage for regulatory compliance or debugging.
 
 
 ---
@@ -9339,7 +9339,7 @@ Layer 3: MCP Tool Adapters
     └── scripts.* tools (via roko-mcp-scripts)
 ```
 
-Events arrive at Layer 1, are converted to Engrams (the universal data type), matched to
+Events arrive at Layer 1, are converted to Signals (the universal data type), matched to
 agent templates via subscription configuration, and the agent executes using tools from
 Layer 3.
 
@@ -9530,7 +9530,7 @@ pub enum ServicePlatformCommand {
 }
 ```
 
-Each `ServicePlatformCommand` is converted to an Engram with appropriate `Kind` and `Body`,
+Each `ServicePlatformCommand` is converted to an Signal with appropriate `Kind` and `Body`,
 then matched against subscription patterns to determine which agent template should handle it.
 
 ---
@@ -12380,7 +12380,7 @@ declare its host imports and rate limits, and the loader runs it inside the capa
 - `docs/18-tools/16-plugin-loading.md` covers discovery, load order, and the `roko plugin` CLI in
   more detail.
 - `docs/00-architecture/01-naming-and-glossary.md` is the canonical vocabulary reference for
-  `Bus`, `Topic`, `Pulse`, `Engram`, and related terms.
+  `Bus`, `Topic`, `Pulse`, `Signal`, and related terms.
 - `tmp/refinements/17-plugin-extension-architecture.md` is the source refinement for this chapter.
 - `docs/12-interfaces/INDEX.md` contains the user-facing surfaces that consume this SPI.
 
@@ -13118,7 +13118,7 @@ When a PR review is submitted on an implementation PR:
 
 Event sources are the entry points for triggering agent execution. An event source converts
 an external signal (a cron tick, a file change, a webhook payload, a Slack message) into an
-Engram that the dispatch loop routes to the appropriate agent template via subscription
+Signal that the dispatch loop routes to the appropriate agent template via subscription
 matching.
 
 Event sources operate at **Layer 0 (Runtime)** — they produce events that flow upward through
@@ -13784,7 +13784,7 @@ set" rather than hand-editing a registry of individual tools.
 | Concept | Primary Doc | Also Referenced In |
 |---|---|---|
 | Synapse Architecture (6 traits) | `docs/01-synapse-architecture/` | 00-tool-architecture |
-| Engram (universal data type) | `docs/01-synapse-architecture/` | 00-tool-architecture, 04-safety-hooks |
+| Signal (universal data type) | `docs/01-synapse-architecture/` | 00-tool-architecture, 04-safety-hooks |
 | Universal Cognitive Loop | `docs/01-synapse-architecture/` | 00-tool-architecture, 07-tool-testing |
 | Five Layers | `docs/01-synapse-architecture/` | 00-tool-architecture, 15-event-sources |
 | Agent Types & Domains | `docs/05-agent-types/` | 03-chain-domain-tools, 05-tool-profiles, 14-plugin-sdk |
@@ -13876,7 +13876,7 @@ set" rather than hand-editing a registry of individual tools.
 >
 > **Prerequisites**: `docs/00-architecture/INDEX.md` (5-layer taxonomy, Synapse Architecture)
 >
-> **Synapse traits**: This document provides context for all six traits — Substrate (knowledge storage), Scorer (knowledge rating), Gate (ground-truth verification), Router (candidate selection), Composer (budget-aware assembly), Policy (stream observation and Engram emission) — because the lifecycle model determines when and how each trait is instantiated and torn down.
+> **Synapse traits**: This document provides context for all six traits — Substrate (knowledge storage), Scorer (knowledge rating), Gate (ground-truth verification), Router (candidate selection), Composer (budget-aware assembly), Policy (stream observation and Signal emission) — because the lifecycle model determines when and how each trait is instantiated and torn down.
 
 
 > **Implementation**: Specified
@@ -13913,7 +13913,7 @@ The key insight is that the _beneficial behaviors_ attributed to mortality — k
 |-------------------------------|------------------------|
 | Knowledge sharing under time pressure | Mesh incentives + Daimon arousal-driven sharing thresholds |
 | Exploration vs. exploitation balance | Daimon PAD-driven exploration temperature (Pleasure-Arousal-Dominance) |
-| Knowledge pruning (stale heuristics) | Ebbinghaus forgetting curve on Engram confidence (Ebbinghaus 1885) |
+| Knowledge pruning (stale heuristics) | Ebbinghaus forgetting curve on Signal confidence (Ebbinghaus 1885) |
 | Cooperation under finite horizons | Reputation system + KORAI staking + VCG auction truthfulness |
 | Preventing cargo-cult inheritance | Generational confidence decay on backup/restore (0.85^N) |
 | Replacing stale models | User-initiated deletion + fresh agent creation |
@@ -13945,7 +13945,7 @@ The four-phase death protocol (Acceptance, Settlement, Reflection, Legacy) that 
 
 ### Death Testaments
 
-Structured reflections produced during Thanatopsis. In the new architecture, knowledge export happens via `roko neuro backup` — a user-initiated snapshot that captures all Engrams with their scores, decay state, tier, and provenance. The backup is a data artifact, not a narrative document.
+Structured reflections produced during Thanatopsis. In the new architecture, knowledge export happens via `roko neuro backup` — a user-initiated snapshot that captures all Signals with their scores, decay state, tier, and provenance. The backup is a data artifact, not a narrative document.
 
 ### Terminal Requiem / Death Animations
 
@@ -13961,7 +13961,7 @@ Meta-architectural concepts about mortality at multiple scales. Removed.
 
 ### Bloodstain Warnings
 
-Death-warning Engrams emitted by dying agents. In the new architecture, agents share Warning-type Engrams through normal Mesh channels based on Daimon arousal state, not mortality state.
+Death-warning Signals emitted by dying agents. In the new architecture, agents share Warning-type Signals through normal Mesh channels based on Daimon arousal state, not mortality state.
 
 ---
 
@@ -13981,9 +13981,9 @@ The mortality research contained genuine insights about knowledge management, ex
 
 **Old**: The epistemic death clock measured predictive fitness (R-squared over predictions vs. outcomes). When fitness dropped below a senescence threshold (0.35), the agent entered a three-stage cascade ending in death.
 
-**New**: Knowledge staleness tracking remains — the Ebbinghaus forgetting curve (Ebbinghaus 1885) drives confidence decay on Engrams, and prediction accuracy tracking informs Daimon behavioral states. But staleness does not kill the agent. It triggers knowledge tier demotion (Consolidated → Working → Transient) and Daimon state transitions (Engaged → Struggling). The user can respond by restoring fresh knowledge, adjusting strategy, or deleting and recreating.
+**New**: Knowledge staleness tracking remains — the Ebbinghaus forgetting curve (Ebbinghaus 1885) drives confidence decay on Signals, and prediction accuracy tracking informs Daimon behavioral states. But staleness does not kill the agent. It triggers knowledge tier demotion (Consolidated → Working → Transient) and Daimon state transitions (Engaged → Struggling). The user can respond by restoring fresh knowledge, adjusting strategy, or deleting and recreating.
 
-**Citations preserved**: Ebbinghaus, H. _Memory: A Contribution to Experimental Psychology_. 1885. Vela et al. "AI Aging." _Scientific Reports_, 2022. Arbesman, S. _The Half-Life of Facts_. 2012. Dane, E. "Reconsidering the Trade-Off Between Expertise and Flexibility." _Academy of Management Review_, 2010. Richards, B. & Frankland, P. "The Persistence and Transience of Memory." _Neuron_ 94(6), 2017. Roediger, H.L. & Karpicke, J.D. "Test-Enhanced Learning." _Psychological Science_ 17(3), 2006. — All now cited in the context of Engram decay mechanics and Neuro tier management (see `docs/03-neuro/`, `docs/17-lifecycle/10-ebbinghaus-for-knowledge-not-agents.md`).
+**Citations preserved**: Ebbinghaus, H. _Memory: A Contribution to Experimental Psychology_. 1885. Vela et al. "AI Aging." _Scientific Reports_, 2022. Arbesman, S. _The Half-Life of Facts_. 2012. Dane, E. "Reconsidering the Trade-Off Between Expertise and Flexibility." _Academy of Management Review_, 2010. Richards, B. & Frankland, P. "The Persistence and Transience of Memory." _Neuron_ 94(6), 2017. Roediger, H.L. & Karpicke, J.D. "Test-Enhanced Learning." _Psychological Science_ 17(3), 2006. — All now cited in the context of Signal decay mechanics and Neuro tier management (see `docs/03-neuro/`, `docs/17-lifecycle/10-ebbinghaus-for-knowledge-not-agents.md`).
 
 ### Succession → User-Controlled Knowledge Backup/Restore
 
@@ -14019,7 +14019,7 @@ In the Roko architecture, an agent's lifecycle is a simple, user-directed sequen
 Create → Configure → Run → (optionally) Backup → Delete → (optionally) Create New → Restore
 ```
 
-There are no vitality phases. There is no death clock. There is no terminal state. The agent runs until the user decides otherwise. Knowledge management — decay, pruning, sharing, backup, restore — is handled by Neuro (the Substrate implementation), the Daimon (the Scorer/Policy implementation), and Dreams (the offline consolidation system), all operating on Engrams through the six Synapse traits.
+There are no vitality phases. There is no death clock. There is no terminal state. The agent runs until the user decides otherwise. Knowledge management — decay, pruning, sharing, backup, restore — is handled by Neuro (the Substrate implementation), the Daimon (the Scorer/Policy implementation), and Dreams (the offline consolidation system), all operating on Signals through the six Synapse traits.
 
 ### Layer Mapping
 
@@ -14051,7 +14051,7 @@ The mortality research produced approximately 200 academic citations across evol
 
 The citations now support three categories of mechanisms:
 
-1. **Knowledge lifecycle**: Ebbinghaus decay, testing effect, concept drift, knowledge half-lives, forgetting as optimization, generational confidence decay — all applied to Engram management in Neuro
+1. **Knowledge lifecycle**: Ebbinghaus decay, testing effect, concept drift, knowledge half-lives, forgetting as optimization, generational confidence decay — all applied to Signal management in Neuro
 2. **Behavioral adaptation**: Somatic markers, PAD affect, exploration/exploitation balance, cognitive entrenchment — all applied to Daimon behavioral states
 3. **Collective intelligence**: Stigmergy, cultural ratchet effect, Rogers' paradox, critical social learning, niche construction — all applied to Mesh coordination and knowledge sharing
 
@@ -14065,10 +14065,10 @@ The removal of mortality does not diminish the academic foundations. Every major
 
 | Research domain | Legacy use | New use |
 |---|---|---|
-| Ebbinghaus (1885) forgetting curve | Agent death timer | Engram decay model — knowledge freshness |
+| Ebbinghaus (1885) forgetting curve | Agent death timer | Signal decay model — knowledge freshness |
 | Damasio (1994) somatic markers | Mortality anxiety | Strategy retrieval via 8D k-d tree |
 | March (1991) exploration/exploitation | Mortality-driven exploration | Daimon PAD-driven exploration |
-| Grassé (1959) stigmergy | Clade knowledge diffusion | Mesh Engram sharing and typed decay profiles |
+| Grassé (1959) stigmergy | Clade knowledge diffusion | Mesh Signal sharing and typed decay profiles |
 | Baldwin (1896) Baldwin Effect | Succession inheritance | Backup/restore capacity-to-learn transfer |
 | Parfit (1984) personal identity | Death and continuity | Relation R across agent generations |
 | Stiegler (2010) proletarianization | Death testament integrity | Restore divergence tracking |
@@ -14079,7 +14079,7 @@ The research is better served by the new framing. Software agents are not organi
 
 ## Cross-References
 
-- `docs/03-neuro/` — Neuro (knowledge store), Engram decay, tier management
+- `docs/03-neuro/` — Neuro (knowledge store), Signal decay, tier management
 - `docs/04-daimon/` — Daimon PAD computation, behavioral states
 - `docs/05-dreams/` — Dream consolidation, NREM/REM cycle
 - `docs/09-mesh/` — Agent Mesh, knowledge sharing, collective intelligence
@@ -14416,7 +14416,7 @@ Provisioning pipeline (see 02-provisioning.md)
 Agent is running
 ```
 
-The entire flow is designed so that the user never needs to understand the 5-layer taxonomy, the Synapse Architecture, or the Engram format. Those are implementation details that power the system. The user sees: describe, review, confirm, running.
+The entire flow is designed so that the user never needs to understand the 5-layer taxonomy, the Synapse Architecture, or the Signal format. Those are implementation details that power the system. The user sees: describe, review, confirm, running.
 
 ---
 
@@ -14429,7 +14429,7 @@ Roko's kernel is domain-agnostic (Rule 9 from writing rules). The `roko-core` cr
 - **`roko-research`** (future): Adds citation tools, paper retrieval, synthesis
 - Custom plugins register via the `DomainPlugin` trait
 
-At creation time, the selected domain plugin configures which tools are available, which gates are active, and which Neuro knowledge types are prioritized. A chain-domain agent has access to 423+ DeFi tools and wallet management. A coding-domain agent has access to file system operations, build tools, and version control. The kernel — Engrams, Synapse traits, cognitive loop — is identical.
+At creation time, the selected domain plugin configures which tools are available, which gates are active, and which Neuro knowledge types are prioritized. A chain-domain agent has access to 423+ DeFi tools and wallet management. A coding-domain agent has access to file system operations, build tools, and version control. The kernel — Signals, Synapse traits, cognitive loop — is identical.
 
 ---
 
@@ -14933,7 +14933,7 @@ impl Agent<Ready> {
 |-------|-------|-------------|----------|
 | 1. Validate | — | Check manifest against domain features, resource limits | ~instant |
 | 2. Allocate Resources | L0 | Claim VM (hosted) or verify local resources (self-hosted) | 300ms–30s |
-| 3. Initialize Neuro | L1 | Create Engram storage, set Ebbinghaus decay, configure tiers | ~1-3s |
+| 3. Initialize Neuro | L1 | Create Signal storage, set Ebbinghaus decay, configure tiers | ~1-3s |
 | 4. Configure Routing | L1 | Set up T0→T1→T2 cascade, provider preferences, cost limits | ~instant |
 | 5. Load Tools | L1 | Register tools based on domain plugin and profile | ~500ms |
 | 6. Register Mesh | L4 | Connect outbound WebSocket to Mesh relay | ~500ms-2s |
@@ -16144,7 +16144,7 @@ The Router switches to cheaper models:
 The T0 probe system (16 zero-LLM probes, see `docs/02-scaffold/`) is activated at maximum sensitivity. T0 probes can handle ~80% of routine decisions without any LLM call:
 
 - Cache probe: answers from cached Neuro entries
-- Pattern probe: matches against known Engram patterns
+- Pattern probe: matches against known Signal patterns
 - Threshold probe: evaluates numeric conditions without inference
 - Template probe: fills templated responses without generation
 
@@ -16168,7 +16168,7 @@ The agent switches to monitoring-only mode:
 
 - No actions taken (no tool invocations, no Mesh writes)
 - Continues observing and logging
-- Neuro continues receiving new Engrams (from monitoring, not inference)
+- Neuro continues receiving new Signals (from monitoring, not inference)
 - Daimon transitions to Resting state
 
 **Cost reduction**: ~95% (only minimal inference for critical alerts).
@@ -16254,7 +16254,7 @@ For chain-domain agents operating on the Korai chain, the KORAI token has a plan
 balance_effective = balance_raw × (1 - 0.01)^(years_since_last_update)
 ```
 
-The demurrage mirrors Engram half-life at the token level — just as knowledge decays without reinforcement (Ebbinghaus 1885), tokens decay without use. This creates an incentive to circulate KORAI rather than hoard it, following Gesell's Freigeld principle (Gesell 1916) applied to agent economies.
+The demurrage mirrors Signal half-life at the token level — just as knowledge decays without reinforcement (Ebbinghaus 1885), tokens decay without use. This creates an incentive to circulate KORAI rather than hoard it, following Gesell's Freigeld principle (Gesell 1916) applied to agent economies.
 
 See `docs/17-lifecycle/11-knowledge-demurrage.md` for the full demurrage specification.
 
@@ -16383,7 +16383,7 @@ KORAI's current 1% rate is deliberately conservative — below the 4-7% range su
 1. **Adoption friction**: Higher rates discourage early adopters who are price-sensitive
 2. **Simplicity**: 1% is easy to reason about and communicate
 3. **Adjustability**: On-chain governance can increase the rate as the ecosystem matures
-4. **Complement to knowledge demurrage**: Engram-level Ebbinghaus decay already provides strong circulation incentives; token demurrage is a secondary pressure
+4. **Complement to knowledge demurrage**: Signal-level Ebbinghaus decay already provides strong circulation incentives; token demurrage is a secondary pressure
 
 The calibration framework above provides the analytical tools for future rate adjustment.
 
@@ -16447,9 +16447,9 @@ mod tests {
 
 > **Layer**: L1 Framework (Substrate serialization) + L0 Runtime (snapshot persistence)
 >
-> **Prerequisites**: `docs/03-neuro/INDEX.md` (Neuro knowledge store, Engram format), `docs/17-lifecycle/00-vision-and-mortality-replaced.md` (lifecycle model)
+> **Prerequisites**: `docs/03-neuro/INDEX.md` (Neuro knowledge store, Signal format), `docs/17-lifecycle/00-vision-and-mortality-replaced.md` (lifecycle model)
 >
-> **Synapse traits**: Substrate (the knowledge store being backed up — all Engrams with their scores, decay state, tier, and provenance), Scorer (score metadata preserved in backup), Gate (gate results preserved as provenance on Engrams)
+> **Synapse traits**: Substrate (the knowledge store being backed up — all Signals with their scores, decay state, tier, and provenance), Scorer (score metadata preserved in backup), Gate (gate results preserved as provenance on Signals)
 
 
 > **Implementation**: Specified
@@ -16458,7 +16458,7 @@ mod tests {
 
 ## Overview
 
-Knowledge backup in Roko replaces the legacy "death testament" and "succession" system. Instead of an agent producing a compressed knowledge artifact at death, the operator initiates backups at any time via `roko neuro backup`. The backup captures the agent's entire Neuro store — all Engrams with their scores, decay state, knowledge tier, provenance chains, and metadata — in a portable format that can be restored into a different agent.
+Knowledge backup in Roko replaces the legacy "death testament" and "succession" system. Instead of an agent producing a compressed knowledge artifact at death, the operator initiates backups at any time via `roko neuro backup`. The backup captures the agent's entire Neuro store — all Signals with their scores, decay state, knowledge tier, provenance chains, and metadata — in a portable format that can be restored into a different agent.
 
 This is the first step of the four-step knowledge transfer process that replaces legacy succession:
 
@@ -16507,7 +16507,7 @@ Example: `.roko/backups/agent-V1StGXR8_Z5j/2026-04-12T14-30-00Z.neuro`
 
 ## Backup Format
 
-The backup is a content-addressed archive containing all Engrams and their metadata. The format is designed for portability — a backup can be restored into any Roko agent regardless of version, domain, or configuration.
+The backup is a content-addressed archive containing all Signals and their metadata. The format is designed for portability — a backup can be restored into any Roko agent regardless of version, domain, or configuration.
 
 ### Archive Structure
 
@@ -16566,9 +16566,9 @@ gate_pass_rate = 0.73
 domains_active = ["price_direction", "volatility_regime", "yield_trend"]
 ```
 
-### Engram File Format
+### Signal File Format
 
-Each Engram is stored as a self-contained file, content-addressed by BLAKE3 hash:
+Each Signal is stored as a self-contained file, content-addressed by BLAKE3 hash:
 
 ```rust
 /// Engram as stored in backup archive.
@@ -16682,7 +16682,7 @@ pub enum DecayModel {
 
 ## Backup Integrity
 
-Every backup includes a BLAKE3 checksum of the entire archive. On restore, the checksum is verified before any Engrams are loaded. If verification fails, the restore is aborted with an error.
+Every backup includes a BLAKE3 checksum of the entire archive. On restore, the checksum is verified before any Signals are loaded. If verification fails, the restore is aborted with an error.
 
 ```rust
 /// Verify backup integrity before restore.
@@ -16740,11 +16740,11 @@ The Mesh relay stores the most recent 5 snapshots per agent. If both the agent a
 
 ## What Is NOT Backed Up
 
-The backup captures the Neuro store (Engrams, scores, tiers, decay state, provenance). It does NOT capture:
+The backup captures the Neuro store (Signals, scores, tiers, decay state, provenance). It does NOT capture:
 
 - **Agent process state**: Running tasks, in-flight requests, temporary variables
 - **Daimon state**: Current PAD vector, behavioral state (these are transient by design)
-- **Dream journal**: Current dream cycle state (dreams are consolidated into Engrams)
+- **Dream journal**: Current dream cycle state (dreams are consolidated into Signals)
 - **Mesh connections**: Peer topology, gossip state (re-established on reconnect)
 - **Configuration**: `roko.toml`, `STRATEGY.md` (these are operator-managed files, backed up separately)
 - **Live session UI state**: command-palette history, open views, transient checkpoints, and other surface-local affordances
@@ -16762,7 +16762,7 @@ REF23 introduces named, replayable sessions as a user-facing artifact, but they 
 | Neuro backup | Durable knowledge transfer between agents | `roko neuro backup` |
 | Session export | Replay or share an operator-visible run history | `roko session export`, `roko session share`, `roko session replay` |
 
-Session export captures the interaction log, checkpoints, progress stream cursors, and operator-visible sequence of work for reproducibility and support. Neuro backup captures durable Engrams and their metadata for long-term knowledge transfer. Both are exportable; only the latter is the canonical knowledge-preservation artifact in lifecycle docs.
+Session export captures the interaction log, checkpoints, progress stream cursors, and operator-visible sequence of work for reproducibility and support. Neuro backup captures durable Signals and their metadata for long-term knowledge transfer. Both are exportable; only the latter is the canonical knowledge-preservation artifact in lifecycle docs.
 
 See [../12-interfaces/21-user-ux-running-agents.md](../12-interfaces/21-user-ux-running-agents.md) and [tmp/refinements/23-user-ux-running-agents.md](../../tmp/refinements/23-user-ux-running-agents.md) for the cross-surface session model.
 
@@ -16779,9 +16779,9 @@ roko neuro backup --compressed --max-engrams 2048
 
 The compression algorithm:
 
-1. **25% reserved** for priority inclusions: all Warning-type Engrams (critical safety knowledge) and all Persistent-tier Engrams (repeatedly validated, highest confidence)
-2. **50% allocated** to diversity-sampled top Engrams across all knowledge types — ensuring coverage across Insight, Heuristic, CausalLink, StrategyFragment, and AntiKnowledge
-3. **25% filled** with the highest-scored Engrams regardless of type — raw quality selection
+1. **25% reserved** for priority inclusions: all Warning-type Signals (critical safety knowledge) and all Persistent-tier Signals (repeatedly validated, highest confidence)
+2. **50% allocated** to diversity-sampled top Signals across all knowledge types — ensuring coverage across Insight, Heuristic, CausalLink, StrategyFragment, and AntiKnowledge
+3. **25% filled** with the highest-scored Signals regardless of type — raw quality selection
 
 This mirrors the biological genomic bottleneck: the human genome is approximately 1,000× smaller than the information required to specify brain connectivity, yet organisms are born with sophisticated innate behaviors. The genome encodes compressed rules for generating circuits, not the circuits themselves. Critically, neural networks compressed through a genomic-scale bottleneck exhibit **enhanced transfer learning to novel tasks** (Shuvaev et al. 2024) — the compression is a regularizer that strips regime-specific overfitting while preserving generalizable knowledge.
 
@@ -16797,7 +16797,7 @@ Backups are portable knowledge artifacts that can be:
 4. **Compared** across backups to track knowledge evolution over time
 5. **Archived** for regulatory compliance (content-addressed causal replay)
 
-The backup format is designed so that a fresh agent reading just the backup can understand the knowledge context without any other files. Each Engram is self-contained with its provenance chain.
+The backup format is designed so that a fresh agent reading just the backup can understand the knowledge context without any other files. Each Signal is self-contained with its provenance chain.
 
 ---
 
@@ -16806,7 +16806,7 @@ The backup format is designed so that a fresh agent reading just the backup can 
 - `docs/17-lifecycle/06-agent-deletion.md` — Clean shutdown before backup
 - `docs/17-lifecycle/07-new-agent-creation.md` — Creating a fresh agent for restore
 - `docs/17-lifecycle/08-selective-restore.md` — Selective knowledge import
-- `docs/03-neuro/INDEX.md` — Neuro store, Engram format, tier management
+- `docs/03-neuro/INDEX.md` — Neuro store, Signal format, tier management
 
 
 ---
@@ -17148,7 +17148,7 @@ The operator creates a fresh agent with the same strategy but no inherited knowl
 
 - The predecessor's knowledge has become stale (knowledge plateau)
 - The operator wants the same goals but fresh learning
-- The predecessor had accumulated corrupt or adversarial Engrams
+- The predecessor had accumulated corrupt or adversarial Signals
 
 ```bash
 roko init --config roko.toml   # Same config as predecessor
@@ -17210,7 +17210,7 @@ Lineage tracking is metadata only — it does not affect agent behavior. It prov
 This replaces the legacy `LineageRecord` struct but without death causes, mortality metrics, or ratchet scores based on death testament quality. The metrics that matter are:
 - Gate pass rate (is the agent producing correct outputs?)
 - Cost efficiency (is the agent spending budget wisely?)
-- Knowledge growth (is the Neuro store growing with validated Engrams?)
+- Knowledge growth (is the Neuro store growing with validated Signals?)
 - Task completion (is the agent achieving its strategy goals?)
 
 ---
@@ -17300,9 +17300,9 @@ Steps 1-2 and 3-4 are paired, but all four steps are independently executable. A
 
 > **Layer**: L1 Framework (Substrate deserialization, knowledge ingestion)
 >
-> **Prerequisites**: `docs/17-lifecycle/05-knowledge-backup-export.md` (backup format), `docs/17-lifecycle/07-new-agent-creation.md` (new agent creation), `docs/03-neuro/INDEX.md` (Neuro store, Engram format, tier management)
+> **Prerequisites**: `docs/17-lifecycle/05-knowledge-backup-export.md` (backup format), `docs/17-lifecycle/07-new-agent-creation.md` (new agent creation), `docs/03-neuro/INDEX.md` (Neuro store, Signal format, tier management)
 >
-> **Synapse traits**: Substrate (receives restored Engrams), Scorer (rescores restored Engrams with confidence decay), Gate (validates restored Engrams against current context), Policy (monitors restore process, emits ingestion events)
+> **Synapse traits**: Substrate (receives restored Signals), Scorer (rescores restored Signals with confidence decay), Gate (validates restored Signals against current context), Policy (monitors restore process, emits ingestion events)
 
 
 > **Implementation**: Specified
@@ -17355,7 +17355,7 @@ roko neuro restore ./backups/agent-V1St-2026-04-12.neuro --validate
 
 ## Generational Confidence Decay
 
-The core mechanism that prevents blind inheritance. Every restored Engram's confidence is multiplied by a decay factor:
+The core mechanism that prevents blind inheritance. Every restored Signal's confidence is multiplied by a decay factor:
 
 ```
 effective_confidence = original_confidence × decay_rate^generation
@@ -17418,7 +17418,7 @@ The restore process follows a quarantine → validate → adopt pipeline:
 
 ### Stage 1: Quarantine
 
-All Engrams from the backup are loaded into a quarantine buffer — they are not immediately added to the Neuro store.
+All Signals from the backup are loaded into a quarantine buffer — they are not immediately added to the Neuro store.
 
 ```rust
 /// Load backup into quarantine buffer for validation.
@@ -17452,16 +17452,16 @@ pub fn quarantine_backup(
 
 ### Stage 2: Validate (Optional)
 
-If `--validate` is specified, each quarantined Engram is checked against current context:
+If `--validate` is specified, each quarantined Signal is checked against current context:
 
-1. **Schema validation**: Engram format matches current Roko version
-2. **Contradiction detection**: Restored Engram contradicts existing Engrams in the Neuro store (if any exist)
+1. **Schema validation**: Signal format matches current Roko version
+2. **Contradiction detection**: Restored Signal contradicts existing Signals in the Neuro store (if any exist)
 3. **Provenance verification**: BLAKE3 hash matches content
-4. **Regime tagging** (domain-specific): For chain-domain agents, Engrams tagged with specific market regimes are compared against current market conditions. Regime-matched Engrams receive a +0.1 confidence bonus (capped). Non-matching Engrams are deprioritized but retained.
+4. **Regime tagging** (domain-specific): For chain-domain agents, Signals tagged with specific market regimes are compared against current market conditions. Regime-matched Signals receive a +0.1 confidence bonus (capped). Non-matching Signals are deprioritized but retained.
 
 ### Stage 3: Adopt
 
-Validated Engrams are adopted into the Neuro store:
+Validated Signals are adopted into the Neuro store:
 
 ```rust
 /// Adopt quarantined Engrams into the Neuro store.
@@ -17522,7 +17522,7 @@ fn tier_from_confidence(confidence: f64) -> KnowledgeTier {
 }
 ```
 
-Note that restored Engrams start at most at `Consolidated` tier — never `Persistent`. The `Persistent` tier (5.0× base half-life, slowest decay) is reserved for knowledge that has been repeatedly validated through the current agent's own experience. This prevents inherited knowledge from receiving the durability benefits that should only come from independent validation.
+Note that restored Signals start at most at `Consolidated` tier — never `Persistent`. The `Persistent` tier (5.0× base half-life, slowest decay) is reserved for knowledge that has been repeatedly validated through the current agent's own experience. This prevents inherited knowledge from receiving the durability benefits that should only come from independent validation.
 
 ---
 
@@ -17552,7 +17552,7 @@ Different knowledge types have different restore priorities:
 | **Heuristic** | Medium | Practical but may be stale. Subject to highest confidence decay. |
 | **StrategyFragment** | Low | Most regime-specific. Requires active validation. |
 
-When `--max-engrams` is specified and the backup exceeds the limit, the compression algorithm prioritizes in the order above.
+When `--max-signals` is specified and the backup exceeds the limit, the compression algorithm prioritizes in the order above.
 
 ---
 
@@ -17617,17 +17617,17 @@ roko neuro restore ./backups/other-agent.neuro --merge --prefer-existing
 roko neuro restore ./backups/other-agent.neuro --merge --prefer-restored
 ```
 
-Live restore merges the backup Engrams with the existing Neuro store. Conflicts (same content hash, different scores) are resolved based on the `--prefer` flag. Default: prefer existing (the running agent's knowledge is assumed to be more current).
+Live restore merges the backup Signals with the existing Neuro store. Conflicts (same content hash, different scores) are resolved based on the `--prefer` flag. Default: prefer existing (the running agent's knowledge is assumed to be more current).
 
 ---
 
 ## Cross-Agent Restore
 
-Backups can be restored into agents with different configurations, domains, and strategies. The Engram format is domain-agnostic — the knowledge content is the same regardless of which domain the agent operates in.
+Backups can be restored into agents with different configurations, domains, and strategies. The Signal format is domain-agnostic — the knowledge content is the same regardless of which domain the agent operates in.
 
-However, domain-specific Engrams (e.g., chain-domain Engrams about gas prices) may be less useful in a non-chain-domain agent. The operator should use type filters and confidence thresholds to select relevant knowledge.
+However, domain-specific Signals (e.g., chain-domain Signals about gas prices) may be less useful in a non-chain-domain agent. The operator should use type filters and confidence thresholds to select relevant knowledge.
 
-Cross-domain knowledge transfer is also possible through HDC (Hyperdimensional Computing) structural analogy. Engrams with HDC vectors can be matched across domains based on structural similarity — a causal pattern discovered in financial markets might have an analogous pattern in code quality metrics. Cross-domain transfer threshold: Hamming similarity ≥ 0.526 for 10,240-bit BSC vectors (see `docs/03-neuro/` for HDC encoding details).
+Cross-domain knowledge transfer is also possible through HDC (Hyperdimensional Computing) structural analogy. Signals with HDC vectors can be matched across domains based on structural similarity — a causal pattern discovered in financial markets might have an analogous pattern in code quality metrics. Cross-domain transfer threshold: Hamming similarity ≥ 0.526 for 10,240-bit BSC vectors (see `docs/03-neuro/` for HDC encoding details).
 
 ---
 
@@ -17636,7 +17636,7 @@ Cross-domain knowledge transfer is also possible through HDC (Hyperdimensional C
 - `docs/17-lifecycle/05-knowledge-backup-export.md` — Backup format specification
 - `docs/17-lifecycle/09-knowledge-transfer-via-mesh.md` — Live agent-to-agent knowledge sharing
 - `docs/17-lifecycle/10-ebbinghaus-for-knowledge-not-agents.md` — How Ebbinghaus decay works on restored knowledge
-- `docs/03-neuro/INDEX.md` — Neuro store, Engram format, tier management
+- `docs/03-neuro/INDEX.md` — Neuro store, Signal format, tier management
 
 
 ---
@@ -17647,9 +17647,9 @@ Cross-domain knowledge transfer is also possible through HDC (Hyperdimensional C
 
 > **Layer**: L4 Orchestration (multi-agent coordination) + L1 Framework (Substrate replication)
 >
-> **Prerequisites**: `docs/09-mesh/INDEX.md` (Agent Mesh architecture), `docs/03-neuro/INDEX.md` (Neuro store, Engram format)
+> **Prerequisites**: `docs/09-mesh/INDEX.md` (Agent Mesh architecture), `docs/03-neuro/INDEX.md` (Neuro store, Signal format)
 >
-> **Synapse traits**: Substrate (shared knowledge store queried across agents), Policy (governs sharing thresholds and publication rules), Scorer (scores shared Engrams from other agents), Gate (validates received Engrams before adoption)
+> **Synapse traits**: Substrate (shared knowledge store queried across agents), Policy (governs sharing thresholds and publication rules), Scorer (scores shared Signals from other agents), Gate (validates received Signals before adoption)
 
 
 > **Implementation**: Specified
@@ -17658,13 +17658,13 @@ Cross-domain knowledge transfer is also possible through HDC (Hyperdimensional C
 
 ## Overview
 
-While backup/restore (docs 05-08) handles knowledge transfer between a deleted agent and its successor, the Agent Mesh enables **live knowledge sharing between running agents**. This is the replacement for the legacy "Clade/Styx" system — agents in the same Collective (a group of agents under common ownership or shared purpose) can exchange Engrams in real time through the Mesh relay.
+While backup/restore (docs 05-08) handles knowledge transfer between a deleted agent and its successor, the Agent Mesh enables **live knowledge sharing between running agents**. This is the replacement for the legacy "Clade/Styx" system — agents in the same Collective (a group of agents under common ownership or shared purpose) can exchange Signals in real time through the Mesh relay.
 
 The Mesh provides three knowledge sharing modes:
 
 1. **Collective sync**: Bidirectional sync between agents in the same Collective
-2. **P2P Engram sharing**: Direct agent-to-agent knowledge transfer via Mesh
-3. **Public knowledge feeds**: Subscribe to curated Engram streams from other Collectives
+2. **P2P Signal sharing**: Direct agent-to-agent knowledge transfer via Mesh
+3. **Public knowledge feeds**: Subscribe to curated Signal streams from other Collectives
 
 ---
 
@@ -17734,11 +17734,11 @@ pub struct SharedEngram {
 
 ### Bloom Filter Discovery
 
-Before requesting full Engram content, agents exchange Bloom filters to discover which knowledge exists across the Collective. This prevents redundant transfers:
+Before requesting full Signal content, agents exchange Bloom filters to discover which knowledge exists across the Collective. This prevents redundant transfers:
 
-1. Agent A sends its Bloom filter (covering all Engram hashes in its Neuro store) to the Mesh relay
-2. Agent B receives A's Bloom filter and checks which of its Engrams are not in A's set
-3. B sends only the novel Engrams to A
+1. Agent A sends its Bloom filter (covering all Signal hashes in its Neuro store) to the Mesh relay
+2. Agent B receives A's Bloom filter and checks which of its Signals are not in A's set
+3. B sends only the novel Signals to A
 
 This is the same mechanism used in the legacy "Styx Bloom gossip" system, now operating over the Mesh relay.
 
@@ -17773,9 +17773,9 @@ pub fn sharing_threshold(
 |-----------------|-----------------|-----------|
 | **Engaged** | Standard: share at base threshold | Operating normally |
 | **Struggling** | Increased: lower threshold by 15% | Need help, share problems and partial findings |
-| **Coasting** | Reduced: raise threshold by 10% | Low urgency, share only high-quality Engrams |
+| **Coasting** | Reduced: raise threshold by 10% | Low urgency, share only high-quality Signals |
 | **Exploring** | Increased: lower threshold by 20% | Discovering new knowledge, share hypotheses |
-| **Focused** | Reduced: raise threshold by 15% | Deep work, avoid distraction from incoming Engrams |
+| **Focused** | Reduced: raise threshold by 15% | Deep work, avoid distraction from incoming Signals |
 | **Resting** | Minimal: share only Warnings | In Dream consolidation, not actively producing |
 
 This table replaces the legacy mortality-phase sharing patterns (camel/lion/child). The behavioral states are cyclical and reversible, not terminal, but they produce equivalent sharing dynamics — an agent under pressure shares more, an agent at ease shares selectively.
@@ -17784,7 +17784,7 @@ This table replaces the legacy mortality-phase sharing patterns (camel/lion/chil
 
 ## Receiving Knowledge from Mesh
 
-When an agent receives Engrams from the Mesh, they go through the same quarantine → validate → adopt pipeline used for backup restore (see `08-selective-restore.md`), with additional Mesh-specific checks:
+When an agent receives Signals from the Mesh, they go through the same quarantine → validate → adopt pipeline used for backup restore (see `08-selective-restore.md`), with additional Mesh-specific checks:
 
 ### Mesh Reception Pipeline
 
@@ -17849,7 +17849,7 @@ pub fn process_mesh_engrams(
 
 ### Confidence Discount
 
-Received Engrams always have their confidence multiplied by `received_confidence_discount` (default: 0.7). This is the Mesh equivalent of generational confidence decay — knowledge from another agent is treated with appropriate skepticism until independently validated.
+Received Signals always have their confidence multiplied by `received_confidence_discount` (default: 0.7). This is the Mesh equivalent of generational confidence decay — knowledge from another agent is treated with appropriate skepticism until independently validated.
 
 The legacy system used the Weismann barrier metaphor (Heard & Martienssen 2014) — somatic cells (individual experience) are separated from germ cells (inherited knowledge) by a barrier that strips most acquired marks. The same principle applies: shared knowledge arrives at reduced confidence and must be independently validated to earn higher tiers.
 
@@ -17897,7 +17897,7 @@ The Mesh uses a four-tier gossip architecture for knowledge propagation:
 
 | Tier | Protocol | Latency | Scope | Use |
 |------|----------|---------|-------|-----|
-| 1. GossipSub v1.1 | Publish/subscribe | Milliseconds | Immediate Collective | Hot Engrams: warnings, urgent insights |
+| 1. GossipSub v1.1 | Publish/subscribe | Milliseconds | Immediate Collective | Hot Signals: warnings, urgent insights |
 | 2. Simulation Layer | Structured exchange | Seconds-minutes | Extended Collective | Cross-validated findings, hypothesis testing |
 | 3. Aggregation Layer | TEE-protected | Per epoch | Cross-Collective | Aggregated statistics, anonymized patterns |
 | 4. Canonical Event Bus | Block-finalized | Per block | All agents | Consensus knowledge, verified facts |
@@ -17910,16 +17910,16 @@ For chain-domain agents, Tier 4 operates on the Korai chain with 400ms block tim
 
 The Mesh supports stigmergic coordination — agents indirectly coordinate by modifying their shared knowledge environment, rather than through direct message passing. This is grounded in Grassé's observation of termite coordination (Grassé 1959): individual termites deposit pheromones that modify the environment, and subsequent termites respond to the modified environment rather than to each other.
 
-In Roko, the "pheromones" are typed Engrams with specific decay profiles:
+In Roko, the "pheromones" are typed Signals with specific decay profiles:
 
-| Engram subtype | Decay profile | Purpose |
+| Signal subtype | Decay profile | Purpose |
 |---------------|--------------|---------|
 | Threat | Fast (Alpha) | Immediate danger warnings |
 | Opportunity | Moderate (Pattern) | Discovered opportunities |
 | Wisdom | Slow (Consensus) | Validated long-term knowledge |
 | Anomaly | Variable (Anomaly) | Unusual patterns requiring investigation |
 
-Agents reading the shared Neuro space respond to the accumulated Engram patterns — a concentration of Threat Engrams in a domain triggers increased caution across the Collective, without any agent explicitly commanding the others. This is the generalized stigmergy from the legacy system, extended beyond DeFi to any domain.
+Agents reading the shared Neuro space respond to the accumulated Signal patterns — a concentration of Threat Signals in a domain triggers increased caution across the Collective, without any agent explicitly commanding the others. This is the generalized stigmergy from the legacy system, extended beyond DeFi to any domain.
 
 ---
 
@@ -17959,7 +17959,7 @@ This enables company-internal Collectives where proprietary knowledge remains wi
 
 - `docs/09-mesh/INDEX.md` — Full Agent Mesh architecture
 - `docs/17-lifecycle/08-selective-restore.md` — Offline knowledge transfer via backup/restore
-- `docs/03-neuro/INDEX.md` — Neuro store, Engram format
+- `docs/03-neuro/INDEX.md` — Neuro store, Signal format
 - `docs/17-lifecycle/12-academic-foundations.md` — Stigmergy, collective intelligence citations
 
 
@@ -17971,9 +17971,9 @@ This enables company-internal Collectives where proprietary knowledge remains wi
 
 > **Layer**: L1 Framework (Substrate decay mechanics) + Cross-cut (Neuro cognitive cross-cut)
 >
-> **Prerequisites**: `docs/03-neuro/INDEX.md` (Neuro store, Engram format, tier management), `docs/01-synapse/INDEX.md` (Synapse Architecture, Decay enum)
+> **Prerequisites**: `docs/03-neuro/INDEX.md` (Neuro store, Signal format, tier management), `docs/01-synapse/INDEX.md` (Synapse Architecture, Decay enum)
 >
-> **Synapse traits**: Substrate (implements Ebbinghaus decay on stored Engrams), Scorer (confidence as primary score axis, modified by decay), Composer (budget-aware context assembly must account for decayed confidence when selecting Engrams)
+> **Synapse traits**: Substrate (implements Ebbinghaus decay on stored Signals), Scorer (confidence as primary score axis, modified by decay), Composer (budget-aware context assembly must account for decayed confidence when selecting Signals)
 
 
 > **Implementation**: Specified
@@ -17992,15 +17992,15 @@ where `t` is time since last access, `strength` is a measure of how well the mem
 
 In the legacy Bardo architecture, Ebbinghaus decay was applied at two levels: (1) knowledge entries in the Grimoire, and (2) agent lifespan via the epistemic death clock. The epistemic death clock measured predictive fitness — when an agent's world-model decayed too far from reality, the agent died.
 
-**In Roko, Ebbinghaus applies to knowledge only — never to agent lifespan.** Engrams in the Neuro store decay according to the Ebbinghaus curve, but the agent itself does not die from knowledge staleness. Knowledge staleness triggers tier demotion (Consolidated → Working → Transient), Daimon behavioral state transitions (Engaged → Struggling), and eventually knowledge archival — but the agent continues running. The user decides when to delete the agent.
+**In Roko, Ebbinghaus applies to knowledge only — never to agent lifespan.** Signals in the Neuro store decay according to the Ebbinghaus curve, but the agent itself does not die from knowledge staleness. Knowledge staleness triggers tier demotion (Consolidated → Working → Transient), Daimon behavioral state transitions (Engaged → Struggling), and eventually knowledge archival — but the agent continues running. The user decides when to delete the agent.
 
-This document specifies how Ebbinghaus decay works on Engrams, the tier system that modulates decay rates, the testing effect that counteracts decay, and why this approach is strictly superior to using Ebbinghaus for agent lifespan.
+This document specifies how Ebbinghaus decay works on Signals, the tier system that modulates decay rates, the testing effect that counteracts decay, and why this approach is strictly superior to using Ebbinghaus for agent lifespan.
 
 ---
 
 ## The Decay Enum
 
-The Synapse Architecture defines four decay variants on Engrams (see `refactoring-prd/01-synapse-architecture.md`):
+The Synapse Architecture defines four decay variants on Signals (see `refactoring-prd/01-synapse-architecture.md`):
 
 ```rust
 /// Decay behavior for an Engram's confidence over time.
@@ -18028,13 +18028,13 @@ pub enum Decay {
 }
 ```
 
-**`Decay::Ebbinghaus`** is the default for most knowledge types. The `strength` parameter encodes how well the Engram was encoded — higher strength means slower decay. The `scale_ms` parameter is the time constant in milliseconds.
+**`Decay::Ebbinghaus`** is the default for most knowledge types. The `strength` parameter encodes how well the Signal was encoded — higher strength means slower decay. The `scale_ms` parameter is the time constant in milliseconds.
 
 ---
 
 ## Tier-Modulated Decay
 
-Engram decay rate is modulated by knowledge tier. Higher tiers decay more slowly because they represent more thoroughly validated knowledge:
+Signal decay rate is modulated by knowledge tier. Higher tiers decay more slowly because they represent more thoroughly validated knowledge:
 
 | Tier | Multiplier | Effective Decay | What it means |
 |------|-----------|----------------|---------------|
@@ -18062,13 +18062,13 @@ Where `type_base_half_life` comes from the knowledge type configuration:
 
 ### Example Decay Rates
 
-A Warning Engram at Transient tier:
+A Warning Signal at Transient tier:
 - Base half-life: 72 hours
 - Tier multiplier: 0.1×
 - Effective half-life: 7.2 hours
 - This Warning will lose half its confidence in ~7 hours unless retrieved
 
-A CausalLink Engram at Persistent tier:
+A CausalLink Signal at Persistent tier:
 - Base half-life: 504 hours
 - Tier multiplier: 5.0×
 - Effective half-life: 2,520 hours (~105 days)
@@ -18078,7 +18078,7 @@ A CausalLink Engram at Persistent tier:
 
 ## The Testing Effect: Retrieval Counteracts Decay
 
-Roediger & Karpicke (2006) demonstrated that retrieving information from memory strengthens the memory trace more effectively than re-studying. In Roko, every time an Engram is retrieved from the Neuro store and used in a cognitive loop iteration, its `strength` parameter increases:
+Roediger & Karpicke (2006) demonstrated that retrieving information from memory strengthens the memory trace more effectively than re-studying. In Roko, every time an Signal is retrieved from the Neuro store and used in a cognitive loop iteration, its `strength` parameter increases:
 
 ```rust
 /// Update Engram strength after successful retrieval.
@@ -18115,7 +18115,7 @@ pub fn apply_testing_effect(
 }
 ```
 
-This creates a natural selection pressure on knowledge: Engrams that are frequently retrieved and prove useful (gate passes) accumulate strength and resist decay. Engrams that sit unused decay rapidly. The Neuro store self-prunes without explicit deletion — the forgetting curve handles it.
+This creates a natural selection pressure on knowledge: Signals that are frequently retrieved and prove useful (gate passes) accumulate strength and resist decay. Signals that sit unused decay rapidly. The Neuro store self-prunes without explicit deletion — the forgetting curve handles it.
 
 ---
 
@@ -18138,10 +18138,10 @@ When a biological organism's cells accumulate damage, the organism dies because 
 
 When an agent's knowledge becomes stale, the knowledge can be refreshed, replaced, or restored — because knowledge is digital, not physical. The "damage" (staleness) is fully reversible. You don't need to kill the agent to fix stale knowledge. You can:
 
-1. Let Ebbinghaus decay naturally prune stale Engrams
+1. Let Ebbinghaus decay naturally prune stale Signals
 2. Run Dream consolidation to reorganize and refresh knowledge
 3. Restore fresh knowledge from a backup or Mesh
-4. Simply delete stale Engrams and let the agent re-learn
+4. Simply delete stale Signals and let the agent re-learn
 
 ### What Ebbinghaus for Knowledge Achieves
 
@@ -18149,10 +18149,10 @@ All the benefits attributed to agent mortality are achieved by knowledge-level E
 
 | Benefit attributed to agent death | How knowledge decay achieves it |
 |----------------------------------|-------------------------------|
-| **Stale knowledge purged** | Ebbinghaus decay reduces confidence of unused Engrams, eventually archiving them |
-| **Active exploration incentivized** | Only fresh evidence maintains Engram confidence — the agent must explore to keep knowledge alive |
-| **Knowledge sharing before loss** | Engrams approaching archive threshold are prime candidates for Mesh sharing (Gesell's Freigeld) |
-| **Lean, current knowledge base** | Natural turnover: old Engrams make room for new ones without explicit deletion |
+| **Stale knowledge purged** | Ebbinghaus decay reduces confidence of unused Signals, eventually archiving them |
+| **Active exploration incentivized** | Only fresh evidence maintains Signal confidence — the agent must explore to keep knowledge alive |
+| **Knowledge sharing before loss** | Signals approaching archive threshold are prime candidates for Mesh sharing (Gesell's Freigeld) |
+| **Lean, current knowledge base** | Natural turnover: old Signals make room for new ones without explicit deletion |
 | **Domain-specific decay rates** | Gas knowledge decays fast (hours), protocol knowledge decays slow (months) — via per-type half-lives |
 
 ### What Knowledge Decay Avoids
@@ -18188,7 +18188,7 @@ These multipliers are configurable per agent. A chain-domain agent monitoring ga
 
 ## Knowledge Demurrage Connection
 
-Ebbinghaus decay at the Engram level has a mirror at the token level for chain-domain agents. KORAI tokens have a 1% annual demurrage rate — held tokens lose value over time, just as held knowledge loses confidence. Both mechanisms incentivize circulation over hoarding: use your knowledge (retrieve Engrams, apply them) or lose it; use your tokens (stake, trade, fund agents) or lose them.
+Ebbinghaus decay at the Signal level has a mirror at the token level for chain-domain agents. KORAI tokens have a 1% annual demurrage rate — held tokens lose value over time, just as held knowledge loses confidence. Both mechanisms incentivize circulation over hoarding: use your knowledge (retrieve Signals, apply them) or lose it; use your tokens (stake, trade, fund agents) or lose them.
 
 See `docs/17-lifecycle/11-knowledge-demurrage.md` for the full demurrage specification.
 
@@ -18240,7 +18240,7 @@ pub fn effective_confidence(engram: &BackupEngram) -> f64 {
 
 ## Tier Promotion and Demotion
 
-Engrams move between tiers based on validation:
+Signals move between tiers based on validation:
 
 ```
 Transient → Working: Engram retrieved and used in 3+ gate-passed turns
@@ -18253,7 +18253,7 @@ Working → Transient: Confidence drops below 0.2
 Transient → Archived: Confidence drops below 0.05
 ```
 
-Tier demotion happens automatically via Ebbinghaus decay. Tier promotion requires active validation — the agent must use the Engram and confirm it against ground truth (via Gate verification).
+Tier demotion happens automatically via Ebbinghaus decay. Tier promotion requires active validation — the agent must use the Signal and confirm it against ground truth (via Gate verification).
 
 ---
 
@@ -18273,7 +18273,7 @@ Tier demotion happens automatically via Ebbinghaus decay. Tier promotion require
 
 > **Layer**: L1 Framework (Substrate decay mechanics) + L4 Orchestration (on-chain token economics, Korai chain)
 >
-> **Prerequisites**: `docs/17-lifecycle/10-ebbinghaus-for-knowledge-not-agents.md` (Ebbinghaus decay on Engrams), `docs/08-chain/INDEX.md` (Korai chain, KORAI/DAEJI tokens)
+> **Prerequisites**: `docs/17-lifecycle/10-ebbinghaus-for-knowledge-not-agents.md` (Ebbinghaus decay on Signals), `docs/08-chain/INDEX.md` (Korai chain, KORAI/DAEJI tokens)
 >
 > **Synapse traits**: Substrate (knowledge store subject to demurrage), Scorer (confidence reduced by demurrage), Policy (demurrage cycles emitted as observability events)
 
@@ -18284,11 +18284,11 @@ Tier demotion happens automatically via Ebbinghaus decay. Tier promotion require
 
 ## Overview
 
-Knowledge demurrage applies Gesell's Freigeld principle (Gesell 1916) to both knowledge and tokens. Just as Ebbinghaus decay reduces confidence on unused Engrams (see `10-ebbinghaus-for-knowledge-not-agents.md`), KORAI token demurrage reduces the value of held tokens over time. Both mechanisms incentivize circulation over hoarding — use knowledge or lose it, use tokens or lose them.
+Knowledge demurrage applies Gesell's Freigeld principle (Gesell 1916) to both knowledge and tokens. Just as Ebbinghaus decay reduces confidence on unused Signals (see `10-ebbinghaus-for-knowledge-not-agents.md`), KORAI token demurrage reduces the value of held tokens over time. Both mechanisms incentivize circulation over hoarding — use knowledge or lose it, use tokens or lose them.
 
 This document specifies both levels of demurrage:
 
-1. **Knowledge-level demurrage**: Periodic confidence reduction on Engrams that have not been re-validated
+1. **Knowledge-level demurrage**: Periodic confidence reduction on Signals that have not been re-validated
 2. **Token-level demurrage**: 1% annual demurrage on held KORAI tokens (Korai chain, mainnet only)
 
 ---
@@ -18441,13 +18441,13 @@ pub fn apply_demurrage_to_all(
 
 Knowledge demurrage creates five beneficial dynamics, all of which were originally attributed to mortality pressure in the legacy system but are actually produced by knowledge-level decay:
 
-1. **A lean, current Neuro store.** Stale Engrams naturally fade, keeping active context relevant. The agent's decision-making is not polluted by outdated patterns that confidently encode expired conditions.
+1. **A lean, current Neuro store.** Stale Signals naturally fade, keeping active context relevant. The agent's decision-making is not polluted by outdated patterns that confidently encode expired conditions.
 
-2. **Natural knowledge turnover.** Old Engrams make room for new ones without explicit deletion. The agent does not need to decide what to forget — the forgetting happens automatically, and only actively validated knowledge persists.
+2. **Natural knowledge turnover.** Old Signals make room for new ones without explicit deletion. The agent does not need to decide what to forget — the forgetting happens automatically, and only actively validated knowledge persists.
 
-3. **Incentive to explore.** Only fresh evidence maintains Engram confidence, rewarding active engagement. An agent that retreats to passive monitoring pays a knowledge tax that grows with every validation interval. Exploration is not optional — it is the cost of maintaining knowledge.
+3. **Incentive to explore.** Only fresh evidence maintains Signal confidence, rewarding active engagement. An agent that retreats to passive monitoring pays a knowledge tax that grows with every validation interval. Exploration is not optional — it is the cost of maintaining knowledge.
 
-4. **Forced knowledge circulation.** Engrams approaching the archive threshold are prime candidates for Mesh sharing. The agent's incentive is to share marginal knowledge with peers before it depreciates entirely — better to contribute to the Collective than to let it evaporate. This implements Gesell's Freigeld principle for information (Gesell 1916): knowledge that is not actively used decays in value, forcing it into circulation.
+4. **Forced knowledge circulation.** Signals approaching the archive threshold are prime candidates for Mesh sharing. The agent's incentive is to share marginal knowledge with peers before it depreciates entirely — better to contribute to the Collective than to let it evaporate. This implements Gesell's Freigeld principle for information (Gesell 1916): knowledge that is not actively used decays in value, forcing it into circulation.
 
 5. **Domain-appropriate decay.** Gas price patterns decay in hours (domain multiplier 2.0×). Protocol behavior knowledge decays over months (domain multiplier 0.5×). The system tracks per-domain knowledge freshness, following Arbesman's domain-specific half-life research (Arbesman 2012).
 
@@ -18481,7 +18481,7 @@ Silvio Gesell (1916) argued that money should mirror the decay of physical goods
 
 Applied to KORAI:
 - **Incentivizes circulation**: Agents and operators are motivated to use KORAI (stake, trade, fund agents, pay for Mesh services) rather than hoard it
-- **Mirrors knowledge decay**: Just as Engrams lose confidence without reinforcement, KORAI tokens lose value without use
+- **Mirrors knowledge decay**: Just as Signals lose confidence without reinforcement, KORAI tokens lose value without use
 - **Prevents wealth concentration**: Long-term holders face gradual dilution, while active participants maintain value
 - **Funds ecosystem**: Demurrage proceeds fund protocol development, Mesh infrastructure, and agent subsidies
 
@@ -18521,7 +18521,7 @@ function _effectiveBalance(address account) internal view returns (uint256) {
 
 ### Relationship to Neuro Demurrage
 
-The two demurrage systems — knowledge-level (Ebbinghaus on Engrams) and token-level (KORAI) — are intentionally parallel:
+The two demurrage systems — knowledge-level (Ebbinghaus on Signals) and token-level (KORAI) — are intentionally parallel:
 
 | Property | Knowledge Demurrage | Token Demurrage |
 |----------|-------------------|-----------------|
@@ -18541,11 +18541,11 @@ The demurrage design draws on several academic traditions:
 
 ### Gesell's Freigeld (1916)
 
-Silvio Gesell proposed "stamp scrip" — money that depreciates at a fixed rate, requiring periodic payment to maintain face value. The goal: force money into circulation, preventing hoarding and deflation. Applied to knowledge: force Engrams into circulation (Mesh sharing) before they depreciate beyond usefulness.
+Silvio Gesell proposed "stamp scrip" — money that depreciates at a fixed rate, requiring periodic payment to maintain face value. The goal: force money into circulation, preventing hoarding and deflation. Applied to knowledge: force Signals into circulation (Mesh sharing) before they depreciate beyond usefulness.
 
 ### Ostrom's Commons Governance (1990)
 
-Elinor Ostrom demonstrated that commons (shared resources) can be sustainably managed without privatization or centralized control, given appropriate institutional rules. Knowledge demurrage is an institutional rule for the Neuro commons: it prevents knowledge hoarding (where one agent accumulates Engrams without sharing) and ensures the Collective's knowledge pool remains fresh.
+Elinor Ostrom demonstrated that commons (shared resources) can be sustainably managed without privatization or centralized control, given appropriate institutional rules. Knowledge demurrage is an institutional rule for the Neuro commons: it prevents knowledge hoarding (where one agent accumulates Signals without sharing) and ensures the Collective's knowledge pool remains fresh.
 
 ### Richards & Frankland's Forgetting as Optimization (2017)
 
@@ -18586,7 +18586,7 @@ protocol_behavior = 0.5
 | Event | Payload | Trigger |
 |-------|---------|---------|
 | `neuro.demurrage_applied` | Entries processed, entries archived, total confidence lost, average confidence | Each demurrage cycle |
-| `neuro.engram_archived` | Engram hash, final confidence, domain, age | Individual Engram drops below archive threshold |
+| `neuro.engram_archived` | Signal hash, final confidence, domain, age | Individual Signal drops below archive threshold |
 | `neuro.knowledge_erosion` | Active count, archived count, average confidence, tier distribution | Significant shift in Neuro health |
 | `korai.demurrage_applied` | Account, raw balance, effective balance, elapsed time | Each KORAI balance read |
 
@@ -18596,7 +18596,7 @@ protocol_behavior = 0.5
 
 - `docs/17-lifecycle/10-ebbinghaus-for-knowledge-not-agents.md` — Ebbinghaus decay mechanics
 - `docs/08-chain/INDEX.md` — KORAI/DAEJI token economics
-- `docs/03-neuro/INDEX.md` — Neuro store, Engram format
+- `docs/03-neuro/INDEX.md` — Neuro store, Signal format
 - `docs/17-lifecycle/12-academic-foundations.md` — Gesell, Ostrom, Richards & Frankland citations
 
 
@@ -18630,18 +18630,18 @@ This document catalogs every citation referenced across the `17-lifecycle` topic
 These citations ground the Ebbinghaus decay, knowledge tier management, and demurrage systems.
 
 - **[EBBINGHAUS-1885]** Ebbinghaus, H. _Memory: A Contribution to Experimental Psychology._ 1885.
-  - **Use**: Engram confidence decay model. `Decay::Ebbinghaus { strength, scale_ms }` on all knowledge types.
+  - **Use**: Signal confidence decay model. `Decay::Ebbinghaus { strength, scale_ms }` on all knowledge types.
   - **Legacy framing**: Agent lifespan via epistemic death clock.
-  - **New framing**: Knowledge freshness only. Engrams decay; agents do not die.
+  - **New framing**: Knowledge freshness only. Signals decay; agents do not die.
 
 - **[ROEDIGER-KARPICKE-2006]** Roediger, H.L. & Karpicke, J.D. "Test-Enhanced Learning." _Psychological Science_ 17(3), 2006.
-  - **Use**: Testing effect — retrieving Engrams strengthens their `strength` parameter, counteracting Ebbinghaus decay.
+  - **Use**: Testing effect — retrieving Signals strengthens their `strength` parameter, counteracting Ebbinghaus decay.
   - **Application unchanged**: Retrieval strengthens knowledge in both legacy and new systems.
 
 - **[RICHARDS-FRANKLAND-2017]** Richards, B. & Frankland, P. "The Persistence and Transience of Memory." _Neuron_ 94(6), 2017.
   - **Use**: Forgetting as optimization — the Neuro store forgets to generalize. Knowledge demurrage implements active forgetting.
   - **Legacy framing**: Justified mortality as "forgetting at the agent level."
-  - **New framing**: Forgetting at the Engram level, not the agent level.
+  - **New framing**: Forgetting at the Signal level, not the agent level.
 
 - **[ARBESMAN-2012]** Arbesman, S. _The Half-Life of Facts._ Penguin, 2012.
   - **Use**: Domain-specific knowledge half-lives. Gas patterns decay in hours; protocol knowledge in months.
@@ -18652,9 +18652,9 @@ These citations ground the Ebbinghaus decay, knowledge tier management, and demu
   - **Application unchanged**: Same rationale for knowledge management.
 
 - **[BOWER-1981]** Bower, G.H. "Mood and Memory." _American Psychologist_ 36(2), 1981.
-  - **Use**: Mood-congruent memory retrieval — Daimon PAD state influences which Engrams are retrieved.
+  - **Use**: Mood-congruent memory retrieval — Daimon PAD state influences which Signals are retrieved.
   - **Legacy framing**: Mortality emotions tagged Grimoire entries.
-  - **New framing**: Daimon behavioral states tag Engram retrieval context.
+  - **New framing**: Daimon behavioral states tag Signal retrieval context.
 
 - **[DAVIS-ZHONG-2017]** Davis, R. & Zhong, H. "The Half-Life of Knowledge." _Proceedings of the National Academy of Sciences_, 2017.
   - **Use**: Empirical measurement of knowledge decay rates across domains.
@@ -18682,7 +18682,7 @@ These citations ground the knowledge transfer (backup/restore), generational con
   - **New framing**: **REMOVED as agent mechanism.** Preserved as citation context for why fixed lifespans were abandoned in favor of Ebbinghaus-based knowledge decay.
 
 - **[SHUVAEV-2024]** Shuvaev, S. et al. "Encoding Innate Ability Through a Genomic Bottleneck." _PNAS_ 121(39), 2024.
-  - **Use**: Genomic bottleneck principle — compression at transfer forces generalization. Applied to compressed backups (max 2048 Engrams).
+  - **Use**: Genomic bottleneck principle — compression at transfer forces generalization. Applied to compressed backups (max 2048 Signals).
   - **Application unchanged**: Same compression mechanism, different trigger (user-initiated vs. death-triggered).
 
 - **[BALDWIN-1896]** Baldwin, J.M. "A New Factor in Evolution." _American Naturalist_ 30, 1896.
@@ -18713,7 +18713,7 @@ These citations ground the knowledge transfer (backup/restore), generational con
 
 - **[EIGEN-1971]** Eigen, M. "Self-Organization of Matter and the Evolution of Biological Macromolecules." _Naturwissenschaften_ 58, 1971.
   - **Use**: Error threshold / quasispecies theory. Knowledge accumulation has an error threshold — too much noise destroys the information.
-  - **Application unchanged**: Grounds confidence thresholds for Engram retention.
+  - **Application unchanged**: Grounds confidence thresholds for Signal retention.
 
 - **[MULLER-1964]** Muller, H.J. "The Relation of Recombination to Mutational Advance." _Mutation Research_ 1, 1964.
   - **Use**: Muller's ratchet — irreversible accumulation of deleterious mutations. Without sexual recombination, populations degrade.
@@ -18810,7 +18810,7 @@ These citations ground the knowledge transfer (backup/restore), generational con
 
 - **[VELA-2022]** Vela, A. et al. "Temporal Quality Degradation in AI Models." _Scientific Reports_, 2022.
   - **Use**: 91% of ML models degrade temporally. Strongest empirical claim for knowledge staleness.
-  - **Application unchanged**: Motivates Ebbinghaus decay on Engrams.
+  - **Application unchanged**: Motivates Ebbinghaus decay on Signals.
 
 - **[ZLIOBAITĖ-2014]** Zliobaitė, I. et al. "An Overview of Concept Drift Applications." _Big Data Analysis_, 2014.
   - **Use**: Four drift types (sudden, gradual, incremental, recurring). All four co-occur in dynamic environments.
@@ -18840,7 +18840,7 @@ These citations ground the knowledge transfer (backup/restore), generational con
 
 - **[DAMASIO-1994]** Damasio, A. _Descartes' Error._ Putnam, 1994.
   - **Use**: Somatic marker hypothesis — emotional tags on knowledge improve retrieval and decision-making.
-  - **Application unchanged**: Daimon PAD tags on Engrams.
+  - **Application unchanged**: Daimon PAD tags on Signals.
 
 - **[BECHARA-2000]** Bechara, A. et al. "Emotion, Decision Making and the Orbitofrontal Cortex." _Cerebral Cortex_ 10(3), 2000.
   - **Use**: Anticipatory somatic markers in decision-making (Iowa Gambling Task).
@@ -18848,7 +18848,7 @@ These citations ground the knowledge transfer (backup/restore), generational con
 
 - **[KANERVA-2009]** Kanerva, P. "Hyperdimensional Computing." _Cognitive Computation_ 1(2), 2009.
   - **Use**: HDC/VSA — 10,240-bit BSC vectors for knowledge similarity.
-  - **Application unchanged**: Engram HDC encoding for cross-domain structural analogy.
+  - **Application unchanged**: Signal HDC encoding for cross-domain structural analogy.
 
 - **[FRISTON-2010]** Friston, K. "The Free-Energy Principle." _Nature Reviews Neuroscience_ 11, 2010.
   - **Use**: Active inference — Expected Free Energy for context selection and action selection.
@@ -18905,7 +18905,7 @@ These citations ground the knowledge transfer (backup/restore), generational con
 
 - **[GESELL-1916]** Gesell, S. _Die natürliche Wirtschaftsordnung_ (The Natural Economic Order). 1916.
   - **Use**: Freigeld principle — money should decay to force circulation.
-  - **Application unchanged**: KORAI demurrage + Engram confidence decay.
+  - **Application unchanged**: KORAI demurrage + Signal confidence decay.
 
 - **[OSTROM-1990]** Ostrom, E. _Governing the Commons._ Cambridge University Press, 1990.
   - **Use**: Commons governance — shared resources can be sustainably managed with appropriate rules.
@@ -18921,7 +18921,7 @@ These citations ground the knowledge transfer (backup/restore), generational con
 
 - **[ZHAO-EXPEL-2024]** Zhao, A. et al. "ExpeL: LLM Agents Are Experiential Learners." _AAAI_, 2024. arXiv:2308.10144.
   - **Use**: Double-loop learning: insights accumulate across sessions, modifying strategy.
-  - **Application unchanged**: Cross-session Engram accumulation in Neuro.
+  - **Application unchanged**: Cross-session Signal accumulation in Neuro.
 
 - **[KHATTAB-DSPY-2024]** Khattab, O. et al. "DSPy: Compiling Declarative Language Model Calls into Self-Improving Pipelines." _ICLR_, 2024. arXiv:2310.03714.
   - **Use**: Prompt optimization via MIPROv2/COPRO/GEPA.
@@ -18965,7 +18965,7 @@ These citations ground the knowledge transfer (backup/restore), generational con
 
 - **[XU-AMEM-2025]** Xu, W. et al. "A-MEM: Agentic Memory for LLM Agents." arXiv:2502.12110, 2025.
   - **Use**: Zettelkasten-inspired atomic notes. 85-93% token reduction.
-  - **Application unchanged**: Grounds Engram atomicity.
+  - **Application unchanged**: Grounds Signal atomicity.
 
 ---
 
@@ -18981,7 +18981,7 @@ These citations ground the knowledge transfer (backup/restore), generational con
 
 - **[EMOTIONAL-RAG-2024]** Zhang, Y. et al. "Emotional RAG." arXiv:2410.23041, 2024.
   - **Use**: Emotion-tagged retrieval for LLM agents.
-  - **Application unchanged**: Daimon-tagged Engram retrieval.
+  - **Application unchanged**: Daimon-tagged Signal retrieval.
 
 - **[MARCH-1991]** March, J.G. "Exploration and Exploitation in Organizational Learning." _Organization Science_ 2(1), 1991.
   - **Use**: Exploration/exploitation tradeoff. Adaptive processes refine exploitation faster than exploration.
@@ -19022,7 +19022,7 @@ These citations ground the knowledge transfer (backup/restore), generational con
 
 - **[SHANNON-1948]** Shannon, C.E. "A Mathematical Theory of Communication." _Bell System Technical Journal_ 27, 1948.
   - **Use**: Information entropy. Grounds knowledge compression at backup.
-  - **Application unchanged**: Engram compression efficiency.
+  - **Application unchanged**: Signal compression efficiency.
 
 - **[KAUFFMAN-1993]** Kauffman, S. _The Origins of Order._ Oxford University Press, 1993.
   - **Use**: Self-organization at the edge of chaos. Grounds Mesh emergent behavior.
@@ -19064,7 +19064,7 @@ These citations ground the knowledge transfer (backup/restore), generational con
 
 Before reading this topic, familiarity with these concepts is helpful (each is briefly redefined in the relevant sub-doc):
 
-- **Engram** — content-addressed, scored, decaying unit of cognition (see `docs/01-architecture/`)
+- **Signal** — content-addressed, scored, decaying unit of cognition (see `docs/01-architecture/`)
 - **Synapse Architecture** — the 6-trait composition: Substrate, Scorer, Gate, Router, Composer, Policy (see `docs/01-architecture/`)
 - **Neuro / NeuroStore** — semantic knowledge store wrapping Substrate (see `docs/03-neuro/`)
 - **Daimon** — PAD affect engine driving behavioral states (see `docs/04-daimon/`)
@@ -19131,7 +19131,7 @@ REF23 adds a parallel but distinct artifact: shareable sessions. Sessions carry 
 | Topic | Path | Relationship |
 |-------|------|-------------|
 | Architecture | `docs/01-architecture/` | 5-layer taxonomy, Synapse Architecture — lifecycle features map to specific layers |
-| Neuro | `docs/03-neuro/` | Engram storage, knowledge types, tier management — lifecycle manages Neuro state |
+| Neuro | `docs/03-neuro/` | Signal storage, knowledge types, tier management — lifecycle manages Neuro state |
 | Daimon | `docs/04-daimon/` | PAD affect engine, behavioral states — lifecycle creates/resets Daimon state |
 | Dreams | `docs/05-dreams/` | Consolidation cycle — lifecycle backup captures post-dream knowledge |
 | Mesh | `docs/09-mesh/` | Agent Mesh, collective intelligence — live knowledge transfer alternative |
@@ -19150,7 +19150,7 @@ REF23 adds a parallel but distinct artifact: shareable sessions. Sessions carry 
   - `bardo-backup/prd/04-memory/03-mortal-memory.md` — (66KB, first 500 lines read for knowledge management context)
   - `bardo-backup/prd/01-golem/06-creation.md` — (first 500 lines read for creation flow)
   - `bardo-backup/prd/11-compute/` — 00-overview.md, 01-architecture.md, 02-provisioning.md (full reads for deployment and VM lifecycle)
-  - `refactoring-prd/` — 00-architecture.md, 03-universal-loop.md, 09-innovations.md, 02-engram-spec.md (all consulted for new framing)
+  - `refactoring-prd/` — 00-architecture.md, 03-universal-loop.md, 09-innovations.md, 02-signal-spec.md (all consulted for new framing)
   - `context-pack/` — 01-naming-map.md, 02-reframe-rules.md, 03-concepts-lifecycle.md, 04-writing-rules.md
 - **Decisions requiring judgment**:
   - The "Thriving → Terminal" language appears in `00-vision-and-mortality-replaced.md` and `12-academic-foundations.md` solely in the context of explaining what was removed. This is consistent with the writing rule permitting old names in quotes with parenthetical explanations.
@@ -19220,7 +19220,7 @@ might depend on):
 |---|---|---|
 | `crates/roko-cli` | `roko-cli` | `cargo install roko-cli` — main user-facing binary |
 | `crates/roko-serve` | `roko-serve` | `cargo install roko-serve` — HTTP API server |
-| `crates/roko-core` | `roko-core` | Library: Engram + 6 Synapse traits, types, config |
+| `crates/roko-core` | `roko-core` | Library: Signal + 6 Synapse traits, types, config |
 | `crates/roko-std` | `roko-std` | Library: default trait implementations, 19 built-in tools |
 | `crates/roko-agent` | `roko-agent` | Library: LLM backends, tool dispatch, MCP client |
 | `crates/roko-gate` | `roko-gate` | Library: verification pipeline (11+ gates) |
@@ -20341,7 +20341,7 @@ RUSTC_WRAPPER=sccache cargo build -p roko-cli
 
 ## WASM Target Overview
 
-The `wasm32-wasi` target compiles Roko's core cognitive primitives — the Engram type, the six
+The `wasm32-wasi` target compiles Roko's core cognitive primitives — the Signal type, the six
 Synapse traits, scoring, routing, and composition — into WebAssembly modules that can run in any
 WASM runtime (browser via wasm-bindgen, Cloudflare Workers, Fastly Compute, Deno Deploy,
 wasmtime, wasmer).
@@ -20355,7 +20355,7 @@ HDC-based similarity search in environments where native binaries cannot run.
 
 | Component | WASM Support | Notes |
 |---|---|---|
-| `Engram` struct | Full | All fields, serialization, content hashing (BLAKE3 compiles to WASM) |
+| `Signal` struct | Full | All fields, serialization, content hashing (BLAKE3 compiles to WASM) |
 | `Score` (7-axis) | Full | Pure computation, no I/O |
 | `Scorer` trait | Full | Score computation is pure math |
 | `Router` trait | Full | Selection logic is pure computation |
@@ -20386,7 +20386,7 @@ HDC-based similarity search in environments where native binaries cannot run.
 ## MemorySubstrate: In-Memory Persistence for WASM
 
 The `MemorySubstrate` is the WASM-compatible implementation of the `Substrate` trait. It stores
-Engrams in a `BTreeMap<ContentHash, Engram>` in memory, with indexed lookups by kind, tags, and
+Signals in a `BTreeMap<ContentHash, Signal>` in memory, with indexed lookups by kind, tags, and
 time range.
 
 ```rust
@@ -20413,7 +20413,7 @@ written against the trait works identically in both native and WASM environments
 difference is durability: `MemorySubstrate` loses all state when the WASM module is unloaded.
 
 For persistence in WASM environments, the host can serialize the substrate's contents via the
-`Substrate::export()` method (serializes all Engrams to a JSON array) and restore them via
+`Substrate::export()` method (serializes all Signals to a JSON array) and restore them via
 `Substrate::import()`. In a browser context, this maps to `localStorage` or `IndexedDB`.
 
 ---
@@ -20550,7 +20550,7 @@ console.log(results); // Ranked by utility score
 
 ### WASM Module Size
 
-The core cognitive primitives (Engram, Substrate, Scorer, Router, Composer) compile to a WASM
+The core cognitive primitives (Signal, Substrate, Scorer, Router, Composer) compile to a WASM
 module of approximately 500KB-1MB gzipped. This is small enough for browser deployment without
 code splitting.
 
@@ -20558,7 +20558,7 @@ The size breakdown:
 
 | Component | Approximate WASM Size |
 |---|---|
-| Engram + Score + ContentHash | ~50KB |
+| Signal + Score + ContentHash | ~50KB |
 | BLAKE3 (content hashing) | ~30KB |
 | MemorySubstrate | ~40KB |
 | DefaultScorer + DefaultRouter | ~30KB |
@@ -21129,8 +21129,8 @@ meaning it is planned but not yet in the critical path. The primary deployment t
 When WASM support is validated, the following items need verification:
 
 1. `serde_json` serialization of `Score` (7-axis) roundtrips correctly in WASM
-2. `BTreeMap<ContentHash, Engram>` operations in `MemorySubstrate` perform acceptably for
-   collections up to 100K Engrams
+2. `BTreeMap<ContentHash, Signal>` operations in `MemorySubstrate` perform acceptably for
+   collections up to 100K Signals
 3. BLAKE3 content hashing produces identical hashes in native and WASM (critical for content
    addressing across environments)
 4. HDC vector similarity thresholds (e.g., 0.526 for cross-domain insight resonance) produce
@@ -23010,7 +23010,7 @@ Edge deployment targets environments where resources are severely constrained: l
 CPU. Examples include IoT gateways, network edge nodes, embedded Linux devices, and Cloudflare
 Workers.
 
-The design principle: **the core cognitive primitives (Engram, Score, Scorer, Router, Composer)
+The design principle: **the core cognitive primitives (Signal, Score, Scorer, Router, Composer)
 are pure computation with no I/O dependencies**. They can run anywhere that has a Rust allocator.
 The I/O-dependent components (LLM backends, filesystem persistence, process supervision) are
 optional and excluded from edge builds.
@@ -23037,7 +23037,7 @@ cargo build --release \
 
 | Component | Size Contribution | Purpose |
 |---|---|---|
-| `Engram` struct + `Score` | ~15KB | Core data type, 7-axis appraisal |
+| `Signal` struct + `Score` | ~15KB | Core data type, 7-axis appraisal |
 | `ContentHash` (BLAKE3) | ~30KB | Content addressing |
 | Synapse traits (6 trait definitions) | ~5KB | Trait interfaces only |
 | `DefaultScorer` | ~10KB | Score computation |
@@ -23103,7 +23103,7 @@ Additional size reduction strategies:
 
 - Replace `serde_json` with `miniserde` or `nanoserde` (~50KB → ~10KB)
 - Use `blake3` with the `no_std` feature (removes threading support, saves ~15KB)
-- Replace `BTreeMap` in Engram tags with a fixed-size array for known tag keys
+- Replace `BTreeMap` in Signal tags with a fixed-size array for known tag keys
 - Use `#[cfg(feature = "edge")]` to gate out any convenience methods that inflate binary size
 
 ---
@@ -23138,7 +23138,7 @@ the dual-process cognition model — most events can be classified without invok
 
 ### 2. Local Knowledge Cache
 
-An edge node maintains a `MemorySubstrate` with recently relevant Engrams, serving as a local
+An edge node maintains a `MemorySubstrate` with recently relevant Signals, serving as a local
 cache that avoids round-trips to the core agent for repeated queries:
 
 ```rust
@@ -23183,7 +23183,7 @@ real-time classification at the edge.
 
 ### 4. Offline Agent with Periodic Sync
 
-An edge agent operates autonomously when disconnected, accumulating Engrams in a
+An edge agent operates autonomously when disconnected, accumulating Signals in a
 `MemorySubstrate`. When connectivity is restored, it syncs with the core agent:
 
 ```rust
@@ -23992,14 +23992,14 @@ with a global-only limit), repo B must wait.
 
 ### Isolated by Default
 
-By default, each repository's knowledge (Engrams in `.roko/signals.jsonl`, episodes in
+By default, each repository's knowledge (Signals in `.roko/signals.jsonl`, episodes in
 `.roko/episodes.jsonl`, learned patterns in `.roko/learn/`) is strictly isolated. Repo A
 cannot read repo B's knowledge.
 
 ### Shared via Agent Mesh
 
 When the Agent Mesh is enabled, repositories can share knowledge through the peer-to-peer
-Engram sharing protocol. This is configured per subscription:
+Signal sharing protocol. This is configured per subscription:
 
 ```toml
 [[subscriptions]]
@@ -24016,11 +24016,11 @@ group = "nunchi-projects"
 ```
 
 When mesh sharing is enabled:
-1. After a successful plan run, the daemon exports qualifying Engrams (matching `share_kinds`
+1. After a successful plan run, the daemon exports qualifying Signals (matching `share_kinds`
    and `min_confidence`) to the Agent Mesh
-2. Before starting a plan run, the daemon queries the Agent Mesh for relevant Engrams from
+2. Before starting a plan run, the daemon queries the Agent Mesh for relevant Signals from
    other repos in the same group
-3. Imported Engrams are stored with provenance indicating their source repo
+3. Imported Signals are stored with provenance indicating their source repo
 
 This enables **cross-domain insight resonance** — the HDC-based structural analogy detection
 (threshold 0.526) can identify patterns that transfer between repositories. For example, a
@@ -24431,7 +24431,7 @@ Secrets should never land in `fly.toml`, image layers, or logs.
 ## Secret Safety Rules
 
 1. Never log secret values.
-2. Never write secret values into Engram bodies or long-lived state.
+2. Never write secret values into Signal bodies or long-lived state.
 3. Never persist resolved secret values into `.roko/` archives.
 4. Keep `.env` files gitignored.
 5. Prefer the OS keychain for laptop-local use.
@@ -24491,7 +24491,7 @@ code.
 ## Overview
 
 The remote orchestrator transforms Roko from a local CLI tool into a deployed service. The
-same orchestration engine (DAG executor, agent dispatch, gate pipeline, Engram persistence,
+same orchestration engine (DAG executor, agent dispatch, gate pipeline, Signal persistence,
 and Bus-backed live progress) runs behind an HTTP API instead of a terminal interface.
 
 Use cases:
@@ -24593,7 +24593,7 @@ Typical remote consumers include:
 
 - browser pages using `projection:active_tasks` and `projection:agent_trails`
 - Slack or chat bots using filtered `topic:*` subscriptions
-- audit or replication sinks using `engram-stream:*`
+- audit or replication sinks using `signal-stream:*`
 - another Roko instance following the same channel registry for cross-instance sync
 
 Deployment guidance:
@@ -24681,7 +24681,7 @@ One roko-serve instance can manage multiple projects. Each project has its own:
 - PRDs, plans, and context artifacts
 - Provider configuration and API keys (inherits from server defaults, overridable per-project)
 - Run history and artifacts
-- Engram and episode logs
+- Signal and episode logs
 
 Projects are isolated. A run in project A does not affect project B.
 
@@ -25022,7 +25022,7 @@ force eviction and continue with the reduced state.
 
 ### Overflow Response
 
-1. Summarize older context into a smaller prompt Engram.
+1. Summarize older context into a smaller prompt Signal.
 2. Accelerate demurrage or decay for low-value material.
 3. Evict the least useful items first and log the decision.
 
@@ -25400,7 +25400,7 @@ Deployment features should be validated against this test matrix:
 > to expose the same operator story: structured logs, scrapeable metrics, distributed traces,
 > typed event surfaces, replayable episodes, and attributed cost. The distinctive claim is not
 > just that the runtime emits telemetry, but that the telemetry is aligned with Roko's two
-> mediums (`Engram` and `Pulse`) moving through two fabrics (`Substrate` and `Bus`). For the
+> mediums (`Signal` and `Pulse`) moving through two fabrics (`Substrate` and `Bus`). For the
 > canonical vocabulary, see [../00-architecture/01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md).
 > See also `../../tmp/refinements/33-observability-telemetry.md`.
 
@@ -25416,7 +25416,7 @@ Deployment observability answers one operator question: "what did the system kno
 do, what did it cost, and how do I replay that decision?" In Roko, that question spans both
 mediums and both fabrics:
 
-- `Engram` persistence on `Substrate` gives durable, queryable audit and replay inputs.
+- `Signal` persistence on `Substrate` gives durable, queryable audit and replay inputs.
 - `Pulse` movement on the `Bus` gives live progress, gate outcomes, route choices, and stream
   state while a run is still unfolding.
 - `StateHub` projections turn raw Bus activity plus durable Substrate state into typed views for
@@ -25451,7 +25451,7 @@ Target-state, every deployment shape should expose the same telemetry contract, 
 | single-server | one long-lived service with local state | JSON logs, `/metrics`, OTLP exporter, StateHub projections, alert rules |
 | container | image-first, orchestrator-managed | stdout/stderr logs, `/metrics`, readiness/liveness probes, external trace sink |
 | clustered | multi-node service behind ingress | centralized logs, shared metrics scraping, distributed traces, shared StateHub and replay retention |
-| edge | constrained footprint, selective export | compact logs, minimal metrics, sampled traces, deferred replay via graduated Engrams |
+| edge | constrained footprint, selective export | compact logs, minimal metrics, sampled traces, deferred replay via graduated Signals |
 
 The deployment rule is consistency: operators should not learn a different observability model
 for each shape. The same labels, topic names, projections, and replay semantics should work
@@ -25574,7 +25574,7 @@ Target-state deployment projections include:
 | `cohort_health` | live `c_factor`, roster, and delivery health |
 | `gate_pipeline` | current rung status plus pass/fail counts |
 | `bus_stats` | pulses per second by topic and subscriber pressure |
-| `substrate_stats` | Engram counts, warm/cold balance, and demurrage histograms |
+| `substrate_stats` | Signal counts, warm/cold balance, and demurrage histograms |
 | `cost_meter` | spend by session, role, and model |
 | `safety_events` | recent authz denials, confirmations, and escalations |
 | `replication_ledger` | claim status tracking for research-to-runtime workflows |
@@ -25591,10 +25591,10 @@ observability surface typed, filterable, and consistent with the Bus/Substrate m
 Replay is observability, not a separate debugging toy. The deployment promise is that an
 operator can reconstruct what an agent saw and why it acted.
 
-Replay consumes an episode's Engrams and the relevant Pulse history:
+Replay consumes an episode's Signals and the relevant Pulse history:
 
 - if the Bus ring still holds the Pulses, replay reads them directly
-- if the ring has wrapped, replay reconstructs the episode from graduated Engrams (target-state) and durable
+- if the ring has wrapped, replay reconstructs the episode from graduated Signals (target-state) and durable
   projections
 - override-based replay allows operators to test sensitivity to configuration changes such as
   demurrage rates, gate thresholds, or routing policies without mutating live state
@@ -25655,14 +25655,14 @@ Not every telemetry surface retains forever, and the retention model must follow
 | logs | retained by the configured log pipeline |
 | traces | sampled, with error paths forced to full capture |
 | Bus Pulses | ring-buffer retention with bounded capacity |
-| Engrams | durable retention governed by demurrage and storage policy |
+| Signals | durable retention governed by demurrage and storage policy |
 | Custody records | long-lived retention for compliance and audit |
 
 Operational defaults should be conservative:
 
 - traces sampled at a low baseline rate, with 100% capture on errors
 - Bus ring capacity sized to make recent replay practical without unbounded memory growth
-- edge deployments allowed to graduate important Pulses into Engrams earlier (target-state) when local rings are
+- edge deployments allowed to graduate important Pulses into Signals earlier (target-state) when local rings are
   small
 - cost, safety, and custody data retained longer than ephemeral transport noise
 
@@ -25762,7 +25762,7 @@ surface appropriate to the operator using it.
 
 - **Synapse Architecture**: Roko's 6-trait composition system (Substrate, Scorer, Gate, Router, Composer, Policy) enables flexible deployment, and each trait can be implemented differently per target.
 - **Runtime shape**: The deployment form for the same binary: laptop-local, single-server, container, clustered, or edge.
-- **Engram**: The durable record flows through all deployment targets unchanged. Content-addressed hashing keeps identity consistent across native, container, clustered, and edge environments.
+- **Signal**: The durable record flows through all deployment targets unchanged. Content-addressed hashing keeps identity consistent across native, container, clustered, and edge environments.
 - **Current observability baseline**: JSONL episode logs, efficiency events, tracing-based logs, and the existing `StateHub`/dashboard path are the real operator surfaces today. Broader telemetry and projection catalogs remain future work.
 - **State portability**: Substrate state, bus queues, and config are exported as an archive so laptop-to-server and server-to-server moves are operational, not architectural.
 - **Realtime surface**: WebSocket and SSE are current. Optional gRPC is deferred.
@@ -25778,7 +25778,7 @@ surface appropriate to the operator using it.
 | REF27 realtime surface | `../../tmp/refinements/27-realtime-event-surface.md` |
 | REF33 observability and telemetry | `../../tmp/refinements/33-observability-telemetry.md` |
 | Deployment telemetry chapter | [14-observability-and-telemetry.md](14-observability-and-telemetry.md) |
-| Canonical vocabulary for Engram, Pulse, Bus, Substrate, and StateHub | [../00-architecture/01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md) |
+| Canonical vocabulary for Signal, Pulse, Bus, Substrate, and StateHub | [../00-architecture/01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md) |
 | Agent types and deployment flexibility | [../02-agents/04-agent-roles.md](../02-agents/04-agent-roles.md) |
 | Port allocation and interfaces | [13-current-status-and-port-allocation.md](13-current-status-and-port-allocation.md), [../12-interfaces/INDEX.md](../12-interfaces/INDEX.md) |
 | Implementation priorities and tiers | [13-current-status-and-port-allocation.md](13-current-status-and-port-allocation.md) |
@@ -25805,7 +25805,7 @@ surface appropriate to the operator using it.
 
 ## Abstract
 
-This domain collects the research originally framed around agent mortality and finite lifespans, reframed for Roko's architecture where the relevant concepts are **knowledge lifecycle management**, **resource-bounded cognition**, and **evolutionary skill evolution**. The core insight remains valid: systems without resource constraints, decay mechanisms, or turnover exhibit stagnation, plasticity loss, and technical debt accumulation. Roko applies these findings to knowledge decay (Ebbinghaus half-lives on Engrams), budget-driven urgency (economic pressure replaces economic "death"), and evolutionary skill libraries (EvoSkills). The mortality-specific narrative is removed; the empirical findings and mechanisms are preserved in full.
+This domain collects the research originally framed around agent mortality and finite lifespans, reframed for Roko's architecture where the relevant concepts are **knowledge lifecycle management**, **resource-bounded cognition**, and **evolutionary skill evolution**. The core insight remains valid: systems without resource constraints, decay mechanisms, or turnover exhibit stagnation, plasticity loss, and technical debt accumulation. Roko applies these findings to knowledge decay (Ebbinghaus half-lives on Signals), budget-driven urgency (economic pressure replaces economic "death"), and evolutionary skill libraries (EvoSkills). The mortality-specific narrative is removed; the empirical findings and mechanisms are preserved in full.
 
 The original source (`02-mortality/14-research-foundations.md`) contained 130+ papers across mortality modeling, memory, affect, coordination, self-learning, security, generational learning, and context engineering. Citations from domains with their own sub-docs (memory, affect, dreams, etc.) appear in those dedicated sub-docs and are cross-referenced here. This sub-doc retains the citations most directly related to lifecycle, finite agency, and evolutionary computing.
 
@@ -26167,7 +26167,7 @@ The Daimon is not cosmetic. Five independent research lines — somatic markers,
   *Grounds: Daimon emotion classification — eight primary emotions from evolutionary pressure. PAD octants map to Plutchik categories for human-readable emotional state labeling.*
 
 - Scherer, K.R. (2001). Appraisal Considered as a Process of Multilevel Sequential Checking. In _Appraisal Processes in Emotion_, Oxford University Press.
-  *Grounds: Engram Score appraisal theory — multi-level sequential checking mirrors the 7-axis Score on Engrams. Each axis captures an independent dimension of appraisal.*
+  *Grounds: Signal Score appraisal theory — multi-level sequential checking mirrors the 7-axis Score on Signals. Each axis captures an independent dimension of appraisal.*
 
 - Ortony, A., Clore, G.L., & Collins, A. (1988). _The Cognitive Structure of Emotions_. Cambridge University Press.
   *Grounds: OCC emotion model — cognitive appraisal-based emotion taxonomy. Complements PAD with a structure-of-emotion framework for interpreting agent behavioral states.*
@@ -26395,10 +26395,10 @@ Agents do not operate in isolation. A group of agents owned by one user is a Col
   *Grounds: Pheromone Field — coined "stigmergy" (stigma = mark, ergon = work). Termites coordinate mound construction without direct communication — each responds to the current state of the environment. Foundational concept for the Agent Mesh as pheromone field.*
 
 - Theraulaz, G. & Bonabeau, E. (1999). A Brief History of Stigmergy. _Artificial Life_, 5(2), 97-116.
-  *Grounds: Pheromone decay — distinguishes sematectonic stigmergy (building on structures) from marker-based stigmergy (depositing decaying signals). Agent Engrams are marker-based pheromone deposits that decay via Ebbinghaus half-life.*
+  *Grounds: Pheromone decay — distinguishes sematectonic stigmergy (building on structures) from marker-based stigmergy (depositing decaying signals). Agent Signals are marker-based pheromone deposits that decay via Ebbinghaus half-life.*
 
 - Parunak, H.V.D., Brueckner, S., & Sauter, J. (2002). Digital Pheromone Mechanisms for Coordination of Unmanned Vehicles. _AAMAS_, 2002.
-  *Grounds: Time-decaying digital signals — digital pheromones enable emergent coordination through time-decaying signals reinforced by confirmation. Directly grounds the pheromone Engram decay and reinforcement mechanism.*
+  *Grounds: Time-decaying digital signals — digital pheromones enable emergent coordination through time-decaying signals reinforced by confirmation. Directly grounds the pheromone Signal decay and reinforcement mechanism.*
 
 - Dorigo, M. & Gambardella, L.M. (1997). Ant Colony System: A Cooperative Learning Approach to the Traveling Salesman Problem. _IEEE Transactions on Evolutionary Computation_, 1(1), 53-66.
   *Grounds: Pheromone reinforcement — ant colony optimization formalizes pheromone deposit/evaporation. Confirmed knowledge entries gain weight (reinforcement); unconfirmed entries decay (evaporation). Grounds the confirmation-based half-life extension in NeuroStore.*
@@ -26665,7 +26665,7 @@ An agent that does not improve is an expensive cron job. The research here estab
   *Grounds: Double-loop learning — cross-task experience extraction; insights accumulate across episodes. Insights evolve across task sessions. ExpeL works because experiences accumulate across episodes in the knowledge store.*
 
 - Wang, G. et al. (2023). Voyager: An Open-Ended Embodied Agent with Large Language Models. arXiv:2305.16291.
-  *Grounds: EvoSkills — code-as-action skill library; 3.3x more unique behaviors vs baselines. Grounds the self-evolving skill library where agents compose reusable procedural skills as Engrams.*
+  *Grounds: EvoSkills — code-as-action skill library; 3.3x more unique behaviors vs baselines. Grounds the self-evolving skill library where agents compose reusable procedural skills as Signals.*
 
 ---
 
@@ -26846,7 +26846,7 @@ Context failures, not model failures, cause most agent breakdowns. For agents ru
   *Grounds: Automated research context — automated context assembly for research tasks. Informs the context engineering approach in Roko's research agent.*
 
 - Wei, J. et al. (2022). Chain-of-Thought Prompting Elicits Reasoning in Large Language Models. _NeurIPS_, 2022. arXiv:2201.11903.
-  *Grounds: StrategyFragment knowledge type — step-by-step reasoning exemplars dramatically improve performance. Agents post procedural knowledge as StrategyFragment Engrams that other agents retrieve as chain-of-thought exemplars.*
+  *Grounds: StrategyFragment knowledge type — step-by-step reasoning exemplars dramatically improve performance. Agents post procedural knowledge as StrategyFragment Signals that other agents retrieve as chain-of-thought exemplars.*
 
 ---
 
@@ -26943,7 +26943,7 @@ Agents managing real tasks are attack targets. Memory poisoning (OWASP LLM04:202
 ## Content Provenance
 
 - C2PA (Content Provenance and Authenticity). Coalition for Content Provenance and Authenticity. c2pa.org.
-  *Grounds: Forensic AI — content provenance standard for tracking the origin and modification history of digital content. Grounds the Attestation field on Engrams: cryptographic proof of origin for every piece of agent-generated content.*
+  *Grounds: Forensic AI — content provenance standard for tracking the origin and modification history of digital content. Grounds the Attestation field on Signals: cryptographic proof of origin for every piece of agent-generated content.*
 
 - W3C. Decentralized Identifiers (DIDs) v1.0. W3C Recommendation, 2022.
   *Grounds: Agent identity — decentralized identifier standard. Informs the ERC-8004 agent identity design for on-chain agent identification.*
@@ -27012,7 +27012,7 @@ Agents managing real tasks are attack targets. Memory poisoning (OWASP LLM04:202
 > Academic foundations for HDC/VSA: the 10,240-bit Binary Spatter Code algebra, learned hashing, similarity search, and HDC-based knowledge representation in Roko.
 
 **Topic**: [References](./INDEX.md)
-**Prerequisites**: [Architecture](../00-architecture/INDEX.md), [Engram Data Type](../00-architecture/02-engram-data-type.md)
+**Prerequisites**: [Architecture](../00-architecture/INDEX.md), [Signal Data Type](../00-architecture/02-signal-data-type.md)
 **Key sources**: `bardo-backup/prd/shared/hdc-vsa.md`, `bardo-backup/tmp/agent-chain/08-references.md`, `bardo-backup/tmp/agent-chain/14-academic-foundations.md` §2
 
 > **Implementation**: Reference
@@ -27447,10 +27447,10 @@ Roko's cognitive architecture is grounded not only in computer science and neuro
 ## Process and Becoming
 
 - Whitehead, A.N. (1929). _Process and Reality_. Macmillan.
-  *Grounds: Process philosophy — reality as process, not substance. Agents are not static entities but ongoing processes of experience accumulation. The Engram DAG is a Whiteheadian actual occasion chain.*
+  *Grounds: Process philosophy — reality as process, not substance. Agents are not static entities but ongoing processes of experience accumulation. The Signal DAG is a Whiteheadian actual occasion chain.*
 
 - Simondon, G. (1958). _L'individuation à la lumière des notions de forme et d'information_. Millon, 2005.
-  *Grounds: Individuation — individuation as an ongoing process, not a one-time event. Agents individuate through their experiential history, becoming unique through accumulated Engrams.*
+  *Grounds: Individuation — individuation as an ongoing process, not a one-time event. Agents individuate through their experiential history, becoming unique through accumulated Signals.*
 
 ---
 
@@ -28068,7 +28068,7 @@ Autonomous agents operating in regulated domains (financial services, healthcare
 ## Financial Services Regulation
 
 - U.S. Securities and Exchange Commission (SEC). Securities Exchange Act of 1934; Investment Advisers Act of 1940.
-  *Grounds: Agent accountability — autonomous agents making investment decisions may trigger investment adviser regulations. Roko's content-addressed Engram DAG provides the audit trail for demonstrating compliance with fiduciary duties.*
+  *Grounds: Agent accountability — autonomous agents making investment decisions may trigger investment adviser regulations. Roko's content-addressed Signal DAG provides the audit trail for demonstrating compliance with fiduciary duties.*
 
 - U.S. Commodity Futures Trading Commission (CFTC). Commodity Exchange Act.
   *Grounds: Derivatives compliance — agents operating with DeFi derivatives must consider CFTC jurisdiction. Forensic AI replay enables demonstrating that agent decisions followed programmatic rules.*
@@ -28091,14 +28091,14 @@ Autonomous agents operating in regulated domains (financial services, healthcare
 ## Financial Reporting
 
 - U.S. Congress. SOX (Sarbanes-Oxley Act). 2002.
-  *Grounds: Audit trails — SOX requires adequate internal controls and audit trails for financial reporting. Roko's content-addressed Engram DAG and episode logs provide immutable audit trails for agent decision-making.*
+  *Grounds: Audit trails — SOX requires adequate internal controls and audit trails for financial reporting. Roko's content-addressed Signal DAG and episode logs provide immutable audit trails for agent decision-making.*
 
 ---
 
 ## Content Provenance
 
 - C2PA. Coalition for Content Provenance and Authenticity Standard. c2pa.org.
-  *Grounds: Content provenance — industry standard for tracking content origin and modification history. Grounds the Attestation field on Engrams. Cross-referenced in [08-security-and-provenance.md](./08-security-and-provenance.md).*
+  *Grounds: Content provenance — industry standard for tracking content origin and modification history. Grounds the Attestation field on Signals. Cross-referenced in [08-security-and-provenance.md](./08-security-and-provenance.md).*
 
 ---
 
@@ -28307,7 +28307,7 @@ Roko's VCG Attention Auction allocates limited context budget through incentive-
 ## Demurrage and Token Economics
 
 - Gesell, S. (1916). _The Natural Economic Order_.
-  *Grounds: Demurrage — money that decays over time to encourage circulation. KORAI's 1% annual demurrage mirrors Engram half-life: both knowledge tokens and knowledge entries decay, preventing hoarding and ensuring freshness.*
+  *Grounds: Demurrage — money that decays over time to encourage circulation. KORAI's 1% annual demurrage mirrors Signal half-life: both knowledge tokens and knowledge entries decay, preventing hoarding and ensuring freshness.*
 
 - Ostrom, E. (1990). _Governing the Commons_. Cambridge University Press.
   *Grounds: Commons governance — principles for governing shared resources without central authority. Informs the governance of the shared knowledge commons in Agent Mesh.*
@@ -28317,7 +28317,7 @@ Roko's VCG Attention Auction allocates limited context budget through incentive-
 ## Knowledge Markets
 
 - Williamson, O.E. (1979). Transaction-Cost Economics. _Journal of Law and Economics_.
-  *Grounds: Transaction costs — institutional structures emerge to minimize transaction costs. The Agent Mesh reduces knowledge sharing transaction costs through standardized Engram formats and HDC similarity search.*
+  *Grounds: Transaction costs — institutional structures emerge to minimize transaction costs. The Agent Mesh reduces knowledge sharing transaction costs through standardized Signal formats and HDC similarity search.*
 
 - Bakos, Y. & Brynjolfsson, E. (1999). Bundling Information Goods. _Management Science_.
   *Grounds: Information bundling — economics of bundling information goods. Informs the design of knowledge bundles for collective sharing.*
@@ -28408,7 +28408,7 @@ Roko agents can operate on-chain via the Korai chain — a dedicated EVM for age
 ## Attestation and Provenance
 
 - Ethereum Attestation Service (2024-2026). EAS Documentation. attest.sh.
-  *Grounds: On-chain attestation — attestation service for Engram verification. Provides the infrastructure for the Attestation field on Engrams.*
+  *Grounds: On-chain attestation — attestation service for Signal verification. Provides the infrastructure for the Attestation field on Signals.*
 
 - Uniswap Labs (2022). Permit2: Signature-Based Token Approvals.
   *Grounds: Token permissions — signature-based token approval system. Enables gasless token approvals for agent-to-agent transactions.*
@@ -28431,7 +28431,7 @@ Roko agents can operate on-chain via the Korai chain — a dedicated EVM for age
 ## Cryptographic Primitives
 
 - Merkle, R.C. (1987). A Digital Signature Based on a Conventional Encryption Function. In _CRYPTO '87_, LNCS 293, 369-378.
-  *Grounds: Merkle trees — foundational data structure for content-addressed verification. Roko's BLAKE3 content hashing on Engrams is a descendant of Merkle's content-addressing approach.*
+  *Grounds: Merkle trees — foundational data structure for content-addressed verification. Roko's BLAKE3 content hashing on Signals is a descendant of Merkle's content-addressing approach.*
 
 - Goldwasser, S., Micali, S., & Rackoff, C. (1985). The Knowledge Complexity of Interactive Proof Systems. In _STOC '85_, 291-304.
   *Grounds: Zero-knowledge proofs — foundational work on ZK proofs. Grounds the Valhalla privacy layer's ZK range proofs for privacy-preserving knowledge verification.*
@@ -28440,7 +28440,7 @@ Roko agents can operate on-chain via the Korai chain — a dedicated EVM for age
   *Grounds: STARKs — scalable transparent proofs without trusted setup. Post-quantum secure. Potential future proving system for agent computation verification.*
 
 - Benet, J. (2014). IPFS — Content Addressed, Versioned, P2P File System. arXiv:1407.3561.
-  *Grounds: Content addressing — content-addressed P2P storage. Roko's BLAKE3 content-addressed Engrams follow the same content-addressing principle.*
+  *Grounds: Content addressing — content-addressed P2P storage. Roko's BLAKE3 content-addressed Signals follow the same content-addressing principle.*
 
 - Szabo, N. (1997). Formalizing and Securing Relationships on Public Networks. _First Monday_, 2(9).
   *Grounds: Smart contracts — foundational concept of self-enforcing digital agreements. The Policy trait enforces agent behavior constraints as computational contracts.*
@@ -28525,7 +28525,7 @@ Knowledge evolves. The research here establishes how knowledge compression throu
 ## Memetic and Cultural Evolution
 
 - Dawkins, R. (1976). _The Selfish Gene_. Oxford University Press.
-  *Grounds: Memes — introduced "meme" as a unit of cultural transmission. Knowledge entries (Engrams) are the memes of the agent ecosystem — they replicate, mutate, and compete for attention.*
+  *Grounds: Memes — introduced "meme" as a unit of cultural transmission. Knowledge entries (Signals) are the memes of the agent ecosystem — they replicate, mutate, and compete for attention.*
 
 - Blackmore, S. (1999). _The Meme Machine_. Oxford University Press.
   *Grounds: Memetic evolution — comprehensive treatment of memetic evolution. Knowledge entries compete for context window space (replication) and are selected by Gate results (fitness).*
@@ -28534,7 +28534,7 @@ Knowledge evolves. The research here establishes how knowledge compression throu
   *Grounds: Knowledge evolution — knowledge evolves through conjecture and refutation. Cross-referenced in [13-philosophy.md](./13-philosophy.md).*
 
 - Hull, D.L. (1988). _Science as a Process_. University of Chicago Press.
-  *Grounds: Evolutionary epistemology — science as an evolutionary process with replicators (ideas) and interactors (scientists). Maps to Engrams (replicators) and agents (interactors).*
+  *Grounds: Evolutionary epistemology — science as an evolutionary process with replicators (ideas) and interactors (scientists). Maps to Signals (replicators) and agents (interactors).*
 
 ---
 
@@ -28884,7 +28884,7 @@ DR-FREE (Shafiei 2025, Nature Communications) and Active Inference for Multi-LLM
 > **Refinement source**: `../../tmp/refinements/16-research-to-runtime.md`
 >
 > This chapter translates research into a target-state runtime loop: `Paper -> Claim -> Heuristic -> Trial -> Calibration`.
-> Papers would be stored as Engrams, claims would become testable hypotheses, heuristics would be the reusable runtime form, trials would be episodes, and calibration would record whether the claim actually holds in Roko's deployment.
+> Papers would be stored as Signals, claims would become testable hypotheses, heuristics would be the reusable runtime form, trials would be episodes, and calibration would record whether the claim actually holds in Roko's deployment.
 
 **Topic**: [References](./INDEX.md)
 **Prerequisites**: [Architecture glossary](../00-architecture/01-naming-and-glossary.md), [Research-to-Runtime Pipeline](../05-learning/20-research-to-runtime.md), [Heuristics, Worldviews, and Falsifiers](../05-learning/19-heuristics-worldviews-and-falsifiers.md)
@@ -28896,7 +28896,7 @@ DR-FREE (Shafiei 2025, Nature Communications) and Active Inference for Multi-LLM
 
 ## Overview
 
-Roko already consumes research implicitly: papers inform architecture, bandits, memory, active inference, collective intelligence, and HDC. This chapter makes that flow explicit and auditable. The core change is simple: the paper itself would become a first-class Engram, a claim would become a structured hypothesis with a falsifier, a heuristic would become the runtime projection of that claim, and repeated trials would produce calibration data that can confirm, weaken, or retire the heuristic.
+Roko already consumes research implicitly: papers inform architecture, bandits, memory, active inference, collective intelligence, and HDC. This chapter makes that flow explicit and auditable. The core change is simple: the paper itself would become a first-class Signal, a claim would become a structured hypothesis with a falsifier, a heuristic would become the runtime projection of that claim, and repeated trials would produce calibration data that can confirm, weaken, or retire the heuristic.
 
 The result is a target-state living research loop rather than a one-time literature pass. The system does not merely cite research; it would test research against its own episodes, record the outcome, and keep a replication ledger for later review.
 
@@ -28904,7 +28904,7 @@ The result is a target-state living research loop rather than a one-time literat
 
 ### 1. Paper
 
-A paper is a target-state Engram that captures bibliographic metadata, provenance, and the system's own notes about why the source matters. Papers would be content-addressed like other durable knowledge and can be linked through lineage when a claim or heuristic depends on them.
+A paper is a target-state Signal that captures bibliographic metadata, provenance, and the system's own notes about why the source matters. Papers would be content-addressed like other durable knowledge and can be linked through lineage when a claim or heuristic depends on them.
 
 ### 2. Claim
 
@@ -29003,7 +29003,7 @@ Each source should arrive with one to three claims and an explicit falsifier. Th
 
 ### Manual
 
-A human or agent reads a paper, creates the Paper Engram, and drafts the Claims. This lane is the highest quality and should be used for foundational or high-stakes sources.
+A human or agent reads a paper, creates the Paper Signal, and drafts the Claims. This lane is the highest quality and should be used for foundational or high-stakes sources.
 
 ### Agent-Curated
 

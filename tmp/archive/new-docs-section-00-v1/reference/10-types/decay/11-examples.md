@@ -89,7 +89,7 @@ After 50 days:
 0.95^50 ≈ 0.077 < 0.1 → cold tier
 ```
 
-**Result**: Engram reaches cold tier somewhere between day 43 and day 44.
+**Result**: Signal reaches cold tier somewhere between day 43 and day 44.
 
 ---
 
@@ -135,7 +135,7 @@ assert!((gc_ms - 35_878_000).abs() < 1_000);
 
 ## Example 6 — Step Decay, Sprint-Scoped Plan
 
-**Scenario**: A `Plan` Engram created at the start of a sprint. Query it mid-sprint, at
+**Scenario**: A `Plan` Signal created at the start of a sprint. Query it mid-sprint, at
 end of sprint (epoch 1), and two sprints later.
 
 ```rust
@@ -164,7 +164,7 @@ assert!((w_two - 0.25).abs() < 0.001);
 
 ## Example 7 — Linear Decay, Session Context
 
-**Scenario**: A `ContextAssembly` Engram with a 30-minute lifetime. Check weight at
+**Scenario**: A `ContextAssembly` Signal with a 30-minute lifetime. Check weight at
 10 min, 30 min, and 31 min.
 
 ```rust
@@ -194,7 +194,7 @@ assert_eq!(w_31, 0.0);  // clamped at floor
 ## Example 8 — Reinforcement Equilibrium Check
 
 **Scenario**: Verify that with default Demurrage params, any retrieval rate ≥ 1/day
-keeps the Engram at full weight.
+keeps the Signal at full weight.
 
 ```rust
 <!-- source: crates/roko-core/tests/decay_examples.rs -->
@@ -213,7 +213,7 @@ assert!((p.balance - 1.0).abs() < 0.001);
 
 ## Example 9 — Cold Tier Freeze and Thaw
 
-**Scenario**: An Engram drops below `COLD_TIER_THRESHOLD`, gets frozen. After 6 months
+**Scenario**: An Signal drops below `COLD_TIER_THRESHOLD`, gets frozen. After 6 months
 (below `MAX_COLD_DWELL_SECS`), a query retrieves it. Verify thaw restores balance.
 
 ```rust
@@ -242,7 +242,7 @@ match &engram.decay {
 
 ## Example 10 — Cold Tier GC after Max Dwell
 
-**Scenario**: An Engram is frozen and never retrieved. After `MAX_COLD_DWELL_SECS`,
+**Scenario**: An Signal is frozen and never retrieved. After `MAX_COLD_DWELL_SECS`,
 the GC job deletes it.
 
 ```rust
@@ -264,7 +264,7 @@ assert!(substrate.cold_store.get(&id).is_err());  // gone from cold too
 
 ## Example 11 — Custom Handler (Ebbinghaus)
 
-**Scenario**: An Engram using the Ebbinghaus custom handler, retrieved three times over
+**Scenario**: An Signal using the Ebbinghaus custom handler, retrieved three times over
 30 days.
 
 ```
@@ -290,7 +290,7 @@ assert!((w - 0.135).abs() < 0.01);
 
 ## Example 12 — Builder Integration
 
-**Scenario**: Create an Engram with an explicit non-default decay.
+**Scenario**: Create an Signal with an explicit non-default decay.
 
 ```rust
 <!-- source: crates/roko-core/tests/decay_examples.rs -->

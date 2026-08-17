@@ -85,7 +85,7 @@ Roko implements a CoALA-compatible cognitive architecture:
 
 | CoALA Component | Roko Implementation |
 |---|---|
-| Working memory | Active `Engram` set in `Substrate` (high-score, low-decay) |
+| Working memory | Active `Signal` set in `Substrate` (high-score, low-decay) |
 | Episodic memory | Episode log in `roko-learn` |
 | Semantic memory | `Neuro` knowledge base (6 types, 4 tiers) |
 | Procedural memory | Playbook rules in `roko-learn` |
@@ -109,7 +109,7 @@ across all cognitive components — a contribution from the somatic marker hypot
    novelty weighting, cold-tier freeze/thaw) implement a richer memory management policy
    than typical cognitive architectures, which use simpler recency-based forgetting.
 
-3. **Content-addressed memory**: `Engram`'s BLAKE3 content-addressing enables deduplication
+3. **Content-addressed memory**: `Signal`'s BLAKE3 content-addressing enables deduplication
    and integrity verification that traditional cognitive architectures do not address.
 
 ### Open Research Questions
@@ -141,7 +141,7 @@ Roko's `C-Factor` metric operationalizes the Woolley finding for AI agent fleets
 - **C-Factor** measures how much faster a fleet of agents solves problems together than
   any single agent solves them alone.
 - A shared `Substrate` enables indirect coordination: one agent's successful strategy
-  (recorded as an `Engram`) is available to other agents, acting like a pheromone trail.
+  (recorded as an `Signal`) is available to other agents, acting like a pheromone trail.
 - The `roko-chain` `Spore/Sparrow` marketplace enables explicit coordination: agents can
   post jobs (Spore) and accept them (Sparrow), creating a distributed task allocation market.
 
@@ -348,7 +348,7 @@ The papers and frameworks cited here are organized in the `research/` folder:
 ## Open Questions
 
 - Are there frontier research areas Roko should be mapping to that are not covered here?
-  Candidates: mechanistic interpretability (for understanding what Engrams represent),
+  Candidates: mechanistic interpretability (for understanding what Signals represent),
   constitutional AI (for Policy trait implementation), and causal inference (for lineage
   DAG analysis).
 - Should this document be maintained as a living survey or replaced by individual per-paper

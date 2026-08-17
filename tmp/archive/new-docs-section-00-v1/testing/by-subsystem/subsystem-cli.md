@@ -40,7 +40,7 @@ Tests use a headless terminal emulator to verify state machine transitions:
 - F1: Overview tab shows current plan status.
 - F2: Agents tab shows active agents and their states.
 - F3: Gate tab shows current gate pipeline state.
-- F4: Substrate tab shows recent Engrams.
+- F4: Substrate tab shows recent Signals.
 - F5: Learning tab shows bandit arms and scores.
 - F6: Logs tab shows event stream.
 - F7: Settings tab shows configuration.

@@ -1,7 +1,13 @@
 # Binary Issues — Batch Index
 
-Runner: `tmp/runners/binary-issues/run.sh`  
-Tracker: `ISSUE-TRACKER.md`  
+> **What is this?** The full batch index for the binary-issues runner. 56 batches
+> covering security defaults, phantom features, slash commands, streaming, subprocess
+> discipline, silent errors, hardcoded values, code dedup, and partial fixes.
+>
+> **Last updated: 2026-08-13**
+
+Runner: `tmp/runners/binary-issues/run.sh`
+Tracker: `ISSUE-TRACKER.md`
 Source audit: `tmp/binary-issues/MASTER-INDEX.md`
 
 ## All batches (56)

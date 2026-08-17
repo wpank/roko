@@ -1,6 +1,6 @@
 # Hyperdimensional Substrate
 
-> **TL;DR**: Every Engram should carry a 10,240-bit HDC fingerprint as
+> **TL;DR**: Every Signal should carry a 10,240-bit HDC fingerprint as
 > a first-class field, not as an optional side-table. Doing so turns
 > similarity, consensus, stigmergy, analogy, and compositional memory
 > into O(1) vector ops over a fabric that already exists. The `roko-primitives`
@@ -13,7 +13,7 @@
 > XOR (bind), majority-vote (bundle), and cyclic shift (permute). Cosine /
 > Hamming similarity between two such vectors is ~1 ns with SIMD popcount.
 > `roko-primitives` already has `HdcVector`; this doc proposes making it a
-> field on every Engram (not just a side-table) and building the core
+> field on every Signal (not just a side-table) and building the core
 > operations around it.
 
 ## 1. Why HDC is the right choice for Roko
@@ -48,12 +48,12 @@ HDC is the bridge.
 - Similarity computation
 
 What it doesn't have:
-- A first-class Engram field for the fingerprint
-- A canonical encoder from Engram body → HDC vector
+- A first-class Engram (renamed to Signal in 2026-08-12) field for the fingerprint
+- A canonical encoder from Signal body → HDC vector
 - HDC-based Substrate query primitives
 - Integration with the Bus as a consensus channel
 
-## 3. The missing field on Engram
+## 3. The missing field on Signal
 
 Proposed addition to `roko-core::engram::Engram`:
 
@@ -77,7 +77,7 @@ encoder registered in `roko-primitives`. This makes it:
 
 ## 4. HDC-based Substrate queries
 
-Today `Substrate::query` is filter-based: "give me all Engrams of Kind
+Today `Substrate::query` is filter-based: "give me all Signals of Kind
 X in tier Y from time T1 to T2". Add:
 
 ```rust
@@ -96,14 +96,14 @@ pub trait Substrate {
 ```
 
 This is *not* semantic search over an external embedding index. It's
-native similarity over content we've already stored. Every Engram is
+native similarity over content we've already stored. Every Signal is
 queryable by similarity the moment it lands.
 
 ### 4.1 Scale
 
 At 10,240 bits per fingerprint, a single 1 GB RAM buffer holds about
 800,000 fingerprints. Brute-force cosine (SIMD) comparison is
-~10^9/second on a modern CPU. So `query_similar` against 800k Engrams is
+~10^9/second on a modern CPU. So `query_similar` against 800k Signals is
 < 1 ms. For larger scales, existing LSH techniques over HDC give
 sub-ms retrieval at tens of millions.
 
@@ -128,7 +128,7 @@ catches "both said correct thing with different words".
 
 ### 5.2 Stigmergic pheromones as HDC vectors
 
-Doc 09 §3 introduced stigmergy as Engrams in a shared Substrate. With
+Doc 09 §3 introduced stigmergy as Signals in a shared Substrate. With
 HDC, *pheromone strength along a direction* is represented as the HDC
 vector's similarity to a "reward direction" vector. Deposits that point
 in the same direction reinforce via bundling; deposits that point
@@ -159,12 +159,12 @@ fp(turn_5) = bind(role_vector, agent_A) + bind(task_vector, T123) +
              bind(output_vector, output_hash) + bind(time_vector, t5)
 ```
 
-Every Engram's fingerprint encodes its role, task, author, time, and
+Every Signal's fingerprint encodes its role, task, author, time, and
 content in *one vector*. Queries can then decompose:
 
 - "what was agent A doing at time t5?" → query_similar to
   `bind(agent_A, time_t5)`.
-- "which Engrams relate to task T123?" → query_similar to
+- "which Signals relate to task T123?" → query_similar to
   `bind(task_vector, T123)`.
 
 This replaces N indexes with one vector space. The Substrate becomes
@@ -173,21 +173,21 @@ holographic: every fingerprint carries its own context.
 ## 7. HDC as the decay mechanism
 
 The existing decay model (`None`, `HalfLife`, `Ttl`, `Ebbinghaus`)
-operates on Engram weights. HDC gives us a subtler decay: *vector noise
-accumulation*. An Engram's effective fingerprint can be a weighted
+operates on Signal weights. HDC gives us a subtler decay: *vector noise
+accumulation*. An Signal's effective fingerprint can be a weighted
 blend of its original fingerprint and a noise vector, with the noise
-weight growing over time. Old Engrams become *fuzzier* rather than
+weight growing over time. Old Signals become *fuzzier* rather than
 gone:
 
-- A 1-year-old Engram matches broad categories but not specific ones.
-- A 1-hour-old Engram matches both.
+- A 1-year-old Signal matches broad categories but not specific ones.
+- A 1-hour-old Signal matches both.
 
 This is biologically faithful — human memory gets more categorical and
 less episodic over time — and it's what enables *generalization* in a
 Substrate. The Neuro tier-progression loop (Phase 4) uses exactly this
 to promote specific episodes to semantic knowledge: as fingerprints
 drift, similar ones cluster, and a cluster-center becomes a new
-category Engram.
+category Signal.
 
 ## 8. Anti-hallucination via HDC consistency
 
@@ -196,7 +196,7 @@ fingerprints of its claimed supporting evidence. Concretely:
 
 1. Agent produces output O claiming to be about X.
 2. Substrate computes fp(O).
-3. Substrate queries for Engrams with lineage tagged as supporting X.
+3. Substrate queries for Signals with lineage tagged as supporting X.
    These have their own fingerprints.
 4. If fp(O) is far from the bundle of supporting fingerprints, the
    output is *semantically disconnected* from its claimed support.
@@ -229,7 +229,7 @@ the Substrate.
 
 ## 10. HDC as meta-state
 
-Agents can carry an *identity fingerprint* — the bundle of all Engrams
+Agents can carry an *identity fingerprint* — the bundle of all Signals
 authored by them over the last K turns. An agent's identity drifts as
 they work. Observable properties:
 
@@ -245,13 +245,13 @@ they work. Observable properties:
 
 ### 11.1 Phase B.5 (between kernel landing and subsystem migration)
 
-1. Add `fingerprint: Option<HdcVector>` to `Engram`. Default None.
+1. Add `fingerprint: Option<HdcVector>` to `Signal`. Default None.
 2. Register a default encoder in `roko-primitives`: hash each bytestring
    word into HD space, bundle words with position-bind.
 3. `FileSubstrate::put` populates the fingerprint at insert time if not
    already set. `FileSubstrate::query_similar` implemented via
-   brute-force scan (fine for <1M Engrams).
-4. `fingerprint` exposed on all HTTP/REST routes that return Engrams.
+   brute-force scan (fine for <1M Signals).
+4. `fingerprint` exposed on all HTTP/REST routes that return Signals.
 5. TUI F7 Substrate tab gains a "Similar to…" search box.
 
 ### 11.2 Phase C.5 (HDC consensus)
@@ -261,7 +261,7 @@ they work. Observable properties:
 2. A `ConsensusPolicy` in `roko-learn` that accumulates votes and
    publishes outcomes.
 3. `query_similar` used by Router when selecting among candidate
-   Engrams (not only by score, but also by similarity to prior
+   Signals (not only by score, but also by similarity to prior
    winners).
 
 ### 11.3 Phase D (HDC-native operations)
@@ -269,7 +269,7 @@ they work. Observable properties:
 1. HDC-based `Kind::Playbook` retrieval: analogy-driven.
 2. ConsistencyGate deployed as stream-gate in `roko-gate`.
 3. HDC-powered Dreams consolidation: fingerprint clustering picks
-   Engrams for promotion.
+   Signals for promotion.
 
 ## 12. Why this is a competitive moat
 
@@ -281,7 +281,7 @@ Three converging facts:
 2. HDC has a 20-year research literature with concrete algorithms for
    binding, unbinding, cleanup, analogy, and sequential representation.
    None of this requires model training.
-3. HDC is fundamentally compatible with the `Engram` concept —
+3. HDC is fundamentally compatible with the `Signal` concept —
    content-addressed, deterministic, compositional. Roko's data model
    was already HDC-shaped before anyone noticed.
 
@@ -302,14 +302,14 @@ changing their core data model rather than bolting on a library.
   cortex — biological precedent.
 
 This is a mature field, not speculative. The engineering path is
-clear. Each citation becomes a Paper Engram once
+clear. Each citation becomes a Paper Signal once
 `16-research-to-runtime.md` lands; the capacity and
 near-orthogonality claims become testable hypotheses in Roko's own
 replication ledger.
 
 ## 14. Canonical encoder — the default implementation
 
-For Phase B.5 (per §11.1) the default Engram encoder needs to be
+For Phase B.5 (per §11.1) the default Signal encoder needs to be
 simple, deterministic, and fast. A rough sketch:
 
 ```rust
@@ -413,7 +413,7 @@ HDC is one of the most load-bearing refinements because it multiplies
 the value of everything else:
 
 - **Demurrage (12)** uses HDC neighbor similarity to weight
-  reinforcement: citing a rare Engram bumps balance more than citing a
+  reinforcement: citing a rare Signal bumps balance more than citing a
   common one.
 - **c-factor (13)** §2.2 — cognitive diversity is the pairwise
   distance between agents' HDC clouds. Without HDC, this metric has no
@@ -439,11 +439,11 @@ HDC isn't magic. Three failure modes to watch:
    field goes alongside the vector.
 2. **Capacity exhaustion** — in theory 10,240 bits hold enormous
    structure, but bundling too many items crowds the space. The
-   cleanup-to-codebook primitive helps, and per-Engram encoders
+   cleanup-to-codebook primitive helps, and per-Signal encoders
    shouldn't bundle more than ~1000 atomic items in a single vector.
    For bigger structures, compose a small set of sub-fingerprints
    lazily rather than one giant vector.
-3. **Near-duplicates confusing retrieval** — if two Engrams are
+3. **Near-duplicates confusing retrieval** — if two Signals are
    fingerprint-similar but semantically different (e.g. two
    error stacks that share keywords but are unrelated), retrieval
    returns both. Fix with tag-binding: `fp(stack) · fp(error_code)`

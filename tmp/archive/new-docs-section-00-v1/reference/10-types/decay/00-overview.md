@@ -1,10 +1,10 @@
 # Decay — Overview
 
-> Why Engrams decay; the demurrage framing; the five decay models at a glance.
+> Why Signals decay; the demurrage framing; the five decay models at a glance.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
-**Depends on**: [Engram](../../01-engram/00-overview.md)  
+**Depends on**: [Signal](../../01-engram/00-overview.md)  
 **Used by**: Substrate GC, retrieval ranking  
 **Last reviewed**: 2026-04-19
 
@@ -12,22 +12,22 @@
 
 ## TL;DR
 
-Engrams decay because information has a shelf life. The decay system implements "use it
+Signals decay because information has a shelf life. The decay system implements "use it
 or lose it" at the substrate level. The primary model (Demurrage) rewards retrieval and
 taxes idleness. Four other models (Exponential, Step, Linear, Custom) handle specialized
 use cases. The decay value is not part of the identity hash — it can be changed without
-creating a new Engram.
+creating a new Signal.
 
 ---
 
 ## The Idea
 
 A system with no decay accumulates everything forever. Eventually, old, irrelevant
-Engrams crowd out recent, relevant ones in retrieval results. The agent's "memory"
+Signals crowd out recent, relevant ones in retrieval results. The agent's "memory"
 becomes stale and slow.
 
 Decay is the solution: information that is not used fades away. When the substrate runs
-garbage collection, the Engrams with the lowest effective weight (score × decay) are
+garbage collection, the Signals with the lowest effective weight (score × decay) are
 removed first. The substrate stays trim and relevant.
 
 The **demurrage** framing frames this as an economic phenomenon: idle information incurs
@@ -42,7 +42,7 @@ reinforces it, which keeps it alive.
 ### Demurrage (Primary)
 
 Balance-based model: a `balance` that decreases each idle day and increases each
-retrieval. The most nuanced model; recommended for most Engrams.
+retrieval. The most nuanced model; recommended for most Signals.
 
 ```
 idle day:     balance *= (1 - idle_tax_per_day)
@@ -83,7 +83,7 @@ A user-provided function `(elapsed_secs: f64, params: &CustomParams) -> f64`.
 
 ## When to Use Which Model
 
-| Engram kind | Recommended decay |
+| Engram (renamed to Signal in 2026-08-12) kind | Recommended decay |
 |-------------|------------------|
 | `KnowledgeEntry` | Demurrage (long-lived; rewarded on use) |
 | `AgentOutput` | Exponential (stale quickly) |
@@ -101,4 +101,4 @@ For the full cross-product of Kind × Decay, see [`08-tier-matrix.md`](08-tier-m
 
 - [`01-demurrage.md`](01-demurrage.md) — the primary model
 - [`08-tier-matrix.md`](08-tier-matrix.md) — which model for which kind
-- [`reference/01-engram/09-decay-fields.md`](../../01-engram/09-decay-fields.md) — decay on the Engram struct
+- [`reference/01-engram/09-decay-fields.md`](../../01-engram/09-decay-fields.md) — decay on the Signal struct

@@ -1,7 +1,13 @@
 # Status Quo: Index
 
+> **Disposition: CURRENT NAVIGATION (2026-08-17).** `.roko/GAPS.md` is the canonical
+> human runtime-acceptance roll-up and `MASTER-EXECUTION-CHECKLIST.md` is the execution
+> control plane. Numbered audit/census documents and the historical epic table below are
+> dated evidence: treat them as historical unless their own leading status banner explicitly
+> says otherwise.
+
 > **What is this?** This directory contains 107 numbered audit documents, an executable
-> backlog of 48 epics (389+ tasks), and supporting evidence produced during systematic
+> backlog of 48 epics (447 implementation tasks), and supporting evidence produced during systematic
 > codebase audits of the roko Rust workspace. Together they track the gap between roko's
 > aspirational specifications (`docs/v2/`) and the actual implementation across 35
 > workspace members (~800K LOC of Rust).
@@ -25,7 +31,7 @@
 > - **Batch:** A multi-agent execution run. Batches 1-10 (2026-07 through 2026-08-13)
 >   ran ~230+ agents producing ~130+ confirmed-done tasks.
 >
-> **Last updated:** 2026-08-13
+> **Last updated:** 2026-08-17
 
 ---
 
@@ -33,19 +39,20 @@
 
 **If you are new to this directory**, follow this path:
 
-1. **Read [95-ENGINE-DRIFT.md](95-ENGINE-DRIFT.md) first.** The single most important
-   fact about this codebase: `roko plan run` historically defaulted to a Graph Engine
-   stub that prints SUCCESS while doing no real work. Real execution uses Runner v2
-   (now the default after E01 landed).
-2. **Read [01-EXECUTIVE-SUMMARY.md](01-EXECUTIVE-SUMMARY.md)** for current truth in one
-   pass: P0 problems, what is real, what is facade, inventory counts.
-3. **Read [13-CURRENT-STATE-MATRIX.md](13-CURRENT-STATE-MATRIX.md)** for the
-   system-by-system Live / Partial / Stub / Legacy / Stale-doc matrix.
-4. **Read [MASTER-EXECUTION-CHECKLIST.md](MASTER-EXECUTION-CHECKLIST.md)** for the
+1. **Read [`.roko/GAPS.md`](../../.roko/GAPS.md)** for the current human-readable
+   runtime/product boundary. Code and tests remain the ultimate behavioral evidence.
+2. **Read [MASTER-EXECUTION-CHECKLIST.md](MASTER-EXECUTION-CHECKLIST.md)** for the
    canonical execution control document: wave-by-wave progress, agent protocols,
    evidence contracts, and what "done" means.
+3. **Read [95-ENGINE-DRIFT.md](95-ENGINE-DRIFT.md)** for the dated engine-drift audit
+   and its explicit current superseding banner. It explains why the default-runtime
+   correction was necessary; it is not the current product roll-up.
+4. **Use [01-EXECUTIVE-SUMMARY.md](01-EXECUTIVE-SUMMARY.md)** and
+   **[13-CURRENT-STATE-MATRIX.md](13-CURRENT-STATE-MATRIX.md)** only as dated
+   2026-08-13 audit baselines. Their unbannered implementation claims are historical,
+   not current truth.
 5. **Go to [backlog/00-INDEX.md](backlog/00-INDEX.md)** for the executable work plan:
-   48 epics, 389+ tasks, milestone gates.
+   48 epics, 447 implementation tasks, milestone gates.
 
 **For depth on a specific subsystem**, use Sections 5-8 below to find the relevant
 evidence ledger. Each ledger contains `file:line` citations from the codebase.
@@ -56,32 +63,59 @@ which maps ~129 v2 specification concepts to their implementation status.
 **When sources disagree**, use this priority order:
 
 1. Current code behavior, tests, and git history.
-2. The MASTER-EXECUTION-CHECKLIST and per-task evidence on the integration branch.
-3. Task records and acceptance requirements in `tasks.toml` files.
-4. The July 14 audit ledgers (96-101 trace documents).
-5. Older status-quo prose, roadmaps, and historical claims.
+2. `.roko/GAPS.md` for the current human runtime/product boundary.
+3. The MASTER-EXECUTION-CHECKLIST and per-task evidence on the integration branch.
+4. Task records and acceptance requirements in `tasks.toml` files.
+5. Dated audit ledgers, older status-quo prose, roadmaps, and historical claims.
+
+## Top-Level Disposition Registry
+
+The 109 direct Markdown files under `tmp/status-quo/` have one deterministic disposition
+rule. This prevents an old audit from becoming current merely because its filename appears
+in this index:
+
+| Scope | Count | Disposition |
+|---|---:|---|
+| `00-INDEX.md` | 1 | `CURRENT-NAVIGATION`; this file routes readers to current owners but does not replace runtime evidence. |
+| `MASTER-EXECUTION-CHECKLIST.md` | 1 | `CURRENT-CONTROL`; raw checklist markers and execution protocol. |
+| `DOC-MANIFEST.md` | 1 | `GENERATED-HISTORICAL`; dated taxonomy, never current implementation proof. |
+| Numbered `01-*.md` through `106-*.md` | 106 | `HISTORICAL-AUDIT` by default. A document may override that default only with an explicit leading `CURRENT`, `AUTHORITATIVE-PARTIAL`, `SUPERSEDED`, or `HISTORICAL` disposition banner. |
+| **Total** | **109** | Every direct top-level status document is classified. |
+
+The classification is about authority, not deletion: historical evidence remains useful for
+provenance. Current behavior comes from code/tests, `.roko/GAPS.md`, the master checklist,
+and any explicitly current document banner, in that order.
 
 ---
 
 ## Overall Programme Status
 
-As of 2026-08-13 (batches 1-10 integrated, ~230+ agents run):
+As of 2026-08-17 (use `.roko/GAPS.md` as the canonical runtime-acceptance rollup):
 
 - **Self-heal plans (SH01-SH06):** 57/57 done. Runner lifecycle, isolation, persistence,
   telemetry, config, and regression harness are all remediated.
-- **Audit epics (E01-E22):** Substantially complete. All 22 epics at or near 100%.
-  E12 at 7/9 (1 partial, 1 blocked). E17 at 1/8 (ACP completion deferred).
-- **Completed epics beyond E22:** E34 (security/IFC, 8/8), E43 (ops hardening, 8/8),
-  E45 (agent quality, 10/10).
-- **Active epics (partial):** E30 (8/9), E31 (4/8), E32 (5/8), E33 (8/9), E35 (5/8),
-  E46 (8/12), E47 (10/11), E48 (10/12).
-- **Greenfield epics (0 tasks done):** E23-E29, E36-E42, E44.
+- **Accepted epics (48/48, canonical roll-up):** E01-E48. Acceptance boundaries and
+  broader product residuals remain explicit in `.roko/GAPS.md`.
+- **Partial epics:** none.
+- **Greenfield epic-manifest work:** zero tasks.
+- **Broader master census:** 209 done, 8 partial, and 25 unchecked raw markers before
+  the current documentation/projection tranche; these include proof and product residuals.
+- **Executable plan queue:** 30/30 plans and 124/124 tasks complete.
+- **Roadmap residuals outside completed manifests:** E32 still has aspirational
+  WIT/Component hostcalls and OpenClaw/legacy adapter parity; E37 still has named-surface
+  rendering/command ingress and native autonomy/graph/HDC source work.
+- **Executable task manifests:** `backlog/plans/00-INDEX.md` mirrors each `[meta].done`
+  value; those historical metadata counts are intentionally distinct from runtime acceptance.
 - **Signal rename:** Done (2026-08-12) -- Engram-to-Signal flip landed across the
   codebase.
-- **docs/v2 annotated:** Done (2026-08-12) -- v2 spec docs synced with reality.
+- **docs/v2 annotated:** Done (2026-08-12) -- every v2 document has an explicit
+  status marker; accuracy still requires ongoing reconciliation as wiring changes.
 - **Production error handling:** Partial -- `.expect()` replaced with proper errors
   in batch 10, but coverage is incomplete.
-- **Documentation plans:** Deferred to Wave 13 (after implementation stabilizes).
+- **Documentation plans:** 71 corpus-reconciliation tasks remain in Wave 13; source
+  ownership coverage is complete and drift enforcement is tracked separately.
+- **Deprecated rate-oracle removal (2026-08-13):** The ISFR vertical has been removed
+  from active Rust, demo, and v2 documentation surfaces. Historical audit records remain.
 
 ---
 
@@ -100,9 +134,9 @@ Decision and strategy documents. Read these to understand the project's state an
 
 | # | File | Size | What it covers |
 |---|------|------|---------------|
-| 95 | [ENGINE-DRIFT](95-ENGINE-DRIFT.md) | 12K | **Read first.** Three coexisting plan engines (orchestrate.rs v1, Runner v2, Graph), why the default was hollow, and the projection seam that unifies their output. |
-| 01 | [EXECUTIVE-SUMMARY](01-EXECUTIVE-SUMMARY.md) | 11K | Current truth in one pass. P0 problems, what is real, what is facade. Inventory counts (35 workspace members, ~800K LOC, 11 LLM providers, ~317 routes). |
-| 13 | [CURRENT-STATE-MATRIX](13-CURRENT-STATE-MATRIX.md) | 12K | Per-subsystem matrix: Live / Partial / Stub / Legacy / Stale-doc status for every major area. |
+| 95 | [ENGINE-DRIFT](95-ENGINE-DRIFT.md) | 12K | Historical default-engine/dry-run audit with a current superseding banner: Runner v2 is default and the Graph plan path dispatches live providers but lacks lifecycle parity. |
+| 01 | [EXECUTIVE-SUMMARY](01-EXECUTIVE-SUMMARY.md) | 11K | Dated 2026-08-13 audit baseline. Its P0 findings and inventory are retained as provenance, not current implementation truth. |
+| 13 | [CURRENT-STATE-MATRIX](13-CURRENT-STATE-MATRIX.md) | 12K | Dated 2026-08-13 per-subsystem audit baseline. Its Live / Partial / Stub / Legacy rows require current-code verification before use. |
 | 12 | [ROADMAP](12-ROADMAP.md) | 14K | Risk-ordered implementation sequence (Phases 0-3). Each item paired with a proof gate. |
 | 24 | [OPEN-ISSUE-LEDGER](24-OPEN-ISSUE-LEDGER.md) | 21K | P0/P1/P2 debt register with codebase evidence and done-when criteria. |
 | 25 | [PROOF-GATES](25-PROOF-GATES.md) | 12K | Runnable commands + pass criteria that prove a fix is actually done. |
@@ -114,7 +148,7 @@ Decision and strategy documents. Read these to understand the project's state an
 ## 3. Execution Backlog
 
 The [`backlog/`](backlog/00-INDEX.md) subfolder turns audit findings into roko-executable
-plans: 48 epics (E01-E48), 389+ implementation tasks, 71 DOC reconciliation tasks, grouped
+plans: 48 epics (E01-E48), 447 implementation tasks, 71 DOC reconciliation tasks, grouped
 into 4 milestones (M0 bootstrap through M3+).
 
 ### Backlog documents
@@ -129,7 +163,7 @@ into 4 milestones (M0 bootstrap through M3+).
 | [backlog/05-MASTER-CHECKLIST.md](backlog/05-MASTER-CHECKLIST.md) | Flat tickable checklist of all tasks by milestone. |
 | [backlog/06-EXECUTABLE-TASK-FILE-COVERAGE.md](backlog/06-EXECUTABLE-TASK-FILE-COVERAGE.md) | Coverage ledger for materialized task files (149 implementation tasks, 0 gaps). |
 | [backlog/07-SUBAGENT-TASK-AUTHORING-NOTES.md](backlog/07-SUBAGENT-TASK-AUTHORING-NOTES.md) | Corrections for task blocks with stale paths, deps, or scopes. |
-| [backlog/08-SOURCE-CORPUS-PLAN-COVERAGE.md](backlog/08-SOURCE-CORPUS-PLAN-COVERAGE.md) | 744 source docs mapped into DOC plans. |
+| [backlog/08-SOURCE-CORPUS-PLAN-COVERAGE.md](backlog/08-SOURCE-CORPUS-PLAN-COVERAGE.md) | 746 source docs mapped into DOC plans. |
 | [backlog/09-UNIFIED-ROADMAP.md](backlog/09-UNIFIED-ROADMAP.md) | Unified roadmap combining all tracks. |
 | [backlog/10-EPIC-DEPENDENCY-MATRIX.md](backlog/10-EPIC-DEPENDENCY-MATRIX.md) | Which epics block which -- dependency analysis. |
 | [backlog/11-EXECUTION-PLAYBOOK.md](backlog/11-EXECUTION-PLAYBOOK.md) | Operations playbook for running multi-agent execution. |
@@ -176,7 +210,7 @@ Whole-tree enumerations and generated manifests.
 | 06 | [WIRING-STATUS](06-WIRING-STATUS.md) | 14K | Built-but-unwired census. Every symbol checked for callers, with WIRED/PARTIAL/DEAD/ORPHAN tags. |
 | 11 | [DEPENDENCY-GRAPH](11-DEPENDENCY-GRAPH.md) | 17K | Workspace crate layering (L0-L4), dependency edges, and violation enumeration. |
 | 16 | [CODEBASE-INVENTORY](16-CODEBASE-INVENTORY.md) | 13K | File count, LOC, API surface, test attribute, and artifact inventory. |
-| 80 | [SOURCE-DOC-MANIFEST](80-SOURCE-DOC-MANIFEST.md) | 92K | Generated manifest of 636 docs files with status tags and owners. Largest file in the pack. |
+| 80 | [SOURCE-DOC-MANIFEST](80-SOURCE-DOC-MANIFEST.md) | 92K | Generated manifest of 637 docs files with status tags and owners. Largest file in the pack. |
 | 83 | [ENV-VAR-MANIFEST](83-ENV-VAR-MANIFEST.md) | 16K | 99 fixed environment variables + dynamic families. |
 | 102 | [SPEC-DEBT-LEDGER](102-SPEC-DEBT-LEDGER.md) | 30K | ~129 named v2 specification concepts mapped to code status (~24 built, ~52 partial, ~48 zero-code). Synthesizes 15/18/85-87. |
 | 103 | [DUPLICATE-TYPES-CENSUS](103-DUPLICATE-TYPES-CENSUS.md) | 19K | 19 cross-crate duplicated type families with no conversions (e.g., GateVerdict 4x). |
@@ -210,7 +244,7 @@ cross-cutting concern. Organized by domain.
 | # | File | Size | What it audits |
 |---|------|------|---------------|
 | 30 | [CORE-SIGNAL](30-CORE-SIGNAL.md) | 30K | roko-core: the Signal noun (formerly Engram), 6 verb traits, storage split-brain. |
-| 31 | [GRAPH-CELLS-ENGINE](31-GRAPH-CELLS-ENGINE.md) | 29K | roko-graph: Graph engine, Cell abstraction, stub cognitive cells, dry-run task executor. |
+| 31 | [GRAPH-CELLS-ENGINE](31-GRAPH-CELLS-ENGINE.md) | 29K | Historical Graph/Cell audit; current plan path has live TaskExecutor dispatch and typed cognitive Cells, with incomplete Runner-v2 lifecycle parity. |
 | 32 | [EVENTS-BUS-STATEHUB](32-EVENTS-BUS-STATEHUB.md) | 33K | Event bus, PulseBus, StateHub push-based dashboard, relay topics, feed agents. |
 | 47 | [FOUNDATION-TYPES-REDESIGN](47-FOUNDATION-TYPES-REDESIGN.md) | 10K | DispatchPlan / RunLedger / GateStatus / CommitOutcome type consolidation. |
 | 89 | [PRIMITIVES-HDC](89-PRIMITIVES-HDC.md) | 30K | roko-primitives: HDC (hyperdimensional computing) vectors and tier routing. |
@@ -219,8 +253,8 @@ cross-cutting concern. Organized by domain.
 
 | # | File | Size | What it audits |
 |---|------|------|---------------|
-| 36 | [ORCHESTRATION-RUNNERS](36-ORCHESTRATION-RUNNERS.md) | 39K | Three-generation orchestration: orchestrate.rs (dead) / Runner v2 (live) / Graph (hollow default). |
-| 37 | [RUNNER-V2-AND-GRAPH](37-RUNNER-V2-AND-GRAPH.md) | 7K | Operator decision doc: which plan engine is live and why. |
+| 36 | [ORCHESTRATION-RUNNERS](36-ORCHESTRATION-RUNNERS.md) | 39K | Historical three-generation orchestration audit; current Graph live-dispatch status is superseded by the master checklist. |
+| 37 | [RUNNER-V2-AND-GRAPH](37-RUNNER-V2-AND-GRAPH.md) | 7K | Historical operator decision doc with a current banner: Runner v2 owns the full lifecycle; Graph has live dispatch but incomplete parity. |
 | 92 | [RUNNER-V2-MODULE-FAMILY](92-RUNNER-V2-MODULE-FAMILY.md) | 14K | Runner v2 per-file ledger (19 files, the live engine). |
 | 88 | [CONDUCTOR](88-CONDUCTOR.md) | 41K | roko-conductor: supervision, 10 watchers, circuit breaker, diagnosis. |
 | 90 | [RUNTIME-FS-STD](90-RUNTIME-FS-STD.md) | 25K | roko-runtime (event bus, process supervisor), roko-fs (JSONL substrate), roko-std (builtins). |
@@ -396,13 +430,13 @@ directory contains ~6,700 markdown/TOML/shell files from various design phases.
 | E09 | Observability | Done | 11/11 | roko-conductor, roko-fs |
 | E10 | Frontend / API Contract | Done | 7/7 | roko-serve, demo-app |
 | E11 | Chain / ISFR | Done | 5/5 | roko-chain |
-| E12 | Dead-Code & Legacy Cleanup | Partial | 7/9 | cross-crate |
+| E12 | Dead-Code & Legacy Cleanup | Done | 9/9 | cross-crate |
 | E13 | v2 Spec-Debt (long-horizon) | Done | 3/3 | roko-core |
 | E14 | Providers & Tools | Done | 12/12 | roko-agent |
 | E15 | MCP Config & Passthrough | Done | 7/7 | roko-agent, roko-mcp-* |
 | E16 | PRD & Self-Hosting Pipeline | Done | 2/2 | roko-cli |
-| E17 | ACP Completion | Partial | 1/8 | roko-acp |
-| E18 | Docs, Config, CI & Ops | Partial | 10/13 impl | roko-cli, cross-crate |
+| E17 | ACP Completion | Done | 8/8 | roko-acp |
+| E18 | Docs, Config, CI & Ops | Done | 15/15 | roko-cli, cross-crate |
 
 ### Foundation Epics (E19-E22) -- v2 kernel
 
@@ -417,42 +451,42 @@ directory contains ~6,700 markdown/TOML/shell files from various design phases.
 
 | Epic | Name | Status | Tasks |
 |------|------|--------|-------|
-| E23 | Agent Cognitive Autonomy | Not started | 0/10 |
+| E23 | Agent Cognitive Autonomy | Done | 10/10; EFE/GoalTree ownership and phase/energy-aware runner dispatch close the manifest. Native E33 observation publication remains separate product scope |
 | E24 | Memory Advanced | Not started | 0/10 |
-| E25 | Learning Loops Advanced | Not started | 0/10 |
+| E25 | Learning Loops Advanced | Done | 10/10; HDC consolidation, hindsight adjustments, governed c-factor recommendations, significance/early stopping, Variance Inequality, autocatalytic metrics, and live when/then playbook enrichment |
 | E26 | Inference Gateway | Not started | 0/12 |
 | E27 | Feeds System | Not started | 0/10 |
 | E28 | Groups & Coordination | Not started | 0/8 |
 | E29 | Connectivity & Relay | Not started | 0/9 |
-| E30 | Extension System | Active | 8/9 |
-| E31 | Trigger System | Active | 4/8 |
-| E32 | Tool & Plugin Ecosystem | Active | 5/8 |
-| E33 | Telemetry & Lens | Active | 8/9 |
-| E34 | Security IFC | Done | 8/8 |
-| E35 | Auth Protocol | Active | 5/8 |
+| E30 | Extension System | Done | 9/9 |
+| E31 | Trigger System | Done | 8/8; bundled watcher-to-raw-EVM ABI/finality/reorg path is live and tested |
+| E32 | Tool & Plugin Ecosystem | Done | 8/8 manifest; Component-hostcall/OpenClaw/one-shot work remains separately tracked roadmap scope |
+| E33 | Telemetry & Lens | Done | 9/9 manifest and runtime ingress complete; all 39 variants have production evidence, including a durable typed registered-agent lifecycle observation boundary. Direct native Agent publication remains separate product scope |
+| E34 | Security IFC | Done | 8/8 strict; trust-origin propagation, exact capability intersection, persistent transitive quarantine, and mandatory audited hooks join the immune/corrigibility/sandbox foundations. Provider-internal semantic/effect coverage remains separate product scope |
+| E35 | Auth Protocol | Done | 8/8 |
 
 ### Ecosystem Epics (E36-E45) -- v2 ecosystem
 
 | Epic | Name | Status | Tasks |
 |------|------|--------|-------|
-| E36 | Payments | Not started | 0/8 |
-| E37 | Surfaces | Not started | 0/9 |
+| E36 | Payments | Done | 8/8; x402 batching, MPP sessions, reputation pricing, paid-feed 402 enforcement, cost persistence, and dashboard events |
+| E37 | Surfaces | Done | 9/9 shared contract/backend manifest; full named-surface rendering and native source/command wiring remain roadmap residuals |
 | E38 | Marketplace | Not started | 0/9 |
 | E39 | Registries & Identity | Not started | 0/8 |
 | E40 | Arenas & Evals | Not started | 0/8 |
 | E41 | DeFi Products | Not started | 0/8 |
-| E42 | Config Evolution | Not started | 0/8 |
+| E42 | Config Evolution | Done | 8/8; priority/provenance, seven invariants, migrations, profiles, transactional reload, and freshness diagnostics |
 | E43 | Deployment & Portability | Done | 8/8 |
-| E44 | Cross-Cut Functors | Not started | 0/8 |
+| E44 | Cross-Cut Functors | Done | 8/8; Memory/Daimon/Dreams/Safety functors, six transforms, conflict VCG, and live gate-failure cascade |
 | E45 | Orchestrator Mori Parity | Done | 10/10 |
 
 ### Operational Epics (E46-E48) -- infrastructure
 
 | Epic | Name | Status | Tasks |
 |------|------|--------|-------|
-| E46 | GitHub Workflow Integration | Active | 8/12 |
-| E47 | Resource & Disk Management | Active | 10/11 |
-| E48 | Rate Limit & Budgeting | Active | 10/12 |
+| E46 | GitHub Workflow Integration | Complete | 12/12 |
+| E47 | Resource & Disk Management | Complete | 11/11 |
+| E48 | Rate Limit & Budgeting | Complete | 12/12 |
 
 ---
 
@@ -462,6 +496,6 @@ directory contains ~6,700 markdown/TOML/shell files from various design phases.
 - Parallel explorer passes audited all major subsystems across multiple waves.
 - The 2026-07-08 re-audit ran ~37 parallel subagents across three waves.
 - The 2026-07-09/10 backlog expansion materialized 48 epics with executable task files.
-- Batches 1-10 (2026-07 through 2026-08-13) ran ~230+ agents producing ~130+
-  confirmed-done tasks.
+- Historical batches 1-10 (2026-07 through 2026-08-13) ran ~230+ agents producing
+  ~130+ confirmed-done tasks; later reconciliation is reflected in the canonical ledger.
 - Every one of the 35 workspace members has coverage in this pack.

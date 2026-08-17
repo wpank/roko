@@ -4,7 +4,7 @@ Use this when an item appears during batch `05` work but is better executed else
 
 | Item | Better Home | Keep In 05 As | Why |
 |------|-------------|---------------|-----|
-| `Engram` HDC fingerprint field | ship-now kernel bridge pass | explicit handoff note | highest-value bridge change, but outside this docs-parity scope |
+| `Engram (renamed to Signal in 2026-08-12)` HDC fingerprint field | ship-now kernel bridge pass | explicit handoff note | highest-value bridge change, but outside this docs-parity scope |
 | typed heuristic calibration struct | ship-soon learning/neuro pass | narrowed follow-up note | builds on shipped `prediction`, `drift`, `regression`, and `tier_progression` without needing worldviews |
 | full demurrage model | later decay hardening | note to start with `last_used` + `access_count` | current value is use-based freshness, not a new economic layer |
 | worldview clustering and dissonance algebra | later heuristics research | target-state label only | zero code today; docs must not describe it as live |

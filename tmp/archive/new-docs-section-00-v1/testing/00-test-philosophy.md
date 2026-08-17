@@ -24,9 +24,9 @@ Any property stated in the architecture as "must always hold" is tested using `p
 Examples:
 - Content-addressing determinism: the same bytes always produce the same `ContentHash`.
 - Score axis independence: mutating one axis must not change other axis values.
-- Lineage acyclicity: an Engram's `parent` chain must be a DAG, never a cycle.
+- Lineage acyclicity: an Signal's `parent` chain must be a DAG, never a cycle.
 - Gate verdict monotonicity: a gate that passes at threshold `t` must also pass at any threshold `t' < t`.
-- Substrate idempotence: writing the same Engram twice must leave the substrate in the same state as writing it once.
+- Substrate idempotence: writing the same Signal twice must leave the substrate in the same state as writing it once.
 
 ### 2. Subsystem contracts (unit tests)
 

@@ -95,7 +95,7 @@ Every concept from the previous specs maps to the unified vocabulary. Nothing is
 
 | Old Concept | Unified Equivalent | Notes |
 |---|---|---|
-| Engram | Signal | Direct identity. Engram struct already has all Signal properties. |
+| Engram (renamed to Signal in 2026-08-12) | Signal | Direct identity. Signal struct already has all Signal properties. |
 | Pulse | Signal (ephemeral) | A Pulse is an ephemeral Signal on the Bus. |
 | Substrate | Store protocol | Put / get / query / prune — identical semantics. |
 | Scorer | Score protocol | Rate along dimensions — identical semantics. |
@@ -126,7 +126,7 @@ Every concept from the previous specs maps to the unified vocabulary. Nothing is
 
 9. **Decay is default.** Signals decay unless explicitly frozen. Knowledge starts Transient. Pheromones start with a 1-hour half-life. Freshness is earned through validation, not assumed.
 
-10. **Wire, don't build.** The existing roko-core traits map 1:1 to protocols. Engram maps 1:1 to Signal. The unified spec renames and extends — it does not replace.
+10. **Wire, don't build.** The existing roko-core traits map 1:1 to protocols. Signal maps 1:1 to Signal. The unified spec renames and extends — it does not replace.
 
 ---
 
@@ -177,7 +177,7 @@ Every concept from the previous specs maps to the unified vocabulary. Nothing is
 
 | Decision | Rationale |
 |---|---|
-| Signal (not Engram) | "Signal" is immediately meaningful. "Engram" is domain-specific jargon. The Rust struct remains `Engram` for backward compatibility; "Signal" is the spec-level name. |
+| Signal (not Signal) | "Signal" is immediately meaningful. "Signal" is domain-specific jargon. The Rust struct remains `Engram` for backward compatibility; "Signal" is the spec-level name. |
 | Block (not Module) | "Module" implies a Rust module or a large unit. "Block" implies composable, small, pluggable — like a Eurorack module or a Scratch block. |
 | Graph (not Workflow) | "Workflow" implies business process automation. "Graph" is precise: nodes + edges. The runtime concept is a "Flow" (Graph at runtime). |
 | Rack (not Parameterized Workflow) | From modular synthesis: a rack holds modules and exposes macro knobs and patch jacks (slots) to the performer. |
@@ -192,7 +192,7 @@ Every concept from the previous specs maps to the unified vocabulary. Nothing is
 | # | Title | Status | Source |
 |---|---|---|---|
 | 00 | Index (this document) | Draft | New |
-| 01 | Signal | Draft | roko-core Engram + arch-09 Knowledge/Pheromone + wf-02 Artifact |
+| 01 | Signal | Draft | roko-core Signal + arch-09 Knowledge/Pheromone + wf-02 Artifact |
 | 02 | Block | Draft | roko-core 6 traits + wf-02 Module + arch-03 Extension + arch-04 Connector |
 | 03 | Graph | Draft | wf-02 Workflow + wf-05 Engine |
 | 04 | Specializations | Draft | New synthesis |

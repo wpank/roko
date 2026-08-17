@@ -19,7 +19,7 @@ tags: [verification, orchestration, failure, replanning, gate-verdict, feedback-
 
 | Signal | From | To | Status |
 |---|---|---|---|
-| `Kind::GateVerdict` Engrams | `roko-gate` | `roko-orchestrator` | **Wired** — pass/fail used in task retry |
+| `Kind::GateVerdict` Signals | `roko-gate` | `roko-orchestrator` | **Wired** — pass/fail used in task retry |
 | Plan DAG | `roko-orchestrator` | `roko-gate` (via agent execution) | **Wired** |
 | N-consecutive-failure signal | `roko-gate` failure accumulator | `roko-orchestrator` replanning trigger | **Missing** (M3) |
 | Failure pattern analysis | (new code) | Plan generator redecomposition | **Missing** |
@@ -83,12 +83,12 @@ Expected after M3 wiring:
 ## Open Questions
 
 1. What constitutes a "different" replan? Should it require a different task decomposition, or just a different model/agent assignment?
-2. Should failure patterns be stored as `Kind::Warning` Engrams in NeuroStore for future use?
+2. Should failure patterns be stored as `Kind::Warning` Signals in NeuroStore for future use?
 3. How does M3 interact with M11 (Orchestration→Daimon)? Should they be implemented together?
 
 ## Cross-References
 
 - Complement: [orchestration-x-daimon.md](./orchestration-x-daimon.md) — M11 (failure→Daimon PAD update)
-- Learning side: [learning-x-verification.md](./learning-x-verification.md) — verdict Engrams also flow to Learning (wired)
+- Learning side: [learning-x-verification.md](./learning-x-verification.md) — verdict Signals also flow to Learning (wired)
 - Finding: [AA-08 Proposal 2](../architectural-analysis/08-novel-proposals.md) — gradient gate feedback (continuous learning signal)
 - Readiness audit: [RA-04: Verification](../readiness-audit/subsystem-verification.md), [RA-01: Orchestration](../readiness-audit/subsystem-orchestration.md)

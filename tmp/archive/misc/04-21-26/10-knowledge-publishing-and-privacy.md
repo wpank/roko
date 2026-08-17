@@ -17,7 +17,7 @@ benefit. But blindly publishing everything leaks:
 |-------|--------|-------------|
 | ResultFilter + scrub.rs | **Wired** | Strips API keys, passwords, auth tokens from tool outputs |
 | CustodyTaint | **Wired** | Tags actions with provenance (UserInput, ExternalFetch, etc.) |
-| Signal-level Taint | **Built** | Clean/UserInput/UnverifiedSource on Engrams |
+| Signal-level Taint | **Built** | Clean/UserInput/UnverifiedSource on Signals |
 | Safety contracts | **Wired** | Role-scoped invariants (NoNetworkAccess, MaxCost, etc.) |
 | Plugin tiers (5-level) | **Built** | Capability-based tool access control |
 | Distiller confidence | **Built** | Knowledge entries have confidence 0-1, GC at <0.05 |

@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is the prompt used to generate synthesis reports in this directory (round 5).
+> It is reference material (a prompt template), not an implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Research Prompt 5: Execution-Critical Gaps, Technical Deep-Dives, and the First 30 Days
 
 ## Context

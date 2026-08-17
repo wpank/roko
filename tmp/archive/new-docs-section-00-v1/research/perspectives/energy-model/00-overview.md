@@ -79,7 +79,7 @@ Biological metabolism operates across three regimes:
 
 **Cognitive analog**:
 - **Resting (T0)**: background monitoring, heartbeat, basic maintenance.
-- **Active (T1)**: standard processing of incoming Engrams, sustainable over extended sessions.
+- **Active (T1)**: standard processing of incoming Signals, sustainable over extended sessions.
 - **Maximal (T2)**: full deliberate reasoning, high compute cost, not sustainable indefinitely.
 
 ---

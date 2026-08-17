@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a comprehensive technical reference for the Korai blockchain (sovereign EVM L1).
+> It is reference material for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Korai Blockchain: Comprehensive Technical Reference
 
 ## 1. What Korai Is

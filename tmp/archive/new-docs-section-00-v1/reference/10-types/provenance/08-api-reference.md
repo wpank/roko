@@ -141,7 +141,7 @@ These live in `roko-fs`, not `roko-core`, but are documented here for discoverab
 
 - Should `add_taint` be available directly on `Provenance` struct or only through the
   Substrate? Currently on the struct (for in-memory construction) and on the Substrate
-  (for persisted Engrams).
+  (for persisted Signals).
 - Should there be a `clear_taint()` method for use in testing? Not in production API;
   could be gated behind `#[cfg(test)]`.
 

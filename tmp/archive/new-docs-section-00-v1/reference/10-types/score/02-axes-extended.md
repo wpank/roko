@@ -36,8 +36,8 @@ with a 95% confidence interval [28.1s, 31.8s]").
 
 ## Axis 6: `salience` — Task Relevance
 
-**What it measures:** How relevant is this Engram to the current task or query context?
-Salience is context-dependent — the same Engram may be salient for one task and
+**What it measures:** How relevant is this Signal to the current task or query context?
+Salience is context-dependent — the same Signal may be salient for one task and
 irrelevant for another.
 
 **Semantic range:**
@@ -46,7 +46,7 @@ irrelevant for another.
 - 0.0 = Completely irrelevant
 
 **Typical scorers:** The retrieval Scorer that runs at context assembly time, using
-the current task's HDC fingerprint to compute similarity to the Engram's fingerprint.
+the current task's HDC fingerprint to compute similarity to the Signal's fingerprint.
 
 **When absent:** `salience = None` means "not evaluated in this context." Never stored
 permanently — salience is computed at retrieval time and discarded.
@@ -61,7 +61,7 @@ salience is computed ephemerally.
 
 ## Axis 7: `coherence` — Internal Consistency
 
-**What it measures:** How internally consistent is the content of the Engram? For a
+**What it measures:** How internally consistent is the content of the Signal? For a
 multi-claim document, coherence measures whether the claims are mutually consistent.
 For a code snippet, coherence measures whether the code is self-consistent (imports
 match uses, variable names are consistent, etc.).

@@ -56,7 +56,7 @@ Audited 2026-04-20. **Complete coverage** of all `tmp/` contents (25 directories
 
 ### P1 — Refinement system
 
-8. Ship "5 now" items from refinements-audit: HDC fingerprint on Engram, unified RokoEvent, Bus trait, Signal cleanup, INDEX fix — [10](10-refinement-system.md)
+8. Ship "5 now" items from refinements-audit: HDC fingerprint on Signal, unified RokoEvent, Bus trait, Signal cleanup, INDEX fix — [10](10-refinement-system.md)
 9. Review + rebase + merge refinements branch (`codex/refinements-run-20260416-221511`) — [10](10-refinement-system.md)
 10. Unblock refinement-audit-runner Phase 2 (PU00-01 verify gate failures) — [10](10-refinement-system.md)
 

@@ -1,8 +1,8 @@
 [meta]
 plan = "E40-arenas-evals"
 total = 8
-done = 0
-status = "ready"
+done = 8
+status = "done"
 max_parallel = 2
 
 # ─── T01: Define Arena, Attempt, and scoring types ───────────────────────────
@@ -35,7 +35,7 @@ All types derive Debug, Clone, Serialize, Deserialize. Use u256 = u128 from phas
 Create crates/roko-chain/src/arena.rs and add `pub mod arena;` to lib.rs after line 88.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = [
   "crates/roko-chain/src/arena.rs",
@@ -98,7 +98,7 @@ Types to implement:
 Add to arena.rs after the core types from T01.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-chain/src/arena.rs"]
 depends_on = ["E40-T01"]
@@ -157,7 +157,7 @@ Implement:
 10. At least 3 unit tests: create+activate lifecycle, attempt with cooldown, max attempts.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-chain/src/arena.rs"]
 depends_on = ["E40-T01", "E40-T02"]
@@ -222,7 +222,7 @@ Implement:
 5. At least 2 tests: BestOf aggregation, EWMA aggregation.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-chain/src/arena.rs"]
 depends_on = ["E40-T03"]
@@ -285,7 +285,7 @@ Implement:
 7. At least 2 tests: TopN distribution, refund on empty arena.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-chain/src/arena.rs"]
 depends_on = ["E40-T04"]
@@ -349,7 +349,7 @@ Implement:
 Add to arena.rs. These are pure data types — no logic.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-chain/src/arena.rs"]
 depends_on = ["E40-T01"]
@@ -403,7 +403,7 @@ Implement:
 4. Test: completed attempt with score 0.8, weight 1.0 -> delta 0.3.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "mechanical"
 files = ["crates/roko-chain/src/arena.rs"]
 depends_on = ["E40-T03"]
@@ -463,7 +463,7 @@ Handlers return 501 Not Implemented with JSON: {"status": "not_implemented", "me
 Follow the existing route pattern: `pub fn routes() -> Router<Arc<AppState>>`.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = [
   "crates/roko-serve/src/routes/arenas.rs",
@@ -476,7 +476,7 @@ max_loc = 60
 read_files = [
   { path = "crates/roko-serve/src/routes/mod.rs", lines = "1-52", why = "Route module declarations — add `mod arenas;` after existing mods" },
   { path = "crates/roko-serve/src/routes/mod.rs", lines = "130-192", why = "build_router() — add .merge(arenas::routes()) in the api chain" },
-  { path = "crates/roko-serve/src/routes/isfr.rs", lines = "1-30", why = "Pattern for stub route module with routes() function" },
+  { path = "crates/roko-serve/src/routes/marketplace.rs", lines = "1-90", why = "Current pattern for authenticated structured stub routes" },
 ]
 symbols = [
   "build_router (routes/mod.rs:131) — merge arenas routes here",

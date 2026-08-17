@@ -759,7 +759,7 @@ nothing happen.
 
 **What needs to change:** Expand the dispatch loop to also match additional
 `ServerEvent` variants beyond `WebhookReceived`. Convert them to synthetic
-`Engram` signals that can be matched against subscription filters.
+`Signal` values that can be matched against subscription filters.
 
 - [ ] **E-1** In `crates/roko-serve/src/dispatch.rs`, at the subscription
   dispatch loop (around line 1424), replace the single `let ... else { continue }`
@@ -769,8 +769,8 @@ nothing happen.
   let signal = match &envelope.payload {
       ServerEvent::WebhookReceived { signal } => signal.clone(),
       ServerEvent::GateResult { plan_id, task_id, gate, passed } => {
-          // Synthesize an Engram from the gate result.
-          Engram::builder()
+          // Synthesize a Signal from the gate result.
+          Signal::builder()
               .kind("gate_result")
               .tag("plan_id", plan_id)
               .tag("task_id", task_id)
@@ -779,14 +779,14 @@ nothing happen.
               .build()
       }
       ServerEvent::PlanCompleted { plan_id, success } => {
-          Engram::builder()
+          Signal::builder()
               .kind("plan_completed")
               .tag("plan_id", plan_id)
               .tag("success", &success.to_string())
               .build()
       }
       ServerEvent::Episode { episode_id, .. } => {
-          Engram::builder()
+          Signal::builder()
               .kind("episode")
               .tag("episode_id", episode_id)
               .build()
@@ -795,7 +795,7 @@ nothing happen.
   };
   ```
 
-  NOTE: The exact `Engram` builder API may differ. Check
+  NOTE: The exact `Signal` builder API may differ. Check
   `crates/roko-core/src/signal.rs` for the actual construction method. The key
   requirement is that each event type produces a signal with a `kind` tag that
   subscription filters can match against.

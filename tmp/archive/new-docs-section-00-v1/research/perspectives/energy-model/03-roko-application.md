@@ -14,9 +14,9 @@ metabolic state model:
 
 | Speed | Biological Analog | Energy Cost | Sustainability |
 |-------|-------------------|-------------|----------------|
-| T0 | Resting metabolic rate | ~5 CEU per Engram | Indefinitely |
-| T1 | Active metabolic rate | ~50 CEU per Engram | Hours |
-| T2 | Maximal metabolic rate | ~500 CEU per Engram | Minutes |
+| T0 | Resting metabolic rate | ~5 CEU per Signal | Indefinitely |
+| T1 | Active metabolic rate | ~50 CEU per Signal | Hours |
+| T2 | Maximal metabolic rate | ~500 CEU per Signal | Minutes |
 
 (CEU values are illustrative, not calibrated to specific hardware.)
 
@@ -31,10 +31,10 @@ Its tier assignment decisions are constrained not just by score (what deserves T
 budget (what can afford T2).
 
 **Current gap**: The Router in most implementations uses score thresholds for tier routing
-without explicit energy budget tracking. Two Engrams with identical scores but different
+without explicit energy budget tracking. Two Signals with identical scores but different
 current energy states (one arriving when T2 is fully available; one arriving when T2 is
 saturated) are treated identically. An energy-budget-aware Router would route the second
-Engram to T1 when T2 is saturated, even if its score would normally merit T2.
+Signal to T1 when T2 is saturated, even if its score would normally merit T2.
 
 **Proposed mechanism**: A Router state variable that tracks current T2 "energy available"
 (decremented when T2 is invoked, replenished over time at the T2-recovery rate). When
@@ -63,9 +63,9 @@ energy budget.
 
 The [Dreams consolidation](../../../reference/09-cross-cuts/README.md) process runs at
 delta speed (slow, background, periodic). In the energy model, Dreams is:
-1. **ATP resynthesis**: converting processed Engrams into durable Neuro knowledge
+1. **ATP resynthesis**: converting processed Signals into durable Neuro knowledge
    (replenishing the "cognitive energy" stored in the knowledge base).
-2. **Mitochondrial maintenance**: cleaning up processed-but-not-retained Engrams,
+2. **Mitochondrial maintenance**: cleaning up processed-but-not-retained Signals,
    repairing topological holes, recalibrating confidence scores.
 3. **Recovery sleep**: the period of low-activity consolidation that enables the next
    period of active performance.
@@ -76,13 +76,13 @@ that eventually degrades performance.
 
 ### The Scorer as Metabolic Sensor
 
-The [Scorer](../../../reference/05-operators/scorer.md) evaluates each Engram's value.
+The [Scorer](../../../reference/05-operators/scorer.md) evaluates each Signal's value.
 In the energy model, the Scorer is the **metabolic sensor** — it assesses whether an
-Engram's information value justifies its processing cost.
+Signal's information value justifies its processing cost.
 
 An efficient Scorer would output not just a value score but a **value-to-cost ratio**:
-how much value does this Engram deliver per CEU of processing? Engrams with high
-value-to-cost ratios deserve priority; Engrams with low ratios should be processed at
+how much value does this Signal deliver per CEU of processing? Signals with high
+value-to-cost ratios deserve priority; Signals with low ratios should be processed at
 the lowest tier or dropped.
 
 The current Scorer outputs a 7-axis value score but does not model processing cost per
@@ -90,19 +90,19 @@ tier. Adding a cost dimension would enable explicit efficiency-based allocation.
 
 ### The Gate as Metabolic Filter
 
-The [Gate](../../../reference/05-operators/gate.md) prevents low-value Engrams from
+The [Gate](../../../reference/05-operators/gate.md) prevents low-value Signals from
 consuming downstream processing energy. In the energy model, the Gate is a **metabolic
 filter**: it ensures that the energy budget is spent only on inputs that meet a minimum
 value threshold.
 
-The Gate's threshold is the minimum value-per-CEU that an Engram must demonstrate to be
+The Gate's threshold is the minimum value-per-CEU that an Signal must demonstrate to be
 worth processing. Below this threshold, the energy cost of processing (even minimal T0
 processing) exceeds the expected value.
 
 **Energy-adaptive Gate**: a Gate that adjusts its threshold based on the current energy
 budget state. When energy is abundant (T2 fully available), the Gate can be permissive —
-even low-value Engrams are cheap to process. When energy is scarce (T2 saturated), the
-Gate should be restrictive — only high-value Engrams are worth the remaining budget.
+even low-value Signals are cheap to process. When energy is scarce (T2 saturated), the
+Gate should be restrictive — only high-value Signals are worth the remaining budget.
 
 ### Neuro as the Long-Term Energy Store
 
@@ -116,6 +116,6 @@ without context can be answered with T0 Neuro probing with context. The return o
 for Neuro consolidation (Dreams cycles) is reduced future energy requirements.
 
 **Energy return on investment**: Each CEU invested in Dreams consolidation (converting
-specific Engrams into durable Neuro knowledge) yields a return through reduced future T2
+specific Signals into durable Neuro knowledge) yields a return through reduced future T2
 invocations. The break-even point: if the consolidation enables more than one avoided T2
 invocation, it pays for itself.

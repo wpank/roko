@@ -1,8 +1,8 @@
 [meta]
 plan = "DOC-v2-core"
 total = 10
-done = 0
-status = "ready"
+done = 3
+status = "in-progress"
 max_parallel = 2
 estimated_total_minutes = 1800
 skip_enrichment = true
@@ -17,7 +17,7 @@ skip_enrichment = true
 id = "DOCV2-T01"
 title = "Reconcile Signal, Pulse, Cell, Store, Bus, and protocol kernel documentation"
 description = "After the canonical kernel and protocol owners are merged, reconcile the Signal/Pulse and Cell documents to the integrated code, tests, and owner evidence. Preserve the specification as a normative target where implementation remains deferred, but label that boundary explicitly; this task must not implement product behavior."
-status = "ready"
+status = "done"
 tier = "integrative"
 max_loc = 1800
 files = [
@@ -133,7 +133,7 @@ fail_msg = "DOCV2-T02 owned documents must exist"
 id = "DOCV2-T03"
 title = "Reconcile Agent lifecycle, vitality, modes, and cognitive-loop documentation"
 description = "After the agent-autonomy and cross-cut owners are merged, reconcile the Agent document to integrated lifecycle, vitality, energy, affect, goal, and cognitive-loop behavior. Read the cross-cut and architecture sources only for consistency; their edits belong to later roll-ups."
-status = "ready"
+status = "done"
 tier = "integrative"
 max_loc = 1200
 files = ["docs/v2/05-AGENT.md"]
@@ -179,7 +179,7 @@ fail_msg = "DOCV2-T03 source must exist and remain covered"
 id = "DOCV2-T04"
 title = "Reconcile Memory, learning, dreams, HDC, and cross-cut documentation"
 description = "After the memory, learning-loop, and cross-cut owners are merged, reconcile the Memory, Learning, and Cross-Cuts documents to durable integrated behavior and tests. Keep unimplemented research/specification material with explicit target or deferred labels rather than creating product mechanisms here."
-status = "ready"
+status = "done"
 tier = "integrative"
 max_loc = 2400
 files = [
@@ -483,7 +483,7 @@ read_files = [
     { path = "tmp/status-quo/backlog/plans/E40-arenas-evals/tasks.toml", why = "Canonical arena/eval implementation owner." },
     { path = "tmp/status-quo/backlog/plans/E41-defi-products/tasks.toml", why = "Canonical DeFi implementation owner." },
     { path = "crates/roko-chain/src/agent_registry.rs", why = "Integrated registry truth to document, not modify." },
-    { path = "crates/roko-chain/src/isfr.rs", why = "Integrated ISFR truth to document, not modify." },
+    { path = "crates/roko-chain/src/defi.rs", why = "Integrated DeFi and ISFR-adjacent truth to document, not modify." },
 ]
 anti_patterns = [
     "Do NOT edit Rust, Solidity, routes, deployment scripts, tests, or manifests.",
@@ -499,7 +499,7 @@ fail_msg = "DOCV2-T09 sources must remain in the canonical coverage ledger"
 [[task]]
 id = "DOCV2-T10"
 title = "Reconcile the v2 index, deployment, roadmap, and public integration guides"
-description = "After every topical documentation roll-up and the deployment/orchestrator owners are merged, reconcile the global index, deployment and roadmap documents, and all five public guides to exact integrated CLI, API, ACP, architecture, config, and deployment truth. This is the final documentation acceptance roll-up, not a product implementation lane."
+description = "After every topical documentation roll-up and the deployment/orchestrator owners are merged, reconcile the global index, deployment and roadmap documents, and all six public guides to exact integrated CLI, API, ACP, GitHub, architecture, config, and deployment truth. This is the final documentation acceptance roll-up, not a product implementation lane."
 status = "ready"
 tier = "architectural"
 max_loc = 5000
@@ -511,6 +511,7 @@ files = [
     "docs/v2/API-REFERENCE.md",
     "docs/v2/ARCHITECTURE-GUIDE.md",
     "docs/v2/CLI-REFERENCE.md",
+    "docs/v2/GITHUB-INTEGRATION.md",
     "docs/v2/INTEGRATION-GUIDE.md",
 ]
 role = "scribe"
@@ -540,7 +541,7 @@ depends_on_plan = [
 acceptance = [
     "The index and roadmap report integrated status without converting open normative targets into shipped claims; superseded history and source mappings remain explicit.",
     "CLI, API, ACP, architecture, integration, config, daemon, worker, secrets, and deployment examples match reproducible local help, route/schema, and test evidence.",
-    "An independent public-docs review runs all safe cited commands, checks local links, confirms all 34 sources remain covered, and rejects any product edit or unsupported claim.",
+    "An independent public-docs review runs all safe cited commands, checks local links, confirms all 35 sources remain covered, and rejects any product edit or unsupported claim.",
 ]
 
 [task.context]
@@ -552,6 +553,7 @@ read_files = [
     { path = "docs/v2/API-REFERENCE.md", why = "Owned HTTP/API public reference." },
     { path = "docs/v2/ARCHITECTURE-GUIDE.md", why = "Owned cross-cutting public architecture guide." },
     { path = "docs/v2/CLI-REFERENCE.md", why = "Owned CLI public reference." },
+    { path = "docs/v2/GITHUB-INTEGRATION.md", why = "Owned GitHub MCP, webhook, and runner workflow guide." },
     { path = "docs/v2/INTEGRATION-GUIDE.md", why = "Owned end-to-end public guide." },
     { path = "tmp/status-quo/backlog/plans/E43-deployment-portability/tasks.toml", why = "Canonical deployment implementation owner." },
     { path = "tmp/status-quo/backlog/plans/E45-orchestrator-mori-parity/tasks.toml", why = "Canonical remaining runner/Mori implementation owner." },
@@ -567,7 +569,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'docs/v2/25-DEPLOYMENT.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/28-ROADMAP.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/CLI-REFERENCE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/API-REFERENCE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/INTEGRATION-GUIDE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/ACP-INTEGRATION-GUIDE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/ARCHITECTURE-GUIDE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
+command = "grep -q 'docs/v2/25-DEPLOYMENT.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/28-ROADMAP.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/CLI-REFERENCE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/API-REFERENCE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/GITHUB-INTEGRATION.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/INTEGRATION-GUIDE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/ACP-INTEGRATION-GUIDE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/ARCHITECTURE-GUIDE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
 fail_msg = "DOCV2-T10 sources must remain in the canonical coverage ledger"
 
 [[task.verify]]
@@ -577,5 +579,5 @@ fail_msg = "The complete backlog plan graph must remain strictly valid after doc
 
 [[task.verify]]
 phase = "structural"
-command = "python3 -c 'from pathlib import Path; import tomllib; p=Path(\"tmp/status-quo/backlog/plans/DOC-v2-core/tasks.toml\"); d=tomllib.loads(p.read_text()); sources={str(x) for x in Path(\"docs/v2\").glob(\"**/*.md\")}; covered={r[\"path\"] for t in d[\"task\"] for r in t[\"context\"][\"read_files\"] if r[\"path\"].startswith(\"docs/v2/\")}; assert len(sources)==34 and sources<=covered and d[\"meta\"][\"total\"]==10 and d[\"meta\"][\"done\"]==0'"
-fail_msg = "DOC-v2-core must preserve all 34 sources, ten task IDs, and zero completed tasks"
+command = "python3 -c 'from pathlib import Path; import tomllib; p=Path(\"tmp/status-quo/backlog/plans/DOC-v2-core/tasks.toml\"); d=tomllib.loads(p.read_text()); sources={str(x) for x in Path(\"docs/v2\").glob(\"**/*.md\")}; covered={r[\"path\"] for t in d[\"task\"] for r in t[\"context\"][\"read_files\"] if r[\"path\"].startswith(\"docs/v2/\")}; assert len(sources)==35 and sources<=covered and d[\"meta\"][\"total\"]==10 and d[\"meta\"][\"done\"]==0'"
+fail_msg = "DOC-v2-core must preserve all 35 sources, ten task IDs, and zero completed tasks"

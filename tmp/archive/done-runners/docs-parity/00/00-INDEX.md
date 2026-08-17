@@ -27,7 +27,7 @@ Hard corrections applied in this refresh:
 - `roko-serve`: **wired**, **200+ routes**
 - TUI: **wired**, **~58K LOC**
 - Event-bus reality: exactly **two live `RokoEvent` variants** (`PlanRevision`, `PrdPublished`)
-- Engram is the live durable kernel noun; parity materials should use Engram-centered wording
+- Signal is the live durable kernel noun; parity materials should use Signal-centered wording
 - `Pulse`, `Datum`, `Demurrage`, `Worldview`, and `Custody`: **0 lines of code**
 
 Docs covered here: **39 markdown files total** in `docs/00-architecture/`:
@@ -39,7 +39,7 @@ Docs covered here: **39 markdown files total** in `docs/00-architecture/`:
 
 | Doc Range | Arc | Audit posture | What matters now |
 |-----------|-----|---------------|------------------|
-| `00-05` | Foundation | `keep` + `narrow` | Keep Engram, score, decay, provenance in present tense; do not backfill Pulse or demurrage |
+| `00-05` | Foundation | `keep` + `narrow` | Keep Signal, score, decay, provenance in present tense; do not backfill Pulse or demurrage |
 | `06-08` | Trait system | `narrow` | Keep the six live traits; defer `Datum` and operator generalization |
 | `09-11` | Cognitive loop | `narrow` | Describe `loop_tick()` as shared logic with incomplete runtime ownership |
 | `12-17` | Architecture layers | `keep` + `rewrite` | Correct serve/TUI status; split current crate reality from planned crate graph |
@@ -81,7 +81,7 @@ program. Keep the parity output small, factual, and explicitly bounded.
 
 ## What Stays Grounded
 
-- Docs `00-03`: Engram-centered kernel framing and the score model are grounded.
+- Docs `00-03`: Signal-centered kernel framing and the score model are grounded.
 - Docs `05-17`: provenance, six traits, three speeds, and large parts of the runtime framing are
   directionally correct.
 - Most of the work in this batch is wording discipline and fact correction, not deletion.
@@ -135,7 +135,7 @@ That order is a narrow editorial pass, not a hidden implementation ladder.
 Batch `00` is successful when:
 
 - every required parity file under `tmp/docs-parity/00/` distinguishes current state from target state,
-- stale legacy naming in parity materials is replaced by Engram-centered wording,
+- stale legacy naming in parity materials is replaced by Signal-centered wording,
 - serve and TUI are explicitly marked as wired,
 - zero-code concepts are labeled `planned` or `deferred`,
 - docs `30-35` read as planning artifacts with dependency ordering rather than as a live 5-7

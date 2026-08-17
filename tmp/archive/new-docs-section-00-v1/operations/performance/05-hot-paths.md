@@ -1,6 +1,6 @@
 # Hot Paths
 
-> The operations that run on every Engram, every turn, and every event — the code that
+> The operations that run on every Signal, every turn, and every event — the code that
 > must be fast and must not allocate unexpectedly in steady state.
 
 **Status**: Shipping
@@ -25,17 +25,17 @@ heap unless there is no alternative.
 
 ---
 
-## Hot Path 1: Engram Construction
+## Hot Path 1: Signal Construction
 
 Every piece of data in Roko — agent output, gate verdict, tool result, learning episode — is
-stored as an Engram. `Engram::new()` runs thousands of times per minute in a busy system.
+stored as an Signal. `Engram::new()` runs thousands of times per minute in a busy system.
 
 **What runs on this path:**
 - BLAKE3 content hash computation (content-addressed ID).
 - Score initialization (7 × `f32`, zeroed or caller-supplied).
 - HDC fingerprint computation (XOR bind of content chunks).
 - Provenance stamping (author kind + trust level).
-- Arena allocation for the Engram's field buffers.
+- Arena allocation for the Signal's field buffers.
 
 **Allocation rule**: All field allocations are from the tick arena. No `Box<T>` or
 `Vec<T>` on this path. Strings are arena-allocated slices. BLAKE3 operates on the input
@@ -51,19 +51,19 @@ bytes without intermediate heap allocation.
 
 ## Hot Path 2: Score Arithmetic and Decay
 
-Score computation runs when an Engram is scored (immediately after construction), when an
+Score computation runs when an Signal is scored (immediately after construction), when an
 agent's output score is re-evaluated, and on every GC pass (decay step for all live
-Engrams).
+Signals).
 
 **What runs on this path:**
 - 7 × `f32` multiply/add/clamp operations.
 - Optional `f64` intermediate for decay (see [04-numerical-stability.md](04-numerical-stability.md)).
-- EMA update for adaptive gate thresholds (on gate events, not every Engram).
+- EMA update for adaptive gate thresholds (on gate events, not every Signal).
 
 **Allocation rule**: Zero allocations. All Score values are inline `f32` fields in the
-`Engram` struct. No boxing, no `Vec<f32>`.
+`Signal` struct. No boxing, no `Vec<f32>`.
 
-**GC decay pass**: runs on all live Engrams in the Substrate. For a 100,000-Engram
+**GC decay pass**: runs on all live Signals in the Substrate. For a 100,000-Signal
 store, this is `100,000 × 7 × ~22 ns ≈ 15 ms`. The GC decay pass runs on a background
 Tokio task; it does not block the main agent loop.
 
@@ -100,7 +100,7 @@ The search is inherently parallelisable; multi-threaded search is planned.
 
 ## Hot Path 4: Substrate Append
 
-Every Engram persist call goes through the buffered JSONL append path:
+Every Signal persist call goes through the buffered JSONL append path:
 
 ```
 Engram → serde_json::to_writer (arena-allocated output buffer) → write to 64 KB buffer
@@ -151,7 +151,7 @@ For contributors and integrators — operations that must not appear on any hot 
 | `Box::new(...)` | Heap allocation per call |
 | `format!("...")` with non-trivial arguments | Heap allocation |
 | `regex::Regex::new(...)` | Compilation + heap allocation |
-| Tokio `spawn` (per event/Engram) | Task allocation + scheduler overhead |
+| Tokio `spawn` (per event/Signal) | Task allocation + scheduler overhead |
 | Disk `read()` syscall | Blocks for O(10 µs) minimum |
 | Logging at `debug` or lower | Allocates a `String` for the formatted message |
 

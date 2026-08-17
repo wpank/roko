@@ -1,12 +1,21 @@
-# ENGINE DRIFT — three plan engines, one default that does no real work
+# ENGINE DRIFT — historical hollow default and current lifecycle split
 
-> Status-quo audit · created 2026-07-08 @ HEAD `5852c93c05` on `main` · **navigation-layer reference.** Centralizes the single most important cross-cutting theme in the codebase: three coexisting plan-execution generations, a default that fabricates success, and the projection seam that tries to unify their output. Sources: `36-ORCHESTRATION-RUNNERS.md`, `37-RUNNER-V2-AND-GRAPH.md`, `31-GRAPH-CELLS-ENGINE.md`, `92-RUNNER-V2-MODULE-FAMILY.md`, and the second-pass execution traces `96-TRACE-RUNNER-V2-EXECUTION.md`, `97-TRACE-SERVE-LIFECYCLE.md`, `98-TRACE-SELF-HOSTING-LOOP.md`, `99-TRACE-AGENT-TURN.md`, `101-TRACE-GATE-PIPELINE.md`; code re-checked at HEAD.
+> **Superseded runtime note (2026-08-15):** Runner v2 remains the default and complete
+> lifecycle owner. `roko plan run --engine graph` now injects a live `TaskExecutorCell`
+> dispatcher that reaches the shared provider runtime; unconfigured registries fail closed.
+> The Graph path still lacks Runner-v2 gates/replan, attempt worktrees/merge, durable
+> state/episodes/efficiency, CLI resume, and cancellation/cleanup parity. The historical
+> dry-run findings below are retained as audit history, not current behavior.
+
+> Status-quo audit · created 2026-07-08 @ HEAD `5852c93c05` on `main` · **updated 2026-08-13** @ HEAD on `main` · **navigation-layer reference.** Centralizes the single most important cross-cutting theme in the codebase: three coexisting plan-execution generations, the projection seam that tries to unify their output, and the historical default-engine bug (now fixed). Sources: `36-ORCHESTRATION-RUNNERS.md`, `37-RUNNER-V2-AND-GRAPH.md`, `31-GRAPH-CELLS-ENGINE.md`, `92-RUNNER-V2-MODULE-FAMILY.md`, and the second-pass execution traces `96-TRACE-RUNNER-V2-EXECUTION.md`, `97-TRACE-SERVE-LIFECYCLE.md`, `98-TRACE-SELF-HOSTING-LOOP.md`, `99-TRACE-AGENT-TURN.md`, `101-TRACE-GATE-PIPELINE.md`; code re-checked at HEAD.
 >
-> Read this before trusting any "roko plan run works" claim in CLAUDE.md or the docs.
+> **2026-08-13 update:** The two P0 engine-routing bugs documented below (graph-as-default, `roko resume` hardcoding Graph) have been **fixed** on `main` as of commits `996c7a08d` (E01-T01) and `8bf311c2f` (E01-T02), landed 2026-07-11. The three engines still coexist, and the Graph engine's `TaskExecutorCell` is still a dry-run stub, but the CLI now correctly defaults to Runner v2.
 
 ## The one thing to know
 
-`roko plan run <dir>` **with no flags does no real work.** It defaults to the Graph Engine, which maps every task to a dry-run stub, prints `SUCCESS`, spawns no agent, spends $0, changes no code, and writes no episodes/snapshot. Real execution requires `--engine runner-v2`. Empirical proof: daeji Run 1 `plan run --fresh` reported "8 nodes, 8 output signals, SUCCESS" in ~2 s with **0 agents / $0.00 / no code changed**; after `--engine runner-v2` the same plan ran 8 real agents, $2.75, 621 s.
+> **FIXED (2026-07-11).** The default-engine bug described below was fixed by E01-T01 (`996c7a08d`). `roko plan run <dir>` now defaults to `--engine runner-v2` (`main.rs:1382`). The Graph engine still exists and its `TaskExecutorCell` is still a dry-run stub (`task_executor.rs:32`), but it is no longer the default.
+
+~~`roko plan run <dir>` **with no flags does no real work.**~~ Historically, it defaulted to the Graph Engine, which mapped every task to a dry-run stub, printed `SUCCESS`, spawned no agent, spent $0, changed no code, and wrote no episodes/snapshot. Real execution required `--engine runner-v2`. Empirical proof from the original audit: daeji Run 1 `plan run --fresh` reported "8 nodes, 8 output signals, SUCCESS" in ~2 s with **0 agents / $0.00 / no code changed**; after `--engine runner-v2` the same plan ran 8 real agents, $2.75, 621 s.
 
 ## Three generations, side by side
 
@@ -14,22 +23,24 @@
 |---|---|---|---|
 | Location | `roko-cli/src/orchestrate.rs` (23,676 LOC) | `roko-cli/src/runner/` (17,090 LOC, 19 files) | `crates/roko-graph/` |
 | Compiled by default? | ❌ gated behind `legacy-orchestrate` (`Cargo.toml:15`) | ✅ always compiled | ✅ always compiled |
-| Selected by | `--features legacy-orchestrate` (off) | `--engine runner-v2`; **implicit** for `do`/`serve`/`prd`/`worker` | **default** `--engine graph` (`main.rs:1361`) |
+| Selected by | `--features legacy-orchestrate` (off) | ~~`--engine runner-v2`~~ **now the default** (`main.rs:1382`); also implicit for `do`/`serve`/`prd`/`worker` | ~~**default**~~ `--engine graph` (was default until E01-T01, 2026-07-11) |
 | Real agent work? | yes (older path) | ✅ yes — streaming dispatch, gates, merge, resume | ❌ **no** — `TaskExecutorCell` dry-run stub |
-| State / lock / resume | partial | ✅ lock + `executor.json` + auto-resume | ❌ none; `--resume-plan` ignored |
-| Status | 🕰️ legacy, dead-by-default | ✅ **the live engine** | 🟡 default but hollow |
+| State / lock / resume | partial | ✅ lock + `executor.json` + auto-resume | lock only; `--resume-plan` ignored and no execution snapshot |
+| Status | 🕰️ legacy, dead-by-default | ✅ **the live engine + now the default** | 🟡 hollow (no longer default since E01-T01) |
 
-## Why the default is hollow (mechanism)
+## Why the former default was hollow (historical mechanism)
 
-- `PlanCmd::Run` clap field: `#[arg(long, default_value = "graph", value_enum)]` (`main.rs:1361`). (The `PlanEngine` enum's `#[default]` is `RunnerV2` at `main.rs:1301`, but clap's `default_value` overrides it on the CLI — `graph` wins.)
+- ~~`PlanCmd::Run` clap field: `#[arg(long, default_value = "graph", value_enum)]` (`main.rs:1361`).~~ **FIXED (E01-T01, 2026-07-11).** The clap `default_value` is now `"runner-v2"` (`main.rs:1382`), matching the `PlanEngine` enum's `#[default]` of `RunnerV2` (`main.rs:1322`).
 - Graph path (`cmd_plan_run_engine`, `commands/plan.rs:1567-1715`) converts each task to a `task-executor` node (`convert.rs:63`), runs `roko_graph::default_registry()`.
 - That registry binds `task-executor` → `TaskExecutorCell::default()` (`engine.rs:356-358`), whose `dry_run` field is `true` (`task_executor.rs:31-34`). It emits a synthetic `task-output:dry-run:<title>` engram and returns `Complete` (`:70-79`). The `dry_run:false` branch is unimplemented and *also* falls back to dry-run with a warning (`:80-92`).
-- The engine path acquires **no** workspace lock (lock lives only in the Runner v2 branch, `plan.rs:272`), emits no episodes/signals/events, writes no snapshot.
+- The engine path now holds the same command-lifetime workspace lock as runner v2. It still emits no episodes/signals/events and writes no snapshot.
 - **Built-not-registered**: `roko-graph` already has a real `AgentCell` (`cells/agent.rs`, full model/provider/tools config) plus `ComposeCell`/`GraduationCell` — but `default_registry()` never binds them. The live-dispatch cell exists in the tree; the default path can't reach it.
 
-## The `roko resume` bug (P0)
+## The `roko resume` bug (P0) -- FIXED
 
-`roko resume` locates a snapshot then builds `PlanCmd::Run { engine: PlanEngine::Graph, resume_plan: Some(snapshot), .. }` (`main.rs:2697-2709`). Because the Graph path prints "snapshots will be ignored" (`commands/plan.rs:260-264`), the snapshot is discarded and the run dry-runs. Real resume: `roko plan run <dir> --engine runner-v2` (Runner v2 auto-resumes from `.roko/state/executor.json`).
+> **FIXED (E01-T02, 2026-07-11).** `roko resume` now builds `PlanCmd::Run { engine: PlanEngine::RunnerV2, .. }` (`main.rs:2782`).
+
+~~`roko resume` locates a snapshot then builds `PlanCmd::Run { engine: PlanEngine::Graph, resume_plan: Some(snapshot), .. }` (`main.rs:2697-2709`). Because the Graph path prints "snapshots will be ignored" (`commands/plan.rs:260-264`), the snapshot is discarded and the run dry-runs.~~ This was the original bug. Runner v2 auto-resumes from `.roko/state/executor.json`.
 
 ## The feature-flag façade
 
@@ -57,8 +68,8 @@ This only normalizes **Runner v2** output — the Graph default emits `eprintln`
 
 ## Consequences for the navigation layer
 
-1. **CLAUDE.md is materially stale.** ~15 component rows + "Absolute paths" + the self-hosting workflow (step 5 `plan run plans/`, step 6 `--resume .roko/state/executor.json`) name `orchestrate.rs` as the wired hub and assume `plan run` does real work. None of that holds: orchestrate.rs is dead-by-default, `plan run` defaults to the hollow Graph path, and the resume flag is `--resume-plan` (and broken via `roko resume`).
-2. **Any "self-host loop works" claim must specify the engine.** Prior 55-task and 8-node runs reporting `agent_outcomes: 0` / $0.00 were Graph no-ops; commits were made out-of-band.
+1. **CLAUDE.md engine-default claim: partially fixed.** The self-hosting workflow (step 5 `plan run plans/`) now does real work by default since the engine default was flipped to `runner-v2` (E01-T01). `roko resume` also works correctly now (E01-T02). However, CLAUDE.md still names `orchestrate.rs` in some component descriptions (orchestrate.rs is dead-by-default, gated behind `legacy-orchestrate`).
+2. **"Self-host loop works" claims no longer require specifying the engine.** The default `plan run` now routes to Runner v2. Prior 55-task and 8-node runs reporting `agent_outcomes: 0` / $0.00 were Graph no-ops under the old default; this is no longer a risk.
 3. **Two DAGs, two projection layers, four state-file generations** — the god-object problem (orchestrate.rs = 23,676 LOC, ~3.3% of the whole tree) is regrowing in Runner v2 (`event_loop.rs` = 6.7K LOC, 16× spec). orchestrate.rs anchors a ~52K-LOC **dead legacy island** (orchestrate.rs + roko-orchestrator + roko-conductor + roko-plugin), gated off by `legacy-orchestrate`. The worst remaining layering violation is `roko-runtime → roko-gate` (V1, `Cargo.toml:27`), and `roko-index` reimplements HDC with no `roko-primitives` dep. See [16-CODEBASE-INVENTORY.md](16-CODEBASE-INVENTORY.md), [11-DEPENDENCY-GRAPH.md](11-DEPENDENCY-GRAPH.md), [03-CRATE-AUDIT.md](03-CRATE-AUDIT.md), [102](102-SPEC-DEBT-LEDGER.md), [104](104-DEAD-CODE-AND-FACADE-CENSUS.md).
 
 ## The engine-drift consequence set (second pass, docs 96–101)
@@ -76,13 +87,21 @@ Two more drift symptoms confirmed this pass: **`events.jsonl` is a 44 MB / 97% `
 
 ## Roadmap (the P0 convergence path)
 
-1. **[P0]** Make the default honest — flip `--engine` default to `runner-v2`, **or** make the Graph path refuse/warn when `task-executor` resolves to a dry-run stub (`main.rs:1361`). Verify: default `plan run` spawns a real agent + writes `.roko/episodes.jsonl`.
-2. **[P0]** Fix `roko resume` — route to `PlanEngine::RunnerV2` (`main.rs:2699`). Verify: interrupted run resumes and skips completed tasks.
-3. **[P0]** Wire `TaskExecutorCell` live mode — delegate to the Runner v2 dispatch facade, **or** register the already-built `AgentCell` (`cells/agent.rs`) in `default_registry()`. Verify: `plan run --engine graph` writes an episode.
+1. ~~**[P0]** Make the default honest — flip `--engine` default to `runner-v2`.~~ **DONE** (E01-T01, `996c7a08d`, 2026-07-11). `main.rs:1382` now reads `default_value = "runner-v2"`.
+2. ~~**[P0]** Fix `roko resume` — route to `PlanEngine::RunnerV2`.~~ **DONE** (E01-T02, `8bf311c2f`, 2026-07-11). `main.rs:2782` now reads `engine: PlanEngine::RunnerV2`.
+3. **[P0]** Wire `TaskExecutorCell` live mode — delegate to the Runner v2 dispatch facade, **or** register the already-built `AgentCell` (`cells/agent.rs`) in `default_registry()`. Verify: `plan run --engine graph` writes an episode. **STILL OPEN** -- `TaskExecutorCell::default()` still has `dry_run: true` (`task_executor.rs:32`), and the `dry_run:false` branch still falls back to dry-run with a warning.
 4. **[P1]** Reconcile the `legacy-runner-v2` feature — add the promised `cfg` gates or delete it + fix Cargo comment + GAPS Task 102.
 5. **[P1]** Update CLAUDE.md orchestration rows, self-host workflow flags, and executor.json claims (orchestrate.rs → `runner/` + `roko-graph`).
 6. **[P2]** Land the Minimum Graph Parity checklist (`37-RUNNER-V2-AND-GRAPH.md`): resume, gate nodes, parallel dispatch, budgets, events.
 7. **[P3]** Once Graph is at parity + default, collapse to one engine; delete orchestrate.rs after porting its ❌ rows (oracles, custody/attestation, dreams trigger).
+
+## 2026-08-13 Status
+
+- Graph dry-run default: **FIXED** (E01-T01, `996c7a08d`, 2026-07-11). `--engine` default is now `runner-v2` (`main.rs:1382`). The Graph engine's `TaskExecutorCell` still defaults to `dry_run: true`, but it is no longer reachable without explicit `--engine graph`.
+- `roko resume` hardcodes Graph: **FIXED** (E01-T02, `8bf311c2f`, 2026-07-11). Now routes to `PlanEngine::RunnerV2` (`main.rs:2782`).
+- Runner v2 is the real engine: **STILL TRUE** -- and now also the default.
+- Graph engine live mode (P0 item 3): **STILL OPEN** -- `TaskExecutorCell::default()` is still `dry_run: true`; the `AgentCell` is still built-not-registered in `default_registry()`.
+- ISFR in serve lifecycle: **STILL PRESENT but not deprecated** -- `roko-serve/src/lib.rs` still spawns `start_isfr_keeper` (line 409), `start_block_watcher` (line 410), and `start_isfr_relay_bridge` (line 434) as part of the serve boot sequence. ISFR is gated by `isfr.enabled` in config and is best-effort (failures are logged and swallowed). See `97-TRACE-SERVE-LIFECYCLE.md` rows 18-19, 23 for the original trace.
 
 ## Cross-references
 

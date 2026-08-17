@@ -1,5 +1,15 @@
 # Phase 2: Graph + Engine — Build From Scratch
 
+> **What is this?** Design for the architectural center of v2: a typed DAG of Cells
+> (Graph) interpreted by a universal Engine. This replaces the procedural Runner v2
+> event loop with declarative composition. Build as new code alongside Runner v2,
+> then migrate in Phase 4.
+>
+> **Status:** Not started. Depends on Phase 1 (Cell execute(), Signal rename, protocols).
+> Runner v2 remains the sole production engine.
+>
+> **Last updated: 2026-08-13**
+
 ## Overview
 
 This is the architectural center of v2. A Graph is a typed DAG of Cells. The Engine

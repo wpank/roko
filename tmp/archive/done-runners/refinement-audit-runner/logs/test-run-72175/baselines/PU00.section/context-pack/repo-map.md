@@ -34,7 +34,7 @@ Use code only to verify claims, not to expand the batch into implementation work
 
 | What | Path |
 |------|------|
-| Engram and core traits | `crates/roko-core/src/` |
+| Engram (renamed to Signal in 2026-08-12) and core traits | `crates/roko-core/src/` |
 | Event bus | `crates/roko-runtime/src/event_bus.rs` |
 | Routing / active inference | `crates/roko-learn/src/` |
 | Prompt composition | `crates/roko-compose/src/` |

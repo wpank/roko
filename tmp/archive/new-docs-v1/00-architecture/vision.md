@@ -99,7 +99,7 @@ synthesis. A chain agent needs transaction simulation, on-chain state grounding,
 position monitoring.
 
 Roko achieves composability through the **Synapse Architecture**: one universal data
-type (the [`Engram`](concepts/engram.md)) and six composable traits
+type (the [`Signal`](concepts/engram.md)) and six composable traits
 (Substrate, Scorer, Gate, Router, Composer, Policy) that express every capability in
 the system. Any combination of trait implementations can be assembled to create a
 domain-specific agent. The architecture is detailed in
@@ -142,7 +142,7 @@ Roko implements CoALA's framework directly:
 
 | CoALA Component | Roko Implementation |
 |---|---|
-| Working memory | The `Context` struct + active Engrams in the Substrate |
+| Working memory | The `Context` struct + active Signals in the Substrate |
 | Episodic memory | Episodes stored via `Substrate.put()` with `Kind::Episode` |
 | Procedural memory | Playbook rules and skills in `roko-learn` |
 | Semantic memory | Knowledge entries in `roko-neuro` (`NeuroStore`) |
@@ -279,19 +279,19 @@ make agents self-improving across any domain.
 
 The entire Roko system is built from **one noun** and **six verbs**:
 
-- **One noun.** The [`Engram`](concepts/engram.md) — a content-addressed, scored,
+- **One noun.** The [`Signal`](concepts/engram.md) — a content-addressed, scored,
   decaying, lineage-tracked unit of cognition. Every piece of information in Roko — a
   task, a prompt, an LLM output, a gate verdict, a knowledge entry, a prediction, a
-  tool trace — is an Engram.
+  tool trace — is an Signal.
 - **Six verbs.** The **Synapse traits** — [Substrate](concepts/substrate.md) (store
   and query), [Scorer](concepts/operators.md) (rate), [Gate](concepts/operators.md)
   (verify), [Router](concepts/operators.md) (select), [Composer](concepts/operators.md)
   (combine), [Policy](concepts/operators.md) (react). Every capability in Roko is an
-  implementation of one of these six traits operating on Engrams.
+  implementation of one of these six traits operating on Signals.
 
 The architecture is called the **Synapse Architecture** because the six traits are the
-synaptic connections through which Engrams flow — each trait transforms, routes, or
-stores Engrams, and the composition of traits defines the agent's cognitive behavior.
+synaptic connections through which Signals flow — each trait transforms, routes, or
+stores Signals, and the composition of traits defines the agent's cognitive behavior.
 
 ### 4.2 Five Layers
 
@@ -329,7 +329,7 @@ See [`cross-cuts.md`](cross-cuts.md) for the full treatment.
 
 ### 4.4 Domain Agnosticism
 
-Roko is domain-agnostic by design. The framework knows about Engrams, traits, layers,
+Roko is domain-agnostic by design. The framework knows about Signals, traits, layers,
 and cognitive loops. It does not know about any specific domain. Domain knowledge
 enters through trait implementations:
 
@@ -368,8 +368,8 @@ available for backup, transfer, or restoration.
 ### 5.3 Not Domain-Specific
 
 Although Roko's early development focused on coding and chain domains, the architecture
-is domain-agnostic. Every component — from the Engram data type to the gate pipeline
-to the learning loops — operates on generic Engrams with domain-specific behavior
+is domain-agnostic. Every component — from the Signal data type to the gate pipeline
+to the learning loops — operates on generic Signals with domain-specific behavior
 injected through trait implementations. The framework does not privilege any domain.
 
 ---
@@ -411,10 +411,10 @@ Seven principles guide Roko's architecture. Each is treated at length in
 
 ### P1 — Signals Over Interfaces
 
-All data is Engrams (currently named `Signal` in the codebase; rename to `Engram` is
+All data is Signals (currently named `Signal` in the codebase; rename to `Signal` is
 Tier 0D in the implementation plan). Services communicate by reading and writing
-Engrams, not by calling each other's methods. This enables loose coupling, audit trails
-via lineage chains, and the ability to replay any decision by following the Engram DAG.
+Signals, not by calling each other's methods. This enables loose coupling, audit trails
+via lineage chains, and the ability to replay any decision by following the Signal DAG.
 
 ### P2 — Composition Over Inheritance
 
@@ -427,7 +427,7 @@ the six traits; no core changes are needed.
 
 Episode logging, playbook extraction, and knowledge consolidation are not optional
 add-ons — they are built into the universal cognitive loop. Every tick produces
-Engrams that feed the learning pipeline. Learning is as fundamental as verification.
+Signals that feed the learning pipeline. Learning is as fundamental as verification.
 
 ### P4 — Verify Everything
 
@@ -497,19 +497,19 @@ records episodes, extracts playbooks, and persists routing decisions.
 
 ### What Is Missing
 
-- **Engram rename.** The Rust type is still `Signal` in the codebase. Rename to
-  `Engram` is Tier 0D in the implementation plan. Documentation uses "Engram"
+- **Signal rename.** The Rust type is still `Signal` in the codebase. Rename to
+  `Signal` is Tier 0D in the implementation plan. Documentation uses "Signal"
   throughout.
 - **Extended score axes.** The `Score` struct currently implements 4 axes
   (confidence, novelty, utility, reputation). The 3 extended axes (precision,
   salience, coherence) are specified but not yet implemented.
-- **Attestation field.** The `attestation: Option<Attestation>` field on the Engram is
+- **Attestation field.** The `attestation: Option<Attestation>` field on the Signal is
   specified but not yet present in the current `Signal` struct.
 - **Interactive TUI.** The dashboard renders as text. An interactive terminal UI
   (ratatui) is the next major infrastructure task.
 - **Full Dreams implementation.** `roko-dreams` is scaffolded but not fully
   implemented.
-- **Agent Mesh.** Peer-to-peer Engram sharing between agents is designed but not
+- **Agent Mesh.** Peer-to-peer Signal sharing between agents is designed but not
   built.
 
 ---

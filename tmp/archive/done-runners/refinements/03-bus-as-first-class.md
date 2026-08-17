@@ -6,7 +6,7 @@
 > the complete kernel of Roko's runtime.
 
 > **For first-time readers**: Roko already has a `Substrate` trait in
-> `crates/roko-core/src/traits.rs` (persist, query, prune durable Engrams)
+> `crates/roko-core/src/traits.rs` (persist, query, prune durable Signals)
 > and an `EventBus<E>` struct in `crates/roko-runtime/src/event_bus.rs`
 > (generic typed broadcast channel with replay ring). The Bus works, but it
 > isn't in the architectural lexicon — no trait, no doc chapter, no stable
@@ -32,7 +32,7 @@ payload.
 
 | | **Substrate** | **Bus** |
 |---|---|---|
-| Medium | Engram | Pulse |
+| Medium | Engram (renamed to Signal in 2026-08-12) | Pulse |
 | Shape | Put/Get/Query/Prune | Publish/Subscribe/Replay |
 | Semantics | Idempotent content-addressed write; query by filter | Broadcast fan-out; topic-addressed; bounded ring for replay |
 | Durability | Long-lived; decays over time | Brief; bounded by ring capacity |
@@ -186,7 +186,7 @@ Synapse trait for it. After the refactor:
 
 And the two-fabric story becomes the kernel's executive summary:
 
-> The Roko kernel is two fabrics — `Substrate` for durable Engrams and
+> The Roko kernel is two fabrics — `Substrate` for durable Signals and
 > `Bus` for ephemeral Pulses. Every subsystem talks to the rest of
 > Roko through one or both of these fabrics. Dependencies flow
 > downward from higher layers to L0; higher-layer communication
@@ -265,7 +265,7 @@ release so in-flight PRs aren't blocked. Then it's removed.
    have a concrete authorization story — see `32-safety-sandbox-provenance.md`
    for where that story lands.
 3. **Schema evolution for topics.** If a Pulse's Body shape changes,
-   how do subscribers know? For now: reuse Engram's approach
+   how do subscribers know? For now: reuse Signal's approach
    (non-exhaustive enums, `Custom(String)` escape hatch, `Body::Json`
    for structured). Formal topic schemas can wait for a v2.
 4. **Wildcard unsubscribe.** If a subscriber uses `Glob("agent.*")`
@@ -306,7 +306,7 @@ Three concrete reasons the refactor is safe to commit to:
    "spooky action at a distance" coupling that would produce runtime
    surprises.
 3. **No data shape changes.** Pulse reuses `Kind` and `Body` from
-   the existing Engram taxonomy. No new serialization formats, no
+   the existing Signal taxonomy. No new serialization formats, no
    new on-disk representations, no migration scripts. The Substrate
    remains the only persistence surface.
 

@@ -1,6 +1,33 @@
 # Comprehensive Issue Catalog
 
-Date: 2026-04-28 (second pass — full demo-app + CLI + API)
+## What is this?
+
+A full catalog of every issue found during end-to-end testing on 2026-04-28, covering the CLI,
+demo-app, and roko-serve API endpoints. Issues are organized by subsystem (16 sections) with
+severity, evidence, root cause, and fix approach for each. This is the most complete bug/gap
+inventory from the April 2026 audit cycle.
+
+Last reviewed: 2026-08-12
+
+## Current status (as of 2026-08-12)
+
+Batch work since this catalog was written has addressed several structural issues:
+
+| Area | Status | Notes |
+|---|---|---|
+| Engram→Signal rename | **RESOLVED** | All runtime code uses `Signal` now. References to "Engram" in this doc reflect the April 2026 codebase state. |
+| `eprintln!`→`tracing` migration | **RESOLVED** | Logging now uses `tracing` macros throughout. |
+| `.expect()`→proper error handling | **PARTIALLY DONE** | Some hot paths converted; others remain. |
+| `orchestrate.rs` (issue 16.4, 8000+ lines) | **RESOLVED** | File deleted entirely. Runner v2 (`event_loop.rs`) is the sole path. |
+| `event_loop.rs` god object | **STILL OPEN** | ~19.8K lines. The monolith problem moved from `orchestrate.rs` to here. |
+| Mutex/unwrap patterns (issue 16.6) | **PARTIALLY DONE** | Some paths migrated to `parking_lot`; not fully consistent. |
+
+Most CLI, API, demo, and security issues in sections 1-15 remain **STILL OPEN** and are valid
+as documented. The priority matrix at the end is still a reasonable guide.
+
+---
+
+Date: 2026-04-28 (second pass -- full demo-app + CLI + API)
 Source: End-to-end testing of CLI, demo-app source analysis, roko-serve API endpoint testing
 Test workspace: `/tmp/roko-e2e-1777398304`
 
@@ -617,12 +644,13 @@ maintain separate views of task/plan state that disagree.
 **Description:** New `reqwest::Client` created per API call instead of reusing a pooled client.
 **Fix:** Create client once in init, share via `Arc<Client>`.
 
-### 16.4 `orchestrate.rs` is 8000+ lines
-**Severity:** Low (maintainability)
+### 16.4 `orchestrate.rs` is 8000+ lines — RESOLVED (deleted)
+**Severity:** Low (maintainability) — **RESOLVED as of 2026-08-12**
 **Description:** Single file handles dispatch, gates, enrichment, efficiency, cost, state,
 resume, and more. Hard to navigate.
-**Fix:** Extract into focused modules: dispatch.rs, gates.rs, enrichment.rs, efficiency.rs.
-Not urgent but would help future development.
+**Resolution:** `orchestrate.rs` was deleted. All execution now goes through runner v2
+(`event_loop.rs`). However, `event_loop.rs` is now ~19.8K lines, so the monolith problem
+has migrated rather than been fully solved.
 
 ### 16.5 Demo data and real API shapes drift
 **Severity:** Medium (ongoing)

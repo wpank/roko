@@ -1,6 +1,6 @@
 # Provenance — Taint Flags
 
-> An optional set of flags that mark an Engram as potentially unreliable, without changing its identity.
+> An optional set of flags that mark an Signal as potentially unreliable, without changing its identity.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -13,24 +13,24 @@
 ## TL;DR
 
 `taint` is an `Option<BTreeSet<TaintFlag>>` on the `Provenance` struct. When `None`,
-the Engram has no known reliability concerns. When `Some(set)`, the set contains one or
+the Signal has no known reliability concerns. When `Some(set)`, the set contains one or
 more flags indicating specific reasons to be cautious. Taint flags do **not** change the
-Engram's `ContentHash`, so an Engram can be flagged after the fact without creating a
+Signal's `ContentHash`, so an Signal can be flagged after the fact without creating a
 new identity. The Gate pipeline reads taint flags to decide whether to pass or reject an
-Engram.
+Signal.
 
 ---
 
 ## The Idea
 
-Trust level (`TrustLevel`) answers "how well-verified is this Engram?" Taint answers
-"are there specific red flags about this Engram?" They are orthogonal:
-- A `ChainWitness` Engram can still be tainted (e.g., the chain confirmed its hash, but
+Trust level (`TrustLevel`) answers "how well-verified is this Signal?" Taint answers
+"are there specific red flags about this Signal?" They are orthogonal:
+- A `ChainWitness` Signal can still be tainted (e.g., the chain confirmed its hash, but
   its source was later identified as a hallucinating model).
-- A `LocalAgent` Engram with no taint is fine for low-stakes use cases.
+- A `LocalAgent` Signal with no taint is fine for low-stakes use cases.
 
 Taint is a **set** rather than a single flag so that multiple independent concerns can
-coexist. An Engram might be simultaneously flagged as `UnverifiedSource` and `OutdatedAt`
+coexist. An Signal might be simultaneously flagged as `UnverifiedSource` and `OutdatedAt`
 without either flag erasing the other.
 
 ---
@@ -66,7 +66,7 @@ pub enum TaintFlag {
 
 ## Taint in Gate Decisions
 
-The Gate pipeline checks taint before passing an Engram to a consumer:
+The Gate pipeline checks taint before passing an Signal to a consumer:
 
 ```rust
 <!-- source: crates/roko-core/src/gate.rs -->
@@ -97,7 +97,7 @@ fn check_taint(engram: &Engram, policy: &GatePolicy) -> GateVerdict {
 
 ## Adding Taint Flags
 
-The Substrate exposes a method to add taint flags to an existing Engram without
+The Substrate exposes a method to add taint flags to an existing Signal without
 changing its identity:
 
 ```rust
@@ -126,7 +126,7 @@ Every taint addition is recorded in the audit log with the reason string.
 
 ## Taint Propagation
 
-When an Engram is derived from a tainted parent (via lineage), the child inherits
+When an Signal is derived from a tainted parent (via lineage), the child inherits
 a `SuspiciousContext` flag automatically:
 
 ```rust
@@ -150,7 +150,7 @@ impl Provenance {
 
 Only `CompromisedAuthor` and `PossibleHallucination` propagate through lineage; other
 flags (`UnverifiedSource`, `OutdatedAt`, `SuspiciousContext`, `Custom`) do not, as they
-are specific to the Engram where they were set.
+are specific to the Signal where they were set.
 
 <!-- ADDED: propagation semantics — which flags propagate was not explicit in source docs;
 inferred from the nature of each flag. -->
@@ -163,7 +163,7 @@ inferred from the nature of each flag. -->
    Use `None` for the untainted case.
 2. Taint flags are **not** part of the `ContentHash` — adding a flag does not change identity.
 3. Taint can only be **added**, not removed, once set — removal would require creating a
-   new Engram with a clean provenance.
+   new Signal with a clean provenance.
 4. `CompromisedAuthor` is always a gate-level rejection — it cannot be overridden by policy.
 5. Audit log must record every `add_taint` call.
 
@@ -176,7 +176,7 @@ inferred from the nature of each flag. -->
 | Taint flag not checked by Gate | Gate policy misconfigured | Policy linter checks that `CompromisedAuthor` is always rejected |
 | Inherited taint causes false positives | Parent taint incorrectly propagated | Use conservative propagation (only `CompromisedAuthor`, `PossibleHallucination`) |
 | Empty taint set stored | Bug in construction path | Substrate normalizes `Some(empty)` to `None` on write |
-| `OutdatedAt` points to missing Engram | Superseding Engram not yet in Substrate | Gate falls back to treating as `Pass` with a warning |
+| `OutdatedAt` points to missing Signal | Superseding Signal not yet in Substrate | Gate falls back to treating as `Pass` with a warning |
 
 ---
 

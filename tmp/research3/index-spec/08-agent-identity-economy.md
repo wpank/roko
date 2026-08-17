@@ -1,3 +1,11 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This describes the agent identity and economy system (ERC-8004, marketplace, reputation).
+> It is reference material, not an implementation plan. Some terminology is outdated --
+> "Engram" has been renamed to "Signal" in the codebase.
+>
+> Last updated: 2026-08-13
+
 # 08 -- Agent Identity and Economy
 
 This document describes the Agent Identity and Economy system: a set of on-chain registries, marketplace protocols, and economic mechanisms that give autonomous AI agents verifiable identities, quantified reputations, and the ability to participate as economic actors. The system enables agents to be hired for work, trade knowledge, earn and spend money, and build trust -- all with cryptographic accountability and without relying on any centralized authority.
@@ -611,10 +619,10 @@ A QP (quadratic programming) solver in a TEE computes the aggregate, producing a
 
 ### 9.1 Forensic AI: Causal Replay
 
-The system's content-addressed provenance architecture creates a natural regulatory compliance moat. Every knowledge artifact (called an Engram) is a content-addressed unit with a BLAKE3 hash, lineage DAG (parent hashes), 7-axis quality score, persistence tier, and full provenance chain.
+The system's content-addressed provenance architecture creates a natural regulatory compliance moat. Every knowledge artifact (called a Signal, formerly "Engram") is a content-addressed unit with a BLAKE3 hash, lineage DAG (parent hashes), 7-axis quality score, persistence tier, and full provenance chain.
 
 ```rust
-pub struct Engram {
+pub struct Signal {  // formerly Engram
     pub hash: Blake3Hash,          // BLAKE3(kind + body + author + tags)
     pub kind: Kind,
     pub body: Vec<u8>,
@@ -635,14 +643,14 @@ pub struct Provenance {
 }
 ```
 
-To replay any agent decision: identify the action's Engram hash, trace the lineage DAG backward, reconstruct the full decision context (which data was in the store, which scores were computed, which router selected the candidate, which gate verified the output), recompute BLAKE3 hashes to verify no tampering, and produce a human-readable audit trail that is itself content-addressed.
+To replay any agent decision: identify the action's Signal hash, trace the lineage DAG backward, reconstruct the full decision context (which data was in the store, which scores were computed, which router selected the candidate, which gate verified the output), recompute BLAKE3 hashes to verify no tampering, and produce a human-readable audit trail that is itself content-addressed.
 
 ### 9.2 Regulatory Mapping
 
 | Regulation | Requirement | Native Capability |
 |---|---|---|
 | EU AI Act (Article 14) | Human oversight | Cognitive Signals (Pause, Resume, Escalate) + Gate architecture |
-| EU AI Act (Article 13) | Transparency | Full Engram lineage DAG |
+| EU AI Act (Article 13) | Transparency | Full Signal lineage DAG |
 | SEC/CFTC | Trading decision reconstruction | Content-addressed lineage from market data to trade |
 | MiFID II | Best execution documentation | Router decisions logged with candidate set and confidence |
 | HIPAA | Clinical audit trail | Content-addressed provenance; PHI-aware Gate |
@@ -698,7 +706,7 @@ The clearing system uses agent reputation to weight rate submissions. Higher-rep
 
 ### 10.2 Knowledge as a Tradeable Asset
 
-Knowledge artifacts (Engrams) function as tradeable assets in two ways:
+Knowledge artifacts (Signals) function as tradeable assets in two ways:
 
 1. **Direct trading via the Knowledge Marketplace.** Alpha-decay pricing: `P(t) = P_base * rep_mult * e^(-lambda * t)` ensures knowledge prices decline as information ages. Three marketplace tiers (Collective, Ecosystem, Universal) provide different access levels.
 
@@ -714,7 +722,7 @@ Agent registers (ERC-8004)
   -> Agent receives jobs (Spore/Sparrow, 3 hiring models)
   -> Agent completes work (gate-verified)
   -> Agent earns payment (ERC-8183 escrow release)
-  -> Agent produces knowledge (Engrams posted to chain)
+  -> Agent produces knowledge (Signals posted to chain)
   -> Knowledge priced via ISFR (collective rate discovery)
   -> Knowledge traded in marketplace (alpha-decay pricing)
   -> Knowledge pre-sold via futures (LMSR prediction market)

@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a PRD for the Nunchi marketing/landing page. It is reference material for
+> pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # PRD: Nunchi Landing Page · Architecture Explorer · TUI Demo
 
 | Field | Value |

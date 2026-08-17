@@ -38,7 +38,7 @@ existential to practical.
 | Dying golem transfers knowledge to offspring | User exports NeuroStore, creates new agent, imports selected pieces |
 | Generational learning (parent → child) | Collective learning (agent → mesh → agent) + selective restore |
 | Knowledge inheritance as biological metaphor | Knowledge as portable, user-controlled data |
-| Lineage (golem families across generations) | Provenance (Engram lineage DAG across time) |
+| Lineage (golem families across generations) | Provenance (Signal lineage DAG across time) |
 | Thanatopsis phase (dying → knowledge selection) | User backup command (`roko neuro backup`) |
 
 **Translation rule**: Replace biological inheritance language with data management
@@ -50,7 +50,7 @@ are identical. Only the transfer mechanism changes.
 | Old Styx feature | New Mesh equivalent |
 |---|---|
 | Clade synchronization | Collective mesh sync via WebSocket/Iroh |
-| Lethe knowledge exchange | P2P Engram sharing via Agent Mesh |
+| Lethe knowledge exchange | P2P Signal sharing via Agent Mesh |
 | Styx WebSocket server | Agent mesh coordinator (in `roko-serve`) |
 | Clade membership | ERC-8004 registry + permissioned subnets |
 

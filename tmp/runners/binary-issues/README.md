@@ -1,5 +1,13 @@
 # Binary Issues Runner
 
+> **What is this?** Focused mop-up runner for ~56 issues found during the binary audit
+> (things like security defaults, phantom features, slash commands that confirm but do not
+> act, silent error swallowing, and hardcoded values). Each batch is a mechanical, verifiable
+> fix. Items behind `#[cfg(feature = "legacy-orchestrate")]` are excluded since
+> `orchestrate.rs` has been deleted and is no longer part of the shipping binary.
+>
+> **Last updated: 2026-08-13**
+
 **Purpose**: Close out the still-open items from `tmp/binary-issues/MASTER-INDEX.md` after the 2026-05-01 verification pass.
 **Source of truth**: `ISSUE-TRACKER.md` (one row per batch).
 **Format**: Same as `parallel-template` — codex, worktrees, cherry-pick, 16 concurrent.

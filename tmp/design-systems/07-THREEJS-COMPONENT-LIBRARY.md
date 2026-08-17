@@ -1,5 +1,15 @@
 # Three.js Modular Component Library
 
+> **What is this?** The implementation cookbook for ROSEDUST (roko's design system).
+> 20+ reusable Three.js scenes, interactive controls, 2D canvas patterns, and UI
+> components -- each with full code, parameters, and integration notes. Extracted from
+> the 14 HTML site iterations catalogued in `06-SITE-CATALOGUE.md`.
+>
+> **Adoption status (2026-08-13):** Heavily adopted. The scene factory (`createScene`),
+> hero orbit diamond, particle swarm, and atmospheric CSS layers are actively used in
+> the demo-app. Always include this doc alongside `01-ROSEDUST-DESIGN-SYSTEM.md` when
+> prompting an LLM to generate ROSEDUST-themed pages.
+
 Reusable scene patterns, interactive elements, and infrastructure extracted from 14 site iterations. Each component includes full implementation code, parameters, and integration notes.
 
 ---
@@ -1136,3 +1146,7 @@ setInterval(updateTelemetry, 2000);
 ```html
 <span class="defterm" data-def="Hyperdimensional Computing uses 10,240-bit vectors...">HDC</span>
 ```
+
+---
+
+*Last updated: 2026-08-13*

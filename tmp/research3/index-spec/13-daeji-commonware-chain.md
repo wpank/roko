@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a technical reference for Daeji, the application-specific blockchain built on
+> Commonware primitives (Simplex BFT + REVM). It is reference material, not an implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Daeji: A Custom Application-Specific Blockchain Built on Commonware Primitives
 
 ## 1. What Daeji Is

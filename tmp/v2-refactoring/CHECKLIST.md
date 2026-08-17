@@ -1,5 +1,7 @@
 # V2 Refactoring — Master Checklist
 
+> **Last updated: 2026-08-13**
+
 Every item has: a wire target, a verification command, and a "done" definition.
 
 **Done = compiled + tested + wired + exercised via CLI.**
@@ -10,15 +12,15 @@ Every item has: a wire target, a verification command, and a "done" definition.
 
 ### Cleanup
 
-- [ ] **QW-4**: Verify orchestrate.rs feature gate is clean
+- [x] **QW-4**: ~~Verify orchestrate.rs feature gate is clean~~ -- **DONE**
   - Wire: N/A (cleanup)
   - Verify: `cargo build -p roko-cli` without `legacy-orchestrate` feature
-  - Done: No non-gated references to orchestrate module
+  - Done: File deleted entirely (E12-T07), not just feature-gated.
 
-- [ ] **QW-5**: Delete roko-calc skeleton
+- [x] **QW-5**: ~~Delete roko-calc skeleton~~ -- **DONE**
   - Wire: N/A (deletion)
   - Verify: `cargo build --workspace`
-  - Done: `crates/roko-calc/` removed, workspace Cargo.toml updated
+  - Done: `crates/roko-calc/` removed, workspace Cargo.toml updated.
 
 - [ ] **QW-7**: Tag all floating code with STATUS comments
   - Wire: N/A (documentation)
@@ -27,14 +29,15 @@ Every item has: a wire target, a verification command, and a "done" definition.
 
 ### Quick Additions
 
-- [ ] **QW-3**: Add `balance: f64` field to Engram/Signal
-  - Wire: Store::put/get — field is persisted/loaded
+- [x] **QW-3**: ~~Add `balance: f64` field to Signal~~ -- **DONE**
+  - Wire: Store::put/get -- field is persisted/loaded
   - Verify: `cargo test -p roko-core` + check JSONL backwards compat
-  - Done: `balance` field exists with serde default, touch() method works
+  - Done: `balance` field exists with `serde(default)`, `touch()` method works.
+    Field is at `crates/roko-core/src/engram.rs:210`.
 
 - [ ] **QW-2**: Add And/Or/Not to TopicFilter
   - Wire: PulseBus subscriptions
-  - Verify: `cargo test -p roko-core` — new filter combinator tests pass
+  - Verify: `cargo test -p roko-core` -- new filter combinator tests pass
   - Done: TopicFilter has And/Or/Not variants, matches() handles them
 
 ### Quick Wiring (floating code → runtime)
@@ -107,20 +110,25 @@ Every item has: a wire target, a verification command, and a "done" definition.
 
 ### 1B: Signal Rename
 
-- [ ] **P1-6**: Rename Engram → Signal in roko-core
-  - Wire: Everything that uses Engram (via deprecated alias)
-  - Verify: `cargo build --workspace` — alias ensures no breaks
-  - Done: `pub struct Signal` is canonical, `pub type Engram = Signal` is deprecated
+**Note:** The full struct rename is DONE (2026-08-12). `pub struct Signal` is canonical
+in `engram.rs`; `pub type Engram = Signal` backward-compat alias retained. New code uses
+`Signal` everywhere. Remaining: mark `Engram` alias as `#[deprecated]`, update remaining
+crate-level references.
+
+- [x] **P1-6**: Rename Signal (from Engram) in roko-core -- **DONE (2026-08-12)**
+  - Wire: Everything that uses Signal (backward-compat `Engram` alias retained)
+  - Verify: `cargo build --workspace` -- alias ensures no breaks
+  - Done: `pub struct Signal` is canonical, `pub type Engram = Signal` alias retained
 
 - [ ] **P1-7**: Update roko-core internals to use Signal
-  - Wire: N/A — internal rename
+  - Wire: N/A -- internal rename
   - Verify: `cargo test -p roko-core`
-  - Done: No internal uses of `Engram` in roko-core (only the deprecated alias)
+  - Done: No internal uses of `Engram` in roko-core (only the backward-compat alias)
 
-- [ ] **P1-8**: Update 5 most-used crates to use Signal
+- [ ] **P1-8**: Update 5 most-used crates to use Signal directly
   - Wire: roko-agent, roko-gate, roko-learn, roko-compose, roko-orchestrator
-  - Verify: `cargo build --workspace` — deprecated warnings may appear
-  - Done: 5 crates import Signal directly (not through Engram alias)
+  - Verify: `cargo build --workspace` -- deprecated warnings may appear
+  - Done: 5 crates import Signal directly (not through `Engram` alias)
 
 ### 1C: New Protocol Traits
 
@@ -347,14 +355,17 @@ Every item has: a wire target, a verification command, and a "done" definition.
 
 ## Tracking
 
-Total items: **58**
+Total items: **58** (4 done, 54 remaining)
 
-| Phase | Items | Status |
-|-------|-------|--------|
-| Phase 0 | 14 | Not started |
-| Phase 1 | 14 | Not started |
-| Phase 2 | 17 | Not started |
-| Phase 3 | 8 | Not started |
-| Phase 4 | 7 | Not started |
+| Phase | Items | Done | Status |
+|-------|-------|------|--------|
+| Phase 0 | 14 | 4 (QW-1/3/4/5) | ~30% done; 10 items outstanding (QW-2/7, DCA-1 through DCA-6, QW-8) |
+| Phase 1 | 14 | 0 | Not started (Signal alias in place but P1-6/7/8 struct rename not done) |
+| Phase 2 | 17 | 0 | Not started |
+| Phase 3 | 8 | 0 | Not started |
+| Phase 4 | 7 | 0 | Not started |
 
-Last updated: 2026-05-05
+Note: The Engram → Signal alias (QW-1) is counted as Phase 0 done. The full struct
+rename (P1-6/7/8) is separate Phase 1 work.
+
+Last updated: 2026-08-13

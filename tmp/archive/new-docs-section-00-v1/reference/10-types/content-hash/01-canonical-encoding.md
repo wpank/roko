@@ -1,6 +1,6 @@
 # ContentHash — Canonical Encoding
 
-> The exact byte sequence fed to BLAKE3 to produce an Engram's ContentHash.
+> The exact byte sequence fed to BLAKE3 to produce an Signal's ContentHash.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -11,10 +11,10 @@
 
 ## TL;DR
 
-`canonical_encode(engram)` produces a deterministic byte vector that is then passed to
+`canonical_encode(signal)` produces a deterministic byte vector that is then passed to
 BLAKE3. The encoding is field-ordered and length-delimited. The exact byte layout is
 specified here so that any implementation (in any language) can reproduce the same hash
-given the same Engram fields.
+given the same Engram (renamed to Signal in 2026-08-12) fields.
 
 ---
 

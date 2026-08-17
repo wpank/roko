@@ -63,7 +63,7 @@ See [../by-subsystem/](../by-subsystem/README.md) for per-crate breakdowns. At t
 
 | Crate | Unit tests | Key focus |
 |---|---|---|
-| `roko-core` | 376 | Engram type, Score axes, ContentHash, decay math |
+| `roko-core` | 376 | Engram (renamed to Signal in 2026-08-12) type, Score axes, ContentHash, decay math |
 | `roko-agent` | 346 | LLM backends, CascadeRouter, safety pipeline |
 | `roko-gate` | 200 | Gate verdicts, rung transitions, threshold logic |
 | `roko-orchestrator` | 158 | Plan DAG scheduling, crash recovery |

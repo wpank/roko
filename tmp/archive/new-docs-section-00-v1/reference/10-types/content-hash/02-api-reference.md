@@ -22,7 +22,7 @@ pub struct ContentHash([u8; 32]);
 
 | Method | Signature | Description |
 |---|---|---|
-| `compute` | `(engram: &Engram) -> Self` | Hash an Engram using canonical encoding + BLAKE3 |
+| `compute` | `(signal: &Signal) -> Self` | Hash an Signal using canonical encoding + BLAKE3 |
 | `from_bytes` | `(bytes: [u8; 32]) -> Self` | Construct from raw bytes (use with caution — no validation) |
 | `from_hex` | `(s: &str) -> Result<Self, HashError>` | Decode from a 64-character lowercase hex string |
 
@@ -37,7 +37,7 @@ pub struct ContentHash([u8; 32]);
 
 | Method | Signature | Description |
 |---|---|---|
-| `verify` | `(&self, engram: &Engram) -> bool` | Recompute hash and compare — returns true if consistent |
+| `verify` | `(&self, signal: &Signal) -> bool` | Recompute hash and compare — returns true if consistent |
 | `zero` | `() -> Self` | The all-zeros hash (reserved for null/sentinel uses) |
 | `is_zero` | `(&self) -> bool` | True if all 32 bytes are zero |
 

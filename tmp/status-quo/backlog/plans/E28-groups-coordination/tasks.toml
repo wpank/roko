@@ -1,8 +1,8 @@
 [meta]
 plan = "E28-groups-coordination"
 total = 8
-done = 0
-status = "ready"
+done = 8
+status = "done"
 max_parallel = 1
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -32,7 +32,7 @@ description = """Create crates/roko-core/src/groups.rs with the following types:
 All types derive Serialize, Deserialize, Debug, Clone. Enums also derive
 PartialEq, Eq. Use #[serde(rename_all = "snake_case")] on enums.
 Register `pub mod groups;` in lib.rs and re-export key types."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "integrative"
 max_loc = 120
@@ -102,7 +102,7 @@ description = """Add to crates/roko-core/src/groups.rs:
 
 All types derive Serialize, Deserialize, Debug, Clone.
 InvitationStatus derives PartialEq, Eq with serde(rename_all = "snake_case")."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 60
@@ -162,7 +162,7 @@ description = """Add to crates/roko-core/src/groups.rs:
 These support the leader-follower coordination mode. The v2 spec uses
 CellRef-based assignment routing, but for this phase we use a simple enum.
 AssignmentStrategy derives PartialEq, Eq, serde(rename_all = "snake_case")."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 50
@@ -223,7 +223,7 @@ description = """Add to crates/roko-core/src/groups.rs:
 The v2 spec (10-GROUPS.md §3.1) defines pheromones as Kind::Pheromone
 Signals subject to demurrage. position_hint is Option<String> (placeholder
 for HDC vector). Reference Kind::Pheromone at kind.rs:95 in doc comments."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 50
@@ -288,7 +288,7 @@ Follow the route module pattern from feeds.rs: pub fn routes() -> Router<Arc<App
 Register `mod groups;` in routes/mod.rs and merge into the router.
 Use in-memory Vec<Group> guarded by RwLock in AppState for initial storage.
 Import Group types from roko_core::groups."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "integrative"
 max_loc = 200
@@ -354,7 +354,7 @@ Add `#[serde(default, skip_serializing_if = "Vec::is_empty")]` on the
 groups field so existing configs without [[groups]] still parse correctly.
 Add GroupDefinition to the Default impl (empty Vec). Pattern follows the
 existing `agents: Vec<AgentDefinition>` field at schema.rs:157."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 40
@@ -420,7 +420,7 @@ ResearchContextBidder via the AttentionBidder variants in orchestrate.rs.
 
 Bid value is proportional to: pheromone intensity, knowledge recency, and
 coordination urgency (pending task assignments in leader-follower mode)."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 30
@@ -490,7 +490,7 @@ the Bus room string:
 - Pheromone* -> "group:{id}:pheromones"
 - Task* -> "group:{id}:coordination"
 - All others -> "group:{id}" """
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 80

@@ -1,5 +1,9 @@
 # Cascade Router Design
 
+> **STALE**: Design sketch from May 2026. CascadeRouter is fully implemented in
+> `roko-learn` and persists to `.roko/learn/cascade-router.json`. See `crates/roko-learn/src/cascade_router.rs`.
+> Last updated: 2026-08-13
+
 ## Goal
 Route tasks to the cheapest model that can handle them.
 

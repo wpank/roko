@@ -26,7 +26,7 @@ Each property gets exactly one page. If the same invariant appears in two subsys
 |---|---|---|
 | Content hash determinism | [content-addressing-determinism.md](content-addressing-determinism.md) | `roko-core` (proptest) |
 | Content hash collision resistance | [content-hash-collision-resistance.md](content-hash-collision-resistance.md) | `roko-core` (unit) |
-| Engram serialization round-trip | [engram-serialization-roundtrip.md](engram-serialization-roundtrip.md) | `roko-core` (proptest) |
+| Engram (renamed to Signal in 2026-08-12) serialization round-trip | [signal-serialization-roundtrip.md](signal-serialization-roundtrip.md) | `roko-core` (proptest) |
 
 ### Score and Appraisal
 
@@ -66,7 +66,7 @@ Each property gets exactly one page. If the same invariant appears in two subsys
 |---|---|---|
 | Substrate write idempotence | [substrate-idempotence.md](substrate-idempotence.md) | `roko-fs` (proptest) |
 | Substrate read-after-write consistency | [substrate-read-after-write.md](substrate-read-after-write.md) | `roko-fs` (proptest) |
-| GC preserves living Engrams | [substrate-gc-preserves-living.md](substrate-gc-preserves-living.md) | `roko-fs` (unit) |
+| GC preserves living Signals | [substrate-gc-preserves-living.md](substrate-gc-preserves-living.md) | `roko-fs` (unit) |
 
 ### HDC and Neuro
 

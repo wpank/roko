@@ -1,7 +1,33 @@
 # Agent Failure Patterns
 
-Reusable lessons for future Codex/Claude runner batches. This is a compact prompt
-and review companion to `ANTI-PATTERNS-V2.md`.
+> **Last updated:** 2026-08-13
+
+## What is this?
+
+This document catalogs the recurring failure modes of AI coding agents (Codex and
+Claude) working on the roko codebase across 661+ batches. It contains systematic
+codebase analysis results and serves as a canonical reference for code quality patterns
+specific to agent-produced output. It was distilled from systematic audits of
+agent-produced diffs: what they did wrong, why it was wrong, and how to prevent it in
+future batches.
+
+This is a compact prompt-and-review companion to `ANTI-PATTERNS-V2.md` (the full
+catalog). Use this doc when:
+- **Preparing runner prompts** -- paste the "Reusable Prompt Block" into agent system prompts
+- **Reviewing batch output** -- use the "Review Checklist" to evaluate agent diffs
+- **Designing fitness checks** -- use the "High-Value Fitness Checks" as CI gates
+
+### Staleness notes (2026-08-13)
+
+- **`orchestrate.rs` is deleted.** References to it are historical. The current
+  god-file concern is `runner/event_loop.rs` (~18K lines).
+- **Engram is renamed to Signal.** All "Engram" references in the codebase are now "Signal."
+- **`eprintln!` to `tracing` migration is done** (~40 calls converted).
+- **`.expect()` to proper errors is partially done** (~25 production fixes).
+- **"46% dormant LOC" claim is unverified.** The figure from INDEX.md has not been
+  re-verified against the current codebase. Treat as directional, not authoritative.
+- The failure patterns themselves remain fully relevant -- agents continue to exhibit
+  the same habits on new code.
 
 ## Core Lesson
 

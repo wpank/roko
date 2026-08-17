@@ -106,11 +106,11 @@ deployment to target requires a manual copy step once host access is restored.
 | `01-knowledge-as-topology.md` | ~120 | Metric spaces, small-world (Watts-Strogatz 1998), scale-free (Barabási-Albert 1999) |
 | `02-temporal-shape.md` | ~115 | Ingestion, decay, consolidation, contradiction as topological operators |
 | `03-decay-as-topological-operator.md` | 137 | Formal operator math, persistent homology (Edelsbrunner 2002), 4 decay model topological effects |
-| `04-roko-application.md` | ~130 | Engram graph, HDC fingerprints as geometric coordinates, decay tier matrix, Dreams as topological surgery |
+| `04-roko-application.md` | ~130 | Engram (renamed to Signal in 2026-08-12) graph, HDC fingerprints as geometric coordinates, decay tier matrix, Dreams as topological surgery |
 | `05-implications.md` | ~120 | 5 design implications with table: topology monitoring, HDC geometry, decay as surgery, Dreams metrics, contradiction detection |
 | `06-open-questions.md` | ~105 | 6 open questions including categorical topology, HDC manifold structure, computational cost |
 
-**Key Roko components illuminated**: Engram, Substrate, Decay variants, Dreams, HDC fingerprint, Three cognitive speeds
+**Key Roko components illuminated**: Signal, Substrate, Decay variants, Dreams, HDC fingerprint, Three cognitive speeds
 
 ### Perspective: emergent-goals (7 files)
 

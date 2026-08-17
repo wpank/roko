@@ -30,7 +30,7 @@ High-signal corpus clusters:
   active inference, foraging, stigmergy, dashboard projections, and feedback
   loops dominate the source docs.
 - The docs repeatedly describe a compositional, domain-agnostic, self-improving
-  scaffold: Engram/Bus/Substrate/Scorer/Gate/Router/Composer/Policy, active
+  scaffold: Signal/Bus/Substrate/Scorer/Gate/Router/Composer/Policy, active
   inference, VCG attention, HDC/VSA knowledge, stigmergic coordination, dreams,
   conductor loops, and dashboard lenses.
 - The live code has many useful pieces, but a lot of decision-making is still
@@ -148,7 +148,7 @@ Why this is too rigid:
 - Prompt text is not versioned as a policy artifact.
 - Experiments can influence sections, but cannot naturally graduate into the
   source prompt profile.
-- Role identity is not an Engram with provenance, lineage, outcomes, and
+- Role identity is not an Signal with provenance, lineage, outcomes, and
   measured lift.
 - The system cannot publish, compare, import, or roll back prompt policies as
   first-class objects.
@@ -374,7 +374,7 @@ publish_diagnostics = true
 
 - Use active inference for scoring, VCG/fairness for allocation, MVT for source
   search stopping, and HDC for dedup/similarity.
-- Persist all allocation decisions as Engrams.
+- Persist all allocation decisions as Signals.
 
 ### G8. Context injection is orchestrator-centric
 

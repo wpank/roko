@@ -35,7 +35,7 @@ Theta fires on `heartbeat.theta.tick` Bus Pulse, typically every N=5 gamma ticks
 - Phase 2: call into `roko-daimon` affect update (ALMA layer integration)
 - Phase 3: read `CalibrationTracker` (at `crates/roko-core/src/prediction.rs:821`) for drift
 - Phase 4: compare plan DAG progress against `crates/roko-orchestrator/src/dag.rs` schedule
-- Phase 5: emit intervention Engrams if stuck (pattern: see `PlanRunner` in `crates/roko-cli/src/orchestrate.rs`)
+- Phase 5: emit intervention Signals if stuck (pattern: see `PlanRunner` in `crates/roko-cli/src/orchestrate.rs`)
 
 **Reference files**:
 - `crates/roko-runtime/src/heartbeat.rs:586` — `HeartbeatPolicy` struct, `ClockConfig` at line 459, `compute_theta_interval()` at line 724, `HeartbeatTick` at line 510
@@ -78,7 +78,7 @@ Delta fires on `heartbeat.delta.tick` Pulse, triggered by: (a) idle detection (`
 - Spawns `crates/roko-dreams/src/runner.rs` dream cycle as a `tokio::spawn` background task
 - After dream cycle completes, calls `roko-neuro` tier promotion for validated knowledge
 - Compiles playbook rules from successful episode patterns
-- Emits a `DeltaCycleReport` Engram with consolidation stats
+- Emits a `DeltaCycleReport` Signal with consolidation stats
 
 **Reference files**:
 - `crates/roko-dreams/src/runner.rs` — dream cycle runner with NREM/REM/integration phases

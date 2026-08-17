@@ -83,7 +83,7 @@ well-defined regardless of how many Gamma ticks produced how many outcomes. See
 
 ## Related Findings
 
-- [F7 — Engram Universality](05-finding-engram-universality.md): The universal Engram type is
+- [F7 — Signal Universality](05-finding-signal-universality.md): The universal Signal type is
   what makes the same data structure work across all three speeds.
 - [08 — Novel Proposals](08-novel-proposals.md): Proposal 8.3 formalizes hierarchical pipeline
   composition as monoid homomorphisms across speeds.

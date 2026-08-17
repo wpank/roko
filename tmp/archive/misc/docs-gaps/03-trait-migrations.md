@@ -4,15 +4,15 @@ The six synapse traits in `crates/roko-core/src/traits.rs` need signature update
 
 **Prerequisite**: All items in `02-missing-kernel-types.md` must be complete (Pulse, Bus, Datum, TopicFilter, PolicyOutputs).
 
-**Note**: Doc 08 explicitly marks these as "target-state operator design" and "planned migration targets." The current Engram-only signatures are v1. These changes bring the traits to the v2 spec.
+**Note**: Doc 08 explicitly marks these as "target-state operator design" and "planned migration targets." The current Signal-only signatures are v1. These changes bring the traits to the v2 spec.
 
 ## Checklist
 
 ### TM-01: Substrate — no changes needed
 - [x] Substrate is at target spec
 
-**Spec** (doc 07): Substrate remains Engram-only by design. Pulses go through Bus.
-**Current code**: Matches spec. `put(Engram)`, `get(&ContentHash)`, `query(&Query)`, etc.
+**Spec** (doc 07): Substrate remains Engram (renamed to Signal in 2026-08-12)-only by design. Pulses go through Bus.
+**Current code**: Matches spec. `put(Signal)`, `get(&ContentHash)`, `query(&Query)`, etc.
 **Status**: COMPLIANT.
 
 ### TM-02: Scorer — add Datum dispatch
@@ -45,10 +45,10 @@ pub trait Scorer: Send + Sync {
 ```
 
 **What to change**:
-1. Rename existing `score(&Engram)` -> `score_engram(&Engram)` across all implementations
-2. Add `score_pulse` with default impl (synthetic Engram conversion)
+1. Rename existing `score(&Signal)` -> `score_engram(&Signal)` across all implementations
+2. Add `score_pulse` with default impl (synthetic Signal conversion)
 3. Add `score(Datum)` dispatch with default impl
-4. Update all call sites from `scorer.score(engram, ctx)` to `scorer.score_engram(engram, ctx)` (or wrap in `Datum::Engram`)
+4. Update all call sites from `scorer.score(signal, ctx)` to `scorer.score_engram(signal, ctx)` (or wrap in `Datum::Engram`)
 
 **Change type**: Additive -- existing impls rename one method, get two new defaults free.
 **Accept when**:
@@ -163,8 +163,8 @@ pub trait Composer: Send + Sync {
 
 **What was done**:
 1. Added `compose_datums` method accepting `&[Datum<'_>]` with default impl
-2. Default impl converts Pulses to synthetic Engrams, delegates to `compose()`
-3. Existing `compose(&[Engram])` kept as-is — zero breakage to existing impls
+2. Default impl converts Pulses to synthetic Signals, delegates to `compose()`
+3. Existing `compose(&[Signal])` kept as-is — zero breakage to existing impls
 4. No call site changes needed — callers can opt into `compose_datums` incrementally
 
 **Change type**: ADDITIVE — new method with default, zero breakage.
@@ -176,7 +176,7 @@ pub trait Composer: Send + Sync {
 - [x] `cargo test -p roko-core` passes
 
 ### TM-06: Policy — add Pulse-aware entry point returning PolicyOutputs
-- [x] Add `decide_with_pulses(&[Engram], &[Pulse]) -> PolicyOutputs` method with default impl
+- [x] Add `decide_with_pulses(&[Signal], &[Pulse]) -> PolicyOutputs` method with default impl
 
 **Spec** (doc 08):
 ```rust
@@ -198,9 +198,9 @@ pub trait Policy: Send + Sync {
 ```
 
 **What was done**:
-1. Added `decide_with_pulses` method accepting `(&[Engram], &[Pulse])` returning `PolicyOutputs`
+1. Added `decide_with_pulses` method accepting `(&[Signal], &[Pulse])` returning `PolicyOutputs`
 2. Default impl ignores pulses, delegates to `decide()`, wraps result in `PolicyOutputs`
-3. Existing `decide(&[Engram]) -> Vec<Engram>` kept as-is — zero breakage to 17 existing impls
+3. Existing `decide(&[Signal]) -> Vec<Signal>` kept as-is — zero breakage to 17 existing impls
 4. No call site changes needed — callers can opt into `decide_with_pulses` incrementally
 
 **Change type**: ADDITIVE — new method with default, zero breakage.

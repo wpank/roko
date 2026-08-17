@@ -1,6 +1,6 @@
 # Query Similar — HDC Similarity Search
 
-> `query_similar` retrieves the `k` `Engram`s whose HDC fingerprint is closest (by Hamming
+> `query_similar` retrieves the `k` `Signal`s whose HDC fingerprint is closest (by Hamming
 > distance) to a supplied query fingerprint. This is Roko's associative recall: given a
 > context vector, find the memories most like it.
 
@@ -26,7 +26,7 @@ Exact lookup (`get`) and structured filtering (`query`) are necessary but not su
 a cognitive agent. An agent that can only retrieve memories it already knows the exact hash of
 has no associative recall — no ability to ask "what do I know that is related to this?"
 
-HDC (Hyperdimensional Computing) fingerprints solve this. Each `Engram` stores a
+HDC (Hyperdimensional Computing) fingerprints solve this. Each `Signal` stores a
 high-dimensional binary vector derived from its content. Vectors that are semantically related
 — derived from similar or overlapping content — tend to be close in Hamming distance. Querying
 by fingerprint proximity is therefore a lightweight form of semantic search that requires no
@@ -52,14 +52,14 @@ fn query_similar(
 
 | Parameter | Type | Description |
 |---|---|---|
-| `fingerprint` | `&HdcFingerprint` | The query vector. Typically derived from the current agent context (the `Engram` being processed, or a thinned combination of recent contexts). |
+| `fingerprint` | `&HdcFingerprint` | The query vector. Typically derived from the current agent context (the `Signal` being processed, or a thinned combination of recent contexts). |
 | `k` | `usize` | Maximum number of results to return. If fewer than `k` fingerprinted records exist, all are returned. |
 
 ---
 
 ## Semantics
 
-1. The implementation collects all stored `Engram`s that have a populated `fingerprint` field.
+1. The implementation collects all stored `Signal`s that have a populated `fingerprint` field.
 2. For each, it computes the Hamming distance between the stored fingerprint and the query
    fingerprint.
 3. It returns the `k` records with the lowest Hamming distance (most similar), in ascending
@@ -84,7 +84,7 @@ fingerprint). See [HDC Fingerprint](../10-types/hdc-fingerprint.md) for the full
 ## Generating a Query Fingerprint
 
 The caller is responsible for constructing the query fingerprint. The typical pattern in the
-cognitive loop is to derive it from the current context `Engram`:
+cognitive loop is to derive it from the current context `Signal`:
 
 ```rust
 // source: crates/roko-core/src/substrate.rs
@@ -118,7 +118,7 @@ let related = substrate.query_similar(&bundle, 8)?;
 | `FileSubstrate` | In-memory index loaded on open | O(n · D/64) after O(n) startup |
 | Future: LSH index | Approximate | O(log n) amortised |
 
-For agents with < 50,000 engrams and D = 10,000 bits, a linear scan completes in
+For agents with < 50,000 signals and D = 10,000 bits, a linear scan completes in
 < 5 ms on modern hardware. At 500,000 records, an LSH (locality-sensitive hashing) index
 would be needed for sub-millisecond recall. See [Performance](./13-performance.md).
 

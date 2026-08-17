@@ -48,7 +48,7 @@ plan.
 
 - wording discipline
 - stale counts and status labels
-- Engram-centered terminology
+- Signal-centered terminology
 - explicit `planned` / `deferred` markers
 - source-index usefulness as a verification aid
 

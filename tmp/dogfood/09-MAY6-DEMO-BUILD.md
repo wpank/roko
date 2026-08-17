@@ -1,12 +1,30 @@
 # May 6 Demo Build Checklist
 
-> **Context**: Nunchi is pitching a16z on May 6, 2026 for a Series A. The demo is the centerpiece — a 5-minute live terminal session showing an agent runtime that handles identity, routing, gates, knowledge-sharing, and crash recovery. This checklist covers everything that must be built or wired to make the demo runnable.
+> **Last updated**: 2026-08-13
 >
-> **What Nunchi is**: An open-source Rust agent runtime (18 crates, "Roko") + a sovereign EVM blockchain for agent identity and knowledge. The demo shows the RUNTIME, not the chain. The chain is Phase 4.
+> **STATUS: HISTORICAL.** This document was written for a May 6, 2026 a16z pitch demo.
+> That date has passed. The checklist items were never fully completed. This file is kept
+> for reference on demo architecture decisions and the `nunchi` CLI wrapper concept.
+>
+> **What is this?** A build checklist for a 5-minute live terminal demo showing roko's
+> agent runtime (identity verification, cost prediction, gate checks, knowledge loading,
+> and crash recovery). "Dogfooding" means roko developing itself -- reading PRDs, generating
+> plans, executing tasks via LLM agents, validating results. This demo was designed to
+> showcase that workflow to investors.
+>
+> **Stale references in this file**:
+> - `orchestrate.rs` is referenced as the main dispatch loop -- it has been **DELETED**.
+>   The current engine is `crates/roko-cli/src/runner/event_loop.rs` (~19,846 lines).
+> - P1-1 references `orchestrate.rs` for TUI streaming -- this was fixed by runner v2.
+> - P1-2 (TOML fence stripping) and P1-3 (memory leak) are both **RESOLVED**.
+>
+> **Original context**: Nunchi is pitching a16z on May 6, 2026 for a Series A. The demo is
+> the centerpiece -- a 5-minute live terminal session showing an agent runtime that handles
+> identity, routing, gates, knowledge-sharing, and crash recovery.
 >
 > **Codebase location**: `/Users/will/dev/nunchi/roko/roko/`
 > **Key crate**: `crates/roko-cli/` (the CLI binary)
-> **Orchestrator**: `crates/roko-cli/src/orchestrate.rs` (the main agent dispatch loop)
+> **Plan runner (current)**: `crates/roko-cli/src/runner/event_loop.rs` (orchestrate.rs DELETED)
 > **Agent dispatcher**: `crates/roko-agent/src/dispatcher/mod.rs`
 
 ---

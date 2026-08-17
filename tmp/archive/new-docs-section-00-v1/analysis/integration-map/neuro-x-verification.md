@@ -53,7 +53,7 @@ Estimated LOC: ~60.
 
 1. Knowledge-based threshold adjustments are bounded: at most ±20% relative to the statistical baseline.
 2. NeuroStore knowledge is read-only from the gate pipeline's perspective.
-3. Threshold adjustments are logged as `Kind::Metric` Engrams for auditability.
+3. Threshold adjustments are logged as `Kind::Metric` Signals for auditability.
 4. If NeuroStore has no relevant patterns, the gate uses its standard adaptive thresholds unchanged.
 
 ## Failure Modes

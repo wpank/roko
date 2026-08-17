@@ -130,7 +130,7 @@ PRD-vs-reality, not parity-file status drift.)
 | C | C.01 (removed incorrect `:11` cross-ref, added doc line range + re-export anchor), C.07 (`gather()` `:266-288` → `:267-288`; 15 tests enumerated; 5456 relabeled as `add` not `query`, 7085 relabeled as `skill_library`, 12927 relabeled as `update_entries`), C.08 (builder method ranges `:253-256`/`:260-263`), C.09 (contrarian block `:387-438`, main loop `:440-499`), C.10 (`PadState` `:148-159` not `:147-181`; `affect_bias` `:1224-1258`), C.11 (orchestrate.rs:7085 caller added) |
 | D | D.10 (`DreamCycle::consolidate` → `DreamCycle::run_budgeted` at `:398-430`; `DreamCycleReport` fields `:67-79`; `review_insights_from_heuristics` at `:2044-2047`; orchestrate trigger at `:5322`) |
 | E | E.02 (test range `:2315-2389` → `:2313-2386` with named tests), E.14 (added `WITNESS_TOPIC` constant anchor + specific test names), E.05 (`PadState` `:146-159` → `:148-159`, added live-PAD wiring at `orchestrate.rs:12871-12873`) |
-| F | F.01 (`impl NeuroStore for KnowledgeStore` `:595-609` → `:590-610`), F.05 (`CLAUDE.md :103,114` → `:134` single line with exact quote), F.06 (`effective_candidate_bid` `:592-` → `:621-630`; Engram tag span `:411-422` → `:411-451`) |
+| F | F.01 (`impl NeuroStore for KnowledgeStore` `:595-609` → `:590-610`), F.05 (`CLAUDE.md :103,114` → `:134` single line with exact quote), F.06 (`effective_candidate_bid` `:592-` → `:621-630`; Signal tag span `:411-422` → `:411-451`) |
 | SOURCE-INDEX | `effective_candidate_bid` `prompt.rs:592-` → `:621-632` (drift of +29 lines) |
 
 ### Field drift corrected
@@ -195,7 +195,7 @@ anchors, test names, and grep outputs:
 - **C**: C.07 (15 test hits enumerated, orchestrate.rs call sites categorized), C.01 (+re-export anchor), C.08 (+full const inventory), C.09 (+winner re-sort + SelectionMode detail), C.10 (`apply_somatic_bias` is module-level `pub fn`, not a method).
 - **D**: D.08 (+model-scope field callout + `applies_to_model`), D.09 (+call-site context, signature drift Fix sketch, X-ref to D.14), D.10 (+`DreamCycleReport`, `review_insights_from_heuristics`, orchestrate trigger; X-ref to D.11–D.14).
 - **E**: E.02 (+clamp line refs + 3 test anchors), E.05 (+each bias formula's specific line + upstream orchestrate.rs wiring), E.06 (corrected `context.rs:798` misattribution; disambiguated 5 `0.15` literals), E.14 (+`WITNESS_TOPIC`, named both tests).
-- **F**: F.01 (+NeuroStore method list + half-life constants), F.05 (refined CLAUDE.md reference to `:134` with quoted line), F.06 (expanded Engram tag enumeration to 7 tags), F.08 (+file size + fn line ranges), F.02 (+`zeros` / `random`).
+- **F**: F.01 (+NeuroStore method list + half-life constants), F.05 (refined CLAUDE.md reference to `:134` with quoted line), F.06 (expanded Signal tag enumeration to 7 tags), F.08 (+file size + fn line ranges), F.02 (+`zeros` / `random`).
 
 ---
 

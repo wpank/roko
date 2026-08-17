@@ -1,8 +1,8 @@
 [meta]
 plan = "E34-security-ifc"
 total = 8
-done = 0
-status = "ready"
+done = 8
+status = "done"
 max_parallel = 2
 
 # ─────────────────────────────────────────────────────────────────────
@@ -11,27 +11,28 @@ max_parallel = 2
 
 [[task]]
 id = "E34-T01"
-title = "Add TaintLevel lattice enum and monotonic propagation rules"
+title = "Add trust-origin taint lattice and monotonic propagation rules"
 description = """
 Formalize the taint lattice IFC from docs/v2/16-SECURITY.md SS2.
 
-The existing provenance.rs has a `Taint` enum (9 variants: Clean, LlmHallucination,
-ToolFailure, UserFlagged, StaleData, UnverifiedSource, Propagated, UserInput, Custom)
-and a `Provenance` struct with a `trust: f32` field. The spec requires a discrete
-4-level lattice that sits alongside these:
+The existing provenance model already uses `TaintLevel` for the orthogonal data-
+classification lattice (Public/Internal/Confidential/Secret), so the trust-origin
+contract must not redefine or conflate that public type. Reuse the canonical
+`CamelTaintLevel` origin lattice through the explicit compatibility name
+`TrustOriginTaintLevel`:
 
-  - TaintLevel enum: Trusted (0), Local (1), External (2), Untrusted (3)
-  - Implement PartialOrd based on lattice ordering (Trusted < Local < External < Untrusted)
-  - TaintLevel::join(a, b) -> TaintLevel — returns the higher (more restrictive) of two
-  - TaintLevel::can_flow_to(from, to) -> bool — true only if from <= to (monotonic)
-  - Add a `taint_level: TaintLevel` field to the existing Provenance struct
-  - Signal::effective_taint() — combines the Taint variant + TaintLevel into a trust decision
+  - Trusted (0), Local (1), External (2), Untrusted (3)
+  - PartialOrd ordering: Trusted < Local < External < Untrusted
+  - join(a, b) returns the higher (less-trusted) origin
+  - can_flow_to(from, to) is true only when from <= to (monotonic)
+  - Add a backward-compatible `trust_origin` field to Provenance
+  - Signal::effective_taint() combines the Taint reason and trust origin
 
 The lattice maps naturally to the existing trust scores: Trusted=1.0, Local=0.75,
 External=0.1, Untrusted=0.0.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-core/src/provenance.rs"]
 depends_on = []
@@ -43,27 +44,25 @@ read_files = [
   { path = "crates/roko-core/src/provenance.rs", lines = "257-293", why = "Provenance struct with trust:f32 and taint:Taint fields" },
   { path = "crates/roko-core/src/provenance.rs", lines = "294-413", why = "Provenance impl: trusted(), agent(), external(), user() constructors" },
   { path = "docs/v2/16-SECURITY.md", lines = "1-100", why = "IFC taint lattice spec: 4 levels, monotonic flow, join semantics" },
-  { path = "crates/roko-orchestrator/src/safety/taint_propagation.rs", lines = "1-80", why = "TaintTracker and TaintReason — existing runtime propagation" },
 ]
 symbols = [
   "Taint — provenance.rs:24, enum with 9 variants (Clean, LlmHallucination, ToolFailure, UserFlagged, StaleData, UnverifiedSource, Propagated, UserInput, Custom)",
   "Provenance — provenance.rs:264, struct { author, trust:f32, taint:Taint, taint_info, session }",
   "Provenance::trusted() — provenance.rs:297, constructor with trust=1.0",
   "Provenance::external() — provenance.rs:321, constructor with trust=0.1",
-  "TaintTracker — taint_propagation.rs, existing runtime taint tracker to integrate with",
-  "TaintReason — taint_propagation.rs, existing reason enum",
 ]
 anti_patterns = [
   "Do NOT break existing Taint variants — add TaintLevel as a separate enum alongside",
-  "Do NOT allow downward taint flow — lattice is strictly monotonic (from <= to only)",
+  "Do NOT allow downward trust-origin flow — lattice is strictly monotonic (from <= to only)",
+  "Do NOT redefine the established classification TaintLevel — use TrustOriginTaintLevel",
   "Do NOT change Provenance::trusted()/agent()/external()/user() signatures — add with_taint_level() builder",
   "Do NOT remove the trust:f32 field — TaintLevel is complementary, not a replacement",
 ]
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'pub enum TaintLevel' crates/roko-core/src/provenance.rs"
-fail_msg = "TaintLevel enum must be defined in provenance.rs"
+command = "grep -q 'TrustOriginTaintLevel' crates/roko-core/src/provenance.rs && grep -q 'CamelTaintLevel' crates/roko-core/src/provenance.rs"
+fail_msg = "TrustOriginTaintLevel must expose the canonical CamelTaintLevel origin lattice"
 
 [[task.verify]]
 phase = "structural"
@@ -72,8 +71,8 @@ fail_msg = "Monotonic flow enforcement (can_flow_to) and join must exist"
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'taint_level' crates/roko-core/src/provenance.rs"
-fail_msg = "Provenance must have a taint_level field"
+command = "grep -q 'trust_origin' crates/roko-core/src/provenance.rs"
+fail_msg = "Provenance must have a backward-compatible trust_origin field"
 
 [[task.verify]]
 phase = "compile"
@@ -93,7 +92,8 @@ fail_msg = "Provenance tests must pass"
 id = "E34-T02"
 title = "Upgrade TaintTracker to use TaintLevel lattice for propagation"
 description = """
-Upgrade the existing TaintTracker in roko-orchestrator to be lattice-aware.
+Create the lattice-aware TaintTracker under roko-agent's current safety owner. The
+former roko-orchestrator implementation target was deleted by E12-T07.
 
 The current TaintTracker uses ContentHash -> (TaintReason, detail) mappings. The
 spec requires lattice-level tracking:
@@ -109,48 +109,47 @@ spec requires lattice-level tracking:
 This connects the roko-core lattice (T01) to the runtime propagation engine.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
-files = ["crates/roko-orchestrator/src/safety/taint_propagation.rs"]
+files = ["crates/roko-agent/src/safety/taint_propagation.rs", "crates/roko-agent/src/safety/mod.rs"]
 depends_on = ["E34-T01"]
 max_loc = 60
 
 [task.context]
 read_files = [
-  { path = "crates/roko-orchestrator/src/safety/taint_propagation.rs", lines = "1-80", why = "Current TaintTracker: HashMap<ContentHash, (TaintReason, String)>" },
   { path = "crates/roko-core/src/provenance.rs", lines = "1-67", why = "TaintLevel enum from T01 — the lattice type to integrate" },
   { path = "crates/roko-core/src/provenance.rs", lines = "257-293", why = "Provenance struct with taint_level field from T01" },
+  { path = "crates/roko-agent/src/safety/mod.rs", lines = "1-80", why = "Current safety module owner and export structure" },
 ]
 symbols = [
-  "TaintTracker — taint_propagation.rs, HashMap-based tracker with mark_tainted/propagate/is_tainted",
-  "TaintReason — taint_propagation.rs, enum (ExternalSource, UserInput, ToolFailure, Propagated, Stale, Custom)",
+  "TaintTracker — new HashMap-based tracker with mark_tainted/propagate/is_tainted",
+  "TaintReason — new reason enum (ExternalSource, UserInput, ToolFailure, Propagated, Stale, Custom)",
   "TaintLevel — provenance.rs (from T01), 4-level lattice enum",
   "TaintLevel::join — provenance.rs (from T01), computes max of two levels",
 ]
 anti_patterns = [
   "Do NOT remove existing TaintReason — add TaintLevel as an additional dimension",
-  "Do NOT break existing mark_tainted/propagate/is_tainted signatures — extend with new overloads",
   "Do NOT make propagation async — keep it synchronous",
 ]
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'TaintLevel' crates/roko-orchestrator/src/safety/taint_propagation.rs"
+command = "grep -q 'TaintLevel' crates/roko-agent/src/safety/taint_propagation.rs"
 fail_msg = "TaintTracker must use TaintLevel"
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'fn get_level' crates/roko-orchestrator/src/safety/taint_propagation.rs"
+command = "grep -q 'fn get_level' crates/roko-agent/src/safety/taint_propagation.rs"
 fail_msg = "get_level query method must exist"
 
 [[task.verify]]
 phase = "compile"
-command = "cargo check -p roko-orchestrator 2>&1"
-fail_msg = "roko-orchestrator must compile"
+command = "cargo check -p roko-agent 2>&1"
+fail_msg = "roko-agent must compile"
 
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-orchestrator taint 2>&1"
+command = "cargo test -p roko-agent taint 2>&1"
 fail_msg = "Taint propagation tests must pass"
 
 # ─────────────────────────────────────────────────────────────────────
@@ -181,7 +180,7 @@ Each stage is a function taking the previous stage's output. The pipeline is
 synchronous and pure — no IO, no async.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-core/src/immune.rs"]
 depends_on = ["E34-T01"]
@@ -259,7 +258,7 @@ Place in a new `crates/roko-core/src/corrigibility.rs` module. Add `pub mod corr
 to lib.rs. The evaluator is a pure function — no IO, no async.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-core/src/corrigibility.rs", "crates/roko-core/src/lib.rs"]
 depends_on = []
@@ -315,11 +314,12 @@ fail_msg = "Corrigibility tests must pass"
 id = "E34-T05"
 title = "Add 5 sandbox enforcement levels with capability intersection"
 description = """
-Extend the existing SandboxPolicy in roko-orchestrator to support 5 levels
-from docs/v2/16-SECURITY.md SS5.
+Provide the 5 enforcement levels from docs/v2/16-SECURITY.md SS5 in the
+canonical live safety owner. The original roko-orchestrator target was removed
+by E12; the accepted implementation is roko-agent/src/safety/sandbox.rs.
 
-The existing sandboxing.rs has SandboxPolicy (path allowlists, command denylist)
-and SandboxEnforcer (validates path/command access). Add:
+The live SandboxPolicy combines the configured level with path, network,
+resource, environment, and audit behavior:
 
   - SandboxLevel enum with 5 levels:
     - Level 0 (None): no sandbox, full trust — all policies empty/permissive
@@ -329,57 +329,56 @@ and SandboxEnforcer (validates path/command access). Add:
     - Level 3 (Isolate): network denied, filesystem read-only except worktree
     - Level 4 (Quarantine): no filesystem, no network, no env, memory-only
   - SandboxLevel::effective_policy() -> SandboxPolicy — returns pre-configured policy
-  - Map from PluginTier (crates/roko-agent/src/safety/capabilities.rs) to max
-    SandboxLevel: PluginTier::Core -> Level 0, Trusted -> Level 1,
-    Community -> Level 2, Untrusted -> Level 4
+  - Map the canonical five PluginTier values (Kernel, Trusted, Standard,
+    Sandboxed, Untrusted) monotonically onto levels 0 through 4
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
-files = ["crates/roko-orchestrator/src/safety/sandboxing.rs"]
+files = ["crates/roko-agent/src/safety/sandbox.rs"]
 depends_on = []
 max_loc = 80
 
 [task.context]
 read_files = [
-  { path = "crates/roko-orchestrator/src/safety/sandboxing.rs", lines = "1-80", why = "SandboxPolicy struct (path allowlists, command denylist) and SandboxEnforcer" },
+  { path = "crates/roko-agent/src/safety/sandbox.rs", lines = "1-110", why = "Relocated live SandboxLevel, effective SandboxPolicy, and PluginTier mapping" },
   { path = "crates/roko-agent/src/safety/capabilities.rs", lines = "1-50", why = "PluginTier enum (Core, Trusted, Community, Untrusted) for trust tier mapping" },
   { path = "docs/v2/16-SECURITY.md", lines = "350-450", why = "Sandbox levels spec: 5 tiers with increasing restriction" },
 ]
 symbols = [
-  "SandboxPolicy — sandboxing.rs, struct with path allowlists and command denylist",
-  "SandboxEnforcer — sandboxing.rs, validates access against policy",
-  "PluginTier — capabilities.rs, enum Core/Trusted/Community/Untrusted with capability implications",
+  "SandboxPolicy — sandbox.rs, live declarative path/network/resource/environment policy",
+  "SandboxLevel — sandbox.rs, exact None/Observe/Restrict/Isolate/Quarantine ordering",
+  "PluginTier — roko-core plugin model, canonical Kernel/Trusted/Standard/Sandboxed/Untrusted ordering",
 ]
 anti_patterns = [
   "Do NOT break existing SandboxPolicy API — add SandboxLevel alongside it",
   "Do NOT allow Level 4 (Quarantine) to have any filesystem access whatsoever",
-  "Do NOT import roko-agent into roko-orchestrator — use string-based tier names or define mapping in orchestrator",
+  "Do NOT recreate the removed roko-orchestrator safety island — roko-agent is the live enforcement owner",
 ]
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'pub enum SandboxLevel' crates/roko-orchestrator/src/safety/sandboxing.rs"
+command = "grep -q 'pub enum SandboxLevel' crates/roko-agent/src/safety/sandbox.rs"
 fail_msg = "SandboxLevel enum must be defined"
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'Quarantine\\|Isolate' crates/roko-orchestrator/src/safety/sandboxing.rs"
+command = "grep -q 'Quarantine\\|Isolate' crates/roko-agent/src/safety/sandbox.rs"
 fail_msg = "All sandbox levels including Quarantine and Isolate must be defined"
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'fn effective_policy' crates/roko-orchestrator/src/safety/sandboxing.rs"
+command = "grep -q 'fn effective_policy' crates/roko-agent/src/safety/sandbox.rs"
 fail_msg = "effective_policy() method must exist on SandboxLevel"
 
 [[task.verify]]
 phase = "compile"
-command = "cargo check -p roko-orchestrator 2>&1"
-fail_msg = "roko-orchestrator must compile"
+command = "cargo check -p roko-agent 2>&1"
+fail_msg = "roko-agent must compile"
 
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-orchestrator sandboxing 2>&1"
+command = "cargo test -p roko-agent safety::sandbox 2>&1"
 fail_msg = "Sandboxing tests must pass"
 
 # ─────────────────────────────────────────────────────────────────────
@@ -406,7 +405,7 @@ Place in a new `crates/roko-core/src/capabilities.rs` module. Add `pub mod capab
 to lib.rs. Intersection is computed once at load time and cached.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-core/src/capabilities.rs", "crates/roko-core/src/lib.rs"]
 depends_on = []
@@ -481,7 +480,7 @@ The save/load methods enable persistence across restarts. Use serde_json for
 serialization. QuarantineVault needs #[derive(Serialize, Deserialize)] on all fields.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-core/src/immune.rs"]
 depends_on = ["E34-T03"]
@@ -562,7 +561,7 @@ and contract.rs (AgentContract with BUNDLED_CONTRACTS, tool allowlists). Wire:
 Do NOT break existing hook chain — add new hooks alongside existing ones.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-agent/src/safety/hooks.rs", "crates/roko-agent/src/safety/contract.rs"]
 depends_on = ["E34-T01", "E34-T02", "E34-T04"]

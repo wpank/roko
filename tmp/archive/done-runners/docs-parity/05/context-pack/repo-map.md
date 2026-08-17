@@ -24,7 +24,7 @@ Quick reference for agents working on `05` learning parity.
 | Metrics and health | `crates/roko-learn/src/efficiency.rs`, `regression.rs`, `cost_table.rs`, `provider_health.rs`, `latency.rs` | proves metrics, cost normalization, and health surfaces are not speculative |
 | Learned guidance | `crates/roko-learn/src/playbook.rs`, `playbook_rules.rs`, `skill_library.rs` | shipped learning artifacts that docs must describe accurately |
 | Knowledge tiers | `crates/roko-neuro/src/tier_progression.rs`, `knowledge_store.rs` | proves tier progression already exists outside `roko-learn` |
-| HDC bridge primitives | `crates/roko-primitives/src/hdc.rs`, `crates/roko-neuro/src/hdc.rs` | supports the carry-forward case for an `Engram` fingerprint field |
+| HDC bridge primitives | `crates/roko-primitives/src/hdc.rs`, `crates/roko-neuro/src/hdc.rs` | supports the carry-forward case for an `Signal` fingerprint field |
 | Learning docs and audit | `docs/05-learning/`, `tmp/refinements-audit/02-learning-audit.md` | source of truth for parity corrections |
 | Parity materials | `tmp/docs-parity/05/` | files being refreshed in this batch |
 

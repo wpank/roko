@@ -28,7 +28,7 @@ Implement the four-stage triage Pipeline that processes chain events after they 
    grep -rn 'pub trait Compose' crates/roko-core/src/traits.rs
    grep -rn 'pub trait Observe' crates/roko-core/src/traits.rs
    ```
-   **Expected**: `Cell` at `cell.rs:14`. `Score` at `traits.rs:167` (sync: `score(&Engram, &Context) -> ScoreValue`). `Compose` at `traits.rs:285` (sync: `compose(&[Engram], &Budget, &dyn Score, &Context) -> Result<Engram>`). `Observe` at `traits.rs:400` (supertrait of Cell, sync: `observe() -> Vec<Engram>`).
+   **Expected**: `Cell` at `cell.rs:14`. `Score` at `traits.rs:167` (sync: `score(&Signal, &Context) -> ScoreValue`). `Compose` at `traits.rs:285` (sync: `compose(&[Signal], &Budget, &dyn Score, &Context) -> Result<Signal>`). `Observe` at `traits.rs:400` (supertrait of Cell, sync: `observe() -> Vec<Signal>`).
 
 3. Create `crates/roko-chain/src/triage_pipeline.rs`:
 
@@ -38,7 +38,7 @@ Implement the four-stage triage Pipeline that processes chain events after they 
    use roko_core::cell::{Cell, CellId};
    use roko_core::score::Score as ScoreValue;
    use roko_core::traits::Score;
-   use roko_core::{Context, Engram};
+   use roko_core::{Context, Signal};
 
    /// Classification of a chain event based on method selector or log topic.
    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

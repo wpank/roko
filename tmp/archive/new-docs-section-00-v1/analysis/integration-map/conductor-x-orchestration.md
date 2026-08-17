@@ -26,7 +26,7 @@ tags: [conductor, orchestration, circuit-breaker, health-monitoring, wired]
 
 1. Circuit breaker state transitions are idempotent — multiple concurrent reads return consistent state.
 2. `ConductorPolicy` is a `Policy` trait impl — it participates in the standard pipeline.
-3. Conductor decisions are logged as `Kind::Intervention` Engrams for the learning subsystem.
+3. Conductor decisions are logged as `Kind::Intervention` Signals for the learning subsystem.
 4. The Conductor does not modify plan state directly — it emits signals that the orchestrator acts on.
 
 ## Enhancement Opportunities

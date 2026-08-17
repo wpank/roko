@@ -101,7 +101,7 @@ Phase C is the subsystem migration portion of the **Q1 Foundation** milestone. T
 
 1. **Migration churn** if several subsystems try to change their transport shapes simultaneously. Mitigation: strict serial order within Phase C; no subsystem starts migrating until the previous one's shims are removed.
 2. **Backend schema drift** if two subsystems converge on incompatible topic naming conventions. Mitigation: a topic naming spec (part of Phase A docs deliverables) enforced before any subsystem migration begins.
-3. **Regression in graduation policy** — a Pulse that should have been graduated to Engram isn't. Mitigation: property tests for the graduation path added in Phase B.
+3. **Regression in graduation policy** — a Pulse that should have been graduated to Signal isn't. Mitigation: property tests for the graduation path added in Phase B.
 
 ---
 

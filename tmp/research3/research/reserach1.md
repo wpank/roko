@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a deep research report on the ISFR benchmark business strategy.
+> It is reference material for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # ISFR as a benchmark business: narrow-first, regulated, agent-native
 
 ## Executive summary

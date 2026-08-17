@@ -35,7 +35,7 @@ The audit found these specific issues:
 1. **Plugin SPI (REF17)**: Tiers 1-3 (TOML manifests, prompt packs, declarative
    tools) are reasonable but unbuilt. Tiers 4-5 (C-FFI ABI bridge, WASM
    runtime with 7 host imports) are premature -- no third-party code execution
-   need exists. The WASM host surface references types (`Pulse`, `Engram`
+   need exists. The WASM host surface references types (`Pulse`, `Signal`
    graduation, `substrate_query_similar`) that do not exist in code.
 
 2. **Plugin registry (`plugins.roko.dev`)**: Aspirational infrastructure for a
@@ -86,7 +86,7 @@ In `docs/20-technical-analysis/00-vision-ta-generalized.md`:
 - If this doc makes moat claims based on the interaction density of 10
   primitives, add a callout:
   `> **Reality check**: Of the 10 primitives cited as moat components, 2 exist
-  > fully (Engram, Substrate), 2 partially (HDC, c-factor), and 6 are
+  > fully (Signal, Substrate), 2 partially (HDC, c-factor), and 6 are
   > unimplemented (Pulse, Bus trait, Demurrage, Heuristic commons, Replication
   > ledger, Plugin SPI). The moat framing is aspirational.`
 

@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This file is reference material for pitch/strategy planning (condensed deck outline),
+> not an implementation plan.
+>
+> Last updated: 2026-08-13
+
 # **Nunchi deck — condensed outline (11 slides, from 20\)**
 
 **Goal:** lead-investor-readable in 5 minutes. Every slide pulls weight. Move synthesis up. Cut redundancy. **Two narratives, one substrate** — Article 50 / agent coordination is the beachhead, ISFR / agent-native finance is the expansion. Both get airtime.  

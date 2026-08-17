@@ -1,8 +1,8 @@
 [meta]
 plan = "E43-deployment-portability"
 total = 8
-done = 0
-status = "ready"
+done = 8
+status = "done"
 max_parallel = 1
 
 # ─── T01: Brain export — portable agent knowledge via JSONL backup ───
@@ -27,7 +27,7 @@ version and applies a confidence discount. What is MISSING per spec:
    contain "secret" or "api_key".
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-neuro/src/knowledge_store.rs"]
 depends_on = []
@@ -88,7 +88,7 @@ discount and resets tier to Transient. What is MISSING per spec:
 5. **Import summary log** — log: entries_imported, entries_skipped_dedup, entries_skipped_contradiction.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-neuro/src/knowledge_store.rs"]
 depends_on = ["E43-T01"]
@@ -151,7 +151,7 @@ at :557. The launchd and systemd submodules exist (declared at :32-36). Verify t
    exists but process is dead.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-cli/src/daemon.rs"]
 depends_on = []
@@ -209,7 +209,7 @@ description = """
    health response latency ms. Wire into the existing DaemonStatus display at :288-295.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-cli/src/daemon.rs"]
 depends_on = ["E43-T03"]
@@ -262,7 +262,7 @@ The daemon redirects stdout/stderr to a log file. Add rotation:
    `--lines N` (default 50) that tails the daemon log. Use tokio::fs for async read.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-cli/src/daemon.rs"]
 depends_on = ["E43-T03"]
@@ -312,7 +312,7 @@ Add `roko config secrets rotate <key>` that:
    key_name, rotated_at, rotated_by (user from env). Do NOT log the secret value.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-cli/src/commands/server.rs"]
 depends_on = []
@@ -371,7 +371,7 @@ Solo/Team/Production tier. Wire into `roko doctor` and `roko status` output.
 5. **Advisory only** — do NOT enforce tier. Just recommend and explain why.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-cli/src/status.rs"]
 depends_on = []
@@ -419,7 +419,7 @@ Create deployment artifacts for containerized roko-serve:
    matching roko.toml server.port.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["Dockerfile", "railway.toml", "crates/roko-cli/src/commands/util.rs"]
 depends_on = []

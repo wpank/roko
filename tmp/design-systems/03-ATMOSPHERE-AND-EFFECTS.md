@@ -1,6 +1,17 @@
 # Atmosphere, Effects & Advanced Visual Systems
 
-Use this document for the deeper visual effects layer — procedural avatars, crystallization animations, atmospheric layering, ambient motion, and the hauntological/consciousness-driven visual language.
+> **What is this?** The advanced effects layer of the ROSEDUST design system. Covers
+> procedural Spectre avatars, crystallization reward animations, glitch overlays,
+> phosphor decay, slot-machine transitions, progressive intensity, and event-driven
+> animation mapping. Use this when building richer interactive experiences beyond
+> standard product pages.
+>
+> **Adoption status (2026-08-13):** Partially adopted. The atmospheric CSS layers
+> (grain, scanlines, vignette) and component patterns are actively used in demo-app.
+> Spectre avatar rendering and crystallization effects are specified but not yet
+> fully implemented in the shipped app.
+
+Use this document for the deeper visual effects layer -- procedural avatars, crystallization animations, atmospheric layering, ambient motion, and the hauntological/consciousness-driven visual language.
 
 ---
 
@@ -519,3 +530,7 @@ Full CLI demo with realistic terminal chrome:
 - No "Welcome, User!" headers
 - No grid lines in charts beyond axis scales
 - No border-radius (ROSEDUST uses sharp corners)
+
+---
+
+*Last updated: 2026-08-13*

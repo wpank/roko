@@ -21,7 +21,7 @@ L4 Orchestration is the topmost layer of the Roko five-layer architecture. It is
 the control plane that coordinates multiple agents working on multiple plans
 simultaneously. Everything below L4 — the L3 Harness (agent pools, MCP,
 safety), L2 Scaffold (prompt assembly, gate pipeline), L1 Framework (Synapse
-traits, Engram types), and L0 Runtime (file substrate, cancellation, event
+traits, Signal types), and L0 Runtime (file substrate, cancellation, event
 bus) — provides building blocks. L4 composes them into a self-hosting
 development loop.
 
@@ -48,7 +48,7 @@ below it:
 | **L4** | **Orchestration** | Plan DAGs, parallel execution, merge serialization, crash recovery, replan | `roko-orchestrator` + `roko-cli` |
 | L3 | Harness | Agent pools, MCP integration, safety layer, tool dispatch | `roko-agent` + `bardo-runtime` |
 | L2 | Scaffold | Prompt assembly, gate pipeline, adaptive thresholds, system prompt builder | `roko-compose` + `roko-gate` |
-| L1 | Framework | Synapse traits (Substrate, Scorer, Gate, Router, Composer, Policy), Engram types, config schema | `roko-core` |
+| L1 | Framework | Synapse traits (Substrate, Scorer, Gate, Router, Composer, Policy), Signal types, config schema | `roko-core` |
 | L0 | Runtime | File substrate (JSONL), cancellation tokens, event bus, observability sinks | `roko-fs` + `bardo-runtime` |
 
 L4 is the only layer that knows about plans, tasks, DAGs, worktrees, and the
@@ -78,7 +78,7 @@ can be replaced or extended without affecting the framework.
 
 Three cognitive cross-cuts span all five layers:
 
-1. **Neuro** — knowledge store, Engram decay, tier management
+1. **Neuro** — knowledge store, Signal decay, tier management
 2. **Daimon** — PAD affect vector, behavioral state modulation
 3. **Dreams** — idle-time consolidation, NREM replay, REM imagination
 
@@ -2520,7 +2520,7 @@ process supervisor, the conductor, and the MCP server state.
 | Field | Type | Purpose |
 |-------|------|---------|
 | `conductor` | `Arc<Conductor>` | Anomaly detection, watchers |
-| `conductor_signals` | `Vec<Engram>` | Engrams for conductor evaluation |
+| `conductor_signals` | `Vec<Engram (renamed to Signal in 2026-08-12)>` | Signals for conductor evaluation |
 | `metrics` | `Arc<MetricRegistry>` | Prometheus-style counters/histograms |
 | `health_probes` | `ProbeRegistry` | Readiness/liveness probes |
 | `obs_sinks` | `FsObservabilitySinks` | File-backed traces and metrics |
@@ -4462,7 +4462,7 @@ crash recovery.
 The hash-chained event log is the orchestrator's implementation of the
 Forensic AI innovation described in `refactoring-prd/09-innovations.md`:
 
-> Content-addressed causal replay — every Engram and every decision carries a
+> Content-addressed causal replay — every Signal and every decision carries a
 > content hash, forming a Merkle DAG from raw observation to final action.
 > Regulators, auditors, or the agent itself can replay the exact causal chain
 > that led to any outcome.
@@ -5027,7 +5027,7 @@ Colony Optimization (Dorigo & Gambardella 1997):
 |-------------|-----------------|
 | Ant colony | Agent collective |
 | Pheromone trail | Commit history, signal log, skill library |
-| Pheromone evaporation | Signal decay, Ebbinghaus forgetting, Engram half-life |
+| Pheromone evaporation | Signal decay, Ebbinghaus forgetting, Signal half-life |
 | Trail reinforcement | Skill extraction from successful tasks |
 | Solution construction | Code changes accumulated across tasks |
 | Colony convergence | Codebase convergence toward passing all gates |
@@ -6130,13 +6130,13 @@ optimal performance.
 | Grimoire | Neuro | Knowledge store |
 | Styx | Agent Mesh | P2P communication |
 | Clade | Collective / Mesh | Agent group |
-| Signal | Engram | Content-addressed cognition unit |
+| Signal | Signal | Content-addressed cognition unit |
 | GNOS | KORAI / DAEJI | Token names |
 | Fleet | Collective | Agent group (corrected from earlier error) |
 
-> Note: The active Rust codebase now uses `Engram` as the type name too. Older
+> Note: The active Rust codebase now uses `Signal` as the type name too. Older
 > docs or historical code samples that mention `Signal` refer to the same
-> content-addressed cognition unit and should be read as `Engram`.
+> content-addressed cognition unit and should be read as `Signal`.
 
 
 ---
@@ -6159,19 +6159,19 @@ optimal performance.
 ## Why Agents Are Separate from the Six Synapse Traits
 
 Roko's core architecture is built on six composable verb traits — the
-**Synapse traits** — that process Engrams:
+**Synapse traits** — that process Signals:
 
 | Trait | Verb | Signature shape |
 |---|---|---|
-| Substrate | store / retrieve | `fn query(&self, …) → Vec<Engram>` |
+| Substrate | store / retrieve | `fn query(&self, …) → Vec<Signal>` |
 | Scorer | evaluate | `fn score(&self, signal) → f64` |
 | Gate | accept / reject | `fn check(&self, signal) → Verdict` |
 | Router | direct | `fn route(&self, signal) → Destination` |
-| Composer | assemble | `fn compose(&self, engrams) → Engram` |
+| Composer | assemble | `fn compose(&self, signals) → Signal` |
 | Policy | decide | `fn decide(&self, …) → Action` |
 
 These traits share four properties: they are **synchronous**, **deterministic**
-(given fixed inputs), **side-effect-free**, and they process **single Engrams**
+(given fixed inputs), **side-effect-free**, and they process **single Signals**
 at a time.
 
 An **Agent** violates all four:
@@ -6238,8 +6238,8 @@ pub trait Agent: Send + Sync {
 
 - **`Send + Sync`** — Required because the orchestrator runs agents across
   `tokio` tasks. Every concrete implementation must be thread-safe.
-- **`&Engram` input** — The input is borrowed, not consumed. This allows the
-  orchestrator to keep the original prompt engram for logging and DAG lineage
+- **`&Signal` input** — The input is borrowed, not consumed. This allows the
+  orchestrator to keep the original prompt signal for logging and DAG lineage
   while the agent works with a reference.
 - **`&Context` context** — The `Context` carries a timestamp and potentially
   other runtime metadata. It provides a clean injection point for contextual
@@ -6296,7 +6296,7 @@ impl AgentResult {
 ```
 
 The `all_engrams()` method returns `trace` followed by `output` — the
-chronological order matters for episode logging, where each engram becomes a
+chronological order matters for episode logging, where each signal becomes a
 row in `.roko/episodes.jsonl`.
 
 ### Usage tracking
@@ -6697,7 +6697,7 @@ sends messages, and creates new actors — with no shared state.
 | Actor model concept | Roko equivalent |
 |---|---|
 | Actor | `Box<dyn Agent>` |
-| Message | `Signal` (Engram) |
+| Message | `Signal` (Signal) |
 | Behavior | `AgentRole` + system prompt |
 | Supervision tree | `PlanRunner` + `ProcessSupervisor` |
 | Let-it-crash | Gate pipeline: fail → retry with fallback model |
@@ -6869,7 +6869,7 @@ capability warrant chain (OCaps), never bypass the supervision hierarchy.
 9. Tenuo (2025). tenuo.dev — Cryptographic capability warrants for AI agents.
 10. Shinn, N. et al. (2023). "Reflexion: Language Agents with Verbal
     Reinforcement Learning." NeurIPS 2023. — Self-reflection pattern.
-11. Refactoring PRD §01-synapse-architecture — Engram struct and 6 Synapse trait
+11. Refactoring PRD §01-synapse-architecture — Signal struct and 6 Synapse trait
     definitions.
 12. Refactoring PRD §05-agent-types — Agent role compositions and extensibility.
 13. `crates/roko-agent/src/agent.rs` — Agent trait and AgentResult source.
@@ -13033,7 +13033,7 @@ install a profile, get a domain-shaped agent stack.
 
 | Source | What it covers |
 |---|---|
-| Refactoring PRD §01 | Synapse architecture, Engram, 6 traits, universal loop |
+| Refactoring PRD §01 | Synapse architecture, Signal, 6 traits, universal loop |
 | Refactoring PRD §02 | Five layers, dual-process tier router, temperament |
 | Refactoring PRD §05 | Agent types, role compositions, extensibility |
 | Refactoring PRD §07 | Implementation priorities, tier 0/1/2 task list |
@@ -13130,7 +13130,7 @@ install a profile, get a domain-shaped agent stack.
 | Golem (legacy) | Agent | Agent subsystem |
 | Mori (legacy) | Roko Orchestrator | CLI/runtime |
 | Grimoire (legacy) | Neuro | Knowledge system |
-| Signal (legacy) | Engram | Content-addressed unit (rename Tier 0D) |
+| Signal (legacy) | Signal | Content-addressed unit (rename Tier 0D) |
 | Clade (legacy) | Collective / Mesh | Multi-agent groups |
 | GNOS | KORAI / DAEJI | Metrics systems |
 
@@ -13169,7 +13169,7 @@ install a profile, get a domain-shaped agent stack.
 
 ## Abstract
 
-The Composer trait is one of the six composable verb traits in the Synapse Architecture. It defines the contract for assembling scored, budgeted context into a single coherent prompt engram. Unlike the other five traits (Substrate, Scorer, Gate, Router, Policy), the Composer explicitly receives a `Scorer` reference at call time, making scoring an input to composition rather than a separate upstream phase. This design ensures that composition is always scoring-aware: the composer can re-score, re-rank, and re-prioritize engrams during assembly, not just consume a pre-ranked list.
+The Composer trait is one of the six composable verb traits in the Synapse Architecture. It defines the contract for assembling scored, budgeted context into a single coherent prompt engram. Unlike the other five traits (Substrate, Scorer, Gate, Router, Policy), the Composer explicitly receives a `Scorer` reference at call time, making scoring an input to composition rather than a separate upstream phase. This design ensures that composition is always scoring-aware: the composer can re-score, re-rank, and re-prioritize signals during assembly, not just consume a pre-ranked list.
 
 This document specifies the Composer trait signature, the Budget struct that constrains it, the rationale for the scorer-in-signature design, and how composition fits into the universal cognitive loop.
 
@@ -13197,20 +13197,20 @@ pub trait Composer: Send + Sync {
 
 | Parameter | Type | Purpose |
 |-----------|------|---------|
-| `engrams` | `&[Engram]` | Candidate context units to assemble |
+| `signals` | `&[Signal]` | Candidate context units to assemble |
 | `budget` | `&Budget` | Hard constraints on output size |
 | `scorer` | `&dyn Scorer` | Scoring function for ranking candidates |
 | `ctx` | `&Context` | Ambient context (agent state, task metadata) |
 
-**Returns:** A single `Engram` — the assembled prompt, ready for LLM consumption.
+**Returns:** A single `Signal` — the assembled prompt, ready for LLM consumption.
 
 The trait is `Send + Sync`, allowing composers to be shared across threads in parallel plan execution. It is synchronous — composition is a CPU-bound operation that should never perform I/O. Composers do not read files, do not query databases, and do not call LLMs. They receive pre-gathered candidates and assemble them under budget constraints.
 
 ---
 
-## 2. The Engram: Content-Addressed Unit of Cognition
+## 2. The Signal: Content-Addressed Unit of Cognition
 
-Every input and output of the Composer is an `Engram` — the fundamental data type of the Synapse Architecture. An Engram is a content-addressed, scored, decaying, lineage-tracked unit of cognition:
+Every input and output of the Composer is an `Signal` — the fundamental data type of the Synapse Architecture. An Signal is a content-addressed, scored, decaying, lineage-tracked unit of cognition:
 
 ```rust
 // crates/roko-core/src/agent.rs (canonical PRD spec)
@@ -13240,7 +13240,7 @@ pub struct Score {
 }
 ```
 
-The Composer receives a slice of scored Engrams and produces a single output Engram whose body contains the assembled prompt. The output Engram's lineage field records which input Engrams were included, providing full provenance for every prompt.
+The Composer receives a slice of scored Signals and produces a single output Signal whose body contains the assembled prompt. The output Signal's lineage field records which input Signals were included, providing full provenance for every prompt.
 
 ---
 
@@ -13261,7 +13261,7 @@ pub struct Budget {
 | Field | Purpose | Typical values |
 |-------|---------|---------------|
 | `max_tokens` | Hard cap on estimated token count of output | 4,000 — 24,000 |
-| `max_signals` | Maximum number of engrams to include | 10 — 50 |
+| `max_signals` | Maximum number of signals to include | 10 — 50 |
 | `max_bytes` | Byte-level cap (for binary payloads) | 100KB — 1MB |
 
 The three constraints work as a conjunction: all must be satisfied. The tightest constraint wins. For text prompts, `max_tokens` is typically the binding constraint. Token estimation uses the heuristic of approximately 4 bytes per token (established by empirical measurement across Anthropic and OpenAI tokenizers for English text and source code).
@@ -13286,7 +13286,7 @@ The Composer trait's most distinctive design choice is accepting `&dyn Scorer` a
 
 ### 4.1 Re-scoring During Assembly
 
-Static pre-scoring assumes that relevance is context-independent. It is not. An engram's value depends on what else is in the prompt. If two engrams contain overlapping information, including both wastes budget. If one engram provides definitions that another references, ordering matters. The Composer can re-score engrams during assembly to account for these interactions — marginal value decreases as similar content is already included.
+Static pre-scoring assumes that relevance is context-independent. It is not. An signal's value depends on what else is in the prompt. If two signals contain overlapping information, including both wastes budget. If one signal provides definitions that another references, ordering matters. The Composer can re-score signals during assembly to account for these interactions — marginal value decreases as similar content is already included.
 
 ### 4.2 Scorer as Strategy
 
@@ -13327,7 +13327,7 @@ impl Composer for PromptComposer {
 
 The implementation is detailed in [01-prompt-composer.md](01-prompt-composer.md).
 
-Note: The current codebase uses `Engram` as the canonical type name. The trait semantics are unchanged.
+Note: The current codebase uses `Signal` as the canonical type name. The trait semantics are unchanged.
 
 ---
 
@@ -13346,7 +13346,7 @@ PERCEIVE (Substrate.query)
                             → META-COGNIZE (Daimon.assess)
 ```
 
-The Composer receives the output of the Router (which has selected which engrams to include) and the Scorer (which has ranked them). It assembles these into the final prompt that the Agent will execute against.
+The Composer receives the output of the Router (which has selected which signals to include) and the Scorer (which has ranked them). It assembles these into the final prompt that the Agent will execute against.
 
 In the current wiring (`roko-cli/src/orchestrate.rs`), composition happens via `RoleSystemPromptSpec::compose_with_budget()`, which builds the 7-layer system prompt, applies role-specific budgets, and outputs the assembled prompt string. The PromptComposer is invoked within this pipeline to handle the final budget-fitting and ordering.
 
@@ -13360,7 +13360,7 @@ The Composer operates under several constraints derived from the Synapse Archite
 2. **Deterministic.** The same inputs must produce the same output. This is critical for prompt cache alignment — if composition is non-deterministic, prefix caching fails.
 3. **Budget-respecting.** The output must satisfy all Budget constraints. No exceptions.
 4. **Critical sections survive.** Sections marked as Critical priority are never dropped, only truncated. This ensures that safety instructions, role identity, and task description always appear.
-5. **Lineage-preserving.** The output Engram's lineage must record which inputs were included, enabling provenance tracking and credit assignment.
+5. **Lineage-preserving.** The output Signal's lineage must record which inputs were included, enabling provenance tracking and credit assignment.
 6. **Placement-aware.** The Composer must respect Placement hints (Start/Middle/End) to implement U-shape attention optimization (Liu et al. 2023 [arXiv:2307.03172]).
 
 ---
@@ -13369,10 +13369,10 @@ The Composer operates under several constraints derived from the Synapse Archite
 
 | Trait | Relationship to Composer |
 |-------|-------------------------|
-| **Substrate** | Provides raw engrams from storage/sensors |
-| **Scorer** | Ranks engrams; passed as parameter to Composer |
+| **Substrate** | Provides raw signals from storage/sensors |
+| **Scorer** | Ranks signals; passed as parameter to Composer |
 | **Gate** | Validates composition output (does the prompt meet quality thresholds?) |
-| **Router** | Selects which engrams to include; upstream of Composer |
+| **Router** | Selects which signals to include; upstream of Composer |
 | **Policy** | Decides when to recompose (e.g., after gate failure, trigger re-composition with different scorer) |
 
 The Composer is the convergence point: it receives output from Substrate (candidates), Scorer (rankings), and Router (selection), and produces the input for the Agent (assembled prompt). It is the most downstream trait before execution.
@@ -13387,7 +13387,7 @@ The Composer trait's design draws on several bodies of work:
 
 **CoALA: Cognitive Architectures for Language Agents** [Sumers et al. 2023]. CoALA provides the theoretical framework: cognitive agents have a universal structure (perception, memory, reasoning, action, reflection) with modular memory components. The Composer maps to CoALA's "working memory assembly" phase — constructing the agent's active context from long-term and episodic memory.
 
-**DSPy: Programmatic Prompt Optimization** [Khattab et al. 2023]. DSPy reframed prompting as programming: define modules with typed signatures, compose them into pipelines, and let a compiler optimize prompts automatically against a metric. The Composer trait's typed signature (`engrams × budget × scorer × ctx → engram`) is DSPy-compatible: it defines a composable module that can be optimized against downstream task success.
+**DSPy: Programmatic Prompt Optimization** [Khattab et al. 2023]. DSPy reframed prompting as programming: define modules with typed signatures, compose them into pipelines, and let a compiler optimize prompts automatically against a metric. The Composer trait's typed signature (`signals × budget × scorer × ctx → signal`) is DSPy-compatible: it defines a composable module that can be optimized against downstream task success.
 
 **Modular RAG** [Gao et al. 2023]. The evolution from Naive RAG (retrieve-then-read) through Advanced RAG (query rewriting, re-ranking) to Modular RAG (composable retrieval/generation/augmentation modules). The Composer is the "augmentation" module in Modular RAG — it determines how retrieved content is assembled and presented to the generator.
 
@@ -13405,7 +13405,7 @@ The Composer trait's design draws on several bodies of work:
 | Active inference scoring | **Scaffold** (see E2 in 12a-cognitive-layer.md) |
 | U-shape placement | **Implemented** (Placement enum: Start/Middle/End) |
 | Lineage tracking in output | **Not yet wired** |
-| Signal → Engram rename | **Pending** (Tier 0D) |
+| Signal → Signal rename | **Pending** (Tier 0D) |
 
 ---
 
@@ -13536,7 +13536,7 @@ The PromptComposer's `compose()` method implements a multi-phase assembly:
 
 ### Phase 1: Decode and Score
 
-Candidate engrams are decoded into `PromptSection` structs. Each section is scored by the provided Scorer, which produces a composite score from priority, recency, relevance, and other signals.
+Candidate signals are decoded into `PromptSection` structs. Each section is scored by the provided Scorer, which produces a composite score from priority, recency, relevance, and other signals.
 
 ### Phase 2: Partition
 
@@ -13905,7 +13905,7 @@ This sub-layer is separate from 3a because its content is task-specific, while 3
 
 Active environmental signals that guide agent behavior through stigmergy:
 
-- Recent engrams from the current plan that signal progress or blockers
+- Recent signals from the current plan that signal progress or blockers
 - Inter-agent coordination signals (e.g., "crate X was just modified")
 - Environment state indicators (build status, test results, resource usage)
 
@@ -19355,7 +19355,7 @@ All citations referenced across the 03-composition sub-docs:
 
 | Old Term | New Term | Status in roko-compose |
 |----------|----------|----------------------|
-| Signal | Engram | **Pending** (Tier 0D). Code still uses `Signal`. |
+| Signal | Signal | **Pending** (Tier 0D). Code still uses `Signal`. |
 | Golem | Agent | **Applied** |
 | Bardo | Roko | **Applied** |
 | Grimoire | Neuro / NeuroStore | **Applied** in context_assembler.rs (imports KnowledgeStore from roko-neuro) |
@@ -19483,7 +19483,7 @@ roko-compose
 
 | Topic | Relationship |
 |-------|-------------|
-| `01-synapse-architecture` | Defines the Composer trait, Engram struct, 6 Synapse traits |
+| `01-synapse-architecture` | Defines the Composer trait, Signal struct, 6 Synapse traits |
 | `02-five-layers` | Defines Layer 2 Scaffold where composition operates |
 | `04-knowledge-and-mesh` | Neuro knowledge store that feeds the assembly pipeline |
 | `05-cognitive-subsystems` | Daimon (PAD state), Dreams (episode consolidation) |
@@ -19495,6 +19495,6 @@ roko-compose
 
 - **Generated:** 2026-04-11
 - **Source reading:** 7 context-pack files, 5 refactoring-PRD canonical sources, 6 legacy PRD/research files, 12 roko-compose source files, 1 implementation plan
-- **Naming map applied:** Bardo→Roko, Golem→Agent, Grimoire→Neuro, Signal→Engram (noted as pending Tier 0D), Mori→Roko Orchestrator
+- **Naming map applied:** Bardo→Roko, Golem→Agent, Grimoire→Neuro, Signal→Signal (noted as pending Tier 0D), Mori→Roko Orchestrator
 - **Reframe rules applied:** No mortality language, no death phases, budget/confidence/time pressure instead
 

@@ -86,11 +86,11 @@ Some perspectives have an additional file when the theory requires more unpackin
 | 1 | [01-knowledge-as-topology.md](temporal-topology/01-knowledge-as-topology.md) | Metric spaces, small-world, scale-free networks |
 | 2 | [02-temporal-shape.md](temporal-topology/02-temporal-shape.md) | Ingestion, decay, consolidation, contradiction as operators |
 | 3 | [03-decay-as-topological-operator.md](temporal-topology/03-decay-as-topological-operator.md) | Formal operator math, persistent homology |
-| 4 | [04-roko-application.md](temporal-topology/04-roko-application.md) | Engram graph, HDC as coordinates, decay tier matrix |
+| 4 | [04-roko-application.md](temporal-topology/04-roko-application.md) | Engram (renamed to Signal in 2026-08-12) graph, HDC as coordinates, decay tier matrix |
 | 5 | [05-implications.md](temporal-topology/05-implications.md) | 5 design implications with table |
 | 6 | [06-open-questions.md](temporal-topology/06-open-questions.md) | Open frontier questions |
 
-**Illuminates**: [Engram](../../reference/01-engram/README.md),
+**Illuminates**: [Signal](../../reference/01-engram/README.md),
 [Substrate](../../reference/03-substrate/README.md),
 [Decay variants](../../reference/10-types/decay.md),
 [Dreams](../../reference/09-cross-cuts/README.md),

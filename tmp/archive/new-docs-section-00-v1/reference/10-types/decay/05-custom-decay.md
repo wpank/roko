@@ -16,7 +16,7 @@
 library does not compute a weight for it — that is delegated to a named handler registered
 at runtime. This makes it possible to introduce new decay shapes (e.g., logarithmic,
 sawtooth, sigmoid) without changing the `Decay` enum. Any Substrate implementation that
-encounters an unregistered custom name should fall back to treating the Engram as immortal
+encounters an unregistered custom name should fall back to treating the Signal as immortal
 rather than silently panicking.
 
 ---
@@ -137,7 +137,7 @@ Names must not contain whitespace and are case-sensitive.
 
 | Failure | Cause | Recovery |
 |---|---|---|
-| Handler not found | Crate that registers handler not loaded | Substrate returns `weight = 1.0`; Engram survives but never decays |
+| Handler not found | Crate that registers handler not loaded | Substrate returns `weight = 1.0`; Signal survives but never decays |
 | Handler panics | Bug in custom handler logic | Substrate catches panics, logs, returns `weight = 1.0` |
 | Params deserialization fails | Schema mismatch between writer and reader | Handler should return `Err` → Substrate uses fallback weight |
 | Name collision | Two crates register same name | Last write wins; emit a startup warning |
@@ -191,7 +191,7 @@ impl DecayHandler for EbbinghausHandler {
   in a later refactor pass).
 - **Serialization**: `serde_json::Value` is the interop type. Custom handlers are responsible
   for versioning their own `params` schema.
-- **GC**: The Substrate cannot pre-compute expiry for Custom-decayed Engrams. It must
+- **GC**: The Substrate cannot pre-compute expiry for Custom-decayed Signals. It must
   call the handler at each compaction pass.
 
 ---

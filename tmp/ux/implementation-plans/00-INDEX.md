@@ -127,7 +127,7 @@ ones in context.
 Every track expects the runner to have read:
 
 - `CLAUDE.md` — canonical project status and self-hosting workflow.
-- `crates/roko-core/src/lib.rs` — workspace trait surface and the `Engram`
+- `crates/roko-core/src/lib.rs` — workspace trait surface and the `Signal`
   type.
 - `crates/roko-runtime/src/event_bus.rs` — `RokoEvent` variants.
 - `tmp/ux/00-architecture-overview.md` — 5-layer model.

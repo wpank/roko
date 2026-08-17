@@ -1,6 +1,18 @@
 # Roko Development Anti-Patterns
 
-Hard-won lessons from building 3+ parallel runtimes that don't share anything. Read this before writing code.
+> Last updated: 2026-08-13
+
+## What is this?
+
+A catalog of **recurring code quality mistakes** discovered while building roko's
+multi-agent execution engine. These patterns were identified during the July 2026
+codebase audit when roko had three separate runtimes that duplicated work. Each
+anti-pattern includes a real codebase example, why it's wrong, and what to do instead.
+
+**Read this before writing code.** These are the mistakes that have cost the most time
+in this codebase. Several have been partially fixed but not fully resolved. Status
+annotations (marked with `STATUS (Aug 2026)`) appear after each anti-pattern showing
+what has changed and what remains.
 
 ## The Cardinal Rule
 
@@ -27,6 +39,11 @@ Command::new("claude")
 
 **Real example:** `roko-acp/src/runner.rs:run_claude_cli()` uses bare `claude --print` with no model selection, no system prompt, no streaming. Meanwhile `roko-acp/src/bridge_events.rs:run_claude_cognitive_task()` uses `claude --print --output-format stream-json --model <model> --system-prompt <prompt>`. Meanwhile `runner/agent_stream.rs:spawn_agent()` uses `CliProviderConfig::build_invocation()`. Three different claude spawns in one codebase.
 
+> **STATUS (Aug 2026):** Partially improved. `ModelCallService` trait now exists in
+> `roko-agent/src/model_call_service.rs` and is used by some paths (chat sessions,
+> serve runtime). However, the runner event loop and ACP pipeline still have their
+> own dispatch paths. The multiple spawn mechanisms remain.
+
 ---
 
 ## Anti-Pattern 2: "Inline Prompt Strings"
@@ -46,6 +63,12 @@ let prompt = format!(
 
 **Real example:** `roko-acp/src/runner.rs` has inline prompts for strategist, implementer, auto-fixer, and reviewer roles. Meanwhile `roko-compose/src/templates/` has proper template modules for all these roles that nobody in the ACP pipeline calls.
 
+> **STATUS (Aug 2026):** Improved. `PromptAssemblyService` now exists in
+> `roko-compose/src/prompt_assembly_service.rs`. The runner event loop uses
+> `RoleSystemPromptSpec` with the 9-layer builder. Inline prompts still exist in
+> the ACP pipeline and some CLI commands, but the main execution path uses
+> structured prompt assembly.
+
 ---
 
 ## Anti-Pattern 3: "Build Another Runtime"
@@ -63,6 +86,17 @@ Each one duplicates: state management, agent dispatch, gate running, retry logic
 
 **Real example:** The other Claude session was about to wire `roko-orchestrator` into the ACP pipeline runner, creating runtime #4 -- a hybrid of the ACP state machine with roko-orchestrator's DAG executor, still using bare `claude --print` for agent dispatch.
 
+> **STATUS (Aug 2026):** Mixed progress. `orchestrate.rs` has been **deleted** -- a
+> major win. The shared services from the unified plan (`ModelCallService`,
+> `PromptAssemblyService`, `FeedbackService`, `WorkflowEngine`, `EffectDriver`,
+> `PipelineState`, `TaskScheduler`) have all been built in their respective crates.
+> However, `runner/event_loop.rs` has grown from 3K to **~19,846 lines**, absorbing
+> features from orchestrate.rs without the planned decomposition into services. The
+> god-file problem migrated rather than being solved -- event_loop.rs is now the same
+> size orchestrate.rs was. The services exist as modules but event_loop.rs has not been
+> refactored to delegate to them. The ACP pipeline still runs its own separate dispatch
+> path.
+
 ---
 
 ## Anti-Pattern 4: "Add Features to the Wrong Layer"
@@ -77,6 +111,11 @@ Each one duplicates: state management, agent dispatch, gate running, retry logic
 - The state machine is pure (no I/O, no async), fully unit-testable with no mocks
 
 **Real example:** The multi-role review was added to `runner.rs` (the driver) as `run_multi_role_review()`. The pipeline state machine doesn't know about it -- it still thinks there's one reviewer. The decision "use two reviewers for thorough mode" should be in the state machine, emitting `SpawnArchitectReviewer` and `SpawnAuditorReviewer` actions that the driver executes.
+
+> **STATUS (Aug 2026):** Still relevant. `PipelineState` now exists in
+> `roko-runtime/src/pipeline_state.rs` as a pure state machine, but the runner
+> event loop still mixes decision logic with effect execution in its ~19,800-line
+> main file.
 
 ---
 
@@ -95,6 +134,10 @@ if config.review_strictness == "thorough" {
 
 **What to do instead:** Define roles declaratively. `WorkflowTemplate::Full` specifies `review_roles: [Architect, Auditor]`. `WorkflowTemplate::Standard` specifies `review_roles: [QuickReviewer]`. The execution engine iterates the role list generically. Adding a new reviewer role means adding a config entry, not changing code.
 
+> **STATUS (Aug 2026):** Still relevant. Role definitions are partially declarative
+> via `core_roles.toml` and `RoleSystemPromptSpec`, but workflow template selection
+> and reviewer assignment are still hardcoded in the runner.
+
 ---
 
 ## Anti-Pattern 6: "Feedback/Learning as Afterthought"
@@ -106,6 +149,12 @@ if config.review_strictness == "thorough" {
 **What to do instead:** Every model call goes through `ModelCallService`, which automatically emits events. `FeedbackService` consumes those events and fans out to all learning sinks. No caller needs to manually record feedback.
 
 **Real example:** The ACP pipeline runner spawns agents and runs gates but records zero feedback. `WorkflowRun.total_cost_usd` and `total_tokens` are initialized to 0 and never updated. No episodes are written.
+
+> **STATUS (Aug 2026):** Improved. `FeedbackService` now exists in
+> `roko-learn/src/feedback_service.rs`. The runner event loop records episodes,
+> efficiency events, cascade observations, and adaptive threshold updates.
+> `ModelCallService` emits events that feed into learning. The ACP pipeline
+> still has weaker feedback coverage.
 
 ---
 
@@ -120,6 +169,11 @@ if config.review_strictness == "thorough" {
 - Retry/replan decisions → `roko-orchestrator` or a new `RepairPolicyEngine`
 - Prompt assembly → `roko-compose`
 - Model routing → `roko-learn::CascadeRouter`
+
+> **STATUS (Aug 2026):** Reduced by one. With `orchestrate.rs` deleted, there are
+> now 2 runtimes instead of 3. However, features from orchestrate.rs were absorbed
+> into event_loop.rs rather than being extracted into shared services, so
+> duplication between the runner and the ACP pipeline persists.
 
 ---
 
@@ -147,6 +201,12 @@ fn run_multi_role_review(
 
 Both share the same effect driver and services, but the state machine phase transitions are different.
 
+> **STATUS (Aug 2026):** Addressed in design. `PipelineState` in
+> `roko-runtime/src/pipeline_state.rs` and `TaskScheduler` in
+> `roko-runtime/src/task_scheduler.rs` were built to handle both single-task and
+> multi-task workflows cleanly. The runner event loop still handles multi-task
+> plans via its own DAG logic rather than delegating to these components.
+
 ---
 
 ## Anti-Pattern 10: "God Files"
@@ -159,6 +219,14 @@ Both share the same effect driver and services, but the state machine phase tran
 **Why it's wrong:** When one file owns 10+ responsibilities, every change risks breaking unrelated functionality. It's impossible to understand, test, or refactor safely.
 
 **What to do instead:** Each file/module owns ONE responsibility. The execution engine is a thin orchestrator that delegates to focused services. See Phase 0 of the unified plan: `ModelCallService`, `PromptAssemblyService`, `FeedbackService`, `PersistenceService`, `GateService` -- each owned by one module.
+
+> **STATUS (Aug 2026):** The biggest offender (`orchestrate.rs`, 21,577 lines) has been
+> **deleted**. However, `event_loop.rs` has grown from 3,036 to **19,846 lines**,
+> inheriting the same god-file problem at nearly the same scale. It still owns dispatch,
+> events, gates, feedback, merge, persistence, and more in a single file. The planned
+> decomposition into focused services has been partially built (the services exist as
+> separate modules in `roko-runtime/` and other crates) but event_loop.rs hasn't been
+> refactored to delegate to them. This is now the #1 structural problem in the codebase.
 
 ---
 
@@ -173,3 +241,47 @@ Before writing code, check:
 - [ ] Does similar code already exist in another runtime? → Use it, don't duplicate it
 - [ ] Am I adding a feature to one entry point? → Add it to a shared service instead
 - [ ] Is my file getting above 500 lines? → Extract a service
+
+---
+
+## Known Persistent Issues (Aug 2026)
+
+Issues from the original audit that remain unresolved or have shifted form.
+
+### God-file: event_loop.rs (19,846 lines)
+The original god-file (`orchestrate.rs`, 21,577 lines) was **deleted**, but
+`event_loop.rs` grew from 3K to 19,846 lines absorbing its features. The same
+anti-pattern at the same scale. The planned service decomposition (Phase 0/1 of
+`UNIFIED-IMPLEMENTATION-PLAN.md`) was partially built -- the service modules exist
+in `roko-runtime/`, `roko-agent/`, `roko-compose/`, and `roko-learn/` -- but
+event_loop.rs was never refactored to delegate to them.
+
+### `extract_clean_text` -- FIXED
+Previously duplicated in 3 files. Now defined once in `chat.rs` and imported by
+`agent_serve.rs` and `chat_inline.rs` via `roko_cli::chat::extract_clean_text`.
+This issue is resolved.
+
+### `std::env::var` API key reads
+198 occurrences across 88 source files in `crates/`. Many are legitimate (config
+loading, test setup, build scripts, feature detection), but credential reads should
+be consolidated through `roko-core::secrets` or a `SecretService`. The unified plan's
+`InferenceGateway` was supposed to be the only component reading env vars for
+credentials. The `roko-core/src/secrets/` module exists but is not universally used.
+
+### VCG auction
+Built in `roko-compose/src/auction.rs` and exported via `roko-compose/src/lib.rs`.
+The VCG auction is **wired** but the greedy knapsack path dominates at runtime --
+the VCG payment computation adds complexity without demonstrated value. The unified
+plan recommends keeping greedy knapsack and deleting VCG payments (Phase 6.2.1).
+
+### Signal rename (from Engram) -- DONE (2026-08-12)
+The Signal rename is **complete**. `Signal` is now the core noun throughout
+the system. Remaining `Engram` references are via the backward-compat alias in
+`roko-core/src/engram.rs`, chain crate types, test fixtures, and serialized
+format references. These are expected and not actionable.
+
+### eprintln!-to-tracing conversion -- DONE
+**Mostly complete.** 810 `tracing::` macro calls across 178 files vs ~250 remaining
+`eprintln!` calls across 36 files. The remaining `eprintln!` uses are concentrated in
+CLI output paths (`prd.rs`, `commands/plan.rs`, `main.rs`, `commands/util.rs`) where
+direct stderr output is intentional for user-facing messages. No further action needed.

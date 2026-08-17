@@ -1,10 +1,10 @@
 # SCORE — Stage 2 of the Cognitive Loop
 
-> Appraise each candidate Engram on seven independent axes and produce a ranked list.
+> Appraise each candidate Signal on seven independent axes and produce a ranked list.
 
 **Status**: Shipping
 **Crate**: `roko-core`
-**Depends on**: [Score type](../10-types/score.md), [Engram](../01-engram/README.md),
+**Depends on**: [Score type](../10-types/score.md), [Signal](../01-engram/README.md),
 [Scorer operator](../05-operators/scorer.md)
 **Used by**: [ROUTE](03-stage-route.md), [loop\_tick()](09-loop-tick-code.md)
 **Last reviewed**: 2026-04-19
@@ -13,7 +13,7 @@
 
 ## TL;DR
 
-SCORE takes the raw candidate set from QUERY and attaches a `Score` to each Engram.
+SCORE takes the raw candidate set from QUERY and attaches a `Score` to each Signal.
 A `Score` is a seven-axis appraisal covering relevance, recency, trust, utility,
 novelty, emotional valence, and cost. The stage returns a ranked `Vec<ScoredEngram>`.
 ROUTE will then select from the top of this list.
@@ -22,8 +22,8 @@ ROUTE will then select from the top of this list.
 
 ## The Idea
 
-Not all knowledge is equally useful in context. A highly relevant but stale Engram is
-less useful than a moderately relevant but fresh one. An Engram from a trusted source
+Not all knowledge is equally useful in context. A highly relevant but stale Signal is
+less useful than a moderately relevant but fresh one. An Signal from a trusted source
 is more useful than one of unknown provenance. Emotional salience may amplify or dampen
 relevance depending on the agent's current affective state.
 
@@ -45,10 +45,10 @@ or learned weights.
 | Relevance | `r` | 0.0–1.0 | Semantic distance to the current stimulus (HDC cosine) |
 | Recency | `t` | 0.0–1.0 | Temporal freshness (exponential decay from `created_at`) |
 | Trust | `τ` | 0.0–1.0 | Provenance attestation quality |
-| Utility | `u` | 0.0–1.0 | Historical success rate when this Engram was used |
+| Utility | `u` | 0.0–1.0 | Historical success rate when this Signal was used |
 | Novelty | `ν` | 0.0–1.0 | Information gain relative to what is already in context |
 | Valence | `v` | −1.0–1.0 | Emotional charge (from Daimon; 0.0 if Daimon absent) |
-| Cost | `c` | 0.0–∞ | Estimated token / compute cost to include this Engram |
+| Cost | `c` | 0.0–∞ | Estimated token / compute cost to include this Signal |
 
 The composite score used for ranking is:
 
@@ -99,27 +99,27 @@ vector, and the current tick timestamp (for recency calculations).
 
 ## Semantics
 
-1. Receive `Vec<Engram>` from QUERY (may be empty → return empty vec).
-2. For each `Engram`, compute all seven axis values.
+1. Receive `Vec<Signal>` from QUERY (may be empty → return empty vec).
+2. For each `Signal`, compute all seven axis values.
 3. Compute `composite` using the active weight vector.
 4. Sort descending by `composite`.
 5. Return `Vec<ScoredEngram>`.
 
-The sort is stable. Ties are broken by Engram `id` for determinism.
+The sort is stable. Ties are broken by Signal `id` for determinism.
 
 Axis computation details:
 
 - **Relevance**: `1.0 − hdcDistance(engram.fingerprint, stimulus.fingerprint)`
   clamped to 0.0–1.0.
 - **Recency**: `exp(−λ · (now − engram.created_at))` where `λ` is the decay rate
-  for the Engram's tier. See [Decay Variants](../10-types/decay.md).
-- **Trust**: derived from the Engram's `Provenance` record. See
+  for the Signal's tier. See [Decay Variants](../10-types/decay.md).
+- **Trust**: derived from the Signal's `Provenance` record. See
   [Provenance](../10-types/provenance.md).
 - **Utility**: exponential moving average of `reward` signals from prior ticks that
-  used this Engram. Defaults to 0.5 for unseen Engrams.
-- **Novelty**: `1.0 − maxSimilarity(engram, already_composed)`. For the first
+  used this Signal. Defaults to 0.5 for unseen Signals.
+- **Novelty**: `1.0 − maxSimilarity(signal, already_composed)`. For the first
   candidate, novelty = 1.0.
-- **Valence**: pulled directly from the Engram's `affect_charge` field (set by Daimon
+- **Valence**: pulled directly from the Signal's `affect_charge` field (set by Daimon
   at persist time). 0.0 for agents without Daimon.
 - **Cost**: estimated by `tokenCount(engram.body) × costPerToken`.
 
@@ -155,20 +155,20 @@ sequentially; a future optimization can parallelize with `rayon` at no API-surfa
 
 ### 1. Relevance-dominant ranking
 
-A research agent queries for "active inference Free Energy" and retrieves 12 Engrams.
+A research agent queries for "active inference Free Energy" and retrieves 12 Signals.
 The three most relevant by HDC similarity float to the top of the ranked list. A fourth
-Engram has slightly lower relevance but very high trust (it was attested by a peer
+Signal has slightly lower relevance but very high trust (it was attested by a peer
 agent with a long positive history), landing it in position 2.
 
 ### 2. Novelty deduplication
 
-COMPOSE has already selected two Engrams about Free Energy. A third candidate covers
+COMPOSE has already selected two Signals about Free Energy. A third candidate covers
 the same ground. Its Novelty axis is near zero. Even if Relevance is high, its
 composite score drops, preventing redundant context.
 
 ### 3. Valence boost (Daimon active)
 
-An agent is in a high-urgency behavioral state. Daimon has marked Engrams tagged with
+An agent is in a high-urgency behavioral state. Daimon has marked Signals tagged with
 `[urgency]` with a positive valence charge. The Scorer's valence weight amplifies those
 candidates, surfacing time-sensitive knowledge ahead of equally relevant but neutral
 material.

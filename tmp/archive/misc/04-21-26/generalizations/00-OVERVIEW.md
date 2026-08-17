@@ -47,7 +47,7 @@ This is achieved through five architectural innovations that no other agent fram
 
 | Term | Meaning |
 |---|---|
-| **Engram** | The universal data type. Every signal, event, episode, and message is an Engram. Think of it as a typed, hashable, content-addressed envelope. |
+| **Signal** | The universal data type. Every signal, event, episode, and message is an Signal. Think of it as a typed, hashable, content-addressed envelope. |
 | **Extension** | A composable unit of agent behavior. Implements lifecycle hooks (on_tick, assemble_context, before_tool_call, etc.). Extensions are layered with dependency ordering. |
 | **Heartbeat** | The agent's main loop. Runs on configurable frequency (gamma=fast/perception, theta=medium/decision, delta=slow/consolidation). Each tick is a 9-step pipeline. |
 | **Cognitive Gating** | The decision of whether a tick needs an LLM call. T0=no (pure Rust, $0), T1=cheap model, T2=full reasoning. Based on prediction error (how surprising is the current state?). |
@@ -142,7 +142,7 @@ Roko is a Cargo workspace with 18 crates:
 
 | Crate | Purpose | Status |
 |---|---|---|
-| `roko-core` | Signal (Engram) + 6 core traits (Substrate, Scorer, Gate, Router, Composer, Policy) | Stable kernel |
+| `roko-core` | Signal (Signal) + 6 core traits (Substrate, Scorer, Gate, Router, Composer, Policy) | Stable kernel |
 | `roko-agent` | 6+ LLM backends (Claude CLI, Anthropic API, OpenAI, Gemini, Perplexity, Ollama), tool loop, safety | Working |
 | `roko-runtime` | ProcessSupervisor, event bus, cancellation | Needs redesign → AgentRuntime |
 | `roko-gate` | 11 gates, 7-rung pipeline, adaptive thresholds | Working |

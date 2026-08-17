@@ -1,6 +1,6 @@
 # Provenance — Trust Escalation
 
-> The protocol by which an Engram's TrustLevel is upgraded from LocalAgent toward ChainWitness.
+> The protocol by which an Signal's TrustLevel is upgraded from LocalAgent toward ChainWitness.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -15,7 +15,7 @@
 Trust escalation is a monotonic upgrade: `LocalAgent → SelfVerified → PeerVerified →
 ChainWitness`. Each step requires evidence from an external source (the agent itself,
 peer agents, or a chain). Escalation updates the `trust` field in the Substrate's
-provenance metadata without changing the Engram's `ContentHash`. Escalation can be
+provenance metadata without changing the Signal's `ContentHash`. Escalation can be
 triggered explicitly (by a verification call) or automatically (by the Substrate's
 background verifier).
 
@@ -23,7 +23,7 @@ background verifier).
 
 ## The Idea
 
-A freshly minted Engram from a local agent has `TrustLevel::LocalAgent`. As it is used,
+A freshly minted Signal from a local agent has `TrustLevel::LocalAgent`. As it is used,
 observed to be accurate, and confirmed by other agents, its trust level rises. The system
 automatically rewards reliable knowledge with higher trust.
 
@@ -33,7 +33,7 @@ The escalation protocol answers: "What counts as evidence for each level?"
 |---|---|
 | LocalAgent → SelfVerified | The authoring agent runs its own consistency check and signs it |
 | SelfVerified → PeerVerified | At least one peer agent independently validates the content |
-| PeerVerified → ChainWitness | The Engram hash is committed to the distributed ledger |
+| PeerVerified → ChainWitness | The Signal hash is committed to the distributed ledger |
 
 ---
 
@@ -93,7 +93,7 @@ pub fn self_verify(
 
 ### SelfVerified → PeerVerified
 
-A peer agent reviews the Engram and submits a verification vote:
+A peer agent reviews the Signal and submits a verification vote:
 
 ```rust
 <!-- source: crates/roko-core/src/verifier.rs -->
@@ -164,7 +164,7 @@ pub fn escalate_trust(
 
 1. Trust escalation is monotonic — `new_level > current_level` is required.
 2. `ChainWitness` is the ceiling — no escalation above it exists.
-3. Escalation does not change the Engram's `ContentHash`.
+3. Escalation does not change the Signal's `ContentHash`.
 4. Every escalation is recorded in the audit log with its evidence.
 5. Only the authoring agent may initiate `SelfVerified` escalation.
 
@@ -172,7 +172,7 @@ pub fn escalate_trust(
 
 ## Open Questions
 
-- Should there be a decay on trust level? (I.e., if an Engram is not accessed for a long
+- Should there be a decay on trust level? (I.e., if an Signal is not accessed for a long
   time, does its trust level decrease?) Not currently planned; trust is monotonic.
 - Should `PEER_VERIFY_QUORUM` be per-Kind (KnowledgeEntry might require 3; ToolTrace only 1)?
 

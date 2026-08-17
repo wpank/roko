@@ -1,6 +1,6 @@
 # Body
 
-> The content payload of an Engram — the actual knowledge it carries.
+> The content payload of an Signal — the actual knowledge it carries.
 
 ## Contents
 
@@ -19,6 +19,6 @@ For implementers encoding to HDC: 00 → the [HDC encoding pipeline](../hdc-fing
 
 ## See also
 
-- [`../../01-engram/05-body-enum.md`](../../01-engram/05-body-enum.md) — Body in Engram context
+- [`../../01-engram/05-body-enum.md`](../../01-engram/05-body-enum.md) — Body in Signal context
 - [`../hdc-fingerprint/02-encoding-pipeline.md`](../hdc-fingerprint/02-encoding-pipeline.md) — Body-to-fingerprint encoding
 - [`../content-hash/01-canonical-encoding.md`](../content-hash/01-canonical-encoding.md) — Body in ContentHash

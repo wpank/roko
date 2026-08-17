@@ -1,8 +1,8 @@
 [meta]
 plan = "E23-agent-cognitive-autonomy"
 total = 10
-done = 0
-status = "ready"
+done = 10
+status = "done"
 max_parallel = 2
 
 # ── T01: Agent lifecycle type-state machine ──────────────────────────
@@ -36,7 +36,7 @@ Wrap all states in an AgentLifecycle enum for runtime storage where
 compile-time enforcement isn't possible (e.g., serialization).
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-agent/src/lifecycle.rs"]
 depends_on = []
@@ -110,7 +110,7 @@ Add to DaimonState (lib.rs:1973-2009): vitality_tracker: VitalityTracker field.
 Add DaimonState::behavioral_phase() -> BehavioralPhase accessor.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-daimon/src/lib.rs"]
 depends_on = []
@@ -181,7 +181,7 @@ cognitive_energy = 1.0f32 (fully charged), fatigue_penalty = 0.0f32,
 efe_last_tier = 0 (T0 default).
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-runtime/src/heartbeat.rs"]
 depends_on = []
@@ -249,7 +249,7 @@ When current drops below 0.0, clamp to 0.0 and log a conservation warning.
 Add to DaimonState (lib.rs:1973): cognitive_energy: CognitiveEnergy field.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-daimon/src/lib.rs"]
 depends_on = ["E23-T02"]
@@ -322,7 +322,7 @@ EfeRouter struct:
 - route(surprise_rate: f32, regime: u8, task_difficulty: f64) -> ModelTier
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-learn/src/active_inference.rs"]
 depends_on = ["E23-T03"]
@@ -396,7 +396,7 @@ Add methods:
 - active_goals(&self) -> Vec<&GoalNode>
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-daimon/src/lib.rs", "crates/roko-daimon/src/goals.rs"]
 depends_on = ["E23-T02"]
@@ -477,7 +477,7 @@ Use the existing Regime enum from CorticalState (heartbeat.rs:243, stored as
 AtomicU8). The Regime values are: Calm=0, Normal=1, Volatile=2, Crisis=3.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-runtime/src/heartbeat.rs"]
 depends_on = ["E23-T03"]
@@ -545,7 +545,7 @@ The existing apply_dream_depotentiation (lib.rs:2158-2172) already handles
 dream-time arousal reduction -- coordinate with it for Delta recovery.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-daimon/src/lib.rs"]
 depends_on = ["E23-T04"]
@@ -581,15 +581,16 @@ phase = "compile"
 command = "cargo check -p roko-daimon 2>&1"
 fail_msg = "roko-daimon must compile"
 
-# ── T09: Wire cognitive autonomy into orchestrate.rs ─────────────────
+# ── T09: Wire cognitive autonomy into runner-v2 dispatch ─────────────
 
 [[task]]
 id = "E23-T09"
-title = "Wire behavioral phase and cognitive energy into orchestrate.rs dispatch"
+title = "Wire behavioral phase and cognitive energy into runner-v2 dispatch"
 description = """
-In orchestrate.rs, the dispatch_agent_with function (line 15184) already reads
-DaimonState for affect modulation. Extend it to integrate the new cognitive
-autonomy types from T02, T04, and T05.
+Runner-v2's event loop already reads DaimonState for affect modulation. Extend
+that live dispatch owner to integrate the cognitive-autonomy types from T02,
+T04, and T05. The former orchestrate.rs engine was removed by E12-T07 and must
+not be recreated.
 
 Changes to dispatch_agent_with:
 1. Check behavioral phase before dispatching: if DaimonState.behavioral_phase()
@@ -600,28 +601,28 @@ Changes to dispatch_agent_with:
 3. Pass vitality (cognitive_energy.current) to the CascadeRouter as a
    routing hint: when vitality < 0.5, add a cost_weight_multiplier of 1.5
    to bias toward cheaper models.
-4. If BehavioralPhase is Conservation or Declining, override the model tier
-   to T0 or T1 respectively (per phase constraints in T02).
+4. If BehavioralPhase is Conservation or Declining, cap the model tier
+   to T1 or T0 respectively (per phase constraints in T02).
 
 All changes must be backward-compatible: when DaimonState has no
 CognitiveEnergy configured (or when cognitive_energy is at default 1.0),
 behavior is unchanged from current.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
-files = ["crates/roko-cli/src/orchestrate.rs"]
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
 depends_on = ["E23-T02", "E23-T04", "E23-T05"]
 max_loc = 80
 
 [task.context]
 read_files = [
-    { path = "crates/roko-cli/src/orchestrate.rs", lines = "15182-15220", why = "dispatch_agent_with function: budget check, task loading" },
-    { path = "crates/roko-cli/src/orchestrate.rs", lines = "1-50", why = "Module imports and struct definitions" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "6960-7060", why = "Current Daimon state, task hook, and dispatch-modulation helpers" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "8800-9060", why = "Live runner-v2 dispatch preparation and provider selection" },
     { path = "docs/v2/05-AGENT.md", lines = "1-50", why = "Agent spec: vitality drives behavioral phases and model selection" },
 ]
 symbols = [
-    "dispatch_agent_with (orchestrate.rs:15184) -- main dispatch function to extend",
+    "runner-v2 event loop dispatch path -- sole live plan-execution owner",
     "DaimonState (roko-daimon) -- affect engine state with new cognitive_energy field",
     "BehavioralPhase (roko-daimon, from T02) -- constrains dispatch tier",
     "CascadeRouter (roko-learn) -- model routing, add vitality as cost hint",
@@ -636,12 +637,12 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'cognitive_energy\\|behavioral_phase\\|BehavioralPhase' crates/roko-cli/src/orchestrate.rs"
-fail_msg = "Cognitive energy / behavioral phase integration must exist in orchestrate.rs"
+command = "grep -q 'cognitive_energy\\|behavioral_phase\\|BehavioralPhase' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "Cognitive energy / behavioral phase integration must exist in runner-v2"
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'deplete\\|Terminal' crates/roko-cli/src/orchestrate.rs"
+command = "grep -q 'deplete\\|Terminal' crates/roko-cli/src/runner/event_loop.rs"
 fail_msg = "Energy depletion and Terminal phase check must exist"
 
 [[task.verify]]
@@ -662,7 +663,7 @@ Tests for roko-daimon/src/lib.rs:
 1. BehavioralPhase::from_vitality returns correct phase for each range
    (Thriving at 0.85, Stable at 0.6, Conservation at 0.4, Declining at 0.2, Terminal at 0.05)
 2. Hysteresis prevents rapid oscillation: transitioning from Stable to
-   Conservation requires dropping below 0.3-0.05=0.25, not 0.3
+   Conservation requires dropping below 0.5-0.05=0.45, not 0.5
 3. CognitiveEnergy::deplete reduces energy by correct amount per depletion type
 4. Fatigue accumulates across multiple deplete() calls
 5. Only Delta recovery resets fatigue to zero (Gamma/Theta leave fatigue unchanged)
@@ -676,7 +677,7 @@ Tests for roko-agent/src/lifecycle.rs:
 11. Verify that invalid transitions don't compile (comment-documented, not executable)
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-daimon/src/lib.rs", "crates/roko-agent/src/lifecycle.rs"]
 depends_on = ["E23-T01", "E23-T02", "E23-T04", "E23-T08"]

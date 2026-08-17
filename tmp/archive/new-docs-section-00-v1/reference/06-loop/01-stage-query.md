@@ -1,11 +1,11 @@
 # QUERY — Stage 1 of the Cognitive Loop
 
-> Retrieve candidate Engrams from the Substrate in response to the current stimulus.
+> Retrieve candidate Signals from the Substrate in response to the current stimulus.
 
 **Status**: Shipping
 **Crate**: `roko-agent`
 **Depends on**: [Substrate trait](../03-substrate/README.md),
-[Engram](../01-engram/README.md), [Pulse](../02-pulse/README.md)
+[Signal](../01-engram/README.md), [Pulse](../02-pulse/README.md)
 **Used by**: [SCORE](02-stage-score.md), [loop\_tick()](09-loop-tick-code.md)
 **Last reviewed**: 2026-04-19
 
@@ -14,7 +14,7 @@
 ## TL;DR
 
 QUERY is the first stage of every tick. It takes the incoming stimulus (a `Pulse` or a
-structured query derived from it), asks the `Substrate` for matching `Engram` records,
+structured query derived from it), asks the `Substrate` for matching `Signal` records,
 and returns a raw candidate set. QUERY does not rank, filter by policy, or make routing
 decisions — those are SCORE and ROUTE's jobs. QUERY's only job is retrieval.
 
@@ -33,12 +33,12 @@ incoming `Pulse`. The spec encodes:
 
 - **Semantic similarity** — HDC distance to the stimulus embedding
 - **Temporal window** — how far back to look (controlled by the speed tier)
-- **Kind filter** — e.g., only retrieve `Engram`s of kind `Observation` or `Plan`
+- **Kind filter** — e.g., only retrieve `Signal`s of kind `Observation` or `Plan`
 - **Provenance filter** — only retrieve from trusted sources (see
   [Provenance](../10-types/provenance.md))
 - **Budget cap** — maximum number of candidates to surface (enforced by Substrate)
 
-The result is a `Vec<Engram>` — unranked, unfiltered, but already deduplicated
+The result is a `Vec<Signal>` — unranked, unfiltered, but already deduplicated
 (the Substrate handles deduplication by content hash).
 
 ---
@@ -77,7 +77,7 @@ applies no further transformation. Custom implementations may pre-filter, expand
 3. It constructs a `QuerySpec` from the fingerprint plus tick-level parameters
    (time window from the speed tier, budget cap from the Harness config).
 4. It calls `substrate.query(spec)`.
-5. It returns `Vec<Engram>` to SCORE. An empty vec is valid — the tick continues.
+5. It returns `Vec<Signal>` to SCORE. An empty vec is valid — the tick continues.
 
 The `QuerySpec.time_window` is set by the speed tier:
 - Gamma ticks look back at most 60 s.
@@ -93,7 +93,7 @@ The `QuerySpec.time_window` is set by the speed tier:
 | `QueryError::Timeout` | Substrate did not respond within the stage budget | Return empty vec; log warning; continue tick |
 | `QueryError::Unavailable` | Substrate is down or saturated | Abort tick; publish `substrate.unavailable` Pulse |
 | `QueryError::Malformed` | `QuerySpec` invalid (e.g., zero max_results) | Panic in debug; return `Err` in release; tick fails |
-| Empty result set | No matching Engrams in window | Normal; tick proceeds with empty context |
+| Empty result set | No matching Signals in window | Normal; tick proceeds with empty context |
 
 A timeout in QUERY does **not** abort the tick — the agent proceeds with an empty
 candidate set. This is intentional: agents must be able to act on a new stimulus even
@@ -125,7 +125,7 @@ cap, substrate time is dominated by HDC, not I/O for in-process substrates.
 ### 1. Simple reactive query
 
 A user sends: `"What is the current price of KORAI?"`. The incoming Pulse has kind
-`UserMessage`. QUERY surfaces up to 16 recent `Observation` Engrams that match the HDC
+`UserMessage`. QUERY surfaces up to 16 recent `Observation` Signals that match the HDC
 fingerprint of "KORAI price". It returns them unranked; SCORE will rank them next.
 
 ### 2. No prior knowledge
@@ -136,8 +136,8 @@ This is correct behavior — the agent reasons from first principles.
 
 ### 3. Provenance-filtered query
 
-A research agent is configured to only trust `Observation` Engrams attested by
-verified external sources. `QuerySpec.prov_filter` excludes self-generated Engrams.
+A research agent is configured to only trust `Observation` Signals attested by
+verified external sources. `QuerySpec.prov_filter` excludes self-generated Signals.
 The returned candidates are all externally sourced facts.
 
 ---
@@ -146,6 +146,6 @@ The returned candidates are all externally sourced facts.
 
 - [SCORE](02-stage-score.md) — ranks the candidates returned here
 - [Substrate trait](../03-substrate/README.md) — the backing store
-- [Engram](../01-engram/README.md) — the data type returned
+- [Signal](../01-engram/README.md) — the data type returned
 - [HDC Fingerprint](../10-types/hdc-fingerprint.md) — how similarity is computed
 - [Performance](14-performance.md) — aggregate budget breakdown across all stages

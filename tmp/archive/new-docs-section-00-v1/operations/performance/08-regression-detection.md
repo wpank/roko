@@ -82,7 +82,7 @@ pub struct PerformanceRegressionPulse {
 
 This Pulse:
 1. Is logged as a `warn!` event (visible with `ROKO_LOG=roko=warn`).
-2. Is persisted as an Engram with kind `PerformanceRegression`.
+2. Is persisted as an Signal with kind `PerformanceRegression`.
 3. Can be subscribed to by any Policy operator (e.g. to trigger an automatic alert or
    to pause new task dispatch pending investigation).
 

@@ -1,5 +1,12 @@
 # ux-impl Batches
 
+> **What is this?** Per-wave batch definitions for the UX implementation runner.
+> 8 waves covering mirage extraction, aggregator backends, chain discovery, TUI events,
+> MCP coverage, feature gating, agent backend parity, and hygiene. Includes a dependency
+> graph and suggested wave ordering.
+>
+> **Last updated: 2026-08-13**
+
 Runner: `tmp/runners/ux-impl/run.sh`.
 Tracker: `ISSUE-TRACKER.md`.
 Source plans: `tmp/ux/implementation-plans/{01..12}-*.md`.

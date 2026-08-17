@@ -15,6 +15,13 @@ sources:
   - ~/obsidian-vault/projects/TEE_ARCHITECTURE_V1.md
 ---
 
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This file is an overview of the yield perps stack (perpetual contract + ISFR index + TEE clearing).
+> It is reference material for the ISFR product vertical, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Yield Perps Stack — Overview
 
 ## Summary

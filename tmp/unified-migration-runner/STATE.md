@@ -1,5 +1,16 @@
 # Runner State (v2 Parallel)
 
+> **Last updated: 2026-08-13**
+
+## What is this?
+
+This file records the last execution state of the parallel-agent migration runner
+(`run.sh` in this directory). The runner executes batches from `MASTER-CHECKLIST.md`
+across 4 Claude agents, each owning a partition of the crate graph. This state file
+is used for `--continue` resume support.
+
+---
+
 | Field | Value |
 |---|---|
 | Run ID | `run-20260426-080451` |

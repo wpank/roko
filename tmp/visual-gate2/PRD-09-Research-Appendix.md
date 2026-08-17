@@ -496,7 +496,7 @@ This fan-out ensures that no single sink failure prevents other consumers from r
 
 ### SS10.2 Evidence Bag Architecture
 
-**Key principle**: The `EvidenceBag` type (PRD-01) provides a typed, structured container for evaluation inputs. Unlike the legacy system's `Engram` (which embeds evidence as serialized JSON in the body), the EvidenceBag maintains typed artifact references with MIME types, file paths, and metadata.
+**Key principle**: The `EvidenceBag` type (PRD-01) provides a typed, structured container for evaluation inputs. Unlike the legacy system's `Signal` (formerly Engram, which embeds evidence as serialized JSON in the body), the EvidenceBag maintains typed artifact references with MIME types, file paths, and metadata.
 
 **Design rationale**: Typed evidence enables two capabilities impossible with the legacy system:
 1. **Criterion-specific evidence requirements**: Each criterion declares what evidence types it needs. The runner validates that required evidence is present before invoking the criterion.

@@ -1,3 +1,11 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a comprehensive reference for the roko agent runtime (18 crates, ~177K LOC).
+> It is reference material, not an implementation plan. Some terminology is outdated --
+> "Engram" has been renamed to "Signal" in the codebase.
+>
+> Last updated: 2026-08-13
+
 # 06 — Roko Agent Runtime
 
 ## 1. What Roko Is
@@ -34,27 +42,27 @@ The loop supports resumption. If interrupted, `roko plan run plans/ --resume .ro
 
 Roko's type system is organized around one universal data type and six verb traits that operate on it.
 
-### The Noun: Signal (Engram)
+### The Noun: Signal (formerly Engram)
 
-Every piece of data flowing through the system is an `Engram` (also referred to as a Signal in the architectural model). An Engram has:
+Every piece of data flowing through the system is a `Signal` (formerly called "Engram" in earlier docs). A Signal has:
 
 - A **Kind** — what type of data it represents (observation, prediction, action, knowledge, episode, etc.)
 - A **Body** — the payload (text, structured JSON, binary)
 - A **Provenance** — where and when it was created
 - A **ContentHash** — a deterministic hash of the body for deduplication and integrity
 - **Tags** — arbitrary key-value metadata for filtering and routing
-- A **Lineage** — links to parent Engrams, forming a DAG of derivations
+- A **Lineage** — links to parent Signals, forming a DAG of derivations
 - A **Decay** — a time-based relevance function that reduces weight over time
 
-Engrams are the universal currency. Agent outputs, gate verdicts, knowledge entries, episodes, routing decisions, and prompt sections are all Engrams or are derived from Engrams.
+Signals are the universal currency. Agent outputs, gate verdicts, knowledge entries, episodes, routing decisions, and prompt sections are all Signals or are derived from Signals.
 
 ### The 6 Verb Traits
 
 | Trait | Role | Example Implementation |
 |:---|:---|:---|
-| **Substrate** | Storage and retrieval. Reads/writes Engrams to a backing store. | `FileSubstrate` — JSONL files on disk with GC and layout management |
-| **Scorer** | Evaluates relevance or quality. Takes Engrams and a Context, returns scores. | `SumScorer` — sums component scores; `CatalystScorer` — factors in reuse, confirmation, and downstream impact |
-| **Gate** | Binary verification. Takes an Engram and decides pass/fail with evidence. | `CompileGate`, `TestGate`, `ClippyGate`, `LlmJudgeGate`, `SymbolGate` |
+| **Substrate** | Storage and retrieval. Reads/writes Signals to a backing store. | `FileSubstrate` — JSONL files on disk with GC and layout management |
+| **Scorer** | Evaluates relevance or quality. Takes Signals and a Context, returns scores. | `SumScorer` — sums component scores; `CatalystScorer` — factors in reuse, confirmation, and downstream impact |
+| **Gate** | Binary verification. Takes a Signal and decides pass/fail with evidence. | `CompileGate`, `TestGate`, `ClippyGate`, `LlmJudgeGate`, `SymbolGate` |
 | **Router** | Selects where work goes. Routes tasks to models, backends, or agents. | `CascadeRouter` — LinUCB bandit over model tiers; `select_model_for_task` — scores models against task requirements |
 | **Composer** | Assembles context. Constructs prompts, combines sections, manages token budgets. | `SystemPromptBuilder` — 9-layer prompt constructor; `PromptComposer` — attention-weighted section assembly |
 | **Policy** | Enforces constraints. Guards actions, budgets, and permissions. | `AgentContract` — YAML-defined constraints; `SafetyLayer` — pre/post execution checks; `BudgetGuardrail` — per-turn dollar ceilings |
@@ -67,13 +75,13 @@ These traits compose into a single execution pattern that repeats at every level
 query -> score -> route -> compose -> act -> verify -> write -> react
 ```
 
-1. **Query**: Read relevant Engrams from the Substrate (prior outputs, knowledge entries, episodes).
+1. **Query**: Read relevant Signals from the Substrate (prior outputs, knowledge entries, episodes).
 2. **Score**: Rank them by relevance to the current task using a Scorer.
 3. **Route**: Select the model, backend, and role using the Router.
 4. **Compose**: Build the system prompt using the Composer (9-layer builder + attention bidding).
 5. **Act**: Dispatch the agent to the selected backend; execute tool calls through the ToolDispatcher.
 6. **Verify**: Run the gate pipeline on the output.
-7. **Write**: Persist the result as new Engrams in the Substrate.
+7. **Write**: Persist the result as new Signals in the Substrate.
 8. **React**: Update learning state (episode logger, cascade router, prompt experiments, adaptive thresholds) and potentially trigger replanning.
 
 ---
@@ -299,7 +307,7 @@ Every tool call passes through a six-stage safety funnel in the `ToolDispatcher`
 2. **Resolve** — the `ToolDef` for the canonical tool name is looked up in the registry.
 3. **Authorize** — the tool's required permissions (read/write/exec/git/network) are compared against the role's granted permissions. A Reviewer role with `write=false` cannot call the Write tool.
 4. **Safety checks** — if a `SafetyLayer` is attached, pre-execution policies run. These include secret scrubbing (detecting API keys, credentials, private keys in tool arguments), provenance logging (recording a custody chain for each tool invocation), and contract enforcement.
-5. **Hook chain** — an optional sequence of `SafetyHook` implementations runs in order. Each hook can allow, modify (rewrite arguments), or reject the call. The first rejection short-circuits the chain. All decisions are emitted as audit Engrams.
+5. **Hook chain** — an optional sequence of `SafetyHook` implementations runs in order. Each hook can allow, modify (rewrite arguments), or reject the call. The first rejection short-circuits the chain. All decisions are emitted as audit Signals.
 6. **Execute with timeout and cancellation** — the handler runs with a configurable timeout and a cancellation token. Results exceeding `max_result_bytes` (default 16KB) are truncated at UTF-8 character boundaries.
 
 ### Agent Contracts
@@ -376,7 +384,7 @@ The `ErrorPatternStore` at `.roko/learn/discovered-patterns.json` catalogs recur
 
 | Crate | What It Does |
 |:---|:---|
-| **roko-core** | The kernel. Defines `Engram`, the 6 verb traits, `AgentRole` (28 variants), `ModelTier`, `TurnBudget`, `ToolPermissions`, configuration schema, tool registry, and error types. Everything depends on this crate; it depends on almost nothing. |
+| **roko-core** | The kernel. Defines `Signal` (formerly `Engram`), the 6 verb traits, `AgentRole` (28 variants), `ModelTier`, `TurnBudget`, `ToolPermissions`, configuration schema, tool registry, and error types. Everything depends on this crate; it depends on almost nothing. |
 | **roko-agent** | Agent dispatch and tool execution. Houses the `ToolDispatcher` (6-stage safety pipeline), 7 LLM backend adapters, agent pool management, MCP config passthrough, invocation session tracking, warm-reuse policies, and the safety layer (scrubbing, contracts, provenance, hooks). |
 | **roko-agent-server** | Per-agent HTTP sidecar. Exposes 13 routes including `/message` (real LLM dispatch), `/stream` (WebSocket), `/predictions`, `/research`, and `/tasks`. Allows external systems to interact with individual agents over HTTP. |
 | **roko-serve** | HTTP control plane. Exposes ~85 REST routes plus SSE and WebSocket endpoints on port 6677. Covers plans, tasks, agents, PRDs, knowledge, learning state, configuration, and health monitoring. Powers external dashboards and API consumers. |
@@ -386,7 +394,7 @@ The `ErrorPatternStore` at `.roko/learn/discovered-patterns.json` catalogs recur
 | **roko-conductor** | Runtime supervision. 10 watchers (health monitor, stuck detector, circuit breaker, anomaly detector), diagnosis engine, and system snapshot facilities. The Conductor role uses this crate to watch over all other agents and intervene when things go wrong. |
 | **roko-learn** | Learning infrastructure. Episode logger, cascade router (LinUCB bandit), prompt experiments (A/B), adaptive gate thresholds (EMA), efficiency events, playbook store, skill library, error pattern store, C-Factor computation, curriculum scheduler, routing log, latency registry, cost tracking, and section effectiveness learning. |
 | **roko-cli** | The CLI binary. All subcommands (`plan`, `prd`, `research`, `agent`, `knowledge`, `learn`, `serve`, `dashboard`, `status`, `doctor`, etc.), the orchestration harness (`orchestrate.rs`), the ratatui TUI (F1-F7 tabs with file watcher), agent spawn configuration, and dispatch helpers. This is the main entry point for all of Roko. |
-| **roko-fs** | File-backed storage. `FileSubstrate` (JSONL-based Engram storage with garbage collection), `RokoLayout` (standard directory structure for `.roko/`), and observability sinks. |
+| **roko-fs** | File-backed storage. `FileSubstrate` (JSONL-based Signal storage with garbage collection), `RokoLayout` (standard directory structure for `.roko/`), and observability sinks. |
 | **roko-std** | Standard library. 19 built-in tool handlers (Read, Write, Edit, Bash, Glob, Grep, Git operations, etc.), `StaticToolRegistry`, `SumScorer`, and a mock dispatcher for testing. |
 | **roko-runtime** | Process lifecycle. `ProcessSupervisor` (tracks agent subprocesses, handles graceful shutdown with drain grace periods), runtime event bus (typed events for plan revision, gate verdicts, agent lifecycle), and cancellation tokens. |
 | **roko-primitives** | Low-level primitives. Hyperdimensional computing (HDC) vectors for semantic fingerprinting, tier routing algorithms, and binary vector operations. HDC fingerprints are computed per-episode and used for fast similarity search in the knowledge store. |

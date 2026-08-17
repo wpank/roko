@@ -1,4 +1,7 @@
-# Week Review — May 18-22
+# Week Review -- May 18-22
+
+> **STALE**: Historical week review. All "next week" items completed.
+> Last updated: 2026-08-13
 
 ## Completed
 - Drafted self-hosting roadmap
@@ -6,11 +9,11 @@
 - Designed cascade router learning loop
 - Sketched TUI tab layout
 
-## Next week
-- Start wiring SystemPromptBuilder into orchestrate.rs
-- Wire EpisodeLogger into dispatch path
-- Begin MCP config passthrough implementation
+## ~~Next week~~ (ALL DONE)
+- ~~Start wiring SystemPromptBuilder into orchestrate.rs~~ DONE
+- ~~Wire EpisodeLogger into dispatch path~~ DONE
+- ~~Begin MCP config passthrough implementation~~ DONE
 
-## Blockers
-- Need rustc 1.91+ for alloy deps (run `rustup update stable`)
-- Clippy warnings on nightly need investigation
+## ~~Blockers~~ (RESOLVED)
+- ~~Need rustc 1.91+ for alloy deps~~ RESOLVED: workspace requires 1.91+
+- ~~Clippy warnings on nightly need investigation~~ RESOLVED

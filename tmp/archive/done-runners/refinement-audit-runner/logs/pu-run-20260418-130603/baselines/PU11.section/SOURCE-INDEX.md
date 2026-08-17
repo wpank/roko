@@ -160,8 +160,8 @@ Generated: 2026-04-16
 
 | File | What | Section |
 |------|------|---------|
-| `provenance.rs` | Engram provenance + tainted flag | B.02 |
-| `engram.rs` | Engram struct + lineage | B.02 |
+| `provenance.rs` | Engram (renamed to Signal in 2026-08-12) provenance + tainted flag | B.02 |
+| `__PATH_ENGRAM_RS__0` | Signal struct + lineage | B.02 |
 | `ContentHash` | Content-addressing primitive (BLAKE3-shaped) | B.01, B.02, E.07 |
 
 ---
@@ -233,7 +233,7 @@ Generated: 2026-04-16
 |----------------|--------|---------|
 | Cognitive namespaces with ACL | `rg -n "CognitiveNamespace\|KernelNamespace" crates --include=*.rs` | F.01 |
 | Cognitive scheduling | `rg -n "cognitive_scheduler\|priority_deadline" crates --include=*.rs` | F.03 |
-| Engram syscalls | `rg -n "EngramSyscall" crates --include=*.rs` | F.04 |
+| Signal syscalls | `rg -n "EngramSyscall" crates --include=*.rs` | F.04 |
 
 ### Forensic-AI compliance packaging
 

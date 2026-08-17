@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a synthesis report from a structured deep-research run. It is reference material
+> for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Mathematical Structure Discovery, Sensory-Motor Grounding, and Measurable Understanding
 
 This document synthesizes the research landscape across automated theorem proving, sensory-motor grounding for software agents, and operationally measurable understanding. It is written as a self-contained reference for someone with no prior exposure to the project or its research program. Every claim is grounded in a specific paper with arXiv identifier, journal reference, or benchmark dataset. The document concludes with five contributions that this stack uniquely enables, none of which appear in any competing system.

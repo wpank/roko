@@ -7,7 +7,7 @@ This parity bundle was narrowed after the refinement audit.
 ### Summary
 
 - rewrote PU06 as a **docs-only** refresh under `tmp/docs-parity/06/`
-- promoted **HDC fingerprint on `Engram`** to the top priority item
+- promoted **HDC fingerprint on `Signal`** to the top priority item
 - treated `roko-neuro` and `HdcVector` as already shipped foundations
 - marked `query_similar()` on `Substrate` as **not yet implemented**
 - moved cross-domain transfer, demurrage, worldview, Library of Babel, and
@@ -19,7 +19,7 @@ This parity bundle was narrowed after the refinement audit.
 1. `HdcVector` already exists in `roko-primitives` as a 345 LOC implementation.
 2. `roko-neuro` is already wired for storage, distillation, tier progression,
    HDC encoding, and context assembly.
-3. The next high-value bridge is kernel-level HDC on `Engram`, not more frontier
+3. The next high-value bridge is kernel-level HDC on `Signal`, not more frontier
    neuro theory.
 4. Docs `08`, `14`, and `15` were reading too far ahead of code reality.
 

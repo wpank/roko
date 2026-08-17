@@ -1,5 +1,19 @@
 # Agent Coordination Use Cases
 
+> **What is this?** An audit of all 42 agent coordination use cases found across
+> Nunchi repos (collaboration, daeji, demo-ide, desktop-app, agent-chat,
+> mcp-gateway, nunchi-cli, contracts-core). The audit classifies each use case
+> by pattern (pub/sub, on-chain, request/response, chat-replacement, other) and
+> shows that the relay covers everything -- no separate chat/messaging layer is
+> needed. This analysis informed decision #9 in `05-decisions.md`.
+>
+> **Status (2026-08-13):** The conclusion (relay is sufficient) is **settled and
+> authoritative**. Topic names in the examples below use colons (matching the
+> current codebase); once the colon-to-dot migration lands, these will change to
+> dot-separated names.
+>
+> Last updated: 2026-08-13
+
 ## Summary
 
 After auditing all PRs across Nunchi-trade repos (collaboration #134-161, daeji #21-42, demo-ide, desktop-app, agent-chat, mcp-gateway, nunchi-cli, contracts-core), here is every agent coordination use case and what handles it.

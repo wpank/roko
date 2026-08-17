@@ -1,3 +1,15 @@
+> **HISTORICAL SEED DOCUMENT — 2026-07-10**
+>
+> This was the initial task seed checklist generated on 2026-07-10 (repo HEAD `5852c93c05`).
+> Most checkboxes remain historical seed state. E25, E36, E42, and E44 were reconciled to
+> `[x]` on 2026-08-15 during their manifest closure pass.
+> The `MASTER-EXECUTION-CHECKLIST.md` has fully superseded this document with
+> accurate wave-by-wave progress tracking.
+>
+> For current status, see:
+> - **`tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md`** — Live execution tracking
+> - **`.roko/GAPS.md`** — Project status and gaps
+
 # 05 — Master Checklist
 
 > **The single scannable checklist for the entire executable backlog.**
@@ -55,14 +67,14 @@ Note: epics use slightly different tier vocabularies; they are reproduced as wri
 - [ ] **E01-T04** (architectural) Wire a real intra-plan DAG scheduler (or delete dead task_dag.rs) — deps: E01-T01 — plan: P12(shallow) — file: crates/roko-cli/src/runner/event_loop.rs, runner/task_dag.rs
 - [ ] **E01-T05** (focused) Make agent concurrency configurable, decoupled from max_concurrent_plans=4 — deps: E01-T04 — plan: P12(shallow) — file: crates/roko-cli/src/runner/event_loop.rs, roko-core/src/defaults.rs:313
 - [ ] **E01-T06** (integrative) Upgrade gate-failure replan from prompt-append to task/plan revision — deps: E01-T01 — plan: none (P15 adjacent) — file: crates/roko-cli/src/runner/event_loop.rs:1549
-- [ ] **E01-T07** (integrative) Wire per-plan worktree isolation into the runner — deps: E01-T04 — plan: none — file: crates/roko-cli/src/runner/merge.rs, roko-orchestrator/src/worktree.rs
+- [ ] **E01-T07** (integrative) Wire per-plan worktree isolation into the runner — deps: E01-T04 — plan: none — file: crates/roko-cli/src/runner/merge.rs, crates/roko-cli/src/orchestrator/worktree.rs
 - [ ] **E01-T08** (integrative) Wire `enrich_rung_config` into live gate dispatch — deps: E01-T01 — plan: none (overlaps E05) — file: crates/roko-cli/src/runner/gate_dispatch.rs, runner/rung_dispatch.rs
 - [ ] **E01-T09** (focused) Regression test: bare default `plan run` does real work — deps: E01-T01, E01-T02 — plan: none — file: crates/roko-cli/tests/ (new)
 - [ ] **E01-T10** (mechanical) Reconcile CLAUDE.md + GAPS + docs to the real engine — deps: E01-T01, E01-T02 — plan: none — file: CLAUDE.md, .roko/GAPS.md
 - [ ] **E01-T11** (focused) Enforce cost budget from config before plan execution starts — deps: E01-T01 — plan: none — file: crates/roko-cli/src/runner/event_loop.rs, runner/types.rs, roko-core/src/config.rs
 - [ ] **E01-T12** (integrative) Add retry-with-backoff for retriable agent dispatch failures (429/529) — deps: E01-T01 — plan: none — file: crates/roko-cli/src/runner/event_loop.rs, roko-agent/src/dispatcher/mod.rs
 - [ ] **E01-T13** (integrative) Wire roko-mcp-github as a default MCP server for plan execution — deps: E01-T01 — plan: none — file: crates/roko-cli/src/orchestrate.rs, runner/event_loop.rs, roko-mcp-github/src/main.rs
-- [ ] **E01-T14** (focused) Auto-create git branches per plan run using worktree.rs branch naming — deps: E01-T04 — plan: none — file: crates/roko-cli/src/runner/event_loop.rs, roko-orchestrator/src/worktree.rs
+- [ ] **E01-T14** (focused) Auto-create git branches per plan run using worktree.rs branch naming — deps: E01-T04 — plan: none — file: crates/roko-cli/src/runner/event_loop.rs, crates/roko-cli/src/orchestrator/worktree.rs
 - [ ] **E01-T15** (focused) Add pre-run disk space check (refuse to start if <2GB free) — deps: E01-T01 — plan: none — file: crates/roko-cli/src/runner/event_loop.rs, commands/plan.rs
 - [ ] **E01-T16** (focused) Auto-trigger GcEngine at plan start — deps: E01-T01 — plan: none — file: crates/roko-cli/src/runner/event_loop.rs, commands/plan.rs
 
@@ -73,7 +85,7 @@ Note: epics use slightly different tier vocabularies; they are reproduced as wri
 - [ ] **E02-T03** (integrative) Repoint executor.json readers at state-snapshot.json; drop executor_snapshot() helper — deps: none — plan: none — file: crates/roko-serve/src/routes/workspaces.rs:322, dashboard_snapshot.rs, roko-fs/src/layout.rs
 - [ ] **E02-T04** (focused) Materialize or repoint gate-thresholds.json — deps: E02-T03 — plan: none — file: crates/roko-cli/src/runner/event_loop.rs or roko-serve/src/learning/mod.rs
 - [ ] **E02-T05** (focused) Collapse episodes to root; repoint serve projection + layout label off memory/ — deps: none — plan: none — file: crates/roko-serve/src/lib.rs, roko-fs/src/layout.rs, feedback_service.rs
-- [ ] **E02-T06** (focused) Consolidate daimon to daimon/affect.json; alias orchestrator state/daimon.json — deps: none — plan: none — file: crates/roko-orchestrator/src/service_factory.rs:236
+- [ ] **E02-T06** (focused) Consolidate daimon to daimon/affect.json; alias orchestrator state/daimon.json — deps: none — plan: none — file: crates/roko-serve/src/service_factory.rs
 - [ ] **E02-T07** (focused) Add retention for events.jsonl, roko.log, chain-watcher.log, run-ledger.jsonl; cap *.bak.* — deps: none — plan: none — file: crates/roko-serve/src/retention.rs:115
 - [ ] **E02-T08** (integrative) Stop feed_tick heartbeats polluting events.jsonl — deps: none — plan: none — file: crates/roko-serve/src/feed_agents/mod.rs, state.rs
 - [ ] **E02-T09** (focused) Resolve runtime-events.jsonl reader-without-file (wire JsonlLogger or drop 2 routes) — deps: none — plan: none — file: crates/roko-serve/src/lib.rs, routes/runs.rs, shared_runs.rs
@@ -104,9 +116,9 @@ Note: epics use slightly different tier vocabularies; they are reproduced as wri
 - [ ] **E04-T09** (focused) Sanitize workspace prefix; write un-interpolated config (F8) — deps: none — plan: none — file: crates/roko-serve/src/routes/workspaces.rs:101
 - [ ] **E04-T10** (focused) Privy JWT membership/role authorization (F10) — deps: none — plan: none — file: crates/roko-serve/src/routes/middleware.rs:202
 - [ ] **E04-T11** (focused) Require scope for terminal even on loopback; drop token-in-env (F11) — deps: E04-T02 — plan: none — file: crates/roko-serve/src/routes/mod.rs:210, terminal.rs
-- [ ] **E04-T12** (integrative) Add CognitiveEvent::PermissionRequest { …, reply: oneshot } (F3) — deps: P22-T2 — plan: P22(substrate) — file: crates/roko-acp/src/bridge_events.rs
-- [ ] **E04-T13** (integrative) Answer PermissionRequest in parent loop via request_permission (F3) — deps: E04-T12 — plan: none — file: crates/roko-acp/src/bridge_events.rs:954
-- [ ] **E04-T14** (integrative) Gate execute_acp_builtin_tool on the decision, fail-closed (F3) — deps: E04-T13 — plan: none (co-owned E17-T01) — file: crates/roko-acp/src/builtin_tools.rs:291
+- [x] **E04-T12** (integrative) Add CognitiveEvent::PermissionRequest { …, reply: oneshot } (F3) — deps: P22-T2 — plan: P22(substrate) — file: crates/roko-acp/src/bridge_events.rs
+- [x] **E04-T13** (integrative) Answer PermissionRequest in parent loop via request_permission (F3) — deps: E04-T12 — plan: none — file: crates/roko-acp/src/bridge_events.rs
+- [x] **E04-T14** (integrative) Gate execute_acp_builtin_tool on the decision, fail-closed (F3) — deps: E04-T13 — plan: none (co-owned E17-T01) — file: crates/roko-acp/src/bridge_events.rs, builtin_tools.rs
 - [ ] **E04-T15** (focused) Producer-side SSE/WS secret scrub (F12) — deps: none — plan: none — file: agent output / trace / terminal / event-ingest producers
 - [ ] **E04-T16** (integrative) Route ACP bash/web_fetch through network policy + SSRF block (F13) — deps: E04-T14 — plan: none — file: crates/roko-acp/src/builtin_tools.rs, roko-agent policy
 - [ ] **E04-T17** (focused) Surface MCP command/env allowlist in `roko doctor` (F14) — deps: none — plan: none — file: crates/roko-agent/src/mcp/config.rs, doctor cmd
@@ -228,15 +240,15 @@ Note: epics use slightly different tier vocabularies; they are reproduced as wri
 
 ### E12 — Dead-Code & Legacy Cleanup  *(remove the ~52K-LOC island after owning epics mine its value · 9 tasks)*
 
-- [ ] **E12-T01** (mechanical) Delete orphan roko-core files pulse_bus.rs and state_hub.rs — deps: none — plan: none — file: crates/roko-core/src/pulse_bus.rs, state_hub.rs *(exemplar EX03)*
-- [ ] **E12-T02** (standard) Program runtime against GateRunner trait; drop roko-gate from runtime deps — deps: none — plan: none — file: crates/roko-runtime/Cargo.toml, effect_driver.rs, workflow_engine.rs
-- [ ] **E12-T03** (standard) Remove legacy-runner-v2 feature facade; unconditionally compile gated tests — deps: none — plan: none — file: crates/roko-cli/Cargo.toml, tests/{cost_dedup,smoke,phase0_wiring,common/mod}.rs
-- [ ] **E12-T04** (focused*) Prune #[allow(dead_code)] members (safe now, incremental) — deps: none — plan: none — file: 37 files across crates/
-- [ ] **E12-T05** (standard*) De-dup roko-index HDC onto roko-primitives — deps: E03 (after) — plan: none — file: crates/roko-index/Cargo.toml + local HDC impl
-- [ ] **E12-T06** (architectural*) Delete roko-orchestrator incl. duplicate safety/ — deps: E01, E04 (after) — plan: none — file: crates/roko-orchestrator/ (crate + Cargo edges)
-- [ ] **E12-T07** (architectural*) Delete orchestrate.rs (23.7K LOC) — deps: E05, E06, E08 (after) — plan: none — file: crates/roko-cli/src/orchestrate.rs, lib.rs
-- [ ] **E12-T08** (standard*) Remove legacy-orchestrate feature + run.rs legacy path — deps: E12-T07 (after) — plan: none — file: crates/roko-cli/Cargo.toml, run.rs cfg sites
-- [ ] **E12-T09** (standard*) Retire roko-plugin facade (after consumer audit) — deps: audit — plan: none — file: crates/roko-plugin/ (crate + Cargo edges)
+- [x] **E12-T01** (mechanical) Delete orphan roko-core files pulse_bus.rs and state_hub.rs — deps: none — plan: none — file: crates/roko-core/src/pulse_bus.rs, state_hub.rs *(exemplar EX03)*
+- [x] **E12-T02** (standard) Program runtime against GateRunner trait; drop roko-gate from runtime deps — deps: none — plan: none — file: crates/roko-core/src/foundation.rs, crates/roko-gate/src/gate_service.rs, crates/roko-runtime/Cargo.toml, effect_driver.rs
+- [x] **E12-T03** (standard) Remove legacy-runner-v2 feature facade; unconditionally compile gated tests — deps: none — plan: none — file: crates/roko-cli/Cargo.toml, tests/{cost_dedup,smoke,phase0_wiring,common/mod}.rs
+- [x] **E12-T04** (focused*) Prune #[allow(dead_code)] members (safe now, incremental) — deps: none — plan: none — file: crates/
+- [x] **E12-T05** (standard*) De-dup roko-index HDC onto roko-primitives — deps: E03 (after) — plan: none — file: crates/roko-index/Cargo.toml + local HDC impl
+- [x] **E12-T06** (architectural*) Migrate the last live exports, then delete roko-orchestrator incl. duplicate safety/ — deps: E01, E04 (after) — plan: none — former file: crates/roko-orchestrator/ (crate + Cargo edges)
+- [x] **E12-T07** (architectural*) Delete orchestrate.rs (23.7K LOC) — deps: E05, E06, E08 (after) — plan: none — file: crates/roko-cli/src/orchestrate.rs, lib.rs
+- [x] **E12-T08** (standard*) Remove legacy-orchestrate feature + run.rs legacy path — deps: E12-T07 (after) — plan: none — file: crates/roko-cli/Cargo.toml, run.rs cfg sites
+- [x] **E12-T09** (superseded after audit) Retain roko-plugin as the canonical E30/E32 SDK and manifest owner; verify consumers and canonical tier/capability ownership — deps: architectural decision — file: crates/roko-plugin/ and consumers
 
 ### E16 — PRD & Self-Hosting Pipeline (generative front-half)  *(2 gap tasks over P08/P09/P23 · 2 tasks)*
 
@@ -245,14 +257,14 @@ Note: epics use slightly different tier vocabularies; they are reproduced as wri
 
 ### E17 — ACP Completion  *(consent-gated, learning-informed, MCP-equipped, honest ACP turns · 8 tasks)*
 
-- [ ] **E17-T01** (integrative) Reply-channel permission gate: emit PermissionRequest, gate exec fail-closed (Fa) — deps: E04, P22 (after P21) — plan: E04+P22(co-owned E04-T12→T14) — file: crates/roko-acp/src/bridge_events.rs, builtin_tools.rs
-- [ ] **E17-T02** (integrative) Consult ExperimentStore for ACP prompt/model A/B (Fb) — deps: P19, E07 — plan: P19+E07(prereq) — file: crates/roko-acp/src/bridge_events.rs
-- [ ] **E17-T03** (integrative) MCP session-tool parity: thread session_mcp_servers into Anthropic path (Fc) — deps: P25 — plan: P25(prereq; coord E15) — file: crates/roko-acp/src/bridge_events.rs
-- [ ] **E17-T04** (focused) Derive tool_context.capabilities from role/session consent, not all-true (Fd) — deps: P22(T1) — plan: P22(supersedes T1) — file: crates/roko-acp/src/bridge_events.rs
-- [ ] **E17-T05** (focused) Advertised-vs-accepted capability guard (image/audio) tying P28 + T04 (Fd) — deps: E17-T04, P28 — plan: P28(prereq) — file: crates/roko-acp/src/handler.rs, types.rs
-- [ ] **E17-T06** (integrative) End-to-end ACP conformance test (consent/select/experiment/Anthropic MCP) — deps: E17-T01, E17-T02, E17-T03, E17-T04 — plan: none — file: crates/roko-acp/src/bridge_events.rs (tests)
-- [ ] **E17-T07** (focused) Add cost budget display in ACP turns — deps: none — deps_plan: E01-execution-engine — plan: none — file: crates/roko-acp/src/bridge_events.rs, types.rs, handler.rs
-- [ ] **E17-T08** (integrative) Add rate limit status in ACP provider selection — deps: none — deps_plan: E14-providers-tools — plan: none — file: crates/roko-acp/src/bridge_events.rs
+- [x] **E17-T01** (integrative) Reply-channel permission gate: emit PermissionRequest, gate exec fail-closed (Fa) — deps: E04, P22 (after P21) — plan: E04+P22(co-owned E04-T12→T14) — file: crates/roko-acp/src/bridge_events.rs, builtin_tools.rs
+- [x] **E17-T02** (integrative) Consult ExperimentStore for ACP prompt/model A/B (Fb) — deps: P19, E07 — plan: P19+E07(prereq) — file: crates/roko-acp/src/bridge_events.rs
+- [x] **E17-T03** (integrative) MCP session-tool parity: thread session_mcp_servers into Anthropic path (Fc) — deps: P25 — plan: P25(prereq; coord E15) — file: crates/roko-acp/src/bridge_events.rs
+- [x] **E17-T04** (focused) Derive tool_context.capabilities from role/session consent, not all-true (Fd) — deps: P22(T1) — plan: P22(supersedes T1) — file: crates/roko-acp/src/bridge_events.rs
+- [x] **E17-T05** (focused) Advertised-vs-accepted capability guard (image/audio) tying P28 + T04 (Fd) — deps: E17-T04, P28 — plan: P28(prereq) — file: crates/roko-acp/src/handler.rs, types.rs
+- [x] **E17-T06** (integrative) End-to-end ACP conformance test (consent/select/experiment/Anthropic MCP) — deps: E17-T01, E17-T02, E17-T03, E17-T04 — plan: none — file: crates/roko-acp/src/bridge_events.rs (tests)
+- [x] **E17-T07** (focused) Persist, expose, and enforce ACP session USD budgets from exact per-turn efficiency costs — deps: none — deps_plan: E01-execution-engine — plan: none — file: crates/roko-acp/src/bridge_events.rs, session.rs, types.rs, handler.rs
+- [x] **E17-T08** (integrative) Consume shared provider health and near-limit RPM/TPM state during ACP automatic selection while honoring explicit choices — deps: none — deps_plan: E14-providers-tools — plan: none — file: crates/roko-acp/src/bridge_events.rs, session.rs
 
 ### E18 — Docs, Config, CI & Ops Hygiene  *(make the repo truthful & the pipeline provable · 15 tasks)*
 
@@ -344,16 +356,16 @@ Note: epics use slightly different tier vocabularies; they are reproduced as wri
 
 ### E23 — Agent Cognitive Autonomy  *(lifecycle type-state, behavioral phases, cortical state, energy, EFE routing · 10 tasks)*
 
-- [ ] **E23-T01** (focused) Implement agent lifecycle type-state (Booting, Ready, Executing, Reflecting, Dormant) — deps: none — file: crates/roko-agent/src/lifecycle.rs
-- [ ] **E23-T02** (focused) Add behavioral phase state machine (Explore, Exploit, Consolidate, Rest) — deps: E23-T01 — file: crates/roko-agent/src/phases.rs
-- [ ] **E23-T03** (focused) Extend CorticalState with attention_focus, working_memory, executive_control — deps: E23-T01 — file: crates/roko-agent/src/cortical.rs
-- [ ] **E23-T04** (focused) Implement CognitiveEnergy pool with recharge/depletion dynamics — deps: E23-T01 — file: crates/roko-agent/src/energy.rs
-- [ ] **E23-T05** (integrative) Add Expected Free Energy (EFE) routing for goal-directed behavior — deps: E23-T04 — file: crates/roko-agent/src/efe_routing.rs
-- [ ] **E23-T06** (integrative) Implement GoalTree with sub-goal decomposition and priority — deps: E23-T05 — file: crates/roko-agent/src/goal_tree.rs
-- [ ] **E23-T07** (focused) Add cognitive timescale hierarchy (reactive, deliberative, reflective) — deps: E23-T02 — file: crates/roko-agent/src/timescales.rs
-- [ ] **E23-T08** (focused) Wire energy-affect coupling between CognitiveEnergy and DaimonState — deps: E23-T04 — file: crates/roko-agent/src/energy.rs
-- [ ] **E23-T09** (integrative) Wire cognitive autonomy into orchestrate.rs dispatch loop — deps: E23-T01, E23-T04, E23-T05 — file: crates/roko-cli/src/orchestrate.rs
-- [ ] **E23-T10** (focused) Unit tests for cognitive autonomy (lifecycle, energy, EFE) — deps: E23-T01, E23-T04, E23-T05 — file: crates/roko-agent/src/
+- [x] **E23-T01** Implement the compile-time lifecycle type-state machine and runtime enum wrapper — `roko-agent/src/lifecycle.rs`
+- [x] **E23-T02** Implement five behavioral phases driven by vitality with hysteresis — `roko-daimon/src/lib.rs`
+- [x] **E23-T03** Extend lock-free CorticalState with cognitive-energy, fatigue, and last-EFE-tier fields — `roko-runtime/src/heartbeat.rs`
+- [x] **E23-T04** Implement CognitiveEnergy depletion, fatigue, and Gamma/Theta/Delta recovery — `roko-daimon/src/lib.rs`
+- [x] **E23-T05** Implement epistemic + pragmatic − cost EFE tier routing — `roko-learn/src/active_inference.rs`
+- [x] **E23-T06** Wire GoalTree into DaimonState for emergent goal tracking — `roko-daimon/src/lib.rs`, `goals.rs`
+- [x] **E23-T07** Add CognitiveTimescale configuration and adaptive clocks — `roko-runtime/src/heartbeat.rs`
+- [x] **E23-T08** Couple CognitiveEnergy bidirectionally with affect appraisal — `roko-daimon/src/lib.rs`
+- [x] **E23-T09** Wire behavioral phase and cognitive energy into runner-v2 dispatch, with numeric cost pressure, phase caps, durable Terminal skips, and post-spawn energy accounting — `roko-cli/src/runner/event_loop.rs`
+- [x] **E23-T10** Complete lifecycle, behavioral-phase, energy, goal, and EFE acceptance tests — `roko-agent`, `roko-daimon`, `roko-cli`
 
 ### E24 — Memory Advanced  *(heuristic kind, admission gate, Allen intervals, resonator, knowledge income · 10 tasks)*
 
@@ -370,16 +382,16 @@ Note: epics use slightly different tier vocabularies; they are reproduced as wri
 
 ### E25 — Learning Loops Advanced  *(HDC defrag, hindsight relabeling, c-factor governance, experiments · 10 tasks)*
 
-- [ ] **E25-T01** (integrative) Implement L3 HDC defragmentation pass for vector space cleanup — deps: none — file: crates/roko-learn/src/hdc_defrag.rs
-- [ ] **E25-T02** (focused) Add hindsight relabeling for episode outcomes — deps: none — file: crates/roko-learn/src/hindsight.rs
-- [ ] **E25-T03** (integrative) Implement c-factor governance constraining learning rate changes — deps: none — file: crates/roko-learn/src/c_factor.rs
-- [ ] **E25-T04** (focused) Add experiment significance testing (chi-square, Bayesian stopping) — deps: none — file: crates/roko-learn/src/experiments.rs
-- [ ] **E25-T05** (focused) Implement playbook when/then pattern matching rules — deps: none — file: crates/roko-learn/src/playbook_rules.rs
-- [ ] **E25-T06** (focused) Add Variance Inequality budget guard for learning updates — deps: E25-T03 — file: crates/roko-learn/src/variance_inequality.rs
-- [ ] **E25-T07** (focused) Implement autocatalytic metrics tracking self-improvement rate — deps: E25-T03 — file: crates/roko-learn/src/autocatalytic.rs
-- [ ] **E25-T08** (integrative) Wire PlaybookRules into dispatch prompt enrichment — deps: E25-T05 — file: crates/roko-learn/src/playbook_rules.rs
-- [ ] **E25-T09** (integrative) Wire learning loops advanced into orchestrate.rs — deps: E25-T01, E25-T03, E25-T05 — file: crates/roko-cli/src/orchestrate.rs
-- [ ] **E25-T10** (focused) Unit tests for learning loops (HDC defrag, c-factor, playbook) — deps: E25-T01, E25-T03, E25-T05 — file: crates/roko-learn/src/
+- [x] **E25-T01** (integrative) Implement L3 HDC defragmentation pass for vector space cleanup — deps: none — file: crates/roko-learn/src/hdc_clustering.rs
+- [x] **E25-T02** (focused) Add hindsight relabeling for episode outcomes — deps: none — file: crates/roko-learn/src/hindsight.rs
+- [x] **E25-T03** (integrative) Implement c-factor governance constraining learning rate changes — deps: none — file: crates/roko-learn/src/cfactor.rs
+- [x] **E25-T04** (focused) Add experiment significance testing (chi-square, Bayesian stopping) — deps: none — file: crates/roko-learn/src/prompt_experiment.rs
+- [x] **E25-T05** (focused) Implement playbook when/then pattern matching rules — deps: none — file: crates/roko-learn/src/playbook.rs
+- [x] **E25-T06** (focused) Add Variance Inequality budget guard for learning updates — deps: E25-T03 — file: crates/roko-learn/src/cfactor.rs
+- [x] **E25-T07** (focused) Implement autocatalytic metrics tracking self-improvement rate — deps: E25-T03 — file: crates/roko-learn/src/aggregate.rs
+- [x] **E25-T08** (integrative) Wire PlaybookRules into dispatch prompt enrichment — deps: E25-T05 — file: crates/roko-learn/src/playbook.rs
+- [x] **E25-T09** (integrative) Wire advanced learning loops into Runner-v2 — deps: E25-T01, E25-T03, E25-T05 — file: crates/roko-cli/src/runner/event_loop.rs
+- [x] **E25-T10** (focused) Unit tests for learning loops (HDC defrag, c-factor, playbook) — deps: E25-T01, E25-T03, E25-T05 — file: crates/roko-learn/src/
 
 ### E26 — Inference Gateway  *(roko-gateway crate, loop detect, cache, tool prune, budget, thinking cap · 12 tasks)*
 
@@ -398,7 +410,7 @@ Note: epics use slightly different tier vocabularies; they are reproduced as wri
 
 ---
 
-## Phase 2b — Infrastructure  *(62 tasks · E27–E33)*
+## Phase 2b — Infrastructure  *(61 tasks · E27–E33)*
 
 ### E27 — Feeds System  *(FeedInfo v2, FeedRegistration, Feed trait, recipes, marketplace · 10 tasks)*
 
@@ -459,28 +471,30 @@ Note: epics use slightly different tier vocabularies; they are reproduced as wri
 - [ ] **E31-T07** (focused) Add trigger API routes to roko-serve — deps: E31-T01 — file: crates/roko-serve/src/routes/
 - [ ] **E31-T08** (focused) Wire trigger events into event Bus topics — deps: E31-T01 — file: crates/roko-runtime/src/
 
-### E32 — Tool Plugin Ecosystem  *(PluginSdkTier, DynamicToolRegistry, declarative tools, sandbox · 8 tasks)*
+### E32 — Tool Plugin Ecosystem  *(PluginSdkTier, DynamicToolRegistry, declarative tools, sandbox · 8/8 manifest complete)*
 
-- [ ] **E32-T01** (focused) Define PluginSdkTier enum (Core, Standard, Community, Experimental) — deps: none — file: crates/roko-core/src/tool.rs
-- [ ] **E32-T02** (integrative) Implement DynamicToolRegistry for runtime tool registration — deps: E32-T01 — file: crates/roko-std/src/tool/registry.rs
-- [ ] **E32-T03** (focused) Add DeclarativeTool conversion from TOML to executable tool — deps: E32-T01 — file: crates/roko-std/src/tool/
-- [ ] **E32-T04** (focused) Implement capability binding for tool permission scoping — deps: E32-T01 — file: crates/roko-std/src/tool/
-- [ ] **E32-T05** (focused) Add sandbox config for tool execution isolation — deps: E32-T01 — file: crates/roko-core/src/config.rs
-- [ ] **E32-T06** (focused) Implement version resolution for plugin dependencies — deps: E32-T01 — file: crates/roko-std/src/tool/
-- [ ] **E32-T07** (focused) Add tool catalog validation (schema check, capability audit) — deps: E32-T02 — file: crates/roko-std/src/tool/
-- [ ] **E32-T08** (focused) Wire plugin CLI commands (install, remove, list, audit) — deps: E32-T02 — file: crates/roko-cli/src/commands/
+All manifest tasks are implemented: canonical types, resolution, dynamic registration, declarative subprocess execution, policy validation, and list/audit. Adversarial coverage verifies strict parsing/admission, exact environment inheritance, symlink-safe paths, bounded concurrent output, process-tree cleanup, truthful audit failure, and live-only MCP advertisement. WIT/Component hostcalls and OpenClaw/legacy adapter parity remain separately tracked roadmap work.
+
+- [x] **E32-T01** (focused) Add PluginSdkTier enum and PluginCapability declaration to roko-plugin — deps: none — file: crates/roko-plugin/src/manifest.rs
+- [x] **E32-T02** (focused) Add DynamicToolRegistry that merges static builtins with plugin-declared tools — deps: E32-T01 — file: crates/roko-std/src/tool/registry.rs
+- [x] **E32-T03** (focused) Add DeclarativeTool-to-ToolDef conversion and wire into extension_loader — deps: E32-T02 — file: crates/roko-cli/src/runner/extension_loader.rs
+- [x] **E32-T04** (focused) Enforce PluginTier capability checks on plugin-declared tool execution — deps: E32-T01 — file: crates/roko-agent/src/safety/capabilities.rs
+- [x] **E32-T05** (focused) Add sandbox configuration fields to plugin manifest and tool execution — deps: E32-T01 — file: crates/roko-plugin/src/manifest.rs
+- [x] **E32-T06** (focused) Add version-aware plugin resolution and duplicate detection to discovery — deps: E32-T05 — file: crates/roko-plugin/src/manifest.rs
+- [x] **E32-T07** (focused) Add validate_tool_catalog to assert all registered tools have handlers — deps: none — file: crates/roko-std/src/tool/handlers.rs
+- [x] **E32-T08** (focused) Enhance roko plugin list with tier display and wire audit to catalog validation — deps: E32-T02, E32-T07 — file: crates/roko-cli/src/commands/config_cmd.rs
 
 ### E33 — Telemetry Lens  *(Observe trait, Lens payloads, StateHub projections, circuit breaker · 9 tasks)*
 
-- [ ] **E33-T01** (integrative) Define Observe trait with lens_id, observe, project methods — deps: none — file: crates/roko-core/src/observe.rs
-- [ ] **E33-T02** (focused) Implement 4 core Lens payloads (AgentMetrics, TaskProgress, GateVerdict, BudgetUsage) — deps: E33-T01 — file: crates/roko-core/src/lens.rs
-- [ ] **E33-T03** (focused) Implement Error, Drift, and Budget alert payloads — deps: E33-T01 — file: crates/roko-core/src/lens.rs
-- [ ] **E33-T04** (focused) Implement C-Factor telemetry payload — deps: E33-T01 — file: crates/roko-core/src/lens.rs
-- [ ] **E33-T05** (integrative) Create 7 StateHub projections from Lens data — deps: E33-T02 — file: crates/roko-core/src/state_hub_projections.rs
-- [ ] **E33-T06** (focused) Implement Lens composition (combine multiple lenses into one) — deps: E33-T01 — file: crates/roko-core/src/observe.rs
-- [ ] **E33-T07** (integrative) Wire StateHub projection pipeline into roko-serve — deps: E33-T05 — file: crates/roko-serve/src/
-- [ ] **E33-T08** (focused) Add lens circuit breaker for high-frequency telemetry throttling — deps: E33-T01 — file: crates/roko-core/src/observe.rs
-- [ ] **E33-T09** (focused) Add telemetry routes to roko-serve for lens data access — deps: E33-T07 — file: crates/roko-serve/src/routes/
+- [x] **E33-T01** Define the complete 39-variant asynchronous TelemetryObserve protocol.
+- [x] **E33-T02** Define the four core Lens payload families.
+- [x] **E33-T03** Define error, drift, and budget alert payloads.
+- [x] **E33-T04** Define C-Factor telemetry payloads.
+- [x] **E33-T05** Materialize all seven typed StateHub projections.
+- [x] **E33-T06** Implement configured Lens stacking/chaining and scoped routing.
+- [x] **E33-T07** Wire typed projection aggregation and invalidation into StateHub/serve.
+- [x] **E33-T08** Add scoped circuit breakers, bounded delivery, and runtime controls.
+- [x] **E33-T09** Expose current and restart-durable projection history over HTTP/SSE.
 
 ---
 
@@ -488,25 +502,25 @@ Note: epics use slightly different tier vocabularies; they are reproduced as wri
 
 ### E34 — Security IFC  *(taint lattice, taint tracker, immune pipeline, corrigibility, sandbox · 8 tasks)*
 
-- [ ] **E34-T01** (focused) Implement TaintLevel lattice (Public, Internal, Sensitive, Critical) — deps: none — file: crates/roko-core/src/taint.rs
-- [ ] **E34-T02** (focused) Upgrade TaintTracker with IFC lattice propagation rules — deps: E34-T01 — file: crates/roko-agent/src/safety/
-- [ ] **E34-T03** (integrative) Implement immune pipeline for detecting taint violations — deps: E34-T02 — file: crates/roko-agent/src/safety/
-- [ ] **E34-T04** (focused) Add corrigibility ordering for agent override hierarchy — deps: E34-T01 — file: crates/roko-agent/src/safety/
-- [ ] **E34-T05** (focused) Define sandbox levels (None, Filesystem, Network, Full) — deps: E34-T01 — file: crates/roko-core/src/sandbox.rs
-- [ ] **E34-T06** (focused) Implement capability intersection for multi-agent permission merging — deps: E34-T01 — file: crates/roko-agent/src/safety/
-- [ ] **E34-T07** (focused) Add QuarantineVault for tainted artifact isolation — deps: E34-T03 — file: crates/roko-agent/src/safety/
-- [ ] **E34-T08** (integrative) Wire IFC enforcement into agent dispatch pipeline — deps: E34-T02, E34-T03 — file: crates/roko-agent/src/
+- [x] **E34-T01** Add the trust-origin lattice and monotonic rules without conflating the established classification TaintLevel — `roko-core/src/provenance.rs`
+- [x] **E34-T02** Implement relocated TaintTracker propagation under the live agent safety owner
+- [x] **E34-T03** Implement the pure five-layer immune pipeline — `roko-core/src/immune.rs`
+- [x] **E34-T04** Implement five-head lexicographic corrigibility ordering — `roko-core/src/corrigibility.rs`
+- [x] **E34-T05** Implement the five sandbox enforcement levels and capability policy — `roko-agent/src/safety/sandbox.rs`
+- [x] **E34-T06** Implement the exact Cell × Graph × Space capability wrappers — `roko-core/src/capabilities.rs`
+- [x] **E34-T07** Complete QuarantineVault batch review, transitive/cycle-safe links, persistence, and statistics — `roko-core/src/immune.rs`
+- [x] **E34-T08** Attach non-replaceable taint/corrigibility enforcement to the production safety hook chain with redacted audits — `roko-agent/src/safety/hooks.rs`, `contract.rs`, `dispatcher/mod.rs`
 
 ### E35 — Auth Protocol  *(API key lifecycle, bearer tokens, JWKS, RBAC, relay tokens · 8 tasks)*
 
-- [ ] **E35-T01** (focused) Implement API key lifecycle (create, rotate, revoke, list) — deps: none — file: crates/roko-serve/src/auth/
-- [ ] **E35-T02** (focused) Add agent bearer token issuance and validation — deps: E35-T01 — file: crates/roko-serve/src/auth/
-- [ ] **E35-T03** (focused) Harden JWKS verification with key rotation support — deps: E35-T01 — file: crates/roko-serve/src/auth/
-- [ ] **E35-T04** (focused) Define RBAC roles (Admin, Operator, Agent, Viewer, Guest) — deps: none — file: crates/roko-serve/src/auth/
-- [ ] **E35-T05** (integrative) Implement RBAC middleware for route-level authorization — deps: E35-T04 — file: crates/roko-serve/src/routes/middleware.rs
-- [ ] **E35-T06** (focused) Add relay tokens for cross-workspace authentication — deps: E35-T02 — file: crates/roko-serve/src/auth/
-- [ ] **E35-T07** (focused) Implement invitation flow for workspace membership — deps: E35-T04 — file: crates/roko-serve/src/auth/
-- [ ] **E35-T08** (focused) Add auth audit trail logging all auth events — deps: E35-T01, E35-T05 — file: crates/roko-serve/src/auth/
+- [x] **E35-T01** (focused) Implement API key lifecycle (create, rotate, revoke, list) — deps: none — files: crates/roko-serve/src/routes/auth.rs, middleware.rs
+- [x] **E35-T02** (focused) Add scoped agent bearer token issuance and validation — deps: E35-T01 — files: crates/roko-serve/src/routes/auth.rs, middleware.rs
+- [x] **E35-T03** (focused) Harden multi-provider JWKS verification with refresh and key rotation — deps: E35-T01 — files: crates/roko-serve/src/jwks.rs, routes/middleware.rs
+- [x] **E35-T04** (focused) Define Owner, Admin, Member, and Viewer workspace RBAC — deps: none — files: crates/roko-serve/src/rbac.rs, routes/team.rs
+- [x] **E35-T05** (integrative) Implement route-wide typed RBAC authorization — deps: E35-T04 — files: crates/roko-serve/src/routes/rbac_middleware.rs, route_permissions.rs
+- [x] **E35-T06** (focused) Add parent-linked, capability-narrowed agent-to-agent relay delegation — deps: E35-T02 — files: crates/roko-serve/src/routes/auth.rs, middleware.rs
+- [x] **E35-T07** (focused) Implement token-based invitation acceptance for workspace membership — deps: E35-T04 — file: crates/roko-serve/src/routes/team.rs
+- [x] **E35-T08** (focused) Add a shared auth audit trail for token and authorization events — deps: E35-T01, E35-T05 — files: crates/roko-serve/src/auth_audit.rs, routes/
 
 ---
 
@@ -514,14 +528,14 @@ Note: epics use slightly different tier vocabularies; they are reproduced as wri
 
 ### E36 — Payments  *(payment domain types, settlement, MPP, pricing, cost tracking · 8 tasks)*
 
-- [ ] **E36-T01** (focused) Define payment domain types (PaymentIntent, Receipt, PaymentState) — deps: none — file: crates/roko-chain/src/payments.rs
-- [ ] **E36-T02** (focused) Implement settlement batching for payment aggregation — deps: E36-T01 — file: crates/roko-chain/src/payments.rs
-- [ ] **E36-T03** (focused) Add MPP (Multi-Path Payment) session management — deps: E36-T01 — file: crates/roko-chain/src/payments.rs
-- [ ] **E36-T04** (focused) Implement pricing tier resolution (Free, Basic, Pro, Enterprise) — deps: E36-T01 — file: crates/roko-chain/src/payments.rs
-- [ ] **E36-T05** (focused) Add FeedInfo pricing fields for feed marketplace — deps: E36-T04 — file: crates/roko-core/src/feed.rs
-- [ ] **E36-T06** (focused) Implement cost tracking per agent per session — deps: E36-T01 — file: crates/roko-chain/src/payments.rs
-- [ ] **E36-T07** (integrative) Wire payment middleware into roko-serve route handlers — deps: E36-T01 — file: crates/roko-serve/src/routes/
-- [ ] **E36-T08** (focused) Add payment dashboard events to StateHub — deps: E36-T06 — file: crates/roko-core/src/
+- [x] **E36-T01** (focused) Define payment domain types and pricing contracts — deps: none — file: crates/roko-core/src/feed.rs
+- [x] **E36-T02** (focused) Implement x402 settlement batching — deps: E36-T01 — file: crates/roko-chain/src/x402.rs
+- [x] **E36-T03** (focused) Add MPP (Metered Payment Protocol) session management — deps: E36-T01 — file: crates/roko-chain/src/x402.rs
+- [x] **E36-T04** (focused) Implement reputation-based pricing tier resolution — deps: E36-T01 — file: crates/roko-chain/src/reputation_registry.rs
+- [x] **E36-T05** (focused) Add FeedInfo pricing fields for feed marketplace — deps: E36-T04 — file: crates/roko-core/src/feed.rs
+- [x] **E36-T06** (focused) Implement cost tracking per agent per session — deps: E36-T01 — file: crates/roko-learn/src/costs_db.rs
+- [x] **E36-T07** (integrative) Wire payment middleware into roko-serve route handlers — deps: E36-T01 — file: crates/roko-serve/src/routes/
+- [x] **E36-T08** (focused) Add payment dashboard events to StateHub — deps: E36-T06 — file: crates/roko-core/src/dashboard_snapshot.rs
 
 ### E38 — Marketplace  *(ArtifactKind, TraceRank, PackageTier, publish pipeline, economics · 9 tasks)*
 
@@ -541,15 +555,15 @@ Note: epics use slightly different tier vocabularies; they are reproduced as wri
 
 ### E37 — Surfaces  *(surface projection contracts, InboxCategory, AutonomyLevel, TUI tabs · 9 tasks)*
 
-- [ ] **E37-T01** (integrative) Define surface projection contracts (Surface trait, ProjectionSpec) — deps: none — file: crates/roko-core/src/surface.rs
-- [ ] **E37-T02** (focused) Implement InboxCategory enum for message classification — deps: none — file: crates/roko-core/src/surface.rs
-- [ ] **E37-T03** (focused) Define AutonomyLevel (Manual, Supervised, Autonomous, Full) — deps: none — file: crates/roko-core/src/surface.rs
-- [ ] **E37-T04** (integrative) Wire TUI tab mapping to surface projections — deps: E37-T01 — file: crates/roko-cli/src/tui/
-- [ ] **E37-T05** (focused) Implement Workbench events for task/build surface — deps: E37-T01 — file: crates/roko-core/src/surface.rs
-- [ ] **E37-T06** (focused) Implement Inbox events for message/notification surface — deps: E37-T02 — file: crates/roko-core/src/surface.rs
-- [ ] **E37-T07** (focused) Implement Autonomy events for control surface — deps: E37-T03 — file: crates/roko-core/src/surface.rs
-- [ ] **E37-T08** (focused) Add surface projection routes to roko-serve — deps: E37-T01 — file: crates/roko-serve/src/routes/
-- [ ] **E37-T09** (focused) Define 12 primitive surface types — deps: E37-T01 — file: crates/roko-core/src/surface.rs
+- [x] **E37-T01** Define typed contracts for Workbench, Inbox, Canvas, Minimap, and Autonomy projections — `roko-serve/src/projection_contract.rs`
+- [x] **E37-T02** Add the eight Inbox categories, three urgency levels, and routing policy — `roko-core/src/dashboard_snapshot.rs`
+- [x] **E37-T03** Define the exact autonomy levels 0–4 and per-capability config — `roko-core/src/agent.rs`
+- [x] **E37-T04** Map all seven v2 surface names alongside the unchanged ten-tab TUI — `roko-cli/src/tui/tabs.rs`
+- [x] **E37-T05** Define the separate tagged Workbench `SurfaceEvent` contract — `roko-core/src/runtime_event.rs`
+- [x] **E37-T06** Materialize idempotent Inbox receive/defer/resolve lifecycle and pending count — `roko-core/src/dashboard_snapshot.rs`
+- [x] **E37-T07** Add typed autonomy change/grant/revoke/bulk events — `roko-core/src/runtime_event.rs`
+- [x] **E37-T08** Serve five dedicated typed StateHub-backed projection routes plus live generic streams — `roko-serve/src/routes/projections.rs`
+- [x] **E37-T09** Define all twelve authoring `ObjectType` primitives — `roko-core/src/foundation.rs`
 
 ### E39 — Registries & Identity  *(ERC-8004, DelegationCaveat, KnowledgeRegistry, gossip, reputation · 8 tasks)*
 
@@ -594,14 +608,14 @@ Note: epics use slightly different tier vocabularies; they are reproduced as wri
 
 ### E42 — Config Evolution  *(ConfigSource priority, invariants, hot reload, migration, profiles · 8 tasks)*
 
-- [ ] **E42-T01** (focused) Add ConfigSource::Evolved and ConfigSource::Composed variants with priority ordering — deps: none — file: crates/roko-core/src/config/provenance.rs
-- [ ] **E42-T02** (focused) Implement the 7 config invariants as validation functions — deps: none — file: crates/roko-core/src/config/validation.rs
-- [ ] **E42-T03** (focused) Add debounced file-watch trigger to hot_reload module — deps: E42-T02 — file: crates/roko-core/src/config/hot_reload.rs
-- [ ] **E42-T04** (focused) Implement config migration chain with versioned migration functions — deps: none — file: crates/roko-core/src/config/loader.rs
-- [ ] **E42-T05** (integrative) Implement per-field priority merge in config loading — deps: E42-T01, E42-T04 — file: crates/roko-core/src/config/loader.rs, provenance.rs
-- [ ] **E42-T06** (focused) Wire validate_invariants into the config load path — deps: E42-T02, E42-T05 — file: crates/roko-core/src/config/loader.rs
-- [ ] **E42-T07** (focused) Add DomainProfile struct with base-profile inheritance — deps: none — file: crates/roko-core/src/config/schema.rs
-- [ ] **E42-T08** (focused) Add config staleness check with demurrage-based warnings — deps: E42-T02 — file: crates/roko-core/src/config/hot_reload.rs
+- [x] **E42-T01** (focused) Add ConfigSource::Evolved and ConfigSource::Composed variants with priority ordering — deps: none — file: crates/roko-core/src/config/provenance.rs
+- [x] **E42-T02** (focused) Implement the 7 config invariants as validation functions — deps: none — file: crates/roko-core/src/config/validation.rs
+- [x] **E42-T03** (focused) Add debounced file-watch trigger to hot_reload module — deps: E42-T02 — file: crates/roko-core/src/config/hot_reload.rs
+- [x] **E42-T04** (focused) Implement config migration chain with versioned migration functions — deps: none — file: crates/roko-core/src/config/loader.rs
+- [x] **E42-T05** (integrative) Implement per-field priority merge in config loading — deps: E42-T01, E42-T04 — files: crates/roko-core/src/config/loader.rs, provenance.rs
+- [x] **E42-T06** (focused) Wire validate_invariants into the config load path — deps: E42-T02, E42-T05 — file: crates/roko-core/src/config/loader.rs
+- [x] **E42-T07** (focused) Add DomainProfile struct with base-profile inheritance — deps: none — file: crates/roko-core/src/config/schema.rs
+- [x] **E42-T08** (focused) Add config staleness check with demurrage-based warnings — deps: E42-T02 — file: crates/roko-core/src/config/hot_reload.rs
 
 ### E43 — Deployment & Portability  *(brain export/import, daemon lifecycle, secrets rotation, Docker · 8 tasks)*
 
@@ -616,14 +630,14 @@ Note: epics use slightly different tier vocabularies; they are reproduced as wri
 
 ### E44 — Cross-Cut Functors  *(CrossCutFunctor trait, Memory/Daimon/Dreams/Safety functors, VCG arbitration · 8 tasks)*
 
-- [ ] **E44-T01** (focused) Define CrossCutFunctor trait with pre_enrich and post_enrich hooks — deps: none — file: crates/roko-compose/src/lib.rs
-- [ ] **E44-T02** (integrative) Implement MemoryFunctor wrapping neuro KnowledgeStore queries — deps: E44-T01 — file: crates/roko-compose/src/strategy.rs
-- [ ] **E44-T03** (integrative) Implement DaimonFunctor wrapping PAD bias and somatic markers — deps: E44-T01 — file: crates/roko-compose/src/strategy.rs
-- [ ] **E44-T04** (focused) Implement DreamsFunctor wrapping dream cycle output injection — deps: E44-T01 — file: crates/roko-compose/src/strategy.rs
-- [ ] **E44-T05** (integrative) Implement 6 natural transformations forming the cross-cut triangle — deps: E44-T02, E44-T03, E44-T04 — file: crates/roko-compose/src/strategy.rs
-- [ ] **E44-T06** (integrative) Wire VCG auction as tiebreaker when cross-cuts produce conflicting recommendations — deps: E44-T02, E44-T03 — file: crates/roko-compose/src/auction.rs
-- [ ] **E44-T07** (focused) Implement SafetyFunctor as capability-level pre-filter outside VCG — deps: E44-T01, E44-T06 — file: crates/roko-compose/src/strategy.rs
-- [ ] **E44-T08** (integrative) Implement gate failure cascade through Memory -> Daimon -> Dreams pipeline — deps: E44-T05, E44-T06 — file: crates/roko-cli/src/runner/event_loop.rs
+- [x] **E44-T01** (focused) Define CrossCutFunctor trait with pre_enrich and post_enrich hooks — deps: none — file: crates/roko-compose/src/cross_cut.rs
+- [x] **E44-T02** (integrative) Implement MemoryFunctor wrapping neuro KnowledgeStore queries — deps: E44-T01 — file: crates/roko-compose/src/memory_functor.rs
+- [x] **E44-T03** (integrative) Implement DaimonFunctor wrapping PAD bias and somatic markers — deps: E44-T01 — file: crates/roko-compose/src/daimon_functor.rs
+- [x] **E44-T04** (focused) Implement DreamsFunctor wrapping dream cycle output injection — deps: E44-T01 — file: crates/roko-compose/src/dreams_functor.rs
+- [x] **E44-T05** (integrative) Implement 6 natural transformations forming the cross-cut triangle — deps: E44-T02, E44-T03, E44-T04 — file: crates/roko-compose/src/natural_transforms.rs
+- [x] **E44-T06** (integrative) Wire VCG auction as tiebreaker when cross-cuts produce conflicting recommendations — deps: E44-T02, E44-T03 — file: crates/roko-compose/src/auction.rs
+- [x] **E44-T07** (focused) Implement SafetyFunctor as capability-level pre-filter outside VCG — deps: E44-T01, E44-T06 — file: crates/roko-compose/src/safety_functor.rs
+- [x] **E44-T08** (integrative) Implement gate failure cascade through Memory -> Daimon -> Dreams pipeline — deps: E44-T05, E44-T06 — file: crates/roko-cli/src/runner/event_loop.rs
 
 ### E45 — Orchestrator Mori Parity  *(review verdict, compile auto-fix, error sharing, reflection, warm pool · 10 tasks)*
 

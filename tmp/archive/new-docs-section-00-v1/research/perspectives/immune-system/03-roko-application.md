@@ -15,13 +15,13 @@ This page traces the full mapping from biological immune components to Roko's ar
 
 **Biological**: The skin is the first line of defense, preventing pathogens from entering.
 
-**Roko analog**: The interface layer — how Engrams enter the system. Any input validation,
+**Roko analog**: The interface layer — how Signals enter the system. Any input validation,
 schema enforcement, or trust-level assignment that happens at the point of ingestion before
-Engrams enter the Substrate. This includes:
-- **Attestation requirements**: Engrams must carry valid provenance (author, timestamp,
-  hash). Engrams without attestation are rejected at the boundary.
-- **Schema validation**: Engrams that violate the data model are rejected before processing.
-- **Source registration**: only registered, trusted sources can inject Engrams directly into
+Signals enter the Substrate. This includes:
+- **Attestation requirements**: Signals must carry valid provenance (author, timestamp,
+  hash). Signals without attestation are rejected at the boundary.
+- **Schema validation**: Signals that violate the data model are rejected before processing.
+- **Source registration**: only registered, trusted sources can inject Signals directly into
   the Substrate. Unregistered sources route through a higher-scrutiny ingestion path.
 
 ---
@@ -34,15 +34,15 @@ The [Gate](../../../reference/05-operators/gate.md) is the primary innate immune
 anything that doesn't look like self. Fast, non-specific, no memory.
 
 **Roko's Gate**:
-- Applies hard-coded rule sets (PAMP equivalents): reject low-score Engrams, reject
-  untrusted-source Engrams, reject Engrams that trigger safety rules.
-- Operates at T0 speed — fast enough to process every Engram without creating a bottleneck.
-- No per-instance memory: the Gate applies the same rules to the same Engram pattern every
+- Applies hard-coded rule sets (PAMP equivalents): reject low-score Signals, reject
+  untrusted-source Signals, reject Signals that trigger safety rules.
+- Operates at T0 speed — fast enough to process every Signal without creating a bottleneck.
+- No per-instance memory: the Gate applies the same rules to the same Signal pattern every
   time. Memory is a property of the rule set (which can be updated), not the Gate instance.
 
 **Innate immune failure modes → Gate failure modes**:
 - **Immunodeficiency**: Gate thresholds set too low → threats pass through unchallenged.
-- **Autoimmunity**: Gate rules too aggressive → valid Engrams are rejected, creating knowledge
+- **Autoimmunity**: Gate rules too aggressive → valid Signals are rejected, creating knowledge
   blindspots.
 - **Immunosenescence** (aging immune decline): Gate rules that were valid when written become
   stale as the threat environment changes.
@@ -51,7 +51,7 @@ anything that doesn't look like self. Fast, non-specific, no memory.
 
 ## The Scorer as Antigen Presentation
 
-The [Scorer](../../../reference/05-operators/scorer.md) evaluates Engrams and flags
+The [Scorer](../../../reference/05-operators/scorer.md) evaluates Signals and flags
 anomalous ones for elevated scrutiny. In immune terms, the Scorer acts as a **dendritic
 cell**: it doesn't kill pathogens, but it presents antigens (signals anomalies) to the
 adaptive system (T2 processing) and provides the co-stimulation signals needed to trigger
@@ -62,7 +62,7 @@ The Scorer's trust and confidence axes are the primary antigen presentation dime
 - High novelty + low coherence = potential adversarial injection
 - Contradiction with high-confidence Neuro knowledge = requires investigation
 
-The Scorer does not decide what happens to the Engram — it enriches it with the information
+The Scorer does not decide what happens to the Signal — it enriches it with the information
 the downstream immune response needs.
 
 ---
@@ -72,11 +72,11 @@ the downstream immune response needs.
 The [Neuro knowledge layer](../../../reference/09-cross-cuts/README.md) defines "self"
 in the cognitive immune system: the accumulated, validated knowledge of the agent.
 
-An Engram that confirms and extends existing Neuro knowledge is "self-compatible" — it is
-recognized as belonging. An Engram that contradicts high-confidence Neuro knowledge is
+An Signal that confirms and extends existing Neuro knowledge is "self-compatible" — it is
+recognized as belonging. An Signal that contradicts high-confidence Neuro knowledge is
 "foreign" — it requires elevated scrutiny.
 
-The Neuro probing mechanism (querying Neuro with Engram content to check consistency)
+The Neuro probing mechanism (querying Neuro with Signal content to check consistency)
 is the cognitive equivalent of **MHC molecule presentation**: comparing the new input against
 the known-self profile to determine compatibility.
 
@@ -88,7 +88,7 @@ integrity of the Neuro knowledge base is the integrity of the self-definition.
 
 ## Dreams as Thymic Selection
 
-The [Dreams subsystem](../../../reference/09-cross-cuts/README.md) consolidates Engrams
+The [Dreams subsystem](../../../reference/09-cross-cuts/README.md) consolidates Signals
 from short-term storage into long-term Neuro knowledge during delta-speed processing.
 
 In immune terms, Dreams is the **thymus**: the organ that selects which immune cells become
@@ -96,16 +96,16 @@ part of the permanent immune repertoire. The thymus eliminates T cells that eith
 1. Cannot recognize self-MHC (useless — won't work)
 2. React too strongly to self-antigens (dangerous — will cause autoimmunity)
 
-Dreams performs an analogous selection: which Engrams are promoted to durable Neuro knowledge
+Dreams performs an analogous selection: which Signals are promoted to durable Neuro knowledge
 (useful and safe), and which are allowed to decay (useless, expired, or potentially
 corrupting)?
 
 The selection criteria in Dreams:
-- **Positive selection**: high-confidence, high-coherence Engrams that extend Neuro
+- **Positive selection**: high-confidence, high-coherence Signals that extend Neuro
   knowledge → promoted
-- **Negative selection**: Engrams that contradict established high-confidence Neuro
+- **Negative selection**: Signals that contradict established high-confidence Neuro
   knowledge → not promoted (or flagged for resolution)
-- **Passive decay**: low-relevance Engrams → expire without promotion
+- **Passive decay**: low-relevance Signals → expire without promotion
 
 ---
 
@@ -135,9 +135,9 @@ In biology, the **major histocompatibility complex** (MHC) molecules present pep
 from proteins inside the cell. The specific MHC type identifies "which body this cell belongs to."
 Immune cells from the same organism recognize the same MHC; foreign MHC triggers a response.
 
-The [Provenance type](../../../reference/10-types/provenance.md) on Engrams is the cognitive
-MHC: it identifies which agent, process, or source produced the Engram and what trust level
-should be assigned. An Engram from a trusted internal source has "self-MHC." An Engram from
+The [Provenance type](../../../reference/10-types/provenance.md) on Signals is the cognitive
+MHC: it identifies which agent, process, or source produced the Signal and what trust level
+should be assigned. An Signal from a trusted internal source has "self-MHC." An Signal from
 an unregistered external source has "foreign MHC" and receives elevated scrutiny.
 
 ---

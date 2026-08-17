@@ -1,6 +1,6 @@
 # Provenance — Author Field
 
-> The string that identifies who produced an Engram. The only provenance field included in the ContentHash.
+> The string that identifies who produced an Signal. The only provenance field included in the ContentHash.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -12,9 +12,9 @@
 
 ## TL;DR
 
-`author` is a free-form UTF-8 string that identifies the Engram's creator. It is the only
-provenance field that participates in the Engram's identity hash, which means two Engrams
-with identical content but different authors are considered **distinct Engrams** — different
+`author` is a free-form UTF-8 string that identifies the Signal's creator. It is the only
+provenance field that participates in the Signal's identity hash, which means two Signals
+with identical content but different authors are considered **distinct Signals** — different
 identities, different hashes. The format is currently a string convention; a structured type
 (DID or agent URI) is planned.
 
@@ -22,12 +22,12 @@ identities, different hashes. The format is currently a string convention; a str
 
 ## The Idea
 
-Identity in Roko is not just "what does this Engram contain" but also "who says so". Two
-agents can independently produce Engrams with identical text bodies. They should have
+Identity in Roko is not just "what does this Signal contain" but also "who says so". Two
+agents can independently produce Signals with identical text bodies. They should have
 different identities, because their reliability and lineage are different. The `author`
 field carries this identity anchor.
 
-The author is fixed at creation. It cannot be changed after the Engram is hashed. Changing
+The author is fixed at creation. It cannot be changed after the Signal is hashed. Changing
 the author would produce a new hash — a new identity — which is the correct behaviour for
 derivative works rather than mutating an existing one.
 
@@ -42,7 +42,7 @@ Author strings follow the convention `"<type>-<id>"`:
 | `agent` | `"agent-001"` | A Roko agent instance, identified by its numeric ID |
 | `tool` | `"tool-rust-analyzer"` | A tool invocation |
 | `external` | `"external-ingest-42"` | Ingest from an external data source |
-| `system` | `"system-boot"` | System-level Engrams created at startup |
+| `system` | `"system-boot"` | System-level Signals created at startup |
 | `human` | `"human-will"` | Human-authored input (for human-in-the-loop workflows) |
 
 These are conventions, not enforced by the type system. Any non-empty string is accepted.
@@ -126,7 +126,7 @@ This means:
 
 | Failure | Cause | Recovery |
 |---|---|---|
-| Duplicate Engrams from different agents | Author field ensures separate hashes | No action needed; this is correct behaviour |
+| Duplicate Signals from different agents | Author field ensures separate hashes | No action needed; this is correct behaviour |
 | Empty author accepted | Pre-validation bypass in legacy code | Add `ProvenanceError::EmptyAuthor` check to all construction paths |
 | Author contains newlines/control chars | Free-form string with no sanitization | Recommend sanitization in `local_agent()` constructor |
 

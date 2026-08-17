@@ -1,11 +1,11 @@
 # Daimon — Affect and Motivation Cross-Cut
 
 > Daimon maintains the agent's emotional state (PAD vectors), translates it into
-> behavioral influences, and marks Engrams with affective significance.
+> behavioral influences, and marks Signals with affective significance.
 
 **Status**: Built
 **Crate**: `roko-daimon` (L2)
-**Depends on**: [Engram](../01-engram/README.md), [Score](../10-types/score.md),
+**Depends on**: [Signal](../01-engram/README.md), [Score](../10-types/score.md),
 [Pulse](../02-pulse/README.md)
 **Used by**: [SCORE stage](../06-loop/02-stage-score.md),
 [ROUTE stage](../06-loop/03-stage-route.md), [COMPOSE stage](../06-loop/04-stage-compose.md)
@@ -98,22 +98,22 @@ are the user-facing abstraction over the continuous PAD space:
 
 | Stage | How Daimon participates |
 |---|---|
-| SCORE | Provides `valence` axis value per Engram; adjusts `novelty` weight per behavioral state |
+| SCORE | Provides `valence` axis value per Signal; adjusts `novelty` weight per behavioral state |
 | ROUTE | Adjusts routing confidence thresholds based on `urgency_level` |
 | COMPOSE | Adds behavioral state note to system prompt; adjusts token budget in urgency |
-| PERSIST | Writes `affect_charge` to new Outcome Engrams; updates PAD based on verify result |
+| PERSIST | Writes `affect_charge` to new Outcome Signals; updates PAD based on verify result |
 
 ---
 
 ## Somatic Markers
 
-Inspired by Damasio's Somatic Marker Hypothesis, Daimon can mark Engrams with an
-`affect_charge` — a scalar encoding the emotional significance of that Engram at the
-time it was created. These marks persist in the Engram and influence future SCORE
+Inspired by Damasio's Somatic Marker Hypothesis, Daimon can mark Signals with an
+`affect_charge` — a scalar encoding the emotional significance of that Signal at the
+time it was created. These marks persist in the Signal and influence future SCORE
 evaluations via the Valence axis.
 
-Engrams created during high-urgency states receive a strong positive or negative
-affect_charge. In future ticks, these Engrams surface with higher relevance (via the
+Signals created during high-urgency states receive a strong positive or negative
+affect_charge. In future ticks, these Signals surface with higher relevance (via the
 Valence weight in SCORE), creating a learned emotional saliency map.
 
 ---

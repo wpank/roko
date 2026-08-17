@@ -1,8 +1,8 @@
 [meta]
 plan = "E42-config-evolution"
 total = 8
-done = 0
-status = "ready"
+done = 8
+status = "done"
 max_parallel = 2
 
 # ─── T01: Add ConfigSource priority enum with Evolved/Composed variants ──────
@@ -39,7 +39,7 @@ Implement:
 Do NOT rename existing variants — add new ones alongside.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-core/src/config/provenance.rs"]
 depends_on = []
@@ -114,7 +114,7 @@ Also implement:
   capacity warning, and passing config.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-core/src/config/validation.rs"]
 depends_on = []
@@ -183,7 +183,7 @@ lives in roko-cli (which already has notify for TUI). This module defines the ca
 trait and reload logic; roko-cli provides the watcher implementation.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-core/src/config/hot_reload.rs"]
 depends_on = []
@@ -251,7 +251,7 @@ Implement:
    missing version defaults to 1.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-core/src/config/loader.rs"]
 depends_on = []
@@ -320,7 +320,7 @@ Implement:
 Keep backward compatibility: load_config_unified callers don't need to change.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = [
   "crates/roko-core/src/config/loader.rs",
@@ -380,7 +380,7 @@ returning the loaded config. Implementation:
 7. At least 2 tests: budget ordering violation prevents load, warning allows load.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-core/src/config/loader.rs"]
 depends_on = ["E42-T02"]
@@ -454,7 +454,7 @@ Implement:
    builtin profile defaults.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-core/src/config/schema.rs"]
 depends_on = []
@@ -523,7 +523,7 @@ Wire into `roko doctor` by calling config_freshness_diagnostics and
 displaying stale sections.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-core/src/config/hot_reload.rs"]
 depends_on = []

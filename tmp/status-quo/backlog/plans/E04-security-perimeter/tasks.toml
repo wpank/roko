@@ -1,8 +1,8 @@
 [meta]
 plan = "E04-security-perimeter"
 total = 19
-done = 17
-status = "ready"
+done = 19
+status = "done"
 max_parallel = 2
 
 # ── E04-T01: Move relay proxy under the auth stack (P0-1 / F1) ──
@@ -619,7 +619,7 @@ acceptance = ["bridge_events.rs exposes a PermissionRequest CognitiveEvent carry
 id = "E04-T13"
 title = "Handle ACP PermissionRequest by calling request_permission in the parent loop"
 description = "Teach the parent ACP event loop to receive PermissionRequest events, call the existing request_permission transport helper, and send the resulting decision back through the reply channel."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 140
@@ -667,7 +667,7 @@ acceptance = ["When a spawned ACP tool loop emits PermissionRequest, the parent 
 id = "E04-T14"
 title = "Fail closed unless ACP builtin tool permission is granted"
 description = "Use the PermissionRequest reply channel before executing permission-requiring ACP builtin tools, and run write/edit/bash only after an Allow or AlwaysAllow decision."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 160

@@ -1,6 +1,6 @@
 # Fixture Library
 
-> Shared test fixtures: proptest strategies, Engram factories, gate input builders, and plan factories.
+> Shared test fixtures: proptest strategies, Signal factories, gate input builders, and plan factories.
 
 **Status**: Shipping
 **Crate**: `roko-test`
@@ -25,12 +25,12 @@ use roko_test::strategies::*;
 
 | Strategy | Return type | Description |
 |---|---|---|
-| `arb_engram()` | `Engram` | Valid Engram with all fields in legal ranges |
-| `arb_engram_with_parent()` | `Engram` | Engram with a valid (non-cyclic) parent hash |
+| `arb_engram()` | `Engram (renamed to Signal in 2026-08-12)` | Valid Signal with all fields in legal ranges |
+| `arb_engram_with_parent()` | `Signal` | Signal with a valid (non-cyclic) parent hash |
 | `arb_score()` | `Score` | Score with all 7 axes in valid ranges |
 | `arb_content_hash()` | `ContentHash` | ContentHash from random bytes |
 | `arb_decay_params()` | `Decay` | One of the 4 decay variants, randomly |
-| `arb_lineage_dag(max_size: usize)` | `Vec<Engram>` | DAG of Engrams (acyclic by construction) |
+| `arb_lineage_dag(max_size: usize)` | `Vec<Signal>` | DAG of Signals (acyclic by construction) |
 | `arb_gate_input()` | `GateInput` | Structurally valid GateInput for any gate |
 | `arb_verdict_config()` | `VerdictConfig` | Gate config with valid threshold |
 | `arb_plan_dag(max_tasks: usize)` | `PlanDag` | Valid plan DAG (acyclic by construction) |

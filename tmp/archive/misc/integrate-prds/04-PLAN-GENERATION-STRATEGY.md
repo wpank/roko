@@ -12,7 +12,7 @@ For agents to succeed on the first try, the task definition must be **self-conta
 ## What a Fresh Agent Needs (Minimum)
 
 ### Always Required
-- **Task title**: imperative verb phrase ("Rename Signal → Engram in roko-agent")
+- **Task title**: imperative verb phrase ("Rename Signal → Signal in roko-agent")
 - **Files to modify**: explicit list, 1-2 files max per task
 - **Verification commands**: shell commands with exit 0 = pass
 
@@ -137,7 +137,7 @@ The shared planner builder already includes the project's `CLAUDE.md` so agents 
 
 ## Breaking Changes: Multi-Plan Strategy
 
-For changes that span many crates (like Signal → Engram):
+For changes that span many crates (like Signal → Signal):
 
 ### Don't: One Giant Plan
 ```

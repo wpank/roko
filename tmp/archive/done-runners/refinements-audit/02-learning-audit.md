@@ -11,7 +11,7 @@ Each refinement doc was read in full and checked against:
 - `crates/roko-learn/src/` (41 files, ~35K LOC) -- the working learning subsystem
 - `crates/roko-neuro/src/` (7 files) -- knowledge store, distiller, tier progression
 - `crates/roko-primitives/src/hdc.rs` -- existing 10,240-bit HDC implementation
-- `crates/roko-core/src/` -- Engram, Decay, Score, prediction, cfactor types
+- `crates/roko-core/src/` -- Signal, Decay, Score, prediction, cfactor types
 - `.roko/learn/` -- runtime data directory (currently empty)
 
 For each doc: a verdict, what is useful, what is overengineered, what the
@@ -90,10 +90,10 @@ ground-truth outcome signals for operators that don't have clean ones.
 
 ## Refinement 11: Hyperdimensional Substrate
 
-**Verdict: SHIP IT (the field on Engram) / DEFER (everything else)**
+**Verdict: SHIP IT (the field on Signal) / DEFER (everything else)**
 
 ### What it proposes
-Add `fingerprint: Option<HdcVector>` to every Engram. Build HDC-based
+Add `fingerprint: Option<HdcVector>` to every Signal. Build HDC-based
 similarity queries, consensus via bundle, stigmergic pheromones,
 compositional memory, analogy-driven retrieval, anti-hallucination gates,
 and agent identity fingerprints.
@@ -119,7 +119,7 @@ type has bind, bundle, permute, similarity, from_seed, serialization. The
 doc's "DefaultEncoder" sketch.
 
 ### What is useful
-- Adding `fingerprint: Option<HdcVector>` to Engram is the right move. It
+- Adding `fingerprint: Option<HdcVector>` to Signal is the right move. It
   is a small change with compounding benefits. The infrastructure to
   compute and store it already exists.
 - `query_similar()` on Substrate is genuinely valuable for retrieval.
@@ -130,7 +130,7 @@ doc's "DefaultEncoder" sketch.
   have yet. There are rarely multiple agents producing competing outputs
   for the same task in the current self-hosting workflow.
 - "Stigmergic pheromones as HDC vectors" (section 5.2) is an analogy
-  looking for an implementation. The existing `Decay::HalfLife` on Engrams
+  looking for an implementation. The existing `Decay::HalfLife` on Signals
   already serves the pheromone use case without HDC vectors.
 - "Agent identity fingerprints" (section 10) is interesting research but
   not useful for self-hosting. You don't need to detect "team formation"
@@ -142,12 +142,12 @@ doc's "DefaultEncoder" sketch.
   clippy, diff) catches real failures; this would catch vibes.
 
 ### Risk
-Low for the Engram field addition. The HDC primitives are well-tested.
+Low for the Engram (renamed to Signal in 2026-08-12) field addition. The HDC primitives are well-tested.
 The risk is scope creep: once the fingerprint exists, someone will want
 all 15 features in the doc, most of which aren't load-bearing yet.
 
 ### What to actually do
-1. Add `fingerprint: Option<HdcVector>` to `Engram`. Use existing
+1. Add `fingerprint: Option<HdcVector>` to `Signal`. Use existing
    `fingerprint()` from `roko-primitives` at Substrate `put()` time.
 2. Add `query_similar()` to `Substrate` trait, implement brute-force.
 3. Stop there. Consensus, stigmergy, analogy, anti-hallucination, and
@@ -160,7 +160,7 @@ all 15 features in the doc, most of which aren't load-bearing yet.
 **Verdict: SIMPLIFY**
 
 ### What it proposes
-Replace time-based decay with an economic model: Engrams carry a `balance`
+Replace time-based decay with an economic model: Signals carry a `balance`
 that costs holding fee per unit time but is reinforced by usage (cited,
 retrieved, gated, surprised, quoted). Novelty-weighted reinforcement via
 HDC neighbor similarity. Cold-tier graduation when balance hits floor.
@@ -191,7 +191,7 @@ identifies. However, `KnowledgeStore` already has confirmation-boosting
 ### What is overengineered
 - Novelty-weighted reinforcement via HDC neighbor similarity (section 3)
   adds a dependency on the HDC substrate that doesn't exist yet for
-  Engrams. It can be bolted on later; making it a prerequisite blocks
+  Signals. It can be bolted on later; making it a prerequisite blocks
   the simpler version.
 - `LearnedParam<T>` with demurrage on *policy parameters* (section 5) is
   elegant but premature. Roko doesn't have stable enough parameter values
@@ -204,8 +204,8 @@ identifies. However, `KnowledgeStore` already has confirmation-boosting
   is a recursive rabbit hole.
 
 ### Risk
-Medium. Adding `balance` to Engram is a schema change that touches
-everything that serializes Engrams. The rate law has tuning parameters
+Medium. Adding `balance` to Signal is a schema change that touches
+everything that serializes Signals. The rate law has tuning parameters
 (flat_tax, exp_decay) that will need empirical calibration -- if the
 defaults are wrong, either everything dies too fast or nothing ever fades.
 Both failure modes look the same at first: "the system doesn't learn."
@@ -430,12 +430,12 @@ progress. The system should ship one loop at a time and measure.
 
 ---
 
-## Refinement 16: Research Papers as Engrams, Replication Ledger
+## Refinement 16: Research Papers as Signals, Replication Ledger
 
 **Verdict: DEFER / SKEPTICAL**
 
 ### What it proposes
-A `Paper` Engram type with DOI, authors, claims. Each claim has a
+A `Paper` Signal type with DOI, authors, claims. Each claim has a
 structured `Hypothesis`, a `falsifier` Predicate, calibration, and a
 `ReplicationLedger` tracking divergence between paper-reported effects
 and Roko-observed effects. A `claim!` macro links config parameters to
@@ -534,7 +534,7 @@ which is why they undercount what exists.
 
 **Three are clearly useful (with simplification):**
 
-1. **Doc 11 (HDC field on Engram)** -- the single highest-value change.
+1. **Doc 11 (HDC field on Signal)** -- the single highest-value change.
    Adding `fingerprint: Option<HdcVector>` and `query_similar()` unlocks
    real capabilities with infrastructure that already exists. SHIP IT.
 
@@ -588,7 +588,7 @@ value independently; the composition is a bonus that arrives later.
 
 ### Recommended implementation order
 
-1. `fingerprint: Option<HdcVector>` on Engram + `query_similar()` (doc 11)
+1. `fingerprint: Option<HdcVector>` on Signal + `query_similar()` (doc 11)
 2. `Calibration` struct on `HeuristicRule` + post-episode updates (doc 14)
 3. `last_used_at` + `access_count` on knowledge/playbook entries (doc 12)
 4. North-star metric instrumentation (doc 15, section 9 only)

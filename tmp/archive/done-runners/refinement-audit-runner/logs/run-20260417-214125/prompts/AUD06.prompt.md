@@ -56,7 +56,7 @@ From the audit master summary — this is the recommended priority order.
 
 ## Ship Now (1-2 weeks total)
 
-1. Add HDC fingerprint field to Engram — `roko-core/src/engram.rs` — 1 day
+1. Add HDC fingerprint field to Signal — `roko-core/src/__PATH_ENGRAM_RS__0` — 1 day
 2. Unify event enums into `RokoEvent` — across 4 crates — 1 week
 3. Add generic `Bus<E>` trait to roko-core — ~100 lines — 2-3 days
 4. Clean up stale "Signal" references — traits.rs, README, kind.rs — 1 hour
@@ -147,7 +147,7 @@ Roko is a Rust workspace at `/Users/will/dev/nunchi/roko/roko/`.
 
 | Crate | Path | LOC | Status |
 |---|---|---|---|
-| roko-core | `crates/roko-core/` | kernel | Stable — Engram + 6 traits + config + tools |
+| roko-core | `crates/roko-core/` | kernel | Stable — Signal + 6 traits + config + tools |
 | roko-agent | `crates/roko-agent/` | large | 8 LLM backends, pools, MCP, tool loop, safety |
 | roko-agent-server | `crates/roko-agent-server/` | medium | Per-agent HTTP sidecar, real LLM dispatch |
 | roko-serve | `crates/roko-serve/` | 30K | HTTP control plane, 200+ routes, SSE, WebSocket |
@@ -176,7 +176,7 @@ Roko is a Rust workspace at `/Users/will/dev/nunchi/roko/roko/`.
 - Test functions: 3,761
 - orchestrate.rs: 17,087 lines
 - Event bus event types: exactly 2 (PlanRevision, PrdPublished)
-- Signal→Engram rename: 99.6% complete
+- Signal→Signal rename: 99.6% complete
 
 ## Concepts with 0 lines of code
 
@@ -252,7 +252,7 @@ abstraction on top of an already-abstract stack?
 
 ### What the doc claims
 
-A 10x10 matrix of ten "load-bearing primitives" (Engram, Pulse, Bus,
+A 10x10 matrix of ten "load-bearing primitives" (Signal, Pulse, Bus,
 Substrate, HDC, Demurrage, Heuristics, c-factor, Replication ledger, Plugin
 SPI), with every cell describing what one primitive gives to another. Ten
 worked synergy examples. The thesis: Roko's moat is the interaction density
@@ -264,13 +264,13 @@ Of the ten primitives:
 
 | Primitive | Exists in code? | Status |
 |---|---|---|
-| P1 Engram | YES | `roko-core/src/engram.rs` -- real, tested, used everywhere |
+| P1 Signal | YES | `roko-core/src/__PATH_ENGRAM_RS__0` -- real, tested, used everywhere |
 | P2 Pulse | NO | No `Pulse` struct exists anywhere in the codebase |
 | P3 Bus trait | NO | `EventBus<E>` exists in `roko-runtime/src/event_bus.rs` as a concrete struct, not a trait |
 | P4 Substrate trait | YES | `roko-core/src/traits.rs` -- real, working |
 | P5 HDC fingerprint | PARTIAL | `HdcVector` exists in `roko-primitives/src/hdc.rs`; `text_fingerprint` used by episode logger; but `query_similar` does not exist on Substrate |
 | P6 Demurrage | NO | Zero occurrences of "demurrage" or "ReinforceKind" in any crate |
-| P7 Heuristics | MINIMAL | `HeuristicRule` in `roko-neuro/src/tier_progression.rs` only; no `Heuristic` engram kind, no Calibrator, no Wilson CI |
+| P7 Heuristics | MINIMAL | `HeuristicRule` in `roko-neuro/src/tier_progression.rs` only; no `Heuristic` signal kind, no Calibrator, no Wilson CI |
 | P8 c-factor | PARTIAL | `CFactorPolicy` in `roko-core/src/cfactor.rs`, `CFactor` struct in `roko-learn/src/cfactor.rs` -- exists, wired to Policy trait |
 | P9 Replication ledger | NO | No `Claim`, `Paper`, or replication ledger code exists |
 | P10 Plugin SPI | NO | No `roko-spi` crate; no plugin manifest schema; no tier system |
@@ -297,13 +297,13 @@ partially. Five are entirely aspirational.
 
 4. **Section 8 claims three "emergent properties"** (self-improvement,
    inspectability, substrate neutrality) that the composition has. But only
-   one (inspectability, via lineage chains on Engrams) is even partially
+   one (inspectability, via lineage chains on Signals) is even partially
    real today. The other two depend on primitives P5-P10 that mostly do
    not exist.
 
 ### Practical alternative
 
-Strip the matrix to the 3-4 primitives that actually exist (Engram,
+Strip the matrix to the 3-4 primitives that actually exist (Signal,
 Substrate, EventBus, HdcVector partial). Document only the synergies that
 are live today: lineage-based auditability, content-addressed storage +
 gate verdicts, HDC fingerprinting in episode logger. Mark everything else
@@ -398,7 +398,7 @@ Start from the existing `SafetyLayer` and extend it:
 - Phase 1: Add `AttestationLevel` to existing `Attestation` struct. Expand
   `Provenance.tainted` from bool to a `Taint` enum. Write the threat model
   doc. (1 week)
-- Phase 2: Add `Custody` engram kind and logging for destructive actions.
+- Phase 2: Add `Custody` signal kind and logging for destructive actions.
   (1 week)
 - Phase 3: Everything else is deferred until a plugin system exists.
 
@@ -512,11 +512,11 @@ I checked every bolded term against the codebase:
 | Datum | Yes | NO | NO -- does not exist |
 | Decay | Yes | `roko-core/src/decay.rs` | YES |
 | Demurrage | Yes | NO | NO -- does not exist |
-| Engram | Yes | `roko-core/src/engram.rs` | YES |
+| Engram (renamed to Signal in 2026-08-12) | Yes | `roko-core/src/__PATH_ENGRAM_RS__0` | YES |
 | Episode | Yes | `roko-learn/src/episode_logger.rs` | YES |
 | EventBus (retired) | Yes | `roko-runtime/src/event_bus.rs` | NOTE: still the live code, not "retired" |
 | Falsifier | Yes | NO | NO -- does not exist |
-| Fingerprint (HDC) | Yes | `roko-primitives/src/hdc.rs` | PARTIAL (HdcVector exists; not "on every Engram at put time") |
+| Fingerprint (HDC) | Yes | `roko-primitives/src/hdc.rs` | PARTIAL (HdcVector exists; not "on every Signal at put time") |
 | Fleet | Yes | NO | NO -- no Fleet struct |
 | Gate | Yes | `roko-core/src/traits.rs` | YES |
 | GateVerdict | Yes | `roko-core/src/kind.rs` | YES |
@@ -526,7 +526,7 @@ I checked every bolded term against the codebase:
 | Heuristic | Yes | `roko-neuro/src/tier_progression.rs` (HeuristicRule) | PARTIAL |
 | HdcVector | Yes | `roko-primitives/src/hdc.rs` | YES |
 | Kind | Yes | `roko-core/src/kind.rs` | YES |
-| Lineage | Yes | `Engram.lineage: Vec<ContentHash>` | YES |
+| Lineage | Yes | `Signal.lineage: Vec<ContentHash>` | YES |
 | loop_tick | Yes | `roko-core/src/loop_tick.rs` | YES |
 | MCP | Yes | `roko-mcp-code/`, etc. | YES |
 | Neuro | Yes | `crates/roko-neuro/` | YES |
@@ -605,7 +605,7 @@ discrepancy -- it is a 5-7x staffing mismatch.
    3-6 months of careful, test-covered migration with high risk of breaking
    the existing working system.
 
-2. **Q2 proposes HDC on every Engram, demurrage, heuristics as a type,
+2. **Q2 proposes HDC on every Signal, demurrage, heuristics as a type,
    c-factor measurement, and research-to-runtime.** These are five
    substantial features, each requiring new types, new storage, new CLI
    commands, and integration tests. For one developer, this is another
@@ -911,7 +911,7 @@ These emerged consistently across all 7 audit workstreams as high-value, low-ris
 
 | # | What | Where | Effort | Why |
 |---|---|---|---|---|
-| 1 | **Add HDC fingerprint field to Engram** | `roko-core/src/engram.rs` | 1 day | HdcVector exists (10,240-bit, tested). Episode fingerprinting already works. This is the single highest-value bridge between the learning and memory layers. |
+| 1 | **Add HDC fingerprint field to Signal** | `roko-core/src/__PATH_ENGRAM_RS__0` | 1 day | HdcVector exists (10,240-bit, tested). Episode fingerprinting already works. This is the single highest-value bridge between the learning and memory layers. |
 | 2 | **Unify event enums into `RokoEvent`** | Across 4 crates | 1 week | Four incompatible event enums (2x `AgentEvent`, `RokoEvent`, `ServerEvent`) is the real problem. Unify them. |
 | 3 | **Add generic `Bus<E>` trait to roko-core** | `roko-core/src/traits.rs` | 2-3 days | ~100 lines. Keep it generic (not Pulse-specific). Solves the layer violation. |
 | 4 | **Clean up stale "Signal" references** | traits.rs, README, kind.rs, CLAUDE.md | 1 hour | 40+ stale occurrences across docs and code comments. |
@@ -973,7 +973,7 @@ From the reality-check audit:
 | roko-serve routes | 200+ (not ~85) |
 | TUI code | 58K LOC |
 | roko-learn modules | 42 modules, 35,847 LOC |
-| Signal→Engram rename | 99.6% complete (4 real stragglers) |
+| Signal→Signal rename | 99.6% complete (4 real stragglers) |
 | Event bus event types | Exactly 2 (PlanRevision, PrdPublished) |
 | Demurrage in code | 0 lines |
 | Pulse in code | 0 lines |
@@ -1000,7 +1000,7 @@ Overall: **3.8 / 5**
 The diagnosis is correct. The prescription (Pulse, Datum, generalized operators, 7-step TickConfig) is overcomplicated. Fix: unify events, add generic Bus trait, update docs. ~1 week instead of 6-7 weeks.
 
 ### Learning (10-16): SIMPLIFY
-The docs undercount what already exists. roko-learn has 42 modules and 36K LOC. HDC fingerprint field on Engram is the highest-value change. Demurrage/worldviews/replication-ledger are premature.
+The docs undercount what already exists. roko-learn has 42 modules and 36K LOC. HDC fingerprint field on Signal is the highest-value change. Demurrage/worldviews/replication-ledger are premature.
 
 ### Moat (17-21): DEFER/SKEPTICAL
 Zero plugin authors, zero external users. The moat is aspirational. Plugin tier 3 (tool manifests) is useful later. Everything else waits.
@@ -1051,7 +1051,7 @@ Legend:
 | Ref | Title | Verdict | Audit note |
 |---|---|---|---|
 | REF01 | critique one noun | `keep` | The diagnosis is real: transport is under-modeled and the kernel story is too storage-centric. |
-| REF02 | Engram vs Pulse | `keep` | `Pulse` is a good transport noun if used to clarify the redesign rather than force a total renaming campaign. |
+| REF02 | Signal vs Pulse | `keep` | `Pulse` is a good transport noun if used to clarify the redesign rather than force a total renaming campaign. |
 | REF03 | Bus as first class | `keep` | This is the strongest foundational follow-up: unify and formalize transport. |
 | REF04 | operators generalized | `narrow` | Good local idea, bad universal law. Medium polymorphism should be proven operator by operator. |
 | REF05 | loop retold | `keep` | Useful as a reference architecture for the redesign, but should guide migration rather than dictate every interface immediately. |
@@ -1180,7 +1180,7 @@ and the roadmap assumes 5-7 engineers. Fix these.
 ## Current state (evidence)
 
 1. **Synergy matrix (REF31)**: 10 "load-bearing primitives" listed. Audit
-   found: Engram (YES), Pulse (NO), Bus trait (NO -- EventBus<E> struct exists),
+   found: Signal (YES), Pulse (NO), Bus trait (NO -- EventBus<E> struct exists),
    Substrate (YES), HDC (PARTIAL), Demurrage (NO), Heuristics (MINIMAL),
    c-factor (PARTIAL), Replication ledger (NO), Plugin SPI (NO). Score: 3 of 10
    exist meaningfully.
@@ -1208,7 +1208,7 @@ In `docs/00-architecture/34-synergy-integration-map.md`:
 - Add an implementation-status callout at the top listing which primitives
   actually exist:
   `> **Implementation status**: Of the 10 primitives in this matrix, 3 exist
-  > fully (Engram, Substrate, EventBus), 2 partially (HDC fingerprint,
+  > fully (Signal, Substrate, EventBus), 2 partially (HDC fingerprint,
   > c-factor), and 5 are target-state only (Pulse, Bus trait, Demurrage,
   > Heuristic commons, Replication ledger, Plugin SPI). Synergy cells
   > involving unbuilt primitives are aspirational.`
@@ -1308,7 +1308,7 @@ In `docs/00-architecture/35-consolidated-roadmap.md`:
 5. **Do not touch architecture foundation docs** (02b, 07b, 08, 09) -- those
    are AUD02's scope.
 6. **Do not touch interfaces/deployment docs** -- those are AUD05's scope.
-7. **Do not fix Signal->Engram references** -- that is AUD07's scope.
+7. **Do not fix Signal->Signal references** -- that is AUD07's scope.
 
 ## Done when
 

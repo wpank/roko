@@ -2,7 +2,7 @@
 
 > Two mediums: Signal (durable) in Store, Pulse (ephemeral) on Bus. Graduation converts Pulse → Signal. Everything that flows through Roko is one or the other.
 
-**Subsumes**: Engram, Pulse/Envelope, Artifact, Knowledge Entry, Pheromone, Evidence, Feed event, ModuleOutput, Finding.
+**Subsumes**: Signal (formerly Engram, renamed to Signal in 2026-08-12), Pulse/Envelope, Artifact, Knowledge Entry, Pheromone, Evidence, Feed event, ModuleOutput, Finding.
 
 ---
 
@@ -69,7 +69,7 @@ pub struct Signal {
 
 ### Mapping to existing code
 
-`Signal` maps directly to `roko-core::Engram`. The Rust struct remains `Engram` for backward compatibility; `type Signal = Engram;` bridges.
+`Signal` maps directly to `roko-core::Signal` (formerly `Engram`, renamed to Signal in 2026-08-12). The Rust struct is now `Signal`; `pub type Engram = Signal` backward-compat alias retained.
 
 ---
 

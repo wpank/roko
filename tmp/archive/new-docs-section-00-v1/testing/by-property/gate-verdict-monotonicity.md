@@ -82,7 +82,7 @@ Gates with binary verdicts (`FormatGate`: formatted / not formatted) are exclude
 The `EmaThresholdManager` enforces monotonic ratcheting in production:
 - Threshold can only decrease (loosen) in response to repeated failures.
 - Threshold can only increase (tighten) in response to repeated passes.
-- A manual override to lower the threshold below the ratchet floor requires a signed justification record in the Engram substrate.
+- A manual override to lower the threshold below the ratchet floor requires a signed justification record in the Signal substrate.
 
 ---
 

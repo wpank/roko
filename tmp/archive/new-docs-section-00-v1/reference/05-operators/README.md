@@ -6,7 +6,7 @@
 
 **Status**: Shipping (all six operators)
 **Crate**: `roko-core` (traits), various (implementations)
-**Depends on**: [Engram](../01-engram/README.md), [Substrate](../03-substrate/README.md)
+**Depends on**: [Signal](../01-engram/README.md), [Substrate](../03-substrate/README.md)
 **Last reviewed**: 2026-04-19
 
 ---
@@ -14,7 +14,7 @@
 ## What an Operator Is
 
 An operator is a **Rust trait** that the cognitive loop calls at a specific step. It receives
-data (an `Engram`, a `Score`, a context), does exactly one thing, and returns a typed result.
+data (an `Signal`, a `Score`, a context), does exactly one thing, and returns a typed result.
 Operators are:
 
 - **Composable** — operators stack (multiple `Scorer` implementations can be chained).
@@ -29,8 +29,8 @@ Operators are:
 | # | Operator | Role | Status | Crate |
 |---|---|---|---|---|
 | — | [`Substrate`](../03-substrate/README.md) | Durable storage fabric | Shipping | `roko-core` |
-| 1 | [`Scorer`](./01-scorer/README.md) | Assign 7-axis `Score` to an `Engram` | Shipping | `roko-core` |
-| 2 | [`Gate`](./02-gate/README.md) | Pass/fail verdict on an `Engram` or action | Shipping | `roko-gate` |
+| 1 | [`Scorer`](./01-scorer/README.md) | Assign 7-axis `Score` to an `Signal` | Shipping | `roko-core` |
+| 2 | [`Gate`](./02-gate/README.md) | Pass/fail verdict on an `Signal` or action | Shipping | `roko-gate` |
 | 3 | [`Router`](./03-router/README.md) | Select which action to execute | Shipping | `roko-agent` |
 | 4 | [`Composer`](./04-composer/README.md) | Build the LLM system prompt | Shipping | `roko-compose` |
 | 5 | [`Policy`](./05-policy/README.md) | Reactive control: circuit breakers, safety, escalation | Shipping | `roko-core` |

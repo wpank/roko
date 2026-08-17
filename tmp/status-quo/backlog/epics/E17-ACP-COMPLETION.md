@@ -1,5 +1,14 @@
 # E17 — ACP Completion
 
+> **Implementation update (2026-08-15): 8/8 done.** ACP mutation consent fails closed;
+> scoped prompt/model experiments, Anthropic MCP parity, consent-derived tool ceilings,
+> truthful media handling, and the conformance capstone are live. Persisted session USD
+> budgets are exposed and enforced before paid dispatch, and automatic provider selection
+> consumes shared canonical health plus near-limit RPM/TPM state while honoring explicit
+> choices. Anthropic's native internal tool loop now applies those shared limiter and
+> exact-provider outcome hooks on every turn. The complete ACP suite passes 178/178.
+> Findings below are preserved as superseded pre-fix evidence.
+
 > **Epic owner surface**: `roko-acp` (the ACP/Zed editor bridge — `bridge_events.rs`,
 > `builtin_tools.rs`, `handler.rs`, `types.rs`).
 > **Goal**: close the four ways the ACP session surface diverges from every other roko
@@ -69,8 +78,10 @@ conformance capstone over T01–T05.
 | **E17-T04** | Derive `tool_context.capabilities` from role/session consent instead of hard-forced all-true | Fd | focused | `roko-acp/src/bridge_events.rs` | `_plan`: P22 (T1) |
 | **E17-T05** | Advertised-vs-accepted capability guard (`image`/`audio`) tying together P28 + T04 | Fd | focused | `roko-acp/src/handler.rs`, `roko-acp/src/types.rs` | E17-T04; `_plan`: P28 |
 | **E17-T06** | End-to-end ACP conformance test (consent precedes write; select+experiment recorded; Anthropic MCP tool callable) | Fa–Fd | integrative | `roko-acp/src/bridge_events.rs` (tests) | E17-T01, E17-T02, E17-T03, E17-T04 |
+| **E17-T07** | Persist and enforce ACP session cost budgets and expose remaining budget | Cost control | focused | `roko-acp/src/bridge_events.rs`, `types.rs`, `handler.rs` | E01 |
+| **E17-T08** | Make adaptive ACP selection consume canonical provider health/rate-limit state | Routing health | integrative | `roko-acp/src/bridge_events.rs` | E14 |
 
-**Task count: 6** (E17-T01 … E17-T06), over **3 cross-epic deps** (E04, E07, E15) and
+**Task count: 8** (E17-T01 … E17-T08), over **3 cross-epic deps** (E04, E07, E15) and
 **5 reconciled ACP plans** (P19, P21, P22, P25, P28) treated as substrate/prerequisites.
 
 ---
@@ -80,8 +91,8 @@ conformance capstone over T01–T05.
 ```toml
 [meta]
 plan = "E17-acp-completion"
-total = 6
-done = 0
+total = 8
+done = 6
 status = "ready"
 max_parallel = 2
 
@@ -102,7 +113,7 @@ max_parallel = 2
 [[task]]
 id = "E17-T01"
 title = "Add PermissionRequest reply channel and gate ACP builtin tool exec fail-closed"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 120
@@ -174,7 +185,7 @@ acceptance = "An ACP turn that calls write_file/edit_file/bash emits an outbound
 [[task]]
 id = "E17-T02"
 title = "Consult ExperimentStore for ACP prompt/model variant selection"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 80
@@ -228,7 +239,7 @@ acceptance = "When an experiment is active in .roko/learn/experiments.json, an A
 [[task]]
 id = "E17-T03"
 title = "Thread session_mcp_servers into run_anthropic_cognitive_task and register MCP tools"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 90
@@ -272,7 +283,7 @@ acceptance = "An ACP session created with an mcpServers entry and an Anthropic-p
 
 ---
 
-## 5. Remaining task stubs (E17-T04 … E17-T06)
+## 5. Superseded task stubs (E17-T04 … E17-T06; completed 2026-08-15)
 
 Same schema; key acceptance/verify notes:
 
@@ -295,7 +306,7 @@ Same schema; key acceptance/verify notes:
 
 ---
 
-## 6. Verification log (authored against HEAD `5852c93c05`)
+## 6. Historical pre-fix verification log (authored against HEAD `5852c93c05`)
 
 | Finding | Re-verified | Result |
 |---|---|---|

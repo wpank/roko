@@ -36,7 +36,7 @@ framing.
    suffice.
 6. **Retired terms must not appear.** Verify-step `terminology_check` will
    fail the batch if retired terms (`Grimoire`, `Styx`, `Clade`, `Mori`,
-   `Bardo`, `Golem`, mortal/death/reincarnation framing, "Signal = Engram"
+   `Bardo`, `Golem`, mortal/death/reincarnation framing, "Signal = Signal"
    disclaimers, etc.) appear in lines you introduce — *except* when the
    line explicitly frames them as "retired / deprecated / historical /
    legacy / formerly / renamed / see also / old name". Use that phrasing
@@ -44,7 +44,7 @@ framing.
 7. **Cross-link to refinements.** Docs that change should include a
    `see tmp/refinements/NN-slug.md` pointer for readers who want the full
    proposal. Use the exact refinement filename (e.g.
-   `tmp/refinements/02-engram-vs-pulse.md`).
+   `tmp/refinements/02-signal-vs-pulse.md`).
 8. **Cross-link to glossary.** Docs introducing new terminology should
    point at `docs/00-architecture/01-naming-and-glossary.md` (or wherever
    the glossary has landed).
@@ -145,7 +145,7 @@ the 35 refinements propagate into `docs/`.
 
 ## The one-liner
 
-> Roko's kernel is two mediums (**Engram** — durable, content-addressed,
+> Roko's kernel is two mediums (**Signal** — durable, content-addressed,
 > decayed; **Pulse** — ephemeral, topic-addressed, sequenced) moving
 > through two fabrics (**Substrate** — storage; **Bus** — transport),
 > acted on by six operators (**Scorer**, **Gate**, **Router**,
@@ -156,7 +156,7 @@ the 35 refinements propagate into `docs/`.
 
 ## Canonical term definitions
 
-**Engram** — Durable medium. Content-addressed by BLAKE3 over
+**Signal** — Durable medium. Content-addressed by BLAKE3 over
 `(kind, body, author, tags)`. Has `lineage: Vec<ContentHash>`,
 `decay` / `balance`, `score` (7 axes), `provenance`, optional
 `attestation`, and (post-refinement) an HDC `fingerprint`. Lives in a
@@ -164,11 +164,11 @@ Substrate.
 
 **Pulse** — Ephemeral medium (new). Typed, topic-addressed,
 sequence-numbered, ring-buffered message on a Bus. Not content-
-addressed; not persisted by default. May *graduate* to an Engram when
+addressed; not persisted by default. May *graduate* to an Signal when
 its lineage matters.
 
 **Substrate** — Storage fabric (kernel trait). Backends: Memory, File,
-HDC, Chain. Persists Engrams. Retrieval by filter or (new)
+HDC, Chain. Persists Signals. Retrieval by filter or (new)
 HDC similarity.
 
 **Bus** — Transport fabric (promoted to kernel trait). Backends:
@@ -179,7 +179,7 @@ Publishes and delivers Pulses by Topic.
 **Topic** — Routing handle for Pulses. Dot-separated lowercase
 strings (`gate.verdict.emitted`, `agent.msg.chunk`, `prediction.error`).
 
-**Datum** — `enum Datum<'a> { Engram(&'a Engram), Pulse(&'a Pulse) }`
+**Datum** — `enum Datum<'a> { Signal(&'a Signal), Pulse(&'a Pulse) }`
 used by polymorphic operators (Scorer, Composer, Router).
 
 **Six operators** — `Scorer`, `Gate`, `Router`, `Composer`, `Policy`,
@@ -246,7 +246,7 @@ consolidated knowledge back into Substrate for the next cycle.
 
 | Term | Use | Avoid |
 |---|---|---|
-| Engram | the durable record | Signal (retired in code 877:5) |
+| Engram (renamed to Signal in 2026-08-12) | the durable record | Signal (retired in code 877:5) |
 | Pulse | the ephemeral message | Event, Envelope, Message, Signal |
 | Bus | the transport trait | EventBus<E> as a trait name |
 | Substrate | the storage trait | (unchanged) |
@@ -274,8 +274,8 @@ match lands outside a line that also signals "retired", "deprecated",
 
 | Retired term | Use instead | Notes |
 |---|---|---|
-| `Signal` (as the durable record) | `Engram` | Rename landed in code (877 Engram vs 5 Signal). Docs should say Engram. |
-| `Signal is the same as Engram` | (delete disclaimer) | The equivalence disclaimer is stale. Remove. |
+| `Signal` (as the durable record) | `Signal` | Rename landed in code (877 Signal vs 5 Signal). Docs should say Signal. |
+| `Signal is the same as Signal` | (delete disclaimer) | The equivalence disclaimer is stale. Remove. |
 | `EventBus<E>` (as trait name) | `Bus` + `Pulse` | The generic struct stays as `BroadcastBus` implementation detail. |
 | `Envelope<E>` (as user-facing type) | `Pulse` | Envelope name retained only as internal impl detail. |
 | `Event` (as type name) | `Pulse` | Collides with tokio/winit. Use Pulse. |
@@ -308,12 +308,12 @@ in the same line (case-insensitive): `retired`, `deprecated`,
 
 | New term | Must appear after batch | Home refinement |
 |---|---|---|
-| `Pulse` | REF02, REF07 | 02-engram-vs-pulse.md |
+| `Pulse` | REF02, REF07 | 02-signal-vs-pulse.md |
 | `Bus` (as kernel trait) | REF03 | 03-bus-as-first-class.md |
 | `Topic` | REF03, REF07 | 03-bus-as-first-class.md |
 | `TopicFilter` | REF03, REF07 | 03-bus-as-first-class.md |
 | `Datum` | REF04 | 04-operators-generalized.md |
-| `PulseSource` | REF02, REF07 | 02-engram-vs-pulse.md |
+| `PulseSource` | REF02, REF07 | 02-signal-vs-pulse.md |
 | `two mediums` | REF01, REF02 | 01-critique-one-noun.md |
 | `two fabrics` | REF03 | 03-bus-as-first-class.md |
 | `seven-step loop` | REF05 | 05-loop-retold.md |
@@ -332,8 +332,8 @@ in the same line (case-insensitive): `retired`, `deprecated`,
 Every refinement propagation should include a trailing "See also" or
 inline cross-reference to the refinement file:
 
-- `see [02-engram-vs-pulse](../../tmp/refinements/02-engram-vs-pulse.md)`
-- or `see tmp/refinements/02-engram-vs-pulse.md §3` for section-specific
+- `see [02-signal-vs-pulse](../../tmp/refinements/02-signal-vs-pulse.md)`
+- or `see tmp/refinements/02-signal-vs-pulse.md §3` for section-specific
   references.
 
 Use the project's existing link conventions where a doc subfolder has
@@ -387,7 +387,7 @@ to update:
 
 - `00-vision-and-thesis.md`
 - `01-naming-and-glossary.md` — every naming-related refinement touches this
-- `02-engram-data-type.md` — REF02
+- `02-signal-data-type.md` — REF02
 - `03-score-7-axis-appraisal.md` — mostly stable
 - `04-decay-variants.md` — REF12 (supersedes decay with demurrage)
 - `05-provenance-and-attestation.md` — REF32
@@ -461,7 +461,7 @@ with the others.
 
 ## Ten load-bearing primitives
 
-1. **Engram** (durable medium) — home: REF02
+1. **Signal** (durable medium) — home: REF02
 2. **Pulse** (ephemeral medium) — home: REF02
 3. **Bus** (transport fabric) — home: REF03
 4. **Substrate** (storage fabric) — home: REF03
@@ -509,7 +509,7 @@ BROADCAST, REACT) uses every primitive:
 
 - SENSE — Substrate (query) + Bus (subscribe) + external I/O.
 - ASSESS — Scorer (weights via HDC/demurrage/heuristic calibration).
-- COMPOSE — Composer (picks from HDC-similar Engrams, injects heuristics,
+- COMPOSE — Composer (picks from HDC-similar Signals, injects heuristics,
   TypedContext shapes prompt).
 - ACT — produces Pulses (agent stream, tool calls).
 - VERIFY — Gate pipeline; gate-verdict Pulses feed heuristic calibration.
@@ -535,12 +535,12 @@ without reading its full source.
 - `01-critique-one-noun.md` — Diagnosis: "one noun, six verbs" framing
   conflates two data shapes, hides the event bus, stretches trait
   signatures.
-- `02-engram-vs-pulse.md` — Introduce Pulse (ephemeral) as Engram's
+- `02-signal-vs-pulse.md` — Introduce Pulse (ephemeral) as Signal's
   sibling; define graduation law.
 - `03-bus-as-first-class.md` — Promote Bus to a kernel trait at L0
   alongside Substrate.
 - `04-operators-generalized.md` — Generalize the six operators over a
-  `Datum` enum that is either Engram or Pulse.
+  `Datum` enum that is either Signal or Pulse.
 - `05-loop-retold.md` — Universal loop collapses from 9 to 7 steps;
   PERSIST and BROADCAST become co-equal; cross-cuts aren't steps.
 - `06-refactoring-plan.md` — Three-phase refactor (docs → kernel →
@@ -557,7 +557,7 @@ without reading its full source.
 - `10-self-learning-cybernetic-loops.md` — Every operator becomes a
   predictor; active inference literal via predict/outcome Pulses.
 - `11-hyperdimensional-substrate.md` — 10,240-bit HDC fingerprint on
-  every Engram; similarity/consensus/analogy as O(1) vector ops.
+  every Signal; similarity/consensus/analogy as O(1) vector ops.
 - `12-knowledge-demurrage.md` — Economic memory: balance, holding
   cost, reinforcement-by-kind; self-trimming playbooks.
 - `13-collective-intelligence-c-factor.md` — Woolley's c-factor
@@ -566,7 +566,7 @@ without reading its full source.
   worldviews as co-citation clusters; lived-experience calibration.
 - `15-exponential-scaling.md` — Seven compounding loops; "every week
   your Roko gets better on your codebase."
-- `16-research-to-runtime.md` — Papers as Engrams, Claims as testable
+- `16-research-to-runtime.md` — Papers as Signals, Claims as testable
   hypotheses, Replication Ledger — living research.
 - `17-plugin-extension-architecture.md` — Five-tier SPI (prompts,
   profiles, manifests, native, WASM) with matched sandboxes.
@@ -715,12 +715,12 @@ ephemeral things) that happen together, not in sequence.
 Cross-cuts (Neuro, Daimon, Dreams) are **not** loop steps. They are
 injected into specific steps:
 
-- **Neuro** contributes Engrams to step 1 (knowledge retrieval) and
+- **Neuro** contributes Signals to step 1 (knowledge retrieval) and
   step 3 (prompt enrichment), and consumes verdicts from step 5.
 - **Daimon** biases step 2 (affect-modulated routing) and gates step 4
   (behavioral-state transitions suppress or enable actions).
 - **Dreams** runs on its own Delta-speed loop, consuming recent
-  Engrams via Substrate and emitting consolidated ones back.
+  Signals via Substrate and emitting consolidated ones back.
 
 ## 3. Step-by-step
 
@@ -728,7 +728,7 @@ injected into specific steps:
 
 The runtime has three sensing primitives:
 
-**Substrate.query** — pull Engrams by filter. Used for durable
+**Substrate.query** — pull Signals by filter. Used for durable
 context: recent episodes, stored plans, knowledge entries, historical
 gate verdicts, cached tool results.
 
@@ -739,7 +739,7 @@ approval requests, cancellation, clock ticks.
 **External I/O** — read from sources that aren't yet either fabric:
 the LLM's WebSocket, a subprocess stdout, a filesystem watch, an
 incoming HTTP request on `roko-serve`. These immediately become Pulses
-(published to the Bus) and often graduate to Engrams.
+(published to the Bus) and often graduate to Signals.
 
 A step-1 implementation is typically a `select!` over one or more
 Bus receivers plus a periodic Substrate poll. The current `loop_tick`
@@ -748,7 +748,7 @@ this — it will generalize.
 
 ### Step 2 — ASSESS
 
-Combined score + route. The input is a slice of `Datum` (Engram or
+Combined score + route. The input is a slice of `Datum` (Signal or
 Pulse). The Scorer computes a multi-axis Score; the Router uses the
 scores (plus ctx-aware logic like cascade model selection or LinUCB
 bandit draws) to produce a `Selection` identifying the chosen item and
@@ -762,49 +762,49 @@ verify, closing the bandit learning loop.
 
 The Composer takes the selected `Datum`(s) plus any additional
 context (system prompt layers, tool descriptions, recent episodes) and
-assembles a composed Engram under a Budget. The composed Engram is
+assembles a composed Signal under a Budget. The composed Signal is
 typically `Kind::Prompt`. This is the step where token-budget
 awareness lives (per design principle P3 in doc 17).
 
 For non-LLM actions (e.g. a direct chain call, a filesystem op) the
-composed Engram describes the action fully enough for step 4 to
+composed Signal describes the action fully enough for step 4 to
 execute it without further context.
 
 ### Step 4 — ACT
 
-The runtime executes the action described by the Engram from step 3.
+The runtime executes the action described by the Signal from step 3.
 In the most common case this is an LLM call: publish `agent.process.spawned`,
 stream `agent.msg.chunk` Pulses as tokens arrive, publish
 `agent.turn.completed` when done. The final `AgentOutput` graduates to
-an Engram for step 5 to verify.
+an Signal for step 5 to verify.
 
 Other act paths:
 
 - Tool call → `tool.call.started` / `tool.call.completed` Pulses;
-  `ToolInvocation` Engram.
+  `ToolInvocation` Signal.
 - Chain transaction → `chain.tx.submitted` / `chain.tx.confirmed`
-  Pulses; `Transaction` Engram.
-- Filesystem op → `fs.op.completed` Pulse; `FsOp` Engram if auditable.
+  Pulses; `Transaction` Signal.
+- Filesystem op → `fs.op.completed` Pulse; `FsOp` Signal if auditable.
 
 ### Step 5 — VERIFY
 
-The Gate pipeline verifies the step-4 Engram. The pipeline itself is
+The Gate pipeline verifies the step-4 Signal. The pipeline itself is
 a Composer-composition-of-Gates specified in `roko-gate`. Each Gate
-emits a `GateVerdict` Engram; the pipeline's output is an aggregate
-Verdict that is itself an Engram.
+emits a `GateVerdict` Signal; the pipeline's output is an aggregate
+Verdict that is itself an Signal.
 
-**Stream-gates run in parallel** to the Engram-gates. A BudgetGate
+**Stream-gates run in parallel** to the Signal-gates. A BudgetGate
 watches `agent.tokens.used` Pulses during step 4 and can halt the
 step before completion if the budget trips.
 
 ### Step 6 — PERSIST & BROADCAST (co-equal)
 
-The step-5 Verdict Engram lands in the Substrate (lineage captured,
+The step-5 Verdict Signal lands in the Substrate (lineage captured,
 audit DAG updated). The same event is broadcast as a
 `gate.verdict.emitted` Pulse for subscribers that care about the
 live delivery.
 
-The composed Engram from step 3 also persists here if the caller
+The composed Signal from step 3 also persists here if the caller
 wants it (useful for prompt replay; can be gated by config since
 prompts can be large).
 
@@ -814,7 +814,7 @@ Policies subscribed to the relevant topics receive the new Pulses
 and decide. Typical reactions:
 
 - `EpisodePolicy` sees `gate.verdict.emitted`, accumulates a turn's
-  worth of Pulses, graduates an `Episode` Engram.
+  worth of Pulses, graduates an `Episode` Signal.
 - `CircuitBreakerPolicy` sees a streak of failed verdicts, publishes
   `conductor.circuit.tripped`.
 - `EfficiencyPolicy` sees token-usage Pulses, updates cascade-router
@@ -832,8 +832,8 @@ are frequencies at which the loop ticks, not different loops. Every
 speed runs these seven steps; what differs is:
 
 - **Sense scope**: Gamma senses only the last few seconds of Pulses +
-  hottest Engrams. Theta senses minutes of recent Pulses + recent
-  Engrams. Delta senses hours of Engrams (Pulses are long gone from
+  hottest Signals. Theta senses minutes of recent Pulses + recent
+  Signals. Delta senses hours of Signals (Pulses are long gone from
   the ring).
 - **Compose budget**: Gamma gets tight token budgets. Delta can
   afford long contexts (used by Dreams consolidation).
@@ -863,9 +863,9 @@ very different persistence costs.
 - §3 Step 2 — ASSESS (joint score+route)
 - §4 Step 3 — COMPOSE (prompt assembly under budget)
 - §5 Step 4 — ACT (LLM / tool / chain)
-- §6 Step 5 — VERIFY (Engram-gates + stream-gates)
+- §6 Step 5 — VERIFY (Signal-gates + stream-gates)
 - §7 Step 6 — PERSIST & BROADCAST (co-equal)
-- §8 Step 7 — REACT (Policy.decide → Pulses + Engrams)
+- §8 Step 7 — REACT (Policy.decide → Pulses + Signals)
 - §9 Cross-cuts inject into specific steps (not a ninth step)
 - §10 The loop at three speeds
 - §11 Shipping code: `loop_tick` with Bus integration
@@ -987,7 +987,7 @@ themselves:
   `gate.verdict.emitted` and `agent.turn.completed` Pulses to update
   PAD.
 - **Dreams** runs its own Delta-speed loop. It consumes recent
-  Engrams via Substrate scan and emits consolidated Engrams (plus
+  Signals via Substrate scan and emits consolidated Signals (plus
   `engram.promoted` Pulses). It doesn't share a tick with the main
   loop.
 

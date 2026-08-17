@@ -7,11 +7,11 @@
 
 ---
 
-## 1. Signal -> Engram Rename
+## 1. Signal -> Signal Rename
 
 **Refinement claim**: "877:5 ratio, essentially complete."
 
-**Reality**: **Confirmed, mostly accurate.** The actual ratio today is ~926 Engram occurrences
+**Reality**: **Confirmed, mostly accurate.** The actual ratio today is ~926 Signal occurrences
 across 134 files vs. 11 "Signal" occurrences across 6 files. The remaining 11 Signal references
 break down as:
 
@@ -21,13 +21,13 @@ break down as:
 | `roko-neuro/src/context.rs` | 2 | Enum variant `SourceFamily::Signal` and match arm -- **straggler** |
 | `roko-compose/src/system_prompt_builder.rs` | 1 | String literal `"Signal"` in a prompt template -- **straggler** |
 | `roko-compose/src/context_provider.rs` | 1 | String literal `"Signal"` in a prompt template -- **straggler** |
-| `roko-cli/src/plan_generate.rs` | 1 | Test assertion: `prompt.contains("Signal -> Engram")` -- meta-reference |
+| `roko-cli/src/plan_generate.rs` | 1 | Test assertion: `prompt.contains("Signal -> Signal")` -- meta-reference |
 | `roko-cli/src/tui/views/dashboard_view.rs` | 1 | UI column header `"Signal"` -- **straggler** |
 
 **Verdict**: 4 real stragglers out of 926+ usages. The rename is ~99.6% complete. The 4
 stragglers are cosmetic (string literals in prompts and UI headers), not structural. No
 `struct Signal` or `type Signal` remains anywhere in the codebase. The core type in
-`roko-core/src/engram.rs` is `pub struct Engram` with BLAKE3 content-hashing, decay functions,
+`roko-core/src/__PATH_ENGRAM_RS__0` is `pub struct Engram` with BLAKE3 content-hashing, decay functions,
 lineage DAG, multi-axis scoring, and attestation support (451 lines, 15 tests). This is a
 real, fully-fleshed data type, not a stub.
 

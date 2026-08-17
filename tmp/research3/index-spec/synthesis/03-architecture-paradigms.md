@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a synthesis report from a structured deep-research run. It is reference material
+> for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Architecture Paradigms and Implementation Patterns
 
 This document synthesizes the architectural paradigms and implementation patterns defined in the Roko v2 specification. It is intended as a self-contained reference for someone with no prior context on the system.

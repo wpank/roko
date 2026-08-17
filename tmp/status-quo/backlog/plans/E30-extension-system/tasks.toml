@@ -1,8 +1,8 @@
 [meta]
 plan = "E30-extension-system"
 total = 9
-done = 0
-status = "ready"
+done = 9
+status = "done"
 max_parallel = 1
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -34,7 +34,7 @@ Add methods on CamelTag:
 
 These types are foundational — used by extension hook return types and
 the CaMeL monitor. Add chrono, HashSet imports if not already present."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "integrative"
 max_loc = 100
@@ -120,7 +120,7 @@ Also add filter_input to the Extension trait (Perception layer):
   }
 
 Add run_filter_input and run_on_budget_exceeded to ExtensionChain."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "integrative"
 max_loc = 80
@@ -204,7 +204,7 @@ description = """Add to crates/roko-core/src/extension.rs:
 The existing PluginTier at safety/capabilities.rs:29 is for plugin
 capability checks. PackageTier here is for extension sandboxing tiers
 per the v2 spec. They align conceptually but serve different purposes."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 50
@@ -276,7 +276,7 @@ description = """Add 4 cross-cutting hooks to the Extension trait in extension.r
 Add corresponding run_on_tick_start, run_on_tick_end, run_on_slot_assigned,
 run_on_slot_completed methods to ExtensionChain (iterate all extensions
 regardless of layer — these are cross-cutting)."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 60
@@ -352,7 +352,7 @@ Modify existing run_* methods (run_pre_inference, run_on_gate, etc.) to:
 
 The existing methods already propagate errors with `?`. Change them to
 log-and-continue instead (matching v2 fault isolation spec §8)."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "integrative"
 max_loc = 90
@@ -435,7 +435,7 @@ description = """Add timeout wrapping to ExtensionChain run_* methods:
 
 The existing methods iterate extensions and call hooks directly. Wrap each
 call with timeout. On timeout, log warning and continue to next extension."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 60
@@ -508,7 +508,7 @@ dependency-aware sort:
 
 Use a simple Kahn's algorithm (indegree counting) for the topological sort.
 Do not add petgraph or other graph library dependencies."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 80
@@ -589,7 +589,7 @@ description = """Enhance crates/roko-cli/src/runner/extension_loader.rs:
 
    These fields are already on AgentConfig/AgentDefinition — just wire
    extension_names parameter from config."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "integrative"
 max_loc = 80
@@ -652,7 +652,7 @@ Register `mod extensions;` in routes/mod.rs and merge into the router.
 Use ExtensionMeta from roko_core::extension for serialization.
 Add extension_chain metadata query capability to AppState (or query
 extension metadata from existing plan state)."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 60

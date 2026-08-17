@@ -13,7 +13,7 @@ are rival. A non-rival good can be consumed by multiple agents without depletion
 once created, can be copied indefinitely.
 
 **Attention is rival.** An agent's attention directed at task A cannot simultaneously be
-directed at task B with full intensity. The attention consumed by processing one Engram is
+directed at task B with full intensity. The attention consumed by processing one Signal is
 not available to process another. This rivalry is not a software limitation to be engineered
 away — it reflects the fundamental structure of sequential processing in a finite compute
 environment.
@@ -70,26 +70,26 @@ a highly relevant stimulus may receive zero attention if it cannot "afford" to b
 successfully against higher-stakes competitors.
 
 The [Scorer](../../../reference/05-operators/scorer.md) in Roko produces a 7-axis appraisal
-of an Engram, several axes of which (salience, relevance, urgency) are, in economic terms,
-the bid that an Engram makes for processing attention.
+of an Signal, several axes of which (salience, relevance, urgency) are, in economic terms,
+the bid that an Signal makes for processing attention.
 
 ---
 
 ## What "Spending" Attention Means
 
-Spending attention on an Engram means:
-1. **Context allocation**: including the Engram's content in the working context of a
+Spending attention on an Signal means:
+1. **Context allocation**: including the Signal's content in the working context of a
    subsequent computation.
 2. **Processing cycles**: routing it through the [Composer](../../../reference/05-operators/composer.md)
    for synthesis or the [Policy](../../../reference/05-operators/policy.md) for action.
-3. **Memory consolidation**: storing the Engram in Neuro (durable knowledge) via the
+3. **Memory consolidation**: storing the Signal in Neuro (durable knowledge) via the
    Dreams consolidation path.
 
-Each of these has a cost. Context allocation reduces the space available for other Engrams.
+Each of these has a cost. Context allocation reduces the space available for other Signals.
 Processing cycles are finite. Memory consolidation requires the Dreams subsystem to be
 running and commits storage.
 
-"Spending attention wisely" means allocating these resources to the Engrams where the
+"Spending attention wisely" means allocating these resources to the Signals where the
 marginal value of processing is highest relative to its cost.
 
 ---
@@ -115,7 +115,7 @@ A process or signal that consistently acquires a disproportionate share of total
 creates an **attention monopoly**. This crowds out other signals, including potentially
 important ones. Sources of attention monopoly:
 - A single high-salience topic (crisis event) that dominates context for extended periods
-- A looping process that generates high-score Engrams continuously, crowding out
+- A looping process that generates high-score Signals continuously, crowding out
   background processes
 - A Composer task that fills the context window, blocking other inputs
 

@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This file is reference material for pitch/strategy planning (Series A competitive landscape
+> and market intelligence), not an implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Nunchi Series A: Blue Ocean Strategy Research Compendium
 
 **Nunchi's dual-track platform — Roko (cognitive agent runtime) and Korai (EVM blockchain for agent knowledge coordination) — enters a market where AI agent infrastructure is scaling at 40–50% CAGR, blockchain-AI convergence remains in its infancy at under $1.1B, and no competitor has unified cognitive agent runtimes with on-chain coordination.** The target raise of ~$20M at $50–200M valuation sits squarely within 2025–2026 Series A norms for AI infrastructure companies, where median pre-money valuations range from $50M to $120M. This document assembles the exhaustive market intelligence needed to make the investment case.

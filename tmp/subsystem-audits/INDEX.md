@@ -1,5 +1,31 @@
 # Roko Subsystem Audits
 
+> **Last updated:** 2026-08-12
+
+## What is this?
+
+This directory contains the results of systematic audits of every major subsystem
+in the roko codebase. The audits were conducted in mid-2026 to assess code quality,
+identify anti-patterns, and plan convergence work across 18 crates (~177K LOC).
+
+**Start with the canonical references:**
+- `ANTI-PATTERNS-V2.md` -- the full anti-pattern catalog (40+ patterns, prompt blocks, CI checks)
+- `AGENT-FAILURE-PATTERNS.md` -- compact checklist for agent prompt prep and diff review
+
+### Staleness notes (2026-08-12)
+
+- **`orchestrate.rs` is deleted.** All references to it (21K lines, god-file) are
+  historical. The current concern is `runner/event_loop.rs` (~20K lines).
+- **Engram is renamed to Signal** throughout the codebase.
+- **`eprintln!` to `tracing` migration is done** (~40 calls converted).
+- **`.expect()` to proper errors is partially done** (~25 production fixes).
+- **LOC analysis (46% dormant claim):** The breakdown below has not been re-verified
+  since the original audit. Significant code has been deleted (orchestrate.rs) and
+  added (event_loop.rs growth, new crates) since then. Treat LOC percentages as
+  approximate.
+
+---
+
 ## Runner Status (2026-04-28)
 
 ### Arch Runner (Phase 0-4: Foundation)
@@ -71,7 +97,7 @@ Per-subsystem workspace for refactoring roko from hardcoded monolith to dynamic,
 
 | Folder | Audit | LOC | Summary |
 |---|---|---|---|
-| [orchestration/](orchestration/) | 3 runtimes, 2 state machines | ~25K | ACP pipeline + Runner v2 + orchestrate.rs monolith (21K dead). Features silently deactivate when switching runtimes. |
+| [orchestration/](orchestration/) | 3 runtimes, 2 state machines | ~25K | ACP pipeline + Runner v2 + orchestrate.rs monolith (21K, now **deleted**). `event_loop.rs` has since grown to ~20K lines. |
 | [acp-protocol/](acp-protocol/) | JSON-RPC editor integration | ~6.5K | Cleanest architecture (pure FSM), but isolated silo — no learning, no safety, no episodes. |
 | [gate-pipeline/](gate-pipeline/) | 7-rung verification | ~19K | 3 separate dispatch paths. Rungs 3-6 return stubs. LLM judge bypasses ModelCallService. |
 
@@ -79,7 +105,7 @@ Per-subsystem workspace for refactoring roko from hardcoded monolith to dynamic,
 
 | Folder | Audit | LOC | Summary |
 |---|---|---|---|
-| [learning-feedback/](learning-feedback/) | 10 learning components | ~15K | CascadeRouter, experiments, playbooks, conductor — all fully built, all only wired from dead code. |
+| [learning-feedback/](learning-feedback/) | 10 learning components | ~15K | CascadeRouter, experiments, playbooks, conductor — originally wired only from dead code (`orchestrate.rs`). Learning loop has since been wired into live paths. |
 | [cognitive-layer/](cognitive-layer/) | Neuro, dreams, daimon, pheromones | ~110K | Neuro + dreams = keep. Daimon 40K LOC = replace with FailureTracker. Pheromones 68K = delete. |
 | [code-intelligence/](code-intelligence/) | Symbol graphs, HDC, MCP | ~8.2K | Solid but under-utilized. HDC similarity disabled in prompt assembly. Index rebuilt fresh every time. |
 
@@ -120,20 +146,29 @@ Per-subsystem workspace for refactoring roko from hardcoded monolith to dynamic,
 
 ## Cross-Cutting Anti-Patterns
 
+> **2026-08-12 note:** `orchestrate.rs` (the primary offender for patterns 1, 2, 3,
+> 6, 7, 10) has been deleted. However, many of these patterns have migrated to
+> `event_loop.rs` and other files. See `ANTI-PATTERNS-V2.md` for the full catalog.
+
 | # | Pattern | Subsystems Affected | Status |
 |---|---|---|---|
 | 1 | Shell out / raw provider dispatch | inference-dispatch, ACP, chat, cognitive-layer | Still recurring in surface paths |
 | 2 | Inline prompt strings / prompt bypass | prompt-assembly, ACP, chat | Partially addressed; live path coverage incomplete |
-| 3 | Build another runtime / shadow runtime | orchestration, ACP, serve, run | Still recurring via legacy fallbacks and divergent entry points |
+| 3 | Build another runtime / shadow runtime | orchestration, ACP, serve, run | `orchestrate.rs` deleted; risk reduced but not eliminated |
 | 4 | Features in wrong layer | gate-pipeline, orchestration, demos | Still recurring when surfaces patch shared-layer gaps |
 | 5 | Hardcoded role/model/provider behavior | prompt-assembly, config, gate-pipeline | Still recurring through defaults and fallback strings |
-| 6 | Feedback as afterthought / optional feedback | learning-feedback, gate-pipeline, chat, ACP | Still recurring in live entry points |
+| 6 | Feedback as afterthought / optional feedback | learning-feedback, gate-pipeline, chat, ACP | Learning loop wired into live paths; some entry points still skip |
 | 7 | Copy between runtimes | inference-dispatch, gate-pipeline, state/event code | Still recurring; see V2 categories A/H |
 | 8 | Parse output/debug strings as contracts | inference-dispatch, cli-chat-tui, runtime projection | Still recurring; see V2 category G |
 | 9 | Transient or lossy state | learning-feedback, http-persistence, workflow reports | Partially addressed; report truth still inferred from events |
-| 10 | God file / accumulation | orchestration, ACP bridge, runner types | Still a risk; needs CI fitness checks |
+| 10 | God file / accumulation | event_loop.rs (~20K lines), ACP bridge, runner types | `orchestrate.rs` deleted but `event_loop.rs` has grown to replace it |
 
-## LOC Summary
+## LOC Summary (from original audit -- not re-verified)
+
+> **2026-08-12 note:** These numbers are from the original mid-2026 audit and have
+> not been re-verified. Since then, `orchestrate.rs` (21K lines) was deleted,
+> `event_loop.rs` grew from ~3K to ~20K lines, and several new crates were added.
+> The percentages below are approximate and likely shifted.
 
 | Category | LOC | % of ~177K |
 |---|---|---|

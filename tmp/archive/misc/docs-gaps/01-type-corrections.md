@@ -23,7 +23,7 @@ cargo test --workspace
 
 **Spec** (doc 05-provenance-and-attestation.md, doc 26-cognitive-immune-system.md): Typed `Taint` enum with variants like `Hallucination`, `Contradiction`, `UnverifiedSource`, `ToolMisuse`, etc.
 **Current code** (`crates/roko-core/src/provenance.rs`): `tainted: bool` field plus `taint_info: Option<TaintInfo>` where `TaintInfo { category: String, detail: String, inherited_from: Option<ContentHash> }`. The `category` is a free-form string — no compile-time variant checking.
-**Status**: FIXED. Added `#[non_exhaustive] enum Taint { Clean, LlmHallucination, ToolFailure, UserFlagged, StaleData, UnverifiedSource, Propagated, UserInput, Custom }` to `roko-core/src/provenance.rs`. Replaced `tainted: bool` with `taint: Taint` on `Provenance`. Added `Provenance::is_tainted()` method. Updated all callers (engram hash, scorer, taint_propagation). `TaintInfo` retained for backward compat with old serialized JSONL; bidirectional conversion between `TaintInfo` and `Taint` enum provided.
+**Status**: FIXED. Added `#[non_exhaustive] enum Taint { Clean, LlmHallucination, ToolFailure, UserFlagged, StaleData, UnverifiedSource, Propagated, UserInput, Custom }` to `roko-core/src/provenance.rs`. Replaced `tainted: bool` with `taint: Taint` on `Provenance`. Added `Provenance::is_tainted()` method. Updated all callers (signal hash, scorer, taint_propagation). `TaintInfo` retained for backward compat with old serialized JSONL; bidirectional conversion between `TaintInfo` and `Taint` enum provided.
 **Priority**: P1 (type-safety issue; blocks SAFE-11 in 20-safety.md)
 **Verify**:
 ```bash
@@ -48,7 +48,7 @@ grep -A 20 'pub fn effective' crates/roko-core/src/score.rs
 ### TC-04: FileSubstrate log file name
 - [x] Rename `signals.jsonl` to `engrams.jsonl` per doc vocabulary
 
-**Spec** (doc 01-naming-and-glossary.md, doc 02-engram-data-type.md): The primary data type is Engram. The log should be named accordingly.
+**Spec** (doc 01-naming-and-glossary.md, doc 02-signal-data-type.md): The primary data type is Signal. The log should be named accordingly.
 **Current code** (`crates/roko-fs/src/layout.rs`): Both files exist: `engrams_path()` returns `.roko/engrams.jsonl` and `signals_path()` returns `.roko/signals.jsonl` (legacy).
 **Status**: PARTIALLY FIXED. New code uses `engrams.jsonl`; old `signals_path()` still exists for backward compat.
 **What to change**: Rename `signals_path()` to `engrams_path()`. Change the file name from `signals.jsonl` to `engrams.jsonl`. Add a migration check that renames the old file if it exists. Update all references.
@@ -121,11 +121,11 @@ The code in `system_prompt_builder.rs` already has comprehensive 9-layer documen
 grep -n 'Layer\|layer' crates/roko-compose/src/system_prompt_builder.rs | head -20
 ```
 
-### TC-09: Engram struct — ensure all spec fields are present
-- [x] Verify Engram has all fields from doc 02
+### TC-09: Signal struct — ensure all spec fields are present
+- [x] Verify Signal has all fields from doc 02
 
-**Spec** (doc 02-engram-data-type.md): Engram should have all specified fields including `emotional_tag` and `attestation`.
-**Current code** (`crates/roko-core/src/engram.rs`): Both fields exist (`emotional_tag: Option<EmotionalTag>`, `attestation: Option<Attestation>`).
+**Spec** (doc 02-signal-data-type.md): Signal should have all specified fields including `emotional_tag` and `attestation`.
+**Current code** (`crates/roko-core/src/__PATH_ENGRAM_RS__0`): Both fields exist (`emotional_tag: Option<EmotionalTag>`, `attestation: Option<Attestation>`).
 **Status**: COMPLIANT. The code has these fields. Verify they match the doc's type definitions exactly.
 **Verify**:
 ```bash

@@ -12,9 +12,9 @@
 | `docs/v1` kernel slice | 113 | `plans/DOC-v1-kernel` | 8 | `source-coverage/docs-v1-kernel.md` |
 | `docs/v1` cognition slice | 119 | `plans/DOC-v1-cognition` | 7 | `source-coverage/docs-v1-cognition.md` |
 | `docs/v1` ecosystem slice | 185 | `plans/DOC-v1-ecosystem` | 10 | `source-coverage/docs-v1-ecosystem.md` |
-| `docs/v2/**/*.md` | 34 | `plans/DOC-v2-core` | 10 | `source-coverage/docs-v2-core.md` |
+| `docs/v2/**/*.md` | 35 | `plans/DOC-v2-core` | 10 | `source-coverage/docs-v2-core.md` |
 | `docs/v2-depth/**/*.md` | 185 | `plans/DOC-v2-depth` | 24 | `source-coverage/docs-v2-depth.md` |
-| **Total** | **745** | **6 DOC plans** | **71** | **6 ledgers** |
+| **Total** | **746** | **6 DOC plans** | **71** | **6 ledgers** |
 
 The DOC plans are not replacements for E01-E18. They are a source-corpus reconciliation layer:
 each task tells a future agent to read a coherent cluster of source docs, map it to existing
@@ -80,7 +80,7 @@ PY
 Current result:
 
 ```text
-sources=745
+sources=746
 missing_from_ledgers=0
 missing_from_doc_tasks=0
 ```

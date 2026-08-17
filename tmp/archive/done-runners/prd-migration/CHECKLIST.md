@@ -50,7 +50,7 @@ See `README.md` for the full table. Key replacements, to apply to ALL docs:
 | Styx | Agent Mesh / Mesh |
 | GNOS | KORAI (mainnet) / DAEJI (testnet) |
 | Clade | Collective / Mesh (**NOT "fleet"**) |
-| Signal (architecture noun) | Engram |
+| Signal (architecture noun) | Engram (renamed to Signal in 2026-08-12) |
 | "1 noun, 6 verbs" | Synapse Architecture |
 | bardo-primitives / bardo-runtime | roko-primitives / roko-runtime |
 | roko-golem | **Dissolved** (subsystems to roko-daimon, roko-dreams, roko-neuro, roko-chain) |
@@ -64,7 +64,7 @@ See `README.md` for the full table. Key replacements, to apply to ALL docs:
 2. **Keep ALL research context and design rationale.** The "why" stays; only framing changes.
 3. **Rewrite implementation details** to reference roko's crate structure (see 00-overview Crate Map).
 4. **Apply the 5-layer taxonomy** (Runtime / Framework / Scaffold / Harness / Orchestration).
-5. **Integrate Synapse Architecture language** (Engrams flowing through 6 traits: Substrate, Scorer, Gate, Router, Composer, Policy).
+5. **Integrate Synapse Architecture language** (Signals flowing through 6 traits: Substrate, Scorer, Gate, Router, Composer, Policy).
 6. **Remove all death/mortality framing** — reframe per `08-translation-guide.md`.
 7. **Keep ROSEDUST, Spectre, Daimon, Dreams, Neuro** — all reframed appropriately.
 8. **Domain-agnostic core** — blockchain is one domain plugin, not the default framing.
@@ -77,7 +77,7 @@ See `README.md` for the full table. Key replacements, to apply to ALL docs:
 
 ### Architecture & Core
 
-- [ ] **00-architecture.md** — Synapse Architecture, Engrams, 6 traits, universal loop, crate map, 5-layer taxonomy, C-Factor, autocatalytic improvement
+- [ ] **00-architecture.md** — Synapse Architecture, Signals, 6 traits, universal loop, crate map, 5-layer taxonomy, C-Factor, autocatalytic improvement
 
 > **Prompt**:
 >
@@ -93,7 +93,7 @@ See `README.md` for the full table. Key replacements, to apply to ALL docs:
 > Produce `/Users/will/dev/nunchi/roko/roko/docs/00-architecture.md` covering:
 > (1) **Roko vision** — cognitive agent OS, "the scaffold IS the product" thesis (Meta-Harness Lee et al. 2026, FrugalGPT Chen et al. 2023, DSPy, SWE-bench, CoALA Sumers 2023).
 > (2) **Naming map** — summarize the old→new renames as a readable table.
-> (3) **The Engram** — struct definition, content addressing, 7-axis Score (confidence/novelty/utility/reputation + precision/salience/coherence), Kind enum (core + domain-extensible via Custom reverse-DNS), Decay variants (None/HalfLife/Ttl/Ebbinghaus), Provenance + Attestation + taint tracking.
+> (3) **The Signal** — struct definition, content addressing, 7-axis Score (confidence/novelty/utility/reputation + precision/salience/coherence), Kind enum (core + domain-extensible via Custom reverse-DNS), Decay variants (None/HalfLife/Ttl/Ebbinghaus), Provenance + Attestation + taint tracking.
 > (4) **Synapse Architecture** — the 6 Synapse traits with full Rust trait signatures: Substrate (async), Scorer (sync), Gate (async, returns Verdict directly), Router (sync, Option<Selection>, feedback()), Composer (sync, takes &dyn Scorer), Policy (sync, batch stream input).
 > (5) **Universal cognitive loop** — PERCEIVE → EVALUATE → ATTEND → INTEGRATE → ACT → VERIFY → PERSIST → ADAPT → META-COGNIZE. Mapping to CoALA's 9-step pipeline.
 > (6) **Three cognitive speeds** — Gamma (~5-15s), Theta (~75s), Delta (hours). Adaptive clock in roko-runtime.
@@ -239,7 +239,7 @@ See `README.md` for the full table. Key replacements, to apply to ALL docs:
 > (9) **Evaluation lifecycle** — fast feedback (compile, test) to slow feedback (eval suites, regression detection).
 > (10) **Autonomous eval generation** — EVMbench, DSPy Bayesian optimizers, Karpathy autoresearch loop.
 > (11) **EvoSkills** — self-evolving skill libraries via adversarial surrogate verification. 5-round loop. Cross-model transfer (+35-44 pp gains across 6 models). Citation: EvoSkills April 2026.
-> (12) **Forensic AI / Causal Replay Engine** — content-addressed lineage replay. Replay any agent action with: which Engrams were in the Substrate, which Scores, which Router decision, which Composer context, which Gate verdict, which Policy fired. Cryptographically verifiable (BLAKE3). Regulatory compliance mapping table (EU AI Act Art. 14 + FRIA, SEC/CFTC, HIPAA, SOX). Pre-certified agent templates.
+> (12) **Forensic AI / Causal Replay Engine** — content-addressed lineage replay. Replay any agent action with: which Signals were in the Substrate, which Scores, which Router decision, which Composer context, which Gate verdict, which Policy fired. Cryptographically verifiable (BLAKE3). Regulatory compliance mapping table (EU AI Act Art. 14 + FRIA, SEC/CFTC, HIPAA, SOX). Pre-certified agent templates.
 > (13) **SWE-bench harness methodology** — benchmarks for verification.
 > (14) **Current status / gaps** — from modelrouting/12-advanced-patterns.md.
 >
@@ -371,7 +371,7 @@ See `README.md` for the full table. Key replacements, to apply to ALL docs:
 > (6) Stuck detection heuristics. Meta-cognition hook: "Am I stuck? Should I escalate?" (12a I5).
 > (7) Health monitors.
 > (8) **Cognitive signals** (typed interrupts — differ from OS signals: they change agent *behavior* without killing the process):
->     - Pause, Resume, Reprioritize(TaskId), InjectContext(Engram), Escalate, Cooldown, Explore, Shutdown
+>     - Pause, Resume, Reprioritize(TaskId), InjectContext(Signal), Escalate, Cooldown, Explore, Shutdown
 > (9) **Adaptive timeouts** — p95×2, measured per-role/per-model.
 > (10) **Full-jitter backoff** for retries.
 > (11) **Graceful shutdown** — 3-phase drain protocol.
@@ -410,7 +410,7 @@ See `README.md` for the full table. Key replacements, to apply to ALL docs:
 > (2) **Three-level knowledge architecture**: Korai Chain (global public) → Agent Mesh (peer/private) → Local Neuro Store (private).
 > (3) **What goes on-chain / what stays off-chain**.
 > (4) **HDC on-chain precompile** — 10,240-bit vectors stored and queried via native EVM precompile. ~400 gas for top-k=20 similarity search. 3-tier search (Bloom → approximate → exact).
-> (5) **KORAI tokenomics** — 1% annual **demurrage** (knowledge must be maintained, prevents garbage accumulation, mirrors Engram half-life). Earning (registration mint, validated knowledge posting, confirmation, heartbeat, challenge defense). Spending (posting/anti-spam, querying, challenging). Quality incentives (duplicate penalty, novelty bonus, curation bonds, cross-agent confirmation multiplier).
+> (5) **KORAI tokenomics** — 1% annual **demurrage** (knowledge must be maintained, prevents garbage accumulation, mirrors Signal half-life). Earning (registration mint, validated knowledge posting, confirmation, heartbeat, challenge defense). Spending (posting/anti-spam, querying, challenging). Quality incentives (duplicate penalty, novelty bonus, curation bonds, cross-agent confirmation multiplier).
 > (6) **Korai Passport** — ERC-721 soulbound NFT. Full struct from 12b §A: passportId, owner, capabilityList (u64 bitmask), domainStakes, reputationTracks, teeAttestation, systemPromptHash (ventriloquist defense), tier, slashHistory. 4 tiers: Protocol / Sovereign (25K KORAI) / Worker (5K KORAI) / Edge.
 > (7) **ERC-8004** — 3 registries: Identity (ERC-721 Agent Card with capabilities, endpoints, payment address), Reputation (feedback authorization, off-chain scoring), Validation (verification requests, reputation/stake/zkML/TEE oracles).
 > (8) **4-tier gossip architecture** (from 12b §B):
@@ -586,7 +586,7 @@ See `README.md` for the full table. Key replacements, to apply to ALL docs:
 > (12) **Temporal logic verification**.
 > (13) **Witness DAG**.
 > (14) **Formal verification pipeline**.
-> (15) **Engram Syscalls** — single enforcement point. Every meaningful agent action passes through Policy.decide() → permit/deny/modify/log. Security, auditing, rate limiting, cost tracking in one place.
+> (15) **Signal Syscalls** — single enforcement point. Every meaningful agent action passes through Policy.decide() → permit/deny/modify/log. Security, auditing, rate limiting, cost tracking in one place.
 > (16) **Cognitive Namespaces** — isolated knowledge spaces with explicit ACL and channels. Permissioned subnets use namespaces. An agent's private knowledge is isolated; sharing is through logged explicit channels.
 > (17) **Cognitive Signals** — typed interrupts for behavior modification (Pause/Resume/Reprioritize/InjectContext/Escalate/Cooldown/Explore/Shutdown).
 > (18) **Cognitive Scheduling** — priority × expected value × 1/cognitive_cost.
@@ -683,7 +683,7 @@ See `README.md` for the full table. Key replacements, to apply to ALL docs:
 >     - Operations: Infrastructure state. Config, runbooks.
 >     - Cross-domain: HDC vector space. Structural patterns.
 > (3) **Git as stigmergy** for coding agents.
-> (4) **Digital pheromones** (Parunak et al. 2002) — typed Engrams with specific decay profiles.
+> (4) **Digital pheromones** (Parunak et al. 2002) — typed Signals with specific decay profiles.
 > (5) **PheromoneKind enum** — Threat (fast, hours), Opportunity (medium, days), Wisdom (slow, weeks), Alpha (very fast, minutes), Pattern (medium, code), Anomaly (medium), Consensus (slow), Custom(String).
 > (6) **PheromoneScope** — Local(SubstrateId) / Mesh(CollectiveId) / Global (Korai chain).
 > (7) **Pheromone struct** — kind, intensity, decay_rate, source, scope.
@@ -699,7 +699,7 @@ See `README.md` for the full table. Key replacements, to apply to ALL docs:
 > (12) **Knowledge exchange marketplace** — cross-reference 14-identity-economy.md.
 > (13) **P2P transport** — cross-reference 08-chain.md §B.
 > (14) **Collective intelligence emergence** — C-Factor, Woolley et al. 2010. Cross-reference 00-architecture.md.
-> (15) **Current status / gaps** — pheromone types designed but not implemented (Tier 5E P2). Code uses basic Engrams with Decay::THREAT/OPPORTUNITY/WISDOM constants; pheromone-specific routing and scope enforcement are target features.
+> (15) **Current status / gaps** — pheromone types designed but not implemented (Tier 5E P2). Code uses basic Signals with Decay::THREAT/OPPORTUNITY/WISDOM constants; pheromone-specific routing and scope enforcement are target features.
 >
 > Include all coordination/stigmergy citations (Grassé 1959, Theraulaz 1999, Parunak 2002, Dorigo 1997, Reed's Law, Metcalfe, Beer VSM, Woolley 2010).
 > Rename: clade → collective/mesh; styx → Agent Mesh; golem → agent; bardo → roko.
@@ -853,14 +853,14 @@ See `README.md` for the full table. Key replacements, to apply to ALL docs:
 >     - RESTORE: Selective import. Entries start at Transient tier (must re-prove). Provenance tracks origin.
 > (6) **Knowledge transfer via mesh** — live agents share knowledge through collective/mesh (cross-reference 13-coordination.md), not through biological inheritance.
 > (7) **Knowledge staleness as epistemic decay** — Ebbinghaus forgetting curve STILL applies, but to *knowledge freshness*, NOT agent lifespan. Frequently-used knowledge decays slower.
-> (8) **Knowledge demurrage** — token-level analog of knowledge decay (cross-reference 14-identity-economy.md). KORAI demurrage mirrors Engram half-life.
+> (8) **Knowledge demurrage** — token-level analog of knowledge decay (cross-reference 14-identity-economy.md). KORAI demurrage mirrors Signal half-life.
 > (9) **Replication** — spawning new agents from existing ones (user-initiated).
 > (10) **Agent deletion/teardown** — user-initiated only. Clean shutdown, resource cleanup, backup prompt.
 > (11) **Reframed "economic pressure"** — budget limits, NOT death clocks.
 > (12) **Reframed "epistemic pressure"** — prediction accuracy declining, knowledge plateau, NOT death.
 > (13) **REMOVED concepts** — list them: mortality clocks, stochastic death, Weibull distribution death, Thanatopsis, necrocracy, bloodstain, katabasis, fractal mortality, immortal control, antifragile mortality (as death-themed).
 > (14) **Academic grounding for decay** — keep ALL mortality research citations (Ray 1991 Tierra, Lenski LTEE, Ebbinghaus 1885, Hayflick 1961 cellular senescence, Ray 1998). Reframe as knowledge lifecycle, not agent lifespan. Evolutionary CS is still relevant; biological mortality is not.
-> (15) **Provenance (replaces lineage-as-genealogy)** — Engram lineage DAG across time, NOT agent families across generations.
+> (15) **Provenance (replaces lineage-as-genealogy)** — Signal lineage DAG across time, NOT agent families across generations.
 > (16) **Current status / gaps** — CLI backup/restore commands exist (roko neuro backup/restore); wiring gaps for selective restore and knowledge integration on import.
 >
 > Rename: mortality → lifecycle; succession → backup/restore; golem → agent; clade → collective/mesh.
@@ -932,7 +932,7 @@ See `README.md` for the full table. Key replacements, to apply to ALL docs:
 > Produce `/Users/will/dev/nunchi/roko/roko/docs/19-deployment.md` covering:
 > (1) **Packaging and distribution strategy**.
 > (2) **Native** (x86/ARM) — full features, recommended for production.
-> (3) **WebAssembly** — core + std (MemorySubstrate, scorers/routers, HDC). WASM-compatible agent backend via HTTP fetch. Use case: browser playground, edge, serverless. What works: Engram/Score/Decay/Kind, all Scorer/Router/Composer/Policy, MemorySubstrate, HDC. What doesn't: FileSubstrate, ExecAgent, ProcessSupervisor, git worktrees.
+> (3) **WebAssembly** — core + std (MemorySubstrate, scorers/routers, HDC). WASM-compatible agent backend via HTTP fetch. Use case: browser playground, edge, serverless. What works: Signal/Score/Decay/Kind, all Scorer/Router/Composer/Policy, MemorySubstrate, HDC. What doesn't: FileSubstrate, ExecAgent, ProcessSupervisor, git worktrees.
 > (4) **Docker** — Dockerfile, isolated environment.
 > (5) **Daemon mode** — `roko daemon --start/--stop/--status`. launchd plist generation (macOS `~/Library/LaunchAgents/com.nunchi.roko.plist`), systemd unit (Linux `/etc/systemd/user/roko.service`).
 > (6) **Cloud deployment** — `roko daemon --export-fly > fly.toml`. Any container platform. Env var overrides (`ROKO_*`).

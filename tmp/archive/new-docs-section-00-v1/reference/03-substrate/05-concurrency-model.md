@@ -97,7 +97,7 @@ substrate.write().unwrap().put(consolidated_engram)?;
 
 1. **One active writer.** `put` and `prune` are exclusive. Never call them from two threads
    simultaneously without an external lock.
-2. **Read-after-write is consistent.** A `get(hash)` called after `put(engram)` in the same
+2. **Read-after-write is consistent.** A `get(hash)` called after `put(signal)` in the same
    thread (or after a lock release) must return the stored record. Implementations must not
    defer writes beyond the `put` return.
 3. **Prune visibility.** A record that has been pruned must not appear in subsequent `get` or

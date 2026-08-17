@@ -1,6 +1,6 @@
-# Engram — Examples
+# Signal — Examples
 
-> Ten worked examples from the simplest possible Engram to complex lineage chains with full provenance and scoring.
+> Ten worked examples from the simplest possible Signal to complex lineage chains with full provenance and scoring.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -12,14 +12,14 @@
 ## TL;DR
 
 All examples below are runnable Rust snippets. They assume `use roko_core::*;`. The
-simplest Engrams are a single `.kind().body().build()` chain. Complex examples add
+simplest Signals are a single `.kind().body().build()` chain. Complex examples add
 lineage, provenance, decay, custom scoring, and multi-step chains.
 
 ---
 
 ## Example 1: Minimal AgentOutput
 
-The simplest valid Engram: an agent response with all defaults.
+The simplest valid Signal: an agent response with all defaults.
 
 ```rust
 <!-- source: crates/roko-core/examples/engram_examples.rs -->

@@ -40,7 +40,7 @@ corrections, to speculative sections, then finishes with source-index verificati
 
 | Batch | Time Box | Purpose | Primary Files | Verify Focus |
 |-------|----------|---------|---------------|--------------|
-| P1 | 15-20 min | Tighten the parity contract and context pack | `00-INDEX.md`, `BATCHES.md`, `context-pack/*.md` | counts/status consistent; docs-only scope explicit; Engram-centered wording |
+| P1 | 15-20 min | Tighten the parity contract and context pack | `00-INDEX.md`, `BATCHES.md`, `context-pack/*.md` | counts/status consistent; docs-only scope explicit; Signal-centered wording |
 | P2 | 15-20 min | Refresh foundation, trait, and loop analyses | `A-foundation.md`, `B-trait-system.md`, `C-cognitive-loop.md` | REF01-05 narrowed; Pulse and Datum remain planned |
 | P3 | 10-15 min | Correct architecture-layer status and implementation-scale facts | `D-architecture-layers.md`, `E-implementation-details.md` | serve/TUI wired; 36 members / 322,088 LOC |
 | P4 | 10-15 min | Rewrite advanced and meta docs as deferred research or planning material | `F-advanced-capabilities.md`, `G-innovation-meta.md` | docs `23-35` stop reading like present-tense implementation proof |
@@ -68,7 +68,7 @@ Turn the parity pack into an audit-aligned verification brief:
 - current-vs-planned discipline
 - corrected counts and wiring status
 - explicit carry-forward boundaries
-- Engram-centered wording instead of stale legacy naming
+- Signal-centered wording instead of stale legacy naming
 
 **Out of scope**:
 
@@ -97,7 +97,7 @@ rg -n "36 workspace members|322,088 Rust LOC|200\\+ routes|58K LOC|two live Roko
 
 Preserve the useful diagnosis while narrowing the prescription:
 
-- Engram remains the live durable kernel noun
+- Signal remains the live durable kernel noun
 - Pulse and Datum become planned or deferred
 - Bus becomes a possible future trait, not a shipped transport rewrite
 - loop and active-inference claims become partial, not absolute

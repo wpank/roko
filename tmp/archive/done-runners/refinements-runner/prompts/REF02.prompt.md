@@ -1,6 +1,6 @@
 # Batch REF02 — Introduce Pulse (ephemeral medium) across architecture chapter
 
-**Refinement source**: `tmp/refinements/02-engram-vs-pulse.md` (injected above under
+**Refinement source**: `tmp/refinements/02-signal-vs-pulse.md` (injected above under
 "Canonical refinement source"). That source is the authoritative proposal;
 your job is to propagate its substance into the canonical `docs/` tree.
 
@@ -9,7 +9,7 @@ your job is to propagate its substance into the canonical `docs/` tree.
 You MAY touch any file under `docs/**` if the refinement applies.
 Primary candidates:
 
-- `docs/00-architecture/02-engram-data-type.md` — extend with Pulse sibling section, graduation law, conversion helpers. Remove "Signal is the same as Engram" disclaimers.
+- `docs/00-architecture/02-signal-data-type.md` — extend with Pulse sibling section, graduation law, conversion helpers. Remove "Signal is the same as Signal" disclaimers.
 - `docs/00-architecture/01-naming-and-glossary.md` — add Pulse, Topic, TopicFilter, PulseSource, Datum entries.
 - `docs/00-architecture/INDEX.md` — add Pulse to the two-medium abstract.
 - Consider adding `docs/00-architecture/02b-pulse-ephemeral-event.md` as a sibling chapter if the content warrants a full file.
@@ -19,12 +19,12 @@ Primary candidates:
 - Every updated doc retains its filename and stable anchor IDs.
 - New content is substantive — section-level or full-file rewrites are
   authorised when a doc is deeply misaligned.
-- Cross-references to `tmp/refinements/02-engram-vs-pulse.md` appear in each touched file.
+- Cross-references to `tmp/refinements/02-signal-vs-pulse.md` appear in each touched file.
 - Index docs (`docs/**/INDEX.md`, `docs/INDEX.md`) are updated when a
   new chapter is added or the chapter index needs to reflect the change.
 - Glossary updates (if applicable) land in
   `docs/00-architecture/01-naming-and-glossary.md`.
-- Graduation law (Pulse → Engram) documented with provenance upgrade.
+- Graduation law (Pulse → Signal) documented with provenance upgrade.
 - Graduation policy table (which topics graduate, which don't) included in either the 02 file or 02b.
 
 ## Required vocabulary (verify)

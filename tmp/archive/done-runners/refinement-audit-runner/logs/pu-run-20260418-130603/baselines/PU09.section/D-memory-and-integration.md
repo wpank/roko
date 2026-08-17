@@ -14,11 +14,11 @@ Generated 2026-04-16.
 
 ---
 
-## D.01 — `EmotionalTag` struct ships in `roko-core` and is consumed across the stack (Doc 09 §"EmotionalTag on Engrams")
+## D.01 — `EmotionalTag` struct ships in `roko-core` and is consumed across the stack (Doc 09 §"EmotionalTag on Signals")
 
 **Status**: DONE
 **Severity**: —
-**Doc claim**: `EmotionalTag { pad: PadVector, intensity: f32, trigger: String, mood_snapshot: PadVector }` attached to Engrams. Clamped on construction. Consumed by the retrieval layer for emotional congruence scoring.
+**Doc claim**: `EmotionalTag { pad: PadVector, intensity: f32, trigger: String, mood_snapshot: PadVector }` attached to Signals. Clamped on construction. Consumed by the retrieval layer for emotional congruence scoring.
 **Reality**: `EmotionalTag` at `roko-core/src/affect.rs:162-189` matches doc exactly — `new()` clamps PAD via `.clamped()`, `intensity` via `.clamp(0.0, 1.0)`, and `mood_snapshot` via `.clamped()`. Test `emotional_tag_clamps_inputs` at `:231-242` pins the clamping. Consumers (grep-verified): `roko-learn/src/episode_logger.rs`, `roko-neuro/src/knowledge_store.rs`, `roko-neuro/src/distiller.rs`, `roko-neuro/src/context.rs`, `roko-dreams/src/{threat, imagination, hypnagogia, cycle}.rs`, `roko-compose/src/{system_prompt_builder, role_prompts, prompt, context_provider}.rs`. `AffectState::emotional_tag(trigger)` at `roko-daimon/src/lib.rs:107-110` produces the tag from the current state (normalized intensity = `PAD.magnitude() / √3`).
 
 One doc-drift caveat matters for later agents: `docs/09-daimon/09-*`
@@ -32,7 +32,7 @@ shipping `EmotionalTag` contract.
 
 **Status**: PARTIAL
 **Severity**: LOW
-**Doc claim**: Four-factor scoring = `recency × importance × relevance × emotional_congruence`. Emotional tags persist from Engrams → distilled knowledge entries → retrieved context. Mood-congruent retrieval weighted by PAD cosine similarity.
+**Doc claim**: Four-factor scoring = `recency × importance × relevance × emotional_congruence`. Emotional tags persist from Signals → distilled knowledge entries → retrieved context. Mood-congruent retrieval weighted by PAD cosine similarity.
 **Reality**: Doc 13 §"Unimplemented Features — Emotional Memory Integration" confirms shipping vs gap:
 - `ContextAssembler` in `roko-compose/src/context_assembler.rs` now uses `EmotionalTag` at retrieval time (partial)
 - Neuro (`roko-neuro/src/knowledge_store.rs`, `context.rs`, `distiller.rs`) preserves emotional tags and derived emotional provenance metadata during consolidation (Done per Doc 13)

@@ -69,7 +69,7 @@ tiebreaking for conflicting cross-cut demands on the same pipeline resource.
 
 ## Functorial Commutativity Requirement
 
-As analyzed in the categorical framework, cross-cuts form endofunctors on the Engram category.
+As analyzed in the categorical framework, cross-cuts form endofunctors on the Signal category.
 For the functorial composition to be correct, the following diagram must commute:
 
 ```

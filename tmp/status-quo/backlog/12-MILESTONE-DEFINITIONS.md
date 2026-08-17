@@ -280,7 +280,7 @@ cargo test --workspace
 | **E08** | 7 | Conductor supervision: anomaly detection, ghost-turn abort, real `conductor_load` |
 | **E09** | 9 | Observability: MetricRegistry threading, log rotation, firehose trimming |
 | **E10** | 7 | Frontend/API contract: fix 4 frontend 404s, casing drift, double SSE, replay |
-| **E17** | 6 | ACP completion: consent-gated, learning-informed, MCP-equipped ACP turns |
+| **E17** | 8 | ACP completion: consent-gated, learning-informed, MCP-equipped ACP turns |
 | **E18** | 13 | Docs/config/CI/ops: MSRV bump, cargo deny, Docker fix, doc rewrites, docs-lint CI |
 | **E33** | 9 | Telemetry & Lens: StateHub projections, Observe protocol, c-factor computation |
 | **E34** | 8 | Security IFC: taint lattice, immune system pipeline, corrigibility, sandbox |

@@ -1,7 +1,7 @@
 # Knowledge Demurrage: Economic Memory
 
 > **TL;DR**: Borrow Silvio Gesell's *demurrage* idea from economics and
-> apply it to memory. Every Engram carries a *holding cost* that decays
+> apply it to memory. Every Signal carries a *holding cost* that decays
 > its weight unless it is actively used, cited, or reinforced. The
 > result: memory that stays fresh, playbooks that don't ossify,
 > worldviews that can't petrify, and a system that preferentially
@@ -20,7 +20,7 @@
 
 ## 1. The problem with indefinite retention
 
-Roko already has mild decay: `Engram.decay: f64` starts at 1.0 and is
+Roko already has mild decay: `Signal.decay: f64` starts at 1.0 and is
 reduced by the GC pass in `roko-fs`. But decay today is:
 
 - **Time-based only**, not usage-based
@@ -53,7 +53,7 @@ gradient: *information that is useful to multiple subscribers stays
 alive; information that nothing cares about fades, making room for new
 information*. It is a market for attention, with a carrying cost.
 
-Proposed addition to Engram:
+Proposed addition to Signal:
 
 ```rust
 pub struct Engram {
@@ -116,8 +116,8 @@ balance ← balance + bonus(kind) * novelty(engram)
 
 Where `novelty` is `1 - max(similarity)` against the top-K HDC
 neighbors (see `11-hyperdimensional-substrate.md`). **Novelty-weighted
-reinforcement** is the key: citing a common engram gives it a tiny
-bump, citing a rare engram gives it a big bump. This is the core
+reinforcement** is the key: citing a common signal gives it a tiny
+bump, citing a rare signal gives it a big bump. This is the core
 anti-hoarding mechanism — high-balance memory has to be *earning* its
 balance from uniquely useful contributions.
 
@@ -125,7 +125,7 @@ balance from uniquely useful contributions.
 
 ### 4.1 Playbook freshness without manual GC
 
-A playbook is an Engram. It earns balance every time an agent
+A playbook is an Signal. It earns balance every time an agent
 successfully applies it, loses balance every tick it sits unused. When
 the codebase drifts and the playbook stops working, its successful-use
 rate drops; demurrage eats its balance; the Router stops proposing it.
@@ -133,7 +133,7 @@ rate drops; demurrage eats its balance; the Router stops proposing it.
 
 ### 4.2 Surprise-weighted retention
 
-`ReinforceKind::Surprised` lets the Bus upweight Engrams whose
+`ReinforceKind::Surprised` lets the Bus upweight Signals whose
 predictions were violated in interesting ways (see
 `10-self-learning-cybernetic-loops.md`). This keeps the
 high-information-content memories preferentially. It is Shannon's
@@ -141,7 +141,7 @@ surprise, operationalized as an economic bonus.
 
 ### 4.3 A natural "forgetting floor"
 
-Balance can reach zero. At that point the Engram becomes a candidate
+Balance can reach zero. At that point the Signal becomes a candidate
 for cold storage or deletion — but its *hash* remains valid (lineage
 doesn't break), the body just moves to a slower tier. This is the
 primitive that lets us build a biologically plausible
@@ -156,7 +156,7 @@ use it as a confidence coefficient:
 consensus = Σ_i (fingerprint(e_i) * effective_weight(e_i))
 ```
 
-Worldviews held by still-earning Engrams dominate; petrified ones
+Worldviews held by still-earning Signals dominate; petrified ones
 recede naturally.
 
 ## 5. Demurrage for the Policy layer
@@ -206,7 +206,7 @@ forgetting rate.
 
 ## 7. Cold-tier graduation
 
-Engrams whose balance hits the floor are graduated to a *cold*
+Signals whose balance hits the floor are graduated to a *cold*
 substrate: same content-address, but the body moves off the hot path.
 Retrieval becomes slower but still possible. This is the inverse of
 the `graduate_to_engram` operation from `08-code-sketches.md` — we
@@ -249,7 +249,7 @@ Three new metrics that surface the attention economy:
 - **Balance histogram** per tier — shape of the distribution tells
   you whether the rates are too aggressive (everything is cold) or
   too lenient (hoarding).
-- **Thaw rate** — how often cold engrams are pulled back. High thaw
+- **Thaw rate** — how often cold signals are pulled back. High thaw
   rate = the demurrage curve is too steep.
 - **Reinforcement-by-kind** breakdown — what *kind* of use is
   keeping memory alive? If `Surprised` is low, the system isn't
@@ -261,7 +261,7 @@ These become first-class tiles on the `roko dashboard`.
 ## 10. Migration path
 
 1. Add `balance`, `demurrage_paid`, `last_touched_at` fields.
-   Backfill existing engrams with `balance = 1.0`.
+   Backfill existing signals with `balance = 1.0`.
 2. Implement `Demurrage` trait and wire charge-on-read into Substrate.
 3. Wire reinforcement into the five call sites (Router, Gate, Scorer,
    Composer, agent turns).
@@ -281,7 +281,7 @@ makes their outputs self-trimming.
   Probably yes; distilled knowledge should be stickier to reflect
   the work that went into it.
 - **Interaction with chain witnesses** (Phase 2) — a chain-witnessed
-  Engram probably cannot be deleted even if balance hits zero; cold
+  Signal probably cannot be deleted even if balance hits zero; cold
   tier but never forget. Demurrage rate respects witness class.
 
 ## 12. Worked example: a playbook's life
@@ -312,27 +312,27 @@ failure is small novelty (cluster is known). Tax continues. Balance
 drops below `min_balance = 0.0`. Substrate schedules `freeze(hash)`.
 
 Day 91. Playbook moves to cold tier. Its hash is still resolvable;
-lineage from Engrams that cited it still works. Full body is on slower
+lineage from Signals that cited it still works. Full body is on slower
 storage.
 
-Day 400. A fork of the codebase reuses an old pattern. A new Engram
+Day 400. A fork of the codebase reuses an old pattern. A new Signal
 references the frozen playbook. Substrate `thaw(hash)` returns it
 with balance reset to a starter value (configurable — default 0.3,
 low enough that one failure sends it back to cold, high enough to
-compete with fresh Engrams). The system is neither forgetting nor
+compete with fresh Signals). The system is neither forgetting nor
 hoarding; it is adapting with memory.
 
 ## 13. Interaction with the Composer and Scorer
 
 Two concrete effects on the other operators:
 
-- **Scorer**: reads `effective_weight(engram)` instead of the old
-  `decay` field. A low-balance Engram scores lower across every
-  axis, not just freshness. High-balance Engrams with strong axis
+- **Scorer**: reads `effective_weight(signal)` instead of the old
+  `decay` field. A low-balance Signal scores lower across every
+  axis, not just freshness. High-balance Signals with strong axis
   scores dominate Router selection naturally. See
   `04-operators-generalized.md` §2 for the new Scorer signature.
 - **Composer**: budget-aware composition now respects *attention
-  budget*, not just token budget. Engrams with balance < 0.3 are
+  budget*, not just token budget. Signals with balance < 0.3 are
   candidates for the budget's last slots; they contribute only if
   nothing higher-balance is available. The composed prompt becomes
   preferentially fresh while retaining access to deep knowledge when
@@ -346,7 +346,7 @@ should touch them in this order:
 1. **`min_balance`** — raise from 0.0 to, say, 0.1 if cold storage
    is growing too fast; lower if memory is bloated.
 2. **`flat_tax_per_day`** — raise if memory is hoarding; lower if
-   warming up new Engrams is too expensive.
+   warming up new Signals is too expensive.
 3. **`surprised_bonus`** — raise this first when the system isn't
    learning from prediction errors visibly. `Surprised` is the
    novelty channel; cranking it emphasizes what's changing.
@@ -373,7 +373,7 @@ expose via StateHub `demurrage_health` projection — see
 - **Reinforcement breakdown**: pie chart of `ReinforceKind` over the
   last 24h.
 - **Thaw rate**: line graph of cold-to-warm thaws per hour.
-- **Attention-leaderboard**: top 20 Engrams by balance, link to
+- **Attention-leaderboard**: top 20 Signals by balance, link to
   inspect.
 
 Each tile answers a specific operator question ("is memory bloating?"

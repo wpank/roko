@@ -18,7 +18,7 @@
    be run?
 
 3. **Can topological centrality be computed incrementally?** Full centrality computation
-   on the Engram graph scales poorly. Can incremental updates be computed as Engrams are
+   on the Signal graph scales poorly. Can incremental updates be computed as Signals are
    added or removed, without recomputing the full graph?
 
 4. **Is topological degradation a useful early warning signal?** Does degrading topology
@@ -26,8 +26,8 @@
    leading indicators of system performance.
 
 5. **What is the relationship between topological structure and HDC similarity?** The HDC
-   distance topology and the Engram graph topology are defined independently. Do they
-   correlate? Are topologically distant Engrams (in the graph) also semantically distant
+   distance topology and the Signal graph topology are defined independently. Do they
+   correlate? Are topologically distant Signals (in the graph) also semantically distant
    (in HDC space)?
 
 ---
@@ -38,14 +38,14 @@
    local-global consistency — when local data patches agree, they can be extended to a
    global consistent structure. A sheaf-theoretic treatment of knowledge bases would make
    the conditions for global consistency (no contradictions) formally precise. Is this
-   tractable at the scale of Roko's Engram stores?
+   tractable at the scale of Roko's Signal stores?
 
 2. **Information geometry**: the space of probability distributions over propositions has
    a natural Riemannian metric (Fisher information metric). Can Roko's confidence-weighted
-   Engram space be analyzed using information geometry, and does this provide better
+   Signal space be analyzed using information geometry, and does this provide better
    optimization targets for decay and consolidation?
 
 3. **How does the [energy model perspective](../energy-model/README.md) interact with
-   topology?** Energy-based decay (high-energy Engrams require more resources to maintain)
+   topology?** Energy-based decay (high-energy Signals require more resources to maintain)
    may produce topologically different degradation patterns than time-based decay. The
    intersection of these two perspectives is unexplored.

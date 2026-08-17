@@ -1,5 +1,11 @@
 # E14 — Providers & Tools  *(correctness of the dispatch path every self-run flows through)*
 
+> **Status reconciliation (2026-08-16): E14 is accepted 12/12.** The findings and task
+> statements below preserve the original audit context. The image finding is now closed:
+> provider-neutral structured image input reaches vision-capable Anthropic, OpenAI-
+> compatible, and Gemini API paths; non-vision and unsupported transports fail closed;
+> ACP advertises the resolved model's image capability. Audio remains unsupported.
+
 > **Depends on E01.** Once `plan run` defaults to Runner v2 and spawns real agents
 > (E01-T01), *every* self-hosted task dispatches through the provider/tool path this
 > epic hardens. A retry that aborts on one 429, a tool allow-list that strips every
@@ -33,7 +39,7 @@ supporting: `36-ORCHESTRATION-RUNNERS.md` (dispatch), `98-TRACE-TOOL-DISPATCH.md
 | b | Tool-alias bug: PascalCase allow-list (`"Read,Write"`) vs snake_case registry (`read_file`) → filter strips **all** tools on non-Claude providers. `canonical_of_claude` exists but is never called on this path. | `provider/openai_compat.rs:252` `parse_allowed_tools_csv` (raw names), `:348` filter; `canonical_of_claude` at `roko-core/tool/aliases.rs` | **P0** | plan exists (P09) |
 | c | Only **16 of 37** builtins have executable handlers; the 17 chain + 4 ISFR tools are definition-only. `handler_for` returns `None` for them → agent offered a tool it cannot run. | `roko-std/tool/handlers.rs:26-45` (16 arms, `_ => None`); `builtin/mod.rs:44` `TOOL_COUNT = 37`; `CHAIN_TOOL_NAMES` (17), `isfr::ISFR_TOOL_NAMES` (4) | **P0** | **uncovered** |
 | d | Gemini native backend has no streaming — `GeminiNativeBackend` implements only `send_turn`, no `stream_turn`/`send_turn_streaming`. | `tool_loop/backends/gemini_native.rs:162-163` `impl LlmBackend` has `async fn send_turn` only | **P1** | **uncovered** |
-| e | Image/vision unsupported: non-Anthropic translators drop image blocks; ACP hardcodes `image: false`. | `translate/gemini.rs` + `translate/mod.rs` no image handling; ACP `handler.rs` `image: false` | **P1** | plan partial (P28) |
+| e | Image/vision was unsupported: non-Anthropic translators dropped image blocks and ACP hardcoded `image: false`. | Historical audit evidence; superseded by E14-T06 and P28 | **P1** | **closed** |
 | f | `ProviderKind::GeminiCli` absent — enum has `GeminiApi` but no CLI-subprocess family (cf. `CursorCli`). | `roko-core/agent.rs:35-59` `enum ProviderKind` (10 variants, no `GeminiCli`) | **P2** | **uncovered** |
 
 ## Reconciliation with existing plans
@@ -42,11 +48,12 @@ supporting: `36-ORCHESTRATION-RUNNERS.md` (dispatch), `98-TRACE-TOOL-DISPATCH.md
 |---|---|---|---|
 | **P13-rate-limit-retry** (4 tasks) | (a) | **Fully covers.** T1 classifies `send_turn` (non-streaming), T2 `stream_turn`, T3 `send_turn_streaming`, T4 unit test. All three send paths map 429→`ProviderError::RateLimit`→`LlmError::Provider` (the retryable variant), 5xx→`ServerError`. | **Yes** — fixes the exact `map_err` sites the retry loop keys on. No gap. |
 | **P09-tool-alias-fix** (3 tasks) | (b) | **Fully covers.** T1 rewrites `parse_allowed_tools_csv` to run `canonical_of_claude` on each name (fixes both the `:252` parse and the `:348` filter via `HashSet<String>`), T2 tests, T3 audits other backends for the same gap. | **Yes** — fixes the parse site so any naming convention resolves. No gap. |
-| **P28-image-support** (5 tasks) | (e) | **Partial.** T1 ACP capability from `supports_vision`, T2 log placeholder, T3 image-injection helper on both dispatch paths, T4 `anthropic_api` passthrough, T5 test. Covers ACP + Anthropic path. | **Partial** — does **not** wire image blocks through the **non-Anthropic translators** (`translate/gemini.rs`, openai_compat), which still drop images. → **E14-T06**. |
+| **P28-image-support** (5 tasks) | (e) | **Complete.** Truthful ACP capability, secret-safe placeholders/redaction, ordered provider-neutral image input, fail-closed transport/model boundaries, and regression tests are accepted. | **Yes.** E14-T06 supplies the non-Anthropic translator tail; P28 closes the end-to-end API/ACP path. |
 | **P27-provider-error-ux** (4 tasks) | (adjacent) | Doctor/auth error-message UX (conditional key checks, provider-agnostic messages). Complementary to E14; not one of the six findings. | n/a |
 
-**Net gaps for this epic:** finding (c) the 21 unimplemented handlers (**P0**, biggest hole),
-(d) Gemini streaming, (f) `GeminiCli` kind, and the non-Anthropic image-translator tail of (e).
+**Reconciled outcome:** the expanded authoritative manifest closes all twelve E14 tasks,
+including executable-tool parity, Gemini streaming/CLI support, and the image-translator
+tail. Later product boundaries are tracked in `.roko/GAPS.md`, not as open E14 work.
 
 ## Task list
 

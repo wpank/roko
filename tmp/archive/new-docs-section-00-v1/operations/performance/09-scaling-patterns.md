@@ -69,12 +69,12 @@ require coordination.
 ```
 
 Each Roko instance handles its own agent tasks independently. The shared substrate
-allows all instances to read each other's Engrams (for context assembly) and the
+allows all instances to read each other's Signals (for context assembly) and the
 shared episode store allows all instances to contribute to learning.
 
 **Coordination requirements (planned):**
 - A distributed lock on the GC process (only one instance GCs at a time).
-- Atomic Engram ID assignment (avoid ID collisions from concurrent writers).
+- Atomic Signal ID assignment (avoid ID collisions from concurrent writers).
 - A merge protocol for concurrent playbook rule extraction.
 
 None of these are implemented yet.
@@ -83,8 +83,8 @@ None of these are implemented yet.
 
 ## Substrate Sharding (Specified)
 
-For very large Engram stores (> 10M entries), a single JSONL file becomes slow to scan.
-The planned sharding model partitions the substrate by Engram kind and time range:
+For very large Signal stores (> 10M entries), a single JSONL file becomes slow to scan.
+The planned sharding model partitions the substrate by Signal kind and time range:
 
 ```
 substrate/
@@ -167,4 +167,4 @@ across pods — cache coherence issues).
 ## Open Questions
 
 - Substrate write coordination (distributed locking) is the main open problem for horizontal scaling.
-- Whether to use CRDT-based Engram stores (which are natively multi-writer) is under research consideration.
+- Whether to use CRDT-based Signal stores (which are natively multi-writer) is under research consideration.

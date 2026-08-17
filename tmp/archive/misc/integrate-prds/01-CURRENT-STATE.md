@@ -6,7 +6,7 @@ Location: `/Users/will/dev/nunchi/roko/roko/docs/`
 
 375+ documents across 22 sections describing the full "Synapse Architecture":
 
-- **1 universal data type**: Engram (currently `Signal` in code)
+- **1 universal data type**: Signal (currently `Signal` in code)
 - **6 synapse traits**: Substrate, Scorer, Gate, Router, Composer, Policy
 - **5-layer taxonomy**: Runtime → Framework → Scaffold → Harness → Orchestration
 - **3 cognitive cross-cuts**: Neuro (knowledge), Daimon (affect), Dreams (consolidation)
@@ -17,7 +17,7 @@ Location: `/Users/will/dev/nunchi/roko/roko/docs/`
 
 | Section | Path | What |
 |---------|------|------|
-| Architecture | `docs/00-architecture/` | Naming glossary, Engram type, synapse traits, universal loop |
+| Architecture | `docs/00-architecture/` | Naming glossary, Signal type, synapse traits, universal loop |
 | Orchestration | `docs/01-orchestration/` | Plan DAG, executor, task dispatch |
 | Agents | `docs/02-agents/` | Type taxonomy, extensibility |
 | Neuro | `docs/06-neuro/` | Tiered knowledge, HDC, decay |
@@ -92,7 +92,7 @@ All steps are CLI commands. The plan-execute-gate-persist loop is wired.
 
 | What | Docs Say | Code Says |
 |------|----------|-----------|
-| Universal data type | Engram | Signal |
+| Universal data type | Engram (renamed to Signal in 2026-08-12) | Signal |
 | Architecture branding | Synapse Architecture | "1 noun + 6 verbs" |
 | Runtime crate | roko-runtime | bardo-runtime |
 | Primitives crate | roko-primitives | bardo-primitives |
@@ -124,5 +124,5 @@ All steps are CLI commands. The plan-execute-gate-persist loop is wired.
 
 - Death/mortality framing completely removed in docs — code still has `mortality.rs`
 - Docs describe 6 cyclical behavioral states (no terminal state) — code has mortality clocks
-- Docs describe Engram with Ebbinghaus decay — code has Signal with simpler decay
+- Docs describe Signal with Ebbinghaus decay — code has Signal with simpler decay
 - Docs describe 3 cognitive speeds (Gamma/Theta/Delta) — code has no speed differentiation

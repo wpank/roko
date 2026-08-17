@@ -1,5 +1,18 @@
 # For AI Agents: How to Use This Task System
 
+> **What is this?** Instructions given to AI agents working on taskrunner tasks. This file
+> was copied into each agent's context window to establish quality standards, anti-patterns
+> to avoid, and architectural decisions to follow. The rules here are still valid for any
+> agent work on the codebase, though the taskrunner itself is no longer the primary
+> execution mechanism (see `tmp/runners/parallel-template/` for the current approach).
+>
+> **Note (2026-08-13):** References to `orchestrate.rs` in traces below are stale --
+> that file has been deleted. The runtime entry point is now
+> `crates/roko-cli/src/runner/event_loop.rs`. The Engram-to-Signal rename (tasks 037-038)
+> is complete.
+>
+> **Last updated: 2026-08-13**
+
 ## The #1 Rule: Wire It or Don't Build It
 
 This codebase has ~15K LOC of dead code — sophisticated implementations that were never
@@ -50,6 +63,9 @@ run. Write it down:
 ```
 CLI main.rs → commands/plan.rs → runner/event_loop.rs → YOUR_CODE
 ```
+
+> **Note:** Older task files may show `orchestrate.rs` in this chain. That file is deleted.
+> All plan execution now flows through `runner/event_loop.rs`.
 
 If you can't trace this chain, you don't understand the wiring yet. Read more code.
 

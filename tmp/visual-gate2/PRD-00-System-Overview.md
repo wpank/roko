@@ -58,11 +58,11 @@ Adding a new gate means editing `gate_service.rs`, `rung_dispatch.rs`, and updat
 
 ### 2.3 What's Good (Keep)
 
-- **`Verify` trait** -- `async fn verify(&self, engram: &Engram, ctx: &Context) -> Verdict` is the right shape. We extend it, not replace it.
+- **`Verify` trait** -- `async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict` is the right shape. We extend it, not replace it.
 - **Composition wrappers** -- `ParallelGate`, `VotingGate`, `FallbackGate`, `GatePipeline` (in `crates/roko-gate/src/composition.rs` and `gate_pipeline.rs`) are well-designed. They become implementations of `Profile` composition strategies.
 - **`AdaptiveThresholds`** -- EMA + CUSUM + SPC + Hotelling is sophisticated (in `crates/roko-gate/src/adaptive_threshold.rs`). It becomes the default learning strategy for `Profile`s.
 - **`Score` (7-axis)** -- `confidence x (1+novelty) x (1+utility) x reputation x salience x coherence` is rich. `Criterion` outputs are projected into `Score` space.
-- **`Engram` as universal carrier** -- content-addressed, scored, decaying, with lineage. Evidence and criterion results are both engrams.
+- **`Signal` as universal carrier** (formerly Engram, renamed to Signal in 2026-08-12) -- content-addressed, scored, decaying, with lineage. Evidence and criterion results are both signals.
 - **`ProcessRewardModel`** -- step-level Promise/Progress signals (in `crates/roko-gate/src/process_reward.rs`) become a `TrajectoryScorer` criterion.
 - **Structured compile errors** -- `compile_errors.rs` with `ErrorCategory`, `FailureClass`, `GateFailureClassification` carries over directly as the structured finding model for `CompileCriterion`.
 
@@ -287,7 +287,7 @@ crates/
 
 ```
 roko-eval (new)
-  +-- depends on: roko-core (Engram, Score, Verdict, Context)
+  +-- depends on: roko-core (Signal, Score, Verdict, Context)
   +-- consumed by: roko-gate (bridge trait, migration adapter)
   +-- consumed by: roko-cli (viz commands, orchestrate.rs integration)
   +-- consumed by: roko-serve (HTTP routes)

@@ -15,6 +15,13 @@ sources:
   - ~/obsidian-vault/research/2026-03-29-daeji-oracle-design.md
 ---
 
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This file specifies the ISFR index methodology, sources, and service API.
+> It is reference material for the ISFR product vertical, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # ISFR — Implied Secured Funding Rate Index
 
 ## Summary

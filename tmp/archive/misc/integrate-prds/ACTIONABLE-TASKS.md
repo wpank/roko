@@ -473,9 +473,9 @@ cargo test -p roko-neuro
 
 ---
 
-## Batch 7: Signal → Engram rename (BIG, do last in Phase A)
+## Batch 7: Signal → Signal rename (BIG, do last in Phase A)
 
-### [x] 7.1 Rename Signal → Engram in roko-core with compat alias
+### [x] 7.1 Rename Signal → Signal in roko-core with compat alias
 
 ```
 Completed in `crates/roko-core/src/engram.rs` / `crates/roko-core/src/lib.rs`.
@@ -505,7 +505,7 @@ cargo check --workspace
 cargo test -p roko-core -- --nocapture
 ```
 
-### [x] 7.2 Update all consumer crates to use Engram
+### [x] 7.2 Update all consumer crates to use Signal
 
 ```
 For each crate that imports Signal, replace with Engram:

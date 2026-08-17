@@ -136,7 +136,7 @@ systems requires some reinterpretation:
 |---------------------|-------------------|
 | Social sensitivity (RME) | Model of peer agent state (knowledge, uncertainty, current task) |
 | Equal turn-taking | Balanced contribution of agents to shared knowledge substrate |
-| Conversational dominance | One agent monopolizing the Engram substrate or Router allocation |
+| Conversational dominance | One agent monopolizing the Signal substrate or Router allocation |
 | Group cohesion (not predictive) | Shared embedding space (not sufficient for *c*) |
 
 The prediction is that multi-agent systems with **accurate peer modeling** and **balanced
@@ -149,7 +149,7 @@ If *c* is to be a useful metric for Roko, it needs an operational definition. Ca
 approaches:
 1. **Task generalization**: measure collective performance on a diverse battery of tasks;
    factor-analyze the results; see if a dominant factor emerges.
-2. **Information diversity index**: measure the entropy of the Engram contributions across
+2. **Information diversity index**: measure the entropy of the Signal contributions across
    agents — high entropy (balanced contribution) correlates with high *c* in humans.
 3. **Peer model accuracy**: measure how accurately each agent models other agents' knowledge
    states (e.g., predicts whether another agent knows a given fact).

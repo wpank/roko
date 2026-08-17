@@ -36,7 +36,7 @@ framing.
    suffice.
 6. **Retired terms must not appear.** Verify-step `terminology_check` will
    fail the batch if retired terms (`Grimoire`, `Styx`, `Clade`, `Mori`,
-   `Bardo`, `Golem`, mortal/death/reincarnation framing, "Signal = Engram"
+   `Bardo`, `Golem`, mortal/death/reincarnation framing, "Signal = Signal"
    disclaimers, etc.) appear in lines you introduce — *except* when the
    line explicitly frames them as "retired / deprecated / historical /
    legacy / formerly / renamed / see also / old name". Use that phrasing
@@ -44,7 +44,7 @@ framing.
 7. **Cross-link to refinements.** Docs that change should include a
    `see tmp/refinements/NN-slug.md` pointer for readers who want the full
    proposal. Use the exact refinement filename (e.g.
-   `tmp/refinements/02-engram-vs-pulse.md`).
+   `tmp/refinements/02-signal-vs-pulse.md`).
 8. **Cross-link to glossary.** Docs introducing new terminology should
    point at `docs/00-architecture/01-naming-and-glossary.md` (or wherever
    the glossary has landed).
@@ -145,7 +145,7 @@ the 35 refinements propagate into `docs/`.
 
 ## The one-liner
 
-> Roko's kernel is two mediums (**Engram** — durable, content-addressed,
+> Roko's kernel is two mediums (**Signal** — durable, content-addressed,
 > decayed; **Pulse** — ephemeral, topic-addressed, sequenced) moving
 > through two fabrics (**Substrate** — storage; **Bus** — transport),
 > acted on by six operators (**Scorer**, **Gate**, **Router**,
@@ -156,7 +156,7 @@ the 35 refinements propagate into `docs/`.
 
 ## Canonical term definitions
 
-**Engram** — Durable medium. Content-addressed by BLAKE3 over
+**Signal** — Durable medium. Content-addressed by BLAKE3 over
 `(kind, body, author, tags)`. Has `lineage: Vec<ContentHash>`,
 `decay` / `balance`, `score` (7 axes), `provenance`, optional
 `attestation`, and (post-refinement) an HDC `fingerprint`. Lives in a
@@ -164,11 +164,11 @@ Substrate.
 
 **Pulse** — Ephemeral medium (new). Typed, topic-addressed,
 sequence-numbered, ring-buffered message on a Bus. Not content-
-addressed; not persisted by default. May *graduate* to an Engram when
+addressed; not persisted by default. May *graduate* to an Signal when
 its lineage matters.
 
 **Substrate** — Storage fabric (kernel trait). Backends: Memory, File,
-HDC, Chain. Persists Engrams. Retrieval by filter or (new)
+HDC, Chain. Persists Signals. Retrieval by filter or (new)
 HDC similarity.
 
 **Bus** — Transport fabric (promoted to kernel trait). Backends:
@@ -179,7 +179,7 @@ Publishes and delivers Pulses by Topic.
 **Topic** — Routing handle for Pulses. Dot-separated lowercase
 strings (`gate.verdict.emitted`, `agent.msg.chunk`, `prediction.error`).
 
-**Datum** — `enum Datum<'a> { Engram(&'a Engram), Pulse(&'a Pulse) }`
+**Datum** — `enum Datum<'a> { Signal(&'a Signal), Pulse(&'a Pulse) }`
 used by polymorphic operators (Scorer, Composer, Router).
 
 **Six operators** — `Scorer`, `Gate`, `Router`, `Composer`, `Policy`,
@@ -246,7 +246,7 @@ consolidated knowledge back into Substrate for the next cycle.
 
 | Term | Use | Avoid |
 |---|---|---|
-| Engram | the durable record | Signal (retired in code 877:5) |
+| Engram (renamed to Signal in 2026-08-12) | the durable record | Signal (retired in code 877:5) |
 | Pulse | the ephemeral message | Event, Envelope, Message, Signal |
 | Bus | the transport trait | EventBus<E> as a trait name |
 | Substrate | the storage trait | (unchanged) |
@@ -274,8 +274,8 @@ match lands outside a line that also signals "retired", "deprecated",
 
 | Retired term | Use instead | Notes |
 |---|---|---|
-| `Signal` (as the durable record) | `Engram` | Rename landed in code (877 Engram vs 5 Signal). Docs should say Engram. |
-| `Signal is the same as Engram` | (delete disclaimer) | The equivalence disclaimer is stale. Remove. |
+| `Signal` (as the durable record) | `Signal` | Rename landed in code (877 Signal vs 5 Signal). Docs should say Signal. |
+| `Signal is the same as Signal` | (delete disclaimer) | The equivalence disclaimer is stale. Remove. |
 | `EventBus<E>` (as trait name) | `Bus` + `Pulse` | The generic struct stays as `BroadcastBus` implementation detail. |
 | `Envelope<E>` (as user-facing type) | `Pulse` | Envelope name retained only as internal impl detail. |
 | `Event` (as type name) | `Pulse` | Collides with tokio/winit. Use Pulse. |
@@ -308,12 +308,12 @@ in the same line (case-insensitive): `retired`, `deprecated`,
 
 | New term | Must appear after batch | Home refinement |
 |---|---|---|
-| `Pulse` | REF02, REF07 | 02-engram-vs-pulse.md |
+| `Pulse` | REF02, REF07 | 02-signal-vs-pulse.md |
 | `Bus` (as kernel trait) | REF03 | 03-bus-as-first-class.md |
 | `Topic` | REF03, REF07 | 03-bus-as-first-class.md |
 | `TopicFilter` | REF03, REF07 | 03-bus-as-first-class.md |
 | `Datum` | REF04 | 04-operators-generalized.md |
-| `PulseSource` | REF02, REF07 | 02-engram-vs-pulse.md |
+| `PulseSource` | REF02, REF07 | 02-signal-vs-pulse.md |
 | `two mediums` | REF01, REF02 | 01-critique-one-noun.md |
 | `two fabrics` | REF03 | 03-bus-as-first-class.md |
 | `seven-step loop` | REF05 | 05-loop-retold.md |
@@ -332,8 +332,8 @@ in the same line (case-insensitive): `retired`, `deprecated`,
 Every refinement propagation should include a trailing "See also" or
 inline cross-reference to the refinement file:
 
-- `see [02-engram-vs-pulse](../../tmp/refinements/02-engram-vs-pulse.md)`
-- or `see tmp/refinements/02-engram-vs-pulse.md §3` for section-specific
+- `see [02-signal-vs-pulse](../../tmp/refinements/02-signal-vs-pulse.md)`
+- or `see tmp/refinements/02-signal-vs-pulse.md §3` for section-specific
   references.
 
 Use the project's existing link conventions where a doc subfolder has
@@ -387,7 +387,7 @@ to update:
 
 - `00-vision-and-thesis.md`
 - `01-naming-and-glossary.md` — every naming-related refinement touches this
-- `02-engram-data-type.md` — REF02
+- `02-signal-data-type.md` — REF02
 - `03-score-7-axis-appraisal.md` — mostly stable
 - `04-decay-variants.md` — REF12 (supersedes decay with demurrage)
 - `05-provenance-and-attestation.md` — REF32
@@ -461,7 +461,7 @@ with the others.
 
 ## Ten load-bearing primitives
 
-1. **Engram** (durable medium) — home: REF02
+1. **Signal** (durable medium) — home: REF02
 2. **Pulse** (ephemeral medium) — home: REF02
 3. **Bus** (transport fabric) — home: REF03
 4. **Substrate** (storage fabric) — home: REF03
@@ -509,7 +509,7 @@ BROADCAST, REACT) uses every primitive:
 
 - SENSE — Substrate (query) + Bus (subscribe) + external I/O.
 - ASSESS — Scorer (weights via HDC/demurrage/heuristic calibration).
-- COMPOSE — Composer (picks from HDC-similar Engrams, injects heuristics,
+- COMPOSE — Composer (picks from HDC-similar Signals, injects heuristics,
   TypedContext shapes prompt).
 - ACT — produces Pulses (agent stream, tool calls).
 - VERIFY — Gate pipeline; gate-verdict Pulses feed heuristic calibration.
@@ -535,12 +535,12 @@ without reading its full source.
 - `01-critique-one-noun.md` — Diagnosis: "one noun, six verbs" framing
   conflates two data shapes, hides the event bus, stretches trait
   signatures.
-- `02-engram-vs-pulse.md` — Introduce Pulse (ephemeral) as Engram's
+- `02-signal-vs-pulse.md` — Introduce Pulse (ephemeral) as Signal's
   sibling; define graduation law.
 - `03-bus-as-first-class.md` — Promote Bus to a kernel trait at L0
   alongside Substrate.
 - `04-operators-generalized.md` — Generalize the six operators over a
-  `Datum` enum that is either Engram or Pulse.
+  `Datum` enum that is either Signal or Pulse.
 - `05-loop-retold.md` — Universal loop collapses from 9 to 7 steps;
   PERSIST and BROADCAST become co-equal; cross-cuts aren't steps.
 - `06-refactoring-plan.md` — Three-phase refactor (docs → kernel →
@@ -557,7 +557,7 @@ without reading its full source.
 - `10-self-learning-cybernetic-loops.md` — Every operator becomes a
   predictor; active inference literal via predict/outcome Pulses.
 - `11-hyperdimensional-substrate.md` — 10,240-bit HDC fingerprint on
-  every Engram; similarity/consensus/analogy as O(1) vector ops.
+  every Signal; similarity/consensus/analogy as O(1) vector ops.
 - `12-knowledge-demurrage.md` — Economic memory: balance, holding
   cost, reinforcement-by-kind; self-trimming playbooks.
 - `13-collective-intelligence-c-factor.md` — Woolley's c-factor
@@ -566,7 +566,7 @@ without reading its full source.
   worldviews as co-citation clusters; lived-experience calibration.
 - `15-exponential-scaling.md` — Seven compounding loops; "every week
   your Roko gets better on your codebase."
-- `16-research-to-runtime.md` — Papers as Engrams, Claims as testable
+- `16-research-to-runtime.md` — Papers as Signals, Claims as testable
   hypotheses, Replication Ledger — living research.
 - `17-plugin-extension-architecture.md` — Five-tier SPI (prompts,
   profiles, manifests, native, WASM) with matched sandboxes.
@@ -672,7 +672,7 @@ file; only edit docs under `docs/`.
 
 `docs/00-architecture/08-chain-layer.md` describes Roko's chain
 integration as shared on-chain state for agent coordination, with
-three transport needs: **storing** signed Engrams (transactions,
+three transport needs: **storing** signed Signals (transactions,
 attestations), **reading** shared knowledge (insights, bounties), and
 **reacting** to on-chain events.
 
@@ -684,7 +684,7 @@ fundamentally a subscription — those are different fabrics.
 
 With two fabrics:
 
-- **`ChainSubstrate`** stores and queries durable on-chain Engrams
+- **`ChainSubstrate`** stores and queries durable on-chain Signals
   (transactions, attestations, insights, bounties, pheromones). It
   already makes sense as a Substrate.
 - **`ChainBus`** (new) maps event-log topics to Bus topics. A smart
@@ -701,25 +701,25 @@ repetition of the polling-vs-streaming bug that's already P0 in
 ## 2. Dreams (offline consolidation — Phase 5C)
 
 `docs/00-architecture/10-dreams.md` describes Dreams as a Delta-speed
-(hours-scale) loop that consolidates recent Engrams into higher-tier
+(hours-scale) loop that consolidates recent Signals into higher-tier
 knowledge. It's scaffold-only today (per `docs/STATUS.md`).
 
 In the one-noun model, Dreams has to walk the Substrate to find
-candidate Engrams for consolidation. It's a polling loop.
+candidate Signals for consolidation. It's a polling loop.
 
 In the two-fabric model, Dreams has two inputs:
 
 1. **Substrate scan** — still the primary source, because
    consolidation is deliberate and wants completeness.
 2. **Bus subscription** — to `substrate.engram.stored` (emitted by
-   the Substrate when new durable Engrams land). This makes Dreams
+   the Substrate when new durable Signals land). This makes Dreams
    reactive: it can wake up when a threshold of new content is
    available rather than polling on a fixed schedule. That matters
    because Delta-speed doesn't mean fixed-cadence; it means
    "slower than Gamma/Theta" — and "slower" can be event-triggered.
 
 Dreams also emits consolidated `Kind::Insight` and `Kind::Heuristic`
-Engrams. In the two-fabric model it emits both the Engram (to
+Signals. In the two-fabric model it emits both the Signal (to
 Substrate) *and* an `engram.promoted` Pulse (to Bus) so the Composer
 at L2 can react and update its enrichment heuristics without
 re-querying.
@@ -733,7 +733,7 @@ environmental state as indirect communication*.
 
 In the two-fabric model, stigmergy is a literal one-liner:
 
-> Pheromones are Engrams persisted to a shared Substrate (chain or
+> Pheromones are Signals persisted to a shared Substrate (chain or
 > mesh) with Ebbinghaus decay. Agents deposit pheromones by
 > `substrate.put`; they detect them by `substrate.query` and/or by
 > subscribing to `mesh.pheromone.deposited` on the Bus.
@@ -752,7 +752,7 @@ broadcast channels through ad-hoc conversions. In the two-fabric
 model, the HTTP layer is trivial:
 
 - REST GET routes → read from Substrate.
-- REST POST routes → publish a Pulse or graduate an Engram.
+- REST POST routes → publish a Pulse or graduate an Signal.
 - WebSocket/SSE streams → forward Bus subscriptions over HTTP.
 
 `roko-serve` becomes mostly a thin Bus-and-Substrate projection to
@@ -776,7 +776,7 @@ With two fabrics, mesh is trivially:
 - **MeshBus** — a Bus backend that fans out Pulses over NATS or a
   libp2p gossipsub topology. Agents subscribe to topics they care
   about.
-- **MeshSubstrate** — a Substrate backend that replicates Engrams
+- **MeshSubstrate** — a Substrate backend that replicates Signals
   over the same transport. Could be CRDT-based; could use the
   chain as arbiter.
 
@@ -793,7 +793,7 @@ Collectives in the two-fabric model are pub/sub topologies:
 
 - A **Swarm** is N agents subscribed to the same topic set; each
   publishes its own findings; the collective outcome is the union
-  of all Pulses and Engrams.
+  of all Pulses and Signals.
 - A **Pipeline** is a chain of topic subscriptions — agent A
   publishes to `work.stage1.done`, agent B subscribes, publishes
   `work.stage2.done`, etc.
@@ -817,12 +817,12 @@ fifty lines.
 
 ## 8. Safety / Provenance (Phase 11)
 
-Safety's audit model already assumes content-addressed Engrams for
+Safety's audit model already assumes content-addressed Signals for
 the long-term forensic DAG. Two-fabric doesn't change that — it
 adds live *detection* of violations. A `SafetyPolicy` subscribes to
 `tool.call.started` Pulses, checks the intended op against role
 permissions, and publishes `safety.approval.requested` or
-`safety.violation.detected` Pulses as appropriate. The Engram DAG
+`safety.violation.detected` Pulses as appropriate. The Signal DAG
 preserves the whole trail.
 
 ## 9. Daimon (affect engine, Phase 9) — cross-cut
@@ -841,7 +841,7 @@ exactly what the cross-cut concept is supposed to be.
 
 A specific Phase-2+ win: when Dreams produces consolidated
 insights, it publishes `neuro.insight.promoted` Pulses. Neuro's
-tier-progression policy subscribes and moves Engrams between
+tier-progression policy subscribes and moves Signals between
 tiers (Transient → Working → Semantic → Procedural). The
 orchestrator's context-enrichment path subscribes and rebuilds its
 enrichment cache. All of this is reactive in two-fabric; in
@@ -854,7 +854,7 @@ those arrows as MISSING.
 |---|---|---|---|
 | 6 | Chain | ChainSubstrate conflates storage and events | Split into ChainSubstrate + ChainBus |
 | 5C | Dreams | Polling Substrate | Subscribe to `substrate.engram.stored` |
-| 13 | Coordination / Stigmergy | Custom pheromone plumbing | Pheromone = Engram in shared Substrate + `mesh.pheromone.*` Pulse |
+| 13 | Coordination / Stigmergy | Custom pheromone plumbing | Pheromone = Signal in shared Substrate + `mesh.pheromone.*` Pulse |
 | 12 | HTTP serve | Ad-hoc stream conversion | Bus projection over HTTP |
 | 2+ | Mesh | Requires new trait family | Just another Bus/Substrate backend |
 | 5+ | Multi-agent collectives | Requires bespoke orchestration | Pub/sub topologies |
@@ -906,11 +906,11 @@ to find it.
 
 1. **Agent A** (coder, working on `src/net/client.rs`) hits a flaky
    test. The agent decides the failure is a race condition.
-2. Agent A authors an Engram of kind `Pheromone` with body
+2. Agent A authors an Signal of kind `Pheromone` with body
    `"race condition suspected in retry loop around line 142"` and
    tags `{ file: "src/net/client.rs", function: "with_retry" }`.
-   The Engram's fingerprint (HDC, see 11) encodes the tags.
-3. Agent A calls `substrate.put(engram)`. Substrate stores it with
+   The Signal's fingerprint (HDC, see 11) encodes the tags.
+3. Agent A calls `substrate.put(signal)`. Substrate stores it with
    `Decay::Ebbinghaus` (fades if never reinforced) and publishes
    `Pulse { topic: "mesh.pheromone.deposited", kind: Pheromone,
    body: ... , lineage_hint: Some(engram_hash) }` to the Bus.
@@ -919,12 +919,12 @@ to find it.
    kind=Pheromone)` and finds Agent A's note. It gets injected into
    the prompt.
 5. Agent B's first action reinforces the pheromone (demurrage §2
-   `ReinforceKind::AgentQuoted`). The Engram's balance goes up; it
+   `ReinforceKind::AgentQuoted`). The Signal's balance goes up; it
    persists past its natural decay.
 6. Agent B proposes a fix. Gate pipeline verifies; `GateVerdict`
    lands; `gate.verdict.emitted` Pulse fires.
 7. The `FixProvenancePolicy` observes the verdict, checks which
-   Engrams were cited in the input context (Agent A's pheromone
+   Signals were cited in the input context (Agent A's pheromone
    was), and publishes `pheromone.successful` with lineage pointing
    at Agent A's original. Agent A's pheromone is now a validated
    heuristic candidate (see 14).
@@ -934,7 +934,7 @@ Every step is a Substrate put or a Bus publish. There is no
 falls out of the kernel primitives. And because every step has
 lineage, the audit trail for *why* the fix was proposed is
 inspectable end-to-end — the forensic capability from
-`docs/00-architecture/02-engram-data-type.md` gets the social
+`docs/00-architecture/02-signal-data-type.md` gets the social
 coordination story for free.
 
 ## 14. Timing of Phase-2 unlocks
@@ -946,8 +946,8 @@ with dependencies:
 |---|---|---|---|
 | Heartbeat clock | Phase C done | Immediate | Under 50 lines; unlocks three-speed consumers |
 | Safety-live (subscribe to tool-call Pulses) | Phase C done | High | Closes P0 safety gap |
-| Dreams (subscribe to `substrate.engram.stored`) | Phase C + demurrage (12) | Medium | Needs stable Engram lineage |
-| Stigmergy (pheromone) | HDC-on-Engram (11) | Medium | Depends on `query_similar` |
+| Dreams (subscribe to `substrate.engram.stored`) | Phase C + demurrage (12) | Medium | Needs stable Signal lineage |
+| Stigmergy (pheromone) | HDC-on-Signal (11) | Medium | Depends on `query_similar` |
 | Mesh (NatsBus) | `roko-mesh` crate scaffold | Medium | Depends on new crate |
 | ChainBus | `roko-chain` integration | Low | Requires on-chain attestation story |
 | Collectives (pub/sub topologies) | Mesh done | Low | Patterns on top of mesh |
@@ -973,7 +973,7 @@ Primary candidates:
 
 - `docs/08-chain/` — introduce ChainBus vs ChainSubstrate split.
 - `docs/10-dreams/` — document Substrate scan + Bus-subscription input.
-- `docs/13-coordination/` — stigmergy as pheromone Engram + mesh.pheromone Pulse.
+- `docs/13-coordination/` — stigmergy as pheromone Signal + mesh.pheromone Pulse.
 - `docs/16-heartbeat/` — HeartbeatPolicy publishes heartbeat.{gamma,theta,delta}.tick Pulses.
 - `docs/00-architecture/24-cross-section-integration-map.md` — Bus-based integration supersedes prior proposals.
 

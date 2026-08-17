@@ -11,8 +11,8 @@ match lands outside a line that also signals "retired", "deprecated",
 
 | Retired term | Use instead | Notes |
 |---|---|---|
-| `Signal` (as the durable record) | `Engram` | Rename landed in code (877 Engram vs 5 Signal). Docs should say Engram. |
-| `Signal is the same as Engram` | (delete disclaimer) | The equivalence disclaimer is stale. Remove. |
+| `Signal` (as the durable record) | `Engram (renamed to Signal in 2026-08-12)` | Rename landed in code (877 Signal vs 5 Signal). Docs should say Signal. |
+| `Signal is the same as Signal` | (delete disclaimer) | The equivalence disclaimer is stale. Remove. |
 | `EventBus<E>` (as trait name) | `Bus` + `Pulse` | The generic struct stays as `BroadcastBus` implementation detail. |
 | `Envelope<E>` (as user-facing type) | `Pulse` | Envelope name retained only as internal impl detail. |
 | `Event` (as type name) | `Pulse` | Collides with tokio/winit. Use Pulse. |
@@ -45,12 +45,12 @@ in the same line (case-insensitive): `retired`, `deprecated`,
 
 | New term | Must appear after batch | Home refinement |
 |---|---|---|
-| `Pulse` | REF02, REF07 | 02-engram-vs-pulse.md |
+| `Pulse` | REF02, REF07 | 02-signal-vs-pulse.md |
 | `Bus` (as kernel trait) | REF03 | 03-bus-as-first-class.md |
 | `Topic` | REF03, REF07 | 03-bus-as-first-class.md |
 | `TopicFilter` | REF03, REF07 | 03-bus-as-first-class.md |
 | `Datum` | REF04 | 04-operators-generalized.md |
-| `PulseSource` | REF02, REF07 | 02-engram-vs-pulse.md |
+| `PulseSource` | REF02, REF07 | 02-signal-vs-pulse.md |
 | `two mediums` | REF01, REF02 | 01-critique-one-noun.md |
 | `two fabrics` | REF03 | 03-bus-as-first-class.md |
 | `seven-step loop` | REF05 | 05-loop-retold.md |
@@ -69,8 +69,8 @@ in the same line (case-insensitive): `retired`, `deprecated`,
 Every refinement propagation should include a trailing "See also" or
 inline cross-reference to the refinement file:
 
-- `see [02-engram-vs-pulse](../../tmp/refinements/02-engram-vs-pulse.md)`
-- or `see tmp/refinements/02-engram-vs-pulse.md §3` for section-specific
+- `see [02-signal-vs-pulse](../../tmp/refinements/02-signal-vs-pulse.md)`
+- or `see tmp/refinements/02-signal-vs-pulse.md §3` for section-specific
   references.
 
 Use the project's existing link conventions where a doc subfolder has

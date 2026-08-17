@@ -52,7 +52,7 @@
 |---|---|---|
 | R1 | Re-encoding does not change `ContentHash` | `fingerprint` excluded from hash |
 | R2 | Re-encoding uses the original `Body`, not the old fingerprint | `reencode()` calls `encoder.encode(&engram.body)` |
-| R3 | After migration, no Engram in the warm tier has a fingerprint with version < current | Migration job guarantee |
+| R3 | After migration, no Signal in the warm tier has a fingerprint with version < current | Migration job guarantee |
 
 ---
 

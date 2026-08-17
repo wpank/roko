@@ -12,7 +12,7 @@
 ## TL;DR
 
 Exponential decay is the simplest model: weight = 0.5^(elapsed / half_life). No state
-beyond the half-life parameter. Use for pheromones, short-lived signals, and any Engram
+beyond the half-life parameter. Use for pheromones, short-lived signals, and any Signal
 where recency dominates.
 
 ---
@@ -56,7 +56,7 @@ impl ExponentialDecayParams {
 - Asymptotically approaches 0.0 but never reaches it.
 
 For GC: the Substrate uses `weight < gc_threshold` (typically 0.01) as the cutoff.
-At `gc_threshold = 0.01`, an Engram with a 1-hour half-life is GC-eligible after
+At `gc_threshold = 0.01`, an Signal with a 1-hour half-life is GC-eligible after
 ≈ 6.6 hours (since `0.5^(6.6) ≈ 0.01`).
 
 ---

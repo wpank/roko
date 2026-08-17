@@ -1,8 +1,8 @@
 [meta]
 plan = "E36-payments"
 total = 8
-done = 0
-status = "ready"
+done = 8
+status = "done"
 max_parallel = 2
 
 # ── E36-T01: Define payment domain types and pricing tiers ──
@@ -38,7 +38,7 @@ FeedInfo (line 52) with no pricing details. The spec defines:
 All types must derive Serialize, Deserialize, Clone, Debug. Keep types pure data
 with no chain/crypto dependencies — roko-core must stay lightweight.
 """
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 60
@@ -117,7 +117,7 @@ batch settlement: "Batch (10min or 100+ auths)". Add:
 
 Do NOT change existing PaymentRequest/PaymentAuthorization structs.
 """
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 60
@@ -201,7 +201,7 @@ settlement on session close or expiry. Add:
 Keep types in x402.rs since both protocols share the same module. Use Address
 and u256 from phase2.rs.
 """
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 60
@@ -285,7 +285,7 @@ GoodStanding/Probation/Suspended/Banned. Add:
   - The function does NOT import roko-core PricingTier — it returns string tier names
     to avoid circular dependencies. The caller maps to PricingTier.
 """
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 50
@@ -361,9 +361,8 @@ consumers need to know the pricing terms. Add:
 
 This is a mechanical extension — the FeedPricingConfig type from T01 already exists.
 """
-status = "ready"
+status = "done"
 tier = "mechanical"
-model_hint = "claude-haiku-4-5"
 max_loc = 15
 files = ["crates/roko-core/src/feed.rs"]
 role = "implementer"
@@ -432,7 +431,7 @@ model/provider/input_tokens/output_tokens fields. Add:
 
 Do NOT change the existing CostRecord struct. PaymentCostRecord is separate.
 """
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 50
@@ -520,7 +519,7 @@ feed routes exist in routes/feeds.rs. Add:
 The middleware returns 402 (not 401 or 403) to signal the specific payment
 requirement per the HTTP 402 spec.
 """
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 80
@@ -597,7 +596,7 @@ Add:
   - Ensure StateHub compiles with the new variants (state_hub.rs uses
     DashboardEvent from roko-core)
 """
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 40

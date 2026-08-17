@@ -60,7 +60,7 @@ power failure mid-write).
 
 ### F3 — Schema Migration
 
-**Scenario**: A new version of `Engram` adds a field. Old JSONL records do not have this
+**Scenario**: A new version of `Signal` adds a field. Old JSONL records do not have this
 field.
 
 **Behaviour**:
@@ -121,7 +121,7 @@ re-pruned.
 <!-- ADDED -->
 ### F7 — Fingerprint Dimension Mismatch
 
-**Scenario**: An `Engram` was stored with a fingerprint of dimension D1, but the current
+**Scenario**: An `Signal` was stored with a fingerprint of dimension D1, but the current
 build uses D2 ≠ D1.
 
 **Behaviour**:
@@ -137,7 +137,7 @@ shipped). Until then, the HDC index must be rebuilt by clearing and re-inserting
 
 | Call site | On `SubstrateError::Io` | On `SubstrateError::Serialization` |
 |---|---|---|
-| Cognitive loop STORE step | Log warning, continue loop | Log error, drop the engram |
+| Cognitive loop STORE step | Log warning, continue loop | Log error, drop the signal |
 | Cognitive loop RECALL step | Log warning, use empty recall | Log error, use empty recall |
 | Explicit `prune` call | Log warning, retry later | Should not occur — prune only removes |
 | Tests | `unwrap()` / `expect()` is fine | Same |

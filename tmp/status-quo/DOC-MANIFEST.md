@@ -1,5 +1,9 @@
 # DOC-MANIFEST — status-quo pack taxonomy & consolidation map
 
+> **Disposition: GENERATED-HISTORICAL.** This dated taxonomy is retained for provenance.
+> `00-INDEX.md` owns the current 109-file disposition rule; `.roko/GAPS.md` and
+> `MASTER-EXECUTION-CHECKLIST.md` own current status.
+
 > Generated 2026-07-09 @ HEAD `5852c93c05` on `main`. Enumerates all 107 numbered docs
 > (`00`–`106`) plus the new `backlog/` subtree, assigns each a **category**, subsystem,
 > size, and one-line purpose, then recommends consolidations and a clean `00-INDEX`
@@ -109,7 +113,7 @@ Trace 6 · Tmp-Archaeology 9 · Backlog-Execution 0 files (2 scaffolded dirs). *
 | 06 | Wiring Status | whole system | 14K | Built-but-unwired census; every symbol caller-checked. |
 | 11 | Dependency Graph | workspace | 17K | Manifest-parsed dep graph + layering-violation enumeration. |
 | 16 | Codebase Inventory | whole system | 13K | Shell-computed file/LOC/API/test/artifact inventory. |
-| 80 | Source Doc Manifest | docs corpus | 91K | Generated 636-file docs/v1+v2+v2-depth manifest with owners. |
+| 80 | Source Doc Manifest | docs corpus | 91K | Generated 637-file docs/v1+v2+v2-depth manifest with owners. |
 | 83 | Env Var Manifest | config/env | 16K | Generated direct env-var inventory (99 fixed + dynamic families). |
 | 102 | Spec-Debt Ledger (Concept-Level) | spec vs code | 29K | ~129 named v2 concepts → code status; synthesizes 15/18/85/86/87. |
 | 103 | Duplicate Types Census | type dup | 19K | 19 cross-crate duplicated type families with no conversions. |

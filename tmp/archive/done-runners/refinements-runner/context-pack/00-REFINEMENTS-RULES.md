@@ -23,7 +23,7 @@ framing.
    suffice.
 6. **Retired terms must not appear.** Verify-step `terminology_check` will
    fail the batch if retired terms (`Grimoire`, `Styx`, `Clade`, `Mori`,
-   `Bardo`, `Golem`, mortal/death/reincarnation framing, "Signal = Engram"
+   `Bardo`, `Golem`, mortal/death/reincarnation framing, "Signal = Signal"
    disclaimers, etc.) appear in lines you introduce — *except* when the
    line explicitly frames them as "retired / deprecated / historical /
    legacy / formerly / renamed / see also / old name". Use that phrasing
@@ -31,7 +31,7 @@ framing.
 7. **Cross-link to refinements.** Docs that change should include a
    `see tmp/refinements/NN-slug.md` pointer for readers who want the full
    proposal. Use the exact refinement filename (e.g.
-   `tmp/refinements/02-engram-vs-pulse.md`).
+   `tmp/refinements/02-signal-vs-pulse.md`).
 8. **Cross-link to glossary.** Docs introducing new terminology should
    point at `docs/00-architecture/01-naming-and-glossary.md` (or wherever
    the glossary has landed).

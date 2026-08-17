@@ -1,5 +1,17 @@
 # Ingest-and-Audit Prompt
 
+> **Last updated: 2026-08-13**
+
+## What is this?
+
+This file is a reusable prompt template for processing unified spec documents as part
+of the mori-to-roko migration. It produces depth docs (redesigned using unified
+primitives), audits the codebase for gaps, and appends migration batches to the runner
+checklist. After processing all 21 docs/ folders, the runner at
+`tmp/unified-migration-runner/` has all batches populated and can execute.
+
+---
+
 Copy everything below the `---` line. Replace `[DOCS_FOLDER]` with the folder name (e.g., `00-architecture`, `03-composition`, `11-safety`).
 
 This prompt does three things in sequence:

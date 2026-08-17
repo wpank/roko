@@ -1,24 +1,29 @@
 # Quick Wins — Things That Can Be Done in Hours
 
+> **Last updated: 2026-08-13**
+
 These are changes that move toward v2 without any architectural risk. Each one is
 self-contained and can be done independently.
 
-## QW-1: Rename Engram → Signal (2-4 hours)
+**Status summary:** QW-1, QW-3, QW-4, QW-5 are DONE. QW-2, QW-6, QW-7, QW-8 are
+outstanding.
+
+## QW-1: Rename Signal (formerly Engram) (2-4 hours) -- DONE
 
 **What**: Make `Signal` the canonical type name, `Engram` the deprecated alias.
 
-**Current state**: `signal.rs` already has `pub type Signal = Engram;`. The rename is
-half-done.
+**Current state**: **DONE** (2026-08-12). Struct is `pub struct Signal` in `engram.rs`;
+`pub type Engram = Signal` backward-compat alias retained.
 
-**Steps**:
-1. In `roko-core/src/engram.rs`, rename `pub struct Engram` → `pub struct Signal`
-2. In `roko-core/src/lib.rs`, add `pub type Engram = Signal;` (backwards compat alias)
-3. Update all internal uses in roko-core to use `Signal`
-4. Run `cargo build --workspace` — the alias means external crates keep compiling
-5. Gradually update external crates to use `Signal` directly
-6. Mark `Engram` alias as `#[deprecated]` after all crates are updated
+**Steps** (completed):
+1. In `roko-core/src/engram.rs`, renamed `pub struct Engram` to `pub struct Signal`
+2. In `roko-core/src/lib.rs`, added `pub type Engram = Signal;` (backwards compat alias)
+3. Updated all internal uses in roko-core to use `Signal`
+4. `cargo build --workspace` passes -- the alias means external crates keep compiling
+5. Gradually updating external crates to use `Signal` directly (ongoing)
+6. Mark `Engram` alias as `#[deprecated]` after all crates are updated (pending)
 
-**Wire target**: Everything that uses Engram already works — this is a rename.
+**Wire target**: Everything that uses Signal works -- this was a rename.
 
 **Verification**: `cargo test --workspace` passes.
 
@@ -42,14 +47,14 @@ half-done.
 
 ---
 
-## QW-3: Add `balance` field to Engram/Signal (1-2 hours)
+## QW-3: Add `balance` field to Signal (1-2 hours) -- DONE
 
 **What**: Add the demurrage balance field that v2 requires.
 
-**Current state**: Engram has `decay: Decay` (weight decay) but not `balance: f64`.
+**Current state**: Signal has `decay: Decay` (weight decay) and now also `balance: f64`.
 
-**Steps**:
-1. Add `pub balance: f64` to Engram struct (default 1.0)
+**Steps** (completed):
+1. Added `pub balance: f64` to Signal struct (default 1.0)
 2. Add `#[serde(default = "default_balance")]` for backwards compat with existing JSONL
 3. Update `ContentHash` computation to EXCLUDE balance (like score, it's mutable metadata)
 4. Add `pub fn touch(&mut self)` that resets balance to 1.0 (demurrage reset on access)
@@ -60,12 +65,12 @@ half-done.
 
 ---
 
-## QW-4: Feature-gate orchestrate.rs (30 minutes)
+## QW-4: Feature-gate orchestrate.rs (30 minutes) -- DONE
 
 **What**: Confirm the feature gate is clean and remove any non-gated references.
 
-**Current state**: Already behind `legacy-orchestrate` feature. But there may be stale
-imports or references.
+**Current state**: DELETED entirely (E12-T07). The file no longer exists -- it was
+removed, not just feature-gated. Originally behind `legacy-orchestrate` feature.
 
 **Steps**:
 1. `grep -rn 'orchestrate' crates/roko-cli/src/ --include='*.rs' | grep -v target/ | grep -v test`
@@ -78,9 +83,9 @@ imports or references.
 
 ---
 
-## QW-5: Delete roko-calc skeleton (15 minutes)
+## QW-5: Delete roko-calc skeleton (15 minutes) -- DONE
 
-**What**: Remove the empty skeleton crate.
+**What**: Remove the empty skeleton crate. (Deleted; `crates/roko-calc/` no longer exists.)
 
 **Steps**:
 1. Remove `crates/roko-calc/` directory
@@ -166,13 +171,13 @@ updated confidence from calibration (not just raw episode counts).
 
 ## Priority Order
 
-| # | Item | Time | Impact | Risk |
-|---|------|------|--------|------|
-| QW-4 | Feature-gate orchestrate.rs cleanup | 30m | Hygiene | None |
-| QW-5 | Delete roko-calc | 15m | Hygiene | None |
-| QW-7 | Audit floating code | 2-3h | Visibility | None |
-| QW-3 | Add balance field | 1-2h | v2 alignment | Low |
-| QW-2 | TopicFilter combinators | 1-2h | v2 alignment | Low |
-| QW-1 | Engram → Signal rename | 2-4h | v2 alignment | Low |
-| QW-6 | Cell execute() stub | 1-2h | v2 alignment | Low |
-| QW-8 | Wire calibration_policy | 3-4h | Closes gap | Low-Med |
+| # | Item | Time | Impact | Risk | Status |
+|---|------|------|--------|------|--------|
+| QW-4 | Feature-gate orchestrate.rs cleanup | 30m | Hygiene | None | **DONE** (deleted) |
+| QW-5 | Delete roko-calc | 15m | Hygiene | None | **DONE** (deleted) |
+| QW-7 | Audit floating code | 2-3h | Visibility | None | Not started |
+| QW-3 | Add balance field | 1-2h | v2 alignment | Low | **DONE** |
+| QW-2 | TopicFilter combinators | 1-2h | v2 alignment | Low | Not started |
+| QW-1 | Signal rename (from Engram) | 2-4h | v2 alignment | Low | **DONE** (2026-08-12) |
+| QW-6 | Cell execute() stub | 1-2h | v2 alignment | Low | Not started |
+| QW-8 | Wire calibration_policy | 3-4h | Closes gap | Low-Med | Not started |

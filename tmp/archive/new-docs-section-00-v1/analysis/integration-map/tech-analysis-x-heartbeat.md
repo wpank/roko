@@ -13,7 +13,7 @@ tags: [technical-analysis, heartbeat, oracle, predictions, prediction-loop, cogn
 
 **Direction**: 20-Technical Analysis → 16-Heartbeat (prediction signals into the cognitive clock)  
 **Status**: **Missing (M17)** — Tier 4, ~150 LOC. Blocked on Oracle trait definition (Readiness Audit G21) and Heartbeat implementation (G24).  
-**Interface**: `roko-oracle::Prediction` Engrams → `roko-heartbeat::CorticalState` tick scheduling
+**Interface**: `roko-oracle::Prediction` Signals → `roko-heartbeat::CorticalState` tick scheduling
 
 ## What Flows
 
@@ -21,7 +21,7 @@ The Technical Analysis subsystem generates domain predictions (market, code, res
 
 | Signal | From | To | Status |
 |---|---|---|---|
-| `Kind::Prediction` Engrams | `roko-oracle` (planned) | `CorticalState` tick scheduler | **Missing** (M17) |
+| `Kind::Prediction` Signals | `roko-oracle` (planned) | `CorticalState` tick scheduler | **Missing** (M17) |
 | Prediction urgency scores | Oracle prediction horizon | Heartbeat tick frequency | **Missing** |
 | Prediction resolution feedback | Heartbeat tick outcomes | Oracle calibration | **Missing** |
 

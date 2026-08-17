@@ -1,6 +1,6 @@
 # Provenance
 
-> How Roko tracks the origin, trust level, and taint of an Engram across its lifetime.
+> How Roko tracks the origin, trust level, and taint of an Signal across its lifetime.
 
 ## Contents
 
@@ -25,6 +25,6 @@ For readers debugging identity issues: 04 → 07 → the [ContentHash overview](
 
 ## See also
 
-- [`../content-hash/`](../content-hash/) — how provenance contributes to Engram identity
-- [`../../01-engram/10-provenance-fields.md`](../../01-engram/10-provenance-fields.md) — provenance in Engram context
-- [`../../01-engram/12-invariants.md`](../../01-engram/12-invariants.md) — Engram-level invariants involving provenance
+- [`../content-hash/`](../content-hash/) — how provenance contributes to Signal identity
+- [`../../01-engram/10-provenance-fields.md`](../../01-engram/10-provenance-fields.md) — provenance in Signal context
+- [`../../01-engram/12-invariants.md`](../../01-engram/12-invariants.md) — Signal-level invariants involving provenance

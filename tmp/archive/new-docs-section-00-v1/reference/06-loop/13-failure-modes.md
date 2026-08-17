@@ -25,7 +25,7 @@ observability markers.
 A partial failure means one stage produced an error or suboptimal result, but the tick
 continued and produced a (possibly degraded) outcome.
 
-| Stage | Failure | Loop response | Outcome Engram? |
+| Stage | Failure | Loop response | Outcome Signal? |
 |---|---|---|---|
 | QUERY | Timeout | Continue with empty candidates | Yes |
 | QUERY | Substrate down | Continue with empty candidates; publish `substrate.unavailable` | Yes |
@@ -43,7 +43,7 @@ continued and produced a (possibly degraded) outcome.
 
 An abort failure means `loop_tick()` returns early without completing all stages.
 
-| Cause | Return type | Engrams written |
+| Cause | Return type | Signals written |
 |---|---|---|
 | ROUTE error (not timeout) | `TickResult::aborted` | Provenance only |
 | COMPOSE error | `TickResult::aborted` | Provenance only |
@@ -105,7 +105,7 @@ When `StuckDetector` fires, the Harness layer applies the stuck-recovery ladder:
 3. **Route to fallback** — route the stimulus to a designated fallback agent or model.
 4. **Publish `agent.stuck` Pulse** — notify the orchestrator; may trigger human-in-the-loop.
 5. **Suspend agent** — if all prior steps fail, suspend the agent and record a
-   `agent.suspended` Engram. Manual intervention required.
+   `agent.suspended` Signal. Manual intervention required.
 
 ---
 
@@ -162,7 +162,7 @@ These signals feed into the operations dashboard and can be routed to alerting s
 
 1. Check `agent.stuck` and `agent.suspended` Pulses in the event log.
 2. If neither: check `route.uncertain` — the agent may be deferring indefinitely.
-3. Query the Substrate for `Kind::Failure` Engrams from the agent's last 10 ticks.
+3. Query the Substrate for `Kind::Failure` Signals from the agent's last 10 ticks.
 4. Check `substrate.unavailable` — the agent may have lost storage access.
 
 ### "Agent is producing wrong output"
@@ -170,13 +170,13 @@ These signals feed into the operations dashboard and can be routed to alerting s
 1. Check `verify.failed` rate — if high, the Gate pipeline may be misconfigured.
 2. Check `predict.error.total_free_energy` trend — if increasing, the world model is
    degrading. Trigger T2 consolidation.
-3. Check the Provenance Engrams for the bad ticks — examine which candidates were
+3. Check the Provenance Signals for the bad ticks — examine which candidates were
    composed and which route was taken.
 
 ### "Agent is repeating the same action"
 
 1. Run `StuckDetector.check()` over the last 10 ticks directly.
-2. Check Novelty axis values in recent SCORE outputs (via Provenance Engrams).
+2. Check Novelty axis values in recent SCORE outputs (via Provenance Signals).
 3. Check if the routing prior has converged to a single target (check `CascadeRouter`
    confidence EMA for the stuck stimulus type).
 

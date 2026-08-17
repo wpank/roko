@@ -1,6 +1,6 @@
 # Kind — Kind and Decay
 
-> How Kind determines the default decay model and parameters for a new Engram.
+> How Kind determines the default decay model and parameters for a new Signal.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -21,7 +21,7 @@ each choice.
 
 ## Why Kind Drives Default Decay
 
-The creator of an Engram often knows only the Kind and Body. They should not be required
+The creator of an Signal often knows only the Kind and Body. They should not be required
 to choose a decay model from scratch. The Kind provides enough information for a sensible
 default:
 
@@ -30,7 +30,7 @@ default:
 - A `Pheromone` is inherently ephemeral — it should be gone within hours.
 
 Encoding these defaults in `Kind::default_decay()` means the builder produces a
-well-configured Engram even when the caller specifies only `kind` and `body`.
+well-configured Signal even when the caller specifies only `kind` and `body`.
 
 ---
 

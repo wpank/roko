@@ -118,7 +118,7 @@ Mori separates concerns into 4 task files per plan. Roko unifies into 1 task fil
 | **Review feedback** | Parsed from reviewer output, fed to next iteration | Same pattern |
 | **Event bus** | AgentEvent enum (stream updates) | RokoEvent (plan revisions, gate verdicts) |
 | **Conductor** | Full meta-agent (nudge, restart, force-advance) | Config exists, not fully wired |
-| **Signals** | Not present | Engram system (typed, content-hashed) |
+| **Signals** | Not present | Signal system (typed, content-hashed) |
 | **Pheromones** | Not present | Stigmergic coordination (time-decaying) |
 | **Episodes** | Not present | Episode logging to `.roko/episodes.jsonl` |
 
@@ -152,7 +152,7 @@ Mori separates concerns into 4 task files per plan. Roko unifies into 1 task fil
 2. **6 provider kinds** (vs 3 backends) -- direct API access, not just CLI
 3. **Formal role manifests** in TOML (vs hardcoded)
 4. **9-layer system prompt builder** with affect/pheromone/anti-pattern layers
-5. **Signal/Engram system** for typed, content-hashed inter-agent communication
+5. **Signal system** for typed, content-hashed inter-agent communication
 6. **Pheromone/stigmergic coordination** between agents
 7. **Adaptive model routing** (LinUCB bandit vs static 3-tier)
 8. **Prompt experiments** (A/B testing)

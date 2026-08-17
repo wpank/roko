@@ -1,15 +1,51 @@
 # Roko Anti-Patterns v2 — Lessons from 661 Batches
 
-Distilled from the 05-01 audit (22 docs, 136 issues), 89 additional subsystem audits
-across 16 directories, the converge-runner deep audit, and the MASTER/UNIFIED
-implementation plans. These are the recurring habits that produced the current state.
-Each pattern appears across multiple subsystems, proving it is systemic, not accidental.
+> **Last updated:** 2026-08-13
+
+## What is this?
+
+This document is the canonical anti-pattern catalog for the roko codebase. It contains
+systematic codebase analysis results and serves as the canonical reference for code
+quality patterns. It was produced through systematic audits of the entire codebase: the
+05-01 audit (22 docs, 136 issues), 89 additional subsystem audits across 16 directories,
+the converge-runner deep audit, and the MASTER/UNIFIED implementation plans.
+
+These are the recurring habits that produced the current state. Each pattern appears
+across multiple subsystems, proving it is systemic, not accidental. If you are preparing
+runner prompts, reviewing batch output, or onboarding to the codebase, start here and
+in the companion doc `AGENT-FAILURE-PATTERNS.md`.
+
+### Staleness notes (2026-08-13)
+
+Some examples in this document reference files or line numbers from mid-2026. Key
+changes since the original audit:
+
+- **`orchestrate.rs` is deleted.** All references to `orchestrate.rs` (21K lines) are
+  historical. The current concern is `runner/event_loop.rs`, which has grown to ~18K
+  lines and is now itself a god-file. The anti-patterns that drove `orchestrate.rs` to
+  deletion (accretion, duplication, swallowed errors) are recurring in `event_loop.rs`.
+- **`eprintln!` to `tracing` migration is done.** ~40 calls converted. This anti-pattern
+  (using stderr instead of structured logging) is largely resolved.
+- **`.expect()` to proper errors is partially done.** ~25 production `.expect()` calls
+  have been converted to proper error handling. Some remain in non-critical paths.
+- **The Engram rename to Signal is done.** All references to "Engram" in the codebase
+  have been replaced with "Signal." If you see "Engram" in audit docs, read it as
+  "Signal."
+- **"46% dormant LOC" claim is unverified.** The INDEX.md figure (~82K / 46% dormant)
+  comes from an earlier audit pass and has not been re-verified against the current
+  codebase. Treat it as directionally correct but not authoritative.
+
+Despite these fixes, the *structural habits* described below remain relevant. New code
+continues to exhibit the same patterns in new locations.
+
+---
 
 **Previous version:** `ANTI-PATTERNS.md` (2026-04-28) marked most patterns as "Resolved."
 The 05-01 audit found they all recurred. This version drops the "Resolved" claims and
 focuses on the structural habits that cause recurrence.
 
-**Scope:** 12 categories (A–L), 40 named patterns, 10 reusable agent rules, decision table.
+**Scope:** 12 categories (A-L, plus M/N/O/P added from converge audit), 40+ named
+patterns, 15 reusable agent rules, decision table, curated prompt blocks, CI fitness checks.
 
 ---
 
@@ -116,12 +152,16 @@ Test fixtures can use `#[cfg(test)]` permissive defaults.
 **Pattern:** An operation that can fail (daimon appraise, conductor decide, feedback
 record, file write, session persist) has its Result silently discarded.
 
-**Where it happened:**
+**Where it happened (historical — `orchestrate.rs` is now deleted):**
 - `orchestrate.rs` — 15+ `let _ = self.daimon.appraise(...)` calls
 - `orchestrate.rs` — `let _ = self.conductor.decide(...)` calls
 - `deployments.rs` — `let _ = tokio::fs::rename(...)` (persistence)
 - `plans.rs` — `let _ = tokio::fs::write(...)` (snapshot)
 - `bridge_events.rs` — `let _ = event_sender.send(...)` (streaming)
+
+> **2026-08-12 note:** `orchestrate.rs` has been deleted, but `let _ =` usage persists
+> in other files. ~25 production `.expect()` calls were also converted to proper error
+> handling as a related cleanup.
 
 **Why it keeps happening:** The caller doesn't want to abort its main operation for
 a secondary concern (feedback, telemetry, persistence). `let _ =` is the fastest way
@@ -143,7 +183,7 @@ Never use bare `let _ =` without at minimum a `warn!` log.
 interprets "no result" as "nothing to do" and silently skips the operation.
 
 **Where it happened:**
-- `orchestrate.rs:7285` — missing provider returns `Ok(None)`, task is skipped
+- `orchestrate.rs:7285` (deleted) — missing provider returned `Ok(None)`, task was skipped
 - `model_selection.rs:304` — unknown provider picks alphabetically first model
 - `schema.rs:311` — `synthesized_model_profile()` guesses provider from slug prefix
 - `chat_session.rs:2874` — failed model resolution updates `model` string but not provider
@@ -247,12 +287,16 @@ Not "code exists" or "unit test passes with mocks."
 
 **Pattern:** Each batch adds 50-200 lines to an existing function. Nobody extracts.
 Over 661 batches, `dispatch_agent_with` grew to 2,059 lines and `orchestrate.rs`
-grew to 22,635 lines.
+grew to 22,635 lines before being deleted.
 
-**Where it happened:**
-- `orchestrate.rs` — 138 functions, 14 exceeding 300 lines
+**Where it happened (historical examples — `orchestrate.rs` is now deleted):**
+- `orchestrate.rs` — 138 functions, 14 exceeding 300 lines (now deleted)
 - `bridge_events.rs` — 3,300 lines, 3 functions over 300 lines
 - `runner/types.rs` — 1,500 lines, 4 functions over 300 lines
+
+> **2026-08-12 note:** `orchestrate.rs` was deleted, but the same accretion pattern
+> has continued in `runner/event_loop.rs`, which has grown from ~3K to ~20K lines.
+> This file is now the primary god-file concern.
 
 **Why it keeps happening:** Adding to an existing function is easier than extracting.
 Each batch's diff is small and reviewable. The cumulative effect is invisible to
@@ -456,7 +500,7 @@ instead of improving the regex.
 calls it.
 
 **Where it happened:**
-- `learning-feedback/ISSUES.md`: full learning loop only reachable from dead `orchestrate.rs`
+- `learning-feedback/ISSUES.md`: full learning loop was only reachable from dead `orchestrate.rs` (now deleted; learning loop has since been wired into live paths)
 - `gate-pipeline/ISSUES.md`: SPC alerts, Hotelling T-squared, domain profiles, PRM signals implemented but unused
 - `code-intelligence/AUDIT.md`: HDC, SQLite backend, PageRank, structural search built but not used by prompt injection
 - `converge-runner/OPEN-ISSUES.md`: GatewayEventWriter, knowledge injection, adaptive thresholds, distillation, SSE completeness all listed as built but not wired
@@ -824,7 +868,7 @@ scenario uses fakes, label them explicitly in the UI and docs.
 starving the executor.
 
 **Where it happened:**
-- `orchestrate.rs` uses `tokio::runtime::Handle::current().block_on()` inside async fn
+- `orchestrate.rs` (deleted) used `tokio::runtime::Handle::current().block_on()` inside async fn
 - `converge-runner` audit identified `block_on` inside tokio runtime as CRIT-01
 - sync gate dispatch blocks the async executor while waiting for shell commands
 - JSONL file writes use blocking I/O inside async task contexts

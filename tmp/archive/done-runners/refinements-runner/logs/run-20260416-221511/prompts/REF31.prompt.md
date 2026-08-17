@@ -36,7 +36,7 @@ framing.
    suffice.
 6. **Retired terms must not appear.** Verify-step `terminology_check` will
    fail the batch if retired terms (`Grimoire`, `Styx`, `Clade`, `Mori`,
-   `Bardo`, `Golem`, mortal/death/reincarnation framing, "Signal = Engram"
+   `Bardo`, `Golem`, mortal/death/reincarnation framing, "Signal = Signal"
    disclaimers, etc.) appear in lines you introduce — *except* when the
    line explicitly frames them as "retired / deprecated / historical /
    legacy / formerly / renamed / see also / old name". Use that phrasing
@@ -44,7 +44,7 @@ framing.
 7. **Cross-link to refinements.** Docs that change should include a
    `see tmp/refinements/NN-slug.md` pointer for readers who want the full
    proposal. Use the exact refinement filename (e.g.
-   `tmp/refinements/02-engram-vs-pulse.md`).
+   `tmp/refinements/02-signal-vs-pulse.md`).
 8. **Cross-link to glossary.** Docs introducing new terminology should
    point at `docs/00-architecture/01-naming-and-glossary.md` (or wherever
    the glossary has landed).
@@ -145,7 +145,7 @@ the 35 refinements propagate into `docs/`.
 
 ## The one-liner
 
-> Roko's kernel is two mediums (**Engram** — durable, content-addressed,
+> Roko's kernel is two mediums (**Signal** — durable, content-addressed,
 > decayed; **Pulse** — ephemeral, topic-addressed, sequenced) moving
 > through two fabrics (**Substrate** — storage; **Bus** — transport),
 > acted on by six operators (**Scorer**, **Gate**, **Router**,
@@ -156,7 +156,7 @@ the 35 refinements propagate into `docs/`.
 
 ## Canonical term definitions
 
-**Engram** — Durable medium. Content-addressed by BLAKE3 over
+**Signal** — Durable medium. Content-addressed by BLAKE3 over
 `(kind, body, author, tags)`. Has `lineage: Vec<ContentHash>`,
 `decay` / `balance`, `score` (7 axes), `provenance`, optional
 `attestation`, and (post-refinement) an HDC `fingerprint`. Lives in a
@@ -164,11 +164,11 @@ Substrate.
 
 **Pulse** — Ephemeral medium (new). Typed, topic-addressed,
 sequence-numbered, ring-buffered message on a Bus. Not content-
-addressed; not persisted by default. May *graduate* to an Engram when
+addressed; not persisted by default. May *graduate* to an Signal when
 its lineage matters.
 
 **Substrate** — Storage fabric (kernel trait). Backends: Memory, File,
-HDC, Chain. Persists Engrams. Retrieval by filter or (new)
+HDC, Chain. Persists Signals. Retrieval by filter or (new)
 HDC similarity.
 
 **Bus** — Transport fabric (promoted to kernel trait). Backends:
@@ -179,7 +179,7 @@ Publishes and delivers Pulses by Topic.
 **Topic** — Routing handle for Pulses. Dot-separated lowercase
 strings (`gate.verdict.emitted`, `agent.msg.chunk`, `prediction.error`).
 
-**Datum** — `enum Datum<'a> { Engram(&'a Engram), Pulse(&'a Pulse) }`
+**Datum** — `enum Datum<'a> { Signal(&'a Signal), Pulse(&'a Pulse) }`
 used by polymorphic operators (Scorer, Composer, Router).
 
 **Six operators** — `Scorer`, `Gate`, `Router`, `Composer`, `Policy`,
@@ -246,7 +246,7 @@ consolidated knowledge back into Substrate for the next cycle.
 
 | Term | Use | Avoid |
 |---|---|---|
-| Engram | the durable record | Signal (retired in code 877:5) |
+| Engram (renamed to Signal in 2026-08-12) | the durable record | Signal (retired in code 877:5) |
 | Pulse | the ephemeral message | Event, Envelope, Message, Signal |
 | Bus | the transport trait | EventBus<E> as a trait name |
 | Substrate | the storage trait | (unchanged) |
@@ -274,8 +274,8 @@ match lands outside a line that also signals "retired", "deprecated",
 
 | Retired term | Use instead | Notes |
 |---|---|---|
-| `Signal` (as the durable record) | `Engram` | Rename landed in code (877 Engram vs 5 Signal). Docs should say Engram. |
-| `Signal is the same as Engram` | (delete disclaimer) | The equivalence disclaimer is stale. Remove. |
+| `Signal` (as the durable record) | `Signal` | Rename landed in code (877 Signal vs 5 Signal). Docs should say Signal. |
+| `Signal is the same as Signal` | (delete disclaimer) | The equivalence disclaimer is stale. Remove. |
 | `EventBus<E>` (as trait name) | `Bus` + `Pulse` | The generic struct stays as `BroadcastBus` implementation detail. |
 | `Envelope<E>` (as user-facing type) | `Pulse` | Envelope name retained only as internal impl detail. |
 | `Event` (as type name) | `Pulse` | Collides with tokio/winit. Use Pulse. |
@@ -308,12 +308,12 @@ in the same line (case-insensitive): `retired`, `deprecated`,
 
 | New term | Must appear after batch | Home refinement |
 |---|---|---|
-| `Pulse` | REF02, REF07 | 02-engram-vs-pulse.md |
+| `Pulse` | REF02, REF07 | 02-signal-vs-pulse.md |
 | `Bus` (as kernel trait) | REF03 | 03-bus-as-first-class.md |
 | `Topic` | REF03, REF07 | 03-bus-as-first-class.md |
 | `TopicFilter` | REF03, REF07 | 03-bus-as-first-class.md |
 | `Datum` | REF04 | 04-operators-generalized.md |
-| `PulseSource` | REF02, REF07 | 02-engram-vs-pulse.md |
+| `PulseSource` | REF02, REF07 | 02-signal-vs-pulse.md |
 | `two mediums` | REF01, REF02 | 01-critique-one-noun.md |
 | `two fabrics` | REF03 | 03-bus-as-first-class.md |
 | `seven-step loop` | REF05 | 05-loop-retold.md |
@@ -332,8 +332,8 @@ in the same line (case-insensitive): `retired`, `deprecated`,
 Every refinement propagation should include a trailing "See also" or
 inline cross-reference to the refinement file:
 
-- `see [02-engram-vs-pulse](../../tmp/refinements/02-engram-vs-pulse.md)`
-- or `see tmp/refinements/02-engram-vs-pulse.md §3` for section-specific
+- `see [02-signal-vs-pulse](../../tmp/refinements/02-signal-vs-pulse.md)`
+- or `see tmp/refinements/02-signal-vs-pulse.md §3` for section-specific
   references.
 
 Use the project's existing link conventions where a doc subfolder has
@@ -387,7 +387,7 @@ to update:
 
 - `00-vision-and-thesis.md`
 - `01-naming-and-glossary.md` — every naming-related refinement touches this
-- `02-engram-data-type.md` — REF02
+- `02-signal-data-type.md` — REF02
 - `03-score-7-axis-appraisal.md` — mostly stable
 - `04-decay-variants.md` — REF12 (supersedes decay with demurrage)
 - `05-provenance-and-attestation.md` — REF32
@@ -461,7 +461,7 @@ with the others.
 
 ## Ten load-bearing primitives
 
-1. **Engram** (durable medium) — home: REF02
+1. **Signal** (durable medium) — home: REF02
 2. **Pulse** (ephemeral medium) — home: REF02
 3. **Bus** (transport fabric) — home: REF03
 4. **Substrate** (storage fabric) — home: REF03
@@ -509,7 +509,7 @@ BROADCAST, REACT) uses every primitive:
 
 - SENSE — Substrate (query) + Bus (subscribe) + external I/O.
 - ASSESS — Scorer (weights via HDC/demurrage/heuristic calibration).
-- COMPOSE — Composer (picks from HDC-similar Engrams, injects heuristics,
+- COMPOSE — Composer (picks from HDC-similar Signals, injects heuristics,
   TypedContext shapes prompt).
 - ACT — produces Pulses (agent stream, tool calls).
 - VERIFY — Gate pipeline; gate-verdict Pulses feed heuristic calibration.
@@ -535,12 +535,12 @@ without reading its full source.
 - `01-critique-one-noun.md` — Diagnosis: "one noun, six verbs" framing
   conflates two data shapes, hides the event bus, stretches trait
   signatures.
-- `02-engram-vs-pulse.md` — Introduce Pulse (ephemeral) as Engram's
+- `02-signal-vs-pulse.md` — Introduce Pulse (ephemeral) as Signal's
   sibling; define graduation law.
 - `03-bus-as-first-class.md` — Promote Bus to a kernel trait at L0
   alongside Substrate.
 - `04-operators-generalized.md` — Generalize the six operators over a
-  `Datum` enum that is either Engram or Pulse.
+  `Datum` enum that is either Signal or Pulse.
 - `05-loop-retold.md` — Universal loop collapses from 9 to 7 steps;
   PERSIST and BROADCAST become co-equal; cross-cuts aren't steps.
 - `06-refactoring-plan.md` — Three-phase refactor (docs → kernel →
@@ -557,7 +557,7 @@ without reading its full source.
 - `10-self-learning-cybernetic-loops.md` — Every operator becomes a
   predictor; active inference literal via predict/outcome Pulses.
 - `11-hyperdimensional-substrate.md` — 10,240-bit HDC fingerprint on
-  every Engram; similarity/consensus/analogy as O(1) vector ops.
+  every Signal; similarity/consensus/analogy as O(1) vector ops.
 - `12-knowledge-demurrage.md` — Economic memory: balance, holding
   cost, reinforcement-by-kind; self-trimming playbooks.
 - `13-collective-intelligence-c-factor.md` — Woolley's c-factor
@@ -566,7 +566,7 @@ without reading its full source.
   worldviews as co-citation clusters; lived-experience calibration.
 - `15-exponential-scaling.md` — Seven compounding loops; "every week
   your Roko gets better on your codebase."
-- `16-research-to-runtime.md` — Papers as Engrams, Claims as testable
+- `16-research-to-runtime.md` — Papers as Signals, Claims as testable
   hypotheses, Replication Ledger — living research.
 - `17-plugin-extension-architecture.md` — Five-tier SPI (prompts,
   profiles, manifests, native, WASM) with matched sandboxes.
@@ -676,7 +676,7 @@ or more refinement docs:
 
 | # | Primitive | Home doc |
 |---|---|---|
-| P1 | Engram (durable medium) | 02 |
+| P1 | Signal (durable medium) | 02 |
 | P2 | Pulse (ephemeral medium) | 02 |
 | P3 | Bus (transport fabric) | 03 |
 | P4 | Substrate (storage fabric) | 03, existing code |
@@ -697,18 +697,18 @@ A compact table. Rows are what each primitive *provides*. Columns are
 what it provides *to*. Entries are short — see the subsections for
 depth.
 
-| ↓ gives → to → | P1 Engram | P2 Pulse | P3 Bus | P4 Substrate | P5 HDC | P6 Dem. | P7 Heur. | P8 c-fct | P9 Repl. | P10 Plug. |
+| ↓ gives → to → | P1 Signal | P2 Pulse | P3 Bus | P4 Substrate | P5 HDC | P6 Dem. | P7 Heur. | P8 c-fct | P9 Repl. | P10 Plug. |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **P1 Engram** | — | graduation src | publish target | store target | encode target | balance owner | lineage | cohort artifacts | paper body | plugin config target |
+| **P1 Signal** | — | graduation src | publish target | store target | encode target | balance owner | lineage | cohort artifacts | paper body | plugin config target |
 | **P2 Pulse** | graduation dest | — | payload | sub events | — | reinforce sig | calib trial | cohort events | ledger obs | plugin event |
 | **P3 Bus** | `substrate.*` | delivery | — | notify | — | reinforce ch | falsif watch | cohort floor | watchdog | lifecycle evt |
 | **P4 Substrate** | home | — | bridge | — | store fp | balance home | heur store | metric src | ledger store | plugin state |
 | **P5 HDC** | fp field | — | — | index key | — | novelty score | fp-matching | diversity | paper search | encoder slot |
 | **P6 Dem.** | weight | — | — | tier logic | — | — | freshness | minority sub. | anti-drift | plugin aging |
-| **P7 Heur.** | Engram var | — | prediction/outcome | store | cluster | rein signal | — | peer model | claim body | heuristic plugin |
+| **P7 Heur.** | Signal var | — | prediction/outcome | store | cluster | rein signal | — | peer model | claim body | heuristic plugin |
 | **P8 c-fct** | cohort record | — | metrics topic | metric store | diversity src | — | peer-pred | — | cohort repl | c-factor plugin |
-| **P9 Repl.** | paper engram | — | watchdog topic | ledger store | paper fp | claim decay | lifted claim | ledger obs | — | claim plugin |
-| **P10 Plug.** | plugin engram | plugin events | plugin topics | plugin reads | plugin encoder | plugin budget | new heur src | new metric | new claim | — |
+| **P9 Repl.** | paper signal | — | watchdog topic | ledger store | paper fp | claim decay | lifted claim | ledger obs | — | claim plugin |
+| **P10 Plug.** | plugin signal | plugin events | plugin topics | plugin reads | plugin encoder | plugin budget | new heur src | new metric | new claim | — |
 
 Reading the matrix: the column "P5 HDC" shows what everybody gives to
 HDC — P1 provides encoding targets, P4 provides the index key slot,
@@ -726,11 +726,11 @@ you can point at in a running Roko instance (or a future one).
 
 Ingredients: P4, P5, P6.
 
-- Substrate stores each Engram with fingerprint.
+- Substrate stores each Signal with fingerprint.
 - Demurrage taxes balance per unit time.
 - `ReinforceKind::Surprised` weight is `bonus × novelty`, where
   `novelty = 1 - max(similarity with top-K neighbors)` via HDC.
-- Common/duplicate Engrams get little bonus; unique Engrams get
+- Common/duplicate Signals get little bonus; unique Signals get
   large bonus.
 
 Effect: memory self-trims toward *uniquely useful* rather than
@@ -763,11 +763,11 @@ Ingredients: P3, P5, P8.
 Effect: the runtime actively guards against monoculture. Requires all
 three; any one alone is descriptive, not regulatory.
 
-### 3.4 Replication ledger × Heuristics × Paper Engram → living research
+### 3.4 Replication ledger × Heuristics × Paper Signal → living research
 
 Ingredients: P1, P7, P9.
 
-- Paper as Engram lives in Substrate.
+- Paper as Signal lives in Substrate.
 - Claims derived from the paper become Heuristics (lifted from the
   `From<Claim>` impl in 16 §4).
 - Watchdogs subscribe to outcome Pulses; ledger updates when
@@ -808,7 +808,7 @@ on heuristic-level predictions.
 
 Ingredients: P1, P2, P4.
 
-- Delta-speed Dreams loop reads recent Engrams (P4, P1).
+- Delta-speed Dreams loop reads recent Signals (P4, P1).
 - Re-consolidates with *current* priors — retrospective learning.
 - Publishes `engram.promoted` Pulses (P2) so consumers (Composer,
   StateHub) update their caches.
@@ -853,7 +853,7 @@ Ingredients: P10 (domain profiles) + 25 §8.1 (TypedContext) + 25 §8.2
 - Every action carries a `TypedContext` of the situation it happens in.
 - Gates match on typed predicates rather than free-text.
 - Custody records who acted, why (heuristics), how (claims), and
-  what happened, signed and stored as Engrams.
+  what happened, signed and stored as Signals.
 
 Effect: every Ops/Blockchain/Compliance-sensitive action is auditable
 after the fact with full provenance, without the team having to
@@ -884,9 +884,9 @@ starting:
 
 Example: "live voice interface for the agent." Walking the matrix:
 - P2 Pulse: voice chunks are Pulses on `agent.voice.chunk`. New topic.
-- P4 Substrate: does voice produce Engrams? Only if transcribed and
+- P4 Substrate: does voice produce Signals? Only if transcribed and
   graduated. Introduce a `VoiceTurn` kind.
-- P6 Demurrage: voice-turn Engrams should decay quickly (high volume,
+- P6 Demurrage: voice-turn Signals should decay quickly (high volume,
   low per-turn value).
 - P10 Plugin: voice is a tier-3 plugin (tool) and tier-4 client
   (speaker/microphone binding).
@@ -941,7 +941,7 @@ Three properties Roko-the-whole has that Roko-any-subset doesn't:
    predicts, every prediction is calibrated, every calibration
    updates weights via Bus. The runtime is a distributed online
    learner with no central training script.
-2. **Inspectability at every level.** Pulse lineage + Engram
+2. **Inspectability at every level.** Pulse lineage + Signal
    lineage + heuristic provenance + claim citation means no
    decision is black-box. Contrast: an LLM wrapper with logs.
 3. **Substrate neutrality.** HDC + demurrage + heuristics produce

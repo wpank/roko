@@ -25,7 +25,7 @@ see `reference/` and `subsystems/`.
 
 | Source file | Branch | Approx size | Primary content |
 |---|---|---|---|
-| `docs/tmp/refinements/23-architectural-analysis-improvements.md` | `main` | ~37 KB | Coherence analysis: trait sufficiency, layer taxonomy, cognitive speeds, Engram universality, crosscut isolation, category theory grounding, novel proposals, inconsistencies, prioritized improvements |
+| `docs/tmp/refinements/23-architectural-analysis-improvements.md` | `main` | ~37 KB | Coherence analysis: trait sufficiency, layer taxonomy, cognitive speeds, Signal universality, crosscut isolation, category theory grounding, novel proposals, inconsistencies, prioritized improvements |
 | `docs/tmp/refinements/24-cross-section-integration-map.md` | `main` | ~44 KB | Per-pair subsystem integration map: missing connections, wired connections, data-flow descriptions, failure modes, open questions |
 | `docs/tmp/refinements/31-implementation-readiness-audit.md` | `main` | ~34 KB | Per-subsystem implementation readiness scores, gap lists, next-action recommendations |
 | `docs/tmp/refinements/34-synergy-integration-map.md` | `agent-refinements` | ~20 KB | Ten load-bearing primitives, 10×10 synergy matrix, ten named synergies, non-synergies, emergent properties |
@@ -48,7 +48,7 @@ Source: `23-architectural-analysis-improvements.md`
 | `02-finding-trait-sufficiency.md` | F1: Trait surface is sufficient; Scoring and Gating are well-defined |
 | `03-finding-layer-taxonomy.md` | F2: Layer taxonomy is present but boundary violations need attention |
 | `04-finding-cognitive-speeds.md` | F3: Cognitive speeds are correctly differentiated |
-| `05-finding-engram-universality.md` | F4: Engram universality is under-exploited |
+| `05-finding-signal-universality.md` | F4: Signal universality is under-exploited |
 | `06-finding-crosscut-isolation.md` | F5: Cross-cut isolation is inconsistent |
 | `07-finding-category-theory.md` | F6: Category-theory grounding is present and valuable |
 | `08-novel-proposals.md` | F7 / eight novel proposals derived from the analysis |
@@ -142,7 +142,7 @@ Source: `34-synergy-integration-map.md`
 | `synergy-01-demurrage-x-hdc.md` | S1: Demurrage × HDC → self-trimming semantic memory |
 | `synergy-02-heuristics-pulse-bus.md` | S2: Heuristics × Pulse × Bus → continuous calibration |
 | `synergy-03-cfactor-bus-hdc.md` | S3: c-factor × Bus × HDC → diversity-aware routing |
-| `synergy-04-replication-living-research.md` | S4: Replication ledger × Heuristics × paper Engram → living research |
+| `synergy-04-replication-living-research.md` | S4: Replication ledger × Heuristics × paper Signal → living research |
 | `synergy-05-plugin-spi-ecosystem.md` | S5: Plugin SPI × Substrate × Bus → ecosystem growth path |
 | `synergy-06-cfactor-heuristics-peer-model.md` | S6: c-factor × Heuristics → peer-model learning |
 | `synergy-07-dreams-retroactive.md` | S7: Dreams × Substrate × Pulse → retroactive insight |

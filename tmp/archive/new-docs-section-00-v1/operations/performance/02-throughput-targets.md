@@ -1,6 +1,6 @@
 # Throughput Targets
 
-> How many Engrams per second and tasks per second Roko should sustain, and at what
+> How many Signals per second and tasks per second Roko should sustain, and at what
 > concurrency levels.
 
 **Status**: Shipping
@@ -12,26 +12,26 @@
 
 ## TL;DR
 
-Roko's Engram storage layer handles > 50,000 Engrams/second in batched mode. Task
+Roko's Signal storage layer handles > 50,000 Engrams/second in batched mode. Task
 throughput is dominated by LLM and gate latency — a single Roko instance can complete
 4–8 coding tasks per minute with 8 concurrent agents.
 
 ---
 
-## Engram Throughput
+## Signal Throughput
 
-The Substrate layer (`FileSubstrate` / JSONL) is the Engram storage path.
+The Substrate layer (`FileSubstrate` / JSONL) is the Signal storage path.
 
 | Mode | Throughput | Notes |
 |------|-----------|-------|
 | Single-threaded unbuffered append | ~5,000 Engrams/s | Each append is a separate `write(2)` syscall |
 | Single-threaded buffered (default) | ~50,000 Engrams/s | 64 KB buffer; one `write(2)` per buffer flush |
-| Batched (100 Engrams per write) | ~150,000 Engrams/s | Used by learning batch flush |
+| Batched (100 Signals per write) | ~150,000 Engrams/s | Used by learning batch flush |
 | HDC similarity search (1M entries, 1 query) | ~200 queries/s | Linear scan; see search latency in [01-latency-budgets.md](01-latency-budgets.md) |
 
 In steady-state operation, Roko generates approximately:
 
-- 10–50 Engrams per agent task (one Engram per turn, tool call result, and gate verdict).
+- 10–50 Signals per agent task (one Signal per turn, tool call result, and gate verdict).
 - 1 episode record per task completion.
 - 1 playbook rule per 5–10 episodes (lazy; batch-extracted).
 

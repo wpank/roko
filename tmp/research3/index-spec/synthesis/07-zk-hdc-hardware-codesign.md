@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a synthesis report from a structured deep-research run. It is reference material
+> for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Zero-Knowledge Proofs over HDC Vectors and Hardware Co-Design
 
 This document describes a three-layer technology stack -- Hyperdimensional Computing (HDC), zero-knowledge proofs (ZK) native to binary vectors, and purpose-built hardware acceleration -- and explains why their combination creates capabilities that no existing agent platform, blockchain, or machine-learning system provides independently. It is written for someone with no prior context on any of these technologies or the systems that use them.

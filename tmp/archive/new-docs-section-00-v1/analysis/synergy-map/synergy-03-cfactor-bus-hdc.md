@@ -96,7 +96,7 @@ See [`reference/04-bus/14-today-vs-planned.md`](../../reference/04-bus/14-today-
    modify fingerprint records — it emits policy Pulses that downstream routing chooses to act on.
 3. Homogeneity corrections decay. After N tasks, assignment weights return to baseline unless
    the homogeneity signal persists.
-4. The diversity correction signal is recorded as an Engram. If corrections become frequent, the
+4. The diversity correction signal is recorded as an Signal. If corrections become frequent, the
    pattern is discoverable in Substrate history.
 
 ---
@@ -126,7 +126,7 @@ See [`reference/04-bus/14-today-vs-planned.md`](../../reference/04-bus/14-today-
 
 ## Today vs. Planned
 
-**Today**: `EventBus<E>` routes typed events. HDC vectors are computed for Engrams. c-factor
+**Today**: `EventBus<E>` routes typed events. HDC vectors are computed for Signals. c-factor
 exists as a partial metric in code. No aggregate Bus statistics API, no fingerprint-based
 diversity signal, no diversity-correction PolicyPulse type.
 
@@ -149,7 +149,7 @@ Routing layer gains a diversity-correction subscriber.
 ## Open Questions
 
 - What is the right diversity metric — Gini coefficient on Pulse origins, or entropy?
-- Should HDC diversity be computed on raw outputs, on the Engrams those outputs produce, or
+- Should HDC diversity be computed on raw outputs, on the Signals those outputs produce, or
   on some intermediate representation?
 - Can the c-factor regulatory loop itself become a source of monoculture if all correction
   signals push toward the same "diverse" pattern?

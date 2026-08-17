@@ -15,7 +15,7 @@ Prefer names that:
 
 | Term | Decision | Why |
 |---|---|---|
-| `Engram` | keep | Distinct, stable, and well-matched to durable records. |
+| `Engram (renamed to Signal in 2026-08-12)` | keep | Distinct, stable, and well-matched to durable records. |
 | `Pulse` | keep | Best ephemeral transport noun in the set. |
 | `Bus` | keep | Standard transport term with low ambiguity. |
 | `Substrate` | keep | Still works as the storage fabric term. |
@@ -71,7 +71,7 @@ Prefer names that:
 If the redesign is tightened, the public concept stack should read roughly like
 this:
 
-- durable record: `Engram`
+- durable record: `Signal`
 - live message: `Pulse`
 - storage fabric: `Substrate`
 - transport fabric: `Bus`

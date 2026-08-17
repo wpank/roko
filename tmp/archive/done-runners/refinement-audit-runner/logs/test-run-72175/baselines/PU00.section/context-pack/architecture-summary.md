@@ -2,7 +2,7 @@
 
 ## Current-State Anchors
 
-The live durable kernel noun is **`Engram`**.
+The live durable kernel noun is **`Signal`**.
 
 The six live core traits are:
 
@@ -50,7 +50,7 @@ stale scale claims.
 
 ## Default Wording Bias
 
-- Prefer `Engram` over legacy naming.
+- Prefer `Signal` over legacy naming.
 - Prefer `planned generic bus trait` over `shipped bus fabric`.
 - Prefer `partial runtime ownership` over `fully wired universal loop`.
 - Prefer `planning artifact` over `implementation gap` for synergy matrix and long roadmap material.

@@ -73,7 +73,7 @@ L4 crates contain minimal logic. They do:
 
 They do **not**:
 - Make routing decisions
-- Manipulate Engrams directly
+- Manipulate Signals directly
 - Call any L2 crate directly
 
 This keeps L4 testable (thin shells are easy to mock), portable (the same CLI can

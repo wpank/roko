@@ -1,5 +1,14 @@
 # Site Catalogue — 14 HTML Iterations
 
+> **What is this?** A catalogue of all 14 HTML site iterations built with the ROSEDUST
+> design system (roko's visual identity). Each entry documents the mood, sections, Three.js
+> scenes, interactive elements, and unique patterns for that iteration. Use this as a
+> reference when choosing which era/style to draw from for new pages.
+>
+> **Adoption status (2026-08-13):** These iterations were the R&D lineage that produced
+> the current demo-app (`demo/demo-app`). The "nunchi_5" variant is closest to the
+> shipped product. ROSEDUST tokens appear ~1,570 times in the demo-app codebase.
+
 A look/feel reference for every iteration, organized by lineage.
 
 ---
@@ -202,3 +211,7 @@ rosedust-prototype → rosedust-v2 → rosedust-v3 → rosedust-v4 → rosedust-
 | Phase tiles (click→scene) | nunchi_3 | nunchi_5 |
 | Sessions sigmoid slider | nunchi_3 | nunchi_5 |
 | Vitality phase slider | nunchi_1 | nunchi_5 |
+
+---
+
+*Last updated: 2026-08-13*

@@ -3,7 +3,7 @@
 > The strictly downward dependency hierarchy that organizes every Roko crate.
 
 **Status**: Shipping
-**Depends on**: [Engram](../01-engram/README.md), [Substrate](../03-substrate/README.md),
+**Depends on**: [Signal](../01-engram/README.md), [Substrate](../03-substrate/README.md),
 [Operators](../05-operators/README.md)
 **Used by**: Everything in Roko
 

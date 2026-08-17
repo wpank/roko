@@ -1,6 +1,6 @@
 # Substrate Configuration
 
-> The `[substrate]` table selects the storage backend for Engram persistence and
+> The `[substrate]` table selects the storage backend for Signal persistence and
 > controls data directory location, garbage collection, and disk usage limits.
 
 **Status**: Shipping (jsonl, memory backends) / Specified (sqlite, lancedb backends)
@@ -29,7 +29,7 @@ data_dir = ".roko/substrate"
 
 ### `jsonl` (Shipping — default)
 
-Append-only JSONL files, one per Engram kind. Implemented in `roko-fs` as `FileSubstrate`.
+Append-only JSONL files, one per Signal kind. Implemented in `roko-fs` as `FileSubstrate`.
 
 - No external dependencies.
 - Human-readable and grep-able.
@@ -47,7 +47,7 @@ data_dir = ".roko/substrate"
 
 ### `memory` (Shipping)
 
-In-memory store. No persistence — all Engrams are lost when the process exits.
+In-memory store. No persistence — all Signals are lost when the process exits.
 
 - Zero disk I/O.
 - Ideal for unit tests and ephemeral evaluation runs.
@@ -69,7 +69,7 @@ will emit a validation error with a clear message.
 ### `lancedb` (Specified — planned)
 
 LanceDB-backed store with native HDC vector search integration. Enables sub-millisecond
-HDC fingerprint similarity queries across the full Engram store.
+HDC fingerprint similarity queries across the full Signal store.
 
 **Status: Specified.** Not yet implemented.
 
@@ -88,18 +88,18 @@ When `backend = "jsonl"`, the `data_dir` contains:
   gc.log                 ← GC run history
 ```
 
-Each line in `engrams.jsonl` is a JSON object representing one Engram. The file is
+Each line in `engrams.jsonl` is a JSON object representing one Signal. The file is
 never rewritten in place; GC creates a new compacted file and atomically renames it.
 
 ---
 
 ## Garbage Collection
 
-The substrate GC removes Engrams that meet all of the following conditions:
+The substrate GC removes Signals that meet all of the following conditions:
 
 1. All seven decay axis values are below the configured floor (default: 0.001).
-2. No active provenance chain references the Engram.
-3. The Engram's `created_at` timestamp is older than the `gc_min_age_hours` floor
+2. No active provenance chain references the Signal.
+3. The Signal's `created_at` timestamp is older than the `gc_min_age_hours` floor
    (default: 72h, not yet configurable in the schema).
 
 **GC schedule:**
@@ -131,7 +131,7 @@ max_size_gb = 10.0
 When the substrate directory exceeds this size:
 
 1. GC is triggered immediately (emergency GC).
-2. Cold-tier Engrams (score < 0.01 on all axes) have their decay accelerated.
+2. Cold-tier Signals (score < 0.01 on all axes) have their decay accelerated.
 3. If still over the cap after GC, a `SubstrateDiskPressure` warning Pulse is emitted.
 4. The runtime does **not** hard-fail; it continues running.
 
@@ -187,7 +187,7 @@ max_size_gb       = 200.0
 ## See Also
 
 - [reference/03-substrate/](../../reference/03-substrate/README.md) — Substrate trait internals
-- [reference/01-engram/](../../reference/01-engram/README.md) — what Engrams contain
+- [reference/01-engram/](../../reference/01-engram/README.md) — what Signals contain
 - [operations/performance/03-memory-model.md](../performance/03-memory-model.md) — allocation patterns for the JSONL backend
 
 ## Open Questions

@@ -50,7 +50,7 @@ agent lifecycles; dashboard/TUI docs describe screens that are not all wired.
 | Composition | `docs/03-composition` | `roko-compose`, `roko-runtime/src/heartbeat_attention.rs` | Plan 06 A, C + 7.4 | SystemPromptBuilder runtime wiring, active inference and VCG budget use, affect-modulated retrieval |
 | Verification | `docs/04-verification` | `roko-gate`, gate routes/status endpoints | Plan 06 OG, K + 7.4 | Gate selector coverage, PRM feedback, autonomous eval lifecycle, verdict-as-signal wiring |
 | Learning | `docs/05-learning` | `roko-learn`, episode logs, routers, playbooks | Plan 06 OG, E + 7.4 | Neuro-aware routing, clustering cadence, playbook rule promotion, research-to-runtime ledger |
-| Neuro | `docs/06-neuro` | `roko-neuro`, `roko-primitives` | Plan 06 E + 7.5 | Backup/restore CLI, HDC operations exposed on Engrams, resonance/resonator features, knowledge lifecycle API |
+| Neuro | `docs/06-neuro` | `roko-neuro`, `roko-primitives` | Plan 06 E + 7.5 | Backup/restore CLI, HDC operations exposed on Signals, resonance/resonator features, knowledge lifecycle API |
 | Conductor | `docs/07-conductor` | `roko-conductor`, watchers, circuit breaker | Plan 06 OG, A + 7.3 | ConductorBandit wiring, watcher actions into orchestrator, dashboard/TUI status surfaces |
 | Chain | `docs/08-chain` | `roko-chain`, `mirage-rs`, contracts | Plan 06 H, J + 7.8 | TxSimGate/WalletGate full behavior, Korai RPC parity, registries/indexer, chain heartbeat |
 | Daimon | `docs/09-daimon` | `roko-daimon`, `roko-runtime::CorticalState` | Plan 06 A, H, I + 7.5 | Behavioral-state merge, tier bias to CascadeRouter, somatic marker retrieval, contagion |
@@ -132,13 +132,13 @@ This closes primitive shape gaps that are too foundational to leave implied.
 - `/Users/will/dev/nunchi/roko/roko/crates/roko-runtime/src/`
 
 **Target areas:**
-- `roko-core`: Engram, Pulse, Datum, Score, Decay, Provenance, Bus, StateHub, config schema
+- `roko-core`: Signal, Pulse, Datum, Score, Decay, Provenance, Bus, StateHub, config schema
 - `roko-runtime`: energy, demurrage, heartbeat, resource limits, lifecycle
 - `roko-fs`: substrate layout, GC, observability
 
 **Implementation:**
 - [ ] Confirm the canonical `Score` has the documented axes or add explicit deprecated/derived-axis mappings
-- [ ] Ensure `Engram`, `Pulse`, and `Datum` support provenance, lineage, content addressing, decay, and signal graduation
+- [ ] Ensure `Signal`, `Pulse`, and `Datum` support provenance, lineage, content addressing, decay, and signal graduation
 - [ ] Add schema validation for every top-level `roko.toml` section described in `tmp/architecture/16-config.md`
 - [ ] Wire config hot reload into serve, TUI, gateway, heartbeat, conductor, and secrets paths
 - [ ] Add numerical stability tests for HDC, decay, demurrage, score normalization, and energy functions
@@ -458,7 +458,7 @@ rg -n "Score|Engram|Pulse|Datum|roko.toml|StateHub|Bus|substrate|GC|demurrage" d
 1. Create a reconciliation table in the ledger for every
    `docs/00-architecture/*.md` file before code changes. Each row must list the
    primitive or service it affects.
-2. Identify the canonical Rust type for `Score`, `Engram`, `Pulse`, `Datum`,
+2. Identify the canonical Rust type for `Score`, `Signal`, `Pulse`, `Datum`,
    provenance, decay, Bus, StateHub, and config. If multiple versions exist,
    document the canonical owner and leave compatibility shims where needed.
 3. Add missing serde fields with `#[serde(default)]` and migration-safe

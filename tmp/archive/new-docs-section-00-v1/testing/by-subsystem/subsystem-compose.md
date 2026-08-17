@@ -28,7 +28,7 @@ Source: implementation status audit, 2026-04-17 ("23 tests" reported; additional
 The builder assembles a system prompt from 7 layers:
 1. Role and persona layer.
 2. Cognitive state layer (Daimon PAD vector injection).
-3. Context and memory layer (retrieved Engrams).
+3. Context and memory layer (retrieved Signals).
 4. Task specification layer.
 5. Tool availability layer.
 6. Output format layer.

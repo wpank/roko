@@ -5,16 +5,16 @@
 **Status**: Shipping  
 **Crate**: `roko-core`  
 **Depends on**: [Overview](00-overview.md), [ContentHash](../content-hash/00-overview.md)  
-**Used by**: [Engram Invariants](../../01-engram/12-invariants.md)  
+**Used by**: [Signal Invariants](../../01-engram/12-invariants.md)  
 **Last reviewed**: 2026-04-19
 
 ---
 
 ## TL;DR
 
-Only `provenance.author` is included in the Engram's `ContentHash`. The `trust` and `taint`
+Only `provenance.author` is included in the Signal's `ContentHash`. The `trust` and `taint`
 fields are excluded. This allows trust escalation and taint flagging to happen after creation
-without producing a new Engram identity. The cost is that two Engrams from the same author
+without producing a new Signal identity. The cost is that two Signals from the same author
 with the same content are always the same identity, regardless of their current trust level.
 
 ---
@@ -77,8 +77,8 @@ The lifecycle of a KnowledgeEntry typically looks like:
 3. Chain commits it → `trust = ChainWitness`
 
 All three states represent the **same piece of knowledge**. If trust were in the hash,
-steps 2 and 3 would create new Engrams, breaking all lineage references pointing to the
-original. The Substrate would accumulate three separate Engrams where one is sufficient.
+steps 2 and 3 would create new Signals, breaking all lineage references pointing to the
+original. The Substrate would accumulate three separate Signals where one is sufficient.
 
 By excluding trust from the hash, the identity is stable and trust escalation is a
 metadata update, not an identity change.
@@ -90,13 +90,13 @@ metadata update, not an identity change.
 **Why taint is NOT in the hash:**
 
 Taint is a post-hoc signal. The typical flow is:
-1. Engram is created (no taint).
+1. Signal is created (no taint).
 2. A week later, the author is identified as compromised.
 3. An operator adds `TaintFlag::CompromisedAuthor`.
 
-If taint were in the hash, step 3 would create a new Engram, leaving the original
+If taint were in the hash, step 3 would create a new Signal, leaving the original
 (without taint) in the Substrate, visible to any consumer that had cached the original
-hash. The whole point of taint is to retroactively mark existing Engrams — this only
+hash. The whole point of taint is to retroactively mark existing Signals — this only
 works if the hash is stable.
 
 ---
@@ -165,4 +165,4 @@ fn different_authors_produce_different_hashes() {
 
 - [`00-overview.md`](00-overview.md) — full Provenance struct
 - [`../content-hash/00-overview.md`](../content-hash/00-overview.md) — how the hash is computed
-- [`../../01-engram/12-invariants.md`](../../01-engram/12-invariants.md) — Engram invariants
+- [`../../01-engram/12-invariants.md`](../../01-engram/12-invariants.md) — Signal invariants

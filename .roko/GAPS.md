@@ -729,49 +729,78 @@ See `crates/roko-graph/src/` for details.
 
 ## Backlog — Specced Implementation Items
 
-> Added 2026-08-17. Fully specced backlog items extracted from historical architecture docs
-> (`tmp/architecture-archive/`) and ACP analysis (`tmp/acp-features/`, `tmp/acp-runner/`).
-> Master index at `tmp/backlog/00-INDEX.md`. Each spec is self-contained.
+> Fully specced backlog items. Master index at `tmp/backlog/00-INDEX.md`.
+> Each spec is self-contained: problem, what exists, what to do, acceptance criteria.
+>
+> Last reconciled: 2026-08-17
 
 ### P0 — Critical
 
-| # | Item | Size | Source |
-|---|---|---|---|
-| 17 | ACP stability hardening (7 P0 panics, 12 race conditions) | L | ACP analysis |
+| # | Item | Size |
+|---|---|---|
+| 17 | ACP stability hardening (7 P0 panics, 12 race conditions) | L |
 
 ### P1 — High
 
-| # | Item | Size | Source |
-|---|---|---|---|
-| 03 | Context injection scoping (per-role context sizing) | M | Orch gaps §5 |
-| 04 | Compile auto-fix path (cargo fix before agent retry) | S | Orch gaps §2 |
-| 07 | Inference cache L1/L2 (blake3 + SimHash) | L | Gateway spec |
-| 18 | ACP spec upgrade v0.12→v0.13 + bridge_events refactor | XL | ACP analysis |
+| # | Item | Size |
+|---|---|---|
+| 03 | Context injection scoping (per-role context sizing) | M |
+| 04 | Compile auto-fix path (cargo fix before agent retry) | S |
+| 18 | ACP spec upgrade v0.12→v0.13 + bridge_events refactor | XL |
+| 21 | Landing page fake metrics (external repo) | S |
+| 33 | CLI gist scrubbing (secret leak via --share) | S |
+| 45 | ACP tool permission gate (plugin tier + command ceiling) | M |
+| 48 | Serve auth default posture | S |
+| 49 | Serve CORS restrictive | S |
+| 50 | Serve rate and body limits | S |
+| 51 | Serve agent name validation (path traversal) | S |
 
 ### P2 — Medium
 
-| # | Item | Size | Source |
-|---|---|---|---|
-| 01 | T0 reflex store (zero-cost repeated decisions) | M | Agent runtime |
-| 02 | Reactive agent mode (trigger-based wake/sleep) | L | Agent runtime |
-| 05 | Express mode (skip strategist for trivial fixes) | M | Orch gaps §1 |
-| 10 | Daimon TUI view (PAD gauges, somatic markers) | S | TUI ops |
-| 12 | E2E test harness (multi-component spawn/health/cleanup) | M | TUI ops |
-| 13 | Historical cost calibration (efficiency.jsonl → predictor) | S | Visual comp |
-| 14 | Plan mutation protocol (typed PlanMutation enum) | M | Visual comp |
-| 15 | Post-gate reflection (lightweight failure analysis agent) | M | Orch gaps §4 |
+| # | Item | Size |
+|---|---|---|
+| 01 | T0 reflex store (zero-cost repeated decisions) | M |
+| 02 | Reactive agent mode (trigger-based wake/sleep) | L |
+| 05 | Express mode (skip strategist for trivial fixes) | M |
+| 10 | Daimon TUI view (PAD gauges, somatic markers) | S |
+| 12 | E2E test harness (multi-component spawn/health/cleanup) | M |
+| 13 | Historical cost calibration (efficiency.jsonl → predictor) | S |
+| 14 | Plan mutation protocol (typed PlanMutation enum) | M |
+| 15 | Post-gate reflection (lightweight failure analysis agent) | M |
+| 20 | Event loop decomposition (23K-line god object) | XL |
+| 22 | Chat inline decomposition | M |
+| 34 | PRD cascade learning (model routing from PRD agent calls) | S |
+| 35 | CLI output redesign (structured reporter) | M |
+| 37 | Multi-process locking (.roko/ concurrent writer safety) | S |
+| 38 | Provider error UX (actionable status-code messages) | S |
+| 39 | ACP learning-pipeline parity (experiment receipts) | M |
+| 40 | Gate rung input completion (diff, fact-check, builder) | S |
+| 43 | Clippy suppression removal (blanket allows in lib.rs) | M |
+| 44 | Calibration feedback loop (3 loops, Loop 1 partial) | M |
+| 46 | ACP test coverage (Gap 1 done; MCP crash + tool matrix open) | S |
+| 47 | ConfigLayer elimination (~1500 LOC legacy dual-loader) | L |
+| 52 | MCP stderr capture & CostTable gaps | S |
+| 53 | Immune system adaptive screening (memory + provider visibility) | L |
+| 54 | Graph Engine Runner-v2 parity (gates/replan/worktree/merge) | XL |
+| 55 | AgentPool runtime integration (pool dispatch + warm reuse) | M |
+| 56 | ACP single-agent chat tools require client capability declaration | M |
+| 57 | Plan generation escalation (no retry on initial agent crash) | S |
+| 58 | Performance hot-path fixes (sync I/O on Tokio, per-dispatch loads) | M |
 
 ### P3 — Low / Phase 2+
 
-| # | Item | Size | Source |
-|---|---|---|---|
-| 09 | Recursive safety continuous monitoring | L | Meta layer |
-| 11 | Justfile (developer convenience) | XS | TUI ops |
-| 16 | Warm agent spawning (pre-spawn during gates) | M | Orch gaps §6 |
+| # | Item | Size |
+|---|---|---|
+| 09 | Recursive safety continuous monitoring | L |
+| 11 | Justfile (developer convenience) | XS |
+| 16 | Warm agent spawning (pre-spawn during gates) | M |
+| 19 | Contextual bandit dead code removal | XS |
+| 41 | TUI push-mode panel data (topology events) | S |
+| 42 | Duplicate type consolidation (~14 families) | S |
+| 59 | HuggingFace provider (Phase 1: OpenAI-compat config-only) | S |
 
-Items 06, 07, 08 (output budgeting, inference cache, key rotation) were found to already
-be implemented in `crates/roko-gateway/` during research. Their specs document remaining
-wiring gaps (e.g., non-gateway code paths).
+Items 06, 07, 08, 36 (output budgeting, inference cache, key rotation, atomic file I/O)
+are fully implemented and removed from the active index.
 
 Items 04, 05, 15, 16 have partial implementations — types/scaffolding exist but runner
 wiring is incomplete. Specs detail exactly what's present vs. missing.

@@ -1,4 +1,4 @@
-//! IFC capability set — maps TaintLevel classifications to allowed operations.
+//! Three-layer capability intersection and IFC capability narrowing.
 //!
 //! This module implements the access-control half of the Information Flow
 //! Control lattice. [`TaintLevel`] answers *how secret* the data is;
@@ -9,17 +9,17 @@
 //!
 //! | TaintLevel    | Allowed operations                        |
 //! |---------------|-------------------------------------------|
-//! | Public        | All capabilities (Read, Write, Execute, Network, FileSystem, Secret) |
-//! | Internal      | All except Secret                         |
-//! | Confidential  | Read + Write only                         |
-//! | Secret        | Read only                                 |
+//! | Public        | All seven capabilities                    |
+//! | Internal      | All except Secrets                        |
+//! | Confidential  | ReadFs + WriteFs only                     |
+//! | Secret        | ReadFs only                               |
 //!
 //! Capabilities can only be *narrowed* by moving to a higher classification
-//! level — data at `Secret` level never receives `Network` or `Execute`
+//! level — data at `Secret` level never receives `Network` or `Shell`
 //! access, even temporarily.
 
-use std::collections::HashSet;
 use std::fmt;
+use std::ops::BitAnd;
 
 use serde::{Deserialize, Serialize};
 
@@ -27,111 +27,162 @@ use crate::TaintLevel;
 
 // ─── Capability ──────────────────────────────────────────────────────────────
 
-/// An individual privilege that code may need to exercise on a signal.
+/// One of the seven independent authorities in the E34 security model.
 ///
-/// Capabilities are granted as a set by [`capabilities_for_taint`] based on
-/// the signal's [`TaintLevel`] classification. A call-site that needs, say,
-/// `Network` access on a `Confidential` signal will be denied because
-/// `capabilities_for_taint(TaintLevel::Confidential)` does not include
-/// `Network`.
+/// The discriminants are bit positions in [`CapabilitySet`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[repr(u8)]
 pub enum Capability {
-    /// Read the signal's content (always permitted at all levels).
-    Read,
-    /// Write or mutate derived data.
-    Write,
-    /// Execute code or spawn processes using this signal as input.
-    Execute,
-    /// Make outbound network calls using this signal's content.
-    Network,
-    /// Read from or write to the filesystem using this signal's content.
-    FileSystem,
-    /// Access or propagate secrets derived from this signal.
-    Secret,
+    /// Read files.
+    #[serde(alias = "read", alias = "file_system")]
+    ReadFs = 0,
+    /// Write files.
+    #[serde(alias = "write")]
+    WriteFs = 1,
+    /// Make outbound network calls.
+    Network = 2,
+    /// Execute shell commands or subprocesses.
+    #[serde(alias = "execute")]
+    Shell = 3,
+    /// Invoke a language model.
+    Llm = 4,
+    /// Read protected secrets.
+    #[serde(alias = "secret")]
+    Secrets = 5,
+    /// Publish to or consume from the signal bus.
+    Bus = 6,
+}
+
+impl Capability {
+    const ALL: [Self; 7] = [
+        Self::ReadFs,
+        Self::WriteFs,
+        Self::Network,
+        Self::Shell,
+        Self::Llm,
+        Self::Secrets,
+        Self::Bus,
+    ];
+
+    const fn bit(self) -> u8 {
+        1 << self as u8
+    }
+
+    /// Compatibility alias for the former coarse read capability.
+    #[allow(non_upper_case_globals)]
+    pub const Read: Self = Self::ReadFs;
+    /// Compatibility alias for the former coarse write capability.
+    #[allow(non_upper_case_globals)]
+    pub const Write: Self = Self::WriteFs;
+    /// Compatibility alias for the former execute capability.
+    #[allow(non_upper_case_globals)]
+    pub const Execute: Self = Self::Shell;
+    /// Compatibility alias for the former combined filesystem capability.
+    #[allow(non_upper_case_globals)]
+    pub const FileSystem: Self = Self::ReadFs;
+    /// Compatibility alias for the former singular secret capability.
+    #[allow(non_upper_case_globals)]
+    pub const Secret: Self = Self::Secrets;
 }
 
 impl fmt::Display for Capability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Read => write!(f, "Read"),
-            Self::Write => write!(f, "Write"),
-            Self::Execute => write!(f, "Execute"),
+            Self::ReadFs => write!(f, "ReadFs"),
+            Self::WriteFs => write!(f, "WriteFs"),
             Self::Network => write!(f, "Network"),
-            Self::FileSystem => write!(f, "FileSystem"),
-            Self::Secret => write!(f, "Secret"),
+            Self::Shell => write!(f, "Shell"),
+            Self::Llm => write!(f, "Llm"),
+            Self::Secrets => write!(f, "Secrets"),
+            Self::Bus => write!(f, "Bus"),
         }
     }
 }
 
 // ─── CapabilitySet ───────────────────────────────────────────────────────────
 
-/// A set of capabilities granted to a signal at a given [`TaintLevel`].
-///
-/// Constructed by [`capabilities_for_taint`]; callers check membership with
-/// [`CapabilitySet::contains`] before performing privileged operations.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CapabilitySet {
-    inner: HashSet<Capability>,
-}
+/// Compact seven-bit capability set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+#[repr(transparent)]
+pub struct CapabilitySet(u8);
 
 impl<I: IntoIterator<Item = Capability>> From<I> for CapabilitySet {
     fn from(iter: I) -> Self {
-        Self {
-            inner: iter.into_iter().collect(),
-        }
+        iter.into_iter()
+            .fold(Self::default(), |set, cap| Self(set.0 | cap.bit()))
     }
 }
 
 impl CapabilitySet {
-    /// Returns `true` if `cap` is in the set.
+    /// Empty capability set.
     #[must_use]
-    pub fn contains(&self, cap: Capability) -> bool {
-        self.inner.contains(&cap)
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    /// Set containing all seven authorities.
+    #[must_use]
+    pub const fn all() -> Self {
+        Self((1 << Capability::ALL.len()) - 1)
+    }
+
+    /// Returns `true` if `cap` is present.
+    #[must_use]
+    pub const fn has(self, cap: Capability) -> bool {
+        self.0 & cap.bit() != 0
+    }
+
+    /// Backward-compatible membership spelling.
+    #[must_use]
+    pub const fn contains(&self, cap: Capability) -> bool {
+        self.has(cap)
     }
 
     /// Returns the number of capabilities in the set.
     #[must_use]
-    pub fn len(&self) -> usize {
-        self.inner.len()
+    pub const fn len(&self) -> usize {
+        self.0.count_ones() as usize
     }
 
     /// Returns `true` if the set is empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
+    pub const fn is_empty(&self) -> bool {
+        self.0 == 0
     }
 
     /// Iterate over all capabilities in the set (order is unspecified).
     pub fn iter(&self) -> impl Iterator<Item = &Capability> {
-        self.inner.iter()
+        Capability::ALL.iter().filter(|cap| self.has(**cap))
     }
 
     /// Return the intersection of `self` and `other` (most-restrictive wins).
     #[must_use]
     pub fn intersect(&self, other: &CapabilitySet) -> CapabilitySet {
-        CapabilitySet {
-            inner: self.inner.intersection(&other.inner).copied().collect(),
-        }
+        *self & *other
+    }
+}
+
+impl BitAnd for CapabilitySet {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        Self(self.0 & rhs.0)
     }
 }
 
 impl fmt::Display for CapabilitySet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.inner.is_empty() {
+        if self.is_empty() {
             return write!(f, "CapabilitySet(empty)");
         }
-        // Sort for deterministic display output.
-        let mut caps: Vec<&Capability> = self.inner.iter().collect();
-        caps.sort_by_key(|c| format!("{c}"));
         write!(f, "CapabilitySet({{")?;
-        let mut first = true;
-        for cap in caps {
-            if !first {
+        for (index, cap) in self.iter().enumerate() {
+            if index != 0 {
                 write!(f, ", ")?;
             }
             write!(f, "{cap}")?;
-            first = false;
         }
         write!(f, "}})")
     }
@@ -163,30 +214,24 @@ impl fmt::Display for CapabilitySet {
 pub fn capabilities_for_taint(level: TaintLevel) -> CapabilitySet {
     let caps: &[Capability] = match level {
         TaintLevel::Public => &[
-            Capability::Read,
-            Capability::Write,
-            Capability::Execute,
+            Capability::ReadFs,
+            Capability::WriteFs,
             Capability::Network,
-            Capability::FileSystem,
-            Capability::Secret,
+            Capability::Shell,
+            Capability::Llm,
+            Capability::Secrets,
+            Capability::Bus,
         ],
         TaintLevel::Internal => &[
-            Capability::Read,
-            Capability::Write,
-            Capability::Execute,
+            Capability::ReadFs,
+            Capability::WriteFs,
             Capability::Network,
-            Capability::FileSystem,
-            // Secret is withheld — internal signals must not propagate secrets.
+            Capability::Shell,
+            Capability::Llm,
+            Capability::Bus,
         ],
-        TaintLevel::Confidential => &[
-            Capability::Read,
-            Capability::Write,
-            // Execute, Network, FileSystem, Secret withheld.
-        ],
-        TaintLevel::Secret => &[
-            Capability::Read,
-            // Everything else withheld — read-only access only.
-        ],
+        TaintLevel::Confidential => &[Capability::ReadFs, Capability::WriteFs],
+        TaintLevel::Secret => &[Capability::ReadFs],
     };
     CapabilitySet::from(caps.iter().copied())
 }
@@ -197,21 +242,21 @@ pub fn capabilities_for_taint(level: TaintLevel) -> CapabilitySet {
 ///
 /// The effective set is the intersection of cell, graph, and space layers;
 /// cells can only be narrowed by intersection, never widened.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CellCapabilities(pub CapabilitySet);
 
 /// What a Graph permits cells to do (from the graph configuration).
 ///
 /// Cells operating within a graph can never exceed what the graph allows,
 /// even if the cell's manifest declares a wider set.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphAllowList(pub CapabilitySet);
 
 /// What the space operator has granted (from the workspace configuration).
 ///
 /// This is the outermost boundary: the space grant constrains both the cell
 /// manifest and the graph config.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpaceGrant(pub CapabilitySet);
 
 /// Compute the effective [`CapabilitySet`] for a cell operating inside a graph
@@ -225,7 +270,7 @@ pub fn effective_capabilities(
     graph: &GraphAllowList,
     space: &SpaceGrant,
 ) -> CapabilitySet {
-    cell.0.intersect(&graph.0).intersect(&space.0)
+    cell.0 & graph.0 & space.0
 }
 
 /// Runtime enforcement interface for capability checks.
@@ -239,7 +284,7 @@ pub trait CapabilityCheck {
     /// Return `Ok(())` if `cap` is present in the effective set, or an
     /// explanatory error string on denial.
     fn require(&self, cap: Capability) -> Result<(), String> {
-        if self.effective().contains(cap) {
+        if self.effective().has(cap) {
             Ok(())
         } else {
             Err(format!(
@@ -250,7 +295,7 @@ pub trait CapabilityCheck {
 
     /// Return `true` if `cap` is present in the effective set.
     fn permits(&self, cap: Capability) -> bool {
-        self.effective().contains(cap)
+        self.effective().has(cap)
     }
 }
 
@@ -269,6 +314,12 @@ impl CachedCapabilityChecker {
             effective: effective_capabilities(cell, graph, space),
         }
     }
+
+    /// Return the intersection cached at construction time.
+    #[must_use]
+    pub const fn effective(&self) -> &CapabilitySet {
+        &self.effective
+    }
 }
 
 impl CapabilityCheck for CachedCapabilityChecker {
@@ -286,15 +337,8 @@ impl CellCapabilities {
 
     /// The full set — all capabilities granted.
     #[must_use]
-    pub fn all() -> Self {
-        Self(CapabilitySet::from([
-            Capability::Read,
-            Capability::Write,
-            Capability::Execute,
-            Capability::Network,
-            Capability::FileSystem,
-            Capability::Secret,
-        ]))
+    pub const fn all() -> Self {
+        Self(CapabilitySet::all())
     }
 }
 
@@ -307,15 +351,8 @@ impl GraphAllowList {
 
     /// The full allow-list — permits everything.
     #[must_use]
-    pub fn all() -> Self {
-        Self(CapabilitySet::from([
-            Capability::Read,
-            Capability::Write,
-            Capability::Execute,
-            Capability::Network,
-            Capability::FileSystem,
-            Capability::Secret,
-        ]))
+    pub const fn all() -> Self {
+        Self(CapabilitySet::all())
     }
 }
 
@@ -328,15 +365,8 @@ impl SpaceGrant {
 
     /// The full space grant — no operator restrictions.
     #[must_use]
-    pub fn all() -> Self {
-        Self(CapabilitySet::from([
-            Capability::Read,
-            Capability::Write,
-            Capability::Execute,
-            Capability::Network,
-            Capability::FileSystem,
-            Capability::Secret,
-        ]))
+    pub const fn all() -> Self {
+        Self(CapabilitySet::all())
     }
 }
 
@@ -347,100 +377,63 @@ mod tests {
     use super::*;
 
     #[test]
-    fn public_has_all_capabilities() {
-        let caps = capabilities_for_taint(TaintLevel::Public);
-        assert!(caps.contains(Capability::Read));
-        assert!(caps.contains(Capability::Write));
-        assert!(caps.contains(Capability::Execute));
-        assert!(caps.contains(Capability::Network));
-        assert!(caps.contains(Capability::FileSystem));
-        assert!(caps.contains(Capability::Secret));
-        assert_eq!(caps.len(), 6);
+    fn bitset_has_all_seven_individual_capabilities() {
+        let all = CapabilitySet::all();
+        assert_eq!(std::mem::size_of::<CapabilitySet>(), 1);
+        assert_eq!(all.len(), 7);
+        for capability in Capability::ALL {
+            assert!(all.has(capability));
+        }
+        assert!(CapabilitySet::empty().is_empty());
     }
 
     #[test]
-    fn internal_has_all_except_secret() {
-        let caps = capabilities_for_taint(TaintLevel::Internal);
-        assert!(caps.contains(Capability::Read));
-        assert!(caps.contains(Capability::Write));
-        assert!(caps.contains(Capability::Execute));
-        assert!(caps.contains(Capability::Network));
-        assert!(caps.contains(Capability::FileSystem));
-        assert!(!caps.contains(Capability::Secret));
-        assert_eq!(caps.len(), 5);
+    fn bitand_is_strict_intersection() {
+        let left =
+            CapabilitySet::from([Capability::ReadFs, Capability::WriteFs, Capability::Network]);
+        let right = CapabilitySet::from([Capability::ReadFs, Capability::Llm]);
+        let result = left & right;
+        assert!(result.has(Capability::ReadFs));
+        assert_eq!(result.len(), 1);
     }
 
     #[test]
-    fn confidential_has_read_and_write_only() {
-        let caps = capabilities_for_taint(TaintLevel::Confidential);
-        assert!(caps.contains(Capability::Read));
-        assert!(caps.contains(Capability::Write));
-        assert!(!caps.contains(Capability::Execute));
-        assert!(!caps.contains(Capability::Network));
-        assert!(!caps.contains(Capability::FileSystem));
-        assert!(!caps.contains(Capability::Secret));
-        assert_eq!(caps.len(), 2);
+    fn effective_capabilities_require_all_three_layers() {
+        let cell =
+            CellCapabilities::of(&[Capability::ReadFs, Capability::WriteFs, Capability::Llm]);
+        let graph = GraphAllowList::of(&[Capability::ReadFs, Capability::Llm, Capability::Bus]);
+        let space = SpaceGrant::of(&[Capability::ReadFs, Capability::Bus]);
+
+        let effective = effective_capabilities(&cell, &graph, &space);
+        assert_eq!(effective, CapabilitySet::from([Capability::ReadFs]));
+        assert!(!effective.has(Capability::WriteFs));
+        assert!(!effective.has(Capability::Llm));
+        assert!(!effective.has(Capability::Bus));
     }
 
     #[test]
-    fn secret_has_read_only() {
-        let caps = capabilities_for_taint(TaintLevel::Secret);
-        assert!(caps.contains(Capability::Read));
-        assert!(!caps.contains(Capability::Write));
-        assert!(!caps.contains(Capability::Execute));
-        assert!(!caps.contains(Capability::Network));
-        assert!(!caps.contains(Capability::FileSystem));
-        assert!(!caps.contains(Capability::Secret));
-        assert_eq!(caps.len(), 1);
+    fn cached_checker_is_not_widened_by_later_layer_changes() {
+        let mut cell = CellCapabilities::of(&[Capability::ReadFs]);
+        let graph = GraphAllowList::all();
+        let space = SpaceGrant::all();
+        let checker = CachedCapabilityChecker::new(&cell, &graph, &space);
+
+        cell = CellCapabilities::all();
+        assert!(cell.0.has(Capability::Network));
+        assert!(checker.effective().has(Capability::ReadFs));
+        assert!(!checker.effective().has(Capability::Network));
     }
 
     #[test]
-    fn capabilities_narrow_as_level_rises() {
-        let public_count = capabilities_for_taint(TaintLevel::Public).len();
-        let internal_count = capabilities_for_taint(TaintLevel::Internal).len();
-        let confidential_count = capabilities_for_taint(TaintLevel::Confidential).len();
-        let secret_count = capabilities_for_taint(TaintLevel::Secret).len();
-        assert!(public_count > internal_count);
-        assert!(internal_count > confidential_count);
-        assert!(confidential_count > secret_count);
-    }
+    fn taint_mapping_still_only_narrows() {
+        let public = capabilities_for_taint(TaintLevel::Public);
+        let internal = capabilities_for_taint(TaintLevel::Internal);
+        let confidential = capabilities_for_taint(TaintLevel::Confidential);
+        let secret = capabilities_for_taint(TaintLevel::Secret);
 
-    #[test]
-    fn capability_set_is_empty_works() {
-        let empty = CapabilitySet::default();
-        assert!(empty.is_empty());
-        assert_eq!(empty.len(), 0);
-        assert!(!empty.contains(Capability::Read));
-    }
-
-    #[test]
-    fn capability_set_display_non_empty() {
-        let caps = capabilities_for_taint(TaintLevel::Secret);
-        let s = caps.to_string();
-        assert!(s.contains("Read"));
-        assert!(s.starts_with("CapabilitySet("));
-    }
-
-    #[test]
-    fn capability_set_display_empty() {
-        let empty = CapabilitySet::default();
-        assert_eq!(empty.to_string(), "CapabilitySet(empty)");
-    }
-
-    #[test]
-    fn capability_display_names() {
-        assert_eq!(Capability::Read.to_string(), "Read");
-        assert_eq!(Capability::Write.to_string(), "Write");
-        assert_eq!(Capability::Execute.to_string(), "Execute");
-        assert_eq!(Capability::Network.to_string(), "Network");
-        assert_eq!(Capability::FileSystem.to_string(), "FileSystem");
-        assert_eq!(Capability::Secret.to_string(), "Secret");
-    }
-
-    #[test]
-    fn capability_set_iter_covers_all() {
-        let caps = capabilities_for_taint(TaintLevel::Public);
-        let collected: HashSet<_> = caps.iter().copied().collect();
-        assert_eq!(collected.len(), 6);
+        assert_eq!(public, CapabilitySet::all());
+        assert_eq!(public & internal, internal);
+        assert_eq!(internal & confidential, confidential);
+        assert_eq!(confidential & secret, secret);
     }
 }

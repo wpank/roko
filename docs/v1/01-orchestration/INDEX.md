@@ -1,5 +1,8 @@
 # 01-orchestration — L4 Orchestration Layer
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L4 Orchestration
 > **Primary crate**: `roko-orchestrator` (`crates/roko-orchestrator/`)
 > **Runtime harness**: `roko-cli/src/orchestrate.rs`

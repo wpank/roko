@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::protocol::{RelayOutboundFrame, TopicEnvelope};
+use crate::protocol::TopicEnvelope;
 use crate::state::RelayState;
 
 /// Configuration for the chain watcher background task.
@@ -66,23 +66,14 @@ pub async fn start_chain_watcher(
                         )
                         .with_publisher("chain-watcher");
 
-                        let (seq, subscribers) = state.bus.publish(envelope.clone());
-
-                        // Fan out to all topic subscribers.
-                        for sub_id in &subscribers {
-                            let frame = RelayOutboundFrame::TopicMessage {
-                                topic: envelope.topic.clone(),
-                                msg_type: envelope.msg_type.clone(),
-                                payload: envelope.payload.clone(),
-                                publisher_id: envelope.publisher_id.clone(),
-                                seq,
-                            };
-                            state.send_to_agent(sub_id, frame);
-                        }
+                        let Ok((_seq, subscribers)) = state.try_publish_topic(envelope, None) else {
+                            warn!(%topic, "rejected invalid chain watcher relay envelope");
+                            continue;
+                        };
 
                         info!(
                             block_number = block_num,
-                            subscribers = subscribers.len(),
+                            subscribers,
                             %topic,
                             "published new_block",
                         );

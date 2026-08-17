@@ -11,45 +11,55 @@ pub(crate) async fn cmd_agent(cli: &Cli, cmd: AgentCmd) -> Result<i32> {
         AgentCmd::Chat { provider, .. } => provider.as_deref(),
         _ => None,
     };
-    if let Some(provider_name) = provider {
-        if let AgentCmd::Chat { agent, .. } = &cmd {
-            // Pre-flight: check providers before starting chat session.
-            {
-                let chat_config: roko_core::config::schema::RokoConfig =
-                    std::fs::read_to_string(workdir.join("roko.toml"))
-                        .ok()
-                        .and_then(|s| roko_core::config::schema::RokoConfig::from_toml(&s).ok())
-                        .unwrap_or_default();
-                let dm = &chat_config.agent.default_model;
-                if !dm.trim().is_empty() {
-                    crate::commands::util::preflight_provider_for_model(&chat_config, dm)?;
-                }
+    if let Some(provider_name) = provider
+        && let AgentCmd::Chat { agent, .. } = &cmd
+    {
+        // Pre-flight: check providers before starting chat session.
+        {
+            let chat_config: roko_core::config::schema::RokoConfig =
+                std::fs::read_to_string(workdir.join("roko.toml"))
+                    .ok()
+                    .and_then(|s| roko_core::config::schema::RokoConfig::from_toml(&s).ok())
+                    .unwrap_or_default();
+            let dm = &chat_config.agent.default_model;
+            if !dm.trim().is_empty() {
+                crate::commands::util::preflight_provider_for_model(&chat_config, dm)?;
             }
-            let resolved = load_resolved_config(&workdir)?;
-            let config = resolved.config;
-            let mut provider_config = roko_core::config::schema::RokoConfig::default();
-            provider_config.providers.extend(config.providers.clone());
-            provider_config.models.extend(config.models.clone());
-            if let Some(model) = config.agent.model.clone() {
-                provider_config.agent.default_model = model;
-            }
-            provider_config.agent.default_effort = config.agent.effort.clone();
-            provider_config.agent.bare_mode = config.agent.bare_mode;
-            provider_config.agent.timeout_ms = Some(config.agent.timeout_ms);
-            provider_config.agent.fallback_model = config.agent.fallback_model.clone();
-            provider_config.agent.tier_models = config.agent.tier_models.clone();
-            provider_config.agent.env = Some(config.agent.env.clone());
-
-            roko_cli::chat::run_direct_provider_chat(
-                agent,
-                provider_name,
-                &provider_config,
-                &workdir,
-            )
-            .await?;
-            return Ok(EXIT_SUCCESS);
         }
+        let resolved = load_resolved_config(&workdir)?;
+        let config = resolved.config;
+        let mut provider_config = roko_core::config::schema::RokoConfig::default();
+        provider_config.providers.extend(config.providers.clone());
+        provider_config.models.extend(config.models.clone());
+        if let Some(model) = config.agent.model.clone() {
+            provider_config.agent.default_model = model;
+        }
+        provider_config.agent.default_effort = config.agent.effort.clone();
+        provider_config.agent.bare_mode = config.agent.bare_mode;
+        provider_config.agent.timeout_ms = Some(config.agent.timeout_ms);
+        provider_config.agent.fallback_model = config.agent.fallback_model.clone();
+        provider_config.agent.tier_models = config.agent.tier_models.clone();
+        provider_config.agent.env = Some(config.agent.env.clone());
+
+        roko_cli::chat::run_direct_provider_chat(agent, provider_name, &provider_config, &workdir)
+            .await?;
+        return Ok(EXIT_SUCCESS);
     }
+
+    // Managed agent lifecycle operations write manifests, process registry,
+    // and runtime state. Serialize those mutations with plan/run/serve.
+    let _workspace_lock = match &cmd {
+        AgentCmd::Create { workdir, .. }
+        | AgentCmd::Delete { workdir, .. }
+        | AgentCmd::Start { workdir, .. }
+        | AgentCmd::Stop { workdir, .. } => {
+            let workdir = workdir.clone().unwrap_or_else(|| resolve_workdir(cli));
+            Some(roko_cli::workspace_lock::acquire_workspace_lock(
+                &workdir.join(".roko"),
+            )?)
+        }
+        _ => None,
+    };
 
     agent_serve::run(cmd).await?;
     Ok(EXIT_SUCCESS)

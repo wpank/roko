@@ -1,5 +1,8 @@
 # The Hypnagogia Engine: Four-Layer Creative Onset
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: Cognitive Cross-Cut (L1 Framework model routing + L2 Scaffold context assembly)
 >
 > **Synapse Traits**: `Substrate` (anti-correlated retrieval from NeuroStore), `Scorer` (novelty/relevance/coherence scoring), `Router` (model selection per layer)

@@ -1,5 +1,8 @@
 # Heuristics, Worldviews, and Falsifiers
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **REF14 source:** `../../tmp/refinements/14-worldview-validation.md`
 > **Glossary:** [Naming and Glossary](../00-architecture/01-naming-and-glossary.md)
 > **Cross-references:** [01-playbook-system](01-playbook-system.md), [16-predictive-foraging](16-predictive-foraging.md), [18-self-learning-cybernetic-loops](18-self-learning-cybernetic-loops.md), [20-research-to-runtime](20-research-to-runtime.md), [12-4-tier-distillation-pipeline](../06-neuro/12-4-tier-distillation-pipeline.md), [14-c-factor-collective-intelligence](../00-architecture/14-c-factor-collective-intelligence.md), [25-attention-as-currency](../00-architecture/25-attention-as-currency.md), `../../tmp/refinements/16-research-to-runtime.md`

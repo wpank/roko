@@ -1,0 +1,90 @@
+[graph]
+name = "inference-gateway"
+description = "Centralized nine-stage inference gateway pipeline"
+version = "1.0.0"
+
+[[nodes]]
+id = "loop-detect"
+cell_type = "roko:gateway/loop-detect"
+[nodes.config]
+protocol = "Verify"
+
+[[nodes]]
+id = "cache-lookup"
+cell_type = "roko:gateway/cache-lookup"
+[nodes.config]
+protocol = "Route"
+
+[[nodes]]
+id = "tool-prune"
+cell_type = "roko:gateway/tool-prune"
+[nodes.config]
+protocol = "Compose"
+
+[[nodes]]
+id = "output-budget"
+cell_type = "roko:gateway/output-budget"
+[nodes.config]
+protocol = "Compose"
+
+[[nodes]]
+id = "thinking-cap"
+cell_type = "roko:gateway/thinking-cap"
+[nodes.config]
+protocol = "Compose"
+
+[[nodes]]
+id = "convergence-detect"
+cell_type = "roko:gateway/convergence-detect"
+[nodes.config]
+protocol = "Verify"
+
+[[nodes]]
+id = "provider-call"
+cell_type = "roko:gateway/provider-call"
+[nodes.config]
+protocol = "Connect"
+
+[[nodes]]
+id = "cache-store"
+cell_type = "roko:gateway/cache-store"
+[nodes.config]
+protocol = "Store"
+
+[[nodes]]
+id = "cost-track"
+cell_type = "roko:gateway/cost-track"
+[nodes.config]
+protocol = "Observe"
+
+[[edges]]
+from = "loop-detect"
+to = "cache-lookup"
+
+[[edges]]
+from = "cache-lookup"
+to = "tool-prune"
+
+[[edges]]
+from = "tool-prune"
+to = "output-budget"
+
+[[edges]]
+from = "output-budget"
+to = "thinking-cap"
+
+[[edges]]
+from = "thinking-cap"
+to = "convergence-detect"
+
+[[edges]]
+from = "convergence-detect"
+to = "provider-call"
+
+[[edges]]
+from = "provider-call"
+to = "cache-store"
+
+[[edges]]
+from = "cache-store"
+to = "cost-track"

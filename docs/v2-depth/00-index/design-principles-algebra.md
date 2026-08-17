@@ -406,7 +406,7 @@ The naming decisions in [00-INDEX.md](../../unified/00-INDEX.md) are not arbitra
 
 | Name | Algebraic Role | Why This Name |
 |---|---|---|
-| **Signal** (not Engram) | Element of the durable sort | "Signal" is immediately meaningful; Rust struct stays `Engram`, bridged by `type Signal = Engram` |
+| **Signal** (not Engram) | Element of the durable sort | "Signal" is immediately meaningful; Signal is the primary type (`Engram` is a backward-compat alias) |
 | **Pulse** (not Event) | Element of the ephemeral sort | Names the distinct lifetime; "Event" is overloaded across every framework |
 | **Cell** (not Module) | Morphism in the Signal algebra | Smallest composable unit; "Module" implies larger granularity |
 | **Graph** (not Workflow) | Composition of morphisms | Mathematical precision; "Workflow" implies BPM linearity |

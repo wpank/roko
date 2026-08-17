@@ -192,6 +192,73 @@ impl FileSubstrate {
 
         Ok(ids)
     }
+
+    /// Insert one Signal and report whether this call created it.
+    ///
+    /// The returned Signal is the canonical stored value, including any
+    /// identity-bearing metadata attached by this substrate. Checking and
+    /// appending are serialized so duplicate callers cannot both report a
+    /// creation.
+    pub async fn put_if_absent(&self, signal: Signal) -> Result<(Signal, bool)> {
+        let signal = attach_hdc_fingerprint(signal);
+        let id = signal.id;
+        let mut guard = self.log_writer.lock().await;
+        if let Some(existing) = self.index.read().get(&id).cloned() {
+            return Ok((existing, false));
+        }
+        let line = serde_json::to_string(&signal).map_err(RokoError::body_encode)?;
+        guard.write_all(line.as_bytes()).await?;
+        guard.write_all(b"\n").await?;
+        guard.flush().await?;
+        drop(guard);
+        self.index.write().insert(id, signal.clone());
+        Ok((signal, true))
+    }
+
+    /// Persist a metadata/lifecycle update for an existing Signal.
+    ///
+    /// Signal identity excludes mutable score and lifecycle fields, so an
+    /// update retains the same content hash. The replacement is appended to
+    /// the log and replay's last-write-wins behavior makes it durable.
+    pub async fn replace_existing(&self, signal: Signal) -> Result<bool> {
+        let id = signal.id;
+        let mut guard = self.log_writer.lock().await;
+        if !self.index.read().contains_key(&id) {
+            return Ok(false);
+        }
+        let line = serde_json::to_string(&signal).map_err(RokoError::body_encode)?;
+        guard.write_all(line.as_bytes()).await?;
+        guard.write_all(b"\n").await?;
+        guard.flush().await?;
+        drop(guard);
+        self.index.write().insert(id, signal);
+        Ok(true)
+    }
+
+    /// Remove exact Signal IDs and durably compact the backing log.
+    ///
+    /// Returns the removed Signals, allowing callers to emit lifecycle events
+    /// only for mutations that actually occurred. If compaction fails, the
+    /// in-memory index is restored before returning the error.
+    pub async fn remove_ids_and_compact(&self, ids: &[ContentHash]) -> Result<Vec<Signal>> {
+        let removed = {
+            let mut index = self.index.write();
+            ids.iter()
+                .filter_map(|id| index.remove(id))
+                .collect::<Vec<_>>()
+        };
+        if removed.is_empty() {
+            return Ok(removed);
+        }
+        if let Err(error) = self.compact().await {
+            let mut index = self.index.write();
+            for signal in removed {
+                index.insert(signal.id, signal);
+            }
+            return Err(error);
+        }
+        Ok(removed)
+    }
 }
 
 async fn replay_log(log_path: &Path) -> Result<HashMap<ContentHash, Signal>> {
@@ -230,35 +297,35 @@ fn tracing_line_error(_path: &Path, _line: usize, _err: &serde_json::Error) {
 }
 
 fn matches_query(signal: &Signal, q: &Query, ctx: &Context) -> bool {
-    if let Some(kinds) = &q.kinds {
-        if !kinds.contains(&signal.kind) {
-            return false;
-        }
+    if let Some(kinds) = &q.kinds
+        && !kinds.contains(&signal.kind)
+    {
+        return false;
     }
-    if let Some(author) = &q.author {
-        if &signal.provenance.author != author {
-            return false;
-        }
+    if let Some(author) = &q.author
+        && &signal.provenance.author != author
+    {
+        return false;
     }
-    if let Some(session) = &q.session {
-        if signal.provenance.session.as_ref() != Some(session) {
-            return false;
-        }
+    if let Some(session) = &q.session
+        && signal.provenance.session.as_ref() != Some(session)
+    {
+        return false;
     }
-    if let Some(since) = q.since_ms {
-        if signal.created_at_ms < since {
-            return false;
-        }
+    if let Some(since) = q.since_ms
+        && signal.created_at_ms < since
+    {
+        return false;
     }
-    if let Some(until) = q.until_ms {
-        if signal.created_at_ms > until {
-            return false;
-        }
+    if let Some(until) = q.until_ms
+        && signal.created_at_ms > until
+    {
+        return false;
     }
-    if let Some(min_w) = q.min_weight {
-        if signal.weight_at(ctx.now_ms) < min_w {
-            return false;
-        }
+    if let Some(min_w) = q.min_weight
+        && signal.weight_at(ctx.now_ms) < min_w
+    {
+        return false;
     }
     for (k, v) in &q.tags {
         match signal.tags.get(k) {
@@ -285,26 +352,8 @@ impl roko_core::Cell for FileSubstrate {
 #[async_trait]
 impl Store for FileSubstrate {
     async fn put(&self, signal: Signal) -> Result<ContentHash> {
-        // Dedupe: skip write if already present.
-        if self.index.read().contains_key(&signal.id) {
-            return Ok(signal.id);
-        }
-        // Attach HDC fingerprint when the feature is enabled and the signal
-        // does not already carry one. The fingerprint is stored as a
-        // base64-encoded tag so it survives JSON serialization without
-        // inflating the line with raw bytes.
-        let signal = attach_hdc_fingerprint(signal);
-        let id = signal.id;
-        // Serialize and append.
-        let line = serde_json::to_string(&signal).map_err(RokoError::body_encode)?;
-        let mut guard = self.log_writer.lock().await;
-        guard.write_all(line.as_bytes()).await?;
-        guard.write_all(b"\n").await?;
-        guard.flush().await?;
-        drop(guard);
-        // Update index.
-        self.index.write().insert(id, signal);
-        Ok(id)
+        let (stored, _) = self.put_if_absent(signal).await?;
+        Ok(stored.id)
     }
 
     async fn get(&self, id: &ContentHash) -> Result<Option<Signal>> {

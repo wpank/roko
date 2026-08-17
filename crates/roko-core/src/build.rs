@@ -3,7 +3,7 @@
 //! [`BuildSystem`] defines how a project compiles, tests, lints, and formats.
 //! Implementations produce [`BuildCommand`] descriptors that carry program name,
 //! arguments, and environment but never execute anything. The execution layer
-//! lives in roko-gate or roko-orchestrator.
+//! lives in roko-gate or the CLI runner.
 //!
 //! This design keeps roko-core free of `std::process` and `std::fs` so it
 //! remains portable, testable, and embeddable.

@@ -1,5 +1,8 @@
 # 04 — The Artifact Store
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L3 Harness — Verification
 > **Crate**: `roko-gate` (`crates/roko-gate/src/artifact_store.rs`)
 > **Status**: Implemented (172 lines)

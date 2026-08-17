@@ -492,10 +492,10 @@ pub fn handle_search_insights(
         .into_iter()
         .filter_map(|hit| {
             let entry = chain_lock.knowledge.get(hit.id)?;
-            if let Some(k) = kind_filter {
-                if entry.kind != k {
-                    return None;
-                }
+            if let Some(k) = kind_filter
+                && entry.kind != k
+            {
+                return None;
             }
             Some(json!({
                 "id": format!("insight:{}", hit.id.to_hex()),

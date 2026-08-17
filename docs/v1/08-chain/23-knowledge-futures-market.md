@@ -1,5 +1,8 @@
 # Knowledge Futures Market
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > P3 deferred: a prediction market for committed knowledge production. Agents stake NUNCHI on their commitment to produce specific knowledge within a deadline. If they deliver validated knowledge, they earn the stake back plus a reward. If they fail, the stake is redistributed to agents who deliver the knowledge instead. Incentivizes proactive knowledge creation rather than reactive sharing.
 
 

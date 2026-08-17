@@ -1,5 +1,8 @@
 # 01 — Provider Registry
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Sub-doc 01 of **02-agents** · Roko Documentation
 >
 > This document describes the config-driven provider registry that maps model

@@ -1186,12 +1186,11 @@ pub async fn run_chat_inline(agent_id: &str, serve_url: &str) -> Result<()> {
     }
 
     // --- All fallible setup BEFORE entering raw mode ---
-    let api_key =
-        auth::resolve_api_key(&roko_core::config::ServeAuthConfig::default(), None).map(|r| r.key);
+    let credential = auth::resolve_api_key(&roko_core::config::ServeAuthConfig::default(), None);
 
     let mut client_builder = reqwest::Client::builder();
-    if let Some(ref key) = api_key {
-        client_builder = client_builder.default_headers(auth::auth_headers(key));
+    if let Some(ref credential) = credential {
+        client_builder = client_builder.default_headers(credential.headers());
     }
     let client = client_builder.build().context("build HTTP client")?;
 

@@ -1,5 +1,8 @@
 # Cybernetics and Viable System Model
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for cybernetic control theory, the Viable System Model, autopoiesis, and feedback-driven adaptation in Roko's architecture.
 
 **Topic**: [References](./INDEX.md)

@@ -1,5 +1,8 @@
 # New Agent Creation (Post-Deletion)
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L0 Runtime + L1 Framework (same as initial creation, see `01-agent-creation.md`)
 >
 > **Prerequisites**: `docs/17-lifecycle/06-agent-deletion.md` (agent deletion), `docs/17-lifecycle/01-agent-creation.md` (creation flow)

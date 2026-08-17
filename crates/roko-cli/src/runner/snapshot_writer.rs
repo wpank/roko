@@ -1,11 +1,14 @@
 //! Async snapshot writer -- offloads JSON persistence to a dedicated OS thread
 //! so `save_snapshot` never blocks the `select!` event loop.
 
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::thread::JoinHandle;
 
 use roko_core::defaults::DEFAULT_RUNNER_RETRY_STRATEGY_PIVOT_ATTEMPT;
+use roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES;
+use serde::Serialize;
 use tracing::{debug, error};
 
 /// Pre-serialized, unified state snapshot ready for a single atomic disk write.
@@ -14,6 +17,55 @@ pub struct SnapshotPayload {
     pub snapshot_json: Vec<u8>,
     /// Destination path (`.roko/state/state-snapshot.json`).
     pub snapshot_path: PathBuf,
+}
+
+struct BoundedJsonBuffer {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl BoundedJsonBuffer {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            limit,
+        }
+    }
+}
+
+impl Write for BoundedJsonBuffer {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.bytes.len().saturating_add(bytes.len()) > self.limit {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                format!("serialized snapshot exceeds {} byte budget", self.limit),
+            ));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Serialize one inner projection while charging a shared aggregate budget.
+pub(super) fn serialize_inner_bounded<T: Serialize>(
+    value: &T,
+    remaining: &mut usize,
+) -> anyhow::Result<String> {
+    let mut buffer = BoundedJsonBuffer::new(*remaining);
+    serde_json::to_writer_pretty(&mut buffer, value)?;
+    *remaining = remaining.saturating_sub(buffer.bytes.len());
+    String::from_utf8(buffer.bytes).map_err(Into::into)
+}
+
+/// Serialize the outer snapshot without ever allocating beyond the disk cap.
+pub(super) fn serialize_snapshot_bounded<T: Serialize>(value: &T) -> anyhow::Result<Vec<u8>> {
+    let mut buffer = BoundedJsonBuffer::new(MAX_DURABLE_RUNNER_PROJECTION_BYTES as usize);
+    serde_json::to_writer_pretty(&mut buffer, value)?;
+    Ok(buffer.bytes)
 }
 
 enum WriterMsg {
@@ -63,21 +115,36 @@ impl SnapshotWriter {
     /// The hot path is non-blocking. Under disk backpressure, this applies
     /// backpressure instead of dropping the newest snapshot; stale intermediate
     /// snapshots are still coalesced by the writer thread.
-    pub fn write(&self, payload: SnapshotPayload) {
-        let Some(tx) = self.tx.as_ref() else { return };
+    pub fn write(&self, payload: SnapshotPayload) -> bool {
+        if payload.snapshot_json.len() as u64 > MAX_DURABLE_RUNNER_PROJECTION_BYTES {
+            error!(
+                bytes = payload.snapshot_json.len(),
+                maximum = MAX_DURABLE_RUNNER_PROJECTION_BYTES,
+                "refusing oversized unified state snapshot"
+            );
+            return false;
+        }
+        let Some(tx) = self.tx.as_ref() else {
+            return false;
+        };
         match tx.try_send(WriterMsg::Write(payload)) {
-            Ok(()) => {}
+            Ok(()) => true,
             Err(TrySendError::Full(WriterMsg::Write(payload))) => {
                 debug!("snapshot writer channel full -- waiting to preserve latest snapshot");
                 if tx.send(WriterMsg::Write(payload)).is_err() {
                     error!("snapshot writer thread has stopped -- snapshot lost");
+                    false
+                } else {
+                    true
                 }
             }
             Err(TrySendError::Full(WriterMsg::Flush)) => {
                 debug!("snapshot writer channel full while flushing");
+                false
             }
             Err(TrySendError::Disconnected(_)) => {
                 error!("snapshot writer thread has stopped -- snapshot lost");
+                false
             }
         }
     }
@@ -287,10 +354,73 @@ mod tests {
         }
         writer.flush();
 
-        // The writer drains to latest, so file should contain "v2" (or at
-        // minimum the last payload that was written).
+        // Flush drains everything queued before it, so the last payload wins.
         let content = std::fs::read_to_string(tmp.path().join("state-snapshot.json")).unwrap();
-        assert!(content == "v0" || content == "v1" || content == "v2");
+        assert_eq!(content, "v2");
+    }
+
+    #[test]
+    fn bounded_writer_round_trips_through_canonical_projection_loader() {
+        let tmp = tempfile::tempdir().unwrap();
+        let executor = serde_json::json!({
+            "schema_version": 1,
+            "plan_states": {},
+            "queue_order": [],
+            "speculative_executions": {},
+            "timestamp_ms": 42
+        });
+        let run_state = serde_json::json!({
+            "schema_version": 1,
+            "run_id": "writer-round-trip",
+            "started_at_ms": 42,
+            "timestamp_ms": 42,
+            "tasks_total": 0,
+            "tasks_completed": 0,
+            "tasks_failed": 0,
+            "total_tokens_in": 0,
+            "total_tokens_out": 0,
+            "total_cost_usd": 0.0,
+            "total_agent_calls": 0
+        });
+        let snapshot = roko_runtime::StateSnapshot::new(
+            42,
+            executor.to_string(),
+            serde_json::json!({
+                "schema_version": 1,
+                "executor": executor,
+                "timestamp_ms": 42
+            })
+            .to_string(),
+            run_state.to_string(),
+            serde_json::json!({"rungs": {}}).to_string(),
+        );
+        let snapshot_json = serialize_snapshot_bounded(&snapshot).unwrap();
+        let snapshot_path = tmp.path().join(roko_runtime::STATE_SNAPSHOT_RELATIVE_PATH);
+        std::fs::create_dir_all(snapshot_path.parent().unwrap()).unwrap();
+
+        let writer = SnapshotWriter::new(4);
+        assert!(writer.write(SnapshotPayload {
+            snapshot_json,
+            snapshot_path: snapshot_path.clone(),
+        }));
+        writer.flush();
+
+        let loaded = roko_runtime::load_durable_runner_projection(tmp.path())
+            .unwrap()
+            .expect("canonical projection");
+        assert_eq!(
+            loaded
+                .snapshot
+                .as_ref()
+                .expect("unified snapshot")
+                .timestamp_ms,
+            42
+        );
+        assert_eq!(
+            loaded.run_state.as_ref().expect("embedded run state")["run_id"],
+            "writer-round-trip"
+        );
+        assert_eq!(loaded.source_path, snapshot_path);
     }
 
     #[test]
@@ -338,5 +468,27 @@ mod tests {
         // The latest snapshot should be the last written value.
         let content = std::fs::read_to_string(&snapshot_path).unwrap();
         assert_eq!(content, "v8");
+    }
+
+    #[test]
+    fn oversized_snapshot_is_rejected_without_replacing_last_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snapshot_path = tmp.path().join("state-snapshot.json");
+        std::fs::write(&snapshot_path, b"last-readable-generation").unwrap();
+        let writer = SnapshotWriter::new(1);
+        assert!(!writer.write(SnapshotPayload {
+            snapshot_json: vec![b'x'; (MAX_DURABLE_RUNNER_PROJECTION_BYTES + 1) as usize],
+            snapshot_path: snapshot_path.clone(),
+        }));
+        writer.flush();
+        assert_eq!(
+            std::fs::read(&snapshot_path).unwrap(),
+            b"last-readable-generation"
+        );
+        assert_eq!(
+            std::fs::read_dir(tmp.path()).unwrap().count(),
+            1,
+            "rejection must happen before backup rotation"
+        );
     }
 }

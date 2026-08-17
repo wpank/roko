@@ -1,5 +1,8 @@
 # 01 — ERC-8004: Three On-Chain Registries
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > ERC-8004 is the on-chain standard for agent identity. It provides three lightweight,
 > composable registries — Identity, Reputation, and Validation — that together solve the
 > "Know Your Agent" problem. This document specifies the full contract architecture,

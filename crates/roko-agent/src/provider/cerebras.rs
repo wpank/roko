@@ -14,7 +14,6 @@
 use std::sync::Arc;
 
 use crate::Agent;
-use crate::dispatcher::HandlerResolver;
 use crate::http::ReqwestPoster;
 use crate::provider::{
     AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, build_tool_dispatcher,
@@ -59,9 +58,7 @@ impl ProviderAdapter for CerebrasAdapter {
         };
 
         if model.supports_tools {
-            let (registry, tools) = tool_registry_for_options(model, options)?;
-            let resolver: Arc<dyn HandlerResolver> =
-                Arc::new(|name: &str| roko_std::tool::handlers::handler_for(name));
+            let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
             let dispatcher = build_tool_dispatcher(registry, resolver);
 
             // Strict translator for constrained decoding on small models.
@@ -97,6 +94,9 @@ Call one tool at a time. After each tool result, decide your next action.\n\n";
                 .with_system_prompt(system_prompt);
             if let Some(ref dir) = options.working_dir {
                 agent = agent.with_worktree_path(dir.clone());
+            }
+            if let Some(root) = options.effective_immune_root() {
+                agent = agent.with_immune_root(root);
             }
 
             return Ok(Box::new(agent));

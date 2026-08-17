@@ -7,6 +7,7 @@ use crate::agent::derived_output;
 #[cfg(test)]
 use crate::http::HttpPostError;
 use crate::http::{HttpPoster, ReqwestPoster};
+use crate::multimodal::contains_images;
 use crate::provider::AgentOptions;
 use crate::safety::SafetyLayer;
 use crate::translate::{ChatResponse, FinishReason, ResponseMetadata, normalize_finish_reason};
@@ -14,14 +15,18 @@ use crate::usage::{UsageObservation, UsageSource};
 use crate::{Agent, AgentResult};
 use async_trait::async_trait;
 use roko_core::config::schema::ModelProfile;
+use roko_core::extension::CamelTaintLevel;
 use roko_core::tool::{ToolCall, ToolContext, ToolDef, ToolResult};
-use roko_core::{Body, Context, Kind, Provenance, Signal};
+use roko_core::{
+    Body, Context, Kind, MessageRole, ModelInputBlock, ModelInputMessage, Provenance, Signal,
+    validate_model_input_messages,
+};
 use serde_json::{Value, json};
 
 use super::types::{
     Content, FunctionDeclaration, FunctionResponsePart, GeminiMetadata, GeminiTool,
-    GenerateContentRequest, GenerateContentResponse, GenerationConfig, Part, SafetySettingRequest,
-    ThinkingConfig,
+    GenerateContentRequest, GenerateContentResponse, GenerationConfig, InlineDataPart, Part,
+    SafetySettingRequest, ThinkingConfig,
 };
 use super::wire::{
     generate_content_endpoint, generate_content_headers, send_generate_content_request,
@@ -117,6 +122,7 @@ pub struct GeminiNativeAgent {
     safety_settings: Vec<SafetySettingRequest>,
     safety: SafetyLayer,
     system_prompt: Option<String>,
+    input_messages: Vec<ModelInputMessage>,
     timeout_ms: u64,
     name: String,
     poster: Arc<dyn HttpPoster>,
@@ -151,6 +157,7 @@ impl GeminiNativeAgent {
             safety_settings: Vec::new(),
             safety,
             system_prompt: options.system_prompt.clone(),
+            input_messages: options.input_messages.clone(),
             timeout_ms: options.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS),
             name,
             model,
@@ -192,7 +199,11 @@ impl GeminiNativeAgent {
 
     fn build_request(&self, messages: &[ChatMessage], tools: &[ToolDef]) -> GenerateContentRequest {
         let system_instruction = self.system_instruction(messages);
-        let contents = self.translate_messages(messages);
+        let contents = if self.input_messages.is_empty() {
+            self.translate_messages(messages)
+        } else {
+            self.translate_input_messages()
+        };
         let tools = self.translate_tools(tools);
         let generation_config = self.generation_config();
 
@@ -227,7 +238,53 @@ impl GeminiNativeAgent {
             }
         }
 
+        for message in &self.input_messages {
+            if message.role != MessageRole::System {
+                continue;
+            }
+            for block in &message.content {
+                if let ModelInputBlock::Text { text } = block
+                    && !text.trim().is_empty()
+                {
+                    segments.push(text.clone());
+                }
+            }
+        }
+
         system_instruction_from_segments(segments)
+    }
+
+    fn translate_input_messages(&self) -> Vec<Content> {
+        self.input_messages
+            .iter()
+            .filter(|message| message.role != MessageRole::System)
+            .filter_map(|message| {
+                let parts = message
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ModelInputBlock::Text { text } if !text.is_empty() => {
+                            Some(Part::Text { text: text.clone() })
+                        }
+                        ModelInputBlock::Image { media_type, data } => Some(Part::InlineData {
+                            inline_data: InlineDataPart {
+                                mime_type: media_type.clone(),
+                                data: data.clone(),
+                            },
+                        }),
+                        ModelInputBlock::Text { .. } => None,
+                    })
+                    .collect::<Vec<_>>();
+                (!parts.is_empty()).then(|| Content {
+                    role: match message.role {
+                        MessageRole::Assistant => "model",
+                        MessageRole::User | MessageRole::System => "user",
+                    }
+                    .to_string(),
+                    parts,
+                })
+            })
+            .collect()
     }
 
     fn translate_messages(&self, messages: &[ChatMessage]) -> Vec<Content> {
@@ -366,6 +423,17 @@ impl Agent for GeminiNativeAgent {
     async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
         let started = Instant::now();
 
+        if let Err(error) = validate_model_input_messages(&self.input_messages) {
+            return self.failure(input, format!("invalid image input: {error}"), &started);
+        }
+        if contains_images(&self.input_messages) && !self.model.supports_vision {
+            return self.failure(
+                input,
+                "model does not support inline image input".to_string(),
+                &started,
+            );
+        }
+
         let prompt_text = match input.body.as_text() {
             Ok(text) => text.to_string(),
             Err(_) => match serde_json::to_string(&input.body) {
@@ -417,7 +485,8 @@ impl Agent for GeminiNativeAgent {
             Ok(parsed) => parsed,
             Err(error) => return self.failure(input, error, &started),
         };
-        let tool_ctx = ToolContext::testing(std::env::current_dir().unwrap_or_else(|_| ".".into()));
+        let tool_ctx = ToolContext::testing(std::env::current_dir().unwrap_or_else(|_| ".".into()))
+            .with_taint_level(CamelTaintLevel::External);
         for call in &parsed.tool_calls {
             if let Err(err) = self.safety.check_pre_execution(call, &tool_ctx) {
                 return self.failure(
@@ -651,6 +720,66 @@ mod tests {
                     && matches!(&parts[0], Part::Text { text }
                         if text == "system seed\n\nsystem from history")
         ));
+    }
+
+    #[test]
+    fn gemini_native_agent_preserves_structured_image_order_and_bytes() {
+        let mut model = base_model();
+        model.supports_vision = true;
+        let agent = GeminiNativeAgent::new(
+            "test-key".to_string(),
+            "https://generativelanguage.googleapis.com".to_string(),
+            model,
+            &AgentOptions {
+                input_messages: vec![ModelInputMessage::new(
+                    MessageRole::User,
+                    vec![
+                        ModelInputBlock::text("before"),
+                        ModelInputBlock::image("image/jpeg", "aGVsbG8="),
+                        ModelInputBlock::text("after"),
+                    ],
+                )],
+                ..Default::default()
+            },
+            SafetyLayer::with_defaults(),
+        );
+
+        let contents = agent.translate_input_messages();
+        assert_eq!(contents.len(), 1);
+        assert!(matches!(&contents[0].parts[0], Part::Text { text } if text == "before"));
+        assert!(matches!(
+            &contents[0].parts[1],
+            Part::InlineData { inline_data }
+                if inline_data.mime_type == "image/jpeg" && inline_data.data == "aGVsbG8="
+        ));
+        assert!(matches!(&contents[0].parts[2], Part::Text { text } if text == "after"));
+    }
+
+    #[tokio::test]
+    async fn gemini_text_only_model_rejects_image_before_http_post() {
+        let captured = Arc::new(Mutex::new(Captured::default()));
+        let poster = Arc::new(MockPoster::ok(
+            Arc::clone(&captured),
+            json!({"candidates": []}),
+        ));
+        let agent = GeminiNativeAgent::new(
+            "test-key".to_string(),
+            "https://generativelanguage.googleapis.com".to_string(),
+            base_model(),
+            &AgentOptions {
+                input_messages: vec![ModelInputMessage::new(
+                    MessageRole::User,
+                    vec![ModelInputBlock::image("image/png", "aGVsbG8=")],
+                )],
+                ..Default::default()
+            },
+            SafetyLayer::with_defaults(),
+        )
+        .with_http_poster(poster);
+
+        let result = agent.run(&prompt("ignored"), &Context::now()).await;
+        assert!(!result.success);
+        assert!(captured.lock().expect("capture lock").body.is_empty());
     }
 
     #[test]

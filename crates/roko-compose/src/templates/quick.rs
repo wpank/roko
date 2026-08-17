@@ -112,17 +112,17 @@ impl RolePromptTemplate for QuickReviewerTemplate {
         );
 
         // 5. prior_review — Dynamic / High / End / hard_cap 3k (only on iteration 2+)
-        if input.iteration > 1 {
-            if let Some(ref review) = input.prior_review {
-                let formatted = format_prior_review(&truncate(review, budget.reviews));
-                sections.push(
-                    PromptSection::new("prior_review", formatted)
-                        .with_priority(SectionPriority::High)
-                        .with_cache_layer(CacheLayer::Volatile)
-                        .with_placement(Placement::End)
-                        .with_hard_cap(budget.reviews),
-                );
-            }
+        if input.iteration > 1
+            && let Some(ref review) = input.prior_review
+        {
+            let formatted = format_prior_review(&truncate(review, budget.reviews));
+            sections.push(
+                PromptSection::new("prior_review", formatted)
+                    .with_priority(SectionPriority::High)
+                    .with_cache_layer(CacheLayer::Volatile)
+                    .with_placement(Placement::End)
+                    .with_hard_cap(budget.reviews),
+            );
         }
 
         // 6. verdict_instructions — System / Critical / End

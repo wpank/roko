@@ -1,5 +1,8 @@
 # Cloud Deployment: Fly.io
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Roko services deploy to Fly.io as Firecracker microVMs with persistent volumes, automatic
 > TLS, private networking, auto-stop on idle, and auto-start on request. This document covers
 > the fly.toml configuration per service, the deploy scripts, secret management, scaling,

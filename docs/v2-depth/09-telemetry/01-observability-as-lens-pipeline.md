@@ -1,6 +1,8 @@
 # Observability as a Lens Pipeline
 
 > Depth for [14-observability-and-telemetry.md](../../docs/19-deployment/14-observability-and-telemetry.md). Redesigns production observability as a Pipeline of Lens Cells -- read-only projections over Bus and Store. Structured logs are Bus Pulses. Metrics are numeric Lens outputs. Traces are lineage-annotated Signals. Dashboards are named Lens compositions.
+>
+> **Implementation status (2026-08-17):** This is a target architecture document, not a description of wired behavior. The concrete types defined here (`LogPulse`, `MetricLens`, `CostPulse`, `TraceLens`, `AlertReactCell`) do not yet exist in the codebase. The `roko-serve` `/metrics` endpoint, OTLP trace export, structured log Bus topics, and named StateHub projections are unimplemented. The "Implementation Tasks" section at the bottom of this document lists the pending work. The underlying data that would feed these Lenses (efficiency.jsonl, gate verdicts, cost events) is already being written by the runner; only the Lens layer is missing.
 
 **Depends on**: [01-SIGNAL](../../unified/01-SIGNAL.md) (Signal, Pulse, lineage, content addressing), [02-CELL](../../unified/02-CELL.md) (Observe protocol, Lens specialization), [03-GRAPH](../../unified/03-GRAPH.md) (Pipeline pattern), [04-BUS-AND-STORE](../../unified/04-BUS-AND-STORE.md) (Bus topics, Store queries)
 

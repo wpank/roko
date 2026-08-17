@@ -1,5 +1,8 @@
 # Subscription Configuration
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > When Roko runs as a daemon (see `04-daemon-launchd-macos.md` and `05-daemon-systemd-linux.md`),
 > it monitors repositories for changes and triggers plan execution automatically. This document
 > defines the subscription configuration format in `roko.toml`, the three trigger types (cron,

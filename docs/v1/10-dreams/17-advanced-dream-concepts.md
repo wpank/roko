@@ -1,5 +1,8 @@
 # Advanced Dream Concepts: Dream Sharing, Nightmare Detection, and Dream Journals
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: Cognitive Cross-Cut (L4 Orchestration mesh integration, L3 Harness safety)
 >
 > **Synapse Traits**: `Policy` (dream sharing policy), `Gate` (nightmare detection gate), `Substrate` (dream journal persistence)

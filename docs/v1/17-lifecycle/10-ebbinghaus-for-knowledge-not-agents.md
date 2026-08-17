@@ -1,5 +1,8 @@
 # Ebbinghaus for Knowledge, Not Agents
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L1 Framework (Substrate decay mechanics) + Cross-cut (Neuro cognitive cross-cut)
 >
 > **Prerequisites**: `docs/03-neuro/INDEX.md` (Neuro store, Engram format, tier management), `docs/01-synapse/INDEX.md` (Synapse Architecture, Decay enum)

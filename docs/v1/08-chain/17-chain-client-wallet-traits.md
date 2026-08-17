@@ -1,5 +1,8 @@
 # ChainClient and ChainWallet Traits
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Two async traits define the interface between Roko agents and any EVM-compatible chain: `ChainClient` for reading chain state (blocks, logs, storage, eth_call) and `ChainWallet` for writing (signing, submitting, and waiting for transactions). Implementations exist for live RPC nodes, mirage-rs simulation, and mock testing.
 
 

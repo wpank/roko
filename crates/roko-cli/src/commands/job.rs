@@ -46,10 +46,10 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
                 let job: roko_core::MarketplaceJob =
                     serde_json::from_str(&data).unwrap_or_default();
                 let effective_status = job.effective_status();
-                if let Some(ref filter) = status {
-                    if !effective_status.eq_ignore_ascii_case(filter) {
-                        continue;
-                    }
+                if let Some(ref filter) = status
+                    && !effective_status.eq_ignore_ascii_case(filter)
+                {
+                    continue;
                 }
                 let icon = match effective_status {
                     "open" | "pending" => "\u{25cb}",
@@ -134,7 +134,7 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
                 .map(|r| r.config.serve.auth)
                 .unwrap_or_default();
             let headers = match auth::resolve_api_key(&auth_cfg, None) {
-                Some(resolved) => auth::auth_headers(&resolved.key),
+                Some(resolved) => resolved.headers(),
                 None => reqwest::header::HeaderMap::new(),
             };
             let body = serde_json::json!({
@@ -292,7 +292,7 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
                     .map(|r| r.config.serve.auth)
                     .unwrap_or_default();
                 let headers = match auth::resolve_api_key(&auth_cfg, None) {
-                    Some(resolved) => auth::auth_headers(&resolved.key),
+                    Some(resolved) => resolved.headers(),
                     None => reqwest::header::HeaderMap::new(),
                 };
                 let client = reqwest::Client::new();

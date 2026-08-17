@@ -530,6 +530,15 @@ pub struct TaskEntry {
     pub agent_id: Option<String>,
 }
 
+/// Cost/budget projection for one plan in the F2 view.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PlanBudgetSummary {
+    pub spent_usd: f64,
+    pub budget_usd: f64,
+    pub projected_remaining_usd: f64,
+    pub projected_total_usd: f64,
+}
+
 /// Git branch tree node.
 #[derive(Debug, Clone, Default)]
 pub struct GitBranchNode {
@@ -1146,6 +1155,10 @@ pub struct TuiState {
     pub cost_per_plan: HashMap<String, f64>,
     /// Cost per task (task_id -> USD).
     pub cost_per_task: HashMap<String, f64>,
+    /// Effective per-plan ceiling; zero means unlimited.
+    pub max_plan_budget_usd: f64,
+    /// Effective task ceilings keyed by `"{plan_id}:{task_id}"`.
+    pub task_budget_usd: HashMap<String, f64>,
     /// Cumulative input tokens across all agents.
     pub cumulative_input_tokens: u64,
     /// Cumulative output tokens across all agents.
@@ -1246,8 +1259,8 @@ pub struct TuiState {
     // -- network stats (header bar) --
     /// Number of agents currently online/discovered.
     pub agents_online: usize,
-    /// Inter-Signal Frequency Ratio (ISFR) — median inter-signal interval.
-    pub isfr: Option<f64>,
+    /// Recent gate pass rate displayed in the network-status header.
+    pub gate_pass_rate: Option<f64>,
 
     // -- knowledge browse --
     /// Knowledge entries for the Inspect tab's KnowledgeBrowse sub-view.
@@ -1369,6 +1382,8 @@ impl Default for TuiState {
 
             cost_per_plan: HashMap::new(),
             cost_per_task: HashMap::new(),
+            max_plan_budget_usd: 0.0,
+            task_budget_usd: HashMap::new(),
             cumulative_input_tokens: 0,
             cumulative_output_tokens: 0,
             token_total: 0,
@@ -1419,7 +1434,7 @@ impl Default for TuiState {
             cached_unified_log: Vec::new(),
 
             agents_online: 0,
-            isfr: None,
+            gate_pass_rate: None,
 
             knowledge_entries: Vec::new(),
 
@@ -1547,6 +1562,50 @@ impl TuiState {
         self.run_started
             .map(|s| s.elapsed().as_secs_f64())
             .unwrap_or(0.0)
+    }
+
+    /// Return the selected plan's spend, ceiling, and simple historical projection.
+    #[must_use]
+    pub fn plan_budget_summary(&self, plan: &PlanEntry) -> PlanBudgetSummary {
+        let spent_usd = self.cost_per_plan.get(&plan.id).copied().unwrap_or(0.0);
+        let prefix = format!("{}:", plan.id);
+        let observed = self
+            .cost_per_task
+            .iter()
+            .filter(|(key, cost)| key.starts_with(&prefix) && **cost > 0.0)
+            .count();
+        let remaining = plan.tasks_total.saturating_sub(observed);
+        let average = if observed == 0 {
+            0.0
+        } else {
+            spent_usd / observed as f64
+        };
+        let projected_remaining_usd = average * remaining as f64;
+        PlanBudgetSummary {
+            spent_usd,
+            budget_usd: self.max_plan_budget_usd,
+            projected_remaining_usd,
+            projected_total_usd: spent_usd + projected_remaining_usd,
+        }
+    }
+
+    /// Effective ceiling for one task; zero means unlimited.
+    #[must_use]
+    pub fn task_budget(&self, plan_id: &str, task_id: &str) -> f64 {
+        self.task_budget_usd
+            .get(&format!("{plan_id}:{task_id}"))
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    /// Aggregate configured ceiling represented by the header's total spend.
+    #[must_use]
+    pub fn aggregate_plan_budget(&self) -> f64 {
+        if self.max_plan_budget_usd <= 0.0 {
+            0.0
+        } else {
+            self.max_plan_budget_usd * self.plans.len().max(1) as f64
+        }
     }
 
     /// Number of execution waves.
@@ -1858,6 +1917,7 @@ impl TuiState {
         self.prune_agent_streams();
 
         self.cost_dollars = data.efficiency.total_cost_usd;
+        self.max_plan_budget_usd = f64::from(data.budget.max_plan_usd);
         self.cumulative_input_tokens = data.efficiency.total_input_tokens;
         self.cumulative_output_tokens = data.efficiency.total_output_tokens;
         self.token_total = self.cumulative_input_tokens + self.cumulative_output_tokens;
@@ -1868,6 +1928,16 @@ impl TuiState {
             .map(GateResultEntry::from)
             .collect();
         sum_costs(data, &mut self.cost_per_plan, &mut self.cost_per_task);
+        self.task_budget_usd.clear();
+        for (plan_id, snapshot) in &plan_snapshots {
+            for task in &snapshot.tasks {
+                self.task_budget_usd.insert(
+                    format!("{plan_id}:{}", task.id),
+                    data.budget
+                        .task_limit_usd(&task.tier, task.model_hint.as_deref()),
+                );
+            }
+        }
 
         self.phase_pipeline = build_phase_pipeline(&data.active_tasks);
 
@@ -1955,7 +2025,7 @@ impl TuiState {
                 .filter(|agent| is_online_agent_status(&agent.status))
                 .count()
         };
-        self.isfr = gate_pass_rate(&data.gate_results);
+        self.gate_pass_rate = gate_pass_rate(&data.gate_results);
 
         // -- marketplace / atelier --
         self.marketplace_jobs = data.marketplace_jobs.clone();
@@ -2310,7 +2380,7 @@ impl TuiState {
 
         // -- network stats --
         self.agents_online = snap.agents.values().filter(|agent| agent.active).count();
-        self.isfr = snapshot_gate_pass_rate(&snap.gates);
+        self.gate_pass_rate = snapshot_gate_pass_rate(&snap.gates);
 
         // Synthesize plan_summaries from snapshot-built plans so the F2 left
         // panel works in approval mode (where DashboardData is never loaded).
@@ -3349,7 +3419,9 @@ fn sum_costs(
             *plans.entry(e.plan_id.clone()).or_default() += e.cost_usd;
         }
         if !e.task_id.is_empty() {
-            *tasks.entry(e.task_id.clone()).or_default() += e.cost_usd;
+            *tasks
+                .entry(format!("{}:{}", e.plan_id, e.task_id))
+                .or_default() += e.cost_usd;
         }
     }
 }
@@ -4070,7 +4142,7 @@ depends_on = ["plan-b:T1"]
         let state = TuiState::from_dashboard_data(&data);
 
         assert_eq!(state.agents_online, 2);
-        assert_eq!(state.isfr, Some(0.5));
+        assert_eq!(state.gate_pass_rate, Some(0.5));
     }
 
     #[test]
@@ -4087,7 +4159,7 @@ depends_on = ["plan-b:T1"]
         let state = TuiState::from_dashboard_data(&data);
 
         assert_eq!(state.agents_online, 2);
-        assert_eq!(state.isfr, None);
+        assert_eq!(state.gate_pass_rate, None);
     }
 
     #[test]
@@ -4414,6 +4486,27 @@ tier = "focused"
     }
 
     #[test]
+    fn plan_budget_summary_projects_from_completed_task_average() {
+        let mut state = TuiState::default();
+        state.max_plan_budget_usd = 5.0;
+        state.cost_per_plan.insert("plan".into(), 1.5);
+        state.cost_per_task.insert("plan:T1".into(), 0.5);
+        state.cost_per_task.insert("plan:T2".into(), 1.0);
+        let plan = PlanEntry {
+            id: "plan".into(),
+            tasks_total: 4,
+            tasks_done: 2,
+            ..PlanEntry::default()
+        };
+
+        let summary = state.plan_budget_summary(&plan);
+        assert_eq!(summary.spent_usd, 1.5);
+        assert_eq!(summary.budget_usd, 5.0);
+        assert_eq!(summary.projected_remaining_usd, 1.5);
+        assert_eq!(summary.projected_total_usd, 3.0);
+    }
+
+    #[test]
     fn update_from_dashboard_snapshot_maps_connected_state_and_preserves_navigation() {
         use roko_core::dashboard_snapshot::{
             AgentState as SnapshotAgentState, DashboardSnapshot, ErrorEntry, GateVerdictView,
@@ -4575,6 +4668,13 @@ tier = "focused"
             atelier_prds: Vec::new(),
             atelier_tasks: HashMap::new(),
             knowledge_entries: Vec::new(),
+            payment_count: 0,
+            total_payment_korai: 0.0,
+            payments_by_protocol: HashMap::new(),
+            settlement_count: 0,
+            inbox_items: HashMap::new(),
+            inbox_resolved_ids: HashSet::new(),
+            inbox_pending_count: 0,
             stats: Default::default(),
         };
 

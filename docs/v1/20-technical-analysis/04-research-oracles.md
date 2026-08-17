@@ -1,5 +1,8 @@
 # Research Oracles — Prediction for Information Analysis
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Research oracles predict source reliability, information completeness, and contradiction risk. The same TA framework that tracks price trends tracks citation momentum. The same adversarial detection that identifies MEV identifies p-hacking.
 
 

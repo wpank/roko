@@ -1729,7 +1729,7 @@ mod tests {
     #[test]
     fn attention_budget_tracks_balances() {
         let subsystems = vec![SubsystemId::Neuro, SubsystemId::Daimon];
-        let mut budget = AttentionBudget::new(&subsystems);
+        let budget = AttentionBudget::new(&subsystems);
 
         assert_eq!(budget.balance(SubsystemId::Neuro), 0.0);
         assert!((budget.bid_multiplier(SubsystemId::Neuro) - 1.0).abs() < 1e-9);

@@ -1,6 +1,8 @@
 # Knowledge Marketplace as Store
 
 > Depth for [21-MARKETPLACE.md](../../unified/21-MARKETPLACE.md). Covers the three-tier knowledge marketplace, alpha-decay pricing, blind verification, the 4-stage ingestion Pipeline, knowledge futures with LMSR prediction markets, and SKILL.md format -- all expressed as Store operations with economic Verify gates.
+>
+> **Implementation status (2026-08-17):** Spec/design document. The local neuro knowledge store (`crates/roko-neuro/`) is fully wired for single-agent use. The marketplace HTTP/CLI stubs (E38 9/9) are tested. Alpha-decay pricing, blind verification pipeline, LMSR prediction markets, and knowledge futures are product work — durable storage/search, executable publish/install pipelines, and ERC-8004 anchoring remain unimplemented. See `.roko/GAPS.md`.
 
 ---
 

@@ -1,5 +1,8 @@
 # Performance and numerical stability
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Cross-cutting -- All Layers
 > Status: **Specification** -- guidelines for implementation
 > Canonical source: various crates (see per-section references)

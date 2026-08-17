@@ -311,6 +311,8 @@ mod tests {
             confidence: 0.5,
             confidence_weight: 0.5,
             source: Some("dream-test".to_string()),
+            origin_taint: Default::default(),
+            classification: Default::default(),
             refuted_insight_id: None,
             refutation_evidence: None,
             source_episodes: vec![],
@@ -327,6 +329,9 @@ mod tests {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         }
     }

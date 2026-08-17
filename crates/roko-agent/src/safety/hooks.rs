@@ -4,6 +4,8 @@ use std::collections::HashSet;
 use std::fmt;
 
 use async_trait::async_trait;
+use roko_core::corrigibility::{ActionContext, CorrigibilityDecision, evaluate_action};
+use roko_core::extension::CamelTaintLevel;
 use roko_core::tool::{ToolContext, ToolDef, ToolError};
 use serde::{Deserialize, Serialize};
 
@@ -199,6 +201,120 @@ pub trait SafetyHook: Send + Sync {
     ) -> Result<HookDecision, ToolError>;
 }
 
+/// Rejects calls whose current turn taint exceeds an agent contract ceiling.
+///
+/// Rejections are converted to [`SafetyAuditRecord`]s by the existing hook
+/// chain, so they follow the same append-only audit path as every other hook.
+#[derive(Debug, Clone, Copy)]
+pub struct TaintLevelHook {
+    /// Maximum trust-origin taint accepted by the role.
+    pub max_taint_level: CamelTaintLevel,
+}
+
+impl TaintLevelHook {
+    /// Create a taint ceiling hook.
+    #[must_use]
+    pub const fn new(max_taint_level: CamelTaintLevel) -> Self {
+        Self { max_taint_level }
+    }
+}
+
+#[async_trait]
+impl SafetyHook for TaintLevelHook {
+    async fn on_tool_call(
+        &self,
+        tool: &ToolDef,
+        _params: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<HookDecision, ToolError> {
+        let observed = ctx.taint_level();
+        let privileged = tool.permission.write
+            || tool.permission.exec
+            || tool.permission.git
+            || tool.permission.network;
+        if privileged && observed > self.max_taint_level {
+            return Ok(HookDecision::Reject(format!(
+                "tool `{}` input taint `{observed}` exceeds maximum `{}`",
+                tool.name, self.max_taint_level
+            )));
+        }
+        Ok(HookDecision::Allow)
+    }
+}
+
+/// Five-head lexicographic corrigibility gate for structured tool calls.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CorrigibilityHook;
+
+/// Build the immutable five-head decision for a structured tool proposal.
+#[must_use]
+pub fn evaluate_tool_corrigibility(
+    tool: &ToolDef,
+    params: &serde_json::Value,
+) -> CorrigibilityDecision {
+    let rendered = format!("{} {}", tool.name, params);
+    let lower = rendered.to_ascii_lowercase();
+    let protective = [
+        "prevent ", "block ", "reject ", "test ", "never ", "do not ",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker));
+    let context = ActionContext {
+        autonomy_level: Some("auto".to_string()),
+        reversible: Some(
+            protective
+                || ![
+                    "force push",
+                    "delete without backup",
+                    "irreversible transaction",
+                    "destroy data",
+                ]
+                .iter()
+                .any(|phrase| lower.contains(phrase)),
+        ),
+        modifies_audit: Some(
+            !protective
+                && [
+                    "disable audit",
+                    "delete audit",
+                    "erase logs",
+                    "disable logging",
+                    "bypass verification",
+                    "disable cancellation",
+                ]
+                .iter()
+                .any(|phrase| lower.contains(phrase)),
+        ),
+        outputs_verifiable: Some(
+            protective
+                || !["fabricate results", "suppress errors", "hide failures"]
+                    .iter()
+                    .any(|phrase| lower.contains(phrase)),
+        ),
+        on_task: Some(!lower.contains("unrelated to the assigned task")),
+    };
+    evaluate_action(&rendered, &context)
+}
+
+#[async_trait]
+impl SafetyHook for CorrigibilityHook {
+    async fn on_tool_call(
+        &self,
+        tool: &ToolDef,
+        params: &serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<HookDecision, ToolError> {
+        let decision = evaluate_tool_corrigibility(tool, params);
+        if let Some((head, reason)) = decision.first_veto() {
+            return Ok(HookDecision::Reject(format!(
+                "{:?} head vetoed tool `{}`: {reason}",
+                head, tool.name
+            )));
+        }
+        Ok(HookDecision::Allow)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +369,47 @@ mod tests {
         let decoded: HookDecision = serde_json::from_str(&encoded).unwrap();
 
         assert_eq!(decoded, decision);
+    }
+
+    #[tokio::test]
+    async fn taint_hook_rejects_untrusted_turn() {
+        use roko_core::tool::{ToolCategory, ToolPermission};
+
+        let hook = TaintLevelHook::new(CamelTaintLevel::External);
+        let tool = ToolDef::new(
+            "write_file",
+            "write",
+            ToolCategory::Write,
+            ToolPermission::writes(),
+        );
+        let ctx = ToolContext::testing("/tmp/work").with_taint_level(CamelTaintLevel::Untrusted);
+        assert!(matches!(
+            hook.on_tool_call(&tool, &serde_json::json!({}), &ctx)
+                .await
+                .unwrap(),
+            HookDecision::Reject(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn corrigibility_hook_vetoes_audit_disable_before_task_head() {
+        use roko_core::tool::{ToolCategory, ToolPermission};
+
+        let hook = CorrigibilityHook;
+        let tool = ToolDef::new(
+            "bash",
+            "shell",
+            ToolCategory::Exec,
+            ToolPermission::executes(),
+        );
+        let decision = hook
+            .on_tool_call(
+                &tool,
+                &serde_json::json!({"command": "disable audit logging"}),
+                &ToolContext::testing("/tmp/work"),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(decision, HookDecision::Reject(reason) if reason.contains("Switch")));
     }
 }

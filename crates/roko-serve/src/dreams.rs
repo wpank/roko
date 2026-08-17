@@ -17,7 +17,7 @@ use roko_daimon::{
     StrategyCoordinates, StrategySpaceDefinition,
 };
 use roko_dreams::cycle::{DreamCycleReport, DreamOutcome};
-use roko_dreams::{DreamCycle, build_dream_review_dispatcher};
+use roko_dreams::{DreamCycle, DreamSchedulePolicy, DreamTrigger, build_dream_review_dispatcher};
 use roko_learn::{
     episode_logger::{Episode, EpisodeLogger},
     playbook::PlaybookStore,
@@ -34,10 +34,86 @@ pub use roko_dreams::{DreamAgentConfig, DreamLoopConfig};
 
 const DREAM_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
+#[derive(Debug)]
+struct ResidentDreamScheduler {
+    policy: DreamSchedulePolicy,
+    next_cron_at: Option<DateTime<Utc>>,
+    scheduled_pending: bool,
+    last_report: Option<DreamCycleReport>,
+}
+
+impl ResidentDreamScheduler {
+    fn new(
+        policy: DreamSchedulePolicy,
+        now: DateTime<Utc>,
+        last_report: Option<DreamCycleReport>,
+    ) -> Self {
+        let next_cron_at = policy.next_cron_at(now);
+        Self {
+            policy,
+            next_cron_at,
+            scheduled_pending: false,
+            last_report,
+        }
+    }
+
+    /// Observe wall time even while agents are active. A cron fire is retained
+    /// as one pending request until the next idle boundary instead of being
+    /// lost or duplicated on every poll.
+    fn observe_clock(&mut self, now: DateTime<Utc>) {
+        if self.next_cron_at.is_some_and(|next| next <= now) {
+            self.scheduled_pending = true;
+            self.next_cron_at = self.policy.next_cron_at(now);
+        }
+    }
+
+    fn due_trigger(
+        &self,
+        now: DateTime<Utc>,
+        idle_since: DateTime<Utc>,
+        new_episode_count: usize,
+    ) -> Option<DreamTrigger> {
+        if !self.policy.enabled {
+            return None;
+        }
+        if self.scheduled_pending {
+            return Some(DreamTrigger::Scheduled);
+        }
+        if self.policy.episode_count_trigger > 0
+            && new_episode_count >= self.policy.episode_count_trigger
+        {
+            return Some(DreamTrigger::EpisodeCount);
+        }
+
+        let idle_delay = self
+            .policy
+            .idle_delay(self.last_report.as_ref(), None::<&roko_dreams::DreamBudget>);
+        let idle_elapsed = now
+            .signed_duration_since(idle_since)
+            .to_std()
+            .unwrap_or(Duration::ZERO);
+        (idle_elapsed >= idle_delay).then_some(DreamTrigger::Idle)
+    }
+
+    fn record_completed(&mut self, trigger: &DreamTrigger, report: DreamCycleReport) {
+        if matches!(trigger, DreamTrigger::Scheduled) {
+            self.scheduled_pending = false;
+        }
+        self.last_report = Some(report);
+    }
+}
+
 /// Start the dream cycle in the background.
-#[must_use]
-pub fn start_dream_loop(state: Arc<AppState>, config: DreamLoopConfig) -> JoinHandle<()> {
-    tokio::spawn(async move {
+///
+/// # Errors
+///
+/// Returns an error before spawning when the scheduling policy contains an
+/// invalid cron expression or adaptive-delay multiplier.
+pub fn start_dream_loop(state: Arc<AppState>, config: DreamLoopConfig) -> Result<JoinHandle<()>> {
+    let schedule = config.effective_schedule();
+    schedule.validate().context("validate dream schedule")?;
+
+    Ok(tokio::spawn(async move {
         if !config.auto_dream {
             return;
         }
@@ -54,8 +130,16 @@ pub fn start_dream_loop(state: Arc<AppState>, config: DreamLoopConfig) -> JoinHa
             warn!(error = %err, "failed to restore last dream checkpoint");
         }
 
-        let idle_threshold = Duration::from_secs(config.idle_threshold_mins.saturating_mul(60));
-        let mut idle_since: Option<TokioInstant> = None;
+        let report_dir = state.layout.root().join("dreams");
+        let latest_report = match load_latest_dream_report(&report_dir) {
+            Ok(report) => report,
+            Err(err) => {
+                warn!(error = %err, "failed to load latest dream report for scheduling");
+                None
+            }
+        };
+        let mut scheduler = ResidentDreamScheduler::new(schedule, Utc::now(), latest_report);
+        let mut idle_since: Option<DateTime<Utc>> = None;
         let mut interval = interval_at(
             TokioInstant::now() + DREAM_CHECK_INTERVAL,
             DREAM_CHECK_INTERVAL,
@@ -68,25 +152,39 @@ pub fn start_dream_loop(state: Arc<AppState>, config: DreamLoopConfig) -> JoinHa
                 break;
             }
 
+            let now = Utc::now();
+            scheduler.observe_clock(now);
+
             let active_agents = state.supervisor.count().await;
             if active_agents > 0 {
                 idle_since = None;
                 continue;
             }
 
-            let now = TokioInstant::now();
-            let started_idle = idle_since.get_or_insert(now);
-            if now.duration_since(*started_idle) < idle_threshold {
+            let started_idle = *idle_since.get_or_insert(now);
+            let new_episode_count = match count_new_episodes(&state, &cycle).await {
+                Ok(count) => count,
+                Err(err) => {
+                    warn!(error = %err, "failed to inspect dream episode backlog");
+                    continue;
+                }
+            };
+            let Some(trigger) = scheduler.due_trigger(now, started_idle, new_episode_count) else {
+                continue;
+            };
+            if new_episode_count < config.min_episodes_for_dream {
                 continue;
             }
 
-            if let Err(err) =
-                maybe_run_dream_cycle(&state, &mut cycle, config.min_episodes_for_dream).await
-            {
-                warn!(error = %err, "dream cycle failed");
+            match run_scheduled_dream_cycle(&state, &mut cycle, &trigger, new_episode_count).await {
+                Ok(report) => {
+                    scheduler.record_completed(&trigger, report);
+                    idle_since = Some(Utc::now());
+                }
+                Err(err) => warn!(error = %err, trigger = trigger.label(), "dream cycle failed"),
             }
         }
-    })
+    }))
 }
 
 /// Run one dream cycle immediately using the existing stores and agent config.
@@ -184,32 +282,32 @@ fn latest_dream_report_path(report_dir: &Path) -> Result<Option<PathBuf>> {
     Ok(latest.map(|(_, path)| path))
 }
 
-async fn maybe_run_dream_cycle(
-    state: &AppState,
-    cycle: &mut DreamCycle,
-    min_episodes_for_dream: usize,
-) -> Result<()> {
+async fn count_new_episodes(state: &AppState, cycle: &DreamCycle) -> Result<usize> {
     let episodes_path = state.layout.episodes_path();
     let episodes = EpisodeLogger::read_all_lossy(&episodes_path)
         .await
         .with_context(|| format!("load episodes from {}", episodes_path.display()))?;
     let last_dream_at = cycle.last_dream_at();
-    let new_episode_count = episodes
+    Ok(episodes
         .iter()
         .filter(|episode| {
             last_dream_at
                 .map(|cutoff| episode.timestamp > cutoff)
                 .unwrap_or(true)
         })
-        .count();
+        .count())
+}
 
-    if new_episode_count < min_episodes_for_dream {
-        return Ok(());
-    }
-
+async fn run_scheduled_dream_cycle(
+    state: &AppState,
+    cycle: &mut DreamCycle,
+    trigger: &DreamTrigger,
+    new_episode_count: usize,
+) -> Result<DreamCycleReport> {
     info!(
+        trigger = trigger.label(),
         new_episodes = new_episode_count,
-        min_episodes_for_dream, "running dream cycle"
+        "running dream cycle"
     );
     let report = cycle.run().await.context("run dream cycle")?;
     info!(
@@ -219,7 +317,7 @@ async fn maybe_run_dream_cycle(
         "dream cycle completed"
     );
     apply_dream_affect_feedback(state, &report).await;
-    Ok(())
+    Ok(report)
 }
 
 async fn apply_dream_affect_feedback(state: &AppState, report: &DreamCycleReport) {
@@ -549,6 +647,85 @@ mod tests {
     use roko_daimon::{DaimonState, StrategyCoordinates};
     use roko_dreams::cycle::{DreamClusterKey, DreamClusterReport, DreamOutcome};
     use serde_json::json;
+
+    fn schedule_time() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-08-15T12:34:15Z")
+            .expect("valid schedule fixture")
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn resident_scheduler_queues_one_cron_fire_until_idle() {
+        let now = schedule_time();
+        let policy = DreamSchedulePolicy {
+            scheduled_cron: Some("0 * * * * * *".to_string()),
+            ..DreamSchedulePolicy::default()
+        };
+        let mut scheduler = ResidentDreamScheduler::new(policy, now, None);
+
+        scheduler.observe_clock(now + ChronoDuration::seconds(46));
+
+        assert!(scheduler.scheduled_pending);
+        assert_eq!(
+            scheduler.due_trigger(
+                now + ChronoDuration::seconds(46),
+                now + ChronoDuration::seconds(46),
+                5,
+            ),
+            Some(DreamTrigger::Scheduled)
+        );
+        let next = scheduler.next_cron_at.expect("next cron fire");
+        scheduler.observe_clock(now + ChronoDuration::seconds(50));
+        assert_eq!(scheduler.next_cron_at, Some(next));
+
+        // Several more cron instants can pass while agents are active, but
+        // the scheduler retains a single logical pending request and moves
+        // the next cursor beyond the observed wall clock.
+        let much_later = now + ChronoDuration::minutes(3) + ChronoDuration::seconds(46);
+        scheduler.observe_clock(much_later);
+        assert!(scheduler.scheduled_pending);
+        assert!(scheduler.next_cron_at.is_some_and(|next| next > much_later));
+        assert_eq!(
+            scheduler.due_trigger(much_later, much_later, 5),
+            Some(DreamTrigger::Scheduled)
+        );
+    }
+
+    #[test]
+    fn resident_scheduler_supports_episode_count_before_idle_delay() {
+        let now = schedule_time();
+        let policy = DreamSchedulePolicy {
+            idle_threshold_mins: 30,
+            episode_count_trigger: 3,
+            ..DreamSchedulePolicy::default()
+        };
+        let scheduler = ResidentDreamScheduler::new(policy, now, None);
+
+        assert_eq!(scheduler.due_trigger(now, now, 2), None);
+        assert_eq!(
+            scheduler.due_trigger(now, now, 3),
+            Some(DreamTrigger::EpisodeCount)
+        );
+    }
+
+    #[test]
+    fn resident_scheduler_honors_idle_policy_delay() {
+        let now = schedule_time();
+        let policy = DreamSchedulePolicy {
+            idle_threshold_mins: 1,
+            ..DreamSchedulePolicy::default()
+        };
+        let scheduler = ResidentDreamScheduler::new(policy, now, None);
+
+        assert_eq!(
+            scheduler.due_trigger(now + ChronoDuration::seconds(59), now, 5),
+            None
+        );
+        assert_eq!(
+            scheduler.due_trigger(now + ChronoDuration::seconds(60), now, 5),
+            Some(DreamTrigger::Idle)
+        );
+    }
 
     #[test]
     fn dream_failures_reduce_confidence_by_task_type() {

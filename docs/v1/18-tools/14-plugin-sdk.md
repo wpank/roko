@@ -1,5 +1,8 @@
 # 14 — roko-plugin SDK
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Five-tier SPI for prompts, profiles, declarative tools and MCPs, native trait implementations,
 > and WASM sandboxed extensions. See also
 > [tmp/refinements/17-plugin-extension-architecture.md](../../tmp/refinements/17-plugin-extension-architecture.md)

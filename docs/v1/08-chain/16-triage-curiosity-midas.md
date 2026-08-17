@@ -1,5 +1,8 @@
 # Triage Pipeline: Curiosity Scoring and MIDAS-R Anomaly Detection
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The triage pipeline is a 4-stage classification system: rule-based filters → MIDAS-R streaming anomaly detection → contextual enrichment → HDC/Bayesian curiosity scoring. It assigns each transaction a curiosity score that determines whether it is noise (ignore), worth tracking (silent monitor), or worth escalating (LLM analysis). No LLM calls touch this path — speed comes from pure computation.
 
 

@@ -1,5 +1,8 @@
 # Cost Normalization
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Crate:** `roko-learn` · **Modules:** `costs_db.rs`, `costs_log.rs`
 > **Persistence:** `.roko/learn/costs.jsonl`
 > **Implementation plan:** `modelrouting/09-cost-normalization.md` (tasks 2H.01–2H.10)

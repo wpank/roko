@@ -1,5 +1,8 @@
 # 03 — Chain Domain Plugin: 423+ DeFi Tools
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The chain domain plugin — 423+ DeFi tools as ONE domain plugin, not the core framework.
 > Two-layer tool model, adapter pattern, high-level architecture, protocol coverage.
 > See also [tmp/refinements/25-domain-specific-agents.md](../../tmp/refinements/25-domain-specific-agents.md).

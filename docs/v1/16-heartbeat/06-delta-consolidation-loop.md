@@ -1,5 +1,8 @@
 # Delta: The Consolidation Loop (~Hours)
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The slowest cognitive frequency — offline learning, dream replay, knowledge promotion, and meta-cognition during idle time.
 
 

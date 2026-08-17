@@ -1,5 +1,8 @@
 # OCC and Scherer Appraisal Theory
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > How events become emotions: the appraisal pipeline that converts gate pass/fail, task outcomes, blockers, time pressure, and prediction accuracy into PAD vector updates.
 
 

@@ -1,5 +1,8 @@
 # Adaptive Timeouts and the State Machine
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Phase timeouts by complexity band. Hard timeouts that are law,
 > not suggestions. PhaseTransition records for audit trails.
 

@@ -2,6 +2,9 @@
 #![allow(unused_imports)]
 
 use crate::*;
+use anyhow::ensure;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i32> {
     match cmd {
@@ -10,6 +13,40 @@ pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i
         }
         KnowledgeCmd::Stats { workdir } => cmd_neuro(cli, NeuroCmd::Stats { workdir }).await,
         KnowledgeCmd::Gc { workdir } => cmd_neuro(cli, NeuroCmd::Gc { workdir }).await,
+        KnowledgeCmd::Export {
+            workdir,
+            output,
+            force,
+            top_n,
+        } => {
+            cmd_neuro(
+                cli,
+                NeuroCmd::Export {
+                    workdir,
+                    output,
+                    force,
+                    top_n,
+                },
+            )
+            .await
+        }
+        KnowledgeCmd::Import {
+            workdir,
+            input,
+            decay_factor,
+            legacy_raw,
+        } => {
+            cmd_neuro(
+                cli,
+                NeuroCmd::Import {
+                    workdir,
+                    input,
+                    decay_factor,
+                    legacy_raw,
+                },
+            )
+            .await
+        }
         KnowledgeCmd::Backup {
             workdir,
             destination,
@@ -34,6 +71,8 @@ pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i
             types,
             min_confidence,
             generation,
+            decay_factor,
+            legacy_raw,
         } => {
             cmd_neuro(
                 cli,
@@ -44,6 +83,8 @@ pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i
                     types,
                     min_confidence,
                     generation,
+                    decay_factor,
+                    legacy_raw,
                 },
             )
             .await
@@ -481,6 +522,65 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
 
             Ok(EXIT_SUCCESS)
         }
+        NeuroCmd::Export {
+            workdir,
+            output,
+            force,
+            top_n,
+        } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            if output.exists() && !force {
+                bail!(
+                    "knowledge export would overwrite {}. Re-run with --force to replace it.",
+                    output.display()
+                );
+            }
+            let store = KnowledgeStore::for_workdir(&wd);
+            let filter = ExportFilter {
+                max_entries: top_n,
+                filter_secrets: true,
+                ..Default::default()
+            };
+            let exported = store.export(&output, &filter)?;
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "workdir": wd,
+                        "output": output,
+                        "entries_exported": exported,
+                        "secret_filtering": true,
+                        "top_n": top_n,
+                    }))?
+                );
+            } else {
+                println!(
+                    "Exported {exported} secret-safe knowledge entries to {}",
+                    output.display()
+                );
+            }
+            Ok(EXIT_SUCCESS)
+        }
+        NeuroCmd::Import {
+            workdir,
+            input,
+            decay_factor,
+            legacy_raw,
+        } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let store = KnowledgeStore::for_workdir(&wd);
+            let result = store.import(
+                &input,
+                &ImportOptions {
+                    confidence_discount: decay_factor,
+                    source_label: "knowledge-import".to_owned(),
+                    allow_legacy: legacy_raw,
+                    ..Default::default()
+                },
+            )?;
+            print_import_result(cli, &input, decay_factor, &result)?;
+            Ok(EXIT_SUCCESS)
+        }
         NeuroCmd::Backup {
             workdir,
             destination,
@@ -499,6 +599,7 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
                     "confirmations_store": report.live.confirmations,
                     "confirmations_backup": report.snapshot.confirmations,
                     "confirmations_present": report.confirmations_present,
+                    "manifest": report.manifest,
                     "top_n": top_n,
                     "entries_exported": report.entries_exported,
                     "force": force,
@@ -522,18 +623,7 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
                 println!("  confirmations: (none)");
             }
 
-            // Write manifest.json alongside the backup files.
-            let manifest = serde_json::json!({
-                "version": 1,
-                "created_at": chrono::Utc::now().to_rfc3339(),
-                "entry_count": report.entries_exported,
-                "top_n": top_n,
-                "source_path": report.live.knowledge,
-            });
-            let manifest_path = destination.join("manifest.json");
-            std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)
-                .with_context(|| format!("write manifest to {}", manifest_path.display()))?;
-            println!("  manifest: {}", manifest_path.display());
+            println!("  manifest: {}", report.manifest.display());
 
             Ok(EXIT_SUCCESS)
         }
@@ -544,6 +634,8 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
             types,
             min_confidence,
             generation,
+            decay_factor,
+            legacy_raw,
         } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
 
@@ -560,11 +652,13 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
                 &source,
                 force,
                 generation,
+                decay_factor,
                 min_confidence,
                 type_filters.as_deref(),
+                legacy_raw,
             )?;
 
-            let confidence_decay = 0.85_f64.powi(generation as i32);
+            let confidence_decay = decay_factor.powf(f64::from(generation));
 
             if cli.json {
                 let payload = serde_json::json!({
@@ -575,10 +669,15 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
                     "confirmations_store": report.live.confirmations,
                     "confirmations_backup": report.snapshot.confirmations,
                     "confirmations_present": report.confirmations_present,
+                    "manifest": report.manifest,
                     "generation": generation,
                     "confidence_decay": confidence_decay,
                     "entries_restored": report.entries_restored,
                     "entries_filtered": report.entries_filtered,
+                    "entries_skipped_dedup": report.entries_skipped_dedup,
+                    "entries_skipped_contradiction": report.entries_skipped_contradiction,
+                    "malformed_entries": report.malformed_entries,
+                    "legacy_input": report.legacy_input,
                     "force": force,
                 });
                 println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -590,6 +689,14 @@ pub(crate) async fn cmd_neuro(cli: &Cli, cmd: NeuroCmd) -> Result<i32> {
             println!("  generation: {generation} (confidence decay: {confidence_decay:.4})");
             println!("  entries restored: {}", report.entries_restored);
             println!("  entries filtered: {}", report.entries_filtered);
+            println!(
+                "  entries skipped (dedup): {}",
+                report.entries_skipped_dedup
+            );
+            println!(
+                "  entries skipped (contradiction): {}",
+                report.entries_skipped_contradiction
+            );
             println!("  tier: all restored entries set to Transient (quarantine)");
             if report.confirmations_present {
                 println!("  confirmations: {}", report.live.confirmations.display());
@@ -729,7 +836,7 @@ pub(crate) async fn cmd_dream(cli: &Cli, cmd: DreamCmdLegacy) -> Result<i32> {
             prepare_runtime_hooks(&workdir, cli.quiet);
 
             let mut runner = build_dream_runner(cli, &workdir)?;
-            let report = match runner.consolidate() {
+            let report = match runner.consolidate_now() {
                 Ok(report) => report,
                 Err(e) => {
                     // Appraise dream failure into the daimon affect state.
@@ -825,6 +932,7 @@ pub(crate) fn build_dream_runner(cli: &Cli, workdir: &Path) -> Result<DreamRunne
             auto_dream: cli_config.dreams.auto_dream,
             idle_threshold_mins: cli_config.dreams.idle_threshold_mins,
             min_episodes_for_dream: cli_config.dreams.min_episodes_for_dream,
+            schedule: cli_config.dreams.schedule_policy(),
             agent: DreamAgentConfig {
                 command: cli_config.agent.command.clone(),
                 args: cli_config.agent.args.clone(),
@@ -844,12 +952,46 @@ pub(crate) struct NeuroTransferReport {
     pub(crate) live: NeuroFileSet,
     pub(crate) snapshot: NeuroFileSet,
     pub(crate) confirmations_present: bool,
+    /// Versioned backup manifest path.
+    pub(crate) manifest: PathBuf,
     /// Number of entries exported (only relevant for backup with --top-n).
     pub(crate) entries_exported: usize,
     /// Number of entries restored (only relevant for restore).
     pub(crate) entries_restored: usize,
     /// Number of entries filtered out during restore.
     pub(crate) entries_filtered: usize,
+    /// Number skipped as exact or semantic duplicates during restore.
+    pub(crate) entries_skipped_dedup: usize,
+    /// Number skipped because they contradict high-confidence knowledge.
+    pub(crate) entries_skipped_contradiction: usize,
+    /// Number of malformed entries. Always zero on success.
+    pub(crate) malformed_entries: usize,
+    /// Whether restore used the explicit legacy migration path.
+    pub(crate) legacy_input: bool,
+}
+
+const NEURO_BACKUP_MANIFEST_FILE: &str = "manifest.json";
+const NEURO_BACKUP_MANIFEST_VERSION: u32 = 2;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct NeuroArtifactDigest {
+    bytes: u64,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct NeuroBackupManifest {
+    version: u32,
+    created_at: chrono::DateTime<chrono::Utc>,
+    entry_count: usize,
+    top_n: Option<usize>,
+    source_path: String,
+    #[serde(default)]
+    knowledge_format_version: u32,
+    #[serde(default)]
+    confirmations_present: bool,
+    #[serde(default)]
+    confirmations: Option<NeuroArtifactDigest>,
 }
 
 pub(crate) fn backup_neuro_store(
@@ -860,75 +1002,93 @@ pub(crate) fn backup_neuro_store(
 ) -> Result<NeuroTransferReport> {
     let live = neuro_live_files(workdir);
     let snapshot = neuro_snapshot_files(destination);
+    reject_backup_alias(destination, &live)?;
 
-    if let Some(n) = top_n {
-        // Genomic bottleneck: export only the top N entries by confidence.
-        let store = KnowledgeStore::for_workdir(workdir);
-        let mut entries = store
-            .read_all()
-            .with_context(|| format!("read knowledge store from {}", store.path().display()))?;
-        // Sort by confidence descending.
-        entries.sort_by(|a, b| {
-            b.confidence
-                .partial_cmp(&a.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        entries.truncate(n);
-
-        // Write entries to the snapshot location using export.
-        let filter = roko_neuro::knowledge_store::ExportFilter::default();
-        ensure_neuro_directory(
-            snapshot
-                .knowledge
-                .parent()
-                .ok_or_else(|| anyhow!("resolve backup directory"))?,
-            "backup",
-        )?;
-
-        // Re-add just the top N entries through a temporary store.
-        let temp_store = KnowledgeStore::new(snapshot.knowledge.clone());
-        let _count = entries.len();
-        if !entries.is_empty() {
-            temp_store.ingest(entries)?;
-        }
-
-        // Also export using the JSONL export format for maximum compatibility.
-        let exported_count = temp_store.export(&snapshot.knowledge, &filter)?;
-
-        let confirmations_present = sync_optional_neuro_file(
-            &live.confirmations,
-            &snapshot.confirmations,
-            force,
-            "backup",
-        )?;
-
-        return Ok(NeuroTransferReport {
-            live,
-            snapshot,
-            confirmations_present,
-            entries_exported: exported_count,
-            entries_restored: 0,
-            entries_filtered: 0,
-        });
+    if destination.exists() && !destination.is_dir() {
+        bail!(
+            "backup target must be a directory, found file at {}",
+            destination.display()
+        );
+    }
+    let destination_populated = destination.exists()
+        && std::fs::read_dir(destination)
+            .with_context(|| format!("read backup directory {}", destination.display()))?
+            .next()
+            .transpose()?
+            .is_some();
+    if destination_populated && !force {
+        bail!(
+            "backup would replace populated directory {}. Re-run with --force to replace it.",
+            destination.display()
+        );
     }
 
-    let confirmations_present = sync_neuro_store_files(&live, &snapshot, force, "backup")?;
+    let parent = parent_dir(destination);
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("create backup parent directory {}", parent.display()))?;
+    let staging = tempfile::Builder::new()
+        .prefix(".roko-neuro-backup-stage-")
+        .tempdir_in(parent)
+        .context("create backup staging directory")?;
+    let staged = neuro_snapshot_files(staging.path());
 
-    // Count entries in the exported file.
-    let entries_exported = if snapshot.knowledge.exists() {
-        let store = KnowledgeStore::new(snapshot.knowledge.clone());
-        store.read_all().map(|e| e.len()).unwrap_or(0)
+    let store = KnowledgeStore::for_workdir(workdir);
+    let entries_exported = store.export(
+        &staged.knowledge,
+        &ExportFilter {
+            max_entries: top_n,
+            filter_secrets: true,
+            ..Default::default()
+        },
+    )?;
+    let confirmation_bytes = if live.confirmations.exists() {
+        Some(std::fs::read(&live.confirmations).with_context(|| {
+            format!(
+                "read live confirmation records from {}",
+                live.confirmations.display()
+            )
+        })?)
     } else {
-        0
+        None
     };
+    if let Some(bytes) = &confirmation_bytes {
+        roko_fs::atomic_write_bytes(&staged.confirmations, bytes).with_context(|| {
+            format!(
+                "write staged confirmation records to {}",
+                staged.confirmations.display()
+            )
+        })?;
+    }
+    let confirmations_present = confirmation_bytes.is_some();
+    let manifest = NeuroBackupManifest {
+        version: NEURO_BACKUP_MANIFEST_VERSION,
+        created_at: chrono::Utc::now(),
+        entry_count: entries_exported,
+        top_n,
+        source_path: live.knowledge.display().to_string(),
+        knowledge_format_version: roko_neuro::knowledge_store::KNOWLEDGE_BACKUP_VERSION,
+        confirmations_present,
+        confirmations: confirmation_bytes.as_deref().map(neuro_artifact_digest),
+    };
+    let staged_manifest = staging.path().join(NEURO_BACKUP_MANIFEST_FILE);
+    roko_fs::atomic_write_json(&staged_manifest, &manifest)
+        .with_context(|| format!("write staged manifest to {}", staged_manifest.display()))?;
+
+    publish_staged_directory(staging.path(), destination)?;
+    let manifest_path = destination.join(NEURO_BACKUP_MANIFEST_FILE);
 
     Ok(NeuroTransferReport {
         live,
         snapshot,
         confirmations_present,
+        manifest: manifest_path,
         entries_exported,
         entries_restored: 0,
         entries_filtered: 0,
+        entries_skipped_dedup: 0,
+        entries_skipped_contradiction: 0,
+        malformed_entries: 0,
+        legacy_input: false,
     })
 }
 
@@ -937,96 +1097,186 @@ pub(crate) fn restore_neuro_store(
     source: &Path,
     force: bool,
     generation: u32,
+    decay_factor: f64,
     min_confidence: Option<f64>,
     type_filters: Option<&[String]>,
+    allow_legacy: bool,
 ) -> Result<NeuroTransferReport> {
     let live = neuro_live_files(workdir);
     let snapshot = neuro_snapshot_files(source);
+    let kinds = type_filters.map(parse_knowledge_kinds).transpose()?;
+    ensure!(
+        decay_factor.is_finite() && (0.0..=1.0).contains(&decay_factor),
+        "decay factor must be between 0.0 and 1.0"
+    );
+    let confidence_multiplier = decay_factor.powf(f64::from(generation));
+    ensure!(
+        snapshot.knowledge.is_file(),
+        "restore source file not found: {}",
+        snapshot.knowledge.display()
+    );
+    reject_restore_alias(source, &live)?;
 
-    // Apply confidence decay and filtering during restore.
-    let confidence_multiplier = 0.85_f64.powi(generation as i32);
+    let (manifest, legacy_manifest) = read_neuro_backup_manifest(source, allow_legacy)?;
+    let confirmation_bytes = if snapshot.confirmations.exists() {
+        ensure!(
+            snapshot.confirmations.is_file(),
+            "restore confirmations path is not a file: {}",
+            snapshot.confirmations.display()
+        );
+        Some(std::fs::read(&snapshot.confirmations).with_context(|| {
+            format!(
+                "read backup confirmation records from {}",
+                snapshot.confirmations.display()
+            )
+        })?)
+    } else {
+        None
+    };
+    validate_confirmation_artifact(manifest.as_ref(), confirmation_bytes.as_deref())?;
 
-    // Read the source backup entries.
-    let source_store = KnowledgeStore::new(snapshot.knowledge.clone());
-    let source_entries = source_store
-        .read_all()
-        .with_context(|| format!("read backup entries from {}", snapshot.knowledge.display()))?;
-
-    let total_source = source_entries.len();
-
-    // Apply filters: type filter and min confidence.
-    let filtered: Vec<_> = source_entries
-        .into_iter()
-        .filter(|entry| {
-            if let Some(types) = type_filters {
-                let kind_str = format!("{:?}", entry.kind).to_lowercase();
-                types.iter().any(|t| kind_str.contains(&t.to_lowercase()))
-            } else {
-                true
-            }
-        })
-        .filter(|entry| {
-            if let Some(min) = min_confidence {
-                entry.confidence >= min
-            } else {
-                true
-            }
-        })
-        .map(|mut entry| {
-            // Apply 0.85^N confidence decay.
-            entry.confidence = (entry.confidence * confidence_multiplier).clamp(0.0, 1.0);
-            // Reset to Transient tier (quarantine).
-            entry.tier = roko_neuro::KnowledgeTier::Transient;
-            // Mark source as restore with generation info.
-            entry.source = Some(format!("restore:gen{generation}"));
-            entry
-        })
-        .collect();
-
-    let entries_restored = filtered.len();
-    let entries_filtered = total_source.saturating_sub(entries_restored);
-
-    // Write filtered entries to the live store.
-    let dest_store = KnowledgeStore::for_workdir(workdir);
-    if let Some(parent) = dest_store.path().parent() {
-        std::fs::create_dir_all(parent)?;
+    for path in [&live.knowledge, &live.confirmations] {
+        if path.exists() {
+            ensure!(
+                path.is_file(),
+                "restore target is not a regular file: {}",
+                path.display()
+            );
+        }
+    }
+    let knowledge_populated = live
+        .knowledge
+        .metadata()
+        .map(|metadata| metadata.len() > 0)
+        .unwrap_or(false);
+    if !force && (knowledge_populated || live.confirmations.exists()) {
+        bail!(
+            "restore would modify existing neuro state at {}. Re-run with --force to proceed.",
+            parent_dir(&live.knowledge).display()
+        );
     }
 
-    // If force is not set and the live store exists, check before overwriting.
-    if dest_store.path().exists() && !force {
-        let existing = dest_store.read_all().unwrap_or_default();
-        if !existing.is_empty() {
-            bail!(
-                "restore would modify existing knowledge store at {}. Re-run with --force to proceed.",
-                dest_store.path().display()
+    let live_root = live
+        .knowledge
+        .parent()
+        .ok_or_else(|| anyhow!("resolve live neuro directory"))?;
+    let live_parent = parent_dir(live_root);
+    let staging_parent = nearest_existing_directory(live_parent)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".roko-neuro-restore-stage-")
+        .tempdir_in(&staging_parent)
+        .context("create restore staging directory")?;
+    let staged = neuro_snapshot_files(staging.path());
+    if live.knowledge.exists() {
+        let live_bytes = std::fs::read(&live.knowledge)
+            .with_context(|| format!("read live knowledge store {}", live.knowledge.display()))?;
+        roko_fs::atomic_write_bytes(&staged.knowledge, &live_bytes)
+            .context("seed staged knowledge store")?;
+    }
+
+    let staged_store = KnowledgeStore::new(staged.knowledge.clone());
+    let import_result = staged_store.import(
+        &snapshot.knowledge,
+        &ImportOptions {
+            confidence_discount: confidence_multiplier,
+            source_label: format!("restore:gen{generation}"),
+            kinds,
+            min_confidence,
+            allow_legacy,
+            ..Default::default()
+        },
+    )?;
+    if !staged.knowledge.exists() {
+        roko_fs::atomic_write_bytes(&staged.knowledge, b"")
+            .context("materialize empty staged knowledge store")?;
+    }
+    if let Some(bytes) = &confirmation_bytes {
+        roko_fs::atomic_write_bytes(&staged.confirmations, bytes)
+            .context("stage confirmation records")?;
+    }
+
+    if let Some(manifest) = &manifest {
+        ensure!(
+            manifest.entry_count == import_result.source_entries,
+            "backup manifest entry_count mismatch: manifest={}, knowledge={}",
+            manifest.entry_count,
+            import_result.source_entries
+        );
+        if manifest.version == NEURO_BACKUP_MANIFEST_VERSION {
+            ensure!(
+                !import_result.legacy_input,
+                "canonical backup manifest cannot contain legacy knowledge data"
             );
         }
     }
 
-    if !filtered.is_empty() {
-        dest_store.ingest(filtered)?;
-    }
-
-    // Copy confirmations if present.
-    let confirmations_present = if snapshot.confirmations.exists() {
-        sync_optional_neuro_file(
-            &snapshot.confirmations,
-            &live.confirmations,
-            force,
-            "restore",
-        )?
-    } else {
-        false
-    };
+    publish_staged_neuro_files(&staged, &live)?;
+    let confirmations_present = confirmation_bytes.is_some();
 
     Ok(NeuroTransferReport {
         live,
         snapshot,
         confirmations_present,
+        manifest: source.join(NEURO_BACKUP_MANIFEST_FILE),
         entries_exported: 0,
-        entries_restored,
-        entries_filtered,
+        entries_restored: import_result.imported,
+        entries_filtered: import_result.skipped_filter,
+        entries_skipped_dedup: import_result.skipped_dedup,
+        entries_skipped_contradiction: import_result.skipped_contradiction,
+        malformed_entries: import_result.malformed,
+        legacy_input: import_result.legacy_input || legacy_manifest,
     })
+}
+
+fn parse_knowledge_kinds(values: &[String]) -> Result<Vec<KnowledgeKind>> {
+    values
+        .iter()
+        .map(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "insight" | "fact" => Ok(KnowledgeKind::Insight),
+            "heuristic" | "procedure" => Ok(KnowledgeKind::Heuristic),
+            "anti_knowledge" | "antiknowledge" | "anti-knowledge" => {
+                Ok(KnowledgeKind::AntiKnowledge)
+            }
+            "warning" | "constraint" => Ok(KnowledgeKind::Warning),
+            "causal_link" | "causallink" | "causal-link" => Ok(KnowledgeKind::CausalLink),
+            "strategy_fragment" | "strategyfragment" | "strategy-fragment" | "playbook" => {
+                Ok(KnowledgeKind::StrategyFragment)
+            }
+            other => bail!("unknown knowledge type `{other}`"),
+        })
+        .collect()
+}
+
+fn print_import_result(
+    cli: &Cli,
+    input: &Path,
+    decay_factor: f64,
+    result: &ImportResult,
+) -> Result<()> {
+    if cli.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "input": input,
+                "decay_factor": decay_factor,
+                "result": result,
+            }))?
+        );
+    } else {
+        println!("Knowledge import from {}:", input.display());
+        println!("  entries imported: {}", result.imported);
+        println!("  entries skipped (dedup): {}", result.skipped_dedup);
+        println!(
+            "  entries skipped (contradiction): {}",
+            result.skipped_contradiction
+        );
+        println!("  entries filtered: {}", result.skipped_filter);
+        println!("  malformed entries: {}", result.malformed);
+        if result.legacy_input {
+            println!("  source format: explicit legacy migration");
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn neuro_live_files(workdir: &Path) -> NeuroFileSet {
@@ -1044,91 +1294,270 @@ pub(crate) fn neuro_snapshot_files(root: &Path) -> NeuroFileSet {
     }
 }
 
-pub(crate) fn sync_neuro_store_files(
-    source: &NeuroFileSet,
-    destination: &NeuroFileSet,
-    force: bool,
-    operation: &str,
-) -> Result<bool> {
-    let destination_root = destination
-        .knowledge
-        .parent()
-        .ok_or_else(|| anyhow!("resolve {operation} destination directory"))?;
-    ensure_neuro_directory(destination_root, operation)?;
-
-    copy_neuro_file(&source.knowledge, &destination.knowledge, force, operation)?;
-    sync_optional_neuro_file(
-        &source.confirmations,
-        &destination.confirmations,
-        force,
-        operation,
-    )
+fn neuro_artifact_digest(bytes: &[u8]) -> NeuroArtifactDigest {
+    let digest = Sha256::digest(bytes);
+    NeuroArtifactDigest {
+        bytes: bytes.len() as u64,
+        sha256: digest.iter().fold(String::new(), |mut output, byte| {
+            use std::fmt::Write;
+            let _ = write!(output, "{byte:02x}");
+            output
+        }),
+    }
 }
 
-pub(crate) fn ensure_neuro_directory(path: &Path, operation: &str) -> Result<()> {
-    if path.exists() && !path.is_dir() {
-        bail!(
-            "{operation} target must be a directory, found file at {}",
+fn read_neuro_backup_manifest(
+    source: &Path,
+    allow_legacy: bool,
+) -> Result<(Option<NeuroBackupManifest>, bool)> {
+    let path = source.join(NEURO_BACKUP_MANIFEST_FILE);
+    if !path.exists() {
+        ensure!(
+            allow_legacy,
+            "backup manifest not found at {}; use explicit --legacy-raw migration only for a trusted legacy backup",
             path.display()
         );
+        return Ok((None, true));
     }
-    std::fs::create_dir_all(path)
-        .with_context(|| format!("create {operation} directory {}", path.display()))?;
-    Ok(())
-}
-
-pub(crate) fn copy_neuro_file(
-    source: &Path,
-    destination: &Path,
-    force: bool,
-    operation: &str,
-) -> Result<()> {
-    if !source.exists() {
-        bail!("{operation} source file not found: {}", source.display());
-    }
-    if destination.exists() && !force {
-        bail!(
-            "{operation} would overwrite {}. Re-run with --force to replace it.",
-            destination.display()
-        );
-    }
-    std::fs::copy(source, destination).with_context(|| {
-        format!(
-            "{operation} {} -> {}",
-            source.display(),
-            destination.display()
-        )
-    })?;
-    Ok(())
-}
-
-pub(crate) fn sync_optional_neuro_file(
-    source: &Path,
-    destination: &Path,
-    force: bool,
-    operation: &str,
-) -> Result<bool> {
-    if source.exists() {
-        copy_neuro_file(source, destination, force, operation)?;
-        return Ok(true);
-    }
-
-    if destination.exists() {
-        if !force {
-            bail!(
-                "{operation} would leave stale optional file at {}. Re-run with --force to replace it.",
-                destination.display()
+    ensure!(
+        path.is_file(),
+        "backup manifest is not a file: {}",
+        path.display()
+    );
+    let bytes = std::fs::read(&path)
+        .with_context(|| format!("read backup manifest from {}", path.display()))?;
+    let manifest: NeuroBackupManifest = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse backup manifest from {}", path.display()))?;
+    match manifest.version {
+        NEURO_BACKUP_MANIFEST_VERSION => {
+            ensure!(
+                manifest.knowledge_format_version
+                    == roko_neuro::knowledge_store::KNOWLEDGE_BACKUP_VERSION,
+                "unsupported knowledge format version {} in backup manifest",
+                manifest.knowledge_format_version
             );
+            ensure!(
+                !manifest.source_path.trim().is_empty(),
+                "canonical backup manifest has an empty source path"
+            );
+            if let Some(limit) = manifest.top_n {
+                ensure!(
+                    manifest.entry_count <= limit,
+                    "backup manifest entry_count {} exceeds top_n {limit}",
+                    manifest.entry_count
+                );
+            }
+            Ok((Some(manifest), false))
         }
-        std::fs::remove_file(destination).with_context(|| {
+        1 if allow_legacy => Ok((Some(manifest), true)),
+        1 => bail!("legacy backup manifest version 1 requires explicit --legacy-raw migration"),
+        version => bail!(
+            "unsupported backup manifest version {version} (this build supports version {NEURO_BACKUP_MANIFEST_VERSION})"
+        ),
+    }
+}
+
+fn validate_confirmation_artifact(
+    manifest: Option<&NeuroBackupManifest>,
+    bytes: Option<&[u8]>,
+) -> Result<()> {
+    let Some(manifest) = manifest else {
+        return Ok(());
+    };
+    if manifest.version != NEURO_BACKUP_MANIFEST_VERSION {
+        return Ok(());
+    }
+    ensure!(
+        manifest.confirmations_present == bytes.is_some(),
+        "backup confirmation presence does not match manifest"
+    );
+    match (&manifest.confirmations, bytes) {
+        (Some(expected), Some(bytes)) => ensure!(
+            expected == &neuro_artifact_digest(bytes),
+            "backup confirmation integrity verification failed"
+        ),
+        (None, None) => {}
+        _ => bail!("backup confirmation digest does not match manifest presence"),
+    }
+    Ok(())
+}
+
+fn publish_staged_directory(staged: &Path, destination: &Path) -> Result<()> {
+    let parent = parent_dir(destination);
+    let rollback = tempfile::Builder::new()
+        .prefix(".roko-neuro-backup-rollback-")
+        .tempdir_in(parent)
+        .context("create backup rollback directory")?;
+    let previous = rollback.path().join("previous");
+    let had_previous = destination.exists();
+    if had_previous {
+        std::fs::rename(destination, &previous).with_context(|| {
             format!(
-                "{operation} remove stale optional file {}",
+                "stage existing backup directory {} for replacement",
                 destination.display()
             )
         })?;
     }
+    if let Err(error) = std::fs::rename(staged, destination) {
+        if had_previous {
+            let _ = std::fs::rename(&previous, destination);
+        }
+        return Err(error).with_context(|| {
+            format!(
+                "publish staged backup directory to {}",
+                destination.display()
+            )
+        });
+    }
+    if let Err(error) = sync_neuro_directory(parent) {
+        let _ = std::fs::remove_dir_all(destination);
+        if had_previous {
+            let _ = std::fs::rename(&previous, destination);
+        }
+        return Err(error).context("durably publish backup directory");
+    }
+    Ok(())
+}
 
-    Ok(false)
+fn publish_staged_neuro_files(staged: &NeuroFileSet, live: &NeuroFileSet) -> Result<()> {
+    let live_root = live
+        .knowledge
+        .parent()
+        .ok_or_else(|| anyhow!("resolve live neuro directory"))?;
+    std::fs::create_dir_all(live_root)
+        .with_context(|| format!("create live neuro directory {}", live_root.display()))?;
+    let rollback = tempfile::Builder::new()
+        .prefix(".restore-rollback-")
+        .tempdir_in(live_root)
+        .context("create restore rollback directory")?;
+    let old_knowledge = rollback.path().join(NEURO_KNOWLEDGE_FILE);
+    let old_confirmations = rollback.path().join(NEURO_CONFIRMATIONS_FILE);
+    let had_knowledge = live.knowledge.exists();
+    let had_confirmations = live.confirmations.exists();
+
+    if had_knowledge {
+        std::fs::rename(&live.knowledge, &old_knowledge)
+            .context("stage live knowledge store for transactional restore")?;
+    }
+    if had_confirmations
+        && let Err(error) = std::fs::rename(&live.confirmations, &old_confirmations)
+    {
+        if had_knowledge {
+            let _ = std::fs::rename(&old_knowledge, &live.knowledge);
+        }
+        return Err(error).context("stage live confirmations for transactional restore");
+    }
+
+    let publish_result = (|| -> Result<()> {
+        std::fs::rename(&staged.knowledge, &live.knowledge)
+            .context("publish restored knowledge store")?;
+        if staged.confirmations.exists() {
+            std::fs::rename(&staged.confirmations, &live.confirmations)
+                .context("publish restored confirmations")?;
+        }
+        sync_neuro_directory(live_root)?;
+        Ok(())
+    })();
+
+    if let Err(error) = publish_result {
+        let _ = std::fs::remove_file(&live.knowledge);
+        let _ = std::fs::remove_file(&live.confirmations);
+        if had_knowledge {
+            let _ = std::fs::rename(&old_knowledge, &live.knowledge);
+        }
+        if had_confirmations {
+            let _ = std::fs::rename(&old_confirmations, &live.confirmations);
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn reject_backup_alias(destination: &Path, live: &NeuroFileSet) -> Result<()> {
+    let destination = resolved_path(destination)?;
+    let live_knowledge = resolved_path(&live.knowledge)?;
+    ensure!(
+        !live_knowledge.starts_with(&destination),
+        "backup destination cannot equal or contain the live neuro store"
+    );
+    Ok(())
+}
+
+fn reject_restore_alias(source: &Path, live: &NeuroFileSet) -> Result<()> {
+    let source = resolved_path(source)?;
+    let live_root = live
+        .knowledge
+        .parent()
+        .ok_or_else(|| anyhow!("resolve live neuro directory"))?;
+    ensure!(
+        source != resolved_path(live_root)?,
+        "restore source cannot be the live neuro directory"
+    );
+    Ok(())
+}
+
+fn resolved_path(path: &Path) -> Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut cursor = absolute.as_path();
+    let mut suffix = Vec::new();
+    while !cursor.exists() {
+        let name = cursor
+            .file_name()
+            .ok_or_else(|| anyhow!("resolve path {}", path.display()))?;
+        suffix.push(name.to_os_string());
+        cursor = cursor
+            .parent()
+            .ok_or_else(|| anyhow!("resolve parent of {}", path.display()))?;
+    }
+    let mut resolved = std::fs::canonicalize(cursor)
+        .with_context(|| format!("resolve existing path ancestor {}", cursor.display()))?;
+    for component in suffix.into_iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}
+
+fn nearest_existing_directory(path: &Path) -> Result<PathBuf> {
+    let mut candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    while !candidate.exists() {
+        ensure!(
+            candidate.pop(),
+            "no existing ancestor found for {}",
+            path.display()
+        );
+    }
+    ensure!(
+        candidate.is_dir(),
+        "existing path ancestor is not a directory: {}",
+        candidate.display()
+    );
+    Ok(candidate)
+}
+
+fn parent_dir(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+#[cfg(unix)]
+fn sync_neuro_directory(path: &Path) -> Result<()> {
+    std::fs::File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .with_context(|| format!("sync directory {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_neuro_directory(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 pub(crate) const NEURO_KNOWLEDGE_FILE: &str = "knowledge.jsonl";

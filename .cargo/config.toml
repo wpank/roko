@@ -1,10 +1,6 @@
 # Roko cargo build optimizations
-# See tmp/DEV-WORKFLOW.md for context
-
-[build]
-# sccache: caches compiled artifacts. Massive win on rebuilds after cargo clean,
-# branch switching, or when deps haven't changed.
-rustc-wrapper = "/opt/homebrew/bin/sccache"
+# See tmp/DEV-WORKFLOW.md for context. Configure optional compiler caching in
+# the local `RUSTC_WRAPPER` environment; this checked config must stay portable.
 
 # Parallel frontend threads (nightly only, ignored on stable)
 # rustflags = ["-Z", "threads=8"]

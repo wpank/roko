@@ -1,5 +1,8 @@
 # Cross-Domain Orchestration
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Design source**: `refactoring-prd/02-five-layers.md` §Cross-Domain
 > Orchestration, `refactoring-prd/05-agent-types.md` §7 Multi-Agent
 > Orchestration

@@ -1,5 +1,8 @@
 # Vickrey Reputation-Adjusted Auction
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > In the Vickrey auction variant, bids are adjusted by agent reputation: `s_i = p_i × (1 + (1 - R_i))`. Higher-reputation agents can win with lower bids. Winner pays the second-highest adjusted score divided by their own adjustment factor. This makes truthful bidding incentive-compatible while rewarding reputation.
 
 

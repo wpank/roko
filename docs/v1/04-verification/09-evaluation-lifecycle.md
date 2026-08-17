@@ -1,5 +1,8 @@
 # 09 — Evaluation Lifecycle
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L3 Harness — Verification
 > **Crates**: `roko-gate`, `roko-learn`, `roko-conductor`
 > **Status**: Partial (fast loops wired, slow loops designed)

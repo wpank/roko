@@ -6,11 +6,13 @@
 
 mod agents;
 mod aggregator;
-mod auth;
+pub(crate) mod arenas;
+pub(crate) mod auth;
 mod bench;
 mod chain;
 pub(crate) mod config;
 mod connectors;
+mod defi;
 mod deployments;
 mod diagnosis;
 mod dream;
@@ -18,11 +20,13 @@ mod event_ingest;
 mod extensions;
 pub(crate) mod feeds;
 mod gateway;
+mod groups;
 mod heartbeats;
 mod integrations;
-mod isfr;
 mod jobs;
 mod learning;
+mod marketplace;
+pub(crate) mod meta;
 mod metrics;
 pub(crate) mod middleware;
 mod neuro;
@@ -30,7 +34,11 @@ mod plans;
 pub(crate) mod prds;
 mod projections;
 mod providers;
+mod rbac_middleware;
+mod recipes;
+pub(crate) mod registries;
 mod research;
+mod route_permissions;
 mod run;
 mod runs;
 mod secrets;
@@ -60,13 +68,12 @@ use std::sync::Arc;
 use super::state::AppState;
 use crate::adapters::SseAdapter;
 use crate::error::ApiError;
-use crate::rbac::Permission;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
-use axum::response::Response;
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use futures::stream::{self, Stream};
@@ -242,56 +249,43 @@ pub fn build_router(
     let cors = middleware::cors_layer(cors_origins, roko_config.server.unsafe_public_cors);
     let terminal_enabled = roko_config.serve.terminal_enabled;
 
-    // ── RBAC-gated route groups ────────────────────────────────────────
-    //
-    // Sensitive routes are wrapped with `require_permission` middleware so
-    // the RBAC permission model (Owner > Admin > Member > Viewer) is
-    // enforced on top of the existing scope-based auth.
-
-    // Plan execution + creation (Member+)
-    let plans_gated = plans::routes().layer(axum::middleware::from_fn(
-        middleware::require_permission(Permission::PlanExecute),
-    ));
-    let prds_gated = prds::routes().layer(axum::middleware::from_fn(
-        middleware::require_permission(Permission::PlanCreate),
-    ));
-
-    // Agent management (Member+)
-    let agents_gated = agents::routes().layer(axum::middleware::from_fn(
-        middleware::require_permission(Permission::AgentSpawn),
-    ));
-
-    // Config changes (Admin+)
-    let config_gated = config::routes().layer(axum::middleware::from_fn(
-        middleware::require_permission(Permission::ConfigEdit),
-    ));
-
-    // Secrets (Admin+)
-    let secrets_gated = secrets::routes().layer(axum::middleware::from_fn(
-        middleware::require_permission(Permission::SecretsWrite),
-    ));
-
-    // Team management (Owner only)
-    let team_gated = team::routes().layer(axum::middleware::from_fn(
-        middleware::require_permission(Permission::TeamManage),
-    ));
+    // Replay the durable arena event outbox before accepting new mutations.
+    // Publication is at-least-once: a crash after publish but before cursor
+    // persistence may duplicate an event, but can never silently lose it.
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        let arena_state = Arc::clone(&state);
+        runtime.spawn(async move {
+            if let Err(error) = arena_state
+                .arenas
+                .project_pending(arena_state.pulse_bus.as_ref())
+                .await
+            {
+                tracing::warn!(%error, "arena startup event replay remains pending");
+            }
+        });
+    }
 
     let api = Router::new()
         .merge(crate::openapi::routes())
         .merge(status::routes())
         .merge(jobs::routes())
         .merge(heartbeats::routes())
-        .merge(plans_gated)
-        .merge(prds_gated)
+        .merge(plans::routes())
+        .merge(prds::routes())
         .merge(run::routes())
         .merge(runs::routes())
         .merge(research::routes())
         .merge(subscriptions::routes())
         .merge(templates::routes())
         .merge(aggregator::routes())
-        .merge(agents_gated)
+        .merge(arenas::routes())
+        .merge(meta::routes())
+        .merge(agents::routes())
         .merge(learning::routes())
-        .merge(config_gated)
+        .merge(marketplace::routes())
+        .merge(defi::routes())
+        .merge(registries::routes())
+        .merge(config::routes())
         .merge(deployments::routes())
         .merge(diagnosis::routes())
         .merge(integrations::routes())
@@ -304,11 +298,13 @@ pub fn build_router(
         .merge(chain::routes())
         .merge(connectors::routes())
         .merge(feeds::routes())
-        .merge(isfr::routes())
+        .merge(recipes::routes())
+        .merge(groups::routes())
         .merge(auth::routes())
-        .merge(secrets_gated)
+        .merge(secrets::routes())
         .merge(vision_loop::routes())
-        .merge(team_gated)
+        .merge(team::routes())
+        .merge(team::join_routes())
         .merge(bench::routes())
         .merge(swe_bench::routes())
         .merge(triggers::routes())
@@ -326,6 +322,10 @@ pub fn build_router(
     let api = if api_auth.enabled {
         api.layer(axum::middleware::from_fn_with_state(
             Arc::clone(&state),
+            rbac_middleware::require_route_permission,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
             middleware::require_scope,
         ))
         .layer(axum::middleware::from_fn_with_state(
@@ -335,6 +335,10 @@ pub fn build_router(
     } else {
         api
     };
+
+    // Install the API fallback before nesting. An outer fallback can observe a
+    // prefix-stripped URI after `/api` routing and accidentally serve the SPA.
+    let api = api.fallback(api_not_found);
 
     // Secret-scrubbing layer: redacts API keys / tokens from JSON responses.
     let scrubber = Arc::clone(&state.scrubber);
@@ -346,6 +350,10 @@ pub fn build_router(
     // Terminal routes always require auth + scope when enabled, even on loopback.
     let terminal = if terminal_enabled {
         crate::terminal::routes()
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                rbac_middleware::require_route_permission,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 Arc::clone(&state),
                 middleware::require_scope,
@@ -371,6 +379,10 @@ pub fn build_router(
         relay_proxy::routes()
             .layer(axum::middleware::from_fn_with_state(
                 Arc::clone(&state),
+                rbac_middleware::require_route_permission,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
                 middleware::require_scope,
             ))
             .layer(axum::middleware::from_fn_with_state(
@@ -389,6 +401,7 @@ pub fn build_router(
         // Standard Prometheus scrape endpoint — no auth, no /api prefix.
         .route("/metrics", get(metrics::metrics_handler))
         .merge(webhooks::public_routes())
+        .merge(triggers::public_routes())
         // Public share-receipt reader: no auth required so recipients can
         // open share links without a roko API key.
         .merge(shared_runs::public_routes())
@@ -397,8 +410,8 @@ pub fn build_router(
         .nest("/api", api)
         .merge(ws)
         .merge(relay)
-        // SPA fallback — serves embedded React app for all unmatched routes
-        .fallback(crate::embedded::serve_embedded);
+        // API/WS typos are JSON 404s; browser routes retain the SPA fallback.
+        .fallback(crate::serve_api_or_spa_fallback);
 
     let rate_limiter = build_global_rate_limiter(DEFAULT_GLOBAL_RATE_PER_SEC);
     let keyed_limiter = build_keyed_rate_limiter(DEFAULT_PER_KEY_RATE_PER_SEC);
@@ -418,6 +431,18 @@ pub fn build_router(
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state)
+}
+
+async fn api_not_found(req: Request) -> Response {
+    let path = req.uri().path().to_string();
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "error": "not_found",
+            "message": format!("No API route matches {path}"),
+        })),
+    )
+        .into_response()
 }
 
 /// `GET /health` — bare liveness probe for load balancers and external tools.
@@ -511,7 +536,7 @@ mod tests {
     use super::*;
 
     use axum::body::Body;
-    use axum::http::{Request, StatusCode};
+    use axum::http::{Method, Request, StatusCode};
     use http_body_util::BodyExt as _;
     use roko_core::config::{RokoConfig, ServeAuthConfig};
     use serde_json::Value;
@@ -544,6 +569,24 @@ mod tests {
         (dir, router)
     }
 
+    fn build_test_router_at(
+        workdir: &std::path::Path,
+        config: RokoConfig,
+    ) -> (Arc<AppState>, axum::Router) {
+        let deploy = Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+        let state = Arc::new(
+            AppState::new(
+                workdir.to_path_buf(),
+                Arc::new(NoOpRuntime),
+                config.clone(),
+                deploy,
+            )
+            .expect("AppState::new"),
+        );
+        let router = build_router(Arc::clone(&state), &[], config.serve.auth.clone());
+        (state, router)
+    }
+
     async fn get_json(router: &axum::Router, uri: &str) -> (StatusCode, Value) {
         let req = Request::builder()
             .uri(uri)
@@ -559,6 +602,66 @@ mod tests {
             .to_bytes();
         let json: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
         (status, json)
+    }
+
+    async fn authenticated_json(
+        router: &axum::Router,
+        method: Method,
+        uri: &str,
+        api_key: &str,
+        body: Value,
+    ) -> (StatusCode, Value) {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("X-Api-Key", api_key)
+            .header("Content-Type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("build authenticated JSON request");
+        let response = router.clone().oneshot(request).await.expect("response");
+        let status = response.status();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect response")
+            .to_bytes();
+        let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, body)
+    }
+
+    fn meta_root_request(name: &str) -> Value {
+        let manifest = roko_agent::lifecycle::AgentExtendedManifest::new(
+            roko_agent::lifecycle::AgentCoreManifest::new(format!("bounded meta-agent {name}")),
+        );
+        let expires_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("test clock")
+            .as_secs()
+            .saturating_add(3_600);
+        serde_json::json!({
+            "name": name,
+            "manifest": serde_json::to_value(manifest).expect("manifest JSON"),
+            "role": "implementer",
+            "grant": {
+                "tools": {
+                    "read": true,
+                    "write": true,
+                    "exec": true,
+                    "git": false,
+                    "network": false
+                },
+                "data_scopes": [],
+                "network_hosts": [],
+                "max_cost_usd": 1.0,
+                "expires_at": expires_at,
+                "spawn": {
+                    "remaining_depth": 2,
+                    "max_children": 4,
+                    "max_retries": 2
+                }
+            }
+        })
     }
 
     #[tokio::test]
@@ -582,9 +685,11 @@ mod tests {
             api_key: "health-secret".into(),
             api_keys: Vec::new(),
             privy_app_id: None,
+            jwks_providers: Vec::new(),
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
             enforcement_mode: Default::default(),
+            invite_expiry_days: 7,
         };
 
         let (_dir, app) = build_test_router(config);
@@ -616,6 +721,1089 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn marketplace_mutations_deny_a_read_only_workspace_key() {
+        let plaintext = "marketplace-viewer";
+        let mut config = RokoConfig::default();
+        config.serve.auth.enabled = true;
+        config.serve.auth.api_keys = vec![roko_core::config::ApiKeyEntry {
+            name: "marketplace-viewer".into(),
+            key_hash: middleware::hash_api_key(plaintext),
+            scope: "read".into(),
+            created_at: "2026-08-16T00:00:00Z".into(),
+            expires_at: None,
+            last_used_at: None,
+            previous_key_hashes: Vec::new(),
+        }];
+        let (_dir, app) = build_test_router(config);
+
+        let read = Request::builder()
+            .uri("/api/marketplace/browse")
+            .header("X-Api-Key", plaintext)
+            .body(Body::empty())
+            .expect("build marketplace read");
+        assert_eq!(
+            app.clone()
+                .oneshot(read)
+                .await
+                .expect("read response")
+                .status(),
+            StatusCode::OK
+        );
+
+        for uri in ["/api/marketplace/publish", "/api/marketplace/fork"] {
+            let mutation = Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("X-Api-Key", plaintext)
+                .body(Body::empty())
+                .expect("build marketplace mutation");
+            let response = app
+                .clone()
+                .oneshot(mutation)
+                .await
+                .expect("mutation response");
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "POST {uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn registry_lifecycle_is_authenticated_admin_only_and_queryable() {
+        let viewer = "registry-viewer";
+        let writer = "registry-writer";
+        let admin = "registry-admin";
+        let mut config = RokoConfig::default();
+        config.serve.auth.enabled = true;
+        config.serve.auth.api_keys = vec![
+            roko_core::config::ApiKeyEntry {
+                name: "registry-viewer".into(),
+                key_hash: middleware::hash_api_key(viewer),
+                scope: "read".into(),
+                created_at: "2026-08-16T00:00:00Z".into(),
+                expires_at: None,
+                last_used_at: None,
+                previous_key_hashes: Vec::new(),
+            },
+            roko_core::config::ApiKeyEntry {
+                name: "registry-writer".into(),
+                key_hash: middleware::hash_api_key(writer),
+                scope: "write".into(),
+                created_at: "2026-08-16T00:00:00Z".into(),
+                expires_at: None,
+                last_used_at: None,
+                previous_key_hashes: Vec::new(),
+            },
+            roko_core::config::ApiKeyEntry {
+                name: "registry-admin".into(),
+                key_hash: middleware::hash_api_key(admin),
+                scope: "admin".into(),
+                created_at: "2026-08-16T00:00:00Z".into(),
+                expires_at: None,
+                last_used_at: None,
+                previous_key_hashes: Vec::new(),
+            },
+        ];
+        let (_dir, app) = build_test_router(config);
+
+        let unauthenticated = Request::builder()
+            .uri("/api/registries/passports")
+            .body(Body::empty())
+            .expect("build unauthenticated registry request");
+        assert_eq!(
+            app.clone()
+                .oneshot(unauthenticated)
+                .await
+                .expect("unauthenticated response")
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        let read = Request::builder()
+            .uri("/api/registries/passports")
+            .header("X-Api-Key", viewer)
+            .body(Body::empty())
+            .expect("build registry read");
+        assert_eq!(
+            app.clone()
+                .oneshot(read)
+                .await
+                .expect("read response")
+                .status(),
+            StatusCode::OK
+        );
+
+        let payload = serde_json::json!({
+            "owner": "did:key:operator",
+            "capabilities": ["knowledge"],
+            "system_prompt_hash": "11".repeat(32),
+            "initial_stake": 0,
+        });
+        let denied = Request::builder()
+            .method("POST")
+            .uri("/api/registries/passports")
+            .header("X-Api-Key", viewer)
+            .header("Content-Type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .expect("build denied registry mutation");
+        assert_eq!(
+            app.clone()
+                .oneshot(denied)
+                .await
+                .expect("denied response")
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+
+        for (method, uri) in [
+            (Method::POST, "/api/registries/passports/1/transfer"),
+            (Method::PUT, "/api/registries/passports/1/metadata"),
+            (Method::POST, "/api/registries/passports/1/delegations"),
+            (
+                Method::DELETE,
+                "/api/registries/passports/1/delegations/2?owner=test",
+            ),
+            (Method::POST, "/api/registries/knowledge"),
+            (Method::POST, "/api/registries/knowledge/abc/validate"),
+            (Method::POST, "/api/registries/knowledge/abc/challenge"),
+            (
+                Method::POST,
+                "/api/registries/knowledge/challenges/abc/resolve",
+            ),
+            (Method::POST, "/api/registries/indexer/sync"),
+            (Method::POST, "/api/registries/indexer/rebuild"),
+        ] {
+            let denied = Request::builder()
+                .method(method.clone())
+                .uri(uri)
+                .header("X-Api-Key", viewer)
+                .header("Content-Type", "application/json")
+                .body(Body::from("{}"))
+                .expect("build denied registry mutation");
+            assert_eq!(
+                app.clone()
+                    .oneshot(denied)
+                    .await
+                    .expect("denied response")
+                    .status(),
+                StatusCode::FORBIDDEN,
+                "{method} {uri}"
+            );
+        }
+
+        let writer_denied = Request::builder()
+            .method(Method::POST)
+            .uri("/api/registries/indexer/rebuild")
+            .header("X-Api-Key", writer)
+            .body(Body::empty())
+            .expect("build write-scoped registry mutation");
+        assert_eq!(
+            app.clone()
+                .oneshot(writer_denied)
+                .await
+                .expect("write-scoped response")
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+
+        let created = Request::builder()
+            .method("POST")
+            .uri("/api/registries/passports")
+            .header("X-Api-Key", admin)
+            .header("Content-Type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .expect("build admin registry mutation");
+        assert_eq!(
+            app.clone()
+                .oneshot(created)
+                .await
+                .expect("created response")
+                .status(),
+            StatusCode::CREATED
+        );
+
+        let detail = Request::builder()
+            .uri("/api/registries/passports/1")
+            .header("X-Api-Key", viewer)
+            .body(Body::empty())
+            .expect("build registry detail read");
+        let response = app.clone().oneshot(detail).await.expect("detail response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect registry detail")
+            .to_bytes();
+        let body: Value = serde_json::from_slice(&body).expect("registry detail JSON");
+        assert_eq!(body["passport"]["owner"], "did:key:operator");
+
+        for owner in ["did:key:validator", "did:key:challenger"] {
+            let (status, _) = authenticated_json(
+                &app,
+                Method::POST,
+                "/api/registries/passports",
+                admin,
+                serde_json::json!({
+                    "owner": owner,
+                    "capabilities": ["knowledge"],
+                    "system_prompt_hash": "12".repeat(32),
+                    "initial_stake": 0,
+                }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED);
+        }
+
+        let (status, _) = authenticated_json(
+            &app,
+            Method::POST,
+            "/api/registries/passports/1/transfer",
+            admin,
+            serde_json::json!({
+                "from": "did:key:operator",
+                "to": "did:key:new-owner",
+                "block": 7,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _) = authenticated_json(
+            &app,
+            Method::PUT,
+            "/api/registries/passports/1/metadata",
+            admin,
+            serde_json::json!({
+                "owner": "did:key:new-owner",
+                "service_endpoints": ["https://agent.example"],
+                "feeds": ["feed://knowledge"],
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _) = authenticated_json(
+            &app,
+            Method::POST,
+            "/api/registries/passports/1/delegations",
+            admin,
+            serde_json::json!({
+                "owner": "did:key:new-owner",
+                "delegatee": 2,
+                "capabilities": ["knowledge"],
+                "expiry_block": 100,
+                "current_block": 7,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, knowledge) = authenticated_json(
+            &app,
+            Method::POST,
+            "/api/registries/knowledge",
+            admin,
+            serde_json::json!({
+                "publisher_id": 1,
+                "content_hash": "22".repeat(32),
+                "tags": ["defi"],
+                "published_at": 10,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let entry_id = knowledge["entry_id"].as_str().expect("published entry id");
+
+        let (status, _) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/registries/knowledge/{entry_id}/validate"),
+            admin,
+            serde_json::json!({ "validator_id": 2 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, challenge) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/registries/knowledge/{entry_id}/challenge"),
+            admin,
+            serde_json::json!({
+                "challenger_id": 3,
+                "evidence_hash": "33".repeat(32),
+                "reason": "counter-evidence",
+                "resolution_deadline": 100,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let challenge_id = challenge["challenge_id"].as_str().expect("challenge id");
+
+        let (status, _) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/registries/knowledge/challenges/{challenge_id}/resolve"),
+            admin,
+            serde_json::json!({ "upheld": false }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _) = authenticated_json(
+            &app,
+            Method::DELETE,
+            "/api/registries/passports/1/delegations/2?owner=did:key:new-owner",
+            admin,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let history = Request::builder()
+            .uri("/api/registries/passports/1/history")
+            .header("X-Api-Key", viewer)
+            .body(Body::empty())
+            .expect("build history request");
+        let response = app.oneshot(history).await.expect("history response");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn arena_service_is_authenticated_classified_and_live() {
+        let mut config = RokoConfig::default();
+        config.serve.auth.enabled = true;
+        config.serve.auth.api_key = "arena-admin".into();
+        let (_dir, app) = build_test_router(config);
+
+        let (status, body) = get_json(&app, "/api/arenas").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["code"], "unauthorized");
+
+        let request = Request::builder()
+            .uri("/api/arenas")
+            .header("X-Api-Key", "arena-admin")
+            .body(Body::empty())
+            .expect("build arena request");
+        let response = app.clone().oneshot(request).await.expect("oneshot");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/arenas/demo/attempts")
+            .header("X-Api-Key", "arena-admin")
+            .body(Body::empty())
+            .expect("build arena attempt request");
+        let response = app.oneshot(request).await.expect("oneshot");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let body: Value = serde_json::from_slice(&body).expect("JSON body");
+        assert_eq!(body["code"], "invalid_json");
+    }
+
+    #[tokio::test]
+    async fn arena_mutations_fail_closed_when_serve_auth_is_disabled() {
+        let mut config = RokoConfig::default();
+        config.serve.auth.enabled = false;
+        let (_dir, app) = build_test_router(config);
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/arenas")
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "name": "unauthorized",
+                    "category": "coding",
+                    "task_source": "static",
+                    "scoring": { "binary": "test_suite_pass" },
+                    "aggregation": "median",
+                    "ground_truth": "test_suite",
+                })
+                .to_string(),
+            ))
+            .expect("build unauthenticated arena mutation");
+        let response = app.oneshot(request).await.expect("arena response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn arena_mutation_denies_a_read_only_workspace_key() {
+        let plaintext = "arena-viewer";
+        let mut config = RokoConfig::default();
+        config.serve.auth.enabled = true;
+        config.serve.auth.api_keys = vec![roko_core::config::ApiKeyEntry {
+            name: "arena-viewer".into(),
+            key_hash: middleware::hash_api_key(plaintext),
+            scope: "read".into(),
+            created_at: "2026-08-16T00:00:00Z".into(),
+            expires_at: None,
+            last_used_at: None,
+            previous_key_hashes: Vec::new(),
+        }];
+        let (_dir, app) = build_test_router(config);
+
+        let read = Request::builder()
+            .uri("/api/arenas")
+            .header("X-Api-Key", plaintext)
+            .body(Body::empty())
+            .expect("build arena read");
+        assert_eq!(
+            app.clone()
+                .oneshot(read)
+                .await
+                .expect("read response")
+                .status(),
+            StatusCode::OK
+        );
+
+        let mutation = Request::builder()
+            .method("POST")
+            .uri("/api/arenas/demo/attempts")
+            .header("X-Api-Key", plaintext)
+            .body(Body::empty())
+            .expect("build arena mutation");
+        let response = app.oneshot(mutation).await.expect("mutation response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect denial")
+            .to_bytes();
+        let body: Value = serde_json::from_slice(&body).expect("JSON denial");
+        assert_eq!(body["code"], "insufficient_scope");
+    }
+
+    #[tokio::test]
+    async fn arena_owner_and_admin_settle_external_evidence_and_project_events() {
+        let owner = "arena-owner-key";
+        let participant = "arena-participant-key";
+        let admin = "arena-admin-key";
+        let reader = "arena-reader-key";
+        let mut config = RokoConfig::default();
+        config.serve.auth.enabled = true;
+        config.serve.auth.api_keys = [
+            ("arena-owner", owner, "write"),
+            ("arena-participant", participant, "write"),
+            ("arena-admin", admin, "admin"),
+            ("arena-reader", reader, "read"),
+        ]
+        .into_iter()
+        .map(|(name, key, scope)| roko_core::config::ApiKeyEntry {
+            name: name.to_string(),
+            key_hash: middleware::hash_api_key(key),
+            scope: scope.to_string(),
+            created_at: "2026-08-16T00:00:00Z".into(),
+            expires_at: None,
+            last_used_at: None,
+            previous_key_hashes: Vec::new(),
+        })
+        .collect();
+        let dir = tempdir().expect("tempdir");
+        let (state, app) = build_test_router_at(dir.path(), config);
+
+        let (status, created) = authenticated_json(
+            &app,
+            Method::POST,
+            "/api/arenas",
+            owner,
+            serde_json::json!({
+                "name": "external scoring arena",
+                "category": "coding",
+                "task_source": "static",
+                "scoring": { "binary": "test_suite_pass" },
+                "aggregation": "median",
+                "max_attempts_per_agent": 2,
+                "cooldown_blocks": 0,
+                "ground_truth": "test_suite",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let arena_id = created["arena_id"].as_str().expect("arena id");
+
+        let (status, denial) = authenticated_json(
+            &app,
+            Method::PATCH,
+            &format!("/api/arenas/{arena_id}"),
+            participant,
+            serde_json::json!({ "action": "activate" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(denial["code"], "forbidden");
+
+        let (status, _) = authenticated_json(
+            &app,
+            Method::PATCH,
+            &format!("/api/arenas/{arena_id}"),
+            owner,
+            serde_json::json!({ "action": "activate" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/arenas/{arena_id}/attempts"),
+            participant,
+            serde_json::json!({
+                "agent_identity_id": 22,
+                "task_hash": "22".repeat(32),
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (status, started) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/arenas/{arena_id}/attempts"),
+            participant,
+            serde_json::json!({ "task_hash": "22".repeat(32) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let attempt_id = started["attempt_id"].as_str().expect("attempt id");
+
+        let (status, _) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/arenas/{arena_id}/attempts/{attempt_id}/submit"),
+            participant,
+            serde_json::json!({ "output_hash": "33".repeat(32) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let settlement = serde_json::json!({
+            "source": "test_suite",
+            "evidence_hash": "44".repeat(32),
+            "subject_output_hash": "33".repeat(32),
+            "settlement": {
+                "outcome": "completed",
+                "score": 0.8,
+                "gate_verdicts": [true]
+            }
+        });
+        let (status, _) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/arenas/{arena_id}/attempts/{attempt_id}/settle"),
+            participant,
+            settlement.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let mut wrong_subject = settlement.clone();
+        wrong_subject["subject_output_hash"] = serde_json::json!("55".repeat(32));
+        let (status, _) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/arenas/{arena_id}/attempts/{attempt_id}/settle"),
+            admin,
+            wrong_subject,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let mut wrong_source = settlement.clone();
+        wrong_source["source"] = serde_json::json!({ "external_oracle": "wrong" });
+        let (status, _) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/arenas/{arena_id}/attempts/{attempt_id}/settle"),
+            admin,
+            wrong_source,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let (status, settled) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/arenas/{arena_id}/attempts/{attempt_id}/settle"),
+            admin,
+            settlement,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(settled["attempt"]["state"], "completed");
+        assert_eq!(settled["attempt"]["score"], 0.8);
+
+        let request = Request::builder()
+            .uri(format!("/api/arenas/{arena_id}/leaderboard"))
+            .header("X-Api-Key", reader)
+            .body(Body::empty())
+            .expect("build leaderboard request");
+        let response = app.oneshot(request).await.expect("leaderboard response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let pulses = state.pulse_bus.replay_from(
+            0,
+            Some(&roko_core::TopicFilter::Prefix("arena.".to_string())),
+        );
+        assert!(
+            pulses
+                .iter()
+                .any(|pulse| pulse.topic.0.as_str() == "arena.attempt_completed")
+        );
+    }
+
+    #[tokio::test]
+    async fn meta_mutations_fail_closed_when_serve_auth_is_disabled() {
+        let mut config = RokoConfig::default();
+        config.serve.auth.enabled = false;
+        let (_dir, app) = build_test_router(config);
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/meta/agents")
+            .header("Content-Type", "application/json")
+            .body(Body::from(meta_root_request("unauthenticated").to_string()))
+            .expect("build unauthenticated meta proposal");
+        let response = app.oneshot(request).await.expect("meta response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn meta_activation_is_owned_arena_bound_single_use_and_fail_closed() {
+        let owner = "meta-owner-key";
+        let scorer = "meta-scorer-key";
+        let intruder = "meta-intruder-key";
+        let reader = "meta-reader-key";
+        let mut config = RokoConfig::default();
+        config.serve.auth.enabled = true;
+        config.serve.auth.api_keys = [
+            ("meta-owner", owner, "admin"),
+            ("meta-scorer", scorer, "admin"),
+            ("meta-intruder", intruder, "agent:write"),
+            ("meta-reader", reader, "read"),
+        ]
+        .into_iter()
+        .map(|(name, key, scope)| roko_core::config::ApiKeyEntry {
+            name: name.to_string(),
+            key_hash: middleware::hash_api_key(key),
+            scope: scope.to_string(),
+            created_at: "2026-08-16T00:00:00Z".into(),
+            expires_at: None,
+            last_used_at: None,
+            previous_key_hashes: Vec::new(),
+        })
+        .collect();
+        let dir = tempdir().expect("tempdir");
+        let (_state, app) = build_test_router_at(dir.path(), config.clone());
+
+        let (status, denial) = authenticated_json(
+            &app,
+            Method::POST,
+            "/api/meta/agents",
+            reader,
+            meta_root_request("read-only"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(denial["code"], "insufficient_scope");
+
+        let (status, denial) = authenticated_json(
+            &app,
+            Method::POST,
+            "/api/meta/agents",
+            intruder,
+            meta_root_request("non-admin-root"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(denial["code"], "forbidden");
+
+        let (status, proposal) = authenticated_json(
+            &app,
+            Method::POST,
+            "/api/meta/agents",
+            owner,
+            meta_root_request("accepted"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{proposal}");
+        let proposal_id = proposal["id"].as_str().expect("proposal id");
+        let artifact_hash = proposal["activation_artifact_hash"]
+            .as_str()
+            .expect("artifact hash");
+
+        let request = Request::builder()
+            .uri(format!("/api/meta/agents/{proposal_id}"))
+            .header("X-Api-Key", intruder)
+            .body(Body::empty())
+            .expect("build foreign meta read");
+        let response = app.clone().oneshot(request).await.expect("foreign read");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let (status, arena) = authenticated_json(
+            &app,
+            Method::POST,
+            "/api/arenas",
+            owner,
+            serde_json::json!({
+                "name": "meta activation arena",
+                "category": "coding",
+                "task_source": "static",
+                "scoring": { "binary": "test_suite_pass" },
+                "aggregation": "median",
+                "max_attempts_per_agent": 8,
+                "cooldown_blocks": 0,
+                "ground_truth": "test_suite"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{arena}");
+        let arena_id = arena["arena_id"].as_str().expect("arena id");
+        let (status, _) = authenticated_json(
+            &app,
+            Method::PATCH,
+            &format!("/api/arenas/{arena_id}"),
+            owner,
+            serde_json::json!({ "action": "activate" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, attempt) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/arenas/{arena_id}/attempts"),
+            owner,
+            serde_json::json!({ "task_hash": "21".repeat(32) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{attempt}");
+        let attempt_id = attempt["attempt_id"].as_str().expect("attempt id");
+        let (status, _) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/arenas/{arena_id}/attempts/{attempt_id}/submit"),
+            owner,
+            serde_json::json!({ "output_hash": artifact_hash }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let evidence_hash = "44".repeat(32);
+        let (status, settled) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/arenas/{arena_id}/attempts/{attempt_id}/settle"),
+            scorer,
+            serde_json::json!({
+                "source": "test_suite",
+                "evidence_hash": evidence_hash,
+                "subject_output_hash": artifact_hash,
+                "settlement": {
+                    "outcome": "completed",
+                    "score": 1.0,
+                    "gate_verdicts": [true]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{settled}");
+
+        let validation = serde_json::json!({
+            "arena_id": arena_id,
+            "attempt_id": attempt_id,
+            "evidence_hash": "44".repeat(32)
+        });
+        let (status, active) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/meta/agents/{proposal_id}/validate"),
+            owner,
+            validation.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{active}");
+        assert_eq!(active["state"], "active");
+        assert_eq!(
+            active["acceptance_evidence"]["subject_output_hash"]
+                .as_array()
+                .expect("bound output hash")
+                .len(),
+            32
+        );
+        assert_eq!(
+            active["safety_evidence"]["decision"]["verdicts"]
+                .as_array()
+                .expect("five-head verdicts")
+                .len(),
+            5
+        );
+
+        // A completed activation cannot replay the validation route/evidence.
+        let (status, replay) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/meta/agents/{proposal_id}/validate"),
+            owner,
+            validation,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{replay}");
+
+        let (status, morphed) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/meta/agents/{proposal_id}/morph"),
+            owner,
+            serde_json::json!({ "role": "auditor" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{morphed}");
+        assert_eq!(morphed["role"], "auditor");
+        assert_eq!(morphed["previous_role"], "implementer");
+        assert_eq!(morphed["grant"]["tools"]["write"], false);
+        assert_eq!(morphed["grant"]["tools"]["exec"], false);
+
+        let (status, rolled_back) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/meta/agents/{proposal_id}/morph/rollback"),
+            owner,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{rolled_back}");
+        assert_eq!(rolled_back["role"], "implementer");
+        assert_eq!(rolled_back["grant"], rolled_back["activation_grant"]);
+
+        let (status, deactivated) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/meta/agents/{proposal_id}/deactivate"),
+            owner,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{deactivated}");
+        assert_eq!(deactivated["state"], "deactivated");
+
+        let (status, missing) = authenticated_json(
+            &app,
+            Method::POST,
+            "/api/meta/agents",
+            owner,
+            meta_root_request("missing-arena"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{missing}");
+        let missing_id = missing["id"].as_str().expect("missing proposal id");
+        let (status, rejected) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/meta/agents/{missing_id}/validate"),
+            owner,
+            serde_json::json!({
+                "arena_id": "51".repeat(32),
+                "attempt_id": "52".repeat(32),
+                "evidence_hash": "53".repeat(32)
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{rejected}");
+        assert_eq!(rejected["state"], "rejected");
+
+        let (status, failed) = authenticated_json(
+            &app,
+            Method::POST,
+            "/api/meta/agents",
+            owner,
+            meta_root_request("failed-gates"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{failed}");
+        let failed_id = failed["id"].as_str().expect("failed proposal id");
+        let failed_artifact = failed["activation_artifact_hash"]
+            .as_str()
+            .expect("failed artifact");
+        let (status, failed_attempt) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/arenas/{arena_id}/attempts"),
+            owner,
+            serde_json::json!({ "task_hash": "61".repeat(32) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{failed_attempt}");
+        let failed_attempt_id = failed_attempt["attempt_id"]
+            .as_str()
+            .expect("failed attempt id");
+        let (status, _) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/arenas/{arena_id}/attempts/{failed_attempt_id}/submit"),
+            owner,
+            serde_json::json!({ "output_hash": failed_artifact }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/arenas/{arena_id}/attempts/{failed_attempt_id}/settle"),
+            scorer,
+            serde_json::json!({
+                "source": "test_suite",
+                "evidence_hash": "64".repeat(32),
+                "subject_output_hash": failed_artifact,
+                "settlement": {
+                    "outcome": "completed",
+                    "score": 1.0,
+                    "gate_verdicts": [false]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, rejected) = authenticated_json(
+            &app,
+            Method::POST,
+            &format!("/api/meta/agents/{failed_id}/validate"),
+            owner,
+            serde_json::json!({
+                "arena_id": arena_id,
+                "attempt_id": failed_attempt_id,
+                "evidence_hash": "64".repeat(32)
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{rejected}");
+        assert_eq!(rejected["state"], "rejected");
+
+        let (_restarted_state, restarted) = build_test_router_at(dir.path(), config);
+        let request = Request::builder()
+            .uri(format!("/api/meta/agents/{proposal_id}"))
+            .header("X-Api-Key", owner)
+            .body(Body::empty())
+            .expect("build restarted meta read");
+        let response = restarted.oneshot(request).await.expect("restarted read");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect restarted meta")
+            .to_bytes();
+        let body: Value = serde_json::from_slice(&body).expect("restarted meta JSON");
+        assert_eq!(body["state"], "deactivated");
+    }
+
+    #[tokio::test]
+    async fn defi_stubs_are_authenticated_classified_and_explicit() {
+        let mut config = RokoConfig::default();
+        config.serve.auth.enabled = true;
+        config.serve.auth.api_key = "defi-admin".into();
+        let (_dir, app) = build_test_router(config);
+
+        let (status, body) = get_json(&app, "/api/defi/instruments").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["code"], "unauthorized");
+
+        let routes = [
+            ("GET", "/api/defi/instruments"),
+            ("POST", "/api/defi/bonds"),
+            ("GET", "/api/defi/bonds/bond-1"),
+            ("POST", "/api/defi/options/price"),
+            ("POST", "/api/defi/insurance"),
+            ("POST", "/api/defi/insurance/policy-1/claims"),
+            ("GET", "/api/defi/indices"),
+            ("GET", "/api/defi/risk/portfolio"),
+        ];
+        for (method, uri) in routes {
+            let request = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("X-Api-Key", "defi-admin")
+                .body(Body::empty())
+                .expect("build DeFi stub request");
+            let response = app.clone().oneshot(request).await.expect("oneshot");
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_IMPLEMENTED,
+                "{method} {uri}"
+            );
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .expect("collect DeFi stub body")
+                .to_bytes();
+            let body: Value = serde_json::from_slice(&body).expect("JSON body");
+            assert_eq!(body["status"], "not_implemented");
+            assert_eq!(body["message"], "DeFi product endpoints are Phase 2");
+        }
+    }
+
+    #[tokio::test]
+    async fn defi_mutation_denies_a_read_only_workspace_key() {
+        let plaintext = "defi-viewer";
+        let mut config = RokoConfig::default();
+        config.serve.auth.enabled = true;
+        config.serve.auth.api_keys = vec![roko_core::config::ApiKeyEntry {
+            name: "defi-viewer".into(),
+            key_hash: middleware::hash_api_key(plaintext),
+            scope: "read".into(),
+            created_at: "2026-08-16T00:00:00Z".into(),
+            expires_at: None,
+            last_used_at: None,
+            previous_key_hashes: Vec::new(),
+        }];
+        let (_dir, app) = build_test_router(config);
+
+        let read = Request::builder()
+            .uri("/api/defi/instruments")
+            .header("X-Api-Key", plaintext)
+            .body(Body::empty())
+            .expect("build DeFi read");
+        assert_eq!(
+            app.clone()
+                .oneshot(read)
+                .await
+                .expect("read response")
+                .status(),
+            StatusCode::NOT_IMPLEMENTED
+        );
+
+        for uri in [
+            "/api/defi/bonds",
+            "/api/defi/options/price",
+            "/api/defi/insurance",
+            "/api/defi/insurance/policy-1/claims",
+        ] {
+            let mutation = Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("X-Api-Key", plaintext)
+                .body(Body::empty())
+                .expect("build DeFi mutation");
+            let response = app
+                .clone()
+                .oneshot(mutation)
+                .await
+                .expect("mutation response");
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "POST {uri}");
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .expect("collect denial")
+                .to_bytes();
+            let body: Value = serde_json::from_slice(&body).expect("JSON denial");
+            assert_eq!(body["code"], "insufficient_scope");
+        }
+    }
+
+    #[tokio::test]
     async fn terminal_routes_require_auth_even_on_loopback() {
         let mut config = RokoConfig::default();
         config.serve.terminal_enabled = true;
@@ -638,9 +1826,11 @@ mod tests {
             api_key: "terminal-secret".into(),
             api_keys: Vec::new(),
             privy_app_id: None,
+            jwks_providers: Vec::new(),
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
             enforcement_mode: Default::default(),
+            invite_expiry_days: 7,
         };
 
         let (_dir, app) = build_test_router(config);
@@ -760,9 +1950,11 @@ mod tests {
             api_key: "relay-secret".into(),
             api_keys: Vec::new(),
             privy_app_id: None,
+            jwks_providers: Vec::new(),
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
             enforcement_mode: Default::default(),
+            invite_expiry_days: 7,
         };
 
         let (_dir, app) = build_test_router(config);
@@ -801,9 +1993,11 @@ mod tests {
             api_key: String::new(),
             api_keys: Vec::new(),
             privy_app_id: None,
+            jwks_providers: Vec::new(),
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
             enforcement_mode: Default::default(),
+            invite_expiry_days: 7,
         };
 
         let (_dir, app) = build_test_router(config);
@@ -817,6 +2011,121 @@ mod tests {
             "GET /relay/health without auth"
         );
         assert_eq!(body["code"], "agent_relay_not_configured");
+    }
+
+    #[tokio::test]
+    async fn build_router_returns_structured_rbac_denial() {
+        let mut config = RokoConfig::default();
+        config.serve.auth.enabled = true;
+        config.serve.auth.api_key = "admin-key".into();
+        let (_dir, app) = build_test_router(config);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/team/invite")
+            .header("X-Api-Key", "admin-key")
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"email":"invitee@example.com"}"#))
+            .expect("build request");
+        let response = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let body: Value = serde_json::from_slice(&body).expect("JSON body");
+        assert_eq!(body["error"], "forbidden");
+        assert_eq!(body["permission"], "team:manage");
+        assert_eq!(body["role"], "admin");
+    }
+
+    #[tokio::test]
+    async fn build_router_allows_owner_team_mutation() {
+        let plaintext = "owner-key-secret";
+        let mut config = RokoConfig::default();
+        config.serve.auth.enabled = true;
+        config.serve.auth.api_keys = vec![roko_core::config::ApiKeyEntry {
+            name: "owner-key".into(),
+            key_hash: middleware::hash_api_key(plaintext),
+            scope: "owner".into(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            expires_at: None,
+            last_used_at: None,
+            previous_key_hashes: Vec::new(),
+        }];
+        let (dir, app) = build_test_router(config);
+        let team_dir = dir.path().join(".roko").join("team");
+        std::fs::create_dir_all(&team_dir).expect("create team dir");
+        std::fs::write(
+            team_dir.join("members.json"),
+            serde_json::to_vec_pretty(&serde_json::json!([{
+                "id": "owner-key",
+                "email": "owner@example.com",
+                "role": "owner",
+                "joined_at": chrono::Utc::now().to_rfc3339(),
+            }]))
+            .expect("serialize member"),
+        )
+        .expect("write members");
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/team/invite")
+            .header("X-Api-Key", plaintext)
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"email":"invitee@example.com"}"#))
+            .expect("build request");
+        let response = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let body: Value = serde_json::from_slice(&body).expect("JSON body");
+        assert_eq!(body["role"], "member");
+        assert!(
+            body["invite_token"]
+                .as_str()
+                .is_some_and(|token| !token.is_empty())
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_audit_query_requires_secrets_read_permission() {
+        let plaintext = "viewer-key-secret";
+        let mut config = RokoConfig::default();
+        config.serve.auth.enabled = true;
+        config.serve.auth.api_keys = vec![roko_core::config::ApiKeyEntry {
+            name: "viewer-key".into(),
+            key_hash: middleware::hash_api_key(plaintext),
+            scope: "read".into(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            expires_at: None,
+            last_used_at: None,
+            previous_key_hashes: Vec::new(),
+        }];
+        let (_dir, app) = build_test_router(config);
+        let req = Request::builder()
+            .uri("/api/auth/audit")
+            .header("X-Api-Key", plaintext)
+            .body(Body::empty())
+            .expect("build request");
+        let response = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let body: Value = serde_json::from_slice(&body).expect("JSON body");
+        assert_eq!(body["error"], "forbidden");
+        assert_eq!(body["permission"], "secrets:read");
+        assert_eq!(body["role"], "viewer");
     }
 
     /// Two callers with different API keys get independent rate-limit budgets.
@@ -969,9 +2278,18 @@ mod tests {
             ("/api/connectors", "write"),
             ("/api/feeds", "write"),
             ("/api/feeds/123", "write"),
+            ("/api/groups", "write"),
+            ("/api/groups/grp-123/invite", "write"),
+            ("/api/groups/grp-123/members/agent-1", "write"),
+            ("/api/groups/grp-123/knowledge", "write"),
+            ("/api/groups/grp-123/pheromones", "write"),
+            ("/api/groups/grp-123/message", "write"),
+            ("/api/invitations/inv-123/accept", "write"),
+            ("/api/invitations/inv-123/reject", "write"),
             ("/api/rpc", "write"),
             ("/api/vision-loop", "write"),
             ("/api/vision-loop/run123/cancel", "write"),
+            ("/api/team/join", "read"),
             ("/api/team/invite", "write"),
             ("/api/team/members/did:test", "write"),
             ("/api/webhooks/generic", "write"),

@@ -1,5 +1,8 @@
 # Watcher Ensemble
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Ten independent detectors, each focused on one failure mode,
 > each implementing the `Policy` trait, each testable in isolation.
 

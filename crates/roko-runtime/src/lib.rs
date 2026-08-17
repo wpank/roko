@@ -40,7 +40,11 @@
     clippy::map_unwrap_or
 )]
 
+pub mod builtin_lenses_derived;
+pub mod builtin_lenses_health;
+pub mod builtin_lenses_performance;
 pub mod cancel;
+pub mod connector_runtime;
 pub mod delta_consumer;
 pub mod demurrage_consumer;
 pub mod effect_driver;
@@ -52,6 +56,7 @@ pub mod heartbeat_attention;
 pub mod heartbeat_probes;
 pub mod http_event_sink;
 pub mod jsonl_logger;
+pub mod lens_executor;
 pub mod lifecycle;
 pub mod metrics;
 pub mod pipeline_state;
@@ -63,14 +68,32 @@ pub mod run_ledger;
 pub mod state_hub;
 pub mod state_snapshot;
 pub mod task_scheduler;
+pub mod telemetry_projection_aggregator;
 pub mod theta_consumer;
 pub mod workflow_engine;
 
+pub use builtin_lenses_derived::{
+    AnomalyLens, CFactorLens, CollectiveIntelligenceLens, TrendLens, UsageLens,
+};
+pub use builtin_lenses_health::{BudgetLens, DriftLens, ErrorLens, create_builtin_health_lens};
+pub use builtin_lenses_performance::{EfficiencyLens, LatencyLens, QualityLens};
 pub use cancel::CancelToken;
+pub use connector_runtime::{
+    ConnectorRuntime, ConnectorRuntimeStatus, ConnectorSupervisionStatus,
+    ConnectorSupervisorOptions, ConnectorSupervisorState, HttpJsonConnector, MAX_ENDPOINT_BYTES,
+    MAX_HEADER_BYTES, MAX_HEALTH_INTERVAL_SECS, MAX_HTTP_JSON_BYTES, MAX_HTTP_TIMEOUT_MS,
+    MAX_MANAGED_CONNECTORS, MAX_OPERATION_BYTES, MAX_QUERY_BYTES, MAX_RECONNECT_ATTEMPTS,
+    MAX_RECONNECT_DELAY_MS, SharedConnectorRegistry,
+};
 pub use effect_driver::{EffectDriver, EffectServices};
 pub use http_event_sink::HttpEventSink;
 // Foundation types re-exported from roko-core for backwards compatibility
 pub use jsonl_logger::JsonlLogger;
+pub use lens_executor::{
+    EventCostLens, LensBackpressurePolicy, LensBreakerConfig, LensDispatchReport,
+    LensEnqueueOutcome, LensExecutionOutcome, LensExecutionRecord, LensExecutor, LensQueueConfig,
+    LensRuntimeStatus, QueuedLensExecutor,
+};
 pub use lifecycle::{
     Agent, AgentLifecycleState, AgentState, ConfigDrift, DegradationStage, GitOpsConfig,
     GitOpsRetryPolicy, HealthProbeConfig, HookSpec, LifecycleHooks, LifecycleTransition,
@@ -94,9 +117,23 @@ pub use run_ledger::{
     AgentOutcome, ArtifactOutcome, CancellationOutcome, EffectErrorKind, EventPersistenceHealth,
     GateRunOutcome, PhaseTransitionRecord, RunLedger, TaskTerminalOutcome,
 };
-pub use state_hub::{SharedStateHub, StateHub, StateHubSender, shared_state_hub};
-pub use state_snapshot::{STATE_SNAPSHOT_VERSION, StateSnapshot};
+pub use state_hub::{
+    DEFAULT_PROJECTION_HISTORY_CAPACITY, DEFAULT_PROJECTION_HISTORY_RETENTION, LensOperatorStatus,
+    LensQueueSnapshot, LensRuntimeControl, LensRuntimeSnapshot, ProjectionState, SharedStateHub,
+    StateHub, StateHubMaterializedSnapshot, StateHubSender, StateHubSnapshotProvenance,
+    shared_state_hub,
+};
+pub use state_snapshot::{
+    DurableDashboardProjection, DurableRunnerProjection, LEGACY_EXECUTOR_RELATIVE_PATH,
+    MAX_DURABLE_RUNNER_PROJECTION_BYTES, RunnerProjectionSource, STATE_SNAPSHOT_RELATIVE_PATH,
+    STATE_SNAPSHOT_VERSION, StateSnapshot, load_durable_dashboard_projection,
+    load_durable_runner_projection, validate_state_snapshot,
+};
 pub use task_scheduler::{SchedulableTask, TaskScheduler, TaskStatus};
+pub use telemetry_projection_aggregator::{
+    LensPayload, LensSignalEnvelope, ProjectionUpdate, TelemetryProjectionAggregator,
+    TelemetryProjectionError, TelemetryProjectionState,
+};
 pub use workflow_engine::{
     GateOutcome, WorkflowEngine, WorkflowResult, WorkflowRunConfig, WorkflowRunReport,
 };

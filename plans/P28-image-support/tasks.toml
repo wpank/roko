@@ -1,8 +1,8 @@
 [meta]
 plan = "P28-image-support"
 total = 5
-done = 0
-status = "ready"
+done = 5
+status = "done"
 max_parallel = 1
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -29,9 +29,9 @@ max_parallel = 1
 [[task]]
 id = "T1"
 title = "Set ACP image capability from model vision support"
-status = "ready"
+status = "done"
 tier = "mechanical"
-model_hint = "claude-haiku-4-5"
+model_hint = "claude-sonnet-4-6"
 max_loc = 15
 files = ["crates/roko-acp/src/handler.rs"]
 role = "implementer"
@@ -82,9 +82,9 @@ fail_msg = "roko-acp must compile cleanly"
 [[task]]
 id = "T2"
 title = "Add image placeholder text in extract_prompt_text"
-status = "ready"
+status = "done"
 tier = "mechanical"
-model_hint = "claude-haiku-4-5"
+model_hint = "claude-sonnet-4-6"
 max_loc = 5
 files = ["crates/roko-acp/src/bridge_events.rs"]
 role = "implementer"
@@ -138,7 +138,7 @@ fail_msg = "roko-acp must compile cleanly"
 [[task]]
 id = "T3"
 title = "Extract image injection helper and apply in both dispatch paths"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 30
@@ -194,7 +194,7 @@ fail_msg = "roko-acp must compile cleanly"
 [[task]]
 id = "T4"
 title = "Verify and fix anthropic_api provider image passthrough"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 25
@@ -240,9 +240,9 @@ fail_msg = "roko-agent must compile cleanly"
 [[task]]
 id = "T5"
 title = "Add test asserting all vision-capable builtins have supports_vision"
-status = "ready"
+status = "done"
 tier = "mechanical"
-model_hint = "claude-haiku-4-5"
+model_hint = "claude-sonnet-4-6"
 max_loc = 20
 files = ["crates/roko-core/src/config/model_registry.rs"]
 role = "implementer"

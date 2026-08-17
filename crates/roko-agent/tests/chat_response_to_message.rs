@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use roko_agent::chat_types::ChatResponse;
 use roko_core::ChatMessage;
 use roko_core::tool::ToolCall;

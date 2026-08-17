@@ -10,12 +10,166 @@
 //! while the unique name prevents concurrent writers from sharing staging
 //! state.
 
+use fs2::FileExt;
+use serde::de::DeserializeOwned;
 use std::ffi::OsString;
-use std::io::{self, Write};
-use std::path::Path;
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const MAX_STRICT_JSON_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Run one strict read/mutate/atomic-write JSON transaction while holding a
+/// stable sibling advisory lock.
+///
+/// The lock file is derived only from `path` (for example,
+/// `experiments.json.lock`) and is intentionally retained between calls. A
+/// missing target starts from `T::default()`. Any other read failure, including
+/// malformed JSON, is returned without modifying the target. The lock remains
+/// held while `transaction` runs and until a changed replacement has been
+/// atomically published and its parent directory synced. A semantic no-op does
+/// not rewrite or reformat the source bytes.
+///
+/// # Errors
+///
+/// Returns filesystem/JSON errors converted through `E`, or an error returned
+/// by `transaction`. A failed read or transaction leaves the target untouched.
+pub fn with_locked_json_transaction<T, R, E, F>(path: &Path, transaction: F) -> Result<R, E>
+where
+    T: Default + DeserializeOwned + serde::Serialize,
+    E: From<io::Error>,
+    F: FnOnce(&mut T) -> Result<R, E>,
+{
+    with_locked_json_transaction_bounded(path, MAX_STRICT_JSON_BYTES, transaction)
+}
+
+/// Run a strict locked JSON transaction with a caller-supplied input bound.
+///
+/// This is equivalent to [`with_locked_json_transaction`] except `max_bytes`
+/// constrains the persisted input read while the sibling lock is held. A zero
+/// limit is rejected. Subsystems with small control ledgers should use this to
+/// prevent a validly addressed but oversized file from consuming unbounded
+/// memory before semantic validation.
+pub fn with_locked_json_transaction_bounded<T, R, E, F>(
+    path: &Path,
+    max_bytes: u64,
+    transaction: F,
+) -> Result<R, E>
+where
+    T: Default + DeserializeOwned + serde::Serialize,
+    E: From<io::Error>,
+    F: FnOnce(&mut T) -> Result<R, E>,
+{
+    if max_bytes == 0 {
+        return Err(E::from(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "JSON transaction byte limit must be positive",
+        )));
+    }
+    let parent = parent_dir_for(path);
+    std::fs::create_dir_all(parent).map_err(E::from)?;
+
+    let lock_path = sibling_lock_path(path);
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .map_err(E::from)?;
+    FileExt::lock_exclusive(&lock).map_err(E::from)?;
+
+    let mut value = read_json_or_default_strict_bounded(path, max_bytes).map_err(E::from)?;
+    let before = serde_json::to_vec(&value)
+        .map_err(|error| E::from(io::Error::new(io::ErrorKind::InvalidData, error)))?;
+    let result = transaction(&mut value)?;
+    let after = serde_json::to_vec(&value)
+        .map_err(|error| E::from(io::Error::new(io::ErrorKind::InvalidData, error)))?;
+    if before != after {
+        let persisted = serde_json::to_vec_pretty(&value)
+            .map_err(|error| E::from(io::Error::new(io::ErrorKind::InvalidData, error)))?;
+        if persisted.len() as u64 > max_bytes {
+            return Err(E::from(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("JSON output exceeds the {max_bytes} byte transaction limit"),
+            )));
+        }
+        atomic_write_bytes(path, &persisted).map_err(E::from)?;
+    }
+    Ok(result)
+}
+
+/// Read JSON strictly, returning `T::default()` only when `path` is absent.
+///
+/// Unlike a permissive "load or new" helper, malformed or unreadable files are
+/// surfaced to the caller and are never silently replaced.
+///
+/// # Errors
+///
+/// Returns [`io::ErrorKind::InvalidData`] for malformed JSON, or the original
+/// filesystem error for failures other than `NotFound`.
+pub fn read_json_or_default_strict<T>(path: &Path) -> io::Result<T>
+where
+    T: Default + DeserializeOwned,
+{
+    read_json_or_default_strict_bounded(path, MAX_STRICT_JSON_BYTES)
+}
+
+/// Read strict JSON with a caller-supplied maximum input size.
+///
+/// A missing file still returns `T::default()`. The byte bound is checked from
+/// metadata and enforced again while reading to handle concurrent growth.
+pub fn read_json_or_default_strict_bounded<T>(path: &Path, max_bytes: u64) -> io::Result<T>
+where
+    T: Default + DeserializeOwned,
+{
+    if max_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "JSON input byte limit must be positive",
+        ));
+    }
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(T::default()),
+        Err(error) => return Err(error),
+    };
+    if file.metadata()?.len() > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "JSON input exceeds the {} byte transaction limit",
+                max_bytes
+            ),
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "JSON input exceeds the {} byte transaction limit",
+                max_bytes
+            ),
+        ));
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+/// Return the stable sibling advisory-lock path for `target`.
+#[must_use]
+pub fn sibling_lock_path(target: &Path) -> PathBuf {
+    let mut name = target
+        .file_name()
+        .map(OsString::from)
+        .unwrap_or_else(|| OsString::from("artifact"));
+    name.push(".lock");
+    target.with_file_name(name)
+}
 
 /// Atomically persist a `serde::Serialize` value as pretty-printed JSON.
 ///
@@ -127,7 +281,13 @@ fn sync_parent_dir(_parent: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::{Deserialize, Serialize};
     use tempfile::TempDir;
+
+    #[derive(Debug, Default, Serialize, Deserialize)]
+    struct Counter {
+        value: u64,
+    }
 
     #[test]
     fn atomic_write_json_round_trip() {
@@ -235,10 +395,132 @@ mod tests {
         assert!(
             first
                 .file_name()
-                .unwrap()
+                .expect("temporary path has a file name")
                 .to_string_lossy()
                 .starts_with("router.json.tmp.")
         );
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn locked_json_transaction_defaults_only_when_missing() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("state.json");
+
+        let result = with_locked_json_transaction::<Counter, _, io::Error, _>(&path, |counter| {
+            assert_eq!(counter.value, 0);
+            counter.value = 7;
+            Ok(counter.value)
+        })
+        .expect("transaction");
+
+        assert_eq!(result, 7);
+        assert_eq!(
+            read_json_or_default_strict::<Counter>(&path)
+                .expect("strict load")
+                .value,
+            7
+        );
+        assert_eq!(sibling_lock_path(&path), dir.path().join("state.json.lock"));
+        assert!(sibling_lock_path(&path).exists());
+    }
+
+    #[test]
+    fn locked_json_transaction_preserves_malformed_source() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let malformed = b"{ definitely-not-json";
+        std::fs::write(&path, malformed).expect("seed malformed source");
+
+        let error = with_locked_json_transaction::<Counter, _, io::Error, _>(&path, |counter| {
+            counter.value = 99;
+            Ok(())
+        })
+        .expect_err("malformed JSON must fail closed");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(std::fs::read(path).expect("preserved source"), malformed);
+    }
+
+    #[test]
+    fn no_op_locked_transaction_preserves_exact_source_bytes() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let compact = br#"{"value":7}"#;
+        std::fs::write(&path, compact).expect("seed compact JSON");
+
+        with_locked_json_transaction::<Counter, _, io::Error, _>(&path, |_counter| Ok(()))
+            .expect("no-op transaction");
+
+        assert_eq!(std::fs::read(path).expect("preserved source"), compact);
+    }
+
+    #[test]
+    fn strict_json_read_rejects_oversized_input_before_allocation() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("oversized.json");
+        let file = std::fs::File::create(&path).expect("create sparse input");
+        file.set_len(MAX_STRICT_JSON_BYTES + 1)
+            .expect("extend sparse input");
+
+        let error = read_json_or_default_strict::<Counter>(&path)
+            .expect_err("oversized JSON must fail closed");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            std::fs::metadata(path)
+                .expect("oversized input remains present")
+                .len(),
+            MAX_STRICT_JSON_BYTES + 1
+        );
+    }
+
+    #[test]
+    fn bounded_transaction_rejects_oversized_output_before_publish() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("bounded.json");
+
+        let error =
+            with_locked_json_transaction_bounded::<String, _, io::Error, _>(&path, 32, |value| {
+                *value = "x".repeat(64);
+                Ok(())
+            })
+            .expect_err("oversized output must fail closed");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn concurrent_locked_json_transactions_do_not_lose_updates() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = std::sync::Arc::new(dir.path().join("counter.json"));
+        let workers = (0..8)
+            .map(|_| {
+                let path = std::sync::Arc::clone(&path);
+                std::thread::spawn(move || {
+                    for _ in 0..25 {
+                        with_locked_json_transaction::<Counter, _, io::Error, _>(
+                            &path,
+                            |counter| {
+                                counter.value += 1;
+                                Ok(())
+                            },
+                        )?;
+                    }
+                    Ok::<_, io::Error>(())
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            worker.join().expect("worker thread").expect("transactions");
+        }
+
+        assert_eq!(
+            read_json_or_default_strict::<Counter>(&path)
+                .expect("strict load")
+                .value,
+            200
+        );
     }
 }

@@ -160,7 +160,7 @@ impl AgentRegistration {
         let card = self.build_card(state.as_ref(), addr);
         let card_uri = if let Some(relay) = &self.relay {
             let card_uri = relay.card_uri(state.agent_id())?;
-            // Pass None for topic_handler — pub/sub wiring happens in the ISFR keeper (C2).
+            // Registration does not subscribe to application topics.
             let _handle = relay_client::connect(relay.clone(), state, card.clone(), None)
                 .await
                 .context("connect agent relay client")?;

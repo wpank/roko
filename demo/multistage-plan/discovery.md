@@ -9,7 +9,7 @@
 
 ### Observed facts
 
-1. **Product identity and scale.** `README.md` (lines 3–5) describes Roko as "a Rust toolkit for building agents that build themselves" and reports "18 crates. ~200K lines of Rust. 1,600+ tests." The core loop is stated as: observe, plan, execute, verify, learn, repeat.
+1. **Product identity and scale.** `README.md` (lines 3–5) describes Roko as "a Rust toolkit for building agents that build themselves" and reports "35 workspace members. ~800K lines of Rust. 9,900+ tests." The core loop is stated as: observe, plan, execute, verify, learn, repeat.
 
 2. **Quick-start entry point.** `README.md` (lines 9–15) documents a three-command onboarding path:
    ```
@@ -21,7 +21,7 @@
 
 3. **Workspace shape.** `Cargo.toml` (lines 1–4) declares `resolver = "2"` and lists workspace members. The `default-members` array (`Cargo.toml` lines ~72–76) includes only three crates: `crates/roko-cli`, `crates/roko-mcp-code`, and `crates/roko-mcp-github`. A bare `cargo build` (without `--workspace`) compiles only those three.
 
-4. **Crate count discrepancy.** `README.md` states "18 crates," but `Cargo.toml` lists 34 workspace members (counting `tests/`, `apps/`, and all `roko-mcp-*` and `roko-lang-*` crates individually). The README crate-map table (`README.md` lines ~118–140) itself lists approximately 22 crate rows, which already exceeds 18. The "18" figure likely predates the addition of MCP servers, language providers, and chain crates.
+4. **Crate count.** `README.md` now states "35 workspace members," matching `Cargo.toml` which lists 35 workspace members (counting `tests/`, `apps/`, and all `roko-mcp-*` and `roko-lang-*` crates individually). The previous "18 crates" figure predated the addition of MCP servers, language providers, and chain crates.
 
 5. **`roko-orchestrator` is documented but not a workspace member.** `README.md` (line ~123) lists `roko-orchestrator` in the crate map as "Plan DAG, parallel executor, merge queue, worktree manager, safety policy." The architecture doc `docs/v1/00-architecture/15-crate-map.md` (§1.1 table and §1.5 table) also references `roko-orchestrator` as a distinct crate. However, `Cargo.toml` does **not** include `crates/roko-orchestrator` in the `members` array. Instead, a comment in `Cargo.toml` (line ~29) reads `# Orchestration layer (plan discovery, task DAG, worktree manager, executor)` with no crate path following it. The orchestrator code lives as a module inside `crates/roko-cli/orchestrator/`.
 
@@ -112,8 +112,8 @@ flowchart TD
 
 **Impact:** Ambiguous toolchain requirements; contributors may waste time on version-related build failures that the manifest does not prevent.
 
-### Risk 5: Crate count ("18") in README is stale relative to the actual workspace
+### Risk 5: Crate count in README -- previously stale, now corrected
 
-**Evidence:** `README.md` (line 7) claims "18 crates." `Cargo.toml` lists 34 workspace members. Even the README's own crate-map table (lines ~118–140) lists more than 18 rows. The discrepancy suggests the figure was accurate at an earlier point and has not been updated as MCP servers, language providers, chain crates, and app crates were added.
+**Evidence:** `README.md` previously claimed "18 crates." This was corrected to "35 workspace members" to match `Cargo.toml`. The "18" figure predated the addition of MCP servers, language providers, chain crates, and app crates.
 
-**Impact:** Contributors may underestimate the codebase size and breadth, leading to insufficient "search before writing" effort as recommended by the contributing guidelines.
+**Impact:** Previously, contributors may have underestimated the codebase size and breadth. Now corrected.

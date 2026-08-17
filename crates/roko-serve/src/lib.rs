@@ -65,6 +65,7 @@ pub mod state_hub {
 }
 
 pub mod adapters;
+pub mod agent_lifecycle;
 pub mod auth_audit;
 pub mod bench;
 pub mod command_events;
@@ -80,6 +81,7 @@ pub mod extract;
 pub mod feed_agents;
 pub mod feedback;
 pub mod fswatcher;
+pub mod group_runtime;
 pub mod integrations;
 pub mod job_runner;
 pub mod jwks;
@@ -96,8 +98,12 @@ pub mod sanitize;
 pub mod scheduler;
 pub mod service_factory;
 pub mod state;
+mod subscription_relay;
+mod telemetry_observer;
 pub mod templates;
 pub mod terminal;
+pub mod trigger_runtime;
+mod trigger_tls;
 pub mod truth_map;
 pub use service_factory::{ServiceBundle, ServiceConfig, ServiceFactory};
 
@@ -346,6 +352,20 @@ impl ServerBuilder {
         if let Err(err) = state.restore_snapshot().await {
             warn!(error = %err, "failed to restore server state snapshot; starting fresh");
         }
+        for feed_id in [
+            "file-watch-roko-dir",
+            "provider-health-feed",
+            "episode-outcome-feed",
+        ] {
+            match state.runtime_feeds.start_registered(feed_id) {
+                Ok(handle) => {
+                    let _feed_bridge = state.feed_bus_bridge.spawn(handle.cell().subscribe());
+                }
+                Err(error) => {
+                    warn!(feed_id, %error, "failed to start built-in runtime feed");
+                }
+            }
+        }
         let dispatcher_roko_config = roko_config.as_ref().clone();
         let dispatcher = Arc::new(dispatch::TemplateAgentDispatcher::new(
             state.workdir.clone(),
@@ -353,7 +373,14 @@ impl ServerBuilder {
             dispatcher_roko_config,
         ));
         tokio::spawn(dispatch::dispatch_loop(Arc::clone(&state), dispatcher));
+        let _github_event_subscriber = events::start_github_event_subscriber(Arc::clone(&state));
+        let _telemetry_producer_bridge = start_telemetry_producer_bridge(Arc::clone(&state));
         start_builtin_event_sources(Arc::clone(&state), roko_config.as_ref().clone());
+        let _trigger_runtime = trigger_runtime::ensure_trigger_runtime(&state).await;
+        if let Err(error) = state.gateway_http.gateway.spawn_gateway_loop() {
+            warn!(%error, "failed to start E26 inference gateway handle loop");
+        }
+        let _gateway_batch_loop = state.gateway_http.spawn_batch_loop();
         let _config_watcher = config_watcher::start_config_watcher(Arc::clone(&state));
         let _prd_publish_subscriber = start_prd_publish_orchestrator(Arc::clone(&state));
         let _feedback_loop = feedback::start_feedback_loop(Arc::clone(&state));
@@ -367,46 +394,6 @@ impl ServerBuilder {
         let _workspace_gc = start_workspace_gc(Arc::clone(&state));
         let _handle_gc = start_handle_gc(Arc::clone(&state));
         let _demurrage = start_demurrage_timer(Arc::clone(&state));
-        // Auto-deploy ISFR contracts if configured.
-        {
-            let chain_cfg = &roko_config.chain;
-            if chain_cfg.auto_deploy_contracts {
-                let rpc = chain_cfg
-                    .rpc_url
-                    .as_deref()
-                    .unwrap_or("http://127.0.0.1:8545");
-                let key = chain_cfg.wallet_key.as_deref().unwrap_or(
-                    "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-                );
-                let contracts_dir = chain_cfg.contracts_dir.as_deref().unwrap_or("contracts");
-                let contracts_path = state.workdir.join(contracts_dir);
-
-                if contracts_path.join("out").is_dir() {
-                    match roko_chain::isfr_bootstrap::bootstrap_isfr(rpc, key, &contracts_path)
-                        .await
-                    {
-                        Ok(addrs) => {
-                            tracing::info!(
-                                oracle = ?addrs.isfr_oracle,
-                                bounty_pool = ?addrs.bounty_pool,
-                                "ISFR contracts deployed"
-                            );
-                            *state.isfr.contract_addresses.write().await = Some(addrs);
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "ISFR contract auto-deploy failed (continuing without on-chain)");
-                        }
-                    }
-                } else {
-                    tracing::info!(
-                        path = %contracts_path.display(),
-                        "ISFR contract artifacts not found; skipping auto-deploy"
-                    );
-                }
-            }
-        }
-
-        let _isfr_keeper = start_isfr_keeper(Arc::clone(&state));
         let _block_watcher = start_block_watcher(Arc::clone(&state));
 
         // Load persisted deployments from disk.
@@ -414,6 +401,7 @@ impl ServerBuilder {
 
         // Eagerly prime the JWKS cache if Privy auth is configured.
         if roko_config.serve.auth.privy_app_id.is_some() {
+            state.jwks_cache.start_refresh_task();
             let jwks = Arc::clone(&state.jwks_cache);
             tokio::spawn(async move {
                 jwks.prime().await;
@@ -429,11 +417,7 @@ impl ServerBuilder {
             Arc::clone(&state.relay_health),
         );
 
-        // Wire the ISFRFeed relay bridge: receives relay TopicMessages and
-        // republishes them as Pulses on the local bus.
-        let _isfr_relay_bridge = start_isfr_relay_bridge(Arc::clone(&state));
-
-        // Spawn feed agents (15 agents publishing to relay + local event bus).
+        // Spawn feed agents publishing to the relay and local event bus.
         let _feed_agents = feed_agents::spawn_all(Arc::clone(&state));
 
         // Bridge feed agents to the relay: registers feeds and forwards ticks.
@@ -450,6 +434,7 @@ impl ServerBuilder {
             roko_config.server.unsafe_public_cors,
             roko_config.serve.auth.clone(),
         );
+        let trigger_tls = trigger_tls::load(state.as_ref()).await?;
 
         let listener = TcpListener::bind(&addr)
             .await
@@ -459,8 +444,15 @@ impl ServerBuilder {
                 .terminal_sessions
                 .configure_server_env_from_addr(local_addr, roko_config.as_ref());
         }
+        let telemetry_observer =
+            telemetry_observer::start_periodic_telemetry_observer(state.as_ref());
 
-        info!("roko server listening on http://{addr}");
+        let scheme = if trigger_tls.is_some() {
+            "https"
+        } else {
+            "http"
+        };
+        info!("roko server listening on {scheme}://{addr}");
         info!("workdir: {}", self.config.workdir.display());
 
         // Spawn chain-watcher if chain.rpc_url is configured (best-effort).
@@ -549,14 +541,27 @@ impl ServerBuilder {
         }
 
         let serve_state = Arc::clone(&state);
+        let observer_cancel = state.cancel.clone();
         let handle = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .with_graceful_shutdown(shutdown_on_cancel(serve_state))
-            .await
-            .context("axum server error")?;
+            let serve_result = if let Some(trigger_tls) = trigger_tls {
+                trigger_tls::serve(listener, router, serve_state.cancel.clone(), trigger_tls).await
+            } else {
+                axum::serve(
+                    listener,
+                    router.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .with_graceful_shutdown(shutdown_on_cancel(serve_state))
+                .await
+                .context("axum server error")
+            };
+            // Also cancel on an unexpected Axum exit, then join the observer
+            // before reporting the server result. This prevents detached
+            // telemetry tasks from outliving the production serve lifecycle.
+            observer_cancel.cancel();
+            if let Err(error) = telemetry_observer.await {
+                warn!(%error, "periodic telemetry observer join failed");
+            }
+            serve_result?;
             info!("server stopped");
             Ok(())
         });
@@ -865,6 +870,10 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
     if let Err(err) = state.restore_snapshot().await {
         warn!(error = %err, "failed to restore server state snapshot; starting fresh");
     }
+    let _github_event_subscriber = events::start_github_event_subscriber(Arc::clone(&state));
+    let _telemetry_producer_bridge = start_telemetry_producer_bridge(Arc::clone(&state));
+    start_builtin_event_sources(Arc::clone(&state), roko_config.clone());
+    let _trigger_runtime = trigger_runtime::ensure_trigger_runtime(&state).await;
     let _config_watcher = config_watcher::start_config_watcher(Arc::clone(&state));
     let _prd_publish_subscriber = start_prd_publish_orchestrator(Arc::clone(&state));
     // Both bridges share a BridgeDedup so they can run simultaneously without
@@ -882,6 +891,7 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
         roko_config.server.unsafe_public_cors,
         roko_config.serve.auth.clone(),
     );
+    let trigger_tls = trigger_tls::load(state.as_ref()).await?;
     let listener = TcpListener::bind(&addr)
         .await
         .with_context(|| format!("bind to {addr}"))?;
@@ -890,17 +900,35 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
             .terminal_sessions
             .configure_server_env_from_addr(local_addr, &roko_config);
     }
+    let telemetry_observer = telemetry_observer::start_periodic_telemetry_observer(state.as_ref());
 
-    info!("roko server listening on http://{addr}");
+    let scheme = if trigger_tls.is_some() {
+        "https"
+    } else {
+        "http"
+    };
+    info!("roko server listening on {scheme}://{addr}");
     info!("workdir: {}", state.workdir.display());
 
-    axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_on_cancel(Arc::clone(&state)))
-    .await
-    .context("axum server error")?;
+    let serve_result = if let Some(trigger_tls) = trigger_tls {
+        trigger_tls::serve(listener, router, state.cancel.clone(), trigger_tls).await
+    } else {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_on_cancel(Arc::clone(&state)))
+        .await
+        .context("axum server error")
+    };
+    if let Err(error) = state.runtime_feeds.stop_all().await {
+        warn!(%error, "one or more runtime feeds failed to stop cleanly");
+    }
+    state.cancel.cancel();
+    if let Err(error) = telemetry_observer.await {
+        warn!(%error, "periodic telemetry observer join failed");
+    }
+    serve_result?;
 
     info!("server stopped");
     Ok(())
@@ -937,7 +965,9 @@ fn api_or_ws_path_requires_json_404(path: &str) -> bool {
         || path.starts_with("/roko-ws/")
 }
 
-async fn serve_api_or_spa_fallback(req: axum::extract::Request) -> axum::response::Response {
+pub(crate) async fn serve_api_or_spa_fallback(
+    req: axum::extract::Request,
+) -> axum::response::Response {
     let path = req.uri().path().to_string();
     if api_or_ws_path_requires_json_404(&path) {
         return (
@@ -1052,48 +1082,32 @@ fn build_app_state(
     }
 
     let _ = state.state_hub.bootstrap_from_workdir(&state.workdir);
-    if let Some(snapshot_json) = tokio::task::block_in_place(|| {
-        state
-            .cascade_router
-            .blocking_read()
-            .as_ref()
-            .map(|router| router.snapshot_json())
-    }) {
-        state
-            .state_hub
-            .update_snapshot(|snapshot| snapshot.cascade_router_json = snapshot_json);
-    }
-    // Seed StateHub with persisted marketplace jobs so the TUI sees them on connect.
+    // Hydrate remaining disk-backed surfaces as part of the recovered
+    // generation. This intentionally emits no live events and preserves
+    // restart provenance.
     let jobs = scan_marketplace_jobs(&state.workdir);
     if !jobs.is_empty() {
         info!(
             count = jobs.len(),
             "loaded existing marketplace jobs from disk"
         );
-        state
-            .state_hub
-            .publish(DashboardEvent::MarketplaceJobsUpdated { jobs });
     }
-    // Seed StateHub with persisted PRDs so the Atelier tab is populated on connect.
     let prds = scan_prd_summaries(&state.workdir);
     if !prds.is_empty() {
         info!(count = prds.len(), "loaded existing PRDs from disk");
-        state.state_hub.publish(DashboardEvent::AtelierPrdsUpdated {
-            prds,
-            tasks: std::collections::HashMap::new(),
-        });
     }
-    // Seed StateHub with knowledge entries from the neuro store.
     let knowledge = scan_knowledge_entries(&state.workdir);
     if !knowledge.is_empty() {
         info!(
             count = knowledge.len(),
             "loaded existing knowledge entries from neuro store"
         );
-        state
-            .state_hub
-            .publish(DashboardEvent::KnowledgeEntriesUpdated { entries: knowledge });
     }
+    state.state_hub.hydrate_recovered_snapshot(|snapshot| {
+        snapshot.marketplace_jobs = jobs;
+        snapshot.atelier_prds = prds;
+        snapshot.knowledge_entries = knowledge;
+    });
 
     // Seed connector and feed registries with default entries so routes
     // return real data instead of empty arrays (audit finding A3).
@@ -1173,47 +1187,55 @@ fn seed_default_registries_inner(state: &AppState) {
     let engrams_path = layout.engrams_path();
     feeds.register(FeedInfo {
         id: String::new(), // assigned by registry
+        cell_id: String::new(),
         name: "engrams".to_string(),
         kind: FeedKind::Raw,
         access: FeedAccess::Public,
         agent_id: "system".to_string(),
         description: "Raw signal log (.roko/engrams.jsonl)".to_string(),
         schema: None,
+        pricing: None,
         created_at: now,
     });
 
     let episodes_path = layout.episodes_path();
     feeds.register(FeedInfo {
         id: String::new(),
+        cell_id: String::new(),
         name: "episodes".to_string(),
         kind: FeedKind::Raw,
         access: FeedAccess::Public,
         agent_id: "system".to_string(),
         description: "Agent turn episode log (.roko/episodes.jsonl)".to_string(),
         schema: None,
+        pricing: None,
         created_at: now,
     });
 
     let efficiency_path = layout.efficiency_path();
     feeds.register(FeedInfo {
         id: String::new(),
+        cell_id: String::new(),
         name: "efficiency".to_string(),
         kind: FeedKind::Derived,
         access: FeedAccess::Public,
         agent_id: "system".to_string(),
         description: "Per-turn efficiency metrics (.roko/learn/efficiency.jsonl)".to_string(),
         schema: None,
+        pricing: None,
         created_at: now,
     });
 
     feeds.register(FeedInfo {
         id: String::new(),
+        cell_id: String::new(),
         name: "knowledge".to_string(),
         kind: FeedKind::Composite,
         access: FeedAccess::Public,
         agent_id: "system".to_string(),
         description: "Durable knowledge entries from the neuro store".to_string(),
         schema: None,
+        pricing: None,
         created_at: now,
     });
 
@@ -1408,6 +1430,93 @@ impl BridgeDedup {
         let mut set = self.server_seqs.lock().unwrap_or_else(|e| e.into_inner());
         set.remove(&seq)
     }
+}
+
+/// Fan durable server lifecycle transitions into the event-oriented Lens runtime.
+///
+/// This bridge deliberately consumes only one authoritative representation for
+/// each transition. In particular, trigger observations come from the
+/// post-persistence `TriggerLifecycle` event, never the compatibility
+/// `TriggerFired` event, so one firing cannot be counted twice.
+fn start_telemetry_producer_bridge(state: Arc<AppState>) -> JoinHandle<()> {
+    let mut receiver = state.event_bus.subscribe();
+    tokio::spawn(async move {
+        loop {
+            let envelope = tokio::select! {
+                _ = state.cancel.cancelled() => break,
+                event = receiver.recv() => match event {
+                    Ok(envelope) => envelope,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(skipped, "telemetry producer bridge lagged behind server event bus");
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                },
+            };
+
+            let Some((event, ancestry)) = server_event_to_observable(&envelope.payload) else {
+                continue;
+            };
+            for error in state.state_hub.emit_observable(&event, &ancestry) {
+                warn!(%error, "server lifecycle telemetry delivery failed");
+            }
+        }
+    })
+}
+
+fn server_event_to_observable(
+    event: &ServerEvent,
+) -> Option<(roko_core::ObservableEvent, Vec<roko_core::LensScope>)> {
+    use roko_core::trigger::TriggerEventKind;
+    use roko_core::{LensScope, ObservableEvent, Verdict};
+
+    let observation = match event {
+        ServerEvent::TriggerLifecycle { event } => {
+            let observable = match event.kind {
+                TriggerEventKind::Armed => ObservableEvent::TriggerArmed {
+                    trigger: event.trigger_name.clone(),
+                },
+                TriggerEventKind::Fired => ObservableEvent::TriggerFired {
+                    trigger: event.trigger_name.clone(),
+                    graph: event.graph.clone(),
+                },
+                TriggerEventKind::Disarmed => ObservableEvent::TriggerDisarmed {
+                    trigger: event.trigger_name.clone(),
+                },
+                _ => return None,
+            };
+            (observable, vec![LensScope::Graph(event.graph.clone())])
+        }
+        ServerEvent::GateResult {
+            plan_id,
+            task_id,
+            gate,
+            rung: _,
+            passed,
+        } => {
+            let verdict = if *passed {
+                Verdict::pass(gate.clone())
+            } else {
+                Verdict::fail(gate.clone(), "gate failed")
+            };
+            (
+                ObservableEvent::VerifyPostResult {
+                    block: task_id.clone(),
+                    verdict,
+                    reward: if *passed { 1.0 } else { 0.0 },
+                    // `ServerEvent::GateResult` carries no evidence references;
+                    // keep this empty instead of manufacturing identifiers.
+                    evidence: Vec::new(),
+                },
+                vec![
+                    LensScope::Cell(task_id.clone()),
+                    LensScope::Graph(plan_id.clone()),
+                ],
+            )
+        }
+        _ => return None,
+    };
+    Some(observation)
 }
 
 fn start_state_hub_bridge(state: Arc<AppState>, dedup: BridgeDedup) -> JoinHandle<()> {
@@ -1620,37 +1729,6 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
             metric: "cost_usd".to_string(),
             value: *cost_so_far,
         }),
-        ServerEvent::IsfrRateComputed {
-            composite_bps,
-            lending_bps,
-            structured_bps,
-            funding_bps,
-            staking_bps,
-            confidence_bps,
-            source_count,
-            timestamp_ms,
-        } => Some(DashboardEvent::IsfrRateComputed {
-            composite_bps: *composite_bps,
-            lending_bps: *lending_bps,
-            structured_bps: *structured_bps,
-            funding_bps: *funding_bps,
-            staking_bps: *staking_bps,
-            confidence_bps: *confidence_bps,
-            source_count: *source_count,
-            timestamp_ms: *timestamp_ms,
-        }),
-        ServerEvent::IsfrSourceHealthChanged {
-            source_id,
-            health,
-            last_rate_bps,
-        } => Some(DashboardEvent::IsfrSourceHealthChanged {
-            source_id: source_id.clone(),
-            health: health.clone(),
-            last_rate_bps: *last_rate_bps,
-        }),
-        ServerEvent::IsfrKeeperStateChanged { running } => {
-            Some(DashboardEvent::IsfrKeeperStateChanged { running: *running })
-        }
         ServerEvent::ChainBlock {
             number,
             hash,
@@ -1696,6 +1774,7 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
             contract,
             event_name,
             decoded,
+            ..
         } => Some(DashboardEvent::ChainContractEvent {
             block_number: *block_number,
             tx_hash: tx_hash.clone(),
@@ -2182,19 +2261,66 @@ fn start_demurrage_timer(state: Arc<AppState>) -> JoinHandle<()> {
             // Also run the balance-based demurrage (apply_demurrage uses elapsed time).
             // This ensures both confidence decay (consumer) and balance decay (store)
             // are applied together.
-            if let Err(e) = store.apply_demurrage() {
-                debug!(error = %e, "demurrage: balance decay failed");
+            let balances_before = entries
+                .iter()
+                .map(|entry| (entry.id.as_str(), entry.balance))
+                .collect::<std::collections::HashMap<_, _>>();
+            match store.apply_demurrage() {
+                Ok(count) => match store.read_all() {
+                    Ok(after) => {
+                        let losses = after
+                            .iter()
+                            .filter_map(|entry| {
+                                let before = balances_before.get(entry.id.as_str())?;
+                                let loss = (*before - entry.balance).max(0.0);
+                                (loss > 0.0).then_some((entry.id.as_str(), loss))
+                            })
+                            .collect::<Vec<_>>();
+                        let total_balance_lost = losses.iter().map(|(_, loss)| *loss).sum::<f64>();
+                        for (signal, loss) in losses {
+                            emit_lens_observation(
+                                &state,
+                                roko_core::ObservableEvent::SignalDemurrageApplied(
+                                    signal.to_string(),
+                                    loss,
+                                ),
+                            );
+                        }
+                        emit_lens_observation(
+                            &state,
+                            roko_core::ObservableEvent::DemurrageApplied {
+                                count,
+                                total_balance_lost,
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        debug!(error = %e, "demurrage: failed to measure applied balance decay");
+                    }
+                },
+                Err(e) => {
+                    debug!(error = %e, "demurrage: balance decay failed");
+                }
             }
         }
     })
+}
+
+fn emit_lens_observation(state: &AppState, event: roko_core::ObservableEvent) {
+    for error in state
+        .state_hub
+        .emit_observable(&event, &[roko_core::LensScope::Global])
+    {
+        debug!(%error, "Lens observation delivery failed");
+    }
 }
 
 /// Periodic cold archival: migrates aged-out signals from the hot substrate
 /// (`.roko/engrams.jsonl` / `FileSubstrate`) to compressed monthly JSONL
 /// archives in `.roko/cold/`.
 ///
-/// Runs every hour (default) or at the interval specified in the
-/// `archival_interval_secs` field. Each tick:
+/// Runs every six hours (default) or at the interval specified by
+/// `cold_storage.interval_secs`. Each tick:
 ///  1. Opens the hot `FileSubstrate`.
 ///  2. Queries for signals older than 7 days (default).
 ///  3. Batch-archives them to `ArchiveColdSubstrate`.
@@ -2209,7 +2335,10 @@ fn start_cold_archival_timer(state: Arc<AppState>) -> JoinHandle<()> {
         return tokio::spawn(async {});
     }
 
-    let interval_secs = cold_cfg.interval_secs;
+    // `tokio::time::interval` rejects zero. Treat a zero supplied by an old or
+    // hand-written config as the smallest useful interval instead of crashing
+    // server startup.
+    let interval_secs = cold_cfg.interval_secs.max(1);
     let max_age_ms = cold_cfg.max_age_ms();
     let batch_size = cold_cfg.batch_size;
 
@@ -2239,7 +2368,7 @@ fn start_cold_archival_timer(state: Arc<AppState>) -> JoinHandle<()> {
             }
 
             // -- Phase 1: cold-archive aged-out signals ----------------------
-            match run_cold_archival_tick(&roko_dir, max_age_ms, batch_size).await {
+            match run_cold_archival_tick(&state.signal_store, max_age_ms, batch_size).await {
                 Ok(0) => {
                     debug!("cold archival tick: no signals to archive");
                 }
@@ -2273,288 +2402,11 @@ fn start_cold_archival_timer(state: Arc<AppState>) -> JoinHandle<()> {
 ///
 /// Returns the number of signals archived, or an error.
 async fn run_cold_archival_tick(
-    roko_dir: &std::path::Path,
+    signal_store: &crate::state::SignalStore,
     max_age_ms: i64,
     batch_size: usize,
 ) -> anyhow::Result<usize> {
-    use roko_core::{ColdStore, Context, Query, Store};
-
-    let hot = roko_fs::FileSubstrate::open(roko_dir).await?;
-    let ctx = Context::now();
-    let cutoff_ms = chrono::Utc::now().timestamp_millis() - max_age_ms;
-    let query = Query::all().until(cutoff_ms).limit(batch_size);
-    let candidates = hot.query(&query, &ctx).await?;
-
-    if candidates.is_empty() {
-        return Ok(0);
-    }
-
-    // Collect IDs before moving candidates into archive_batch.
-    let candidate_ids: Vec<roko_core::ContentHash> = candidates.iter().map(|e| e.id).collect();
-
-    let cold_dir = roko_dir.join("cold");
-    let cold = roko_fs::ArchiveColdSubstrate::open(&cold_dir).await?;
-
-    // Phase 1: archive to cold storage (dedup-safe: skips already-archived).
-    let archived = cold.archive_batch(candidates).await?;
-
-    // Phase 2: prune archived IDs from the hot store and compact the log.
-    // This runs only after archive_batch succeeds so a failure cannot lose data.
-    if !candidate_ids.is_empty() {
-        hot.remove_ids(&candidate_ids);
-        hot.compact().await?;
-    }
-
-    Ok(archived)
-}
-
-/// Start the ISFR keeper as a background task if `config.isfr.enabled` is true.
-///
-/// The keeper is constructed from `[isfr.sources]` in `roko.toml`.  When no
-/// sources are configured a 4-source mock keeper is used so the rate history
-/// is populated in dev environments without any DeFi connectivity.
-///
-/// The keeper's `PublishFn` callback fires after every successful tick and:
-///   - Writes the new composite rate to `state.isfr.current_rate`.
-///   - Pushes the rate to `state.isfr.rate_history` (Vec, newest at end, max 256).
-///   - Updates `state.isfr.sources` with per-source health snapshots.
-///   - Emits `ServerEvent::IsfrRateComputed` to the event bus.
-///
-/// `state.isfr.keeper_running` is set to `true` before `keeper.run()` and
-/// reset to `false` when the task exits (on shutdown or panic-recovery).
-fn start_isfr_keeper(state: Arc<AppState>) -> JoinHandle<()> {
-    use roko_chain::isfr_keeper::{
-        ISFRKeeper, ISFRKeeperConfig, SourceConfig as KeeperSourceConfig,
-    };
-    use roko_chain::isfr_sources::SourceStatus;
-    use state::ISFRSourceSnapshot;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    let roko_config = state.load_roko_config();
-    let isfr_section = roko_config.isfr.clone();
-
-    if !isfr_section.enabled {
-        // Return a no-op task so the caller always gets a JoinHandle.
-        return tokio::spawn(async {});
-    }
-
-    let keeper_config = ISFRKeeperConfig {
-        poll_interval_secs: isfr_section.poll_interval_secs,
-        epoch_duration_secs: isfr_section.epoch_duration_secs,
-        min_submissions: isfr_section.min_submissions,
-        outlier_sigma: isfr_section.outlier_sigma,
-        relay_url: None,
-        chain_id: "31337".to_string(),
-    };
-
-    // Build source list from config, or fall back to the standard 4-source mock.
-    let keeper = if isfr_section.sources.is_empty() {
-        ISFRKeeper::mock_keeper("roko-serve", keeper_config)
-    } else {
-        let source_configs: Vec<KeeperSourceConfig> = isfr_section
-            .sources
-            .iter()
-            .map(|sc| KeeperSourceConfig {
-                name: sc.name.clone(),
-                kind: sc.kind.clone(),
-                weight: sc.weight,
-                class: sc.class.clone(),
-                rate_bps: sc.rate_bps,
-                jitter_bps: sc.jitter_bps,
-                rpc_url: sc.rpc_url.clone(),
-                pool_address: sc.pool_address.clone(),
-            })
-            .collect();
-        ISFRKeeper::from_config("roko-serve", keeper_config, &source_configs)
-    };
-
-    // Gate: if all sources are offline (RPC unreachable), don't run the keeper.
-    if !keeper.has_live_sources() {
-        tracing::warn!("ISFR keeper: all sources offline, skipping keeper startup");
-        return tokio::spawn(async {});
-    }
-
-    let keeper = std::sync::Arc::new(keeper);
-
-    // Wire the publish callback: captures Arc<AppState> and Arc<ISFRKeeper>.
-    {
-        let state_cb = Arc::clone(&state);
-        let keeper_cb = Arc::clone(&keeper);
-
-        // Track the last epoch we successfully submitted on-chain to avoid
-        // re-submitting on every tick within the same epoch.
-        let last_submitted_epoch = Arc::new(AtomicU64::new(u64::MAX));
-
-        keeper.set_publish_fn(std::sync::Arc::new(
-            move |_topic: &str, _msg_type: &str, _payload: serde_json::Value| {
-                // Grab the freshly computed composite from the keeper.
-                let Some(rate) = keeper_cb.current_rate() else {
-                    return;
-                };
-
-                const MAX_HISTORY: usize = 256;
-
-                // The PublishFn signature is `Fn(...) + Send + Sync` (not async),
-                // so we spawn a short-lived task to drive the async RwLock writes
-                // without blocking the keeper's poll loop.
-                let rate_clone = rate.clone();
-                let state_async = Arc::clone(&state_cb);
-                let metas = keeper_cb.source_metas();
-
-                // Update epoch counter from keeper.
-                let epoch = keeper_cb.current_epoch();
-                state_cb
-                    .isfr
-                    .current_epoch
-                    .store(epoch, std::sync::atomic::Ordering::Relaxed);
-
-                // Determine if we should submit on-chain this tick (new epoch).
-                let prev_epoch = last_submitted_epoch.swap(epoch, Ordering::AcqRel);
-                let should_submit = prev_epoch != epoch;
-                let last_submitted_epoch_clone = Arc::clone(&last_submitted_epoch);
-
-                // Build source snapshots synchronously from metas (no async needed).
-                let source_snapshots: Vec<ISFRSourceSnapshot> = metas
-                    .iter()
-                    .map(|m| ISFRSourceSnapshot {
-                        id: m.name.clone(),
-                        name: m.name.clone(),
-                        class: m.class.as_str().to_string(),
-                        weight: m.weight,
-                        last_rate_bps: m.last_reading.as_ref().map(|r| r.rate_bps),
-                        health: match m.status {
-                            SourceStatus::Live => "live".to_string(),
-                            SourceStatus::Stale => "stale".to_string(),
-                            SourceStatus::Offline => "offline".to_string(),
-                        },
-                        last_poll_ms: m.last_reading.as_ref().map(|r| r.timestamp_ms as i64),
-                    })
-                    .collect();
-
-                let composite_bps = rate_clone.composite_bps;
-                let lending_bps = rate_clone.lending_bps;
-                let structured_bps = rate_clone.structured_bps;
-                let funding_bps = rate_clone.funding_bps;
-                let staking_bps = rate_clone.staking_bps;
-                let confidence_bps = rate_clone.confidence_bps;
-                let source_count = rate_clone.readings.len();
-                let timestamp_ms = rate_clone.timestamp_ms as i64;
-
-                // Spawn async to update the tokio RwLock fields without blocking.
-                tokio::spawn(async move {
-                    // 1. Write current_rate.
-                    *state_async.isfr.current_rate.write().await = Some(rate_clone.clone());
-
-                    // 2. Push to rate_history (bounded at MAX_HISTORY, newest at end).
-                    {
-                        let mut history = state_async.isfr.rate_history.write().await;
-                        history.push(rate_clone);
-                        if history.len() > MAX_HISTORY {
-                            let excess = history.len() - MAX_HISTORY;
-                            history.drain(0..excess);
-                        }
-                    }
-
-                    // 3. Replace source snapshots.
-                    *state_async.isfr.sources.write().await = source_snapshots;
-
-                    // 4. Emit the rate event to the bus.
-                    state_async
-                        .event_bus
-                        .publish(ServerEvent::IsfrRateComputed {
-                            composite_bps,
-                            lending_bps,
-                            structured_bps,
-                            funding_bps,
-                            staking_bps,
-                            confidence_bps,
-                            source_count,
-                            timestamp_ms,
-                        });
-
-                    // 5. Submit on-chain if this is a new epoch and chain is configured.
-                    if should_submit {
-                        let oracle_addr = state_async
-                            .isfr
-                            .contract_addresses
-                            .read()
-                            .await
-                            .as_ref()
-                            .and_then(|a| a.isfr_oracle.clone());
-
-                        if let Some(oracle_address) = oracle_addr {
-                            let roko_config = state_async.load_roko_config();
-                            let rpc_url = roko_config
-                                .chain
-                                .rpc_url
-                                .clone()
-                                .unwrap_or_else(|| "http://127.0.0.1:8545".to_string());
-                            let wallet_key =
-                                roko_config.chain.wallet_key.clone().unwrap_or_default();
-
-                            if !wallet_key.is_empty() {
-                                let config = roko_chain::isfr_oracle_submit::OracleSubmitConfig {
-                                    oracle_address,
-                                    rpc_url,
-                                    wallet_key,
-                                    chain_id: roko_config.chain.chain_id.unwrap_or(31337),
-                                };
-                                tokio::spawn(async move {
-                                    roko_chain::isfr_oracle_submit::submit_rate_on_chain(
-                                        &config,
-                                        epoch,
-                                        composite_bps,
-                                        lending_bps,
-                                        structured_bps,
-                                        funding_bps,
-                                        staking_bps,
-                                        confidence_bps,
-                                    )
-                                    .await;
-                                });
-                            }
-                        } else {
-                            // No oracle address yet — reset so we retry next tick.
-                            last_submitted_epoch_clone
-                                .store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
-                        }
-                    }
-                });
-            },
-        ));
-    }
-
-    // Mark keeper as running.
-    state.isfr.keeper_running.store(true, Ordering::Relaxed);
-    state
-        .event_bus
-        .publish(ServerEvent::IsfrKeeperStateChanged { running: true });
-
-    // Clone the Arc for the cancel-bridge task; the main `state` remains available
-    // for the post-run cleanup.
-    let state_bridge = Arc::clone(&state);
-
-    tokio::spawn(async move {
-        // Bridge roko's CancelToken into a tokio-util CancellationToken so
-        // ISFRKeeper::run() can use it.
-        let keeper_cancel = tokio_util::sync::CancellationToken::new();
-        let bridge_cancel = keeper_cancel.clone();
-        tokio::spawn(async move {
-            state_bridge.cancel.cancelled().await;
-            bridge_cancel.cancel();
-        });
-
-        keeper.run(keeper_cancel).await;
-
-        // Keeper loop exited (shutdown or cancelled).
-        state
-            .isfr
-            .keeper_running
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-        state
-            .event_bus
-            .publish(ServerEvent::IsfrKeeperStateChanged { running: false });
-    })
+    signal_store.archive_aged(max_age_ms, batch_size).await
 }
 
 /// Start the block watcher background task.
@@ -2563,7 +2415,7 @@ fn start_isfr_keeper(state: Arc<AppState>) -> JoinHandle<()> {
 /// publishes them to the event bus and updates `state.chain` ring buffers.
 /// Returns a no-op handle if no chain client is configured.
 fn start_block_watcher(state: Arc<AppState>) -> JoinHandle<()> {
-    use roko_chain::block_watcher::{BlockInfo, BlockWatcher, ContractEventInfo, TxInfo};
+    use roko_chain::block_watcher::BlockWatcher;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
@@ -2613,57 +2465,7 @@ fn start_block_watcher(state: Arc<AppState>) -> JoinHandle<()> {
 
     let publish_fn: roko_chain::block_watcher::PublishFn =
         Arc::new(move |topic: &str, payload: serde_json::Value| {
-            let state = Arc::clone(&state_publish);
-            match topic {
-                "chain:block" => {
-                    if let Ok(block) = serde_json::from_value::<BlockInfo>(payload) {
-                        state.event_bus.publish(ServerEvent::ChainBlock {
-                            number: block.number,
-                            hash: block.hash.clone(),
-                            parent_hash: block.parent_hash.clone(),
-                            timestamp: block.timestamp,
-                            gas_used: block.gas_used,
-                            gas_limit: block.gas_limit,
-                            tx_count: block.tx_count,
-                            base_fee_per_gas: block.base_fee_per_gas,
-                        });
-                        // Spawn async update of ring buffer.
-                        let chain_state = Arc::clone(&state.chain);
-                        tokio::spawn(async move { chain_state.push_block(block).await });
-                    }
-                }
-                "chain:tx" => {
-                    if let Ok(tx) = serde_json::from_value::<TxInfo>(payload) {
-                        state.event_bus.publish(ServerEvent::ChainTx {
-                            block_number: tx.block_number,
-                            tx_hash: tx.tx_hash.clone(),
-                            from: tx.from.clone(),
-                            to: tx.to.clone(),
-                            value_wei: tx.value_wei.clone(),
-                            gas_used: tx.gas_used,
-                            method_sig: tx.method_sig.clone(),
-                            success: tx.success,
-                        });
-                        let chain_state = Arc::clone(&state.chain);
-                        tokio::spawn(async move { chain_state.push_tx(tx).await });
-                    }
-                }
-                "chain:event" => {
-                    if let Ok(evt) = serde_json::from_value::<ContractEventInfo>(payload) {
-                        state.event_bus.publish(ServerEvent::ChainContractEvent {
-                            block_number: evt.block_number,
-                            tx_hash: evt.tx_hash.clone(),
-                            log_index: evt.log_index,
-                            contract: evt.contract.clone(),
-                            event_name: evt.event_name.clone(),
-                            decoded: evt.decoded.clone(),
-                        });
-                        let chain_state = Arc::clone(&state.chain);
-                        tokio::spawn(async move { chain_state.push_event(evt).await });
-                    }
-                }
-                _ => {}
-            }
+            publish_chain_watcher_payload(&state_publish, topic, payload);
         });
 
     let state_outer = Arc::clone(&state);
@@ -2676,220 +2478,613 @@ fn start_block_watcher(state: Arc<AppState>) -> JoinHandle<()> {
     })
 }
 
-/// Start the ISFRFeed relay bridge when a relay URL is configured.
-///
-/// Creates a [`BroadcastBus`], wraps it in an [`ISFRFeed`], and connects to the
-/// relay using an [`ISFRTopicAdapter`] as the [`TopicHandler`].  After the
-/// connection is established, subscribes to the standard ISFR relay topics so
-/// that keeper-published rate data is republished as Pulses on the local bus.
-///
-/// Returns `None` when no relay URL is configured, so the caller can store the
-/// `JoinHandle` the same way as the workspace-registration task.
-///
-/// Any connection failure is logged at `warn` level and swallowed — the bridge
-/// is best-effort.  Agents that consume the bus will simply see no ISFR pulses
-/// until the relay becomes reachable.
-fn start_isfr_relay_bridge(state: Arc<AppState>) -> Option<tokio::task::JoinHandle<()>> {
-    use roko_agent_server::features::relay_client::{RelayClientConfig, connect};
-    use roko_agent_server::features::relay_subscriber::ISFRTopicAdapter;
-    use roko_agent_server::registration::{AgentCard, AgentCardEndpoints};
-    use roko_agent_server::state::AgentState;
-    use roko_core::bus_backends::BroadcastBus;
-    use roko_core::isfr_feed::ISFRFeed;
-
-    let roko_config = state.load_roko_config();
-    let relay_url = roko_config.relay.url.clone()?;
-
-    let chain_id = roko_config
-        .chain
-        .chain_id
-        .map(|id| id.to_string())
-        .unwrap_or_else(|| "31337".to_string());
-
-    info!(relay_url = %relay_url, chain_id = %chain_id, "starting ISFRFeed relay bridge");
-
-    Some(tokio::spawn(async move {
-        // Build a dedicated bus for ISFR pulses.
-        let bus = Arc::new(BroadcastBus::new());
-        let feed = Arc::new(ISFRFeed::new(bus));
-
-        // Wrap in the TopicHandler adapter.
-        let handler = ISFRTopicAdapter::make_handler(Arc::clone(&feed));
-
-        // Build a minimal AgentState for the relay handshake (no LLM backend).
-        let agent_state = Arc::new(AgentState::new(
-            "roko-serve-isfr".to_string(),
-            None,
-            env!("CARGO_PKG_VERSION").to_string(),
-            vec!["isfr_subscriber".to_string()],
-            None,
-            None,
-            None,
-        ));
-
-        // Build a minimal AgentCard (no public endpoints needed).
-        let card = AgentCard {
-            name: "roko-serve-isfr".to_string(),
-            capabilities: vec!["isfr_subscriber".to_string()],
-            endpoints: AgentCardEndpoints {
-                rest: None,
-                websocket: None,
-                a2a: None,
-                mcp: None,
-            },
-            domain_tags: vec!["roko".to_string(), "isfr".to_string()],
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        };
-
-        let relay_config = RelayClientConfig::new(relay_url.clone());
-
-        let handle = match connect(relay_config, agent_state, card, Some(handler)).await {
-            Ok(h) => h,
-            Err(e) => {
-                info!(error = %e, relay_url = %relay_url, "ISFRFeed relay bridge: not available (non-fatal)");
-                return;
-            }
-        };
-
-        // Subscribe to the standard ISFR relay topics.
-        let topics = ISFRFeed::relay_topics(&chain_id);
-        for topic in &topics {
-            if let Err(e) = handle.subscribe(topic) {
-                warn!(
-                    error = %e,
-                    topic = %topic,
-                    "ISFRFeed relay bridge: subscribe failed"
-                );
+fn publish_chain_watcher_payload(state: &Arc<AppState>, topic: &str, payload: serde_json::Value) {
+    use roko_chain::block_watcher::{
+        BlockInfo, ChainReorgInfo, ContractEventInfo, RawLogInfo, TxInfo,
+    };
+    match topic {
+        "chain:block" => {
+            if let Ok(block) = serde_json::from_value::<BlockInfo>(payload) {
+                state.event_bus.publish(ServerEvent::ChainBlock {
+                    number: block.number,
+                    hash: block.hash.clone(),
+                    parent_hash: block.parent_hash.clone(),
+                    timestamp: block.timestamp,
+                    gas_used: block.gas_used,
+                    gas_limit: block.gas_limit,
+                    tx_count: block.tx_count,
+                    base_fee_per_gas: block.base_fee_per_gas,
+                });
+                let chain_state = Arc::clone(&state.chain);
+                tokio::spawn(async move { chain_state.push_block(block).await });
             }
         }
-
-        info!(
-            topics = ?topics,
-            "ISFRFeed relay bridge: subscribed to relay topics"
-        );
-
-        // Keep the relay handle alive until the server shuts down.
-        // The relay client runs its own WebSocket loop in a spawned task;
-        // dropping the handle closes the outbound sender channel, which causes
-        // the loop to exit.
-        state.cancel.cancelled().await;
-        drop(handle);
-    }))
+        "chain:tx" => {
+            if let Ok(tx) = serde_json::from_value::<TxInfo>(payload) {
+                state.event_bus.publish(ServerEvent::ChainTx {
+                    block_number: tx.block_number,
+                    tx_hash: tx.tx_hash.clone(),
+                    from: tx.from.clone(),
+                    to: tx.to.clone(),
+                    value_wei: tx.value_wei.clone(),
+                    gas_used: tx.gas_used,
+                    method_sig: tx.method_sig.clone(),
+                    success: tx.success,
+                });
+                let chain_state = Arc::clone(&state.chain);
+                tokio::spawn(async move { chain_state.push_tx(tx).await });
+            }
+        }
+        "chain:log" => {
+            if let Ok(log) = serde_json::from_value::<RawLogInfo>(payload) {
+                let chain_id = state.load_roko_config().chain.chain_id.unwrap_or_default();
+                state.event_bus.publish(ServerEvent::ChainLogObserved {
+                    chain_id,
+                    block_number: log.block_number,
+                    block_hash: log.block_hash,
+                    tx_hash: log.tx_hash,
+                    log_index: log.log_index,
+                    contract: log.contract,
+                    topics: log.topics,
+                    data: log.data,
+                    finality: roko_core::trigger::FinalityRequirement::Reversible,
+                    removed: false,
+                });
+            }
+        }
+        "chain:event" => {
+            if let Ok(evt) = serde_json::from_value::<ContractEventInfo>(payload) {
+                state.event_bus.publish(ServerEvent::ChainContractEvent {
+                    block_number: evt.block_number,
+                    tx_hash: evt.tx_hash.clone(),
+                    log_index: evt.log_index,
+                    contract: evt.contract.clone(),
+                    event_name: evt.event_name.clone(),
+                    decoded: evt.decoded.clone(),
+                    raw_evidence_available: evt.raw_evidence_available,
+                });
+                let chain_state = Arc::clone(&state.chain);
+                tokio::spawn(async move { chain_state.push_event(evt).await });
+            }
+        }
+        "chain:reorg" => {
+            if let Ok(reorg) = serde_json::from_value::<ChainReorgInfo>(payload) {
+                let chain_id = state.load_roko_config().chain.chain_id.unwrap_or_default();
+                state.event_bus.publish(ServerEvent::ChainReorg {
+                    chain_id,
+                    orphaned_block_hashes: reorg.orphaned_block_hashes,
+                });
+            }
+        }
+        _ => {}
+    }
 }
 
-/// Bridge feed agents to the relay: connects as a single agent, registers all
-/// 15 feeds, then subscribes to `ServerEvent::FeedTick` and publishes each tick
-/// to the relay topic bus so the relay dashboard shows live feed data.
+/// Run the supervised relay bridge for both durable subscription consumption
+/// and optional feed publication. The consumer is active whenever a relay URL
+/// is configured; it is intentionally not coupled to `feed_agents.enabled`.
 fn start_feed_relay_bridge(state: Arc<AppState>) -> Option<tokio::task::JoinHandle<()>> {
-    use roko_agent_server::features::relay_client::{RelayClientConfig, connect};
+    use roko_agent_server::features::relay_client::{
+        MAX_DESIRED_ROOMS, RelayClientConfig, RelayClientStatus, TopicHandler, connect,
+    };
     use roko_agent_server::registration::{AgentCard, AgentCardEndpoints};
     use roko_agent_server::state::AgentState;
 
     let roko_config = state.load_roko_config();
     let raw_relay_url = roko_config.relay.url.clone()?;
-
-    if !roko_config.feed_agents_enabled() {
-        return None;
-    }
+    let publish_feeds = roko_config.feed_agents_enabled();
 
     // Normalize to base URL (strip path like /relay/agents/ws).
     let relay_url = crate::relay::normalize_relay_base_url(&raw_relay_url);
-    info!(relay_url = %relay_url, "starting feed agent relay bridge");
+    info!(relay_url = %relay_url, publish_feeds, "starting durable relay subscription bridge");
 
     let state2 = Arc::clone(&state);
     Some(tokio::spawn(async move {
-        // Wait briefly for feed agents to populate the catalog.
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let workspace_identity = stable_relay_workspace_identity(&state2.workdir);
+        if publish_feeds {
+            let publisher_state = Arc::clone(&state2);
+            let publisher_url = relay_url.clone();
+            let publisher_identity = workspace_identity.clone();
+            tokio::spawn(async move {
+                run_feed_relay_publisher(publisher_state, publisher_url, publisher_identity).await;
+            });
+        }
 
+        let consumer_id = relay_consumer_id(&workspace_identity);
         let agent_state = Arc::new(AgentState::new(
-            "roko-feed-publisher".to_string(),
+            consumer_id.clone(),
             None,
             env!("CARGO_PKG_VERSION").to_string(),
-            vec![
-                "feed_publisher".to_string(),
-                "isfr".to_string(),
-                "chain".to_string(),
-            ],
+            vec!["subscription_consumer".to_string()],
             None,
             None,
             None,
         ));
 
         let card = AgentCard {
-            name: "roko-feed-publisher".to_string(),
-            capabilities: vec![
-                "feed_publisher".to_string(),
-                "isfr".to_string(),
-                "chain".to_string(),
-            ],
+            name: consumer_id,
+            capabilities: vec!["subscription_consumer".to_string()],
             endpoints: AgentCardEndpoints {
                 rest: None,
                 websocket: None,
                 a2a: None,
                 mcp: None,
             },
-            domain_tags: vec!["roko".to_string(), "feeds".to_string()],
+            domain_tags: vec!["roko".to_string(), "subscription-consumer".to_string()],
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
 
-        let relay_config = RelayClientConfig::new(relay_url.clone());
-        let handle = match connect(relay_config, agent_state, card, None).await {
-            Ok(h) => h,
-            Err(e) => {
-                warn!(error = %e, relay_url = %relay_url, "feed relay bridge: connect failed");
+        let dispatcher: Arc<dyn dispatch::AgentDispatcher> =
+            Arc::new(dispatch::TemplateAgentDispatcher::new(
+                state2.workdir.clone(),
+                None,
+                state2.load_roko_config().as_ref().clone(),
+            ));
+        let topic_handler: Arc<dyn TopicHandler> =
+            Arc::new(crate::subscription_relay::ServeTopicHandler::new(
+                Arc::clone(&state2.subscription_relay),
+                Arc::clone(&state2),
+                dispatcher,
+            ));
+        let origin_hash = crate::subscription_relay::relay_origin_hash(&relay_url);
+        'supervisor: loop {
+            let plan = crate::subscription_relay::remote_subscription_plan(
+                &state2.subscriptions,
+                MAX_DESIRED_ROOMS,
+            );
+            state2
+                .subscription_relay
+                .set_subscription_plan_diagnostics(
+                    plan.unsupported_triggers.clone(),
+                    plan.capacity_rejected_rooms.clone(),
+                )
+                .await;
+
+            if let Err(error) = state2
+                .subscription_relay
+                .guard_stream_change(&origin_hash, &plan.rooms)
+                .await
+            {
+                let cursor = state2.subscription_relay.status().await.global_cursor;
+                state2
+                    .subscription_relay
+                    .set_connection(
+                        crate::subscription_relay::ServeRelayConnectionStatus::ReconciliationRequired {
+                            snapshot_seq: cursor,
+                        },
+                    )
+                    .await;
+                warn!(%error, "relay stream change requires reconciliation");
                 return;
             }
-        };
 
-        // Register all feeds from the catalog.
-        let catalog = state2.feed_agent_catalog.read().await;
-        for feed in &catalog.feeds {
-            if let Err(e) = handle.register_feed(
-                &feed.feed_id,
-                &feed.topic,
-                &feed.name,
-                &feed.description,
-                &feed.kind,
-                &feed.rate,
-            ) {
-                warn!(feed_id = %feed.feed_id, error = %e, "feed relay bridge: register_feed failed");
+            if !plan.capacity_rejected_rooms.is_empty() || plan.rooms.is_empty() {
+                let durable_cursor = state2.subscription_relay.status().await.global_cursor;
+                let reason = if plan.rooms.is_empty() {
+                    "no enabled exact relay subscription rooms are configured".to_string()
+                } else {
+                    format!(
+                        "{} exact relay rooms exceed client capacity {MAX_DESIRED_ROOMS}",
+                        plan.rooms.len()
+                    )
+                };
+                state2
+                    .subscription_relay
+                    .set_connection(
+                        crate::subscription_relay::ServeRelayConnectionStatus::Disconnected {
+                            durable_cursor,
+                            reason: Some(reason),
+                        },
+                    )
+                    .await;
+                tokio::select! {
+                    _ = state2.cancel.cancelled() => return,
+                    () = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+                }
+                continue;
             }
-        }
-        let feed_count = catalog.feeds.len();
-        drop(catalog);
 
-        info!(feed_count, "feed relay bridge: registered feeds with relay");
+            if let Err(error) = state2
+                .subscription_relay
+                .bind_stream(&origin_hash, &plan.rooms)
+                .await
+            {
+                let cursor = state2.subscription_relay.status().await.global_cursor;
+                state2
+                    .subscription_relay
+                    .set_connection(
+                        crate::subscription_relay::ServeRelayConnectionStatus::ReconciliationRequired {
+                            snapshot_seq: cursor,
+                        },
+                    )
+                    .await;
+                warn!(%error, "relay consumer stream binding requires reconciliation");
+                return;
+            }
 
-        // Subscribe to local FeedTick events and forward to relay.
-        let mut rx = state2.event_bus.subscribe();
-        loop {
-            tokio::select! {
-                _ = state2.cancel.cancelled() => break,
-                envelope = rx.recv() => {
-                    match envelope {
-                        Ok(env) => {
-                            if let crate::events::ServerEvent::FeedTick {
-                                topic,
-                                payload,
-                                ..
-                            } = env.payload {
-                                if let Err(e) = handle.publish(&topic, "tick", payload) {
-                                    debug!(error = %e, "feed relay bridge: publish failed");
-                                    break;
-                                }
+            let relay_config = match RelayClientConfig::new(relay_url.clone())
+                .with_initial_rooms(plan.rooms.clone())
+            {
+                Ok(config) => config,
+                Err(error) => {
+                    let durable_cursor = state2.subscription_relay.status().await.global_cursor;
+                    state2
+                        .subscription_relay
+                        .set_connection(
+                            crate::subscription_relay::ServeRelayConnectionStatus::Disconnected {
+                                durable_cursor,
+                                reason: Some(error.to_string()),
+                            },
+                        )
+                        .await;
+                    tokio::select! {
+                        _ = state2.cancel.cancelled() => return,
+                        () = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+                    }
+                    continue;
+                }
+            };
+            state2
+                .subscription_relay
+                .set_connection(crate::subscription_relay::ServeRelayConnectionStatus::Connecting)
+                .await;
+            let mut initial_attempt = 0u32;
+            let handle = loop {
+                let result = tokio::select! {
+                    _ = state2.cancel.cancelled() => return,
+                    result = connect(
+                        relay_config.clone(),
+                        Arc::clone(&agent_state),
+                        card.clone(),
+                        Some(Arc::clone(&topic_handler)),
+                    ) => result,
+                };
+                match result {
+                    Ok(handle) => break handle,
+                    Err(error) => {
+                        warn!(%error, %relay_url, initial_attempt, "relay consumer initial connect failed");
+                        let durable_cursor = state2.subscription_relay.status().await.global_cursor;
+                        state2
+                            .subscription_relay
+                            .set_connection(
+                                crate::subscription_relay::ServeRelayConnectionStatus::Disconnected {
+                                    durable_cursor,
+                                    reason: Some(error.to_string()),
+                                },
+                            )
+                            .await;
+                        let delay = relay_initial_retry_delay(initial_attempt);
+                        initial_attempt = initial_attempt.saturating_add(1);
+                        tokio::select! {
+                            _ = state2.cancel.cancelled() => return,
+                            () = tokio::time::sleep(delay) => {}
+                        }
+                        let refreshed = crate::subscription_relay::remote_subscription_plan(
+                            &state2.subscriptions,
+                            MAX_DESIRED_ROOMS,
+                        );
+                        state2
+                            .subscription_relay
+                            .set_subscription_plan_diagnostics(
+                                refreshed.unsupported_triggers.clone(),
+                                refreshed.capacity_rejected_rooms.clone(),
+                            )
+                            .await;
+                        if let Err(error) = state2
+                            .subscription_relay
+                            .guard_stream_change(&origin_hash, &refreshed.rooms)
+                            .await
+                        {
+                            let cursor = state2.subscription_relay.status().await.global_cursor;
+                            state2
+                                .subscription_relay
+                                .set_connection(
+                                    crate::subscription_relay::ServeRelayConnectionStatus::ReconciliationRequired {
+                                        snapshot_seq: cursor,
+                                    },
+                                )
+                                .await;
+                            warn!(%error, "relay stream change during connect requires reconciliation");
+                            return;
+                        }
+                        if refreshed.rooms != plan.rooms
+                            || !refreshed.capacity_rejected_rooms.is_empty()
+                        {
+                            continue 'supervisor;
+                        }
+                        state2
+                            .subscription_relay
+                            .set_connection(
+                                crate::subscription_relay::ServeRelayConnectionStatus::Connecting,
+                            )
+                            .await;
+                    }
+                }
+            };
+
+            let mut status_rx = handle.subscribe_status();
+            let initial_status = status_rx.borrow().clone();
+            state2
+                .subscription_relay
+                .observe_client_status(initial_status)
+                .await;
+            let mut reconcile = tokio::time::interval(std::time::Duration::from_secs(2));
+            reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = state2.cancel.cancelled() => {
+                        handle.shutdown();
+                        return;
+                    },
+                    changed = status_rx.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        let status = status_rx.borrow().clone();
+                        state2.subscription_relay.observe_client_status(status.clone()).await;
+                        if matches!(
+                            status,
+                            RelayClientStatus::ReconciliationRequired { .. }
+                                | RelayClientStatus::Superseded { .. }
+                        ) {
+                            handle.shutdown();
+                            return;
+                        }
+                        if matches!(status, RelayClientStatus::Stopped) {
+                            break;
+                        }
+                    }
+                    _ = reconcile.tick() => {
+                        let refreshed = crate::subscription_relay::remote_subscription_plan(
+                            &state2.subscriptions,
+                            MAX_DESIRED_ROOMS,
+                        );
+                        state2
+                            .subscription_relay
+                            .set_subscription_plan_diagnostics(
+                                refreshed.unsupported_triggers.clone(),
+                                refreshed.capacity_rejected_rooms.clone(),
+                            )
+                            .await;
+                        if let Err(error) = state2
+                            .subscription_relay
+                            .guard_stream_change(&origin_hash, &refreshed.rooms)
+                            .await
+                        {
+                            handle.shutdown();
+                            let cursor = state2.subscription_relay.status().await.global_cursor;
+                            state2
+                                .subscription_relay
+                                .set_connection(
+                                    crate::subscription_relay::ServeRelayConnectionStatus::ReconciliationRequired {
+                                        snapshot_seq: cursor,
+                                    },
+                                )
+                                .await;
+                            warn!(%error, "relay room-set change requires reconciliation");
+                            return;
+                        }
+                        if refreshed.rooms != plan.rooms
+                            || !refreshed.capacity_rejected_rooms.is_empty()
+                        {
+                            handle.shutdown();
+                            if !refreshed.capacity_rejected_rooms.is_empty()
+                                || refreshed.rooms.is_empty()
+                            {
+                                continue 'supervisor;
                             }
+                            if let Err(error) = state2
+                                .subscription_relay
+                                .bind_stream(&origin_hash, &refreshed.rooms)
+                                .await
+                            {
+                                let cursor = state2.subscription_relay.status().await.global_cursor;
+                                state2
+                                    .subscription_relay
+                                    .set_connection(
+                                        crate::subscription_relay::ServeRelayConnectionStatus::ReconciliationRequired {
+                                            snapshot_seq: cursor,
+                                        },
+                                    )
+                                    .await;
+                                warn!(%error, "relay room-set change requires reconciliation");
+                                return;
+                            }
+                            continue 'supervisor;
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            debug!(skipped = n, "feed relay bridge: event bus lagged");
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
             }
+            handle.shutdown();
         }
-
-        drop(handle);
     }))
+}
+
+fn stable_relay_workspace_identity(workdir: &Path) -> String {
+    let stable_path = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
+    let hash = blake3::hash(stable_path.to_string_lossy().as_bytes())
+        .to_hex()
+        .to_string();
+    hash[..16].to_string()
+}
+
+fn relay_consumer_id(workspace_identity: &str) -> String {
+    format!("roko-serve-consumer-{workspace_identity}")
+}
+
+fn relay_publisher_id(workspace_identity: &str) -> String {
+    format!("roko-serve-publisher-{workspace_identity}")
+}
+
+fn is_exact_relay_room(trigger: &str) -> bool {
+    use roko_core::wire_protocol::RelayEnvelope;
+
+    !trigger.contains(['*', '?'])
+        && RelayEnvelope {
+            seq: 0,
+            ts: 0,
+            room: trigger.to_string(),
+            msg_type: "subscription".to_string(),
+            payload: serde_json::Value::Null,
+            publisher_id: None,
+        }
+        .validate()
+        .is_ok()
+}
+
+fn relay_initial_retry_delay(attempt: u32) -> std::time::Duration {
+    let multiplier = 1u32.checked_shl(attempt.min(7)).unwrap_or(u32::MAX);
+    std::time::Duration::from_millis(250)
+        .saturating_mul(multiplier)
+        .min(std::time::Duration::from_secs(30))
+}
+
+async fn run_feed_relay_publisher(
+    state: Arc<AppState>,
+    relay_url: String,
+    workspace_identity: String,
+) {
+    use roko_agent_server::features::relay_client::{RelayClientConfig, connect};
+    use roko_agent_server::registration::{AgentCard, AgentCardEndpoints};
+    use roko_agent_server::state::AgentState;
+
+    let publisher_id = relay_publisher_id(&workspace_identity);
+    let agent_state = Arc::new(AgentState::new(
+        publisher_id.clone(),
+        None,
+        env!("CARGO_PKG_VERSION").to_string(),
+        vec!["feed_publisher".to_string()],
+        None,
+        None,
+        None,
+    ));
+    let card = AgentCard {
+        name: publisher_id,
+        capabilities: vec!["feed_publisher".to_string()],
+        endpoints: AgentCardEndpoints {
+            rest: None,
+            websocket: None,
+            a2a: None,
+            mcp: None,
+        },
+        domain_tags: vec!["roko".to_string(), "feed-publisher".to_string()],
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+    let relay_config = RelayClientConfig::new(relay_url.clone());
+    let mut attempt = 0u32;
+    let handle = loop {
+        let result = tokio::select! {
+            _ = state.cancel.cancelled() => return,
+            result = connect(
+                relay_config.clone(),
+                Arc::clone(&agent_state),
+                card.clone(),
+                None,
+            ) => result,
+        };
+        match result {
+            Ok(handle) => break handle,
+            Err(error) => {
+                warn!(%error, %relay_url, attempt, "feed relay publisher initial connect failed");
+                let delay = relay_initial_retry_delay(attempt);
+                attempt = attempt.saturating_add(1);
+                tokio::select! {
+                    _ = state.cancel.cancelled() => return,
+                    () = tokio::time::sleep(delay) => {}
+                }
+            }
+        }
+    };
+
+    let mut registered_feeds = HashSet::new();
+    let mut rx = state.event_bus.subscribe();
+    let mut reconcile = tokio::time::interval(std::time::Duration::from_secs(2));
+    reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = state.cancel.cancelled() => break,
+            _ = reconcile.tick() => {
+                let catalog = state.feed_agent_catalog.read().await;
+                for feed in &catalog.feeds {
+                    if registered_feeds.contains(&feed.feed_id) {
+                        continue;
+                    }
+                    match handle.register_feed(
+                        &feed.feed_id,
+                        &feed.topic,
+                        &feed.name,
+                        &feed.description,
+                        &feed.kind,
+                        &feed.rate,
+                    ) {
+                        Ok(()) => {
+                            registered_feeds.insert(feed.feed_id.clone());
+                        }
+                        Err(error) => {
+                            debug!(feed_id = %feed.feed_id, %error, "feed relay registration was not admitted");
+                        }
+                    }
+                }
+            }
+            envelope = rx.recv() => {
+                match envelope {
+                    Ok(env) => {
+                        if let crate::events::ServerEvent::FeedTick { topic, payload, .. } = env.payload
+                            && let Err(error) = handle.publish(&topic, "tick", payload)
+                        {
+                            debug!(%error, "feed relay publish failed");
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        debug!(skipped, "feed relay publisher event bus lagged");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    }
+    handle.shutdown();
+}
+
+#[cfg(test)]
+mod subscription_relay_bridge_tests {
+    use super::*;
+
+    #[test]
+    fn workspace_identity_is_stable_and_roles_do_not_self_supersede() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = stable_relay_workspace_identity(dir.path());
+        let second = stable_relay_workspace_identity(dir.path());
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 16);
+        assert_ne!(relay_consumer_id(&first), relay_publisher_id(&first));
+    }
+
+    #[test]
+    fn relay_room_subscription_rejects_globs_and_invalid_names() {
+        assert!(is_exact_relay_room("feed:prices"));
+        assert!(!is_exact_relay_room("feed:*"));
+        assert!(!is_exact_relay_room("feed:price?"));
+        assert!(!is_exact_relay_room("feed prices"));
+        assert!(!is_exact_relay_room(""));
+    }
+
+    #[test]
+    fn initial_retry_backoff_is_bounded() {
+        assert_eq!(
+            relay_initial_retry_delay(0),
+            std::time::Duration::from_millis(250)
+        );
+        assert_eq!(
+            relay_initial_retry_delay(1),
+            std::time::Duration::from_millis(500)
+        );
+        assert_eq!(
+            relay_initial_retry_delay(1_000),
+            std::time::Duration::from_secs(30)
+        );
+    }
 }
 
 /// Discover plugin manifests in the standard search paths and register any
@@ -3088,7 +3283,8 @@ fn init_otlp_tracing(endpoint: &str, service_name: &str, _sample_rate: f64) {
 mod tests {
     use super::{
         ServerBuildConfig, ServerBuilder, build_app_state, resolve_bind_with_port_env,
-        run_server_with_state, serve_api_or_spa_fallback,
+        run_cold_archival_tick, run_server_with_state, serve_api_or_spa_fallback,
+        start_telemetry_producer_bridge,
     };
 
     use axum::body::{Body, to_bytes};
@@ -3097,10 +3293,59 @@ mod tests {
     use roko_learn::cascade_router::CascadeRouter;
     use roko_learn::model_router::CONTEXT_DIM;
     use serde_json::Value;
-    use std::sync::Arc;
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
     use crate::runtime::NoOpRuntime;
+
+    struct RecordingLifecycleLens {
+        name: String,
+        scope: roko_core::LensScope,
+        observes: Vec<roko_core::ObservableEventKind>,
+        seen: Arc<Mutex<Vec<(String, roko_core::ObservableEvent)>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl roko_core::TelemetryObserve for RecordingLifecycleLens {
+        async fn observe(
+            &self,
+            event: &roko_core::ObservableEvent,
+        ) -> roko_core::Result<Vec<roko_core::Signal>> {
+            self.seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((self.name.clone(), event.clone()));
+            Ok(Vec::new())
+        }
+
+        fn observes(&self) -> &[roko_core::ObservableEventKind] {
+            &self.observes
+        }
+
+        fn scope(&self) -> roko_core::LensScope {
+            self.scope.clone()
+        }
+    }
+
+    fn register_recording_lens(
+        registry: &mut roko_core::LensRegistry,
+        name: &str,
+        scope: &str,
+        observes: roko_core::ObservableEventKind,
+    ) {
+        registry
+            .register_with_observes(
+                roko_core::LensConfig {
+                    name: name.to_string(),
+                    block: "test:recording-lens".to_string(),
+                    scope: scope.to_string(),
+                    params: BTreeMap::new(),
+                },
+                vec![observes],
+            )
+            .expect("register recording lens");
+    }
 
     async fn fallback_response(path: &str) -> axum::response::Response {
         let request = Request::builder()
@@ -3108,6 +3353,163 @@ mod tests {
             .body(Body::empty())
             .expect("build request");
         serve_api_or_spa_fallback(request).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn durable_server_lifecycle_producers_reach_scoped_lenses_once() -> roko_core::Result<()>
+    {
+        use roko_core::trigger::{
+            TriggerBinding, TriggerEvent, TriggerEventKind, TriggerKind, TriggerLifecycleEvent,
+            TriggerSource,
+        };
+        use roko_core::{LensScope, ObservableEvent, ObservableEventKind, Verdict};
+        use roko_runtime::{LensExecutor, LensQueueConfig};
+
+        let workdir = tempdir().expect("tempdir");
+        let hub = roko_runtime::SharedStateHub::new_in_process();
+        let state = Arc::new(
+            build_app_state(
+                workdir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                Some(hub.clone()),
+                None,
+            )
+            .expect("build state"),
+        );
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = roko_core::LensRegistry::new();
+        register_recording_lens(
+            &mut registry,
+            "trigger-recorder",
+            "graph:graph-a",
+            ObservableEventKind::TriggerLifecycle,
+        );
+        register_recording_lens(
+            &mut registry,
+            "verify-recorder",
+            "graph:plan-a",
+            ObservableEventKind::VerifyLifecycle,
+        );
+        let mut executor = LensExecutor::new(registry.clone())?.with_projection(hub.sender());
+        for registration in registry.registrations() {
+            executor.register(
+                registration.config.name.clone(),
+                Arc::new(RecordingLifecycleLens {
+                    name: registration.config.name.clone(),
+                    scope: registration.scope.clone(),
+                    observes: registration.observes.clone(),
+                    seen: Arc::clone(&seen),
+                }),
+            )?;
+        }
+        let queue = executor.into_queued("server-producer-test", LensQueueConfig::default())?;
+        let bridge = start_telemetry_producer_bridge(Arc::clone(&state));
+
+        let binding = TriggerBinding::new("deploy", TriggerKind::Manual, "graph-a");
+        for kind in [
+            TriggerEventKind::Armed,
+            TriggerEventKind::Fired,
+            TriggerEventKind::Disarmed,
+        ] {
+            state
+                .event_bus
+                .publish(crate::events::ServerEvent::TriggerLifecycle {
+                    event: TriggerLifecycleEvent::new(
+                        &binding,
+                        kind,
+                        Some("trace-a".to_string()),
+                        serde_json::json!({}),
+                    ),
+                });
+        }
+        state
+            .event_bus
+            .publish(crate::events::ServerEvent::TriggerFired {
+                trigger_name: "deploy".to_string(),
+                event: TriggerEvent::new(
+                    "deploy".to_string(),
+                    serde_json::json!({}),
+                    TriggerSource::Manual {
+                        user: "tester".to_string(),
+                    },
+                    "trace-a".to_string(),
+                ),
+            });
+        state
+            .event_bus
+            .publish(crate::events::ServerEvent::GateResult {
+                plan_id: "plan-a".to_string(),
+                task_id: "task-a".to_string(),
+                gate: "compile".to_string(),
+                rung: 2,
+                passed: true,
+            });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if seen
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .len()
+                    == 4
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("lifecycle observations");
+        assert!(queue.wait_idle(std::time::Duration::from_secs(5)).await);
+
+        let observations = seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(
+            observations.len(),
+            4,
+            "compatibility firing must not duplicate"
+        );
+        assert!(matches!(
+            observations[0],
+            (ref lens, ObservableEvent::TriggerArmed { ref trigger })
+                if lens == "trigger-recorder" && trigger == "deploy"
+        ));
+        assert!(matches!(
+            observations[1],
+            (ref lens, ObservableEvent::TriggerFired { ref trigger, ref graph })
+                if lens == "trigger-recorder" && trigger == "deploy" && graph == "graph-a"
+        ));
+        assert!(matches!(
+            observations[2],
+            (ref lens, ObservableEvent::TriggerDisarmed { ref trigger })
+                if lens == "trigger-recorder" && trigger == "deploy"
+        ));
+        assert!(matches!(
+            observations[3],
+            (
+                ref lens,
+                ObservableEvent::VerifyPostResult {
+                    ref block,
+                    reward: 1.0,
+                    ref verdict,
+                    ref evidence,
+                }
+            ) if lens == "verify-recorder"
+                && block == "task-a"
+                && verdict == &Verdict::pass("compile")
+                && evidence.is_empty()
+        ));
+        assert_eq!(
+            observations[1].1.source_scope(),
+            LensScope::Graph("graph-a".to_string())
+        );
+
+        state.cancel.cancel();
+        bridge.await.expect("bridge shutdown");
+        Ok::<(), roko_core::RokoError>(())
     }
 
     #[tokio::test]
@@ -3223,6 +3625,77 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn production_construction_preserves_verified_restart_provenance() {
+        let dir = tempdir().unwrap();
+        let workdir = dir.path().to_path_buf();
+        let state_dir = workdir.join(".roko/state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let executor = serde_json::json!({
+            "schema_version": 1,
+            "plan_states": {
+                "restart": {
+                    "plan_id": "restart",
+                    "current_phase": {"kind": "implementing"},
+                    "assigned_agents": []
+                }
+            },
+            "queue_order": ["restart"],
+            "speculative_executions": {},
+            "timestamp_ms": 42
+        });
+        let snapshot = roko_runtime::StateSnapshot::new(
+            42,
+            executor.to_string(),
+            serde_json::json!({
+                "schema_version": 1,
+                "executor": executor,
+                "timestamp_ms": 42
+            })
+            .to_string(),
+            serde_json::json!({
+                "schema_version": 1,
+                "run_id": "restart-run",
+                "timestamp_ms": 42,
+                "tasks_total": 0,
+                "tasks_completed": 0,
+                "tasks_failed": 0,
+                "total_tokens_in": 0,
+                "total_tokens_out": 0,
+                "total_cost_usd": 0.0,
+                "total_agent_calls": 0,
+                "replan_ledger": {}
+            })
+            .to_string(),
+            serde_json::json!({"rungs": {}}).to_string(),
+        );
+        std::fs::write(
+            state_dir.join("state-snapshot.json"),
+            serde_json::to_vec(&snapshot).unwrap(),
+        )
+        .unwrap();
+
+        let state = build_app_state(
+            workdir,
+            Arc::new(NoOpRuntime),
+            roko_core::config::schema::RokoConfig::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        let captured = state.state_hub.cursor_snapshot();
+        assert!(captured.snapshot.plans.contains_key("restart"));
+        assert!(captured.provenance.bootstrapped);
+        assert!(captured.provenance.recovered);
+        assert!(!captured.provenance.live_events_applied);
+        assert_eq!(
+            captured.provenance.source_status.as_deref(),
+            Some("state_snapshot")
+        );
+        assert!(captured.provenance.runner.is_some());
+        assert_eq!(captured.next_seq, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn shutdown_persists_cascade_router_state() {
         let dir = tempdir().expect("tempdir");
         let workdir = dir.path().to_path_buf();
@@ -3249,6 +3722,59 @@ mod tests {
             vec!["claude-sonnet-4-6".to_string()],
         );
         assert_eq!(reloaded.total_observations(), 1);
+    }
+
+    #[tokio::test]
+    async fn cold_archival_tick_moves_only_aged_signals_out_of_hot_storage() {
+        use roko_core::{Body, ColdStore, Context, Kind, Query, Signal, Store};
+
+        let dir = tempdir().expect("tempdir");
+        let roko_dir = dir.path().join(".roko");
+        let hot = roko_fs::FileSubstrate::open(&roko_dir)
+            .await
+            .expect("open hot substrate");
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let aged = Signal::builder(Kind::Metric)
+            .body(Body::text("aged"))
+            .created_at_ms(now_ms - 120_000)
+            .build();
+        let fresh = Signal::builder(Kind::Metric)
+            .body(Body::text("fresh"))
+            .created_at_ms(now_ms)
+            .build();
+        hot.put(aged.clone()).await.expect("store aged signal");
+        hot.put(fresh.clone()).await.expect("store fresh signal");
+
+        let hub = roko_runtime::StateHub::default_capacity();
+        let signal_store = crate::state::SignalStore::new(roko_dir.clone(), hub.sender());
+        let archived = run_cold_archival_tick(&signal_store, 60_000, 100)
+            .await
+            .expect("archive tick");
+        assert_eq!(archived, 1);
+
+        // The archival tick owns a separate FileSubstrate handle. Reopen the
+        // hot store to validate the durable post-compaction state rather than
+        // the original handle's deliberately independent in-memory index.
+        let reopened_hot = roko_fs::FileSubstrate::open(&roko_dir)
+            .await
+            .expect("reopen hot substrate");
+        let remaining = reopened_hot
+            .query(&Query::all(), &Context::now())
+            .await
+            .expect("query hot substrate");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, fresh.id);
+
+        let cold = roko_fs::ArchiveColdSubstrate::open(roko_dir.join("cold"))
+            .await
+            .expect("open cold substrate");
+        assert!(cold.contains(&aged.id).await.expect("query cold substrate"));
+        assert!(
+            !cold
+                .contains(&fresh.id)
+                .await
+                .expect("query cold substrate")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3379,6 +3905,64 @@ mod tests {
             .await
             .expect("validation must happen before listener bind");
         drop(rebound);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_server_with_state_emits_periodic_telemetry_and_shuts_down() {
+        let dir = tempdir().expect("tempdir");
+        let state = Arc::new(
+            build_app_state(
+                dir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                None,
+                None,
+            )
+            .expect("build app state"),
+        );
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve probe port");
+        let port = probe.local_addr().expect("probe address").port();
+        drop(probe);
+
+        let server_state = Arc::clone(&state);
+        let server = tokio::spawn(run_server_with_state(server_state, "127.0.0.1", port));
+        let telemetry_path = state.layout.telemetry_observations_path();
+        let observations = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let Ok(contents) = tokio::fs::read_to_string(&telemetry_path).await {
+                    let observations = contents
+                        .lines()
+                        .filter_map(|line| {
+                            serde_json::from_str::<roko_core::obs::TelemetryObservation>(line).ok()
+                        })
+                        .collect::<Vec<_>>();
+                    if observations.len() >= 3 {
+                        break observations;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        // Always cancel and join the production lifecycle before asserting so
+        // a failed observation cannot strand server background tasks in tests.
+        state.shutdown().await;
+        let server_result = tokio::time::timeout(std::time::Duration::from_secs(3), server)
+            .await
+            .expect("server did not stop after cancellation")
+            .expect("server task panicked");
+        server_result.expect("server returned an error");
+
+        let observations = observations.expect("serve lifecycle did not emit telemetry");
+        let names = observations
+            .iter()
+            .map(|observation| observation.lens_name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["token-usage", "latency", "cost"]);
+        assert!(state.cancel.is_cancelled());
     }
 
     /// T3-25: a `PORT` env override must replace **only** the port, leaving

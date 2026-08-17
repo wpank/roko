@@ -1,5 +1,8 @@
 # Observability and Telemetry
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Deployment-level observability is part of the product, not an afterthought. Roko runs across
 > laptop-local, single-server, container, clustered, and edge shapes, but every shape still has
 > to expose the same operator story: structured logs, scrapeable metrics, distributed traces,

@@ -16,13 +16,13 @@ default = []
 # Without this feature, chain.* tools are absent from the tool catalog and
 # handler_for returns None for all chain.* names, so no model is ever
 # advertised a chain tool without an executable handler.
-# roko-chain is still a mandatory dependency (for ISFR tools); this feature
-# only controls whether the chain-domain *tool* surface is active.
-chain = []
+# The dependency itself is optional so the default standard-tool build does
+# not compile the deferred chain subsystem.
+chain = ["dep:roko-chain"]
 
 [dependencies]
 roko-core = { path = "../roko-core" }
-roko-chain = { path = "../roko-chain" }
+roko-chain = { path = "../roko-chain", optional = true }
 async-trait = "0.1"
 serde = { workspace = true }
 serde_json = { workspace = true }

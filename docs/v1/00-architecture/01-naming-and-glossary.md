@@ -1,5 +1,8 @@
 # Naming and Glossary
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **TL;DR**: This is the canonical vocabulary reference for Roko. It now distinguishes shipping
 > code from target-state design terms with explicit status tags, so docs stop describing planned
 > architecture as if it already exists. Use this document when writing docs, code comments,

@@ -1,5 +1,8 @@
 # Configuration — Layered Resolution
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > `roko.toml` format and the layered resolution system: CLI flags → environment variables → config file → defaults. Minimal config, override only what you need.
 
 

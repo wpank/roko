@@ -1,5 +1,8 @@
 # Snapshot & Crash Recovery
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Modules**: `roko-orchestrator/src/executor/snapshot.rs`,
 > `roko-orchestrator/src/executor/recovery.rs`
 > **Key types**: `ExecutorSnapshot`, `RecoveryEngine`, `RecoveredState`

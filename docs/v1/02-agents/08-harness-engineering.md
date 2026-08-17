@@ -1,5 +1,8 @@
 # 08 — Harness Engineering
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Sub-doc 08 of **02-agents** · Roko Documentation
 >
 > This document covers the Meta-Harness research (Lee et al., 2026), the

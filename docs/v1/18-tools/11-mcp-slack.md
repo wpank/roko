@@ -1,5 +1,8 @@
 # 11 — roko-mcp-slack
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > 8 Slack API tools: messaging, channels, threads, reactions, files, user lookup.
 > Socket Mode and HTTP Mode operation.
 

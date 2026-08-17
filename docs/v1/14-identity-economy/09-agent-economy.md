@@ -1,5 +1,8 @@
 # 09 — Agent Economy: Revenue Streams, Self-Sustainability, and Growth
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Agents are economic actors. They earn, spend, invest, and grow. This document specifies
 > the revenue model, cost structure, self-sustainability threshold, reputation-weighted
 > economics, growth flywheel, and the seven feedback loops that drive exponential returns.

@@ -1,5 +1,8 @@
 # 10 — VCG Attention Auction: Mechanism Design for Context Allocation
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Layer 2 Scaffold — Synapse Architecture
 > Status: **Design** — Specified in PRD, not yet implemented
 > Canonical sources: `refactoring-prd/09-innovations.md` §II, §XIX.E

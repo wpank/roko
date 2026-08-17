@@ -1,5 +1,8 @@
 # Adaptive Signal Metabolism
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Signals are living organisms. They compete for attention, reproduce when useful, die when obsolete, and evolve through mutation and selection. The TA subsystem is an ecological system governed by Hebbian learning and replicator dynamics.
 
 

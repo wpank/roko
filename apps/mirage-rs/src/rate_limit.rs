@@ -328,7 +328,7 @@ impl RateLimiter {
         let mut map = self.author_buckets.lock();
         let cell = map
             .entry(author.to_owned())
-            .or_insert_with(|| Mutex::new(TokenBucket::new(capacity, Duration::from_secs(3600))));
+            .or_insert_with(|| Mutex::new(TokenBucket::new(capacity, Duration::from_hours(1))));
         let mut b = cell.lock();
         f(&mut b)
     }
@@ -371,23 +371,23 @@ impl RateLimiter {
         }
 
         // Per-author quota check for write methods.
-        if matches!(class, MethodClass::Write) {
-            if let Some(author_id) = author {
-                let res = self.with_author_bucket(author_id, |bucket| bucket.try_consume(now));
-                if let Err(reset_at_ms) = res {
-                    // Refund the method-bucket token we just consumed so the
-                    // failed attempt does not also exhaust method budget.
-                    // (Refund is best-effort: recompute and add one back.)
-                    self.with_method_bucket(method, limit_rps, |bucket| {
-                        bucket.tokens = (bucket.tokens + 1.0).min(bucket.capacity);
-                    });
-                    self.total_denied.fetch_add(1, Ordering::Relaxed);
-                    return Err(RateLimitError::AuthorQuotaExceeded {
-                        author: author_id.to_owned(),
-                        limit_per_hour: self.config.author_writes_per_hour,
-                        reset_at_ms,
-                    });
-                }
+        if matches!(class, MethodClass::Write)
+            && let Some(author_id) = author
+        {
+            let res = self.with_author_bucket(author_id, |bucket| bucket.try_consume(now));
+            if let Err(reset_at_ms) = res {
+                // Refund the method-bucket token we just consumed so the
+                // failed attempt does not also exhaust method budget.
+                // (Refund is best-effort: recompute and add one back.)
+                self.with_method_bucket(method, limit_rps, |bucket| {
+                    bucket.tokens = (bucket.tokens + 1.0).min(bucket.capacity);
+                });
+                self.total_denied.fetch_add(1, Ordering::Relaxed);
+                return Err(RateLimitError::AuthorQuotaExceeded {
+                    author: author_id.to_owned(),
+                    limit_per_hour: self.config.author_writes_per_hour,
+                    reset_at_ms,
+                });
             }
         }
 

@@ -1,5 +1,8 @@
 # Funding and Budgets
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L1 Framework (capabilities, model routing) + L3 Harness (monitoring, interventions)
 >
 > **Prerequisites**: `docs/17-lifecycle/03-configuration-and-operator-model.md` (operator controls), `docs/00-architecture/INDEX.md` (5-layer taxonomy)

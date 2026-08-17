@@ -1,5 +1,8 @@
 # Permissioned Subnets: Private Collective Meshes
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L4 Orchestration (organizational coordination), L1 Framework (access control)
 >
 > **Synapse traits**: `Substrate` (scoped storage with access control), `Gate` (permission

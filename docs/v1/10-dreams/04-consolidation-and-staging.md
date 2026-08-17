@@ -1,5 +1,8 @@
 # Consolidation and the Staging Buffer
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: Cognitive Cross-Cut (L2 Scaffold → L3 Harness gate validation)
 >
 > **Synapse Traits**: `Substrate` (NeuroStore write), `Gate` (confidence threshold validation), `Composer` (Engram assembly)

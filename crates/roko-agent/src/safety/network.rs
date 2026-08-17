@@ -123,12 +123,12 @@ pub fn check_url_with_policy(url: &str, policy: &NetworkPolicy) -> Result<(), To
             .strip_prefix('[')
             .and_then(|s| s.strip_suffix(']'))
             .unwrap_or(host);
-        if let Ok(ip) = ip_candidate.parse::<IpAddr>() {
-            if is_private_ip(&ip) {
-                return Err(ToolError::NetworkBlocked(
-                    "private network address blocked".to_string(),
-                ));
-            }
+        if let Ok(ip) = ip_candidate.parse::<IpAddr>()
+            && is_private_ip(&ip)
+        {
+            return Err(ToolError::NetworkBlocked(
+                "private network address blocked".to_string(),
+            ));
         }
     }
 

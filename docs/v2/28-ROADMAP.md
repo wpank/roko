@@ -14,26 +14,27 @@ What is already built, working, and wired. This is the foundation the roadmap bu
 
 | Crate | Unified Concepts | Status |
 |---|---|---|
-| `roko-core` | Signal (Engram), 6 protocols (Store/Score/Verify/Route/Compose/React) | Kernel, stable |
-| `roko-agent` | Agent specialization: 9-step pipeline, 5+ LLM backends, MCP, tool loop, safety | Dispatch wired |
-| `roko-agent-server` | Agent sidecar: `/message`, `/stream`, `/predictions`, `/research`, `/tasks` | Wired |
-| `roko-orchestrator` | Graph execution (plan DAG, parallel executor, merge queue) | Wired via orchestrate.rs |
+| `roko-core` | Signal (preferred name; Rust struct is `Engram`, `type Signal = Engram` alias), 6 protocols (Store/Score/Verify/Route/Compose/React) | Kernel, stable |
+| `roko-agent` | Agent specialization: 9-step pipeline, 11 LLM backends (Claude CLI, Anthropic API, OpenAI-compat, Cursor ACP, Perplexity, Gemini API, Gemini CLI, Cerebras, Cursor CLI, Hermes, OpenClaw), MCP, tool loop, safety, bounded meta-agent lineage/grants and exact role morph policy | Dispatch wired; R04 meta lifecycle primitives wired |
+| `roko-agent-server` | Agent sidecar plus supervised durable relay client with bounded queues, reconnect, cursor restore, replay/snapshot handling, and ACK-after-handler-commit | Wired |
+| `roko-cli::orchestrator` | Plan state machine, task/worktree isolation, parallel executor, merge queue | Wired via runner v2; migrated from the removed standalone crate |
 | `roko-gate` | Verify protocol: 11 gates, 7-rung pipeline, adaptive thresholds | Wired, called per-task |
 | `roko-compose` | Compose protocol: prompt assembly, 9 templates, VCG auction, enrichment | Wired |
 | `roko-learn` | Learning Loops 1+2: episodes, cascade router, experiments, efficiency, bandits | Fully wired |
 | `roko-neuro` | Memory specialization: knowledge store, tiers, HDC fingerprints, distillation | Wired |
-| `roko-dreams` | Loop 3 partial: NREM/REM/Integration phases built, no runtime trigger | Built, not triggered |
+| `roko-dreams` | Loop 3 phases plus daemon-resident adaptive-idle, cron, and episode-count scheduling | Runtime scheduled; Bus/intensive integration partial |
 | `roko-conductor` | 10 watchers, circuit breaker, diagnosis | Wired into executor |
-| `roko-runtime` | ProcessSupervisor, event bus, cancellation | Wired into PlanRunner |
+| `roko-runtime` | ProcessSupervisor, event bus, cancellation, supervised HTTP JSON connector registry | Wired into PlanRunner and connector control plane |
 | `roko-primitives` | HDC vectors, tier routing | Fully wired |
 | `roko-daimon` | Affect engine, somatic markers, dispatch modulation | Wired per-task |
-| `roko-serve` | ~85 HTTP routes, SSE, WebSocket on :6677 | Wired |
-| `roko-cli` | All CLI commands + ratatui TUI (F1-F7 tabs) | Main entry point |
+| `roko-serve` | ~200 HTTP routes, SSE, WebSocket on :6677; connector lifecycle; durable exact-room relay subscription journal; local arena and meta-agent services | Wired at the scoped R01–R04 boundaries |
+| `roko-cli` | All CLI commands + ratatui TUI (F1-F10 tabs) | Main entry point |
 | `roko-fs` | FileSubstrate (JSONL), GC, layout | Stable |
-| `roko-std` | 19 builtin tools, mock dispatcher | Stable |
+| `roko-std` | 35 catalog entries by default (16 executable local + 19 GitHub MCP); 52 with 17 chain placeholders | Dispatch classes verified; HTTP MCP execution remains unwired |
 | `roko-mcp-code` | Code-intelligence MCP server | Wired |
 | `roko-index` | Parser + graph + HDC indexing | Built |
-| `roko-chain` | Chain witness primitives, marketplace, validation registry | Partial |
+| `roko-chain` | Chain witness primitives, marketplace, validation registry, durable local arena registry/attempt settlement/outbox | Partial overall; R03 local arena boundary wired |
+| `agent-relay` | Bounded canonical-envelope relay, atomic subscribe/recovery, replay/snapshot, ACK and supersession | R02 wired |
 
 ### 1.2 Working End-to-End Flows
 
@@ -43,26 +44,46 @@ The following flows work today via CLI:
 2. **Research-enhanced planning**: `research enhance-prd` -> `prd plan` with research context
 3. **Automatic replan**: Gate failure triggers `build_gate_failure_plan_revision` (Loop 2)
 4. **Auto-plan on publish**: `prd.auto_plan` config triggers plan generation when PRD is published
-5. **Interactive monitoring**: `roko dashboard` TUI with F1-F7 tabs
-6. **HTTP control plane**: `roko serve` exposes ~85 routes for external callers
+5. **Interactive monitoring**: `roko dashboard` TUI with F1-F10 tabs
+6. **HTTP control plane**: `roko serve` exposes ~200 routes for external callers
 7. **Agent sidecar**: `roko agent serve` with real LLM dispatch
+8. **GitHub plan workflow**: plan runs open a draft `roko/plan/*` PR, publish terminal
+   task results, track failures as issues, and merge only after local regression and
+   GitHub CI succeed; verified webhooks graduate asynchronously into trigger signals
+9. **Scoped connectivity and arena safety**: supervised HTTP JSON connectors, bounded relay
+   transport with restart-durable exact-room subscription execution, a local authorized arena
+   lifecycle with external scoring, and human-requested meta-agent activation/morph/deactivation
+   through the fixed five-head safety Graph
 
 ### 1.3 What Phase 0 Lacks (In Unified Vocabulary)
 
-- No **Pulse/Bus kernel** — event bus exists in roko-runtime but is not promoted to a kernel trait alongside Store
-- No **predict-publish-correct** pattern — learning happens but is not structural via Bus pub/sub
-- No **demurrage** on knowledge Signals — tiers exist but no balance/decay mechanics
+> **Implementation status:** Phase 0 ~90% IMPLEMENTED. Phase 1 remains partial (Pulse/Bus
+> exist; kernel-wide protocol convergence is incomplete). Phases 2-3 are not complete. The
+> deprecated rate-oracle vertical was removed on 2026-08-13. Key gaps include EFE routing,
+> Bus-driven/intensive dream policy, Graph authoring round-trip, Rack, and the native Agent
+> runtime.
+
+- ~~No **Pulse/Bus kernel**~~ [PARTIAL] — event bus exists in roko-runtime; StateHub push-based `DashboardEvent` system is wired; Bus is not yet a kernel trait
+- ~~No **predict-publish-correct** pattern~~ [PARTIAL] — Graph Cell execution publishes one
+  typed prediction before attempts and one calibration/correction after terminal success;
+  exhausted retries publish no false calibration. The current honest implementation is the
+  Assess Cell, and protocol-wide Cell participation remains future work
+- ~~No **demurrage** on knowledge Signals~~ [PARTIAL] — demurrage balance field exists on knowledge entries; decay mechanics exist in roko-neuro but are not fully wired at runtime
 - No **Heuristic kind** — knowledge Signals have no when/then/falsifier structure
 - No **EFE routing** — CascadeRouter uses LinUCB bandits, not Expected Free Energy (Friston 2006)
-- No **Observe protocol** (Lens system) — monitoring exists but is not protocol-based
-- No **Trigger protocol** — triggers are hardcoded, not declarative
-- No **Connect protocol** formalization — connectors exist but are not protocol-based
-- No **Graph authoring** — plans are TOML task lists, not typed Graphs with edges
+- ~~No **Observe protocol** (Lens system)~~ [DONE at the E33 runtime boundary] — all 11 bounded built-in executors are live with queued drop-oldest delivery, breaker controls, restart-durable history, resolution queries, configurable 7-day retention, and production ingress for all 39 event variants. `AgentBudgetUpdate` comes from the runner ledger and the final six Agent lifecycle variants enter through a durable, identity-bound observation API; E23 still owns the absent native Agent components that will eventually call it internally
+- ~~No **Trigger protocol**~~ [DONE] — the declarative long-lived runtime covers all seven source kinds, mapped root-Cell Signals, Space/capability enforcement, shared Pulse delivery, Graph execution, filters, rate/concurrency policy, webhooks, durable CLI/API history, IANA/DST cron, CA-verified mTLS, and bundled watcher-to-raw-EVM ABI decoding with automatic finality promotion, canonical-hash checks, bounded reorg replay, invalidation, and idempotency
+- ~~No **Connect protocol** formalization~~ [PARTIAL] — the async five-method contract, one supervised HTTP JSON adapter, authenticated lifecycle routes, and a bounded relay server/durable client are live. Additional connector transports, startup discovery, MCP auto-registration, workspace discovery, A2A/x402, finality/reorg execution, and dashboard auto-connect remain
+- ~~No **Graph authoring**~~ [PARTIAL] — standalone Graph TOML loads, validates its DAG,
+  and runs with typed conditional edge variants; plan authoring still uses task lists and
+  does not round-trip through the Graph schema
 - No **Rack** abstraction — no parameterized Graphs
 - No **TypeSchema validation** at load time
-- **Loop 3** (dream cycle) is built but has no runtime trigger
-- **Loop 4** (structural adaptation) does not exist
-- On-chain registries are specified but not deployed
+- ~~**Loop 3** (dream cycle) is built but has no runtime trigger~~ [PARTIAL] — the daemon now owns automatic adaptive-idle, cron, and episode-count execution with active-work deferral and restart-aware report state. Bus-triggered scheduling, intensive backlog draining, and the spec's Graph/Cell refactor remain future work
+- **Loop 4** (structural adaptation) does not exist. R04's explicit, artifact-bound
+  meta-agent proposal/activation and role morph lifecycle is not autonomous generated
+  execution, ADAS, HGM, or a dream-cycle structural-change generator
+- On-chain registries are specified but only partially deployed. The legacy rate-oracle vertical has been removed; remaining registries are Phase 2+.
 
 ### 1.4 Remaining Work Items (from CLAUDE.md)
 
@@ -70,10 +91,17 @@ These are the immediate priorities before entering Phase 1:
 
 | Item | Description | Status |
 |---|---|---|
-| 13 | Knowledge-informed agent routing — neuro store not yet consulted for model selection in CascadeRouter | Not started |
-| 14 | Cold substrate archival — built but not instantiated at runtime (no cron/trigger) | Not started |
-| 15 | UX34: force_backend override learning — cascade router doesn't learn from manual overrides | Not started |
-| 16 | Chain runtime integration — Phase 2+ (needs blockchain backend for witness anchoring) | Deferred |
+| 13 | Knowledge-informed agent routing — runner-v2 consults persisted neuro knowledge and supplies model hints to cascade selection | Done (2026-08-13) |
+| 14 | Cold substrate archival — configurable server timer archives aged signals before pruning hot storage | Done (2026-08-13) |
+| 14a | Provider outcome feedback — direct per-attempt accounting, shared persisted health, and unhealthy-provider filtering in runner-v2 | Done (2026-08-13) |
+| 14b | ACP cascade dispatch — exact opt-in, real selected-key dispatch, explicit session precedence, decision metadata, and correctly keyed direct-prompt observations | Done (2026-08-14) |
+| 14c | ACP live streaming — plan/do structured producers, immediate stdout/stderr forwarding, retry/failure correlation, and process-tree cancellation | Done (2026-08-14) |
+| 14d | Episode-store convergence — layout V3 migrates root/learn/memory inputs into the sole `.roko/episodes.jsonl` sink with archives and malformed-byte quarantine | Done (2026-08-14) |
+| 15 | Complete the remaining six E33 Agent lifecycle event variants | Done at runtime ingress (2026-08-15); native Agent owners remain E23 |
+| 16 | Complete opaque provider-internal result visibility, semantic anomaly detection, non-provider trust-boundary and incident/memory/rate-limit effects; broaden subprocess-only network policy if domain/port or in-process HTTP isolation is required | Partial; automatic provider final-output quarantine/isolation is live |
+| 17 | Make advertised MCP tools executable in non-CLI HTTP provider tool loops | Done (2026-08-13) |
+| 18 | UX34: force_backend override learning — cascade router doesn't learn from manual overrides | Not started |
+| 19 | Chain runtime integration — Phase 2+ (needs blockchain backend for witness anchoring) | Deferred |
 
 ---
 
@@ -96,7 +124,7 @@ Promote Pulse and Bus to kernel-level, wire predict-publish-correct, add demurra
 | Implement `Pulse::graduate()` -> Signal | `crates/roko-core/src/pulse.rs` | S | Pulse + Signal |
 | Implement `Signal::to_pulse()` (lossy projection) | `crates/roko-core/src/signal.rs` | S | Pulse + Signal |
 | Topic taxonomy: define standard topic hierarchy | `crates/roko-core/src/topics.rs` | S | -- |
-| Wire Cell lifecycle events as Pulses on Bus | `crates/roko-orchestrator/` | M | BroadcastBus |
+| Wire Cell lifecycle events as Pulses on Bus | `crates/roko-cli/src/runner/` | M | BroadcastBus |
 
 ### 2.2 Predict-Publish-Correct
 
@@ -118,7 +146,7 @@ Promote Pulse and Bus to kernel-level, wire predict-publish-correct, add demurra
 
 | Task | Target | Size | Depends On |
 |---|---|---|---|
-| Add `balance`, `demurrage_paid`, `last_touched_at` fields to Engram | `crates/roko-core/src/engram.rs` | S | -- |
+| Add `balance`, `demurrage_paid`, `last_touched_at` fields to Signal | `crates/roko-core/src/engram.rs` | S | -- |
 | Implement demurrage rate law: `balance(t+dt) = balance(t) - r*dt - beta*balance(t)*dt` | `crates/roko-neuro/src/demurrage.rs` | M | Balance fields |
 | Implement reinforcement kinds (Retrieved, Cited, GatePassed, Surprised, AgentQuoted) | `crates/roko-neuro/src/demurrage.rs` | S | Demurrage |
 | Novelty-weighted reinforcement: `bonus * (1 - max_similarity)` | `crates/roko-neuro/src/demurrage.rs` | M | HDC index |
@@ -154,9 +182,11 @@ Promote Pulse and Bus to kernel-level, wire predict-publish-correct, add demurra
 
 | Task | Target | Size | Depends On |
 |---|---|---|---|
-| Add CronTrigger for dream cycle | `crates/roko-dreams/src/trigger.rs` | S | -- |
-| Wire dream trigger into `roko serve` startup | `crates/roko-serve/src/lib.rs` | S | Dream trigger |
-| Add `roko knowledge dream schedule` CLI | Already exists, wire to trigger | S | Dream trigger |
+| Adaptive-idle scheduling policy | `crates/roko-dreams/src/runner.rs` | Done | -- |
+| Cron and episode-count scheduling | `crates/roko-dreams/src/runner.rs` | Done | Idle policy |
+| Resident scheduling in daemon | `crates/roko-serve/src/dreams.rs`, `roko-cli` daemon | Done | Dream policy |
+| Manual run and schedule inspection | `roko knowledge dream` | Done | Dream runner |
+| Bus-signal trigger and intensive backlog mode | Dream/runtime integration | Future | Kernel Bus |
 
 ### 2.7 Observe Protocol + 10 Lenses
 
@@ -189,8 +219,8 @@ Promote Pulse and Bus to kernel-level, wire predict-publish-correct, add demurra
 | Task | Target | Size | Depends On |
 |---|---|---|---|
 | Define `TypeSchema` enum (primitives, collections, named structs, unions) | `crates/roko-core/src/schema.rs` | M | -- |
-| Implement validation at Graph-load time (type check edges) | `crates/roko-orchestrator/src/graph/` | M | TypeSchema |
-| Implement runtime validation (check Cell outputs match schema) | `crates/roko-orchestrator/src/graph/` | S | TypeSchema |
+| Implement validation at Graph-load time (type check edges) | `crates/roko-graph/src/loader.rs` | M | TypeSchema |
+| Implement runtime validation (check Cell outputs match schema) | `crates/roko-graph/src/engine.rs` | S | TypeSchema |
 
 ---
 
@@ -204,13 +234,13 @@ Replace the current plan executor with a proper Graph engine. Introduce type-sta
 
 | Task | Target | Size | Depends On |
 |---|---|---|---|
-| Define Graph TOML schema with typed edges | `crates/roko-orchestrator/src/graph/schema.rs` | M | Phase 1 TypeSchema |
-| Implement Graph loader with full validation | `crates/roko-orchestrator/src/graph/loader.rs` | L | Graph schema |
-| Implement Graph executor with state machine | `crates/roko-orchestrator/src/graph/executor.rs` | L | Graph loader |
-| Add Flow (runtime Graph instance) with RunId | `crates/roko-orchestrator/src/graph/flow.rs` | M | Graph executor |
-| Add Hot Flow variant (tick-driven, stays resident) | `crates/roko-orchestrator/src/graph/hot.rs` | M | Flow |
-| Wire Graph executor into `plan run` | `crates/roko-cli/src/orchestrate.rs` | L | Flow |
-| Snapshot/resume for Graph execution | `crates/roko-orchestrator/src/graph/snapshot.rs` | M | Flow |
+| Define Graph TOML schema with typed edges | `crates/roko-graph/src/types.rs` | M | Phase 1 TypeSchema |
+| Implement Graph loader with full validation | `crates/roko-graph/src/loader.rs` | L | Graph schema |
+| Implement Graph executor with state machine | `crates/roko-graph/src/engine.rs` | L | Graph loader |
+| Add Flow (runtime Graph instance) with RunId | `crates/roko-graph/src/engine.rs` | M | Graph executor |
+| Add Hot Flow variant (tick-driven, stays resident) | `crates/roko-graph/src/hot.rs` | M | Flow |
+| Wire Graph executor into `plan run` | `crates/roko-cli/src/runner/event_loop.rs` | L | Flow |
+| Snapshot/resume for Graph execution | `crates/roko-runtime/src/state_snapshot.rs` | M | Flow |
 | Migration tool: convert existing plans to Graph TOML | `crates/roko-cli/src/migrate.rs` | M | Graph loader |
 
 ### 3.2 Type-State Agent Lifecycle
@@ -260,9 +290,9 @@ Replace the current plan executor with a proper Graph engine. Introduce type-sta
 
 | Task | Target | Size | Depends On |
 |---|---|---|---|
-| Define Rack struct (Graph + Macros + Slots) | `crates/roko-orchestrator/src/graph/rack.rs` | M | Graph schema |
-| Implement Macro substitution at load time | `crates/roko-orchestrator/src/graph/macro_expand.rs` | M | Rack struct |
-| Implement Slot binding | `crates/roko-orchestrator/src/graph/slot.rs` | S | Rack struct |
+| Define Rack struct (Graph + Macros + Slots) | `crates/roko-graph/src/rack.rs` | M | Graph schema |
+| Implement Macro substitution at load time | `crates/roko-graph/src/macro_expand.rs` | M | Rack struct |
+| Implement Slot binding | `crates/roko-graph/src/slot.rs` | S | Rack struct |
 
 ### 3.7 5-Tier SPI
 
@@ -282,7 +312,7 @@ Replace the current plan executor with a proper Graph engine. Introduce type-sta
 | Task | Target | Size | Depends On |
 |---|---|---|---|
 | Cell manifest format (TOML) | `crates/roko-core/src/manifest.rs` | S | -- |
-| Local Cell registry | `crates/roko-orchestrator/src/registry.rs` | M | Cell manifest |
+| Local Cell registry | `crates/roko-graph/src/registry.rs` | M | Cell manifest |
 | `roko marketplace publish/install/fork` CLI | `crates/roko-cli/src/marketplace.rs` | L | Local registry |
 | Marketplace HTTP routes | `crates/roko-serve/src/routes/marketplace.rs` | M | Local registry |
 
@@ -290,7 +320,11 @@ Replace the current plan executor with a proper Graph engine. Introduce type-sta
 
 ## 4. Phase 3 — Autonomy, Safety, and Economy (Long-Term)
 
-Full autonomous operation with CaMeL IFC, 5-head corrigibility, on-chain anchoring, arenas, brain export, and cross-agent knowledge sharing.
+Full autonomous operation with CaMeL IFC, on-chain anchoring, arena learning/economy,
+brain export, and cross-agent knowledge sharing remains long-term. R03 and R04 now provide
+a deliberately narrower local arena evidence service and explicit meta-agent lifecycle;
+they do not imply Loop 4, ADAS, HGM, autonomous generated execution, an on-chain economy,
+or continuous safety wrapping of every Flow.
 
 ### 4.1 Learning Loop 4 (L4 Self-Evolution)
 
@@ -318,12 +352,20 @@ Full autonomous operation with CaMeL IFC, 5-head corrigibility, on-chain anchori
 
 **Goal**: Lexicographic safety ordering: deference > switch > truth > impact > task (Nayebi 2024). Implemented as a Verify-protocol chain where each head can veto.
 
+**R04 scoped status:** the immutable verifier implementations and canonical five-node
+conditional Graph are live. Meta-agent activation and explicit role morph/rollback execute
+all five heads in exact order, persist canonical evidence, enforce non-widening tool/data/
+network/cost/spawn grants and lineage limits, and require independently settled R03 evidence
+bound to the complete activation artifact. Owner-authorized deactivation is durable and
+requires live descendants to be deactivated first. This is a meta-lifecycle boundary, not a
+mandatory wrapper around every Graph/Flow.
+
 | Task | Target | Size | Depends On |
 |---|---|---|---|
-| Define 5-head corrigibility as Verify chain | `crates/roko-gate/src/corrigibility.rs` | L | Phase 2 Verify |
-| Implement 5 Verify heads | `crates/roko-gate/src/corrigibility/` | L | Corrigibility chain |
-| Implement RecursiveSafetyMonitor | `crates/roko-gate/src/recursive_safety.rs` | L | Corrigibility chain |
-| Wire into Graph executor as mandatory wrapper | `crates/roko-orchestrator/src/graph/safety.rs` | M | RecursiveSafetyMonitor |
+| ~~Define 5-head corrigibility as Verify chain~~ [DONE R04] | `crates/roko-core/src/corrigibility.rs`, `crates/roko-graph/src/cells/corrigibility.rs` | L | Phase 2 Verify |
+| ~~Implement 5 Verify heads~~ [DONE R04] | `crates/roko-core/src/corrigibility.rs` | L | Corrigibility chain |
+| ~~Implement RecursiveSafetyMonitor for meta activation/morph~~ [DONE R04 scoped] | `crates/roko-agent/src/safety/recursive.rs` | L | Corrigibility chain |
+| Wire into Graph executor as mandatory wrapper | `crates/roko-graph/src/safety.rs` | M | RecursiveSafetyMonitor |
 
 ### 4.4 On-Chain Registry Deployment
 
@@ -344,10 +386,10 @@ Full autonomous operation with CaMeL IFC, 5-head corrigibility, on-chain anchori
 
 | Task | Target | Size | Depends On |
 |---|---|---|---|
-| Arena types + registry | `crates/roko-chain/src/arena.rs` | L | On-chain contracts |
+| ~~Arena types + durable local registry~~ [DONE E40/R03 local] | `crates/roko-chain/src/arena.rs` | L | -- |
 | 7-step flywheel pipeline | `crates/roko-learn/src/arena/` | L | Arena types |
 | Cross-arena transfer detection via HDC fingerprint correlation | `crates/roko-primitives/src/transfer.rs` | M | Arena types + HDC |
-| Arena API routes | `crates/roko-serve/src/routes/arenas.rs` | L | Arena types |
+| ~~Authorized local arena lifecycle, attempt, settlement and leaderboard routes~~ [DONE R03 local] | `crates/roko-serve/src/routes/arenas.rs` | L | Arena types |
 | VCG batch matching for bounties | `crates/roko-serve/src/routes/bounties.rs` | M | Bounty routes |
 
 ### 4.6 Brain Export and Import
@@ -385,7 +427,7 @@ Complete mapping of every crate to the unified concepts it owns.
 | `roko-core` | Signal, Pulse, Cell, Graph (types), Bus (trait) | Store, Score, Verify, Route, Compose, React, Observe, Connect, Trigger (traits) | -- | -- |
 | `roko-agent` | -- | Connect (LLM backends) | Agent (type-state lifecycle, 9-step pipeline, CaMeL tags) | -- |
 | `roko-agent-server` | -- | -- | Agent (HTTP sidecar) | -- |
-| `roko-orchestrator` | Graph (execution), Hot Graph | -- | Flow, Hot Flow, Rack | -- |
+| `roko-graph` + `roko-cli::orchestrator` | Graph execution and plan state machine | -- | Flow, Hot Flow, Rack | -- |
 | `roko-gate` | -- | Verify (11 impl, CaMeL monitor, 5-head corrigibility) | -- | -- |
 | `roko-compose` | -- | Compose (9 templates, VCG, CognitiveWorkspace, section effects) | -- | -- |
 | `roko-learn` | -- | Score, Route (EFE), CalibrationPolicy (React) | Loop (Loops 1+2), Arena flywheel | L1, L2 |
@@ -398,7 +440,7 @@ Complete mapping of every crate to the unified concepts it owns.
 | `roko-serve` | -- | Observe (health) | Lens (HTTP), Surfaces | -- |
 | `roko-cli` | -- | -- | Agent (CLI), Lens (TUI), Surfaces (TUI) | -- |
 | `roko-fs` | -- | Store (JSONL) | -- | -- |
-| `roko-std` | Cell (19 tools), Declarative tools (Tier 3) | -- | -- | -- |
+| `roko-std` | Cell (35 tools, 52 with chain), Declarative tools (Tier 3) | -- | -- | -- |
 | `roko-chain` | -- | Store (on-chain), Connect (chain) | Connector, Arena, Eval, Bounty | -- |
 | `roko-index` | -- | Store (code graph) | -- | -- |
 | `roko-mcp-code` | -- | Connect (MCP) | Connector (code intel) | -- |
@@ -470,7 +512,7 @@ The unified vocabulary applies at the spec and documentation level. Existing Rus
 
 | Spec Name | Code Name | When to Rename | Bridge |
 |---|---|---|---|
-| Signal | `Engram` | Phase 2 (Graph engine migration point) | `type Signal = Engram;` |
+| Signal | `Engram` (Rust struct) | Phase 2 (Graph engine migration point) | `Engram` is the Rust struct; `type Signal = Engram;` is the preferred alias |
 | Pulse | `Envelope<E>` | Phase 1 (promote to first-class) | New struct replaces |
 | Bus | `EventBus` | Phase 1 (promote to kernel trait) | New trait replaces |
 | Cell | Module/trait impl | Phase 2 (Cell trait introduced) | New trait |
@@ -520,7 +562,7 @@ The `React` (formerly `Policy`) protocol changes from operating on Signals to op
 
 ### Phase 1 Complete When
 
-- [ ] `Pulse` struct exists in roko-core as a first-class type alongside `Engram`
+- [ ] `Pulse` struct exists in roko-core as a first-class type alongside `Signal`
 - [ ] `Bus` trait exists in roko-core alongside `Substrate`
 - [ ] `BroadcastBus` implementation passes pub/sub integration tests
 - [ ] Cell lifecycle events emitted as Pulses on Bus
@@ -533,7 +575,7 @@ The `React` (formerly `Policy`) protocol changes from operating on Signals to op
 - [ ] Heuristic calibration from gate verdicts via Bus works end-to-end
 - [ ] EFE routing replaces LinUCB in CascadeRouter
 - [ ] Regime conditioning: Route receives regime Signal
-- [ ] Dream cycle runs on a configurable schedule without manual invocation
+- [x] Dream cycle runs on a configurable idle/cron/episode schedule without manual invocation
 - [ ] `Observe`, `Trigger`, and `Connect` traits exist in roko-core
 - [ ] 10 Lenses implemented and wired into TUI + HTTP
 - [ ] TypeSchema validation at Graph-load time
@@ -542,7 +584,8 @@ The `React` (formerly `Policy`) protocol changes from operating on Signals to op
 ### Phase 2 Complete When
 
 - [ ] A Graph can be authored in TOML and executed via `roko plan run`
-- [ ] Hot Graph stays resident and re-fires per tick
+- [x] Hot Graph stays resident and re-fires per tick, with restart-durable retained outputs,
+  cumulative budgets, strict graph/run-scoped Activity replay, and atomic manifests
 - [ ] Existing plans automatically convertible via `roko plan migrate`
 - [ ] Type-state Agent enforces lifecycle transitions at compile time
 - [ ] Vitality model drives behavioral phases (Thriving through Terminal)
@@ -559,8 +602,8 @@ The `React` (formerly `Policy`) protocol changes from operating on Signals to op
 - [ ] Loop 4 proposes a structural change and it is approved/rejected via Agent Inbox
 - [ ] CaMeL IFC: capability tags propagate through Extension hooks, no laundering
 - [ ] CaMeL monitor detects and flags capability tag violations
-- [ ] 5-head corrigibility chain enforces lexicographic safety ordering
-- [ ] RecursiveSafetyMonitor prevents a deliberately crafted safety bypass
+- [x] 5-head corrigibility chain enforces lexicographic safety ordering at the R04 meta-agent activation/morph boundary
+- [x] RecursiveSafetyMonitor rejects crafted widening/reordering/bypass attempts at that scoped boundary
 - [ ] 8 registries deployed on Mirage
 - [ ] An Agent registers ERC-8004 identity, publishes knowledge Signal, receives reputation attestation
 - [ ] Arena 7-step flywheel runs end-to-end

@@ -1,5 +1,8 @@
 # Vision and Core Thesis
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** Roko is a Rust toolkit for building cognitive agents that build themselves.
 > Its core thesis — "the scaffold IS the product" — asserts that given the same LLM, agent
 > performance varies dramatically based on the surrounding harness: context engineering,

@@ -1,5 +1,8 @@
 # Knowledge Transfer via Agent Mesh
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L4 Orchestration (multi-agent coordination) + L1 Framework (Substrate replication)
 >
 > **Prerequisites**: `docs/09-mesh/INDEX.md` (Agent Mesh architecture), `docs/03-neuro/INDEX.md` (Neuro store, Engram format)

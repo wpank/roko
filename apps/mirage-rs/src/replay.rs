@@ -563,10 +563,10 @@ impl TargetedFollower {
             .and_then(|value| value.as_str())
             .and_then(|value| value.parse::<Address>().ok());
 
-        if let Some(filter_addresses) = filter_address_set {
-            if to.is_some_and(|address| filter_addresses.contains(&address)) {
-                return Ok(true);
-            }
+        if let Some(filter_addresses) = filter_address_set
+            && to.is_some_and(|address| filter_addresses.contains(&address))
+        {
+            return Ok(true);
         }
 
         if let Some(filter_selectors) = &self.config.filter_selectors {
@@ -866,10 +866,10 @@ impl SpeculativeExecutor {
 
     fn ensure_cow_baseline(&mut self, state: &ForkState) -> Arc<HashMap<(Address, U256), U256>> {
         let context = Self::current_context(state);
-        if let Some((cached, baseline)) = &self.cow_baseline {
-            if *cached == context {
-                return Arc::clone(baseline);
-            }
+        if let Some((cached, baseline)) = &self.cow_baseline
+            && *cached == context
+        {
+            return Arc::clone(baseline);
         }
         let mut storage = HashMap::new();
         for (address, account) in &state.db.dirty.accounts {

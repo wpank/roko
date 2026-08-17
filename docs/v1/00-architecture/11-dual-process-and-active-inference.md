@@ -1,5 +1,8 @@
 # Dual-Process Cognition and Active Inference
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** Roko implements dual-process cognition inspired by Kahneman's System 1/
 > System 2 (Kahneman 2011) and CLARION's dual-level architecture (Sun 2002). Three
 > inference tiers -- T0 (no LLM), T1 (fast model), T2 (full model) -- are routed by

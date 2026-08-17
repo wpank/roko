@@ -4,6 +4,20 @@
 
 **Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal/Pulse, demurrage, HDC fingerprints, Heuristic kind), [02-CELL](02-CELL.md) (Cell trait, Verify protocol, predict-publish-correct, conjunctive/Pareto scoring), [03-GRAPH](03-GRAPH.md) (Graph composition), [04-EXECUTION](04-EXECUTION.md) (Flow lifecycle), [07-LEARNING](07-LEARNING.md) (4 loops, Variance Inequality), [06-MEMORY](06-MEMORY.md) (demurrage, knowledge distillation), [22-REGISTRIES](22-REGISTRIES.md) (reputation registry, InsightStore), [08-GATEWAY](08-GATEWAY.md) (CascadeRouter)
 
+> **E40 + R03 implementation status (2026-08-16): scoped local arena service implemented.**
+> `roko-chain::arena` provides the declarative arena/scoring model, validated
+> lifecycle registry, attempt limits and cooldowns, independent scorer evidence,
+> derived leaderboards, prize escrow, reputation effects, flywheel exchange types,
+> typed Bus-event projection, and an atomic versioned local snapshot adapter.
+> `roko-serve` now owns that snapshot and exposes a live authorized HTTP lifecycle:
+> create/list/get/transition arenas; start/list/get/submit attempts; settle an
+> attempt from externally bound scoring evidence; and read leaderboards. Mutations
+> are rollback-safe, persisted before response/event projection, and use a durable
+> outbox cursor for at-least-once projection after restart. The broader eight-arena
+> execution catalog, seven-stage learning flywheel, eval registry, cross-arena
+> transfer runtime, on-chain contracts, tokens, bounties, and transfer remain product
+> work rather than implied by this local service.
+
 ---
 
 ## 1. Design Constraints
@@ -299,9 +313,14 @@ pub enum AggregationRule {
 
 ---
 
-## 5. The 8 Arenas
+## 5. Arena Catalog
 
-Eight concrete arenas cover the primary domains where Agents operate. Each arena has domain-specific scoring, but all share the 7-step flywheel.
+> **Catalog execution status:** MINIMAL — Only the Self-Hosting Meta-Arena has an
+> execution path through `roko plan run`. E40 ships the reusable registry and
+> exchange types, but not orchestration for the other seven arena designs or the
+> seven-stage learning flywheel.
+
+Eight arena designs cover the primary domains where Agents operate. Each arena has domain-specific scoring, but all share the 7-step flywheel.
 
 ### 5.1 Coding Arena
 
@@ -1084,21 +1103,32 @@ interface IDisputeResolver {
 
 ### 13.1 Arena Endpoints
 
+The following R03 endpoints are live and backed by
+`.roko/chain/arena-state.json`:
+
 ```
 POST   /api/arenas                          Create a new arena
-GET    /api/arenas                          List arenas (query: state, category, limit, offset, sort)
-GET    /api/arenas/featured                 Curated featured arenas
+GET    /api/arenas                          List arenas (query: state, category, limit, offset)
 GET    /api/arenas/:id                      Get arena detail
-PATCH  /api/arenas/:id                      Update arena (creator only; state transitions)
-GET    /api/arenas/:id/leaderboard          Get leaderboard (query: since_block, limit, offset)
-GET    /api/arenas/:id/attempts             List attempts (query: agent_id, state, limit, offset, sort)
-POST   /api/arenas/:id/attempts             Submit a new attempt
+PATCH  /api/arenas/:id                      Owner/admin lifecycle transition
+GET    /api/arenas/:id/leaderboard          Get derived leaderboard (query: limit, offset)
+GET    /api/arenas/:id/attempts             List attempts (query: agent_identity_id, state, limit, offset)
+POST   /api/arenas/:id/attempts             Start an authenticated attempt
 GET    /api/arenas/:id/attempts/:attemptId  Get attempt detail
-GET    /api/arenas/:id/distribution         Score distribution statistics
-GET    /api/arenas/:id/flywheel             Flywheel status (current step, failure clusters, curriculum)
-GET    /api/arenas/:id/transfer             Cross-arena transfer metrics
-GET    /api/arenas/:id/my                   User's participation (query: owner)
+POST   /api/arenas/:id/attempts/:attemptId/submit
+                                               Bind the participant's output hash
+POST   /api/arenas/:id/attempts/:attemptId/settle
+                                               Owner/admin external scoring and atomic settlement
 ```
+
+Mutating operations require an authenticated principal, enforce participant or
+arena-owner/admin authorization as applicable, and bind optional numeric identities to
+that principal. Settlement requires a ground-truth source, scorer identity, evidence hash,
+subject-output hash, and typed settlement. Block-based cooldown/deadline configuration
+requires a trusted chain clock. Reads report `source: "local_durable"`.
+
+Featured arenas, distributions, flywheel status, cross-arena transfer metrics, and
+per-user aggregate views remain proposed product endpoints rather than live routes.
 
 ### 13.2 Eval Endpoints
 
@@ -1136,7 +1166,7 @@ GET    /api/bounties/batch-match            Run VCG matching across all open bou
 
 ### WebSocket Subscription
 
-Clients subscribe to arena/eval/bounty events by topic:
+The following room names illustrate the product event taxonomy:
 
 ```
 ws://relay/ws?subscribe=arena:0xabc123      // Single arena
@@ -1144,6 +1174,12 @@ ws://relay/ws?subscribe=arena:*             // All arenas
 ws://relay/ws?subscribe=bounty:0xdef456     // Single bounty
 ws://relay/ws?subscribe=eval:*              // All evals
 ```
+
+They are not a literal live query-string API. R02 relay consumers subscribe through the
+WebSocket frame protocol, and `roko serve` currently executes only exact room strings.
+Wildcard triggers such as `arena:*` are reported as unsupported in
+`GET /api/subscriptions/relay/status`; register explicit arena rooms until a bounded wildcard
+expansion contract exists.
 
 ---
 
@@ -1243,12 +1279,12 @@ pub enum BountyEvent {
 
 | Component | Crate | Status |
 |---|---|---|
-| Arena types + registry | `roko-chain` | Types needed; marketplace.rs has the job lifecycle |
+| Arena types + registry | `roko-chain/src/arena.rs` | Wired locally: validated lifecycle, attempts, derived leaderboards, escrow, reputation effects, events, atomic snapshots |
 | Eval types + registry | `roko-chain` | Types needed; eval_generator.rs in `roko-gate` has the generation side |
 | Bounty market | `roko-chain/src/marketplace.rs` | Wired (job lifecycle, escrow, disputes) |
 | VCG matching | `roko-compose/src/auction.rs` | Wired (`vcg_allocate` exported) |
 | Validation records | `roko-chain/src/validation_registry.rs` | Wired (work proofs feed reputation) |
-| Arena API routes | `roko-serve` | Not yet implemented |
+| Arena API routes | `roko-serve/src/routes/arenas.rs` | Live authorized local service: lifecycle, attempts, external evidence settlement, derived leaderboard, atomic persistence, durable outbox projection |
 | Eval API routes | `roko-serve` | Not yet implemented |
 | Bounty API routes | `roko-serve` | Partial (jobs routes exist, bounty-specific routes needed) |
 | Contract deployment | Solidity in `contracts/` | Not yet implemented |
@@ -1256,6 +1292,13 @@ pub enum BountyEvent {
 ---
 
 ## 17. Acceptance Criteria
+
+These criteria describe the complete product vision. E40 plus R03 close the core
+registry and live local HTTP lifecycle, including external scoring evidence,
+atomic settlement/leaderboard effects, and durable event projection. They do not
+claim the deferred seven-step learning runtime, eval registry, flywheel, cross-arena
+transfer, on-chain deployment, token economics, bounty market, or dashboard criteria
+below.
 
 | Criterion | Verification |
 |---|---|

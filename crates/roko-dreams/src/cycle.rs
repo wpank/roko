@@ -132,6 +132,10 @@ pub struct StagingBufferStats {
     pub validated_count: usize,
     /// Entries promoted to knowledge store this cycle.
     pub promoted_this_cycle: usize,
+    /// Entries demoted during this cycle. The current staging pipeline has no
+    /// demotion phase, so this remains zero while making that fact explicit.
+    #[serde(default)]
+    pub demoted_this_cycle: usize,
     /// Entries garbage collected this cycle.
     pub gc_removed: usize,
 }
@@ -720,6 +724,7 @@ impl DreamCycle {
                 .candidates_at_stage(&ConfidenceStage::Validated)
                 .len(),
             promoted_this_cycle: promoted_count,
+            demoted_this_cycle: 0,
             gc_removed,
         });
 
@@ -878,8 +883,7 @@ impl DreamCycle {
             Ok(history) => history,
             Err(_) => return Ok(None),
         };
-        let Some(regression) =
-            detect_cfactor_regression(&history, Duration::from_secs(7 * 24 * 60 * 60), 0.20)
+        let Some(regression) = detect_cfactor_regression(&history, Duration::from_hours(168), 0.20)
         else {
             return Ok(None);
         };
@@ -1667,6 +1671,8 @@ impl DreamDistillationCandidate {
             id: derive_knowledge_id(self.kind, content, &self.source_episodes, &self.tags),
             kind: self.kind,
             source: Some("dream".to_string()),
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: content.to_string(),
             confidence,
             confidence_weight: confidence,
@@ -1690,6 +1696,9 @@ impl DreamDistillationCandidate {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         })
     }
@@ -1754,6 +1763,7 @@ fn build_playbook(cluster: &DreamCluster, started_at: DateTime<Utc>) -> Playbook
         "Dream playbook {} / {} / {}",
         cluster.key.plan_id, cluster.key.task_type, cluster.key.model
     );
+    playbook.when_pattern = Some(cluster.key.task_type.clone());
     playbook.steps = vec![
         PlaybookStep::new(
             0,
@@ -1817,6 +1827,8 @@ fn playbook_knowledge_entry(
         ),
         kind: KnowledgeKind::StrategyFragment,
         source: Some("dream".to_string()),
+        origin_taint: Default::default(),
+        classification: Default::default(),
         content,
         confidence: if playbook.steps.is_empty() { 0.0 } else { 1.0 },
         confidence_weight: if playbook.steps.is_empty() { 0.0 } else { 1.0 },
@@ -1845,6 +1857,9 @@ fn playbook_knowledge_entry(
         deprecated: false,
         balance: 1.0,
         frozen: false,
+        balance_depleted_at: None,
+        frozen_at: None,
+        falsifier: None,
         catalytic_score: 0,
     }
 }
@@ -1885,6 +1900,8 @@ fn build_regression_entry(cluster: &DreamCluster, created_at: DateTime<Utc>) -> 
         ),
         kind,
         source: Some("dream".to_string()),
+        origin_taint: Default::default(),
+        classification: Default::default(),
         content,
         confidence,
         confidence_weight: if kind == KnowledgeKind::AntiKnowledge {
@@ -1919,6 +1936,9 @@ fn build_regression_entry(cluster: &DreamCluster, created_at: DateTime<Utc>) -> 
         deprecated: false,
         balance: 1.0,
         frozen: false,
+        balance_depleted_at: None,
+        frozen_at: None,
+        falsifier: None,
         catalytic_score: 0,
     }
 }
@@ -2041,6 +2061,8 @@ fn generate_cross_domain_strategy_hypotheses(
             id: derive_knowledge_id(KnowledgeKind::Heuristic, &content, &source_episodes, &tags),
             kind: KnowledgeKind::Heuristic,
             source: Some("dream".to_string()),
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content,
             confidence,
             confidence_weight: confidence,
@@ -2064,6 +2086,9 @@ fn generate_cross_domain_strategy_hypotheses(
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         });
     }
@@ -2327,6 +2352,8 @@ fn build_mistake_insight_entry(
         ),
         kind: KnowledgeKind::Insight,
         source: Some("dream".to_string()),
+        origin_taint: Default::default(),
+        classification: Default::default(),
         content,
         confidence: if cluster.failure_count > 0 { 0.85 } else { 0.0 },
         confidence_weight: if cluster.failure_count > 0 { 0.85 } else { 0.0 },
@@ -2359,6 +2386,9 @@ fn build_mistake_insight_entry(
         deprecated: false,
         balance: 1.0,
         frozen: false,
+        balance_depleted_at: None,
+        frozen_at: None,
+        falsifier: None,
         catalytic_score: 0,
     }
 }
@@ -2394,6 +2424,8 @@ fn review_insights_from_heuristics(
             ),
             kind: KnowledgeKind::Insight,
             source: Some("dream".to_string()),
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content,
             confidence: heuristic.confidence.clamp(0.0, 1.0),
             confidence_weight: heuristic.confidence.clamp(0.0, 1.0),
@@ -2417,6 +2449,9 @@ fn review_insights_from_heuristics(
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
             }
         })
@@ -3336,11 +3371,9 @@ mod tests {
         });
         let mut cycle = DreamCycle::new(store, knowledge, playbooks, dispatcher);
         let report = cycle.run().await.expect("dream cycle should succeed");
-        // Hypnagogia runs before NREM; even with few episodes it should run.
-        assert!(
-            report.hypnagogia_entries_count >= 0,
-            "hypnagogia_entries_count should be present in report"
-        );
+        // A single episode is below the clustering threshold, but the report
+        // still carries the explicit hypnagogia result.
+        assert_eq!(report.hypnagogia_entries_count, 0);
     }
 
     #[tokio::test]
@@ -3360,10 +3393,9 @@ mod tests {
         let stats = report
             .staging_buffer_stats
             .expect("staging_buffer_stats should be present");
-        // After a cycle, staging buffer should have been touched.
-        assert!(
-            stats.total_entries >= 0,
-            "total_entries should be non-negative"
+        assert_eq!(
+            stats.total_entries,
+            stats.raw_count + stats.replayed_count + stats.validated_count
         );
     }
 
@@ -3407,6 +3439,7 @@ mod tests {
             replayed_count: 4,
             validated_count: 2,
             promoted_this_cycle: 1,
+            demoted_this_cycle: 0,
             gc_removed: 0,
         };
         let json = serde_json::to_string(&stats).unwrap();
@@ -3462,6 +3495,7 @@ mod tests {
                 replayed_count: 1,
                 validated_count: 1,
                 promoted_this_cycle: 1,
+                demoted_this_cycle: 0,
                 gc_removed: 0,
             }),
             intensive_mode_active: true,

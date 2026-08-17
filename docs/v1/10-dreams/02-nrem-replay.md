@@ -1,5 +1,8 @@
 # NREM Replay: Utility-Weighted Episode Consolidation
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: Cognitive Cross-Cut (L1 Framework agent dispatch, L2 Scaffold context assembly)
 >
 > **Synapse Traits**: `Substrate` (episode retrieval from NeuroStore), `Scorer` (Mattar-Daw utility formula)

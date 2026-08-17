@@ -1,5 +1,8 @@
 # HDC Counterfactual Synthesis
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L1 Framework (HDC primitives) + Cognitive Cross-Cut (dream counterfactuals)
 >
 > **Synapse Traits**: `Substrate` (HDC vector storage), `Scorer` (Hamming similarity scoring)

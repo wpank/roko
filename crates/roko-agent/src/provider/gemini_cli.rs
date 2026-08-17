@@ -4,10 +4,9 @@
 //! Unlike the Gemini API backends, this uses Google OAuth authentication rather
 //! than an API key — users authenticate via `gemini /auth` beforehand.
 //!
-//! The adapter falls through to [`ExecAgent`](crate::ExecAgent), which pipes
-//! the prompt through stdin and captures stdout. The Gemini CLI does not expose
-//! structured tool calling in subprocess mode, so this backend is best suited
-//! for one-shot generation tasks.
+//! The adapter falls through to [`ExecAgent`](crate::ExecAgent) for legacy
+//! one-shot callers. Runner-v2 uses Gemini's headless stream-JSON protocol and
+//! authenticated per-task MCP configuration through its CLI dispatch adapter.
 //!
 //! # Configuration
 //!
@@ -26,7 +25,9 @@
 use crate::Agent;
 use crate::exec::ExecAgent;
 use crate::provider::pre_flight::binary_on_path;
-use crate::provider::{AgentCreationError, AgentOptions, ProviderAdapter, ProviderError};
+use crate::provider::{
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
+};
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
@@ -35,6 +36,9 @@ use std::path::PathBuf;
 
 /// Default Gemini CLI binary name.
 const DEFAULT_GEMINI_COMMAND: &str = "gemini";
+
+/// Gemini headless stream-JSON translation.
+pub mod stream;
 
 /// Provider adapter for the Gemini CLI subprocess.
 pub struct GeminiCliAdapter;
@@ -104,6 +108,10 @@ impl ProviderAdapter for GeminiCliAdapter {
         .with_timeout_ms(timeout_ms)
         .with_name(name)
         .with_current_dir(working_dir);
+
+        if let Some(limits) = configured_resource_limits(provider)? {
+            agent = agent.with_resource_limits(limits);
+        }
 
         for (key, value) in &options.env {
             agent = agent.with_env_var(key.clone(), value.clone());

@@ -1,5 +1,8 @@
 # Cognitive Cross-Cuts: Neuro, Daimon, Dreams
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** Three cognitive cross-cuts - Neuro (knowledge), Daimon (motivation), and Dreams (offline learning) - are injected into operators and speeds, not treated as steps in the universal loop. The loop itself is seven steps, and these cross-cuts influence SENSE, ASSESS, COMPOSE, ACT, VERIFY, PERSIST, and BROADCAST from the side. This document tightens the integration points and aligns them with [tmp/refinements/05-loop-retold.md](../../tmp/refinements/05-loop-retold.md) and the glossary in [01-naming-and-glossary.md](01-naming-and-glossary.md).
 
 > **Implementation**: Shipping

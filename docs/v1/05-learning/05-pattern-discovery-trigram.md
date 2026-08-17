@@ -1,5 +1,8 @@
 # Pattern Discovery: Trigram Mining
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Crate:** `roko-learn` · **Modules:** `pattern_discovery.rs`, `hdc_clustering.rs`
 > **Wiring:** `LearningRuntime::record_completed_run()` → `PatternMiner::ingest_episode()`
 > **Cross-references:** [00-episode-logger](00-episode-logger.md), [01-playbook-system](01-playbook-system.md), [15-collective-calibration-31x](15-collective-calibration-31x.md)

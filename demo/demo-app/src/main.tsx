@@ -3,8 +3,6 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Routes, Route } from 'react-router';
 import ErrorBoundary from './components/ErrorBoundary';
 import AppShell from './components/AppShell';
-import { WorkspaceProvider } from './hooks/useWorkspace';
-import { RokoConfigProvider } from './hooks/useRokoConfig';
 import { ToastProvider } from './components/Toast';
 import { bootstrapTransport } from './app/bootstrap';
 import './styles/rosedust.css';
@@ -29,7 +27,6 @@ const KnowledgeEntries = lazy(() => import('./pages/dashboard/KnowledgeEntries')
 const DreamsView = lazy(() => import('./pages/dashboard/DreamsView'));
 const FeedsDashboard = lazy(() => import('./pages/feeds/FeedsDashboard'));
 const RelayDashboard = lazy(() => import('./pages/dashboard/RelayDashboard'));
-const IsfrDashboard = lazy(() => import('./pages/isfr/IsfrDashboard'));
 const Terminal = lazy(() => import('./pages/Terminal'));
 const Builder = lazy(() => import('./pages/Builder'));
 const Explorer = lazy(() => import('./pages/Explorer/index'));
@@ -80,48 +77,45 @@ function RouteLoading() {
 }
 
 // Initialize transport layer before React render.
-// Cleanup is stored at module scope for HMR teardown if needed.
-void bootstrapTransport();
+const cleanupTransport = bootstrapTransport();
+if (import.meta.hot) {
+  import.meta.hot.dispose(cleanupTransport);
+}
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
       <ErrorBoundary>
-        <WorkspaceProvider>
-        <RokoConfigProvider>
         <ToastProvider>
-        <Suspense fallback={<RouteLoading />}>
-          <Routes>
-            <Route element={<AppShell />}>
-              <Route index element={<Landing />} />
-              <Route path="dashboard" element={<DashboardLayout />}>
-                <Route index element={<CostDashboard />} />
-                <Route path="fleet" element={<AgentFleet />} />
-                <Route path="knowledge" element={<KnowledgeGraph />} />
-                <Route path="integrity" element={<IntegrityView />} />
-                <Route path="entries" element={<KnowledgeEntries />} />
-                <Route path="routing" element={<CascadeRouter />} />
-                <Route path="dreams" element={<DreamsView />} />
-                <Route path="feeds" element={<FeedsDashboard />} />
-                <Route path="relay" element={<RelayDashboard />} />
+          <Suspense fallback={<RouteLoading />}>
+            <Routes>
+              <Route element={<AppShell />}>
+                <Route index element={<Landing />} />
+                <Route path="dashboard" element={<DashboardLayout />}>
+                  <Route index element={<CostDashboard />} />
+                  <Route path="fleet" element={<AgentFleet />} />
+                  <Route path="knowledge" element={<KnowledgeGraph />} />
+                  <Route path="integrity" element={<IntegrityView />} />
+                  <Route path="entries" element={<KnowledgeEntries />} />
+                  <Route path="routing" element={<CascadeRouter />} />
+                  <Route path="dreams" element={<DreamsView />} />
+                  <Route path="feeds" element={<FeedsDashboard />} />
+                  <Route path="relay" element={<RelayDashboard />} />
+                </Route>
+                <Route path="demo" element={null} />
+                <Route path="terminal" element={<Terminal />} />
+                <Route path="builder" element={<Builder />} />
+                <Route path="explorer" element={<Explorer />} />
+                <Route path="settings" element={<Settings />} />
+                <Route path="bench" element={<Bench />} />
+                <Route path="bench/run/:id" element={<BenchRunDetail />} />
+                <Route path="bench/compare" element={<BenchCompare />} />
+                <Route path="share/:token" element={<SharePage />} />
+                <Route path="share" element={<SharePage />} />
               </Route>
-              <Route path="isfr" element={<IsfrDashboard />} />
-              <Route path="demo" element={null} />
-              <Route path="terminal" element={<Terminal />} />
-              <Route path="builder" element={<Builder />} />
-              <Route path="explorer" element={<Explorer />} />
-              <Route path="settings" element={<Settings />} />
-              <Route path="bench" element={<Bench />} />
-              <Route path="bench/run/:id" element={<BenchRunDetail />} />
-              <Route path="bench/compare" element={<BenchCompare />} />
-              <Route path="share/:token" element={<SharePage />} />
-              <Route path="share" element={<SharePage />} />
-            </Route>
-          </Routes>
-        </Suspense>
+            </Routes>
+          </Suspense>
         </ToastProvider>
-        </RokoConfigProvider>
-        </WorkspaceProvider>
       </ErrorBoundary>
     </BrowserRouter>
   </StrictMode>,

@@ -1,5 +1,8 @@
 # Attention as Universal Cognitive Currency
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** Attention is Roko's scarce resource — every perception, composition, inference,
 > and verification step costs attention tokens drawn from a finite pool. This document unifies
 > three previously disjoint mechanisms (VCG attention auction, CascadeRouter model selection,

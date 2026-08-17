@@ -488,10 +488,11 @@ fn extract_failing_test_names(output: &str, build: BuildSystem, max: usize) -> V
                 }
             }
         };
-        if let Some(n) = candidate {
-            if !n.is_empty() && !names.iter().any(|existing| existing == n) {
-                names.push(n.to_string());
-            }
+        if let Some(n) = candidate
+            && !n.is_empty()
+            && !names.iter().any(|existing| existing == n)
+        {
+            names.push(n.to_string());
         }
         if names.len() >= max {
             break;

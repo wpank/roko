@@ -451,16 +451,15 @@ impl BlockObserver {
             .iter()
             .filter(|(_, (c, _))| *c == ContractCategory::DexRouter)
             .max_by_key(|(_, (_, v))| *v)
+            && *count >= 3
         {
-            if *count >= 3 {
-                let pct = (*count as f32 / tx_total as f32) * 100.0;
-                let content = format!(
-                    "{} saw {} swaps in block #{} ({:.1}% of {} txs)",
-                    name, count, n, pct, tx_total
-                );
-                self.post_insight("insight", &content).await?;
-                posted += 1;
-            }
+            let pct = (*count as f32 / tx_total as f32) * 100.0;
+            let content = format!(
+                "{} saw {} swaps in block #{} ({:.1}% of {} txs)",
+                name, count, n, pct, tx_total
+            );
+            self.post_insight("insight", &content).await?;
+            posted += 1;
         }
 
         // === INSIGHT: DEX activity concentration ===
@@ -492,78 +491,78 @@ impl BlockObserver {
         }
 
         // === INSIGHT: Aave / lending cluster ===
-        if let Some(count) = category_hits.get(&ContractCategory::LendingPool) {
-            if *count >= 3 {
-                let supply = method_hits.get("supply (Aave)").unwrap_or(&0);
-                let withdraw = method_hits.get("withdraw (Aave)").unwrap_or(&0);
-                let borrow = method_hits.get("borrow (Aave)").unwrap_or(&0);
-                let repay = method_hits.get("repay (Aave)").unwrap_or(&0);
-                let content = format!(
-                    "lending activity spike in block #{}: {} calls (supply={} withdraw={} borrow={} repay={})",
-                    n, count, supply, withdraw, borrow, repay
-                );
-                self.post_insight("insight", &content).await?;
-                posted += 1;
-            }
+        if let Some(count) = category_hits.get(&ContractCategory::LendingPool)
+            && *count >= 3
+        {
+            let supply = method_hits.get("supply (Aave)").unwrap_or(&0);
+            let withdraw = method_hits.get("withdraw (Aave)").unwrap_or(&0);
+            let borrow = method_hits.get("borrow (Aave)").unwrap_or(&0);
+            let repay = method_hits.get("repay (Aave)").unwrap_or(&0);
+            let content = format!(
+                "lending activity spike in block #{}: {} calls (supply={} withdraw={} borrow={} repay={})",
+                n, count, supply, withdraw, borrow, repay
+            );
+            self.post_insight("insight", &content).await?;
+            posted += 1;
         }
 
         // === INSIGHT: Liquid staking activity ===
-        if let Some(count) = category_hits.get(&ContractCategory::Lst) {
-            if *count >= 2 {
-                let content = format!(
-                    "liquid staking activity: {} LST interactions in block #{}",
-                    count, n
-                );
-                self.post_insight("heuristic", &content).await?;
-                posted += 1;
-            }
+        if let Some(count) = category_hits.get(&ContractCategory::Lst)
+            && *count >= 2
+        {
+            let content = format!(
+                "liquid staking activity: {} LST interactions in block #{}",
+                count, n
+            );
+            self.post_insight("heuristic", &content).await?;
+            posted += 1;
         }
 
         // === INSIGHT: NFT marketplace activity ===
-        if let Some(count) = category_hits.get(&ContractCategory::NftMarket) {
-            if *count >= 3 {
-                let content = format!("NFT marketplace activity: {} trades in block #{}", count, n);
-                self.post_insight("insight", &content).await?;
-                posted += 1;
-            }
+        if let Some(count) = category_hits.get(&ContractCategory::NftMarket)
+            && *count >= 3
+        {
+            let content = format!("NFT marketplace activity: {} trades in block #{}", count, n);
+            self.post_insight("insight", &content).await?;
+            posted += 1;
         }
 
         // === INSIGHT: Bridge flows ===
-        if let Some(count) = category_hits.get(&ContractCategory::Bridge) {
-            if *count >= 2 {
-                let bridges: Vec<&str> = contract_hits
-                    .iter()
-                    .filter(|(_, (c, _))| *c == ContractCategory::Bridge)
-                    .map(|(k, _)| *k)
-                    .collect();
-                let content = format!(
-                    "cross-chain bridge activity in block #{}: {} calls via {}",
-                    n,
-                    count,
-                    bridges.join(", ")
-                );
-                self.post_insight("insight", &content).await?;
-                posted += 1;
-            }
+        if let Some(count) = category_hits.get(&ContractCategory::Bridge)
+            && *count >= 2
+        {
+            let bridges: Vec<&str> = contract_hits
+                .iter()
+                .filter(|(_, (c, _))| *c == ContractCategory::Bridge)
+                .map(|(k, _)| *k)
+                .collect();
+            let content = format!(
+                "cross-chain bridge activity in block #{}: {} calls via {}",
+                n,
+                count,
+                bridges.join(", ")
+            );
+            self.post_insight("insight", &content).await?;
+            posted += 1;
         }
 
         // === INSIGHT: stablecoin transfers ===
-        if let Some(count) = category_hits.get(&ContractCategory::Stablecoin) {
-            if *count >= 5 {
-                let stables: Vec<&str> = contract_hits
-                    .iter()
-                    .filter(|(_, (c, _))| *c == ContractCategory::Stablecoin)
-                    .map(|(k, _)| *k)
-                    .collect();
-                let content = format!(
-                    "stablecoin velocity in block #{}: {} transfers across {}",
-                    n,
-                    count,
-                    stables.join(", ")
-                );
-                self.post_insight("heuristic", &content).await?;
-                posted += 1;
-            }
+        if let Some(count) = category_hits.get(&ContractCategory::Stablecoin)
+            && *count >= 5
+        {
+            let stables: Vec<&str> = contract_hits
+                .iter()
+                .filter(|(_, (c, _))| *c == ContractCategory::Stablecoin)
+                .map(|(k, _)| *k)
+                .collect();
+            let content = format!(
+                "stablecoin velocity in block #{}: {} transfers across {}",
+                n,
+                count,
+                stables.join(", ")
+            );
+            self.post_insight("heuristic", &content).await?;
+            posted += 1;
         }
 
         // === INSIGHT: whale transfer with known destination ===
@@ -636,16 +635,16 @@ impl BlockObserver {
         }
 
         // === INSIGHT: method-selector distribution ===
-        if let Some((top_method, top_count)) = method_hits.iter().max_by_key(|(_, v)| *v) {
-            if *top_count >= 8 {
-                let pct = (*top_count as f32 / tx_total as f32) * 100.0;
-                let content = format!(
-                    "block #{} dominated by `{}`: {} calls ({:.0}% of {} txs)",
-                    n, top_method, top_count, pct, tx_total
-                );
-                self.post_insight("heuristic", &content).await?;
-                posted += 1;
-            }
+        if let Some((top_method, top_count)) = method_hits.iter().max_by_key(|(_, v)| *v)
+            && *top_count >= 8
+        {
+            let pct = (*top_count as f32 / tx_total as f32) * 100.0;
+            let content = format!(
+                "block #{} dominated by `{}`: {} calls ({:.0}% of {} txs)",
+                n, top_method, top_count, pct, tx_total
+            );
+            self.post_insight("heuristic", &content).await?;
+            posted += 1;
         }
 
         Ok(posted)

@@ -1,11 +1,11 @@
 //! Poll-based block watcher for streaming chain data to the event bus.
 //!
-//! Designed to run alongside the ISFR keeper as a background task.
+//! Designed to run as an independent chain-observation background task.
 //! Polls the connected JSON-RPC provider for new blocks, iterates
 //! transactions and logs, decodes known contract events, and publishes
 //! typed payloads via a callback.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -57,6 +57,28 @@ pub struct ContractEventInfo {
     pub contract: String,
     pub event_name: String,
     pub decoded: serde_json::Value,
+    #[serde(default)]
+    pub raw_evidence_available: bool,
+}
+
+/// Raw EVM log evidence emitted alongside the compatibility decoded event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(missing_docs)]
+pub struct RawLogInfo {
+    pub block_number: u64,
+    pub block_hash: String,
+    pub tx_hash: String,
+    pub log_index: u32,
+    pub contract: String,
+    pub topics: Vec<String>,
+    pub data: String,
+}
+
+/// Reorganization evidence emitted before replacement blocks are replayed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(missing_docs)]
+pub struct ChainReorgInfo {
+    pub orphaned_block_hashes: Vec<String>,
 }
 
 /// Known event signatures for decoding.
@@ -117,6 +139,7 @@ impl BlockWatcher {
     pub async fn run(self, publish: PublishFn, cancel: CancellationToken) {
         let mut last_block: u64 = 0;
         let mut seeded = false;
+        let mut canonical = BTreeMap::<u64, String>::new();
 
         // Seed with current block number — retry until the chain is reachable.
         for attempt in 1..=30 {
@@ -139,7 +162,9 @@ impl BlockWatcher {
                             if cancel.is_cancelled() {
                                 return;
                             }
-                            self.process_block(num, &publish).await;
+                            if let Some(block) = self.process_block(num, &publish).await {
+                                record_canonical_block(&mut canonical, &block);
+                            }
                         }
                         info!(count = n - start, "block_watcher backfill complete");
                     }
@@ -201,10 +226,6 @@ impl BlockWatcher {
                 }
             };
 
-            if current <= last_block {
-                continue;
-            }
-
             // If we never seeded, treat the first successful poll as the seed
             // point and backfill from there (avoids trying to process millions
             // of blocks from 0).
@@ -220,24 +241,87 @@ impl BlockWatcher {
                     if cancel.is_cancelled() {
                         return;
                     }
-                    self.process_block(num, &publish).await;
+                    if let Some(block) = self.process_block(num, &publish).await {
+                        record_canonical_block(&mut canonical, &block);
+                    }
                 }
                 last_block = current;
                 continue;
             }
 
-            // Cap catch-up to avoid processing thousands of blocks at once.
-            let effective_start = if current - last_block > Self::BACKFILL_COUNT {
-                current.saturating_sub(Self::BACKFILL_COUNT)
+            let probe_height = current.min(last_block);
+            let observed_probe = self.fetch_block_hash(probe_height).await;
+            let known_probe = canonical.get(&probe_height);
+            let reorg_detected = current < last_block
+                || observed_probe
+                    .as_ref()
+                    .zip(known_probe)
+                    .is_some_and(|(observed, known)| observed != known);
+            let reorg_start = if reorg_detected {
+                let mut ancestor = probe_height;
+                let search_floor = canonical
+                    .first_key_value()
+                    .map_or(probe_height, |(height, _)| *height);
+                if ancestor >= search_floor {
+                    loop {
+                        let observed = self.fetch_block_hash(ancestor).await;
+                        if observed
+                            .as_ref()
+                            .zip(canonical.get(&ancestor))
+                            .is_some_and(|(current, known)| current == known)
+                        {
+                            break;
+                        }
+                        if ancestor <= search_floor {
+                            // The fork is deeper than our bounded canonical
+                            // window. Invalidate the whole window and replay it;
+                            // never scan unbounded history back to genesis.
+                            ancestor = search_floor.saturating_sub(1);
+                            break;
+                        }
+                        ancestor -= 1;
+                    }
+                }
+                let orphaned_block_hashes = canonical
+                    .range((ancestor + 1)..)
+                    .map(|(_, hash)| hash.clone())
+                    .collect::<Vec<_>>();
+                if !orphaned_block_hashes.is_empty() {
+                    publish(
+                        "chain:reorg",
+                        serde_json::to_value(ChainReorgInfo {
+                            orphaned_block_hashes,
+                        })
+                        .unwrap_or_default(),
+                    );
+                }
+                canonical.retain(|height, _| *height <= ancestor);
+                Some(ancestor)
             } else {
-                last_block
+                None
             };
+
+            if current <= last_block && reorg_start.is_none() {
+                continue;
+            }
+
+            // Cap ordinary catch-up, but replay every replacement block after
+            // a detected fork so its raw logs are not lost.
+            let effective_start = reorg_start.unwrap_or_else(|| {
+                if current.saturating_sub(last_block) > Self::BACKFILL_COUNT {
+                    current.saturating_sub(Self::BACKFILL_COUNT)
+                } else {
+                    last_block
+                }
+            });
 
             for num in (effective_start + 1)..=current {
                 if cancel.is_cancelled() {
                     return;
                 }
-                self.process_block(num, &publish).await;
+                if let Some(block) = self.process_block(num, &publish).await {
+                    record_canonical_block(&mut canonical, &block);
+                }
             }
 
             last_block = current;
@@ -245,7 +329,16 @@ impl BlockWatcher {
     }
 
     /// Fetch a single block by number, publish block/tx/event payloads.
-    async fn process_block(&self, num: u64, publish: &PublishFn) {
+    async fn fetch_block_hash(&self, num: u64) -> Option<String> {
+        self.provider
+            .get_block_by_number(BlockNumberOrTag::Number(num))
+            .await
+            .ok()
+            .flatten()
+            .map(|block| format!("{:#x}", block.header.hash))
+    }
+
+    async fn process_block(&self, num: u64, publish: &PublishFn) -> Option<BlockInfo> {
         let block = match self
             .provider
             .get_block_by_number(BlockNumberOrTag::Number(num))
@@ -253,14 +346,15 @@ impl BlockWatcher {
             .await
         {
             Ok(Some(b)) => b,
-            Ok(None) => return,
+            Ok(None) => return None,
             Err(e) => {
                 tracing::debug!(block = num, error = %e, "failed to fetch block");
-                return;
+                return None;
             }
         };
 
         let header = &block.header;
+        let block_hash = format!("{:#x}", header.hash);
 
         // Process transactions FIRST so we get the actual count (Anvil fork blocks
         // may return empty transaction arrays for historical blocks even with .full()).
@@ -274,7 +368,7 @@ impl BlockWatcher {
                 );
             }
             for tx in transactions {
-                self.process_full_tx(num, tx, publish).await;
+                self.process_full_tx(num, &block_hash, tx, publish).await;
                 actual_tx_count += 1;
             }
         } else if let Some(hashes) = block.transactions.as_hashes() {
@@ -288,7 +382,7 @@ impl BlockWatcher {
             for hash in hashes {
                 match self.provider.get_transaction_by_hash(*hash).await {
                     Ok(Some(tx)) => {
-                        self.process_full_tx(num, &tx, publish).await;
+                        self.process_full_tx(num, &block_hash, &tx, publish).await;
                         actual_tx_count += 1;
                     }
                     Ok(None) => {
@@ -310,13 +404,13 @@ impl BlockWatcher {
                 gas_used = header.gas_used,
                 "block has gas_used but 0 parsed txs — attempting raw tx extraction"
             );
-            actual_tx_count = self.try_raw_tx_extraction(num, publish).await;
+            actual_tx_count = self.try_raw_tx_extraction(num, &block_hash, publish).await;
         }
 
         // Publish block info with ACTUAL tx count (after processing transactions)
         let block_info = BlockInfo {
             number: header.number,
-            hash: format!("{:#x}", header.hash),
+            hash: block_hash,
             parent_hash: format!("{:#x}", header.parent_hash),
             timestamp: header.timestamp,
             gas_used: header.gas_used,
@@ -329,12 +423,18 @@ impl BlockWatcher {
             "chain:block",
             serde_json::to_value(&block_info).unwrap_or_default(),
         );
+        Some(block_info)
     }
 
     /// Fallback: when alloy can't deserialize the block's transactions, try
     /// fetching each tx individually by hash. We extract hashes from a raw
     /// JSON-RPC call to avoid alloy's typed deserialization.
-    async fn try_raw_tx_extraction(&self, block_number: u64, publish: &PublishFn) -> u32 {
+    async fn try_raw_tx_extraction(
+        &self,
+        block_number: u64,
+        block_hash: &str,
+        publish: &PublishFn,
+    ) -> u32 {
         // Use alloy's raw transport to get the untyped block JSON.
         let params = (format!("0x{block_number:x}"), true);
         let raw: Result<Option<serde_json::Value>, _> = self
@@ -367,7 +467,8 @@ impl BlockWatcher {
             // even when the bulk block response fails alloy deserialization).
             match self.provider.get_transaction_by_hash(hash).await {
                 Ok(Some(tx)) => {
-                    self.process_full_tx(block_number, &tx, publish).await;
+                    self.process_full_tx(block_number, block_hash, &tx, publish)
+                        .await;
                     count += 1;
                 }
                 Ok(None) => {
@@ -418,6 +519,7 @@ impl BlockWatcher {
     async fn process_full_tx(
         &self,
         block_number: u64,
+        block_hash: &str,
         tx: &<alloy::network::Ethereum as alloy::network::Network>::TransactionResponse,
         publish: &PublishFn,
     ) {
@@ -468,6 +570,16 @@ impl BlockWatcher {
 
             let topic0 = format!("{:#x}", topics[0]);
             let contract = format!("{:#x}", log.inner.address);
+            let raw = raw_log_info(
+                block_number,
+                block_hash,
+                &tx_hash,
+                log_idx as u32,
+                &contract,
+                topics,
+                &log.inner.data.data,
+            );
+            publish("chain:log", serde_json::to_value(&raw).unwrap_or_default());
             let (event_name, decoded) = decode_event(&topic0, topics, &log.inner.data.data);
 
             let event_info = ContractEventInfo {
@@ -477,6 +589,7 @@ impl BlockWatcher {
                 contract,
                 event_name,
                 decoded,
+                raw_evidence_available: true,
             };
 
             publish(
@@ -484,6 +597,35 @@ impl BlockWatcher {
                 serde_json::to_value(&event_info).unwrap_or_default(),
             );
         }
+    }
+}
+
+fn record_canonical_block(canonical: &mut BTreeMap<u64, String>, block: &BlockInfo) {
+    const CANONICAL_WINDOW: usize = 128;
+    canonical.insert(block.number, block.hash.to_ascii_lowercase());
+    while canonical.len() > CANONICAL_WINDOW {
+        canonical.pop_first();
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn raw_log_info(
+    block_number: u64,
+    block_hash: &str,
+    tx_hash: &str,
+    log_index: u32,
+    contract: &str,
+    topics: &[B256],
+    data: &[u8],
+) -> RawLogInfo {
+    RawLogInfo {
+        block_number,
+        block_hash: block_hash.to_string(),
+        tx_hash: tx_hash.to_string(),
+        log_index,
+        contract: contract.to_string(),
+        topics: topics.iter().map(|topic| format!("{topic:#x}")).collect(),
+        data: format!("0x{}", alloy::hex::encode(data)),
     }
 }
 
@@ -650,5 +792,26 @@ mod tests {
 
         let b100 = compute_backoff(100);
         assert!(b100.as_millis() >= 60000 && b100.as_millis() < 61100);
+    }
+
+    #[test]
+    fn raw_log_evidence_preserves_canonical_fields() {
+        let topic = B256::repeat_byte(0xabu8);
+        let raw = raw_log_info(
+            42,
+            "0xblock",
+            "0xtx",
+            3,
+            "0xcontract",
+            &[topic],
+            &[0x01, 0x02, 0xff],
+        );
+        assert_eq!(raw.block_number, 42);
+        assert_eq!(raw.block_hash, "0xblock");
+        assert_eq!(raw.tx_hash, "0xtx");
+        assert_eq!(raw.log_index, 3);
+        assert_eq!(raw.contract, "0xcontract");
+        assert_eq!(raw.topics, vec![format!("{topic:#x}")]);
+        assert_eq!(raw.data, "0x0102ff");
     }
 }

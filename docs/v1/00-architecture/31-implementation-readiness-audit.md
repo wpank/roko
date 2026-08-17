@@ -1,5 +1,8 @@
 # Implementation Readiness Audit
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Generated 2026-04-13. Covers all 21 doc sections (excluding 21-references), 350+ files,
 > cross-referenced against 36 workspace members (~322K LOC, 3,761 tests).
 

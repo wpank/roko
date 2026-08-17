@@ -1,5 +1,8 @@
 # Symbol Extraction
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Extracting structured symbol definitions from source code — the atomic data that feeds dependency graphs, fingerprints, and search.
 
 

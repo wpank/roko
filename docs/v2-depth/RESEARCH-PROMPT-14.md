@@ -22,7 +22,7 @@ All three must be internally consistent — same numbers, same framing, same voc
 
 **Nunchi** = two parts:
 
-**Roko** — open-source Rust agent runtime (18 crates, Apache 2.0). Agents run a 6-stage pipeline: OBSERVE → GATE → ASSEMBLE → INFER+TOOLS → REFLECT → CONSOLIDATE. A model router (CascadeRouter) learns which LLM to use per task, producing 10-30x cost reduction vs. naive execution. An 11-gate language-agnostic verification pipeline validates output. A knowledge store accumulates agent learnings with Ebbinghaus-style decay. Predict-publish-correct on the event bus makes every operator a learner. The system self-hosts: reads its own PRDs, generates plans, dispatches Claude agents, validates with gates, persists results.
+**Roko** — open-source Rust agent runtime (34 workspace members, Apache 2.0). Agents run a 6-stage pipeline: OBSERVE → GATE → ASSEMBLE → INFER+TOOLS → REFLECT → CONSOLIDATE. A model router (CascadeRouter) learns which LLM to use per task, producing 10-30x cost reduction vs. naive execution. An 11-gate language-agnostic verification pipeline validates output. A knowledge store accumulates agent learnings with Ebbinghaus-style decay. Predict-publish-correct on the event bus makes every operator a learner. The system self-hosts: reads its own PRDs, generates plans, dispatches Claude agents, validates with gates, persists results.
 
 **Nunchi Chain** — sovereign EVM L1. Simplex consensus, ~50ms blocks via co-located Tokyo validators (Hyperliquid architecture). Native HDC precompile (~400 gas for 10,240-bit similarity search). ERC-8004 agent identities with 7-domain EMA reputation. On-chain knowledge substrate with demurrage pruning. ZK-HDC proofs (<1s proving). Cooperative clearing engine that turns trades into knowledge deposits.
 

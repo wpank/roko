@@ -1,5 +1,8 @@
 # HDC On-Chain Precompile
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > 10,240-bit hyperdimensional vectors via native EVM precompile: ~400 gas for top-K=20 similarity search, three-tier search architecture, same encoding locally and on-chain.
 
 

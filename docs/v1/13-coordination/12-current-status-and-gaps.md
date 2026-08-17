@@ -1,5 +1,8 @@
 # Current Status and Gaps: Coordination Implementation State
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: All layers (L0–L4) — this sub-doc surveys the implementation status of
 > coordination features across the entire stack
 >

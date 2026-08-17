@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::workspace_paths::{drafts_dir, ideas_path, plans_dir, prd_dir, published_dir, roko_dir};
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 // ─── Index paths ───────────────────────────────────────────────────
 
@@ -119,12 +119,15 @@ pub fn rebuild_prd_index(workdir: &Path) -> Result<()> {
 
 // ─── Plans index ───────────────────────────────────────────────────
 
-/// Rebuild `.roko/plans/INDEX.md` from all plan directories.
-pub fn rebuild_plans_index(workdir: &Path) -> Result<()> {
+/// Render the plans index deterministically without mutating the workspace.
+pub fn render_plans_index(workdir: &Path) -> Result<String> {
     let mut out = String::new();
     let _ = writeln!(out, "# Plans Index");
     let _ = writeln!(out, "\n> Auto-generated. Do not edit manually.");
-    let _ = writeln!(out, "> Rebuilt on every `roko plan` command.");
+    let _ = writeln!(
+        out,
+        "> Rebuilt after successful mutating `roko plan` commands."
+    );
     if plans_dir(workdir)
         .join("_meta/IMPLEMENTATION_ORDER.md")
         .is_file()
@@ -136,23 +139,17 @@ pub fn rebuild_plans_index(workdir: &Path) -> Result<()> {
     }
     let _ = writeln!(
         out,
-        "> Executable totals exclude superseded and archived plans.\n"
+        "> Executable totals exclude superseded, archived, and fixture plans.\n"
     );
-
-    if let Some(parent) = plans_index_path(workdir).parent() {
-        std::fs::create_dir_all(parent)?;
-    }
 
     let _ = writeln!(out, "## Executable Plans\n");
     let _ = writeln!(out, "| Plan | Tasks | Done | Ready | Status | Parallel |");
     let _ = writeln!(out, "|------|-------|------|-------|--------|----------|");
 
-    let plan_entries = collect_plan_index_entries(workdir);
-    if !plans_dir(workdir).is_dir() {
+    let Some(plan_entries) = collect_plan_index_entries(workdir)? else {
         let _ = writeln!(out, "| _(no plans directory)_ | | | | | |");
-        std::fs::write(plans_index_path(workdir), &out)?;
-        return Ok(());
-    }
+        return Ok(out);
+    };
 
     let mut total_tasks = 0u32;
     let mut total_done = 0u32;
@@ -160,7 +157,10 @@ pub fn rebuild_plans_index(workdir: &Path) -> Result<()> {
     let mut complete_plans = 0u32;
     let mut ready_plans = 0u32;
 
-    for entry in plan_entries.iter().filter(|entry| !entry.is_inactive()) {
+    for entry in plan_entries
+        .iter()
+        .filter(|entry| !entry.is_inactive() && !entry.is_fixture())
+    {
         let _ = writeln!(
             out,
             "| `{}` | {} | {} | {} | {} | {} |",
@@ -233,7 +233,62 @@ pub fn rebuild_plans_index(workdir: &Path) -> Result<()> {
         );
     }
 
-    std::fs::write(plans_index_path(workdir), &out)?;
+    let fixtures: Vec<&PlanIndexEntry> = plan_entries
+        .iter()
+        .filter(|entry| entry.is_fixture())
+        .collect();
+    if !fixtures.is_empty() {
+        let fixture_tasks: u32 = fixtures.iter().map(|entry| entry.tasks).sum();
+        let _ = writeln!(out, "\n## Fixtures / Examples\n");
+        let _ = writeln!(out, "| Plan | Tasks | Status |");
+        let _ = writeln!(out, "|------|-------|--------|");
+        for entry in &fixtures {
+            let _ = writeln!(
+                out,
+                "| `{}` | {} | {} |",
+                entry.name,
+                entry.tasks,
+                entry.status_label()
+            );
+        }
+        let _ = writeln!(
+            out,
+            "\n**Fixtures excluded from backlog**: {} plans, {} tasks",
+            fixtures.len(),
+            fixture_tasks
+        );
+    }
+
+    Ok(out)
+}
+
+/// Rebuild `.roko/plans/INDEX.md` from all plan directories.
+pub fn rebuild_plans_index(workdir: &Path) -> Result<()> {
+    let path = plans_index_path(workdir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, render_plans_index(workdir)?)?;
+    Ok(())
+}
+
+/// Verify the plans index exactly matches its deterministic rendering.
+///
+/// This check never writes the index, including when the file is missing or
+/// stale, so it is safe for validation commands and CI drift gates.
+pub fn check_plans_index(workdir: &Path) -> Result<()> {
+    let path = plans_index_path(workdir);
+    let actual = std::fs::read_to_string(&path).map_err(|error| {
+        anyhow::anyhow!("read generated plans index {}: {error}", path.display())
+    })?;
+    let expected = render_plans_index(workdir)?;
+    if actual != expected {
+        anyhow::bail!(
+            "generated plans index is stale: {}; run `roko plan index --workdir {}`",
+            path.display(),
+            workdir.display()
+        );
+    }
     Ok(())
 }
 
@@ -253,6 +308,10 @@ impl PlanIndexEntry {
         matches!(self.meta_status.as_str(), "superseded" | "archived")
     }
 
+    fn is_fixture(&self) -> bool {
+        self.meta_status == "fixture"
+    }
+
     fn is_complete(&self) -> bool {
         self.meta_status == "done" || (self.tasks > 0 && self.done == self.tasks)
     }
@@ -261,6 +320,7 @@ impl PlanIndexEntry {
         match self.meta_status.as_str() {
             "superseded" => "⏭ superseded".to_string(),
             "archived" => "🗄 archived".to_string(),
+            "fixture" => "🧪 fixture".to_string(),
             "done" => "✅ complete".to_string(),
             status if self.is_complete() => {
                 if status.is_empty() {
@@ -282,33 +342,55 @@ impl PlanIndexEntry {
     }
 }
 
-fn collect_plan_index_entries(workdir: &Path) -> Vec<PlanIndexEntry> {
+fn collect_plan_index_entries(workdir: &Path) -> Result<Option<Vec<PlanIndexEntry>>> {
     let plans_root = plans_dir(workdir);
-    if !plans_root.is_dir() {
-        return Vec::new();
-    }
+    let entries = match std::fs::read_dir(&plans_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("read plans directory {}", plans_root.display()));
+        }
+    };
 
-    let run_state_completed = load_run_state_completed(workdir);
+    let run_state_completed = load_run_state_completed(workdir)?;
     let mut plan_dirs: Vec<PathBuf> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&plans_root) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() && path.join("tasks.toml").exists() {
-                plan_dirs.push(path);
+    for entry in entries {
+        let entry = entry.with_context(|| format!("read entry in {}", plans_root.display()))?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("read file type for {}", entry.path().display()))?;
+        if !file_type.is_dir() {
+            continue;
+        }
+        let tasks_path = entry.path().join("tasks.toml");
+        match std::fs::metadata(&tasks_path) {
+            Ok(metadata) if metadata.is_file() => plan_dirs.push(entry.path()),
+            Ok(_) => anyhow::bail!("plan tasks input is not a file: {}", tasks_path.display()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("inspect plan tasks input {}", tasks_path.display()));
             }
         }
     }
     plan_dirs.sort();
 
-    plan_dirs
+    let entries = plan_dirs
         .iter()
-        .map(|dir| {
-            let name = dir.file_name().unwrap_or_default().to_string_lossy();
-            let content = std::fs::read_to_string(dir.join("tasks.toml")).unwrap_or_default();
-            let mut counts = count_top_level_tasks(&content);
+        .map(|dir| -> Result<PlanIndexEntry> {
+            let name = dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .context("plan directory name is not valid UTF-8")?;
+            let tasks_path = dir.join("tasks.toml");
+            let content = std::fs::read_to_string(&tasks_path)
+                .with_context(|| format!("read plan tasks input {}", tasks_path.display()))?;
+            let mut counts = count_top_level_tasks(&content)
+                .with_context(|| format!("parse plan tasks input {}", tasks_path.display()))?;
 
             // Overlay real completion data from run-state.json if available.
-            if let Some(completed_ids) = run_state_completed.get(name.as_ref()) {
+            if let Some(completed_ids) = run_state_completed.get(name) {
                 if !completed_ids.is_empty() {
                     counts.1 = completed_ids.len() as u32;
                     counts.2 = counts.0.saturating_sub(counts.1);
@@ -323,7 +405,7 @@ fn collect_plan_index_entries(workdir: &Path) -> Vec<PlanIndexEntry> {
             let max_parallel =
                 extract_meta_value(&content, "max_parallel").unwrap_or_else(|| "—".to_string());
 
-            PlanIndexEntry {
+            Ok(PlanIndexEntry {
                 name: name.to_string(),
                 tasks: counts.0,
                 done: counts.1,
@@ -331,57 +413,66 @@ fn collect_plan_index_entries(workdir: &Path) -> Vec<PlanIndexEntry> {
                 max_parallel,
                 meta_status,
                 superseded_by,
-            }
+            })
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Some(entries))
 }
 
-fn load_run_state_completed(workdir: &Path) -> std::collections::HashMap<String, Vec<String>> {
+fn load_run_state_completed(
+    workdir: &Path,
+) -> Result<std::collections::HashMap<String, Vec<String>>> {
     // tasks.toml is never updated by plan run; completion state lives in
     // run-state.json. This is RunStateSnapshot, not executor.json.
     let run_state_path = workdir.join(".roko/state/run-state.json");
-    if !run_state_path.exists() {
-        return std::collections::HashMap::new();
-    }
-
-    std::fs::read_to_string(&run_state_path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-        .and_then(|val| {
-            val.get("completed_tasks")
-                .and_then(|ct| serde_json::from_value(ct.clone()).ok())
-        })
-        .unwrap_or_default()
+    let content = match std::fs::read_to_string(&run_state_path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(std::collections::HashMap::new());
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("read run-state input {}", run_state_path.display()));
+        }
+    };
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .with_context(|| format!("parse run-state input {}", run_state_path.display()))?;
+    let completed = value
+        .get("completed_tasks")
+        .context("run-state input is missing completed_tasks")?;
+    serde_json::from_value(completed.clone())
+        .with_context(|| format!("parse completed_tasks in {}", run_state_path.display()))
 }
 
-fn count_top_level_tasks(content: &str) -> (u32, u32, u32) {
-    let Ok(parsed) = toml::from_str::<toml::Value>(content) else {
-        return (
-            content.matches("[[task]]").count() as u32,
-            content.matches("status = \"done\"").count() as u32,
-            content.matches("status = \"ready\"").count() as u32,
-        );
-    };
-
-    let Some(tasks) = parsed.get("task").and_then(toml::Value::as_array) else {
-        return (0, 0, 0);
+fn count_top_level_tasks(content: &str) -> Result<(u32, u32, u32)> {
+    let parsed = toml::from_str::<toml::Value>(content).context("invalid TOML")?;
+    let tasks = match parsed.get("task") {
+        None => return Ok((0, 0, 0)),
+        Some(tasks) => tasks
+            .as_array()
+            .context("task must be an array of tables")?,
     };
 
     let mut done = 0u32;
     let mut ready = 0u32;
     for task in tasks {
-        match task
-            .as_table()
-            .and_then(|table| table.get("status"))
-            .and_then(toml::Value::as_str)
-        {
+        let table = task.as_table().context("task entry must be a table")?;
+        let status = match table.get("status") {
+            Some(status) => Some(
+                status
+                    .as_str()
+                    .context("task status must be a string when present")?,
+            ),
+            None => None,
+        };
+        match status {
             Some("done") => done += 1,
             Some("ready") | None => ready += 1,
             _ => {}
         }
     }
 
-    (tasks.len() as u32, done, ready)
+    Ok((tasks.len() as u32, done, ready))
 }
 
 // ─── Research index ────────────────────────────────────────────────
@@ -452,7 +543,7 @@ pub fn rebuild_master_index(workdir: &Path) -> Result<()> {
     let _ = writeln!(out, "→ [Full index](.roko/prd/INDEX.md)\n");
 
     // Plans summary
-    let plan_entries = collect_plan_index_entries(workdir);
+    let plan_entries = collect_plan_index_entries(workdir)?.unwrap_or_default();
     let active_entries: Vec<&PlanIndexEntry> = plan_entries
         .iter()
         .filter(|entry| !entry.is_inactive())
@@ -515,10 +606,9 @@ pub fn rebuild_master_index(workdir: &Path) -> Result<()> {
 
 /// Rebuild ALL indexes. Call this after any mutation.
 pub fn rebuild_all(workdir: &Path) -> Result<()> {
-    // Silently skip if directories don't exist yet
-    let _ = rebuild_prd_index(workdir);
-    let _ = rebuild_plans_index(workdir);
-    let _ = rebuild_research_index(workdir);
+    rebuild_prd_index(workdir)?;
+    rebuild_plans_index(workdir)?;
+    rebuild_research_index(workdir)?;
     rebuild_master_index(workdir)?;
     Ok(())
 }
@@ -622,6 +712,20 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_all_propagates_index_write_failures() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(".roko"), b"not a directory").unwrap();
+
+        let error = rebuild_all(tmp.path()).unwrap_err();
+
+        assert!(
+            error.to_string().contains("Not a directory")
+                || error.to_string().contains("not a directory"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
     fn prd_index_includes_drafts() {
         let tmp = tempfile::tempdir().unwrap();
         let drafts = drafts_dir(tmp.path());
@@ -715,12 +819,138 @@ mod tests {
     }
 
     #[test]
+    fn plans_index_separates_rerunnable_fixtures_from_backlog() {
+        let tmp = tempfile::tempdir().unwrap();
+        let active = plans_dir(tmp.path()).join("active-plan");
+        let fixture = plans_dir(tmp.path()).join("demo-example");
+        std::fs::create_dir_all(&active).unwrap();
+        std::fs::create_dir_all(&fixture).unwrap();
+        std::fs::write(
+            active.join("tasks.toml"),
+            "[meta]\nplan = \"active\"\nstatus = \"ready\"\nmax_parallel = 1\n\n\
+             [[task]]\nid = \"T1\"\nstatus = \"ready\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            fixture.join("tasks.toml"),
+            "[meta]\nplan = \"demo\"\nstatus = \"fixture\"\nmax_parallel = 1\n\n\
+             [[task]]\nid = \"D1\"\nstatus = \"ready\"\n\n\
+             [[task]]\nid = \"D2\"\nstatus = \"ready\"\n",
+        )
+        .unwrap();
+
+        rebuild_plans_index(tmp.path()).unwrap();
+
+        let content = std::fs::read_to_string(plans_index_path(tmp.path())).unwrap();
+        assert!(content.contains("**Executable Total**: 1 plans, 1 tasks, 0 done"));
+        assert!(content.contains("## Fixtures / Examples"));
+        assert!(content.contains("| `demo-example` | 2 | 🧪 fixture |"));
+        assert!(content.contains("**Fixtures excluded from backlog**: 1 plans, 2 tasks"));
+    }
+
+    #[test]
     fn plans_index_writes_under_dot_roko() {
         let tmp = tempfile::tempdir().unwrap();
 
         rebuild_plans_index(tmp.path()).unwrap();
 
         assert!(plans_index_path(tmp.path()).exists());
+    }
+
+    #[test]
+    fn plans_index_render_is_deterministic_and_non_mutating() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plan = plans_dir(tmp.path()).join("deterministic-plan");
+        std::fs::create_dir_all(&plan).unwrap();
+        std::fs::write(
+            plan.join("tasks.toml"),
+            "[meta]\nplan = \"deterministic\"\nstatus = \"ready\"\nmax_parallel = 1\n\n\
+             [[task]]\nid = \"T1\"\nstatus = \"ready\"\n",
+        )
+        .unwrap();
+
+        let first = render_plans_index(tmp.path()).unwrap();
+        let second = render_plans_index(tmp.path()).unwrap();
+
+        assert_eq!(first, second);
+        assert!(first.contains("| `deterministic-plan` | 1 | 0 | 1 |"));
+        assert!(!plans_index_path(tmp.path()).exists());
+    }
+
+    #[test]
+    fn plans_index_render_fails_closed_on_unreadable_plans_directory_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(roko_dir(tmp.path())).unwrap();
+        std::fs::write(plans_dir(tmp.path()), b"not a directory").unwrap();
+
+        let error = render_plans_index(tmp.path()).unwrap_err();
+
+        assert!(error.to_string().contains("read plans directory"));
+    }
+
+    #[test]
+    fn plans_index_render_fails_closed_on_malformed_tasks_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plan = plans_dir(tmp.path()).join("malformed-plan");
+        std::fs::create_dir_all(&plan).unwrap();
+        std::fs::write(plan.join("tasks.toml"), b"[[task]\nid = \"T1\"\n").unwrap();
+
+        let error = render_plans_index(tmp.path()).unwrap_err();
+
+        assert!(error.to_string().contains("parse plan tasks input"));
+    }
+
+    #[test]
+    fn plans_index_render_fails_closed_on_malformed_run_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plan = plans_dir(tmp.path()).join("valid-plan");
+        std::fs::create_dir_all(&plan).unwrap();
+        std::fs::write(
+            plan.join("tasks.toml"),
+            "[meta]\nstatus = \"ready\"\n\n[[task]]\nid = \"T1\"\n",
+        )
+        .unwrap();
+        let state = tmp.path().join(".roko/state");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(state.join("run-state.json"), b"{not-json").unwrap();
+
+        let error = render_plans_index(tmp.path()).unwrap_err();
+
+        assert!(error.to_string().contains("parse run-state input"));
+    }
+
+    #[test]
+    fn plans_index_check_detects_stale_content_without_rewriting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plan = plans_dir(tmp.path()).join("stale-plan");
+        std::fs::create_dir_all(&plan).unwrap();
+        std::fs::write(
+            plan.join("tasks.toml"),
+            "[meta]\nplan = \"stale\"\nstatus = \"ready\"\nmax_parallel = 1\n\n\
+             [[task]]\nid = \"T1\"\nstatus = \"ready\"\n",
+        )
+        .unwrap();
+        rebuild_plans_index(tmp.path()).unwrap();
+        let index_path = plans_index_path(tmp.path());
+        std::fs::write(&index_path, b"stale bytes\n").unwrap();
+        let before = std::fs::read(&index_path).unwrap();
+
+        let error = check_plans_index(tmp.path()).unwrap_err();
+
+        assert!(error.to_string().contains("generated plans index is stale"));
+        assert_eq!(std::fs::read(&index_path).unwrap(), before);
+        rebuild_plans_index(tmp.path()).unwrap();
+        check_plans_index(tmp.path()).unwrap();
+    }
+
+    #[test]
+    fn plans_index_check_does_not_create_a_missing_index() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let error = check_plans_index(tmp.path()).unwrap_err();
+
+        assert!(error.to_string().contains("read generated plans index"));
+        assert!(!plans_index_path(tmp.path()).exists());
     }
 
     #[test]

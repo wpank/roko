@@ -784,15 +784,17 @@ mod tests {
                 failure_kind: Some(RunnerFailureKind::Transient),
                 duration_ms: 500,
                 output: format!("failure {i}"),
-                verdicts: vec![GateVerdictSummary {
-                    gate_name: "cargo-test".into(),
-                    passed: false,
-                    skipped: false,
-                    summary: format!("{} test failures", i + 1),
-                    error_digest: None,
-                    failure_kind: Some(RunnerFailureKind::Transient),
-                    rung_index: None,
-                }],
+                verdicts: (0..=i)
+                    .map(|failure| GateVerdictSummary {
+                        gate_name: format!("cargo-test-{failure}"),
+                        passed: false,
+                        skipped: false,
+                        summary: format!("test failure {failure}"),
+                        error_digest: None,
+                        failure_kind: Some(RunnerFailureKind::Transient),
+                        rung_index: None,
+                    })
+                    .collect(),
             };
             let signal = runner_event_to_signal(&event).expect("gate failure should map to signal");
             stream.push(signal);
@@ -820,6 +822,7 @@ mod tests {
             phase_durations: TaskPhaseDurations::default(),
             model: "claude-sonnet-4-6".into(),
             provider: "anthropic".into(),
+            prompt_experiment_observation_eligible: true,
         };
         let signal = runner_event_to_signal(&event).expect("should map");
         assert_eq!(signal.kind, Kind::AgentOutput);
@@ -1172,15 +1175,17 @@ mod tests {
                 failure_kind: Some(RunnerFailureKind::Transient),
                 duration_ms: 500,
                 output: format!("test failure iteration {i}"),
-                verdicts: vec![GateVerdictSummary {
-                    gate_name: "cargo-test".into(),
-                    passed: false,
-                    skipped: false,
-                    summary: format!("{} test failures", i + 1),
-                    error_digest: None,
-                    failure_kind: Some(RunnerFailureKind::Transient),
-                    rung_index: None,
-                }],
+                verdicts: (0..=i)
+                    .map(|failure| GateVerdictSummary {
+                        gate_name: format!("cargo-test-{failure}"),
+                        passed: false,
+                        skipped: false,
+                        summary: format!("test failure {failure}"),
+                        error_digest: None,
+                        failure_kind: Some(RunnerFailureKind::Transient),
+                        rung_index: None,
+                    })
+                    .collect(),
             };
             if let Some(e) = runner_event_to_signal(&event) {
                 ring.push(e);

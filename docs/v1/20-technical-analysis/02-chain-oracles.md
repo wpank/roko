@@ -1,5 +1,8 @@
 # Chain Oracles — On-Chain Technical Analysis Primitives
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The chain domain is where TA originated. Chain oracles implement the universal Oracle trait with blockchain-specific state variables, verification mechanisms, and adversarial threat models.
 
 

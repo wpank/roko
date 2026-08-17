@@ -178,12 +178,11 @@ impl CircuitBreaker {
     /// last failure, it transitions to `HalfOpen`.
     #[must_use]
     pub fn state(&mut self) -> BreakerState {
-        if self.state == BreakerState::Open {
-            if let Some(ts) = self.last_failure_at {
-                if ts.elapsed() >= self.recovery_timeout {
-                    self.state = BreakerState::HalfOpen;
-                }
-            }
+        if self.state == BreakerState::Open
+            && let Some(ts) = self.last_failure_at
+            && ts.elapsed() >= self.recovery_timeout
+        {
+            self.state = BreakerState::HalfOpen;
         }
         self.state
     }

@@ -1,12 +1,16 @@
 //! `roko trigger` -- manage trigger bindings.
 //!
-//! Trigger bindings live as JSON files in `.roko/triggers/`. Each binding
+//! Trigger bindings live as TOML files in `.roko/triggers/`. Each binding
 //! connects an event source (cron, webhook, signal, etc.) to a graph that
 //! is executed when the trigger fires.
 
 use anyhow::{Context as _, Result};
 use clap::Subcommand;
-use roko_core::trigger::{TriggerBinding, TriggerEvent, TriggerKind, TriggerSource};
+use roko_core::trigger::{
+    TriggerBinding, TriggerEvent, TriggerEventKind, TriggerKind, TriggerSource,
+    load_trigger_history, valid_trigger_name,
+};
+use roko_fs::RokoLayout;
 
 use crate::*;
 
@@ -52,6 +56,17 @@ pub enum TriggerCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Show durable firing history with correlated Flow run references.
+    History {
+        /// Trigger binding name.
+        name: String,
+        /// Maximum number of recent firings to return.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
 }
 
 pub(crate) async fn cmd_trigger(cli: &Cli, cmd: TriggerCmd) -> Result<i32> {
@@ -81,48 +96,31 @@ pub(crate) async fn cmd_trigger(cli: &Cli, cmd: TriggerCmd) -> Result<i32> {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             cmd_fire(cli, &wd, &name, &payload).await
         }
+        TriggerCmd::History {
+            name,
+            limit,
+            workdir,
+        } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            cmd_history(cli, &wd, &name, limit)
+        }
     }
 }
 
 /// Directory where trigger bindings are stored.
 fn triggers_dir(workdir: &Path) -> PathBuf {
-    workdir.join(".roko").join("triggers")
+    RokoLayout::for_project(workdir).triggers_dir()
 }
 
-/// Load a single trigger binding from its JSON file.
+/// Load a single trigger binding from its TOML file.
 fn load_binding(path: &Path) -> Result<TriggerBinding> {
-    let data = std::fs::read_to_string(path)
-        .with_context(|| format!("read trigger binding {}", path.display()))?;
-    serde_json::from_str(&data).with_context(|| format!("parse trigger binding {}", path.display()))
+    TriggerBinding::load_from_file(path)
+        .with_context(|| format!("load trigger binding {}", path.display()))
 }
 
 /// Load all trigger bindings from the triggers directory.
 fn load_all_bindings(workdir: &Path) -> Result<Vec<TriggerBinding>> {
-    let dir = triggers_dir(workdir);
-    if !dir.is_dir() {
-        return Ok(Vec::new());
-    }
-    let mut bindings = Vec::new();
-    let mut entries: Vec<_> = std::fs::read_dir(&dir)?
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext == "json")
-        })
-        .collect();
-    entries.sort_by_key(|e| e.file_name());
-
-    for entry in entries {
-        match load_binding(&entry.path()) {
-            Ok(binding) => bindings.push(binding),
-            Err(e) => {
-                eprintln!("warning: skipping {}: {e}", entry.path().display());
-            }
-        }
-    }
-    Ok(bindings)
+    TriggerBinding::load_all(&triggers_dir(workdir)).context("load trigger bindings")
 }
 
 fn cmd_list(cli: &Cli, workdir: &Path) -> Result<i32> {
@@ -161,7 +159,8 @@ fn cmd_list(cli: &Cli, workdir: &Path) -> Result<i32> {
 }
 
 fn cmd_show(cli: &Cli, workdir: &Path, name: &str) -> Result<i32> {
-    let path = triggers_dir(workdir).join(format!("{name}.json"));
+    anyhow::ensure!(valid_trigger_name(name), "invalid trigger name '{name}'");
+    let path = triggers_dir(workdir).join(format!("{name}.toml"));
     if !path.exists() {
         if cli.json {
             println!(
@@ -242,12 +241,13 @@ fn cmd_show(cli: &Cli, workdir: &Path, name: &str) -> Result<i32> {
 fn cmd_create(cli: &Cli, workdir: &Path, name: &str, kind: &str, graph: &str) -> Result<i32> {
     let trigger_kind = parse_trigger_kind(kind)?;
     let binding = TriggerBinding::new(name, trigger_kind, graph);
+    binding.validate().context("validate trigger binding")?;
 
     let dir = triggers_dir(workdir);
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("create triggers directory {}", dir.display()))?;
 
-    let path = dir.join(format!("{name}.json"));
+    let path = dir.join(format!("{name}.toml"));
     if path.exists() {
         if cli.json {
             println!(
@@ -260,8 +260,8 @@ fn cmd_create(cli: &Cli, workdir: &Path, name: &str, kind: &str, graph: &str) ->
         return Ok(EXIT_FAILURE);
     }
 
-    let json = serde_json::to_string_pretty(&binding).context("serialize trigger binding")?;
-    std::fs::write(&path, &json)
+    binding
+        .save_to_file(&path)
         .with_context(|| format!("write trigger binding to {}", path.display()))?;
 
     if cli.json {
@@ -276,7 +276,8 @@ fn cmd_create(cli: &Cli, workdir: &Path, name: &str, kind: &str, graph: &str) ->
 }
 
 async fn cmd_fire(cli: &Cli, workdir: &Path, name: &str, payload_str: &str) -> Result<i32> {
-    let path = triggers_dir(workdir).join(format!("{name}.json"));
+    anyhow::ensure!(valid_trigger_name(name), "invalid trigger name '{name}'");
+    let path = triggers_dir(workdir).join(format!("{name}.toml"));
     if !path.exists() {
         if cli.json {
             println!(
@@ -306,7 +307,7 @@ async fn cmd_fire(cli: &Cli, workdir: &Path, name: &str, payload_str: &str) -> R
         serde_json::from_str(payload_str).context("parse --payload as JSON")?;
 
     let trace_id = format!("manual-{}", uuid::Uuid::new_v4());
-    let event = TriggerEvent::new(
+    let mut event = TriggerEvent::new(
         name.to_string(),
         payload,
         TriggerSource::Manual {
@@ -316,16 +317,23 @@ async fn cmd_fire(cli: &Cli, workdir: &Path, name: &str, payload_str: &str) -> R
         },
         trace_id.clone(),
     );
+    if let Some(space_id) = &binding.space {
+        event = event.with_space(space_id.clone());
+    }
 
-    // Persist the event to .roko/triggers/events/ for the trigger engine to pick up.
-    let events_dir = triggers_dir(workdir).join("events");
+    // Persist into the durable inbox. A running server claims these files and
+    // records the resulting lifecycle/event evidence separately.
+    let events_dir = triggers_dir(workdir).join("inbox");
     std::fs::create_dir_all(&events_dir)
-        .with_context(|| format!("create trigger events directory {}", events_dir.display()))?;
+        .with_context(|| format!("create trigger inbox directory {}", events_dir.display()))?;
 
     let event_path = events_dir.join(format!("{name}-{trace_id}.json"));
+    let temporary_path = event_path.with_extension("json.tmp");
     let event_json = serde_json::to_string_pretty(&event).context("serialize trigger event")?;
-    std::fs::write(&event_path, &event_json)
-        .with_context(|| format!("write trigger event to {}", event_path.display()))?;
+    std::fs::write(&temporary_path, &event_json)
+        .with_context(|| format!("write trigger event to {}", temporary_path.display()))?;
+    std::fs::rename(&temporary_path, &event_path)
+        .with_context(|| format!("commit trigger event to {}", event_path.display()))?;
 
     if cli.json {
         println!("{}", serde_json::to_string_pretty(&event)?);
@@ -339,11 +347,93 @@ async fn cmd_fire(cli: &Cli, workdir: &Path, name: &str, payload_str: &str) -> R
     Ok(EXIT_SUCCESS)
 }
 
+fn cmd_history(cli: &Cli, workdir: &Path, name: &str, limit: usize) -> Result<i32> {
+    anyhow::ensure!(valid_trigger_name(name), "invalid trigger name '{name}'");
+    anyhow::ensure!(
+        (1..=1_000).contains(&limit),
+        "history limit must be between 1 and 1000"
+    );
+    let binding_path = triggers_dir(workdir).join(format!("{name}.toml"));
+    if !binding_path.is_file() {
+        if cli.json {
+            println!(
+                "{}",
+                serde_json::json!({"error": format!("trigger '{name}' not found")})
+            );
+        } else {
+            eprintln!("trigger '{name}' not found at {}", binding_path.display());
+        }
+        return Ok(EXIT_FAILURE);
+    }
+
+    let history = load_trigger_history(&triggers_dir(workdir), name, limit)
+        .with_context(|| format!("read durable history for trigger '{name}'"))?;
+    if cli.json {
+        println!("{}", serde_json::to_string_pretty(&history)?);
+        return Ok(EXIT_SUCCESS);
+    }
+
+    if history.records.is_empty() {
+        println!("No durable firings found for trigger '{name}'.");
+        return Ok(EXIT_SUCCESS);
+    }
+
+    println!("History for trigger '{name}' ({} total)", history.total);
+    println!(
+        "{:<14} {:<38} {:<13} {:<38} {}",
+        "FIRED_AT_MS", "TRACE_ID", "STATUS", "RUN_ID", "SOURCE"
+    );
+    for record in history.records {
+        let completed = record
+            .lifecycle
+            .iter()
+            .rev()
+            .find(|event| event.kind == TriggerEventKind::FlowCompleted);
+        let started = record
+            .lifecycle
+            .iter()
+            .find(|event| event.kind == TriggerEventKind::FlowStarted);
+        let status = completed.map_or("running", |event| {
+            if event
+                .detail
+                .get("success")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                "completed"
+            } else if event
+                .detail
+                .get("cancelled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                "cancelled"
+            } else {
+                "failed"
+            }
+        });
+        let run_id = completed
+            .or(started)
+            .and_then(|event| event.detail.get("run_id"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("-");
+        println!(
+            "{:<14} {:<38} {:<13} {:<38} {}",
+            record.event.fired_at_ms,
+            record.event.trace_id,
+            status,
+            run_id,
+            trigger_source_label(&record.event.source),
+        );
+    }
+    Ok(EXIT_SUCCESS)
+}
+
 /// Parse a user-supplied kind string into a `TriggerKind`.
 ///
 /// For kinds that require additional configuration (cron expression, webhook
 /// path, etc.), we create a minimal placeholder that the user can edit in the
-/// generated JSON file.
+/// generated TOML file.
 fn parse_trigger_kind(kind: &str) -> Result<TriggerKind> {
     match kind.to_lowercase().as_str() {
         "webhook" => Ok(TriggerKind::Webhook(roko_core::trigger::WebhookTrigger {
@@ -377,6 +467,8 @@ fn parse_trigger_kind(kind: &str) -> Result<TriggerKind> {
                 chain_id: 1,
                 contract: "0x0000000000000000000000000000000000000000".to_string(),
                 event_signature: "Transfer(address,address,uint256)".to_string(),
+                abi: None,
+                finality: roko_core::trigger::FinalityRequirement::default(),
             },
         )),
         other => anyhow::bail!(
@@ -395,6 +487,18 @@ fn trigger_kind_label(kind: &TriggerKind) -> &'static str {
         TriggerKind::ChainEvent(_) => "chain",
         TriggerKind::Manual => "manual",
         TriggerKind::SignalPattern(_) => "signal",
+    }
+}
+
+fn trigger_source_label(source: &TriggerSource) -> &'static str {
+    match source {
+        TriggerSource::Cron { .. } => "cron",
+        TriggerSource::Webhook { .. } => "webhook",
+        TriggerSource::FileWatch { .. } => "filewatch",
+        TriggerSource::Bus { .. } => "bus",
+        TriggerSource::ChainEvent { .. } => "chain",
+        TriggerSource::Manual { .. } => "manual",
+        TriggerSource::SignalPattern { .. } => "signal",
     }
 }
 
@@ -532,9 +636,8 @@ mod tests {
     fn load_binding_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
         let binding = TriggerBinding::new("test-trigger", TriggerKind::Manual, "plans/test.toml");
-        let path = tmp.path().join("test-trigger.json");
-        let json = serde_json::to_string_pretty(&binding).unwrap();
-        std::fs::write(&path, &json).unwrap();
+        let path = tmp.path().join("test-trigger.toml");
+        binding.save_to_file(&path).unwrap();
 
         let loaded = load_binding(&path).unwrap();
         assert_eq!(loaded.name, "test-trigger");
@@ -550,20 +653,16 @@ mod tests {
     }
 
     #[test]
-    fn load_all_bindings_skips_non_json() {
+    fn load_all_bindings_skips_non_toml() {
         let tmp = tempfile::tempdir().unwrap();
         let triggers = tmp.path().join(".roko").join("triggers");
         std::fs::create_dir_all(&triggers).unwrap();
 
-        // Write a JSON trigger file.
+        // Write a canonical TOML trigger file.
         let binding = TriggerBinding::new("good", TriggerKind::Manual, "plans/g.toml");
-        std::fs::write(
-            triggers.join("good.json"),
-            serde_json::to_string(&binding).unwrap(),
-        )
-        .unwrap();
+        binding.save_to_file(&triggers.join("good.toml")).unwrap();
 
-        // Write a non-JSON file that should be skipped.
+        // Write a non-TOML file that should be skipped.
         std::fs::write(triggers.join("readme.txt"), "not a trigger").unwrap();
 
         let loaded = load_all_bindings(tmp.path()).unwrap();

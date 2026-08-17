@@ -15,7 +15,7 @@ Category definition is the single most important strategic decision before the p
 Nunchi is a two-part system for agent coordination, identity, and trust:
 
 **Part 1 — Roko (open-source Rust runtime)**
-An agent orchestration runtime. 18 Rust crates, ~177,000 lines of code. Apache 2.0 licensed. It does the following:
+An agent orchestration runtime. 34 workspace members, ~800K lines of code. Apache 2.0 licensed. It does the following:
 - Agents run through a 6-stage pipeline: OBSERVE → GATE → ASSEMBLE → INFER+TOOLS → REFLECT → CONSOLIDATE
 - A model routing system (CascadeRouter) learns which LLM to use for each task type, producing 10-30x cost reduction vs. naive agent execution
 - An 11-gate verification pipeline checks agent output at 7 rungs (compile, test, lint, diff, LLM review, etc.) — language-agnostic, not tied to any specific programming language

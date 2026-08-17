@@ -38,7 +38,8 @@ use std::path::Path;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use roko_core::{EmotionalTag, PadVector};
+use roko_core::extension::CamelTaintLevel;
+use roko_core::{EmotionalTag, PadVector, TaintLevel};
 use serde::{Deserialize, Serialize};
 
 fn default_confidence() -> f64 {
@@ -226,6 +227,31 @@ pub struct EmotionalProvenance {
     pub emotional_diversity: f64,
 }
 
+/// A falsifiable predicate attached to learned rules and negative knowledge.
+///
+/// Surviving observations increase the rule's evidentiary standing. A single
+/// observed violation deactivates the falsifier and discredits the entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Falsifier {
+    /// The concrete claim checked against subsequent observations.
+    pub predicate: String,
+    /// Number of observations checked against the predicate.
+    #[serde(default)]
+    pub observations: u32,
+    /// Number of observations that violated the predicate.
+    #[serde(default)]
+    pub violations: u32,
+    /// Most recent check time.
+    pub last_checked: DateTime<Utc>,
+    /// Whether the predicate should continue receiving observations.
+    #[serde(default = "default_true")]
+    pub active: bool,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
 impl EmotionalProvenance {
     /// Build provenance metadata from a single emotional observation.
     #[must_use]
@@ -344,6 +370,17 @@ pub struct KnowledgeEntry {
     /// Provenance label for the entry, if it came from a dedicated source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Trust-origin taint carried by this entry.
+    ///
+    /// This label is monotonic at durable ingress: persistence code may raise
+    /// it, but must never replace it with a more-trusted value.
+    #[serde(default)]
+    pub origin_taint: CamelTaintLevel,
+    /// Information-flow security classification carried by this entry.
+    ///
+    /// This label is also monotonic at durable ingress and across rewrites.
+    #[serde(default)]
+    pub classification: TaintLevel,
     /// The actual knowledge content.
     #[serde(default)]
     pub content: String,
@@ -417,6 +454,15 @@ pub struct KnowledgeEntry {
     /// restore a starter balance.
     #[serde(default)]
     pub frozen: bool,
+    /// When the balance first became non-positive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance_depleted_at: Option<DateTime<Utc>>,
+    /// When this entry entered cold storage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen_at: Option<DateTime<Utc>>,
+    /// Optional falsifiable claim for Heuristic and AntiKnowledge entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub falsifier: Option<Falsifier>,
     /// Catalytic score: how many new knowledge entries this entry helped create (P1-58).
     ///
     /// Incremented each time this entry is in the context pack during a task
@@ -433,6 +479,8 @@ impl Default for KnowledgeEntry {
             id: String::new(),
             kind: KnowledgeKind::default(),
             source: None,
+            origin_taint: CamelTaintLevel::default(),
+            classification: TaintLevel::default(),
             content: String::new(),
             confidence: default_confidence(),
             confidence_weight: default_confidence_weight(),
@@ -453,6 +501,9 @@ impl Default for KnowledgeEntry {
             deprecated: false,
             balance: default_balance(),
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         }
     }
@@ -645,11 +696,14 @@ impl KnowledgeEntry {
     /// NEURO-11: Freeze this entry into cold storage.
     pub fn freeze(&mut self) {
         self.frozen = true;
+        self.frozen_at.get_or_insert_with(Utc::now);
     }
 
     /// NEURO-11: Thaw this entry from cold storage with a starter balance.
     pub fn thaw(&mut self, starter_balance: f64) {
         self.frozen = false;
+        self.frozen_at = None;
+        self.balance_depleted_at = None;
         self.balance = starter_balance.clamp(0.0, 5.0);
     }
 }
@@ -693,9 +747,9 @@ impl ReinforcementSignal {
     pub const fn base_value(self) -> f64 {
         match self {
             Self::Retrieved => 0.05,
-            Self::Cited => 0.08,
-            Self::Gated => 0.10,
-            Self::Surprised => 0.15,
+            Self::Cited => 0.10,
+            Self::Gated => 0.15,
+            Self::Surprised => 0.08,
             Self::AgentQuoted => 0.12,
         }
     }
@@ -738,6 +792,18 @@ pub enum SourceChannel {
 }
 
 impl SourceChannel {
+    /// Stable source label used when an explicit channel has no source text.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UserInput => "user-input",
+            Self::GateVerdict => "gate-verdict",
+            Self::AgentOutput => "agent-output",
+            Self::ExternalApi => "external-api",
+            Self::DreamConsolidation => "dream-consolidation",
+        }
+    }
+
     /// Default trust discount factor for this channel.
     ///
     /// The entry's raw confidence is multiplied by this value on ingest.
@@ -762,19 +828,49 @@ impl SourceChannel {
     #[must_use]
     pub fn from_source_label(label: &str) -> Self {
         let normalized = label.trim().to_ascii_lowercase();
-        if normalized.contains("user") || normalized.contains("manual") {
-            Self::UserInput
-        } else if normalized.contains("gate") || normalized.contains("verdict") {
-            Self::GateVerdict
-        } else if normalized.contains("agent") || normalized.contains("llm") {
-            Self::AgentOutput
-        } else if normalized.contains("api") || normalized.contains("external") {
+        // Check the least-trusted source markers first. A compound label such
+        // as `user-external-import` must not be interpreted as trusted user
+        // input merely because it contains the word `user`.
+        if normalized.contains("api")
+            || normalized.contains("external")
+            || normalized.contains("remote")
+            || normalized.contains("import")
+            || normalized.contains("restore")
+        {
             Self::ExternalApi
         } else if normalized.contains("dream") || normalized.contains("consolidat") {
             Self::DreamConsolidation
+        } else if normalized.contains("agent") || normalized.contains("llm") {
+            Self::AgentOutput
+        } else if normalized.contains("gate") || normalized.contains("verdict") {
+            Self::GateVerdict
+        } else if normalized.contains("user") || normalized.contains("manual") {
+            Self::UserInput
         } else {
             // Default to agent output for unknown sources.
             Self::AgentOutput
+        }
+    }
+
+    /// Minimum trust-origin taint required for knowledge from this channel.
+    #[must_use]
+    pub const fn minimum_origin_taint(self) -> CamelTaintLevel {
+        match self {
+            Self::UserInput => CamelTaintLevel::Local,
+            Self::GateVerdict => CamelTaintLevel::Trusted,
+            Self::AgentOutput | Self::DreamConsolidation => CamelTaintLevel::Untrusted,
+            Self::ExternalApi => CamelTaintLevel::External,
+        }
+    }
+
+    /// Minimum security classification required for this channel.
+    #[must_use]
+    pub const fn minimum_classification(self) -> TaintLevel {
+        match self {
+            Self::UserInput | Self::GateVerdict | Self::AgentOutput | Self::DreamConsolidation => {
+                TaintLevel::Internal
+            }
+            Self::ExternalApi => TaintLevel::Confidential,
         }
     }
 }
@@ -787,6 +883,19 @@ pub fn apply_source_discount(entries: &mut [KnowledgeEntry], channel: SourceChan
     let factor = channel.discount_factor();
     for entry in entries.iter_mut() {
         entry.confidence = (entry.confidence * factor).clamp(0.0, 1.0);
+    }
+}
+
+/// Monotonically join source-channel taint and classification into entries.
+///
+/// Calling this function with a more-trusted channel cannot lower labels that
+/// an entry already carries.
+pub fn apply_source_security_labels(entries: &mut [KnowledgeEntry], channel: SourceChannel) {
+    let minimum_origin_taint = channel.minimum_origin_taint();
+    let minimum_classification = channel.minimum_classification();
+    for entry in entries {
+        entry.origin_taint = entry.origin_taint.max(minimum_origin_taint);
+        entry.classification = entry.classification.join(minimum_classification);
     }
 }
 
@@ -1402,24 +1511,31 @@ pub use context::{
 };
 pub use distiller::{DistillationBackend, Distiller};
 pub use episode_completion::spawn_episode_distillation;
+#[cfg(feature = "hdc")]
+pub use hdc::ResonancePair;
 pub use knowledge_store::{
-    AntiKnowledgeConflict, BackupHeader, DEFAULT_GC_MIN_CONFIDENCE, ExportFilter, ImportOptions,
-    KnowledgeConfirmationRecord, KnowledgeQueryBreakdown, KnowledgeQueryHit,
-    KnowledgeSimilarityHit, KnowledgeStats, KnowledgeStore, QUERY_SCORE_FLOOR,
+    AntiKnowledgeConflict, BackupHeader, DEFAULT_GC_MIN_CONFIDENCE, ExportBundle, ExportFilter,
+    FalsifierOutcome, ImportOptions, ImportResult, KnowledgeConfirmationRecord,
+    KnowledgeQueryBreakdown, KnowledgeQueryHit, KnowledgeSimilarityHit, KnowledgeStats,
+    KnowledgeStore, QUERY_SCORE_FLOOR,
 };
 #[cfg(feature = "hdc")]
 pub use knowledge_store::{MemoryHit, MemoryIndex};
+#[cfg(feature = "hdc")]
+pub use lifecycle::CrossDomainTransfer;
 pub use lifecycle::{
-    DEFAULT_KNOWLEDGE_LIFECYCLE_FILE, KnowledgeLifecycleConfig, KnowledgeLifecycleRecord,
-    RuntimeAdmissionPath, RuntimeEpisodeObservation, RuntimeKnowledgeLifecycle,
+    BatchDistillationReport, DEFAULT_KNOWLEDGE_LIFECYCLE_FILE, DistillationResult,
+    KnowledgeLifecycleConfig, KnowledgeLifecycleRecord, RuntimeAdmissionPath,
+    RuntimeEpisodeObservation, RuntimeKnowledgeLifecycle,
 };
 pub use temporal::{
     AllenRelation, KnowledgeEpoch, TemporalIndex, TemporalInterval, TemporalRelation,
 };
 pub use tier_progression::{
     DEFAULT_HEURISTIC_DEMOTIONS_FILE, DEFAULT_HEURISTIC_OBSERVATIONS_FILE, DEFAULT_HEURISTICS_FILE,
-    Heuristic, HeuristicDemotionRecord, HeuristicObservation, HeuristicStore,
-    evaluate_tier_progression_v2, promotion_threshold,
+    EntryTierProgressionReport, Heuristic, HeuristicDemotionRecord, HeuristicObservation,
+    HeuristicStore, TierProgressionConfig, TierThreshold, evaluate_tier_progression_v2,
+    promotion_threshold,
 };
 
 #[cfg(test)]
@@ -1440,6 +1556,8 @@ mod tests {
             id: "kn-1".to_string(),
             kind: KnowledgeKind::Insight,
             source: None,
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: "Prefer smaller retries after gate failures.".to_string(),
             confidence: 0.9,
             confidence_weight: 0.9,
@@ -1463,6 +1581,9 @@ mod tests {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         };
 

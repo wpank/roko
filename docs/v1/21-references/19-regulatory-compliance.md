@@ -1,5 +1,8 @@
 # Regulatory Compliance
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Regulatory frameworks, compliance standards, and legal precedents relevant to autonomous agent operation, financial services, and AI governance.
 
 **Topic**: [References](./INDEX.md)

@@ -148,18 +148,18 @@ pub fn find_mcp_launch(working_dir: &Path) -> Option<McpLaunch> {
     while let Some(dir) = search {
         for rel in [".roko/mcp-config.local.json", ".roko/mcp-config.json"] {
             let candidate = dir.join(rel);
-            if candidate.exists() {
-                if let Some(config) = load_json_mcp_launch(&candidate) {
-                    return Some(normalize_mcp_launch(config, dir));
-                }
+            if candidate.exists()
+                && let Some(config) = load_json_mcp_launch(&candidate)
+            {
+                return Some(normalize_mcp_launch(config, dir));
             }
         }
         // Also check codex-style TOML config.
         let codex_candidate = dir.join(".codex/config.toml");
-        if codex_candidate.exists() {
-            if let Some(config) = load_toml_mcp_launch(&codex_candidate) {
-                return Some(normalize_mcp_launch(config, dir));
-            }
+        if codex_candidate.exists()
+            && let Some(config) = load_toml_mcp_launch(&codex_candidate)
+        {
+            return Some(normalize_mcp_launch(config, dir));
         }
         search = dir.parent();
     }

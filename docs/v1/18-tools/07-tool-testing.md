@@ -1,5 +1,8 @@
 # 07 — Tool Testing Strategy
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Four-layer testing: session shim, unit tests, property-based tests, evaluation tests,
 > red-team tests. mirage-rs integration, CI pipeline.
 

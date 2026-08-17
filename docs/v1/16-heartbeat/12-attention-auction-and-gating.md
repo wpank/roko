@@ -1,5 +1,8 @@
 # Attention Auction, Context Governor, and CorticalState
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > VCG truthful bidding for limited context budget, the shared perception surface, meta-cognition hooks, and the frequency scheduler.
 
 

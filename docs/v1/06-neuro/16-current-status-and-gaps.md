@@ -1,5 +1,8 @@
 # Current Status and Implementation Gaps
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > A comprehensive assessment of what exists in the roko-neuro codebase today, what is scaffolded, and what remains to be built — mapped against the refactoring-prd design and the implementation plan.
 
 

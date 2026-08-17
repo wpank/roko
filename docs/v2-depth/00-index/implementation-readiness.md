@@ -165,7 +165,7 @@ impl Compose for CodeAwareComposer {
 [phase_c]
 # Already built:
 learn = { crate = "roko-learn", status = "wired", tests = 348 }
-orchestrate = { crate = "roko-orchestrator", status = "wired", tests = 315 }
+orchestrate = { crate = "roko-cli::orchestrator", status = "wired", notes = "Migrated from the removed roko-orchestrator crate by E12-T06" }
 
 # Phase C additions:
 learn_from_all_verdicts = { status = "partial", notes = "LearnRecord receives all gate verdict types, not just pass/fail" }
@@ -231,13 +231,13 @@ impl Store for DemurrageStore {
 
 ```toml
 [phase_d]
-# Already built (scaffold):
-dreams = { crate = "roko-dreams", status = "scaffold", notes = "DreamRunner exists, no runtime trigger" }
+# Already built:
+dreams = { crate = "roko-dreams", status = "runtime-scheduled", notes = "DreamRunner plus daemon-resident adaptive-idle, cron, and episode-count scheduling" }
 neuro = { crate = "roko-neuro", status = "partial", notes = "Store types spread across crates" }
 daimon = { crate = "roko-daimon", status = "built", notes = "PAD + somatic landscape exist" }
 
 # Phase D additions:
-dream_trigger = { status = "gap", notes = "Delta-speed trigger from Bus subscription to substrate.signal.stored" }
+dream_trigger = { status = "partial", notes = "Resident scheduling is live; Delta-speed Bus subscription and intensive backlog mode remain" }
 dream_to_neuro = { status = "gap", notes = "DreamConsolidate → NeuroMemory: consolidated Signals" }
 dream_to_daimon = { status = "gap", notes = "DreamConsolidate → DaimonAffect: depotentiation of traumatic markers" }
 neuro_to_compose = { status = "partial", notes = "Knowledge entries partially reach ContextCompose" }
@@ -456,8 +456,8 @@ Mapping the implementation readiness audit scores to the phase structure:
 |---|---|---|---|---|
 | **A: Kernel** | roko-core, roko-runtime, roko-primitives | 21/30 | 376 + ~50 | Store stable; Bus partial; HDC-per-Signal gap |
 | **B: Framework** | roko-agent, roko-compose, roko-gate, roko-index | 21 + 25 + 27 + 24 = 97/120 | 567 + 264 + 216 + 92 | Core loop wired; CodeIndex unwired; Bus publishing missing |
-| **C: Learning** | roko-learn, roko-conductor, roko-orchestrator | 29 + 29 + 30 = 88/90 | 348 + 130 + 315 | Best-specified subsystems; conductor layer violation; demurrage target-state |
-| **D: Cross-cuts** | roko-neuro, roko-daimon, roko-dreams | 22 + 23 + 23 = 68/90 | 18 + ~20 + ~10 | Weakest section; Dreams scaffold-only; Daimon dual-implementation |
+| **C: Learning** | roko-learn, roko-conductor, roko-cli runner/orchestrator | Historical 29 + 29 + 30 = 88/90 | Historical 348 + 130 + 315 | Audit-era scores retained; orchestration ownership migrated into roko-cli in E12 |
+| **D: Cross-cuts** | roko-neuro, roko-daimon, roko-dreams | Historical 22 + 23 + 23 = 68/90 | Historical 18 + ~20 + ~10 | Audit-era scores retained; Dreams now run from a resident scheduler, while Bus/intensive integration and Daimon convergence remain |
 | **E: Domain+Interface** | roko-chain, roko-cli, roko-serve | 18 + 23 + (not scored) | 10 + 38 + ~50 | Chain deferred; CLI wired; serve built but not Bus-connected |
 
 **Key insight**: Phase C (Learning) has the highest audit scores (29-30/30) but depends on Phase A (Bus) and Phase B (Verify on Bus) which have lower scores. The readiness is inverted: the most-specified subsystems cannot be fully wired until the less-specified kernel is stabilized. This is the architectural reason the kernel must come first.

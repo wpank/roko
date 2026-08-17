@@ -6,7 +6,7 @@
 //! - [`Selection`] — a [`Route`](crate::Route) chose one candidate
 //! - [`Outcome`] — feedback about what happened after a selection was acted on
 
-use crate::ContentHash;
+use crate::{ArtifactRef, ContentHash};
 use serde::{Deserialize, Serialize};
 
 /// Structured test counts from a test gate (passed/failed/ignored).
@@ -186,6 +186,38 @@ impl Verdict {
     }
 }
 
+/// Ordered stages in the artifact publishing contract.
+///
+/// This enum describes the pipeline boundary only. The core crate does not
+/// perform signature, schema, or storage verification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublishStage {
+    Checksum,
+    Signature,
+    CapabilityCheck,
+    SemverCheck,
+    SchemaValidate,
+    Store,
+}
+
+/// Verdict emitted for one artifact publishing stage.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PublishStageResult {
+    pub stage: PublishStage,
+    pub verdict: Verdict,
+    pub detail: Option<String>,
+}
+
+/// Aggregate contract returned by an artifact publishing pipeline.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PublishPipelineResult {
+    pub stages: Vec<PublishStageResult>,
+    pub overall_passed: bool,
+    pub artifact_ref: Option<ArtifactRef>,
+    pub total_duration_ms: u64,
+}
+
 /// The result of a [`Route`](crate::Route) picking one signal from candidates.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Selection {
@@ -352,6 +384,46 @@ mod tests {
         assert_eq!(
             v.error_digest.as_deref(),
             Some("E0599: no method `foo` on type `Bar`")
+        );
+    }
+
+    #[test]
+    fn publish_pipeline_contract_round_trips_all_six_stages() {
+        let stages = [
+            "checksum",
+            "signature",
+            "capability_check",
+            "semver_check",
+            "schema_validate",
+            "store",
+        ]
+        .into_iter()
+        .map(|stage_name| PublishStageResult {
+            stage: serde_json::from_value(serde_json::json!(stage_name))
+                .expect("deserialize stage name"),
+            verdict: Verdict::pass(stage_name),
+            detail: None,
+        })
+        .collect::<Vec<_>>();
+        let pipeline = PublishPipelineResult {
+            stages,
+            overall_passed: true,
+            artifact_ref: Some(ArtifactRef {
+                publisher: "alice".to_owned(),
+                name: "review".to_owned(),
+                version: "1.0.0".to_owned(),
+            }),
+            total_duration_ms: 42,
+        };
+
+        let encoded = serde_json::to_string(&pipeline).expect("serialize pipeline contract");
+        let decoded = serde_json::from_str::<PublishPipelineResult>(&encoded)
+            .expect("deserialize pipeline contract");
+        assert_eq!(decoded, pipeline);
+        assert_eq!(decoded.stages.len(), 6);
+        assert_eq!(
+            decoded.artifact_ref.as_ref().map(ToString::to_string),
+            Some("@alice/review@1.0.0".to_owned())
         );
     }
 

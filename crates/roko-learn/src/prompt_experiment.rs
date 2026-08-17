@@ -7,11 +7,13 @@
 //!
 //! Persistence is a single JSON file managed by [`ExperimentStore`].
 
-use roko_core::ExperimentWinnerSummary;
+use roko_core::{ContentHash, ExperimentWinnerSummary};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::path::Path;
+
+use chrono::{DateTime, Utc};
 
 /// Default path for persisted static overrides derived from concluded experiments.
 pub const DEFAULT_STATIC_OVERRIDES_PATH: &str = ".roko/learn/static-overrides.json";
@@ -56,6 +58,19 @@ pub struct VariantStats {
     pub trials: u64,
     /// Number of successful outcomes.
     pub successes: u64,
+}
+
+/// Immutable statistics captured when an experiment is auto-promoted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExperimentArchive {
+    /// Conclusion timestamp.
+    pub concluded_at: DateTime<Utc>,
+    /// Final per-variant counters.
+    pub final_stats: HashMap<String, VariantStats>,
+    /// Chi-squared p-value for the two leading variants.
+    pub p_value: f64,
+    /// Absolute success-rate difference between the leaders.
+    pub effect_size: f64,
 }
 
 impl VariantStats {
@@ -130,6 +145,132 @@ pub enum ExperimentStatus {
     Concluded,
 }
 
+/// Durable identity of one runner attempt receiving prompt treatments.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct PromptAttemptKey {
+    /// Durable runner invocation id.
+    pub run_id: String,
+    /// Plan containing the task.
+    pub plan_id: String,
+    /// Task receiving the prompt.
+    pub task_id: String,
+    /// Monotonic task attempt number.
+    pub attempt: u32,
+}
+
+impl PromptAttemptKey {
+    /// Construct an attempt identity.
+    pub fn new(
+        run_id: impl Into<String>,
+        plan_id: impl Into<String>,
+        task_id: impl Into<String>,
+        attempt: u32,
+    ) -> Self {
+        Self {
+            run_id: run_id.into(),
+            plan_id: plan_id.into(),
+            task_id: task_id.into(),
+            attempt,
+        }
+    }
+}
+
+/// Durable lifecycle of a prompt-experiment assignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PromptAssignmentState {
+    /// Treatment selected and reserved, but no provider side effect started.
+    Prepared,
+    /// The exact composed prompt was handed to a provider launch boundary.
+    Dispatched,
+    /// A dispatched treatment received a terminal success/failure observation.
+    Observed,
+    /// The treatment never produced an eligible observation.
+    Abandoned,
+}
+
+/// Attempt-level terminal disposition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AssignmentSettlement {
+    /// The provider-backed attempt completed with this experiment outcome.
+    Observed {
+        /// Whether the attempt satisfied its outcome gate.
+        success: bool,
+    },
+    /// The attempt was abandoned and must not update experiment statistics.
+    Abandoned,
+}
+
+/// Durable assignment and audit receipt for one prompt treatment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptExperimentAssignment {
+    /// Content-addressed deterministic assignment identifier.
+    pub assignment_id: String,
+    /// Runner attempt receiving this treatment.
+    pub attempt_key: PromptAttemptKey,
+    /// Experiment that selected the variant.
+    pub experiment_id: String,
+    /// Selected variant identifier.
+    pub variant_id: String,
+    /// Optional role scope of the selected experiment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Canonical prompt section replaced by the treatment.
+    pub section_name: String,
+    /// Exact treatment content retained until terminal settlement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_snapshot: Option<String>,
+    /// Durable BLAKE3 hash of the treatment content.
+    pub content_hash: String,
+    /// Hash of the exact final prompt handed to the provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_hash: Option<String>,
+    /// Assignment lifecycle state.
+    pub state: PromptAssignmentState,
+    /// Observed outcome, present only for [`PromptAssignmentState::Observed`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success: Option<bool>,
+    /// Whether this treatment was assigned while the experiment was running.
+    /// Concluded sticky winners remain auditable but never reserve or update a
+    /// learning trial.
+    #[serde(default)]
+    learning_eligible: bool,
+}
+
+/// Durable attempt bucket used to make preparation, dispatch, and settlement
+/// idempotent across process crashes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PromptAttemptAssignments {
+    attempt_key: PromptAttemptKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
+    #[serde(default)]
+    eligible_sections: Vec<String>,
+    #[serde(default)]
+    assignments: Vec<PromptExperimentAssignment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt_hash: Option<String>,
+    /// Canonical assignment-id subset actually included in the dispatched
+    /// prompt. `None` is reserved for stores written before subset tracking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    included_assignment_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    settlement: Option<AssignmentSettlement>,
+}
+
+/// Typed failures from durable assignment lifecycle operations.
+#[derive(Debug, thiserror::Error)]
+pub enum PromptAssignmentError {
+    /// Filesystem or persisted-JSON failure.
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    /// The request conflicts with already-durable attempt state.
+    #[error("prompt assignment conflict: {0}")]
+    Conflict(String),
+    /// No durable assignment bucket exists for the requested attempt.
+    #[error("prompt assignment attempt not found: {0}")]
+    AttemptNotFound(String),
+}
+
 /// A prompt experiment tracks multiple variants for one prompt section.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptExperiment {
@@ -155,6 +296,9 @@ pub struct PromptExperiment {
     pub min_trials_per_variant: u64,
     /// Required difference in success rate to declare a winner.
     pub min_effect_size: f64,
+    /// Final statistics retained after automatic promotion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<ExperimentArchive>,
 }
 
 impl PromptExperiment {
@@ -179,6 +323,7 @@ impl PromptExperiment {
             winner_id: None,
             min_trials_per_variant: 10,
             min_effect_size: 0.1,
+            archive: None,
         }
     }
 
@@ -227,6 +372,7 @@ impl PromptExperiment {
             if let Some(winner) = self.check_conclusion() {
                 self.status = ExperimentStatus::Concluded;
                 self.winner_id = Some(winner);
+                self.archive = Some(self.build_archive());
                 return true;
             }
         }
@@ -249,8 +395,8 @@ impl PromptExperiment {
 
     /// Check if we have enough data to declare a winner.
     ///
-    /// Requires all active variants to have at least `min_trials_per_variant`
-    /// and the best variant to lead the second-best by `min_effect_size`.
+    /// Requires enough evidence, a practically meaningful effect, and either
+    /// p < 0.05 or non-overlapping Wilson 95% intervals after 50 total trials.
     fn check_conclusion(&self) -> Option<String> {
         let active_stats: Vec<(&str, &VariantStats)> = self
             .variants
@@ -281,10 +427,71 @@ impl PromptExperiment {
         let (best_id, best_rate) = ranked[0];
         let (_, second_rate) = ranked[1];
 
-        if best_rate - second_rate >= self.min_effect_size {
+        let best_stats = active_stats
+            .iter()
+            .find(|(id, _)| *id == best_id)
+            .map(|(_, stats)| *stats)?;
+        let second_id = ranked[1].0;
+        let second_stats = active_stats
+            .iter()
+            .find(|(id, _)| *id == second_id)
+            .map(|(_, stats)| *stats)?;
+        let (_, p_value) = chi_squared_test(best_stats, second_stats);
+        let significant = p_value < 0.05;
+        let early = self.early_stopping_check().as_deref() == Some(best_id);
+
+        if best_rate - second_rate >= self.min_effect_size && (significant || early) {
             Some(best_id.to_string())
         } else {
             None
+        }
+    }
+
+    /// Return the likely winner when Wilson 95% intervals no longer overlap
+    /// after at least 50 observations across active variants.
+    #[must_use]
+    pub fn early_stopping_check(&self) -> Option<String> {
+        let mut ranked = self
+            .variants
+            .iter()
+            .filter(|variant| variant.active)
+            .filter_map(|variant| {
+                self.stats
+                    .get(&variant.id)
+                    .map(|stats| (&variant.id, stats))
+            })
+            .collect::<Vec<_>>();
+        if ranked.len() < 2 || ranked.iter().map(|(_, stats)| stats.trials).sum::<u64>() < 50 {
+            return None;
+        }
+        ranked.sort_by(|a, b| b.1.success_rate().total_cmp(&a.1.success_rate()));
+        let best_interval = ranked[0].1.confidence_interval_95();
+        let second_interval = ranked[1].1.confidence_interval_95();
+        (best_interval.0 > second_interval.1).then(|| ranked[0].0.clone())
+    }
+
+    fn build_archive(&self) -> ExperimentArchive {
+        let mut ranked = self
+            .variants
+            .iter()
+            .filter(|variant| variant.active)
+            .filter_map(|variant| self.stats.get(&variant.id))
+            .collect::<Vec<_>>();
+        ranked.sort_by(|a, b| b.success_rate().total_cmp(&a.success_rate()));
+        let (p_value, effect_size) = if ranked.len() >= 2 {
+            let (_, p_value) = chi_squared_test(ranked[0], ranked[1]);
+            (
+                p_value,
+                (ranked[0].success_rate() - ranked[1].success_rate()).abs(),
+            )
+        } else {
+            (0.0, 1.0)
+        };
+        ExperimentArchive {
+            concluded_at: Utc::now(),
+            final_stats: self.stats.clone(),
+            p_value,
+            effect_size,
         }
     }
 
@@ -388,12 +595,63 @@ impl PromptExperiment {
     }
 }
 
+/// Pearson chi-squared test for two binary-outcome variants.
+///
+/// Returns `(statistic, p_value)` with one degree of freedom. Degenerate
+/// tables return a non-significant p-value instead of producing NaN.
+#[must_use]
+pub fn chi_squared_test(stats_a: &VariantStats, stats_b: &VariantStats) -> (f64, f64) {
+    if stats_a.trials == 0 || stats_b.trials == 0 {
+        return (0.0, 1.0);
+    }
+    let a_success = stats_a.successes.min(stats_a.trials) as f64;
+    let b_success = stats_b.successes.min(stats_b.trials) as f64;
+    let a_total = stats_a.trials as f64;
+    let b_total = stats_b.trials as f64;
+    let successes = a_success + b_success;
+    let total = a_total + b_total;
+    let failures = total - successes;
+    if successes <= f64::EPSILON || failures <= f64::EPSILON {
+        return (0.0, 1.0);
+    }
+    let expected_a_success = a_total * successes / total;
+    let expected_b_success = b_total * successes / total;
+    let cells = [
+        (a_success, expected_a_success),
+        (a_total - a_success, a_total - expected_a_success),
+        (b_success, expected_b_success),
+        (b_total - b_success, b_total - expected_b_success),
+    ];
+    let statistic = cells
+        .iter()
+        .filter(|(_, expected)| *expected > f64::EPSILON)
+        .map(|(observed, expected)| (observed - expected).powi(2) / expected)
+        .sum::<f64>();
+    (statistic, erfc((statistic / 2.0).sqrt()).clamp(0.0, 1.0))
+}
+
+// Abramowitz and Stegun 7.1.26; ample precision for an experiment gate.
+fn erfc(value: f64) -> f64 {
+    let x = value.abs();
+    let t = 1.0 / (1.0 + 0.327_591_1 * x);
+    let polynomial =
+        (((((1.061_405_429 * t - 1.453_152_027) * t) + 1.421_413_741) * t - 0.284_496_736) * t
+            + 0.254_829_592)
+            * t;
+    let erf = 1.0 - polynomial * (-x * x).exp();
+    if value >= 0.0 { 1.0 - erf } else { 1.0 + erf }
+}
+
 // ─── Store ──────────────────────────────────────────────────────────────────
 
 /// Persisted experiment store: manages all active and concluded experiments.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExperimentStore {
     experiments: HashMap<String, PromptExperiment>,
+    /// Attempt-scoped assignment receipts. The map key is a deterministic hash
+    /// of run/plan/task/attempt; the full identity is retained in each bucket.
+    #[serde(default)]
+    attempt_assignments: BTreeMap<String, PromptAttemptAssignments>,
 }
 
 impl ExperimentStore {
@@ -401,7 +659,32 @@ impl ExperimentStore {
     pub fn new() -> Self {
         Self {
             experiments: HashMap::new(),
+            attempt_assignments: BTreeMap::new(),
         }
+    }
+
+    /// Strictly load a store, returning an empty store only when it is absent.
+    ///
+    /// # Errors
+    ///
+    /// Malformed JSON is returned as [`io::ErrorKind::InvalidData`]. The source
+    /// file is never rewritten by this read-only operation.
+    pub fn load_strict(path: &Path) -> io::Result<Self> {
+        roko_fs::read_json_or_default_strict(path)
+    }
+
+    /// Strict read/mutate/atomic-write transaction under the store's stable
+    /// sibling advisory lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns strict load, mutation, or atomic publication errors. Malformed
+    /// input and failed mutations leave the existing file untouched.
+    pub fn transaction<R>(
+        path: &Path,
+        transaction: impl FnOnce(&mut Self) -> io::Result<R>,
+    ) -> io::Result<R> {
+        roko_fs::with_locked_json_transaction::<Self, R, io::Error, _>(path, transaction)
     }
 
     /// Load from a JSON file, or create empty if missing/corrupt.
@@ -458,6 +741,504 @@ impl ExperimentStore {
     /// Returns `(variant_id, variant_content)` or `None` if no experiment.
     pub fn assign_variant_for_section(&self, section_name: &str) -> Option<(String, String)> {
         self.assign_variant(section_name)
+    }
+
+    /// Prepare deterministic role/section treatments for one durable attempt.
+    ///
+    /// Preparation reserves running-experiment arms without counting a trial.
+    /// Repeating the identical request returns the same content snapshots.
+    /// Multiple applicable experiments for one role/section are rejected
+    /// instead of selecting by hash-map iteration order. Concluded experiments
+    /// return their persisted winner as a sticky, non-learning treatment.
+    ///
+    /// # Errors
+    ///
+    /// Returns strict persistence failures, invalid attempt identity, overlap,
+    /// or a request that conflicts with an existing attempt bucket.
+    pub fn prepare_attempt_assignments(
+        path: &Path,
+        attempt_key: &PromptAttemptKey,
+        role: Option<&str>,
+        eligible_sections: &[&str],
+    ) -> Result<Vec<PromptExperimentAssignment>, PromptAssignmentError> {
+        validate_attempt_key(attempt_key)?;
+        let role = normalize_optional(role);
+        let eligible_sections = normalize_sections(eligible_sections)?;
+        roko_fs::with_locked_json_transaction::<Self, _, PromptAssignmentError, _>(path, |store| {
+            store.prepare_attempt_assignments_unlocked(
+                attempt_key,
+                role.as_deref(),
+                &eligible_sections,
+            )
+        })
+    }
+
+    /// Mark the exact subset of prepared treatments included in the final
+    /// prompt as dispatched immediately before provider launch.
+    ///
+    /// Assignment ids must be sorted, unique, and belong to this attempt.
+    /// Repeating the same hash and subset is idempotent. A different hash or
+    /// subset, missing preparation, or terminal attempt is a conflict.
+    pub fn mark_attempt_dispatched(
+        path: &Path,
+        attempt_key: &PromptAttemptKey,
+        prompt_hash: &str,
+        included_assignment_ids: &[&str],
+    ) -> Result<Vec<PromptExperimentAssignment>, PromptAssignmentError> {
+        let prompt_hash = prompt_hash.trim();
+        if prompt_hash.is_empty() {
+            return Err(PromptAssignmentError::Conflict(
+                "dispatch prompt hash cannot be empty".to_string(),
+            ));
+        }
+        let included_assignment_ids = validate_included_assignment_ids(included_assignment_ids)?;
+        let bucket_id = attempt_bucket_id(attempt_key);
+        roko_fs::with_locked_json_transaction::<Self, _, PromptAssignmentError, _>(path, |store| {
+            let bucket = store
+                .attempt_assignments
+                .get_mut(&bucket_id)
+                .ok_or_else(|| PromptAssignmentError::AttemptNotFound(bucket_id.clone()))?;
+            if bucket.attempt_key != *attempt_key {
+                return Err(PromptAssignmentError::Conflict(format!(
+                    "attempt bucket collision for {bucket_id}"
+                )));
+            }
+            if bucket.settlement.is_some() {
+                return Err(PromptAssignmentError::Conflict(format!(
+                    "attempt {bucket_id} is already settled"
+                )));
+            }
+
+            let mut known_assignment_ids = bucket
+                .assignments
+                .iter()
+                .map(|assignment| assignment.assignment_id.as_str())
+                .collect::<Vec<_>>();
+            known_assignment_ids.sort_unstable();
+            if known_assignment_ids
+                .windows(2)
+                .any(|pair| pair[0] == pair[1])
+            {
+                return Err(PromptAssignmentError::Conflict(format!(
+                    "attempt {bucket_id} contains duplicate assignment ids"
+                )));
+            }
+            if let Some(unknown_id) = included_assignment_ids.iter().find(|assignment_id| {
+                known_assignment_ids
+                    .binary_search(&assignment_id.as_str())
+                    .is_err()
+            }) {
+                return Err(PromptAssignmentError::Conflict(format!(
+                    "assignment {unknown_id:?} does not belong to attempt {bucket_id}"
+                )));
+            }
+
+            if let Some(existing_hash) = bucket.prompt_hash.as_deref() {
+                if existing_hash != prompt_hash {
+                    return Err(PromptAssignmentError::Conflict(format!(
+                        "attempt {bucket_id} was dispatched with a different prompt hash"
+                    )));
+                }
+
+                // Ledgers written before subset tracking can recover the
+                // original full inclusion set from dispatched assignment rows.
+                let existing_included =
+                    bucket.included_assignment_ids.clone().unwrap_or_else(|| {
+                        let mut ids = bucket
+                            .assignments
+                            .iter()
+                            .filter(|assignment| {
+                                assignment.state == PromptAssignmentState::Dispatched
+                            })
+                            .map(|assignment| assignment.assignment_id.clone())
+                            .collect::<Vec<_>>();
+                        ids.sort();
+                        ids
+                    });
+                if existing_included != included_assignment_ids {
+                    return Err(PromptAssignmentError::Conflict(format!(
+                        "attempt {bucket_id} was dispatched with a different assignment subset"
+                    )));
+                }
+                if bucket.assignments.iter().any(|assignment| {
+                    let included = included_assignment_ids
+                        .binary_search(&assignment.assignment_id)
+                        .is_ok();
+                    if included {
+                        assignment.state != PromptAssignmentState::Dispatched
+                            || assignment.prompt_hash.as_deref() != Some(prompt_hash)
+                    } else {
+                        assignment.state != PromptAssignmentState::Prepared
+                            || assignment.prompt_hash.is_some()
+                    }
+                }) {
+                    return Err(PromptAssignmentError::Conflict(format!(
+                        "attempt {bucket_id} has inconsistent dispatched assignments"
+                    )));
+                }
+                bucket.included_assignment_ids = Some(included_assignment_ids.clone());
+                return Ok(bucket.assignments.clone());
+            }
+
+            if bucket
+                .assignments
+                .iter()
+                .any(|assignment| assignment.state != PromptAssignmentState::Prepared)
+            {
+                return Err(PromptAssignmentError::Conflict(format!(
+                    "attempt {bucket_id} contains a non-prepared assignment"
+                )));
+            }
+            bucket.prompt_hash = Some(prompt_hash.to_string());
+            bucket.included_assignment_ids = Some(included_assignment_ids.clone());
+            for assignment in &mut bucket.assignments {
+                if included_assignment_ids
+                    .binary_search(&assignment.assignment_id)
+                    .is_ok()
+                {
+                    assignment.state = PromptAssignmentState::Dispatched;
+                    assignment.prompt_hash = Some(prompt_hash.to_string());
+                }
+            }
+            Ok(bucket.assignments.clone())
+        })
+    }
+
+    /// Atomically settle every treatment belonging to one attempt.
+    ///
+    /// Prepared treatments become abandoned and never count a trial. Dispatched
+    /// observed treatments update their exact experiment/variant once;
+    /// dispatched abandoned treatments do not. Repeating the same settlement is
+    /// a no-op, while a different terminal result is rejected.
+    pub fn settle_attempt(
+        path: &Path,
+        attempt_key: &PromptAttemptKey,
+        settlement: AssignmentSettlement,
+    ) -> Result<Vec<PromptExperimentAssignment>, PromptAssignmentError> {
+        let bucket_id = attempt_bucket_id(attempt_key);
+        roko_fs::with_locked_json_transaction::<Self, _, PromptAssignmentError, _>(path, |store| {
+            store.settle_attempt_unlocked(&bucket_id, attempt_key, settlement)
+        })
+    }
+
+    /// Return durable assignment receipts for an attempt.
+    #[must_use]
+    pub fn assignments_for_attempt(
+        &self,
+        attempt_key: &PromptAttemptKey,
+    ) -> Option<&[PromptExperimentAssignment]> {
+        let bucket = self
+            .attempt_assignments
+            .get(&attempt_bucket_id(attempt_key))?;
+        (bucket.attempt_key == *attempt_key).then_some(bucket.assignments.as_slice())
+    }
+
+    fn prepare_attempt_assignments_unlocked(
+        &mut self,
+        attempt_key: &PromptAttemptKey,
+        role: Option<&str>,
+        eligible_sections: &[String],
+    ) -> Result<Vec<PromptExperimentAssignment>, PromptAssignmentError> {
+        let bucket_id = attempt_bucket_id(attempt_key);
+        if let Some(existing) = self.attempt_assignments.get(&bucket_id) {
+            if existing.attempt_key != *attempt_key {
+                return Err(PromptAssignmentError::Conflict(format!(
+                    "attempt bucket collision for {bucket_id}"
+                )));
+            }
+            if existing.role.as_deref() != role || existing.eligible_sections != eligible_sections {
+                return Err(PromptAssignmentError::Conflict(format!(
+                    "attempt {bucket_id} was prepared with a different role or section set"
+                )));
+            }
+            return Ok(existing.assignments.clone());
+        }
+
+        // Resolve every treatment before inserting anything, so overlap or a
+        // malformed experiment cannot publish a partial reservation.
+        let mut assignments = Vec::new();
+        for section_name in eligible_sections {
+            let mut candidates = self
+                .experiments
+                .values()
+                .filter(|experiment| experiment.section_name == *section_name)
+                .filter(|experiment| experiment_matches_role(experiment, role))
+                .collect::<Vec<_>>();
+            candidates.sort_by(|left, right| left.experiment_id.cmp(&right.experiment_id));
+            if candidates.len() > 1 {
+                let experiment_ids = candidates
+                    .iter()
+                    .map(|experiment| experiment.experiment_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(PromptAssignmentError::Conflict(format!(
+                    "role {:?} section {section_name:?} is covered by overlapping experiments: {experiment_ids}",
+                    role
+                )));
+            }
+            let Some(experiment) = candidates.first().copied() else {
+                continue;
+            };
+
+            let learning_eligible = experiment.status == ExperimentStatus::Running;
+            let variant = if learning_eligible {
+                self.select_variant_with_reservations(experiment, &attempt_key.run_id)
+                    .ok_or_else(|| {
+                        PromptAssignmentError::Conflict(format!(
+                            "running experiment {:?} has no active variant",
+                            experiment.experiment_id
+                        ))
+                    })?
+            } else {
+                experiment
+                    .winner_id
+                    .as_deref()
+                    .and_then(|winner_id| {
+                        experiment
+                            .variants
+                            .iter()
+                            .find(|variant| variant.id == winner_id)
+                    })
+                    .cloned()
+                    .ok_or_else(|| {
+                        PromptAssignmentError::Conflict(format!(
+                            "concluded experiment {:?} has no persisted winner variant",
+                            experiment.experiment_id
+                        ))
+                    })?
+            };
+            if variant.section_name != *section_name {
+                return Err(PromptAssignmentError::Conflict(format!(
+                    "variant {:?} targets section {:?}, not experiment section {:?}",
+                    variant.id, variant.section_name, section_name
+                )));
+            }
+
+            assignments.push(PromptExperimentAssignment {
+                assignment_id: assignment_id(
+                    attempt_key,
+                    &experiment.experiment_id,
+                    &variant.id,
+                    role,
+                    section_name,
+                ),
+                attempt_key: attempt_key.clone(),
+                experiment_id: experiment.experiment_id.clone(),
+                variant_id: variant.id,
+                role: role.map(str::to_string),
+                section_name: section_name.clone(),
+                content_hash: ContentHash::of(variant.content.as_bytes()).to_hex(),
+                content_snapshot: Some(variant.content),
+                prompt_hash: None,
+                state: PromptAssignmentState::Prepared,
+                success: None,
+                learning_eligible,
+            });
+        }
+        assignments.sort_by(|left, right| {
+            left.section_name
+                .cmp(&right.section_name)
+                .then_with(|| left.experiment_id.cmp(&right.experiment_id))
+                .then_with(|| left.variant_id.cmp(&right.variant_id))
+        });
+
+        // The runner asks for treatments whenever an experiments store exists.
+        // Do not permanently grow it for unrelated roles/sections.
+        if assignments.is_empty() {
+            return Ok(assignments);
+        }
+
+        self.attempt_assignments.insert(
+            bucket_id,
+            PromptAttemptAssignments {
+                attempt_key: attempt_key.clone(),
+                role: role.map(str::to_string),
+                eligible_sections: eligible_sections.to_vec(),
+                assignments: assignments.clone(),
+                prompt_hash: None,
+                included_assignment_ids: None,
+                settlement: None,
+            },
+        );
+        Ok(assignments)
+    }
+
+    fn select_variant_with_reservations(
+        &self,
+        experiment: &PromptExperiment,
+        current_run_id: &str,
+    ) -> Option<PromptVariant> {
+        let mut variants = experiment
+            .variants
+            .iter()
+            .filter(|variant| variant.active)
+            .collect::<Vec<_>>();
+        variants.sort_by(|left, right| left.id.cmp(&right.id));
+        let effective_trials = variants
+            .iter()
+            .map(|variant| {
+                experiment
+                    .stats
+                    .get(&variant.id)
+                    .map_or(0, |stats| stats.trials)
+                    + self.outstanding_reservations(
+                        current_run_id,
+                        &experiment.experiment_id,
+                        &variant.id,
+                    )
+            })
+            .sum::<u64>();
+
+        variants
+            .into_iter()
+            .map(|variant| {
+                let stats = experiment
+                    .stats
+                    .get(&variant.id)
+                    .cloned()
+                    .unwrap_or_default();
+                let reserved = self.outstanding_reservations(
+                    current_run_id,
+                    &experiment.experiment_id,
+                    &variant.id,
+                );
+                let effective_variant_trials = stats.trials + reserved;
+                let score = if effective_variant_trials == 0 {
+                    f64::MAX
+                } else {
+                    let exploration = (2.0 * (effective_trials.max(1) as f64).ln()
+                        / effective_variant_trials as f64)
+                        .sqrt();
+                    stats.success_rate() + exploration
+                };
+                (variant, score)
+            })
+            .max_by(|(left_variant, left_score), (right_variant, right_score)| {
+                left_score
+                    .total_cmp(right_score)
+                    // `max_by` keeps the greater item; reverse the id tie-break
+                    // so deterministic preparation chooses the lower id.
+                    .then_with(|| right_variant.id.cmp(&left_variant.id))
+            })
+            .map(|(variant, _)| variant.clone())
+    }
+
+    fn outstanding_reservations(
+        &self,
+        current_run_id: &str,
+        experiment_id: &str,
+        variant_id: &str,
+    ) -> u64 {
+        self.attempt_assignments
+            .values()
+            .filter(|bucket| bucket.attempt_key.run_id == current_run_id)
+            .flat_map(|bucket| &bucket.assignments)
+            .filter(|assignment| assignment.learning_eligible)
+            .filter(|assignment| assignment.experiment_id == experiment_id)
+            .filter(|assignment| assignment.variant_id == variant_id)
+            .filter(|assignment| {
+                matches!(
+                    assignment.state,
+                    PromptAssignmentState::Prepared | PromptAssignmentState::Dispatched
+                )
+            })
+            .count() as u64
+    }
+
+    fn settle_attempt_unlocked(
+        &mut self,
+        bucket_id: &str,
+        attempt_key: &PromptAttemptKey,
+        settlement: AssignmentSettlement,
+    ) -> Result<Vec<PromptExperimentAssignment>, PromptAssignmentError> {
+        let bucket = self
+            .attempt_assignments
+            .get(bucket_id)
+            .ok_or_else(|| PromptAssignmentError::AttemptNotFound(bucket_id.to_string()))?;
+        if bucket.attempt_key != *attempt_key {
+            return Err(PromptAssignmentError::Conflict(format!(
+                "attempt bucket collision for {bucket_id}"
+            )));
+        }
+        if let Some(existing) = bucket.settlement {
+            if existing == settlement {
+                return Ok(bucket.assignments.clone());
+            }
+            return Err(PromptAssignmentError::Conflict(format!(
+                "attempt {bucket_id} already has a different settlement"
+            )));
+        }
+
+        let observations = match settlement {
+            AssignmentSettlement::Observed { success } => bucket
+                .assignments
+                .iter()
+                .filter(|assignment| {
+                    assignment.state == PromptAssignmentState::Dispatched
+                        && assignment.learning_eligible
+                })
+                .map(|assignment| {
+                    (
+                        assignment.experiment_id.clone(),
+                        assignment.variant_id.clone(),
+                        success,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            AssignmentSettlement::Abandoned => Vec::new(),
+        };
+
+        // Validate every scoped target before changing any statistics.
+        for (experiment_id, variant_id, _) in &observations {
+            let experiment = self.experiments.get(experiment_id).ok_or_else(|| {
+                PromptAssignmentError::Conflict(format!(
+                    "assignment references missing experiment {experiment_id:?}"
+                ))
+            })?;
+            if !experiment.stats.contains_key(variant_id) {
+                return Err(PromptAssignmentError::Conflict(format!(
+                    "assignment references missing variant {variant_id:?} in experiment {experiment_id:?}"
+                )));
+            }
+        }
+        for (experiment_id, variant_id, success) in &observations {
+            if !self.record_outcome_for_experiment(experiment_id, variant_id, *success) {
+                return Err(PromptAssignmentError::Conflict(format!(
+                    "could not settle {experiment_id:?}/{variant_id:?}"
+                )));
+            }
+        }
+
+        let bucket = self
+            .attempt_assignments
+            .get_mut(bucket_id)
+            .expect("validated attempt bucket remains present");
+        for assignment in &mut bucket.assignments {
+            match assignment.state {
+                PromptAssignmentState::Prepared => {
+                    assignment.state = PromptAssignmentState::Abandoned;
+                    assignment.success = None;
+                }
+                PromptAssignmentState::Dispatched => match settlement {
+                    AssignmentSettlement::Observed { success } => {
+                        assignment.state = PromptAssignmentState::Observed;
+                        assignment.success = Some(success);
+                    }
+                    AssignmentSettlement::Abandoned => {
+                        assignment.state = PromptAssignmentState::Abandoned;
+                        assignment.success = None;
+                    }
+                },
+                PromptAssignmentState::Observed | PromptAssignmentState::Abandoned => {
+                    return Err(PromptAssignmentError::Conflict(format!(
+                        "attempt {bucket_id} contains terminal assignments without a settlement"
+                    )));
+                }
+            }
+            assignment.content_snapshot = None;
+        }
+        bucket.settlement = Some(settlement);
+        Ok(bucket.assignments.clone())
     }
 
     /// Return all concluded experiments with sufficiently high confidence.
@@ -588,6 +1369,27 @@ impl ExperimentStore {
         }
     }
 
+    /// Record an outcome for a variant in one specific experiment.
+    ///
+    /// Returns `false` when either identifier is unknown. Prefer this scoped
+    /// form when the caller retained the experiment id at assignment time, so
+    /// identical variant ids in separate experiments cannot be conflated.
+    pub fn record_outcome_for_experiment(
+        &mut self,
+        experiment_id: &str,
+        variant_id: &str,
+        success: bool,
+    ) -> bool {
+        let Some(experiment) = self.experiments.get_mut(experiment_id) else {
+            return false;
+        };
+        if !experiment.stats.contains_key(variant_id) {
+            return false;
+        }
+        experiment.record_outcome(variant_id, success);
+        true
+    }
+
     /// Apply a WAL-replayed experiment outcome. Does NOT write a WAL entry.
     ///
     /// Identical to [`Self::record_outcome`] but named distinctly so callers
@@ -637,6 +1439,118 @@ impl Default for ExperimentStore {
     }
 }
 
+fn validate_attempt_key(attempt_key: &PromptAttemptKey) -> Result<(), PromptAssignmentError> {
+    for (name, value) in [
+        ("run_id", attempt_key.run_id.as_str()),
+        ("plan_id", attempt_key.plan_id.as_str()),
+        ("task_id", attempt_key.task_id.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(PromptAssignmentError::Conflict(format!(
+                "attempt {name} cannot be empty"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_optional(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn normalize_sections(sections: &[&str]) -> Result<Vec<String>, PromptAssignmentError> {
+    let mut normalized = Vec::with_capacity(sections.len());
+    for section in sections {
+        let section = section.trim();
+        if section.is_empty() {
+            return Err(PromptAssignmentError::Conflict(
+                "eligible prompt sections cannot contain an empty name".to_string(),
+            ));
+        }
+        normalized.push(section.to_string());
+    }
+    normalized.sort();
+    normalized.dedup();
+    Ok(normalized)
+}
+
+fn validate_included_assignment_ids(
+    assignment_ids: &[&str],
+) -> Result<Vec<String>, PromptAssignmentError> {
+    let mut canonical = Vec::with_capacity(assignment_ids.len());
+    for assignment_id in assignment_ids {
+        if assignment_id.is_empty() || assignment_id.trim() != *assignment_id {
+            return Err(PromptAssignmentError::Conflict(
+                "included assignment ids must be non-empty exact ids".to_string(),
+            ));
+        }
+        if canonical
+            .last()
+            .is_some_and(|previous: &String| previous.as_str() >= *assignment_id)
+        {
+            return Err(PromptAssignmentError::Conflict(
+                "included assignment ids must be lexicographically sorted and unique".to_string(),
+            ));
+        }
+        canonical.push((*assignment_id).to_string());
+    }
+    Ok(canonical)
+}
+
+fn experiment_matches_role(experiment: &PromptExperiment, requested_role: Option<&str>) -> bool {
+    let experiment_role = experiment
+        .role
+        .as_deref()
+        .map(str::trim)
+        .filter(|role| !role.is_empty());
+    experiment_role.is_none() || experiment_role == requested_role
+}
+
+fn attempt_bucket_id(attempt_key: &PromptAttemptKey) -> String {
+    stable_assignment_hash(&[
+        "prompt-attempt",
+        &attempt_key.run_id,
+        &attempt_key.plan_id,
+        &attempt_key.task_id,
+        &attempt_key.attempt.to_string(),
+    ])
+}
+
+fn assignment_id(
+    attempt_key: &PromptAttemptKey,
+    experiment_id: &str,
+    variant_id: &str,
+    role: Option<&str>,
+    section_name: &str,
+) -> String {
+    format!(
+        "prompt-assignment-{}",
+        stable_assignment_hash(&[
+            "prompt-assignment",
+            &attempt_key.run_id,
+            &attempt_key.plan_id,
+            &attempt_key.task_id,
+            &attempt_key.attempt.to_string(),
+            experiment_id,
+            variant_id,
+            role.unwrap_or(""),
+            section_name,
+        ])
+    )
+}
+
+fn stable_assignment_hash(parts: &[&str]) -> String {
+    let mut canonical = Vec::new();
+    for part in parts {
+        canonical.extend_from_slice(&(part.len() as u64).to_le_bytes());
+        canonical.extend_from_slice(part.as_bytes());
+    }
+    ContentHash::of(&canonical).to_hex()
+}
+
 fn winner_variant_label(variant: &PromptVariant) -> String {
     variant
         .slug
@@ -683,6 +1597,10 @@ mod tests {
         ]
     }
 
+    fn attempt(run_id: &str, attempt: u32) -> PromptAttemptKey {
+        PromptAttemptKey::new(run_id, "plan-1", "task-1", attempt)
+    }
+
     #[test]
     fn experiment_selects_unsampled_first() {
         let exp = PromptExperiment::new("test-1", "constraints", make_variants("constraints"));
@@ -705,6 +1623,31 @@ mod tests {
 
         assert_eq!(exp.status, ExperimentStatus::Concluded);
         assert_eq!(exp.winner_id.as_deref(), Some("a"));
+        assert!(
+            exp.archive
+                .as_ref()
+                .is_some_and(|archive| archive.p_value < 0.05)
+        );
+    }
+
+    #[test]
+    fn chi_squared_significance_and_early_stopping_identify_winner() {
+        let strong = VariantStats {
+            trials: 50,
+            successes: 48,
+        };
+        let weak = VariantStats {
+            trials: 50,
+            successes: 10,
+        };
+        let (statistic, p_value) = chi_squared_test(&strong, &weak);
+        assert!(statistic > 10.0);
+        assert!(p_value < 0.05);
+
+        let mut experiment = PromptExperiment::new("early", "style", make_variants("style"));
+        experiment.stats.insert("a".into(), strong);
+        experiment.stats.insert("b".into(), weak);
+        assert_eq!(experiment.early_stopping_check().as_deref(), Some("a"));
     }
 
     #[test]
@@ -877,5 +1820,507 @@ mod tests {
         let stats_b = experiment.stats.get("b").expect("variant b stats");
         assert_eq!(stats_b.trials, 1);
         assert_eq!(stats_b.successes, 1);
+    }
+
+    #[test]
+    fn legacy_store_json_loads_strictly_with_empty_assignment_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("experiments.json");
+        let experiment =
+            PromptExperiment::new("legacy", "constraints", make_variants("constraints"));
+        let legacy = serde_json::json!({
+            "experiments": { "legacy": experiment }
+        });
+        std::fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+
+        let loaded = ExperimentStore::load_strict(&path).expect("legacy JSON remains readable");
+        assert!(loaded.get("legacy").is_some());
+        assert!(loaded.attempt_assignments.is_empty());
+    }
+
+    #[test]
+    fn malformed_store_is_preserved_and_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("experiments.json");
+        let malformed = b"{ not valid experiment state";
+        std::fs::write(&path, malformed).unwrap();
+
+        let error = ExperimentStore::prepare_attempt_assignments(
+            &path,
+            &attempt("run-malformed", 1),
+            Some("implementer"),
+            &["constraints"],
+        )
+        .expect_err("malformed state must not become a default store");
+        assert!(matches!(
+            error,
+            PromptAssignmentError::Io(ref source)
+                if source.kind() == io::ErrorKind::InvalidData
+        ));
+        assert_eq!(std::fs::read(path).unwrap(), malformed);
+    }
+
+    #[test]
+    fn preparation_is_idempotent_and_outstanding_reservations_spread_arms() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("experiments.json");
+        let mut store = ExperimentStore::new();
+        let mut experiment =
+            PromptExperiment::new("exp", "constraints", make_variants("constraints"));
+        experiment.role = Some("implementer".into());
+        store.register(experiment);
+        store.save(&path).unwrap();
+
+        let first_key = attempt("run-1", 1);
+        let first = ExperimentStore::prepare_attempt_assignments(
+            &path,
+            &first_key,
+            Some("implementer"),
+            &["constraints", "unrelated"],
+        )
+        .unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].state, PromptAssignmentState::Prepared);
+        assert_eq!(first[0].content_hash.len(), 64);
+        assert!(first[0].content_snapshot.is_some());
+        assert_eq!(first[0].section_name, "constraints");
+
+        let replay = ExperimentStore::prepare_attempt_assignments(
+            &path,
+            &first_key,
+            Some("implementer"),
+            &["unrelated", "constraints"],
+        )
+        .unwrap();
+        assert_eq!(replay, first);
+
+        let second = ExperimentStore::prepare_attempt_assignments(
+            &path,
+            &attempt("run-1", 2),
+            Some("implementer"),
+            &["constraints"],
+        )
+        .unwrap();
+        assert_eq!(second.len(), 1);
+        assert_ne!(second[0].variant_id, first[0].variant_id);
+
+        let reopened = ExperimentStore::load_strict(&path).unwrap();
+        assert_eq!(
+            reopened.assignments_for_attempt(&first_key),
+            Some(first.as_slice())
+        );
+        let stats = &reopened.get("exp").unwrap().stats;
+        assert_eq!(stats["a"].trials + stats["b"].trials, 0);
+    }
+
+    #[test]
+    fn orphaned_reservations_from_an_older_run_do_not_bias_a_new_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("experiments.json");
+        let mut store = ExperimentStore::new();
+        store.register(PromptExperiment::new(
+            "exp",
+            "constraints",
+            make_variants("constraints"),
+        ));
+        store.save(&path).unwrap();
+
+        let old = ExperimentStore::prepare_attempt_assignments(
+            &path,
+            &attempt("old-run", 1),
+            None,
+            &["constraints"],
+        )
+        .unwrap();
+        let first_in_new_run = ExperimentStore::prepare_attempt_assignments(
+            &path,
+            &attempt("new-run", 1),
+            None,
+            &["constraints"],
+        )
+        .unwrap();
+        assert_eq!(first_in_new_run[0].variant_id, old[0].variant_id);
+
+        let second_in_new_run = ExperimentStore::prepare_attempt_assignments(
+            &path,
+            &attempt("new-run", 2),
+            None,
+            &["constraints"],
+        )
+        .unwrap();
+        assert_ne!(
+            second_in_new_run[0].variant_id,
+            first_in_new_run[0].variant_id
+        );
+
+        let reopened = ExperimentStore::load_strict(&path).unwrap();
+        assert_eq!(
+            reopened
+                .assignments_for_attempt(&attempt("old-run", 1))
+                .unwrap()[0]
+                .state,
+            PromptAssignmentState::Prepared
+        );
+    }
+
+    #[test]
+    fn overlapping_role_section_experiments_are_rejected_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("experiments.json");
+        let mut store = ExperimentStore::new();
+        store.register(PromptExperiment::new(
+            "global",
+            "constraints",
+            make_variants("constraints"),
+        ));
+        let mut scoped =
+            PromptExperiment::new("scoped", "constraints", make_variants("constraints"));
+        scoped.role = Some("implementer".into());
+        store.register(scoped);
+        store.save(&path).unwrap();
+        let key = attempt("run-overlap", 1);
+
+        let error = ExperimentStore::prepare_attempt_assignments(
+            &path,
+            &key,
+            Some("implementer"),
+            &["constraints"],
+        )
+        .expect_err("global and role-specific treatment overlap");
+        assert!(matches!(error, PromptAssignmentError::Conflict(_)));
+        assert!(
+            ExperimentStore::load_strict(&path)
+                .unwrap()
+                .assignments_for_attempt(&key)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn unrelated_attempt_does_not_create_an_empty_durable_bucket() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("experiments.json");
+        let mut store = ExperimentStore::new();
+        let mut experiment =
+            PromptExperiment::new("scoped", "constraints", make_variants("constraints"));
+        experiment.role = Some("implementer".into());
+        store.register(experiment);
+        store.save(&path).unwrap();
+        let key = attempt("run-unrelated", 1);
+
+        let prepared = ExperimentStore::prepare_attempt_assignments(
+            &path,
+            &key,
+            Some("reviewer"),
+            &["constraints", "context"],
+        )
+        .unwrap();
+
+        assert!(prepared.is_empty());
+        let reopened = ExperimentStore::load_strict(&path).unwrap();
+        assert!(reopened.attempt_assignments.is_empty());
+        assert!(reopened.assignments_for_attempt(&key).is_none());
+    }
+
+    #[test]
+    fn dispatch_and_scoped_settlement_are_idempotent_and_auditable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("experiments.json");
+        let mut store = ExperimentStore::new();
+        store.register(PromptExperiment::new(
+            "exp",
+            "constraints",
+            make_variants("constraints"),
+        ));
+        store.save(&path).unwrap();
+        let key = attempt("run-observed", 1);
+        let prepared =
+            ExperimentStore::prepare_attempt_assignments(&path, &key, None, &["constraints"])
+                .unwrap();
+        let content_hash = prepared[0].content_hash.clone();
+        let included_assignment_ids = [prepared[0].assignment_id.as_str()];
+
+        let dispatched = ExperimentStore::mark_attempt_dispatched(
+            &path,
+            &key,
+            "full-prompt-hash",
+            &included_assignment_ids,
+        )
+        .unwrap();
+        assert_eq!(dispatched[0].state, PromptAssignmentState::Dispatched);
+        assert_eq!(
+            ExperimentStore::mark_attempt_dispatched(
+                &path,
+                &key,
+                "full-prompt-hash",
+                &included_assignment_ids,
+            )
+            .unwrap(),
+            dispatched
+        );
+        assert!(matches!(
+            ExperimentStore::mark_attempt_dispatched(
+                &path,
+                &key,
+                "changed-hash",
+                &included_assignment_ids,
+            ),
+            Err(PromptAssignmentError::Conflict(_))
+        ));
+
+        let settlement = AssignmentSettlement::Observed { success: true };
+        let observed = ExperimentStore::settle_attempt(&path, &key, settlement).unwrap();
+        assert_eq!(observed[0].state, PromptAssignmentState::Observed);
+        assert_eq!(observed[0].success, Some(true));
+        assert!(observed[0].content_snapshot.is_none());
+        assert_eq!(observed[0].content_hash, content_hash);
+        assert_eq!(observed[0].prompt_hash.as_deref(), Some("full-prompt-hash"));
+        assert_eq!(
+            ExperimentStore::settle_attempt(&path, &key, settlement).unwrap(),
+            observed
+        );
+        assert!(matches!(
+            ExperimentStore::settle_attempt(
+                &path,
+                &key,
+                AssignmentSettlement::Observed { success: false }
+            ),
+            Err(PromptAssignmentError::Conflict(_))
+        ));
+
+        let reopened = ExperimentStore::load_strict(&path).unwrap();
+        let variant = &observed[0].variant_id;
+        let stats = &reopened.get("exp").unwrap().stats[variant];
+        assert_eq!(stats.trials, 1);
+        assert_eq!(stats.successes, 1);
+    }
+
+    #[test]
+    fn dispatch_tracks_exact_included_subset_and_excluded_treatment_gets_zero_credit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("experiments.json");
+        let mut store = ExperimentStore::new();
+        store.register(PromptExperiment::new(
+            "included",
+            "constraints",
+            make_variants("constraints"),
+        ));
+        store.register(PromptExperiment::new(
+            "excluded",
+            "style",
+            make_variants("style"),
+        ));
+        store.save(&path).unwrap();
+        let key = attempt("run-subset", 1);
+        let prepared = ExperimentStore::prepare_attempt_assignments(
+            &path,
+            &key,
+            None,
+            &["constraints", "style"],
+        )
+        .unwrap();
+        assert_eq!(prepared.len(), 2);
+
+        let included = prepared
+            .iter()
+            .find(|assignment| assignment.experiment_id == "included")
+            .unwrap();
+        let excluded = prepared
+            .iter()
+            .find(|assignment| assignment.experiment_id == "excluded")
+            .unwrap();
+        let included_assignment_id = included.assignment_id.clone();
+        let excluded_assignment_id = excluded.assignment_id.clone();
+        let included_variant_id = included.variant_id.clone();
+        let excluded_variant_id = excluded.variant_id.clone();
+        let excluded_content_hash = excluded.content_hash.clone();
+
+        let mut all_ids = [
+            included_assignment_id.as_str(),
+            excluded_assignment_id.as_str(),
+        ];
+        all_ids.sort_unstable();
+        let unsorted_ids = [all_ids[1], all_ids[0]];
+        assert!(matches!(
+            ExperimentStore::mark_attempt_dispatched(&path, &key, "prompt-hash", &unsorted_ids,),
+            Err(PromptAssignmentError::Conflict(_))
+        ));
+        assert!(matches!(
+            ExperimentStore::mark_attempt_dispatched(
+                &path,
+                &key,
+                "prompt-hash",
+                &[all_ids[0], all_ids[0]],
+            ),
+            Err(PromptAssignmentError::Conflict(_))
+        ));
+        assert!(matches!(
+            ExperimentStore::mark_attempt_dispatched(
+                &path,
+                &key,
+                "prompt-hash",
+                &["prompt-assignment-not-in-attempt"],
+            ),
+            Err(PromptAssignmentError::Conflict(_))
+        ));
+
+        let included_ids = [included_assignment_id.as_str()];
+        let dispatched =
+            ExperimentStore::mark_attempt_dispatched(&path, &key, "prompt-hash", &included_ids)
+                .unwrap();
+        let dispatched_included = dispatched
+            .iter()
+            .find(|assignment| assignment.experiment_id == "included")
+            .unwrap();
+        let still_prepared = dispatched
+            .iter()
+            .find(|assignment| assignment.experiment_id == "excluded")
+            .unwrap();
+        assert_eq!(dispatched_included.state, PromptAssignmentState::Dispatched);
+        assert_eq!(
+            dispatched_included.prompt_hash.as_deref(),
+            Some("prompt-hash")
+        );
+        assert_eq!(still_prepared.state, PromptAssignmentState::Prepared);
+        assert!(still_prepared.prompt_hash.is_none());
+        assert_eq!(
+            ExperimentStore::mark_attempt_dispatched(&path, &key, "prompt-hash", &included_ids,)
+                .unwrap(),
+            dispatched
+        );
+        assert!(matches!(
+            ExperimentStore::mark_attempt_dispatched(
+                &path,
+                &key,
+                "prompt-hash",
+                &[excluded_assignment_id.as_str()],
+            ),
+            Err(PromptAssignmentError::Conflict(_))
+        ));
+
+        let settled = ExperimentStore::settle_attempt(
+            &path,
+            &key,
+            AssignmentSettlement::Observed { success: true },
+        )
+        .unwrap();
+        let observed = settled
+            .iter()
+            .find(|assignment| assignment.experiment_id == "included")
+            .unwrap();
+        let abandoned = settled
+            .iter()
+            .find(|assignment| assignment.experiment_id == "excluded")
+            .unwrap();
+        assert_eq!(observed.state, PromptAssignmentState::Observed);
+        assert_eq!(observed.success, Some(true));
+        assert_eq!(abandoned.state, PromptAssignmentState::Abandoned);
+        assert_eq!(abandoned.success, None);
+        assert!(abandoned.content_snapshot.is_none());
+        assert_eq!(abandoned.content_hash, excluded_content_hash);
+        assert!(abandoned.prompt_hash.is_none());
+
+        let reopened = ExperimentStore::load_strict(&path).unwrap();
+        assert_eq!(
+            reopened.get("included").unwrap().stats[&included_variant_id].trials,
+            1
+        );
+        assert_eq!(
+            reopened.get("included").unwrap().stats[&included_variant_id].successes,
+            1
+        );
+        assert_eq!(
+            reopened.get("excluded").unwrap().stats[&excluded_variant_id].trials,
+            0
+        );
+        assert_eq!(
+            reopened.get("excluded").unwrap().stats[&excluded_variant_id].successes,
+            0
+        );
+    }
+
+    #[test]
+    fn settling_prepared_assignment_abandons_without_counting_trial() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("experiments.json");
+        let mut store = ExperimentStore::new();
+        store.register(PromptExperiment::new(
+            "exp",
+            "constraints",
+            make_variants("constraints"),
+        ));
+        store.save(&path).unwrap();
+        let key = attempt("run-prepared", 1);
+        ExperimentStore::prepare_attempt_assignments(&path, &key, None, &["constraints"]).unwrap();
+
+        let settled = ExperimentStore::settle_attempt(
+            &path,
+            &key,
+            AssignmentSettlement::Observed { success: true },
+        )
+        .unwrap();
+        assert_eq!(settled[0].state, PromptAssignmentState::Abandoned);
+        assert_eq!(settled[0].success, None);
+        assert!(settled[0].content_snapshot.is_none());
+        let reopened = ExperimentStore::load_strict(&path).unwrap();
+        assert!(
+            reopened
+                .get("exp")
+                .unwrap()
+                .stats
+                .values()
+                .all(|stats| stats.trials == 0)
+        );
+    }
+
+    #[test]
+    fn concluded_winner_is_sticky_and_never_changes_stats() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("experiments.json");
+        let mut experiment =
+            PromptExperiment::new("done", "constraints", make_variants("constraints"));
+        experiment.status = ExperimentStatus::Concluded;
+        experiment.winner_id = Some("b".into());
+        experiment.stats.get_mut("a").unwrap().trials = 10;
+        experiment.stats.get_mut("b").unwrap().trials = 10;
+        let original_stats = experiment.stats.clone();
+        let mut store = ExperimentStore::new();
+        store.register(experiment);
+        store.save(&path).unwrap();
+        let key = attempt("run-winner", 1);
+
+        let prepared =
+            ExperimentStore::prepare_attempt_assignments(&path, &key, None, &["constraints"])
+                .unwrap();
+        assert_eq!(prepared[0].variant_id, "b");
+        assert_eq!(
+            prepared[0].content_snapshot.as_deref(),
+            Some("Be verbose and thorough.")
+        );
+        let reopened_prepared = ExperimentStore::load_strict(&path).unwrap();
+        assert_eq!(
+            reopened_prepared.assignments_for_attempt(&key),
+            Some(prepared.as_slice())
+        );
+
+        ExperimentStore::mark_attempt_dispatched(
+            &path,
+            &key,
+            "winner-prompt",
+            &[prepared[0].assignment_id.as_str()],
+        )
+        .unwrap();
+        ExperimentStore::settle_attempt(
+            &path,
+            &key,
+            AssignmentSettlement::Observed { success: true },
+        )
+        .unwrap();
+        let reopened = ExperimentStore::load_strict(&path).unwrap();
+        let reopened_stats = &reopened.get("done").unwrap().stats;
+        for (variant_id, expected) in original_stats {
+            assert_eq!(reopened_stats[&variant_id].trials, expected.trials);
+            assert_eq!(reopened_stats[&variant_id].successes, expected.successes);
+        }
     }
 }

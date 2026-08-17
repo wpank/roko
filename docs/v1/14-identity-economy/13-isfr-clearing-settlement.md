@@ -1,5 +1,8 @@
 # 13 — ISFR Clearing & Settlement
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The Intersubjective Fact Registry (ISFR) enables collective price discovery among
 > agents. Cooperative clearing settles cross-agent obligations via a QP solver running
 > inside a TEE. DVP (Delivery vs. Payment) ensures atomic settlement. This document

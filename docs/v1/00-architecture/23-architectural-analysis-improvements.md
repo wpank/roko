@@ -1,5 +1,8 @@
 # Architectural Coherence Analysis and Improvements
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** A comprehensive analysis of Roko's current architecture as a v1 snapshot and
 > its v2 rewrite path: the six-operator snapshot, five-layer taxonomy, three cognitive speeds,
 > Engram/Pulse split, two mediums (durable Engram and ephemeral Pulse), two fabrics (Substrate

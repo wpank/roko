@@ -1,5 +1,8 @@
 # Dreams (Offline Learning and Consolidation)
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** Dreams are one of three cognitive cross-cuts in Roko — subsystems that span multiple architectural layers rather than living at a single layer. While Neuro provides persistent memory and Daimon provides emotional context, Dreams provide the offline consolidation mechanism that transforms raw episodic experience into durable semantic knowledge, creative hypotheses, and strategic insights. In the two-fabric model, Dreams consume both Substrate scans and Bus subscriptions, so Delta-speed consolidation can wake on `substrate.engram.stored` instead of relying on fixed polling. Dreams are the agent's sleep: a periodic offline process where the agent replays recent episodes, generates counterfactual scenarios, depotentiates emotional charge, discovers cross-episode patterns, and stages new knowledge for waking validation. Dreams are idle-triggered and scheduled — they fire when the agent has capacity, not in response to any mortality or termination signal. See also [tmp/refinements/09-phase-2-implications.md](../../tmp/refinements/09-phase-2-implications.md) and the naming glossary in [docs/00-architecture/01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md).
 
 ---

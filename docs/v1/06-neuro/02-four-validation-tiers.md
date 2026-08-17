@@ -1,5 +1,8 @@
 # Four Validation Tiers
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Knowledge reliability is tracked through four validation tiers — Transient, Working, Consolidated, Persistent — each with a multiplicative effect on the base half-life of the knowledge type.
 
 

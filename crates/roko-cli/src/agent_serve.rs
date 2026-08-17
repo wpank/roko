@@ -221,13 +221,16 @@ impl AgentServeRuntimeConfig {
         // task. It uses stub cells for now -- real cell implementations will
         // be wired in a future task. The loop is cancelled when the server
         // shuts down.
-        let _cog_handle = self.try_start_cognitive_loop();
+        let cog_handle = self.try_start_cognitive_loop();
 
         let result = server.serve().await;
 
         // Cancel the cognitive loop (if running) when the server exits.
-        if let Some(ref handle) = _cog_handle {
+        if let Some(ref handle) = cog_handle {
             handle.cancel();
+            if let Err(error) = handle.wait_result().await {
+                warn!(%error, "cognitive Hot Graph stopped with a terminal failure");
+            }
         }
 
         // Cleanup: remove our entry from agents.json on shutdown.
@@ -347,21 +350,21 @@ impl AgentServeRuntimeConfig {
                             "relay config captured for later hook-up"
                         );
                     }
-                    if let Some(chain) = &startup.chain {
-                        if let Some(url) = &chain.rpc_url {
-                            match roko_chain::alloy_impl::AlloyChainClient::http(url) {
-                                Ok(_client) => {
-                                    let has_wallet = chain.wallet_key.is_some();
-                                    info!(
-                                        agent_id = %startup.agent_id,
-                                        chain_rpc = url,
-                                        has_wallet,
-                                        "chain tools active for agent sidecar"
-                                    );
-                                }
-                                Err(e) => {
-                                    warn!(error = %e, "chain rpc_url set but client failed");
-                                }
+                    if let Some(chain) = &startup.chain
+                        && let Some(url) = &chain.rpc_url
+                    {
+                        match roko_chain::alloy_impl::AlloyChainClient::http(url) {
+                            Ok(_client) => {
+                                let has_wallet = chain.wallet_key.is_some();
+                                info!(
+                                    agent_id = %startup.agent_id,
+                                    chain_rpc = url,
+                                    has_wallet,
+                                    "chain tools active for agent sidecar"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "chain rpc_url set but client failed");
                             }
                         }
                     }
@@ -376,8 +379,8 @@ impl AgentServeRuntimeConfig {
     /// Looks for the cognitive-loop TOML at the standard path
     /// (`examples/graphs/cognitive-loop.toml` relative to the workspace root).
     /// If the file exists, the graph is loaded with stub cells and started as a
-    /// Hot Graph with a 1-second tick interval and no tick limit (runs until
-    /// cancelled).
+    /// crash-recoverable Hot Graph with a 1-second tick interval and no tick
+    /// limit (runs until cancelled).
     ///
     /// Returns `Some(HotGraphHandle)` if the loop was started, `None` if the
     /// TOML was not found or failed to load. Errors are logged but do not
@@ -416,9 +419,13 @@ impl AgentServeRuntimeConfig {
         let policy = roko_graph::HotPolicy {
             tick_interval_ms: 1000,
             max_ticks: None,
-            persist_tick_state: false,
+            persist_tick_state: true,
             loop_level: None,
         };
+        let checkpoint_dir = workdir
+            .join(".roko/state/hot")
+            .join(safe_hot_state_component(&self.agent_id))
+            .join(safe_hot_state_component(&graph.metadata.name));
 
         info!(
             agent_id = %self.agent_id,
@@ -426,7 +433,24 @@ impl AgentServeRuntimeConfig {
             "starting cognitive loop as Hot Graph"
         );
 
-        Some(roko_graph::start_hot(graph, registry, policy, None))
+        match roko_graph::start_hot_resumable(
+            graph,
+            registry,
+            policy,
+            None,
+            roko_graph::HotCheckpointOptions::new(&checkpoint_dir),
+        ) {
+            Ok(handle) => Some(handle),
+            Err(error) => {
+                warn!(
+                    agent_id = %self.agent_id,
+                    checkpoint = %checkpoint_dir.display(),
+                    %error,
+                    "cognitive Hot Graph checkpoint failed validation; loop not started"
+                );
+                None
+            }
+        }
     }
 
     fn try_build_dispatcher(&self) -> Result<Option<Arc<dyn DispatchLike>>> {
@@ -534,6 +558,24 @@ impl AgentServeRuntimeConfig {
             chain: self.chain.clone(),
             serve_url: self.serve_url.clone(),
         }
+    }
+}
+
+fn safe_hot_state_component(value: &str) -> String {
+    let component: String = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if component.is_empty() || component == "." || component == ".." {
+        "graph".to_string()
+    } else {
+        component
     }
 }
 

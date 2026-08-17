@@ -223,11 +223,11 @@ fn enforce_additional_properties_false(schema: &mut serde_json::Value) {
     }
 
     // Recurse into properties.
-    if let Some(props) = obj.get_mut("properties") {
-        if let Some(props_obj) = props.as_object_mut() {
-            for (_key, prop_schema) in props_obj.iter_mut() {
-                enforce_additional_properties_false(prop_schema);
-            }
+    if let Some(props) = obj.get_mut("properties")
+        && let Some(props_obj) = props.as_object_mut()
+    {
+        for (_key, prop_schema) in props_obj.iter_mut() {
+            enforce_additional_properties_false(prop_schema);
         }
     }
 
@@ -238,11 +238,11 @@ fn enforce_additional_properties_false(schema: &mut serde_json::Value) {
 
     // Recurse into anyOf / oneOf / allOf variants.
     for keyword in ["anyOf", "oneOf", "allOf"] {
-        if let Some(variants) = obj.get_mut(keyword) {
-            if let Some(arr) = variants.as_array_mut() {
-                for variant in arr.iter_mut() {
-                    enforce_additional_properties_false(variant);
-                }
+        if let Some(variants) = obj.get_mut(keyword)
+            && let Some(arr) = variants.as_array_mut()
+        {
+            for variant in arr.iter_mut() {
+                enforce_additional_properties_false(variant);
             }
         }
     }

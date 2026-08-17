@@ -5,6 +5,7 @@
 //! - `POST   /api/feeds`               — register a feed
 //! - `GET    /api/feeds/{id}`          — get feed detail
 //! - `DELETE /api/feeds/{id}`          — unregister a feed
+//! - `GET    /api/feeds/catalog`       — list built-in feed agents and descriptors
 //!
 //! Runtime feeds (live status from the serve layer):
 //! - `GET    /api/feeds/runtime`       — list all runtime feeds with status
@@ -13,15 +14,17 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
-use axum::routing::get;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
-use roko_core::feed::{FeedAccess, FeedInfo, FeedKind};
+use roko_core::feed::{FeedAccess, FeedInfo, FeedKind, FeedPricingConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::ApiError;
+use crate::routes::middleware::require_payment;
 use crate::state::AppState;
 
 pub fn routes() -> Router<Arc<AppState>> {
@@ -33,6 +36,11 @@ pub fn routes() -> Router<Arc<AppState>> {
         // so that "/feeds/runtime" is not captured as id="runtime".
         .route("/feeds/runtime", get(list_runtime_feeds))
         .route("/feeds/runtime/{id}", get(get_runtime_feed_status))
+        .route("/feeds/discover", get(discover_feeds))
+        .route("/feeds/search", get(search_feeds))
+        .route("/feeds/health", get(feed_health))
+        .route("/feeds/start/{id}", post(start_feed))
+        .route("/feeds/stop/{id}", post(stop_feed))
         .route("/feeds/{id}", get(get_feed).delete(delete_feed))
 }
 
@@ -49,6 +57,8 @@ struct CreateFeedRequest {
     description: String,
     #[serde(default)]
     schema: Option<Value>,
+    #[serde(default)]
+    pricing: Option<FeedPricingConfig>,
 }
 
 fn default_access() -> FeedAccess {
@@ -65,8 +75,17 @@ struct FeedQuery {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct FeedListResponse {
-    feeds: Vec<FeedInfo>,
+    feeds: Vec<FeedView>,
     total: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct FeedView {
+    #[serde(flatten)]
+    feed: FeedInfo,
+    running: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_status: Option<roko_core::FeedRuntimeStatus>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -124,6 +143,20 @@ async fn list_feeds(
         (None, None) => reg.list().to_vec(),
     };
 
+    let feeds = feeds
+        .into_iter()
+        .map(|feed| {
+            let runtime_status = state
+                .runtime_feeds
+                .get(&feed.cell_id)
+                .map(|handle| handle.status());
+            FeedView {
+                running: runtime_status.is_some(),
+                runtime_status,
+                feed,
+            }
+        })
+        .collect::<Vec<_>>();
     let total = feeds.len();
     Json(FeedListResponse { feeds, total })
 }
@@ -142,12 +175,14 @@ async fn create_feed(
 
     let info = FeedInfo {
         id: String::new(), // assigned by registry
+        cell_id: String::new(),
         name: req.name,
         kind: req.kind,
         access: req.access,
         agent_id: req.agent_id,
         description: req.description,
         schema: req.schema,
+        pricing: req.pricing,
         created_at: Utc::now(),
     };
 
@@ -162,12 +197,28 @@ async fn create_feed(
 async fn get_feed(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<FeedInfo>, ApiError> {
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
     let reg = state.feeds.read().await;
     let info = reg
         .get(&id)
-        .ok_or_else(|| ApiError::not_found(format!("feed '{id}' not found")))?;
-    Ok(Json(info.clone()))
+        .ok_or_else(|| ApiError::not_found(format!("feed '{id}' not found")))?
+        .clone();
+    drop(reg);
+
+    if let Err(response) = require_payment(&info, &headers) {
+        return Ok(response);
+    }
+    let runtime_status = state
+        .runtime_feeds
+        .get(&info.cell_id)
+        .map(|handle| handle.status());
+    Ok(Json(FeedView {
+        running: runtime_status.is_some(),
+        runtime_status,
+        feed: info,
+    })
+    .into_response())
 }
 
 /// `DELETE /api/feeds/{id}` — unregister a feed.
@@ -205,7 +256,7 @@ async fn get_feed_catalog(State(state): State<Arc<AppState>>) -> Json<FeedCatalo
 async fn list_runtime_feeds(
     State(state): State<Arc<AppState>>,
 ) -> Json<Vec<roko_core::FeedRuntimeStatus>> {
-    Json(state.runtime_feeds.list())
+    Json(state.runtime_feeds.health())
 }
 
 /// `GET /api/feeds/runtime/{id}` -- get detailed status for a single runtime feed.
@@ -215,9 +266,64 @@ async fn get_runtime_feed_status(
 ) -> Result<Json<roko_core::FeedRuntimeStatus>, StatusCode> {
     state
         .runtime_feeds
-        .get(&id)
+        .status(&id)
         .map(Json)
         .ok_or(StatusCode::NOT_FOUND)
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchQuery {
+    q: String,
+}
+
+/// `GET /api/feeds/discover` -- list every runnable built-in feed descriptor.
+async fn discover_feeds(State(state): State<Arc<AppState>>) -> Json<Vec<FeedInfo>> {
+    Json(state.runtime_feeds.discover())
+}
+
+/// `GET /api/feeds/search?q=` -- search runtime feed metadata.
+async fn search_feeds(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<SearchQuery>,
+) -> Json<Vec<FeedInfo>> {
+    Json(state.runtime_feeds.search(&query.q))
+}
+
+/// `GET /api/feeds/health` -- aggregate runtime health including stopped feeds.
+async fn feed_health(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<roko_core::FeedRuntimeStatus>> {
+    Json(state.runtime_feeds.health())
+}
+
+/// `POST /api/feeds/start/{id}` -- start a registered runtime feed and bridge it to Bus.
+async fn start_feed(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<roko_core::FeedRuntimeStatus>), ApiError> {
+    let handle = state
+        .runtime_feeds
+        .start_registered(&id)
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    let _bridge = state.feed_bus_bridge.spawn(handle.cell().subscribe());
+    Ok((StatusCode::ACCEPTED, Json(handle.status())))
+}
+
+/// `POST /api/feeds/stop/{id}` -- cooperatively stop a running feed.
+async fn stop_feed(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<roko_core::FeedRuntimeStatus>, ApiError> {
+    let handle = state
+        .runtime_feeds
+        .get(&id)
+        .ok_or_else(|| ApiError::not_found(format!("feed '{id}' is not running")))?;
+    state
+        .runtime_feeds
+        .stop(&id)
+        .await
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    Ok(Json(handle.status()))
 }
 
 #[cfg(test)]
@@ -226,23 +332,24 @@ mod tests {
 
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
+    use roko_chain::x402::{PaymentAuthorization, PaymentRequest};
     use roko_core::config::schema::RokoConfig;
+    use roko_core::feed::{PaymentProtocol, PricingTier};
     use tower::ServiceExt;
 
     use crate::deploy::create_backend;
     use crate::runtime::NoOpRuntime;
 
     fn test_state(workdir: std::path::PathBuf) -> Arc<AppState> {
+        test_state_with_config(workdir, RokoConfig::default())
+    }
+
+    fn test_state_with_config(workdir: std::path::PathBuf, config: RokoConfig) -> Arc<AppState> {
         let deploy_backend =
             Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
         Arc::new(
-            AppState::new(
-                workdir,
-                Arc::new(NoOpRuntime),
-                RokoConfig::default(),
-                deploy_backend,
-            )
-            .expect("AppState::new"),
+            AppState::new(workdir, Arc::new(NoOpRuntime), config, deploy_backend)
+                .expect("AppState::new"),
         )
     }
 
@@ -271,6 +378,74 @@ mod tests {
         let payload: FeedListResponse = serde_json::from_slice(&body).expect("parse");
         assert!(payload.feeds.is_empty());
         assert_eq!(payload.total, 0);
+    }
+
+    #[tokio::test]
+    async fn feed_catalog_contains_only_reduced_generic_agents() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
+        let mut config = RokoConfig::default();
+        config.feed_agents.enabled = true;
+        let state = test_state_with_config(dir.path().to_path_buf(), config);
+        let handles = crate::feed_agents::spawn_all(Arc::clone(&state));
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if state.feed_agent_catalog.read().await.agents.len() == 10 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("feed catalog populated");
+
+        let response = routes()
+            .with_state(Arc::clone(&state))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/feeds/catalog")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("parse");
+        let agent_ids: Vec<&str> = payload["agents"]
+            .as_array()
+            .expect("agents array")
+            .iter()
+            .map(|agent| agent["agent_id"].as_str().expect("agent id"))
+            .collect();
+        assert_eq!(
+            agent_ids,
+            [
+                "chain-watcher",
+                "gas-oracle",
+                "agent-monitor",
+                "relay-stats",
+                "system-heartbeat",
+                "block-space",
+                "tx-throughput",
+                "fee-burn",
+                "network-health",
+                "contract-activity",
+            ]
+        );
+        assert_eq!(payload["feeds"].as_array().expect("feeds array").len(), 10);
+        assert_eq!(payload["stats"]["total_agents"], 10);
+        assert_eq!(payload["stats"]["total_feeds"], 10);
+
+        state.cancel.cancel();
+        for handle in handles {
+            handle.abort();
+        }
     }
 
     #[tokio::test]
@@ -332,6 +507,145 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn paid_feed_payment_cell_challenges_invalid_requests_and_accepts_sufficient_value() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
+        let state = test_state(dir.path().to_path_buf());
+        let feed_id = state.feeds.write().await.register(FeedInfo {
+            id: String::new(),
+            cell_id: String::new(),
+            name: "paid-signals".into(),
+            kind: FeedKind::Derived,
+            access: FeedAccess::Paid,
+            agent_id: "provider-7".into(),
+            description: "paid".into(),
+            schema: None,
+            pricing: Some(FeedPricingConfig {
+                tier: PricingTier::Standard,
+                per_request_cost: 2.25,
+                session_pricing: None,
+                protocol: PaymentProtocol::X402,
+            }),
+            created_at: Utc::now(),
+        });
+        let app = routes().with_state(state);
+        let uri = format!("/feeds/{feed_id}");
+
+        let missing = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&uri)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(missing.status(), StatusCode::PAYMENT_REQUIRED);
+        assert!(missing.headers().contains_key("x-payment-request"));
+        let body = to_bytes(missing.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let challenge: PaymentRequest = serde_json::from_slice(&body).expect("payment challenge");
+        assert_eq!(challenge.recipient, "provider-7");
+        assert_eq!(challenge.amount, 3);
+
+        let malformed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&uri)
+                    .header("x-payment-authorization", "not-json")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(malformed.status(), StatusCode::PAYMENT_REQUIRED);
+
+        let authorization = |value| {
+            serde_json::to_string(&PaymentAuthorization {
+                from: "subscriber-4".into(),
+                to: "provider-7".into(),
+                value,
+                valid_after: 0,
+                valid_before: u64::MAX,
+                nonce: 99,
+                v: 27,
+                r: [0; 32],
+                s: [1; 32],
+            })
+            .expect("serialize authorization")
+        };
+        let underpaid = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&uri)
+                    .header("x-payment-authorization", authorization(2))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(underpaid.status(), StatusCode::PAYMENT_REQUIRED);
+
+        let paid = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&uri)
+                    .header("x-payment-authorization", authorization(3))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(paid.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn public_and_private_feed_reads_bypass_payment_cell() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
+        let state = test_state(dir.path().to_path_buf());
+        let mut ids = Vec::new();
+        for access in [FeedAccess::Public, FeedAccess::Private] {
+            ids.push(state.feeds.write().await.register(FeedInfo {
+                id: String::new(),
+                cell_id: String::new(),
+                name: format!("{access:?}-feed"),
+                kind: FeedKind::Raw,
+                access,
+                agent_id: "provider".into(),
+                description: String::new(),
+                schema: None,
+                pricing: None,
+                created_at: Utc::now(),
+            }));
+        }
+        let app = routes().with_state(state);
+
+        for id in ids {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(format!("/feeds/{id}"))
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+    }
+
+    #[tokio::test]
     async fn list_feeds_with_kind_filter() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
@@ -379,7 +693,7 @@ mod tests {
             .expect("body");
         let payload: FeedListResponse = serde_json::from_slice(&body).expect("parse");
         assert_eq!(payload.total, 1);
-        assert_eq!(payload.feeds[0].name, "raw-feed");
+        assert_eq!(payload.feeds[0].feed.name, "raw-feed");
     }
 
     #[tokio::test]
@@ -525,7 +839,7 @@ mod tests {
     // ── Runtime feed tests ───────────────────────────────────────
 
     #[tokio::test]
-    async fn list_runtime_feeds_returns_two_entries() {
+    async fn list_runtime_feeds_returns_three_entries() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
         let state = test_state(dir.path().to_path_buf());
@@ -549,12 +863,21 @@ mod tests {
         let feeds: Vec<roko_core::FeedRuntimeStatus> =
             serde_json::from_slice(&body).expect("parse");
         assert_eq!(feeds.len(), 3);
-        assert_eq!(feeds[0].id, "file-watch-roko-dir");
-        assert_eq!(feeds[0].topic, "fs.changed");
-        assert_eq!(feeds[1].id, "provider-health-feed");
-        assert_eq!(feeds[1].topic, "provider.health");
-        assert_eq!(feeds[2].id, "isfr-keeper");
-        assert_eq!(feeds[2].topic, "isfr.rates");
+        assert!(
+            feeds
+                .iter()
+                .any(|feed| feed.id == "file-watch-roko-dir" && feed.topic == "fs.changed")
+        );
+        assert!(
+            feeds
+                .iter()
+                .any(|feed| feed.id == "provider-health-feed" && feed.topic == "provider.health")
+        );
+        assert!(
+            feeds
+                .iter()
+                .any(|feed| feed.id == "episode-outcome-feed" && feed.topic == "episode.outcome")
+        );
     }
 
     #[tokio::test]
@@ -582,8 +905,8 @@ mod tests {
         let status: roko_core::FeedRuntimeStatus = serde_json::from_slice(&body).expect("parse");
         assert_eq!(status.id, "file-watch-roko-dir");
         assert_eq!(status.kind, "Raw");
-        // .roko/ dir was created above so it should be connected.
-        assert!(status.connected);
+        // AppState construction registers feeds; ServerBuilder starts them.
+        assert!(!status.connected);
     }
 
     #[tokio::test]
@@ -605,5 +928,68 @@ mod tests {
             .expect("response");
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_health_and_search_are_live() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
+        let state = test_state(dir.path().to_path_buf());
+        let app = routes().with_state(state);
+
+        let started = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/feeds/start/file-watch-roko-dir")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(started.status(), StatusCode::ACCEPTED);
+        tokio::task::yield_now().await;
+
+        let health = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/feeds/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+        let body = to_bytes(health.into_body(), usize::MAX).await.unwrap();
+        let statuses: Vec<roko_core::FeedRuntimeStatus> = serde_json::from_slice(&body).unwrap();
+        assert!(statuses.iter().any(|feed| feed.id == "file-watch-roko-dir"));
+
+        let search = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/feeds/search?q=health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(search.into_body(), usize::MAX).await.unwrap();
+        let results: Vec<FeedInfo> = serde_json::from_slice(&body).unwrap();
+        assert!(results.iter().any(|feed| feed.id == "provider-health-feed"));
+
+        let stopped = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/feeds/stop/file-watch-roko-dir")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stopped.status(), StatusCode::OK);
     }
 }

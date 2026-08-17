@@ -8,6 +8,10 @@
 
 **Crate**: `crates/roko-gateway/`
 
+> **Implementation status:** SHIPPED (E26 T01-T12, 2026-08-16) — `roko-gateway` owns the provider-neutral protocol, bounded keyless handles, nine-stage pipeline, two-layer cache, loop/convergence controls, tool/output/thinking budgets, provider fallback/key rotation contracts, cost persistence, three-level backpressure, batch queue, HTTP adapters, and loader-verified TOML graph. `roko-serve` constructs it from the live `ModelCallService`, `CascadeRouter`, cost table, and `GatewayEventWriter`; starts the gateway and batch loops; and routes inference, stats, and batch HTTP traffic through it.
+>
+> **Roadmap beyond E26:** Native provider batch-job submission/polling and WebSocket `StatsEvent` broadcast remain adapter work. The current batch processor makes bounded live calls through the same pipeline with batch pricing, and handle streaming preserves full-pipeline accounting by emitting the accounted completion as chunks; incremental provider-to-client pipeline streaming remains future work.
+
 ---
 
 ## 1. Overview
@@ -20,7 +24,7 @@ The `CascadeRouter` from `roko-learn` ([07-LEARNING](07-LEARNING.md)) handles mo
 
 ## 2. Pipeline Graph Definition
 
-The gateway is a **Pipeline** -- a linear Graph of Cells where each can reject, transform, or redirect. This is not a bespoke service; it is a Graph like any other, expressible in TOML and composed from standard Cell primitives.
+The gateway is a **Pipeline** -- a linear Graph of Cells where each can reject, transform, or redirect. This is not a bespoke service; it is a Graph like any other, expressible in TOML and composed from standard Cell primitives. The checked-in, loader-verified source of truth is `crates/roko-gateway/inference-gateway.toml`.
 
 ```toml
 [graph]
@@ -29,47 +33,56 @@ type = "pipeline"
 
 [[nodes]]
 id = "loop-detect"
-cell = "roko:gateway/loop-detect"
+cell_type = "roko:gateway/loop-detect"
+[nodes.config]
 protocol = "Verify"
 
 [[nodes]]
 id = "cache-lookup"
-cell = "roko:gateway/cache-lookup"
+cell_type = "roko:gateway/cache-lookup"
+[nodes.config]
 protocol = "Route"
 
 [[nodes]]
 id = "tool-prune"
-cell = "roko:gateway/tool-prune"
+cell_type = "roko:gateway/tool-prune"
+[nodes.config]
 protocol = "Compose"
 
 [[nodes]]
 id = "output-budget"
-cell = "roko:gateway/output-budget"
+cell_type = "roko:gateway/output-budget"
+[nodes.config]
 protocol = "Compose"
 
 [[nodes]]
 id = "thinking-cap"
-cell = "roko:gateway/thinking-cap"
+cell_type = "roko:gateway/thinking-cap"
+[nodes.config]
 protocol = "Compose"
 
 [[nodes]]
 id = "convergence-detect"
-cell = "roko:gateway/convergence-detect"
+cell_type = "roko:gateway/convergence-detect"
+[nodes.config]
 protocol = "Verify"
 
 [[nodes]]
 id = "provider-call"
-cell = "roko:gateway/provider-call"
+cell_type = "roko:gateway/provider-call"
+[nodes.config]
 protocol = "Connect"
 
 [[nodes]]
 id = "cache-store"
-cell = "roko:gateway/cache-store"
+cell_type = "roko:gateway/cache-store"
+[nodes.config]
 protocol = "Store"
 
 [[nodes]]
 id = "cost-track"
-cell = "roko:gateway/cost-track"
+cell_type = "roko:gateway/cost-track"
+[nodes.config]
 protocol = "Observe"
 
 [[edges]]
@@ -759,11 +772,11 @@ Queues inference requests for asynchronous batch processing at a **50% cost disc
 
 ### Submission
 
-On flush, the gateway submits the batch to `POST https://api.anthropic.com/v1/messages/batches`.
+The shipped `ClientBatchProcessor` drains entries with bounded concurrency through `InferenceClient::complete`, so every item receives the same preprocessing, provider dispatch, persistence, and 50% batch-cost calculation as real-time traffic. `BatchProcessor` is the extension boundary for a native provider batch-job adapter; direct Anthropic `/v1/messages/batches` submission is roadmap work.
 
 ### Polling
 
-Background task polls `GET /v1/messages/batches/{batch_id}` every **60 seconds** until the batch completes.
+Local pipeline results complete directly. Native provider batch processors must use the exported **60-second** polling interval contract (`BATCH_POLL_INTERVAL`); provider-job polling is roadmap work.
 
 ### Results
 
@@ -790,7 +803,7 @@ GET    /api/gateway/stats             Aggregate gateway statistics:
 
 GET    /api/gateway/ws                WebSocket endpoint streaming per-request
                                        StatsEvents in real time.
-                                       Broadcast channel (1024 slot capacity).
+                                       Broadcast channel (1024 slot capacity; roadmap).
 
 POST   /api/gateway/batch/submit      Queue a request for batch processing.
                                        Returns 202 + custom_id.
@@ -800,6 +813,8 @@ POST   /api/gateway/batch/flush       Force-flush the current batch queue.
 GET    /api/gateway/batch/result/:id  Retrieve completed batch result by
                                        custom_id.
 ```
+
+The inference, stats, batch submit, batch flush, and batch result routes above are live in `roko-serve` and use its existing authenticated route classification. The WebSocket route and `StatsEvent` broadcast schema remain the next telemetry adapter milestone.
 
 ### StatsEvent
 

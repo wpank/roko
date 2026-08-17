@@ -404,6 +404,7 @@ mod tests {
                     role: MessageRole::User,
                     content: "hello".to_string(),
                 }],
+                input_messages: Vec::new(),
                 cache_policy: CachePolicy::Bypass,
                 ..Default::default()
             },

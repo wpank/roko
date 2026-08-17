@@ -297,7 +297,9 @@ fn map_load_config_error(err: LoadConfigError) -> ApiError {
         | LoadConfigError::Validation { .. }
         | LoadConfigError::ProviderReference { .. }
         | LoadConfigError::AmbiguousModelSlug { .. }
-        | LoadConfigError::UnresolvedModel { .. } => ApiError::bad_request(err.to_string()),
+        | LoadConfigError::UnresolvedModel { .. }
+        | LoadConfigError::InvariantViolation { .. }
+        | LoadConfigError::Migration { .. } => ApiError::bad_request(err.to_string()),
     }
 }
 
@@ -850,6 +852,26 @@ default_model = "first"
         let dir = tempfile::tempdir().expect("tempdir");
         let workdir = dir.path().to_path_buf();
         let mut config = RokoConfig::default();
+        // Keep this normalization test independent of any user-global budget
+        // overlay while still satisfying the canonical finite-plan invariant.
+        config.budget.max_plan_usd = 10.0;
+        config.budget.max_turn_usd = 1.0;
+        config.providers.insert(
+            "provider".to_string(),
+            roko_core::config::schema::ProviderConfig {
+                kind: roko_core::agent::ProviderKind::OpenAiCompat,
+                base_url: Some("https://example.com/v1".to_string()),
+                api_key_env: None,
+                command: None,
+                args: None,
+                timeout_ms: None,
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: None,
+                max_concurrent: None,
+                limits: None,
+            },
+        );
         config.models.insert(
             "focused".to_string(),
             roko_core::config::schema::ModelProfile {
@@ -879,16 +901,22 @@ default_model = "first"
             .await
             .expect("response");
 
-        assert_eq!(response.status(), StatusCode::OK);
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected response: {}",
+            String::from_utf8_lossy(&body)
+        );
         assert_eq!(state.load_roko_config().agent.default_model, "focused");
         let persisted = tokio::fs::read_to_string(workdir.join("roko.toml"))
             .await
             .expect("read config");
         let persisted: RokoConfig = toml::from_str(&persisted).expect("parse config");
         assert_eq!(persisted.agent.default_model, "focused");
-        let body = to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("read body");
         let payload: Value = serde_json::from_slice(&body).expect("parse body");
         assert_eq!(payload["agent"]["default_model"], "focused");
         assert_eq!(payload["default_model"], "focused");
@@ -1509,8 +1537,13 @@ slug = "global-slug"
                     }
                 }),
             )
-            .expect_err("global merge must make the candidate slug ambiguous");
-            assert!(error.to_string().contains("ambiguous model slug"));
+            .expect_err("project slug override must invalidate the masked global model key");
+            assert!(
+                error
+                    .to_string()
+                    .contains("agent.default_model references unresolved model 'global-model'"),
+                "unexpected rejection: {error}"
+            );
             assert_eq!(
                 std::fs::read_to_string(workdir.join("roko.toml")).expect("read retained source"),
                 before_source

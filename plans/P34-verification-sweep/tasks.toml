@@ -1,8 +1,8 @@
 [meta]
 plan = "P34-verification-sweep"
 total = 4
-done = 0
-status = "ready"
+done = 4
+status = "done"
 max_parallel = 1
 estimated_total_minutes = 120
 skip_enrichment = true
@@ -40,9 +40,9 @@ Focus areas for potential breakage:
 - roko-cli plan.rs Shorthand/external_subcommand changes
 - roko-agent codex_agent.rs retry logic
 """
-status = "ready"
+status = "done"
 tier = "mechanical"
-model_hint = "claude-haiku-4-5"
+model_hint = "claude-sonnet"
 max_loc = 50
 files = ["Cargo.toml"]
 role = "implementer"
@@ -84,9 +84,9 @@ Common clippy issues from these change types:
 - Missing #[must_use] on new public functions
 - Redundant pattern matches in new match arms
 """
-status = "ready"
+status = "done"
 tier = "mechanical"
-model_hint = "claude-haiku-4-5"
+model_hint = "claude-sonnet"
 max_loc = 50
 files = ["Cargo.toml"]
 role = "implementer"
@@ -123,7 +123,7 @@ Likely areas of test sensitivity:
 - roko-agent: CodexAgent tests (after retry logic addition)
 - roko-cli: plan command tests (after Shorthand variant addition)
 """
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 50
@@ -165,9 +165,9 @@ Build the release binary and verify basic CLI functionality:
 This catches linker errors, missing features, and startup crashes that
 unit tests don't cover.
 """
-status = "ready"
+status = "done"
 tier = "mechanical"
-model_hint = "claude-haiku-4-5"
+model_hint = "claude-sonnet"
 max_loc = 5
 files = ["Cargo.toml"]
 role = "implementer"

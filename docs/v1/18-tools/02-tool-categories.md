@@ -1,5 +1,8 @@
 # 02 — Tool Categories Taxonomy
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The 17 chain domain categories, prefix conventions, chain support matrix, and risk tier
 > scale. Plus how categories interact with profiles for tool filtering.
 

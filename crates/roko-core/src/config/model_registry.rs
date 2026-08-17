@@ -266,34 +266,32 @@ mod tests {
 
     #[test]
     fn vision_capable_models_have_supports_vision() {
-        // Verify that known vision-capable models (Gemini, Claude, GPT) have supports_vision: true
+        let expected = [
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5",
+            "gpt-5.5",
+            "gpt-5.4-mini",
+            "o3",
+            "o4-mini",
+            "gpt-4o",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+        ];
         for m in BUILTIN_MODELS {
-            match m.slug {
-                // Gemini models should support vision
-                "gemini-2.5-pro" | "gemini-2.5-flash" => {
-                    assert!(
-                        m.supports_vision,
-                        "{} should have supports_vision: true",
-                        m.slug
-                    );
-                }
-                // Claude models should support vision (Opus, Sonnet, Haiku)
-                "claude-opus-4-6" | "claude-sonnet-4-6" | "claude-haiku-4-5" => {
-                    assert!(
-                        m.supports_vision,
-                        "{} should have supports_vision: true",
-                        m.slug
-                    );
-                }
-                // OpenAI vision-capable models
-                "gpt-4o" | "o4" | "o4-mini" => {
-                    assert!(
-                        m.supports_vision,
-                        "{} should have supports_vision: true",
-                        m.slug
-                    );
-                }
-                _ => {} // Other models may or may not support vision
+            assert_eq!(
+                m.supports_vision,
+                expected.contains(&m.slug),
+                "unexpected vision capability for {}",
+                m.slug
+            );
+            if m.supports_vision {
+                assert!(
+                    m.provider_kind.supports_inline_images(),
+                    "{} advertises vision but provider {} lacks an inline-image wire path",
+                    m.slug,
+                    m.provider_kind
+                );
             }
         }
     }

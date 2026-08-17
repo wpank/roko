@@ -168,7 +168,7 @@ pub(crate) async fn cmd_login_browser(url: &str, dashboard_url: &str) -> Result<
     std::io::Write::flush(&mut std::io::stdout())?;
 
     // Wait for the callback with a 5-minute timeout.
-    let result = tokio::time::timeout(Duration::from_secs(300), rx).await;
+    let result = tokio::time::timeout(Duration::from_mins(5), rx).await;
     server_handle.abort();
 
     match result {

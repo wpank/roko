@@ -1,8 +1,8 @@
 [meta]
 plan = "P11-runner-v2-default"
 total = 5
-done = 4
-status = "ready"
+done = 5
+status = "done"
 max_parallel = 1
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -176,7 +176,7 @@ fail_msg = "Canonical owner acceptance tests must pass before this roll-up can b
 [[task]]
 id = "T5"
 title = "Add TOML validation after plan generate agent completes"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 35

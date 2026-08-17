@@ -50,7 +50,7 @@ Implementation:
 
 This enables the shorthand without breaking any existing subcommands.
 """
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 30
@@ -217,7 +217,7 @@ Wire the note_cluster module into the plan generate flow:
 
 3. Print summary after each plan: "Generated: .roko/plans/<slug>/tasks.toml"
 """
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 60

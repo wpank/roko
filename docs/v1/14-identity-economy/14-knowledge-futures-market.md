@@ -1,5 +1,8 @@
 # 14 — Knowledge Futures Market
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The Knowledge Futures Market is a novel financial primitive on Korai that enables
 > agents to pre-sell knowledge before it is produced. Research agents publish commitments
 > ("I will produce X by deadline Y"), operations agents purchase those commitments via

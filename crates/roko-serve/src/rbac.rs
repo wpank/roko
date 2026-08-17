@@ -33,7 +33,10 @@ use crate::error::ApiError;
 // ── Role ────────────────────────────────────────────────────────────────────
 
 /// A workspace role. Roles are strictly ordered: `Owner > Admin > Member > Viewer`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum Role {
     /// Workspace viewer — read-only access to the dashboard.
     Viewer = 0,

@@ -1,5 +1,8 @@
 # 13 — roko-mcp-stdio
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Generic MCP stdio scaffold: protocol handler, tool registration,
 > base implementation for building custom MCP servers.
 

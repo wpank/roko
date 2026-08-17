@@ -1,5 +1,8 @@
 # Packaging and Distribution
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > How Roko's 36-workspace-member Cargo workspace is packaged, versioned, and distributed to users through
 > multiple channels: crates.io, Homebrew, GitHub Releases with prebuilt binaries, and Docker
 > images on ghcr.io. This document covers the full release pipeline from commit to installable

@@ -1,5 +1,8 @@
 # Dream Evolution: The Fourth Phase
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: Cognitive Cross-Cut (L2 Scaffold knowledge recombination)
 >
 > **Synapse Traits**: `Scorer` (memetic fitness scoring), `Policy` (strategy evolution policy)

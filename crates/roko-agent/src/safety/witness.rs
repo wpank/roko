@@ -174,10 +174,10 @@ impl WitnessDag {
         while let Some(vertex) = queue.pop_front() {
             result.push(vertex);
             for parent_id in &vertex.parents {
-                if visited.insert(*parent_id) {
-                    if let Some(parent) = self.vertices.get(parent_id) {
-                        queue.push_back(parent);
-                    }
+                if visited.insert(*parent_id)
+                    && let Some(parent) = self.vertices.get(parent_id)
+                {
+                    queue.push_back(parent);
                 }
             }
         }

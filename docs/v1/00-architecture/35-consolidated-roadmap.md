@@ -1,5 +1,8 @@
 # Consolidated Roadmap
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** This chapter is the sequencing layer for the architecture refinements. The
 > primitive chapters explain what Roko is and how the parts fit together; this roadmap explains
 > what lands next, what must land first, and which Q1-Q4 milestones produce visible wins without

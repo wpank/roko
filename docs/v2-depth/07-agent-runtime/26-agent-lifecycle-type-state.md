@@ -2,6 +2,8 @@
 
 > Agent creation, deletion, and provisioning as a type-state machine. States are compile-time enforced. Three creation flows. Three successor patterns. Deletion is an 8-step Pipeline. Knowledge backup/restore uses confidence decay per generational distance.
 
+> **Implementation status (2026-08-17):** IMPLEMENTED. The compile-time type-state machine (Initializing/Bootstrapping/Ready/Running/Draining/Terminated) is implemented in `crates/roko-agent/src/lifecycle.rs`. `AgentLifecycle` enum, all state structs, and transitions are present and tested. E23 is 10/10 accepted.
+
 See [02-CELL.md](../../unified/02-CELL.md) for Pipeline pattern, [03-GRAPH.md](../../unified/03-GRAPH.md) for Graph definition, [05-AGENT.md](../../unified/05-AGENT.md) for Agent specialization.
 
 ---

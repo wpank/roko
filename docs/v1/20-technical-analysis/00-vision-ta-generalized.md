@@ -1,5 +1,8 @@
 # Technical Analysis as Universal Oracle Primitives
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > TA is NOT chain-only. It is a general-purpose prediction framework with domain-specific instances.
 
 

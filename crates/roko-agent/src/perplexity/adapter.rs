@@ -6,7 +6,6 @@
 //! - Standard chat models → [`PerplexityChatAgent`]
 
 use crate::agent::{Agent, AgentResult, derived_output};
-use crate::dispatcher::HandlerResolver;
 use crate::perplexity::PerplexityDeepResearchAgent;
 use crate::perplexity::chat::PerplexityChatAgent;
 use crate::perplexity::embed;
@@ -154,10 +153,10 @@ fn perplexity_search_options(model: &ModelProfile, options: &AgentOptions) -> Se
         ..Default::default()
     };
     for extra_arg in &options.extra_args {
-        if let Some(payload) = extra_arg.strip_prefix(PERPLEXITY_SEARCH_OPTIONS_ARG_PREFIX) {
-            if let Ok(extra) = serde_json::from_str::<SearchOptions>(payload) {
-                merge_search_options(&mut search_options, &extra);
-            }
+        if let Some(payload) = extra_arg.strip_prefix(PERPLEXITY_SEARCH_OPTIONS_ARG_PREFIX)
+            && let Ok(extra) = serde_json::from_str::<SearchOptions>(payload)
+        {
+            merge_search_options(&mut search_options, &extra);
         }
     }
     search_options
@@ -169,9 +168,7 @@ fn perplexity_tool_loop_agent(
     model: &ModelProfile,
     options: &AgentOptions,
 ) -> Result<Box<dyn Agent>, AgentCreationError> {
-    let (registry, tools) = tool_registry_for_options(model, options)?;
-    let resolver: Arc<dyn HandlerResolver> =
-        Arc::new(|name: &str| roko_std::tool::handlers::handler_for(name));
+    let (registry, tools, resolver) = tool_registry_for_options(model, options)?;
     let dispatcher = build_tool_dispatcher(registry, resolver);
     let translator: Arc<dyn Translator> = Arc::new(OpenAiTranslator);
     let timeout_ms = options.timeout_ms.unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
@@ -194,6 +191,12 @@ fn perplexity_tool_loop_agent(
         .with_name(name);
     if let Some(prompt) = &options.system_prompt {
         agent = agent.with_system_prompt(prompt.clone());
+    }
+    if let Some(ref dir) = options.working_dir {
+        agent = agent.with_worktree_path(dir.clone());
+    }
+    if let Some(root) = options.effective_immune_root() {
+        agent = agent.with_immune_root(root);
     }
 
     Ok(Box::new(agent))

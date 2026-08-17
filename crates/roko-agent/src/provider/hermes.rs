@@ -1,7 +1,9 @@
 use crate::Agent;
 use crate::hermes::{HermesAcpAgent, HermesAcpConfig, HermesConfig, HermesHttpAgent};
 use crate::hermes::{HermesFlavor, HermesOneShotAgent, HermesOneShotConfig};
-use crate::provider::{AgentCreationError, AgentOptions, ProviderAdapter, ProviderError};
+use crate::provider::{
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
+};
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
@@ -43,6 +45,7 @@ impl ProviderAdapter for HermesProviderAdapter {
             .working_dir
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let resource_limits = configured_resource_limits(provider)?;
 
         // Tier selection: base_url → HTTP, args contain "acp" → ACP, else → oneshot.
         let is_acp = provider
@@ -79,7 +82,10 @@ impl ProviderAdapter for HermesProviderAdapter {
                     Some(model.slug.clone())
                 },
                 timeout,
-                mcp_servers: None,
+                mcp_servers: options.local_tool_mcp_servers.as_ref().map(|servers| {
+                    Value::Array(servers.iter().map(|server| server.to_acp_json()).collect())
+                }),
+                resource_limits,
             };
             let agent = HermesAcpAgent::new(config);
             Ok(Box::new(agent))
@@ -100,6 +106,7 @@ impl ProviderAdapter for HermesProviderAdapter {
                     Some(model.slug.clone())
                 },
                 timeout,
+                resource_limits,
                 ..Default::default()
             };
             let agent = HermesOneShotAgent::new(config);

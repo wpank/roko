@@ -1,8 +1,8 @@
 [meta]
 plan = "P30-onboarding-doctor"
 total = 4
-done = 0
-status = "ready"
+done = 4
+status = "done"
 max_parallel = 2
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -25,7 +25,7 @@ max_parallel = 2
 [[task]]
 id = "T1"
 title = "Acceptance roll-up: provider-aware doctor key checks"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "P27-provider-error-ux#T1"
 tier = "mechanical"
@@ -63,7 +63,7 @@ fail_msg = "Canonical owner acceptance tests must pass before this roll-up can b
 [[task]]
 id = "T2"
 title = "Acceptance roll-up: configured-provider credential validation"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "P27-provider-error-ux#T1"
 tier = "focused"
@@ -101,7 +101,7 @@ fail_msg = "Canonical owner acceptance tests must pass before this roll-up can b
 [[task]]
 id = "T3"
 title = "Print next-step hints after roko init succeeds"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 15
@@ -146,7 +146,7 @@ fail_msg = "roko-cli must compile cleanly"
 [[task]]
 id = "T4"
 title = "Update roko setup next-step hints to include develop and models"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 10

@@ -1,5 +1,8 @@
 # Spectre Creature Visualization
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The Spectre creature — a procedurally generated, behaviorally animated entity that encodes an agent's cognitive state as a dense visual readout. Generated deterministically from agent identity, animated by Daimon state. Never dies.
 
 

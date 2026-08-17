@@ -1,5 +1,6 @@
 //! Typed provenance for config resolution.
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -18,6 +19,52 @@ pub enum ConfigSource {
     Env,
     LocalOverride,
     CliOverride,
+    Evolved,
+    Composed,
+    ApiOverride,
+}
+
+impl ConfigSource {
+    /// Resolution priority for this source category. Higher values win.
+    #[must_use]
+    pub const fn priority(&self) -> u8 {
+        match self {
+            Self::ApiOverride => 5,
+            Self::CliOverride => 4,
+            Self::Env => 3,
+            Self::File | Self::LocalOverride => 2,
+            Self::Evolved | Self::Migration => 1,
+            Self::Default | Self::Composed => 0,
+        }
+    }
+
+    const fn tie_breaker(&self) -> u8 {
+        match self {
+            Self::Default => 0,
+            Self::Composed => 1,
+            Self::Migration => 2,
+            Self::Evolved => 3,
+            Self::File => 4,
+            Self::LocalOverride => 5,
+            Self::Env => 6,
+            Self::CliOverride => 7,
+            Self::ApiOverride => 8,
+        }
+    }
+}
+
+impl Ord for ConfigSource {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.priority()
+            .cmp(&other.priority())
+            .then_with(|| self.tie_breaker().cmp(&other.tie_breaker()))
+    }
+}
+
+impl PartialOrd for ConfigSource {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// Machine-readable trace for where a config value came from and why.
@@ -95,6 +142,77 @@ impl ConfigProvenance {
             reason: Some(reason.into()),
         }
     }
+
+    #[must_use]
+    pub fn evolved(key: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            source: ConfigSource::Evolved,
+            path: None,
+            key: key.into(),
+            reason: Some(reason.into()),
+        }
+    }
+
+    #[must_use]
+    pub fn api_override(key: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            source: ConfigSource::ApiOverride,
+            path: None,
+            key: key.into(),
+            reason: Some(reason.into()),
+        }
+    }
+}
+
+/// Runtime-only provenance for one resolved config field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldProvenance {
+    pub key: String,
+    pub value_source: ConfigSource,
+    pub priority: u8,
+    pub reason: Option<String>,
+}
+
+impl FieldProvenance {
+    #[must_use]
+    pub fn new(
+        key: impl Into<String>,
+        value_source: ConfigSource,
+        reason: impl Into<Option<String>>,
+    ) -> Self {
+        let priority = value_source.priority();
+        Self {
+            key: key.into(),
+            value_source,
+            priority,
+            reason: reason.into(),
+        }
+    }
+}
+
+/// Per-field resolution metadata retained alongside a validated config.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MergeContext {
+    pub field_provenance: Vec<FieldProvenance>,
+}
+
+impl MergeContext {
+    /// Record a candidate source, replacing the current source only when it
+    /// has equal or greater precedence. Equal-priority sources are applied in
+    /// specificity order by the loader (global file before project file).
+    pub fn record(&mut self, provenance: FieldProvenance) {
+        if let Some(existing) = self
+            .field_provenance
+            .iter_mut()
+            .find(|existing| existing.key == provenance.key)
+        {
+            if provenance.priority >= existing.priority {
+                *existing = provenance;
+            }
+            return;
+        }
+        self.field_provenance.push(provenance);
+    }
 }
 
 /// Config diagnostic captured during migration or validation.
@@ -106,12 +224,10 @@ pub struct ConfigDiagnostic {
 
 /// Parsed config after migration and validation, with provenance retained.
 ///
-/// `raw` holds the config as deserialized before any migration step; `migrated`
-/// is the authoritative post-migration value that callers consume via
-/// [`ValidatedConfig::config`] / [`ValidatedConfig::into_config`]. Today the
-/// two are identical because `load_config` does not perform schema migration;
-/// future migration passes should populate `migrated` separately and leave
-/// `raw` untouched for provenance/audit tooling.
+/// `raw` holds the config after value-tree schema migration but before runtime
+/// layers (global config, environment overrides, and secret resolution).
+/// `migrated` is the authoritative fully resolved value that callers consume
+/// via [`ValidatedConfig::config`] / [`ValidatedConfig::into_config`].
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ValidatedConfig {
     pub raw: RokoConfig,
@@ -120,6 +236,9 @@ pub struct ValidatedConfig {
     pub diagnostics: Vec<ConfigDiagnostic>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provenance: Vec<ConfigProvenance>,
+    /// Runtime-only per-field resolution metadata.
+    #[serde(skip)]
+    pub merge_context: MergeContext,
 }
 
 impl ValidatedConfig {
@@ -134,6 +253,7 @@ impl ValidatedConfig {
             migrated: config,
             diagnostics: Vec::new(),
             provenance: Vec::new(),
+            merge_context: MergeContext::default(),
         }
     }
 
@@ -203,6 +323,8 @@ mod tests {
                 "developer local override",
             ),
             ConfigProvenance::cli_override("agent.default_model", "--model"),
+            ConfigProvenance::evolved("gates.max_iterations", "adaptive thresholds"),
+            ConfigProvenance::api_override("budget.max_plan_usd", "operator request"),
         ];
 
         assert_eq!(entries[0].source, ConfigSource::File);
@@ -215,6 +337,8 @@ mod tests {
         assert_eq!(entries[3].source, ConfigSource::Env);
         assert_eq!(entries[4].source, ConfigSource::LocalOverride);
         assert_eq!(entries[5].source, ConfigSource::CliOverride);
+        assert_eq!(entries[6].source, ConfigSource::Evolved);
+        assert_eq!(entries[7].source, ConfigSource::ApiOverride);
         assert!(entries.iter().all(|entry| !entry.key.is_empty()));
     }
 
@@ -235,6 +359,7 @@ mod tests {
                 message: "already current".to_string(),
             }],
             provenance: provenance.clone(),
+            merge_context: MergeContext::default(),
         };
         let resolved = ResolvedRuntimeConfig {
             providers: HashMap::new(),
@@ -244,5 +369,25 @@ mod tests {
 
         assert_eq!(validated.provenance.len(), 1);
         assert_eq!(resolved.provenance.len(), 1);
+    }
+
+    #[test]
+    fn config_provenance_source_priority_orders_resolution_layers() {
+        assert!(ConfigSource::ApiOverride > ConfigSource::CliOverride);
+        assert!(ConfigSource::CliOverride > ConfigSource::Env);
+        assert!(ConfigSource::Env > ConfigSource::File);
+        assert!(ConfigSource::File > ConfigSource::Evolved);
+        assert!(ConfigSource::Evolved > ConfigSource::Default);
+        assert_eq!(
+            ConfigSource::File.priority(),
+            ConfigSource::LocalOverride.priority()
+        );
+    }
+
+    #[test]
+    fn config_provenance_evolved_constructor_retains_reason() {
+        let entry = ConfigProvenance::evolved("routing.weights.cost", "learned reward");
+        assert_eq!(entry.source, ConfigSource::Evolved);
+        assert_eq!(entry.reason.as_deref(), Some("learned reward"));
     }
 }

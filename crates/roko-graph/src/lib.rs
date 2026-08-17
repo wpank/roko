@@ -49,6 +49,7 @@ pub mod condition;
 pub mod convert;
 pub mod engine;
 pub mod error;
+pub mod fingerprint;
 pub mod hot;
 pub mod loader;
 pub mod registry;
@@ -70,9 +71,17 @@ pub use types::{
 };
 
 // Re-export from new modules.
-pub use budget::{BudgetEnforcer, BudgetLimits, BudgetTracker, NodeCost};
+pub use budget::{
+    BudgetCheckpoint, BudgetEnforcer, BudgetLimits, BudgetTracker, NodeCost, NodeCostCheckpoint,
+};
 pub use condition::{CompareOp, Condition, evaluate};
 pub use convert::{PlanTaskInfo, plan_to_graph, plan_to_graph_with_endpoints};
 pub use error::Result as GraphResult;
-pub use hot::{HotGraphHandle, HotPolicy, LoopLevel, start_hot, start_hot_with_budget};
+pub use fingerprint::graph_execution_fingerprint;
+pub use hot::{
+    HotCheckpointError, HotCheckpointOptions, HotGraphCheckpointManifest, HotGraphFailure,
+    HotGraphHandle, HotPolicy, LoopLevel, start_hot, start_hot_resumable,
+    start_hot_resumable_with_budget, start_hot_with_budget,
+};
 pub use replay::{ActivityRecorder, ActivityReplayer, RecordEntry};
+pub use roko_core::{LensConfig, LensRegistration, LensRegistry};

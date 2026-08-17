@@ -86,13 +86,13 @@ impl ContractArtifact {
             return Vec::new();
         };
         for item in arr {
-            if item.get("type").and_then(|v| v.as_str()) == Some("constructor") {
-                if let Some(inputs) = item.get("inputs").and_then(|v| v.as_array()) {
-                    return inputs
-                        .iter()
-                        .filter_map(|i| i.get("type").and_then(|t| t.as_str()).map(String::from))
-                        .collect();
-                }
+            if item.get("type").and_then(|v| v.as_str()) == Some("constructor")
+                && let Some(inputs) = item.get("inputs").and_then(|v| v.as_array())
+            {
+                return inputs
+                    .iter()
+                    .filter_map(|i| i.get("type").and_then(|t| t.as_str()).map(String::from))
+                    .collect();
             }
         }
         Vec::new()

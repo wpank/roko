@@ -365,11 +365,11 @@ impl CheckSuiteEvent {
 
     /// Map this event to the appropriate signal kind string.
     ///
-    /// - `Completed` → [`signal_kinds::GITHUB_CHECK_SUITE_COMPLETED`]
+    /// - `Completed` → [`signal_kinds::GITHUB_CHECK_COMPLETED`]
     /// - All other actions → [`signal_kinds::GITHUB_CHECK_SUITE`]
     pub fn to_signal_kind(&self) -> &'static str {
         match &self.action {
-            CheckSuiteAction::Completed => signal_kinds::GITHUB_CHECK_SUITE_COMPLETED,
+            CheckSuiteAction::Completed => signal_kinds::GITHUB_CHECK_COMPLETED,
             _ => signal_kinds::GITHUB_CHECK_SUITE,
         }
     }
@@ -615,9 +615,7 @@ fn github_signal_kind(event_type: &str, payload: &Value) -> Option<Kind> {
         "check_suite" => {
             let action = payload.get("action").and_then(Value::as_str)?;
             match action {
-                "completed" => Some(Kind::Custom(
-                    signal_kinds::GITHUB_CHECK_SUITE_COMPLETED.into(),
-                )),
+                "completed" => Some(Kind::Custom(signal_kinds::GITHUB_CHECK_COMPLETED.into())),
                 _ => Some(Kind::Custom(signal_kinds::GITHUB_CHECK_SUITE.into())),
             }
         }
@@ -813,9 +811,9 @@ mod tests {
         assert!(
             matches!(
                 check_completed.as_ref().map(Kind::as_str),
-                Some(kind) if kind == signal_kinds::GITHUB_CHECK_SUITE_COMPLETED
+                Some(kind) if kind == signal_kinds::GITHUB_CHECK_COMPLETED
             ),
-            "check_suite completed should map to GITHUB_CHECK_SUITE_COMPLETED"
+            "check_suite completed should map to GITHUB_CHECK_COMPLETED"
         );
     }
 
@@ -1568,10 +1566,7 @@ mod tests {
     fn check_suite_event_to_signal_kind_completed() {
         let payload = check_suite_payload("completed", "sha", Some("main"), None, Some("success"));
         let evt = CheckSuiteEvent::from_payload(&payload).expect("parse");
-        assert_eq!(
-            evt.to_signal_kind(),
-            signal_kinds::GITHUB_CHECK_SUITE_COMPLETED
-        );
+        assert_eq!(evt.to_signal_kind(), signal_kinds::GITHUB_CHECK_COMPLETED);
     }
 
     #[test]

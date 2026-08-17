@@ -1,5 +1,8 @@
 # Context Engineering
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for context assembly, prompt optimization, retrieval-augmented generation, and attention management in Roko's Composer and context pipeline.
 
 **Topic**: [References](./INDEX.md)

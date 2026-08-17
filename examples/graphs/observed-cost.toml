@@ -1,0 +1,27 @@
+[graph]
+name = "observed-cost"
+description = "Minimal graph with stacked Cost/Latency Lenses and a derived cost trend"
+version = "1.0.0"
+
+[[lenses]]
+name = "cost-monitor"
+block = "roko:cost-lens@^1.0"
+scope = "graph"
+
+[[lenses]]
+name = "latency-monitor"
+block = "roko:latency-lens@^1.0"
+scope = "graph"
+
+[[lenses]]
+name = "cost-trend"
+block = "roko:trend-lens@^1.0"
+scope = "lens:cost-monitor"
+
+[lenses.params]
+metric = "total_usd"
+min_data_points = 2
+
+[[nodes]]
+id = "work"
+cell_type = "noop"

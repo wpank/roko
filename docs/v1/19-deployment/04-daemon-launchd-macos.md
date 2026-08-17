@@ -1,5 +1,8 @@
 # Daemon Mode: launchd (macOS)
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > On macOS, Roko can run as a persistent background daemon managed by launchd. The
 > `roko daemon --install` command generates a launchd plist, installs it to
 > `~/Library/LaunchAgents/`, and starts the service. This document covers the plist

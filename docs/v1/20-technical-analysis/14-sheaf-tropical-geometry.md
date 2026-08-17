@@ -1,5 +1,8 @@
 # Sheaf-Theoretic Consistency and Tropical Decision Geometry
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Sheaf theory provides local-to-global consistency guarantees across distributed oracle subsystems. Tropical geometry reveals the piecewise-linear decision boundaries of oracle policies and connects symbolic planning (dynamic programming) with neural computation via the max-plus semiring.
 
 

@@ -411,7 +411,12 @@ pub(crate) fn apply_concluded_experiment_overrides(learning: &LearningRuntime, w
 pub fn distillation_model_caller(workdir: &Path) -> Arc<dyn ModelCaller> {
     let config = roko_core::config::loader::load_config_unified(workdir).unwrap_or_default();
     let model = config.agent.default_model.clone();
-    Arc::new(ModelCallService::new(model).with_config(config))
+    Arc::new(
+        ModelCallService::new(model)
+            .with_config(config)
+            .with_working_dir(workdir)
+            .with_immune_root(workdir),
+    )
 }
 
 pub(crate) fn install_episode_distillation_hook(learning: &mut LearningRuntime, workdir: &Path) {
@@ -536,6 +541,13 @@ pub(crate) fn build_task_playbook(task_def: &task_parser::TaskDef) -> Playbook {
         .unwrap_or_else(|| task_def.title.clone());
     let mut playbook = Playbook::new(task_def.id.clone(), goal);
     playbook.name = task_def.title.clone();
+    playbook.when_pattern = Some(
+        [
+            task_def.title.as_str(),
+            task_def.description.as_deref().unwrap_or_default(),
+        ]
+        .join(" "),
+    );
 
     let mut next_index = 0u32;
     playbook.steps.push(PlaybookStep::new(

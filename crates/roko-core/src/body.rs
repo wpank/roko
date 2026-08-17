@@ -189,7 +189,7 @@ mod base64_bytes {
             }
         }
         let bytes = s.as_bytes();
-        if bytes.len() % 4 != 0 {
+        if !bytes.len().is_multiple_of(4) {
             return Err("base64 length not multiple of 4".into());
         }
         let mut out = Vec::with_capacity(bytes.len() / 4 * 3);

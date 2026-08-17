@@ -2,6 +2,8 @@
 
 > Depth for [05-AGENT.md](../../unified/05-AGENT.md). Concrete provider integration details for 8+ backends, domain profiles as configuration bundles, and a reality check on what is wired versus aspirational.
 
+> **Implementation status (2026-08-17):** IMPLEMENTED. All listed providers (Anthropic API, Claude CLI, OpenAI/OpenAI-compat, Ollama, Cursor ACP, ZhipuAI, OpenRouter, Perplexity, Gemini, Moonshot) have adapters in `crates/roko-agent/src/`. The provider table in §1 ("Integration Status") is current. Domain profiles are config bundles — implemented but not separately typed. The `InferenceHandle` / `TypedContext` patterns remain spec-level naming; the runtime uses the `ProviderAdapter` trait directly.
+
 ## Provider Landscape
 
 Roko integrates with 8+ LLM providers through a uniform Cell interface. Each provider is a **Connect protocol Cell** behind the `ProviderAdapter` trait. The adapter hides protocol differences; downstream Cells (ToolLoop, SafetyLayer, GatePipeline) are provider-agnostic.
@@ -222,7 +224,7 @@ pub enum ContextValue {
     String(String),
     Int(i64),
     Float(f64),
-    Hash(EngramHash),
+    Hash(SignalHash),
     Fingerprint(HdcVector),
     List(Vec<ContextValue>),
     Nested(BTreeMap<ContextKey, ContextValue>),

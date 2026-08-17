@@ -15,7 +15,7 @@ Roko implements OS-level primitives for agents, adapted from what Linux provides
 | Namespaces (PID, net, mount) | Process isolation | Cognitive Namespaces | **Space** specialization |
 | Signals (SIGTERM, SIGKILL) | Process control | Cognitive Signals | **Pulse** with priority |
 | Scheduler (CFS) | CPU time allocation | Cognitive Scheduling | EDF on **Graph** executor |
-| System calls (syscall table) | Hardware access control | Engram Syscalls | **Verify** protocol Pipeline |
+| System calls (syscall table) | Hardware access control | Signal Syscalls | **Verify** protocol Pipeline |
 | Capabilities (CAP_NET_RAW) | Fine-grained permissions | Capability tokens | Cell capability intersection |
 | cgroups (resource limits) | Resource containment | Budget limits | Verify + React Cells |
 | seccomp (syscall filtering) | Syscall allowlist | Tool permissions | Pipeline of Verify Cells |
@@ -476,7 +476,7 @@ impl VerifyCell for MevProtectionCell {
 The four cognitive kernel primitives compose into the defense-in-depth model:
 
 ```
-Engram Syscalls (outermost): Verify Pipeline wraps every action
+Signal Syscalls (outermost): Verify Pipeline wraps every action
   |
   Cognitive Namespaces: Space isolation + Store partitions
     |
@@ -487,7 +487,7 @@ Engram Syscalls (outermost): Verify Pipeline wraps every action
 
 The existing `SafetyLayer` in `crates/roko-agent/src/safety/mod.rs` is a composite Verify Cell that chains BashPolicy, GitPolicy, NetworkPolicy, PathPolicy, ScrubPolicy, and RateLimiter. The cognitive kernel vision extends this to cover all agent actions, not just tool invocations.
 
-The critical gap (see [02-defense-in-depth-as-pipeline.md](02-defense-in-depth-as-pipeline.md) SS6): the SafetyLayer is wired into routed/provider-backed execution paths but not universally from all subprocess branches. Closing this gap makes the Engram Syscall pattern effective.
+The critical gap (see [02-defense-in-depth-as-pipeline.md](02-defense-in-depth-as-pipeline.md) SS6): the SafetyLayer is wired into routed/provider-backed execution paths but not universally from all subprocess branches. Closing this gap makes the Signal Syscall pattern effective.
 
 ---
 

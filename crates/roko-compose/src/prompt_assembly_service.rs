@@ -409,24 +409,24 @@ impl PromptAssembler for PromptAssemblyService {
                 recent_episodes: 0,
                 max_results: 3,
             };
-            if let Ok(playbooks) = store.query(&ctx).await {
-                if !playbooks.is_empty() {
-                    builder = builder.with_playbooks(&playbooks);
-                    self.record_prompt_section_id("relevant_techniques");
-                }
+            if let Ok(playbooks) = store.query(&ctx).await
+                && !playbooks.is_empty()
+            {
+                builder = builder.with_playbooks(&playbooks);
+                self.record_prompt_section_id("relevant_techniques");
             }
         }
 
-        if self.should_include("domain") {
-            if let Some((domain, ids)) = domain_context_for_spec(
+        if self.should_include("domain")
+            && let Some((domain, ids)) = domain_context_for_spec(
                 &spec,
                 self.domain_context.as_deref(),
                 self.knowledge_store.as_deref(),
-            ) {
-                self.record_knowledge_ids(ids);
-                builder = builder.with_domain(domain);
-                self.record_prompt_section_id("domain_context");
-            }
+            )
+        {
+            self.record_knowledge_ids(ids);
+            builder = builder.with_domain(domain);
+            self.record_prompt_section_id("domain_context");
         }
 
         if self.should_include("context")
@@ -772,10 +772,10 @@ fn collect_source_context_from(
             file_listing.push(relative);
         }
 
-        if source_samples.len() < SOURCE_SAMPLE_LIMIT {
-            if let Some(source) = read_to_string_if_exists(&path) {
-                source_samples.push(source);
-            }
+        if source_samples.len() < SOURCE_SAMPLE_LIMIT
+            && let Some(source) = read_to_string_if_exists(&path)
+        {
+            source_samples.push(source);
         }
     }
 }
@@ -798,6 +798,8 @@ fn path_to_string(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use roko_core::foundation::{FeedbackEvent, FeedbackSink};
+    use roko_learn::FeedbackService;
     use roko_neuro::KnowledgeStore;
 
     #[tokio::test]
@@ -958,6 +960,103 @@ mod tests {
         assert!(
             svc.last_prompt_section_ids()
                 .contains(&"domain_context".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn knowledge_prompt_feedback_loop_updates_durable_scores() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(KnowledgeStore::new(
+            dir.path().join("neuro").join("knowledge.jsonl"),
+        ));
+        store
+            .add(KnowledgeEntry {
+                id: "K001".into(),
+                kind: KnowledgeKind::Insight,
+                content: "Testing workflows should assert durable feedback loops.".into(),
+                confidence: 0.95,
+                tags: vec!["testing".into()],
+                tier: KnowledgeTier::Consolidated,
+                ..KnowledgeEntry::default()
+            })
+            .unwrap();
+
+        let assembler = PromptAssemblyService::new().with_knowledge_store(Arc::clone(&store));
+        let feedback_dir = dir.path().join("learn");
+        let feedback = FeedbackService::new(feedback_dir.clone());
+        let initial_score = feedback
+            .knowledge_scores()
+            .get("K001")
+            .copied()
+            .unwrap_or_default();
+
+        let prompt = assembler
+            .assemble(PromptSpec {
+                role: Some("implementer".into()),
+                task: Some("Improve testing for knowledge feedback loops".into()),
+                ..PromptSpec::default()
+            })
+            .await
+            .unwrap();
+        assert!(prompt.contains("Testing workflows should assert durable feedback loops."));
+
+        let knowledge_ids = assembler.last_knowledge_ids();
+        assert_eq!(knowledge_ids, vec!["K001".to_string()]);
+        let prompt_section_ids = assembler.last_prompt_section_ids();
+        assert!(prompt_section_ids.contains(&"domain_context".to_string()));
+
+        feedback
+            .record(FeedbackEvent::ModelCall {
+                run_id: Some("run-knowledge-loop".into()),
+                request_id: Some("req-knowledge-loop".into()),
+                prompt_section_ids: prompt_section_ids.clone(),
+                knowledge_ids: knowledge_ids.clone(),
+                model: Some("sonnet".into()),
+                provider: None,
+                token_usage: None,
+                cost: None,
+                role: "implementer".into(),
+                input_tokens: 1000,
+                output_tokens: 200,
+                cost_usd: 0.01,
+                latency_ms: 1500,
+                success: true,
+            })
+            .await
+            .unwrap();
+        feedback
+            .record(FeedbackEvent::GateResult {
+                run_id: "run-knowledge-loop".into(),
+                gate_name: "test".into(),
+                passed: true,
+                duration_ms: 250,
+            })
+            .await
+            .unwrap();
+
+        feedback.flush().unwrap();
+
+        let computed_scores = feedback.compute_knowledge_scores().unwrap();
+        assert_eq!(computed_scores.get("K001"), Some(&(1, 1)));
+
+        let updated_score = feedback
+            .knowledge_scores()
+            .get("K001")
+            .copied()
+            .unwrap_or_default();
+        assert!(updated_score > initial_score);
+
+        let reloaded = FeedbackService::new(feedback_dir);
+        assert_eq!(
+            reloaded.knowledge_scores().get("K001"),
+            Some(&updated_score)
+        );
+
+        let effectiveness = reloaded.section_effectiveness();
+        assert!(
+            effectiveness
+                .get("domain_context")
+                .is_some_and(|score| *score > 1.0)
         );
     }
 

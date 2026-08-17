@@ -65,12 +65,12 @@ impl RollingStats {
     pub fn push(&mut self, value: f32) -> (f32, f32) {
         let val = f64::from(value);
         // Evict oldest if at capacity
-        if self.values.len() >= self.window_size {
-            if let Some(old) = self.values.pop_front() {
-                let old = f64::from(old);
-                self.running_sum -= old;
-                self.running_sum_sq -= old * old;
-            }
+        if self.values.len() >= self.window_size
+            && let Some(old) = self.values.pop_front()
+        {
+            let old = f64::from(old);
+            self.running_sum -= old;
+            self.running_sum_sq -= old * old;
         }
         self.values.push_back(value);
         self.running_sum += val;
@@ -1462,12 +1462,12 @@ mod tests {
         for _ in 0..20 {
             stats.push(0.1);
         }
-        let (mean, stddev) = stats.push(0.1);
+        let (mean, _stddev) = stats.push(0.1);
         // Baseline is stable: mean~0.1, stddev~0
         assert!((mean - 0.1).abs() < 0.01);
 
         // Now push an outlier
-        let (mean_after, stddev_after) = stats.push(0.9);
+        let (_mean_after, stddev_after) = stats.push(0.9);
         // The stddev should now be non-zero since we have a spike
         assert!(stddev_after > 0.0);
     }

@@ -29,9 +29,18 @@
 //! }
 //! ```
 
+use std::collections::HashMap;
+use std::io;
+use std::path::Path;
+
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use super::provenance::ConfigDiagnostic;
 use super::schema::RokoConfig;
+
+/// Default review window used by config freshness diagnostics.
+pub const DEFAULT_CONFIG_STALENESS_DAYS: u32 = 30;
 
 /// Which config section changed.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -78,6 +87,26 @@ impl ConfigSection {
                 | Self::Routing
         )
     }
+
+    /// Stable lower-case section key used by freshness persistence.
+    #[must_use]
+    pub fn as_key(&self) -> &str {
+        match self {
+            Self::Budget => "budget",
+            Self::Tools => "tools",
+            Self::Learning => "learning",
+            Self::Gates => "gates",
+            Self::Conductor => "conductor",
+            Self::Agent => "agent",
+            Self::Providers => "providers",
+            Self::Models => "models",
+            Self::Serve => "serve",
+            Self::Routing => "routing",
+            Self::Scheduler => "scheduler",
+            Self::Watcher => "watcher",
+            Self::Other(section) => section,
+        }
+    }
 }
 
 /// A detected difference between two configurations.
@@ -96,6 +125,107 @@ pub struct HotReloadResult {
     pub applied: Vec<ConfigChange>,
     /// Changes that require a restart to take effect.
     pub needs_restart: Vec<ConfigChange>,
+}
+
+/// Consumer notified by a CLI-owned filesystem watcher.
+pub trait ConfigWatchCallback {
+    fn on_config_changed(&self, result: HotReloadResult);
+    fn on_config_error(&self, error: String);
+}
+
+/// Fully captured request used by watcher/control-plane integrations.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConfigReloadRequest {
+    pub old_config: RokoConfig,
+    pub new_config: RokoConfig,
+    pub changes: Vec<ConfigChange>,
+    pub requested_at: DateTime<Utc>,
+}
+
+/// Policy knobs for CLI-owned config watchers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReloadPolicy {
+    pub debounce_ms: u64,
+    pub auto_reload: bool,
+    pub reject_on_invariant_error: bool,
+}
+
+impl Default for ReloadPolicy {
+    fn default() -> Self {
+        Self {
+            debounce_ms: 500,
+            auto_reload: false,
+            reject_on_invariant_error: true,
+        }
+    }
+}
+
+/// Per-section review timestamps persisted under `.roko/state` by callers.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigFreshness {
+    #[serde(default)]
+    pub section_timestamps: HashMap<String, DateTime<Utc>>,
+}
+
+impl ConfigFreshness {
+    /// Load freshness metadata from an exact JSON path, or from the canonical
+    /// `.roko/state/config-freshness.json` beneath a workspace directory.
+    #[must_use]
+    pub fn load(path: &Path) -> Self {
+        std::fs::read_to_string(Self::persistence_path(path))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    /// Save freshness metadata without creating its parent directory.
+    pub fn save(&self, path: &Path) -> io::Result<()> {
+        let bytes = serde_json::to_vec_pretty(self)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        std::fs::write(Self::persistence_path(path), bytes)
+    }
+
+    pub fn touch(&mut self, section: &str) {
+        self.section_timestamps
+            .insert(section.to_string(), Utc::now());
+    }
+
+    pub fn touch_changed(&mut self, changes: &[ConfigChange]) {
+        for change in changes {
+            self.touch(change.section.as_key());
+        }
+    }
+
+    fn persistence_path(path: &Path) -> std::path::PathBuf {
+        if path.is_dir() {
+            path.join(".roko")
+                .join("state")
+                .join("config-freshness.json")
+        } else {
+            path.to_path_buf()
+        }
+    }
+}
+
+/// Warn for tracked sections whose last explicit review exceeds the threshold.
+#[must_use]
+pub fn config_freshness_diagnostics(
+    freshness: &ConfigFreshness,
+    staleness_threshold_days: u32,
+) -> Vec<ConfigDiagnostic> {
+    let now = Utc::now();
+    let mut sections = freshness.section_timestamps.iter().collect::<Vec<_>>();
+    sections.sort_unstable_by_key(|(section, _)| *section);
+    sections
+        .into_iter()
+        .filter_map(|(section, timestamp)| {
+            let days = now.signed_duration_since(*timestamp).num_days().max(0);
+            (days > i64::from(staleness_threshold_days)).then(|| ConfigDiagnostic {
+                key: format!("config_freshness.{section}"),
+                message: format!("config section '{section}' has not been reviewed in {days} days"),
+            })
+        })
+        .collect()
 }
 
 impl HotReloadResult {
@@ -141,10 +271,10 @@ pub fn config_diff(old: &RokoConfig, new: &RokoConfig) -> Vec<ConfigChange> {
         });
     }
 
-    if old.gates != new.gates {
+    if old.gates != new.gates || old.pipeline != new.pipeline {
         changes.push(ConfigChange {
             section: ConfigSection::Gates,
-            summary: "gate thresholds changed".into(),
+            summary: "gate thresholds or pipeline retries changed".into(),
         });
     }
 
@@ -191,6 +321,27 @@ pub fn config_diff(old: &RokoConfig, new: &RokoConfig) -> Vec<ConfigChange> {
         });
     }
 
+    if old.scheduler != new.scheduler {
+        changes.push(ConfigChange {
+            section: ConfigSection::Scheduler,
+            summary: "scheduler configuration changed (requires restart)".into(),
+        });
+    }
+
+    if old.watcher != new.watcher {
+        changes.push(ConfigChange {
+            section: ConfigSection::Watcher,
+            summary: "watcher configuration changed (requires restart)".into(),
+        });
+    }
+
+    if old.profiles != new.profiles {
+        changes.push(ConfigChange {
+            section: ConfigSection::Other("profiles".into()),
+            summary: "domain profiles changed (requires restart)".into(),
+        });
+    }
+
     if old.server != new.server {
         changes.push(ConfigChange {
             section: ConfigSection::Other("server".into()),
@@ -219,7 +370,10 @@ pub fn apply_hot_reload(
                 ConfigSection::Budget => current.budget = new_config.budget.clone(),
                 ConfigSection::Tools => current.tools = new_config.tools.clone(),
                 ConfigSection::Learning => current.learning = new_config.learning.clone(),
-                ConfigSection::Gates => current.gates = new_config.gates.clone(),
+                ConfigSection::Gates => {
+                    current.gates = new_config.gates.clone();
+                    current.pipeline = new_config.pipeline.clone();
+                }
                 ConfigSection::Conductor => current.conductor = new_config.conductor.clone(),
                 ConfigSection::Routing => current.routing = new_config.routing.clone(),
                 _ => {} // unreachable given is_hot_reloadable()
@@ -244,6 +398,15 @@ pub fn apply_hot_reload(
         applied,
         needs_restart,
     }
+}
+
+/// Pull the latest workspace config, validate it, diff it, and atomically
+/// apply only hot-reloadable sections to `current`.
+pub fn try_reload(current: &mut RokoConfig, workdir: &Path) -> Result<HotReloadResult, String> {
+    let new_config =
+        super::loader::load_config_unified(workdir).map_err(|error| error.to_string())?;
+    let changes = config_diff(current, &new_config);
+    Ok(apply_hot_reload(current, &new_config, &changes))
 }
 
 /// Parse a STRATEGY.md file into structured strategy fields.
@@ -308,14 +471,13 @@ pub fn parse_strategy_md(content: &str) -> StrategyDocument {
         if let Some(item) = trimmed
             .strip_prefix("- ")
             .or_else(|| trimmed.strip_prefix("* "))
+            && !item.is_empty()
         {
-            if !item.is_empty() {
-                match current_section {
-                    Some("goals") => doc.goals.push(item.to_string()),
-                    Some("tactics") => doc.tactics.push(item.to_string()),
-                    Some("risk_bounds") => doc.risk_bounds.push(item.to_string()),
-                    _ => {}
-                }
+            match current_section {
+                Some("goals") => doc.goals.push(item.to_string()),
+                Some("tactics") => doc.tactics.push(item.to_string()),
+                Some("risk_bounds") => doc.risk_bounds.push(item.to_string()),
+                _ => {}
             }
         }
     }
@@ -401,6 +563,68 @@ mod tests {
             needs_restart: vec![],
         };
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn try_reload_applies_valid_disk_change() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            "schema_version = 2\nconfig_version = 2\n[budget]\nmax_plan_usd = 20.0\nmax_turn_usd = 1.0\n",
+        )
+        .expect("write config");
+        let mut current = RokoConfig::default();
+
+        let result = try_reload(&mut current, dir.path()).expect("reload");
+        assert!(
+            result
+                .applied
+                .iter()
+                .any(|change| change.section == ConfigSection::Budget)
+        );
+        assert_eq!(current.budget.max_plan_usd, 20.0);
+    }
+
+    #[test]
+    fn try_reload_rejects_invariant_error_without_mutating_current() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            "schema_version = 2\nconfig_version = 2\n[budget]\nmax_plan_usd = 1.0\nmax_turn_usd = 2.0\n",
+        )
+        .expect("write config");
+        let mut current = RokoConfig::default();
+        let original = current.clone();
+
+        let error = try_reload(&mut current, dir.path()).expect_err("invalid reload");
+        assert!(error.contains("invariant 1"), "{error}");
+        assert_eq!(current, original);
+    }
+
+    #[test]
+    fn config_freshness_diagnostics_detect_stale_sections() {
+        let mut freshness = ConfigFreshness::default();
+        freshness.section_timestamps.insert(
+            "budget".to_string(),
+            Utc::now() - chrono::Duration::days(31),
+        );
+
+        let diagnostics = config_freshness_diagnostics(&freshness, 30);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("budget"));
+    }
+
+    #[test]
+    fn config_freshness_diagnostics_accept_fresh_sections_and_roundtrips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config-freshness.json");
+        let mut freshness = ConfigFreshness::default();
+        freshness.touch("gates");
+        freshness.save(&path).expect("save freshness");
+        let loaded = ConfigFreshness::load(&path);
+
+        assert!(config_freshness_diagnostics(&loaded, 30).is_empty());
+        assert!(loaded.section_timestamps.contains_key("gates"));
     }
 
     #[test]

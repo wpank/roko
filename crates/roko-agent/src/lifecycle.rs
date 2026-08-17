@@ -7,9 +7,14 @@
 //! pure helper functions those flows need while leaving storage, network, and
 //! long-running I/O to higher layers.
 
-use std::{collections::HashMap, marker::PhantomData, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    marker::PhantomData,
+    path::Path,
+    time::Instant,
+};
 
-use roko_core::Attestation;
+use roko_core::{Attestation, config::AgentMode};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -386,6 +391,73 @@ pub struct SuccessorConfig {
     pub exploration_boost_duration: u64,
 }
 
+/// Hard bounds applied by production meta-agent creation surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MetaAgentLimits {
+    /// Maximum generation number within one lineage.
+    pub max_depth: u32,
+    /// Maximum direct children for any one parent.
+    pub max_children_per_parent: u32,
+    /// Maximum rejected child proposals for any one parent.
+    pub max_retries_per_parent: u32,
+    /// Maximum cumulative delegated cost across a lineage.
+    pub max_lineage_cost_usd: f64,
+}
+
+/// Absolute depth ceiling accepted by the meta-agent contract.
+pub const MAX_META_AGENT_DEPTH: u32 = 16;
+/// Absolute direct-child ceiling accepted by the meta-agent contract.
+pub const MAX_META_AGENT_FANOUT: u32 = 64;
+/// Absolute rejected-proposal retry ceiling accepted by the contract.
+pub const MAX_META_AGENT_RETRIES: u32 = 16;
+/// Absolute lineage cost ceiling accepted by the contract.
+pub const MAX_META_AGENT_LINEAGE_COST_USD: f64 = 10_000.0;
+
+impl Default for MetaAgentLimits {
+    fn default() -> Self {
+        Self {
+            max_depth: 4,
+            max_children_per_parent: 4,
+            max_retries_per_parent: 2,
+            max_lineage_cost_usd: 25.0,
+        }
+    }
+}
+
+/// Durable usage counters checked before proposing another successor.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct SuccessorUsage {
+    /// Existing direct children of the selected parent.
+    pub direct_children: u32,
+    /// Rejected direct children charged as retries.
+    pub rejected_children: u32,
+    /// Cost already delegated within the lineage.
+    pub lineage_cost_usd: f64,
+}
+
+/// Failure returned by bounded successor creation.
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum SuccessorError {
+    /// A required positive bound is zero, non-finite, or above a hard maximum.
+    #[error("meta-agent limits are invalid")]
+    InvalidLimits,
+    /// Generation depth has reached its configured bound.
+    #[error("meta-agent generation depth limit reached")]
+    DepthLimit,
+    /// Direct child fan-out has reached its configured bound.
+    #[error("meta-agent child fan-out limit reached")]
+    FanoutLimit,
+    /// Rejected proposal retry budget has been exhausted.
+    #[error("meta-agent retry limit reached")]
+    RetryLimit,
+    /// Requested or cumulative lineage cost is invalid or too large.
+    #[error("meta-agent lineage cost limit exceeded")]
+    CostLimit,
+    /// Parent generation cannot be incremented safely.
+    #[error("meta-agent generation counter overflow")]
+    GenerationOverflow,
+}
+
 impl Default for SuccessorConfig {
     fn default() -> Self {
         Self {
@@ -477,9 +549,9 @@ pub struct ToolsLoaded;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct MeshRegistered;
 
-/// Type-state marker: agent is ready to run.
+/// Type-state marker: the creation pipeline is ready to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct Ready;
+pub struct ProvisioningReady;
 
 /// Provisioning state accumulated while resolving an agent manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -606,12 +678,12 @@ impl ProvisioningAgent<ToolsLoaded> {
 
 impl ProvisioningAgent<MeshRegistered> {
     /// Final transition to ready.
-    pub fn ready(self) -> ProvisioningAgent<Ready> {
+    pub fn ready(self) -> ProvisioningAgent<ProvisioningReady> {
         self.transition()
     }
 }
 
-impl ProvisioningAgent<Ready> {
+impl ProvisioningAgent<ProvisioningReady> {
     /// Return the ready manifest.
     pub const fn manifest(&self) -> &AgentExtendedManifest {
         &self.manifest
@@ -653,7 +725,7 @@ impl<S> ProvisioningAgent<S> {
 pub fn provision_full(
     manifest: AgentExtendedManifest,
     _slot: &str,
-) -> Result<ProvisioningAgent<Ready>, ProvisioningError> {
+) -> Result<ProvisioningAgent<ProvisioningReady>, ProvisioningError> {
     let agent = ProvisioningAgent::new(manifest);
     let validated = agent.validate()?;
     let allocated = validated.allocate_resources(_slot);
@@ -663,6 +735,517 @@ pub fn provision_full(
     let mesh = tools.register_mesh();
     Ok(mesh.ready())
 }
+
+// ─── Runtime lifecycle type-state machine ────────────────────────────────
+
+/// State of one named concurrent execution slot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SlotState {
+    /// Slot has no active assignment.
+    Idle,
+    /// Slot is executing an assignment.
+    Active,
+    /// Slot cannot progress until a concrete blocker is resolved.
+    Blocked {
+        /// Human-readable non-empty blocker reason.
+        reason: String,
+    },
+    /// Slot completed its current assignment.
+    Completed,
+}
+
+impl SlotState {
+    const fn label(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Active => "active",
+            Self::Blocked { .. } => "blocked",
+            Self::Completed => "completed",
+        }
+    }
+}
+
+/// Validation or transition failure from [`SlotManager`].
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum SlotManagerError {
+    /// At least one slot must be permitted.
+    #[error("max_slots must be greater than zero")]
+    InvalidCapacity,
+    /// More initial names were supplied than the configured capacity.
+    #[error("slot count {count} exceeds capacity {max_slots}")]
+    CapacityExceeded {
+        /// Supplied slot count.
+        count: usize,
+        /// Configured maximum.
+        max_slots: usize,
+    },
+    /// Slot names are stable non-empty identifiers.
+    #[error("slot name must not be empty")]
+    EmptyName,
+    /// Duplicate slot names would make observations ambiguous.
+    #[error("duplicate slot name: {0}")]
+    DuplicateName(String),
+    /// Mutation named a slot not owned by this manager.
+    #[error("unknown slot: {0}")]
+    UnknownSlot(String),
+    /// Blocked state requires a useful reason.
+    #[error("blocked slot reason must not be empty")]
+    EmptyBlockedReason,
+    /// The requested state edge is not legal.
+    #[error("illegal slot transition for {slot}: {from} -> {to}")]
+    IllegalTransition {
+        /// Slot whose state was rejected.
+        slot: String,
+        /// Current state label.
+        from: &'static str,
+        /// Requested state label.
+        to: &'static str,
+    },
+}
+
+/// Deterministically ordered owner of named execution-slot state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotManager {
+    slots: BTreeMap<String, SlotState>,
+    max_slots: usize,
+}
+
+impl SlotManager {
+    /// Create a manager with a validated set of initially idle slot names.
+    pub fn new(
+        max_slots: usize,
+        names: impl IntoIterator<Item = String>,
+    ) -> Result<Self, SlotManagerError> {
+        if max_slots == 0 {
+            return Err(SlotManagerError::InvalidCapacity);
+        }
+        let names = names.into_iter().collect::<Vec<_>>();
+        if names.len() > max_slots {
+            return Err(SlotManagerError::CapacityExceeded {
+                count: names.len(),
+                max_slots,
+            });
+        }
+        let mut slots = BTreeMap::new();
+        for name in names {
+            let name = name.trim().to_owned();
+            if name.is_empty() {
+                return Err(SlotManagerError::EmptyName);
+            }
+            if slots.insert(name.clone(), SlotState::Idle).is_some() {
+                return Err(SlotManagerError::DuplicateName(name));
+            }
+        }
+        Ok(Self { slots, max_slots })
+    }
+
+    /// Maximum number of slots this manager may own.
+    #[must_use]
+    pub const fn max_slots(&self) -> usize {
+        self.max_slots
+    }
+
+    /// Read one named slot state.
+    #[must_use]
+    pub fn state(&self, name: &str) -> Option<&SlotState> {
+        self.slots.get(name)
+    }
+
+    /// Iterate over every slot in deterministic name order.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (&str, &SlotState)> {
+        self.slots
+            .iter()
+            .map(|(name, state)| (name.as_str(), state))
+    }
+
+    /// Activate an idle or previously blocked slot. Repeated activation is a no-op.
+    pub fn activate(&mut self, name: &str) -> Result<bool, SlotManagerError> {
+        self.transition(name, SlotState::Active, |state| {
+            matches!(state, SlotState::Idle | SlotState::Blocked { .. })
+        })
+    }
+
+    /// Block an active slot with a concrete reason.
+    pub fn block(
+        &mut self,
+        name: &str,
+        reason: impl Into<String>,
+    ) -> Result<bool, SlotManagerError> {
+        let reason = reason.into().trim().to_owned();
+        if reason.is_empty() {
+            return Err(SlotManagerError::EmptyBlockedReason);
+        }
+        let next = SlotState::Blocked { reason };
+        self.transition(name, next, |state| {
+            matches!(state, SlotState::Active | SlotState::Blocked { .. })
+        })
+    }
+
+    /// Complete an active or blocked slot. Repeated completion is a no-op.
+    pub fn complete(&mut self, name: &str) -> Result<bool, SlotManagerError> {
+        self.transition(name, SlotState::Completed, |state| {
+            matches!(state, SlotState::Active | SlotState::Blocked { .. })
+        })
+    }
+
+    /// Reset a slot to idle for its next assignment.
+    pub fn reset(&mut self, name: &str) -> Result<bool, SlotManagerError> {
+        self.transition(name, SlotState::Idle, |_| true)
+    }
+
+    fn transition(
+        &mut self,
+        name: &str,
+        next: SlotState,
+        legal: impl FnOnce(&SlotState) -> bool,
+    ) -> Result<bool, SlotManagerError> {
+        let current = self
+            .slots
+            .get_mut(name)
+            .ok_or_else(|| SlotManagerError::UnknownSlot(name.to_owned()))?;
+        if current == &next {
+            return Ok(false);
+        }
+        if !legal(current) {
+            return Err(SlotManagerError::IllegalTransition {
+                slot: name.to_owned(),
+                from: current.label(),
+                to: next.label(),
+            });
+        }
+        *current = next;
+        Ok(true)
+    }
+}
+
+/// One durable, ordered agent-mode mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentModeMutation {
+    /// Previous execution mode.
+    pub previous: AgentMode,
+    /// New execution mode.
+    pub current: AgentMode,
+    /// Monotonic local revision after applying this mutation.
+    pub revision: u64,
+}
+
+/// Native owner of mutable agent execution mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentModeOwner {
+    current: AgentMode,
+    revision: u64,
+}
+
+impl AgentModeOwner {
+    /// Create mode state at revision zero.
+    #[must_use]
+    pub const fn new(current: AgentMode) -> Self {
+        Self {
+            current,
+            revision: 0,
+        }
+    }
+
+    /// Read the current execution mode.
+    #[must_use]
+    pub const fn current(&self) -> AgentMode {
+        self.current
+    }
+
+    /// Read the current monotonic mode revision.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Apply a real mode change; repeated writes are idempotent.
+    pub fn mutate(&mut self, next: AgentMode) -> Option<AgentModeMutation> {
+        if next == self.current {
+            return None;
+        }
+        let previous = self.current;
+        self.current = next;
+        self.revision = self.revision.saturating_add(1);
+        Some(AgentModeMutation {
+            previous,
+            current: next,
+            revision: self.revision,
+        })
+    }
+}
+
+/// Why a running agent began an orderly drain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DrainReason {
+    /// An operator requested a graceful stop.
+    OperatorRequest,
+    /// The configured budget was exhausted.
+    BudgetExhausted,
+    /// The hosting process is shutting down.
+    Shutdown,
+    /// A caller-defined reason.
+    Other(String),
+}
+
+/// Why an agent reached its terminal state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
+pub enum TerminationReason {
+    /// Orderly drain completed.
+    DrainCompleted(DrainReason),
+    /// Immediate termination requested by a safety or operator path.
+    Emergency(String),
+    /// Runtime execution failed irrecoverably.
+    Failure(String),
+}
+
+/// Opaque durable backup reference produced while draining.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupHandle {
+    /// Stable identifier or path understood by the backup owner.
+    pub reference: String,
+}
+
+impl BackupHandle {
+    /// Construct a non-empty backup reference.
+    pub fn new(reference: impl Into<String>) -> Result<Self, RuntimeLifecycleError> {
+        let reference = reference.into();
+        if reference.trim().is_empty() {
+            return Err(RuntimeLifecycleError::EmptyBackupReference);
+        }
+        Ok(Self { reference })
+    }
+}
+
+/// Validation failures at the runtime lifecycle boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum RuntimeLifecycleError {
+    /// Agent intent must not be blank.
+    #[error("agent prompt must not be empty")]
+    EmptyPrompt,
+    /// Schema version zero has no defined interpretation.
+    #[error("agent schema version must be greater than zero")]
+    InvalidSchemaVersion,
+    /// At least one concrete capability is required to bootstrap.
+    #[error("at least one capability is required")]
+    MissingCapabilities,
+    /// Capability labels must contain non-whitespace characters.
+    #[error("capability at index {0} must not be empty")]
+    EmptyCapability(usize),
+    /// Capability labels are stable identifiers and must be unique.
+    #[error("duplicate capability: {0}")]
+    DuplicateCapability(String),
+    /// Backup references are opaque, but never blank.
+    #[error("backup reference must not be empty")]
+    EmptyBackupReference,
+}
+
+/// Newly constructed runtime state awaiting validation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Initializing {
+    /// Immutable creation manifest carried across the lifecycle.
+    pub manifest: AgentCoreManifest,
+    /// Monotonic construction instant.
+    pub created_at: Instant,
+}
+
+impl Initializing {
+    /// Begin a runtime lifecycle for a manifest.
+    #[must_use]
+    pub fn new(manifest: AgentCoreManifest) -> Self {
+        Self {
+            manifest,
+            created_at: Instant::now(),
+        }
+    }
+
+    /// Validate runtime inputs and advance to bootstrapping.
+    pub fn validate(
+        self,
+        capabilities: Vec<String>,
+    ) -> Result<Bootstrapping, RuntimeLifecycleError> {
+        if self.manifest.prompt.trim().is_empty() {
+            return Err(RuntimeLifecycleError::EmptyPrompt);
+        }
+        if self.manifest.schema_version == 0 {
+            return Err(RuntimeLifecycleError::InvalidSchemaVersion);
+        }
+        if capabilities.is_empty() {
+            return Err(RuntimeLifecycleError::MissingCapabilities);
+        }
+
+        let mut seen = HashSet::with_capacity(capabilities.len());
+        let mut normalized = Vec::with_capacity(capabilities.len());
+        for (index, capability) in capabilities.into_iter().enumerate() {
+            let capability = capability.trim().to_owned();
+            if capability.is_empty() {
+                return Err(RuntimeLifecycleError::EmptyCapability(index));
+            }
+            if !seen.insert(capability.clone()) {
+                return Err(RuntimeLifecycleError::DuplicateCapability(capability));
+            }
+            normalized.push(capability);
+        }
+
+        Ok(Bootstrapping {
+            manifest: self.manifest,
+            capabilities: normalized,
+        })
+    }
+}
+
+/// Validated runtime state while external bootstrap work is performed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bootstrapping {
+    /// Immutable creation manifest.
+    pub manifest: AgentCoreManifest,
+    /// Validated runtime capabilities.
+    pub capabilities: Vec<String>,
+}
+
+impl Bootstrapping {
+    /// Mark caller-owned bootstrap work complete.
+    #[must_use]
+    pub fn bootstrap_complete(self) -> Ready {
+        Ready {
+            manifest: self.manifest,
+            capabilities: self.capabilities,
+        }
+    }
+}
+
+/// Bootstrapped runtime state that may begin execution.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ready {
+    /// Immutable creation manifest.
+    pub manifest: AgentCoreManifest,
+    /// Validated runtime capabilities.
+    pub capabilities: Vec<String>,
+}
+
+impl Ready {
+    /// Start cognitive execution.
+    #[must_use]
+    pub fn start(self) -> Running {
+        Running {
+            manifest: self.manifest,
+            capabilities: self.capabilities,
+            started_at: Instant::now(),
+            tick_count: 0,
+        }
+    }
+}
+
+/// Actively executing runtime state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Running {
+    /// Immutable creation manifest.
+    pub manifest: AgentCoreManifest,
+    /// Validated runtime capabilities.
+    pub capabilities: Vec<String>,
+    /// Monotonic instant execution began.
+    pub started_at: Instant,
+    /// Number of real cognitive ticks completed by the caller.
+    pub tick_count: u64,
+}
+
+impl Running {
+    /// Record one completed cognitive tick, saturating at `u64::MAX`.
+    pub fn record_completed_tick(&mut self) -> u64 {
+        self.tick_count = self.tick_count.saturating_add(1);
+        self.tick_count
+    }
+
+    /// Begin an orderly drain.
+    #[must_use]
+    pub fn drain(self, reason: DrainReason) -> Draining {
+        Draining {
+            manifest: self.manifest,
+            reason,
+            drain_started: Instant::now(),
+        }
+    }
+
+    /// Terminate immediately without requiring a drain.
+    #[must_use]
+    pub fn terminate(self, reason: TerminationReason) -> Terminated {
+        Terminated {
+            manifest: self.manifest,
+            reason,
+            backup: None,
+        }
+    }
+}
+
+/// Runtime state performing caller-owned graceful shutdown work.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Draining {
+    /// Immutable creation manifest.
+    pub manifest: AgentCoreManifest,
+    /// Reason the drain began.
+    pub reason: DrainReason,
+    /// Monotonic instant the drain began.
+    pub drain_started: Instant,
+}
+
+impl Draining {
+    /// Complete the drain with an optional durable backup reference.
+    #[must_use]
+    pub fn complete_drain(self, backup: Option<BackupHandle>) -> Terminated {
+        Terminated {
+            manifest: self.manifest,
+            reason: TerminationReason::DrainCompleted(self.reason),
+            backup,
+        }
+    }
+}
+
+/// Terminal runtime state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Terminated {
+    /// Immutable creation manifest.
+    pub manifest: AgentCoreManifest,
+    /// Terminal cause.
+    pub reason: TerminationReason,
+    /// Optional durable backup reference.
+    pub backup: Option<BackupHandle>,
+}
+
+/// Runtime-erased lifecycle state for heterogeneous storage.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AgentLifecycle {
+    /// Awaiting validation.
+    Initializing(Initializing),
+    /// Performing bootstrap work.
+    Bootstrapping(Bootstrapping),
+    /// Ready to start.
+    Ready(Ready),
+    /// Actively executing.
+    Running(Running),
+    /// Gracefully shutting down.
+    Draining(Draining),
+    /// Permanently stopped.
+    Terminated(Terminated),
+}
+
+macro_rules! impl_lifecycle_from {
+    ($state:ident) => {
+        impl From<$state> for AgentLifecycle {
+            fn from(state: $state) -> Self {
+                Self::$state(state)
+            }
+        }
+    };
+}
+
+impl_lifecycle_from!(Initializing);
+impl_lifecycle_from!(Bootstrapping);
+impl_lifecycle_from!(Ready);
+impl_lifecycle_from!(Running);
+impl_lifecycle_from!(Draining);
+impl_lifecycle_from!(Terminated);
 
 /// Running agent record returned by the provisioning shell.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1970,10 +2553,11 @@ impl BudgetTracker {
         };
 
         // Check lifetime cap if set.
-        if let Some(max_total) = self.config.max_total_usd {
-            if max_total > 0.0 && self.lifetime_cost_usd >= max_total {
-                return BudgetStatus::Exhausted;
-            }
+        if let Some(max_total) = self.config.max_total_usd
+            && max_total > 0.0
+            && self.lifetime_cost_usd >= max_total
+        {
+            return BudgetStatus::Exhausted;
         }
 
         if daily_fraction >= 1.0 {
@@ -2071,10 +2655,11 @@ pub fn degradation_cascade(
 // ─── Successor creation ──────────────────────────────────────────────────
 
 /// Successor creation mode controlling what the new agent inherits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SuccessorMode {
     /// New agent inherits nothing: fresh Neuro, fresh Daimon, new ID.
+    #[default]
     Clean,
     /// New agent inherits parent's prompt, tool profile, and strategy but
     /// gets fresh Neuro (no knowledge transfer).
@@ -2106,7 +2691,7 @@ pub fn create_successor(
         .or_else(|| parent.name.clone())
         .or_else(|| Some("root".to_string()));
 
-    let generation = parent.generation + 1;
+    let generation = parent.generation.saturating_add(1);
 
     match mode {
         SuccessorMode::Clean => {
@@ -2158,6 +2743,55 @@ pub fn create_successor(
             resolve_manifest(manifest)
         }
     }
+}
+
+/// Create a successor only after checking durable depth, fan-out, retry, and
+/// lineage-cost usage.
+pub fn create_successor_bounded(
+    parent: &AgentExtendedManifest,
+    mode: SuccessorMode,
+    new_name: Option<String>,
+    limits: MetaAgentLimits,
+    usage: SuccessorUsage,
+    requested_cost_usd: f64,
+) -> Result<AgentExtendedManifest, SuccessorError> {
+    if limits.max_depth == 0
+        || limits.max_depth > MAX_META_AGENT_DEPTH
+        || limits.max_children_per_parent == 0
+        || limits.max_children_per_parent > MAX_META_AGENT_FANOUT
+        || limits.max_retries_per_parent > MAX_META_AGENT_RETRIES
+        || !limits.max_lineage_cost_usd.is_finite()
+        || limits.max_lineage_cost_usd <= 0.0
+        || limits.max_lineage_cost_usd > MAX_META_AGENT_LINEAGE_COST_USD
+    {
+        return Err(SuccessorError::InvalidLimits);
+    }
+    let generation = parent
+        .generation
+        .checked_add(1)
+        .ok_or(SuccessorError::GenerationOverflow)?;
+    if generation > limits.max_depth {
+        return Err(SuccessorError::DepthLimit);
+    }
+    if usage.direct_children >= limits.max_children_per_parent {
+        return Err(SuccessorError::FanoutLimit);
+    }
+    if usage.rejected_children > limits.max_retries_per_parent {
+        return Err(SuccessorError::RetryLimit);
+    }
+    let projected_cost = usage.lineage_cost_usd + requested_cost_usd;
+    if !limits.max_lineage_cost_usd.is_finite()
+        || !usage.lineage_cost_usd.is_finite()
+        || usage.lineage_cost_usd < 0.0
+        || !requested_cost_usd.is_finite()
+        || requested_cost_usd < 0.0
+        || projected_cost > limits.max_lineage_cost_usd
+    {
+        return Err(SuccessorError::CostLimit);
+    }
+    let child = create_successor(parent, mode, new_name);
+    debug_assert_eq!(child.generation, generation);
+    Ok(child)
 }
 
 // ─── Demurrage cycle runner ──────────────────────────────────────────────
@@ -2468,6 +3102,81 @@ mod tests {
         assert_eq!(grandchild.lineage_id, Some("parent-agent".into()));
     }
 
+    #[test]
+    fn bounded_successor_checks_depth_fanout_retry_and_cost() {
+        let parent = sample_parent_manifest();
+        let limits = MetaAgentLimits {
+            max_depth: 1,
+            max_children_per_parent: 1,
+            max_retries_per_parent: 1,
+            max_lineage_cost_usd: 2.0,
+        };
+        let child = create_successor_bounded(
+            &parent,
+            SuccessorMode::Clean,
+            Some("bounded".into()),
+            limits,
+            SuccessorUsage::default(),
+            1.0,
+        )
+        .expect("first bounded child");
+        assert_eq!(child.generation, 1);
+
+        assert_eq!(
+            create_successor_bounded(
+                &parent,
+                SuccessorMode::Clean,
+                None,
+                limits,
+                SuccessorUsage {
+                    direct_children: 1,
+                    ..SuccessorUsage::default()
+                },
+                1.0,
+            ),
+            Err(SuccessorError::FanoutLimit)
+        );
+        assert_eq!(
+            create_successor_bounded(
+                &child,
+                SuccessorMode::Clean,
+                None,
+                limits,
+                SuccessorUsage::default(),
+                1.0,
+            ),
+            Err(SuccessorError::DepthLimit)
+        );
+        assert_eq!(
+            create_successor_bounded(
+                &parent,
+                SuccessorMode::Clean,
+                None,
+                limits,
+                SuccessorUsage {
+                    rejected_children: 2,
+                    ..SuccessorUsage::default()
+                },
+                1.0,
+            ),
+            Err(SuccessorError::RetryLimit)
+        );
+        assert_eq!(
+            create_successor_bounded(
+                &parent,
+                SuccessorMode::Clean,
+                None,
+                limits,
+                SuccessorUsage {
+                    lineage_cost_usd: 1.5,
+                    ..SuccessorUsage::default()
+                },
+                1.0,
+            ),
+            Err(SuccessorError::CostLimit)
+        );
+    }
+
     // ─── DemurrageCycle tests ────────────────────────────────────────────
 
     #[test]
@@ -2569,5 +3278,123 @@ mod tests {
         let mesh = tools.register_mesh();
         let ready = mesh.ready();
         assert!(ready.state().neuro_initialized);
+    }
+
+    #[test]
+    fn runtime_lifecycle_enforces_orderly_and_emergency_paths() {
+        // Invalid transitions are absent from the public type-state API: for
+        // example, `Initializing` has no `start`, and `Ready` has no `drain`.
+        // These are compile-time guarantees rather than panic paths.
+        let manifest = AgentCoreManifest::new("Operate a verified research loop");
+        let bootstrapping = Initializing::new(manifest)
+            .validate(vec!["search".into(), "verify".into()])
+            .expect("valid runtime inputs");
+        let mut running = bootstrapping.bootstrap_complete().start();
+
+        assert_eq!(running.record_completed_tick(), 1);
+        assert_eq!(running.record_completed_tick(), 2);
+        let terminated = running
+            .drain(DrainReason::OperatorRequest)
+            .complete_drain(Some(BackupHandle::new("backup-42").expect("handle")));
+        assert_eq!(
+            terminated.reason,
+            TerminationReason::DrainCompleted(DrainReason::OperatorRequest)
+        );
+        assert_eq!(
+            terminated
+                .backup
+                .as_ref()
+                .map(|handle| handle.reference.as_str()),
+            Some("backup-42")
+        );
+
+        let emergency = Initializing::new(AgentCoreManifest::new("Keep the service safe"))
+            .validate(vec!["safety".into()])
+            .expect("valid runtime inputs")
+            .bootstrap_complete()
+            .start()
+            .terminate(TerminationReason::Emergency("kill switch".into()));
+        assert!(matches!(
+            emergency.reason,
+            TerminationReason::Emergency(ref reason) if reason == "kill switch"
+        ));
+    }
+
+    #[test]
+    fn runtime_lifecycle_rejects_invalid_capabilities() {
+        let duplicate = Initializing::new(AgentCoreManifest::new("Run a useful agent"))
+            .validate(vec!["search".into(), " search ".into()]);
+        assert_eq!(
+            duplicate,
+            Err(RuntimeLifecycleError::DuplicateCapability("search".into()))
+        );
+
+        let blank = Initializing::new(AgentCoreManifest::new("Run a useful agent"))
+            .validate(vec![" ".into()]);
+        assert_eq!(blank, Err(RuntimeLifecycleError::EmptyCapability(0)));
+    }
+
+    #[test]
+    fn slot_manager_owns_strict_idempotent_state_transitions() {
+        let mut slots =
+            SlotManager::new(2, vec!["beta".into(), "alpha".into()]).expect("valid slots");
+        assert_eq!(
+            slots.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            vec!["alpha", "beta"]
+        );
+        assert!(slots.activate("alpha").expect("idle -> active"));
+        assert!(!slots.activate("alpha").expect("repeat is idempotent"));
+        assert!(slots.block("alpha", "waiting for input").expect("block"));
+        assert!(matches!(
+            slots.state("alpha"),
+            Some(SlotState::Blocked { reason }) if reason == "waiting for input"
+        ));
+        assert!(slots.complete("alpha").expect("blocked -> complete"));
+        assert_eq!(
+            slots.activate("alpha"),
+            Err(SlotManagerError::IllegalTransition {
+                slot: "alpha".into(),
+                from: "completed",
+                to: "active",
+            })
+        );
+        assert!(slots.reset("alpha").expect("completed -> idle"));
+        assert_eq!(slots.state("alpha"), Some(&SlotState::Idle));
+    }
+
+    #[test]
+    fn slot_manager_rejects_ambiguous_or_invalid_inputs() {
+        assert_eq!(
+            SlotManager::new(1, vec!["a".into(), "b".into()]),
+            Err(SlotManagerError::CapacityExceeded {
+                count: 2,
+                max_slots: 1,
+            })
+        );
+        assert_eq!(
+            SlotManager::new(2, vec!["a".into(), " a ".into()]),
+            Err(SlotManagerError::DuplicateName("a".into()))
+        );
+        let mut slots = SlotManager::new(1, vec!["a".into()]).expect("valid slots");
+        assert_eq!(
+            slots.block("a", " "),
+            Err(SlotManagerError::EmptyBlockedReason)
+        );
+    }
+
+    #[test]
+    fn mode_owner_emits_only_real_mutations() {
+        let mut mode = AgentModeOwner::new(AgentMode::Ephemeral);
+        assert_eq!(mode.mutate(AgentMode::Ephemeral), None);
+        assert_eq!(
+            mode.mutate(AgentMode::Persistent),
+            Some(AgentModeMutation {
+                previous: AgentMode::Ephemeral,
+                current: AgentMode::Persistent,
+                revision: 1,
+            })
+        );
+        assert_eq!(mode.current(), AgentMode::Persistent);
+        assert_eq!(mode.revision(), 1);
     }
 }

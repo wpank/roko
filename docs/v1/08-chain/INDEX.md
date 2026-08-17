@@ -1,5 +1,8 @@
 # Topic 08: Chain Layer (Nunchi)
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The Nunchi chain is a dedicated EVM with simplex consensus (50ms blocks) for agent coordination: native ERC-8004 identity (full spec), reputation (7-domain EMA), job market (ERC-8183), knowledge sharing (HDC precompile), and economic incentives (NUNCHI/NUNCHI_TEST tokens with demurrage). Blockchain is ONE domain plugin — the chain layer uses the same Synapse traits as every other domain.
 > In the two-fabric model, durable chain state lives in `ChainSubstrate` while chain logs and contract activity surface as Pulses on `ChainBus`; see `tmp/refinements/09-phase-2-implications.md` and [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md).
 

@@ -10,6 +10,7 @@ use serde_json::{Map, Value};
 use tokio::sync::mpsc;
 
 use crate::http::{HttpPoster, ReqwestPoster};
+use crate::multimodal::wire_messages_contain_images;
 use crate::provider::map_provider_error;
 use crate::rate_limit::ProviderRateLimiter;
 use crate::streaming::{StreamAccumulator, StreamChunk, parse_sse_line};
@@ -106,8 +107,8 @@ pub struct OpenAiCompatLlmBackend {
     /// Optional metric registry for emitting TTFT and request duration histograms.
     metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
     /// When true, image blocks in incoming messages are preserved as
-    /// `image_url` content parts (data URIs). When false, image blocks are
-    /// silently dropped so non-vision models never receive them.
+    /// `image_url` content parts (data URIs). When false, image input fails
+    /// before provider I/O.
     supports_vision: bool,
 }
 
@@ -150,7 +151,7 @@ impl OpenAiCompatLlmBackend {
     }
 
     /// Control whether image blocks in incoming messages are passed through as
-    /// `image_url` data-URI content parts (`true`) or silently dropped (`false`).
+    /// `image_url` data-URI content parts (`true`) or rejected (`false`).
     ///
     /// Must match the model's `supports_vision` capability. Defaults to `false`.
     #[must_use]
@@ -314,6 +315,11 @@ impl OpenAiCompatLlmBackend {
         let RenderedTools::JsonArray(tools) = tools else {
             return Err(LlmError::Backend("expected json tool array".into()));
         };
+        if !self.supports_vision && wire_messages_contain_images(messages) {
+            return Err(LlmError::Backend(
+                "model does not support inline image input".into(),
+            ));
+        }
         // Check if any message has array content (multipart blocks). Array
         // content must be processed to convert or drop image blocks regardless
         // of vision support, since the backend expects the OpenAI wire format.
@@ -339,14 +345,11 @@ impl OpenAiCompatLlmBackend {
                 if self.normalize_tool_call_content
                     && msg.get("role").and_then(Value::as_str) == Some("assistant")
                     && msg.get("tool_calls").is_some_and(Value::is_array)
+                    && let Some(content) = msg.get("content")
+                    && (content.as_str().is_some_and(str::is_empty) || content.is_null())
+                    && let Some(obj) = msg.as_object_mut()
                 {
-                    if let Some(content) = msg.get("content") {
-                        if content.as_str().is_some_and(str::is_empty) || content.is_null() {
-                            if let Some(obj) = msg.as_object_mut() {
-                                obj.insert("content".to_string(), Value::Null);
-                            }
-                        }
-                    }
+                    obj.insert("content".to_string(), Value::Null);
                 }
             }
             std::borrow::Cow::Owned(msgs)
@@ -1193,6 +1196,26 @@ mod tests {
         assert_eq!(parsed["model"], "gpt-5.4");
         assert_eq!(parsed["max_completion_tokens"], 256);
         assert!(parsed.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn build_body_rejects_images_for_non_vision_model() {
+        let backend = OpenAiCompatLlmBackend::new("test-key", "text-only");
+        let result = backend.build_body(
+            &[serde_json::json!({
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {
+                    "url": "data:image/png;base64,aGVsbG8="
+                }}]
+            })],
+            &RenderedTools::JsonArray(serde_json::json!([])),
+            &SessionState::default(),
+            false,
+        );
+
+        assert!(
+            matches!(result, Err(LlmError::Backend(message)) if message.contains("does not support"))
+        );
     }
 
     #[test]

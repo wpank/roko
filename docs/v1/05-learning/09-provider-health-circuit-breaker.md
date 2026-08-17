@@ -1,5 +1,8 @@
 # Provider Health and Circuit Breaker
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Crate:** `roko-learn` · **Module:** `provider_health.rs`
 > **Wiring:** `ProviderHealthRegistry` → `CascadeRouter::select()` (filters unhealthy providers)
 > **Implementation plan:** `modelrouting/08-learning-loops.md` (tasks 2G.01–2G.06)

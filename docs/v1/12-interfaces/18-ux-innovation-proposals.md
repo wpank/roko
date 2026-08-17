@@ -1,5 +1,8 @@
 # UX Innovation Proposals
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Seven frontier UX innovations that transform how operators interact with cognitive agents — from conversational development to knowledge cartography. Each proposal grounds speculative design in published research, concrete Rust structs, and TUI mockups.
 
 > **Implementation**: Not yet built

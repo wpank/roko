@@ -249,9 +249,7 @@ fn count_non_empty_lines(path: &Path) -> usize {
 }
 
 fn read_episode_summary(workdir: &Path) -> (usize, Option<bool>) {
-    let primary = workdir.join(".roko").join("episodes.jsonl");
-    let fallback = workdir.join(".roko").join("learn").join("episodes.jsonl");
-    let path = if primary.exists() { primary } else { fallback };
+    let path = roko_learn::runtime_feedback::resolve_project_episode_path(workdir);
     let Ok(text) = std::fs::read_to_string(path) else {
         return (0, None);
     };

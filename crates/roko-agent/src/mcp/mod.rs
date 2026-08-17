@@ -14,7 +14,10 @@ pub mod error_accumulator;
 pub mod handler;
 pub mod to_tool_def;
 
-pub use bridge::{McpBridgeError, discover_mcp_tools};
+pub use bridge::{
+    McpBridgeError, McpRuntime, McpRuntimeClient, McpRuntimeTransport, discover_mcp_runtime,
+    discover_mcp_tools,
+};
 pub use client::{
     MCP_PROTOCOL_VERSION, McpClient, McpRequest, McpResponse, McpToolAnnotations, McpToolDef,
     McpToolResult, StdioTransport, Transport,

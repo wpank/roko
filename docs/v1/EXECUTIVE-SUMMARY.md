@@ -1,5 +1,8 @@
 # Roko — Executive Summary
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../v2/](../v2/) for the current reference.
+
+
 > A cognitive architecture for self-developing agents. 36 workspace members, ~322K LOC, 3,761 tests.
 >
 > **Updated**: 2026-04-13 · **Audience**: Technical executives, investors, engineering leads

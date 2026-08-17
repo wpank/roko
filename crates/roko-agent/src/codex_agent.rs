@@ -20,11 +20,14 @@ use crate::agent::{Agent, AgentResult};
 #[cfg(test)]
 use crate::http::HttpPostError;
 use crate::http::{HttpPoster, ReqwestPoster};
+use crate::multimodal::openai_messages;
 use crate::provider::ProviderSemaphores;
 use crate::usage::Usage;
 use async_trait::async_trait;
 use roko_core::defaults::{DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_REQUEST_TIMEOUT_MS};
-use roko_core::{Body, Context, Kind, Provenance, Signal};
+use roko_core::{
+    Body, Context, Kind, ModelInputMessage, Provenance, Signal, validate_model_input_messages,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -102,15 +105,9 @@ struct ChatResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct RequestMessage<'a> {
-    role: &'a str,
-    content: &'a str,
-}
-
-#[derive(Debug, Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
-    messages: Vec<RequestMessage<'a>>,
+    messages: Vec<Value>,
     #[serde(flatten)]
     extra_body_params: Map<String, Value>,
 }
@@ -144,6 +141,8 @@ pub struct CodexAgent {
     poster: Arc<dyn HttpPoster>,
     provider_id: Option<String>,
     provider_semaphores: Option<Arc<ProviderSemaphores>>,
+    system_prompt: Option<String>,
+    input_messages: Vec<ModelInputMessage>,
 }
 
 impl std::fmt::Debug for CodexAgent {
@@ -177,6 +176,8 @@ impl CodexAgent {
             poster: Arc::new(ReqwestPoster::new()),
             provider_id: None,
             provider_semaphores: None,
+            system_prompt: None,
+            input_messages: Vec::new(),
         }
     }
 
@@ -302,12 +303,81 @@ impl CodexAgent {
             ..Default::default()
         })
     }
+
+    /// Attach an ordered provider-neutral multimodal message history.
+    #[must_use]
+    pub fn with_input_messages(mut self, messages: Vec<ModelInputMessage>) -> Self {
+        self.input_messages = messages;
+        self
+    }
+
+    /// Attach system guidance to the OpenAI-compatible request.
+    #[must_use]
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.system_prompt = Some(prompt.into());
+        self
+    }
+
+    fn request_messages(&self, prompt_text: String) -> Vec<Value> {
+        let mut system_segments = Vec::new();
+        push_unique_system_segment(&mut system_segments, self.system_prompt.as_deref());
+        for message in &self.input_messages {
+            if message.role != roko_core::MessageRole::System {
+                continue;
+            }
+            let content = message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    roko_core::ModelInputBlock::Text { text } if !text.trim().is_empty() => {
+                        Some(text.as_str())
+                    }
+                    roko_core::ModelInputBlock::Text { .. }
+                    | roko_core::ModelInputBlock::Image { .. } => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            push_unique_system_segment(&mut system_segments, Some(&content));
+        }
+
+        let mut messages = if self.input_messages.is_empty() {
+            vec![serde_json::json!({"role": "user", "content": prompt_text})]
+        } else {
+            openai_messages(&self.input_messages)
+                .into_iter()
+                .filter(|message| message.get("role").and_then(Value::as_str) != Some("system"))
+                .collect()
+        };
+        if !system_segments.is_empty() {
+            messages.insert(
+                0,
+                serde_json::json!({
+                    "role": "system",
+                    "content": system_segments.join("\n\n"),
+                }),
+            );
+        }
+        messages
+    }
+}
+
+fn push_unique_system_segment(segments: &mut Vec<String>, value: Option<&str>) {
+    let Some(value) = value.filter(|value| !value.trim().is_empty()) else {
+        return;
+    };
+    if !segments.iter().any(|existing| existing == value) {
+        segments.push(value.to_string());
+    }
 }
 
 #[async_trait]
 impl Agent for CodexAgent {
     async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
         let started = Instant::now();
+
+        if let Err(error) = validate_model_input_messages(&self.input_messages) {
+            return self.fail(input, &format!("invalid image input: {error}"), started);
+        }
 
         let prompt_text = match input.body.as_text() {
             Ok(s) => s.to_owned(),
@@ -331,12 +401,10 @@ impl Agent for CodexAgent {
         };
         extra.insert(token_key.to_string(), Value::from(self.max_tokens));
 
+        let messages = self.request_messages(prompt_text);
         let req = ChatRequest {
             model: &self.model,
-            messages: vec![RequestMessage {
-                role: "user",
-                content: &prompt_text,
-            }],
+            messages: messages.clone(),
             extra_body_params: extra,
         };
         let body = match serde_json::to_vec(&req) {
@@ -377,10 +445,7 @@ impl Agent for CodexAgent {
                     fixed_extra.insert("max_completion_tokens".to_string(), token_value);
                     let fixed_req = ChatRequest {
                         model: &self.model,
-                        messages: vec![RequestMessage {
-                            role: "user",
-                            content: &prompt_text,
-                        }],
+                        messages,
                         extra_body_params: fixed_extra,
                     };
                     let fixed_body = match serde_json::to_vec(&fixed_req) {
@@ -1010,6 +1075,98 @@ mod tests {
         assert_eq!(v["max_tokens"], 256);
         assert_eq!(v["messages"][0]["role"], "user");
         assert_eq!(v["messages"][0]["content"], "hello there");
+    }
+
+    #[tokio::test]
+    async fn structured_image_request_preserves_openai_order_and_exact_bytes() {
+        let poster = MockPoster::ok(canned_ok("ok", 1, 1));
+        let agent = CodexAgent::new("k", "gpt-vision")
+            .with_http_poster(poster.clone())
+            .with_input_messages(vec![roko_core::ModelInputMessage::new(
+                roko_core::MessageRole::User,
+                vec![
+                    roko_core::ModelInputBlock::text("before"),
+                    roko_core::ModelInputBlock::image("image/webp", "aGVsbG8="),
+                    roko_core::ModelInputBlock::text("after"),
+                ],
+            )]);
+
+        let result = agent
+            .run(&prompt("ignored fallback"), &Context::now())
+            .await;
+        assert!(result.success);
+        let call = poster.last_call().expect("call recorded");
+        let request: Value = serde_json::from_slice(&call.body).expect("request json");
+        let content = request["messages"][0]["content"]
+            .as_array()
+            .expect("multipart content");
+        assert_eq!(content[0]["text"], "before");
+        assert_eq!(
+            content[1]["image_url"]["url"],
+            "data:image/webp;base64,aGVsbG8="
+        );
+        assert_eq!(content[2]["text"], "after");
+    }
+
+    #[tokio::test]
+    async fn structured_request_emits_system_guidance_exactly_once() {
+        let poster = MockPoster::ok(canned_ok("ok", 1, 1));
+        let agent = CodexAgent::new("k", "gpt-vision")
+            .with_http_poster(poster.clone())
+            .with_system_prompt("shared guidance")
+            .with_input_messages(vec![
+                roko_core::ModelInputMessage::new(
+                    roko_core::MessageRole::System,
+                    vec![roko_core::ModelInputBlock::text("shared guidance")],
+                ),
+                roko_core::ModelInputMessage::new(
+                    roko_core::MessageRole::User,
+                    vec![
+                        roko_core::ModelInputBlock::text("before"),
+                        roko_core::ModelInputBlock::image("image/webp", "aGVsbG8="),
+                        roko_core::ModelInputBlock::text("after"),
+                    ],
+                ),
+            ]);
+
+        let result = agent
+            .run(&prompt("ignored fallback"), &Context::now())
+            .await;
+        assert!(result.success);
+        let call = poster.last_call().expect("call recorded");
+        let request: Value = serde_json::from_slice(&call.body).expect("request json");
+        let messages = request["messages"].as_array().expect("messages array");
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message["role"] == "system")
+                .count(),
+            1
+        );
+        assert_eq!(messages[0]["content"], "shared guidance");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(
+            messages[1]["content"][1]["image_url"]["url"],
+            "data:image/webp;base64,aGVsbG8="
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_image_fails_before_openai_http_post() {
+        let poster = MockPoster::ok(canned_ok("ok", 1, 1));
+        let agent = CodexAgent::new("k", "gpt-vision")
+            .with_http_poster(poster.clone())
+            .with_input_messages(vec![roko_core::ModelInputMessage::new(
+                roko_core::MessageRole::User,
+                vec![roko_core::ModelInputBlock::image(
+                    "image/svg+xml",
+                    "aGVsbG8=",
+                )],
+            )]);
+
+        let result = agent.run(&prompt("ignored"), &Context::now()).await;
+        assert!(!result.success);
+        assert_eq!(poster.call_count(), 0);
     }
 
     #[tokio::test]

@@ -27,6 +27,7 @@ use roko_core::foundation::{
     ModelCaller, caller,
 };
 use roko_core::task::{TaskCategory, TaskComplexityBand};
+use roko_gateway::{BatchResult as PipelineBatchResult, InferenceRequest as PipelineRequest};
 use roko_learn::bandits::UcbBandit;
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::model_router::RoutingContext;
@@ -41,9 +42,41 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/inference/complete", post(inference_complete))
         .route("/gateway/stats", get(gateway_stats))
+        .route("/gateway/inference", post(pipeline_inference))
+        .route("/gateway/batch/submit", post(pipeline_batch_submit))
+        .route("/gateway/batch/flush", post(pipeline_batch_flush))
+        .route("/gateway/batch/result/{id}", get(pipeline_batch_result))
         .route("/gateway/models", get(gateway_models))
+        .route("/rate-limits", get(rate_limits))
         .route("/inference/batch/submit", post(batch_submit))
         .route("/inference/batch/{id}", get(batch_status))
+}
+
+/// `GET /api/rate-limits` — live rolling provider RPM/TPM and circuit state.
+async fn rate_limits(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let providers = state
+        .model_call_service
+        .rate_limit_snapshot()
+        .into_iter()
+        .map(|limits| {
+            let health = state.provider_health_registry.get(&limits.provider_id);
+            json!({
+                "id": limits.provider_id,
+                "provider_id": limits.provider_id,
+                "rpm_used": limits.rpm_used,
+                "rpm_limit": limits.rpm_limit,
+                "tpm_used": limits.tpm_used,
+                "tpm_limit": limits.tpm_limit,
+                "circuit_state": health.state,
+                "cooldown_until_ms": health.cooldown_until,
+                "health": health,
+            })
+        })
+        .collect::<Vec<_>>();
+    Json(json!({
+        "provider_count": providers.len(),
+        "providers": providers,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +273,9 @@ struct GatewayStatsResponse {
     average_latency_ms: f64,
     models: HashMap<String, ModelStats>,
     providers: Value,
+    /// Live E26 pipeline-stage and three-level backpressure telemetry.
+    #[serde(default)]
+    pipeline: Value,
 }
 
 /// Metadata for a single model returned by the models endpoint.
@@ -309,14 +345,9 @@ async fn inference_complete(
         body.temperature,
         body.agent_id.clone(),
     );
-    let requested_provider = provider_id_for_model(&config, &model_slug);
-
     let call_start = std::time::Instant::now();
 
     let model_response = state.model_call_service.call(req).await.map_err(|err| {
-        if let Some(provider) = requested_provider.as_deref() {
-            state.provider_health.record_failure(provider);
-        }
         let _duration_ms = call_start.elapsed().as_millis() as u64;
         state.event_bus.publish(ServerEvent::InferenceFailed {
             request_id: request_id.clone(),
@@ -328,9 +359,6 @@ async fn inference_complete(
     })?;
 
     let served_model = model_response.model.clone();
-    if let Some(served_provider) = provider_id_for_model(&config, &served_model) {
-        state.provider_health.record_success(&served_provider);
-    }
     let input_tokens = model_response.usage.input_tokens;
     let output_tokens = model_response.usage.output_tokens;
     let cost_usd = model_response.usage.cost_usd;
@@ -488,7 +516,58 @@ async fn gateway_stats(
         average_latency_ms,
         models: model_stats,
         providers: Value::Object(providers_json),
+        pipeline: serde_json::to_value(state.gateway_http.gateway.stats())
+            .map_err(|error| ApiError::internal(format!("encode pipeline stats: {error}")))?,
     }))
+}
+
+/// `POST /api/gateway/inference` — execute the E26 nine-stage live pipeline.
+async fn pipeline_inference(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<PipelineRequest>,
+) -> Result<Json<roko_gateway::InferenceResponse>, roko_gateway::GatewayError> {
+    use roko_gateway::InferenceClient;
+    state.gateway_http.gateway.complete(request).await.map(Json)
+}
+
+#[derive(Debug, Serialize)]
+struct PipelineBatchAccepted {
+    custom_id: String,
+}
+
+async fn pipeline_batch_submit(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<PipelineRequest>,
+) -> Result<(axum::http::StatusCode, Json<PipelineBatchAccepted>), roko_gateway::GatewayError> {
+    let custom_id = state.gateway_http.batch.submit(request).await?;
+    Ok((
+        axum::http::StatusCode::ACCEPTED,
+        Json(PipelineBatchAccepted { custom_id }),
+    ))
+}
+
+#[derive(Debug, Serialize)]
+struct PipelineBatchFlushed {
+    flushed: usize,
+}
+
+async fn pipeline_batch_flush(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<PipelineBatchFlushed>, roko_gateway::GatewayError> {
+    let flushed = state.gateway_http.batch.flush().await?;
+    Ok(Json(PipelineBatchFlushed { flushed }))
+}
+
+async fn pipeline_batch_result(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<PipelineBatchResult>, axum::http::StatusCode> {
+    state
+        .gateway_http
+        .batch
+        .get_result(&id)
+        .map(Json)
+        .ok_or(axum::http::StatusCode::NOT_FOUND)
 }
 
 /// `GET /api/gateway/models` — list available models with capabilities and
@@ -578,16 +657,9 @@ async fn batch_submit(
 
                     let req =
                         model_call_request(model_slug.clone(), &item.messages, None, None, None);
-                    let requested_provider = provider_id_for_model(&config_ref, &model_slug);
-
                     let result_item = match state_ref.model_call_service.call(req).await {
                         Ok(model_response) => {
                             let served_model = model_response.model.clone();
-                            if let Some(served_provider) =
-                                provider_id_for_model(&config_ref, &served_model)
-                            {
-                                state_ref.provider_health.record_success(&served_provider);
-                            }
                             let input_tokens = model_response.usage.input_tokens;
                             let output_tokens = model_response.usage.output_tokens;
                             let cost_usd = model_response.usage.cost_usd;
@@ -606,17 +678,12 @@ async fn batch_submit(
                                 error: None,
                             }
                         }
-                        Err(err) => {
-                            if let Some(provider) = requested_provider.as_deref() {
-                                state_ref.provider_health.record_failure(provider);
-                            }
-                            BatchResultItem {
-                                custom_id: item.custom_id.clone(),
-                                success: false,
-                                response: None,
-                                error: Some(err.to_string()),
-                            }
-                        }
+                        Err(err) => BatchResultItem {
+                            custom_id: item.custom_id.clone(),
+                            success: false,
+                            response: None,
+                            error: Some(err.to_string()),
+                        },
                     };
 
                     // B3: increment progress counter after each item.
@@ -749,6 +816,7 @@ fn model_call_request(
         model,
         system: None,
         messages: messages.iter().map(core_chat_message).collect(),
+        input_messages: Vec::new(),
         max_tokens,
         temperature: temperature.map(|t| t as f32),
         role,
@@ -1303,6 +1371,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rate_limits_reports_live_provider_limit_snapshots() {
+        let (_dir, state) = test_state();
+        let Json(payload) = rate_limits(State(state)).await;
+
+        let providers = payload["providers"]
+            .as_array()
+            .expect("providers should be an array");
+        assert_eq!(payload["provider_count"], providers.len());
+        for provider in providers {
+            assert!(provider["provider_id"].is_string());
+            assert!(provider["rpm_used"].is_u64());
+            assert!(provider["rpm_limit"].is_u64());
+            assert!(provider["tpm_used"].is_u64());
+            assert!(provider["tpm_limit"].is_u64());
+            assert!(provider["circuit_state"].is_string());
+            assert!(provider["health"]["state"].is_string());
+            assert!(provider["health"]["total_requests"].is_u64());
+        }
+    }
+
+    #[tokio::test]
     async fn test_gateway_writes_durable_events() {
         let dir = tempdir().expect("tempdir");
         let workdir = dir.path().to_path_buf();
@@ -1378,6 +1467,7 @@ mod tests {
                 .with_cost_table(cost_table)
                 .with_feedback_sink(feedback_sink)
                 .with_gateway_event_writer(Arc::new(GatewayEventWriter::for_workdir(&workdir)))
+                .with_provider_outcome_recorder(Arc::clone(&state.provider_health_registry))
                 .with_run_id("gateway-durable-test"),
         );
         let state = Arc::new(state);

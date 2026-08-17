@@ -1,5 +1,8 @@
 # Coordination and Multi-Agent Systems
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for stigmergic coordination, collective intelligence, multi-agent cooperation, and mesh-based knowledge sharing in Roko's Agent Mesh and Pheromone Field subsystems.
 
 **Topic**: [References](./INDEX.md)

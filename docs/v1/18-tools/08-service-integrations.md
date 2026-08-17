@@ -1,5 +1,8 @@
 # 08 — Service Integrations
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > MetaMask, Venice, Bankr, AgentCash, Uniswap, Slack, GitHub, Linear — integration
 > architecture and chain domain plugin service dependencies.
 

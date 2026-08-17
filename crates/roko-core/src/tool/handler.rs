@@ -27,6 +27,7 @@ use super::def::ToolPermission;
 use super::metrics::{MetricsSink, NoopMetricsSink};
 use super::trace::{NoopTraceSink, TraceSink};
 use crate::Engram;
+use crate::extension::CamelTaintLevel;
 
 /// A mutating side effect performed by a tool during agent execution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -111,13 +112,13 @@ pub trait CancelToken: Send + Sync {
             static WARNED: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
             let type_name = std::any::type_name::<Self>();
             let set = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
-            if let Ok(mut guard) = set.lock() {
-                if guard.insert(type_name) {
-                    tracing::warn!(
-                        type_name,
-                        "CancelToken: using 50ms polling fallback — consider overriding cancelled() with Notify"
-                    );
-                }
+            if let Ok(mut guard) = set.lock()
+                && guard.insert(type_name)
+            {
+                tracing::warn!(
+                    type_name,
+                    "CancelToken: using 50ms polling fallback — consider overriding cancelled() with Notify"
+                );
             }
         }
         if self.is_cancelled() {
@@ -227,6 +228,13 @@ pub struct ToolContext {
     /// root; writes outside it produce
     /// [`ToolError::PathOutsideWorktree`](crate::tool::ToolError::PathOutsideWorktree).
     pub worktree_path: PathBuf,
+    /// Canonical workspace root holding durable immune authority state.
+    ///
+    /// This is deliberately distinct from [`Self::worktree_path`]: runner
+    /// attempts may execute in disposable git worktrees, while isolation,
+    /// rate limits, evidence, and quarantine indexes must survive attempt
+    /// cleanup and remain shared by later attempts.
+    pub immune_root_path: PathBuf,
     /// Wall-clock budget for this call (from
     /// [`ToolDef::timeout_ms`](crate::tool::ToolDef::timeout_ms)).
     pub timeout: Duration,
@@ -248,6 +256,11 @@ pub struct ToolContext {
     pub cancel_token: Arc<dyn CancelToken>,
     /// Shared log of external side effects produced during execution.
     pub external_actions: Arc<RwLock<Vec<ExternalAction>>>,
+    /// Highest trust-origin taint observed during this tool-loop turn.
+    ///
+    /// The shared cell is monotonic: handlers and the dispatcher may raise
+    /// the level after consuming untrusted data, but can never lower it.
+    taint_level: Arc<RwLock<CamelTaintLevel>>,
 }
 
 impl ToolContext {
@@ -262,8 +275,10 @@ impl ToolContext {
         metrics_sink: Arc<dyn MetricsSink>,
         cancel_token: Arc<dyn CancelToken>,
     ) -> Self {
+        let worktree_path = worktree_path.into();
         Self {
-            worktree_path: worktree_path.into(),
+            immune_root_path: normalize_immune_root(&worktree_path),
+            worktree_path,
             timeout,
             capabilities,
             allowed_tools: None,
@@ -273,6 +288,7 @@ impl ToolContext {
             metrics_sink,
             cancel_token,
             external_actions: Arc::new(RwLock::new(Vec::new())),
+            taint_level: Arc::new(RwLock::new(CamelTaintLevel::Trusted)),
         }
     }
 
@@ -280,8 +296,10 @@ impl ToolContext {
     /// 60-second timeout, full capabilities, all no-op sinks, never-cancel token.
     #[must_use]
     pub fn testing(worktree_path: impl Into<PathBuf>) -> Self {
+        let worktree_path = worktree_path.into();
         Self {
-            worktree_path: worktree_path.into(),
+            immune_root_path: normalize_immune_root(&worktree_path),
+            worktree_path,
             timeout: Duration::from_secs(60),
             capabilities: ToolPermission {
                 read: true,
@@ -297,6 +315,7 @@ impl ToolContext {
             metrics_sink: Arc::new(NoopMetricsSink),
             cancel_token: Arc::new(NeverCancel),
             external_actions: Arc::new(RwLock::new(Vec::new())),
+            taint_level: Arc::new(RwLock::new(CamelTaintLevel::Trusted)),
         }
     }
 
@@ -352,6 +371,37 @@ impl ToolContext {
         self
     }
 
+    /// Set the canonical root used only for durable immune authority state.
+    #[must_use]
+    pub fn with_immune_root(mut self, immune_root: impl Into<PathBuf>) -> Self {
+        let immune_root = immune_root.into();
+        self.immune_root_path = normalize_immune_root(&immune_root);
+        self
+    }
+
+    /// Set the initial trust-origin taint for this turn.
+    #[must_use]
+    pub fn with_taint_level(self, taint_level: CamelTaintLevel) -> Self {
+        *self.taint_level.write() = taint_level;
+        self
+    }
+
+    /// Return the highest trust-origin taint observed in this turn.
+    #[must_use]
+    pub fn taint_level(&self) -> CamelTaintLevel {
+        *self.taint_level.read()
+    }
+
+    /// Monotonically raise the turn's trust-origin taint.
+    ///
+    /// This is deliberately a join operation rather than a setter so an
+    /// extension or handler cannot launder untrusted input back to a more
+    /// trusted level.
+    pub fn raise_taint(&self, taint_level: CamelTaintLevel) {
+        let mut current = self.taint_level.write();
+        *current = (*current).max(taint_level);
+    }
+
     /// Short-cut: is the context's [`CancelToken`] tripped?
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
@@ -364,16 +414,27 @@ impl ToolContext {
         &self.worktree_path
     }
 
+    /// The canonical workspace root for durable immune controls and evidence.
+    #[must_use]
+    pub fn immune_root(&self) -> &Path {
+        &self.immune_root_path
+    }
+
     /// Record a mutating external side-effect for later inspection.
     pub fn record_external_action(&self, action: ExternalAction) {
         self.external_actions.write().push(action);
     }
 }
 
+fn normalize_immune_root(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
 impl std::fmt::Debug for ToolContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolContext")
             .field("worktree_path", &self.worktree_path)
+            .field("immune_root_path", &self.immune_root_path)
             .field("timeout", &self.timeout)
             .field("capabilities", &self.capabilities)
             .field("allowed_tools", &self.allowed_tools)
@@ -383,6 +444,7 @@ impl std::fmt::Debug for ToolContext {
             .field("metrics_sink", &"Arc<dyn MetricsSink>")
             .field("cancel_token", &"Arc<dyn CancelToken>")
             .field("external_actions", &"Arc<RwLock<Vec<ExternalAction>>>")
+            .field("taint_level", &self.taint_level())
             .finish()
     }
 }
@@ -443,6 +505,7 @@ mod tests {
         assert!(ctx.capabilities.git);
         assert!(!ctx.capabilities.network);
         assert_eq!(ctx.worktree(), Path::new("/tmp/work"));
+        assert_eq!(ctx.immune_root(), Path::new("/tmp/work"));
         assert_eq!(ctx.timeout, Duration::from_secs(60));
         assert!(!ctx.is_cancelled());
     }
@@ -462,6 +525,13 @@ mod tests {
         );
         assert!(ctx.is_cancelled());
         assert_eq!(ctx.timeout, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn immune_root_is_independent_from_effect_worktree() {
+        let ctx = ToolContext::testing("/tmp/attempt").with_immune_root("/tmp/canonical-workspace");
+        assert_eq!(ctx.worktree(), Path::new("/tmp/attempt"));
+        assert_eq!(ctx.immune_root(), Path::new("/tmp/canonical-workspace"));
     }
 
     #[test]

@@ -232,12 +232,12 @@ fn validate_required_fields(
     };
 
     for field in required {
-        if let Some(name) = field.as_str() {
-            if !obj.contains_key(name) {
-                return Err(ConvertError::SchemaViolation(format!(
-                    "missing required field: {name}"
-                )));
-            }
+        if let Some(name) = field.as_str()
+            && !obj.contains_key(name)
+        {
+            return Err(ConvertError::SchemaViolation(format!(
+                "missing required field: {name}"
+            )));
         }
     }
 

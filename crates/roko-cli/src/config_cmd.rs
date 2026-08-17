@@ -410,6 +410,13 @@ pub async fn cmd_validate(workdir: &Path) -> Result<()> {
             return Err(anyhow!("config validation failed"));
         }
     };
+    if let Err(err) = ConfigLayer::parse_toml(&text).and_then(ConfigLayer::resolve) {
+        print_phase_status("Phase 2: Schema validation", false);
+        println!("  ✗ {err:#}");
+        println!();
+        println!("Result: 0 warnings, 1 error");
+        return Err(anyhow!("config validation failed"));
+    }
     print_phase_status("Phase 2: Schema validation", true);
 
     let client = reqwest::Client::builder()
@@ -785,6 +792,26 @@ fn print_resolved(r: &ResolvedConfig) {
         r.sources.dreams_min_episodes_for_dream.tag()
     );
     println!(
+        "  dreams.scheduled_cron = {:?} {}",
+        r.config.dreams.scheduled_cron,
+        r.sources.dreams_scheduled_cron.tag()
+    );
+    println!(
+        "  dreams.episode_count_trigger = {} {}",
+        r.config.dreams.episode_count_trigger,
+        r.sources.dreams_episode_count_trigger.tag()
+    );
+    println!(
+        "  dreams.quality_gain = {} {}",
+        r.config.dreams.quality_gain,
+        r.sources.dreams_quality_gain.tag()
+    );
+    println!(
+        "  dreams.quality_penalty = {} {}",
+        r.config.dreams.quality_penalty,
+        r.sources.dreams_quality_penalty.tag()
+    );
+    println!(
         "  gates              = {} entries {}",
         r.config.gates.len(),
         r.sources.gates.tag()
@@ -814,6 +841,10 @@ fn print_resolved(r: &ResolvedConfig) {
         && r.sources.dreams_auto_dream == Source::Default
         && r.sources.dreams_idle_threshold_mins == Source::Default
         && r.sources.dreams_min_episodes_for_dream == Source::Default
+        && r.sources.dreams_scheduled_cron == Source::Default
+        && r.sources.dreams_episode_count_trigger == Source::Default
+        && r.sources.dreams_quality_gain == Source::Default
+        && r.sources.dreams_quality_penalty == Source::Default
         && r.sources.runner_plan_timeout_secs == Source::Default;
     if fully_default {
         println!("\nhint: no config files found — run `roko config init` to set one up.");
@@ -1618,6 +1649,23 @@ mod tests {
         assert_eq!(layer.agent.unwrap().command.unwrap(), "ollama");
     }
 
+    #[tokio::test]
+    async fn validate_rejects_invalid_dream_schedule_before_semantic_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("roko.toml"),
+            r#"
+[dreams]
+scheduled_cron = "invalid cron"
+"#,
+        )
+        .unwrap();
+
+        let err = cmd_validate(dir.path()).await.unwrap_err();
+
+        assert_eq!(err.to_string(), "config validation failed");
+    }
+
     #[test]
     fn apply_key_value_sets_prompt_budget() {
         let mut layer = ConfigLayer::default();
@@ -2125,7 +2173,7 @@ command = "claude"
             ProviderConfig {
                 kind: ProviderKind::OpenAiCompat,
                 base_url: Some("https://acme.test/v1".into()),
-                api_key_env: Some("sk-ant-SECRET-KEY-9999".into()),
+                api_key_env: Some("ACME_API_KEY".into()),
                 command: None,
                 args: None,
                 timeout_ms: None,
@@ -2147,8 +2195,8 @@ command = "claude"
             "interpolated header secret leaked in effective config output"
         );
         assert!(
-            !output.contains("sk-ant-SECRET-KEY-9999"),
-            "api_key_env secret leaked in effective config output"
+            output.contains("ACME_API_KEY"),
+            "api_key_env metadata was incorrectly redacted"
         );
 
         // The redaction marker must be present.

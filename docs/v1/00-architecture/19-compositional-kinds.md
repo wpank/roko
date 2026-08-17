@@ -1,5 +1,8 @@
 # Compositional kinds
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Layer 0 Kernel -- Signal Type System
 > Status: **Specification** -- migration path from flat enum to compound kinds
 > Canonical source: `crates/roko-core/src/kind.rs`

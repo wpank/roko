@@ -1,5 +1,8 @@
 # Conductor Architecture
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The Conductor is not a timeout manager. It is the agent's theory of mind
 > about its own pipeline — the subsystem that watches execution unfold
 > and asks: is this going where I predicted?

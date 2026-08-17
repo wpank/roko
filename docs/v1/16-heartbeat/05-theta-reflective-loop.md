@@ -1,5 +1,8 @@
 # Theta: The Reflective Loop (~75s)
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The medium cognitive frequency — periodic reflection, plan re-evaluation, and calibration checking.
 
 

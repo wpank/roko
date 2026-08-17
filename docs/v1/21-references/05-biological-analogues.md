@@ -1,5 +1,8 @@
 # Biological Analogues
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for biological systems that provide structural analogies for Roko's cognitive architecture — from optimal foraging to niche construction, self-organized criticality to morphogenetic specialization.
 
 **Topic**: [References](./INDEX.md)

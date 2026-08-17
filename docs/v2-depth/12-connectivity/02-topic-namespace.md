@@ -125,6 +125,9 @@ bus.publish(pulse).await?;
 
 ### 3.2 ISFR (Interest-and-Settlement-Free Rate)
 
+> **ISFR DEPRECATED (2026-08-13):** The ISFR vertical is deprecated and scheduled
+> for removal. See `.roko/GAPS.md`.
+
 | Topic | Payload | Publisher |
 |---|---|---|
 | `isfr.rates` | Composite rate update with source weights | ISFR keeper |
@@ -322,7 +325,7 @@ System and chain topics are never garbage collected. They are identified by pref
 
 - `system.*` -- relay and infrastructure health.
 - `chain.*` -- chain watcher events.
-- `isfr.*` -- rate oracle events.
+- `isfr.*` -- rate oracle events (DEPRECATED).
 
 ---
 
@@ -334,7 +337,7 @@ Certain topic prefixes are reserved for system components. Agents must not publi
 |---|---|---|
 | `system.*` | Relay | Infrastructure health, relay metrics, provider status |
 | `chain.*` | Chain watcher | Block events, finality updates, reorg notifications |
-| `isfr.*` | ISFR keeper | Rate updates, epoch transitions |
+| `isfr.*` | ISFR keeper (DEPRECATED) | Rate updates, epoch transitions |
 | `feed.meta.*` | Relay | Feed registry metadata, relay-internal statistics |
 
 ```rust

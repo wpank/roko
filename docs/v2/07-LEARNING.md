@@ -1,18 +1,55 @@
 # 07 -- Learning Loops
 
-> Four cybernetic loops at increasing timescales. Seven compounding mechanisms that make each unit of usage improve the next. C-factor as a Lens. All expressed as Loop Graphs of Cells processing Signals through Bus and Store.
+> The architecture organizes learning as four cybernetic loops at increasing
+> timescales. Current code ships concrete learning modules and runner feedback
+> paths; realizing every loop as a declarative Loop Graph remains target design.
 
 **Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal/Pulse, demurrage, HDC fingerprints), [02-CELL](02-CELL.md) (9 protocols, predict-publish-correct, Verify redesign, EFE routing), [03-GRAPH](03-GRAPH.md) (Graph wiring, TOML definition), [04-EXECUTION](04-EXECUTION.md) (Loop specialization, convergence conditions), [05-AGENT](05-AGENT.md) (EFE gating, vitality, somatic markers, CorticalState), [06-MEMORY](06-MEMORY.md) (Store, demurrage economics, Heuristics, AntiKnowledge, Resonator Networks)
 
-**Pattern**: Loop (feedback edge from output back to input). Every structure in this document is a Loop Graph -- a Graph specialization where output feeds back to input.
+**Target pattern**: Loop (feedback edge from output back to input). The diagrams
+and TOML below specify how the current modules can converge on a common Graph
+specialization; they are not four currently loaded runtime graphs.
+
+> **Implementation status (2026-08-15):** PARTIAL broader-spec coverage; **E25 is complete
+> (10/10)**. Shipped E25 behavior includes HDC defragmentation with provenance, append-only
+> hindsight adjustments, bounded c-factor governance recommendations, chi-square/Wilson
+> experiment conclusions and archives, Variance Inequality checks, seven autocatalytic
+> metrics, and explicit when/then playbook matching. Runner-v2 injects the top three matches
+> before dispatch and records governance/compounding evidence after completion. The full
+> declarative Loop-Graph realization and autonomous structural L4 evolution described below
+> remain design/roadmap scope rather than claims of shipped runtime behavior.
+
+### Current implementation sources and reading contract
+
+| Current surface | Authoritative source |
+|---|---|
+| Attempt-scoped prompt experiments and durable assignment state | `crates/roko-learn/src/prompt_experiment.rs` |
+| Runner dispatch/terminal experiment lifecycle | `crates/roko-cli/src/runner/prompt_experiments.rs`, `crates/roko-cli/src/runner/event_loop.rs` |
+| HDC clustering and hindsight relabeling | `crates/roko-learn/src/hdc_clustering.rs`, `crates/roko-learn/src/hindsight.rs` |
+| C-factor measurement/governance | `crates/roko-learn/src/cfactor.rs` |
+| Aggregate metrics, playbooks, and runtime feedback | `crates/roko-learn/src/aggregate.rs`, `crates/roko-learn/src/playbook.rs`, `crates/roko-learn/src/runtime_feedback.rs` |
+| Dream-cycle orchestration | `crates/roko-dreams/src/cycle.rs` |
+
+Unless a section is explicitly labeled **Current implementation**, its Cell
+types, Graph/TOML definitions, policies, pseudocode, formulas, and acceptance rows
+are normative target design. The research rationale is retained without treating
+those sketches as additional shipped APIs.
 
 ---
 
 ## 1. Overview
 
-Roko learns through four feedback loops, each operating at a different timescale with a different level of autonomy. All four are implemented as **Loop** specializations -- Graphs that feed output back to input -- using the same primitives as every other part of the system.
+The architecture defines four feedback loops, each operating at a different
+timescale with a different level of autonomy. Shipped modules implement portions
+of these loops, but the four loops are not yet implemented end to end as
+declarative **Loop** Graph specializations.
 
-Learning is not a separate subsystem. It emerges from the **predict-publish-correct** pattern ([02-CELL](02-CELL.md)): every Cell publishes its prediction as a Pulse, reality publishes the outcome, a CalibrationPolicy joins them and computes error, and the Cell subscribes to its own error topic. This pattern is structural -- it uses the same Bus that carries heartbeats and gate verdicts. (Friston 2006, active inference made structural.)
+The target unification uses the **predict-publish-correct** pattern
+([02-CELL](02-CELL.md)): a Cell predicts, an outcome arrives, and calibration
+feeds error back. Current Cell traits expose opt-in `predict` and `correct` hooks,
+and current learning modules provide concrete feedback paths; they do not make
+every Cell publish and subscribe through the Bus automatically. (Friston 2006,
+active inference made structural.)
 
 | Loop | Name | Timescale | Autonomy | What It Adjusts |
 |---|---|---|---|---|
@@ -40,9 +77,11 @@ Each loop is bounded by explicit safety constraints. Lower loops (L1, L2) operat
 
 ---
 
-## 2. Predict-Publish-Correct: The Structural Mechanism
+## 2. Target: Predict-Publish-Correct as a Universal Mechanism
 
-Every operator in Roko is a learner. This is not a metaphor -- it is the literal mechanism by which all four loops update (Friston 2006, active inference).
+Current operators may opt into prediction and correction. Universal automatic
+participation for every operator, as described below, is the target mechanism
+(Friston 2006, active inference).
 
 ### 2.1 The Pattern
 
@@ -66,7 +105,8 @@ Cell subscribes to error     ->    Updates its internal model
 
 The predict-publish-correct pattern uses the same Bus that carries agent heartbeats, the same Pulse type that carries streaming output, and the same topic taxonomy that routes lifecycle events. There is no learning-specific infrastructure -- the Bus IS the learning fabric. This means:
 
-1. **Every new Cell automatically participates in learning** -- it predicts, publishes, and can subscribe to corrections without any learning-specific code.
+1. **Every new Cell can participate in learning** -- the target wiring predicts,
+   publishes, and subscribes to corrections through common hooks.
 2. **Learning is observable** -- Lens Cells attach to `prediction.*` and `calibration.*` topics to track learning dynamics.
 3. **Learning is auditable** -- graduated Signals from predictions and outcomes carry full lineage.
 
@@ -168,6 +208,29 @@ L1 maintains a rolling quality window. If quality drops below a configured thres
 2. Halve the learning rate for this parameter.
 3. Emit an `Alert(Warning)` Signal via the BudgetLens.
 4. Log the rollback in `.roko/learn/param-rollbacks.jsonl`.
+
+### 3.5 Attempt-scoped prompt experiments
+
+Runner prompt treatments are durable effects, not best-effort annotations. For each
+`run_id/plan_id/task_id/attempt`, the ExperimentStore transaction chooses a scoped variant
+and snapshots its content. Prompt assembly replaces the exact canonical section before
+scoring, placement, and token-budget selection; diagnostics retain IDs and hashes but not
+raw treatment content.
+
+After model resolution and the pre-dispatch safety gate, the runner records a hash of the
+exact final system/user prompt before either CLI or bridge launch. A typed durable terminal
+event then settles the assignment exactly once. Restart reconciliation reads rotated event
+generations oldest-first and then the live log, deduplicates identical facts, and skips
+contradictory facts for review. Excluded treatments, assembly failures, and confirmed
+pre-provider failures do not count as trials. Capacity deferral preserves the same treatment,
+while stale reservations from an older run do not bias a new run. A crash after the dispatch
+receipt is committed but before the provider starts still requires a future provider-start
+acknowledgement to distinguish it perfectly from a launched request.
+
+All production ExperimentStore writers use a stable sibling advisory lock across strict
+read, scoped mutation, and atomic publication. Malformed or oversized state is preserved
+rather than silently replaced. ACP and serve still use their own context-injection shapes;
+canonical-section receipt parity across those runtimes remains follow-up work.
 
 After `max_rollbacks` consecutive rollbacks, the parameter freezes at its current value and an `Alert(Critical)` Signal is emitted recommending human review.
 
@@ -1388,9 +1451,13 @@ impl Cell for WisdomGate {
 }
 ```
 
-### 9.6 Anti-Groupthink React Cells
+### 9.6 Current detection and target Anti-Groupthink React Cells
 
-Optimizing for cohort cohesion can overshoot into groupthink. Three structural countermeasures are implemented as **React protocol Cells** ([02-CELL](02-CELL.md)). React Cells subscribe to Signals and emit corrective actions.
+Optimizing for cohort cohesion can overshoot into groupthink. Current
+`cfactor::detect_pathologies` detects groupthink and other collective pathologies,
+and `CFactorGovernance::recommendations` can emit the non-binding
+`CFactorAction::InjectDiversity`. The three **React protocol Cells** below are
+target structural countermeasures, not current runtime types.
 
 #### Devil's Advocate React Cell
 
@@ -1476,7 +1543,9 @@ pub struct MinorityReportReact {
 }
 ```
 
-These three React Cells form a structural defense against c-factor maximization turning into monoculture. They are not rhetorical devices -- they are runtime policies wired into the Graph that processes cohort telemetry.
+Together these three proposed React Cells would form a structural defense against
+c-factor maximization turning into monoculture. Current runtime behavior stops at
+bounded detection and auditable, non-binding governance recommendations.
 
 ### 9.7 What Happens When Someone Optimizes C-Factor Directly?
 
@@ -1601,7 +1670,10 @@ pub enum AutocatalyticStatus {
 }
 ```
 
-**Current status**: Loops C1-C5 are strongly connected via the edges in section 10. C6 (commons) and C7 (plugin) are phase-2 and not yet connected in the running system. The autocatalytic condition holds for the inner five Loops but not yet for the full seven.
+**Target-graph status**: the design connects C1-C5 through the edges in section 10;
+C6 (commons) and C7 (plugin) are later target phases. Current modules implement
+several individual metrics and feedback operations, but the runtime does not yet
+establish the full inner-five autocatalytic condition as a loaded graph.
 
 ---
 
@@ -1890,9 +1962,11 @@ The most dangerous failure mode is **silent degradation**: a Loop continues to p
 
 ---
 
-## 18. Implementation as Graphs
+## 18. Target Implementation as Graphs
 
-Each loop is a Graph (specifically, a Loop specialization). The loops are literally defined as TOML Graphs with feedback edges (see sections 3.1, 4.1, 5.1 for concrete definitions).
+The convergence target represents each loop as a Graph (specifically, a Loop
+specialization). The TOML in sections 3.1, 4.1, and 5.1 is specification material,
+not a claim that those definitions are currently loaded by the runner.
 
 ### Loop Graph Conventions
 
@@ -1913,7 +1987,11 @@ Each loop is a Graph (specifically, a Loop specialization). The loops are litera
 
 ---
 
-## 19. Acceptance Criteria
+## 19. Target Acceptance Catalog
+
+This catalog combines tests already represented by current E25 modules with
+end-to-end Loop-Graph, universal Bus, structural L4, and anti-groupthink Cell
+targets. A row is not by itself a shipped-feature assertion.
 
 | # | Criterion | Verification |
 |---|---|---|

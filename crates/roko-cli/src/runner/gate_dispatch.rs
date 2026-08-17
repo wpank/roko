@@ -10,7 +10,10 @@ use std::time::Instant;
 
 use futures::FutureExt;
 use roko_core::config::GatesConfig;
-use roko_core::{Body, Kind, Provenance, Signal, SignalBuilder, Verdict, Verify};
+use roko_core::{
+    Body, Kind, LensScope, ObservableEvent, Provenance, Signal, SignalBuilder, TelemetryEventSink,
+    Verdict, Verify,
+};
 use roko_fs::RokoLayout;
 use roko_gate::classify_gate_failure;
 use roko_gate::generated_test_gate::ArtifactStore as GeneratedArtifactStore;
@@ -260,6 +263,7 @@ pub fn spawn_gate(
     target_crates: Vec<String>,
     verdict_publisher: Option<VerdictPublisher>,
     task_context: Option<GateTaskContext>,
+    telemetry_sink: Option<Arc<dyn TelemetryEventSink>>,
 ) -> (JoinHandle<()>, oneshot::Sender<()>) {
     let (start_tx, start_rx) = oneshot::channel();
     let handle = tokio::spawn(async move {
@@ -295,6 +299,7 @@ pub fn spawn_gate(
                     target_crates,
                     verdict_publisher,
                     task_context,
+                    telemetry_sink,
                 )
                 .await,
             )
@@ -466,6 +471,7 @@ pub async fn run_gate_once(
     target_crates: Vec<String>,
     verdict_publisher: Option<VerdictPublisher>,
     task_context: Option<GateTaskContext>,
+    telemetry_sink: Option<Arc<dyn TelemetryEventSink>>,
 ) -> GateCompletion {
     let start = Instant::now();
     let signal = gate_signal(&plan_id, &task_id, rung, &workdir, &target_crates);
@@ -647,6 +653,29 @@ pub async fn run_gate_once(
     let all_skipped = real_verdicts.is_empty() && !verdicts.is_empty();
     let output = render_output(&verdicts);
     let failure_kind = (!passed && !all_skipped).then(|| classify_failure_kind(&verdicts, &output));
+
+    if let Some(sink) = telemetry_sink.as_ref() {
+        let ancestry = [
+            LensScope::Cell(task_id.clone()),
+            LensScope::Graph(plan_id.clone()),
+        ];
+        for verdict in &real_verdicts {
+            let verified = ObservableEvent::SignalVerified(signal.id.to_hex(), (*verdict).clone());
+            if let Err(error) = sink.emit(&verified, &ancestry).await {
+                error!(%error, "gate SignalVerified telemetry delivery failed");
+            }
+            if effect.kind == GateCompletionKind::Preflight {
+                let pre_result = ObservableEvent::VerifyPreResult {
+                    block: task_id.clone(),
+                    verdict: (*verdict).clone(),
+                    evidence: verdict.error_digest.iter().cloned().collect(),
+                };
+                if let Err(error) = sink.emit(&pre_result, &ancestry).await {
+                    error!(%error, "gate VerifyPreResult telemetry delivery failed");
+                }
+            }
+        }
+    }
 
     // E05-T08: Publish non-skipped verdicts through VerdictPublisher as
     // Kind::GateVerdict signals. The publisher callback (set up by the
@@ -1180,6 +1209,53 @@ fn classify_failure_kind(verdicts: &[Verdict], output: &str) -> RunnerFailureKin
 mod tests {
     use super::*;
 
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    struct StateHubTelemetryTestSink(roko_runtime::StateHubSender);
+
+    #[async_trait::async_trait]
+    impl TelemetryEventSink for StateHubTelemetryTestSink {
+        async fn emit(
+            &self,
+            event: &ObservableEvent,
+            ancestry: &[LensScope],
+        ) -> roko_core::Result<Vec<Signal>> {
+            let errors = self.0.emit_observable(event, ancestry);
+            if errors.is_empty() {
+                Ok(Vec::new())
+            } else {
+                Err(roko_core::RokoError::invalid(errors.join("; ")))
+            }
+        }
+    }
+
+    struct RecordingGateLens {
+        name: String,
+        scope: LensScope,
+        observes: Vec<roko_core::ObservableEventKind>,
+        seen: Arc<Mutex<Vec<(String, ObservableEvent)>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl roko_core::TelemetryObserve for RecordingGateLens {
+        async fn observe(&self, event: &ObservableEvent) -> roko_core::Result<Vec<Signal>> {
+            self.seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((self.name.clone(), event.clone()));
+            Ok(Vec::new())
+        }
+
+        fn observes(&self) -> &[roko_core::ObservableEventKind] {
+            &self.observes
+        }
+
+        fn scope(&self) -> LensScope {
+            self.scope.clone()
+        }
+    }
+
     fn git_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         for args in [
@@ -1211,6 +1287,117 @@ mod tests {
         }
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn preflight_producer_reaches_state_hub_scoped_lenses_once() -> roko_core::Result<()> {
+        use roko_core::{LensConfig, LensRegistry, ObservableEventKind};
+        use roko_runtime::{LensExecutor, LensQueueConfig};
+
+        let dir = git_repo();
+        let hub = roko_runtime::SharedStateHub::new_in_process();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = LensRegistry::new();
+        for (name, scope, kind) in [
+            (
+                "signal-verification-recorder",
+                "graph:plan",
+                ObservableEventKind::SignalLifecycle,
+            ),
+            (
+                "preflight-recorder",
+                "cell:task",
+                ObservableEventKind::VerifyLifecycle,
+            ),
+        ] {
+            registry.register_with_observes(
+                LensConfig {
+                    name: name.to_string(),
+                    block: "test:recording-gate-lens".to_string(),
+                    scope: scope.to_string(),
+                    params: BTreeMap::new(),
+                },
+                vec![kind],
+            )?;
+        }
+        let mut executor = LensExecutor::new(registry.clone())?.with_projection(hub.sender());
+        for registration in registry.registrations() {
+            executor.register(
+                registration.config.name.clone(),
+                Arc::new(RecordingGateLens {
+                    name: registration.config.name.clone(),
+                    scope: registration.scope.clone(),
+                    observes: registration.observes.clone(),
+                    seen: Arc::clone(&seen),
+                }),
+            )?;
+        }
+        let queue = executor.into_queued("gate-producer-test", LensQueueConfig::default())?;
+        let telemetry_sink: Arc<dyn TelemetryEventSink> =
+            Arc::new(StateHubTelemetryTestSink(hub.sender()));
+        let gates = GatesConfig {
+            custom_rungs: vec![roko_core::config::GateRungConfig {
+                name: "preflight-test".into(),
+                command: "true".into(),
+                timeout_secs: 10,
+                required: true,
+                parallel_with: Vec::new(),
+            }],
+            ..GatesConfig::default()
+        };
+
+        let completion = run_gate_once(
+            gate_effect(GateCompletionKind::Preflight),
+            "plan".into(),
+            "task".into(),
+            1,
+            dir.path().to_path_buf(),
+            gates,
+            PlanComplexity::Trivial,
+            Vec::new(),
+            None,
+            10,
+            Vec::new(),
+            None,
+            None,
+            Some(telemetry_sink),
+        )
+        .await;
+        assert!(completion.passed, "preflight should pass: {completion:#?}");
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if seen
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .len()
+                    == 2
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("gate telemetry observations");
+        assert!(queue.wait_idle(Duration::from_secs(5)).await);
+
+        let observations = seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(observations.len(), 2, "one event per production variant");
+        assert!(observations.iter().any(|(lens, event)| {
+            lens == "signal-verification-recorder"
+                && matches!(event, ObservableEvent::SignalVerified(_, verdict) if verdict.passed)
+        }));
+        assert!(observations.iter().any(|(lens, event)| {
+            lens == "preflight-recorder"
+                && matches!(event, ObservableEvent::VerifyPreResult { block, verdict, evidence }
+                    if block == "task" && verdict.passed && evidence.is_empty())
+        }));
+
+        Ok(())
+    }
+
     fn barrier_gate() -> (
         JoinHandle<()>,
         oneshot::Sender<()>,
@@ -1239,6 +1426,7 @@ mod tests {
             tx,
             Arc::new(Semaphore::new(1)),
             Vec::new(),
+            None,
             None,
             None,
         );
@@ -1368,6 +1556,7 @@ mod tests {
             Vec::new(),
             None,
             None,
+            None,
         );
 
         start.send(()).expect("owner starts producer");
@@ -1492,6 +1681,7 @@ mod tests {
                 Vec::new(),
                 None,
                 None,
+                None,
             )
             .await;
             assert!(!completion.passed);
@@ -1541,6 +1731,7 @@ mod tests {
             Vec::new(),
             None,
             None,
+            None,
         )
         .await;
 
@@ -1576,6 +1767,7 @@ mod tests {
             Vec::new(),
             None,
             None,
+            None,
         )
         .await;
         let baseline_failures = baseline
@@ -1597,6 +1789,7 @@ mod tests {
             Some(baseline_failures),
             10,
             Vec::new(),
+            None,
             None,
             None,
         )
@@ -1632,6 +1825,7 @@ mod tests {
             Some(Vec::new()),
             10,
             Vec::new(),
+            None,
             None,
             None,
         )
@@ -1727,6 +1921,7 @@ mod tests {
                 Vec::new(),
                 None,
                 None,
+                None,
             ),
         )
         .await
@@ -1765,6 +1960,7 @@ mod tests {
             Vec::new(),
             None,
             None,
+            None,
         )
         .await;
         assert!(
@@ -1792,6 +1988,7 @@ mod tests {
     #[tokio::test]
     async fn live_gate_verdicts_publish_signal() {
         use roko_core::Kind;
+        use roko_core::config::GateRungConfig;
         use std::sync::Mutex;
 
         let published: Arc<Mutex<Vec<roko_core::Pulse>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1801,13 +1998,23 @@ mod tests {
         }));
 
         let dir = git_repo();
+        let gates = GatesConfig {
+            custom_rungs: vec![GateRungConfig {
+                name: "test".into(),
+                command: "true".into(),
+                timeout_secs: 10,
+                required: true,
+                parallel_with: Vec::new(),
+            }],
+            ..GatesConfig::default()
+        };
         let completion = run_gate_once(
             gate_effect(GateCompletionKind::Gate),
             "plan-pub".into(),
             "task-pub".into(),
             2,
             dir.path().to_path_buf(),
-            GatesConfig::default(),
+            gates,
             PlanComplexity::Trivial,
             vec![VerifyStep {
                 phase: "test".into(),
@@ -1820,10 +2027,11 @@ mod tests {
             Vec::new(),
             Some(publisher),
             None,
+            None,
         )
         .await;
 
-        assert!(completion.passed, "gate should pass");
+        assert!(completion.passed, "gate should pass: {completion:#?}");
 
         let pulses = published.lock().unwrap();
         assert!(

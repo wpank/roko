@@ -1,5 +1,8 @@
 # Mood-Congruent Memory
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > How emotional state biases knowledge retrieval: the four-factor scoring model, emotional tags on Engrams, PAD cosine similarity, and the dream-memory-emotion triangle.
 
 

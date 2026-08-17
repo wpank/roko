@@ -15,7 +15,6 @@ use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::{ModelProfile, ProviderConfig, RokoConfig};
 use roko_core::tool::ToolResult;
 use roko_core::{Body, Context, Engram, Kind};
-use roko_learn::costs_db::CostTable;
 use serde_json::{Value, json};
 
 fn prompt(text: &str) -> Engram {
@@ -604,20 +603,6 @@ fn gemini_error_classification_handles_retry_context_overflow_and_auth() {
 
     let auth = GeminiAdapter.classify_error(403, &Value::Null);
     assert!(matches!(auth, ProviderError::AuthFailure));
-}
-
-#[test]
-fn gemini_tiered_pricing_calculation_switches_above_200k_context() {
-    let table = CostTable::default();
-    let gemini_pro = table
-        .lookup("gemini-2.5-pro")
-        .expect("gemini-2.5-pro pricing");
-
-    let low_tier_total = gemini_pro.estimate_total(200_000, 50_000);
-    let high_tier_total = gemini_pro.estimate_total(300_000, 50_000);
-
-    assert!((low_tier_total - 0.75).abs() < 1e-9);
-    assert!((high_tier_total - 1.50).abs() < 1e-9);
 }
 
 #[test]

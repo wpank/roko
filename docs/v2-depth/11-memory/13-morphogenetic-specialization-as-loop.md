@@ -1,6 +1,8 @@
 # Morphogenetic Specialization as Loop
 
 > Depth for [06-MEMORY.md](../../unified/06-MEMORY.md). How agents self-organize into complementary specialists through Turing reaction-diffusion kinetics, expressed as a Loop Graph with an 8-dimensional strategy vector, Gierer-Meinhardt update dynamics, and Lyapunov stability monitoring.
+>
+> **Implementation status (2026-08-17):** Spec/design document. The Turing reaction-diffusion specialization loop, 8D strategy vector, Gierer-Meinhardt dynamics, and niche competition mechanisms described here are not wired at runtime. The agent vitality and lifecycle infrastructure (CorticalState, GoalTree) from E23 is wired; morphogenetic specialization between agents in a Group is product work. See `.roko/GAPS.md`.
 
 **Depends on**: [01-SIGNAL](../../unified/01-SIGNAL.md) (Signal/Pulse duality), [02-CELL](../../unified/02-CELL.md) (Score, Verify, React, Observe protocols), [03-GRAPH](../../unified/03-GRAPH.md) (Loop pattern, Graph composition), [05-AGENT](../../unified/05-AGENT.md) (Agent runtime, vitality), [11-stigmergy-as-bus](11-stigmergy-as-bus.md) (Bus-native stigmergy, dual-write), [12-pheromone-mechanics-and-interference](12-pheromone-mechanics-and-interference.md) (Hill-function response thresholds, kind system)
 

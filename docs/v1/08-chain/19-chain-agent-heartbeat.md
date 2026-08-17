@@ -1,5 +1,8 @@
 # Chain Agent Heartbeat: 9-Step Cognitive Mapping
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The chain agent's heartbeat is the chain-domain specialization of the canonical seven-step loop, driven by `heartbeat.gamma.tick`, `heartbeat.theta.tick`, and `heartbeat.delta.tick` Pulses. The historical 9-step chain wording remains useful as a fine-grained decomposition inside that tick-driven loop, especially for SIMULATE and VALIDATE before capital-at-risk actions.
 
 > See also `tmp/refinements/09-phase-2-implications.md` and [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md).

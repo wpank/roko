@@ -1,5 +1,8 @@
 # Predictive Foraging and Active Inference
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Every knowledge retrieval is a falsifiable prediction. The CalibrationTracker corrects biases at ~50ns per correction. Active inference (factorized discrete POMDP with 90 states) drives context selection via Expected Free Energy. This is the complete prediction-resolution-calibration loop.
 
 

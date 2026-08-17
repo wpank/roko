@@ -1,3 +1,5 @@
+#![allow(dead_code, missing_docs)]
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::json;

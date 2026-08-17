@@ -376,6 +376,29 @@ const DEPRECATED_PREFIXES: &[(&str, &str)] = &[
 /// Returns an empty `Vec` when the catalog is healthy.
 #[must_use]
 pub fn validate_tool_catalog(registry: &DynamicToolRegistry) -> Vec<ToolValidationIssue> {
+    validate_tool_catalog_with_handler(registry, |name| {
+        super::handlers::handler_for(name).is_some()
+    })
+}
+
+/// Validate a catalog against a caller-provided executable handler inventory.
+///
+/// This is the runtime-composition counterpart to [`validate_tool_catalog`].
+/// The static validator only knows about handlers compiled into `roko-std`,
+/// while plugin and embedding surfaces compose additional handlers at runtime.
+/// Passing that composed lookup here keeps the canonical registry responsible
+/// for parity checking without coupling `roko-std` to the agent dispatcher.
+///
+/// MCP definitions remain exempt because they are executed by an external MCP
+/// runtime rather than a local [`ToolHandler`](roko_core::tool::ToolHandler).
+#[must_use]
+pub fn validate_tool_catalog_with_handler<F>(
+    registry: &DynamicToolRegistry,
+    mut has_handler: F,
+) -> Vec<ToolValidationIssue>
+where
+    F: FnMut(&str) -> bool,
+{
     use roko_core::tool::ToolSource;
     use std::collections::HashSet;
 
@@ -397,7 +420,7 @@ pub fn validate_tool_catalog(registry: &DynamicToolRegistry) -> Vec<ToolValidati
     //    MCP-dispatched.
     for tool in all_tools {
         let is_mcp = matches!(&tool.source, ToolSource::Mcp { .. });
-        if !is_mcp && super::handlers::handler_for(&tool.name).is_none() {
+        if !is_mcp && !has_handler(&tool.name) {
             issues.push(ToolValidationIssue::UnhandledTool {
                 name: tool.name.clone(),
             });
@@ -497,8 +520,8 @@ mod tests {
         // Assert the invariant between the constant and the runtime slices.
         assert_eq!(ROKO_BUILTIN_TOOLS.len(), TOOL_COUNT);
         assert_eq!(BUILTIN_TOOL_NAMES.len(), TOOL_COUNT);
-        // Sanity: minimum is 16 std + 4 ISFR = 20.
-        assert!(TOOL_COUNT >= 20, "TOOL_COUNT must be at least 20");
+        // The canonical standard-tool surface always contributes 16 tools.
+        assert!(TOOL_COUNT >= 16, "TOOL_COUNT must be at least 16");
     }
 
     #[test]
@@ -834,7 +857,7 @@ mod tests {
 
     // ── validate_tool_catalog tests ──────────────────────────────────────
 
-    use super::{ToolValidationIssue, validate_tool_catalog};
+    use super::{ToolValidationIssue, validate_tool_catalog, validate_tool_catalog_with_handler};
 
     #[test]
     fn validate_default_registry_has_no_issues() {
@@ -876,6 +899,28 @@ mod tests {
             1,
             "expected exactly one UnhandledTool issue for orphan_tool"
         );
+    }
+
+    #[test]
+    fn validate_runtime_plugin_handler_parity() {
+        let plugin = plugin_tool("example.echo", "example");
+        let reg = DynamicToolRegistry::from_tools(vec![plugin]);
+
+        let missing = validate_tool_catalog_with_handler(&reg, |_| false);
+        assert!(missing.iter().any(|issue| {
+            matches!(
+                issue,
+                ToolValidationIssue::UnhandledTool { name } if name == "example.echo"
+            )
+        }));
+
+        let handled = validate_tool_catalog_with_handler(&reg, |name| name == "example.echo");
+        assert!(!handled.iter().any(|issue| {
+            matches!(
+                issue,
+                ToolValidationIssue::UnhandledTool { name } if name == "example.echo"
+            )
+        }));
     }
 
     #[test]
@@ -966,7 +1011,8 @@ mod tests {
             .iter()
             .filter(|i| matches!(i, ToolValidationIssue::MissingHandler { .. }))
             .collect();
-        // HandlerRegistry::shipped_names() has 20 entries.
+        // One MissingHandler issue is reported for each unconditional local
+        // handler (currently the 16 standard tools).
         assert_eq!(
             missing.len(),
             super::super::handlers::HandlerRegistry::new()

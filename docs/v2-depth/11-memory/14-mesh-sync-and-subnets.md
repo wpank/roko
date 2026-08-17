@@ -1,6 +1,8 @@
 # Mesh Sync and Subnets
 
 > Depth for [06-MEMORY.md](../../unified/06-MEMORY.md). Bus federation across Space boundaries via dual-transport (WebSocket relay + Iroh gossip), partition-tolerant eventual consistency with version-vector dedup, ERC-8004 agent discovery, permissioned subnets as nested Spaces with Bus partitions, and the Weismann barrier for cross-Space trust.
+>
+> **Implementation status (2026-08-17):** Spec/design document. The WebSocket relay transport is wired (`apps/agent-relay/`). The Iroh gossip transport, version-vector dedup, ERC-8004 discovery, permissioned subnet partitioning, and Weismann barrier trust controls described here are not wired at runtime. These are product work. See `.roko/GAPS.md`.
 
 **Depends on**: [01-SIGNAL](../../unified/01-SIGNAL.md) (Signal/Pulse duality, graduation), [02-CELL](../../unified/02-CELL.md) (Connect, Verify, Score protocols), [03-GRAPH](../../unified/03-GRAPH.md) (Pipeline), [11-CONNECTIVITY](../../unified/11-CONNECTIVITY.md) (relay wire protocol, exoskeleton), [10-GROUPS](../../unified/10-GROUPS.md) (Group, Space, coordination modes), [11-stigmergy-as-bus](11-stigmergy-as-bus.md) (Bus-native stigmergy, scoped visibility), [12-pheromone-mechanics-and-interference](12-pheromone-mechanics-and-interference.md) (kind system, promotion cascade)
 

@@ -65,12 +65,12 @@ pub(crate) async fn cmd_think(
     println!("Mode: read-only");
     println!();
 
-    if let Some(topic) = explain_topic.as_deref() {
-        if let Some(entry) = roko_cli::explain::find_topic(topic) {
-            println!("Concept help: {topic}");
-            print!("{}", roko_cli::explain::render_topic(entry, 1));
-            println!();
-        }
+    if let Some(topic) = explain_topic.as_deref()
+        && let Some(entry) = roko_cli::explain::find_topic(topic)
+    {
+        println!("Concept help: {topic}");
+        print!("{}", roko_cli::explain::render_topic(entry, 1));
+        println!();
     }
 
     if let Some(context) = repo_context.as_ref() {

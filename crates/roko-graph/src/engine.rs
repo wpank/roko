@@ -1,31 +1,34 @@
-//! Graph execution engine: sequential topological execution of cell DAGs.
+//! Graph execution engine: conditional sequential/parallel execution of Cell DAGs.
 //!
 //! The `GraphEngine` takes a `Graph` and a `CellRegistry`, topologically sorts
-//! the nodes, and executes each cell sequentially. Outputs from upstream nodes
-//! are passed as inputs to downstream nodes via an internal context map.
+//! the nodes, and executes Cells sequentially or in bounded topological waves.
+//! Only active conditional edges contribute upstream outputs to downstream Cells.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use petgraph::visit::EdgeRef as _;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use roko_core::{ContentHash, LensScope, ObservableEvent, TelemetryEventSink};
+
 use crate::cell::{Cell, CellContext};
 use crate::registry::CellRegistry;
 use crate::replay::{ActivityRecorder, ActivityReplayer};
 use crate::topo::{topological_order, topological_waves};
-use crate::types::{ExecutionClass, Graph, GraphError, GraphPolicy, NodeId};
+use crate::types::{EdgeCondition, ExecutionClass, Graph, GraphError, GraphPolicy, NodeId};
 
 // ─── MergeEnqueuer trait ────────────────────────────────────────────────────
 
 /// A merge request produced by the graph engine after a successful plan execution.
 ///
-/// This mirrors `roko_orchestrator::MergeRequest` but lives in roko-graph to
-/// avoid a circular dependency (roko-graph is layer 2, roko-orchestrator is layer 3).
+/// This mirrors the live runner's merge request but lives in roko-graph to
+/// avoid a circular dependency from the graph layer into CLI orchestration.
 /// The orchestrator's runner bridges this to the real `MergeQueue` via the
 /// [`MergeEnqueuer`] trait.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,7 +50,7 @@ pub struct MergeRequest {
 /// [`MergeEnqueuer::enqueue`] with the plan's changed files.
 ///
 /// Implement this trait to bridge to your merge queue implementation
-/// (e.g., `roko_orchestrator::MergeQueue`).
+/// (e.g., the CLI runner's `MergeQueue`).
 pub trait MergeEnqueuer: Send + Sync + std::fmt::Debug {
     /// Enqueue a merge request. Returns `true` if the request was accepted.
     fn enqueue(&self, request: MergeRequest) -> bool;
@@ -92,6 +95,8 @@ pub enum SerializableNodeStatus {
     Failed,
     /// Skipped because an upstream node failed.
     Skipped,
+    /// Skipped because no incoming conditional route selected this node.
+    ConditionSkipped,
 }
 
 impl From<NodeStatus> for SerializableNodeStatus {
@@ -102,6 +107,7 @@ impl From<NodeStatus> for SerializableNodeStatus {
             NodeStatus::Complete => Self::Complete,
             NodeStatus::Failed => Self::Failed,
             NodeStatus::Skipped => Self::Skipped,
+            NodeStatus::ConditionSkipped => Self::ConditionSkipped,
         }
     }
 }
@@ -113,6 +119,7 @@ impl From<SerializableNodeStatus> for NodeStatus {
             SerializableNodeStatus::Complete => Self::Complete,
             SerializableNodeStatus::Failed => Self::Failed,
             SerializableNodeStatus::Skipped => Self::Skipped,
+            SerializableNodeStatus::ConditionSkipped => Self::ConditionSkipped,
         }
     }
 }
@@ -143,6 +150,8 @@ pub enum NodeStatus {
     Failed,
     /// Skipped because an upstream node failed.
     Skipped,
+    /// Skipped because no incoming conditional route selected this node.
+    ConditionSkipped,
 }
 
 impl std::fmt::Display for NodeStatus {
@@ -153,8 +162,21 @@ impl std::fmt::Display for NodeStatus {
             Self::Complete => write!(f, "complete"),
             Self::Failed => write!(f, "FAILED"),
             Self::Skipped => write!(f, "skipped"),
+            Self::ConditionSkipped => write!(f, "not-selected"),
         }
     }
+}
+
+/// Decision made for a node after evaluating all of its incoming edges.
+enum NodeActivation {
+    /// A root node, supplied by the graph ingress boundary.
+    Root,
+    /// The node is selected and receives outputs only from active edges.
+    Ready(Vec<roko_core::Signal>),
+    /// No conditional route selected the node. This is a successful no-op.
+    ConditionSkipped(String),
+    /// A required dependency did not complete successfully.
+    UpstreamFailed(String),
 }
 
 /// Execution result for a single node.
@@ -168,7 +190,7 @@ pub struct NodeResult {
     pub status: NodeStatus,
     /// Wall-clock duration of execution (zero for skipped nodes).
     pub duration: Duration,
-    /// Error message if status is Failed.
+    /// Failure or skip diagnostic, when applicable.
     pub error: Option<String>,
     /// Number of output signals produced.
     pub output_count: usize,
@@ -179,7 +201,7 @@ pub struct NodeResult {
 pub struct GraphOutput {
     /// Name of the graph that was executed.
     pub graph_name: String,
-    /// Whether the entire graph completed successfully (all nodes Complete).
+    /// Whether the graph completed without failures (untaken routes are allowed).
     pub success: bool,
     /// Per-node execution results in topological order.
     pub node_results: Vec<NodeResult>,
@@ -299,11 +321,16 @@ impl FlowHandle {
     }
 }
 
-/// The graph execution engine. Holds a graph and registry, executes nodes
-/// sequentially in topological order.
+/// The graph execution engine. Holds a graph and registry, executing nodes
+/// sequentially or in bounded parallel topological waves according to policy.
 pub struct GraphEngine {
     graph: Graph,
     registry: CellRegistry,
+    /// Signals supplied by the caller to every root node in the Graph.
+    ///
+    /// Root nodes have no predecessor outputs to consume, so this is the
+    /// ingress boundary for manual, trigger, and nested-Graph executions.
+    root_inputs: Vec<roko_core::Signal>,
     /// Optional recorder — when present, Activity node outputs are appended to
     /// a JSONL file after each successful execution.
     recorder: Option<parking_lot::Mutex<ActivityRecorder>>,
@@ -313,6 +340,10 @@ pub struct GraphEngine {
     /// Optional merge queue — when present, a [`MergeRequest`] is enqueued
     /// after a successful graph execution that represents a plan.
     merge_queue: Option<Arc<dyn MergeEnqueuer>>,
+    /// Optional passive lifecycle-event sink for the telemetry Lens runtime.
+    telemetry: Option<Arc<dyn TelemetryEventSink>>,
+    /// Last complete per-node outputs for stateful Hot Graph ticks.
+    tick_state: parking_lot::Mutex<HashMap<NodeId, Vec<roko_core::Signal>>>,
 }
 
 impl GraphEngine {
@@ -322,10 +353,51 @@ impl GraphEngine {
         Self {
             graph,
             registry,
+            root_inputs: Vec::new(),
             recorder: None,
             replayer: None,
             merge_queue: None,
+            telemetry: None,
+            tick_state: parking_lot::Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Supply the input Signals delivered to each root node.
+    ///
+    /// A Graph may have more than one root. Each root receives an independent
+    /// clone of this collection; downstream nodes continue to receive only
+    /// their predecessors' outputs.
+    #[must_use]
+    pub fn with_root_inputs(mut self, inputs: Vec<roko_core::Signal>) -> Self {
+        self.root_inputs = inputs;
+        self
+    }
+
+    /// Restore the last complete per-node outputs for a stateful Hot Graph.
+    ///
+    /// Unknown node IDs are rejected so a checkpoint from a drifted Graph
+    /// cannot silently inject state. The state is consumed only when the
+    /// Graph's Hot policy enables `persist_tick_state`.
+    pub fn restore_tick_state(
+        &self,
+        state: HashMap<NodeId, Vec<roko_core::Signal>>,
+    ) -> std::result::Result<(), GraphError> {
+        if let Some(node_id) = state
+            .keys()
+            .find(|node_id| !self.graph.node_map.contains_key(*node_id))
+        {
+            return Err(GraphError::InvalidGraph {
+                reason: format!("Hot checkpoint contains unknown node state '{node_id}'"),
+            });
+        }
+        *self.tick_state.lock() = state;
+        Ok(())
+    }
+
+    /// Snapshot the last complete per-node outputs for a stateful Hot Graph.
+    #[must_use]
+    pub fn tick_state_snapshot(&self) -> HashMap<NodeId, Vec<roko_core::Signal>> {
+        self.tick_state.lock().clone()
     }
 
     /// Attach an [`ActivityRecorder`] to this engine.
@@ -362,7 +434,16 @@ impl GraphEngine {
         self
     }
 
-    /// Execute the graph sequentially in topological order.
+    /// Attach a passive lifecycle-event sink.
+    ///
+    /// Telemetry failures are logged and never change Graph or Cell outcomes.
+    #[must_use]
+    pub fn with_telemetry(mut self, telemetry: Arc<dyn TelemetryEventSink>) -> Self {
+        self.telemetry = Some(telemetry);
+        self
+    }
+
+    /// Execute the graph using the configured concurrency policy.
     ///
     /// Each node is instantiated from the registry, executed with inputs from
     /// upstream nodes, and its outputs are stored for downstream consumption.
@@ -381,8 +462,12 @@ impl GraphEngine {
     /// Returns `GraphError::CycleDetected` if the graph contains a cycle, or
     /// `GraphError::UnknownCellType` if a node references an unregistered cell type.
     pub async fn execute(&self, ctx: &CellContext) -> Result<GraphOutput, GraphError> {
-        // tick = 0 for one-shot (non-Hot) graph executions.
-        self.execute_at_tick(ctx, 0).await
+        if self.graph.policy.max_concurrent_nodes > 1 {
+            self.execute_parallel_at_tick(ctx, 0).await
+        } else {
+            // tick = 0 for one-shot (non-Hot) graph executions.
+            self.execute_at_tick(ctx, 0).await
+        }
     }
 
     /// Execute the graph at a specific tick index.
@@ -398,14 +483,28 @@ impl GraphEngine {
     ) -> Result<GraphOutput, GraphError> {
         let start = Instant::now();
         let graph_name = self.graph.metadata.name.clone();
+        let run_id = ctx.run_id.clone().unwrap_or_else(|| graph_name.clone());
+        let graph_ancestry = [LensScope::Graph(graph_name.clone())];
+        self.emit_telemetry(
+            &ObservableEvent::GraphStarted {
+                graph: graph_name.clone(),
+                run: run_id.clone(),
+                input_hash: input_signal_hash(&self.root_inputs),
+            },
+            &graph_ancestry,
+        )
+        .await;
+        let mut total_cost_usd = 0.0;
 
         // 1. Topological sort
         let order = topological_order(&self.graph)?;
 
-        // 2. Track outputs per node and failed-set for skip propagation
-        let mut outputs: HashMap<NodeId, Vec<roko_core::Signal>> = HashMap::new();
-        let mut failed_nodes: HashSet<NodeId> = HashSet::new();
+        // 2. Track outputs and terminal status for conditional routing.
+        let mut outputs = self.initial_tick_outputs();
+        let mut statuses: HashMap<NodeId, NodeStatus> = HashMap::new();
         let mut results: Vec<NodeResult> = Vec::with_capacity(order.len());
+        let mut fail_fast_abort = false;
+        let mut resumed_emitted = false;
 
         // 3. Execute each node in order
         for node_id in &order {
@@ -414,61 +513,132 @@ impl GraphEngine {
                 continue;
             };
 
-            // Check if any upstream dependency failed -> skip
-            if self.has_failed_ancestor(node_id, &failed_nodes) {
-                results.push(NodeResult {
+            if fail_fast_abort {
+                let result = NodeResult {
                     node_id: node_id.clone(),
                     cell_type: node.cell_type.clone(),
                     status: NodeStatus::Skipped,
                     duration: Duration::ZERO,
-                    error: Some("upstream dependency failed".to_string()),
+                    error: Some("aborted after graph failure".to_string()),
                     output_count: 0,
-                });
-                failed_nodes.insert(node_id.clone());
+                };
+                statuses.insert(node_id.clone(), result.status);
+                results.push(result);
                 continue;
             }
+
+            let input = match evaluate_node_activation(&self.graph, node_id, &statuses, &outputs) {
+                NodeActivation::Root => self.root_tick_inputs(node_id, &outputs),
+                NodeActivation::Ready(input) => input,
+                NodeActivation::ConditionSkipped(reason) => {
+                    let result = NodeResult {
+                        node_id: node_id.clone(),
+                        cell_type: node.cell_type.clone(),
+                        status: NodeStatus::ConditionSkipped,
+                        duration: Duration::ZERO,
+                        error: Some(reason),
+                        output_count: 0,
+                    };
+                    statuses.insert(node_id.clone(), result.status);
+                    results.push(result);
+                    continue;
+                }
+                NodeActivation::UpstreamFailed(reason) => {
+                    let result = NodeResult {
+                        node_id: node_id.clone(),
+                        cell_type: node.cell_type.clone(),
+                        status: NodeStatus::Skipped,
+                        duration: Duration::ZERO,
+                        error: Some(reason),
+                        output_count: 0,
+                    };
+                    statuses.insert(node_id.clone(), result.status);
+                    results.push(result);
+                    continue;
+                }
+            };
 
             let is_activity = node.execution_class == ExecutionClass::Activity;
 
             // For Activity nodes: check replayer for a pre-recorded result.
-            if is_activity {
-                if let Some(replayer) = &self.replayer {
-                    if let Some(recorded) = replayer.lookup(node_id, tick) {
-                        let count = recorded.len();
-                        info!(
-                            node_id = %node_id,
-                            tick,
-                            outputs = count,
-                            "replay: substituting recorded Activity output"
-                        );
-                        outputs.insert(node_id.clone(), recorded.clone());
-                        results.push(NodeResult {
-                            node_id: node_id.clone(),
-                            cell_type: node.cell_type.clone(),
-                            status: NodeStatus::Complete,
-                            duration: Duration::ZERO,
-                            error: None,
-                            output_count: count,
-                        });
-                        continue;
-                    }
+            if is_activity
+                && let Some(replayer) = &self.replayer
+                && let Some(recorded) = replayer.lookup(node_id, tick)
+            {
+                let mut recorded = recorded.clone();
+                propagate_input_taint(&input, &mut recorded, node_id);
+                let count = recorded.len();
+                if !resumed_emitted {
+                    self.emit_telemetry(
+                        &ObservableEvent::GraphResumed {
+                            graph: graph_name.clone(),
+                            run: run_id.clone(),
+                        },
+                        &graph_ancestry,
+                    )
+                    .await;
+                    resumed_emitted = true;
                 }
+                info!(
+                    node_id = %node_id,
+                    tick,
+                    outputs = count,
+                    "replay: substituting recorded Activity output"
+                );
+                outputs.insert(node_id.clone(), recorded);
+                statuses.insert(node_id.clone(), NodeStatus::Complete);
+                results.push(NodeResult {
+                    node_id: node_id.clone(),
+                    cell_type: node.cell_type.clone(),
+                    status: NodeStatus::Complete,
+                    duration: Duration::ZERO,
+                    error: None,
+                    output_count: count,
+                });
+                continue;
             }
 
             // Instantiate cell from registry
             let cell: Box<dyn Cell> = self.registry.create(&node.cell_type, node.config.clone())?;
 
-            // Gather inputs from upstream nodes
-            let input = self.gather_inputs(node_id, &outputs);
+            let input_hash = input_signal_hash(&input);
+            let estimated_cost_usd = cell.estimated_cost().unwrap_or_default();
+            let cell_ancestry = [
+                LensScope::Cell(node_id.clone()),
+                LensScope::Graph(graph_name.clone()),
+            ];
+            self.emit_telemetry(
+                &ObservableEvent::CellStarted {
+                    block: node_id.clone(),
+                    run: run_id.clone(),
+                    input_hash,
+                },
+                &cell_ancestry,
+            )
+            .await;
 
             info!(node_id = %node_id, cell_type = %node.cell_type, "executing node");
             let node_start = Instant::now();
 
-            // Execute the cell
-            match cell.execute(input, ctx).await {
+            // Execute the cell, applying the graph's retry policy without
+            // treating intermediate failures as terminal Cell failures.
+            let (execution, attempts) = execute_cell_with_retries(
+                cell.as_ref(),
+                input,
+                ctx,
+                max_retries(&self.graph.policy),
+                self.telemetry.as_ref(),
+                node_id,
+                &run_id,
+                &cell_ancestry,
+            )
+            .await;
+            match execution {
                 Ok(output_signals) => {
                     let duration = node_start.elapsed();
+                    let duration_ms = duration_ms(duration);
                     let count = output_signals.len();
+                    total_cost_usd += estimated_cost_usd * f64::from(attempts);
                     info!(
                         node_id = %node_id,
                         outputs = count,
@@ -477,24 +647,44 @@ impl GraphEngine {
                     );
 
                     // For Activity nodes: record the output if a recorder is present.
-                    if is_activity {
-                        if let Some(recorder) = &self.recorder {
-                            if let Err(e) = recorder.lock().record(
-                                &graph_name,
-                                node_id,
-                                tick,
-                                output_signals.clone(),
-                            ) {
-                                warn!(
-                                    node_id = %node_id,
-                                    error = %e,
-                                    "replay recorder: failed to write entry"
-                                );
-                            }
-                        }
+                    if is_activity
+                        && let Some(recorder) = &self.recorder
+                        && let Err(error) = recorder.lock().record(
+                            &graph_name,
+                            node_id,
+                            tick,
+                            output_signals.clone(),
+                        )
+                    {
+                        return Err(GraphError::NodeFailed {
+                            node_id: node_id.clone(),
+                            reason: format!("persist Activity checkpoint: {error}"),
+                        });
                     }
 
+                    self.emit_telemetry(
+                        &ObservableEvent::CellCompleted {
+                            block: node_id.clone(),
+                            run: run_id.clone(),
+                            duration_ms,
+                            cost_usd: estimated_cost_usd * f64::from(attempts),
+                        },
+                        &cell_ancestry,
+                    )
+                    .await;
+                    self.emit_telemetry(
+                        &ObservableEvent::GraphNodeCompleted {
+                            graph: graph_name.clone(),
+                            run: run_id.clone(),
+                            node: node_id.clone(),
+                            duration_ms,
+                        },
+                        &cell_ancestry,
+                    )
+                    .await;
+
                     outputs.insert(node_id.clone(), output_signals);
+                    statuses.insert(node_id.clone(), NodeStatus::Complete);
                     results.push(NodeResult {
                         node_id: node_id.clone(),
                         cell_type: node.cell_type.clone(),
@@ -507,13 +697,27 @@ impl GraphEngine {
                 Err(e) => {
                     let duration = node_start.elapsed();
                     let msg = e.to_string();
+                    total_cost_usd += estimated_cost_usd * f64::from(attempts);
                     warn!(
                         node_id = %node_id,
                         error = %msg,
                         duration_ms = duration.as_millis(),
                         "node failed"
                     );
-                    failed_nodes.insert(node_id.clone());
+                    statuses.insert(node_id.clone(), NodeStatus::Failed);
+                    fail_fast_abort = matches!(
+                        self.graph.policy.failure_strategy,
+                        crate::types::FailureStrategy::FailFast
+                    );
+                    self.emit_telemetry(
+                        &ObservableEvent::CellFailed {
+                            block: node_id.clone(),
+                            run: run_id.clone(),
+                            error: msg.clone(),
+                        },
+                        &cell_ancestry,
+                    )
+                    .await;
                     results.push(NodeResult {
                         node_id: node_id.clone(),
                         cell_type: node.cell_type.clone(),
@@ -527,30 +731,53 @@ impl GraphEngine {
         }
 
         let total_duration = start.elapsed();
-        let success = results.iter().all(|r| r.status == NodeStatus::Complete);
+        let success = graph_execution_succeeded(&results);
+
+        if success {
+            self.emit_telemetry(
+                &ObservableEvent::GraphCompleted {
+                    graph: graph_name.clone(),
+                    run: run_id,
+                    duration_ms: duration_ms(total_duration),
+                    cost_usd: total_cost_usd,
+                },
+                &graph_ancestry,
+            )
+            .await;
+        } else {
+            self.emit_telemetry(
+                &ObservableEvent::GraphFailed {
+                    graph: graph_name.clone(),
+                    run: run_id,
+                    error: "one or more graph nodes failed".to_string(),
+                },
+                &graph_ancestry,
+            )
+            .await;
+        }
 
         // After successful execution, enqueue a merge request if a merge queue
         // is attached. Collect files_changed from Activity node outputs via
         // the "files_changed" tag convention.
-        if success {
-            if let Some(merge_queue) = &self.merge_queue {
-                let files_changed = Self::collect_files_changed(&outputs);
-                if !files_changed.is_empty() {
-                    let request = MergeRequest {
-                        plan_id: graph_name.clone(),
-                        branch_name: String::new(), // caller sets via merge queue impl
-                        files_changed,
-                        priority: 0,
-                    };
-                    let accepted = merge_queue.enqueue(request);
-                    info!(
-                        graph = %graph_name,
-                        accepted,
-                        "merge request enqueued after successful execution"
-                    );
-                }
+        if success && let Some(merge_queue) = &self.merge_queue {
+            let files_changed = Self::collect_files_changed(&outputs);
+            if !files_changed.is_empty() {
+                let request = MergeRequest {
+                    plan_id: graph_name.clone(),
+                    branch_name: String::new(), // caller sets via merge queue impl
+                    files_changed,
+                    priority: 0,
+                };
+                let accepted = merge_queue.enqueue(request);
+                info!(
+                    graph = %graph_name,
+                    accepted,
+                    "merge request enqueued after successful execution"
+                );
             }
         }
+
+        self.persist_tick_outputs(&outputs);
 
         Ok(GraphOutput {
             graph_name,
@@ -575,47 +802,133 @@ impl GraphEngine {
     /// `GraphError::UnknownCellType` if a node references an unregistered cell type.
     #[allow(clippy::too_many_lines)]
     pub async fn execute_parallel(&self, ctx: &CellContext) -> Result<GraphOutput, GraphError> {
+        self.execute_parallel_at_tick(ctx, 0).await
+    }
+
+    /// Execute bounded parallel topological waves at a specific Hot Graph tick.
+    ///
+    /// The tick is part of Activity replay/record identity; keeping it explicit
+    /// prevents multi-tick runs from reusing tick-zero evidence.
+    #[allow(clippy::too_many_lines)]
+    pub async fn execute_parallel_at_tick(
+        &self,
+        ctx: &CellContext,
+        tick: u64,
+    ) -> Result<GraphOutput, GraphError> {
         use tokio::task::JoinSet;
 
         let start = Instant::now();
         let graph_name = self.graph.metadata.name.clone();
-        let max_concurrent = self.graph.policy.max_concurrent_nodes;
+        let run_id = ctx.run_id.clone().unwrap_or_else(|| graph_name.clone());
+        let graph_ancestry = [LensScope::Graph(graph_name.clone())];
+        self.emit_telemetry(
+            &ObservableEvent::GraphStarted {
+                graph: graph_name.clone(),
+                run: run_id.clone(),
+                input_hash: input_signal_hash(&self.root_inputs),
+            },
+            &graph_ancestry,
+        )
+        .await;
+        let max_concurrent = self.graph.policy.max_concurrent_nodes.max(1);
 
         // 1. Compute waves
         let waves = topological_waves(&self.graph)?;
 
         // 2. Track outputs and failures
         let outputs: Arc<parking_lot::Mutex<HashMap<NodeId, Vec<roko_core::Signal>>>> =
+            Arc::new(parking_lot::Mutex::new(self.initial_tick_outputs()));
+        let statuses: Arc<parking_lot::Mutex<HashMap<NodeId, NodeStatus>>> =
             Arc::new(parking_lot::Mutex::new(HashMap::new()));
         let failed_nodes: Arc<parking_lot::Mutex<HashSet<NodeId>>> =
             Arc::new(parking_lot::Mutex::new(HashSet::new()));
         let mut results: Vec<NodeResult> = Vec::new();
+        let mut resumed_emitted = false;
 
         let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+        let mut total_cost_usd = 0.0;
 
         // 3. Execute wave by wave
         for wave in &waves {
-            let mut join_set: JoinSet<NodeResult> = JoinSet::new();
+            let mut join_set: JoinSet<(NodeResult, f64, Vec<roko_core::Signal>, bool)> =
+                JoinSet::new();
             for node_id in wave {
                 let Some(node) = self.graph.get_node(node_id) else {
                     continue;
                 };
 
-                // Check if any upstream dependency failed -> skip
-                {
-                    let failed = failed_nodes.lock();
-                    if self.has_failed_ancestor_set(node_id, &failed) {
-                        failed_nodes.lock().insert(node_id.clone());
-                        results.push(NodeResult {
+                let activation = {
+                    let status_guard = statuses.lock();
+                    let output_guard = outputs.lock();
+                    evaluate_node_activation(&self.graph, node_id, &status_guard, &output_guard)
+                };
+                let input = match activation {
+                    NodeActivation::Root => {
+                        let output_guard = outputs.lock();
+                        self.root_tick_inputs(node_id, &output_guard)
+                    }
+                    NodeActivation::Ready(input) => input,
+                    NodeActivation::ConditionSkipped(reason) => {
+                        let result = NodeResult {
+                            node_id: node_id.clone(),
+                            cell_type: node.cell_type.clone(),
+                            status: NodeStatus::ConditionSkipped,
+                            duration: Duration::ZERO,
+                            error: Some(reason),
+                            output_count: 0,
+                        };
+                        statuses.lock().insert(node_id.clone(), result.status);
+                        results.push(result);
+                        continue;
+                    }
+                    NodeActivation::UpstreamFailed(reason) => {
+                        let result = NodeResult {
                             node_id: node_id.clone(),
                             cell_type: node.cell_type.clone(),
                             status: NodeStatus::Skipped,
                             duration: Duration::ZERO,
-                            error: Some("upstream dependency failed".to_string()),
+                            error: Some(reason),
                             output_count: 0,
-                        });
+                        };
+                        statuses.lock().insert(node_id.clone(), result.status);
+                        results.push(result);
                         continue;
                     }
+                };
+                let input_hash = input_signal_hash(&input);
+                let is_activity = node.execution_class == ExecutionClass::Activity;
+
+                if is_activity
+                    && let Some(replayer) = &self.replayer
+                    && let Some(recorded) = replayer.lookup(node_id, tick)
+                {
+                    let mut recorded = recorded.clone();
+                    propagate_input_taint(&input, &mut recorded, node_id);
+                    let count = recorded.len();
+                    if !resumed_emitted {
+                        self.emit_telemetry(
+                            &ObservableEvent::GraphResumed {
+                                graph: graph_name.clone(),
+                                run: run_id.clone(),
+                            },
+                            &graph_ancestry,
+                        )
+                        .await;
+                        resumed_emitted = true;
+                    }
+                    outputs.lock().insert(node_id.clone(), recorded);
+                    statuses
+                        .lock()
+                        .insert(node_id.clone(), NodeStatus::Complete);
+                    results.push(NodeResult {
+                        node_id: node_id.clone(),
+                        cell_type: node.cell_type.clone(),
+                        status: NodeStatus::Complete,
+                        duration: Duration::ZERO,
+                        error: None,
+                        output_count: count,
+                    });
+                    continue;
                 }
 
                 // Instantiate cell from registry
@@ -624,71 +937,163 @@ impl GraphEngine {
                     .create(&node.cell_type, node.config.clone())?
                     .into();
 
-                // Gather inputs from upstream nodes (all in previous waves, so all completed)
-                let input = {
-                    let out = outputs.lock();
-                    self.gather_inputs_from(node_id, &out)
-                };
-
                 let sem = semaphore.clone();
                 let node_id = node_id.clone();
                 let cell_type = node.cell_type.clone();
                 let ctx = ctx.clone();
+                let graph_name = graph_name.clone();
+                let run_id = run_id.clone();
+                let telemetry = self.telemetry.clone();
+                let estimated_cost_usd = cell.estimated_cost().unwrap_or_default();
+                let max_retries = max_retries(&self.graph.policy);
+                statuses.lock().insert(node_id.clone(), NodeStatus::Running);
 
                 join_set.spawn(async move {
                     let Ok(_permit) = sem.acquire().await else {
-                        return NodeResult {
-                            node_id: node_id.clone(),
-                            cell_type,
-                            status: NodeStatus::Failed,
-                            duration: Duration::ZERO,
-                            error: Some("semaphore closed".into()),
-                            output_count: 0,
-                        };
-                    };
-
-                    let node_start = Instant::now();
-                    match cell.execute(input, &ctx).await {
-                        Ok(output_signals) => {
-                            let duration = node_start.elapsed();
-                            let count = output_signals.len();
-                            NodeResult {
-                                node_id: node_id.clone(),
-                                cell_type,
-                                status: NodeStatus::Complete,
-                                duration,
-                                error: None,
-                                output_count: count,
-                            }
-                        }
-                        Err(e) => {
-                            let duration = node_start.elapsed();
+                        return (
                             NodeResult {
                                 node_id: node_id.clone(),
                                 cell_type,
                                 status: NodeStatus::Failed,
-                                duration,
-                                error: Some(e.to_string()),
+                                duration: Duration::ZERO,
+                                error: Some("semaphore closed".into()),
                                 output_count: 0,
-                            }
+                            },
+                            0.0,
+                            Vec::new(),
+                            is_activity,
+                        );
+                    };
+
+                    let ancestry = [
+                        LensScope::Cell(node_id.clone()),
+                        LensScope::Graph(graph_name.clone()),
+                    ];
+                    emit_telemetry_to(
+                        telemetry.as_ref(),
+                        &ObservableEvent::CellStarted {
+                            block: node_id.clone(),
+                            run: run_id.clone(),
+                            input_hash,
+                        },
+                        &ancestry,
+                    )
+                    .await;
+
+                    let node_start = Instant::now();
+                    let (execution, attempts) = execute_cell_with_retries(
+                        cell.as_ref(),
+                        input,
+                        &ctx,
+                        max_retries,
+                        telemetry.as_ref(),
+                        &node_id,
+                        &run_id,
+                        &ancestry,
+                    )
+                    .await;
+                    let attempt_cost = estimated_cost_usd * f64::from(attempts);
+                    let (result, output_signals) = match execution {
+                        Ok(output_signals) => {
+                            let duration = node_start.elapsed();
+                            let duration_ms = duration_ms(duration);
+                            let count = output_signals.len();
+                            emit_telemetry_to(
+                                telemetry.as_ref(),
+                                &ObservableEvent::CellCompleted {
+                                    block: node_id.clone(),
+                                    run: run_id.clone(),
+                                    duration_ms,
+                                    cost_usd: attempt_cost,
+                                },
+                                &ancestry,
+                            )
+                            .await;
+                            emit_telemetry_to(
+                                telemetry.as_ref(),
+                                &ObservableEvent::GraphNodeCompleted {
+                                    graph: graph_name,
+                                    run: run_id,
+                                    node: node_id.clone(),
+                                    duration_ms,
+                                },
+                                &ancestry,
+                            )
+                            .await;
+                            (
+                                NodeResult {
+                                    node_id: node_id.clone(),
+                                    cell_type,
+                                    status: NodeStatus::Complete,
+                                    duration,
+                                    error: None,
+                                    output_count: count,
+                                },
+                                output_signals,
+                            )
                         }
-                    }
+                        Err(e) => {
+                            let duration = node_start.elapsed();
+                            let error = e.to_string();
+                            emit_telemetry_to(
+                                telemetry.as_ref(),
+                                &ObservableEvent::CellFailed {
+                                    block: node_id.clone(),
+                                    run: run_id,
+                                    error: error.clone(),
+                                },
+                                &ancestry,
+                            )
+                            .await;
+                            (
+                                NodeResult {
+                                    node_id: node_id.clone(),
+                                    cell_type,
+                                    status: NodeStatus::Failed,
+                                    duration,
+                                    error: Some(error),
+                                    output_count: 0,
+                                },
+                                Vec::new(),
+                            )
+                        }
+                    };
+                    (result, attempt_cost, output_signals, is_activity)
                 });
             }
 
             // Await all tasks in this wave
             while let Some(join_result) = join_set.join_next().await {
                 match join_result {
-                    Ok(node_result) => {
+                    Ok((node_result, attempt_cost, output_signals, is_activity)) => {
+                        total_cost_usd += attempt_cost;
                         if node_result.status == NodeStatus::Failed {
                             failed_nodes.lock().insert(node_result.node_id.clone());
+                            statuses
+                                .lock()
+                                .insert(node_result.node_id.clone(), NodeStatus::Failed);
+                        } else if node_result.status == NodeStatus::Complete {
+                            if is_activity
+                                && let Some(recorder) = &self.recorder
+                                && let Err(error) = recorder.lock().record(
+                                    &graph_name,
+                                    &node_result.node_id,
+                                    tick,
+                                    output_signals.clone(),
+                                )
+                            {
+                                return Err(GraphError::NodeFailed {
+                                    node_id: node_result.node_id,
+                                    reason: format!("persist Activity checkpoint: {error}"),
+                                });
+                            }
+                            outputs
+                                .lock()
+                                .insert(node_result.node_id.clone(), output_signals);
+                            statuses
+                                .lock()
+                                .insert(node_result.node_id.clone(), NodeStatus::Complete);
                         }
-                        // Note: in parallel mode, we don't capture signal outputs
-                        // in the wave_outputs map because the spawned tasks don't
-                        // return them (they're consumed inside the task). For full
-                        // inter-wave data flow, we'd need to Arc the outputs.
-                        // This is acceptable for plan execution where nodes are
-                        // independent and communicate via filesystem/git, not signals.
                         results.push(node_result);
                     }
                     Err(join_err) => {
@@ -707,14 +1112,16 @@ impl GraphEngine {
                 for remaining_wave in waves.iter().skip_while(|w| *w != wave).skip(1) {
                     for node_id in remaining_wave {
                         if let Some(node) = self.graph.get_node(node_id) {
-                            results.push(NodeResult {
+                            let result = NodeResult {
                                 node_id: node_id.clone(),
                                 cell_type: node.cell_type.clone(),
                                 status: NodeStatus::Skipped,
                                 duration: Duration::ZERO,
                                 error: Some("aborted: upstream wave had failure".to_string()),
                                 output_count: 0,
-                            });
+                            };
+                            statuses.lock().insert(node_id.clone(), result.status);
+                            results.push(result);
                         }
                     }
                 }
@@ -723,7 +1130,45 @@ impl GraphEngine {
         }
 
         let total_duration = start.elapsed();
-        let success = results.iter().all(|r| r.status == NodeStatus::Complete);
+        let success = graph_execution_succeeded(&results);
+
+        if success {
+            self.emit_telemetry(
+                &ObservableEvent::GraphCompleted {
+                    graph: graph_name.clone(),
+                    run: run_id,
+                    duration_ms: duration_ms(total_duration),
+                    cost_usd: total_cost_usd,
+                },
+                &graph_ancestry,
+            )
+            .await;
+        } else {
+            self.emit_telemetry(
+                &ObservableEvent::GraphFailed {
+                    graph: graph_name.clone(),
+                    run: run_id,
+                    error: "one or more graph nodes failed".to_string(),
+                },
+                &graph_ancestry,
+            )
+            .await;
+        }
+
+        if success && let Some(merge_queue) = &self.merge_queue {
+            let files_changed = Self::collect_files_changed(&outputs.lock());
+            if !files_changed.is_empty() {
+                let accepted = merge_queue.enqueue(MergeRequest {
+                    plan_id: graph_name.clone(),
+                    branch_name: String::new(),
+                    files_changed,
+                    priority: 0,
+                });
+                info!(graph = %graph_name, accepted, "parallel merge request enqueued");
+            }
+        }
+
+        self.persist_tick_outputs(&outputs.lock());
 
         Ok(GraphOutput {
             graph_name,
@@ -752,19 +1197,19 @@ impl GraphEngine {
         let mut snap_outputs = HashMap::new();
         for (id, signals) in node_outputs {
             // Only snapshot Activity node outputs.
-            if let Some(node) = self.graph.get_node(id) {
-                if node.execution_class == ExecutionClass::Activity {
-                    let serialized: Vec<SerializableSignal> = signals
-                        .iter()
-                        .filter_map(|e| {
-                            serde_json::to_value(e)
-                                .ok()
-                                .map(|json| SerializableSignal { json })
-                        })
-                        .collect();
-                    if !serialized.is_empty() {
-                        snap_outputs.insert(id.clone(), serialized);
-                    }
+            if let Some(node) = self.graph.get_node(id)
+                && node.execution_class == ExecutionClass::Activity
+            {
+                let serialized: Vec<SerializableSignal> = signals
+                    .iter()
+                    .filter_map(|e| {
+                        serde_json::to_value(e)
+                            .ok()
+                            .map(|json| SerializableSignal { json })
+                    })
+                    .collect();
+                if !serialized.is_empty() {
+                    snap_outputs.insert(id.clone(), serialized);
                 }
             }
         }
@@ -787,9 +1232,9 @@ impl GraphEngine {
 
     /// Resume a graph engine from a previously captured snapshot.
     ///
-    /// Nodes that were `Complete` in the snapshot are not re-executed. Their
-    /// Activity outputs are restored from the snapshot. Pending and Running
-    /// nodes (Running is treated as Pending on resume) will be re-executed.
+    /// Activity nodes that were `Complete` are restored without re-execution.
+    /// Completed Workflow nodes are re-derived because snapshots intentionally
+    /// omit their outputs. Pending and Running nodes are also re-executed.
     ///
     /// # Errors
     /// Returns an error if the graph contains a cycle or references unknown cell types.
@@ -806,8 +1251,7 @@ impl GraphEngine {
         let order = topological_order(&graph)?;
 
         let mut outputs: HashMap<NodeId, Vec<roko_core::Signal>> = HashMap::new();
-        #[allow(clippy::collection_is_never_read)]
-        let mut failed_nodes: HashSet<NodeId> = HashSet::new();
+        let mut statuses: HashMap<NodeId, NodeStatus> = HashMap::new();
         let mut results: Vec<NodeResult> = Vec::with_capacity(order.len());
 
         // Restore completed Activity node outputs from the snapshot.
@@ -826,11 +1270,15 @@ impl GraphEngine {
                 continue;
             };
 
-            // Check snapshot status -- skip already-completed nodes.
+            // Restore terminal Activity and route statuses. Workflow outputs
+            // are not snapshotted, so completed Workflow nodes re-execute.
             if let Some(snap_status) = snapshot.node_statuses.get(node_id) {
                 let status: NodeStatus = (*snap_status).into();
-                if status == NodeStatus::Complete {
+                if status == NodeStatus::Complete
+                    && node.execution_class == ExecutionClass::Activity
+                {
                     let output_count = outputs.get(node_id).map_or(0, Vec::len);
+                    statuses.insert(node_id.clone(), NodeStatus::Complete);
                     results.push(NodeResult {
                         node_id: node_id.clone(),
                         cell_type: node.cell_type.clone(),
@@ -841,8 +1289,20 @@ impl GraphEngine {
                     });
                     continue;
                 }
+                if status == NodeStatus::ConditionSkipped {
+                    statuses.insert(node_id.clone(), NodeStatus::ConditionSkipped);
+                    results.push(NodeResult {
+                        node_id: node_id.clone(),
+                        cell_type: node.cell_type.clone(),
+                        status: NodeStatus::ConditionSkipped,
+                        duration: Duration::ZERO,
+                        error: Some("conditional route was not selected in snapshot".to_string()),
+                        output_count: 0,
+                    });
+                    continue;
+                }
                 if status == NodeStatus::Skipped {
-                    failed_nodes.insert(node_id.clone());
+                    statuses.insert(node_id.clone(), NodeStatus::Skipped);
                     results.push(NodeResult {
                         node_id: node_id.clone(),
                         cell_type: node.cell_type.clone(),
@@ -854,7 +1314,7 @@ impl GraphEngine {
                     continue;
                 }
                 if status == NodeStatus::Failed {
-                    failed_nodes.insert(node_id.clone());
+                    statuses.insert(node_id.clone(), NodeStatus::Failed);
                     results.push(NodeResult {
                         node_id: node_id.clone(),
                         cell_type: node.cell_type.clone(),
@@ -867,30 +1327,49 @@ impl GraphEngine {
                 }
             }
 
-            // Re-execute pending nodes.
-            let cell: Box<dyn Cell> = registry.create(&node.cell_type, node.config.clone())?;
-
-            let mut input = Vec::new();
-            {
-                use petgraph::Direction;
-                if let Some(&idx) = graph.node_map.get(node_id) {
-                    for pred_idx in graph.inner.neighbors_directed(idx, Direction::Incoming) {
-                        let pred_id = &graph.inner[pred_idx].id;
-                        if let Some(signals) = outputs.get(pred_id) {
-                            input.extend(signals.iter().cloned());
-                        }
-                    }
+            let input = match evaluate_node_activation(&graph, node_id, &statuses, &outputs) {
+                NodeActivation::Root => Vec::new(),
+                NodeActivation::Ready(input) => input,
+                NodeActivation::ConditionSkipped(reason) => {
+                    statuses.insert(node_id.clone(), NodeStatus::ConditionSkipped);
+                    results.push(NodeResult {
+                        node_id: node_id.clone(),
+                        cell_type: node.cell_type.clone(),
+                        status: NodeStatus::ConditionSkipped,
+                        duration: Duration::ZERO,
+                        error: Some(reason),
+                        output_count: 0,
+                    });
+                    continue;
                 }
-            }
+                NodeActivation::UpstreamFailed(reason) => {
+                    statuses.insert(node_id.clone(), NodeStatus::Skipped);
+                    results.push(NodeResult {
+                        node_id: node_id.clone(),
+                        cell_type: node.cell_type.clone(),
+                        status: NodeStatus::Skipped,
+                        duration: Duration::ZERO,
+                        error: Some(reason),
+                        output_count: 0,
+                    });
+                    continue;
+                }
+            };
+
+            // Re-execute pending nodes and all Workflow nodes.
+            let cell: Box<dyn Cell> = registry.create(&node.cell_type, node.config.clone())?;
 
             info!(node_id = %node_id, cell_type = %node.cell_type, "resume: executing node");
             let node_start = Instant::now();
 
+            let input_taint = input.clone();
             match cell.execute(input, ctx).await {
-                Ok(output_signals) => {
+                Ok(mut output_signals) => {
+                    propagate_input_taint(&input_taint, &mut output_signals, node_id);
                     let duration = node_start.elapsed();
                     let count = output_signals.len();
                     outputs.insert(node_id.clone(), output_signals);
+                    statuses.insert(node_id.clone(), NodeStatus::Complete);
                     results.push(NodeResult {
                         node_id: node_id.clone(),
                         cell_type: node.cell_type.clone(),
@@ -903,7 +1382,7 @@ impl GraphEngine {
                 Err(e) => {
                     let duration = node_start.elapsed();
                     let msg = e.to_string();
-                    failed_nodes.insert(node_id.clone());
+                    statuses.insert(node_id.clone(), NodeStatus::Failed);
                     results.push(NodeResult {
                         node_id: node_id.clone(),
                         cell_type: node.cell_type.clone(),
@@ -917,7 +1396,7 @@ impl GraphEngine {
         }
 
         let total_duration = start.elapsed();
-        let success = results.iter().all(|r| r.status == NodeStatus::Complete);
+        let success = graph_execution_succeeded(&results);
 
         Ok(GraphOutput {
             graph_name,
@@ -1039,6 +1518,7 @@ impl GraphEngine {
 
     /// Internal: execute the graph while publishing per-node status into `node_statuses`.
     /// Respects the cancellation token -- stops after the current node if cancelled.
+    #[allow(clippy::too_many_lines)] // Keep status transitions adjacent to graph execution.
     async fn execute_with_status_tracking(
         &self,
         ctx: &CellContext,
@@ -1046,12 +1526,27 @@ impl GraphEngine {
         cancel: &CancellationToken,
     ) -> Result<GraphOutput, GraphError> {
         let start = Instant::now();
+        let graph_name = self.graph.metadata.name.clone();
+        let run_id = ctx.run_id.clone().unwrap_or_else(|| graph_name.clone());
+        let graph_ancestry = [LensScope::Graph(graph_name.clone())];
 
         let order = topological_order(&self.graph)?;
 
-        let mut outputs: HashMap<NodeId, Vec<roko_core::Signal>> = HashMap::new();
-        let mut failed_nodes: HashSet<NodeId> = HashSet::new();
+        self.emit_telemetry(
+            &ObservableEvent::GraphStarted {
+                graph: graph_name.clone(),
+                run: run_id.clone(),
+                input_hash: input_signal_hash(&self.root_inputs),
+            },
+            &graph_ancestry,
+        )
+        .await;
+
+        let mut outputs = self.initial_tick_outputs();
         let mut results: Vec<NodeResult> = Vec::with_capacity(order.len());
+        let mut total_cost_usd = 0.0;
+        let mut was_cancelled = false;
+        let mut fail_fast_abort = false;
 
         // Seed all nodes as Pending.
         {
@@ -1065,6 +1560,18 @@ impl GraphEngine {
             // Honour cancellation between nodes.
             if cancel.is_cancelled() {
                 info!(node_id = %node_id, "flow cancelled before node");
+                self.emit_telemetry(
+                    &ObservableEvent::CellCancelled {
+                        block: node_id.clone(),
+                        run: run_id.clone(),
+                    },
+                    &[
+                        LensScope::Cell(node_id.clone()),
+                        LensScope::Graph(graph_name.clone()),
+                    ],
+                )
+                .await;
+                was_cancelled = true;
                 break;
             }
 
@@ -1072,7 +1579,7 @@ impl GraphEngine {
                 continue;
             };
 
-            if self.has_failed_ancestor(node_id, &failed_nodes) {
+            if fail_fast_abort {
                 node_statuses
                     .lock()
                     .insert(node_id.clone(), NodeStatus::Skipped);
@@ -1081,27 +1588,110 @@ impl GraphEngine {
                     cell_type: node.cell_type.clone(),
                     status: NodeStatus::Skipped,
                     duration: Duration::ZERO,
-                    error: Some("upstream dependency failed".to_string()),
+                    error: Some("aborted after graph failure".to_string()),
                     output_count: 0,
                 });
-                failed_nodes.insert(node_id.clone());
                 continue;
             }
+
+            let input = {
+                let statuses = node_statuses.lock();
+                match evaluate_node_activation(&self.graph, node_id, &statuses, &outputs) {
+                    NodeActivation::Root => self.root_tick_inputs(node_id, &outputs),
+                    NodeActivation::Ready(input) => input,
+                    NodeActivation::ConditionSkipped(reason) => {
+                        drop(statuses);
+                        node_statuses
+                            .lock()
+                            .insert(node_id.clone(), NodeStatus::ConditionSkipped);
+                        results.push(NodeResult {
+                            node_id: node_id.clone(),
+                            cell_type: node.cell_type.clone(),
+                            status: NodeStatus::ConditionSkipped,
+                            duration: Duration::ZERO,
+                            error: Some(reason),
+                            output_count: 0,
+                        });
+                        continue;
+                    }
+                    NodeActivation::UpstreamFailed(reason) => {
+                        drop(statuses);
+                        node_statuses
+                            .lock()
+                            .insert(node_id.clone(), NodeStatus::Skipped);
+                        results.push(NodeResult {
+                            node_id: node_id.clone(),
+                            cell_type: node.cell_type.clone(),
+                            status: NodeStatus::Skipped,
+                            duration: Duration::ZERO,
+                            error: Some(reason),
+                            output_count: 0,
+                        });
+                        continue;
+                    }
+                }
+            };
 
             node_statuses
                 .lock()
                 .insert(node_id.clone(), NodeStatus::Running);
 
             let cell: Box<dyn Cell> = self.registry.create(&node.cell_type, node.config.clone())?;
-            let input = self.gather_inputs(node_id, &outputs);
+            let estimated_cost_usd = cell.estimated_cost().unwrap_or_default();
+            let ancestry = [
+                LensScope::Cell(node_id.clone()),
+                LensScope::Graph(graph_name.clone()),
+            ];
+            self.emit_telemetry(
+                &ObservableEvent::CellStarted {
+                    block: node_id.clone(),
+                    run: run_id.clone(),
+                    input_hash: input_signal_hash(&input),
+                },
+                &ancestry,
+            )
+            .await;
 
             info!(node_id = %node_id, cell_type = %node.cell_type, "flow: executing node");
             let node_start = Instant::now();
 
-            match cell.execute(input, ctx).await {
+            let (execution, attempts) = execute_cell_with_retries(
+                cell.as_ref(),
+                input,
+                ctx,
+                max_retries(&self.graph.policy),
+                self.telemetry.as_ref(),
+                node_id,
+                &run_id,
+                &ancestry,
+            )
+            .await;
+            match execution {
                 Ok(output_signals) => {
                     let duration = node_start.elapsed();
+                    let duration_ms = duration_ms(duration);
                     let count = output_signals.len();
+                    total_cost_usd += estimated_cost_usd * f64::from(attempts);
+                    self.emit_telemetry(
+                        &ObservableEvent::CellCompleted {
+                            block: node_id.clone(),
+                            run: run_id.clone(),
+                            duration_ms,
+                            cost_usd: estimated_cost_usd * f64::from(attempts),
+                        },
+                        &ancestry,
+                    )
+                    .await;
+                    self.emit_telemetry(
+                        &ObservableEvent::GraphNodeCompleted {
+                            graph: graph_name.clone(),
+                            run: run_id.clone(),
+                            node: node_id.clone(),
+                            duration_ms,
+                        },
+                        &ancestry,
+                    )
+                    .await;
                     node_statuses
                         .lock()
                         .insert(node_id.clone(), NodeStatus::Complete);
@@ -1118,11 +1708,24 @@ impl GraphEngine {
                 Err(e) => {
                     let duration = node_start.elapsed();
                     let msg = e.to_string();
+                    total_cost_usd += estimated_cost_usd * f64::from(attempts);
+                    self.emit_telemetry(
+                        &ObservableEvent::CellFailed {
+                            block: node_id.clone(),
+                            run: run_id.clone(),
+                            error: msg.clone(),
+                        },
+                        &ancestry,
+                    )
+                    .await;
                     warn!(node_id = %node_id, error = %msg, "flow: node failed");
                     node_statuses
                         .lock()
                         .insert(node_id.clone(), NodeStatus::Failed);
-                    failed_nodes.insert(node_id.clone());
+                    fail_fast_abort = matches!(
+                        self.graph.policy.failure_strategy,
+                        crate::types::FailureStrategy::FailFast
+                    );
                     results.push(NodeResult {
                         node_id: node_id.clone(),
                         cell_type: node.cell_type.clone(),
@@ -1136,111 +1739,92 @@ impl GraphEngine {
         }
 
         let total_duration = start.elapsed();
-        let success = results.iter().all(|r| r.status == NodeStatus::Complete);
+        let success = !was_cancelled && graph_execution_succeeded(&results);
+
+        if was_cancelled {
+            self.emit_telemetry(
+                &ObservableEvent::GraphPaused {
+                    graph: graph_name.clone(),
+                    run: run_id,
+                    reason: "cancelled".to_string(),
+                },
+                &graph_ancestry,
+            )
+            .await;
+        } else if success {
+            self.emit_telemetry(
+                &ObservableEvent::GraphCompleted {
+                    graph: graph_name.clone(),
+                    run: run_id,
+                    duration_ms: duration_ms(total_duration),
+                    cost_usd: total_cost_usd,
+                },
+                &graph_ancestry,
+            )
+            .await;
+        } else {
+            self.emit_telemetry(
+                &ObservableEvent::GraphFailed {
+                    graph: graph_name.clone(),
+                    run: run_id,
+                    error: "one or more graph nodes failed".to_string(),
+                },
+                &graph_ancestry,
+            )
+            .await;
+        }
 
         Ok(GraphOutput {
-            graph_name: self.graph.metadata.name.clone(),
+            graph_name,
             success,
             node_results: results,
             total_duration,
         })
     }
 
-    /// Check if a node has any failed ancestor in the DAG.
-    fn has_failed_ancestor(&self, node_id: &str, failed: &HashSet<NodeId>) -> bool {
-        use petgraph::Direction;
-
-        let Some(&idx) = self.graph.node_map.get(node_id) else {
-            return false;
-        };
-
-        // Check all incoming neighbors (direct parents)
-        for pred_idx in self
-            .graph
-            .inner
-            .neighbors_directed(idx, Direction::Incoming)
-        {
-            let pred_id = &self.graph.inner[pred_idx].id;
-            if failed.contains(pred_id) {
-                return true;
-            }
-        }
-        false
+    fn persist_tick_state_enabled(&self) -> bool {
+        self.graph
+            .policy
+            .hot
+            .as_ref()
+            .is_some_and(|policy| policy.persist_tick_state)
     }
 
-    /// Gather output signals from all upstream (predecessor) nodes as input.
-    fn gather_inputs(
+    fn initial_tick_outputs(&self) -> HashMap<NodeId, Vec<roko_core::Signal>> {
+        if self.persist_tick_state_enabled() {
+            self.tick_state.lock().clone()
+        } else {
+            HashMap::new()
+        }
+    }
+
+    fn root_tick_inputs(
         &self,
         node_id: &str,
         outputs: &HashMap<NodeId, Vec<roko_core::Signal>>,
     ) -> Vec<roko_core::Signal> {
-        use petgraph::Direction;
-
-        let Some(&idx) = self.graph.node_map.get(node_id) else {
-            return vec![];
-        };
-
-        let mut input = Vec::new();
-        for pred_idx in self
-            .graph
-            .inner
-            .neighbors_directed(idx, Direction::Incoming)
+        let mut input = self.root_inputs.clone();
+        if self.persist_tick_state_enabled()
+            && let Some(previous) = outputs.get(node_id)
         {
-            let pred_id = &self.graph.inner[pred_idx].id;
-            if let Some(signals) = outputs.get(pred_id) {
-                input.extend(signals.iter().cloned());
-            }
+            input.extend(previous.iter().cloned());
         }
         input
     }
 
-    /// Check if a node has any failed ancestor -- variant that takes a `&HashSet`
-    /// from a `parking_lot::Mutex` guard (used by `execute_parallel`).
-    fn has_failed_ancestor_set(&self, node_id: &str, failed: &HashSet<NodeId>) -> bool {
-        use petgraph::Direction;
-
-        let Some(&idx) = self.graph.node_map.get(node_id) else {
-            return false;
-        };
-
-        for pred_idx in self
-            .graph
-            .inner
-            .neighbors_directed(idx, Direction::Incoming)
-        {
-            let pred_id = &self.graph.inner[pred_idx].id;
-            if failed.contains(pred_id) {
-                return true;
-            }
+    fn persist_tick_outputs(&self, outputs: &HashMap<NodeId, Vec<roko_core::Signal>>) {
+        if self.persist_tick_state_enabled() {
+            *self.tick_state.lock() = outputs.clone();
         }
-        false
     }
 
-    /// Gather input signals from upstream nodes -- variant that takes
-    /// an external `HashMap` (used by `execute_parallel` with a `Mutex` guard).
-    fn gather_inputs_from(
-        &self,
-        node_id: &str,
-        outputs: &HashMap<NodeId, Vec<roko_core::Signal>>,
-    ) -> Vec<roko_core::Signal> {
-        use petgraph::Direction;
-
-        let Some(&idx) = self.graph.node_map.get(node_id) else {
-            return vec![];
+    async fn emit_telemetry(&self, event: &ObservableEvent, ancestry: &[LensScope]) {
+        let Some(telemetry) = &self.telemetry else {
+            return;
         };
-
-        let mut input = Vec::new();
-        for pred_idx in self
-            .graph
-            .inner
-            .neighbors_directed(idx, Direction::Incoming)
-        {
-            let pred_id = &self.graph.inner[pred_idx].id;
-            if let Some(signals) = outputs.get(pred_id) {
-                input.extend(signals.iter().cloned());
-            }
+        if let Err(error) = telemetry.emit(event, ancestry).await {
+            warn!(%error, event_kind = ?event.kind(), "passive telemetry delivery failed");
         }
-        input
     }
 
     /// Extract `files_changed` from completed node outputs.
@@ -1268,16 +1852,290 @@ impl GraphEngine {
     }
 }
 
+/// Evaluate the incoming edge set for one node.
+///
+/// Unconditional and `Always` edges are required dependencies (AND). The
+/// remaining conditional edges are routes (OR): at least one route must fire,
+/// and only outputs carried by fired edges are passed to the target node.
+fn evaluate_node_activation(
+    graph: &Graph,
+    node_id: &str,
+    statuses: &HashMap<NodeId, NodeStatus>,
+    outputs: &HashMap<NodeId, Vec<roko_core::Signal>>,
+) -> NodeActivation {
+    use petgraph::Direction;
+
+    let Some(&idx) = graph.node_map.get(node_id) else {
+        return NodeActivation::UpstreamFailed(format!("node `{node_id}` is not in the graph"));
+    };
+
+    let mut has_incoming = false;
+    let mut has_conditional = false;
+    let mut conditional_fired = false;
+    let mut input = Vec::new();
+
+    for edge_ref in graph.inner.edges_directed(idx, Direction::Incoming) {
+        has_incoming = true;
+        let edge = edge_ref.weight();
+        let source_id = &graph.inner[edge_ref.source()].id;
+        let status = statuses
+            .get(source_id)
+            .copied()
+            .unwrap_or(NodeStatus::Pending);
+        let source_outputs = outputs.get(source_id).map_or(&[][..], Vec::as_slice);
+
+        match edge.condition.as_ref() {
+            None | Some(EdgeCondition::Always) => match status {
+                NodeStatus::Complete => input.extend(source_outputs.iter().cloned()),
+                NodeStatus::ConditionSkipped => {
+                    return NodeActivation::ConditionSkipped(format!(
+                        "required route from `{source_id}` was not selected"
+                    ));
+                }
+                NodeStatus::Failed | NodeStatus::Skipped => {
+                    return NodeActivation::UpstreamFailed(format!(
+                        "required dependency `{source_id}` did not complete"
+                    ));
+                }
+                NodeStatus::Pending | NodeStatus::Running => {
+                    return NodeActivation::UpstreamFailed(format!(
+                        "required dependency `{source_id}` is not complete"
+                    ));
+                }
+            },
+            Some(condition) => {
+                has_conditional = true;
+                let fires = match condition {
+                    EdgeCondition::Success => status == NodeStatus::Complete,
+                    EdgeCondition::Failure => status == NodeStatus::Failed,
+                    EdgeCondition::OutputEquals { key, value } => {
+                        status == NodeStatus::Complete
+                            && source_outputs
+                                .iter()
+                                .any(|signal| signal_output_equals(signal, key, value))
+                    }
+                    EdgeCondition::Always => unreachable!("handled as a required edge"),
+                };
+                if fires {
+                    conditional_fired = true;
+                    input.extend(source_outputs.iter().cloned());
+                }
+            }
+        }
+    }
+
+    if !has_incoming {
+        NodeActivation::Root
+    } else if has_conditional && !conditional_fired {
+        NodeActivation::ConditionSkipped("no incoming conditional edge fired".to_string())
+    } else {
+        NodeActivation::Ready(input)
+    }
+}
+
+fn signal_output_equals(signal: &roko_core::Signal, key: &str, expected: &str) -> bool {
+    if let Some(tag_key) = key.strip_prefix("tags.") {
+        return signal
+            .tags
+            .get(tag_key)
+            .is_some_and(|value| value == expected);
+    }
+
+    if let roko_core::Body::Json(value) = &signal.body
+        && let Some(actual) = json_path(value, key)
+        && json_value_equals(actual, expected)
+    {
+        return true;
+    }
+
+    if matches!(key, "body" | "text" | "value")
+        && let roko_core::Body::Text(actual) = &signal.body
+    {
+        return actual == expected;
+    }
+
+    signal.tags.get(key).is_some_and(|value| value == expected)
+}
+
+fn json_path<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+    if key.is_empty() || key == "body" {
+        return Some(value);
+    }
+    key.split('.')
+        .try_fold(value, |current, segment| match current {
+            serde_json::Value::Object(map) => map.get(segment),
+            serde_json::Value::Array(values) => segment
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| values.get(index)),
+            _ => None,
+        })
+}
+
+fn json_value_equals(actual: &serde_json::Value, expected: &str) -> bool {
+    match actual {
+        serde_json::Value::String(value) => value == expected,
+        serde_json::Value::Number(value) => value.to_string() == expected,
+        serde_json::Value::Bool(value) => value.to_string() == expected,
+        serde_json::Value::Null => expected == "null",
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            serde_json::to_string(actual).is_ok_and(|value| value == expected)
+        }
+    }
+}
+
+fn graph_execution_succeeded(results: &[NodeResult]) -> bool {
+    results.iter().all(|result| {
+        matches!(
+            result.status,
+            NodeStatus::Complete | NodeStatus::ConditionSkipped
+        )
+    })
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn input_signal_hash(input: &[roko_core::Signal]) -> String {
+    let bytes = input
+        .iter()
+        .flat_map(|signal| signal.id.0)
+        .collect::<Vec<_>>();
+    ContentHash::of(&bytes).to_hex()
+}
+
+fn max_retries(policy: &GraphPolicy) -> u32 {
+    match policy.failure_strategy {
+        crate::types::FailureStrategy::Retry { max_retries } => max_retries,
+        crate::types::FailureStrategy::FailFast | crate::types::FailureStrategy::SkipFailed => 0,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_cell_with_retries(
+    cell: &dyn Cell,
+    input: Vec<roko_core::Signal>,
+    ctx: &CellContext,
+    max_retries: u32,
+    telemetry: Option<&Arc<dyn TelemetryEventSink>>,
+    block: &str,
+    run: &str,
+    ancestry: &[LensScope],
+) -> (roko_core::Result<Vec<roko_core::Signal>>, u32) {
+    let prediction = cell.predict(&input);
+    if let Some(prediction) = prediction.as_ref() {
+        let serialized = serde_json::to_string(prediction)
+            .unwrap_or_else(|error| format!("prediction serialization failed: {error}"));
+        emit_telemetry_to(
+            telemetry,
+            &ObservableEvent::CellPredictionPublished {
+                block: block.to_string(),
+                prediction: serialized,
+            },
+            ancestry,
+        )
+        .await;
+    }
+    let mut retry_attempt = 0_u32;
+    loop {
+        match cell.execute(input.clone(), ctx).await {
+            Ok(mut output) => {
+                propagate_input_taint(&input, &mut output, block);
+                if let Some(prediction) = prediction.as_ref() {
+                    let calibration_error = cell.calibration_error(prediction, &output);
+                    cell.correct(prediction, &output);
+                    if let Some(error) = calibration_error {
+                        emit_telemetry_to(
+                            telemetry,
+                            &ObservableEvent::CellCalibrationReceived {
+                                block: block.to_string(),
+                                error: error.clamp(0.0, 1.0),
+                            },
+                            ancestry,
+                        )
+                        .await;
+                    }
+                }
+                return (Ok(output), retry_attempt.saturating_add(1));
+            }
+            Err(error) if retry_attempt < max_retries => {
+                retry_attempt = retry_attempt.saturating_add(1);
+                emit_telemetry_to(
+                    telemetry,
+                    &ObservableEvent::CellRetried {
+                        block: block.to_string(),
+                        run: run.to_string(),
+                        attempt: retry_attempt,
+                        reason: error.to_string(),
+                    },
+                    ancestry,
+                )
+                .await;
+            }
+            Err(error) => return (Err(error), retry_attempt.saturating_add(1)),
+        }
+    }
+}
+
+/// Enforce the Graph IFC boundary after every Cell execution and replay.
+///
+/// Cells may preserve or raise their own output classification, but cannot
+/// lower it below the join of their inputs. The engine owns this invariant so
+/// it also applies to third-party Cells that do not use `Signal::derive`.
+fn propagate_input_taint(
+    input: &[roko_core::Signal],
+    output: &mut [roko_core::Signal],
+    block: &str,
+) {
+    let inherited = input
+        .iter()
+        .fold(roko_core::TaintLevel::Public, |level, signal| {
+            level.join(signal.provenance.effective_taint())
+        });
+
+    for signal in output {
+        let current = signal.provenance.effective_taint();
+        if !inherited.can_flow_to(current) {
+            signal.provenance.taint_level = signal.provenance.taint_level.join(inherited);
+            info!(
+                block,
+                signal = %signal.id,
+                input_taint = ?inherited,
+                output_taint = ?signal.provenance.effective_taint(),
+                "raised Cell output taint to preserve monotonic Graph flow"
+            );
+        }
+    }
+}
+
+async fn emit_telemetry_to(
+    telemetry: Option<&Arc<dyn TelemetryEventSink>>,
+    event: &ObservableEvent,
+    ancestry: &[LensScope],
+) {
+    let Some(telemetry) = telemetry else {
+        return;
+    };
+    if let Err(error) = telemetry.emit(event, ancestry).await {
+        warn!(%error, event_kind = ?event.kind(), "passive telemetry delivery failed");
+    }
+}
+
 /// Build the default cell registry with standard gate and utility cells.
 ///
 /// Registered cell types:
 /// - `gate.compile` -- `CompileGate` (cargo check)
 /// - `gate.test` -- `TestGate` (cargo test)
 /// - `gate.clippy` -- `ClippyGate` (cargo clippy)
+/// - `security.verify.*` -- independently hosted corrigibility Verify Cells
+/// - `security.immune.*` -- ordered runtime immune-pipeline Cells
 /// - `noop` -- `NoopCell` (passes input through unchanged, useful for testing)
 #[must_use]
 pub fn default_registry() -> CellRegistry {
     let mut registry = CellRegistry::new();
+    crate::cells::register_corrigibility_cells(&mut registry);
+    crate::cells::register_immune_cells(&mut registry);
 
     registry.register("gate.compile", |_config| {
         Box::new(ShellCell::new(
@@ -1336,8 +2194,10 @@ pub fn default_registry() -> CellRegistry {
     });
 
     // Task executor cell for plan-to-graph converted tasks (task 101).
-    registry.register("task-executor", |_config| {
-        Box::new(crate::cells::task_executor::TaskExecutorCell::default())
+    registry.register("task-executor", |config| {
+        Box::new(crate::cells::task_executor::TaskExecutorCell::unconfigured(
+            config,
+        ))
     });
 
     // Legacy cognitive loop stub aliases -- keep PassthroughCell stubs for
@@ -1449,13 +2309,26 @@ impl Cell for ShellCell {
         None
     }
     fn estimated_duration(&self) -> Option<Duration> {
-        Some(Duration::from_secs(60))
+        Some(Duration::from_mins(1))
     }
     async fn execute(
         &self,
         input: Vec<roko_core::Signal>,
-        _ctx: &CellContext,
+        ctx: &CellContext,
     ) -> roko_core::error::Result<Vec<roko_core::Signal>> {
+        if let Some(capabilities) = &ctx.capabilities {
+            for required in [
+                roko_core::Capability::Execute,
+                roko_core::Capability::FileSystem,
+            ] {
+                if !capabilities.contains(required) {
+                    return Err(roko_core::error::RokoError::invalid(format!(
+                        "cell '{}' requires capability {required}",
+                        self.id
+                    )));
+                }
+            }
+        }
         let output = tokio::process::Command::new(self.program)
             .args(self.args)
             .output()
@@ -1499,6 +2372,225 @@ mod tests {
     use super::*;
     use crate::loader::load_from_str;
 
+    struct CaptureCell {
+        received: Arc<std::sync::Mutex<Vec<roko_core::Signal>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Cell for CaptureCell {
+        fn cell_id(&self) -> &str {
+            "capture"
+        }
+
+        fn cell_name(&self) -> &str {
+            "CaptureCell"
+        }
+
+        async fn execute(
+            &self,
+            input: Vec<roko_core::Signal>,
+            _ctx: &CellContext,
+        ) -> roko_core::error::Result<Vec<roko_core::Signal>> {
+            *self
+                .received
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = input.clone();
+            Ok(input)
+        }
+    }
+
+    struct TaintLoweringCell;
+
+    #[async_trait::async_trait]
+    impl Cell for TaintLoweringCell {
+        fn cell_id(&self) -> &str {
+            "taint-lowering"
+        }
+
+        fn cell_name(&self) -> &str {
+            "TaintLoweringCell"
+        }
+
+        async fn execute(
+            &self,
+            _input: Vec<roko_core::Signal>,
+            _ctx: &CellContext,
+        ) -> roko_core::Result<Vec<roko_core::Signal>> {
+            Ok(vec![
+                roko_core::Signal::builder(roko_core::Kind::Prompt)
+                    .body(roko_core::Body::text("fresh public output"))
+                    .provenance(roko_core::Provenance::trusted("unsafe-cell"))
+                    .build(),
+            ])
+        }
+    }
+
+    struct JsonOutputCell {
+        value: serde_json::Value,
+    }
+
+    #[async_trait::async_trait]
+    impl Cell for JsonOutputCell {
+        fn cell_id(&self) -> &str {
+            "json-output"
+        }
+
+        fn cell_name(&self) -> &str {
+            "JsonOutputCell"
+        }
+
+        async fn execute(
+            &self,
+            _input: Vec<roko_core::Signal>,
+            _ctx: &CellContext,
+        ) -> roko_core::Result<Vec<roko_core::Signal>> {
+            Ok(vec![
+                roko_core::Signal::builder(roko_core::Kind::Custom("route.output".into()))
+                    .body(roko_core::Body::Json(self.value.clone()))
+                    .build(),
+            ])
+        }
+    }
+
+    struct AlwaysFailCell;
+
+    #[async_trait::async_trait]
+    impl Cell for AlwaysFailCell {
+        fn cell_id(&self) -> &str {
+            "always-fail"
+        }
+
+        fn cell_name(&self) -> &str {
+            "AlwaysFailCell"
+        }
+
+        async fn execute(
+            &self,
+            _input: Vec<roko_core::Signal>,
+            _ctx: &CellContext,
+        ) -> roko_core::Result<Vec<roko_core::Signal>> {
+            Err(roko_core::RokoError::invalid("intentional test failure"))
+        }
+    }
+
+    struct TickIncrementCell;
+
+    #[async_trait::async_trait]
+    impl Cell for TickIncrementCell {
+        fn cell_id(&self) -> &str {
+            "tick-increment"
+        }
+
+        fn cell_name(&self) -> &str {
+            "TickIncrementCell"
+        }
+
+        async fn execute(
+            &self,
+            input: Vec<roko_core::Signal>,
+            _ctx: &CellContext,
+        ) -> roko_core::Result<Vec<roko_core::Signal>> {
+            let previous = input
+                .iter()
+                .filter_map(|signal| match &signal.body {
+                    roko_core::Body::Json(value) => value.get("tick")?.as_u64(),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0);
+            Ok(vec![
+                roko_core::Signal::builder(roko_core::Kind::Custom("tick.state".into()))
+                    .body(roko_core::Body::Json(serde_json::json!({
+                        "tick": previous + 1
+                    })))
+                    .build(),
+            ])
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingTelemetry {
+        events: std::sync::Mutex<Vec<(ObservableEvent, Vec<LensScope>)>>,
+        fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl TelemetryEventSink for RecordingTelemetry {
+        async fn emit(
+            &self,
+            event: &ObservableEvent,
+            ancestry: &[LensScope],
+        ) -> roko_core::Result<Vec<roko_core::Signal>> {
+            self.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((event.clone(), ancestry.to_vec()));
+            if self.fail {
+                Err(roko_core::RokoError::invalid("test telemetry failure"))
+            } else {
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    struct FailThenSucceedCell {
+        attempts: Arc<AtomicU64>,
+        failures_before_success: u64,
+        corrections: Arc<AtomicU64>,
+    }
+
+    #[async_trait::async_trait]
+    impl Cell for FailThenSucceedCell {
+        fn cell_id(&self) -> &str {
+            "flaky"
+        }
+
+        fn cell_name(&self) -> &str {
+            "FailThenSucceedCell"
+        }
+
+        fn predict(&self, input: &[roko_core::Signal]) -> Option<roko_core::PredictionRecord> {
+            Some(roko_core::PredictionRecord {
+                cell_id: self.cell_id().to_string(),
+                predicted_outcome: serde_json::json!({"output_count": input.len()}),
+                confidence: 1.0,
+                timestamp_ms: 0,
+            })
+        }
+
+        fn calibration_error(
+            &self,
+            _prediction: &roko_core::PredictionRecord,
+            _actual: &[roko_core::Signal],
+        ) -> Option<f64> {
+            Some(0.0)
+        }
+
+        fn correct(
+            &self,
+            _prediction: &roko_core::PredictionRecord,
+            _actual: &[roko_core::Signal],
+        ) {
+            self.corrections.fetch_add(1, Ordering::SeqCst);
+        }
+
+        async fn execute(
+            &self,
+            input: Vec<roko_core::Signal>,
+            _ctx: &CellContext,
+        ) -> roko_core::Result<Vec<roko_core::Signal>> {
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt < self.failures_before_success {
+                Err(roko_core::RokoError::invalid(format!(
+                    "transient failure {}",
+                    attempt + 1
+                )))
+            } else {
+                Ok(input)
+            }
+        }
+    }
+
     fn noop_registry() -> CellRegistry {
         let mut r = CellRegistry::new();
         r.register("noop", |_| Box::new(NoopCell::default()));
@@ -1512,6 +2604,15 @@ mod tests {
             Box::new(NoopCell::with_id_and_name("gate.clippy", "ClippyGate"))
         });
         r
+    }
+
+    fn result_status(output: &GraphOutput, node_id: &str) -> NodeStatus {
+        output
+            .node_results
+            .iter()
+            .find(|result| result.node_id == node_id)
+            .unwrap_or_else(|| panic!("missing result for node `{node_id}`"))
+            .status
     }
 
     #[tokio::test]
@@ -1573,6 +2674,966 @@ cell_type = "noop"
         assert!(output.success);
         assert_eq!(output.node_results.len(), 1);
         assert_eq!(output.node_results[0].status, NodeStatus::Complete);
+    }
+
+    #[tokio::test]
+    async fn root_inputs_reach_root_cells_and_flow_downstream() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "root-input"
+
+[[nodes]]
+id = "root"
+cell_type = "noop"
+
+[[nodes]]
+id = "sink"
+cell_type = "capture"
+
+[[edges]]
+from = "root"
+to = "sink"
+"#,
+        )
+        .unwrap();
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture = Arc::clone(&received);
+        let mut registry = noop_registry();
+        registry.register("capture", move |_| {
+            Box::new(CaptureCell {
+                received: Arc::clone(&capture),
+            })
+        });
+        let signal =
+            roko_core::Signal::builder(roko_core::Kind::Custom("trigger.input".to_string()))
+                .body(roko_core::Body::Json(serde_json::json!({
+                    "inputs": {"branch": "main"}
+                })))
+                .build();
+
+        let output = GraphEngine::new(graph, registry)
+            .with_root_inputs(vec![signal.clone()])
+            .execute(&CellContext::new())
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        assert_eq!(output.node_results[0].output_count, 1);
+        assert_eq!(output.node_results[1].output_count, 1);
+        assert_eq!(
+            *received
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![signal]
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_execution_preserves_signal_flow_between_waves() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "parallel-signal-flow"
+
+[graph.policy]
+max_concurrent_nodes = 2
+
+[[nodes]]
+id = "root"
+cell_type = "noop"
+
+[[nodes]]
+id = "sink"
+cell_type = "capture"
+
+[[edges]]
+from = "root"
+to = "sink"
+"#,
+        )
+        .unwrap();
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture = Arc::clone(&received);
+        let mut registry = noop_registry();
+        registry.register("capture", move |_| {
+            Box::new(CaptureCell {
+                received: Arc::clone(&capture),
+            })
+        });
+        let signal = roko_core::Signal::builder(roko_core::Kind::Task)
+            .body(roko_core::Body::text("flow between waves"))
+            .build();
+
+        let output = GraphEngine::new(graph, registry)
+            .with_root_inputs(vec![signal.clone()])
+            .execute_parallel(&CellContext::new())
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        assert_eq!(
+            *received
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![signal]
+        );
+    }
+
+    #[tokio::test]
+    async fn sequential_output_condition_selects_only_matching_branch() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "conditional-sequential"
+
+[graph.policy]
+max_concurrent_nodes = 1
+
+[[nodes]]
+id = "route"
+cell_type = "json-output"
+
+[[nodes]]
+id = "left"
+cell_type = "noop"
+
+[[nodes]]
+id = "right"
+cell_type = "noop"
+
+[[nodes]]
+id = "right-child"
+cell_type = "noop"
+
+[[edges]]
+from = "route"
+to = "left"
+[edges.condition]
+type = "output_equals"
+key = "route"
+value = "left"
+
+[[edges]]
+from = "route"
+to = "right"
+[edges.condition]
+type = "output_equals"
+key = "route"
+value = "right"
+
+[[edges]]
+from = "right"
+to = "right-child"
+"#,
+        )
+        .unwrap();
+        let mut registry = noop_registry();
+        registry.register("json-output", |_| {
+            Box::new(JsonOutputCell {
+                value: serde_json::json!({"route": "left"}),
+            })
+        });
+
+        let output = GraphEngine::new(graph, registry)
+            .execute(&CellContext::new())
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        assert_eq!(result_status(&output, "route"), NodeStatus::Complete);
+        assert_eq!(result_status(&output, "left"), NodeStatus::Complete);
+        assert_eq!(
+            result_status(&output, "right"),
+            NodeStatus::ConditionSkipped
+        );
+        assert_eq!(
+            result_status(&output, "right-child"),
+            NodeStatus::ConditionSkipped
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_output_condition_matches_nested_json_with_sequential_parity() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "conditional-parallel"
+
+[graph.policy]
+max_concurrent_nodes = 4
+
+[[nodes]]
+id = "route"
+cell_type = "json-output"
+
+[[nodes]]
+id = "selected"
+cell_type = "noop"
+
+[[nodes]]
+id = "unselected"
+cell_type = "noop"
+
+[[edges]]
+from = "route"
+to = "selected"
+[edges.condition]
+type = "output_equals"
+key = "decision.status"
+value = "go"
+
+[[edges]]
+from = "route"
+to = "unselected"
+[edges.condition]
+type = "output_equals"
+key = "decision.status"
+value = "stop"
+"#,
+        )
+        .unwrap();
+        let mut registry = noop_registry();
+        registry.register("json-output", |_| {
+            Box::new(JsonOutputCell {
+                value: serde_json::json!({"decision": {"status": "go"}}),
+            })
+        });
+
+        let output = GraphEngine::new(graph, registry)
+            .execute(&CellContext::new())
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        assert_eq!(result_status(&output, "selected"), NodeStatus::Complete);
+        assert_eq!(
+            result_status(&output, "unselected"),
+            NodeStatus::ConditionSkipped
+        );
+    }
+
+    #[tokio::test]
+    async fn failure_condition_runs_handler_under_skip_failed_policy() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "failure-route"
+
+[graph.policy]
+failure_strategy = "skip_failed"
+max_concurrent_nodes = 1
+
+[[nodes]]
+id = "source"
+cell_type = "always-fail"
+
+[[nodes]]
+id = "recovery"
+cell_type = "noop"
+
+[[nodes]]
+id = "success-only"
+cell_type = "noop"
+
+[[edges]]
+from = "source"
+to = "recovery"
+[edges.condition]
+type = "failure"
+
+[[edges]]
+from = "source"
+to = "success-only"
+[edges.condition]
+type = "success"
+"#,
+        )
+        .unwrap();
+        let mut registry = noop_registry();
+        registry.register("always-fail", |_| Box::new(AlwaysFailCell));
+
+        let output = GraphEngine::new(graph, registry)
+            .execute(&CellContext::new())
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert_eq!(result_status(&output, "source"), NodeStatus::Failed);
+        assert_eq!(result_status(&output, "recovery"), NodeStatus::Complete);
+        assert_eq!(
+            result_status(&output, "success-only"),
+            NodeStatus::ConditionSkipped
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_uses_restored_activity_output_for_conditional_routing() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "conditional-resume"
+
+[[nodes]]
+id = "route"
+cell_type = "noop"
+
+[[nodes]]
+id = "left"
+cell_type = "noop"
+
+[[nodes]]
+id = "right"
+cell_type = "noop"
+
+[[edges]]
+from = "route"
+to = "left"
+[edges.condition]
+type = "output_equals"
+key = "route"
+value = "left"
+
+[[edges]]
+from = "route"
+to = "right"
+[edges.condition]
+type = "output_equals"
+key = "route"
+value = "right"
+"#,
+        )
+        .unwrap();
+        let mut statuses = HashMap::new();
+        statuses.insert("route".to_string(), NodeStatus::Complete);
+        statuses.insert("left".to_string(), NodeStatus::Pending);
+        statuses.insert("right".to_string(), NodeStatus::Pending);
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "route".to_string(),
+            vec![
+                roko_core::Signal::builder(roko_core::Kind::Custom("route.output".into()))
+                    .body(roko_core::Body::Json(serde_json::json!({"route": "left"})))
+                    .build(),
+            ],
+        );
+        let snapshot =
+            GraphEngine::new(graph.clone(), noop_registry()).snapshot(&statuses, &outputs, 0);
+
+        let output =
+            GraphEngine::resume_from(&snapshot, graph, noop_registry(), &CellContext::new())
+                .await
+                .unwrap();
+
+        assert!(output.success);
+        assert_eq!(result_status(&output, "route"), NodeStatus::Complete);
+        assert_eq!(result_status(&output, "left"), NodeStatus::Complete);
+        assert_eq!(
+            result_status(&output, "right"),
+            NodeStatus::ConditionSkipped
+        );
+    }
+
+    #[tokio::test]
+    async fn live_flow_applies_conditional_routing() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "conditional-flow"
+
+[[nodes]]
+id = "route"
+cell_type = "json-output"
+
+[[nodes]]
+id = "selected"
+cell_type = "noop"
+
+[[nodes]]
+id = "unselected"
+cell_type = "noop"
+
+[[edges]]
+from = "route"
+to = "selected"
+[edges.condition]
+type = "success"
+
+[[edges]]
+from = "route"
+to = "unselected"
+[edges.condition]
+type = "failure"
+"#,
+        )
+        .unwrap();
+        let mut registry = noop_registry();
+        registry.register("json-output", |_| {
+            Box::new(JsonOutputCell {
+                value: serde_json::json!({"ok": true}),
+            })
+        });
+
+        let output = GraphEngine::new(graph, registry)
+            .start(CellContext::new())
+            .await_completion()
+            .await
+            .expect("flow output");
+
+        assert!(output.success);
+        assert_eq!(result_status(&output, "selected"), NodeStatus::Complete);
+        assert_eq!(
+            result_status(&output, "unselected"),
+            NodeStatus::ConditionSkipped
+        );
+    }
+
+    #[tokio::test]
+    async fn hot_policy_persists_cell_outputs_between_ticks() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "stateful-hot"
+
+[graph.policy]
+mode = "hot"
+max_concurrent_nodes = 2
+
+[graph.policy.hot]
+persist_tick_state = true
+
+[[nodes]]
+id = "counter"
+cell_type = "tick-increment"
+
+[[nodes]]
+id = "sink"
+cell_type = "capture"
+
+[[edges]]
+from = "counter"
+to = "sink"
+"#,
+        )
+        .unwrap();
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture = Arc::clone(&received);
+        let mut registry = noop_registry();
+        registry.register("tick-increment", |_| Box::new(TickIncrementCell));
+        registry.register("capture", move |_| {
+            Box::new(CaptureCell {
+                received: Arc::clone(&capture),
+            })
+        });
+        let engine = GraphEngine::new(graph, registry);
+
+        assert!(
+            engine
+                .execute_parallel_at_tick(&CellContext::new(), 0)
+                .await
+                .unwrap()
+                .success
+        );
+        assert!(
+            engine
+                .execute_parallel_at_tick(&CellContext::new(), 1)
+                .await
+                .unwrap()
+                .success
+        );
+
+        let signals = received
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(signals.len(), 1);
+        let roko_core::Body::Json(body) = &signals[0].body else {
+            panic!("tick state must remain structured JSON");
+        };
+        assert_eq!(body["tick"], serde_json::json!(2));
+    }
+
+    #[tokio::test]
+    async fn graph_boundary_prevents_cell_from_lowering_input_taint() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "taint-flow"
+
+[[nodes]]
+id = "lowering"
+cell_type = "taint-lowering"
+
+[[nodes]]
+id = "sink"
+cell_type = "capture"
+
+[[edges]]
+from = "lowering"
+to = "sink"
+"#,
+        )
+        .unwrap();
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture = Arc::clone(&received);
+        let mut registry = noop_registry();
+        registry.register("taint-lowering", |_| Box::new(TaintLoweringCell));
+        registry.register("capture", move |_| {
+            Box::new(CaptureCell {
+                received: Arc::clone(&capture),
+            })
+        });
+        let classified = roko_core::Signal::builder(roko_core::Kind::Task)
+            .provenance(
+                roko_core::Provenance::external("webhook")
+                    .with_taint_level(roko_core::TaintLevel::Secret),
+            )
+            .build();
+
+        let output = GraphEngine::new(graph, registry)
+            .with_root_inputs(vec![classified])
+            .execute(&CellContext::new())
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        let signals = received
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(signals.len(), 1);
+        assert_eq!(
+            signals[0].provenance.effective_taint(),
+            roko_core::TaintLevel::Secret
+        );
+    }
+
+    #[tokio::test]
+    async fn graph_execution_emits_scoped_lifecycle_events() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "observed"
+
+[[nodes]]
+id = "only"
+cell_type = "noop"
+"#,
+        )
+        .unwrap();
+        let telemetry = Arc::new(RecordingTelemetry::default());
+        let engine = GraphEngine::new(graph, noop_registry()).with_telemetry(telemetry.clone());
+        let output = engine
+            .execute(&CellContext::new().with_run_id("run-1".into()))
+            .await
+            .unwrap();
+        assert!(output.success);
+
+        let events = telemetry
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(matches!(
+            events.first().map(|entry| &entry.0),
+            Some(ObservableEvent::GraphStarted { run, .. }) if run == "run-1"
+        ));
+        assert!(events.iter().any(|(event, ancestry)| {
+            matches!(event, ObservableEvent::CellCompleted { block, .. } if block == "only")
+                && ancestry
+                    == &[
+                        LensScope::Cell("only".into()),
+                        LensScope::Graph("observed".into()),
+                    ]
+        }));
+        assert!(matches!(
+            events.last().map(|entry| &entry.0),
+            Some(ObservableEvent::GraphCompleted { graph, .. }) if graph == "observed"
+        ));
+    }
+
+    #[tokio::test]
+    async fn predictive_cell_publishes_once_and_receives_one_terminal_calibration() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "predictive"
+
+[[nodes]]
+id = "assess-node"
+cell_type = "assess"
+"#,
+        )
+        .expect("predictive graph");
+        let telemetry = Arc::new(RecordingTelemetry::default());
+        let input = roko_core::Signal::builder(roko_core::Kind::AgentMessage)
+            .body(roko_core::Body::text("one input"))
+            .build();
+        let output = GraphEngine::new(graph, default_registry())
+            .with_root_inputs(vec![input])
+            .with_telemetry(telemetry.clone())
+            .execute(&CellContext::new().with_run_id("prediction-run".into()))
+            .await
+            .expect("predictive execution");
+        assert!(output.success);
+
+        let events = telemetry
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let published = events
+            .iter()
+            .position(|(event, ancestry)| {
+                matches!(
+                    event,
+                    ObservableEvent::CellPredictionPublished { block, prediction }
+                        if block == "assess-node"
+                            && serde_json::from_str::<roko_core::PredictionRecord>(prediction)
+                                .is_ok_and(|record| {
+                                    record.cell_id == "assess"
+                                        && record.predicted_outcome["output_count"] == 1
+                                })
+                ) && ancestry
+                    == &[
+                        LensScope::Cell("assess-node".into()),
+                        LensScope::Graph("predictive".into()),
+                    ]
+            })
+            .expect("prediction publication");
+        let calibrated = events
+            .iter()
+            .position(|(event, ancestry)| {
+                matches!(
+                    event,
+                    ObservableEvent::CellCalibrationReceived { block, error }
+                        if block == "assess-node" && *error == 0.0
+                ) && ancestry
+                    == &[
+                        LensScope::Cell("assess-node".into()),
+                        LensScope::Graph("predictive".into()),
+                    ]
+            })
+            .expect("calibration receipt");
+        let completed = events
+            .iter()
+            .position(|(event, _)| {
+                matches!(event, ObservableEvent::CellCompleted { block, .. } if block == "assess-node")
+            })
+            .expect("cell completion");
+        assert!(published < calibrated);
+        assert!(calibrated < completed);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(event, _)| matches!(
+                    event,
+                    ObservableEvent::CellPredictionPublished { .. }
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(event, _)| matches!(
+                    event,
+                    ObservableEvent::CellCalibrationReceived { .. }
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_emits_graph_resumed_once_without_reexecuting_activity() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "resumed"
+
+[[nodes]]
+id = "only"
+cell_type = "noop"
+"#,
+        )
+        .unwrap();
+        let recording = tempfile::NamedTempFile::new().unwrap();
+        let mut recorder = ActivityRecorder::create_fresh("resume-run", recording.path()).unwrap();
+        recorder.record("resumed", "only", 0, Vec::new()).unwrap();
+        drop(recorder);
+        let replayer =
+            ActivityReplayer::load_scoped(recording.path(), "resumed", "resume-run").unwrap();
+        let telemetry = Arc::new(RecordingTelemetry::default());
+
+        let output = GraphEngine::new(graph, noop_registry())
+            .with_replayer(replayer)
+            .with_telemetry(telemetry.clone())
+            .execute(&CellContext::new().with_run_id("resume-run".into()))
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        let events = telemetry
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(event, _)| matches!(event, ObservableEvent::GraphResumed { .. }))
+                .count(),
+            1
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|(event, _)| matches!(event, ObservableEvent::CellStarted { .. }))
+        );
+        assert!(matches!(
+            events.first().map(|entry| &entry.0),
+            Some(ObservableEvent::GraphStarted { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn telemetry_failure_never_changes_graph_outcome() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "passive"
+
+[[nodes]]
+id = "only"
+cell_type = "noop"
+"#,
+        )
+        .unwrap();
+        let telemetry = Arc::new(RecordingTelemetry {
+            fail: true,
+            ..RecordingTelemetry::default()
+        });
+        let output = GraphEngine::new(graph, noop_registry())
+            .with_telemetry(telemetry)
+            .execute(&CellContext::new())
+            .await
+            .unwrap();
+        assert!(output.success);
+    }
+
+    #[tokio::test]
+    async fn retry_policy_executes_retries_and_emits_each_transition() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "retry-observed"
+
+[graph.policy]
+failure_strategy = { retry = { max_retries = 2 } }
+
+[[nodes]]
+id = "flaky"
+cell_type = "flaky"
+"#,
+        )
+        .unwrap();
+        let attempts = Arc::new(AtomicU64::new(0));
+        let corrections = Arc::new(AtomicU64::new(0));
+        let cell_attempts = Arc::clone(&attempts);
+        let cell_corrections = Arc::clone(&corrections);
+        let mut registry = CellRegistry::new();
+        registry.register("flaky", move |_| {
+            Box::new(FailThenSucceedCell {
+                attempts: Arc::clone(&cell_attempts),
+                failures_before_success: 2,
+                corrections: Arc::clone(&cell_corrections),
+            })
+        });
+        let telemetry = Arc::new(RecordingTelemetry::default());
+
+        let output = GraphEngine::new(graph, registry)
+            .with_telemetry(telemetry.clone())
+            .execute(&CellContext::new().with_run_id("retry-run".into()))
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(corrections.load(Ordering::SeqCst), 1);
+        let events = telemetry
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let retries = events
+            .iter()
+            .filter_map(|(event, ancestry)| match event {
+                ObservableEvent::CellRetried {
+                    block,
+                    run,
+                    attempt,
+                    reason,
+                } => Some((block, run, *attempt, reason, ancestry)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(retries.len(), 2);
+        assert_eq!(retries[0].2, 1);
+        assert_eq!(retries[1].2, 2);
+        assert_eq!(retries[0].0, "flaky");
+        assert_eq!(retries[0].1, "retry-run");
+        assert!(retries[0].3.contains("transient failure 1"));
+        assert_eq!(
+            retries[0].4,
+            &[
+                LensScope::Cell("flaky".into()),
+                LensScope::Graph("retry-observed".into()),
+            ]
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|(event, _)| matches!(event, ObservableEvent::CellFailed { .. }))
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(event, _)| matches!(
+                    event,
+                    ObservableEvent::CellPredictionPublished { .. }
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(event, _)| matches!(
+                    event,
+                    ObservableEvent::CellCalibrationReceived { .. }
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn exhausted_retry_policy_emits_one_terminal_failure() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "retry-exhausted"
+
+[graph.policy]
+failure_strategy = { retry = { max_retries = 2 } }
+
+[[nodes]]
+id = "flaky"
+cell_type = "flaky"
+"#,
+        )
+        .unwrap();
+        let attempts = Arc::new(AtomicU64::new(0));
+        let corrections = Arc::new(AtomicU64::new(0));
+        let cell_attempts = Arc::clone(&attempts);
+        let cell_corrections = Arc::clone(&corrections);
+        let mut registry = CellRegistry::new();
+        registry.register("flaky", move |_| {
+            Box::new(FailThenSucceedCell {
+                attempts: Arc::clone(&cell_attempts),
+                failures_before_success: u64::MAX,
+                corrections: Arc::clone(&cell_corrections),
+            })
+        });
+        let telemetry = Arc::new(RecordingTelemetry::default());
+
+        let output = GraphEngine::new(graph, registry)
+            .with_telemetry(telemetry.clone())
+            .execute(&CellContext::new())
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(corrections.load(Ordering::SeqCst), 0);
+        let events = telemetry
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(event, _)| matches!(event, ObservableEvent::CellRetried { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(event, _)| matches!(event, ObservableEvent::CellFailed { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(event, _)| matches!(
+                    event,
+                    ObservableEvent::CellPredictionPublished { .. }
+                ))
+                .count(),
+            1
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|(event, _)| matches!(event, ObservableEvent::CellCalibrationReceived { .. }))
+        );
+        assert!(matches!(
+            events.last().map(|entry| &entry.0),
+            Some(ObservableEvent::GraphFailed { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancelling_flow_emits_cell_cancelled_before_graph_paused() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "cancel-observed"
+
+[[nodes]]
+id = "pending"
+cell_type = "noop"
+"#,
+        )
+        .unwrap();
+        let telemetry = Arc::new(RecordingTelemetry::default());
+        let handle = GraphEngine::new(graph, noop_registry())
+            .with_telemetry(telemetry.clone())
+            .start(CellContext::new().with_run_id("cancel-run".into()));
+        handle.cancel();
+        let output = handle.await_completion().await.expect("cancelled output");
+
+        assert!(!output.success);
+        let events = telemetry
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cancelled = events
+            .iter()
+            .position(|(event, ancestry)| {
+                matches!(
+                    event,
+                    ObservableEvent::CellCancelled { block, run }
+                        if block == "pending" && run == "cancel-run"
+                ) && ancestry
+                    == &[
+                        LensScope::Cell("pending".into()),
+                        LensScope::Graph("cancel-observed".into()),
+                    ]
+            })
+            .expect("CellCancelled event");
+        let paused = events
+            .iter()
+            .position(|(event, _)| matches!(event, ObservableEvent::GraphPaused { .. }))
+            .expect("GraphPaused event");
+        assert!(cancelled < paused);
     }
 
     #[tokio::test]

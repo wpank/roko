@@ -1,5 +1,8 @@
 # 10 — Autonomous Evaluation Generation
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L3 Harness — Verification
 > **Crates**: `roko-gate` (generated_test_gate, property_test_gate), `roko-agent`
 > **Status**: Scaffold (gate implementations exist, generation pipeline designed)

@@ -8,6 +8,173 @@ use thiserror::Error;
 use toml::Value;
 
 use super::provenance::ConfigSource;
+use super::schema::RokoConfig;
+
+/// Severity assigned to a semantic config invariant result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvariantSeverity {
+    Error,
+    Warning,
+}
+
+/// One failed semantic invariant. Passing invariants are omitted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvariantResult {
+    pub invariant_id: u8,
+    pub severity: InvariantSeverity,
+    pub message: String,
+    pub config_path: String,
+}
+
+fn invariant(
+    invariant_id: u8,
+    severity: InvariantSeverity,
+    config_path: impl Into<String>,
+    message: impl Into<String>,
+) -> InvariantResult {
+    InvariantResult {
+        invariant_id,
+        severity,
+        message: message.into(),
+        config_path: config_path.into(),
+    }
+}
+
+/// Validate cross-section relationships on a fully resolved config.
+///
+/// Only failed invariants are returned. Callers reject `Error` results and
+/// may surface `Warning` results without preventing startup.
+#[must_use]
+pub fn validate_invariants(config: &RokoConfig) -> Vec<InvariantResult> {
+    let mut results = Vec::new();
+
+    // A zero plan ceiling means unlimited. A zero turn ceiling is unlimited,
+    // so it cannot be nested beneath a finite plan ceiling.
+    if config.budget.max_plan_usd > 0.0
+        && (config.budget.max_turn_usd == 0.0
+            || config.budget.max_turn_usd > config.budget.max_plan_usd)
+    {
+        results.push(invariant(
+            1,
+            InvariantSeverity::Error,
+            "budget.max_turn_usd",
+            format!(
+                "budget.max_turn_usd ({}) must not exceed budget.max_plan_usd ({})",
+                config.budget.max_turn_usd, config.budget.max_plan_usd
+            ),
+        ));
+    }
+
+    // The live schema models rung retry overrides as pipeline complexity
+    // bands. Each override must remain within the global gate retry ceiling.
+    let pipeline_iterations = [
+        ("mechanical", config.pipeline.mechanical.max_iterations),
+        ("focused", config.pipeline.focused.max_iterations),
+        ("integrative", config.pipeline.integrative.max_iterations),
+        (
+            "architectural",
+            config.pipeline.architectural.max_iterations,
+        ),
+    ];
+    for (name, iterations) in pipeline_iterations {
+        if iterations > config.gates.max_iterations {
+            results.push(invariant(
+                2,
+                InvariantSeverity::Warning,
+                format!("pipeline.{name}.max_iterations"),
+                format!(
+                    "pipeline.{name}.max_iterations ({iterations}) exceeds gates.max_iterations ({})",
+                    config.gates.max_iterations
+                ),
+            ));
+        }
+    }
+    for pair in pipeline_iterations.windows(2) {
+        let [
+            (lower_name, lower_iterations),
+            (higher_name, higher_iterations),
+        ] = pair
+        else {
+            continue;
+        };
+        if lower_iterations > higher_iterations {
+            results.push(invariant(
+                2,
+                InvariantSeverity::Warning,
+                format!("pipeline.{higher_name}.max_iterations"),
+                format!(
+                    "pipeline retry hierarchy decreases from {lower_name} ({lower_iterations}) to {higher_name} ({higher_iterations})"
+                ),
+            ));
+        }
+    }
+
+    for (model, profile) in &config.models {
+        if !config.providers.contains_key(&profile.provider) {
+            results.push(invariant(
+                3,
+                InvariantSeverity::Error,
+                format!("models.{model}.provider"),
+                format!(
+                    "model '{model}' references provider '{}' which is not configured",
+                    profile.provider
+                ),
+            ));
+        }
+    }
+
+    let estimated_parallel_cost =
+        config.conductor.max_agents as f64 * f64::from(config.budget.max_turn_usd) * 10.0;
+    if config.budget.max_plan_usd > 0.0
+        && estimated_parallel_cost > f64::from(config.budget.max_plan_usd)
+    {
+        results.push(invariant(
+            4,
+            InvariantSeverity::Warning,
+            "conductor.max_agents",
+            format!(
+                "estimated parallel-agent cost ({estimated_parallel_cost:.2} USD) exceeds budget.max_plan_usd ({:.2} USD)",
+                config.budget.max_plan_usd
+            ),
+        ));
+    }
+
+    if !(4..=1_000).contains(&config.agent.context_limit_k) {
+        results.push(invariant(
+            5,
+            InvariantSeverity::Warning,
+            "agent.context_limit_k",
+            format!(
+                "agent.context_limit_k ({}) is outside the supported range 4..=1000",
+                config.agent.context_limit_k
+            ),
+        ));
+    }
+
+    if config.conductor.max_agents == 0 {
+        results.push(invariant(
+            6,
+            InvariantSeverity::Error,
+            "conductor.max_agents",
+            "conductor.max_agents must be at least 1",
+        ));
+    }
+
+    if config.learning.replan_on_gate_failure
+        && config.gates.skip_tests
+        && !config.gates.clippy_enabled
+    {
+        results.push(invariant(
+            7,
+            InvariantSeverity::Warning,
+            "learning.replan_on_gate_failure",
+            "replan_on_gate_failure is enabled while test and clippy gates are disabled",
+        ));
+    }
+
+    results
+}
 
 /// Explicit source mode for strict config validation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -287,5 +454,53 @@ mod tests {
             override_policy.validate_at(now),
             Err(DangerousPermissionOverrideError::MissingAcknowledgementEnv)
         );
+    }
+
+    #[test]
+    fn validate_invariants_rejects_budget_ordering() {
+        let mut config = RokoConfig::default();
+        config.budget.max_plan_usd = 5.0;
+        config.budget.max_turn_usd = 6.0;
+
+        let results = validate_invariants(&config);
+        assert!(results.iter().any(|result| {
+            result.invariant_id == 1 && result.severity == InvariantSeverity::Error
+        }));
+    }
+
+    #[test]
+    fn validate_invariants_rejects_missing_provider() {
+        let mut config = RokoConfig::default();
+        config.models.insert(
+            "orphan".to_string(),
+            super::super::provider::ModelProfile {
+                provider: "missing".to_string(),
+                slug: "orphan-v1".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let results = validate_invariants(&config);
+        assert!(results.iter().any(|result| {
+            result.invariant_id == 3 && result.severity == InvariantSeverity::Error
+        }));
+    }
+
+    #[test]
+    fn validate_invariants_warns_on_parallel_capacity() {
+        let mut config = RokoConfig::default();
+        config.budget.max_plan_usd = 50.0;
+        config.budget.max_turn_usd = 1.0;
+        config.conductor.max_agents = 8;
+
+        let results = validate_invariants(&config);
+        assert!(results.iter().any(|result| {
+            result.invariant_id == 4 && result.severity == InvariantSeverity::Warning
+        }));
+    }
+
+    #[test]
+    fn validate_invariants_accepts_default_config() {
+        assert!(validate_invariants(&RokoConfig::default()).is_empty());
     }
 }

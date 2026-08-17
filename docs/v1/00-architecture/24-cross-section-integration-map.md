@@ -1,5 +1,8 @@
 # Cross-Section Integration Map
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** A complete dependency matrix across all 22 documentation sections, identifying
 > every data flow, trait usage, configuration dependency, and missing integration point.
 > This document is the architectural X-ray — it shows how the system's subsystems actually
@@ -324,7 +327,7 @@ transport.
 | **Policy** | 09-Daimon | `DaimonPolicy` | Wired |
 | **Policy** | 05-Learning | `PredictionPolicy` | Wired |
 | **Policy** | 13-Coordination | `CFactorPolicy` | Wired into prompt-time collective calibration guidance |
-| **Policy** | 10-Dreams | `DreamSchedulePolicy` | Missing |
+| **Policy** | 10-Dreams | `DreamSchedulePolicy` | Wired in daemon mode for adaptive idle, cron, and episode count; Bus/intensive policies remain |
 | **Policy** | 16-Heartbeat | `HeartbeatPolicy` | Proposed in REF09 as the publisher of heartbeat tick Pulses |
 | **Policy** | 13-Coordination | `PheromonePolicy` | Missing |
 
@@ -382,8 +385,10 @@ roko.toml (Section 00: Architecture)
 ├── learning.auto_apply      → 05-Learning (experiment promotion) [MISSING]
 ├── conductor.max_agents     → 07-Conductor (concurrency limit)
 ├── conductor.stuck_threshold→ 07-Conductor (stuck detection)
-├── dreams.schedule          → 10-Dreams (consolidation trigger) [MISSING]
-├── dreams.min_episodes      → 10-Dreams (minimum data for NREM) [MISSING]
+├── dreams.scheduled_cron    → 10-Dreams (optional seven-field consolidation cadence)
+├── dreams.episode_count_trigger → 10-Dreams (optional backlog threshold)
+├── dreams.min_episodes_for_dream → 10-Dreams (minimum data for automatic execution)
+├── dreams.quality_gain / quality_penalty → 10-Dreams (adaptive idle delay)
 ├── daimon.initial_pad       → 09-Daimon (starting PAD vector) [MISSING]
 ├── daimon.contrarian_pct    → 09-Daimon (echo chamber prevention) [MISSING]
 ├── neuro.max_entries        → 06-Neuro (knowledge store size)

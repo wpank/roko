@@ -87,6 +87,8 @@ impl VisionEvaluator {
             system_prompt: Some(sys_prompt),
             timeout_ms: Some(llm_timeout_ms),
             name: "vision-evaluator".to_string(),
+            working_dir: Some(self.workdir.clone()),
+            immune_root: Some(self.workdir.clone()),
             ..Default::default()
         };
 

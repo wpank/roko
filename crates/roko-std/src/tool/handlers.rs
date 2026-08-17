@@ -25,7 +25,7 @@ use std::sync::Arc;
 use roko_core::tool::ToolHandler;
 
 use super::builtin::{
-    apply_patch, bash, edit_file, exit_plan_mode, glob, grep, isfr, ls, multi_edit, notebook_edit,
+    apply_patch, bash, edit_file, exit_plan_mode, glob, grep, ls, multi_edit, notebook_edit,
     read_file, run_tests, task_agent, todo_write, web_fetch, web_search, write_file,
 };
 
@@ -114,9 +114,6 @@ pub fn handler_for(name: &str) -> Option<Arc<dyn ToolHandler>> {
         n if n == web_fetch::NAME => Some(Arc::new(web_fetch::Handler)),
         n if n == web_search::NAME => Some(Arc::new(web_search::Handler)),
         n if n == task_agent::NAME => Some(Arc::new(task_agent::Handler)),
-        // ISFR tools: handler ships with no keeper; returns a typed error when
-        // keeper is absent rather than silently succeeding.
-        n if isfr::ISFR_TOOL_NAMES.contains(&n) => Some(Arc::new(isfr::ISFRHandler::new())),
         #[cfg(feature = "chain")]
         other => chain_handler_for(other),
         #[cfg(not(feature = "chain"))]
@@ -141,7 +138,7 @@ impl HandlerRegistry {
         handler_for(name)
     }
 
-    /// Canonical names of handlers that ship unconditionally (16 std + 4 ISFR).
+    /// Canonical names of the 16 handlers that ship unconditionally.
     ///
     /// Chain tool handlers are registered separately via `handler_for` when the
     /// `chain` cargo feature is enabled, but are not listed here so that callers
@@ -165,10 +162,6 @@ impl HandlerRegistry {
             web_fetch::NAME,
             web_search::NAME,
             task_agent::NAME,
-            isfr::ISFR_READ_RATES,
-            isfr::ISFR_READ_RATE_HISTORY,
-            isfr::ISFR_ORACLE_STATUS,
-            isfr::ISFR_SOURCE_STATUS,
         ];
         NAMES
     }
@@ -196,21 +189,10 @@ mod tests {
 
     #[test]
     fn handler_names_match_tool_defs() {
-        use crate::tool::builtin::isfr::ISFR_TOOL_NAMES;
         let reg = HandlerRegistry::new();
         for name in reg.shipped_names() {
             let handler = reg.get(name).expect("handler present");
-            if ISFR_TOOL_NAMES.contains(name) {
-                // ISFRHandler dispatches multiple names via a single handler;
-                // its canonical name() is "isfr.*". Confirm it resolves only.
-                assert!(
-                    handler.name().starts_with("isfr"),
-                    "unexpected handler name `{}` for ISFR tool `{name}`",
-                    handler.name()
-                );
-            } else {
-                assert_eq!(handler.name(), *name);
-            }
+            assert_eq!(handler.name(), *name);
         }
     }
 
@@ -239,39 +221,86 @@ mod tests {
     }
 
     #[test]
-    fn all_20_handlers_ship() {
-        // 16 std built-ins + 4 ISFR tools = 20 shipped handlers.
-        assert_eq!(HandlerRegistry::new().shipped_names().len(), 20);
+    fn all_16_handlers_ship() {
+        assert_eq!(HandlerRegistry::new().shipped_names().len(), 16);
     }
 
     #[test]
-    fn isfr_tools_resolve_to_handlers() {
-        use crate::tool::builtin::isfr::ISFR_TOOL_NAMES;
-        let reg = HandlerRegistry::new();
-        for name in &ISFR_TOOL_NAMES {
-            assert!(
-                reg.get(name).is_some(),
-                "handler_for returned None for ISFR tool `{name}`"
-            );
-        }
-    }
+    fn catalog_dispatch_classes_are_exact() {
+        use roko_core::tool::ToolSource;
+        use std::collections::HashSet;
 
-    #[test]
-    fn isfr_handler_name_sentinel() {
-        // ISFRHandler is a multi-name handler; its canonical name() is "isfr.*".
-        // Confirm all 4 ISFR tools resolve and their handler uses the isfr prefix.
-        use crate::tool::builtin::isfr::ISFR_TOOL_NAMES;
-        let reg = HandlerRegistry::new();
-        for name in &ISFR_TOOL_NAMES {
-            let handler = reg
-                .get(name)
-                .unwrap_or_else(|| panic!("no handler for ISFR tool `{name}`"));
-            assert!(
-                handler.name().starts_with("isfr"),
-                "unexpected handler name `{}` for tool `{name}`",
-                handler.name()
-            );
+        let standard_names: HashSet<&str> = HandlerRegistry::new()
+            .shipped_names()
+            .iter()
+            .copied()
+            .collect();
+        #[cfg(feature = "chain")]
+        let chain_names: HashSet<&str> = roko_chain::tools::CHAIN_TOOL_NAMES
+            .iter()
+            .copied()
+            .collect();
+        let mut standard_count = 0usize;
+        #[cfg(feature = "chain")]
+        let mut chain_count = 0usize;
+        #[cfg(not(feature = "chain"))]
+        let chain_count = 0usize;
+        let mut mcp_count = 0usize;
+
+        for tool in crate::tool::builtin::ROKO_BUILTIN_TOOLS.iter() {
+            match &tool.source {
+                ToolSource::Mcp { server } => {
+                    mcp_count += 1;
+                    assert_eq!(
+                        server, "roko-mcp-github",
+                        "unexpected MCP server for catalog tool `{}`",
+                        tool.name
+                    );
+                    assert!(
+                        handler_for(&tool.name).is_none(),
+                        "MCP tool `{}` must not masquerade as a local handler",
+                        tool.name
+                    );
+                }
+                _ => {
+                    if standard_names.contains(tool.name.as_str()) {
+                        standard_count += 1;
+                    } else {
+                        #[cfg(feature = "chain")]
+                        if chain_names.contains(tool.name.as_str()) {
+                            chain_count += 1;
+                        } else {
+                            panic!(
+                                "non-MCP catalog tool `{}` is in neither local inventory",
+                                tool.name
+                            );
+                        }
+
+                        #[cfg(not(feature = "chain"))]
+                        panic!(
+                            "non-MCP catalog tool `{}` is not in the standard local inventory",
+                            tool.name
+                        );
+                    }
+                    assert!(
+                        handler_for(&tool.name).is_some(),
+                        "non-MCP catalog tool `{}` has no local handler",
+                        tool.name
+                    );
+                }
+            }
         }
+
+        assert_eq!(standard_count, 16);
+        assert_eq!(mcp_count, 19);
+        #[cfg(feature = "chain")]
+        assert_eq!(chain_count, 17);
+        #[cfg(not(feature = "chain"))]
+        assert_eq!(chain_count, 0);
+        assert_eq!(
+            standard_count + chain_count + mcp_count,
+            crate::tool::TOOL_COUNT
+        );
     }
 
     /// When the `chain` feature is enabled, every advertised chain tool must
@@ -285,6 +314,39 @@ mod tests {
             assert!(
                 reg.get(name).is_some(),
                 "no handler for chain tool `{name}` even though `chain` feature is enabled"
+            );
+        }
+    }
+
+    #[cfg(feature = "chain")]
+    #[tokio::test]
+    async fn chain_catalog_handlers_fail_explicitly_without_a_live_backend() {
+        use roko_chain::tools::CHAIN_TOOL_NAMES;
+        use roko_core::tool::{ToolCall, ToolContext, ToolError, ToolResult};
+
+        let reg = HandlerRegistry::new();
+        let ctx = ToolContext::testing("/tmp/roko-std-chain-catalog");
+        for (index, name) in CHAIN_TOOL_NAMES.iter().enumerate() {
+            let handler = reg
+                .get(name)
+                .unwrap_or_else(|| panic!("missing advertised chain handler for `{name}`"));
+            let result = handler
+                .execute(
+                    ToolCall::new(
+                        format!("chain-catalog-{index}"),
+                        *name,
+                        serde_json::json!({}),
+                    ),
+                    &ctx,
+                )
+                .await;
+            assert!(
+                matches!(
+                    result,
+                    ToolResult::Err(ToolError::Other(ref message))
+                        if message.contains(name) && message.contains("not wired")
+                ),
+                "chain handler `{name}` must fail honestly when no live backend is attached; got {result:?}"
             );
         }
     }

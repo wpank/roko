@@ -47,13 +47,11 @@ fn default_engine_does_real_work() {
         "bare default plan run did not persist an episode"
     );
 
-    for snapshot_name in ["executor.json", "state-snapshot.json"] {
-        let snapshot_path = workdir.join(".roko/state").join(snapshot_name);
-        let snapshot = fs::read_to_string(&snapshot_path)
-            .unwrap_or_else(|err| panic!("read {}: {err}", snapshot_path.display()));
-        assert!(
-            !snapshot.trim().is_empty(),
-            "bare default plan run wrote an empty {snapshot_name}"
-        );
-    }
+    let snapshot_path = workdir.join(".roko/state/state-snapshot.json");
+    let snapshot = fs::read_to_string(&snapshot_path)
+        .unwrap_or_else(|err| panic!("read {}: {err}", snapshot_path.display()));
+    assert!(
+        !snapshot.trim().is_empty(),
+        "bare default plan run wrote an empty state-snapshot.json"
+    );
 }

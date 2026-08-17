@@ -1,5 +1,8 @@
 # The Three-Phase Dream Cycle
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: Cognitive Cross-Cut (L0 scheduling + L1 agent dispatch + L2 context assembly)
 >
 > **Synapse Traits**: `Scorer` (Mattar-Daw utility scoring), `Gate` (staging buffer validation), `Composer` (Engram assembly from dream outputs)

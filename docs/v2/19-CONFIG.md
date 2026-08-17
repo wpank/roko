@@ -2,11 +2,15 @@
 
 > Configuration is a Signal. `Kind::Config` carries content-addressed, versioned, lineage-tracked, demurrage-decayed configuration state. Runtime overrides resolve through a Compose Cell. Schema validation runs as a Verify Cell. Hot reload fires from a Trigger Cell. The same five primitives that govern every other subsystem govern configuration.
 
+> **Implementation status:** **E42 manifest COMPLETE (8/8); broader spec PARTIAL.** The runtime configuration layer is implemented: unified TOML loading, schema v1 -> v2 migration before deserialization, layered per-field resolution with provenance, post-merge invariant validation, selective transactional reload, inheritable domain-profile overlays, and per-section freshness warnings in `roko doctor`. Config-as-Signal (`Kind::Config`) and the `ConfigComposeCell`, `ConfigVerifyCell`, `ConfigMigrateCell`, and `ConfigWatchTrigger` protocol Cells remain aspirational. There is a synchronous reload API, but no config filesystem watcher or reload Graph yet.
+
 **Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal, Kind, content addressing, demurrage), [02-CELL](02-CELL.md) (9 protocols, Compose, Verify, Trigger), [03-GRAPH](03-GRAPH.md) (Graph composition), [13-TRIGGERS](13-TRIGGERS.md) (Trigger Cell, file watcher)
 
 ---
 
 ## 1. Config as Signal
+
+> **Implementation status:** Aspirational. No `Kind::Config` exists in code. Configuration is loaded from TOML files, not wrapped in Signals.
 
 Configuration is not special-cased infrastructure. It is data that:
 - has a content hash (identical configs produce the same SHA-256),
@@ -43,62 +47,61 @@ pub fn config_signal(config: &RokoConfig, source: ConfigSource) -> Signal {
 
 ## 2. ConfigSource and Priority
 
-Every config value has a provenance. Sources are ordered by priority -- higher-priority sources override lower ones for the same field.
+> **Implementation status:** Implemented for the runtime loader. `ValidatedConfig::merge_context` retains runtime-only `FieldProvenance` entries for explicit project-file fields, changed global-file values, and named or hierarchical environment overrides. Migration steps are retained in the broader provenance trail. The loader records a default sentinel when no config file exists rather than materializing provenance for every compiled default.
+
+Every config value can have provenance. Sources are ordered by priority -- higher-priority sources override lower ones for the same field.
 
 ```rust
 /// Where a config value came from, in priority order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigSource {
-    /// Priority 0: L4 structural adaptation proposed this value.
-    /// Lowest -- evolution is a suggestion, not a mandate.
-    Evolved { proposal_id: String },
-
-    /// Priority 1: the roko.toml file on disk.
-    TomlFile(PathBuf),
-
-    /// Priority 2: environment variable.
-    EnvVar(String),
-
-    /// Priority 3: CLI flag.
-    CliFlag(String),
-
-    /// Priority 4: runtime override via HTTP API.
-    ApiOverride { principal: String },
+    File,
+    Migration,
+    Default,
+    Env,
+    LocalOverride,
+    CliOverride,
+    Evolved,
+    Composed,
+    ApiOverride,
 }
 
 impl ConfigSource {
-    fn priority(&self) -> u8 {
+    pub const fn priority(&self) -> u8 {
         match self {
-            ConfigSource::Evolved { .. } => 0,
-            ConfigSource::TomlFile(_) => 1,
-            ConfigSource::EnvVar(_) => 2,
-            ConfigSource::CliFlag(_) => 3,
-            ConfigSource::ApiOverride { .. } => 4,
+            Self::ApiOverride => 5,
+            Self::CliOverride => 4,
+            Self::Env => 3,
+            Self::File | Self::LocalOverride => 2,
+            Self::Evolved | Self::Migration => 1,
+            Self::Default | Self::Composed => 0,
         }
     }
 }
 ```
 
-Resolution: `CLI (3) > Env (2) > TOML (1) > Evolved (0)`. Each field resolves independently -- the highest-priority source providing a value for that field wins. API overrides (priority 4) are runtime-only and do not persist to disk.
+Declared resolution is `API (5) > CLI (4) > Env (3) > File/LocalOverride (2) > Evolved/Migration (1) > Default/Composed (0)`. File sources at equal priority are applied in specificity order, with the project file winning over the global file. The unified loader currently materializes the default, global/project file, migration, and environment layers; CLI, API, and evolved categories are available for their owning integrations. API overrides and all provenance metadata are runtime-only and do not persist to `roko.toml`.
 
 ### Environment Variable Convention
 
 ```
-ROKO_SECTION_FIELD  ->  section.field
+ROKO__SECTION__FIELD  ->  section.field
 
-ROKO_CONDUCTOR_MAX_AGENTS=8       -> conductor.max_agents = 8
-ROKO_BUDGET_MAX_PLAN_USD=200      -> budget.max_plan_usd = 200.0
-ROKO_ROUTING_COST_WEIGHT=0.4      -> routing.cost_weight = 0.4
-ROKO_AGENT_DEFAULT_MODEL=opus     -> agent.default_model = "opus"
+ROKO__CONDUCTOR__MAX_AGENTS=8       -> conductor.max_agents = 8
+ROKO__BUDGET__MAX_PLAN_USD=200      -> budget.max_plan_usd = 200.0
+ROKO__ROUTING__COST_WEIGHT=0.4      -> routing.cost_weight = 0.4
+ROKO__AGENT__DEFAULT_MODEL=opus     -> agent.default_model = "opus"
 ```
 
-Convention: `ROKO_` prefix, section and field joined by `_`, all uppercase. `${VAR}` expansion inside TOML string values also supported: `rpc_url = "${ETH_RPC_URL}"`.
+The generic convention uses the `ROKO__` prefix and double underscores between path components. Named compatibility variables such as `ROKO_MODEL`, `ROKO_BACKEND`, `ROKO_CONTEXT_LIMIT_K`, `ROKO_MAX_AGENTS`, and `ROKO_BUDGET_USD` are also supported. `${VAR}` expansion inside TOML string values is supported, for example `rpc_url = "${ETH_RPC_URL}"`.
 
 ---
 
 ## 3. Config Compose Cell
 
-The three override sources (CLI > env > TOML > evolved) are a **Compose protocol** (02-CELL.md) that merges config Signals by priority. The Compose Cell assembles a composite config from multiple partial inputs.
+> **Implementation status:** The `ConfigComposeCell` and Signal lineage shown below are aspirational. The non-Signal runtime equivalent is implemented in `roko-core/src/config/loader.rs`: defaults, global config, the more-specific project file, named environment variables, and hierarchical `ROKO__*` variables resolve field by field, with provenance retained in `MergeContext`.
+
+In the target architecture, API, CLI, environment, file, evolved, and default layers form a **Compose protocol** (02-CELL.md) that merges config Signals by priority. The Compose Cell assembles a composite config from multiple partial inputs.
 
 ```rust
 /// Compose Cell: merges config Signals by priority.
@@ -169,13 +172,15 @@ The merged config Signal records all parent hashes. To trace where a value came 
 
 ## 4. Config Verify Cell
 
+> **Implementation status:** The `ConfigVerifyCell` and Verdict Signal shown below are aspirational. The equivalent runtime checks are implemented by `validate_invariants` and run unconditionally after all file, environment, interpolation, and secret-resolution layers. Error-severity failures reject the load; warning-severity failures are logged and included in validated-config diagnostics.
+
 Configuration validation is a **Verify protocol Cell** (02-CELL.md). It takes a config Signal as input and emits a Verdict Signal.
 
 ```rust
 /// Verify Cell: config schema validation.
 ///
 /// Checks 7 invariants plus type correctness, provider existence,
-/// schema version compatibility, and unknown field detection.
+/// schema version compatibility, and unknown top-level field detection.
 pub struct ConfigVerifyCell;
 
 impl Cell for ConfigVerifyCell {
@@ -216,13 +221,13 @@ impl Cell for ConfigVerifyCell {
 
 | # | Invariant | Parameters | Rule |
 |---|---|---|---|
-| 1 | Budget ordering | `warn_threshold`, `block_threshold` | `warn < block` |
-| 2 | Reward weight sum | `cost_weight + latency_weight + quality_weight` | `== 1.0` (tolerance 0.01) |
-| 3 | Agent capacity vs budget | `max_agents * max_task_usd` | `<= max_session_usd` (warning, not error) |
-| 4 | Gate iterations hierarchy | `gates.max_iterations`, `pipeline.*.max_iterations` | Pipeline overrides gate |
-| 5 | Provider existence | `agent.default_model` | Provider for this model must exist in `[providers]` |
-| 6 | Demurrage floor | `demurrage.min_balance` | `>= 0.0` |
-| 7 | Demurrage bonuses | `demurrage.*_bonus` | `>= 0.0` (negative reinforcement belongs in Verify, not config) |
+| 1 | Budget ordering | `budget.max_turn_usd`, `budget.max_plan_usd` | Turn ceiling must not exceed a finite plan ceiling; error. Zero retains its unlimited-budget semantics. |
+| 2 | Gate iteration hierarchy | `gates.max_iterations`, `pipeline.*.max_iterations` | Each pipeline band must remain within the global gate ceiling, and retries must not decrease from mechanical through architectural; warning. |
+| 3 | Provider existence | `models.*.provider`, `providers` | Every configured model must reference an existing provider; error. |
+| 4 | Agent capacity vs budget | `conductor.max_agents * budget.max_turn_usd * 10` | Heuristic estimated parallel cost should not exceed a finite plan ceiling; warning. |
+| 5 | Context bounds | `agent.context_limit_k` | Must be within `4..=1000`; warning. |
+| 6 | Conductor parallelism | `conductor.max_agents` | Must be at least one; error. |
+| 7 | Learning consistency | `learning.replan_on_gate_failure`, test/clippy gates | Warn when replanning is enabled while both test and clippy gates are disabled. |
 
 ### 4.2 Error Handling
 
@@ -230,7 +235,8 @@ impl Cell for ConfigVerifyCell {
 |---|---|
 | Missing `roko.toml` | Use `RokoConfig::default()` -- system is functional with just defaults |
 | Malformed TOML | Parse error with line/column. Refuse to start. |
-| Unknown field | Warn but continue (forward compatibility) |
+| Unknown top-level field | Add a diagnostic, log a warning, and continue (forward compatibility) |
+| Unknown nested field | Continue silently under serde compatibility; nested unknown-field diagnostics are not implemented |
 | Wrong type | Type mismatch error with expected vs actual |
 | Schema version mismatch | Run migration chain; fail if no migration path |
 | Validation warning | Log warning, continue |
@@ -240,7 +246,11 @@ impl Cell for ConfigVerifyCell {
 
 ## 5. Config Watch Trigger
 
-When `roko.toml` changes on disk, the system reloads without restart. This is a **Trigger Cell** ([13-TRIGGERS](13-TRIGGERS.md)) watching the config file.
+> **Implementation status:** The `ConfigWatchTrigger`, automatic filesystem watch, and Trigger/Compose/Verify reload Graph remain aspirational. The core does implement `ConfigWatchCallback`, `ConfigReloadRequest`, `ReloadPolicy` (500 ms debounce, auto-reload off, reject invariant errors), and synchronous `try_reload`. `try_reload` loads through the unified migration/merge/validation path, leaves the current config unchanged on failure, applies hot-reloadable sections, and reports changes that still require restart.
+
+The hot-reloadable sections are budget, tools, learning, gates/pipeline, conductor, and routing. Agent, provider, model, serve, scheduler, watcher, profile, and server changes are detected but require restart. The CLI owns any future filesystem watcher; `roko-core` deliberately does not depend on `notify`.
+
+The target architecture is a **Trigger Cell** ([13-TRIGGERS](13-TRIGGERS.md)) watching `roko.toml`:
 
 ```rust
 /// Trigger Cell: watches roko.toml for changes and triggers reload.
@@ -333,6 +343,8 @@ to   = "verify"
 
 ## 6. Schema Versioning and Migration
 
+> **Implementation status:** Implemented in the unified loader as `ConfigMigrator`, `MigrationFn`, `MigrationReport`, and `MigrationStep`. TOML is migrated as a `toml::Value` before serde deserialization. The built-in v1 -> v2 step renames legacy nested agent and budget keys and sets both version fields to 2. Missing schema versions default to v1; live loading fails if the chain cannot reach the current schema. The Signal-based `ConfigMigrateCell` below remains aspirational, and the separate flat Mori converter remains available for that legacy format.
+
 Config carries two version numbers:
 
 | Field | Purpose | Current |
@@ -375,7 +387,7 @@ impl Cell for ConfigMigrateCell {
 
         // Migrated config is a new Signal with lineage to the old one
         let new_config: RokoConfig = toml::from_str(&config_value.to_string())?;
-        let mut result = config_signal(&new_config, ConfigSource::Migrated);
+        let mut result = config_signal(&new_config, ConfigSource::Migration);
         result.metadata.parent_hashes = vec![signal.hash()];
 
         Ok(vec![result])
@@ -385,8 +397,10 @@ impl Cell for ConfigMigrateCell {
 
 | Version | Format | Notes |
 |---|---|---|
-| `config_version = 1` | Legacy Mori format | Warns on load, suggests `roko config migrate` |
-| `config_version = 2` | Current unified schema | Default for new workspaces |
+| `schema_version = 1` or omitted | Previous unified schema | Automatically migrates nested `agent.model/backend/effort` and `budget.max_session_usd/max_agent_usd` names before deserialization |
+| `schema_version = 2` | Current unified schema | No migration step is applied |
+
+`config_version` is also set to 2 by the built-in migration. Flat Mori-format conversion is handled separately by `from_mori_toml`; it is not the schema migration chain described here.
 
 ---
 
@@ -402,7 +416,7 @@ schema_version = 2
 name = "my-project"
 ```
 
-Every other section uses `#[serde(default)]` defaults. The system is fully functional with just a project name. The config Compose Cell fills in defaults for any field not specified.
+Every other section uses `#[serde(default)]` defaults. The system is fully functional with just a project name. Today serde and `RokoConfig::default()` fill unspecified fields; a future Config Compose Cell would express that operation in the Signal graph.
 
 ---
 
@@ -427,6 +441,12 @@ The canonical source is `crates/roko-core/src/config/schema.rs`. All types deriv
 | `port` | u16 | `6677` | HTTP port |
 | `cors_origins` | Vec\<String\> | `[]` | Allowed CORS origins (empty = permissive) |
 | `auth_token` | Option\<String\> | None | Legacy single auth token |
+
+### 8.2a `[statehub]` -- StateHubConfig
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `history_retention` | String duration | `"7d"` | Maximum age of projection-history records; enforced during restore, live updates, and queries |
 
 ### 8.3 `[serve]` -- ServeConfig
 
@@ -461,7 +481,7 @@ expires_at = "2027-04-20T00:00:00Z"  # optional
 | `default_backend` | String | `"claude"` | Default provider backend |
 | `default_effort` | String | `"medium"` | Task effort level |
 | `context_limit_k` | u32 | `200` | Context window limit (K tokens) |
-| `bare_mode` | bool | `true` | Run agents in bare mode (no MCP) |
+| `bare_mode` | bool | `true` | For Claude CLI, replace its built-in system prompt with Roko's canonical prompt instead of appending to it; MCP/tool policy remains independently configured |
 | `fallback_model` | Option\<String\> | None | Fallback when primary unavailable |
 | `extensions` | Vec\<String\> | `[]` | Default extension chain |
 | `domain` | Option\<String\> | None | Default domain profile |
@@ -477,6 +497,12 @@ turn_budget_usd = 0.5
 ```
 
 Available override fields: `model`, `backend`, `effort`, `temperament`, `context_limit_k`, `tools`, `budget`, `thresholds`, `routing_overrides`, `turn_budget_usd`.
+
+#### `[runner]` -- CoreRunnerConfig
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `sandbox_level` | RunnerSandboxLevel | `"restrict"` | Live Runner/ACP enforcement level: `none`, `observe`, `restrict`, `isolate`, or `quarantine`; unknown values fail config parsing |
 
 #### `[agent.data_llm]` -- DataLlmConfig
 
@@ -516,6 +542,14 @@ kind = "anthropic_api"
 api_key_env = "ANTHROPIC_API_KEY"
 max_concurrent = 50
 
+[providers.anthropic.limits]
+rpm = 50
+tpm = 40000
+max_cpu_seconds = 120
+max_rss_bytes = 2147483648
+max_processes = 8
+network = "allow"
+
 [providers.ollama]
 kind = "ollama"
 base_url = "http://localhost:11434"
@@ -531,6 +565,22 @@ base_url = "http://localhost:11434"
 | `ttft_timeout_ms` | Option\<u64\> | `15_000` | Time-to-first-token timeout |
 | `connect_timeout_ms` | Option\<u64\> | `5_000` | TCP connection timeout |
 | `max_concurrent` | Option\<u32\> | None | Concurrency limit |
+
+`[providers.<id>.limits]` applies shared request/token budgets and OS-backed guarantees
+to subprocess providers:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `rpm` | u32 | `0` | Requests-per-minute ceiling; zero disables this ceiling |
+| `tpm` | u64 | `0` | Tokens-per-minute ceiling; zero disables this ceiling |
+| `max_cpu_seconds` | Option\<u64\> | None | Per-process CPU-time limit; unsupported requests fail closed |
+| `max_rss_bytes` | Option\<u64\> | None | Address-space/memory ceiling where the host can enforce it |
+| `max_processes` | Option\<u64\> | None | Unix `RLIMIT_NPROC` ceiling (accounted per real user ID) |
+| `network` | `"allow"` or `"deny"` | `"allow"` | Deny all subprocess network access through macOS Seatbelt or Linux firejail+seccomp; unsupported hosts fail closed |
+
+Network denial covers provider subprocesses, not in-process HTTP transports, and is
+currently all-or-nothing rather than domain/port scoped. `timeout_ms` bounds provider
+workloads and the complete Hermes/OpenClaw readiness/version probe sequence.
 
 ### 8.7 `[models]` -- model profiles
 
@@ -558,6 +608,11 @@ cost_output_per_m = 15.0
 | `supports_caching` | bool | `false` | Provider-side caching |
 | `cost_input_per_m` | Option\<f64\> | None | $/M input tokens |
 | `cost_output_per_m` | Option\<f64\> | None | $/M output tokens |
+
+`supports_vision = true` enables inline base64 image input only on the supported
+Anthropic, OpenAI-compatible, and Gemini API transports. It also controls the ACP image
+capability advertisement. Unsupported transports and non-vision models fail closed;
+remote image URLs and audio are not accepted.
 
 ### 8.8 `[routing]` -- model routing
 
@@ -604,9 +659,14 @@ Per-complexity overrides: `[routing.weights.mechanical]`, `[routing.weights.focu
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `max_plan_usd` | f32 | `25.0` | Max cost per plan execution |
-| `max_turn_usd` | f32 | `3.0` | Max cost per agent turn |
+| `max_plan_usd` | f32 | `0.0` | Max cost per plan execution; zero is unlimited |
+| `max_task_usd` | f32 | `0.0` | Base task ceiling; zero is unlimited |
+| `max_turn_usd` | f32 | `0.0` | Max cost per agent turn; zero is unlimited |
 | `prompt_token_budget` | usize | `10_000` | Max prompt tokens |
+| `tier_multipliers.mechanical` | f32 | `0.2` | Mechanical/Haiku task multiplier |
+| `tier_multipliers.standard` | f32 | `1.0` | Standard/Sonnet task multiplier |
+| `tier_multipliers.complex` | f32 | `3.0` | Complex/Opus task multiplier |
+| `tier_multipliers.expert` | f32 | `5.0` | Explicit expert/architectural task multiplier |
 
 ### 8.12 `[conductor]` -- orchestration control
 
@@ -644,6 +704,7 @@ set -- operator and author intent always take precedence.
 | `replan_on_gate_failure` | bool | `true` | Trigger replan on gate failure |
 | `replan_max_per_plan` | u32 | `2` | Max replans per plan |
 | `replan_gate_attempts` | u32 | `3` | Gate attempts before replan |
+| `gate_threshold_flush_interval` | u64 | `10` | Gate observations between adaptive-threshold writes; zero normalizes to one |
 
 ### 8.14 `[demurrage]` -- signal decay
 
@@ -673,77 +734,70 @@ set -- operator and author intent always take precedence.
 
 ## 9. Domain Profiles as Cognitive Postures
 
-A domain profile is a **complete cognitive posture** -- not a string label like `"coding"`. It bundles clock configuration, extensions, wakeup events, context weights, gate configuration, and infrastructure settings into a coherent whole.
+> **Implementation status:** Inheritable config overlays are implemented in `config/schema.rs`, including cycle detection, a five-edge depth limit, field-wise gate merging, an extensible `extra` map, and `coding`, `research`, and `review` built-in definitions. Automatic selection and application of a profile to an agent runtime is not wired yet. The broader clock, extension, wakeup, context-weight, and infrastructure posture described by earlier versions of this chapter remains aspirational.
+
+A domain profile is currently a named, optional overlay for model, effort, context, iteration, tool, and gate settings.
 
 ### 9.1 Profile Schema
 
 ```rust
 pub struct DomainProfile {
     pub name: String,
-    pub version: Version,
-    pub description: String,
-    pub base: Option<String>,           // extends another profile
-    pub clock: ClockConfig,
-    pub extensions: ExtensionConfig,
-    pub wakeup: WakeupConfig,
-    pub context_weights: ContextWeights,
-    pub gates: GateConfig,
-    pub infrastructure: InfraConfig,
-    pub models: ModelConfig,
+    pub base: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub context_limit_k: Option<u32>,
+    pub max_iterations: Option<u32>,
+    pub tool_profile: Option<String>,
+    pub gate_config: Option<GateProfileConfig>,
+    pub extra: HashMap<String, toml::Value>,
 }
 
-pub struct ClockConfig {
-    pub gamma_ms: u64,                  // perception tick
-    pub theta_ms: u64,                  // inference tick
-    pub delta_ms: u64,                  // reflection tick
-    pub regime: Regime,                 // Calm / Normal / Volatile / Crisis
-}
-
-pub struct ContextWeights {
-    pub neuro: f64,                     // knowledge store context
-    pub task: f64,                      // task-specific context
-    pub research: f64,                  // research findings
-    pub heuristic: f64,                 // learned heuristics
-    pub episode: f64,                   // past episodes
-    pub pheromone: f64,                 // stigmergic signals
-    pub affect: f64,                    // somatic markers
-    pub system: f64,                    // system instructions
+pub struct GateProfileConfig {
+    pub skip_tests: Option<bool>,
+    pub clippy_enabled: Option<bool>,
+    pub max_rung: Option<u32>,
 }
 ```
 
 ### 9.2 Profile Comparison
 
-| Dimension | Coding | Security Audit | Research | Trading |
-|---|---|---|---|---|
-| **Clock (gamma)** | 200ms | 300ms | 500ms | 100ms |
-| **Clock (theta)** | 3000ms | 5000ms | 10000ms | 1000ms |
-| **Extensions** | git, compiler, test-runner | vuln-scanner, dep-audit | web-search, citation-check | chain-reader, risk-mgr |
-| **Wakeup** | Code changes, PR events | Scheduled scans, vuln feeds | Manual trigger, cron | Price ticks, chain events |
-| **Context** | High task (0.4) | High research (0.3) | High research (0.4) | High task (0.4), high neuro (0.3) |
-| **Gates** | compile, test, clippy | vuln_scan, llm_judge, diff | fact-check, citation | risk, position-limit |
-| **Budget** | $10, ephemeral | $25, persistent | $15, ephemeral | $50, persistent |
+`builtin_profiles()` supplies these definitions to callers; `RokoConfig::default()` keeps its `profiles` map empty.
+
+| Profile | Implemented overlay values |
+|---|---|
+| `coding` | `effort = "high"`, `tool_profile = "full"`, `max_iterations = 3` |
+| `research` | `effort = "medium"`, `context_limit_k = 200`, `gate_config.skip_tests = true` |
+| `review` | `effort = "low"`, `max_iterations = 1` |
 
 ### 9.3 Profile Inheritance
 
-Profiles extend other profiles via `base`. Deep merge: arrays are concatenated (extensions), objects are merged (gates config), scalars are overridden (clock values).
+Profiles in `RokoConfig.profiles` extend other profiles via `base`. Resolution follows at most five inheritance edges and rejects cycles or missing parents. Optional scalar values from the child override the parent, gate options merge field by field, and child `extra` entries replace parent entries with the same key.
 
 ```toml
-[profile]
-name = "defi-security-audit"
-base = "security-audit"           # inherits all settings
+[profiles.base-review]
+name = "base-review"
+effort = "low"
+max_iterations = 1
 
-[profile.extensions]
-enabled = ["chain-reader", "slither-analyzer"]   # added on top of base
+[profiles.security-review]
+name = "security-review"
+base = "base-review"
+model = "claude-opus-4-6"
+tool_profile = "security"
 
-[profile.gates]
-vuln_scan = { severity = "low" }                 # stricter threshold
+[profiles.security-review.gate_config]
+skip_tests = false
+clippy_enabled = true
 ```
 
 ---
 
 ## 10. Config Evolution in L4
 
-Configuration is evolvable. In L4 structural adaptation (07-LEARNING.md), the system proposes config changes based on observed outcomes.
+> **Implementation status:** `ConfigSource::Evolved`, its priority, and provenance constructors are implemented. The L4 proposal, approval, persistence, and Signal flow below is not wired.
+
+Configuration is intended to be evolvable. In L4 structural adaptation (07-LEARNING.md), the system proposes config changes based on observed outcomes.
 
 ```rust
 /// L4 config evolution: the system proposes config changes.
@@ -754,7 +808,7 @@ Configuration is evolvable. In L4 structural adaptation (07-LEARNING.md), the sy
 /// 3. Proposal goes through ConfigVerifyCell.
 /// 4. If valid, enters human approval queue.
 /// 5. If approved, new Config Signal emitted with source Evolved.
-/// 6. Evolved has LOWEST priority -- it is a suggestion, not a mandate.
+/// 6. Evolved is below file/env/CLI/API inputs but above compiled defaults.
 pub struct ConfigProposal {
     pub changes: BTreeMap<String, serde_json::Value>,
     pub rationale: String,
@@ -765,7 +819,9 @@ pub struct ConfigProposal {
 
 ### 10.1 Config Demurrage
 
-Stale config loses balance. When a config Signal's balance drops below threshold, the system emits a warning Pulse:
+> **Implementation status:** A pragmatic freshness layer is implemented. `ConfigFreshness` persists per-section review timestamps at `.roko/state/config-freshness.json`, `touch_changed` updates sections from a config diff, and `config_freshness_diagnostics` warns when a tracked timestamp is older than the default 30-day threshold. `roko doctor` displays those warnings. Only sections present in the freshness file are evaluated; never-tracked sections are silent. Signal balance decay and warning Pulses remain aspirational.
+
+The target Signal architecture would make stale config lose balance and emit a warning Pulse:
 
 ```rust
 pub fn config_demurrage_check(config_signal: &Signal, now: Instant) -> Option<Signal> {
@@ -898,6 +954,7 @@ express_mode = false
 [learning]
 replan_on_gate_failure = true
 file_intel_max_entries = 15
+gate_threshold_flush_interval = 10
 
 [gates]
 clippy_enabled = true
@@ -922,6 +979,8 @@ domain = "research"
 
 ## 14. Acceptance Criteria
 
+This table describes the chapter-level target. E42 covers the non-Signal migration, resolution/provenance, invariant, pull-reload, profile-overlay, and tracked-section freshness paths. Criteria involving `Kind::Config`, protocol Cells, a filesystem watch trigger, the reload Graph, automatic profile application, or L4 proposals remain open.
+
 | Criterion | Verification |
 |---|---|
 | Config Signal round-trips through serialize -> parse -> reserialize with content hash preserved | Unit test on representative config |
@@ -932,13 +991,13 @@ domain = "research"
 | Config migration chain: v1 -> v2 preserves all values | Round-trip migration test |
 | Schema version mismatch triggers migration automatically | Test with old-version config |
 | Malformed TOML refuses to start with line/column error | Parse error test |
-| Unknown fields warn but do not fail | Forward compatibility test |
+| Unknown top-level fields warn but do not fail | Forward compatibility test; nested unknown fields currently remain serde-compatible and silent |
 | Missing roko.toml uses defaults and is fully functional | Default config boot test |
 | Minimal config (just project.name) produces functional system | Minimal config test |
-| Domain profile configures all dimensions simultaneously | Set `profile = "security-audit"`, verify clock + extensions + gates + models |
-| Profile inheritance: child overrides parent via deep merge | Profile with `base`, verify merge semantics |
-| Environment variable convention: ROKO_SECTION_FIELD maps correctly | Env var resolution test |
-| Config demurrage: stale config emits warning after 30 days | Demurrage check test |
-| L4 config proposal: evolved values have lowest priority | Compose with Evolved source, verify CLI/env override it |
+| Domain profile overlay configures the implemented model/effort/context/tool/gate dimensions | Resolve a named profile and inspect the overlay |
+| Profile inheritance: child overrides parent, with field-wise gate and `extra` merging | Profile with `base`, verify merge semantics and cycle/depth rejection |
+| Environment variable convention: `ROKO__SECTION__FIELD` maps correctly | Env var resolution test |
+| Config freshness: a tracked stale section emits a doctor warning after 30 days | Freshness diagnostic and doctor-display tests |
+| L4 config proposal: evolved values remain below file/env/CLI/API inputs | Compare `ConfigSource` priorities; proposal flow remains open |
 | Secret management: secrets never appear in config Signal payload | Lineage inspection test |
 | Multi-workspace daemon isolates config per workspace | Config isolation test |

@@ -1,5 +1,8 @@
 # 11 — EvoSkills: Self-Evolving Verification Skills
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L3 Harness — Verification × L2 Engine — Learning
 > **Crates**: `roko-learn` (skill_library, pattern_discovery), `roko-gate`
 > **Status**: Skill library scaffold exists, adversarial verification designed

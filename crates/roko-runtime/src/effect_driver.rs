@@ -14,7 +14,7 @@ use crate::pipeline_state::{CommitOutcome, PipelineInput};
 pub use roko_core::RuntimeEvent;
 pub use roko_core::foundation::{
     AffectPolicy, ChatMessage, DispatchModulation, GateReport, MessageRole, ModelCallRequest,
-    ModelCallResponse, TokenUsage,
+    ModelCallResponse, ModelInputBlock, ModelInputMessage, TokenUsage,
 };
 use roko_core::foundation::{
     CachePolicy, FeedbackEvent, FeedbackSink, GateConfig, GateRunner, GateVerdict, ModelCaller,
@@ -69,6 +69,7 @@ pub struct EffectDriver {
     run_id: String,
     workdir: PathBuf,
     feedback_totals: tokio::sync::Mutex<WorkflowFeedbackTotals>,
+    input_messages: Vec<ModelInputMessage>,
 }
 
 impl EffectDriver {
@@ -79,7 +80,15 @@ impl EffectDriver {
             run_id,
             workdir,
             feedback_totals: tokio::sync::Mutex::new(WorkflowFeedbackTotals::default()),
+            input_messages: Vec::new(),
         }
+    }
+
+    /// Attach the original ordered multimodal user input to workflow agent turns.
+    #[must_use]
+    pub fn with_input_messages(mut self, input_messages: Vec<ModelInputMessage>) -> Self {
+        self.input_messages = input_messages;
+        self
     }
 
     pub(crate) async fn workflow_feedback_totals(&self) -> WorkflowFeedbackTotals {
@@ -161,6 +170,7 @@ impl EffectDriver {
             modulation: &modulation,
             prompt_section_ids: prompt_section_ids.clone(),
             knowledge_ids: knowledge_ids.clone(),
+            input_messages: self.input_messages.clone(),
         });
 
         tracing::debug!(
@@ -320,14 +330,10 @@ impl EffectDriver {
                 if let Some(ref affect) = self.services.affect_policy {
                     let mut policy = affect.lock().await;
                     for verdict in &report.verdicts {
-                        // E05-T06: Use the canonical rung_selector::Rung mapping
-                        // from roko-gate's registry instead of a local ad-hoc table.
-                        let canonical = roko_gate::rung_for_gate_name(&verdict.gate_name);
-                        let rung = canonical.map(|r| r.as_index() as u8).unwrap_or(u8::MAX);
-                        // Deterministic gates (those with a canonical rung in
-                        // Compile/Lint/Test) produce binary pass/fail with confidence 1.0.
-                        // Heuristic/standalone gates use lower confidence.
-                        let confidence = if roko_gate::is_deterministic_gate(&verdict.gate_name) {
+                        // Classification is supplied by the injected GateRunner so runtime
+                        // does not depend on the concrete gate registry.
+                        let rung = verdict.classification.canonical_rung.unwrap_or(u8::MAX);
+                        let confidence = if verdict.classification.deterministic {
                             1.0_f64
                         } else {
                             0.5_f64
@@ -581,10 +587,12 @@ struct ModelCallRequestParts<'a> {
     modulation: &'a DispatchModulation,
     prompt_section_ids: Vec<String>,
     knowledge_ids: Vec<String>,
+    input_messages: Vec<ModelInputMessage>,
 }
 
 fn model_call_request(parts: ModelCallRequestParts<'_>) -> ModelCallRequest {
     let max_tokens = modulated_max_tokens(parts.modulation);
+    let input_messages = workflow_input_messages(&parts.user_content, parts.input_messages);
     ModelCallRequest {
         model: parts.model.to_string(),
         system: Some(parts.system_prompt),
@@ -592,6 +600,7 @@ fn model_call_request(parts: ModelCallRequestParts<'_>) -> ModelCallRequest {
             role: MessageRole::User,
             content: parts.user_content,
         }],
+        input_messages,
         max_tokens: Some(max_tokens),
         temperature: Some(modulated_temperature(parts.modulation)),
         role: Some(parts.role.to_string()),
@@ -609,6 +618,25 @@ fn model_call_request(parts: ModelCallRequestParts<'_>) -> ModelCallRequest {
         cache_policy: modulated_cache_policy(parts.modulation),
         tools: Vec::new(),
     }
+}
+
+fn workflow_input_messages(
+    phase_prompt: &str,
+    original: Vec<ModelInputMessage>,
+) -> Vec<ModelInputMessage> {
+    if original.is_empty() {
+        return Vec::new();
+    }
+    let mut content = vec![ModelInputBlock::text(format!(
+        "## Workflow phase instructions\n\n{phase_prompt}\n\n## Original multimodal request\n"
+    ))];
+    for message in original {
+        if message.role == MessageRole::System {
+            continue;
+        }
+        content.extend(message.content);
+    }
+    vec![ModelInputMessage::new(MessageRole::User, content)]
 }
 
 fn modulated_max_tokens(modulation: &DispatchModulation) -> u32 {
@@ -710,7 +738,39 @@ mod tests {
 
     use parking_lot::Mutex;
     use roko_core::BehavioralState;
-    use roko_core::foundation::AffectContext;
+    use roko_core::foundation::{AffectContext, GateClassification};
+
+    #[test]
+    fn workflow_multimodal_input_keeps_phase_prefix_and_original_block_order() {
+        let original = vec![ModelInputMessage::new(
+            MessageRole::User,
+            vec![
+                ModelInputBlock::text("before"),
+                ModelInputBlock::image("image/png", "aGVsbG8="),
+                ModelInputBlock::text("after"),
+            ],
+        )];
+
+        let messages = workflow_input_messages("implement this", original);
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(
+            &messages[0].content[0],
+            ModelInputBlock::Text { text } if text.contains("implement this")
+        ));
+        assert!(matches!(
+            &messages[0].content[1],
+            ModelInputBlock::Text { text } if text == "before"
+        ));
+        assert!(matches!(
+            &messages[0].content[2],
+            ModelInputBlock::Image { media_type, data }
+                if media_type == "image/png" && data == "aGVsbG8="
+        ));
+        assert!(matches!(
+            &messages[0].content[3],
+            ModelInputBlock::Text { text } if text == "after"
+        ));
+    }
 
     struct RecordingModelCaller {
         captured: Arc<Mutex<Option<ModelCallRequest>>>,
@@ -945,65 +1005,122 @@ mod tests {
         ));
     }
 
-    /// E05-T06: effect driver uses the canonical rung_selector::Rung mapping
-    /// from roko-gate's registry, not a local ad-hoc match table.
-    #[test]
-    fn effect_driver_uses_canonical_rung_mapping() {
-        use roko_gate::rung_selector::Rung;
+    struct ClassifiedGateRunner;
 
-        // Gates with canonical rungs map to Rung enum values.
-        let canonical_cases: &[(&str, Rung)] = &[
-            ("compile", Rung::Compile),
-            ("compile:cargo", Rung::Compile),
-            ("clippy", Rung::Lint),
-            ("clippy:cargo", Rung::Lint),
-            ("test", Rung::Test),
-            ("test:cargo", Rung::Test),
-        ];
-        for (name, expected) in canonical_cases {
-            let resolved = roko_gate::rung_for_gate_name(name);
-            assert_eq!(
-                resolved,
-                Some(*expected),
-                "{name} should map to canonical {expected:?}"
-            );
-            // The u8 index matches the Rung enum's as_index().
-            let index = resolved.unwrap().as_index() as u8;
-            assert_eq!(index, expected.as_index() as u8, "{name} index mismatch");
+    impl GateRunner for ClassifiedGateRunner {
+        fn run_gates<'life0, 'async_trait>(
+            &'life0 self,
+            _config: GateConfig,
+        ) -> Pin<Box<dyn Future<Output = roko_core::Result<GateReport>> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async {
+                Ok(GateReport {
+                    verdicts: vec![
+                        GateVerdict {
+                            gate_name: "synthetic-deterministic".to_string(),
+                            classification: GateClassification {
+                                canonical_rung: Some(2),
+                                deterministic: true,
+                            },
+                            passed: true,
+                            skipped: false,
+                            skip_reason: None,
+                            output: String::new(),
+                            duration_ms: 1,
+                        },
+                        GateVerdict {
+                            gate_name: "synthetic-standalone".to_string(),
+                            classification: GateClassification::default(),
+                            passed: true,
+                            skipped: false,
+                            skip_reason: None,
+                            output: String::new(),
+                            duration_ms: 1,
+                        },
+                    ],
+                })
+            })
+        }
+    }
+
+    struct RecordingGateAffectPolicy {
+        observations: Arc<Mutex<Vec<(String, bool, u8, f64)>>>,
+    }
+
+    impl AffectPolicy for RecordingGateAffectPolicy {
+        fn pre_dispatch(&self, _task_id: &str, _role: &str) -> AffectContext {
+            AffectContext {
+                behavioral_state: BehavioralState::Engaged,
+                pad: [0.0; 3],
+                emotional_tag: None,
+            }
         }
 
-        // Standalone gates (diff, fmt, custom, judge) have no canonical rung.
-        let standalone_cases = [
-            "diff",
-            "diff:git",
-            "fmt",
-            "fmt:cargo",
-            "format",
-            "custom",
-            "custom:shell",
-            "shell",
-            "judge",
-            "llm-judge",
-        ];
-        for name in standalone_cases {
-            assert_eq!(
-                roko_gate::rung_for_gate_name(name),
-                None,
-                "{name} is standalone and should have no canonical rung"
-            );
+        fn on_task_outcome(
+            &mut self,
+            _task_id: &str,
+            _succeeded: bool,
+            _tokens_used: u64,
+            _cost_usd: f64,
+        ) {
         }
 
-        // Unknown gates also return None.
-        assert_eq!(roko_gate::rung_for_gate_name("nonexistent"), None);
+        fn on_gate_result(&mut self, gate_name: &str, passed: bool, rung: u8, confidence: f64) {
+            self.observations
+                .lock()
+                .push((gate_name.to_string(), passed, rung, confidence));
+        }
 
-        // Deterministic-gate helper classifies correctly.
-        assert!(roko_gate::is_deterministic_gate("compile"));
-        assert!(roko_gate::is_deterministic_gate("clippy"));
-        assert!(roko_gate::is_deterministic_gate("test"));
-        assert!(!roko_gate::is_deterministic_gate("diff"));
-        assert!(!roko_gate::is_deterministic_gate("custom"));
-        assert!(!roko_gate::is_deterministic_gate("judge"));
-        assert!(!roko_gate::is_deterministic_gate("nonexistent"));
+        fn modulate_dispatch(&self, _role: &str, _params: &mut DispatchModulation) {}
+
+        fn behavioral_state(&self) -> BehavioralState {
+            BehavioralState::Engaged
+        }
+
+        fn persist<'life0, 'async_trait>(
+            &'life0 self,
+        ) -> Pin<Box<dyn Future<Output = roko_core::Result<()>> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn run_gates_consumes_classification_from_the_injected_result() {
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let services = EffectServices {
+            default_model: "mock-model".to_string(),
+            model_caller: Arc::new(RecordingModelCaller {
+                captured: Arc::new(Mutex::new(None)),
+            }),
+            prompt_assembler: Arc::new(StaticPromptAssembler),
+            feedback_sink: Arc::new(RecordingFeedbackSink),
+            gate_runner: Arc::new(ClassifiedGateRunner),
+            affect_policy: Some(Arc::new(tokio::sync::Mutex::new(
+                RecordingGateAffectPolicy {
+                    observations: Arc::clone(&observations),
+                },
+            ))),
+        };
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let driver = EffectDriver::new(services, "run-test".to_string(), tempdir.path().into());
+
+        let input = driver.run_gates(&["ignored".to_string()], &[]).await;
+
+        assert!(matches!(input, PipelineInput::GatesPassed));
+        assert_eq!(
+            *observations.lock(),
+            vec![
+                ("synthetic-deterministic".to_string(), true, 2, 1.0),
+                ("synthetic-standalone".to_string(), true, u8::MAX, 0.5),
+            ]
+        );
     }
 
     fn init_clean_git_workdir(workdir: &std::path::Path) {

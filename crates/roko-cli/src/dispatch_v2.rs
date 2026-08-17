@@ -16,15 +16,19 @@ use anyhow::{Context as _, Result as AnyhowResult};
 use roko_agent::AgentRuntimeEvent;
 use roko_agent::StreamChunk;
 use roko_agent::model_call_service::ProviderOutcomeRecorder;
-use roko_agent::provider::{AgentOptions, ProviderSemaphores};
+use roko_agent::process::ResourceLimits;
+use roko_agent::provider::{AgentOptions, LocalToolMcpServer, ProviderSemaphores};
 use roko_agent::rate_limit::ProviderRateLimiter;
+use roko_agent::safety::contract::AgentContract;
 use roko_agent::{Agent, AgentResult, create_agent_for_model};
 use roko_core::agent::{ProviderKind, resolve_model};
 use roko_core::config::schema::{ModelProfile, ProviderConfig, RokoConfig};
+use roko_core::tool::aliases::{canonical_names, claude_of_canonical};
 use roko_core::{Body, Context, Kind, Signal};
 use roko_learn::model_call_feedback::{ModelCallFeedback, ModelCallFeedbackRecorder};
 use roko_learn::provider_health::ProviderHealthRegistry;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::learning_helpers::capture_runtime_model_slugs;
@@ -118,6 +122,8 @@ pub async fn dispatch_via_model_call_service(prompt: &str) -> AnyhowResult<Dispa
     let cost_table = roko_agent::CostTable::from_config_with_defaults(&model_config.models);
     let mut service = ModelCallService::new(model.clone())
         .with_config(model_config.clone())
+        .with_working_dir(workdir.clone())
+        .with_immune_root(workdir.clone())
         .with_cost_table(cost_table)
         .with_feedback_sink(feedback_sink)
         .with_inference_observer(Arc::new(
@@ -191,6 +197,8 @@ pub enum CliProtocol {
     ClaudeStreamJson,
     /// OpenAI Codex CLI `codex exec --json`.
     CodexExecJson,
+    /// Google Gemini CLI `--output-format stream-json`.
+    GeminiStreamJson,
 }
 
 impl CliProtocol {
@@ -199,6 +207,7 @@ impl CliProtocol {
         match self {
             Self::ClaudeStreamJson => "claude-cli",
             Self::CodexExecJson => "codex-cli",
+            Self::GeminiStreamJson => "gemini-cli",
         }
     }
 
@@ -207,12 +216,13 @@ impl CliProtocol {
         match self {
             Self::ClaudeStreamJson => ProviderKind::ClaudeCli,
             Self::CodexExecJson => ProviderKind::OpenAiCompat,
+            Self::GeminiStreamJson => ProviderKind::GeminiCli,
         }
     }
 
     /// Whether this CLI supports resuming an existing session through runner config.
     pub const fn supports_resume(self) -> bool {
-        matches!(self, Self::ClaudeStreamJson)
+        matches!(self, Self::ClaudeStreamJson | Self::GeminiStreamJson)
     }
 
     /// Whether this CLI accepts an MCP config path directly.
@@ -259,6 +269,36 @@ pub struct CliProviderConfig {
     pub command: PathBuf,
     /// Provider-level extra args from `roko.toml`.
     pub provider_args: Vec<String>,
+    /// OS resource limits applied to each CLI subprocess.
+    pub resource_limits: Option<ResourceLimits>,
+}
+
+/// Per-agent authority for the loopback MCP server that exposes in-process
+/// declarative-plugin handlers to an opaque CLI provider.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CliPluginMcpConfig {
+    /// Stable MCP server name used in provider tool namespaces.
+    pub server_name: String,
+    /// Loopback Streamable HTTP endpoint.
+    pub url: String,
+    /// HMAC-signed task authority. Never serialize it into persisted dispatch
+    /// plans or print it through `Debug`.
+    #[serde(default, skip_serializing)]
+    pub bearer_token: String,
+    /// Raw MCP tool names permitted by the effective task contract.
+    pub tool_names: Vec<String>,
+}
+
+impl std::fmt::Debug for CliPluginMcpConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CliPluginMcpConfig")
+            .field("server_name", &self.server_name)
+            .field("url", &self.url)
+            .field("bearer_token", &"[REDACTED]")
+            .field("tool_names", &self.tool_names)
+            .finish()
+    }
 }
 
 impl CliProviderConfig {
@@ -268,6 +308,7 @@ impl CliProviderConfig {
             descriptor: CliProviderDescriptor::new(provider_id, CliProtocol::ClaudeStreamJson),
             command: command.into(),
             provider_args: Vec::new(),
+            resource_limits: None,
         }
     }
 
@@ -277,6 +318,17 @@ impl CliProviderConfig {
             descriptor: CliProviderDescriptor::new(provider_id, CliProtocol::CodexExecJson),
             command: command.into(),
             provider_args: Vec::new(),
+            resource_limits: None,
+        }
+    }
+
+    /// Build a Gemini CLI provider.
+    pub fn gemini(provider_id: impl Into<String>, command: impl Into<PathBuf>) -> Self {
+        Self {
+            descriptor: CliProviderDescriptor::new(provider_id, CliProtocol::GeminiStreamJson),
+            command: command.into(),
+            provider_args: Vec::new(),
+            resource_limits: None,
         }
     }
 
@@ -310,6 +362,7 @@ impl CliProviderConfig {
                     Self::claude(provider_id, command)
                 };
                 config.provider_args = provider.args.clone().unwrap_or_default();
+                config.resource_limits = configured_cli_resource_limits(provider)?;
                 Ok(config)
             }
             ProviderKind::OpenAiCompat => {
@@ -317,6 +370,7 @@ impl CliProviderConfig {
                 if executable_name(&command).contains("codex") {
                     let mut config = Self::codex(provider_id, command);
                     config.provider_args = provider.args.clone().unwrap_or_default();
+                    config.resource_limits = configured_cli_resource_limits(provider)?;
                     Ok(config)
                 } else {
                     Err(DispatchV2Error::UnsupportedCommand {
@@ -325,12 +379,16 @@ impl CliProviderConfig {
                     })
                 }
             }
-            // Hermes and OpenClaw support CLI one-shot mode; treat like ClaudeCli
-            // when a command is configured.
-            ProviderKind::Hermes | ProviderKind::OpenClaw => {
-                let command = required_command(&provider_id, provider)?;
-                let mut config = Self::claude(provider_id, command);
+            ProviderKind::GeminiCli => {
+                let command = provider
+                    .command
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|command| !command.is_empty())
+                    .unwrap_or("gemini");
+                let mut config = Self::gemini(provider_id, command);
                 config.provider_args = provider.args.clone().unwrap_or_default();
+                config.resource_limits = configured_cli_resource_limits(provider)?;
                 Ok(config)
             }
             // API-backed and ACP providers are dispatched via AgentResultBridge,
@@ -340,8 +398,9 @@ impl CliProviderConfig {
             | ProviderKind::CursorCli
             | ProviderKind::PerplexityApi
             | ProviderKind::GeminiApi
-            | ProviderKind::GeminiCli
-            | ProviderKind::CerebrasApi) => {
+            | ProviderKind::CerebrasApi
+            | ProviderKind::Hermes
+            | ProviderKind::OpenClaw) => {
                 Err(DispatchV2Error::UnsupportedCliProvider { provider_id, kind })
             }
         }
@@ -373,6 +432,7 @@ impl CliDispatchProvider for CliProviderConfig {
         match self.descriptor.protocol {
             CliProtocol::ClaudeStreamJson => self.build_claude_invocation(request),
             CliProtocol::CodexExecJson => self.build_codex_invocation(request),
+            CliProtocol::GeminiStreamJson => self.build_gemini_invocation(request),
         }
     }
 }
@@ -412,17 +472,35 @@ impl CliProviderConfig {
             args.push("--effort".to_string());
             args.push(effort.clone());
         }
-        if let Some(mcp_config) = &request.mcp_config {
+        if request.mcp_config.is_some() || request.plugin_mcp.is_some() {
             args.push("--mcp-config".to_string());
-            args.push(mcp_config.to_string_lossy().to_string());
+            if let Some(mcp_config) = &request.mcp_config {
+                args.push(mcp_config.to_string_lossy().to_string());
+            }
+            if let Some(plugin_mcp) = &request.plugin_mcp {
+                args.push(claude_plugin_mcp_json(plugin_mcp));
+            }
+            args.push("--strict-mcp-config".to_string());
         }
         if let Some(session) = &request.resume_session {
             args.push("--resume".to_string());
             args.push(session.clone());
         }
+        if let Some(allowed) = &request.allowed_tools {
+            args.push("--tools".to_string());
+            args.push(
+                allowed
+                    .iter()
+                    .filter_map(|name| claude_policy_tool_name(name, request.plugin_mcp.as_ref()))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        }
         for tool in &request.disallowed_tools {
-            args.push("--disallowed-tools".to_string());
-            args.push(tool.clone());
+            if let Some(tool) = claude_policy_tool_name(tool, request.plugin_mcp.as_ref()) {
+                args.push("--disallowed-tools".to_string());
+                args.push(tool);
+            }
         }
 
         Ok(CliInvocation::new(
@@ -437,8 +515,21 @@ impl CliProviderConfig {
         &self,
         request: &CliDispatchRequest,
     ) -> Result<CliInvocation, DispatchV2Error> {
+        // Codex CLI has no binding native-tool allow/deny flag. The MCP
+        // bridge enforces its own contract-scoped catalog, but accepting a
+        // request-level policy here would still leave Codex built-ins outside
+        // that policy. Preserve the existing fail-closed behavior.
+        if request.allowed_tools.is_some() || !request.disallowed_tools.is_empty() {
+            return Err(DispatchV2Error::ToolPolicyUnsupported {
+                provider_id: self.descriptor.provider_id.clone(),
+                protocol: self.descriptor.protocol,
+            });
+        }
         let mut args = vec!["exec".to_string()];
         args.extend(self.provider_args.clone());
+        if let Some(plugin_mcp) = &request.plugin_mcp {
+            args.extend(codex_plugin_mcp_args(plugin_mcp));
+        }
         args.push("--json".to_string());
         args.push("--cd".to_string());
         args.push(request.workdir.to_string_lossy().to_string());
@@ -471,6 +562,72 @@ impl CliProviderConfig {
 
         Ok(CliInvocation::new(self, request, args, stdin))
     }
+
+    fn build_gemini_invocation(
+        &self,
+        request: &CliDispatchRequest,
+    ) -> Result<CliInvocation, DispatchV2Error> {
+        if request.mcp_config.is_some() {
+            return Err(DispatchV2Error::McpConfigUnsupported {
+                provider_id: self.descriptor.provider_id.clone(),
+                protocol: self.descriptor.protocol,
+            });
+        }
+        if let Some(argument) = self
+            .provider_args
+            .iter()
+            .find(|argument| gemini_provider_arg_conflicts(argument))
+        {
+            return Err(DispatchV2Error::ConflictingProviderArgument {
+                provider_id: self.descriptor.provider_id.clone(),
+                argument: argument.clone(),
+            });
+        }
+
+        let mut args = self.provider_args.clone();
+        args.extend([
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+            "--model".to_string(),
+            request.model.clone(),
+            "--prompt".to_string(),
+            String::new(),
+            "--extensions".to_string(),
+            "none".to_string(),
+            "--approval-mode".to_string(),
+            if request.dangerously_skip_permissions {
+                "yolo".to_string()
+            } else {
+                "default".to_string()
+            },
+        ]);
+        if let Some(plugin_mcp) = &request.plugin_mcp {
+            args.extend([
+                "--allowed-mcp-server-names".to_string(),
+                plugin_mcp.server_name.clone(),
+            ]);
+        }
+        if let Some(session) = &request.resume_session {
+            args.extend(["--resume".to_string(), session.clone()]);
+        }
+
+        let stdin = if request.system_prompt.trim().is_empty() {
+            request.prompt.clone()
+        } else {
+            format!(
+                "{}\n\n---\n\n{}",
+                request.system_prompt.trim(),
+                request.prompt
+            )
+        };
+        let mut invocation = CliInvocation::new(self, request, args, stdin);
+        invocation.ephemeral_config = Some(CliEphemeralConfig {
+            env_key: "GEMINI_CLI_SYSTEM_SETTINGS_PATH".to_string(),
+            file_name: "settings.json".to_string(),
+            contents: gemini_system_settings_json(request),
+        });
+        Ok(invocation)
+    }
 }
 
 /// Provider-neutral request to launch a CLI-backed agent turn.
@@ -498,15 +655,213 @@ pub struct CliDispatchRequest {
     pub env: Vec<(String, String)>,
     /// Agent id used by observers.
     pub agent_id: String,
-    /// Tool names the agent must not invoke (passed as --disallowed-tools to Claude CLI).
+    /// Binding tool allowlist translated into the selected CLI's native policy.
     ///
-    /// Only applied on the Claude CLI path — the Codex path has no equivalent flag.
+    /// `Some(vec![])` means deny all and is serialized as an explicit empty
+    /// value. `None` means the contract imposed no allowlist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_tools: Option<Vec<String>>,
+    /// Tool names the agent must not invoke, translated into native policy.
+    ///
+    /// Claude and Gemini support this binding restriction. Codex has no
+    /// equivalent built-in-tool flag and rejects such requests fail-closed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disallowed_tools: Vec<String>,
+    /// Contract-scoped bridge for local plugin handlers, when the runner has
+    /// discovered declarative tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_mcp: Option<CliPluginMcpConfig>,
+}
+
+fn claude_policy_tool_name(name: &str, plugin_mcp: Option<&CliPluginMcpConfig>) -> Option<String> {
+    if let Some(plugin_mcp) = plugin_mcp
+        && plugin_mcp.tool_names.iter().any(|tool| tool == name)
+    {
+        return Some(format!("mcp__{}__{name}", plugin_mcp.server_name));
+    }
+    if let Some(alias) = claude_of_canonical(name) {
+        Some(alias.to_string())
+    } else if canonical_names().any(|canonical| canonical == name) {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+fn claude_plugin_mcp_json(config: &CliPluginMcpConfig) -> String {
+    let mut servers = serde_json::Map::new();
+    servers.insert(
+        config.server_name.clone(),
+        json!({
+            "type": "http",
+            "url": config.url,
+            "headers": {
+                "Authorization": "Bearer ${ROKO_PLUGIN_MCP_TOKEN}"
+            }
+        }),
+    );
+    json!({ "mcpServers": servers }).to_string()
+}
+
+fn codex_plugin_mcp_args(config: &CliPluginMcpConfig) -> Vec<String> {
+    let prefix = format!("mcp_servers.{}", config.server_name);
+    let tools = toml::Value::Array(
+        config
+            .tool_names
+            .iter()
+            .cloned()
+            .map(toml::Value::String)
+            .collect(),
+    )
+    .to_string();
+    [
+        format!("{prefix}.url={}", toml::Value::String(config.url.clone())),
+        format!(
+            "{prefix}.bearer_token_env_var={}",
+            toml::Value::String("ROKO_PLUGIN_MCP_TOKEN".to_string())
+        ),
+        format!("{prefix}.required=true"),
+        format!("{prefix}.enabled_tools={tools}"),
+        format!("{prefix}.default_tools_approval_mode=\"auto\""),
+    ]
+    .into_iter()
+    .flat_map(|value| ["--config".to_string(), value])
+    .collect()
+}
+
+fn gemini_policy_tool_name(name: &str, plugin_mcp: Option<&CliPluginMcpConfig>) -> Option<String> {
+    if plugin_mcp.is_some_and(|config| config.tool_names.iter().any(|tool| tool == name)) {
+        return None;
+    }
+    Some(
+        match name {
+            "edit_file" | "multi_edit" => "replace",
+            "grep" => "search_file_content",
+            "bash" => "run_shell_command",
+            "ls" => "list_directory",
+            "web_search" => "google_web_search",
+            "todo_write" => "write_todos",
+            "task" => "agent",
+            other => other,
+        }
+        .to_string(),
+    )
+}
+
+fn gemini_provider_arg_conflicts(argument: &str) -> bool {
+    if !argument.starts_with('-') {
+        return true;
+    }
+    let flag = argument.split_once('=').map_or(argument, |(flag, _)| flag);
+    matches!(
+        flag,
+        "-m" | "--model"
+            | "-p"
+            | "--prompt"
+            | "-o"
+            | "--output-format"
+            | "-y"
+            | "--yolo"
+            | "--approval-mode"
+            | "--policy"
+            | "--admin-policy"
+            | "--allowed-tools"
+            | "--allowed-mcp-server-names"
+            | "-e"
+            | "--extensions"
+            | "-r"
+            | "--resume"
+            | "-i"
+            | "--prompt-interactive"
+            | "--acp"
+            | "--experimental-acp"
+            | "-w"
+            | "--worktree"
+            | "--skip-trust"
+            | "--include-directories"
+            | "--session-id"
+            | "--list-sessions"
+            | "--delete-session"
+            | "--fake-responses"
+            | "--record-responses"
+    )
+}
+
+fn gemini_system_settings_json(request: &CliDispatchRequest) -> String {
+    let mut tools = serde_json::Map::new();
+    // System settings have higher precedence than user/workspace settings.
+    // Empty commands prevent ambient discovered-tool configuration from
+    // expanding the task's executable catalog.
+    tools.insert("discoveryCommand".to_string(), json!(""));
+    tools.insert("callCommand".to_string(), json!(""));
+    if let Some(allowed) = &request.allowed_tools {
+        tools.insert(
+            "core".to_string(),
+            json!(
+                allowed
+                    .iter()
+                    .filter_map(|name| gemini_policy_tool_name(name, request.plugin_mcp.as_ref()))
+                    .collect::<Vec<_>>()
+            ),
+        );
+    }
+    let excluded = request
+        .disallowed_tools
+        .iter()
+        .filter_map(|name| gemini_policy_tool_name(name, request.plugin_mcp.as_ref()))
+        .collect::<Vec<_>>();
+    if !excluded.is_empty() {
+        tools.insert("exclude".to_string(), json!(excluded));
+    }
+
+    let mut settings = serde_json::Map::new();
+    settings.insert("tools".to_string(), serde_json::Value::Object(tools));
+    settings.insert("hooksConfig".to_string(), json!({ "enabled": false }));
+    settings.insert("skills".to_string(), json!({ "enabled": false }));
+    settings.insert(
+        "model".to_string(),
+        json!({ "maxSessionTurns": request.max_turns }),
+    );
+    if let Some(config) = &request.plugin_mcp {
+        // Gemini deliberately sanitizes inherited environment variables before
+        // expanding remote MCP headers. Explicitly authorize this task-scoped
+        // credential so the Authorization placeholder resolves instead of
+        // silently becoming an empty bearer token.
+        settings.insert(
+            "security".to_string(),
+            json!({
+                "environmentVariableRedaction": {
+                    "allowed": ["ROKO_PLUGIN_MCP_TOKEN"]
+                }
+            }),
+        );
+        settings.insert(
+            "mcp".to_string(),
+            json!({ "allowed": [config.server_name.clone()] }),
+        );
+        let mut servers = serde_json::Map::new();
+        servers.insert(
+            config.server_name.clone(),
+            json!({
+                "type": "http",
+                "httpUrl": config.url,
+                "headers": {
+                    "Authorization": "Bearer ${ROKO_PLUGIN_MCP_TOKEN}"
+                },
+                "includeTools": config.tool_names,
+                "trust": true
+            }),
+        );
+        settings.insert("mcpServers".to_string(), serde_json::Value::Object(servers));
+    }
+    serde_json::Value::Object(settings).to_string()
 }
 
 impl CliDispatchRequest {
     fn validate(&self) -> Result<(), DispatchV2Error> {
+        if roko_agent::immune_boundary::validate_provider_agent_id(&self.agent_id).is_err() {
+            return Err(DispatchV2Error::InvalidAgentId);
+        }
         if self.prompt.trim().is_empty() {
             return Err(DispatchV2Error::EmptyPrompt);
         }
@@ -535,6 +890,9 @@ pub struct CliInvocation {
     pub stdin: String,
     /// Environment entries to set on the subprocess.
     pub env: Vec<(String, String)>,
+    /// Authentication entries applied after ordinary environment overrides.
+    #[serde(skip)]
+    pub(crate) secret_env: CliSecretEnv,
     /// CLI wire protocol.
     pub protocol: CliProtocol,
     /// Provider label for normalized runner events.
@@ -543,6 +901,45 @@ pub struct CliInvocation {
     pub model: String,
     /// Agent id associated with this invocation.
     pub agent_id: String,
+    /// OS resource limits to install before spawning the CLI.
+    pub resource_limits: Option<ResourceLimits>,
+    /// Provider configuration that must exist for the subprocess lifetime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ephemeral_config: Option<CliEphemeralConfig>,
+}
+
+/// A short-lived provider config materialized immediately before spawn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CliEphemeralConfig {
+    /// Environment variable through which the provider receives the path.
+    pub env_key: String,
+    /// File name within the runner-owned temporary directory.
+    pub file_name: String,
+    /// Complete file content. Secrets should be referenced through env vars.
+    pub contents: String,
+}
+
+/// Subprocess credentials that are neither serialized nor exposed by `Debug`.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct CliSecretEnv(Vec<(String, String)>);
+
+impl fmt::Debug for CliSecretEnv {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_list()
+            .entries(self.0.iter().map(|(key, _)| (key, "[REDACTED]")))
+            .finish()
+    }
+}
+
+impl CliSecretEnv {
+    fn upsert(&mut self, key: &str, value: &str) {
+        upsert_env(&mut self.0, key, value);
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &(String, String)> {
+        self.0.iter()
+    }
 }
 
 impl CliInvocation {
@@ -555,6 +952,11 @@ impl CliInvocation {
         let mut env = request.env.clone();
         upsert_env(&mut env, "CARGO_INCREMENTAL", "0");
         upsert_env(&mut env, "CARGO_BUILD_JOBS", "2");
+        let mut secret_env = CliSecretEnv::default();
+        if let Some(plugin_mcp) = &request.plugin_mcp {
+            env.retain(|(key, _)| key != "ROKO_PLUGIN_MCP_TOKEN");
+            secret_env.upsert("ROKO_PLUGIN_MCP_TOKEN", &plugin_mcp.bearer_token);
+        }
 
         Self {
             program: provider.command.clone(),
@@ -562,12 +964,30 @@ impl CliInvocation {
             workdir: request.workdir.clone(),
             stdin,
             env,
+            secret_env,
             protocol: provider.descriptor.protocol,
             event_provider: provider.descriptor.event_provider.clone(),
             model: request.model.clone(),
             agent_id: request.agent_id.clone(),
+            resource_limits: provider.resource_limits.clone(),
+            ephemeral_config: None,
         }
     }
+}
+
+fn configured_cli_resource_limits(
+    provider: &ProviderConfig,
+) -> Result<Option<ResourceLimits>, DispatchV2Error> {
+    let limits = ResourceLimits::from_provider_config(provider);
+    if let Some(limits) = &limits {
+        limits.validate_for_current_platform().map_err(|error| {
+            DispatchV2Error::ResourceLimitEnforcement {
+                provider_id: provider.kind.label().to_string(),
+                message: error.to_string(),
+            }
+        })?;
+    }
+    Ok(limits)
 }
 
 /// Runtime the runner should use for a resolved provider/model pair.
@@ -826,6 +1246,7 @@ impl AgentDispatcherV2 {
                 detail: unsupported.detail.clone(),
             });
         }
+        validate_contract_support(request, &target)?;
 
         let options = self.agent_options(request);
         let agent =
@@ -996,7 +1417,40 @@ impl AgentDispatcherV2 {
     pub async fn run_agent_result_bridge_with_mcp(
         &self,
         request: AgentDispatchRequest,
-        mcp_tools: Option<Arc<Vec<roko_core::tool::ToolDef>>>,
+        mcp_runtime: Option<Arc<roko_agent::mcp::McpRuntime>>,
+    ) -> Result<AgentResultDispatch, DispatchV2Error> {
+        self.run_agent_result_bridge_with_tools(request, mcp_runtime, None)
+            .await
+    }
+
+    /// Run a provider-factory agent with pre-discovered MCP and local tool
+    /// runtimes. Keeping the executable local resolver beside its definitions
+    /// prevents provider loops from advertising definition-only plugin tools.
+    pub async fn run_agent_result_bridge_with_tools(
+        &self,
+        request: AgentDispatchRequest,
+        mcp_runtime: Option<Arc<roko_agent::mcp::McpRuntime>>,
+        local_tool_runtime: Option<Arc<roko_agent::provider::LocalToolRuntime>>,
+    ) -> Result<AgentResultDispatch, DispatchV2Error> {
+        self.run_agent_result_bridge_with_tools_and_cli_mcp(
+            request,
+            mcp_runtime,
+            local_tool_runtime,
+            None,
+            false,
+        )
+        .await
+    }
+
+    /// Run a provider bridge while supplying an authenticated per-call MCP
+    /// endpoint for ACP transports that can consume one.
+    pub async fn run_agent_result_bridge_with_tools_and_cli_mcp(
+        &self,
+        request: AgentDispatchRequest,
+        mcp_runtime: Option<Arc<roko_agent::mcp::McpRuntime>>,
+        local_tool_runtime: Option<Arc<roko_agent::provider::LocalToolRuntime>>,
+        local_tool_mcp: Option<CliPluginMcpConfig>,
+        local_tool_mcp_bridge_ready: bool,
     ) -> Result<AgentResultDispatch, DispatchV2Error> {
         request.validate()?;
         let target = self.resolve(&request.model_key);
@@ -1006,10 +1460,25 @@ impl AgentDispatcherV2 {
                 detail: unsupported.detail.clone(),
             });
         }
+        validate_contract_support(&request, &target)?;
 
         let mut options = self.agent_options(&request);
-        if let Some(tools) = mcp_tools {
-            options.pre_discovered_mcp_tools = Some(tools);
+        if let Some(runtime) = mcp_runtime {
+            options.pre_discovered_mcp_runtime = Some(runtime);
+        }
+        if target_supports_per_call_local_mcp(&target) && local_tool_mcp_bridge_ready {
+            options.local_tool_mcp_servers = local_tool_mcp.map(|config| {
+                Arc::new(vec![LocalToolMcpServer {
+                    name: config.server_name,
+                    url: config.url,
+                    bearer_token: config.bearer_token,
+                }])
+            });
+        } else {
+            // Passing the in-process runtime to an opaque adapter is
+            // intentional here: central provider construction rejects it,
+            // yielding a truthful error when no supported bridge exists.
+            options.pre_discovered_local_tools = local_tool_runtime;
         }
         let agent =
             create_agent_for_model(&self.config, &request.model_key, options).map_err(|err| {
@@ -1064,7 +1533,12 @@ impl AgentDispatcherV2 {
                 .then(|| request.system_prompt.clone()),
             cached_content: None,
             tools: request.tools.clone(),
+            agent_contract: request.agent_contract.clone(),
             mcp_config: request.mcp_config.clone(),
+            immune_root: request
+                .immune_root
+                .clone()
+                .or_else(|| Some(request.workdir.clone())),
             working_dir: Some(request.workdir.clone()),
             provider_semaphores: Some(Arc::clone(&self.semaphores)),
             env: request.env.clone(),
@@ -1083,9 +1557,46 @@ impl AgentDispatcherV2 {
     }
 }
 
+fn target_supports_per_call_local_mcp(target: &ProviderDispatchSpec) -> bool {
+    target.provider_kind == ProviderKind::CursorCli
+        || (target.provider_kind == ProviderKind::Hermes
+            && target.provider_config.as_ref().is_some_and(|provider| {
+                provider.base_url.is_none()
+                    && provider
+                        .args
+                        .as_ref()
+                        .is_some_and(|args| args.iter().any(|argument| argument == "acp"))
+            }))
+}
+
+fn validate_contract_support(
+    request: &AgentDispatchRequest,
+    target: &ProviderDispatchSpec,
+) -> Result<(), DispatchV2Error> {
+    if request.agent_contract.is_none()
+        || matches!(
+            target.provider_kind,
+            ProviderKind::ClaudeCli
+                | ProviderKind::AnthropicApi
+                | ProviderKind::OpenAiCompat
+                | ProviderKind::PerplexityApi
+                | ProviderKind::GeminiApi
+                | ProviderKind::CerebrasApi
+                | ProviderKind::CursorAcp
+        )
+    {
+        return Ok(());
+    }
+
+    Err(DispatchV2Error::ContractUnsupported {
+        provider_id: target.provider_id.clone(),
+        kind: target.provider_kind,
+    })
+}
+
 /// Classify a provider error from output text into an error kind string
 /// suitable for [`ProviderHealthRegistry::record_provider_failure`].
-fn classify_provider_error(output_text_lower: &str) -> &'static str {
+pub(crate) fn classify_provider_error(output_text_lower: &str) -> &'static str {
     if output_text_lower.contains("rate limit")
         || output_text_lower.contains("rate_limit")
         || output_text_lower.contains("429")
@@ -1143,7 +1654,7 @@ async fn record_agent_dispatch_feedback(
 }
 
 /// Request for provider-factory dispatch.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentDispatchRequest {
     /// Logical model key to resolve.
     pub model_key: String,
@@ -1153,6 +1664,9 @@ pub struct AgentDispatchRequest {
     pub system_prompt: String,
     /// Working directory.
     pub workdir: PathBuf,
+    /// Canonical workspace root for durable immune authority state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub immune_root: Option<PathBuf>,
     /// Agent id for diagnostics.
     pub agent_id: String,
     /// Optional command override for legacy providers.
@@ -1169,6 +1683,13 @@ pub struct AgentDispatchRequest {
     pub effort: Option<String>,
     /// Optional tool allowlist/config payload.
     pub tools: Option<String>,
+    /// Fully resolved role contract for this dispatch.
+    ///
+    /// Runner-v2 folds task allow/deny restrictions into this contract before
+    /// entering the bridge so the provider adapter receives one authoritative
+    /// policy. `None` is reserved for non-runner callers with no role contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_contract: Option<AgentContract>,
     /// Whether provider built-in prompts should be disabled.
     pub bare_mode: bool,
     /// Whether provider permission prompts/sandboxing should be bypassed.
@@ -1177,6 +1698,9 @@ pub struct AgentDispatchRequest {
 
 impl AgentDispatchRequest {
     fn validate(&self) -> Result<(), DispatchV2Error> {
+        if roko_agent::immune_boundary::validate_provider_agent_id(&self.agent_id).is_err() {
+            return Err(DispatchV2Error::InvalidAgentId);
+        }
         if self.prompt.trim().is_empty() {
             return Err(DispatchV2Error::EmptyPrompt);
         }
@@ -1411,6 +1935,7 @@ fn upsert_env(env: &mut Vec<(String, String)>, key: &str, value: &str) {
 pub enum DispatchV2Error {
     EmptyPrompt,
     EmptyModel,
+    InvalidAgentId,
     WorkdirMissing {
         path: PathBuf,
     },
@@ -1434,6 +1959,26 @@ pub enum DispatchV2Error {
         model_key: String,
         message: String,
     },
+    ToolPolicyUnsupported {
+        provider_id: String,
+        protocol: CliProtocol,
+    },
+    McpConfigUnsupported {
+        provider_id: String,
+        protocol: CliProtocol,
+    },
+    ConflictingProviderArgument {
+        provider_id: String,
+        argument: String,
+    },
+    ContractUnsupported {
+        provider_id: String,
+        kind: ProviderKind,
+    },
+    ResourceLimitEnforcement {
+        provider_id: String,
+        message: String,
+    },
 }
 
 impl fmt::Display for DispatchV2Error {
@@ -1441,6 +1986,7 @@ impl fmt::Display for DispatchV2Error {
         match self {
             Self::EmptyPrompt => f.write_str("cannot dispatch an empty prompt"),
             Self::EmptyModel => f.write_str("cannot dispatch without a model"),
+            Self::InvalidAgentId => f.write_str("cannot dispatch with an invalid agent identity"),
             Self::WorkdirMissing { path } => {
                 write!(f, "dispatch workdir does not exist: {}", path.display())
             }
@@ -1466,6 +2012,38 @@ impl fmt::Display for DispatchV2Error {
             Self::AgentCreation { model_key, message } => {
                 write!(f, "failed to create agent for `{model_key}`: {message}")
             }
+            Self::ToolPolicyUnsupported {
+                provider_id,
+                protocol,
+            } => write!(
+                f,
+                "provider `{provider_id}` ({protocol:?}) cannot enforce the requested tool policy"
+            ),
+            Self::McpConfigUnsupported {
+                provider_id,
+                protocol,
+            } => write!(
+                f,
+                "provider `{provider_id}` ({protocol:?}) cannot consume the configured MCP file"
+            ),
+            Self::ConflictingProviderArgument {
+                provider_id,
+                argument,
+            } => write!(
+                f,
+                "provider `{provider_id}` argument `{argument}` conflicts with runner-enforced dispatch policy"
+            ),
+            Self::ContractUnsupported { provider_id, kind } => write!(
+                f,
+                "provider `{provider_id}` ({kind}) cannot enforce the resolved agent contract"
+            ),
+            Self::ResourceLimitEnforcement {
+                provider_id,
+                message,
+            } => write!(
+                f,
+                "provider `{provider_id}` resource-limit enforcement failed: {message}"
+            ),
         }
     }
 }
@@ -1504,6 +2082,44 @@ mod tests {
     }
 
     #[test]
+    fn agent_dispatch_request_rejects_invalid_identity_before_resolution() {
+        let invalid_ids = [
+            String::new(),
+            "agent\nTOKEN=request-secret".to_string(),
+            "x".repeat(257),
+            "PASSWORD=request-secret".to_string(),
+            format!("sk-proj-{}", "A".repeat(32)),
+        ];
+        for agent_id in invalid_ids {
+            let request = AgentDispatchRequest {
+                model_key: "missing-model".to_string(),
+                prompt: "do work".to_string(),
+                system_prompt: String::new(),
+                workdir: std::env::current_dir().expect("current dir"),
+                immune_root: None,
+                agent_id: agent_id.clone(),
+                command: None,
+                timeout_ms: None,
+                mcp_config: None,
+                env: Vec::new(),
+                extra_args: Vec::new(),
+                effort: None,
+                tools: None,
+                agent_contract: None,
+                bare_mode: false,
+                dangerously_skip_permissions: false,
+            };
+            let error = request.validate().expect_err("invalid identity must fail");
+            assert_eq!(error, DispatchV2Error::InvalidAgentId);
+            let visible = error.to_string();
+            assert!(!visible.contains("request-secret"));
+            if !agent_id.is_empty() {
+                assert!(!visible.contains(&agent_id));
+            }
+        }
+    }
+
+    #[test]
     fn codex_invocation_folds_system_prompt_into_stdin() {
         let provider = CliProviderConfig::codex("codex_cli", "codex");
         let request = CliDispatchRequest {
@@ -1518,13 +2134,433 @@ mod tests {
             resume_session: None,
             env: Vec::new(),
             agent_id: "p/t".to_string(),
+            allowed_tools: None,
             disallowed_tools: Vec::new(),
+            plugin_mcp: None,
         };
 
         let invocation = provider.build_invocation(&request).unwrap();
         assert_eq!(invocation.protocol, CliProtocol::CodexExecJson);
         assert!(invocation.args.iter().any(|arg| arg == "--model"));
         assert_eq!(invocation.stdin, "system\n\n---\n\nimplement it");
+    }
+
+    #[test]
+    fn claude_invocation_enforces_allowlist_and_forbidden_tools() {
+        let provider = CliProviderConfig::claude("claude_cli", "claude");
+        let request = CliDispatchRequest {
+            prompt: "implement it".to_string(),
+            system_prompt: String::new(),
+            model: "claude-sonnet-4-6".to_string(),
+            workdir: std::env::current_dir().unwrap(),
+            max_turns: 50,
+            effort: None,
+            dangerously_skip_permissions: false,
+            mcp_config: None,
+            resume_session: None,
+            env: Vec::new(),
+            agent_id: "p/t".to_string(),
+            allowed_tools: Some(vec![
+                "read_file".into(),
+                "grep".into(),
+                "apply_patch".into(),
+            ]),
+            disallowed_tools: vec!["bash".into(), "web_search".into(), "run_tests".into()],
+            plugin_mcp: None,
+        };
+
+        let invocation = provider.build_invocation(&request).unwrap();
+        let tools_index = invocation
+            .args
+            .iter()
+            .position(|arg| arg == "--tools")
+            .expect("allowlist flag");
+        assert_eq!(invocation.args[tools_index + 1], "Read,Grep");
+        let denied = invocation
+            .args
+            .windows(2)
+            .filter(|pair| pair[0] == "--disallowed-tools")
+            .map(|pair| pair[1].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(denied, vec!["Bash", "WebSearch"]);
+    }
+
+    #[test]
+    fn claude_invocation_preserves_explicit_deny_all_allowlist() {
+        let provider = CliProviderConfig::claude("claude_cli", "claude");
+        let request = CliDispatchRequest {
+            prompt: "restricted work".to_string(),
+            system_prompt: String::new(),
+            model: "claude-sonnet-4-6".to_string(),
+            workdir: std::env::current_dir().unwrap(),
+            max_turns: 1,
+            effort: None,
+            dangerously_skip_permissions: false,
+            mcp_config: None,
+            resume_session: None,
+            env: Vec::new(),
+            agent_id: "p/unknown".to_string(),
+            allowed_tools: Some(Vec::new()),
+            disallowed_tools: Vec::new(),
+            plugin_mcp: None,
+        };
+
+        let invocation = provider.build_invocation(&request).unwrap();
+        let tools_index = invocation
+            .args
+            .iter()
+            .position(|arg| arg == "--tools")
+            .expect("deny-all must still emit --tools");
+        assert_eq!(invocation.args[tools_index + 1], "");
+    }
+
+    #[test]
+    fn codex_invocation_rejects_unenforceable_tool_policy() {
+        let provider = CliProviderConfig::codex("codex_cli", "codex");
+        let request = CliDispatchRequest {
+            prompt: "restricted work".to_string(),
+            system_prompt: String::new(),
+            model: "gpt-5".to_string(),
+            workdir: std::env::current_dir().unwrap(),
+            max_turns: 1,
+            effort: None,
+            dangerously_skip_permissions: false,
+            mcp_config: None,
+            resume_session: None,
+            env: Vec::new(),
+            agent_id: "p/restricted".to_string(),
+            allowed_tools: Some(vec!["read_file".into()]),
+            disallowed_tools: Vec::new(),
+            plugin_mcp: None,
+        };
+
+        assert!(matches!(
+            provider.build_invocation(&request),
+            Err(DispatchV2Error::ToolPolicyUnsupported { .. })
+        ));
+    }
+
+    fn plugin_mcp_config() -> CliPluginMcpConfig {
+        CliPluginMcpConfig {
+            server_name: "roko_plugins".to_string(),
+            url: "http://127.0.0.1:43123/mcp".to_string(),
+            bearer_token: "signed-secret".to_string(),
+            tool_names: vec!["demo.echo".to_string()],
+        }
+    }
+
+    #[test]
+    fn claude_invocation_exposes_local_handlers_through_authenticated_mcp() {
+        let provider = CliProviderConfig::claude("claude_cli", "claude");
+        let request = CliDispatchRequest {
+            prompt: "use the plugin".to_string(),
+            system_prompt: String::new(),
+            model: "claude-sonnet-4-6".to_string(),
+            workdir: std::env::current_dir().unwrap(),
+            max_turns: 2,
+            effort: None,
+            dangerously_skip_permissions: false,
+            mcp_config: None,
+            resume_session: None,
+            env: Vec::new(),
+            agent_id: "p/plugin".to_string(),
+            allowed_tools: Some(vec!["demo.echo".to_string()]),
+            disallowed_tools: Vec::new(),
+            plugin_mcp: Some(plugin_mcp_config()),
+        };
+
+        let invocation = provider
+            .build_invocation(&request)
+            .expect("Claude MCP invocation");
+        let config_json = invocation
+            .args
+            .iter()
+            .find(|argument| argument.contains("127.0.0.1:43123/mcp"))
+            .expect("inline MCP config");
+        assert!(config_json.contains("${ROKO_PLUGIN_MCP_TOKEN}"));
+        assert!(
+            invocation
+                .args
+                .iter()
+                .any(|argument| argument == "--strict-mcp-config")
+        );
+        let tools = invocation
+            .args
+            .windows(2)
+            .find(|pair| pair[0] == "--tools")
+            .expect("tool allowlist");
+        assert_eq!(tools[1], "mcp__roko_plugins__demo.echo");
+        assert!(
+            invocation
+                .secret_env
+                .iter()
+                .any(|(key, value)| { key == "ROKO_PLUGIN_MCP_TOKEN" && value == "signed-secret" })
+        );
+        assert!(!format!("{:?}", request.plugin_mcp).contains("signed-secret"));
+    }
+
+    #[test]
+    fn codex_invocation_configures_required_mcp_and_keeps_native_policy_fail_closed() {
+        let provider = CliProviderConfig::codex("codex_cli", "codex");
+        let mut request = CliDispatchRequest {
+            prompt: "use the plugin".to_string(),
+            system_prompt: String::new(),
+            model: "gpt-5".to_string(),
+            workdir: std::env::current_dir().unwrap(),
+            max_turns: 2,
+            effort: None,
+            dangerously_skip_permissions: false,
+            mcp_config: None,
+            resume_session: None,
+            env: Vec::new(),
+            agent_id: "p/plugin".to_string(),
+            allowed_tools: None,
+            disallowed_tools: Vec::new(),
+            plugin_mcp: Some(plugin_mcp_config()),
+        };
+
+        let invocation = provider
+            .build_invocation(&request)
+            .expect("Codex MCP invocation");
+        let rendered = invocation.args.join(" ");
+        assert!(rendered.contains("mcp_servers.roko_plugins.url="));
+        assert!(rendered.contains("mcp_servers.roko_plugins.bearer_token_env_var="));
+        assert!(rendered.contains("mcp_servers.roko_plugins.required=true"));
+        assert!(rendered.contains("mcp_servers.roko_plugins.enabled_tools="));
+        assert!(
+            invocation
+                .secret_env
+                .iter()
+                .any(|(key, value)| { key == "ROKO_PLUGIN_MCP_TOKEN" && value == "signed-secret" })
+        );
+
+        request.allowed_tools = Some(vec!["demo.echo".to_string()]);
+        assert!(matches!(
+            provider.build_invocation(&request),
+            Err(DispatchV2Error::ToolPolicyUnsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn gemini_invocation_binds_authenticated_mcp_and_tool_policy() {
+        let provider = CliProviderConfig::gemini("gemini_cli", "gemini");
+        let request = CliDispatchRequest {
+            prompt: "use the plugin".to_string(),
+            system_prompt: "stay scoped".to_string(),
+            model: "gemini-2.5-pro".to_string(),
+            workdir: std::env::current_dir().unwrap(),
+            max_turns: 3,
+            effort: None,
+            dangerously_skip_permissions: false,
+            mcp_config: None,
+            resume_session: None,
+            env: Vec::new(),
+            agent_id: "p/gemini-plugin".to_string(),
+            allowed_tools: Some(vec!["read_file".to_string(), "demo.echo".to_string()]),
+            disallowed_tools: vec!["bash".to_string()],
+            plugin_mcp: Some(plugin_mcp_config()),
+        };
+
+        let invocation = provider
+            .build_invocation(&request)
+            .expect("Gemini MCP invocation");
+        assert_eq!(invocation.protocol, CliProtocol::GeminiStreamJson);
+        assert_eq!(invocation.stdin, "stay scoped\n\n---\n\nuse the plugin");
+        assert!(
+            invocation
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--output-format", "stream-json"])
+        );
+        assert!(
+            invocation
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--allowed-mcp-server-names", "roko_plugins"])
+        );
+        assert!(
+            invocation
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--extensions", "none"])
+        );
+        assert!(
+            invocation
+                .secret_env
+                .iter()
+                .any(|(key, value)| key == "ROKO_PLUGIN_MCP_TOKEN" && value == "signed-secret")
+        );
+        assert!(!format!("{invocation:?}").contains("signed-secret"));
+        assert!(
+            !serde_json::to_string(&invocation)
+                .expect("serialize invocation")
+                .contains("signed-secret")
+        );
+
+        let ephemeral = invocation
+            .ephemeral_config
+            .as_ref()
+            .expect("Gemini system settings");
+        assert_eq!(ephemeral.env_key, "GEMINI_CLI_SYSTEM_SETTINGS_PATH");
+        let settings: serde_json::Value =
+            serde_json::from_str(&ephemeral.contents).expect("valid settings JSON");
+        assert_eq!(settings["tools"]["core"], json!(["read_file"]));
+        assert_eq!(settings["tools"]["discoveryCommand"], "");
+        assert_eq!(settings["tools"]["callCommand"], "");
+        assert_eq!(settings["tools"]["exclude"], json!(["run_shell_command"]));
+        assert_eq!(settings["hooksConfig"]["enabled"], false);
+        assert_eq!(settings["skills"]["enabled"], false);
+        assert_eq!(
+            settings["security"]["environmentVariableRedaction"]["allowed"],
+            json!(["ROKO_PLUGIN_MCP_TOKEN"])
+        );
+        assert_eq!(
+            settings["mcpServers"]["roko_plugins"]["httpUrl"],
+            "http://127.0.0.1:43123/mcp"
+        );
+        assert_eq!(
+            settings["mcpServers"]["roko_plugins"]["headers"]["Authorization"],
+            "Bearer ${ROKO_PLUGIN_MCP_TOKEN}"
+        );
+        assert_eq!(
+            settings["mcpServers"]["roko_plugins"]["includeTools"],
+            json!(["demo.echo"])
+        );
+        assert!(!ephemeral.contents.contains("signed-secret"));
+    }
+
+    #[test]
+    fn gemini_rejects_untranslatable_external_mcp_config() {
+        let mut provider = CliProviderConfig::gemini("gemini_cli", "gemini");
+        let mut request = CliDispatchRequest {
+            prompt: "use configured MCP".to_string(),
+            system_prompt: String::new(),
+            model: "gemini-2.5-pro".to_string(),
+            workdir: std::env::current_dir().unwrap(),
+            max_turns: 1,
+            effort: None,
+            dangerously_skip_permissions: false,
+            mcp_config: Some(PathBuf::from("external-mcp.json")),
+            resume_session: None,
+            env: Vec::new(),
+            agent_id: "p/gemini-mcp".to_string(),
+            allowed_tools: None,
+            disallowed_tools: Vec::new(),
+            plugin_mcp: None,
+        };
+        assert!(matches!(
+            provider.build_invocation(&request),
+            Err(DispatchV2Error::McpConfigUnsupported { .. })
+        ));
+
+        request.mcp_config = None;
+        provider.provider_args = vec!["--allowed-mcp-server-names=unscoped".to_string()];
+        assert!(matches!(
+            provider.build_invocation(&request),
+            Err(DispatchV2Error::ConflictingProviderArgument { .. })
+        ));
+    }
+
+    #[test]
+    fn gemini_cli_resolves_to_stream_runtime_and_openclaw_stays_opaque() {
+        let gemini = ProviderConfig {
+            kind: ProviderKind::GeminiCli,
+            base_url: None,
+            api_key_env: None,
+            command: None,
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+        };
+        assert!(matches!(
+            classify_runtime("gemini", ProviderKind::GeminiCli, Some(&gemini)),
+            ProviderRuntime::Cli(CliProviderConfig {
+                descriptor: CliProviderDescriptor {
+                    protocol: CliProtocol::GeminiStreamJson,
+                    ..
+                },
+                ..
+            })
+        ));
+
+        let openclaw = ProviderConfig {
+            kind: ProviderKind::OpenClaw,
+            base_url: None,
+            api_key_env: None,
+            command: Some("openclaw".to_string()),
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+        };
+        assert!(matches!(
+            classify_runtime("openclaw", ProviderKind::OpenClaw, Some(&openclaw)),
+            ProviderRuntime::AgentResultBridge {
+                provider_kind: ProviderKind::OpenClaw
+            }
+        ));
+    }
+
+    #[test]
+    fn openclaw_contract_calls_fail_closed_before_adapter_creation() {
+        let target = ProviderDispatchSpec {
+            provider_id: "openclaw".to_string(),
+            provider_kind: ProviderKind::OpenClaw,
+            model_key: "openclaw-model".to_string(),
+            model_slug: "probe-model".to_string(),
+            provider_config: Some(ProviderConfig {
+                kind: ProviderKind::OpenClaw,
+                base_url: None,
+                api_key_env: None,
+                command: Some("openclaw".to_string()),
+                args: None,
+                timeout_ms: None,
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: None,
+                max_concurrent: None,
+                limits: None,
+            }),
+            model_profile: None,
+            runtime: ProviderRuntime::AgentResultBridge {
+                provider_kind: ProviderKind::OpenClaw,
+            },
+        };
+        let request = AgentDispatchRequest {
+            model_key: "openclaw-model".to_string(),
+            prompt: "use plugin".to_string(),
+            system_prompt: String::new(),
+            workdir: std::env::current_dir().unwrap(),
+            immune_root: None,
+            agent_id: "p/openclaw".to_string(),
+            command: None,
+            timeout_ms: None,
+            mcp_config: None,
+            env: Vec::new(),
+            extra_args: Vec::new(),
+            effort: None,
+            tools: None,
+            agent_contract: Some(AgentContract {
+                allowed_tools: Some(vec!["demo.echo".to_string()]),
+                ..AgentContract::default()
+            }),
+            bare_mode: false,
+            dangerously_skip_permissions: false,
+        };
+        assert!(matches!(
+            validate_contract_support(&request, &target),
+            Err(DispatchV2Error::ContractUnsupported {
+                kind: ProviderKind::OpenClaw,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]
@@ -1573,6 +2609,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
             prompt: "do work".to_string(),
             system_prompt: "system".to_string(),
             workdir: tmp.path().to_path_buf(),
+            immune_root: None,
             agent_id: "dispatch-agent".to_string(),
             command: None,
             timeout_ms: Some(5_000),
@@ -1581,6 +2618,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
             extra_args: Vec::new(),
             effort: None,
             tools: None,
+            agent_contract: None,
             bare_mode: false,
             dangerously_skip_permissions: false,
         };

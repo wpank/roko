@@ -76,7 +76,7 @@ execution API over HTTP. It bridges external requests into the Bus/Store fabric.
 /// Transforms HTTP requests into Pulses on the internal Bus,
 /// reads results from Store, streams progress via SSE/WebSocket.
 pub struct ServeConnectCell {
-    /// Axum router with ~85 routes
+    /// Axum router with ~317 routes
     router: Router,
     /// Bus subscription for live event streaming
     bus: Arc<Bus>,
@@ -553,7 +553,7 @@ On Fly.io, internal services communicate via `.internal` DNS over private 6PN:
 | fly.toml per service | `deploy/fly/*/fly.toml` | Not started |
 | Deploy scripts (fly-deploy.sh, fly-secrets.sh) | `deploy/scripts/` | Not started |
 | Dockerfile slim variant | `docker/roko-serve.Dockerfile` | Not started |
-| roko-serve HTTP API wiring | `crates/roko-serve/src/routes/` | Partial (~85 routes scaffolded) |
+| roko-serve HTTP API wiring | `crates/roko-serve/src/routes/` | Partial (~317 routes scaffolded) |
 | Auth Pipeline (API key verify) | `crates/roko-serve/src/auth.rs` | Not started |
 | Webhook ingress handler | `crates/roko-serve/src/webhooks.rs` | Not started |
 | Cost tracking per-request | `crates/roko-serve/src/cost.rs` | Partial |

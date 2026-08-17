@@ -6,7 +6,7 @@ import {
   AnimatedHeaderCell,
   TableEmptyState,
 } from '../../components/AnimatedTable';
-import { useLiveApi } from '../../hooks/useLiveApi';
+import { useDataApi } from '../../hooks/useDataApi';
 import { getCssVar } from '../../lib/color';
 import { domainColor } from '../../lib/palette';
 import { useServerEventSubscription } from '../../hooks/useEventStream';
@@ -229,7 +229,7 @@ function ConfidenceHistogram({ entries, height = 140 }: { entries: KnowledgeEntr
 type KESortKey = 'label' | 'domain' | 'citations' | 'confidence';
 
 export default function KnowledgeEntries() {
-  const { get } = useLiveApi();
+  const { get } = useDataApi();
   const [entries, setEntries] = useState<KnowledgeEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastLoaded, setLastLoaded] = useState<string>('—');
@@ -264,7 +264,7 @@ export default function KnowledgeEntries() {
   // SSE-triggered refetch
   const debouncedRefetch = useDebouncedRefetch(fetchEntries, 2000);
   useServerEventSubscription(
-    ['knowledge_ingested', 'knowledge_consumed'],
+    ['knowledge_entries_updated'],
     debouncedRefetch,
   );
 

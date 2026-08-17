@@ -1,6 +1,8 @@
 # Reputation as Score Protocol
 
 > Depth for [21-MARKETPLACE.md](../../unified/21-MARKETPLACE.md). Covers the 7-domain EMA reputation system, reputation multiplier, discipline state machine, EigenTrust hybrid, collusion detection, and Bayesian Truth Serum -- all expressed as compositions of Score, Verify, Route, and React Cells.
+>
+> **Implementation status (2026-08-17):** Spec/design document. The local reputation registry (`crates/roko-chain/src/reputation_registry.rs`) implements EMA scoring and tier tracking as a local state machine. EigenTrust peer validation, collusion detection, Bayesian Truth Serum calibration, and on-chain reputation anchoring are product work. See `.roko/GAPS.md`.
 
 ---
 

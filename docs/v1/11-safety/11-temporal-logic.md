@@ -1,5 +1,8 @@
 # Temporal Logic Verification
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L3 Harness (runtime monitoring), L4 Orchestration (pre-execution verification)
 >
 > **Crate**: Target: `roko-gate` (temporal gates), `roko-conductor` (monitoring)

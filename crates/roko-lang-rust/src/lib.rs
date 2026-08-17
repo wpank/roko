@@ -349,10 +349,10 @@ fn extract_symbol_from_line(line: &str, line_num: usize) -> Option<Symbol> {
 fn parse_visibility(s: &str) -> (Visibility, &str) {
     if let Some(rest) = s.strip_prefix("pub") {
         let rest = rest.trim_start();
-        if let Some(after_paren) = rest.strip_prefix('(') {
-            if let Some(close) = after_paren.find(')') {
-                return (Visibility::Public, after_paren[close + 1..].trim_start());
-            }
+        if let Some(after_paren) = rest.strip_prefix('(')
+            && let Some(close) = after_paren.find(')')
+        {
+            return (Visibility::Public, after_paren[close + 1..].trim_start());
         }
         (Visibility::Public, rest)
     } else {

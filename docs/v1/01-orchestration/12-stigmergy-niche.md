@@ -1,5 +1,8 @@
 # Stigmergic Coordination & Niche Construction
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Theoretical basis**: `refactoring-prd/02-five-layers.md` §Stigmergy,
 > `refactoring-prd/05-agent-types.md` §Niche Construction
 > **Implementation**: Worktrees, merge queue, commit history, signal log,

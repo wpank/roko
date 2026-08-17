@@ -55,8 +55,8 @@ Read in order:
 - `/Users/will/dev/nunchi/roko/roko/tmp/unified/research4.md` — strategic: category-creation framing (Sequoia/a16z/NFX), protocol-not-framework positioning, cost-control as killer wedge, MCP+A2A+ERC-8004+x402 as fixed exoskeleton, five compounding mechanisms, five named UX surfaces, marketplace economics, failure patterns to avoid, autopoiesis (spec-as-runtime-artifact)
 
 ### Refinements (architectural redesign proposals — the most important source for elegance)
-- `/Users/will/dev/nunchi/roko/roko/tmp/refinements/01-critique-one-noun.md` — why 1 noun is reductive: system has 2 mediums (Engram/Pulse)
-- `/Users/will/dev/nunchi/roko/roko/tmp/refinements/02-engram-vs-pulse.md` — Engram (durable) vs Pulse (ephemeral), graduation law
+- `/Users/will/dev/nunchi/roko/roko/tmp/refinements/01-critique-one-noun.md` — why 1 noun is reductive: system has 2 mediums (Signal/Pulse) (Signal was called Engram at time of writing, renamed to Signal in 2026-08-12)
+- `/Users/will/dev/nunchi/roko/roko/tmp/refinements/02-engram-vs-pulse.md` — Signal (durable) vs Pulse (ephemeral), graduation law
 - `/Users/will/dev/nunchi/roko/roko/tmp/refinements/03-bus-as-first-class.md` — Bus as L0 kernel trait alongside Substrate
 - `/Users/will/dev/nunchi/roko/roko/tmp/refinements/04-operators-generalized.md` — 6 operators generalized to work on both mediums
 - `/Users/will/dev/nunchi/roko/roko/tmp/refinements/05-loop-retold.md` — universal loop with two mediums

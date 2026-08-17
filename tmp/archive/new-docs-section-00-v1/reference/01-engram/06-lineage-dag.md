@@ -1,6 +1,6 @@
-# Engram — Lineage DAG
+# Signal — Lineage DAG
 
-> Every Engram records the ContentHashes of the Engrams it was derived from. These parent links form a directed acyclic graph (DAG) that enables full audit trails.
+> Every Signal records the ContentHashes of the Signals it was derived from. These parent links form a directed acyclic graph (DAG) that enables full audit trails.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -12,10 +12,10 @@
 
 ## TL;DR
 
-The `lineage: Vec<ContentHash>` field lists the direct parents of an Engram. The Substrate
+The `lineage: Vec<ContentHash>` field lists the direct parents of an Signal. The Substrate
 maintains the full DAG — ancestors can be traversed arbitrarily deep. The DAG is
 append-only and cycle-free. Any decision in the system can be explained by following the
-DAG backward: "Why this output? Because of these context Engrams. Where did those come
+DAG backward: "Why this output? Because of these context Signals. Where did those come
 from? Follow their lineage."
 
 ---
@@ -24,12 +24,12 @@ from? Follow their lineage."
 
 Agent outputs are not created from nothing. A GateVerdict derives from the AgentOutput it
 judged. An AgentOutput derives from the ContextAssembly that built its prompt. A
-ContextAssembly derives from the KnowledgeEntry and Observation Engrams that were
+ContextAssembly derives from the KnowledgeEntry and Observation Signals that were
 retrieved. Following these parent links gives you the complete causal chain for any
 decision.
 
 This is fundamentally different from log-based audit trails:
-- Logs are text; lineage DAGs are typed Engrams with their own scores, provenance, and
+- Logs are text; lineage DAGs are typed Signals with their own scores, provenance, and
   decay.
 - Logs are append-only files; the DAG is a queryable graph.
 - Logs capture what happened; the DAG captures why it happened (causal provenance).
@@ -54,11 +54,11 @@ learns which knowledge is actually useful.
 pub lineage: Vec<ContentHash>,
 ```
 
-### Root vs. Derived Engrams
+### Root vs. Derived Signals
 
-- **Root Engram**: `lineage.is_empty()`. Produced from external input (tool response,
+- **Root Signal**: `lineage.is_empty()`. Produced from external input (tool response,
   user message, environment observation).
-- **Derived Engram**: `lineage.len() > 0`. Produced by processing other Engrams.
+- **Derived Signal**: `lineage.len() > 0`. Produced by processing other Signals.
 
 ### DAG Invariants
 
@@ -74,7 +74,7 @@ pub lineage: Vec<ContentHash>,
 
 ## Semantics
 
-### Building a Derived Engram
+### Building a Derived Signal
 
 ```rust
 <!-- source: crates/roko-core/src/engram_builder.rs -->
@@ -139,7 +139,7 @@ To understand why the output was rejected: follow E → D → C → B → A.
 
 ## Cycle Prevention
 
-The Substrate's ingest pipeline checks for cycles before accepting an Engram:
+The Substrate's ingest pipeline checks for cycles before accepting an Signal:
 
 ```rust
 <!-- source: crates/roko-core/src/substrate.rs -->
@@ -190,8 +190,8 @@ Cycle detection is O(ancestors), bounded by `max_lineage_depth`.
 
 | Failure | Cause | Recovery |
 |---------|-------|----------|
-| Dangling lineage reference | Parent Engram was GC'd after decay to zero | Flagged in Substrate; audit query returns partial chain |
-| Cycle detected on ingest | Bug in builder or adversarial input | Substrate rejects the Engram; error logged with full lineage |
+| Dangling lineage reference | Parent Signal was GC'd after decay to zero | Flagged in Substrate; audit query returns partial chain |
+| Cycle detected on ingest | Bug in builder or adversarial input | Substrate rejects the Signal; error logged with full lineage |
 | Deep lineage causing slow audit | DAG depth > 1000 | `ancestors()` has `max_depth` parameter; audit tools cap at configurable depth |
 
 ---

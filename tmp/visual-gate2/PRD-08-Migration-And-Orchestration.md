@@ -53,7 +53,7 @@ The gate system is built on two traits from `roko-core`:
 // crates/roko-core/src/lib.rs
 #[async_trait]
 pub trait Verify: Send + Sync {
-    async fn verify(&self, signal: &Engram, ctx: &Context) -> Verdict;
+    async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict;
     fn name(&self) -> &str;
 }
 
@@ -227,7 +227,7 @@ impl<V: Verify> LegacyCriterion<V> {
 #[async_trait]
 impl<V: Verify> Criterion for LegacyCriterion<V> {
     async fn evaluate(&self, evidence: &EvidenceBag, ctx: &EvalContext) -> CriterionResult {
-        // Convert EvidenceBag to Engram + Context for the legacy gate
+        // Convert EvidenceBag to Signal + Context for the legacy gate
         let (engram, core_ctx) = evidence.to_legacy_inputs();
         let verdict = self.inner.verify(&engram, &core_ctx).await;
 
@@ -260,7 +260,7 @@ pub struct CriterionGate<C: Criterion> {
 
 #[async_trait]
 impl<C: Criterion> Verify for CriterionGate<C> {
-    async fn verify(&self, signal: &Engram, ctx: &Context) -> Verdict {
+    async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict {
         let evidence = EvidenceBag::from_legacy(signal, ctx);
         let eval_ctx = EvalContext::from_core(ctx);
         let result = self.inner.evaluate(&evidence, &eval_ctx).await;
@@ -340,7 +340,7 @@ crates/roko-eval-judge/                 # LLM judge criteria
 
 | Aspect | Legacy Bridge | Native Criterion |
 |---|---|---|
-| Evidence | Single Engram (text blob) | Typed EvidenceBag with artifacts |
+| Evidence | Single Signal (text blob) | Typed EvidenceBag with artifacts |
 | Output | Binary pass/fail + text reason | Pass/fail + score + typed findings |
 | Artifacts | None | Screenshots, diffs, logs as ArtifactRef |
 | Structure | Free-text detail | Structured `Finding` with severity, location |
@@ -433,7 +433,7 @@ impl CompileGate {
 
 #[async_trait]
 impl Verify for CompileGate {
-    async fn verify(&self, signal: &Engram, ctx: &Context) -> Verdict {
+    async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict {
         // ... 80 lines of shell invocation and parsing ...
     }
 }
@@ -455,7 +455,7 @@ impl CompileGate {
 
 #[async_trait]
 impl Verify for CompileGate {
-    async fn verify(&self, signal: &Engram, ctx: &Context) -> Verdict {
+    async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict {
         self.inner.verify(signal, ctx).await
     }
     fn name(&self) -> &str { "compile" }

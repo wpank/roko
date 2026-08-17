@@ -262,7 +262,7 @@ seamless.
 **File:** `/Users/will/dev/nunchi/roko/roko/docs/19-deployment/INDEX.md`
 
 Good structure. The five deployment shapes (laptop, single-server, container, clustered, edge)
-are consistent throughout. The Key Concepts section (lines 34-42) integrates Engram, Pulse,
+are consistent throughout. The Key Concepts section (lines 34-42) integrates Signal, Pulse,
 Bus, StateHub, and profiles cleanly.
 
 **Issues:**
@@ -281,7 +281,7 @@ Bus, StateHub, and profiles cleanly.
 One of the best-integrated refinement docs. REF33 content is woven into a coherent operator
 story. The Roko-specific metrics table (lines 109-124) is concretely useful. The
 "Replay and Time-Travel" section (lines 181-196) connects deployment concerns to the
-Bus/Engram model naturally.
+Bus/Signal model naturally.
 
 **Score: 5/5**
 
@@ -291,7 +291,7 @@ Bus/Engram model naturally.
 
 ### Issue A: "Signal" still appears in active code and docs (HIGH)
 
-The glossary correctly marks `Signal` as retired in favor of `Engram`. However, **`Signal`
+The glossary correctly marks `Signal` as retired in favor of `Signal`. However, **`Signal`
 still appears as a live Rust type name** in code snippets across at least 8 docs:
 
 | File | Context |
@@ -307,7 +307,7 @@ still appears as a live Rust type name** in code snippets across at least 8 docs
 
 These docs were NOT updated by the refinements runner because they predate the glossary
 changes. The scaffolder doc (02-roko-new-scaffolders.md) explicitly notes "will be renamed to
-Engram in Tier 0D" (line 128), which is at least honest. But the conductor, orchestration,
+Signal in Tier 0D" (line 128), which is at least honest. But the conductor, orchestration,
 forensic, and CLI-REFERENCE docs use `Signal` without any qualification.
 
 **This is the biggest terminology hygiene gap in the tree.** The refinements correctly updated

@@ -1,14 +1,26 @@
 # E12 — Dead-Code & Legacy Cleanup
 
-**Status:** GAP — no existing plan. Census complete, deletions not yet sequenced.
+**Status:** DONE — 9/9 tasks complete (2026-08-15).
 **Source docs:** `104-DEAD-CODE-AND-FACADE-CENSUS`, `06-WIRING-STATUS`, `03-CRATE-AUDIT`,
 `54-PER-CRATE-MIGRATION-CHECKLIST`, `11-DEPENDENCY-GRAPH`
 **Depends on:** E05 (gate adaptivity port), E06 (compose unify), E08 (conductor wiring),
 plus E01/E04 for the orchestrator island. Deletion tasks are **gated** behind the epics
 that first port each module's live value out of the dead island.
-**Owning subsystem:** whole-workspace hygiene (`roko-core`, `roko-runtime`, `roko-orchestrator`,
-`roko-conductor`, `roko-plugin`, `roko-cli/src/orchestrate.rs`, `roko-index`)
+**Owning subsystem:** whole-workspace hygiene (`roko-core`, `roko-runtime`, `roko-conductor`,
+`roko-plugin`, `roko-cli`, `roko-index`)
 **Task count:** 9 (E12-T01 … E12-T09)
+
+## Implementation update (2026-08-15)
+
+All nine tasks are complete. The final live `GitHubOps` contract moved into `roko-cli`;
+worktree fsmonitor behavior and provider-health regressions were retained in their live
+owners; and the obsolete `roko-orchestrator` workspace member, source tree, dependency,
+and lockfile package were removed. T09's original deletion premise was disproved by its
+consumer audit: `roko-plugin` owns live E30/E32 SDK, manifest, and resolution behavior,
+so the accepted task explicitly retains and ratifies that canonical owner.
+
+The findings and sequencing below are retained as historical rationale. The executable
+manifest at `backlog/plans/E12-DEAD-CODE-CLEANUP/tasks.toml` is authoritative.
 
 ---
 
@@ -69,11 +81,11 @@ violation, a test-only feature façade) that carry zero inter-epic risk, then qu
 | `legacy-runner-v2` feature | — | test-only façade | none | **now** (E12-T03) |
 | 37× `#[allow(dead_code)]` members | ~? | dead members | callers removed by owning epics | **now**, incremental (E12-T04) |
 | `roko-index` HDC reimpl | ~? | duplicate impl | E03 type consolidation must expose primitives HDC | after **E03** (E12-T05) |
-| `roko-orchestrator/src/safety/` | 3.4K | duplicate safety | E04 makes roko-agent safety canonical | after **E04** (E12-T06) |
-| `roko-orchestrator` (rest) | ~? | superseded DAG/executor | E01 runner-v2 owns execution | after **E01/E08** (E12-T06) |
+| `roko-orchestrator/src/safety/` | 3.4K | duplicate safety | E04 makes roko-agent safety canonical | **deleted** (E12-T06) |
+| `roko-orchestrator` (rest) | ~? | superseded DAG/executor | E01 runner-v2 owns execution | **deleted after live-export migration** (E12-T06) |
 | `roko-cli/src/orchestrate.rs` | 23.7K | dead legacy engine | E05 (gate adaptivity), E06 (compose enrich), E08 (conductor) | after **E05/E06/E08** (E12-T07) |
 | `legacy-orchestrate` feature + `run.rs` legacy path | ~? | legacy binary gate | orchestrate.rs deleted (E12-T07) | after **E12-T07** (E12-T08) |
-| `roko-plugin` (facade crate) | ~? | facade | audit real consumers (roko-serve/cli imports) | after audit (E12-T09) |
+| `roko-plugin` | ~? | canonical live SDK, not a facade | audited real consumers and E30/E32 ownership | **retained by superseded T09** |
 
 **Split:** ~4 tasks are **safe to delete/refactor now** (T01–T04); **5 tasks are gated behind
 other epics** (T05←E03, T06←E01/E04, T07←E05/E06/E08, T08←T07, T09←audit).
@@ -116,8 +128,10 @@ supervision out of it. Remove `pub mod orchestrate` + the `PlanRunner` re-export
 ### E12-T08 — Remove `legacy-orchestrate` feature + `run.rs` legacy path *(gated: after T07)*
 Delete the ~10 cfg sites, the `[[bin]]` `required-features`, and the feature definition.
 
-### E12-T09 — Retire `roko-plugin` facade *(gated: after consumer audit)*
-Audit `roko-serve`/`roko-cli` imports; if unused, delete the crate and its Cargo edges.
+### E12-T09 — Audit plugin consumers and ratify the canonical SDK owner *(superseded)*
+The audit proved `roko-plugin` is a live E30/E32 owner, not a facade. Retain it, verify
+its CLI/serve consumers, and keep `PluginTier`/`PluginCapability` canonical rather than
+replacing working plugin behavior with no-ops.
 
 ---
 

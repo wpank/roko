@@ -13,7 +13,7 @@
 
 | # | Primitive | Short name | Status |
 |---|---|---|---|
-| P1 | Engram | `Engram` | Shipping |
+| P1 | Engram (renamed to Signal in 2026-08-12) | `Signal` | Shipping |
 | P2 | Pulse | `Pulse` | Scaffold |
 | P3 | Bus / `EventBus<E>` | `Bus` | Built (EventBus); Scaffold (Bus trait) |
 | P4 | Substrate | `Substrate` | Shipping |
@@ -49,12 +49,12 @@ Use this table to find all synergies that touch a given primitive.
 
 | Primitive | Participates in |
 |---|---|
-| P1 Engram | S1 (substrate of record), S4 (paper Engram) |
+| P1 Signal | S1 (substrate of record), S4 (paper Signal) |
 | P2 Pulse | S2 (calibration trial), S5 (lifecycle events), S7 (reinterpretation output) |
 | P3 Bus | S2 (falsifier watch / calibration routing), S3 (work distribution stats), S5 (plugin lifecycle), S9 (agreement Pulses) |
-| P4 Substrate | S1 (home of fingerprinted Engrams), S4 (paper Engram store), S5 (plugin read/write surface), S7 (historical Engram source), S10 (Custody record store) |
+| P4 Substrate | S1 (home of fingerprinted Signals), S4 (paper Signal store), S5 (plugin read/write surface), S7 (historical Signal source), S10 (Custody record store) |
 | P5 HDC | S1 (novelty score), S3 (output convergence detection), S9 (semantic endorsement fingerprint) |
-| P6 Demurrage | S1 (holding cost on Engrams), S8 (holding cost on confidence) |
+| P6 Demurrage | S1 (holding cost on Signals), S8 (holding cost on confidence) |
 | P7 Heuristics | S2 (rule being calibrated), S4 (lifted claim form), S6 (peer-model form), S8 (target of confidence decay) |
 | P8 c-factor | S3 (policy signal integrator), S6 (peer-model accuracy component) |
 | P9 Ledger | S4 (evidence + falsification history) |
@@ -72,7 +72,7 @@ Use this table to find all synergies that touch a given primitive.
 
 | Synergy | What is live | What is missing |
 |---|---|---|
-| S10 | Gate operator (Built); Substrate (Shipping) | TypedContext full schema, domain profile bundles, Custody Engram writes |
+| S10 | Gate operator (Built); Substrate (Shipping) | TypedContext full schema, domain profile bundles, Custody Signal writes |
 | S3 | HDC partial (Built); c-factor partial (Built); `EventBus<E>` (Built) | Bus statistics API; c-factor regulatory emitter; PolicyPulse types |
 
 ### Target-state (one or more core primitives are Specified or Scaffold)
@@ -123,7 +123,7 @@ state primitives land. None are fully live today.
 | Property | Synergies required | Why it emerges |
 |---|---|---|
 | Self-improvement without a separate training pipeline | S2, S4, S6, S8 | The runtime predicts, calibrates, and updates through its own Bus-mediated feedback. Training is a continuous process, not a periodic pipeline. |
-| Inspectability at every level | S10, S9, S4, S7 | Pulse lineage, Engram lineage, heuristic provenance, Custody records, and ledger status together make every decision traceable without requiring a separate observability stack. |
+| Inspectability at every level | S10, S9, S4, S7 | Pulse lineage, Signal lineage, heuristic provenance, Custody records, and ledger status together make every decision traceable without requiring a separate observability stack. |
 | Substrate neutrality | S1, S5, S7 | Because key behaviors are driven by HDC, demurrage, heuristics, and policy, the system can swap storage or transport implementations without changing its cognitive behavior. |
 
 ---

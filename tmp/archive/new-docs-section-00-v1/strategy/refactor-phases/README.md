@@ -1,7 +1,7 @@
 # Refactor Phases
 
 > The four-phase plan to migrate Roko from its current ad hoc transport surfaces to the
-> canonical two-medium (`Engram` + `Pulse`), two-fabric (`Substrate` + `Bus`) kernel model.
+> canonical two-medium (`Signal` + `Pulse`), two-fabric (`Substrate` + `Bus`) kernel model.
 > Each phase is independently mergeable and reversible.
 
 **Source**: [`docs/00-architecture/33-refactor-plan-phases.md`](../../_migration/cluster-I-strategy.md)

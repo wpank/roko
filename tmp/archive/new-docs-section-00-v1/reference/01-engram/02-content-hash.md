@@ -1,6 +1,6 @@
-# Engram — ContentHash Identity
+# Signal — ContentHash Identity
 
-> The ContentHash is the Engram's identity: a 32-byte BLAKE3 digest of the Engram's stable fields.
+> The ContentHash is the Signal's identity: a 32-byte BLAKE3 digest of the Signal's stable fields.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -12,7 +12,7 @@
 
 ## TL;DR
 
-An Engram's identity is computed by hashing its stable fields (kind, body, created_at_ms,
+An Signal's identity is computed by hashing its stable fields (kind, body, created_at_ms,
 provenance.author, lineage, tags) with BLAKE3. Score, decay, and fingerprint are excluded.
 The same content always produces the same hash. The Substrate uses ContentHash for exact-match
 lookups; the HDC fingerprint handles similarity search.
@@ -29,12 +29,12 @@ consequences for Roko:
    same author, same tags), the substrate's `insert` is idempotent — the second insertion
    is a no-op because the ContentHash already exists.
 
-2. **Lineage is cryptographically verifiable.** Because parent Engrams' ContentHashes are
-   included in child Engrams' `lineage` field (which is itself hashed), the audit DAG
-   cannot be silently tampered with. Changing a parent Engram changes its hash, which
+2. **Lineage is cryptographically verifiable.** Because parent Signals' ContentHashes are
+   included in child Signals' `lineage` field (which is itself hashed), the audit DAG
+   cannot be silently tampered with. Changing a parent Signal changes its hash, which
    changes the child's lineage field, which changes the child's hash.
 
-3. **Distributed consensus is natural.** Two agents holding identical Engrams have
+3. **Distributed consensus is natural.** Two agents holding identical Signals have
    identical hashes — no synchronization protocol needed to verify identity.
 
 ---
@@ -101,7 +101,7 @@ For the precise byte-level encoding rules, see
 BLAKE3 was chosen for:
 
 1. **Speed**: BLAKE3 runs at ~1 GB/s on a single core, well above the throughput of
-   Engram emission. Hashing a typical Engram takes < 1 µs.
+   Signal emission. Hashing a typical Signal takes < 1 µs.
 
 2. **Security**: 256-bit output; no known collision attacks; NIST finalist lineage
    (BLAKE2 predecessor). Suitable for content-addressing where collision resistance
@@ -138,7 +138,7 @@ fn compute_id(engram: &Engram) -> ContentHash {
 
 ### Verification
 
-Any component can verify an Engram's id at any time by recomputing the hash:
+Any component can verify an Signal's id at any time by recomputing the hash:
 
 ```rust
 <!-- source: crates/roko-core/src/engram.rs -->
@@ -151,7 +151,7 @@ impl Engram {
 }
 ```
 
-The Substrate calls `verify_id()` on every ingested Engram.
+The Substrate calls `verify_id()` on every ingested Signal.
 
 ---
 
@@ -174,9 +174,9 @@ for the full ContentHash API.
 
 | Failure | Cause | Detection |
 |---------|-------|-----------|
-| Hash mismatch on ingest | Engram modified after construction | Substrate `verify_id()` on ingest |
+| Hash mismatch on ingest | Engram (renamed to Signal in 2026-08-12) modified after construction | Substrate `verify_id()` on ingest |
 | Non-deterministic hash | Non-canonical field ordering | Prevented by `BTreeMap<String, String>` for tags |
-| Collision | Two distinct Engrams with same hash | Probability ≈ 2⁻¹²⁸ per pair; treated as impossible |
+| Collision | Two distinct Signals with same hash | Probability ≈ 2⁻¹²⁸ per pair; treated as impossible |
 
 ---
 

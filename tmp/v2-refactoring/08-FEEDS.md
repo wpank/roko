@@ -1,5 +1,14 @@
 # Phase 3A: Feeds — Continuous Data Streams as Cells
 
+> **What is this?** Design for the Feed abstraction: a Cell that connects to external
+> data sources, watches for changes, and publishes data as Pulses on the Bus. Feeds
+> unify the various ad-hoc polling loops (file watcher, provider health) behind a
+> consistent interface.
+>
+> **Status:** Not started. Depends on Phase 2 (Graph + Engine).
+>
+> **Last updated: 2026-08-13**
+
 ## What Is a Feed?
 
 A Feed is a Cell that:

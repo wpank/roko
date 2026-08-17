@@ -6,7 +6,7 @@ is your complete briefing. Read every file it references before you start writin
 ## Your mission
 
 Generate the `00-architecture/` topic folder for the Roko PRD documentation. This is the
-foundational topic — it describes the Synapse Architecture, Engrams, the 6 Synapse traits,
+foundational topic — it describes the Synapse Architecture, Signals, the 6 Synapse traits,
 the universal cognitive loop, the 5 layers, cognitive cross-cuts, C-Factor, the crate map,
 provenance, autocatalytic improvement, and the design principles. Every other topic in the
 documentation builds on the concepts you define here.
@@ -26,7 +26,7 @@ Use the Read tool to read these files, in order, before anything else:
 7. `/Users/will/dev/nunchi/roko/roko/tmp/prd-migration/context-pack/06-output-structure.md`
 
 These are non-negotiable. Read them fully. They define:
-- The naming map (Bardo→Roko, Golem→Agent, Grimoire→Neuro, Styx→Mesh, GNOS→KORAI/DAEJI, Clade→Collective/Mesh — **NOT fleet**, Signal→Engram, "1 noun 6 verbs"→Synapse Architecture)
+- The naming map (Bardo→Roko, Golem→Agent, Grimoire→Neuro, Styx→Mesh, GNOS→KORAI/DAEJI, Clade→Collective/Mesh — **NOT fleet**, Signal→Signal, "1 noun 6 verbs"→Synapse Architecture)
 - The reframe rules (no mortality, no death, no terminal phases, no succession, no stochastic death clocks)
 - The writing rules (DO NOT SUMMARIZE, DO NOT TRUNCATE, PRESERVE ALL CITATIONS, write for zero-context readers, use 5-layer taxonomy, integrate Synapse language)
 - The output structure (where to write, what INDEX.md must contain, what each sub-doc must contain)
@@ -36,7 +36,7 @@ These are non-negotiable. Read them fully. They define:
 Use Read to read every one of these files IN FULL:
 
 1. `/Users/will/dev/nunchi/roko/refactoring-prd/00-overview.md` — Vision, naming, crate map, recommended reading order
-2. `/Users/will/dev/nunchi/roko/refactoring-prd/01-synapse-architecture.md` — Engram struct, 7-axis Score, 6 Synapse traits (full Rust signatures), universal cognitive loop, three cognitive speeds, dual-process cognition, active inference, cybernetic self-learning loops, composability example
+2. `/Users/will/dev/nunchi/roko/refactoring-prd/01-synapse-architecture.md` — Signal struct, 7-axis Score, 6 Synapse traits (full Rust signatures), universal cognitive loop, three cognitive speeds, dual-process cognition, active inference, cybernetic self-learning loops, composability example
 3. `/Users/will/dev/nunchi/roko/refactoring-prd/02-five-layers.md` — L0 Runtime through L4 Orchestration. Trait × layer map. Dependency rules. Adaptive clock. Dual-process tier router. Temperament profiling. Stigmergy. Cross-domain orchestration.
 4. `/Users/will/dev/nunchi/roko/refactoring-prd/03-cognitive-subsystems.md` — Neuro (6 knowledge types, 4 tiers, HDC, cross-domain transfer), Daimon (PAD, 6 behavioral states, somatic markers), Dreams (3-phase cycle), Oracles, cybernetic self-learning, VSM mapping (Beer), Good Regulator (Conant & Ashby), Ashby's Law.
 5. `/Users/will/dev/nunchi/roko/refactoring-prd/07-implementation-priorities.md` — Current state, Tier 0–6 roadmap, dissolution of roko-golem, dropped items, kept/reframed items, "What Makes This a Series A Story."
@@ -74,7 +74,7 @@ Use Read to examine:
 - `/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/lib.rs`
 - `/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/traits.rs` (if it exists)
 - Use Glob to find: `/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/**/*.rs`
-- Read the Engram/Signal definition file to get actual field types
+- Read the Signal/Signal definition file to get actual field types
 
 This grounds your writing in the shipping code, not just the spec.
 
@@ -92,8 +92,8 @@ can be read standalone. The sub-docs are:
 | # | Filename | Content |
 |---|---|---|
 | 00 | `00-vision-and-thesis.md` | "The scaffold IS the product." Meta-Harness (Lee et al. 2026, arXiv:2603.28052). FrugalGPT (Chen et al. 2023, arXiv:2305.05176). DSPy. SWE-bench. CoALA (Sumers et al. 2023, arXiv:2309.02427). What Roko is. Who it's for. The problem it solves. Why context engineering / scaffolding matters more than model selection. |
-| 01 | `01-naming-and-glossary.md` | The old→new naming map as a reference document for readers coming from legacy sources. Explain every rename: Bardo→Roko, Mori→Roko Orchestrator, Golem→Agent, Grimoire→Neuro, Styx→Mesh, Clade→Collective/Mesh, GNOS→KORAI/DAEJI, Signal→Engram, "1 noun 6 verbs"→Synapse Architecture. Also define new terms: Engram, Synapse Architecture, C-Factor, KORAI, DAEJI, Spectre, ROSEDUST. |
-| 02 | `02-engram-data-type.md` | Full Engram struct (Rust code). Every field. Content addressing via BLAKE3(kind+body+author+tags). Deduplication. Replay. Verification. Cross-system identity. Kind enum with core variants + Custom(String) for domain-extensibility (reverse-DNS prefixes). Body types. Tags as ordered BTreeMap. Created_at_ms. Lineage Vec<ContentHash>. |
+| 01 | `01-naming-and-glossary.md` | The old→new naming map as a reference document for readers coming from legacy sources. Explain every rename: Bardo→Roko, Mori→Roko Orchestrator, Golem→Agent, Grimoire→Neuro, Styx→Mesh, Clade→Collective/Mesh, GNOS→KORAI/DAEJI, Signal→Signal, "1 noun 6 verbs"→Synapse Architecture. Also define new terms: Signal, Synapse Architecture, C-Factor, KORAI, DAEJI, Spectre, ROSEDUST. |
+| 02 | `02-signal-data-type.md` | Full Signal struct (Rust code). Every field. Content addressing via BLAKE3(kind+body+author+tags). Deduplication. Replay. Verification. Cross-system identity. Kind enum with core variants + Custom(String) for domain-extensibility (reverse-DNS prefixes). Body types. Tags as ordered BTreeMap. Created_at_ms. Lineage Vec<ContentHash>. |
 | 03 | `03-score-7-axis-appraisal.md` | The 7 score axes: confidence, novelty, utility, reputation (stable) + precision, salience, coherence (extended). Each axis's cognitive function. Effective score formula. Backward compat (new axes default to 0.5). Appraisal theory (Scherer 2001). Why score is separated from ID. |
 | 04 | `04-decay-variants.md` | Decay enum: None, HalfLife{half_life_ms}, Ttl{ttl_ms}, Ebbinghaus{strength, scale_ms}. Built-in constants: Decay::THREAT (2h), Decay::OPPORTUNITY (4h), Decay::WISDOM (24h). Ebbinghaus integration with Neuro tier progression. How decay is memory management, not mortality. |
 | 05 | `05-provenance-and-attestation.md` | Provenance struct: author, model_fingerprint, prompt_hash, taint level (Trusted/Unverified/Suspicious), timestamp, context. Attestation: Ed25519Signature, PublicKey (DID/TEE), optional ChainAttestation. How attestations enable proving model origin, chain of custody, C2PA-compatible content credentials, regulatory compliance. Taint propagation through lineage DAG. |
@@ -166,7 +166,7 @@ Before finishing, run through `context-pack/04-writing-rules.md` Rule 15 checkli
 - **NO DEATH FRAMING**. No mortality. No terminal. No death clocks. No succession. No thanatopsis. (Okay to discuss how they were REMOVED.)
 - **USE THE NAMING MAP**. Bardo→Roko, Golem→Agent, Grimoire→Neuro, etc.
 - **WRITE FOR ZERO-CONTEXT READERS**. Every term defined on first use.
-- **APPLY SYNAPSE ARCHITECTURE LANGUAGE**. Engrams, 6 traits, 5 layers, cross-cuts.
+- **APPLY SYNAPSE ARCHITECTURE LANGUAGE**. Signals, 6 traits, 5 layers, cross-cuts.
 - **DOMAIN-AGNOSTIC FRAMING**. Chain is a domain plugin, not the default.
 - **DO NOT ASK FOR CLARIFICATION**. Make decisions per these rules and continue.
 

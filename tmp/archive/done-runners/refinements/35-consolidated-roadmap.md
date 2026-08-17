@@ -121,7 +121,7 @@ heuristics becoming a real library, c-factor visible in dashboards.
 
 Tracks:
 
-- **HDC on every Engram** (11): field added; default encoder
+- **HDC on every Signal** (11): field added; default encoder
   registered; `query_similar` on FileSubstrate.
 - **Demurrage** (12): balance/reinforcement; cold tier; dashboard
   tile.
@@ -131,7 +131,7 @@ Tracks:
 - **c-factor measurement** (13 §10 steps 1–2): metrics, dashboard
   tile. No Policy-level actuation yet.
 - **Research-to-runtime** (16 §12 steps 1–3): Paper + Claim
-  Engrams; starter kit of 20 papers.
+  Signals; starter kit of 20 papers.
 
 Risk: demurrage rate-tuning (high). Mitigations: per-deployment
 overrides; sliding-window CI to detect cold-tier blow-up;

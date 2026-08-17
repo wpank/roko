@@ -1,5 +1,12 @@
 # Architecture Runner — Batch Manifest
 
+> **What is this?** Batch definitions for the architecture runner, which built out the
+> v2 runtime foundation (RuntimeEvent types, foundation traits, service layer, adapters,
+> and CLI wiring). This work was completed on the `wp-arch2` branch in April-May 2026.
+> The batches here are historical reference for how the architecture was assembled.
+>
+> **Last updated: 2026-08-13**
+
 16 batches across 5 phases. Each batch produces one or two new files plus a `mod` declaration.
 
 ## Phase 0: Core Types & Traits

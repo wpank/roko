@@ -1,10 +1,10 @@
 # Body — Overview
 
-> The enum that holds the actual content of an Engram: text, a vector embedding, JSON, binary data, or structured key-value fields.
+> The enum that holds the actual content of an Signal: text, a vector embedding, JSON, binary data, or structured key-value fields.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
-**Depends on**: [Engram](../../01-engram/00-overview.md)  
+**Depends on**: [Signal](../../01-engram/00-overview.md)  
 **Used by**: [ContentHash](../content-hash/00-overview.md), [HDC Fingerprint](../hdc-fingerprint/00-overview.md)  
 **Last reviewed**: 2026-04-19
 
@@ -13,7 +13,7 @@
 ## TL;DR
 
 `Body` is a five-variant enum: `Text(String)`, `Embedding(Vec<f32>)`, `Json(serde_json::Value)`,
-`Binary(Vec<u8>)`, and `Structured(BTreeMap<String, Body>)`. It is included in the Engram's
+`Binary(Vec<u8>)`, and `Structured(BTreeMap<String, Body>)`. It is included in the Signal's
 `ContentHash`. Only `Text`, `Json`, and `Structured` bodies produce HDC fingerprints —
 `Binary` does not.
 
@@ -21,14 +21,14 @@
 
 ## The Idea
 
-An Engram can carry many kinds of payloads:
+An Signal can carry many kinds of payloads:
 - A written claim or answer (`Text`).
 - A semantic vector from an LLM encoder (`Embedding`).
 - A structured data record (`Json` or `Structured`).
 - An opaque binary blob (`Binary`) for file content or serialized objects.
 
-All of these are first-class Engram payloads. The `Body` enum provides a single type that
-covers all cases without requiring separate Engram types.
+All of these are first-class Signal payloads. The `Body` enum provides a single type that
+covers all cases without requiring separate Signal types.
 
 ---
 

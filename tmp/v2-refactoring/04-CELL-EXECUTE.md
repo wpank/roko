@@ -1,5 +1,14 @@
 # Phase 1A: Cell Gets execute() — The Universal Computation Interface
 
+> **What is this?** Design for adding `execute()` to the Cell trait, which is the
+> foundation for the Graph + Engine architecture in Phase 2. Currently the Cell trait
+> provides only identity and metadata; this change adds a universal computation entry
+> point so any Cell can be called from a Graph.
+>
+> **Status:** Not started. Prerequisite for Phase 2 (Graph + Engine).
+>
+> **Last updated: 2026-08-13**
+
 ## What Changes
 
 The `Cell` trait in `roko-core/src/cell.rs` currently provides only identity and metadata:

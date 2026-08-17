@@ -1,5 +1,18 @@
 # Phase 3 — Autonomy, Safety, and Economy
 
+> **Last updated: 2026-08-13**
+
+## What is this?
+
+Phase 3 of the mori-to-roko migration: full autonomous operation capabilities. This phase
+adds CaMeL IFC (information flow control), 5-head corrigibility, on-chain registry
+anchoring, arena evaluation system, brain export/import, and cross-agent knowledge sharing.
+
+**Status**: Pending -- depends on Phases 1-2 completion. Some items are additionally
+blocked on depth docs (`[BLOCKED:depth]`). Phase 0 structural items are done (runner v2,
+main.rs decomposition, serve routes consolidation). Engram->Signal rename is DONE
+(2026-08-12).
+
 > Full autonomous operation with CaMeL IFC, 5-head corrigibility, on-chain anchoring, arenas, brain export, and cross-agent knowledge sharing.
 
 **Spec source**: `tmp/unified/21-ROADMAP.md` §4 (Phase 3)

@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a synthesis report from a structured deep-research run. It is reference material
+> for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Collective Intelligence Scaling Laws, Emergent Communication, and Multi-Agent Coordination
 
 This document synthesizes the current state of research (2024--2026) on how groups of AI agents scale, communicate, coordinate, and fail. It is written for someone with no prior context on multi-agent systems or the research literature. Every claim is traced to a specific paper with its arXiv identifier.

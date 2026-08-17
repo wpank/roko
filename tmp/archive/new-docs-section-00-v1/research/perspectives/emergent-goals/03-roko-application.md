@@ -51,11 +51,11 @@ overcome it. As a hard constraint, it is immune to such pressures.
 
 ### Composer: Emergent Goals Through Context Selection
 
-The [Composer](../../../reference/05-operators/composer.md) selects which Engrams enter
-the synthesis context. This selection is itself a goal-shaping mechanism: the Engrams that
+The [Composer](../../../reference/05-operators/composer.md) selects which Signals enter
+the synthesis context. This selection is itself a goal-shaping mechanism: the Signals that
 consistently appear in context define the agent's effective frame of reference.
 
-If the Composer consistently selects Engrams from a particular domain (because that domain
+If the Composer consistently selects Signals from a particular domain (because that domain
 has consistently high scores), the agent's synthesis will be consistently framed through
 that domain. The effective goal becomes "solve problems through the lens of X."
 
@@ -64,7 +64,7 @@ lens, but the scoring/selection dynamics consistently produce one.
 
 **Countermeasure**: Policy-level diversity requirements for context assembly — ensure that
 the Composer samples across domains, not just from the highest-scoring region of the
-Engram space.
+Signal space.
 
 ### Daimon → Score → Router as a Closed Goal Loop
 
@@ -77,9 +77,9 @@ Daimon state → Score biases → Router tier selection → Engram processed →
 ```
 
 This loop is the computational substrate on which emergent goals develop. If certain types
-of Engrams consistently produce outcomes that drive Daimon toward a particular state, and
-that Daimon state consistently scores those Engram types highly, the loop closes: the agent
-develops an effective goal of processing that Engram type.
+of Signals consistently produce outcomes that drive Daimon toward a particular state, and
+that Daimon state consistently scores those Signal types highly, the loop closes: the agent
+develops an effective goal of processing that Signal type.
 
 This is not always a problem — stable useful goals can emerge from this loop. But it can
 produce **goal rigidity**: once the loop has settled into a stable cycle, it resists

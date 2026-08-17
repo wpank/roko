@@ -1,5 +1,14 @@
 # Fast Build & Deploy Guide
 
+Last updated: 2026-08-13
+
+## What is this?
+
+Three speed tiers for building and deploying roko: zigbuild (~45s), cargo-chef
+(~2min), and local cross-compile + tunnel (~0s rebuild). Includes Dockerfile
+recipes for each tier. The files described here (`Dockerfile.runtime`,
+`Dockerfile.optimized`) are NOT yet committed to the repo.
+
 Goal: minimize the time from code change to running in production.
 
 **Files not in repo yet:** `Dockerfile.runtime` and `Dockerfile.optimized` are described below but **must be added** at the repo root (or paths updated) before `docker build -f Dockerfile.runtime` works. The stock root `Dockerfile` is the slow, Rust-only path unless you adopt **04-DOCKERFILE-FIX.md**.

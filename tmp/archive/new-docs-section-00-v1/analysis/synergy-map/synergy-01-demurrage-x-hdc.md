@@ -5,7 +5,7 @@
 > and frequently-used records survive; redundant or stale ones decay away.
 
 **Status**: Analysis — target-state synergy  
-**Primitives involved**: P6 Demurrage × P5 HDC (with P1 Engram and P4 Substrate as substrate)  
+**Primitives involved**: P6 Demurrage × P5 HDC (with P1 Signal and P4 Substrate as substrate)  
 **Reality check**: P5 HDC fingerprinting is partially built; P6 Demurrage is Specified (no
 shipped implementation). The full synergy is target-state.  
 **Last reviewed**: 2026-04-19
@@ -16,9 +16,9 @@ shipped implementation). The full synergy is target-state.
 
 | Primitive | Role in this synergy |
 |---|---|
-| [P6 Demurrage](../../reference/) | Imposes a holding cost on each Engram over time, creating economic pressure to evict low-value records |
-| [P5 HDC fingerprint](../../reference/) | Encodes each Engram as a high-dimensional vector; nearest-neighbor distance measures semantic novelty |
-| [P1 Engram](../../reference/01-engram/) | The unit of memory that carries both a demurrage balance and an HDC fingerprint |
+| [P6 Demurrage](../../reference/) | Imposes a holding cost on each Signal over time, creating economic pressure to evict low-value records |
+| [P5 HDC fingerprint](../../reference/) | Encodes each Signal as a high-dimensional vector; nearest-neighbor distance measures semantic novelty |
+| [P1 Signal](../../reference/01-engram/) | The unit of memory that carries both a demurrage balance and an HDC fingerprint |
 | [P4 Substrate](../../reference/03-substrate/) | The store that evaluates eviction pressure and executes pruning |
 
 ---
@@ -35,7 +35,7 @@ similarity by evicting duplicates.
 
 Together the two primitives create a **"unique-and-used" pressure**:
 
-1. Each Engram carries an HDC fingerprint computed at write time.
+1. Each Signal carries an HDC fingerprint computed at write time.
 2. Demurrage evaluates holding cost as a function of both time-since-access and semantic
    redundancy (distance to nearest neighbors).
 3. Records that are semantically close to many other records pay higher effective holding cost —
@@ -80,7 +80,7 @@ See [`reference/03-substrate/06-pruning.md`](../../reference/03-substrate/06-pru
 
 ## Invariants
 
-1. Every Engram that enters Substrate carries an HDC fingerprint. There is no "unfingerprinted"
+1. Every Signal that enters Substrate carries an HDC fingerprint. There is no "unfingerprinted"
    record in the target-state design.
 2. Holding cost is always non-negative. Demurrage cannot create artificial credits.
 3. Pruning can only decrease the total record count, never increase it. The self-trimming

@@ -1,19 +1,19 @@
 # Scorer Overview
 
-> The `Scorer` operator assigns a [`Score`](../../10-types/score.md) to an `Engram`. It is
+> The `Scorer` operator assigns a [`Score`](../../10-types/score.md) to an `Signal`. It is
 > the appraisal step — the mechanism by which the cognitive loop decides what is worth
 > keeping, acting on, and learning from.
 
 **Status**: Shipping
 **Crate**: `roko-core`
-**Depends on**: [Engram](../../01-engram/README.md), [Score](../../10-types/score.md)
+**Depends on**: [Signal](../../01-engram/README.md), [Score](../../10-types/score.md)
 **Last reviewed**: 2026-04-19
 
 ---
 
 ## TL;DR
 
-`Scorer::score(engram, prior_score) -> Score` takes an `Engram` and the accumulated score
+`Scorer::score(signal, prior_score) -> Score` takes an `Signal` and the accumulated score
 from earlier scorers in the chain, and returns an updated `Score`. Multiple scorers are
 stacked; the last scorer's output is the final score for the loop tick.
 

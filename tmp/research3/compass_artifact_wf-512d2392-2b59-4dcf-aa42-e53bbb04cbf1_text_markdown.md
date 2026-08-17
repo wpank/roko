@@ -1,3 +1,14 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+>
+> **Status: Most implementation-ready proposal.** This UiGate architecture spec is the most
+> concrete and actionable proposal in the research corpus -- it specifies a deterministic
+> verifier loop for agent-generated UI with concrete tool choices (chromiumoxide, axe-core,
+> odiff), an eight-loop cybernetic architecture, and a pairwise Bradley-Terry judging
+> methodology. If UiGate is built, start here.
+>
+> Last updated: 2026-08-13
+
 # Building UiGate: a deterministic verifier loop for agent-generated UI
 
 The verdict up front: **build UiGate around a vector of orthogonal external verifiers, not a single LLM judge.** Every load-bearing signal — accessibility, performance, design-token adherence, layout-metric thresholds, visual regression — is a deterministic, machine-readable JSON oracle that already exists. Wire those first, treat the multimodal LLM judge as one signal among eight, gate on conjunctive hard checks plus a Pareto frontier on soft ones, and feed every run into a private preference dataset that compounds. The literature is unambiguous: Goodhart on visual eval is the default failure mode unless you enforce regulator variety (Ashby), constrained reward composition (Moskovitz 2024), and rotating held-out canaries. Pairwise judging beats absolute scoring (Chen et al. ICML 2024, MLLM-as-a-Judge); a panel of disjoint-family judges with trimmed-mean aggregation beats any single frontier model. The closest published self-improving loop you should literally copy is **WebRL** (Qi et al., arXiv 2411.02337) for curriculum-from-failures plus **WebGen-Agent** (arXiv 2509.22644) for step-level screenshot feedback. The closest production iteration loop worth stealing is **v0's composite stack** — frontier base model plus RAG over a curated component library plus a small RFT-trained post-processor (`vercel-autofixer-01`). Everything else in this report is a refinement of that core.

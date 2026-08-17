@@ -1,6 +1,6 @@
 # Score — Examples
 
-> Worked examples: scoring Engrams through each Scorer layer.
+> Worked examples: scoring Signals through each Scorer layer.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -90,7 +90,7 @@ let score = Score {
 
 ## Example 5: Outcome Update After Gate Pass
 
-When a downstream gate passes, update the utility of contributing Engrams:
+When a downstream gate passes, update the utility of contributing Signals:
 
 ```rust
 <!-- source: crates/roko-core/src/scorer/utility.rs -->

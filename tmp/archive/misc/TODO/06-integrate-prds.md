@@ -11,7 +11,7 @@
 | Rename bardo-runtime -> roko-runtime | DONE | `crates/roko-runtime/` |
 | Rename bardo-primitives -> roko-primitives | DONE | `crates/roko-primitives/` |
 | Dissolve roko-golem | DONE | Hypnagogia -> roko-dreams, witness -> roko-chain |
-| Signal -> Engram rename | DONE | `crates/roko-core/src/engram.rs` |
+| Signal -> Signal rename | DONE | `crates/roko-core/src/__PATH_ENGRAM_RS__0` |
 | Update workspace metadata | DONE | Root `Cargo.toml` |
 
 ## Phase B: Structural Wiring — 85% DONE
@@ -29,7 +29,7 @@
 | model_hint override | WIRED | `orchestrate.rs:3971-3984` |
 | Worktree isolation | WIRED | `crates/roko-orchestrator/src/worktree.rs`, `orchestrate.rs:5880` |
 | VCG Auction | PARTIAL | 8-bidder auction works; greedy not optimal |
-| Emotional tagging | WIRED | `crates/roko-core/src/engram.rs` (EmotionalTag) |
+| Emotional tagging | WIRED | `crates/roko-core/src/__PATH_ENGRAM_RS__0` (EmotionalTag) |
 | Attestation signing | PARTIAL | Type extension done; signing workflow missing |
 | Lineage tracking | PARTIAL | Field exists; runtime emission inconsistent |
 

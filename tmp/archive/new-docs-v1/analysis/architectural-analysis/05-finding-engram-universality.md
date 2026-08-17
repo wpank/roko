@@ -1,19 +1,19 @@
-# Finding: Engram/Signal Universality
+# Finding: Signal/Signal Universality
 
-> Edge cases that stress the universal Engram type, comparison to the Agent Data Protocol,
+> Edge cases that stress the universal Signal type, comparison to the Agent Data Protocol,
 > and the VSA/HDC algebraic extension opportunity.
 
 **Status**: Analysis
 **Crate**: `roko-core`
-**Depends on**: [Engram Data Type](../../reference/01-engram/README.md)
+**Depends on**: [Signal Data Type](../../reference/01-engram/README.md)
 **Last reviewed**: 2026-04-13
 
 ---
 
 ## TL;DR
 
-The Engram/Signal type is genuinely universal. All data categories fit without awkward
-workarounds. Engram is strictly richer than the Agent Data Protocol (ADP), validating the
+The Signal/Signal type is genuinely universal. All data categories fit without awkward
+workarounds. Signal is strictly richer than the Agent Data Protocol (ADP), validating the
 core design choice. The HDC algebraic extension (bind, bundle, permute) is a natural next
 step that would make Signal a proper Vector Symbolic Architecture element.
 
@@ -21,7 +21,7 @@ step that would make Signal a proper Vector Symbolic Architecture element.
 
 ## What the Universal Type Handles Well
 
-| Data Category | Engram Representation | Fit |
+| Data Category | Engram (renamed to Signal in 2026-08-12) Representation | Fit |
 |---|---|---|
 | LLM output | `Kind::AgentOutput`, `Body::Text(response)` | Excellent |
 | Gate verdict | `Kind::GateVerdict`, `Body::Json(verdict_data)` | Excellent |
@@ -40,10 +40,10 @@ step that would make Signal a proper Vector Symbolic Architecture element.
 | **Large binary blobs** (e.g., model weights) | Signal struct held in memory | `Body::Bytes` exists but no streaming | Adequate for current use; streaming needed at scale |
 | **Structured multi-part data** (e.g., PR with title + body + files) | Single Body can't hold structured parts | `Body::Json` with nested structure | Adequate but verbose |
 | **Cross-signal relationships** (e.g., gate verdict about an agent output) | Lineage is a Vec of parent hashes | Lineage + tags (`"target_id": hash`) | Adequate |
-| **Real-time streaming data** (e.g., live price feed) | Engram is a snapshot, not a stream | Create new Engrams per tick with Decay::TTL | Adequate; TTL handles ephemerality |
+| **Real-time streaming data** (e.g., live price feed) | Signal is a snapshot, not a stream | Create new Signals per tick with Decay::TTL | Adequate; TTL handles ephemerality |
 | **Confidential data** (e.g., API keys in context) | Provenance.tainted exists but no encryption | Taint flag + scrub policy | Adequate for current threat model |
 
-No edge case requires a new type or a structural change to Engram. All are handled by existing
+No edge case requires a new type or a structural change to Signal. All are handled by existing
 extension mechanisms (`Kind::Custom`, `Body::Json`, `tags`, `Decay::TTL`, `Provenance.tainted`).
 
 ---
@@ -54,9 +54,9 @@ The Agent Data Protocol (arXiv:2510.24702) addresses the same problem: universal
 representation for agent systems. ADP unifies all agent data into Trajectory objects composed
 of Actions (API, code, message) and Observations (text, web).
 
-| Dimension | ADP | Roko Engram |
+| Dimension | ADP | Roko Signal |
 |---|---|---|
-| **Universal type** | Trajectory | Signal/Engram |
+| **Universal type** | Trajectory | Signal/Signal |
 | **Identity** | Sequential index | Content-addressed (BLAKE3 hash) |
 | **Quality assessment** | None | 4-axis Score (confidence, novelty, utility, reputation) |
 | **Temporal dynamics** | None | Four Decay variants (None, HalfLife, TTL, Ebbinghaus) |
@@ -64,7 +64,7 @@ of Actions (API, code, message) and Observations (text, web).
 | **Composition** | Concatenation | Composer trait with budget constraints |
 | **Complexity reduction** | O(D+A) vs O(D×A) | Same: universal type enables O(D+A) integration |
 
-Roko's Engram is strictly richer than ADP's Trajectory: it adds scoring, decay, provenance,
+Roko's Signal is strictly richer than ADP's Trajectory: it adds scoring, decay, provenance,
 content-addressing, and lineage tracking. The ADP paper validates the core insight that a
 universal type reduces integration complexity from multiplicative to additive.
 
@@ -73,7 +73,7 @@ universal type reduces integration complexity from multiplicative to additive.
 ## VSA/HDC Algebraic Extension Opportunity
 
 The existing `bardo-primitives` crate provides 10,240-bit Hyperdimensional Computing vectors.
-These could extend the Engram with algebraic operations:
+These could extend the Signal with algebraic operations:
 
 ```rust
 // Potential extension: Engram algebraic operations
@@ -100,12 +100,12 @@ identified in the readiness audit. See also [08-novel-proposals.md](08-novel-pro
 
 ## Related Findings
 
-- [F2 — Trait Sufficiency](02-finding-trait-sufficiency.md): The six traits operate on Engrams
+- [F2 — Trait Sufficiency](02-finding-trait-sufficiency.md): The six traits operate on Signals
   as their primary data type.
-- [07 — Category Theory](07-finding-category-theory.md): Engrams are the objects of the
-  Engram category.
+- [07 — Category Theory](07-finding-category-theory.md): Signals are the objects of the
+  Signal category.
 - [Integration Map: neuro×composition](../integration-map/neuro-x-composition.md): The
-  missing full knowledge injection depends on Engram Kind richness.
+  missing full knowledge injection depends on Signal Kind richness.
 
 ## References
 
@@ -116,5 +116,5 @@ identified in the readiness audit. See also [08-novel-proposals.md](08-novel-pro
 ## Open Questions
 
 - Should HDC bind/bundle/permute be added to `roko-core::Signal` before or after the
-  Signal→Engram rename?
+  Signal→Signal rename?
 - Does the streaming extension for large binary blobs belong in Phase 1 or Phase 2?

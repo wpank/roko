@@ -1,8 +1,8 @@
 [meta]
 plan = "E48-rate-limit-budgeting"
 total = 12
-done = 2
-status = "ready"
+done = 12
+status = "done"
 max_parallel = 2
 depends_on_plan = ["E01-execution-engine"]
 
@@ -216,7 +216,7 @@ The existing ProviderRateLimiter is already thread-safe (governor is
 Send + Sync) and already keyed by provider_id. The only missing piece is
 threading it from the orchestrator into each provider adapter.
 """
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 files = [
@@ -285,7 +285,7 @@ that canonical state. It must not define another budget_exhausted flag, persiste
 schema, cost accumulator, or pre-dispatch halt path. Tests must prove the override is
 explicit and that both runner entry points observe the same SH05 state.
 """
-status = "ready"
+status = "done"
 ownership = "distinct-extension"
 uses_owner = "SH05-T04"
 tier = "focused"
@@ -364,7 +364,7 @@ selection while still recording its outcome. Tests must assert Arc identity and
 drive Closed, Open, and HalfOpen transitions through real outcome adapters on
 ModelCallService, legacy dispatch_agent_with/run_prepared_agent, and runner-v2.
 """
-status = "ready"
+status = "done"
 ownership = "canonical-owner"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
@@ -467,7 +467,7 @@ The orchestrator already has RetryErrorPattern::RateLimit detection
 (orchestrate.rs:10946) and backoff logic (orchestrate.rs:10202-10207).
 This task extends it to try fallback models first.
 """
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 files = [
@@ -534,7 +534,7 @@ Add a pre-dispatch check:
 The 4-chars-per-token heuristic is intentionally simple. Accuracy
 improvements (tiktoken integration) can come later.
 """
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 files = [
@@ -601,7 +601,7 @@ Add tier-based budget allocation:
 
 Keep the existing max_task_usd as the base. The multiplier scales it.
 """
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 files = [
@@ -666,7 +666,7 @@ Add cost projection:
 Keep the projection simple — average historical cost per tier. Don't
 try to estimate based on prompt size or model pricing.
 """
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 files = [
@@ -731,7 +731,7 @@ Wire proper budget->routing integration:
 5. Update routing_budget_pressure() to return a value directly usable
    as the new budget_pressure field instead of piggybacking on conductor_load.
 """
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 files = [
@@ -786,7 +786,7 @@ background save/flush path restores the same Open/HalfOpen/Closed state after
 restart. This task writes no second outcome adapter, tracker, classifier, or
 persistence schema.
 """
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "E48-T05"
 tier = "focused"
@@ -859,7 +859,7 @@ Add cost visibility:
 Use the existing TUI render pattern from crates/roko-cli/src/tui/ and
 the existing route registration pattern from crates/roko-serve/src/routes/.
 """
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 files = [

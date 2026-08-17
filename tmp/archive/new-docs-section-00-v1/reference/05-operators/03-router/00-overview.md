@@ -1,6 +1,6 @@
 # Router Overview
 
-> `Router` maps an (`Engram`, `Score`) pair to an `Action` — the thing the agent will do
+> `Router` maps an (`Signal`, `Score`) pair to an `Action` — the thing the agent will do
 > next. It is the decision-making operator of the cognitive loop.
 
 **Status**: Shipping
@@ -12,7 +12,7 @@
 
 ## TL;DR
 
-`Router::route(engram, score) -> Action` returns the action to take. Three routing
+`Router::route(signal, score) -> Action` returns the action to take. Three routing
 strategies are provided: `StaticRouter` (rule-based), `ConfidenceRouter` (score-driven),
 and `UCBRouter` (bandit-driven exploration). `CascadeRouter` tries them in sequence,
 falling back to the next strategy on `None`.
@@ -21,7 +21,7 @@ falling back to the next strategy on `None`.
 
 ## What Routing Does
 
-After an `Engram` has been scored and gated, the agent must decide what to do with it.
+After an `Signal` has been scored and gated, the agent must decide what to do with it.
 Options might include: call a specific tool, ask a clarifying question, retrieve more
 context, respond to the user, or defer to a different agent.
 
@@ -34,7 +34,7 @@ and evaluative steps, routing is where the agent commits to a course of action.
 
 ### 1. Static (Rule-Based)
 
-Matches the `Engram` against a set of deterministic rules (kind, score range, topic):
+Matches the `Signal` against a set of deterministic rules (kind, score range, topic):
 
 ```
 If kind == Task AND confidence > 0.8 → Action::ExecuteTask

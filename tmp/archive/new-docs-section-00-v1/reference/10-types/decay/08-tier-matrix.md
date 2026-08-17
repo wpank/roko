@@ -1,6 +1,6 @@
 # Decay — Tier Matrix
 
-> A reference table mapping each Engram Kind to its default decay model, parameters, and cold-tier behaviour.
+> A reference table mapping each Signal Kind to its default decay model, parameters, and cold-tier behaviour.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -12,7 +12,7 @@
 
 ## TL;DR
 
-Different Engram kinds have different natural lifetimes. A tool trace from a finished task
+Different Signal kinds have different natural lifetimes. A tool trace from a finished task
 should decay quickly. A consolidated knowledge entry should decay very slowly or not at all
 under normal use. This page defines the canonical default decay parameters for every Kind,
 derived from the source docs' decay tier matrix and supplemented by inference where gaps
@@ -160,7 +160,7 @@ relative durability values described for each Kind. -->
 
 ## Overriding Defaults
 
-The [Engram Builder](../../01-engram/07-builder-pattern.md) allows overriding the default
+The [Signal Builder](../../01-engram/07-builder-pattern.md) allows overriding the default
 decay at construction time:
 
 ```rust

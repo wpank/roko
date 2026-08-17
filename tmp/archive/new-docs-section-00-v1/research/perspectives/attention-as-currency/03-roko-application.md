@@ -15,11 +15,11 @@ in Roko's architecture. This page traces the mapping.
 ## The Scorer as Bid Generator
 
 The [Scorer](../../../reference/05-operators/scorer.md) produces a 7-axis appraisal of each
-Engram. In the attention economy framing:
+Signal. In the attention economy framing:
 
 **The Scorer generates the attention bid.**
 
-Each Score axis is, in effect, a component of the total bid an Engram makes for processing
+Each Score axis is, in effect, a component of the total bid an Signal makes for processing
 attention:
 
 | Score Axis | Economic Role |
@@ -46,12 +46,12 @@ be made explicit and justified.
 
 ## The Gate as Reserve Price
 
-The [Gate](../../../reference/05-operators/gate.md) rejects Engrams that fall below a
+The [Gate](../../../reference/05-operators/gate.md) rejects Signals that fall below a
 threshold. In the attention economy framing:
 
 **The Gate implements the reserve price.**
 
-An Engram that cannot exceed the Gate threshold receives zero attention — it is not admitted
+An Signal that cannot exceed the Gate threshold receives zero attention — it is not admitted
 to the allocation market at all. The Gate's role is to prevent the allocation mechanism from
 being overwhelmed by low-value bids, maintaining the signal-to-noise ratio for downstream
 processing.
@@ -64,7 +64,7 @@ processing.
   (attention poverty); too low, and the allocation mechanism is flooded (attention monopoly
   risk).
 
-The Gate also implements **non-price rationing**: it can exclude categories of Engrams
+The Gate also implements **non-price rationing**: it can exclude categories of Signals
 regardless of their bid (safety-relevant exclusions, source-trust minimums). This
 corresponds to regulatory floors in market design.
 
@@ -73,20 +73,20 @@ corresponds to regulatory floors in market design.
 ## The Router as Allocation Mechanism
 
 The [Router](../../../reference/05-operators/router.md) determines which processing path
-each admitted Engram follows. In the attention economy framing:
+each admitted Signal follows. In the attention economy framing:
 
 **The Router is the allocation mechanism — it decides who gets attention and how much.**
 
-The Router maps Engrams to processing tiers:
+The Router maps Signals to processing tiers:
 - **T0** (fast path): minimal attention, stereotyped response
 - **T1** (standard path): moderate attention, heuristic-guided response
 - **T2** (deliberate path): high attention, full reasoning
 
 This is a **tiered market**: attention is not homogeneous. "T0 attention" is a different
 good from "T2 attention" — cheaper, less accurate, faster. The Router decides which tier's
-attention each Engram merits.
+attention each Signal merits.
 
-**Efficiency criterion for the Router**: The efficient allocation routes each Engram to the
+**Efficiency criterion for the Router**: The efficient allocation routes each Signal to the
 lowest-cost tier where the expected value of the response still exceeds the cost of a
 higher-tier response. This is the cognitive equivalent of the economic principle: produce
 at the point where marginal cost equals marginal benefit.
@@ -94,34 +94,34 @@ at the point where marginal cost equals marginal benefit.
 **Current implementation gap**: The Router currently uses rule-based tier assignment rather
 than explicit value-cost tradeoff calculations. The attention economy framing suggests that
 explicit cost modeling (how much does a T2 response cost?) and explicit value modeling
-(how much better is a T2 response for this Engram class?) would improve allocation efficiency.
+(how much better is a T2 response for this Signal class?) would improve allocation efficiency.
 
 ---
 
 ## The Composer as Bundle Allocator
 
 The [Composer](../../../reference/05-operators/composer.md) assembles a synthesis context —
-a bundle of Engrams to be processed together. In the attention economy framing:
+a bundle of Signals to be processed together. In the attention economy framing:
 
 **The Composer solves a combinatorial attention allocation problem.**
 
-The context window is the total budget. The Composer must select a bundle of Engrams such
+The context window is the total budget. The Composer must select a bundle of Signals such
 that:
 1. The bundle fits in the context window (budget constraint).
 2. The bundle maximizes the expected quality of the synthesis output (welfare criterion).
-3. Synergistic Engrams (those that complement each other) are preferred to redundant ones.
+3. Synergistic Signals (those that complement each other) are preferred to redundant ones.
 
 This is the combinatorial auction problem described in [02-market-mechanics.md](02-market-mechanics.md).
 VCG provides the theoretical ideal; the Composer's actual selection heuristic (e.g., greedy
 by score) is a tractable approximation.
 
 **Specific design implications:**
-- Engrams that are **complements** in synthesis (each makes the other more valuable when
+- Signals that are **complements** in synthesis (each makes the other more valuable when
   present) should be scored as a bundle, not individually.
-- Engrams that are **substitutes** (each covers the same ground) should be penalized for
+- Signals that are **substitutes** (each covers the same ground) should be penalized for
   co-inclusion; the system should pick one rather than duplicating.
 - The Composer should track **attention budget consumption** across the context window, not
-  just token count — a high-information-density Engram may deserve more "space" even if it
+  just token count — a high-information-density Signal may deserve more "space" even if it
   has the same token length as a low-density one.
 
 ---
@@ -135,7 +135,7 @@ attention allocation. In the attention economy framing:
 
 Just as central banks set interest rates and reserve requirements to shape overall economic
 behavior, the Policy operator sets:
-- **Priority domains**: certain categories of Engrams always receive priority attention
+- **Priority domains**: certain categories of Signals always receive priority attention
   (safety signals, user-facing events)
 - **Attention caps**: no single topic or process can consume more than \( X\% \) of total
   attention
@@ -161,5 +161,5 @@ are intentional mechanisms for ensuring that the attention market does not treat
 equally when the context demands differential treatment.
 
 The economic analogy is a **preference shock**: the agent's preferences change based on
-its state, causing the same Engrams to bid differently in different states. A crisis event
-that raises arousal changes the preference ordering over all subsequent Engrams.
+its state, causing the same Signals to bid differently in different states. A crisis event
+that raises arousal changes the preference ordering over all subsequent Signals.

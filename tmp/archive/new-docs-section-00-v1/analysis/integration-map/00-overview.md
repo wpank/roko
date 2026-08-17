@@ -47,7 +47,7 @@ The 22 sections map to architectural concerns and implementation layers:
 ## Dependency Matrix Legend
 
 Each cell encodes relationship type(s) from the **row section** to the **column section**:
-- **D** = Data flow (Engrams flow from row → column)
+- **D** = Data flow (Signals flow from row → column)
 - **T** = Trait usage (row implements traits column consumes)
 - **C** = Configuration (row's parameters affect column's behavior)
 - **I** = Integration point (currently wired)
@@ -162,7 +162,7 @@ Enables multi-agent coordination:
 Replace direct function calls in `orchestrate.rs` with typed topic channels. Each missing integration (M1-M20) becomes ~20-40 LOC instead of 40-200 LOC. Estimated infrastructure cost: ~200 LOC. See [99-master-lattice.md](./99-master-lattice.md).
 
 ### Four-Dimensional Provenance
-Tag cross-section Engram flows with dimension (Dataflow / ControlFlow / Telemetry / Scheduling) for debuggability. Extends `Provenance` struct in `roko-core`. Backward compatible.
+Tag cross-section Signal flows with dimension (Dataflow / ControlFlow / Telemetry / Scheduling) for debuggability. Extends `Provenance` struct in `roko-core`. Backward compatible.
 
 ### Dreams as Off-Loop Projection Builder
 Treat Dreams as an event-log projection with cursor-based catch-up. Closes M7 and enables crash recovery. See [dreams-x-neuro.md](./dreams-x-neuro.md).

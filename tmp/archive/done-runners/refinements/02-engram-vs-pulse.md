@@ -1,25 +1,25 @@
-# Two Mediums: Engram (Durable) and Pulse (Ephemeral)
+# Two Mediums: Signal (Durable) and Pulse (Ephemeral)
 
-> **TL;DR**: Keep the Engram exactly as it is — the content-addressed,
+> **TL;DR**: Keep the Signal exactly as it is — the content-addressed,
 > lineage-bearing, decayed, provenance-stamped record. Introduce a sibling
 > type, **Pulse**, for the in-flight message. Define a clean conversion
-> law so Pulses can graduate into Engrams when their lineage matters.
+> law so Pulses can graduate into Signals when their lineage matters.
 
-> **For first-time readers**: An **Engram** today is a Roko Rust struct —
+> **For first-time readers**: An **Signal** today is a Roko Rust struct —
 > hashed by BLAKE3 over its `kind`/`body`/`author`/`tags`, decayed on a schedule,
-> scored along 7 axes, chained by lineage to parent Engrams. It is Roko's one
+> scored along 7 axes, chained by lineage to parent Signals. It is Roko's one
 > existing data type. A **Pulse** (this proposal) is its sibling: a typed,
 > sequence-numbered, brief message that lives in an event-bus ring buffer
 > and delivers once. This doc names the Pulse, lists which fields it has and
-> doesn't, and defines when a Pulse should "graduate" into an Engram.
+> doesn't, and defines when a Pulse should "graduate" into an Signal.
 
 ## 1. The split
 
-| Property | Engram | Pulse |
+| Property | Engram (renamed to Signal in 2026-08-12) | Pulse |
 |---|---|---|
 | Identity | `ContentHash` (BLAKE3 over kind + body + author + tags) | `(topic, seq)` within a Bus; no global hash |
 | Durability | Persisted in a `Substrate` | Lives in a Bus ring buffer; drops when ring wraps |
-| Lineage | `Vec<ContentHash>` — audit DAG | Optional `lineage_hint: Option<ContentHash>` pointing at an Engram |
+| Lineage | `Vec<ContentHash>` — audit DAG | Optional `lineage_hint: Option<ContentHash>` pointing at an Signal |
 | Decay | `Decay` enum (HalfLife, Ttl, Ebbinghaus, None) | N/A — Pulses are instantaneous |
 | Score | `Score` (7-axis appraisal) | N/A — Pulses may be scored in flight but don't carry a score |
 | Provenance | Full `Provenance` (author, trust, taint, attestation) | Lightweight: `source: String`, topic implies author class |
@@ -99,21 +99,21 @@ string-namespaced taxonomy.
 
 ### 2.2 Why reuse `Kind` and `Body`?
 
-The Engram's `Kind` enum in `crates/roko-core/src/kind.rs` already
+The Signal's `Kind` enum in `crates/roko-core/src/kind.rs` already
 enumerates the semantic categories of the system (ProcessSpawn,
 AgentMessage, GateVerdict, TokenUsage, …). Reusing it for Pulses means a
-Pulse and an Engram that describe the same event have the same `kind`
+Pulse and an Signal that describe the same event have the same `kind`
 and `body`, which makes graduation trivially an identity function plus
 some extra fields.
 
 This also means existing code that dispatches on `Kind` continues to
 work: a Policy that reacts to `Kind::GateVerdict` Pulses is the
-*same* Policy that reads `Kind::GateVerdict` Engrams from storage
+*same* Policy that reads `Kind::GateVerdict` Signals from storage
 during replay.
 
 ## 3. The conversion law
 
-Graduation is the well-defined path from Pulse to Engram:
+Graduation is the well-defined path from Pulse to Signal:
 
 ```rust
 impl Pulse {
@@ -146,7 +146,7 @@ impl Pulse {
 }
 ```
 
-The reverse — Engram to Pulse — is a lossy projection (loses score,
+The reverse — Signal to Pulse — is a lossy projection (loses score,
 decay, lineage vector):
 
 ```rust
@@ -179,7 +179,7 @@ and should die in the ring buffer. Good defaults:
 | Pulse topic | Graduate? | Reason |
 |---|---|---|
 | `orchestration.plan.started` | Yes | Plan lifecycle belongs in DAG |
-| `orchestration.task.ready` | No | Redundant with Task Engram already in Substrate |
+| `orchestration.task.ready` | No | Redundant with Task Signal already in Substrate |
 | `agent.msg.chunk` | Batch-graduate on stream close | Individual chunks are noise |
 | `agent.process.spawned/exited` | Yes | Process lifecycle is forensic |
 | `agent.tokens.used` | Aggregate then graduate | Per-chunk is noise; per-turn is useful |
@@ -197,21 +197,21 @@ default implementation, overridable via config.
 ### 4.1 It matches what the code already does
 
 `roko-agent-server` already publishes WebSocket token-chunk events that
-are not Engrams. `roko-orchestrator` already emits `OrchestrationEvent`
+are not Signals. `roko-orchestrator` already emits `OrchestrationEvent`
 on a bus. `roko-runtime` already defines `Envelope<E>`. We are
 *naming* what exists, not inventing a second type system.
 
-### 4.2 It preserves the Engram invariants
+### 4.2 It preserves the Signal invariants
 
 The forensic AI capability and the content-addressed DAG depend on
-Engrams being *exactly* what they are today: hashed, lineage-bearing,
+Signals being *exactly* what they are today: hashed, lineage-bearing,
 decayed. Pulses don't weaken this — they just stop forcing ephemeral
 events into the hashed DAG when they don't need to be there.
 
 ### 4.3 It lets the Substrate remain the only persistence surface
 
 Pulses aren't persisted. If a Pulse matters long-term, it graduates to
-an Engram and goes to the Substrate. There is still exactly one
+an Signal and goes to the Substrate. There is still exactly one
 storage surface, with one audit model. We added a transport surface
 alongside it, which is what we have been calling the event bus all
 along.
@@ -232,11 +232,11 @@ fn decide(&self, stream: &[Pulse], ctx: &Context) -> PolicyOutputs;
 ```
 
 Existing Policy implementations that were doing
-`Policy::decide(&[], ctx)` with synthetic empty Engram streams
+`Policy::decide(&[], ctx)` with synthetic empty Signal streams
 (doc 23 calls this "awkward but functional") can now emit their
-metric Pulses cleanly. Policies that want to react to stored Engrams
+metric Pulses cleanly. Policies that want to react to stored Signals
 can still do so — they subscribe to a `substrate.*` topic that the
-Substrate emits when Engrams land.
+Substrate emits when Signals land.
 
 ## 5. Worked example — agent turn
 
@@ -244,26 +244,26 @@ Current state, one-noun model:
 
 1. Agent subprocess spawns → ad-hoc `AgentEvent::ProcessSpawned` on bus.
 2. Token chunks arrive → ad-hoc `AgentEvent::StreamChunk` on bus.
-3. Turn completes → `Engram { kind: AgentOutput, body: Text(...) }`
+3. Turn completes → `Signal { kind: AgentOutput, body: Text(...) }`
    written to Substrate.
-4. GatePipeline verifies the Engram → `Engram { kind: GateVerdict }`
+4. GatePipeline verifies the Signal → `Signal { kind: GateVerdict }`
    written to Substrate.
-5. TUI polls Substrate for new Engrams (doc 24 flags this as the
+5. TUI polls Substrate for new Signals (doc 24 flags this as the
    P0 "polling-vs-streaming" bug).
 
 Two-medium model:
 
 1. Agent subprocess spawns → publish `Pulse { topic:
    "agent.process.spawned", kind: ProcessSpawn, ... }`. Policy
-   graduates it to an Engram (process lifecycle is forensic).
+   graduates it to an Signal (process lifecycle is forensic).
 2. Token chunks arrive → publish `Pulse { topic: "agent.msg.chunk", ... }`
    at 10–100 Hz. Not graduated. TUI subscribes, renders incrementally.
 3. Turn completes → publish `Pulse { topic: "agent.turn.completed", ... }`
-   AND graduate to `Engram { kind: AgentOutput }` written to
+   AND graduate to `Signal { kind: AgentOutput }` written to
    Substrate.
 4. GatePipeline runs → publishes `Pulse { topic:
    "gate.verdict.emitted", ... }` AND graduates to
-   `Engram { kind: GateVerdict }`.
+   `Signal { kind: GateVerdict }`.
 5. TUI never polls — it subscribes to `gate.verdict.*`,
    `agent.msg.*`, `orchestration.*` topics. The P0 bug dissolves.
 
@@ -290,7 +290,7 @@ poll a database.
   stream slice on a topic with 50 subscribers is 250 MB of copies per
   publish. Rule of thumb: bodies under 64 KB for hot topics (`agent.msg.chunk`),
   under 1 MB for structural topics (`orchestration.plan.started`). If it
-  has to be bigger, put the payload in a Substrate Engram and let the
+  has to be bigger, put the payload in a Substrate Signal and let the
   Pulse carry only a `lineage_hint` pointing at it.
 
 ## 7. What else changes if Pulse lands
@@ -304,7 +304,7 @@ these in mind when reviewing:
   the prediction-error signal.
 - **`12-knowledge-demurrage.md`** §2 — the `ReinforceKind::Retrieved` and
   `ReinforceKind::Surprised` signals ride on Pulses. Demurrage without
-  Pulse either forces every read to write a new Engram (expensive) or
+  Pulse either forces every read to write a new Signal (expensive) or
   skips reinforcement entirely (misses the point).
 - **`13-collective-intelligence-c-factor.md`** §2.2 — every c-factor
   metric is computable from Bus statistics. Authorship entropy, delivery

@@ -1,13 +1,13 @@
 # Substrate — Durable Storage Fabric
 
 > `Substrate` is the trait that every storage backend in Roko must implement. It is the
-> single seam between the rest of the framework and wherever `Engram` records actually live
+> single seam between the rest of the framework and wherever `Signal` records actually live
 > on disk, in memory, or on-chain. If you are storing, retrieving, or searching memories in
 > Roko, you are calling through `Substrate`.
 
 **Status**: Shipping
 **Crate**: `roko-core` (trait), `roko-fs` (file backend), `roko-runtime` (wiring)
-**Depends on**: [Engram](../01-engram/README.md), [Score](../10-types/score.md), [Decay](../10-types/decay.md)
+**Depends on**: [Signal](../01-engram/README.md), [Score](../10-types/score.md), [Decay](../10-types/decay.md)
 **Last reviewed**: 2026-04-19
 
 ---
@@ -54,7 +54,7 @@ only needs the pruning page.
 ## See Also
 
 - [Bus Transport Fabric](../04-bus/README.md) — the sibling fabric for ephemeral events
-- [Engram Data Type](../01-engram/README.md) — the record type that Substrate stores
+- [Signal Data Type](../01-engram/README.md) — the record type that Substrate stores
 - [HDC Fingerprint](../10-types/hdc-fingerprint.md) — the vector used by `query_similar`
 - [Decay Variants](../10-types/decay.md) — drives pruning decisions
 - [Universal Cognitive Loop](../06-loop/README.md) — Substrate is called in the RECALL and STORE steps

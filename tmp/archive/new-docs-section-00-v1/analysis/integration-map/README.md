@@ -14,7 +14,7 @@ subsection: integration-map
 Each file documents **one pair** of sections:
 
 - **Direction**: which section drives the other (or bidirectional)
-- **What flows**: the Engram kinds, trait calls, or config values exchanged
+- **What flows**: the Signal kinds, trait calls, or config values exchanged
 - **Status**: Wired / Missing (Mx) / Partial
 - **Invariants** and **failure modes** of the interaction
 

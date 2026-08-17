@@ -77,7 +77,7 @@
 | `tui/views/git_view.rs` | F4 | Branch tree, commit graph, worktrees |
 | `tui/views/logs_view.rs` | F5 | Log viewer with filtering |
 | `tui/views/config_view.rs` | F6 | Config editor |
-| `tui/views/context_view.rs` | F7 | Engram DAG, episode replay |
+| `tui/views/context_view.rs` | F7 | Engram (renamed to Signal in 2026-08-12) DAG, episode replay |
 
 ### Widgets
 | File | Purpose |

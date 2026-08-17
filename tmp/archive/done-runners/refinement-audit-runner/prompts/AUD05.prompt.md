@@ -174,7 +174,7 @@ In `docs/12-interfaces/06-websocket-streaming.md`:
 4. **Do not touch architecture docs** -- those are AUD02's scope.
 5. **Do not touch learning/neuro docs** -- those are AUD03's scope.
 6. **Do not touch safety docs** -- those are AUD06's scope.
-7. **Do not fix Signal->Engram references** -- that is AUD07's scope.
+7. **Do not fix Signal->Signal references** -- that is AUD07's scope.
 8. **Use real numbers.** "131 lines" is more useful than "minimal." "22K LOC"
    is more useful than "substantial."
 

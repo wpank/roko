@@ -1,5 +1,15 @@
 # Topic Grammar Decision
 
+> **What is this?** The decision record for switching relay topic names from
+> colon-separated (`isfr:rates`) to dot-separated (`isfr.rates`). Dots match
+> NATS/RabbitMQ/Kafka conventions, are URL-safe, and enable future wildcard
+> subscriptions. This decision is **settled** (see `05-decisions.md` #3) but
+> **not yet implemented** -- the codebase still uses colons. The
+> `ISFRFeed.map_topic()` shim in `roko-core/src/isfr_feed.rs` converts colons
+> to dots at the boundary. The migration file list below is still accurate.
+>
+> Last updated: 2026-08-13
+
 ## Decision: Use dots (`.`)
 
 Topics use dot-separated hierarchical namespaces. Migrate from the current colon-separated format.

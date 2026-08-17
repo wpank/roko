@@ -41,7 +41,7 @@ The audit found these specific problems in the architecture docs:
 
 3. **`08-scorer-gate-router-composer-policy.md`** describes `Datum` as the
    universal input type for operators. Reality: no `Datum` type exists. Operators
-   take `&[Engram]` today.
+   take `&[Signal]` today.
 
 4. **`12-five-layer-taxonomy.md`** line 221 says `roko-core, roko-bus, roko-hdc,
    and roko-spi are the only kernel-tier crates` (present tense). Reality:
@@ -81,7 +81,7 @@ In `docs/00-architecture/07b-bus-transport-fabric.md`:
 In `docs/00-architecture/08-scorer-gate-router-composer-policy.md`:
 - Where `Datum` is introduced as the operator input type, add a note:
   `> **Note**: `Datum` is a target-state abstraction. Current operators accept
-  > `&[Engram]` directly. The medium-polymorphic `Datum` wrapper is planned
+  > `&[Signal]` directly. The medium-polymorphic `Datum` wrapper is planned
   > but not yet implemented.`
 
 ### 4. Fix five-layer taxonomy crate claims
@@ -129,7 +129,7 @@ In `docs/00-architecture/09-universal-cognitive-loop.md`:
    "Built" (code exists, not fully wired), "Target-state" (described in docs,
    no code).
 4. **Do not touch the glossary.** Glossary fixes are AUD06's scope.
-5. **Do not fix Signal->Engram references.** That is AUD07's scope.
+5. **Do not fix Signal->Signal references.** That is AUD07's scope.
 6. **Do not change the architecture narrative.** The two-medium, two-fabric
    story is the intended target architecture. Just qualify what is current vs.
    what is planned.

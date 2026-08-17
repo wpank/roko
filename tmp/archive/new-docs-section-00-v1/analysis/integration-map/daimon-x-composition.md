@@ -78,7 +78,7 @@ Expected once implemented:
 
 1. Should the `AffectModel` trait expose raw PAD floats or named predicates (`is_high_arousal()`, `is_low_dominance()`)? Named predicates are more testable.
 2. Is there a risk of feedback loop: high arousal → more safety warnings → higher arousal? Need a dampening mechanism.
-3. Should affect modulation be logged as a `Kind::Metric` Engram for later analysis?
+3. Should affect modulation be logged as a `Kind::Metric` Signal for later analysis?
 
 ## Cross-References
 

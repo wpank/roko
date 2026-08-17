@@ -15,7 +15,7 @@
 
 ### `Pass`
 
-The gate evaluated the `Engram` and approves it. The gate makes an active positive
+The gate evaluated the `Signal` and approves it. The gate makes an active positive
 statement: "I have checked this input and it is acceptable."
 
 `Pass` is appropriate when:
@@ -25,16 +25,16 @@ statement: "I have checked this input and it is acceptable."
 
 ### `Reject(reason: String)`
 
-The gate evaluated the `Engram` and rejects it. The `reason` string is logged and included
+The gate evaluated the `Signal` and rejects it. The `reason` string is logged and included
 in the `LoopOutcome::Rejected` result for observability.
 
 `Reject` is appropriate when:
 - `score.confidence < threshold`
 - The body contains unsafe or prohibited content.
-- The `Engram`'s coherence score is below the contradiction threshold.
+- The `Signal`'s coherence score is below the contradiction threshold.
 - Any other specific criterion the gate is designed to enforce.
 
-The loop halts for this `Engram` after the first `Reject`. The reason is preserved.
+The loop halts for this `Signal` after the first `Reject`. The reason is preserved.
 
 ### `Abstain`
 
@@ -79,10 +79,10 @@ In a gate pipeline with `[G1, G2, G3]`:
 
 | G1 | G2 | G3 | Outcome |
 |---|---|---|---|
-| Pass | Pass | Pass | All pass → Engram proceeds |
+| Pass | Pass | Pass | All pass → Signal proceeds |
 | Pass | Reject | — | Rejected at G2; G3 not called |
-| Abstain | Pass | Pass | G1 skipped; G2, G3 pass → Engram proceeds |
-| Abstain | Abstain | Abstain | All abstain → Engram proceeds (no objection) |
+| Abstain | Pass | Pass | G1 skipped; G2, G3 pass → Signal proceeds |
+| Abstain | Abstain | Abstain | All abstain → Signal proceeds (no objection) |
 | Pass | Err | Pass | G2 crash → treated as Abstain; G3 called |
 
 ---

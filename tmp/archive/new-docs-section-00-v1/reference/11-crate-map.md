@@ -45,18 +45,18 @@ The kernel. Every other crate depends on these two.
 
 | Crate | Status | Responsibility | Tests (as of 2026-04-17) | Dependents |
 |---|---|---|---|---|
-| `roko-core` | **Shipping** | `Engram` type + 6 Synapse traits (`Substrate`, `Scorer`, `Gate`, `Router`, `Composer`, `Policy`), `Score`, `Decay`, `Provenance`, `ContentHash`, `Kind`, `Body`, `HDC` fingerprint, `Taint`, `Attestation` | 376 | All crates |
+| `roko-core` | **Shipping** | `Engram (renamed to Signal in 2026-08-12)` type + 6 Synapse traits (`Substrate`, `Scorer`, `Gate`, `Router`, `Composer`, `Policy`), `Score`, `Decay`, `Provenance`, `ContentHash`, `Kind`, `Body`, `HDC` fingerprint, `Taint`, `Attestation` | 376 | All crates |
 | `roko-runtime` | **Shipping** | `ProcessSupervisor`, `EventBus<E>`, cancellation tokens, async task lifecycle | — (as of 2026-04-17 per status.md) | L1–L4 crates |
 
 ### `roko-core` — Detail
 
 `roko-core` is the kernel. It defines the two mediums and the six operator traits, but contains
-no implementations — only the trait definitions and the `Engram` data type. This is a deliberate
+no implementations — only the trait definitions and the `Signal` data type. This is a deliberate
 design constraint: the kernel must remain implementation-free so that multiple backends can
 be plugged in without depending on each other.
 
 Key types:
-- `Engram` — content-addressed durable record
+- `Signal` — content-addressed durable record
 - `Score` — 7-axis appraisal (confidence, novelty, utility, reputation + precision, salience, coherence)
 - `Decay` — four variants (balance/demurrage, reinforcement, novelty weighting, cold-tier freeze/thaw)
 - `Provenance` — audit context

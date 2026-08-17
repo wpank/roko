@@ -17,20 +17,20 @@
 ### 1.1 `Pulse` as a first-class type (ephemeral medium)
 
 What: a typed, sequence-numbered, ring-buffered in-flight message
-with explicit graduation to durable Engram.
+with explicit graduation to durable Signal.
 Closest prior art: Kafka messages, ROS topics. Neither has the
 graduation pattern or the content-addressed bridge.
-Why net-new: the explicit *lifecycle* `Pulse → Engram` and the
+Why net-new: the explicit *lifecycle* `Pulse → Signal` and the
 symmetric operator traits that work on either medium are unique.
 
-### 1.2 HDC fingerprint on every Engram
+### 1.2 HDC fingerprint on every Signal
 
 What: a 10,240-bit hyperdimensional fingerprint attached at write
 time, enabling O(1) similarity, consensus, analogy.
 Closest prior art: vector databases (Pinecone, Weaviate). These use
 dense float embeddings from an LLM; we use structural HDC with
 compositional binding.
-Why net-new: *every* Engram in the core substrate gets one, not
+Why net-new: *every* Signal in the core substrate gets one, not
 just text; fingerprints compose via XOR/permute/bundle without
 re-embedding.
 
@@ -47,7 +47,7 @@ rate law.
 
 ### 1.4 Heuristic with explicit falsifier
 
-What: a first-class Engram type that states preconditions,
+What: a first-class Signal type that states preconditions,
 prediction, and *what would prove it wrong*, with ongoing
 calibration.
 Closest prior art: rule-based systems (Soar, ACT-R), vector-store
@@ -87,7 +87,7 @@ devil's-advocate and outsider-injection machinery.
 ### 1.8 Two-fabric operator generalization
 
 What: every kernel operator (Scorer, Gate, Router, Composer,
-Policy) operates on either durable Engrams or ephemeral Pulses via
+Policy) operates on either durable Signals or ephemeral Pulses via
 a unified trait.
 Closest prior art: stream-processing frameworks (Flink, Dataflow)
 distinguish bounded from unbounded but rarely unify them at an
@@ -123,7 +123,7 @@ or refutes, a learning Policy joins and updates the operator. This
 makes the operator *itself* a learner without bespoke training
 code.
 
-### 2.2 Stigmergy via Engrams
+### 2.2 Stigmergy via Signals
 
 Agents deposit observations that other agents read later, producing
 indirect coordination without handoff. Grassé's model but with
@@ -131,7 +131,7 @@ typed content-addressed artifacts.
 
 ### 2.3 Chain witnesses for empirical knowledge
 
-Phase 2 primitive: chain-witnessed Engrams carry a signature trail
+Phase 2 primitive: chain-witnessed Signals carry a signature trail
 that increases trust multiplicatively across deployments. Aim is
 empirical, not financial — a "proof-of-replication" network.
 
@@ -184,7 +184,7 @@ subscribers, not integrations.
 ### 3.5 HDC query API
 
 `substrate.query_similar(fingerprint, k=10)` as a first-class
-Substrate method, returning Engrams regardless of type. Cross-cutting
+Substrate method, returning Signals regardless of type. Cross-cutting
 semantic retrieval over the entire knowledge store.
 
 ### 3.6 Replication ledger API
@@ -233,7 +233,7 @@ So each primitive points to its home doc:
 | Primitive | Home doc |
 |---|---|
 | 1.1 Pulse / graduation | 02 |
-| 1.2 HDC per Engram | 11 |
+| 1.2 HDC per Signal | 11 |
 | 1.3 Demurrage | 12 |
 | 1.4 Heuristic with falsifier | 14 |
 | 1.5 Replication ledger | 16 |
@@ -243,7 +243,7 @@ So each primitive points to its home doc:
 | 1.9 Demurrage-taxed parameters | 12 §5 |
 | 1.10 Prediction markets on heuristics | 15 §5.1 |
 | 2.1 Predict-publish-correct loops | 10 §2 |
-| 2.2 Stigmergy via Engrams | 09 §3 |
+| 2.2 Stigmergy via Signals | 09 §3 |
 | 2.3 Chain-witnessed heuristics | 09 §5, 18 §2.4 |
 | 2.4 Dream cycles | 09 §2 |
 | 2.5 Peer-prediction role-taking | 13 §3.2, 14 §7 |

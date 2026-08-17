@@ -24,9 +24,9 @@ These four directories form a connected pipeline: 35 refinement proposals -> aud
 
 ### Key Concepts Proposed
 
-- **Pulse**: Ephemeral event type (complement to durable Engram)
+- **Pulse**: Ephemeral event type (complement to durable Signal)
 - **Bus trait**: First-class transport in kernel (fixes conductor->learn layer violation)
-- **Datum enum**: Generalized operator input (Engram | Pulse)
+- **Datum enum**: Generalized operator input (Signal | Pulse)
 - **7-step loop**: SENSE, ASSESS, COMPOSE, ACT, VERIFY, PERSIST+BROADCAST, REACT
 - **Plugin SPI**: 5-tier extension architecture
 - **StateHub**: Kernel-tier projection layer (currently TUI-only)
@@ -35,10 +35,10 @@ These four directories form a connected pipeline: 35 refinement proposals -> aud
 
 | Concept | Codebase Location | Status |
 |---------|-------------------|--------|
-| Engram type | `crates/roko-core/src/engram.rs` | Wired |
+| Engram (renamed to Signal in 2026-08-12) type | `crates/roko-core/src/__PATH_ENGRAM_RS__0` | Wired |
 | Six Synapse traits | `crates/roko-core/src/traits.rs` | Wired |
 | EventBus<E> | `crates/roko-runtime/src/event_bus.rs` | Exists (not promoted to Bus trait) |
-| HDC vectors | `crates/roko-primitives/src/hdc.rs` | Scaffolded (no Engram fingerprint) |
+| HDC vectors | `crates/roko-primitives/src/hdc.rs` | Scaffolded (no Signal fingerprint) |
 | CascadeRouter | `crates/roko-learn/src/cascade_router.rs` | Wired |
 | SafetyLayer | `crates/roko-agent/src/safety/` | Wired |
 
@@ -70,7 +70,7 @@ These four directories form a connected pipeline: 35 refinement proposals -> aud
 
 ### The "Ship Now" List (1 week total)
 
-- [ ] Add `fingerprint: Option<HdcVector>` to Engram — `crates/roko-core/src/engram.rs`
+- [ ] Add `fingerprint: Option<HdcVector>` to Signal — `crates/roko-core/src/__PATH_ENGRAM_RS__0`
 - [ ] Unify 4 incompatible event enums into `RokoEvent` — across 4 crates
 - [ ] Add generic `Bus<E>` trait to roko-core — `crates/roko-core/src/traits.rs` (~100 lines)
 - [ ] Clean up ~40 stale "Signal" references — traits.rs, README, kind.rs, CLAUDE.md

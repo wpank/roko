@@ -1,5 +1,8 @@
 # Episode Logger Design Notes
 
+> **STALE**: Episode logging is fully wired as of May 2026. See runner/ event loop.
+> Last updated: 2026-08-13
+
 ## Data model
 Each episode captures one agent invocation:
 - task_id, agent_name, role
@@ -16,4 +19,5 @@ Each episode captures one agent invocation:
 - Used for playbook extraction and efficiency tracking
 
 ## Integration point
-orchestrate.rs `dispatch_agent_with()` → log episode after response
+~~orchestrate.rs `dispatch_agent_with()` → log episode after response~~
+DONE: wired in runner/ `dispatch_agent_with()`, episodes logged with HDC fingerprints

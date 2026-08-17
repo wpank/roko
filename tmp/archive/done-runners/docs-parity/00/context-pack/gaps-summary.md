@@ -52,7 +52,7 @@ The audit conclusion still applies: the diagnosis is often right, but the prescr
 
 - wording discipline
 - stale counts and status labels
-- Engram-centered terminology
+- Signal-centered terminology
 - explicit `planned` / `deferred` markers
 - source-index usefulness as a verification aid
 - scope control so the pack reads like a 90-minute parity pass, not a roadmap

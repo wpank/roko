@@ -12,7 +12,7 @@
 Roko is a Rust toolkit for building agents that build themselves. Today it reads PRDs,
 plans, executes tasks via sub-agents, validates with gates, and persists episodes — the
 universal loop works end-to-end. Its current foundational story in
-`crates/roko-core/src/lib.rs` is "one noun (Engram) and six verb traits" (Substrate,
+`crates/roko-core/src/lib.rs` is "one noun (Signal) and six verb traits" (Substrate,
 Scorer, Gate, Router, Composer, Policy). That story is catchy and has carried the
 project from ~0 to ~177K LOC — but the runtime grew a second medium (live events
 on an in-memory bus) and a second fabric (the event bus itself) that the framing
@@ -27,7 +27,7 @@ See the **Files** tables below for full titles. In reading order — if you read
 else, skim these sentences:
 
 1. **01** — three receipts from the code why "one noun" is reductive.
-2. **02** — introduce Pulse (ephemeral) as Engram's sibling, with a graduation law.
+2. **02** — introduce Pulse (ephemeral) as Signal's sibling, with a graduation law.
 3. **03** — promote Bus to a kernel trait next to Substrate.
 4. **04** — generalize the six operators to work over either medium.
 5. **05** — the universal loop becomes 7 steps; cross-cuts stop pretending to be step 9.
@@ -36,12 +36,12 @@ else, skim these sentences:
 8. **08** — actual Rust sketches for Bus, Pulse, Datum, a conductor port.
 9. **09** — chain, dreams, mesh, and stigmergy all land cleanly on the new kernel.
 10. **10** — every operator becomes a predictor; active inference becomes literal.
-11. **11** — 10,240-bit HDC fingerprint on every Engram; similarity is O(1).
+11. **11** — 10,240-bit HDC fingerprint on every Signal; similarity is O(1).
 12. **12** — demurrage replaces decay; memory becomes an attention economy.
 13. **13** — Woolley's c-factor as a continuously measured runtime signal.
 14. **14** — heuristics with explicit falsifiers and calibration over lived experience.
 15. **15** — seven compounding loops that make every week of usage cheaper than the last.
-16. **16** — papers become Engrams; claims become testable hypotheses; replication ledger.
+16. **16** — papers become Signals; claims become testable hypotheses; replication ledger.
 17. **17** — five-tier plugin SPI from pure-data prompts up to WASM sandboxes.
 18. **18** — five structural moats, and what kills each one.
 19. **19** — flat catalog of what's net-new vs prior art; the pitch deck.
@@ -56,7 +56,7 @@ else, skim these sentences:
 28. **28** — adopt Claude-Code / Aider muscle memory; diff-first; per-hunk control.
 29. **29** — five-page first-party web UI on SvelteKit + StateHub.
 30. **30** — ten rich UX primitives from reasoning streams to replay scrubbers.
-31. **31** — **synergy map** — how Engram + Pulse + Bus + HDC + Demurrage + Heuristics + c-factor + Replication interlock into one coherent system.
+31. **31** — **synergy map** — how Signal + Pulse + Bus + HDC + Demurrage + Heuristics + c-factor + Replication interlock into one coherent system.
 32. **32** — **safety, sandboxing, provenance** — the defensive spine that runs orthogonally across every layer.
 33. **33** — **observability & telemetry** — logs, metrics, traces, events, replay; what ships, what's pluggable.
 34. **34** — **glossary** — every new term, every reclaimed term, in one place.
@@ -64,24 +64,24 @@ else, skim these sentences:
 
 ## Why this folder exists
 
-Roko's current foundational story ("one noun — Engram — plus six verb traits")
+Roko's current foundational story ("one noun — Signal — plus six verb traits")
 comes from `crates/roko-core/src/lib.rs` and
 `docs/00-architecture/06-synapse-traits.md`. It is catchy, but it is
 selling the system short in three ways:
 
-1. There are already two distinct data shapes in the codebase. **Engram** is a
+1. There are already two distinct data shapes in the codebase. **Signal** is a
    durable, BLAKE3-addressed record with lineage, decay, and provenance.
    `roko-runtime::event_bus::Envelope<E>` is a typed, sequence-numbered,
    ring-buffered in-flight message. The docs pretend the second doesn't exist.
-2. The six traits are advertised as operating on Engrams, but Policy already
+2. The six traits are advertised as operating on Signals, but Policy already
    operates over streams, and several subsystems reach across layers to
    subscribe to live events because the bus isn't part of the architectural
    lexicon. `docs/00-architecture/23-architectural-analysis-improvements.md`
    flags one confirmed layer violation caused by exactly this gap.
-3. The name "Signal" was recently freed when `Signal` → `Engram` landed in
+3. The name "Signal" was recently freed when `Signal` → `Signal` landed in
    code (877:5 in crates/). The README, CLAUDE.md, docs/INDEX.md, and the
    naming-glossary still carry the old equivalence and the
-   "code uses Signal / docs use Engram" disclaimer. All stale.
+   "code uses Signal / docs use Signal" disclaimer. All stale.
 
 The proposal in this folder is to reorganize the foundational chapter around
 **two mediums, two fabrics, and six operators**, with layers, tempos, and
@@ -128,7 +128,7 @@ measurements; and so on. The synergy doc (31) makes the cross-weave explicit.
 |---|---|---|
 | 00 | [00-INDEX.md](00-INDEX.md) | This file |
 | 01 | [01-critique-one-noun.md](01-critique-one-noun.md) | Why "one noun, six verbs" is reductive — receipts from code, docs, and event-bus usage |
-| 02 | [02-engram-vs-pulse.md](02-engram-vs-pulse.md) | The two-medium split: durable Engram vs ephemeral Pulse, conversion law |
+| 02 | [02-signal-vs-pulse.md](02-signal-vs-pulse.md) | The two-medium split: durable Signal vs ephemeral Pulse, conversion law |
 | 03 | [03-bus-as-first-class.md](03-bus-as-first-class.md) | Promoting `EventBus` to a kernel trait alongside `Substrate` |
 | 04 | [04-operators-generalized.md](04-operators-generalized.md) | The six operators (Scorer, Gate, Router, Composer, Policy, plus Substrate/Bus) redrawn over either medium |
 | 05 | [05-loop-retold.md](05-loop-retold.md) | The universal cognitive loop with three sense sources and a broadcast step |
@@ -142,12 +142,12 @@ measurements; and so on. The synergy doc (31) makes the cross-weave explicit.
 | # | File | What |
 |---|---|---|
 | 10 | [10-self-learning-cybernetic-loops.md](10-self-learning-cybernetic-loops.md) | Every operator as a predictor; active inference as a literal implementation on Bus + Pulse |
-| 11 | [11-hyperdimensional-substrate.md](11-hyperdimensional-substrate.md) | 10,240-bit HDC fingerprint on every Engram — similarity, consensus, analogy as O(1) vector ops |
+| 11 | [11-hyperdimensional-substrate.md](11-hyperdimensional-substrate.md) | 10,240-bit HDC fingerprint on every Signal — similarity, consensus, analogy as O(1) vector ops |
 | 12 | [12-knowledge-demurrage.md](12-knowledge-demurrage.md) | Economic memory: balance, holding cost, reinforcement-by-kind; self-trimming playbooks |
 | 13 | [13-collective-intelligence-c-factor.md](13-collective-intelligence-c-factor.md) | Quantifying Woolley's c-factor from Bus statistics and optimizing it via Policy |
 | 14 | [14-worldview-validation.md](14-worldview-validation.md) | Heuristics with falsifiers, worldviews as co-citation clusters, lived-experience calibration |
 | 15 | [15-exponential-scaling.md](15-exponential-scaling.md) | Seven compounding loops, superlinear returns, "every week your Roko gets better on your codebase" |
-| 16 | [16-research-to-runtime.md](16-research-to-runtime.md) | Papers as Engrams, Claims as testable hypotheses, Replication Ledger — living research |
+| 16 | [16-research-to-runtime.md](16-research-to-runtime.md) | Papers as Signals, Claims as testable hypotheses, Replication Ledger — living research |
 | 17 | [17-plugin-extension-architecture.md](17-plugin-extension-architecture.md) | Five-tier SPI (prompts, profiles, manifests, native, WASM) with matched sandboxes |
 | 18 | [18-competitive-moat.md](18-competitive-moat.md) | Five structural components: architectural coherence, heuristic commons, ecosystem, replication ledger, Rust |
 | 19 | [19-net-new-innovations.md](19-net-new-innovations.md) | Flat catalog of primitives and patterns with no known prior art — the pitch deck |
@@ -251,5 +251,5 @@ sequencing.
 - **Concrete over abstract**: every doc includes at least one worked
   example (code sketch, table, worked scenario) somewhere.
 - **Name the prior art**: when a doc introduces a concept borrowed from
-  research or another system, it cites. Citations become Paper Engrams
+  research or another system, it cites. Citations become Paper Signals
   once `16-research-to-runtime.md` lands.

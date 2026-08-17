@@ -43,14 +43,14 @@ indicate damage, even in the absence of pathogens. "Danger theory" (Matzinger, 1
 proposes that the immune system responds to danger (including self-damage) rather than to
 foreignness per se.
 
-**Cognitive analog**: A system under attack from within — Engrams that cause downstream
+**Cognitive analog**: A system under attack from within — Signals that cause downstream
 processing errors, cascading failures, or circular reasoning — should trigger a defensive
-response even if each Engram individually passes all PAMP-equivalent checks. The "danger"
-is the downstream consequence, not the Engram's own signature.
+response even if each Signal individually passes all PAMP-equivalent checks. The "danger"
+is the downstream consequence, not the Signal's own signature.
 
 This suggests that Roko needs a **consequence monitoring layer**: detecting when processing
-Engrams produces outputs that signal damage (errors, hallucinations, contradictions) and
-using these as DAMP-equivalent signals to quarantine the upstream Engrams responsible.
+Signals produces outputs that signal damage (errors, hallucinations, contradictions) and
+using these as DAMP-equivalent signals to quarantine the upstream Signals responsible.
 
 ---
 
@@ -61,11 +61,11 @@ require **co-stimulation** signals. A T cell that receives antigen without co-st
 becomes anergic (unresponsive) rather than activated. This prevents the adaptive immune
 system from being triggered by harmless antigen encountered under routine conditions.
 
-**Cognitive analog**: A potentially threatening Engram should not automatically trigger
+**Cognitive analog**: A potentially threatening Signal should not automatically trigger
 full T2 investigation. It should require co-stimulation — independent corroboration from
 other signals. For example:
-- A single Engram with low provenance trust is not sufficient to trigger a security response.
-- If that Engram also arrives during a period of anomalous network activity (another signal),
+- A single Signal with low provenance trust is not sufficient to trigger a security response.
+- If that Signal also arrives during a period of anomalous network activity (another signal),
   the combination warrants escalation.
 
 This two-signal requirement prevents the adaptive cognitive immune system from being
@@ -84,12 +84,12 @@ the response is:
 - Lower threshold (responds to smaller amounts of antigen)
 
 **Cognitive analog**: The Witness DAG provides partial immunological memory: it records
-what happened in past interactions, including processing errors, rejected Engrams, and
+what happened in past interactions, including processing errors, rejected Signals, and
 verified threats. A threat pattern that was previously neutralized should be recognizable
 faster on re-encounter.
 
 The practical implementation requires:
-1. A representation of past threat patterns (not just individual Engrams, but structural
+1. A representation of past threat patterns (not just individual Signals, but structural
    patterns — "sequences of high-urgency claims from unverified sources").
 2. A fast retrieval mechanism for pattern matching against new inputs.
 3. A confidence decay: old "memories" should fade as the system's environment changes and
@@ -108,10 +108,10 @@ pathogen destruction. Key features:
 
 **Cognitive analog**: Alert cascades in Roko — where a single threat detection triggers
 a widening circle of review — implement the cascade amplification principle. When one
-Gate rejects an Engram, downstream systems should receive a "complement activation"
-signal that increases their vigilance for similar Engrams.
+Gate rejects an Signal, downstream systems should receive a "complement activation"
+signal that increases their vigilance for similar Signals.
 
-The opsonization analog: a flagged Engram should be **marked** (via provenance or metadata)
+The opsonization analog: a flagged Signal should be **marked** (via provenance or metadata)
 so that downstream processing knows to treat it with extra scrutiny, even if it passes
 subsequent gates by a narrow margin.
 

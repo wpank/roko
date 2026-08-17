@@ -121,7 +121,7 @@ stagnation when evidence is sparse.
 
 ## Today vs. Planned
 
-**Today**: Heuristics can be stored in Substrate as `Signal`/`Engram` variants. `EventBus<E>`
+**Today**: Heuristics can be stored in Substrate as `Signal`/`Signal` variants. `EventBus<E>`
 can route typed events. No falsifier-evaluation subscriber exists. Calibration is manual.
 
 **Planned**: The Heuristics subsystem gains a falsifier runtime; the Bus gains typed topic

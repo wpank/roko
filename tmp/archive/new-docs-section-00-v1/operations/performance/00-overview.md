@@ -13,7 +13,7 @@
 ## TL;DR
 
 Roko's performance model has two tiers: the sub-millisecond **synchronous hot path**
-(Engram construction, scoring, HDC operations, Substrate writes) and the multi-second
+(Signal construction, scoring, HDC operations, Substrate writes) and the multi-second
 **async agent path** (LLM calls, gate execution). The hot path must not allocate on the
 heap in steady state. The async path is bounded by external latency (LLM APIs) and is
 optimised for throughput (parallel agent dispatch) rather than per-call latency.
@@ -33,7 +33,7 @@ gate execution — must complete in under 100 ms aggregate in the common case. I
 overhead is visible relative to LLM latency, something is wrong.
 
 **Allocate at setup, not at runtime.** The hot paths (Score arithmetic, HDC operations,
-Engram construction, Substrate writes) use arena allocators and pre-allocated pools. No
+Signal construction, Substrate writes) use arena allocators and pre-allocated pools. No
 heap allocation in steady state for core types.
 
 **Parallelism, not serialisation.** Where tasks are independent, Roko runs them in
@@ -47,16 +47,16 @@ the main task loop.
 
 ### Tier 1: Synchronous Hot Path (< 1 ms target)
 
-Operations that happen on every event, on every Engram, on every agent turn:
+Operations that happen on every event, on every Signal, on every agent turn:
 
-- Engram construction and field assignment.
+- Signal construction and field assignment.
 - Score arithmetic (7-axis, f32 math).
 - HDC fingerprint XOR / Hamming distance operations.
 - Substrate JSONL append (fast path: buffer flush, no fsync).
 - EventBus<E> publish/subscribe dispatch.
 - Gate pre-screening (T0 rule check in CascadeRouter).
 
-These operations are benchmarked individually. The combined overhead per Engram creation
+These operations are benchmarked individually. The combined overhead per Signal creation
 must be < 1 ms at p99 on the CI benchmark machine.
 
 ### Tier 2: Async Agent Path (LLM-bounded)
@@ -82,7 +82,7 @@ A complete task (from LLM invocation to Substrate commit) has this budget:
 | LLM first token | 0.5 s | 3 s | Model response time / cold start |
 | LLM full response | 2 s | 20 s | Model response size / streaming |
 | Gate pipeline | 5 s | 60 s | Test suite size |
-| Engram persist | 1 ms | 5 ms | JSONL append (buffered) |
+| Engram (renamed to Signal in 2026-08-12) persist | 1 ms | 5 ms | JSONL append (buffered) |
 | Learning update | 10 ms | 50 ms | Episode write + bandit update |
 | **Total (ex-LLM)** | **~55 ms** | **~315 ms** | Context + gates dominate |
 | **Total (inc-LLM)** | **~7 s** | **~80 s** | LLM dominates |

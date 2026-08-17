@@ -12,7 +12,7 @@
 
 Recurring terms:
 
-- **Substrate** — durable store (Engrams): SQLite on laptop,
+- **Substrate** — durable store (Signals): SQLite on laptop,
   Postgres/object store at scale. Trait-level; swap with config.
 - **Bus** — ephemeral stream (Pulses): in-memory by default,
   NATS/Redis/Kafka for clustered. Trait-level; swap with config.

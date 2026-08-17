@@ -37,7 +37,7 @@ manifolds, causal discovery, sheaf geometry, tropical algebra) are entirely unim
 
 **8 T0 chain probes** (zero-LLM, <100ms each): (1) gas_baseline — current gwei vs 7d average, (2) mempool_pressure — pending tx count trend, (3) liquidity_depth — combined TVL change rate, (4) funding_rate — perp funding vs threshold, (5) volatility — Garman-Klass estimator, (6) mev_density — sandwich/frontrun tx ratio per block, (7) block_time_drift — actual vs expected block time, (8) whale_flow — large tx volume vs average.
 
-`predict()` returns a `Prediction` with `value: PredictionValue::Continuous(f64)` or `Categorical { outcomes, probabilities }`, `confidence: f64`, `interval: ConfidenceInterval`, `horizon: Duration`. `evaluate()` compares prediction against on-chain outcome Engram.
+`predict()` returns a `Prediction` with `value: PredictionValue::Continuous(f64)` or `Categorical { outcomes, probabilities }`, `confidence: f64`, `interval: ConfidenceInterval`, `horizon: Duration`. `evaluate()` compares prediction against on-chain outcome Signal.
 
 **Current code**: `Oracle` trait at `crates/roko-core/src/prediction.rs:20` with `predict()` and `evaluate()`. `OracleDomain::Chain` at line 101. `OracleQuery` at line 37 with `domain`, `category`, `parameters`, `horizon` fields. `Prediction` at line 352 with value, confidence, interval, lineage. `crates/roko-chain/src/` exists with type stubs but no Oracle implementation.
 
@@ -319,7 +319,7 @@ cargo test -p roko-primitives
 ### TA-07: Adaptive signal metabolism
 - [x] Implement replicator dynamics and fitness landscapes for signals
 
-**Spec** (doc 08 `docs/20-technical-analysis/08-adaptive-signal-metabolism.md`): Signals (Engrams) are treated as organisms in a fitness landscape. Their population dynamics follow evolutionary biology:
+**Spec** (doc 08 `docs/20-technical-analysis/08-adaptive-signal-metabolism.md`): Signals (Signals) are treated as organisms in a fitness landscape. Their population dynamics follow evolutionary biology:
 
 **Replicator dynamics** (Taylor & Jonker 1978):
 ```
@@ -335,7 +335,7 @@ where `x` = signal activation, `y` = outcome verification, `w` = current weight,
 
 **SignalRegistry ecosystem**: maintains a population of active signal patterns with per-pattern fitness scores, birth/death rates, and speciation tracking. Fisher's fundamental theorem: the rate of fitness increase equals the genetic variance in fitness — more diverse signal populations adapt faster.
 
-**Current code**: No `SignalRegistry` struct. No replicator dynamics. No Hebbian learning. `crates/roko-learn/src/` has learning infrastructure (episodes, bandits, efficiency) but not evolutionary signal dynamics. `crates/roko-core/src/` has Engram types but no fitness tracking on Engrams.
+**Current code**: No `SignalRegistry` struct. No replicator dynamics. No Hebbian learning. `crates/roko-learn/src/` has learning infrastructure (episodes, bandits, efficiency) but not evolutionary signal dynamics. `crates/roko-core/src/` has Signal types but no fitness tracking on Signals.
 
 **What to change**: Add `crates/roko-learn/src/signal_metabolism.rs`:
 1. `SignalRegistry` struct with `HashMap<SignalTypeId, SignalPopulation>` tracking population sizes and fitness scores
@@ -346,7 +346,7 @@ where `x` = signal activation, `y` = outcome verification, `w` = current weight,
 
 **Reference files**:
 - `crates/roko-learn/src/` — learning subsystem (implementation target)
-- `crates/roko-core/src/` — Engram types, signal definitions
+- `crates/roko-core/src/` — Signal types, signal definitions
 - `crates/roko-learn/src/episode_logger.rs` — episode data (source of fitness signals)
 - `docs/20-technical-analysis/08-adaptive-signal-metabolism.md` — full spec: replicator dynamics, Oja's rule, Fisher's theorem, speciation, Red Queen
 

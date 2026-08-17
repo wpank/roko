@@ -1,8 +1,8 @@
 [meta]
 plan = "E12-DEAD-CODE-CLEANUP"
 total = 9
-done = 3
-status = "ready"
+done = 9
+status = "done"
 max_parallel = 1
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -55,7 +55,7 @@ fail_msg = "roko-core must still compile after deleting the orphan files."
 [[task]]
 id = "E12-T02"
 title = "Program runtime against GateRunner trait; drop roko-gate from runtime deps"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 120
@@ -108,7 +108,7 @@ fail_msg = "roko-runtime must build and its tests must compile after the depende
 [[task]]
 id = "E12-T03"
 title = "Remove legacy-runner-v2 feature facade; unconditionally compile the tests it gated"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 60
@@ -263,7 +263,7 @@ fail_msg = "roko-index HDC tests must pass with roko-primitives as the backing i
 [[task]]
 id = "E12-T06"
 title = "Migrate live roko-orchestrator exports, then delete the crate and duplicate safety"
-status = "ready"
+status = "done"
 tier = "architectural"
 model_hint = "claude-opus-4-5"
 max_loc = 520
@@ -290,7 +290,7 @@ read_files = [
     { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1-45", why = "Current live runner imports roko_orchestrator types; migrate these before deleting the crate." },
     { path = "crates/roko-cli/src/runner/merge.rs", lines = "1-80", why = "MergeQueue/MergeRequest are live imports that need a new home or local replacement." },
     { path = "crates/roko-cli/src/task_parser.rs", lines = "1-30", why = "ReplanStrategy/detect_cycle_nodes import site; do not strand parser validation." },
-    { path = "crates/roko-orchestrator/src/safety/capability_tokens.rs", lines = "1-80", why = "Duplicate safety island to remove only after live roko-agent safety is canonical." },
+    { path = "crates/roko-agent/src/safety/capabilities.rs", lines = "1-80", why = "Canonical live capability policy that replaced the deleted duplicate safety island." },
 ]
 symbols = [
     "MergeQueue",
@@ -323,7 +323,7 @@ fail_msg = "cli, serve, and acp must compile after roko-orchestrator exports are
 [[task]]
 id = "E12-T07"
 title = "Delete legacy orchestrate.rs and remove its public exports"
-status = "ready"
+status = "done"
 tier = "architectural"
 model_hint = "claude-opus-4-5"
 max_loc = 260
@@ -375,7 +375,7 @@ fail_msg = "roko-cli must compile on the default feature set after orchestrate.r
 [[task]]
 id = "E12-T08"
 title = "Remove legacy-orchestrate feature and run.rs legacy path"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 220
@@ -418,12 +418,14 @@ command = "cargo test -p roko-cli --no-run 2>&1"
 fail_msg = "roko-cli tests must compile after the legacy-orchestrate cfg path is removed."
 
 # ─────────────────────────────────────────────────────────────────────────────
-# E12-T09: Retire roko-plugin facade after consumer migration
+# E12-T09: Audit plugin ownership and supersede the obsolete facade deletion
+# 2026-08-15 reconciliation: roko-plugin is not a facade. It is the canonical
+# E30/E32 SDK, manifest, trigger-source, and declarative-tool package.
 # ─────────────────────────────────────────────────────────────────────────────
 [[task]]
 id = "E12-T09"
-title = "Audit consumers, migrate live plugin APIs, and retire roko-plugin facade"
-status = "ready"
+title = "Audit plugin consumers and ratify roko-plugin as the canonical SDK owner"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 320
@@ -441,11 +443,11 @@ files = [
 ]
 role = "implementer"
 depends_on = []
-acceptance = ["Every live roko_plugin consumer in cli and serve is audited and either migrated to an owning crate/module or deleted with its call site; the roko-plugin workspace member and Cargo dependencies are removed only after the audit proves no live imports remain; the facade crate directory is deleted as the final step."]
+acceptance = ["Every live roko_plugin consumer in cli and serve is audited; roko-plugin is retained as the canonical E30/E32 SDK and manifest owner rather than misclassified as a facade; PluginTier and PluginCapability have one canonical definition in roko-core and are re-exported where needed; the obsolete deletion instruction is explicitly superseded without replacing live plugin behavior with no-ops."]
 
 [task.context]
 read_files = [
-    { path = "tmp/status-quo/backlog/epics/E12-DEAD-CODE-CLEANUP.md", lines = "78-86", why = "E12-T09 cannot be a straight deletion; it must audit/migrate/delete because roko-plugin has live consumers." },
+    { path = "tmp/status-quo/backlog/epics/E12-DEAD-CODE-CLEANUP.md", lines = "78-86", why = "Historical deletion proposal superseded after the live-consumer and E32 ownership audit." },
     { path = "crates/roko-cli/src/runner/extension_loader.rs", lines = "100-145", why = "Live plugin manifest discovery consumer to migrate or delete deliberately." },
     { path = "crates/roko-cli/src/commands/config_cmd.rs", lines = "1060-1160", why = "CLI plugin config/listing code imports roko_plugin manifest APIs." },
     { path = "crates/roko-serve/src/fswatcher.rs", lines = "1-80", why = "Serve file-watch event source consumer." },
@@ -458,17 +460,17 @@ symbols = [
     "EventSource",
 ]
 anti_patterns = [
-    "Do NOT delete crates/roko-plugin before migrating or intentionally deleting every live roko_plugin import.",
-    "Do NOT replace plugin loading with silent no-ops; if a feature is retired, surface a clear command/runtime error or remove the UI path.",
-    "Do NOT leave roko-plugin in the workspace or package Cargo.toml files after the crate directory is deleted.",
+    "Do NOT delete crates/roko-plugin: it owns live E30/E32 behavior and is no longer a facade.",
+    "Do NOT duplicate canonical PluginTier or PluginCapability definitions in consumer crates.",
+    "Do NOT replace plugin loading, trigger sources, or declarative tools with silent no-ops to satisfy a stale cleanup instruction.",
 ]
 
 [[task.verify]]
 phase = "structural"
-command = "test ! -d crates/roko-plugin && ! rg -q 'roko_plugin|roko-plugin' Cargo.toml crates --glob '!crates/roko-plugin/**'"
-fail_msg = "roko-plugin must be removed only after all non-plugin imports and Cargo edges are gone."
+command = "test -d crates/roko-plugin && test \"$(rg -l 'enum PluginTier' crates --glob '*.rs' | wc -l | tr -d ' ')\" = 1 && rg -q 'roko_plugin::manifest' crates/roko-cli/src"
+fail_msg = "roko-plugin must remain the live SDK/manifest owner with one canonical PluginTier definition."
 
 [[task.verify]]
 phase = "compile"
 command = "cargo check -p roko-cli -p roko-serve 2>&1"
-fail_msg = "cli and serve must compile after roko-plugin consumers are migrated or retired."
+fail_msg = "cli and serve must compile with the retained canonical plugin SDK."

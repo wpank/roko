@@ -1,4 +1,6 @@
-# 01: Relay Upgrade — Topic Pub/Sub + Chain Watcher
+# 01: Relay Upgrade -- Topic Pub/Sub + Chain Watcher
+
+> Last updated: 2026-08-13
 
 Upgrade the existing `apps/agent-relay/` with topic-based pub/sub, ring buffer for reconnection, and a chain event watcher. All changes are additive — existing request/response functionality stays untouched.
 

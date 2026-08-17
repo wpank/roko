@@ -5,7 +5,7 @@ the 35 refinements propagate into `docs/`.
 
 ## The one-liner
 
-> Roko's kernel is two mediums (**Engram** — durable, content-addressed,
+> Roko's kernel is two mediums (**Signal** — durable, content-addressed,
 > decayed; **Pulse** — ephemeral, topic-addressed, sequenced) moving
 > through two fabrics (**Substrate** — storage; **Bus** — transport),
 > acted on by six operators (**Scorer**, **Gate**, **Router**,
@@ -16,7 +16,7 @@ the 35 refinements propagate into `docs/`.
 
 ## Canonical term definitions
 
-**Engram** — Durable medium. Content-addressed by BLAKE3 over
+**Signal** — Durable medium. Content-addressed by BLAKE3 over
 `(kind, body, author, tags)`. Has `lineage: Vec<ContentHash>`,
 `decay` / `balance`, `score` (7 axes), `provenance`, optional
 `attestation`, and (post-refinement) an HDC `fingerprint`. Lives in a
@@ -24,11 +24,11 @@ Substrate.
 
 **Pulse** — Ephemeral medium (new). Typed, topic-addressed,
 sequence-numbered, ring-buffered message on a Bus. Not content-
-addressed; not persisted by default. May *graduate* to an Engram when
+addressed; not persisted by default. May *graduate* to an Signal when
 its lineage matters.
 
 **Substrate** — Storage fabric (kernel trait). Backends: Memory, File,
-HDC, Chain. Persists Engrams. Retrieval by filter or (new)
+HDC, Chain. Persists Signals. Retrieval by filter or (new)
 HDC similarity.
 
 **Bus** — Transport fabric (promoted to kernel trait). Backends:
@@ -39,7 +39,7 @@ Publishes and delivers Pulses by Topic.
 **Topic** — Routing handle for Pulses. Dot-separated lowercase
 strings (`gate.verdict.emitted`, `agent.msg.chunk`, `prediction.error`).
 
-**Datum** — `enum Datum<'a> { Engram(&'a Engram), Pulse(&'a Pulse) }`
+**Datum** — `enum Datum<'a> { Signal(&'a Signal), Pulse(&'a Pulse) }`
 used by polymorphic operators (Scorer, Composer, Router).
 
 **Six operators** — `Scorer`, `Gate`, `Router`, `Composer`, `Policy`,
@@ -106,7 +106,7 @@ consolidated knowledge back into Substrate for the next cycle.
 
 | Term | Use | Avoid |
 |---|---|---|
-| Engram | the durable record | Signal (retired in code 877:5) |
+| Engram (renamed to Signal in 2026-08-12) | the durable record | Signal (retired in code 877:5) |
 | Pulse | the ephemeral message | Event, Envelope, Message, Signal |
 | Bus | the transport trait | EventBus<E> as a trait name |
 | Substrate | the storage trait | (unchanged) |

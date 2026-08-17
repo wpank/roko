@@ -120,7 +120,7 @@ See [tiers/04-regression-tests.md](tiers/04-regression-tests.md).
 
 **Speed**: ~5 minutes. Runs in CI on merges to `main` only.
 
-**Coverage**: tests the self-hosting loop with a seed PRD, verifies that the resulting engrams are content-addressed correctly, that the gate pipeline runs to completion, and that the substrate reflects the expected state.
+**Coverage**: tests the self-hosting loop with a seed PRD, verifies that the resulting signals are content-addressed correctly, that the gate pipeline runs to completion, and that the substrate reflects the expected state.
 
 See [tiers/05-end-to-end-tests.md](tiers/05-end-to-end-tests.md).
 
@@ -128,7 +128,7 @@ See [tiers/05-end-to-end-tests.md](tiers/05-end-to-end-tests.md).
 
 ## Supporting Tier — Fuzz Tests
 
-Fuzz tests run against parser and serialization boundaries using `cargo-fuzz` + libFuzzer. Primary targets: Engram deserialization, gate input parsing, and plan DAG parsing.
+Fuzz tests run against parser and serialization boundaries using `cargo-fuzz` + libFuzzer. Primary targets: Signal deserialization, gate input parsing, and plan DAG parsing.
 
 See [tiers/06-fuzz-tests.md](tiers/06-fuzz-tests.md).
 

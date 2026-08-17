@@ -15,7 +15,7 @@ Score model already has: confidence, novelty, utility, reputation, precision, sa
 
 ---
 
-## D.02 — Engram Attestation Integration
+## D.02 — Signal Attestation Integration
 
 **Status**: PARTIAL
 **Priority**: P2
@@ -25,22 +25,22 @@ Score model already has: confidence, novelty, utility, reputation, precision, sa
 ### Files to modify
 
 - `crates/roko-core/src/attestation.rs` — Signing + verification logic
-- `crates/roko-core/src/engram.rs` — `attestation: Option<Attestation>` field (exists)
+- `crates/roko-core/src/__PATH_ENGRAM_RS__0` — `attestation: Option<Attestation>` field (exists)
 - `crates/roko-chain/src/` — Chain witness workflows
 
 ### Context
 
-`Attestation` type and `Option<Attestation>` field on `Engram` exist. Missing: signing, verification, and chain-witness workflows. Needed for forensic verification and mesh trust.
+`Attestation` type and `Option<Attestation>` field on `Signal` exist. Missing: signing, verification, and chain-witness workflows. Needed for forensic verification and mesh trust.
 
 ### Implementation details
 
 1. In `attestation.rs`, implement:
-   - `fn sign(engram: &Engram, key: &SigningKey) -> Attestation` — Ed25519 signature over engram content hash
-   - `fn verify(engram: &Engram, attestation: &Attestation) -> bool` — verify signature against public key
+   - `fn sign(signal: &Signal, key: &SigningKey) -> Attestation` — Ed25519 signature over signal content hash
+   - `fn verify(signal: &Signal, attestation: &Attestation) -> bool` — verify signature against public key
 2. In `roko-chain`, add chain witness:
    - `fn witness_on_chain(attestation: &Attestation, chain_client: &ChainClient) -> TxHash` — write attestation hash to chain
    - `fn verify_on_chain(attestation: &Attestation, chain_client: &ChainClient) -> bool` — check chain for matching hash
-3. Wire into orchestrate.rs: optionally attest gate-passed engrams
+3. Wire into orchestrate.rs: optionally attest gate-passed signals
 
 ### Verify command
 
@@ -60,20 +60,20 @@ cargo test -p roko-core --lib -- attestation 2>&1 | tail -10
 
 ### Files to modify
 
-- `crates/roko-core/src/engram.rs` — `lineage: Vec<ContentHash>` (exists)
+- `crates/roko-core/src/__PATH_ENGRAM_RS__0` — `lineage: Vec<ContentHash>` (exists)
 - `crates/roko-cli/src/orchestrate.rs` — Preserve lineage in dispatch/policy/persistence flows
 - `crates/roko-agent/src/dispatcher/mod.rs` — Pass upstream hashes through dispatch
 
 ### Context
 
-`Engram.lineage` and `derive()` exist. `PromptComposer` populates lineage from kept inputs. But many runtime-emitted Engrams still do not preserve upstream lineage consistently across dispatch, policy, and persistence flows.
+`Signal.lineage` and `derive()` exist. `PromptComposer` populates lineage from kept inputs. But many runtime-emitted Signals still do not preserve upstream lineage consistently across dispatch, policy, and persistence flows.
 
 ### Implementation details
 
 1. Audit all `Engram::new()` call sites in orchestrate.rs, dispatcher, and policy modules
-2. For each: ensure `lineage` is populated with upstream engram hashes
-3. In dispatcher: when creating response engrams, include input engram hash in lineage
-4. In gate pipeline: when creating gate verdict engrams, include task engram hash
+2. For each: ensure `lineage` is populated with upstream signal hashes
+3. In dispatcher: when creating response signals, include input signal hash in lineage
+4. In gate pipeline: when creating gate verdict signals, include task signal hash
 5. In persistence: ensure lineage is serialized to JSONL
 
 ### Verify command
@@ -257,12 +257,12 @@ cargo test -p roko-neuro --lib -- context 2>&1 | tail -10
 
 ### Files to modify
 
-- `crates/roko-core/src/engram.rs` — `EmotionalTag` (exists)
+- `crates/roko-core/src/__PATH_ENGRAM_RS__0` — `EmotionalTag` (exists)
 - `crates/roko-neuro/src/distiller.rs` — Emotional provenance in distillation
 
 ### Context
 
-`EmotionalTag` on Engram exists. Distilled knowledge entries carry `EmotionalProvenance`. Retrieval-time weighting uses tags. Missing: somatic-landscape-backed recall and broader consolidation policy.
+`EmotionalTag` on Signal exists. Distilled knowledge entries carry `EmotionalProvenance`. Retrieval-time weighting uses tags. Missing: somatic-landscape-backed recall and broader consolidation policy.
 
 ### Implementation details
 
@@ -1010,7 +1010,7 @@ This summary supersedes the stale per-item status lines below for `D.34-D.54`.
 - `D.37` DONE: `LearningRateSchedule` now modulates router exploration across cold/warm/mature phases.
 - `D.38` PARTIAL: meta-learning remains routed through existing runtime feedback, experiments, and playbooks; no standalone tool-sequence miner landed.
 - `D.39` PARTIAL: episode tiering is implemented as logical replay priority, not a hot/warm/cold storage migration.
-- `D.40` PARTIAL: pheromones are now represented and transported as `Kind::Pheromone` engrams, but there is still no dedicated core `PheromoneField` with decay/confirmation state.
+- `D.40` PARTIAL: pheromones are now represented and transported as `Kind::Pheromone` signals, but there is still no dedicated core `PheromoneField` with decay/confirmation state.
 - `D.41` PARTIAL: mesh transport remains out of scope for this write boundary; D3 only lands local pheromone transport and prompt-enrichment seams.
 - `D.42` DONE: `cfactor.rs` now detects collective pathologies such as cascade/groupthink/echo-chamber style failures.
 - `D.43` DONE: CLI heartbeat theta reflection is wired through `heartbeat.rs` and `orchestrate.rs`, with persisted snapshots and conductor signals.
@@ -1583,7 +1583,7 @@ cargo test -p roko-agent --lib -- safety 2>&1 | tail -10
 ### Implementation details
 
 1. Implement 8-step shutdown:
-   - Signal intent, drain active tasks, flush state, backup knowledge, deregister from registry, archive episodes, emit shutdown engram, terminate process
+   - Signal intent, drain active tasks, flush state, backup knowledge, deregister from registry, archive episodes, emit shutdown signal, terminate process
 2. Knowledge backup: serialize agent's knowledge entries with `confidence *= 0.85^depth` decay
 3. Knowledge restore: when new agent inherits, load with decayed confidence
 4. Wire into ProcessSupervisor's agent removal path
@@ -1620,7 +1620,7 @@ Covered by F.09 (TUI & Interfaces section). Cross-reference only.
 
 ### Context
 
-Target modules: Engram, Score, Router, Composer. Enable running core roko logic in browser/edge environments.
+Target modules: Signal, Score, Router, Composer. Enable running core roko logic in browser/edge environments.
 
 ### Implementation details
 

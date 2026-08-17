@@ -1,5 +1,15 @@
 # Implementation Status — Honest Audit (2026-04-22)
 
+> **What is this?** PRDs (Product Requirement Documents) capture work items for roko.
+> This file is an honest audit of implementation progress against the plans in this
+> directory. Roko can read PRDs, generate plans, and execute them via agents.
+>
+> **Status:** This audit was written 2026-04-22. Significant progress has been made
+> since then (see CLAUDE.md at the workspace root for current state). The canonical
+> gap tracker is `.roko/GAPS.md`. The canonical PRD storage is `.roko/prd/`.
+
+Last updated: 2026-08-13
+
 **None of the impl checklists are fully complete end-to-end.**
 Most are PARTIAL at best. The codebase has a "built but not wired" pattern
 where code exists but data doesn't flow to it.

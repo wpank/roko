@@ -1,8 +1,19 @@
 # Decisions
 
+> **What is this?** Nine design decisions that resulted from auditing PRs #156
+> and #158 against the actual relay implementation. All nine are **settled and
+> authoritative**. Implementation status is noted per-decision below. The only
+> decision that is settled but not yet implemented is #3 (colon-to-dot topic
+> migration). The original open questions that prompted these decisions are in
+> `pr-156-158-assessment.md`.
+>
+> Last updated: 2026-08-13
+
 Settled answers to the open questions from the original assessment.
 
 ## 1. MCP Gateway: Closed
+
+**Status:** Settled and implemented. Roko uses `.mcp.json` / `agent.mcp_config`; no hosted gateway.
 
 **Decision:** Nunchi is not building a managed MCP product.
 
@@ -22,6 +33,8 @@ PR #156's hosted MCP gateway was trying to solve "Railway agents can't use local
 - If someone later wants a managed MCP proxy product, it's opt-in via `NUNCHI_MCP_GATEWAY_URL`
 
 ## 2. Chat (daeji PR #24): Dead
+
+**Status:** Settled. PR #24 not merged.
 
 **Decision:** Do not merge PR #24. The relay replaces it.
 
@@ -44,11 +57,15 @@ The commonware-p2p chat layer uses the wrong transport for agent coordination. T
 
 ## 3. Topic Grammar: Dots
 
+**Status:** Decided but **not yet implemented**. Codebase still uses colons; `ISFRFeed.map_topic()` shim converts at the boundary.
+
 **Decision:** Use dot-separated topics. Migrate from colons.
 
 See [04-topic-grammar.md](04-topic-grammar.md) for full rationale.
 
 ## 4. Relay Deployment: Multi-Relay
+
+**Status:** Settled. Sidecar is the current default deployment.
 
 **Decision:** Agents connect to 1-3 relays. Sidecar is default. Shared relay is optional.
 
@@ -59,6 +76,8 @@ See [04-topic-grammar.md](04-topic-grammar.md) for full rationale.
 The relay is a library crate (`daeji-relay` or factored from `apps/agent-relay`) that can be used as a standalone binary or embedded in kora.
 
 ## 5. Relay Protocol: Not Frozen Yet
+
+**Status:** Settled. Protocol remains unfrozen; none of the listed cleanups have landed yet.
 
 **Decision:** The relay protocol is not v1 frozen. Small breaking changes are allowed now.
 
@@ -72,6 +91,8 @@ Allowed cleanups before freeze:
 After these land, the v1 wire format can be frozen. PR #158 should not freeze the current protocol — it should align to the actual implementation and list these gaps.
 
 ## 6. PR #158 Disposition: Rewrite
+
+**Status:** Settled. Rewrite has not been done.
 
 **Decision:** PR #158 should be rewritten to align with the actual relay implementation.
 
@@ -92,6 +113,8 @@ The PR correctly distinguishes broadcast/bus from private coordination. But it:
 
 ## 7. PR #156 Disposition: Strip MCP, Keep Workspace
 
+**Status:** Settled. Rewrite has not been done.
+
 **Decision:** PR #156 should remove the hosted MCP gateway and keep the workspace/tile/action surface.
 
 **Keep:**
@@ -109,11 +132,15 @@ The PR correctly distinguishes broadcast/bus from private coordination. But it:
 
 ## 8. Chain Indexer Location: Relay Chain Watcher
 
+**Status:** Settled. Chain watcher exists but only publishes `new_block`; contract event decoding is pending.
+
 **Decision:** The marketplace/chain event read model belongs in the relay's chain watcher, not in `mcp-gateway`.
 
 The `mcp-gateway` PR #3 put ERC-8004/marketplace event ingestion, jobs, work proofs, and reputation projections inside the MCP gateway. That's the wrong service boundary. The relay chain watcher already watches the chain — it should decode these events and publish them as typed topic messages. Consumers (dashboards, agents, IDE) subscribe to the relevant topics.
 
 ## 9. Coordination: Relay Is Sufficient
+
+**Status:** Settled and authoritative. See `03-coordination-use-cases.md` for the full 42-case audit.
 
 **Decision:** Agents do not need a separate coordination/chat layer beyond the relay.
 

@@ -95,7 +95,7 @@ tier. With the Bus, every operator gets one essentially for free.
 | Composer | prompt will fit budget + win gate | Token count + gate verdict | Template EMA; template bandit |
 | Gate | task will succeed post-patch | Next gate verdict + regression tests | Threshold EMA (already partial in `adaptive.rs`) |
 | Policy | decision will improve metric | Metric Pulse after decision | Per-policy online calibration |
-| Substrate | Engram tier is correct | Query frequency + recency | Tier-promotion Markov chain |
+| Substrate | Engram (renamed to Signal in 2026-08-12) tier is correct | Query frequency + recency | Tier-promotion Markov chain |
 
 Six self-calibrating operators instead of three partially-adaptive
 subsystems. Scale: every call in the system produces training data for
@@ -112,7 +112,7 @@ Roko's Composer plus the Bus gives us a tighter, native version:
 
 Composer templates become first-class `TemplateEngram`s (stored,
 versioned, content-addressed). Each template has a vacant "slot" for
-the input Engram and a `SuccessMetric` field linking to a Gate
+the input Signal and a `SuccessMetric` field linking to a Gate
 pipeline whose verdict is the template's reward.
 
 ### 3.2 The optimization loop
@@ -185,7 +185,7 @@ publishes to it. Every learner subscribes. The TUI F4 tab grows a
 
 High-prediction-error regions of the Substrate are where the agent is
 *learning most*. Dreams should prioritize them for consolidation;
-Neuro should promote their Engrams to higher tiers; the orchestrator
+Neuro should promote their Signals to higher tiers; the orchestrator
 should re-plan around them. The Bus makes this a one-liner: subscribe
 to `prediction.error.high`, enqueue the lineage for deeper analysis.
 
@@ -454,7 +454,7 @@ touches nearly every other refinement:
   same HD space, so `Similarity(fp(predicted), fp(actual))` is a
   universal error signal.
 - **Demurrage (12)** is reinforced by the `ReinforceKind::Surprised`
-  signal that `prediction.error.high` produces. Surprising Engrams
+  signal that `prediction.error.high` produces. Surprising Signals
   stay warm longer; unsurprising ones fade.
 - **Heuristics (14)** have a built-in calibration field — they are
   the highest-value case for per-operator predict/outcome pairs. A

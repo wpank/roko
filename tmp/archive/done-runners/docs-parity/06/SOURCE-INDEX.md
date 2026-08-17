@@ -7,7 +7,7 @@ the post-audit neuro parity story.
 
 | File | Why it matters |
 |------|----------------|
-| `crates/roko-core/src/engram.rs:38-65` | `Engram` exists and currently has no HDC fingerprint field |
+| `crates/roko-core/src/__PATH_ENGRAM_RS__0:38-65` | `Engram (renamed to Signal in 2026-08-12)` exists and currently has no HDC fingerprint field |
 | `crates/roko-core/src/traits.rs:34-63` | `Substrate` exists with `put/get/query/prune`; no `query_similar()` |
 | `crates/roko-primitives/src/hdc.rs:24-255` | shipping `HdcVector` implementation |
 

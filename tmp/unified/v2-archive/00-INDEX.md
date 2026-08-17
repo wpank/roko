@@ -71,7 +71,7 @@ Every protocol supports **predict-publish-correct** (§ Design Principles). A Ce
 
 ### 1. Two mediums, two fabrics
 
-Durable **Signals** in **Store**, ephemeral **Pulses** on **Bus**. Both are kernel-level (L0). The system has two data shapes because reality has two timescales: things that persist and things that flow. **Graduation** converts Pulse → Signal (the only path into the audit DAG). **Projection** converts Signal → Pulse (lossy broadcast). The code already had both shapes — `Engram` and `Envelope<E>` in `roko-runtime::event_bus` — but the v1 spec claimed one noun.
+Durable **Signals** in **Store**, ephemeral **Pulses** on **Bus**. Both are kernel-level (L0). The system has two data shapes because reality has two timescales: things that persist and things that flow. **Graduation** converts Pulse → Signal (the only path into the audit DAG). **Projection** converts Signal → Pulse (lossy broadcast). The code already had both shapes — `Signal` (formerly `Engram`, renamed to Signal in 2026-08-12) and `Envelope<E>` in `roko-runtime::event_bus` — but the v1 spec claimed one noun.
 
 ### 2. Every operator is a learner
 
@@ -269,7 +269,7 @@ These take the system from linear to exponential returns:
 
 | Decision | Rationale |
 |---|---|
-| **Signal** (not Engram) | Immediately meaningful. Rust struct remains `Engram`; `type Signal = Engram;` bridges. Spec name is Signal; code name is Engram. |
+| **Signal** (not Engram) | Immediately meaningful. Rust struct is now `Signal` (renamed from Engram in 2026-08-12); `pub type Engram = Signal` backward-compat alias retained. |
 | **Pulse** (not Envelope/Event) | Names the ephemeral sibling. Code has `Envelope<E>` in `roko-runtime::event_bus`; "Pulse" is the canonical name. |
 | **Bus** (not EventBus) | Transport fabric promoted to kernel trait alongside Store. Two fabrics, not one. |
 | **Cell** (not Module) | Composable, small, pluggable — Eurorack module, Scratch block. |
@@ -290,7 +290,7 @@ These take the system from linear to exponential returns:
 
 | Code | Spec | Notes |
 |---|---|---|
-| `Engram` | Signal (durable) | Direct map. Rust struct stays `Engram`. |
+| `Engram` | Signal (durable) | Direct map. Rust struct is now `Signal`; `pub type Engram = Signal` alias retained. |
 | `Envelope<E>` / EventBus | Pulse / Bus | Promoted from impl detail to kernel. |
 | `Substrate` | Store protocol | Identical + `query_similar`. |
 | `Scorer` | Score protocol | + calibration. |

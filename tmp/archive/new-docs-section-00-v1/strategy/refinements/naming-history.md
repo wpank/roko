@@ -17,7 +17,7 @@ Roko went through three naming generations:
    agent lifecycle and termination.
 2. **The "one noun, six verbs" era** — the first formal architecture naming: Signal (noun),
    Substrate/Scorer/Gate/Router/Composer/Policy (verbs). Introduced the Synapse metaphor.
-3. **The "two mediums, two fabrics" era** — the current vocabulary: Engram + Pulse (mediums),
+3. **The "two mediums, two fabrics" era** — the current vocabulary: Signal + Pulse (mediums),
    Substrate + Bus (fabrics), six operators (verbs). Retired Signal, introduced explicit
    shipping/planned distinction.
 
@@ -72,7 +72,7 @@ using it removes a barrier for new contributors. The `Golem` name is fully retir
 
 ---
 
-## Chapter 3 — Signal → Engram + Pulse
+## Chapter 3 — Signal → Signal + Pulse
 
 **Signal** was the original noun in the "one noun, six verbs" architecture. It served as the
 catch-all for any piece of information the system processed — durable knowledge records,
@@ -89,7 +89,7 @@ made it impossible to reason about persistence guarantees.
 
 The split:
 
-- **`Engram`** (from neuroscience: the physical substrate of memory) — the durable record.
+- **`Signal`** (from neuroscience: the physical substrate of memory) — the durable record.
   Content-addressed via BLAKE3, 7-axis scored, four decay models, lineage DAG. The noun in
   the revised "two mediums" framing.
   
@@ -97,7 +97,7 @@ The split:
   through `Bus`, not persisted by default. *Planned, not yet shipped.*
 
 `Signal` is `[retired]` for both durable and ephemeral usage. In the current codebase, some
-internal code paths still use `Signal` as the struct name for what is semantically an `Engram`.
+internal code paths still use `Signal` as the struct name for what is semantically an `Signal`.
 These are migration targets.
 
 ---
@@ -115,7 +115,7 @@ The name was retired for practical reasons:
 - It clashed with the neuroscience naming convention being adopted elsewhere
 
 **Neuro** was chosen as the replacement — simple, descriptive, consistent with the
-neuroscience-inspired vocabulary (Engram, Synapse, Gamma/Theta/Delta, HDC).
+neuroscience-inspired vocabulary (Signal, Synapse, Gamma/Theta/Delta, HDC).
 
 ---
 
@@ -154,12 +154,12 @@ Router, Composer, Policy)"**. This mnemonic served its purpose during the initia
 it communicated the composability principle clearly and gave every contributor a mental model
 for where new functionality belonged.
 
-When `Signal` was split into `Engram` + `Pulse`, the mnemonic broke. "One noun, six verbs"
+When `Signal` was split into `Signal` + `Pulse`, the mnemonic broke. "One noun, six verbs"
 no longer described the system accurately.
 
 The replacement mnemonic is **"two mediums, two fabrics"**:
 
-- **Two mediums**: `Engram` (durable) and `Pulse` (ephemeral)
+- **Two mediums**: `Signal` (durable) and `Pulse` (ephemeral)
 - **Two fabrics**: `Substrate` (storage) and `Bus` (transport)
 - **Six operators**: Substrate, Scorer, Gate, Router, Composer, Policy — unchanged
 
@@ -179,7 +179,7 @@ framing at a particular stage of the design. It is retired because the design ou
 | `Bardo` | `Roko` | Project name replaced; Buddhist framing retired |
 | `Mori` | `Roko` | Predecessor project name; fully superseded |
 | `Golem` | `Agent` | Too whimsical; industry standard term adopted |
-| `Signal` (durable) | `Engram` | Medium split required separate durable type |
+| `Signal` (durable) | `Engram (renamed to Signal in 2026-08-12)` | Medium split required separate durable type |
 | `Signal` (ephemeral) | `Pulse` | Medium split required separate ephemeral type |
 | `Signal` (wire) | `Pulse` | Same as above; wire-event usage retired |
 | `Event` (as general term) | `Pulse` | Overloaded; replaced by precise ephemeral medium |
@@ -205,5 +205,5 @@ framing at a particular stage of the design. It is retired because the design ou
 - Should a formal ADR (Architecture Decision Record) be created for each major naming
   transition? The narrative here captures the *why*, but ADRs would provide a more formal
   decision record with alternatives considered.
-- The `Signal` → `Engram` migration in code is incomplete. What is the timeline for full
+- The `Signal` → `Signal` migration in code is incomplete. What is the timeline for full
   codebase migration? (Tracking in implementation roadmap, not here.)

@@ -22,7 +22,7 @@ The 7 axes are: `novelty`, `relevance`, `confidence`, `valence`, `arousal`, `coh
 
 ## Why It Matters
 
-The 7-axis Score is used to rank Engrams in retrieval, route tasks, modulate decay, and drive learning updates. If axes were not independent:
+The 7-axis Score is used to rank Signals in retrieval, route tasks, modulate decay, and drive learning updates. If axes were not independent:
 - A scoring operation targeting one axis would corrupt others.
 - Scorer implementations would require global knowledge of all other axis values.
 - The Score could not be composed from partial assessments (a `NoveltyScorer` setting novelty should not touch relevance).

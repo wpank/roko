@@ -104,6 +104,6 @@ is deprecated.
 
 ## See Also
 
-- [`00-overview.md`](00-overview.md) — Engram vs Pulse distinction
+- [`00-overview.md`](00-overview.md) — Signal vs Pulse distinction
 - [`01-specification.md`](01-specification.md) — target Pulse spec
 - [`07-open-questions.md`](07-open-questions.md) — migration open questions

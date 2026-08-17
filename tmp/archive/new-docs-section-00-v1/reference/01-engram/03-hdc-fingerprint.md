@@ -1,4 +1,4 @@
-# Engram — HDC Fingerprint
+# Signal — HDC Fingerprint
 
 > The HDC fingerprint is a 10,240-bit semantic vector that enables similarity search alongside exact ContentHash lookup.
 
@@ -12,9 +12,9 @@
 
 ## TL;DR
 
-Every Engram carries an optional `HdcFingerprint` — a 10,240-bit Binary Spatter Code (BSC)
-vector encoding the semantic meaning of the Engram's content. The fingerprint enables
-queries like "find me Engrams similar to this one" at ~50 ns per comparison via POPCNT.
+Every Signal carries an optional `HdcFingerprint` — a 10,240-bit Binary Spatter Code (BSC)
+vector encoding the semantic meaning of the Signal's content. The fingerprint enables
+queries like "find me Signals similar to this one" at ~50 ns per comparison via POPCNT.
 The `encoder_version` field ensures fingerprints from different encoder generations are
 not cross-compared incorrectly.
 
@@ -22,8 +22,8 @@ not cross-compared incorrectly.
 
 ## The Idea
 
-ContentHash gives exact-match retrieval: "give me Engram with id X." But agents often need
-semantic retrieval: "give me Engrams related to Python async patterns." ContentHash cannot
+ContentHash gives exact-match retrieval: "give me Signal with id X." But agents often need
+semantic retrieval: "give me Signals related to Python async patterns." ContentHash cannot
 help — only the HDC fingerprint can.
 
 Hyperdimensional computing (HDC) represents concepts as very high-dimensional binary
@@ -124,12 +124,12 @@ environments), `fingerprint` is `None`.
 
 ### Encoding Process
 
-The encoder converts an Engram's `kind` and `body` into a 10,240-bit vector:
+The encoder converts an Signal's `kind` and `body` into a 10,240-bit vector:
 
 1. Encode the Kind discriminant as a role vector (deterministic from the Kind tag).
 2. Encode the Body content into a content vector (tokenize + embed + project to BSC).
 3. Bind the role vector and content vector with XOR.
-4. The result is the Engram's fingerprint vector.
+4. The result is the Signal's fingerprint vector.
 
 For the full encoding algorithm, see
 [`../10-types/hdc-fingerprint/04-encoding-scheme.md`](../10-types/hdc-fingerprint/04-encoding-scheme.md).
@@ -166,7 +166,7 @@ fn versions_compatible(a: &HdcFingerprint, b: &HdcFingerprint) -> bool {
 }
 ```
 
-When comparing Engrams across encoder versions, the system re-encodes the older Engram
+When comparing Signals across encoder versions, the system re-encodes the older Signal
 using the current encoder. See
 [`../10-types/hdc-fingerprint/03-encoder-version.md`](../10-types/hdc-fingerprint/03-encoder-version.md).
 
@@ -174,9 +174,9 @@ using the current encoder. See
 
 ## Performance
 
-- **Encoding**: ~10–50 µs per Engram (body tokenization dominates)
+- **Encoding**: ~10–50 µs per Signal (body tokenization dominates)
 - **Hamming distance**: ~50 ns (160 POPCNT operations on 64-bit words)
-- **Substrate scan** (1M Engrams): ~50 ms without indexing; ~500 µs with an HDC index structure
+- **Substrate scan** (1M Signals): ~50 ms without indexing; ~500 µs with an HDC index structure
 
 For the full performance analysis, see
 [`../10-types/hdc-fingerprint/05-performance.md`](../10-types/hdc-fingerprint/05-performance.md).
@@ -198,7 +198,7 @@ For the full performance analysis, see
 |---------|---------|----------|
 | `fingerprint` is None in production | HDC encoder not registered | Substrate logs warning; similarity search disabled; hash lookup still works |
 | Cross-version comparison | Comparing fingerprints with different `encoder_version` | Detected and rejected; re-encode if cross-version similarity needed |
-| Encoding failure | Body contains content the encoder cannot process | Encoder returns `None`; `fingerprint` is set to `None` for that Engram |
+| Encoding failure | Body contains content the encoder cannot process | Encoder returns `None`; `fingerprint` is set to `None` for that Signal |
 
 ---
 

@@ -35,26 +35,26 @@ threat. Roko's analogs:
 ### The Gate as Innate Immune Cell
 
 The [Gate operator](../../../reference/05-operators/gate.md) is the primary innate defense.
-It recognizes broad classes of problematic Engrams:
+It recognizes broad classes of problematic Signals:
 - Score below threshold (any axis) → reject
 - Provenance from untrusted source → reject
 - Content violating safety rules (hard-coded patterns) → reject
 - Anomalous metadata (impossible timestamps, self-referential loops) → quarantine
 
-The Gate does not need to understand the specific content of a rejected Engram. It
+The Gate does not need to understand the specific content of a rejected Signal. It
 recognizes structural "danger signatures" — just as macrophages recognize LPS without
 knowing which bacterium produced it.
 
 **Properties:**
 - Fast (T0-tier operation in most implementations)
-- No memory (same Engram class is handled identically on every encounter)
+- No memory (same Signal class is handled identically on every encounter)
 - Non-specific (rejects whole classes, not specific instances)
 - Can produce false positives (autoimmune events)
 
 ### Score Anomaly Detection as Pattern Recognition
 
 The [Scorer](../../../reference/05-operators/scorer.md)'s axes include trust and confidence.
-An Engram with high confidence on a claim that contradicts established Neuro knowledge
+An Signal with high confidence on a claim that contradicts established Neuro knowledge
 is a danger signal — the signature of either misinformation or a significant environmental
 change that requires investigation.
 
@@ -70,8 +70,8 @@ deploys precision responses.
 
 ### Learning-Based Anomaly Detection
 
-As the system processes Engrams over time, it can learn the distribution of "normal"
-Engram characteristics for a given context (source, topic, time period). Engrams that
+As the system processes Signals over time, it can learn the distribution of "normal"
+Signal characteristics for a given context (source, topic, time period). Signals that
 deviate significantly from this learned distribution are flagged as anomalies.
 
 This is analogous to B cells learning to recognize specific antigens: the system develops
@@ -79,10 +79,10 @@ receptors tuned to the specific shapes of threats it has encountered, enabling f
 more precise recognition in the future.
 
 In Roko, this would be implemented as:
-- A learned model of Engram statistics per context
+- A learned model of Signal statistics per context
 - Per-source reliability models (a source that has been reliable becomes "self"; a source
   that has produced corrupted data becomes "non-self")
-- Cascade pattern detection (sequences of Engrams that together constitute an attack even
+- Cascade pattern detection (sequences of Signals that together constitute an attack even
   if individually benign)
 
 ### Neuro as Immunological Memory
@@ -91,7 +91,7 @@ The [Neuro knowledge layer](../../../reference/09-cross-cuts/README.md) is, in p
 immunological memory system: it stores the record of what has been validated and accepted,
 providing a reference model of "self" against which new inputs are compared.
 
-An Engram that strongly contradicts established Neuro knowledge is flagged for careful
+An Signal that strongly contradicts established Neuro knowledge is flagged for careful
 review — it is either an update to "self" (learning) or a threat to be neutralized.
 The system must distinguish these cases.
 
@@ -125,7 +125,7 @@ of tolerance is autoimmunity — the immune system destroys the body's own tissu
 In cognitive systems, the analog is:
 - **Cognitive autoimmunity**: the system rejects its own valid conclusions as threats because
   they superficially resemble adversarial content.
-- **Gate false positives**: legitimate, important Engrams are rejected because they match
+- **Gate false positives**: legitimate, important Signals are rejected because they match
   a threat signature.
 - **Catastrophic forgetting**: learned defenses overwrite valid knowledge (destroying "self"
   to prevent infection).
@@ -133,5 +133,5 @@ In cognitive systems, the analog is:
 Tolerance mechanisms in biology work by eliminating or inactivating immune cells that react
 to self-antigens (central tolerance in the thymus; peripheral tolerance via Treg cells).
 The cognitive analog would be mechanisms to whitelist known-good sources, protect high-
-confidence Neuro knowledge from invalidation by single contrary Engrams, and require
+confidence Neuro knowledge from invalidation by single contrary Signals, and require
 higher evidentiary standards before overwriting established beliefs.

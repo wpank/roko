@@ -51,11 +51,11 @@ Metadata are at the bottom.
 
 ## Memory Selection
 
-The `memory_selection` field controls which recalled `Engram`s are included:
+The `memory_selection` field controls which recalled `Signal`s are included:
 
 | Strategy | Description |
 |---|---|
-| `TopK(k)` | Include the k highest-score engrams |
+| `TopK(k)` | Include the k highest-score signals |
 | `Budget(max_tokens)` | Include as many as fit in `max_tokens` |
 | `UShape { top_k, bottom_k }` | Top-k for Context layer, bottom-k for Memory layer |
 

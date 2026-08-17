@@ -1,9 +1,22 @@
 # Phase 1 — Kernel Upgrade
 
+> **Last updated: 2026-08-13**
+
+## What is this?
+
+Phase 1 of the mori-to-roko migration: rename core types to match the unified spec,
+promote Pulse and Bus to kernel-level, wire prediction/calibration loops, and introduce
+new protocols (Observe, Trigger, Connect). This is the architectural keystone phase.
+
+**Status**: The Signal rename (formerly Engram, renamed 2026-08-12) is **DONE**. The `Pulse` struct
+is implemented. All other items in this phase remain pending.
+
+---
+
 > Promote Pulse and Bus to kernel-level, wire predict-publish-correct, add demurrage, introduce Heuristic kind, upgrade routing to EFE, trigger the dream cycle, formalize Observe/Trigger/Connect protocols, and rename all types to match the unified spec.
 
 **Spec source**: `tmp/unified/21-ROADMAP.md` §2 (Phase 1)
-**Dependencies**: Phase 0 complete
+**Dependencies**: Phase 0 complete (mostly done — see `01-PHASE-0-PREP.md`)
 
 ---
 
@@ -11,9 +24,9 @@
 
 Rename the fundamental types across the entire codebase. Each rename is a single find-and-replace across all crates, followed by updating all imports, docs, and tests.
 
-- [ ] **Rename `Engram` → `Signal`** — Rename the struct, all field references, all method signatures, all test fixtures, all docs. The struct lives in `crates/roko-core/src/engram.rs` → rename file to `signal.rs`. Update `mod` declarations in `lib.rs`. Update all 28 downstream crates that import `Engram`. **Verify**: `cargo test --workspace` passes, `grep -rn 'Engram' crates/ --include='*.rs' | grep -v target/` returns zero hits.
+- [x] **Rename `Engram` → `Signal`** — **DONE (2026-08-12).** The struct in `crates/roko-core/src/engram.rs` is now `pub struct Signal`. A backwards-compat alias `pub type Engram = Signal` is retained so downstream crates compile without mass-renaming every call site. New code uses `Signal` exclusively. The file has not yet been renamed from `engram.rs` to `signal.rs` (a cosmetic follow-up). Remaining `Engram` references in crates are via the alias and doc comments -- these will be cleaned up incrementally.
   - Spec: `tmp/unified/01-SIGNAL.md` §2 (Signal struct)
-  - Code: `crates/roko-core/src/engram.rs` and all importers
+  - Code: `crates/roko-core/src/engram.rs` (struct renamed, file rename pending)
 
 - [ ] **Rename `Substrate` → `Store`** — Rename the trait and all implementations (FileSubstrate → FileStore, MemorySubstrate → MemoryStore, ColdSubstrate → ColdStore). Update trait bounds, generic params, and docs across all crates. **Verify**: zero grep hits for `Substrate` in `*.rs` files.
   - Spec: `tmp/unified/00-INDEX.md` §Vocabulary (9 Protocols table, Store row)

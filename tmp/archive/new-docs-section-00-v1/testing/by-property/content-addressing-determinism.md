@@ -19,8 +19,8 @@ More precisely: `ContentHash` is a pure function of the byte content. Two `Conte
 
 ## Why It Matters
 
-The entire Roko substrate is content-addressed: an Engram's identity IS its hash. If the hash were non-deterministic (depended on time, machine state, or random inputs), then:
-- The same Engram stored on two machines would have different IDs.
+The entire Roko substrate is content-addressed: an Signal's identity IS its hash. If the hash were non-deterministic (depended on time, machine state, or random inputs), then:
+- The same Signal stored on two machines would have different IDs.
 - Write idempotence would be impossible (the second write would always create a new ID).
 - Cross-agent deduplication would fail.
 - The provenance chain (which is a hash chain) would be unverifiable.
@@ -82,7 +82,7 @@ A failing counterexample from proptest would show the minimal byte slice that tr
 ## Related Properties
 
 - [content-hash-collision-resistance.md](content-hash-collision-resistance.md) — `h1 == h2 ↔ bytes1 == bytes2`
-- [engram-serialization-roundtrip.md](engram-serialization-roundtrip.md) — depends on determinism for round-trip equality
+- [signal-serialization-roundtrip.md](signal-serialization-roundtrip.md) — depends on determinism for round-trip equality
 - [substrate-idempotence.md](substrate-idempotence.md) — write idempotence depends on deterministic IDs
 
 ## See also

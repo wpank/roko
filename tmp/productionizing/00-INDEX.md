@@ -1,6 +1,26 @@
 # Productionizing Roko
 
-Guide to deploying roko + demo-app as a full self-hosting loop on Railway.
+Last updated: 2026-08-13
+
+## What is this?
+
+These docs track production-readiness tasks for roko: error handling, logging,
+performance, security, deployment, and operational concerns. They were created
+from a full production audit (06-AUDIT-FINDINGS.md) and organized into
+actionable implementation plans (10, 11, 12).
+
+If you are new to this directory, start with the reading order below.
+
+## Status summary
+
+| Concern | Status | Details |
+|---------|--------|---------|
+| `.expect()` / `.unwrap()` panics | **PARTIALLY ADDRESSED** | ~25 production fixes in batch 2026-08-12; ~690 remain but most are in tests, not runtime paths |
+| `eprintln!` bypass of structured logging | **ADDRESSED** | ~40 calls converted to `tracing` in batch 2026-08-12 |
+| File locking for `.roko/` state | **STILL OPEN** | No inter-process locking; concurrent `roko serve` + `roko plan run` can corrupt state files |
+| HTTP timeouts on outbound requests | **PARTIALLY ADDRESSED** | 8 `reqwest` clients in roko-serve now have 30s timeouts; Axum inbound request timeout layer not yet added |
+| Auth disabled by default | Open | No change since audit (C3) |
+| Model routing fallbacks | Open | Hardcoded `"claude-sonnet-4-6"` fallbacks still present (C1) |
 
 ## Files
 
@@ -45,11 +65,11 @@ These docs target **self-hosted `roko serve` + `demo-app`**. In the tree today:
 
 ### Critical blockers (must fix before deploy)
 
-| # | What | Impact |
-|---|------|--------|
-| C1 | Model routing falls back to unavailable providers | Dispatch fails mid-task |
-| C2 | No file locking for concurrent state writes | State corruption |
-| C3 | Auth disabled by default, no warning on public bind | Everything exposed |
+| # | What | Impact | Status |
+|---|------|--------|--------|
+| C1 | Model routing falls back to unavailable providers | Dispatch fails mid-task | Open |
+| C2 | No file locking for concurrent state writes | State corruption | **STILL OPEN** |
+| C3 | Auth disabled by default, no warning on public bind | Everything exposed | Open |
 
 ### Quick deploy (after fixing blockers)
 
@@ -80,7 +100,7 @@ curl https://your-app.up.railway.app/api/health
 | Gemini | `GEMINI_API_KEY` | gemini-2.5-pro, gemini-2.5-flash |
 | Ollama | (local, no key) | depends on installed models |
 
-## Task execution order
+## Task execution order (0/18 complete)
 
 See `10-IMPLEMENTATION-PLAN.md` for full details. Summary:
 
@@ -94,14 +114,18 @@ HIGH (do next):
   P7  (HTTP timeouts + limits)
   P8  (error logging)
   P9  (context overflow)
-  P10 (expect/unwrap cleanup)
+  P10 (expect/unwrap cleanup) — PARTIALLY ADDRESSED outside this plan (~25 fixes in batch 2026-08-12)
 
 MEDIUM (before or after deploy):
   P11 (log rotation)
-  P12 (eprintln → tracing)
+  P12 (eprintln → tracing) — ADDRESSED outside this plan (~40 fixes in batch 2026-08-12)
   P13 → P14 (Dockerfile + deploy configs)
   P15 (production roko.toml)
 ```
+
+Note: P10 and P12 have had significant progress from batch work outside this plan,
+but the formal tasks remain open because the plan-specific verification steps have
+not been run. See status notes in 10-IMPLEMENTATION-PLAN.md.
 
 Parallel-safe groups: {P1-P4}, {P5, P6, P7, P8}, {P9, P10, P11, P12}, {P13-P14, P15}.
 

@@ -13,7 +13,7 @@ Read all 7 files in `/Users/will/dev/nunchi/roko/roko/tmp/prd-migration/context-
 ## Step 2 — refactoring-prd canonical sources
 
 1. `/Users/will/dev/nunchi/roko/refactoring-prd/01-synapse-architecture.md` §Provenance & Attestation, §Decay (memory management not mortality)
-2. `/Users/will/dev/nunchi/roko/refactoring-prd/09-innovations.md` §IX Forensic AI / Causal Replay (regulatory compliance table), §XII Cognitive Kernel Primitives (Namespaces with ACL, Signals, Scheduling, Engram Syscalls)
+2. `/Users/will/dev/nunchi/roko/refactoring-prd/09-innovations.md` §IX Forensic AI / Causal Replay (regulatory compliance table), §XII Cognitive Kernel Primitives (Namespaces with ACL, Signals, Scheduling, Signal Syscalls)
 3. `/Users/will/dev/nunchi/roko/refactoring-prd/07-implementation-priorities.md` §Tier 1G (production hardening)
 4. `/Users/will/dev/nunchi/roko/refactoring-prd/08-translation-guide.md`
 
@@ -52,7 +52,7 @@ Write **17 sub-docs** plus `INDEX.md`:
 |---|---|---|
 | 00 | `00-defense-in-depth.md` | Defense-in-depth overview. Layers of safety: capabilities, audit, taint, sandbox, prompt security, threat model. Why each layer matters. |
 | 01 | `01-capability-tokens.md` | Typed, unforgeable authorization tokens. Least-privilege per role. Capability declarations at Framework layer. |
-| 02 | `02-content-addressed-audit-chain.md` | BLAKE3 lineage DAG. Tamper-evident. Every Engram traces to its inputs. Replay any decision chain. |
+| 02 | `02-content-addressed-audit-chain.md` | BLAKE3 lineage DAG. Tamper-evident. Every Signal traces to its inputs. Replay any decision chain. |
 | 03 | `03-taint-aware-ingestion.md` | TaintLevel: Trusted / Unverified / Suspicious. Taint propagates through lineage DAG. Reviewers see what was touched by unverified sources. |
 | 04 | `04-permits-and-allowlists.md` | Permit-based authorization. Allowlists per tool category. Configuration in roko.toml. |
 | 05 | `05-loop-detection-and-guard.md` | Detecting agents stuck in loops. Guard against infinite recursion, runaway token burn, repeated same action. |
@@ -62,9 +62,9 @@ Write **17 sub-docs** plus `INDEX.md`:
 | 09 | `09-adaptive-risk-management.md` | Risk scoring. Adaptive thresholds. Integration with Daimon PAD (high arousal → more conservative). |
 | 10 | `10-mev-protection.md` | MEV (Maximal Extractable Value) protection for chain agents. Transaction ordering defenses. Cross-reference 08-chain.md. |
 | 11 | `11-temporal-logic-verification.md` | Temporal logic constraints. Safety invariants over sequences. |
-| 12 | `12-witness-dag.md` | Witness DAG for cryptographic verification of agent actions. Ed25519 signatures per Engram. Chain of custody from prompt to verdict. |
+| 12 | `12-witness-dag.md` | Witness DAG for cryptographic verification of agent actions. Ed25519 signatures per Signal. Chain of custody from prompt to verdict. |
 | 13 | `13-formal-verification-pipeline.md` | Formal verification integration. Property-based tests, model checking, theorem proving. Where and when each applies. |
-| 14 | `14-cognitive-kernel-primitives.md` | OS-level primitives for agents. (1) **Cognitive Namespaces**: isolated knowledge spaces with ACL, explicit cross-namespace channels. Permissioned subnets use namespaces. Full Rust struct. (2) **Cognitive Signals**: typed interrupts (Pause/Resume/Reprioritize/InjectContext/Escalate/Cooldown/Explore/Shutdown) — behavior modification, not process killing (cross-reference 07-conductor.md). (3) **Cognitive Scheduling**: `cognitive_priority = task_urgency × expected_value × (1/cognitive_cost)`. (4) **Engram Syscalls**: every meaningful agent action passes through Policy.decide() → permit/deny/modify/log. Single enforcement point for security, auditing, rate limiting, cost tracking. |
+| 14 | `14-cognitive-kernel-primitives.md` | OS-level primitives for agents. (1) **Cognitive Namespaces**: isolated knowledge spaces with ACL, explicit cross-namespace channels. Permissioned subnets use namespaces. Full Rust struct. (2) **Cognitive Signals**: typed interrupts (Pause/Resume/Reprioritize/InjectContext/Escalate/Cooldown/Explore/Shutdown) — behavior modification, not process killing (cross-reference 07-conductor.md). (3) **Cognitive Scheduling**: `cognitive_priority = task_urgency × expected_value × (1/cognitive_cost)`. (4) **Signal Syscalls**: every meaningful agent action passes through Policy.decide() → permit/deny/modify/log. Single enforcement point for security, auditing, rate limiting, cost tracking. |
 | 15 | `15-forensic-ai-regulatory-compliance.md` | Full regulatory compliance mapping table (cross-reference 04-verification.md §12 for causal replay): EU AI Act Art. 14 (human oversight mechanisms) + FRIA (fundamental rights impact assessment), SEC/CFTC (trading decision reconstruction, MiFID II), HIPAA (clinical decision audit trail, PHI-aware Gate), SOX (financial control documentation), GDPR (purpose-limitation Policy). Pre-certified agent templates (SEC-Compliant Trading Agent, HIPAA-Compliant Clinical Agent, GDPR-Compliant Data Agent). Enterprise value $100-500K/month. Certification moat — multi-year, multi-million-dollar process to get regulator blessing. |
 | 16 | `16-critical-integration-gap.md` | **THE #1 KNOWN INTEGRATION GAP**. Safety policies ARE implemented: `roko-agent/src/safety/mod.rs` has `SafetyLayer` (256 lines) composing bash/git/network/path/scrub/rate_limit guards. `roko-agent/src/dispatcher/mod.rs` has `ToolDispatcher.with_safety(layer)` integration. **But** `roko-cli/src/orchestrate.rs` never creates a `ToolDispatcher` — it calls `ExecAgent::run()` directly. The SafetyLayer is wired but never invoked from the CLI pipeline. This is the #1 known gap per `11-inconsistencies.md`. Explain clearly. Explain what fixing it requires: refactor orchestrate.rs to create a ToolDispatcher, plug in SafetyLayer, route agent tool calls through it. This is part of Tier 1 hardening. |
 

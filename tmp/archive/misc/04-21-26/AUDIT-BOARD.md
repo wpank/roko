@@ -28,7 +28,7 @@ Moved to `tmp/archive/04-21-26/demo-parity/`:
 | `B10-integration-test.md` | Bash smoke harness exists, is executable, matches current heartbeat payload contracts, and exercises jobs + heartbeats over HTTP. | `bash tmp/04-21-26/demo-parity/integration-test.sh` passed |
 | `C1-marketplace-tab.md` | F8 Marketplace tab, subviews, header/status hints, and data loading are wired. | `cargo test -p roko-cli --test tui_tabs` passed |
 | `C2-atelier-tab.md` | F9 Atelier tab and PRD/task view wiring are in place. | `cargo test -p roko-cli --test tui_tabs` passed |
-| `C3-inspect-subviews.md` | F7 Inspect subviews render through typed `TuiState`; Engram DAG rows include confidence bars and explicit scroll/selection clamping; Knowledge Browse filtering uses `ViewState.search_query`. | `cargo test -p roko-cli --lib context_view -- --nocapture`; `cargo test -p roko-cli --lib signal_ -- --nocapture`; `cargo test -p roko-cli --test tui_tabs` passed |
+| `C3-inspect-subviews.md` | F7 Inspect subviews render through typed `TuiState`; Signal DAG rows include confidence bars and explicit scroll/selection clamping; Knowledge Browse filtering uses `ViewState.search_query`. | `cargo test -p roko-cli --lib context_view -- --nocapture`; `cargo test -p roko-cli --lib signal_ -- --nocapture`; `cargo test -p roko-cli --test tui_tabs` passed |
 | `C4-config-subviews.md` | F6 provider/model subviews are reachable via per-tab subview state and consistently use `Block::bordered()`. | `cargo test -p roko-cli --lib tui::` passed |
 | `C6-header-stats.md` | Header stats show active-agent count, gate pass-rate ISFR, no-data fallback, and file fallback when agent data is empty. | `cargo test -p roko-cli --lib tui::` passed |
 

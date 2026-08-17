@@ -31,7 +31,7 @@
 
 ### Verified Against Codebase
 
-- Engram struct in `crates/roko-core/src/engram.rs`
+- Signal struct in `crates/roko-core/src/__PATH_ENGRAM_RS__0`
 - Six Synapse traits in `crates/roko-core/src/traits.rs`
 - FileSubstrate in `crates/roko-fs/src/file_substrate.rs`
 - CascadeRouter in `crates/roko-learn/src/cascade_router.rs`

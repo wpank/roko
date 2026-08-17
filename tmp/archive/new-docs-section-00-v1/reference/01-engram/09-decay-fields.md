@@ -1,6 +1,6 @@
-# Engram — Decay Fields
+# Signal — Decay Fields
 
-> The `decay: Decay` field governs how an Engram's effective weight decreases over time. It is not part of the identity hash.
+> The `decay: Decay` field governs how an Signal's effective weight decreases over time. It is not part of the identity hash.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -12,10 +12,10 @@
 
 ## TL;DR
 
-Every Engram carries a `Decay` model that determines how its weight evolves over time.
+Every Signal carries a `Decay` model that determines how its weight evolves over time.
 Four models are supported: Demurrage (the primary model), Exponential, Step, and Linear.
 Custom functions are available. Decay is excluded from the identity hash so substrates
-can change the model without changing the Engram's id.
+can change the model without changing the Signal's id.
 
 ---
 
@@ -25,8 +25,8 @@ Information has a shelf life. An agent output produced five minutes ago is likel
 relevant than one from three months ago. A pheromone signal deposited by a failed attempt
 should evaporate quickly. A foundational knowledge entry should persist for months.
 
-Decay models encode this intuition mathematically. The Substrate multiplies an Engram's
-effective score by its decay weight at retrieval time. An Engram at weight 0.0 is
+Decay models encode this intuition mathematically. The Substrate multiplies an Signal's
+effective score by its decay weight at retrieval time. An Signal at weight 0.0 is
 effectively invisible and becomes a GC candidate.
 
 ---
@@ -35,7 +35,7 @@ effectively invisible and becomes a GC candidate.
 
 The `Decay` type is specified in full in
 [`../10-types/decay/`](../10-types/decay/README.md). This page covers the attachment
-of Decay to Engram.
+of Decay to Signal.
 
 ### The Decay Field
 
@@ -66,7 +66,7 @@ retrieval.
 
 ### Changing Decay at Runtime
 
-The Substrate supports updating the decay model for an existing Engram:
+The Substrate supports updating the decay model for an existing Signal:
 
 ```rust
 <!-- source: crates/roko-core/src/substrate.rs -->
@@ -79,9 +79,9 @@ trait Substrate {
 ```
 
 This is used for:
-- **Cold-tier migration**: promoting an Engram to `Decay::ColdTier` when it has not been
+- **Cold-tier migration**: promoting an Signal to `Decay::ColdTier` when it has not been
   accessed for the substrate's cold threshold.
-- **Decay model upgrades**: migrating a fleet of Engrams from Exponential to Demurrage.
+- **Decay model upgrades**: migrating a fleet of Signals from Exponential to Demurrage.
 
 ---
 
@@ -89,7 +89,7 @@ This is used for:
 
 | Model | When to use |
 |-------|------------|
-| `Decay::Demurrage` | Primary model for most Engrams; rewards active use, taxes idleness |
+| `Decay::Demurrage` | Primary model for most Signals; rewards active use, taxes idleness |
 | `Decay::Exponential` | Classic half-life decay; pheromones, short-lived signals |
 | `Decay::Step` | Epoch-based drops; gate verdicts, time-boxed plans |
 | `Decay::Linear` | Simple time-linear fade; metrics, observations |
@@ -114,7 +114,7 @@ pub struct DemurrageParams {
 ```
 
 Demurrage is the primary model because it implements the "use it or lose it" principle:
-frequently-accessed knowledge stays warm; idle knowledge degrades. When an Engram is
+frequently-accessed knowledge stays warm; idle knowledge degrades. When an Signal is
 retrieved, `balance += reinforcement_per_use`, capped at 1.0. Each day of non-access,
 `balance *= (1 - idle_tax_per_day)`.
 
@@ -160,17 +160,17 @@ pub struct LinearDecayParams {
 let effective_weight = decay.weight_at(now_ms, engram.created_at_ms);
 ```
 
-The Substrate multiplies the Engram's `score.effective()` by `effective_weight` when
+The Substrate multiplies the Signal's `score.effective()` by `effective_weight` when
 ranking retrieval results.
 
 ### GC Eligibility
 
-An Engram with `effective_weight < substrate.gc_threshold` (typically 0.01) is a GC
-candidate. The GC runs during idle periods and removes the lowest-weighted Engrams first.
+An Signal with `effective_weight < substrate.gc_threshold` (typically 0.01) is a GC
+candidate. The GC runs during idle periods and removes the lowest-weighted Signals first.
 
 ### Reinforcement on Use
 
-For Demurrage Engrams, the Substrate calls `decay.reinforce()` on every retrieval:
+For Demurrage Signals, the Substrate calls `decay.reinforce()` on every retrieval:
 
 ```rust
 <!-- source: crates/roko-core/src/substrate.rs -->
@@ -199,7 +199,7 @@ fn on_retrieve(&self, id: &ContentHash) {
 |---------|-------|----------|
 | Weight goes to 0 prematurely | Idle tax too high | Tune `idle_tax_per_day`; cold-tier migration before GC |
 | Reinforcement overflow | Multiple simultaneous retrievals | Capped at 1.0; not an error |
-| GC removes needed Engram | Decay without reinforcement | Pre-retrieve before GC window; monitor GC logs |
+| GC removes needed Signal | Decay without reinforcement | Pre-retrieve before GC window; monitor GC logs |
 
 ---
 

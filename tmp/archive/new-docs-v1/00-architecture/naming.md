@@ -40,14 +40,14 @@ column uses the four tags defined in the [next section](#status-tags).
 |---|---|---|---|
 | `Roko` | `[shipping]` | Project and framework name | `Bardo` / `Mori` (retired) |
 | `Agent` | `[shipping]` | Running process or session | `Golem` (retired) |
-| `Engram` | `[shipping]` | Durable record medium | `Signal` (retired durable term) |
+| `Engram (renamed to Signal in 2026-08-12)` | `[shipping]` | Durable record medium | `Signal` (retired durable term) |
 | `Pulse` | `[planned]` | Target-state ephemeral transport medium | `Event`, `Envelope`, `Message`, `Signal` (retired wire terms) |
 | `Substrate` | `[shipping]` | Storage fabric | legacy storage-only synonyms |
 | `EventBus<E>` | `[shipping]` | Current live transport implementation | calling it retired |
 | `Bus` | `[planned]` | Target-state transport fabric abstraction | presenting it as already shipped |
 | `Topic` | `[planned]` | Target-state Pulse routing handle | `Channel`, `Subject` |
 | `TopicFilter` | `[planned]` | Target-state subscription matcher | ad hoc routing filters |
-| `Datum` | `[planned]` | Target-state polymorphic `Engram` or `Pulse` input | one-off sum types |
+| `Datum` | `[planned]` | Target-state polymorphic `Signal` or `Pulse` input | one-off sum types |
 | `PulseSource` | `[planned]` | Target-state lightweight Pulse origin attribution | overloaded provenance terms |
 | `Neuro` | `[shipping]` | Durable knowledge cross-cut | `Grimoire` (retired) |
 | `Daimon` | `[built]` | Affect cross-cut; public alias `AffectBias` | old loop-step framing for affect |
@@ -116,7 +116,7 @@ term first and add the public alias in parentheses.
 
 ### Capitalisation and code formatting
 
-- Core types are TitleCase: `Engram`, `Pulse`, `Substrate`, `Bus`, `Score`, `Score`,
+- Core types are TitleCase: `Signal`, `Pulse`, `Substrate`, `Bus`, `Score`, `Score`,
   `Kind`, `Body`.
 - The six operator roles are TitleCase too: `Scorer`, `Gate`, `Router`, `Composer`,
   `Policy`. (They are singular nouns, not verbs — a `Scorer` scores; the scoring
@@ -154,7 +154,7 @@ new prose. If you find retired vocabulary in new documentation, fix the document
 | `Grimoire` | `Neuro` | `Grimoire` misrepresented the knowledge subsystem as a static book of spells rather than a living, decaying, tier-progressing memory. |
 | `Styx` (umbrella) | `Mesh` + `Korai` | The single umbrella collapsed the agent-mesh transport and the chain integration into one term. They are now distinct. |
 | `Clade` | `Fleet` | `Clade` is a phylogenetic term; `Fleet` matches the deployment-scoped roster metaphor already used in ops. |
-| `Signal` (as durable medium) | `Engram` | `Signal` is ambiguous — it suggests a wire-level event more than a durable record. The Rust type itself is still named `Signal` today; rename to `Engram` is Tier 0D in the implementation plan. |
+| `Signal` (as durable medium) | `Signal` | `Signal` is ambiguous — it suggests a wire-level event more than a durable record. The Rust type itself is still named `Signal` today; rename to `Signal` is Tier 0D in the implementation plan. |
 | `Event` / `Envelope` / `Message` (as canonical wire type) | `Pulse` | All three were used interchangeably at different times. `Pulse` is the single canonical term for the target-state ephemeral medium. |
 
 None of the above should appear in new prose except in this table, in
@@ -211,6 +211,6 @@ If any of those steps is skipped, the term is ambiguous and will drift.
 - [`../ALIASES.md`](../ALIASES.md) — internal-to-public alias map.
 - [`CONVENTIONS.md`](../CONVENTIONS.md) — the writing rules that enforce this vocabulary.
 - [`vision.md`](vision.md) — where the core vocabulary is first introduced in context.
-- [`concepts/engram.md`](concepts/engram.md) — the `Engram` (formerly `Signal`) deep dive.
+- [`concepts/engram.md`](concepts/engram.md) — the `Signal` (formerly `Signal`) deep dive.
 - [`concepts/pulse.md`](concepts/pulse.md) — the target-state `Pulse`.
 - [`concepts/bus.md`](concepts/bus.md) — the target-state `Bus` vs. shipping `EventBus<E>`.

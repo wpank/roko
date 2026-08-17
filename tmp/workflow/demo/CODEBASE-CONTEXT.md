@@ -44,7 +44,7 @@ Before anything else, here are terms used throughout this document and the rest 
 | **Tokyo Night** | A code editor color theme — electric blue (#7AA2F7), purple (#BB9AF7), dark blue-black background (#1A1B26). Proposed replacement for ROSEDUST in the demo. |
 | **Clack-style** | A CLI output formatting convention using Unicode symbols (◆ ◇ │ └ ✔ ✖) instead of plain text or emoji. Named after the `@clack/prompts` npm package. |
 | **ACP** | Agent Client Protocol — a JSON-RPC 2.0 protocol over stdio that lets editors (VS Code, JetBrains, Zed, Neovim) use Roko as a coding agent backend. Similar to LSP but for AI agents. |
-| **ISFR** | Internet Secured Funding Rate — an on-chain benchmark rate. Future expansion product, not current. The agent coordination plane's equivalent of SOFR (the rate that underpins $668T in interest rate derivatives). |
+| **ISFR** | Internet Secured Funding Rate — an on-chain benchmark rate. ~~Future expansion product, not current.~~ **DEPRECATED (2026-08-13):** The ISFR vertical is deprecated and scheduled for removal. See `.roko/GAPS.md` for tracking. |
 
 ---
 

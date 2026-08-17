@@ -76,7 +76,7 @@ Plus `INDEX.md`.
 
 Per context-pack rules. ≥200 lines per sub-doc, ≥4500 total. Citations: Kanerva 2009, Neubert 2022, Kleyko 2022, Plate 1994, Frady 2021, Ebbinghaus 1885, Johnson-Lindenstrauss 1984, Bower 1981, Damasio 1994, Park 2023 (arXiv:2304.03442), Sumers 2023 (arXiv:2309.02427), Mattar-Daw. **Minimum 14+ HDC/VSA references.**
 
-Cross-reference topics 00-architecture (Decay enum, Engram), 03-composition (knowledge injected into context), 05-learning (distillation pipeline), 08-chain (HDC on-chain precompile), 09-daimon (somatic landscape), 13-coordination (pheromones), 14-identity-economy (Library of Babel).
+Cross-reference topics 00-architecture (Decay enum, Signal), 03-composition (knowledge injected into context), 05-learning (distillation pipeline), 08-chain (HDC on-chain precompile), 09-daimon (somatic landscape), 13-coordination (pheromones), 14-identity-economy (Library of Babel).
 
 ## CRITICAL REMINDERS
 

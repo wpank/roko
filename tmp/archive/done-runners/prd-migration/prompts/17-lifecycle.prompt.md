@@ -78,7 +78,7 @@ Write **13 sub-docs** plus `INDEX.md`:
 | 08 | `08-selective-restore.md` | `roko neuro restore <file>` — selective import from a backup. User picks which entries to restore. Entries start at Transient tier — must re-prove themselves. Provenance tracks origin ("restored from agent X on date Y"). |
 | 09 | `09-knowledge-transfer-via-mesh.md` | Live agent-to-agent knowledge transfer via Collective/Mesh (cross-reference 13-coordination.md). Not inheritance, not succession — ongoing collective learning via shared Substrate. |
 | 10 | `10-ebbinghaus-for-knowledge-not-agents.md` | Ebbinghaus 1885 forgetting curve. Applied to **knowledge freshness**, NOT agent lifespan. Successful use increases knowledge strength → decay slows. Failed use decreases → decay accelerates. Tier progression emerges naturally. Cross-reference 06-neuro.md §07. |
-| 11 | `11-knowledge-demurrage.md` | Token-level analog of knowledge decay. KORAI demurrage (1% annual) mirrors Engram half-life. Cross-reference 14-identity-economy.md §10 for KORAI tokenomics details. |
+| 11 | `11-knowledge-demurrage.md` | Token-level analog of knowledge decay. KORAI demurrage (1% annual) mirrors Signal half-life. Cross-reference 14-identity-economy.md §10 for KORAI tokenomics details. |
 | 12 | `12-academic-foundations.md` | **Keep ALL 130+ mortality research citations.** They're still relevant — they ground knowledge transfer and decay mechanisms, not agent biological lifespan. Ray 1991 Tierra (evolutionary CS — reframed). Lenski Long-Term Evolution Experiment. Ebbinghaus 1885 (forgetting curve). Hayflick 1961 (cellular senescence — only as historical reference). Tom Ray on evolutionary systems. All references. Group by topic. |
 
 Plus `INDEX.md`.

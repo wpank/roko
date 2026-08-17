@@ -2,7 +2,7 @@
 
 ## Focus Now
 
-1. **HDC on `Engram`**
+1. **HDC on `Signal`**
    The HDC math already ships; the kernel object still lacks the field.
 
 2. **Honest query docs**

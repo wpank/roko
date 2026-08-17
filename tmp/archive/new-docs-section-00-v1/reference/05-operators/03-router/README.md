@@ -1,6 +1,6 @@
 # Router
 
-> `Router` selects which action to execute for a given `Engram` and `Score`. It is the
+> `Router` selects which action to execute for a given `Signal` and `Score`. It is the
 > decision step — the operator that decides *what* the agent does next.
 
 **Status**: Shipping

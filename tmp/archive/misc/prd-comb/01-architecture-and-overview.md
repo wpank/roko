@@ -15,7 +15,7 @@ has its own folder with multiple sub-docs. For naming conventions, reframe rules
 and the authoritative source of truth, see `tmp/prd-migration/README.md` and
 `/Users/will/dev/nunchi/roko/refactoring-prd/`.
 
-See also `tmp/refinements/01-critique-one-noun.md`, `tmp/refinements/02-engram-vs-pulse.md`,
+See also `tmp/refinements/01-critique-one-noun.md`, `tmp/refinements/02-signal-vs-pulse.md`,
 and `tmp/refinements/03-bus-as-first-class.md`; REF02-REF05 and REF07 continue the reframing
 from the retired "one noun, six verbs" mnemonic into the current two-medium, two-fabric
 architecture story, and
@@ -24,9 +24,9 @@ in [`00-architecture/33-refactor-plan-phases.md`](00-architecture/33-refactor-pl
 `tmp/refinements/10-self-learning-cybernetic-loops.md` extends that story by making prediction,
 outcome, calibration, and `prediction.error.*` topics first-class across learning and heartbeat.
 `tmp/refinements/11-hyperdimensional-substrate.md` extends it further by making the HDC
-fingerprint a first-class Engram field and a native Substrate query primitive.
+fingerprint a first-class Engram (renamed to Signal in 2026-08-12) field and a native Substrate query primitive.
 `tmp/refinements/12-knowledge-demurrage.md` then recasts durable memory as a target-state attention
-economy: Engrams would carry `balance`, demurrage would tax idle knowledge, reinforcement would keep useful
+economy: Signals would carry `balance`, demurrage would tax idle knowledge, reinforcement would keep useful
 knowledge warm, and cold-tier freeze/thaw replaces blunt prune-only decay for long-lived stores.
 `tmp/refinements/13-collective-intelligence-c-factor.md` adds c-factor as a continuously
 measured cohort diagnostic derived from Bus and Substrate statistics, with conditional Policy
@@ -37,7 +37,7 @@ start with [`05-learning/19-heuristics-worldviews-and-falsifiers.md`](05-learnin
 [`06-neuro/12-4-tier-distillation-pipeline.md`](06-neuro/12-4-tier-distillation-pipeline.md),
 and [`00-architecture/01-naming-and-glossary.md`](00-architecture/01-naming-and-glossary.md).
 `tmp/refinements/16-research-to-runtime.md` adds the target-state paper-to-calibration pipeline:
-papers would become Engrams, claims would become falsifiable hypotheses, heuristics would carry provenance,
+papers would become Signals, claims would become falsifiable hypotheses, heuristics would carry provenance,
 and replication ledgers would track whether the system's own trials replicate the source. Start with
 [`21-references/25-research-to-runtime.md`](21-references/25-research-to-runtime.md),
 [`05-learning/20-research-to-runtime.md`](05-learning/20-research-to-runtime.md),
@@ -177,11 +177,11 @@ and [`00-architecture/34-synergy-integration-map.md`](00-architecture/34-synergy
 >
 > | Concept | What | Key docs |
 > |---|---|---|
-> | **Two mediums** | `Engram` (durable) + `Pulse` (ephemeral, planned) | [02-engram](00-architecture/02-engram-data-type.md), [02b-pulse](00-architecture/02b-pulse-ephemeral-event.md) |
+> | **Two mediums** | `Signal` (durable) + `Pulse` (ephemeral, planned) | [02-signal](00-architecture/02-signal-data-type.md), [02b-pulse](00-architecture/02b-pulse-ephemeral-event.md) |
 > | **Two fabrics** | `Substrate` (storage) + `Bus` (transport, planned) | [07-substrate](00-architecture/07-substrate-trait.md), [07b-bus](00-architecture/07b-bus-transport-fabric.md) |
 > | **Six operators** | `Scorer`, `Gate`, `Router`, `Composer`, `Policy`, and `Substrate` | [06-traits](00-architecture/06-synapse-traits.md) |
 > | **Learning** | Prediction/outcome loops, bandits, and a growing heuristic library | [05-learning/INDEX](05-learning/INDEX.md) |
-> | **HDC** | 10,240-bit fingerprints for similarity and clustering | [02-engram](00-architecture/02-engram-data-type.md), [06-neuro/INDEX](06-neuro/INDEX.md) |
+> | **HDC** | 10,240-bit fingerprints for similarity and clustering | [02-signal](00-architecture/02-signal-data-type.md), [06-neuro/INDEX](06-neuro/INDEX.md) |
 > | **Safety** | Contracts, warrants, attestation, and policy checks | [11-safety/INDEX](11-safety/INDEX.md) |
 >
 > For canonical vocabulary and public aliases, see [Naming and Glossary](00-architecture/01-naming-and-glossary.md).
@@ -250,7 +250,7 @@ that builds Roko.
 
 ## System at a Glance
 
-**Architecture**: 1 noun (Engram) + 6 verb traits (Substrate, Scorer, Gate, Router, Composer, Policy).
+**Architecture**: 1 noun (Signal) + 6 verb traits (Substrate, Scorer, Gate, Router, Composer, Policy).
 
 **Universal loop**: query → score → route → compose → act → verify → persist → react.
 
@@ -266,7 +266,7 @@ that builds Roko.
 
 ### 00 — Architecture (Shipping)
 
-The Synapse Architecture defines one universal data type (the Engram — content-addressed via
+The Synapse Architecture defines one universal data type (the Signal — content-addressed via
 BLAKE3, 7-axis scored, with four decay models) and six composable traits that process it.
 Every capability in the system, from code generation to knowledge consolidation, is an
 implementation of one of these six traits. 376 tests in `roko-core`.
@@ -448,7 +448,7 @@ improvement.
 
 ### 4. Verification as Cognition (Gate Pipeline)
 
-Gate verdicts are themselves Engrams that re-enter the cognitive loop. The 7-rung pipeline
+Gate verdicts are themselves Signals that re-enter the cognitive loop. The 7-rung pipeline
 with adaptive EMA thresholds, monotonic ratcheting, and process reward models creates a
 system where verification is not a post-hoc check but a core cognitive operation. The system
 learns its own expected pass rates and flags anomalies. Song et al. (ICLR 2025) shows the
@@ -631,7 +631,7 @@ The full PRD corpus: 22 sections, 384+ documents, ~137K lines, 260+ academic cit
 Roko is a Rust toolkit for building agents that build themselves. It provides a cognitive
 architecture — not just prompt chaining — where agents plan work, execute it via LLMs,
 verify results through gate pipelines, learn from outcomes, and persist everything as
-content-addressed, decaying data (Engrams). The core
+content-addressed, decaying data (Signals). The core
 loop is wired end-to-end: Roko already uses itself to develop itself.
 
 **36 workspace members, ~322K LOC, 3,761 tests.**
@@ -642,17 +642,17 @@ loop is wired end-to-end: Roko already uses itself to develop itself.
 
 **One noun, six verbs.**
 
-The noun is the **Engram** — a universal content-addressed datum with
+The noun is the **Signal** — a universal content-addressed datum with
 BLAKE3 hashing, 7-axis scoring, four decay models, lineage tracking, and provenance stamps.
-Every event, output, verdict, and knowledge entry is an Engram.
+Every event, output, verdict, and knowledge entry is an Signal.
 
-The six verbs are traits that operate on Engrams:
+The six verbs are traits that operate on Signals:
 
 | Trait | What It Does |
 |-------|-------------|
-| **Substrate** | Store and query Engrams (JSONL files, in-memory, chain-backed) |
-| **Scorer** | Score Engrams on relevance, confidence, urgency, etc. |
-| **Gate** | Verify Engrams (compile, test, lint, diff, semantic checks) |
+| **Substrate** | Store and query Signals (JSONL files, in-memory, chain-backed) |
+| **Scorer** | Score Signals on relevance, confidence, urgency, etc. |
+| **Gate** | Verify Signals (compile, test, lint, diff, semantic checks) |
 | **Router** | Select which model/tier handles a task (CascadeRouter: T0→T1→T2) |
 | **Composer** | Assemble context for the LLM (6-layer prompt builder, token budgets) |
 | **Policy** | React to events (circuit breakers, escalation, safety enforcement) |
@@ -739,7 +739,7 @@ experiments = true             # Enable prompt A/B testing
 The docs are organized into 22 sections. Here's the reading order for different goals:
 
 ### "I want to understand the architecture"
-1. [`00-architecture/`](00-architecture/INDEX.md) — Start here. Signal/Engram, 6 traits, universal loop.
+1. [`00-architecture/`](00-architecture/INDEX.md) — Start here. Signal/Signal, 6 traits, universal loop.
 2. [`16-heartbeat/`](16-heartbeat/INDEX.md) — The cognitive clock (Gamma/Theta/Delta speeds).
 3. [`00-architecture/12-five-layer-taxonomy.md`](00-architecture/12-five-layer-taxonomy.md) — How crates are layered.
 4. [`00-architecture/15-crate-map.md`](00-architecture/15-crate-map.md) — Every crate, its status, and its role.
@@ -774,7 +774,7 @@ The docs are organized into 22 sections. Here's the reading order for different 
 | `crates/` | All 18+ Rust crates |
 | `crates/roko-cli/src/` | CLI entry point and subcommands |
 | `crates/roko-cli/src/orchestrate.rs` | The main plan-execute-gate-persist loop |
-| `crates/roko-core/` | Kernel: Engram, 6 traits, config |
+| `crates/roko-core/` | Kernel: Signal, 6 traits, config |
 | `.roko/` | Runtime data (signals, episodes, state, dreams, learn) |
 | `.roko/prd/` | PRD storage |
 | `.roko/state/` | Executor snapshots for resume |
@@ -846,7 +846,7 @@ These components form the working self-hosting loop: `roko prd` → `roko plan r
 
 | Component | Crate | Tests | CLI Command |
 |-----------|-------|-------|-------------|
-| Signal/Engram type + 6 Synapse traits | `roko-core` | 376 | — (kernel) |
+| Signal/Signal type + 6 Synapse traits | `roko-core` | 376 | — (kernel) |
 | Plan DAG executor + parallel scheduling | `roko-orchestrator` | 158 | `roko plan run` |
 | 5 LLM backends + CascadeRouter + MCP | `roko-agent` | 346 | `roko run` |
 | 6-layer SystemPromptBuilder + 9 templates | `roko-compose` | 23 | — (used by orchestrator) |
@@ -999,7 +999,7 @@ machinery to improve themselves over time.
 |-----------|---------|-------------|----------|-------------|-----------|
 | **Language** | Rust | Python | Python | Python | Python |
 | **Architecture model** | Cognitive (1 noun + 6 traits) | DAG/chain | Role-based crews | Single agent + ACI | Loop-based |
-| **Universal data type** | Engram (content-addressed, decaying, scored) | Varies per chain | Messages | Observations | Messages |
+| **Universal data type** | Signal (content-addressed, decaying, scored) | Varies per chain | Messages | Observations | Messages |
 | **Content addressing** | BLAKE3 hash on every datum | No | No | No | No |
 | **Verification pipeline** | 14 gates, 7-rung pipeline, adaptive thresholds | Optional callbacks | No built-in | SWE-bench evaluation | No built-in |
 | **Knowledge management** | 6 types × 4 tiers, HDC similarity, decay | Vector store (external) | No built-in | No built-in | No built-in |
@@ -1021,13 +1021,13 @@ machinery to improve themselves over time.
 ### 1. One Noun, Six Verbs
 
 Most frameworks have many types: tasks, messages, tools, observations, actions, memories.
-Roko has exactly one data type (Engram) and six trait operations. This enables
-universal composability — any Scorer scores any Engram, any Substrate stores any Engram,
-any Gate verifies any Engram. Components compose freely.
+Roko has exactly one data type (Signal) and six trait operations. This enables
+universal composability — any Scorer scores any Signal, any Substrate stores any Signal,
+any Gate verifies any Signal. Components compose freely.
 
 ### 2. Everything Decays
 
-In Roko, knowledge is not permanent. Every Engram has a decay model (exponential, linear,
+In Roko, knowledge is not permanent. Every Signal has a decay model (exponential, linear,
 stepped, or asymptotic) and a half-life determined by its validation tier. Transient
 knowledge (unverified) decays in hours. Persistent knowledge (cross-validated by multiple
 agents) decays over months. This prevents stale information from poisoning decisions —
@@ -1052,7 +1052,7 @@ experience into validated knowledge — something no other agent framework does.
 
 Roko's 7-rung gate pipeline (syntax → compile → test → lint → diff → semantic → integration) verifies
 every agent output before it enters the knowledge base. Adaptive thresholds (EMA per rung)
-learn expected pass rates and flag anomalies. Gate verdicts are themselves Engrams that
+learn expected pass rates and flag anomalies. Gate verdicts are themselves Signals that
 re-enter the cognitive loop — "verification as cognition."
 
 ### 6. Self-Development
@@ -1202,7 +1202,7 @@ definition layer.
 Write a scoring function once. It works in a browser, on an edge worker, in CI, and on the
 CLI. Write a routing algorithm once. Same. The platform adapter handles the I/O; the
 cognitive logic stays identical. Content-addressed hashing (BLAKE3) produces the same hash
-on every target, so an Engram created in a browser has the same identity as one created in
+on every target, so an Signal created in a browser has the same identity as one created in
 the CLI -- they can be merged, synced, and deduplicated across environments.
 
 ---
@@ -3862,7 +3862,7 @@ Webhook ingress endpoints live outside `/api/` (no auth middleware by default).
 
 ### `POST /webhooks/github`
 
-GitHub webhook receiver. Verifies `X-Hub-Signature-256`, converts the payload to an engram, persists it, and publishes to the event bus.
+GitHub webhook receiver. Verifies `X-Hub-Signature-256`, converts the payload to an signal, persists it, and publishes to the event bus.
 
 Requires `[webhooks.github].secret` to be configured.
 
@@ -4037,7 +4037,7 @@ roko status --json        # machine-readable output
 
 ### roko replay
 
-Walk the lineage DAG rooted at an Engram hash and print it.
+Walk the lineage DAG rooted at an Signal hash and print it.
 
 ```
 roko replay <hash> [--workdir <path>]
@@ -4045,7 +4045,7 @@ roko replay <hash> [--workdir <path>]
 
 | Flag | Description |
 |------|-------------|
-| `hash` | Engram hash (64 hex chars) to walk |
+| `hash` | Signal hash (64 hex chars) to walk |
 | `--workdir` | Directory containing `.roko/` (default: cwd) |
 
 **Example:**
@@ -4972,7 +4972,7 @@ roko subscription add --template <name> --trigger <glob>
 | Flag | Description |
 |------|-------------|
 | `--template` | Agent template name to invoke |
-| `--trigger` | Engram trigger glob to match |
+| `--trigger` | Signal trigger glob to match |
 
 **Example:**
 
@@ -5038,7 +5038,7 @@ roko inject <session> <payload> [--kind <type>] [--workdir <path>]
 |------|-------------|
 | `session` | Target session ID |
 | `payload` | Payload text |
-| `--kind` | Engram kind: `directive`, `abort`, `context` (default: directive) |
+| `--kind` | Signal kind: `directive`, `abort`, `context` (default: directive) |
 
 **Example:**
 
@@ -6604,10 +6604,10 @@ citation verification, source credibility scoring, and knowledge synthesis. A ch
 needs transaction simulation, on-chain state grounding, and position monitoring.
 
 Roko achieves composability through the **Synapse Architecture**: one universal data type
-(the Engram) and six composable traits (Substrate, Scorer, Gate, Router, Composer, Policy)
+(the Signal) and six composable traits (Substrate, Scorer, Gate, Router, Composer, Policy)
 that express every capability in the system. Any combination of trait implementations can be
 assembled to create a domain-specific agent. The architecture is detailed in the subsequent
-documents of this topic (see [02-engram-data-type.md](02-engram-data-type.md) and
+documents of this topic (see [02-signal-data-type.md](02-signal-data-type.md) and
 [06-synapse-traits.md](06-synapse-traits.md)).
 
 ### 2.3 Self-Improvement Is the Goal, Not the Assumption
@@ -6644,7 +6644,7 @@ Roko implements CoALA's framework directly:
 
 | CoALA Component | Roko Implementation |
 |---|---|
-| Working memory | The `Context` struct + active Engrams in the Substrate |
+| Working memory | The `Context` struct + active Signals in the Substrate |
 | Episodic memory | Episodes stored via `Substrate.put()` with `Kind::Episode` |
 | Procedural memory | Playbook rules and skills in `roko-learn` |
 | Semantic memory | Knowledge entries in `roko-neuro` (NeuroStore) |
@@ -6774,17 +6774,17 @@ self-improving across any domain.
 
 The entire Roko system is built from **one noun** and **six verbs**:
 
-- **One noun**: The **Engram** — a content-addressed, scored, decaying, lineage-tracked unit
+- **One noun**: The **Signal** — a content-addressed, scored, decaying, lineage-tracked unit
   of cognition. Every piece of information in Roko — a task, a prompt, an LLM output, a gate
-  verdict, a knowledge entry, a prediction, a tool trace — is an Engram.
+  verdict, a knowledge entry, a prediction, a tool trace — is an Signal.
 
 - **Six verbs**: The **Synapse traits** — Substrate (store and query), Scorer (rate), Gate
   (verify), Router (select), Composer (combine), Policy (react). Every capability in Roko is
-  an implementation of one of these six traits operating on Engrams.
+  an implementation of one of these six traits operating on Signals.
 
 This architecture is called the **Synapse Architecture** because the six traits are the
-synaptic connections through which Engrams flow — each trait transforms, routes, or stores
-Engrams, and the composition of traits defines the agent's cognitive behavior.
+synaptic connections through which Signals flow — each trait transforms, routes, or stores
+Signals, and the composition of traits defines the agent's cognitive behavior.
 
 ### 4.2 Five Layers
 
@@ -6820,7 +6820,7 @@ Three subsystems are injected across multiple layers rather than living at any s
 
 ### 4.4 Domain Agnosticism
 
-Roko is domain-agnostic by design. The framework knows about Engrams, traits, layers, and
+Roko is domain-agnostic by design. The framework knows about Signals, traits, layers, and
 cognitive loops. It does not know about any specific domain. Domain knowledge enters through
 trait implementations:
 
@@ -6859,8 +6859,8 @@ transfer, or restoration.
 ### 5.3 Not Domain-Specific
 
 Although Roko's early development focused on coding and chain domains, the architecture is
-domain-agnostic. Every component — from the Engram data type to the gate pipeline to the
-learning loops — operates on generic Engrams with domain-specific behavior injected through
+domain-agnostic. Every component — from the Signal data type to the gate pipeline to the
+learning loops — operates on generic Signals with domain-specific behavior injected through
 trait implementations. The framework does not privilege any domain.
 
 ---
@@ -6900,10 +6900,10 @@ Seven principles guide Roko's architecture:
 
 ### P1: Signals Over Interfaces
 
-All data is Engrams (currently named Signal in the codebase; rename to Engram is Tier 0D
-in the implementation plan). Services communicate by reading and writing Engrams, not by
+All data is Signals (currently named Signal in the codebase; rename to Signal is Tier 0D
+in the implementation plan). Services communicate by reading and writing Signals, not by
 calling each other's methods. This enables loose coupling, audit trails via lineage chains,
-and the ability to replay any decision by following the Engram DAG.
+and the ability to replay any decision by following the Signal DAG.
 
 ### P2: Composition Over Inheritance
 
@@ -6915,7 +6915,7 @@ no core changes are needed.
 ### P3: Learning Is Infrastructure
 
 Episode logging, playbook extraction, and knowledge consolidation are not optional add-ons —
-they are built into the universal cognitive loop. Every tick produces Engrams that feed the
+they are built into the universal cognitive loop. Every tick produces Signals that feed the
 learning pipeline. Learning is as fundamental as verification.
 
 ### P4: Verify Everything
@@ -6983,24 +6983,24 @@ decisions.
 
 ### What Is Missing
 
-- **Engram rename**: The Rust type is still `Signal` in the codebase. Rename to `Engram` is
-  Tier 0D in the implementation plan. PRD documentation uses "Engram" throughout.
+- **Signal rename**: The Rust type is still `Signal` in the codebase. Rename to `Signal` is
+  Tier 0D in the implementation plan. PRD documentation uses "Signal" throughout.
 - **Extended score axes**: The Score struct currently implements 4 axes (confidence, novelty,
   utility, reputation). The 3 extended axes (precision, salience, coherence) are specified
   but not yet implemented.
-- **Attestation field**: The `attestation: Option<Attestation>` field on the Engram is
+- **Attestation field**: The `attestation: Option<Attestation>` field on the Signal is
   specified but not yet present in the current Signal struct.
 - **Interactive TUI**: The dashboard renders as text. An interactive terminal UI (ratatui)
   is the next major infrastructure task.
 - **Full Dreams implementation**: `roko-dreams` is scaffolded but not fully implemented.
-- **Agent Mesh**: P2P Engram sharing between agents is designed but not built.
+- **Agent Mesh**: P2P Signal sharing between agents is designed but not built.
 
 ---
 
 ## Cross-References
 
 - [01-naming-and-glossary.md](01-naming-and-glossary.md) — Authoritative naming map and glossary
-- [02-engram-data-type.md](02-engram-data-type.md) — Full Engram specification
+- [02-signal-data-type.md](02-signal-data-type.md) — Full Signal specification
 - [06-synapse-traits.md](06-synapse-traits.md) — The six Synapse traits
 - [09-universal-cognitive-loop.md](09-universal-cognitive-loop.md) — The 9-step cognitive loop
 - [12-five-layer-taxonomy.md](12-five-layer-taxonomy.md) — Layer architecture
@@ -7043,14 +7043,14 @@ is still planned.
 |---|---|---|---|
 | `Roko` | `[shipping]` | Project and framework name | `Bardo` / `Mori` (retired) |
 | `Agent` | `[shipping]` | Running process or session | `Golem` (retired) |
-| `Engram` | `[shipping]` | Durable record medium | `Signal` (retired durable term) |
+| `Signal` | `[shipping]` | Durable record medium | `Signal` (retired durable term) |
 | `Pulse` | `[planned]` | Target-state ephemeral transport medium | `Event`, `Envelope`, `Message`, `Signal` (retired wire terms) |
 | `Substrate` | `[shipping]` | Storage fabric | legacy storage-only synonyms |
 | `EventBus<E>` | `[shipping]` | Current live transport implementation | calling it retired |
 | `Bus` | `[planned]` | Target-state transport fabric abstraction | presenting it as already shipped |
 | `Topic` | `[planned]` | Target-state Pulse routing handle | `Channel`, `Subject` |
 | `TopicFilter` | `[planned]` | Target-state subscription matcher | ad hoc routing filters |
-| `Datum` | `[planned]` | Target-state polymorphic `Engram` or `Pulse` input | one-off sum types |
+| `Datum` | `[planned]` | Target-state polymorphic `Signal` or `Pulse` input | one-off sum types |
 | `PulseSource` | `[planned]` | Target-state lightweight Pulse origin attribution | overloaded provenance terms |
 | `Neuro` | `[shipping]` | Durable knowledge cross-cut | `Grimoire` (retired) |
 | `Daimon` | `[built]` | Affect cross-cut; public alias `AffectBias` | old loop-step framing for affect |
@@ -7064,7 +7064,7 @@ is still planned.
 | `Custody` | `[planned]` | Chain-of-custody audit record | informal approval prose |
 
 See also [07-naming](../../tmp/refinements/07-naming.md),
-[02-engram-vs-pulse](../../tmp/refinements/02-engram-vs-pulse.md),
+[02-signal-vs-pulse](../../tmp/refinements/02-signal-vs-pulse.md),
 [03-bus-as-first-class](../../tmp/refinements/03-bus-as-first-class.md), and
 [docs/00-architecture/07b-bus-transport-fabric.md](./07b-bus-transport-fabric.md).
 
@@ -7091,8 +7091,8 @@ See also [07-naming](../../tmp/refinements/07-naming.md),
 **Active inference** — Predict-publish-correct loop carried across operators with `prediction.*`,
 `outcome.*`, and `prediction.error.*` Pulses. Home: [10-self-learning-cybernetic-loops](../../tmp/refinements/10-self-learning-cybernetic-loops.md).
 
-**ACT** — Step 4 of the seven-step universal loop: execute the composed Engram as an LLM call,
-tool call, or chain call. Produces Pulses and usually a final durable Engram. Home:
+**ACT** — Step 4 of the seven-step universal loop: execute the composed Signal as an LLM call,
+tool call, or chain call. Produces Pulses and usually a final durable Signal. Home:
 [05-loop-retold](../../tmp/refinements/05-loop-retold.md) and
 [Universal Cognitive Loop](./09-universal-cognitive-loop.md).
 
@@ -7106,14 +7106,14 @@ Formerly `Styx`. Phase 2+. Home: [09-phase-2-implications](../../tmp/refinements
 failing; emitted as a priority Pulse. Home:
 [10-self-learning-cybernetic-loops](../../tmp/refinements/10-self-learning-cybernetic-loops.md).
 
-**Annotation** — Typed human-authored Engram attached to another artifact such as an episode,
+**Annotation** — Typed human-authored Signal attached to another artifact such as an episode,
 heuristic, plan, or diff. Home: [30-rich-ux-primitives](../../tmp/refinements/30-rich-ux-primitives.md) and
 [Rich UX Primitives](../12-interfaces/23-rich-ux-primitives.md).
 
 **ASSESS** — Step 2 of the seven-step loop: joint `Scorer` and `Router` pass that chooses the
 next action and records confidence. Home: [05-loop-retold](../../tmp/refinements/05-loop-retold.md).
 
-**Attestation** [built] — Cryptographic signature over an Engram `ContentHash`. The shipped code
+**Attestation** [built] — Cryptographic signature over an Signal `ContentHash`. The shipped code
 already has `Attestation`, `ChainAttestation`, and sign/verify support; the level taxonomy
 (`LocalAgent`, `OrgRole`, `ChainWitness`) is target-state. Home:
 [32-safety-sandbox-provenance](../../tmp/refinements/32-safety-sandbox-provenance.md) and
@@ -7127,7 +7127,7 @@ boundary. Home:
 
 ## B
 
-**Balance** [planned] *(new)* — An Engram's demurrage-taxed attention credit. Starts at `1.0`, decays over
+**Balance** [planned] *(new)* — An Signal's demurrage-taxed attention credit. Starts at `1.0`, decays over
 time, and is restored by reinforcement. Home:
 [12-knowledge-demurrage](../../tmp/refinements/12-knowledge-demurrage.md) and
 [Attention as Universal Cognitive Currency](./25-attention-as-currency.md).
@@ -7135,9 +7135,9 @@ time, and is restored by reinforcement. Home:
 **BROADCAST** — Step 6b of the seven-step loop, co-equal with `PERSIST`: publish Pulses to the
 Bus. Home: [05-loop-retold](../../tmp/refinements/05-loop-retold.md).
 
-**Body** — Shared payload enum used by both Engrams and Pulses so graduation can preserve
-identity. Home: [02-engram-vs-pulse](../../tmp/refinements/02-engram-vs-pulse.md) and
-[Engram Data Type](./02-engram-data-type.md).
+**Body** — Shared payload enum used by both Signals and Pulses so graduation can preserve
+identity. Home: [02-signal-vs-pulse](../../tmp/refinements/02-signal-vs-pulse.md) and
+[Signal Data Type](./02-signal-data-type.md).
 
 **Bus** [planned] *(promoted)* — Target-state kernel transport trait for Pulses; sibling to
 `Substrate`. The current live transport code is `EventBus<E>` in `roko-runtime`. Home:
@@ -7177,11 +7177,11 @@ violations, Brier score, and Wilson confidence interval. Home:
 **ChainSubstrate** [planned] — Substrate backend that persists attestations and durable insights on-chain.
 Phase 2+. Home: [09-phase-2-implications](../../tmp/refinements/09-phase-2-implications.md).
 
-**Chain witness** — Cryptographic witness over an Engram committed to a blockchain for
+**Chain witness** — Cryptographic witness over an Signal committed to a blockchain for
 cross-deployment trust. Home:
 [32-safety-sandbox-provenance](../../tmp/refinements/32-safety-sandbox-provenance.md).
 
-**Claim** [planned] *(new)* — Structured hypothesis distilled from a `Paper` Engram, including falsifier,
+**Claim** [planned] *(new)* — Structured hypothesis distilled from a `Paper` Signal, including falsifier,
 context, effect size, and calibration. Home:
 [16-research-to-runtime](../../tmp/refinements/16-research-to-runtime.md).
 
@@ -7192,7 +7192,7 @@ against the replication ledger. Home:
 **Cohort** [planned] — Set of agents working on a related task and measured together for c-factor. Home:
 [13-collective-intelligence-c-factor](../../tmp/refinements/13-collective-intelligence-c-factor.md).
 
-**Cold tier** [planned] — Substrate region for Engrams whose balance has reached the demurrage floor.
+**Cold tier** [planned] — Substrate region for Signals whose balance has reached the demurrage floor.
 Content remains resolvable but moves to slower storage. Home:
 [12-knowledge-demurrage](../../tmp/refinements/12-knowledge-demurrage.md) and
 [Decay Variants](./04-decay-variants.md).
@@ -7201,20 +7201,20 @@ Content remains resolvable but moves to slower storage. Home:
 [14-worldview-validation](../../tmp/refinements/14-worldview-validation.md) and
 [18-competitive-moat](../../tmp/refinements/18-competitive-moat.md).
 
-**COMPOSE** — Step 3 of the seven-step loop: the `Composer` assembles a prompt Engram under a
+**COMPOSE** — Step 3 of the seven-step loop: the `Composer` assembles a prompt Signal under a
 budget. Home: [05-loop-retold](../../tmp/refinements/05-loop-retold.md).
 
-**Composer** — One of the six operators. Takes a slice of `Datum` and produces an Engram,
+**Composer** — One of the six operators. Takes a slice of `Datum` and produces an Signal,
 usually a prompt. Home:
 [04-operators-generalized](../../tmp/refinements/04-operators-generalized.md) and
 [Scorer, Gate, Router, Composer, Policy](./08-scorer-gate-router-composer-policy.md).
 
-**Consistency gate** — Stream gate that checks an output against its cited Engram support,
+**Consistency gate** — Stream gate that checks an output against its cited Signal support,
 often via HDC similarity. Home:
 [11-hyperdimensional-substrate](../../tmp/refinements/11-hyperdimensional-substrate.md).
 
-**ContentHash** — `BLAKE3(kind, body, author, tags)` identifier for an Engram. Home:
-[Engram Data Type](./02-engram-data-type.md).
+**ContentHash** — `BLAKE3(kind, body, author, tags)` identifier for an Signal. Home:
+[Signal Data Type](./02-signal-data-type.md).
 
 **Context** [shipping] — Existing sidecar state passed to operators today; `TypedContext` is the newer,
 structured domain-specific form. Home:
@@ -7231,7 +7231,7 @@ what simulation ran, what result occurred, and what witness exists. Home:
 Public alias: **AffectBias** in user-facing docs. Home:
 [Cognitive Cross-Cuts](./13-cognitive-cross-cuts.md).
 
-**`Datum`** [planned] *(new)* — `enum Datum<'a> { Engram(&'a Engram), Pulse(&'a Pulse) }` used by
+**`Datum`** [planned] *(new)* — `enum Datum<'a> { Signal(&'a Signal), Pulse(&'a Pulse) }` used by
 polymorphic operators. Home:
 [04-operators-generalized](../../tmp/refinements/04-operators-generalized.md) and
 [08-code-sketches](../../tmp/refinements/08-code-sketches.md).
@@ -7247,7 +7247,7 @@ Home: [Three Cognitive Speeds](./10-three-cognitive-speeds.md).
 [26-statehub-rearchitecture](../../tmp/refinements/26-statehub-rearchitecture.md) and
 [StateHub Projection Layer](../12-interfaces/22-statehub-projection-layer.md).
 
-**Demurrage** [planned] *(new)* — Economic memory rule that taxes idle Engram balance over time and
+**Demurrage** [planned] *(new)* — Economic memory rule that taxes idle Signal balance over time and
 restores weight through reinforcement. Public alias: **retention pressure** when the docs need a
 clearer operator-facing term for the same target-state idea. Home:
 [12-knowledge-demurrage](../../tmp/refinements/12-knowledge-demurrage.md) and
@@ -7269,19 +7269,19 @@ results back into Substrate for later cycles. Home:
 **Ebbinghaus** — A forgetting-curve-style decay variant kept as historical context under the
 new demurrage framing. Home: [Decay Variants](./04-decay-variants.md).
 
-**Engram** — Roko's durable medium: content-addressed, lineage-bearing, scored, and persisted in
+**Signal** — Roko's durable medium: content-addressed, lineage-bearing, scored, and persisted in
 a `Substrate`. Home:
-[02-engram-vs-pulse](../../tmp/refinements/02-engram-vs-pulse.md) and
-[Engram Data Type](./02-engram-data-type.md).
+[02-signal-vs-pulse](../../tmp/refinements/02-signal-vs-pulse.md) and
+[Signal Data Type](./02-signal-data-type.md).
 
-**EngramBuilder** — Builder for constructing Engrams and attaching derived fields such as
-fingerprint, lineage, and score. Home: [Engram Data Type](./02-engram-data-type.md).
+**EngramBuilder** — Builder for constructing Signals and attaching derived fields such as
+fingerprint, lineage, and score. Home: [Signal Data Type](./02-signal-data-type.md).
 
 **Envelope** *(historical)* — Old generic wrapper around transport payloads. Retired in favor of
-`Pulse`. Home: [02-engram-vs-pulse](../../tmp/refinements/02-engram-vs-pulse.md) and
+`Pulse`. Home: [02-signal-vs-pulse](../../tmp/refinements/02-signal-vs-pulse.md) and
 [07-naming](../../tmp/refinements/07-naming.md).
 
-**Episode** — Engram kind recording a full agent turn, including inputs, tool calls, outputs,
+**Episode** — Signal kind recording a full agent turn, including inputs, tool calls, outputs,
 and verdicts. Home: [05-learning/INDEX](../05-learning/INDEX.md).
 
 **Event** *(historical)* — Retired as Roko's primary wire type name in favor of `Pulse`.
@@ -7304,11 +7304,11 @@ would refute it. Public alias: **counterexample check** in user-facing docs. Hom
 [14-worldview-validation](../../tmp/refinements/14-worldview-validation.md) and
 [16-research-to-runtime](../../tmp/refinements/16-research-to-runtime.md).
 
-**Fingerprint** [built] *(new)* — `HDC fingerprint` attached to Engrams or related records for
+**Fingerprint** [built] *(new)* — `HDC fingerprint` attached to Signals or related records for
 similarity queries, clustering, consensus, and analogy. `HdcVector` exists today, but it is not
-attached to every Engram on write. Home:
+attached to every Signal on write. Home:
 [11-hyperdimensional-substrate](../../tmp/refinements/11-hyperdimensional-substrate.md) and
-[Engram Data Type](./02-engram-data-type.md).
+[Signal Data Type](./02-signal-data-type.md).
 
 **Fleet** [planned] — Deployment-scoped roster of agents. Formerly `Clade`. Home:
 [13-collective-intelligence-c-factor](../../tmp/refinements/13-collective-intelligence-c-factor.md).
@@ -7318,19 +7318,19 @@ attached to every Engram on write. Home:
 **Gamma** — Fastest cognitive speed, usually the turn-level cadence. Home:
 [Three Cognitive Speeds](./10-three-cognitive-speeds.md).
 
-**Gate** — One of the six operators. Verifies an Engram or a Pulse window against truth or
+**Gate** — One of the six operators. Verifies an Signal or a Pulse window against truth or
 policy. Home:
 [04-operators-generalized](../../tmp/refinements/04-operators-generalized.md) and
 [Scorer, Gate, Router, Composer, Policy](./08-scorer-gate-router-composer-policy.md).
 
-**GateVerdict** — Engram kind produced by a Gate; includes pass/fail, reason, and evidence.
+**GateVerdict** — Signal kind produced by a Gate; includes pass/fail, reason, and evidence.
 Home: [Scorer, Gate, Router, Composer, Policy](./08-scorer-gate-router-composer-policy.md).
 
 **Golem** *(historical)* — Retired old name for `Agent`.
 
-**Graduation** [planned] *(new)* — Converting a `Pulse` into an `Engram` when durable lineage and audit
+**Graduation** [planned] *(new)* — Converting a `Pulse` into an `Signal` when durable lineage and audit
 matter. Home:
-[02-engram-vs-pulse](../../tmp/refinements/02-engram-vs-pulse.md) and
+[02-signal-vs-pulse](../../tmp/refinements/02-signal-vs-pulse.md) and
 [08-code-sketches](../../tmp/refinements/08-code-sketches.md).
 
 **Grimoire** *(historical)* — Retired old name for `Neuro`.
@@ -7353,7 +7353,7 @@ and consensus operations. Home:
 [16-heartbeat/INDEX](../16-heartbeat/INDEX.md).
 
 **Heuristic** [built] *(new)* — First-class learning rule or heuristic record. The shipped code
-has `HeuristicRule` and related learning logic, but not the full Engram variant described here.
+has `HeuristicRule` and related learning logic, but not the full Signal variant described here.
 Home:
 [14-worldview-validation](../../tmp/refinements/14-worldview-validation.md).
 
@@ -7363,7 +7363,7 @@ degrades gracefully. Home:
 
 ## I
 
-**Identity fingerprint** — HDC vector characterizing an agent's recent Engrams for team
+**Identity fingerprint** — HDC vector characterizing an agent's recent Signals for team
 discovery, routing diversity, and similarity-aware coordination. Home:
 [11-hyperdimensional-substrate](../../tmp/refinements/11-hyperdimensional-substrate.md).
 
@@ -7374,12 +7374,12 @@ still learn. Home:
 ## K
 
 **Kernel** — The narrow set of core types and traits that every other crate depends on:
-`Engram`, `Pulse`, `Substrate`, `Bus`, `Scorer`, `Gate`, `Router`, `Composer`, and `Policy`.
+`Signal`, `Pulse`, `Substrate`, `Bus`, `Scorer`, `Gate`, `Router`, `Composer`, and `Policy`.
 Home: [04-operators-generalized](../../tmp/refinements/04-operators-generalized.md).
 
-**Kind** — Semantic category enum for Engrams and Pulses such as `Plan`, `Task`, `Episode`,
+**Kind** — Semantic category enum for Signals and Pulses such as `Plan`, `Task`, `Episode`,
 `GateVerdict`, `Heuristic`, and `Paper`. Home:
-[Engram Data Type](./02-engram-data-type.md).
+[Signal Data Type](./02-signal-data-type.md).
 
 **Korai** — Chain integration layer. Historically bundled under `Styx`; now kept distinct from
 the mesh. Home: [09-phase-2-implications](../../tmp/refinements/09-phase-2-implications.md).
@@ -7390,8 +7390,8 @@ the mesh. Home: [09-phase-2-implications](../../tmp/refinements/09-phase-2-impli
 Orchestration, with strictly downward dependencies. Home:
 [Five-Layer Taxonomy](./12-five-layer-taxonomy.md).
 
-**Lineage** — `Vec<ContentHash>` on an Engram pointing to its parents in the durable audit DAG.
-Home: [Engram Data Type](./02-engram-data-type.md).
+**Lineage** — `Vec<ContentHash>` on an Signal pointing to its parents in the durable audit DAG.
+Home: [Signal Data Type](./02-signal-data-type.md).
 
 **`loop_tick`** — Universal cognitive loop function, revised to the seven-step framing. Home:
 [05-loop-retold](../../tmp/refinements/05-loop-retold.md) and
@@ -7442,20 +7442,20 @@ prediction Pulse. Home:
 **PAD vector** — Pleasure-Arousal-Dominance affective state maintained by `Daimon`. Home:
 [09-daimon/INDEX](../09-daimon/INDEX.md).
 
-**Paper** [planned] *(new)* — Engram kind representing an academic paper together with DOI, authors,
+**Paper** [planned] *(new)* — Signal kind representing an academic paper together with DOI, authors,
 abstract, fingerprint, and extracted claims. Home:
 [16-research-to-runtime](../../tmp/refinements/16-research-to-runtime.md).
 
-**PERSIST** — Step 6a of the seven-step loop: persist an Engram to `Substrate`. Home:
+**PERSIST** — Step 6a of the seven-step loop: persist an Signal to `Substrate`. Home:
 [05-loop-retold](../../tmp/refinements/05-loop-retold.md).
 
-**Pheromone** — Engram kind used for stigmergic coordination between agents. Home:
+**Pheromone** — Signal kind used for stigmergic coordination between agents. Home:
 [09-phase-2-implications](../../tmp/refinements/09-phase-2-implications.md).
 
-**Plan** — Engram kind representing a structured multi-task plan with DAG edges. Home:
+**Plan** — Signal kind representing a structured multi-task plan with DAG edges. Home:
 [01-orchestration/INDEX](../01-orchestration/INDEX.md).
 
-**Playbook** — Engram kind storing a distilled reusable action sequence. Home:
+**Playbook** — Signal kind storing a distilled reusable action sequence. Home:
 [05-learning/INDEX](../05-learning/INDEX.md).
 
 **Plugin** [planned] — Third-party extension package. Tiers span prompts, profiles, manifests, native,
@@ -7463,11 +7463,11 @@ and WASM. Home:
 [17-plugin-extension-architecture](../../tmp/refinements/17-plugin-extension-architecture.md).
 
 **Policy** — One of the six operators; reacts to streams of Pulses and emits new Pulses plus
-Engrams. Home:
+Signals. Home:
 [04-operators-generalized](../../tmp/refinements/04-operators-generalized.md) and
 [Scorer, Gate, Router, Composer, Policy](./08-scorer-gate-router-composer-policy.md).
 
-**`PolicyOutputs`** [planned] *(new)* — Return type of `Policy::decide` containing `{ pulses, engrams }`.
+**`PolicyOutputs`** [planned] *(new)* — Return type of `Policy::decide` containing `{ pulses, signals }`.
 Home: [04-operators-generalized](../../tmp/refinements/04-operators-generalized.md).
 
 **Prediction Pulse** [planned] *(new)* — Pulse on a `prediction.*` topic emitted when an operator makes a
@@ -7493,13 +7493,13 @@ model is still target-state. Home:
 [24-deployment-ux](../../tmp/refinements/24-deployment-ux.md) and
 [25-domain-specific-agents](../../tmp/refinements/25-domain-specific-agents.md).
 
-**Provenance** — Full author, trust, taint, and attestation record on an Engram. Home:
+**Provenance** — Full author, trust, taint, and attestation record on an Signal. Home:
 [Provenance and Attestation](./05-provenance-and-attestation.md).
 
 **Pulse** [planned] *(new)* — Target-state ephemeral medium: typed, sequence-numbered,
 topic-addressed, ring-buffered, and not persisted by default. Lives on a `Bus` and may graduate
-to an Engram.
-Home: [02-engram-vs-pulse](../../tmp/refinements/02-engram-vs-pulse.md).
+to an Signal.
+Home: [02-signal-vs-pulse](../../tmp/refinements/02-signal-vs-pulse.md).
 
 **`PulseSource`** [planned] *(new)* — Lightweight origin attribution on every Pulse, usually
 `{ component, agent_id }`. Home:
@@ -7507,17 +7507,17 @@ Home: [02-engram-vs-pulse](../../tmp/refinements/02-engram-vs-pulse.md).
 
 ## Q
 
-**`query_similar`** [planned] *(new)* — Substrate method that returns Engrams within an HDC radius of a
+**`query_similar`** [planned] *(new)* — Substrate method that returns Signals within an HDC radius of a
 query fingerprint. Home:
 [11-hyperdimensional-substrate](../../tmp/refinements/11-hyperdimensional-substrate.md) and
 [Substrate Trait](./07-substrate-trait.md).
 
 ## R
 
-**REACT** — Step 7 of the seven-step loop: `Policy::decide` emits follow-on Pulses and Engrams.
+**REACT** — Step 7 of the seven-step loop: `Policy::decide` emits follow-on Pulses and Signals.
 Home: [05-loop-retold](../../tmp/refinements/05-loop-retold.md).
 
-**Reinforcement** [planned] *(new)* — Bonus applied to an Engram's balance when it is cited, retrieved,
+**Reinforcement** [planned] *(new)* — Bonus applied to an Signal's balance when it is cited, retrieved,
 gated, surprising, or agent-quoted. Home:
 [12-knowledge-demurrage](../../tmp/refinements/12-knowledge-demurrage.md).
 
@@ -7548,7 +7548,7 @@ rather than a domain bundle. Home:
 **Scaffold** — Deliverable surface and L2 layer where contexts and composed work products live.
 Home: [Five-Layer Taxonomy](./12-five-layer-taxonomy.md).
 
-**Score** — Seven-axis appraisal attached to an Engram by the `Scorer`. Home:
+**Score** — Seven-axis appraisal attached to an Signal by the `Scorer`. Home:
 [Score: 7-Axis Appraisal](./03-score-7-axis-appraisal.md).
 
 **Scorer** — One of the six operators; computes score for any `Datum`. Home:
@@ -7562,15 +7562,15 @@ Home:
 [23-user-ux-running-agents](../../tmp/refinements/23-user-ux-running-agents.md) and
 [User UX Running Agents](../12-interfaces/21-user-ux-running-agents.md).
 
-**Signal** *(historical)* — Retired old name for `Engram` as the durable record. The stale
-"Signal = Engram" disclaimer is retired and should not appear in new prose. Home:
+**Signal** *(historical)* — Retired old name for `Signal` as the durable record. The stale
+"Signal = Signal" disclaimer is retired and should not appear in new prose. Home:
 [07-naming](../../tmp/refinements/07-naming.md).
 
 **SPI** — Service Provider Interface for plugin extension points. Home:
 [17-plugin-extension-architecture](../../tmp/refinements/17-plugin-extension-architecture.md).
 
 **Stigmergy** — Indirect coordination via shared environment, implemented with `Pheromone`
-Engrams and `mesh.pheromone.*` Pulses. Home:
+Signals and `mesh.pheromone.*` Pulses. Home:
 [09-phase-2-implications](../../tmp/refinements/09-phase-2-implications.md).
 
 **StateHub** [built] *(promoted)* — Current dashboard/event hub that can broadcast state updates.
@@ -7581,7 +7581,7 @@ today. Home:
 
 **Styx** *(historical)* — Retired old umbrella term that split into `Mesh` and `Korai`.
 
-**Substrate** — Kernel storage trait for durable Engrams. Home:
+**Substrate** — Kernel storage trait for durable Signals. Home:
 [Substrate Trait](./07-substrate-trait.md) and
 [03-bus-as-first-class](../../tmp/refinements/03-bus-as-first-class.md).
 
@@ -7591,7 +7591,7 @@ today. Home:
 ## T
 
 **Taint** [built] — Metadata indicating untrusted input origin that propagates through derived
-Engrams until explicit review or approval. The current code ships `Provenance.tainted: bool`; the
+Signals until explicit review or approval. The current code ships `Provenance.tainted: bool`; the
 richer enum described in the refinements is target-state. Home:
 [32-safety-sandbox-provenance](../../tmp/refinements/32-safety-sandbox-provenance.md) and
 [Cognitive Immune System](./26-cognitive-immune-system.md).
@@ -7633,11 +7633,11 @@ long-term replay-based revert. Home:
 
 ## V
 
-**Verdict** — Output of a Gate, always materialized as a `GateVerdict` Engram so the durable
+**Verdict** — Output of a Gate, always materialized as a `GateVerdict` Signal so the durable
 audit DAG is preserved. Home:
 [04-operators-generalized](../../tmp/refinements/04-operators-generalized.md).
 
-**VERIFY** — Step 5 of the seven-step loop: Gate or stream gate verifies an Engram or Pulse
+**VERIFY** — Step 5 of the seven-step loop: Gate or stream gate verifies an Signal or Pulse
 window and emits a verdict. Home: [05-loop-retold](../../tmp/refinements/05-loop-retold.md).
 
 ## W
@@ -7649,7 +7649,7 @@ replication ledger updates automatically. Home:
 **Wilson CI** [planned] — Wilson score interval used as a confidence bound in calibration. Home:
 [14-worldview-validation](../../tmp/refinements/14-worldview-validation.md).
 
-**WisdomGate** — Gate enforcing Surowiecki's four conditions before a consensus Engram is
+**WisdomGate** — Gate enforcing Surowiecki's four conditions before a consensus Signal is
 finalized. Home:
 [13-collective-intelligence-c-factor](../../tmp/refinements/13-collective-intelligence-c-factor.md).
 
@@ -7669,7 +7669,7 @@ formerly-marked contexts.
 
 | Old | Replaced by | Reason |
 |---|---|---|
-| `Signal` (retired durable term) | `Engram` | Durable-record rename already landed |
+| `Signal` (retired durable term) | `Signal` | Durable-record rename already landed |
 | `Signal` (retired ephemeral candidate) | `Pulse` | Do not reuse `Signal` for the wire medium |
 | `Envelope<E>` (historical wrapper name) | `Pulse` | Internal wrapper name leaked into architecture prose |
 | `Message` (retired wire term) | `Pulse` for transport, `ChatMessage` for LLM transcripts | `Message` is overloaded |
@@ -7679,7 +7679,7 @@ formerly-marked contexts.
 | `Styx` (retired umbrella term) | `Mesh` + `Korai` | One umbrella term split into two clearer concepts |
 | `Grimoire` (retired knowledge-cross-cut name) | `Neuro` | Retired knowledge-cross-cut name |
 | `Clade` (retired roster term) | `Fleet` | `Fleet` is the conventional roster term |
-| `Signal = Engram` disclaimer (retired) | remove the disclaimer | `Engram` and `Pulse` are distinct mediums |
+| `Signal = Signal` disclaimer (retired) | remove the disclaimer | `Signal` and `Pulse` are distinct mediums |
 | retired lifecycle framing like `mortal`, `death`, or `reincarnation` | remove the framing | Use custody, export/import, resource, or budget language instead |
 
 `EventBus<E>` is intentionally not in the retired table. It is the live transport implementation in
@@ -7710,7 +7710,7 @@ this glossary in the same change.
 ## See Also
 
 - [Vision and Core Thesis](./00-vision-and-thesis.md)
-- [Engram Data Type](./02-engram-data-type.md)
+- [Signal Data Type](./02-signal-data-type.md)
 - [Substrate Trait](./07-substrate-trait.md)
 - [Bus Transport Fabric](./07b-bus-transport-fabric.md)
 - [Universal Cognitive Loop](./09-universal-cognitive-loop.md)
@@ -7723,24 +7723,24 @@ this glossary in the same change.
 
 ---
 
-# SOURCE: /Users/will/dev/nunchi/roko/roko/docs/00-architecture/02-engram-data-type.md
+# SOURCE: /Users/will/dev/nunchi/roko/roko/docs/00-architecture/02-signal-data-type.md
 
-# The Engram Data Type
+# The Signal Data Type
 
-> **Abstract:** The Engram is the universal datum of the Roko system. Every event, every
+> **Abstract:** The Signal is the universal datum of the Roko system. Every event, every
 > piece of data, every agent output, every gate verdict, every knowledge entry, every
-> prediction, every tool trace - is an Engram. Engrams are content-addressed (BLAKE3),
+> prediction, every tool trace - is an Signal. Signals are content-addressed (BLAKE3),
 > scored (7-axis appraisal), decaying (four decay models), lineage-tracked (audit DAG),
 > provenance-stamped (author + trust + taint), and fingerprinted with a first-class HDC
-> vector. This document specifies the Engram struct in full detail, explains each field,
-> describes the content-addressing and HDC fingerprinting schemes, and shows how Engrams
+> vector. This document specifies the Signal struct in full detail, explains each field,
+> describes the content-addressing and HDC fingerprinting schemes, and shows how Signals
 > flow through the Synapse Architecture.
 
 
 > **Implementation**: Shipping
 
 > **Historical note:** The shipping Rust implementation still uses the legacy `Signal`
-> identifier in `roko-core`. This document uses **Engram** for the durable record and
+> identifier in `roko-core`. This document uses **Signal** for the durable record and
 > treats the old name as an implementation detail, not the canonical architectural term.
 
 ---
@@ -7751,36 +7751,36 @@ Classical software architectures use many types: tasks, events, messages, reques
 records, logs. Each type has its own schema, its own storage, its own lifecycle. Adding a new
 capability means adding a new type, a new store, a new API.
 
-Roko takes a different approach. There is exactly one data type — the **Engram** — and six
+Roko takes a different approach. There is exactly one data type — the **Signal** — and six
 traits that operate on it. This design choice has three consequences:
 
-1. **Universal composability**: Any Scorer can score any Engram. Any Substrate can store any
-   Engram. Any Gate can verify any Engram. Components compose freely because they all speak
+1. **Universal composability**: Any Scorer can score any Signal. Any Substrate can store any
+   Signal. Any Gate can verify any Signal. Components compose freely because they all speak
    the same language.
 
-2. **Full audit trails**: Every Engram carries lineage — the ContentHashes of the parent
-   Engrams it was derived from. This forms a directed acyclic graph (DAG) that can be
+2. **Full audit trails**: Every Signal carries lineage — the ContentHashes of the parent
+   Signals it was derived from. This forms a directed acyclic graph (DAG) that can be
    traversed to explain any decision: why was this model chosen? What context was used? What
    gate verdict was rendered? Follow the lineage.
 
-3. **Temporal dynamics**: Every Engram decays. Knowledge fades. Pheromone signals expire.
+3. **Temporal dynamics**: Every Signal decays. Knowledge fades. Pheromone signals expire.
    Context becomes stale. The system's "memory" is not a static database — it is a living
    substrate where information has weight that changes over time.
 
-The name "Engram" comes from neuroscience: a hypothetical means by which memories are stored
+The name "Signal" comes from neuroscience: a hypothetical means by which memories are stored
 as biophysical changes in the brain (Semon 1904; Lashley 1950; Tonegawa et al. 2015, Science
-348(6238)). In Roko, an Engram is the digital equivalent - a content-addressed unit of
+348(6238)). In Roko, an Signal is the digital equivalent - a content-addressed unit of
 cognition that persists, decays, and can be retrieved by exact address or by HDC similarity.
 That similarity path matters because the Substrate can hold both a unique identity hash and a
 first-class semantic fingerprint on the same record.
 
 ---
 
-## 2. The Engram Struct
+## 2. The Signal Struct
 
-The target Engram struct (the architectural specification). The current Rust type still
+The target Signal struct (the architectural specification). The current Rust type still
 uses the historical `Signal` identifier in shipping code; the fields below describe the
-canonical Engram shape.
+canonical Signal shape.
 
 ```rust
 /// The universal datum of the Roko system.
@@ -7835,8 +7835,8 @@ Each field is specified in detail in the sections that follow.
 
 ## 3. ContentHash — Identity Through Content
 
-An Engram's identity is its `ContentHash`: a 32-byte BLAKE3 digest computed from the
-Engram's canonical encoding. Two Engrams with identical content have identical hashes.
+An Signal's identity is its `ContentHash`: a 32-byte BLAKE3 digest computed from the
+Signal's canonical encoding. Two Signals with identical content have identical hashes.
 
 ```rust
 /// A 32-byte content-addressed identifier (BLAKE3 digest).
@@ -7897,7 +7897,7 @@ BLAKE3 was chosen over SHA-256 for three reasons:
 
 1. **Speed**: BLAKE3 is ~5× faster than SHA-256 on modern hardware due to its tree-based
    structure and SIMD optimizations.
-2. **Streaming**: BLAKE3 supports incremental hashing, which matters when Engrams contain
+2. **Streaming**: BLAKE3 supports incremental hashing, which matters when Signals contain
    large payloads (file contents, compiled artifacts).
 3. **Keyed mode**: BLAKE3 supports keyed hashing for MAC computation, useful for attestation.
 
@@ -7907,8 +7907,8 @@ The content hash covers:
 
 - `kind` — the semantic type (via `kind.as_str().as_bytes()`)
 - `body` — the payload (via `body.canonical_bytes()`)
-- `provenance.author` — who produced this Engram
-- `provenance.tainted` — whether the Engram contains untrusted data
+- `provenance.author` — who produced this Signal
+- `provenance.tainted` — whether the Signal contains untrusted data
 - `lineage` — the parent ContentHashes
 - `tags` — all key-value pairs in sorted order (BTreeMap guarantees sort order)
 
@@ -7917,15 +7917,15 @@ The content hash covers:
 The content hash **excludes**:
 
 - `score` — Scores can be recomputed by different Scorers in different contexts without
-  changing what the Engram fundamentally is.
+  changing what the Signal fundamentally is.
 - `decay` — Decay can be adjusted (e.g., promoted from HalfLife to None for persistent
   knowledge) without changing identity.
-- `created_at_ms` — Creation time is metadata, not content. Two Engrams with identical
+- `created_at_ms` — Creation time is metadata, not content. Two Signals with identical
   content produced at different times should deduplicate.
 - `fingerprint` — The HDC vector is derived from semantic structure and encoder version,
   not part of identity. If the encoder changes, the fingerprint changes, not the hash.
 
-This design means that `Substrate.put()` is **idempotent**: re-putting the same Engram
+This design means that `Substrate.put()` is **idempotent**: re-putting the same Signal
 produces the same ContentHash and is a no-op in the Substrate.
 
 ### 3.4 Hash Computation (Shipping Code)
@@ -7964,7 +7964,7 @@ insertion order.
 
 ### 3.5 HDC fingerprint
 
-The HDC fingerprint is the semantic access vector for an Engram. It is 10,240 bits by
+The HDC fingerprint is the semantic access vector for an Signal. It is 10,240 bits by
 default, computed deterministically from `kind` and `body` by a registered encoder, and
 stored with encoder-version metadata so nodes can compare fingerprints safely across
 deployments. The field is optional so the record can still land when the encoder is
@@ -7976,7 +7976,7 @@ That plurality is deliberate. A playbook, a gate verdict, and a JSON task payloa
 need the same feature extraction path, but they all need to produce a stable fingerprint
 for the same encoder version.
 
-The canonical population point is `Substrate.put()`. When an Engram is persisted, the
+The canonical population point is `Substrate.put()`. When an Signal is persisted, the
 Substrate resolves the appropriate encoder, computes the fingerprint if the caller did not
 already stage one, and writes the finalized HDC metadata alongside the durable record.
 
@@ -7989,7 +7989,7 @@ determinism for a given `encoder_version`.
 
 ## 4. Kind — Semantic Type
 
-The `Kind` enum tells consumers how to interpret an Engram's body. Kinds are grouped by
+The `Kind` enum tells consumers how to interpret an Signal's body. Kinds are grouped by
 architectural concern and are `#[non_exhaustive]` with a `Custom(String)` escape hatch for
 extensions.
 
@@ -8064,9 +8064,9 @@ without touching the kernel.
 
 Kinds serve as the switchyard for dispatch throughout the system:
 
-- A Gate might only verify Engrams of kind `GateVerdict` or `TestResult`
-- A Composer might only combine `PromptSection` Engrams into a `Prompt`
-- A Policy might watch for `ToolHealthDegraded` Engrams and emit circuit-breaker responses
+- A Gate might only verify Signals of kind `GateVerdict` or `TestResult`
+- A Composer might only combine `PromptSection` Signals into a `Prompt`
+- A Policy might watch for `ToolHealthDegraded` Signals and emit circuit-breaker responses
 - A Router might select among `RouterChoice` candidates based on historical feedback
 - A Substrate may select a Kind-specific HDC encoder before populating `fingerprint`
 
@@ -8074,7 +8074,7 @@ Kinds serve as the switchyard for dispatch throughout the system:
 
 ## 5. Body — Typed Payload
 
-The `Body` enum carries the Engram's actual content. It is tagged so consumers can determine
+The `Body` enum carries the Signal's actual content. It is tagged so consumers can determine
 the payload format at runtime before decoding.
 
 ```rust
@@ -8096,7 +8096,7 @@ pub enum Body {
 
 | Variant | When Used | Size Method |
 |---|---|---|
-| `Empty` | Marker Engrams where the Kind and tags carry all meaning (e.g., `ProcessSpawn`) | `byte_size() → 0` |
+| `Empty` | Marker Signals where the Kind and tags carry all meaning (e.g., `ProcessSpawn`) | `byte_size() → 0` |
 | `Text(String)` | Logs, prompts, messages, natural-language content | `byte_size() → string.len()` |
 | `Json(Value)` | Structured data: tool call parameters, gate results, configuration | `byte_size() → json.to_string().len()` |
 | `Bytes(Vec<u8>)` | Binary artifacts, compressed data, serialized HDC vectors | `byte_size() → bytes.len()` |
@@ -8132,19 +8132,19 @@ let text: &str = text_body.as_text()?;
 
 ## 6. Lineage — The Audit DAG
 
-The `lineage` field is a vector of `ContentHash`es identifying the parent Engrams from which
-this Engram was derived. This forms a directed acyclic graph (DAG) that enables:
+The `lineage` field is a vector of `ContentHash`es identifying the parent Signals from which
+this Signal was derived. This forms a directed acyclic graph (DAG) that enables:
 
 - **Causal replay**: Trace any decision back to its inputs by following lineage chains.
-- **Impact analysis**: Find all Engrams that depend on a given input.
-- **Autocatalytic metrics**: Measure how many downstream Engrams an input catalyzed.
+- **Impact analysis**: Find all Signals that depend on a given input.
+- **Autocatalytic metrics**: Measure how many downstream Signals an input catalyzed.
 - **Forensic audit**: Reconstruct the complete chain of reasoning for any output.
 
 ### 6.1 Lineage Construction
 
-When a Gate verifies an Engram and produces a Verdict, the Verdict Engram's lineage includes
-the input Engram's ContentHash. When a Composer combines multiple Engrams, the composed
-output's lineage includes all input ContentHashes. The `derive()` method on Engram
+When a Gate verifies an Signal and produces a Verdict, the Verdict Signal's lineage includes
+the input Signal's ContentHash. When a Composer combines multiple Signals, the composed
+output's lineage includes all input ContentHashes. The `derive()` method on Signal
 automates this:
 
 ```rust
@@ -8190,7 +8190,7 @@ async fn trace_lineage(
 
 ## 7. The Builder Pattern
 
-Engrams are constructed using the builder pattern, which provides sensible defaults:
+Signals are constructed using the builder pattern, which provides sensible defaults:
 
 ```rust
 pub struct EngramBuilder {
@@ -8210,10 +8210,10 @@ pub struct EngramBuilder {
 
 | Field | Default | Rationale |
 |---|---|---|
-| `body` | `Body::Empty` | Marker Engrams are common |
-| `created_at_ms` | Current wall-clock time | Most Engrams are created "now" |
+| `body` | `Body::Empty` | Marker Signals are common |
+| `created_at_ms` | Current wall-clock time | Most Signals are created "now" |
 | `decay` | `Decay::None` | Conservative — explicit opt-in to decay |
-| `provenance` | `Provenance::default()` (trusted, author="roko") | Internal Engrams are trusted |
+| `provenance` | `Provenance::default()` (trusted, author="roko") | Internal Signals are trusted |
 | `score` | `Score::NEUTRAL` (confidence=0.5, novelty=0, utility=0, reputation=1) | Neutral until scored |
 | `lineage` | Empty vec | No parents unless specified |
 | `tags` | Empty BTreeMap | No metadata unless specified |
@@ -8290,7 +8290,7 @@ semantic clustering can stay consistent across nodes.
 
 ## 8. Effective Weight
 
-An Engram's effective weight at a given time combines its score and its decay:
+An Signal's effective weight at a given time combines its score and its decay:
 
 ```rust
 /// The effective weight of this Engram at the given current time.
@@ -8302,7 +8302,7 @@ pub fn weight_at(&self, now_ms: i64) -> f32 {
 ```
 
 This is the primary ordering criterion for Substrate queries with `min_weight` filters.
-An Engram that was highly scored at creation but has decayed significantly may fall below
+An Signal that was highly scored at creation but has decayed significantly may fall below
 the weight threshold and be excluded from query results — or pruned entirely by
 `Substrate.prune()`.
 
@@ -8313,8 +8313,8 @@ not depend on the scalar weight. The two signals are complementary.
 
 ## 9. Serde and Persistence
 
-Engrams are fully serializable via serde. The default persistence format is JSONL
-(JSON Lines) in the `FileSubstrate` (`roko-fs`), where each line is one Engram:
+Signals are fully serializable via serde. The default persistence format is JSONL
+(JSON Lines) in the `FileSubstrate` (`roko-fs`), where each line is one Signal:
 
 ```json
 {"id":"a1b2c3d4...","fingerprint":{"vector":"<hdc-bytes>","encoder_version":3},"kind":"task","body":{"format":"text","data":"implement login"},"created_at_ms":1712345678000,"decay":{"kind":"none"},"provenance":{"author":"roko","trust":1.0,"tainted":false,"session":null},"score":{"confidence":0.5,"novelty":0.0,"utility":0.0,"reputation":1.0},"lineage":[],"tags":{"priority":"high"}}
@@ -8326,7 +8326,7 @@ files are valid UTF-8 throughout while preserving the ability to detect encoder 
 
 ---
 
-## 10. Engram Properties Summary
+## 10. Signal Properties Summary
 
 | Property | Value | Implication |
 |---|---|---|
@@ -8409,7 +8409,7 @@ not identity. Its versioning is explicit so encoder migrations stay observable.
 ### 13.2 CRDT Compatibility
 
 The lineage DAG is structurally compatible with Merkle-CRDTs (Sanjuán et al. 2020,
-arXiv:2004.00107). If two agents independently derive Engrams from the same parent, the
+arXiv:2004.00107). If two agents independently derive Signals from the same parent, the
 union of their lineage graphs is well-defined by content addressing — deduplication is
 automatic. The Score's `utility` and `reputation` axes could be modeled as grow-only CRDT
 counters for distributed accumulation.
@@ -8432,7 +8432,7 @@ likely redundant. This provides a **substrate-free novelty signal** — no query
 
 ### 14.2 Bayesian Surprise as Novelty
 
-Itti & Baldi (2005) define Bayesian surprise as `S(data) = KL[P(M|data) || P(M)]`. Engrams
+Itti & Baldi (2005) define Bayesian surprise as `S(data) = KL[P(M|data) || P(M)]`. Signals
 with high Bayesian surprise deserve high novelty scores. Schmidhuber (2010) formalizes this
 as "compression progress" — the intrinsic reward from learning to compress data better.
 
@@ -8440,7 +8440,7 @@ as "compression progress" — the intrinsic reward from learning to compress dat
 
 Grünwald's MDL principle (2007) provides a rigorous definition for the planned `coherence`
 axis: `coherence = 1.0 - (L(D|M) / L(D|null_model))`, where the model M is the existing
-corpus of same-Kind Engrams.
+corpus of same-Kind Signals.
 
 ```rust
 /// ComplexityScorer: computes local complexity as a Kolmogorov proxy.
@@ -8460,22 +8460,22 @@ impl Scorer for ComplexityScorer {
 
 ---
 
-## 15. Engram Algebra: VSA Operations
+## 15. Signal Algebra: VSA Operations
 
 Vector Symbolic Architectures (VSAs) define algebraic operations on high-dimensional vectors
-that preserve compositional structure. Extending these to Engrams creates a proper algebra.
+that preserve compositional structure. Extending these to Signals creates a proper algebra.
 
 ### 15.1 The Three Operations
 
-| Operation | HDC Implementation | Engram Meaning |
+| Operation | HDC Implementation | Signal Meaning |
 |---|---|---|
-| **Bind** (⊗) | XOR of HDC vectors | Associate two Engrams (key-value pair) |
+| **Bind** (⊗) | XOR of HDC vectors | Associate two Signals (key-value pair) |
 | **Bundle** (⊕) | Majority vote | Create cluster centroid / composite |
 | **Permute** (ρ) | Cyclic bit shift | Encode temporal ordering |
 
 ### 15.2 Record Encoding via HDC
 
-An Engram's Score can be encoded as a single HDC vector for nanosecond-speed approximate
+An Signal's Score can be encoded as a single HDC vector for nanosecond-speed approximate
 nearest-neighbor queries over score profiles:
 
 ```
@@ -8538,8 +8538,8 @@ impl Engram {
 
 | Citation | Contribution |
 |---|---|
-| Semon 1904, Die Mneme | Coined "engram" for memory traces. |
-| Tonegawa et al. 2015, Science 348(6238) | Identified engram cells in the brain — physical substrates of memory. |
+| Semon 1904, Die Mneme | Coined "signal" for memory traces. |
+| Tonegawa et al. 2015, Science 348(6238) | Identified signal cells in the brain — physical substrates of memory. |
 | BLAKE3 (O'Connor et al. 2020) | Cryptographic hash function. 5× faster than SHA-256, streaming, SIMD-optimized. |
 | Merkle 1989, Crypto '89, LNCS 435 | Content-addressed storage via hash trees. Foundation for the lineage DAG. |
 | Kolmogorov 1965, Problems of Information Transmission | Algorithmic complexity — shortest program that outputs a string. |
@@ -8559,7 +8559,7 @@ impl Engram {
 
 - **Shipping code**: The current Rust implementation still carries the legacy `Signal`
   identifier and builder name in `roko-core`, while the architectural spec here uses
-  `Engram` and `EngramBuilder` for the durable record. `ContentHash`, `Kind`, `Body`,
+  `Signal` and `EngramBuilder` for the durable record. `ContentHash`, `Kind`, `Body`,
   `Score`, `Decay`, and `Provenance` are all implemented and tested in `roko-core`
   (376 tests passing).
 - **Fingerprint spec**: The HDC fingerprint is specified here as a first-class field and
@@ -8567,7 +8567,7 @@ impl Engram {
 - **Extended score axes**: Precision, salience, and coherence are specified but not yet in
   the Score struct.
 - **Attestation field**: The `attestation: Option<Attestation>` field is specified in the
-  architecture but not yet present in the current shipping Engram shape. See
+  architecture but not yet present in the current shipping Signal shape. See
   [05-provenance-and-attestation.md](05-provenance-and-attestation.md).
 
 ---
@@ -8577,8 +8577,8 @@ impl Engram {
 - [03-score-7-axis-appraisal.md](03-score-7-axis-appraisal.md) — Full Score specification
 - [04-decay-variants.md](04-decay-variants.md) — Decay enum details
 - [05-provenance-and-attestation.md](05-provenance-and-attestation.md) — Provenance and Attestation
-- [06-synapse-traits.md](06-synapse-traits.md) — The traits that operate on Engrams
-- [09-universal-cognitive-loop.md](09-universal-cognitive-loop.md) — How Engrams flow through the loop
+- [06-synapse-traits.md](06-synapse-traits.md) — The traits that operate on Signals
+- [09-universal-cognitive-loop.md](09-universal-cognitive-loop.md) — How Signals flow through the loop
 - [01-naming-and-glossary.md](01-naming-and-glossary.md) — Canonical vocabulary and terminology
 - [tmp/refinements/11-hyperdimensional-substrate.md](../../tmp/refinements/11-hyperdimensional-substrate.md) — Source refinement for the HDC fingerprint field
 
@@ -8589,15 +8589,15 @@ impl Engram {
 
 # The Pulse Ephemeral Event Medium
 
-> **Abstract:** Pulse is the ephemeral sibling medium to Engram. Pulses are typed,
+> **Abstract:** Pulse is the ephemeral sibling medium to Signal. Pulses are typed,
 > sequence-numbered, in-flight events on the Bus: they are delivered now, may be observed
 > once, and are not persisted by default. They can carry a lightweight source attribution
-> plus an optional lineage hint, but they do not carry Engram durability fields such as
+> plus an optional lineage hint, but they do not carry Signal durability fields such as
 > `id`, `score`, `decay`, or full provenance. When a Pulse must become auditable or
-> replayable, it graduates into an Engram using the conversion law in this document.
-> For the durable medium, see [02-engram-data-type.md](./02-engram-data-type.md). For the
+> replayable, it graduates into an Signal using the conversion law in this document.
+> For the durable medium, see [02-signal-data-type.md](./02-signal-data-type.md). For the
 > naming map and legacy terms, see [01-naming-and-glossary.md](./01-naming-and-glossary.md).
-> This doc is the REF02 companion to `tmp/refinements/02-engram-vs-pulse.md`.
+> This doc is the REF02 companion to `tmp/refinements/02-signal-vs-pulse.md`.
 
 
 > **Implementation status**: Target-state design. No `Pulse` type exists in the codebase yet.
@@ -8612,7 +8612,7 @@ impl Engram {
 > **Implementation status**: Pulse is a target-state medium. This chapter defines the intended
 > Bus/Pulse semantics and graduation model; these are not current runtime guarantees.
 
-Engrams are for durable record. Pulse is for live delivery.
+Signals are for durable record. Pulse is for live delivery.
 
 The Bus needs a form for token chunks, progress notifications, process lifecycle signals,
 dashboard refreshes, and other transient observations that should fan out immediately but
@@ -8625,7 +8625,7 @@ Pulse gives the architecture three things:
 2. **Smaller transport cost**: Hot-path notifications stay light and do not drag the full
    durable-record payload into every hop.
 3. **Explicit graduation**: The system decides when a live event deserves to become a
-   durable Engram instead of forcing every event into the hashed DAG.
+   durable Signal instead of forcing every event into the hashed DAG.
 
 Pulse is not a second storage model. It is the transient transport medium that feeds the
 durable medium when needed.
@@ -8673,7 +8673,7 @@ pub struct Pulse {
 
 ### 2.1 What Pulse Does Not Carry
 
-Pulse deliberately omits the durable-record fields that belong to Engram:
+Pulse deliberately omits the durable-record fields that belong to Signal:
 
 - No `id` or content hash by default
 - No `score`
@@ -8701,7 +8701,7 @@ topic and sequence, not by durable identity.
 
 ---
 
-## 3. Pulse to Engram Graduation
+## 3. Pulse to Signal Graduation
 
 Graduation is the explicit conversion from live transport into durable record.
 
@@ -8737,20 +8737,20 @@ The law is simple:
 
 - A Pulse remains transient while it is only useful for delivery or UI fanout.
 - A Pulse graduates when it needs auditability, replay, verification, or durable learning.
-- Once graduated, the Engram is the durable source of truth for downstream operators.
+- Once graduated, the Signal is the durable source of truth for downstream operators.
 
 That means the Bus carries live events, while the Substrate stores the durable record.
 
 ### 3.2 Provenance Upgrade
 
-Pulse carries lightweight `source` attribution; Engram carries full `Provenance`.
+Pulse carries lightweight `source` attribution; Signal carries full `Provenance`.
 
 When a Pulse graduates:
 
 - `source` becomes `provenance.author`
 - the source class determines the initial `trust` and `tainted` state
 - `lineage_hint` becomes the first durable lineage parent
-- `trace_id` stays transport metadata and does not affect the Engram hash
+- `trace_id` stays transport metadata and does not affect the Signal hash
 - optional attestation can be attached only once the durable record exists
 
 The upgrade is a refinement, not a rewrite. The same event becomes more accountable when it
@@ -8778,7 +8778,7 @@ let engram = pulse.graduate(
 );
 ```
 
-The Pulse is for delivery; the Engram is for record.
+The Pulse is for delivery; the Signal is for record.
 
 ---
 
@@ -8793,7 +8793,7 @@ durable DAG and only promote events whose future value outweighs the storage cos
 | Pulse topic | Graduate? | Default policy | Reason |
 |---|---|---|---|
 | `orchestration.plan.started` | Yes | Graduate immediately | Plan lifecycle belongs in the audit DAG |
-| `orchestration.task.ready` | No | Drop after delivery | Redundant with the durable Task Engram |
+| `orchestration.task.ready` | No | Drop after delivery | Redundant with the durable Task Signal |
 | `agent.msg.chunk` | Batch | Graduate on stream close | Chunks are transport noise; the completed turn is durable |
 | `agent.process.spawned` | Yes | Graduate immediately | Process lifecycle is forensic evidence |
 | `agent.process.exited` | Yes | Graduate immediately | Exit state matters for reconstruction |
@@ -8815,19 +8815,19 @@ policy, but they should not invent a second durability model.
 
 ---
 
-## 5. Relationship to Engram
+## 5. Relationship to Signal
 
-Pulse and Engram are sibling media, not competing truth models.
+Pulse and Signal are sibling media, not competing truth models.
 
 - Pulse carries the live event.
-- Engram carries the durable record.
+- Signal carries the durable record.
 - Graduation is the bridge between them.
 
-The durable invariants still belong to Engram only: content addressability, lineage DAG,
+The durable invariants still belong to Signal only: content addressability, lineage DAG,
 decay, provenance, and optional attestation. Pulse remains intentionally lighter so the Bus
 can stay fast and the durable DAG can stay meaningful.
 
-For the durable side of the architecture, read [02-engram-data-type.md](./02-engram-data-type.md).
+For the durable side of the architecture, read [02-signal-data-type.md](./02-signal-data-type.md).
 
 
 ---
@@ -8836,7 +8836,7 @@ For the durable side of the architecture, read [02-engram-data-type.md](./02-eng
 
 # Score: 7-Axis Appraisal
 
-> **Abstract:** Every Engram in Roko carries a multi-dimensional quality score. The Score
+> **Abstract:** Every Signal in Roko carries a multi-dimensional quality score. The Score
 > struct provides a structured assessment across seven axes — four stable (confidence,
 > novelty, utility, reputation) and three extended (precision, salience, coherence). These
 > axes collapse into a single effective scalar via a multiplicative formula designed so that
@@ -8854,7 +8854,7 @@ For the durable side of the architecture, read [02-engram-data-type.md](./02-eng
 Agent systems produce and consume enormous quantities of information: task descriptions,
 LLM outputs, gate verdicts, knowledge entries, tool traces. Not all information is equally
 valuable. A scoring system must answer the question: "How much should I trust and attend to
-this Engram?"
+this Signal?"
 
 Simple scalar scoring (a single 0-1 confidence) loses information. A highly confident but
 stale piece of knowledge should score differently from a novel but uncertain observation.
@@ -8890,7 +8890,7 @@ pub struct Score {
 
 ### 2.1 Confidence — [0, 1]
 
-**What it measures**: How sure are we that this Engram is correct, valid, or truthful?
+**What it measures**: How sure are we that this Signal is correct, valid, or truthful?
 
 **Range**: [0, 1]. Clamped at construction.
 
@@ -8908,7 +8908,7 @@ ratings, source verification.
 
 ### 2.2 Novelty — [0, 1]
 
-**What it measures**: How new or surprising is this Engram compared to what the system
+**What it measures**: How new or surprising is this Signal compared to what the system
 already knows?
 
 **Range**: [0, 1]. Clamped at construction.
@@ -8918,57 +8918,57 @@ already knows?
 - A routine heartbeat tick → novelty near 0.0
 - A piece of information that updates an existing knowledge entry → novelty ~0.5
 
-**Role in scoring**: Novelty acts as a multiplicative bonus via `(1 + novelty)`. An Engram
-with novelty 0.0 has an effective score multiplier of 1.0 from this axis; an Engram with
+**Role in scoring**: Novelty acts as a multiplicative bonus via `(1 + novelty)`. An Signal
+with novelty 0.0 has an effective score multiplier of 1.0 from this axis; an Signal with
 novelty 1.0 has a multiplier of 2.0. This ensures that novel information is prioritized
 without penalizing routine information.
 
 **Connection to Active Inference**: Novelty maps to the epistemic value component of Expected
-Free Energy (Friston 2010). High-novelty Engrams carry high expected information gain, making
+Free Energy (Friston 2010). High-novelty Signals carry high expected information gain, making
 them priority targets for attention allocation.
 
 ### 2.3 Utility — [0, ∞)
 
-**What it measures**: How pragmatically useful has this Engram proven to be? Utility
-accumulates over time as the Engram is referenced, used in compositions, or leads to
+**What it measures**: How pragmatically useful has this Signal proven to be? Utility
+accumulates over time as the Signal is referenced, used in compositions, or leads to
 successful outcomes.
 
 **Range**: [0, ∞). Unbounded above; clamped to non-negative at construction.
 
 **Examples**:
 - A playbook rule that has been applied 50 times with positive outcomes → high utility
-- A fresh Engram that has never been used → utility 0.0
+- A fresh Signal that has never been used → utility 0.0
 - A knowledge entry that has been referenced in 10 successful task completions → utility
   growing proportionally
 
 **Role in scoring**: Like novelty, utility acts as a multiplicative bonus via `(1 + utility)`.
-An Engram with utility 0.0 has a multiplier of 1.0; with utility 5.0, it has a multiplier
-of 6.0. Utility accumulates, giving frequently-useful Engrams exponentially increasing
+An Signal with utility 0.0 has a multiplier of 1.0; with utility 5.0, it has a multiplier
+of 6.0. Utility accumulates, giving frequently-useful Signals exponentially increasing
 priority.
 
 **Connection to Active Inference**: Utility maps to the pragmatic value component of Expected
-Free Energy. High-utility Engrams have demonstrated pragmatic value through outcomes.
+Free Energy. High-utility Signals have demonstrated pragmatic value through outcomes.
 
 ### 2.4 Reputation — [0, ∞)
 
-**What it measures**: How trustworthy is the Engram's producer at the time the Engram was
+**What it measures**: How trustworthy is the Signal's producer at the time the Signal was
 created?
 
 **Range**: [0, ∞). Unbounded above; clamped to non-negative at construction.
 
 **Examples**:
-- An Engram from a Gate (ground truth) → reputation 1.0
-- An Engram from an internal agent → reputation 0.75 (Provenance default for agents)
-- An Engram from an untrusted external source → reputation 0.1
-- An Engram from a model or agent with accumulated positive track record → reputation
+- An Signal from a Gate (ground truth) → reputation 1.0
+- An Signal from an internal agent → reputation 0.75 (Provenance default for agents)
+- An Signal from an untrusted external source → reputation 0.1
+- An Signal from a model or agent with accumulated positive track record → reputation
   growing above 1.0
 
-**Role in scoring**: Reputation directly scales the effective score. An Engram with
+**Role in scoring**: Reputation directly scales the effective score. An Signal with
 reputation 0.0 has zero effective score regardless of other axes — untrusted sources are
-structurally excluded. An Engram with reputation 2.0 gets double the priority of one with
+structurally excluded. An Signal with reputation 2.0 gets double the priority of one with
 reputation 1.0.
 
-**Connection to Provenance**: Reputation is initialized from the Engram's Provenance record
+**Connection to Provenance**: Reputation is initialized from the Signal's Provenance record
 but can be updated as the author's track record evolves. The Score's reputation field is a
 snapshot at emission time; the Provenance's trust field is the current trust level.
 
@@ -8981,11 +8981,11 @@ Score struct (`roko-core/src/score.rs`) with `#[serde(default)]` for backward co
 
 ### 3.1 Precision — [0, 1]
 
-**What it measures**: How specific and well-defined is this Engram's content? Precision
+**What it measures**: How specific and well-defined is this Signal's content? Precision
 captures the difference between a vague statement ("something is probably wrong") and a
 specific one ("compilation fails at line 42 with error E0599").
 
-**Role**: Used for weighting predictions and knowledge entries. High-precision Engrams are
+**Role**: Used for weighting predictions and knowledge entries. High-precision Signals are
 more actionable and receive higher weight in composition decisions.
 
 **Connection to Active Inference**: Precision weighting is central to active inference
@@ -8994,12 +8994,12 @@ they should update the model.
 
 ### 3.2 Salience — [0, 1]
 
-**What it measures**: How relevant is this Engram to the current context? Salience is
-context-dependent — the same Engram may be highly salient in one context and irrelevant in
+**What it measures**: How relevant is this Signal to the current context? Salience is
+context-dependent — the same Signal may be highly salient in one context and irrelevant in
 another.
 
 **Role**: Used by the VCG Attention Auction (see [17-design-principles-and-frontier-summary.md](17-design-principles-and-frontier-summary.md))
-for truthful context budget allocation. High-salience Engrams bid higher for inclusion in
+for truthful context budget allocation. High-salience Signals bid higher for inclusion in
 the context window.
 
 **Connection to Active Inference**: Salience maps to the relevance component of attentional
@@ -9007,11 +9007,11 @@ selection — which signals deserve computational resources given the current go
 
 ### 3.3 Coherence — [0, 1]
 
-**What it measures**: How consistent is this Engram with the system's existing knowledge base?
-An Engram that contradicts well-established knowledge has low coherence; one that fits
+**What it measures**: How consistent is this Signal with the system's existing knowledge base?
+An Signal that contradicts well-established knowledge has low coherence; one that fits
 seamlessly has high coherence.
 
-**Role**: Used for knowledge integration decisions. Low-coherence Engrams may signal either
+**Role**: Used for knowledge integration decisions. Low-coherence Signals may signal either
 an error (contradiction with ground truth) or a genuine surprise (new information that updates
 the model). The distinction is made by checking against Gate verdicts.
 
@@ -9050,8 +9050,8 @@ impl Score {
 | `reputation = 0 → effective = 0` | Zero reputation kills the score | Untrusted sources are structurally excluded |
 | `novelty = 0 → multiplier = 1.0` | No penalty for routine information | Routine is normal, not bad |
 | `novelty = 1 → multiplier = 2.0` | Novel information gets 2× priority | Surprise drives attention |
-| `utility = 0 → multiplier = 1.0` | New Engrams start at baseline | No penalty for lack of history |
-| `utility = n → multiplier = (1+n)` | Utility accumulates multiplicatively | Frequently-useful Engrams dominate |
+| `utility = 0 → multiplier = 1.0` | New Signals start at baseline | No penalty for lack of history |
+| `utility = n → multiplier = (1+n)` | Utility accumulates multiplicatively | Frequently-useful Signals dominate |
 
 ### 4.2 Example Calculations
 
@@ -9100,7 +9100,7 @@ impl Score {
 ```
 
 `Score::NEUTRAL` is the default assigned by the EngramBuilder. It represents "we have no
-information about this Engram's quality" — moderate confidence, no novelty signal, no
+information about this Signal's quality" — moderate confidence, no novelty signal, no
 utility history, trusted author. The effective value is 0.5.
 
 `Score::ZERO` represents "no evidence" — zero across all axes. Effective value is 0.0.
@@ -9129,7 +9129,7 @@ impl Mul for Score {
 
 Used when applying a per-axis modifier to a base score. For example, a RecencyScorer might
 produce a modifier score where confidence is 1.0 (no change) and reputation is 0.5 (halved
-for older Engrams). Multiplying this modifier with the base score scales reputation without
+for older Signals). Multiplying this modifier with the base score scales reputation without
 affecting confidence.
 
 ### 6.2 Element-Wise Addition (Aggregation)
@@ -9155,7 +9155,7 @@ Used when aggregating evidence from multiple Scorers. Confidence and novelty are
 
 ## 7. Score × Decay = Weight
 
-An Engram's effective weight at a given time combines Score and Decay (see
+An Signal's effective weight at a given time combines Score and Decay (see
 [04-decay-variants.md](04-decay-variants.md)):
 
 ```
@@ -9163,7 +9163,7 @@ weight(t) = score.effective() × decay.apply(age_ms)
 ```
 
 This is the primary ordering criterion for Substrate queries. The `weight_at()` method on
-Engram computes this:
+Signal computes this:
 
 ```rust
 pub fn weight_at(&self, now_ms: i64) -> f32 {
@@ -9172,7 +9172,7 @@ pub fn weight_at(&self, now_ms: i64) -> f32 {
 }
 ```
 
-A highly-scored Engram with aggressive decay will eventually fall below the weight threshold
+A highly-scored Signal with aggressive decay will eventually fall below the weight threshold
 and be excluded from queries or pruned from the Substrate. This is how the system implements
 "forgetting" — not by deleting information, but by letting its weight decay below the
 threshold of relevance.
@@ -9183,7 +9183,7 @@ threshold of relevance.
 
 Scorers are implementations of the `Scorer` trait (see
 [06-synapse-traits.md](06-synapse-traits.md)). Each Scorer is a pure function of
-`(Engram, Context) → Score`:
+`(Signal, Context) → Score`:
 
 ```rust
 pub trait Scorer: Send + Sync {
@@ -9195,11 +9195,11 @@ pub trait Scorer: Send + Sync {
 Multiple Scorers compose via `CompositeScorer` using the arithmetic operations above. A
 typical scoring pipeline:
 
-1. **RelevanceScorer**: Scores how well the Engram matches the current goal (via Context).
+1. **RelevanceScorer**: Scores how well the Signal matches the current goal (via Context).
    Sets confidence based on semantic similarity.
-2. **RecencyScorer**: Scores how recent the Engram is. Reduces confidence for stale data.
+2. **RecencyScorer**: Scores how recent the Signal is. Reduces confidence for stale data.
 3. **ReputationScorer**: Scores based on the author's track record. Sets reputation.
-4. **CatalyticScorer**: Scores based on how many downstream Engrams this one has catalyzed.
+4. **CatalyticScorer**: Scores based on how many downstream Signals this one has catalyzed.
    Sets utility.
 
 The pipeline aggregates scores via addition, then the effective score formula collapses the
@@ -9214,7 +9214,7 @@ MCDA methods offer alternatives for contexts where the simple formula is insuffi
 
 ### 9.1 TOPSIS (Hwang & Yoon 1981)
 
-Technique for Order of Preference by Similarity to Ideal Solution. Measures each Engram's
+Technique for Order of Preference by Similarity to Ideal Solution. Measures each Signal's
 geometric distance from a Positive Ideal Solution (best possible on all axes) and a Negative
 Ideal Solution (worst possible). The relative closeness coefficient:
 
@@ -9228,12 +9228,12 @@ where:
 ```
 
 TOPSIS is fully compensatory (a large advantage on one axis offsets a deficit on another)
-and always produces a total ordering. Suitable for Engram ranking when all axes are
+and always produces a total ordering. Suitable for Signal ranking when all axes are
 commensurable.
 
 ### 9.2 ELECTRE III (Roy 1968; Figueira et al. 2005)
 
-The outranking approach: "Engram A outranks B" means there is sufficient evidence in favor
+The outranking approach: "Signal A outranks B" means there is sufficient evidence in favor
 of A and no strong evidence against it. Three thresholds per axis:
 
 | Threshold | Symbol | Meaning |
@@ -9242,7 +9242,7 @@ of A and no strong evidence against it. Three thresholds per axis:
 | Preference | p_j | Differences above p_j establish strict preference |
 | **Veto** | v_j | Differences above v_j block outranking entirely |
 
-The veto threshold makes ELECTRE **non-compensatory**: zero confidence vetoes the Engram
+The veto threshold makes ELECTRE **non-compensatory**: zero confidence vetoes the Signal
 regardless of other axes. This is structurally equivalent to Roko's current design where
 `confidence = 0 → effective = 0`, but ELECTRE generalizes it to any axis.
 
@@ -9258,7 +9258,7 @@ phi⁻(a) = (1/(n-1)) Σ_{x≠a} pi(x, a)   // negative flow (dominated-ness)
 phi(a)  = phi⁺(a) - phi⁻(a)              // net flow → ranking
 ```
 
-PROMETHEE I preserves **incomparability** — two Engrams that are strong on different axes
+PROMETHEE I preserves **incomparability** — two Signals that are strong on different axes
 remain unranked rather than forced into a total order. This is useful when the Router should
 consider multiple candidates rather than a single winner.
 
@@ -9266,9 +9266,9 @@ consider multiple candidates rather than a single winner.
 
 | Situation | Method | Rationale |
 |---|---|---|
-| Standard Engram ranking (most cases) | `effective()` formula | Simple, fast, well-understood |
+| Standard Signal ranking (most cases) | `effective()` formula | Simple, fast, well-understood |
 | Context budget allocation (VCG auction) | TOPSIS | Produces normalized [0,1] scores for bidding |
-| Safety-critical verification | ELECTRE III | Veto thresholds prevent unsafe Engrams from passing |
+| Safety-critical verification | ELECTRE III | Veto thresholds prevent unsafe Signals from passing |
 | Exploratory routing (multiple candidates) | PROMETHEE I | Preserves incomparability for diverse selection |
 
 ---
@@ -9415,8 +9415,8 @@ evidence from different sources:
 | Axis | Evidence Source | Update Trigger |
 |---|---|---|
 | confidence | Gate verdicts | Each gate pass/fail |
-| novelty | Complexity ratio (Section 14 of 02-engram-data-type.md) | On Engram creation |
-| utility | Downstream usage count | Each time the Engram is referenced |
+| novelty | Complexity ratio (Section 14 of 02-signal-data-type.md) | On Signal creation |
+| utility | Downstream usage count | Each time the Signal is referenced |
 | reputation | Author's historical pass rate | Periodic reputation recalculation |
 | precision | Error specificity (vague vs. specific) | LLM evaluation |
 | salience | Context match score | Per-query relevance check |
@@ -9456,7 +9456,7 @@ evidence from different sources:
 
 ## Cross-References
 
-- [02-engram-data-type.md](02-engram-data-type.md) — Score as a field on the Engram
+- [02-signal-data-type.md](02-signal-data-type.md) — Score as a field on the Signal
 - [04-decay-variants.md](04-decay-variants.md) — How Score and Decay combine into weight
 - [06-synapse-traits.md](06-synapse-traits.md) — The Scorer trait
 - [11-dual-process-and-active-inference.md](11-dual-process-and-active-inference.md) — EFE and precision weighting
@@ -9468,7 +9468,7 @@ evidence from different sources:
 
 # Decay Variants
 
-> **Abstract:** This chapter documents a target-state demurrage extension for durable Engrams. Current shipping retention in the codebase is still time-based via the `Decay` enum; the balance-bearing model below is future work rather than current behavior. See also
+> **Abstract:** This chapter documents a target-state demurrage extension for durable Signals. Current shipping retention in the codebase is still time-based via the `Decay` enum; the balance-bearing model below is future work rather than current behavior. See also
 > [tmp/refinements/12-knowledge-demurrage.md](../../tmp/refinements/12-knowledge-demurrage.md)
 > and [01-naming-and-glossary.md](01-naming-and-glossary.md).
 >
@@ -9486,8 +9486,8 @@ extension, not the first thing the implementation needs to ship.
 
 Demurrage gives the system a different incentive structure:
 
-- Useful Engrams stay warm because they are read, cited, and reinforced.
-- Unused Engrams lose balance gradually instead of waiting for a hard prune.
+- Useful Signals stay warm because they are read, cited, and reinforced.
+- Unused Signals lose balance gradually instead of waiting for a hard prune.
 - Knowledge that stops paying for its keep moves toward cold storage.
 - The retrieval surface favors currently useful knowledge over historically cached knowledge.
 
@@ -9546,7 +9546,7 @@ The rate law is intentionally simple:
 balance(t+Δt) = balance(t) - flat_tax * Δt - exp_tax * balance(t) * Δt
 ```
 
-That gives the system a floor-aware, compounding holding cost. Reinforcement pushes balance back up, but only when the Engram earns it through actual use.
+That gives the system a floor-aware, compounding holding cost. Reinforcement pushes balance back up, but only when the Signal earns it through actual use.
 
 ---
 
@@ -9572,8 +9572,8 @@ That changes the shape of memory selection in three ways:
 
 The `ReinforceKind` value matters because different kinds of use carry different meaning:
 
-- `Cited` means the Engram participates in lineage.
-- `Retrieved` means the Engram solved a query.
+- `Cited` means the Signal participates in lineage.
+- `Retrieved` means the Signal solved a query.
 - `Gated` means it survived verification.
 - `Surprised` means it was informationally novel.
 - `AgentQuoted` means another agent turned it into output.
@@ -9584,7 +9584,7 @@ This is the right place to make the attention economy visible to the Scorer, the
 
 ## 4. Novelty Weighting
 
-Demurrage is strongest when it is coupled to HDC similarity. Novel Engrams should earn a larger reinforcement bonus than common ones, because rare but useful knowledge is what we most want to keep.
+Demurrage is strongest when it is coupled to HDC similarity. Novel Signals should earn a larger reinforcement bonus than common ones, because rare but useful knowledge is what we most want to keep.
 
 Use the HDC fingerprint from [11-hyperdimensional-substrate.md](11-hyperdimensional-substrate.md) and see also
 [tmp/refinements/11-hyperdimensional-substrate.md](../../tmp/refinements/11-hyperdimensional-substrate.md).
@@ -9598,8 +9598,8 @@ novelty = 1 - max(similarity(top-K HDC neighbors))
 
 That means:
 
-- Citing a common Engram gives a small bump.
-- Citing a rare Engram gives a larger bump.
+- Citing a common Signal gives a small bump.
+- Citing a rare Signal gives a larger bump.
 - Surprising retrievals are rewarded more than routine confirmations.
 
 This is the anti-hoarding mechanism. High-balance memory has to keep paying for its place by remaining uniquely useful.
@@ -9608,7 +9608,7 @@ This is the anti-hoarding mechanism. High-balance memory has to keep paying for 
 
 ## 5. Cold Tier, Freeze, Thaw
 
-In this deferred model, when balance reaches the floor, the Engram should not disappear from the system model. It should move to cold storage.
+In this deferred model, when balance reaches the floor, the Signal should not disappear from the system model. It should move to cold storage.
 
 ```rust
 pub trait ColdSubstrate: Substrate {
@@ -9620,8 +9620,8 @@ pub trait ColdSubstrate: Substrate {
 The flow is:
 
 1. `charge()` reduces balance over time.
-2. Reinforcement raises balance while the Engram remains useful.
-3. When balance reaches `min_balance`, the Engram is frozen.
+2. Reinforcement raises balance while the Signal remains useful.
+3. When balance reaches `min_balance`, the Signal is frozen.
 4. Retrieval can thaw it on demand and reset balance to a starter value.
 5. Thawing should emit a Bus Pulse so observers can update caches and policy state.
 
@@ -9640,7 +9640,7 @@ This chapter still keeps the older shapes because they are useful for bounded-li
 | `Ttl` | Strict validity windows | Appropriate when a record is either valid or invalid. |
 | `Ebbinghaus` | Transient recall curves | Useful as a shaping function for older knowledge research, not as the main durable-memory policy. |
 
-Use these when the artifact itself is naturally ephemeral. Do not use them to describe durable Engrams when the system should be learning from use, citation, and surprise.
+Use these when the artifact itself is naturally ephemeral. Do not use them to describe durable Signals when the system should be learning from use, citation, and surprise.
 
 Examples of appropriate secondary use:
 
@@ -9682,14 +9682,14 @@ Demurrage needs direct instrumentation, otherwise the model is invisible and unt
 - Balance histogram by tier.
 - Thaw rate for cold-to-warm transitions.
 - Reinforcement-by-kind breakdown over time.
-- Attention leaderboard for the most highly retained Engrams.
+- Attention leaderboard for the most highly retained Signals.
 
 Those views answer the operational questions the old decay-first model could not answer well:
 
 - Is memory hoarding?
 - Is it forgetting too fast?
 - What kind of use is keeping knowledge alive?
-- Which Engrams are earning their balance?
+- Which Signals are earning their balance?
 
 ---
 
@@ -9722,7 +9722,7 @@ That is an attention economy, not a cache.
 
 ## 11. Cross-References
 
-- [01-naming-and-glossary.md](01-naming-and-glossary.md) — canonical vocabulary for Engram, Bus, Topic, and Neuro.
+- [01-naming-and-glossary.md](01-naming-and-glossary.md) — canonical vocabulary for Signal, Bus, Topic, and Neuro.
 - [11-hyperdimensional-substrate.md](11-hyperdimensional-substrate.md) — HDC fingerprint and similarity-driven novelty.
 - [18-decay-tier-matrix.md](18-decay-tier-matrix.md) — tier progression and cold-storage rules.
 - [20-configuration-schema.md](20-configuration-schema.md) — demurrage rate keys and tuning surface.
@@ -9736,7 +9736,7 @@ That is an attention economy, not a cache.
 
 # Provenance and Attestation
 
-> **Abstract:** In the revised architecture, provenance is the durable audit context attached to every `Engram`, not just a lightweight author tag. It tells operators who produced the record, how much to trust it, whether it is tainted, and which higher-assurance artifacts such as `Custody` and `Attestation` are linked to it. This document aligns the architecture chapter with the REF32 safety spine: typed taint, chain-of-custody records for auditable actions, explicit attestation levels, and a clear split between durable proof in `Substrate` and live safety signaling on the `Bus`. See [tmp/refinements/32-safety-sandbox-provenance.md](../../tmp/refinements/32-safety-sandbox-provenance.md) and [Naming Map and Glossary](01-naming-and-glossary.md).
+> **Abstract:** In the revised architecture, provenance is the durable audit context attached to every `Signal`, not just a lightweight author tag. It tells operators who produced the record, how much to trust it, whether it is tainted, and which higher-assurance artifacts such as `Custody` and `Attestation` are linked to it. This document aligns the architecture chapter with the REF32 safety spine: typed taint, chain-of-custody records for auditable actions, explicit attestation levels, and a clear split between durable proof in `Substrate` and live safety signaling on the `Bus`. See [tmp/refinements/32-safety-sandbox-provenance.md](../../tmp/refinements/32-safety-sandbox-provenance.md) and [Naming Map and Glossary](01-naming-and-glossary.md).
 
 > **Implementation status:** Specified architecture with a shipping subset
 
@@ -9750,7 +9750,7 @@ preserve more than content. It must preserve audit context.
 
 At the architecture level, provenance answers four questions for every durable record:
 
-1. **Who produced this Engram?** A user, agent, gate, plugin, chain source, or system role.
+1. **Who produced this Signal?** A user, agent, gate, plugin, chain source, or system role.
 2. **How trusted was that producer at emission time?** Trust is a snapshot, not a live lookup.
 3. **Is the record tainted, and why?** Taint is a typed safety signal, not a generic warning bit.
 4. **What higher-assurance proof exists around this record?** A `Custody` chain, an
@@ -9766,13 +9766,13 @@ This is load-bearing for three reasons:
 
 `Pulse` remains the ephemeral wire medium on the `Bus`. It can carry lightweight source
 metadata for routing and live review, but provenance becomes durable only when the runtime
-graduates relevant state into an `Engram` and persists it in `Substrate`.
+graduates relevant state into an `Signal` and persists it in `Substrate`.
 
 ---
 
 ## 2. The Provenance Contract
 
-Every `Engram` carries provenance. The exact shipping struct can evolve, but the architecture
+Every `Signal` carries provenance. The exact shipping struct can evolve, but the architecture
 contract is stable: provenance is the minimum durable audit context required to interpret the
 record safely after the fact.
 
@@ -9796,7 +9796,7 @@ The fields mean:
 
 Two architecture rules follow from that contract:
 
-1. Provenance is part of the Engram's durable meaning. Two identical bodies from different
+1. Provenance is part of the Signal's durable meaning. Two identical bodies from different
    authors or taint states are not the same audit record.
 2. Provenance is not the whole safety story. It is the base layer that `Custody`,
    `Attestation`, and safety-focused `Pulse` streams build on top of.
@@ -9807,12 +9807,12 @@ provenance struct.
 
 ---
 
-## 3. Provenance as Durable Audit Context on Engrams
+## 3. Provenance as Durable Audit Context on Signals
 
-The durable medium in Roko is the `Engram`, so the durable audit trail also lives there.
+The durable medium in Roko is the `Signal`, so the durable audit trail also lives there.
 Architecture-level provenance therefore means:
 
-- A retrieved Engram from `Substrate` is self-describing enough to evaluate safety without
+- A retrieved Signal from `Substrate` is self-describing enough to evaluate safety without
   consulting the original runtime process.
 - A reviewer can inspect lineage and see whether a record came from trusted gates, user input,
   plugin output, or external fetches.
@@ -9823,9 +9823,9 @@ In practice, that yields three layers of audit evidence:
 
 | Layer | Stored on | Purpose |
 |---|---|---|
-| `Provenance` | every `Engram` | minimum durable audit context |
-| `Custody` | auditable-action `Engram` | why a privileged or externally visible action happened |
-| `Attestation` | opt-in on selected `Engram` kinds | cryptographic proof of signer and integrity |
+| `Provenance` | every `Signal` | minimum durable audit context |
+| `Custody` | auditable-action `Signal` | why a privileged or externally visible action happened |
+| `Attestation` | opt-in on selected `Signal` kinds | cryptographic proof of signer and integrity |
 
 This is the key architectural split:
 
@@ -9834,7 +9834,7 @@ This is the key architectural split:
 
 The system may publish `safety.*`, `network.egress.*`, `plugin.violation`, or
 `gate.verdict.emitted` Pulses as events happen, but the evidence that survives replay is the
-Engram set persisted in `Substrate`.
+Signal set persisted in `Substrate`.
 
 ---
 
@@ -9876,7 +9876,7 @@ enum Taint {
 
 Taint is one-way and conservative:
 
-1. If a `Composer` reads any tainted Engram, the composed prompt Engram is tainted.
+1. If a `Composer` reads any tainted Signal, the composed prompt Signal is tainted.
 2. If an LLM turn or tool action consumes tainted input, its derived output stays tainted until
    explicitly reviewed and signed off.
 3. If multiple taint sources contribute to one result, the output records the strongest relevant
@@ -9902,9 +9902,9 @@ path that builds on the taint model defined here.
 
 ## 5. Custody Records for Auditable Actions
 
-Not every Engram needs a full chain-of-custody record. But any action that changes external
+Not every Signal needs a full chain-of-custody record. But any action that changes external
 state, performs a privileged operation, or needs compliance-grade review must emit a durable
-`Custody` Engram.
+`Custody` Signal.
 
 REF32 defines the record shape:
 
@@ -9981,7 +9981,7 @@ enum AttestationLevel {
 
 Attestation is opt-in by kind. REF32's default posture is:
 
-- `GateVerdict` Engrams default to `LocalAgent`.
+- `GateVerdict` Signals default to `LocalAgent`.
 - `Custody` for destructive actions defaults to `OrgRole`.
 - Heuristic-commons contributions may use `ChainWitness` when cross-deployment trust matters.
 
@@ -9989,7 +9989,7 @@ Three rules keep the model coherent:
 
 1. An attestation signs the `ContentHash`; it does not replace content addressing.
 2. Attestation strengthens integrity and signer identity, but it does not erase taint.
-3. Attestation and custody compose: a `Custody` Engram can itself be attested.
+3. Attestation and custody compose: a `Custody` Signal can itself be attested.
 
 ---
 
@@ -10000,8 +10000,8 @@ See [09-universal-cognitive-loop.md](09-universal-cognitive-loop.md) for the ful
 
 ### Step 1: SENSE
 
-- `Substrate.query()` returns provenance-bearing Engrams.
-- `Bus.subscribe()` returns live Pulses that may later graduate into Engrams.
+- `Substrate.query()` returns provenance-bearing Signals.
+- `Bus.subscribe()` returns live Pulses that may later graduate into Signals.
 - External I/O enters as potential taint sources and should be normalized before further use.
 
 ### Step 2: ASSESS
@@ -10012,7 +10012,7 @@ See [09-universal-cognitive-loop.md](09-universal-cognitive-loop.md) for the ful
 
 ### Step 3: COMPOSE
 
-- `Composer` preserves taint lineage when assembling prompt Engrams.
+- `Composer` preserves taint lineage when assembling prompt Signals.
 - Prompt assembly is where untrusted context can become dangerous, so provenance-aware
   composition is a core safety obligation rather than a later add-on.
 
@@ -10031,7 +10031,7 @@ See [09-universal-cognitive-loop.md](09-universal-cognitive-loop.md) for the ful
 
 ### Step 6: PERSIST and BROADCAST
 
-- `Substrate.put()` persists the action result, verdict Engrams, and any `Custody` record.
+- `Substrate.put()` persists the action result, verdict Signals, and any `Custody` record.
 - `Bus.publish()` emits live Pulses such as `safety.*`, `network.egress.*`, or
   `gate.verdict.emitted`.
 - The architectural invariant is that `Substrate` holds durable audit truth while `Bus` delivers
@@ -10041,7 +10041,7 @@ See [09-universal-cognitive-loop.md](09-universal-cognitive-loop.md) for the ful
 
 - `Policy` reads the new safety evidence and decides follow-up actions: quarantine, approval
   request, replay, or escalation.
-- The reactive path may publish more Pulses immediately while also persisting additional Engrams
+- The reactive path may publish more Pulses immediately while also persisting additional Signals
   for later review.
 
 ---
@@ -10054,7 +10054,7 @@ The safety spine only works if the two fabrics keep distinct responsibilities.
 
 `Substrate` is where durable audit context lives:
 
-- persisted Engram provenance
+- persisted Signal provenance
 - `Custody` records
 - attested records
 - lineage needed for replay and incident response
@@ -10080,7 +10080,7 @@ logs or UI traces and disappears once the process exits. In Roko, live observati
 proof are separate but connected:
 
 - `Pulse` enables immediate intervention.
-- `Engram` enables later audit.
+- `Signal` enables later audit.
 - `Custody` and `Attestation` lift selected actions to stronger guarantees.
 
 ---
@@ -10104,7 +10104,7 @@ broader safety spine instead of treating provenance as an isolated helper struct
 ## Cross-References
 
 - [Naming Map and Glossary](01-naming-and-glossary.md)
-- [02-engram-data-type.md](02-engram-data-type.md)
+- [02-signal-data-type.md](02-signal-data-type.md)
 - [07-substrate-trait.md](07-substrate-trait.md)
 - [07b-bus-transport-fabric.md](07b-bus-transport-fabric.md)
 - [09-universal-cognitive-loop.md](09-universal-cognitive-loop.md)
@@ -10120,13 +10120,13 @@ broader safety spine instead of treating provenance as an isolated helper struct
 
 > **Abstract:** This document keeps the Synapse trait model as a load-bearing part of Roko's
 > architecture, but no longer treats the historical "one noun, six verbs" mnemonic as the
-> complete story. Roko's kernel is better read as two mediums, durable Engram and ephemeral
+> complete story. Roko's kernel is better read as two mediums, durable Signal and ephemeral
 > Pulse, moving through two fabrics, Substrate and Bus, with six operators providing the
 > durable-storage, assessment, verification, routing, composition, and reaction logic around
 > them. The complete kernel grammar is six operations plus two fabric traits.
 
 > **See also:** `tmp/refinements/01-critique-one-noun.md` for the diagnosis,
-> `tmp/refinements/02-engram-vs-pulse.md` for the Engram/Pulse split,
+> `tmp/refinements/02-signal-vs-pulse.md` for the Signal/Pulse split,
 > `tmp/refinements/03-bus-as-first-class.md` for the Bus promotion,
 > `tmp/refinements/04-operators-generalized.md` for signature generalization,
 > `tmp/refinements/08-code-sketches.md` for the illustrative Rust sketches, and
@@ -10147,7 +10147,7 @@ The original mnemonic was useful because it emphasized parsimony: a small set of
 interfaces can express a wide range of agent behaviors. That remains true. What no longer holds
 is the implication that one durable record type explains the whole runtime. The runtime now has:
 
-- **Two mediums**: durable **Engram** and ephemeral **Pulse**
+- **Two mediums**: durable **Signal** and ephemeral **Pulse**
 - **Two fabrics**: storage-oriented **Substrate** and transport-oriented **Bus**
 - **Six operators**: the six synapse roles that assess, verify, route, compose, persist, and
   react around those mediums
@@ -10159,7 +10159,7 @@ more than a single durable noun.
 ### 1.1 Historical Mnemonic, Revised
 
 The historical "one noun, six verbs" phrase is best read as shorthand for the durable half of v1:
-an Engram-centric storage and composition model. REF01 shows why that shorthand became too small:
+an Signal-centric storage and composition model. REF01 shows why that shorthand became too small:
 live transport moved onto a Bus, runtime policies started reacting to in-flight traffic, and some
 trait signatures became awkward because they were asked to pretend every input was already a
 stored artifact.
@@ -10185,13 +10185,13 @@ fabric traits they work through:
 
 | Kernel trait | Core job | Primary layer | Relationship to the two-medium / two-fabric model |
 |---|---|---|---|
-| **Substrate** | Persist and query durable state | L0 Runtime | Storage fabric for Engrams |
+| **Substrate** | Persist and query durable state | L0 Runtime | Storage fabric for Signals |
 | **Bus** | Publish and subscribe live traffic | L0 Runtime | Transport fabric for Pulses |
 | **Scorer** | Assess salience, value, novelty, quality | L1-L2 | Scores either medium through `Datum` |
-| **Gate** | Verify against external reality | L3 Harness | Verifies Engrams directly and Pulse windows through stream-gates |
-| **Router** | Choose among candidates or next actions | L1 Framework | Selects from Engrams or Pulses depending on the decision surface |
-| **Composer** | Assemble bounded artifacts | L2 Scaffold | Consumes `Datum` inputs and emits durable Engrams under a budget |
-| **Policy** | React to streams and outcomes | L3-L4 | Consumes Pulse streams and emits `PolicyOutputs` with Pulses plus Engrams |
+| **Gate** | Verify against external reality | L3 Harness | Verifies Signals directly and Pulse windows through stream-gates |
+| **Router** | Choose among candidates or next actions | L1 Framework | Selects from Signals or Pulses depending on the decision surface |
+| **Composer** | Assemble bounded artifacts | L2 Scaffold | Consumes `Datum` inputs and emits durable Signals under a budget |
+| **Policy** | React to streams and outcomes | L3-L4 | Consumes Pulse streams and emits `PolicyOutputs` with Pulses plus Signals |
 
 The Bus is not a replacement for the six operators. It is the second fabric those operators now
 work alongside. In other words: six operations plus two fabric traits is the complete kernel
@@ -10231,15 +10231,15 @@ operators that need to work over either medium.
 
 ## 3. Substrate — Durable Storage
 
-Substrate remains the durable storage fabric. Its job is unchanged: persist Engrams, retrieve
+Substrate remains the durable storage fabric. Its job is unchanged: persist Signals, retrieve
 them by query, and expose a stable memory surface to the rest of the system.
 
 That durability boundary matters more clearly after REF01:
 
-- Engrams belong in Substrate because their identity, lineage, provenance, and decay matter.
+- Signals belong in Substrate because their identity, lineage, provenance, and decay matter.
 - Pulses do not belong in Substrate by default because they are transport traffic, not durable
   records.
-- Graduation from Pulse to Engram is a deliberate step, not an architectural accident.
+- Graduation from Pulse to Signal is a deliberate step, not an architectural accident.
 
 This is why Substrate still deserves its own deep-dive in
 [07-substrate-trait.md](./07-substrate-trait.md). The critique is not that storage was wrong;
@@ -10250,17 +10250,17 @@ it is that storage was being asked to stand in for transport.
 ## 4. Scorer — Assessment
 
 Scorers rate what the runtime should care about. In v1 documentation that usually meant scoring
-Engrams already present in storage. In the fuller kernel story, assessment happens against both
+Signals already present in storage. In the fuller kernel story, assessment happens against both
 durable and live inputs:
 
-- retrieved Engrams during context selection
+- retrieved Signals during context selection
 - candidate actions before execution
 - live runtime signals that may later graduate into durable records
 
 REF04 carries the signature-generalization work. In the revised trait table that means a Scorer
 can expose monomorphic `score_engram` and `score_pulse` methods plus a thin `score(Datum)` entry
 point. REF01's point is simpler: the architecture should stop pretending that every assessable
-thing is already a stored Engram.
+thing is already a stored Signal.
 
 ---
 
@@ -10273,7 +10273,7 @@ the world.
 That part of the story does not change. What changes is the placement of verification in the
 runtime:
 
-- some Gates verify composed Engrams after an action completes
+- some Gates verify composed Signals after an action completes
 - some stream-oriented checks want to observe live runtime traffic before or during action
 - the Gate pipeline should therefore be described as sitting beside both Substrate and Bus, not
   as a purely post-storage concern
@@ -10290,8 +10290,8 @@ Routers choose among alternatives: which model to call, which backend to use, wh
 which plan branch to pursue, or which candidate artifact to advance.
 
 The core idea remains stable. The nuance introduced by REF01 is that not every routed choice is a
-choice among stored Engrams. Some routing decisions are about live control flow or in-flight
-traffic, and only later become Engrams for audit and learning.
+choice among stored Signals. Some routing decisions are about live control flow or in-flight
+traffic, and only later become Signals for audit and learning.
 
 That distinction matters because it explains why routing feels natural in the system while some
 of the older trait signatures felt stretched. REF04 resolves the mismatch with separate
@@ -10307,14 +10307,14 @@ token, byte, time, or structural budgets.
 
 Prompt construction is the clearest example:
 
-1. retrieve relevant Engrams from Substrate
+1. retrieve relevant Signals from Substrate
 2. rank or filter them with Scorers and Routers
-3. assemble a prompt Engram under a budget
+3. assemble a prompt Signal under a budget
 
 That story still holds. What changes is the boundary around composition. When the runtime reacts
 to live traffic, the input set may include observations that are not yet durable. REF04 names
 that mixed input set as `Datum` and keeps the output durable: `Composer::compose(&[Datum], ...)`
-still emits an Engram even when some ingredients are Pulses.
+still emits an Signal even when some ingredients are Pulses.
 
 ---
 
@@ -10331,11 +10331,11 @@ other follow-on work. In practice that means:
 - approval flows react to in-flight decisions
 - telemetry and observability often want to emit from the stream itself
 
-REF01 calls this out explicitly because "stream of Engrams" was doing too much conceptual work.
-The durable output of a Policy can absolutely be an Engram. But the thing the Policy is watching
+REF01 calls this out explicitly because "stream of Signals" was doing too much conceptual work.
+The durable output of a Policy can absolutely be an Signal. But the thing the Policy is watching
 is often better described as Pulse traffic on a Bus. REF04 makes that explicit with
 `Policy::decide(&[Pulse], ctx) -> PolicyOutputs`, where `PolicyOutputs` can publish new Pulses
-and persist graduated Engrams in the same reaction step.
+and persist graduated Signals in the same reaction step.
 
 This is also why REF04 matters: operator signatures should generalize where the architecture has
 already generalized in reality.
@@ -10372,7 +10372,7 @@ A complete runtime pass now reads more clearly when the two mediums and two fabr
 3. **Assess and route** with Scorers and Routers
 4. **Compose** a bounded output when durable assembly is required
 5. **Act and verify** through tools, models, or chain execution plus Gates
-6. **Persist** durable results as Engrams
+6. **Persist** durable results as Signals
 7. **Broadcast/react** on the Bus and through Policies
 
 The six operators still compose. The improvement is that the architecture no longer hides live
@@ -10398,8 +10398,8 @@ The most important awkward cases are not random edge conditions. They are eviden
 
 | Boundary case | Why it feels awkward in the old framing | What REF01 says about it |
 |---|---|---|
-| Telemetry emission from `Policy::decide(&[], ctx)` | The operator wants to react without pretending an Engram stream already exists | `Policy::decide(&[Pulse], ctx) -> PolicyOutputs` describes the live stream directly |
-| Circuit breakers and watcher loops | Policies want to watch runtime changes as they happen | Policy is a Pulse-stream consumer whose reactions may publish Pulses or persist Engrams |
+| Telemetry emission from `Policy::decide(&[], ctx)` | The operator wants to react without pretending an Signal stream already exists | `Policy::decide(&[Pulse], ctx) -> PolicyOutputs` describes the live stream directly |
+| Circuit breakers and watcher loops | Policies want to watch runtime changes as they happen | Policy is a Pulse-stream consumer whose reactions may publish Pulses or persist Signals |
 | Direct cross-layer runtime dependencies | Subsystems bypass the architecture story to communicate | Bus needs first-class architectural recognition |
 | Mixed live-plus-durable context assembly | Composer wants recent traffic plus stored state in one budget | `Datum` makes the mixed input set explicit without inventing new operator types |
 
@@ -10415,7 +10415,7 @@ not the fact that these six roles are the stable conceptual primitives.
 
 REF02, REF03, and REF04 carry the concrete follow-on work:
 
-1. define Pulse as Engram's ephemeral sibling
+1. define Pulse as Signal's ephemeral sibling
 2. promote Bus as the transport fabric
 3. generalize operator signatures where the runtime already handles both mediums
 
@@ -10430,7 +10430,7 @@ The code sketch appendix makes the migration direction easier to read from the t
   be described in Bus terms rather than as storage helpers.
 - `Pulse` is the short-lived wire form, so stream-oriented reactions can publish a new Pulse even
   when no durable record is needed.
-- `Datum` is the mixed-input adapter for operators that may consume either an Engram or a Pulse
+- `Datum` is the mixed-input adapter for operators that may consume either an Signal or a Pulse
   without forcing a fake storage round-trip first.
 
 That is the practical bridge from the overview in this doc to the fuller sketches in
@@ -10480,7 +10480,7 @@ That is the practical bridge from the overview in this doc to the fuller sketche
 # The Substrate Trait
 
 > **Abstract:** The Substrate trait is the storage fabric and kernel primitive of Roko's
-> runtime. It persists, retrieves, queries, and prunes durable Engrams at L0, and it also
+> runtime. It persists, retrieves, queries, and prunes durable Signals at L0, and it also
 > exposes native HDC similarity queries over `HdcVector` fingerprints. It is one half of
 > the two-fabric kernel story; the other half is the Bus transport fabric in
 > [07b-bus-transport-fabric.md](07b-bus-transport-fabric.md). See
@@ -10493,11 +10493,11 @@ That is the practical bridge from the overview in this doc to the fuller sketche
 
 ## 1. Role in the Architecture
 
-Substrate is the durable storage fabric at L0. It provides the ground for Engrams:
+Substrate is the durable storage fabric at L0. It provides the ground for Signals:
 content-addressed persistence, query-by-filter, native HDC similarity search, and pruning
 by effective weight. Every subsystem that needs durable state depends on it.
 
-Bus is the sibling fabric, not a replacement. Substrate stores Engrams; Bus moves Pulses.
+Bus is the sibling fabric, not a replacement. Substrate stores Signals; Bus moves Pulses.
 Together they are the complete kernel interface for Roko's runtime. The two fabrics are
 separate because the system needs two different semantics:
 
@@ -10508,7 +10508,7 @@ separate because the system needs two different semantics:
 
 | Fabric | Medium | Core operations | Retention model | Typical backends |
 |---|---|---|---|---|
-| Substrate | Engram | `put`, `get`, `query`, `query_similar`, `prune` | Long-lived storage with content identity, HDC fingerprints, and decay-aware pruning | Memory, File, HDC, Chain |
+| Substrate | Signal | `put`, `get`, `query`, `query_similar`, `prune` | Long-lived storage with content identity, HDC fingerprints, and decay-aware pruning | Memory, File, HDC, Chain |
 | Bus | Pulse | `publish`, `subscribe`, `replay_since`, `current_seq` | Bounded transport ring with topic routing and replay retention | BroadcastBus, MemoryBus, MultiBus, NATS/Kafka/Redpanda, ChainBus |
 
 Substrate remains the trait for long-lived records and storage backends. The Bus chapter
@@ -10561,15 +10561,15 @@ windows. Those belong to the Bus fabric, which is the kernel's transport primiti
 
 ### 2.1 `put()` - Store
 
-Stores an Engram and returns its `ContentHash`. The operation is idempotent: storing the
-same Engram twice is a no-op because identity is content. When a fingerprint is not
-already present, the Substrate populates the Engram's optional HDC fingerprint metadata at
+Stores an Signal and returns its `ContentHash`. The operation is idempotent: storing the
+same Signal twice is a no-op because identity is content. When a fingerprint is not
+already present, the Substrate populates the Signal's optional HDC fingerprint metadata at
 insert time using the canonical encoder for that record shape, so HDC similarity becomes a
 first-class property of the stored record rather than a side-table concern.
 
 ### 2.2 `get()` - Retrieve
 
-Retrieves a single Engram by its `ContentHash`. Returns `None` if the Engram is not found
+Retrieves a single Signal by its `ContentHash`. Returns `None` if the Signal is not found
 or has been pruned. `get()` returns the raw stored record, not a decay-adjusted view.
 
 ### 2.3 `query()` - Filter and Retrieve
@@ -10593,7 +10593,7 @@ Implementations may apply decay when evaluating `min_weight` and when ordering r
 
 ### 2.4 `prune()` - Garbage Collection
 
-Removes Engrams whose effective weight has fallen below the threshold:
+Removes Signals whose effective weight has fallen below the threshold:
 
 ```text
 weight = score.effective() × decay.apply(ctx.now_ms - created_at_ms)
@@ -10606,7 +10606,7 @@ Bus replay semantics.
 
 `tmp/refinements/11-hyperdimensional-substrate.md` makes this capability normative. HDC
 similarity is a native Substrate read primitive, not an external vector-store add-on:
-every stored Engram carries a 10,240-bit `HdcVector` fingerprint, and `query_similar`
+every stored Signal carries a 10,240-bit `HdcVector` fingerprint, and `query_similar`
 returns the nearest matches within a radius and limit.
 
 ```rust
@@ -10681,7 +10681,7 @@ pub struct MemorySubstrate {
 ### 3.2 FileSubstrate (roko-fs)
 
 JSONL file backend for default persistence. It uses append-only writes for crash safety
-and periodic compaction via `prune()`. It also computes or preserves each Engram's
+and periodic compaction via `prune()`. It also computes or preserves each Signal's
 fingerprint at `put()` time so `query_similar()` can be answered directly against stored
 records.
 
@@ -10689,7 +10689,7 @@ Located in `roko-fs`. This is the default Substrate for all Roko agents.
 
 ### 3.3 HdcSubstrate (Planned)
 
-Hyperdimensional Computing substrate for semantic similarity queries. Engrams are encoded
+Hyperdimensional Computing substrate for semantic similarity queries. Signals are encoded
 as 10,240-bit HDC vectors using XOR bind and majority bundle. Queries use Hamming
 distance for fixed-cost similarity comparison, and the planned implementation can serve
 as the specialized backend for large HDC-heavy corpora while still honoring the same
@@ -10697,8 +10697,8 @@ as the specialized backend for large HDC-heavy corpora while still honoring the 
 
 ### 3.4 ChainSubstrate (Planned)
 
-On-chain Substrate on the Korai chain. Engram `ContentHash` values are posted on-chain for
-attestation and shared state. Full Engram bodies are stored off-chain with on-chain
+On-chain Substrate on the Korai chain. Signal `ContentHash` values are posted on-chain for
+attestation and shared state. Full Signal bodies are stored off-chain with on-chain
 pointers.
 
 ---
@@ -10721,7 +10721,7 @@ external locking.
 
 The two-fabric kernel story is:
 
-- `Substrate` persists durable Engrams and answers both filter queries and HDC similarity
+- `Substrate` persists durable Signals and answers both filter queries and HDC similarity
   queries over stored records.
 - `Bus` transports ephemeral Pulses and carries consensus and coordination traffic
   without turning storage into transport.
@@ -10750,8 +10750,8 @@ topics, topic filters, replay, and bounded ring semantics.
 
 ## Cross-References
 
-- [01-naming-and-glossary.md](01-naming-and-glossary.md) - Canonical names for Substrate, Bus, Engram, and Pulse
-- [02-engram-data-type.md](02-engram-data-type.md) - What Substrates store
+- [01-naming-and-glossary.md](01-naming-and-glossary.md) - Canonical names for Substrate, Bus, Signal, and Pulse
+- [02-signal-data-type.md](02-signal-data-type.md) - What Substrates store
 - [04-decay-variants.md](04-decay-variants.md) - How pruning uses decay
 - [06-synapse-traits.md](06-synapse-traits.md) - Substrate in the trait overview
 - [07b-bus-transport-fabric.md](07b-bus-transport-fabric.md) - The Bus sibling fabric
@@ -10783,7 +10783,7 @@ topics, topic filters, replay, and bounded ring semantics.
 ## 1. Role in the Architecture
 
 In the target architecture, Bus is the kernel's ephemeral transport fabric at L0. It exists
-for communication, not durable storage. Where Substrate preserves Engrams, Bus delivers
+for communication, not durable storage. Where Substrate preserves Signals, Bus delivers
 Pulses to subscribers that care about a topic family. The two fabrics then become the
 complete kernel surface at L0: storage lives in Substrate, transport lives in Bus.
 
@@ -10801,7 +10801,7 @@ kernel-stable name and trait surface described here have not landed yet.
 
 | Fabric | Medium | Core operations | Retention model | Typical backends |
 |---|---|---|---|---|
-| Substrate | Engram | `put`, `get`, `query`, `prune` | Long-lived storage with content identity and decay-aware pruning | Memory, File, HDC, Chain |
+| Substrate | Signal | `put`, `get`, `query`, `prune` | Long-lived storage with content identity and decay-aware pruning | Memory, File, HDC, Chain |
 | Bus | Pulse | `publish`, `subscribe`, `replay_since`, `current_seq` | Bounded transport ring with topic routing and replay retention | BroadcastBus, MemoryBus, MultiBus, NATS/Kafka/Redpanda, ChainBus |
 
 ---
@@ -10856,7 +10856,7 @@ pub trait Bus: Send + Sync {
   publish order and tracks the subscriber's last seen sequence for bounded resume logic.
 
 The Bus does not content-address messages and does not persist them by default. If the
-message must survive beyond the replay ring, graduate it to an Engram and store it on a
+message must survive beyond the replay ring, graduate it to an Signal and store it on a
 Substrate.
 
 ### 2.2 TopicFilter
@@ -10909,7 +10909,7 @@ The ring buffer is a bounded retention window, not durable storage:
 
 - newer Pulses evict older Pulses when capacity is reached,
 - replay only covers what remains in the ring,
-- subscribers that fall behind lose history unless the Pulse is also graduated to an Engram.
+- subscribers that fall behind lose history unless the Pulse is also graduated to an Signal.
 
 The default in-process Bus would use a bounded ring over `tokio::sync::broadcast` plus
 replay state. Future backends can use the same semantics with different transport internals.
@@ -10969,7 +10969,7 @@ runtime may hold both handles and use them concurrently.
 
 The kernel surface is intentionally small:
 
-- `Substrate` persists durable Engrams.
+- `Substrate` persists durable Signals.
 - `Bus` transports ephemeral Pulses.
 
 This split lets Roko express durable knowledge and live communication without forcing every
@@ -11008,7 +11008,7 @@ the conductor can react to topic streams such as `gate.failure.rate` and
 # Scorer, Gate, Router, Composer, Policy — The Five Operational Traits
 
 > **Abstract:** This document specifies the five non-fabric operators after REF04. Roko's
-> kernel is two mediums (`Engram`, `Pulse`) moving through two fabrics (`Substrate`, `Bus`),
+> kernel is two mediums (`Signal`, `Pulse`) moving through two fabrics (`Substrate`, `Bus`),
 > with six operators acting on them. The five operators here generalize over `Datum` or Pulse
 > streams where appropriate; the fabric traits remain explicit. See
 > `tmp/refinements/04-operators-generalized.md` for the canonical proposal,
@@ -11020,7 +11020,7 @@ the conductor can react to topic streams such as `gate.failure.rate` and
 > and [07b-bus-transport-fabric.md](./07b-bus-transport-fabric.md) for the fabric contracts.
 
 > **Implementation status**: Target-state operator design. Current operators still accept
-> `&[Engram]` directly in today's codebase. The `Pulse`/`Bus` model and `Datum`-based
+> `&[Signal]` directly in today's codebase. The `Pulse`/`Bus` model and `Datum`-based
 > generalization documented here are planned migration targets rather than uniformly shipped
 > APIs.
 
@@ -11031,7 +11031,7 @@ the conductor can react to topic streams such as `gate.failure.rate` and
 REF04 keeps the existing operator vocabulary but generalizes its signatures as a target-state
 operator model for the runtime:
 
-- `Engram` is the durable medium.
+- `Signal` is the durable medium.
 - `Pulse` is the ephemeral medium.
 - `Substrate` is the storage fabric.
 - `Bus` is the transport fabric.
@@ -11047,15 +11047,15 @@ The recommended operator surface is:
 
 | Trait | Role | Input | Output | Medium |
 |---|---|---|---|---|
-| `Scorer` | Rate an item along multi-axis criteria | `Datum<'_>` or monomorphic `&Engram` / `&Pulse` | `Score` | Either |
-| `Gate` | Verify against external reality | `&Engram` or `&[Pulse]` | `Verdict` persisted as an Engram | Either -> Engram |
-| `Router` | Choose among candidates | `&[Engram]` or `&[Pulse]` | `Option<Selection>` | Either |
-| `Composer` | Combine many inputs under a budget | `&[Datum<'_>]`, `&Budget`, `&dyn Scorer` | `Engram` | Either -> Engram |
+| `Scorer` | Rate an item along multi-axis criteria | `Datum<'_>` or monomorphic `&Signal` / `&Pulse` | `Score` | Either |
+| `Gate` | Verify against external reality | `&Signal` or `&[Pulse]` | `Verdict` persisted as an Signal | Either -> Signal |
+| `Router` | Choose among candidates | `&[Signal]` or `&[Pulse]` | `Option<Selection>` | Either |
+| `Composer` | Combine many inputs under a budget | `&[Datum<'_>]`, `&Budget`, `&dyn Scorer` | `Signal` | Either -> Signal |
 | `Policy` | React to streams and outcomes | `&[Pulse]` | `PolicyOutputs` | Pulse -> Either |
 
 The fabric siblings around those operators are:
 
-- `Substrate`: persists and queries durable `Engram` records.
+- `Substrate`: persists and queries durable `Signal` records.
 - `Bus`: publishes, subscribes, and replays live `Pulse` traffic through `Topic` and
   `TopicFilter`.
 
@@ -11065,7 +11065,7 @@ fabric traits.
 ### Datum - Shared Surface For Either Medium
 
 > **Implementation status**: `Datum` is a target-state abstraction. Current operators accept
-> `&[Engram]` directly. The medium-polymorphic `Datum` wrapper is planned but not yet
+> `&[Signal]` directly. The medium-polymorphic `Datum` wrapper is planned but not yet
 > implemented.
 
 Operators that can work polymorphically use `Datum`:
@@ -11090,14 +11090,14 @@ operation applies to either medium.
 
 The practical rule is:
 
-- use `&Engram` when only the durable path makes sense
+- use `&Signal` when only the durable path makes sense
 - use `&Pulse` or `&[Pulse]` when the operator is reacting to live traffic
 - use `Datum` when a single operator needs to accept either medium without introducing a new
   trait family
 
-## 1. Scorer — Rate Engrams
+## 1. Scorer — Rate Signals
 
-Most scorers are still naturally Engram-first. REF04's change is that live traffic can be scored
+Most scorers are still naturally Signal-first. REF04's change is that live traffic can be scored
 without pretending it is already stored.
 
 ```rust
@@ -11122,7 +11122,7 @@ pub trait Scorer: Send + Sync {
 
 This shape preserves the fast path:
 
-- Engram-oriented scorers implement `score_engram` only.
+- Signal-oriented scorers implement `score_engram` only.
 - Pulse-aware scorers override `score_pulse` when transport-native behavior matters.
 - Callers that want one entry point use `score(Datum)`.
 
@@ -11131,7 +11131,7 @@ distress prioritization, and webhook Pulses for triage before graduation.
 
 ## 2. Gate — Verify Against Ground Truth
 
-Gate remains the verification operator. The durable Engram path stays primary; the new capability
+Gate remains the verification operator. The durable Signal path stays primary; the new capability
 is stream verification over a Pulse window.
 
 ```rust
@@ -11149,7 +11149,7 @@ pub trait Gate: Send + Sync {
 ```
 
 The key invariant does not change: a `Verdict` is still a durable audit artifact. Even when a
-Gate verifies a live window, the result persists as an Engram so the audit DAG remains durable.
+Gate verifies a live window, the result persists as an Signal so the audit DAG remains durable.
 
 Stream-gates exist for cases where the truth criterion is temporal rather than already stored:
 
@@ -11158,7 +11158,7 @@ Stream-gates exist for cases where the truth criterion is temporal rather than a
 - `LivenessGate` watches `agent.msg.chunk` timing and trips on silence.
 
 Most existing gates remain unchanged because the default `verify_stream` path materializes a
-synthetic Engram and reuses the durable verification logic.
+synthetic Signal and reuses the durable verification logic.
 
 ## 3. Router — Select Among Alternatives
 
@@ -11210,23 +11210,23 @@ This matches the architectural boundary exactly:
 
 - composition may need stored episodes plus the last N stream chunks
 - scoring and budget logic still apply across the whole candidate set
-- the result remains an `Engram` because composed artifacts are durable records
+- the result remains an `Signal` because composed artifacts are durable records
 
 Representative uses:
 
 - `LiveContextComposer` builds prompt context from both Substrate retrieval and recent Bus
   traffic
-- `TelemetryRollupComposer` consolidates a minute of transport Pulses into a summary Engram
+- `TelemetryRollupComposer` consolidates a minute of transport Pulses into a summary Signal
 - `PromptComposer` keeps the old durable-only path by passing `Datum::Engram` wrappers
 
 ## 5. Policy — React to Streams
 
 > **Implementation status**: The `Policy` shape below is the REF04 target contract. Current
-> policy implementations are still Engram-first in today's codebase; stream-reactive `Pulse`
+> policy implementations are still Signal-first in today's codebase; stream-reactive `Pulse`
 > inputs remain planned migration work.
 
 Policy is the most consequential signature change in REF04. Reactive logic naturally consumes
-Pulses, not retrospective slices of stored Engrams.
+Pulses, not retrospective slices of stored Signals.
 
 ```rust
 pub trait Policy: Send + Sync {
@@ -11243,7 +11243,7 @@ pub struct PolicyOutputs {
 `PolicyOutputs` makes the reaction step explicit:
 
 - publish new Pulses on the Bus for immediate downstream reactions
-- persist Engrams for summaries, graduations, metrics, or durable decisions
+- persist Signals for summaries, graduations, metrics, or durable decisions
 
 This is the architectural fix for the long-standing mismatch where a policy wanted to react to
 live changes but the signature implied it was consuming stored artifacts.
@@ -11251,7 +11251,7 @@ live changes but the signature implied it was consuming stored artifacts.
 Common examples:
 
 - `EpisodePolicy` subscribes to `substrate.engram.stored` filtered to episode kinds and emits
-  summary Engrams or follow-on Pulses
+  summary Signals or follow-on Pulses
 - `CircuitBreakerPolicy` watches `gate.verdict.emitted` and publishes failure-rate or pause
   Pulses
 - `HeartbeatPolicy` publishes `heartbeat.tick` Pulses at Gamma, Theta, and Delta cadence
@@ -11375,14 +11375,14 @@ Per-trait migration cost is small except for `Policy`:
 
 | Trait | Before | After | Migration shape |
 |---|---|---|---|
-| `Scorer` | `score(&Engram, &Context)` | add `score_pulse`, `score(Datum)` | additive |
-| `Gate` | `verify(&Engram, &Context)` | add `verify_stream(&[Pulse], &Context)` | additive |
-| `Router` | `select(&[Engram], &Context)` | add `select_pulse(&[Pulse], ...)` | additive |
-| `Composer` | `compose(&[Engram], ...)` | `compose(&[Datum], ...)` | additive wrapper at call sites |
-| `Policy` | `decide(&[Engram], ctx) -> Vec<Engram>` | `decide(&[Pulse], ctx) -> PolicyOutputs` | breaking; use a shim during migration |
+| `Scorer` | `score(&Signal, &Context)` | add `score_pulse`, `score(Datum)` | additive |
+| `Gate` | `verify(&Signal, &Context)` | add `verify_stream(&[Pulse], &Context)` | additive |
+| `Router` | `select(&[Signal], &Context)` | add `select_pulse(&[Pulse], ...)` | additive |
+| `Composer` | `compose(&[Signal], ...)` | `compose(&[Datum], ...)` | additive wrapper at call sites |
+| `Policy` | `decide(&[Signal], ctx) -> Vec<Signal>` | `decide(&[Pulse], ctx) -> PolicyOutputs` | breaking; use a shim during migration |
 
 The canonical migration shim is a bridge that subscribes to `substrate.engram.stored`, converts
-relevant durable writes into a Pulse stream, and lets Engram-oriented policy implementations
+relevant durable writes into a Pulse stream, and lets Signal-oriented policy implementations
 delete themselves only after the last caller has moved.
 
 ## Cross-References
@@ -11446,7 +11446,7 @@ The universal loop is the same across coding, research, coordination, and consol
 
 `SENSE` has three sources:
 
-* `Substrate.query()` for durable Engrams such as plans, episodes, heuristics, verdicts, and stored context.
+* `Substrate.query()` for durable Signals such as plans, episodes, heuristics, verdicts, and stored context.
 * `Bus.subscribe()` for live Pulses such as turn output, approval requests, cancellation, and timing signals.
 * External I/O for inputs that have not yet been normalized into either fabric, such as LLM streams, subprocess output, filesystem watches, or inbound HTTP requests.
 
@@ -11460,7 +11460,7 @@ The important part is not just ranking. The combined step answers two questions 
 
 ### Step 3: COMPOSE
 
-The Composer turns the selected material into a prompt Engram or other execution bundle under a budget. This is where the current context window is shaped, trimmed, and ordered.
+The Composer turns the selected material into a prompt Signal or other execution bundle under a budget. This is where the current context window is shaped, trimmed, and ordered.
 
 `COMPOSE` can include durable knowledge from the Substrate, live Pulses from the Bus, and task-specific constraints from the current runtime context.
 
@@ -11471,13 +11471,13 @@ The Composer turns the selected material into a prompt Engram or other execution
 The output is typically twofold:
 
 * A stream of Pulses for live observers.
-* A final Engram that captures the action result for downstream verification and storage.
+* A final Signal that captures the action result for downstream verification and storage.
 
 ### Step 5: VERIFY
 
-`VERIFY` is not a single check. It is a gate pipeline made of Engram-gates plus stream-gates.
+`VERIFY` is not a single check. It is a gate pipeline made of Signal-gates plus stream-gates.
 
-* Engram-gates verify durable outputs, producing Verdict Engrams.
+* Signal-gates verify durable outputs, producing Verdict Signals.
 * Stream-gates watch live Pulses during execution and can halt or downgrade the step before the final result is accepted.
 
 This keeps verification tied to the actual action path instead of treating it as a post-hoc afterthought.
@@ -11490,14 +11490,14 @@ This keeps verification tied to the actual action path instead of treating it as
 
 Step 6 is intentionally split into two co-equal operations that happen together.
 
-* `PERSIST` writes Engrams into the Substrate with lineage intact.
+* `PERSIST` writes Signals into the Substrate with lineage intact.
 * `BROADCAST` publishes Pulses onto the Bus for live consumers.
 
 The point is not sequencing. Durable records and ephemeral delivery are different jobs, and the architecture treats them as peers.
 
 ### Step 7: REACT
 
-Policies consume the new Pulses and emit further outputs. Those outputs can be additional Pulses, new Engrams, or both.
+Policies consume the new Pulses and emit further outputs. Those outputs can be additional Pulses, new Signals, or both.
 
 Common reactions include episode consolidation, circuit-breaking, routing feedback, and task-specific follow-up actions. This is the step where the loop becomes self-modifying over time without pretending that policy is a separate cognitive phase.
 
@@ -11507,7 +11507,7 @@ Neuro, Daimon, and Dreams are cross-cuts. They inject into operators and phases;
 
 * **Neuro** contributes durable knowledge to `SENSE` and `COMPOSE`. It is the enrichment path for retrieval, prompt assembly, and tier progression.
 * **Daimon** biases `ASSESS` and influences `ACT`. It modulates selection and action gating using affective state.
-* **Dreams** runs on its own Delta-speed consolidation cycle. It consumes recent Engrams, synthesizes new ones, and feeds the results back into the Substrate.
+* **Dreams** runs on its own Delta-speed consolidation cycle. It consumes recent Signals, synthesizes new ones, and feeds the results back into the Substrate.
 
 This distinction matters because the loop is about execution order, while the cross-cuts are about where additional cognitive machinery hooks in.
 
@@ -11676,7 +11676,7 @@ Delta mode for deep consolidation:
 - **Dreams REM imagination**: Generate novel hypotheses via HDC recombination
   (Boden 2004, The Creative Mind)
 - **Knowledge promotion**: Promote Consolidated-tier knowledge to Persistent
-- **Pruning**: Remove Engrams that have decayed below threshold
+- **Pruning**: Remove Signals that have decayed below threshold
 - **Synthesis**: Extract cross-episode patterns into new playbook rules
 
 Delta ticks use T2 (full model) for deep reasoning and synthesis.
@@ -12129,7 +12129,7 @@ LLM-era architectures that inform specific mechanisms:
 | **Tree of Thoughts** (Yao et al. 2023) | Branching search over reasoning paths | Router.select() with multiple candidates |
 | **ExpeL** (Zhao et al. 2023) | Learning from experience | Episode → Playbook extraction in roko-learn |
 | **Voyager** (Wang et al. 2023) | Skill library accumulation | EvoSkills in roko-learn |
-| **LATS** (Zhou et al. 2023) | Language Agent Tree Search | Search over Engram candidates via Router |
+| **LATS** (Zhou et al. 2023) | Language Agent Tree Search | Search over Signal candidates via Router |
 
 ---
 
@@ -12203,7 +12203,7 @@ prediction-error stream, and the routing logic.
 > downward dependencies. This document specifies each layer, maps the six Synapse traits
 > to their layer assignments, describes the dependency rules, and provides the complete
 > layer diagram. L0 is the target two-medium, two-fabric runtime/kernel surface:
-> `Substrate` is the storage fabric for durable Engrams, and the target `Bus` trait is the
+> `Substrate` is the storage fabric for durable Signals, and the target `Bus` trait is the
 > transport fabric for ephemeral Pulses. In the target dep graph, `roko-core` is joined by
 > proposed kernel crates `roko-bus`, `roko-hdc`, and `roko-spi`; today those
 > responsibilities are still partly split across `roko-runtime`, `roko-primitives`, and the
@@ -12275,7 +12275,7 @@ I/O, adaptive clock.
 
 **What Lives Here**:
 - Process spawning and lifecycle management (`ProcessSupervisor`)
-- `Substrate` for durable Engram persistence and query
+- `Substrate` for durable Signal persistence and query
 - target `Bus` transport for topic-addressed Pulse delivery and bounded replay
 - target `Topic` as the routing handle for Pulse publication and subscription
 - target `TopicFilter` as the subscription and replay selector used by Bus consumers
@@ -12473,7 +12473,7 @@ small, keep impl crates independent, and let coordination flow through the fabri
 
 | Layer | Crate | Status | Purpose |
 |---|---|---|---|
-| **Runtime / Kernel (L0)** | `roko-core` | Built (376 tests) | Engram, Substrate, and shared kernel traits today; the target kernel surface adds Bus, Topic, and TopicFilter |
+| **Runtime / Kernel (L0)** | `roko-core` | Built (376 tests) | Signal, Substrate, and shared kernel traits today; the target kernel surface adds Bus, Topic, and TopicFilter |
 | **Runtime / Kernel (L0)** | `roko-primitives` | Built | Current HDC vectors, Hamming similarity, shared types; target home shrinks to `roko-hdc` |
 | **Runtime / Kernel (L0)** | `roko-runtime` | Built | Process supervision, cancellation, Bus-backed lifecycle, adaptive clock |
 | **Runtime / Kernel (L0)** | `roko-bus` | Proposed | Target transport crate for Bus backends and Pulse delivery |
@@ -12657,7 +12657,7 @@ HDC encoding enables Cross-Domain Insight Resonance (see [17-design-principles-a
 | SENSE | Neuro-backed `Substrate.query` supplies durable context for recall and retrieval. |
 | COMPOSE | Composer queries NeuroStore for relevant knowledge to enrich prompts under budget. |
 | VERIFY / REACT | Gate verdicts and outcome records are consumed back into Neuro for consolidation and tier promotion. |
-| Dreams Delta loop | Dreams reads from and writes to NeuroStore while consolidating Engrams. |
+| Dreams Delta loop | Dreams reads from and writes to NeuroStore while consolidating Signals. |
 
 ---
 
@@ -12714,7 +12714,7 @@ These markers implement fast heuristic signals that guide decision-making before
 
 ## 4. Dreams - Offline Learning
 
-`roko-dreams` provides offline learning during idle time at Delta frequency. Dreams is its own Delta-speed loop: it consumes recent Engrams and related Pulses, synthesizes new Engrams, and emits follow-up Pulses for later use.
+`roko-dreams` provides offline learning during idle time at Delta frequency. Dreams is its own Delta-speed loop: it consumes recent Signals and related Pulses, synthesizes new Signals, and emits follow-up Pulses for later use.
 
 ### 4.1 Three-Phase Cycle
 
@@ -12754,7 +12754,7 @@ This addresses the Alpha Convergence Problem: without creative divergence, an ag
 | Loop touchpoint | How Dreams Is Injected |
 |---|---|
 | Delta speed | Runs as a separate consolidation loop on the Delta schedule. |
-| Neuro | Consumes recent Engrams from NeuroStore and writes back consolidated Engrams. |
+| Neuro | Consumes recent Signals from NeuroStore and writes back consolidated Signals. |
 | Pulse stream | Emits related Pulses to announce consolidation, promotion, and follow-up work. |
 | Daimon | Uses PAD during consolidation and updates behavioral state after synthesis. |
 
@@ -12930,9 +12930,9 @@ Category theory provides a formal framework for understanding why cross-cuts com
 
 ### 7.1 Cross-Cuts as Endofunctors
 
-Each cross-cut defines an endofunctor F: Eng -> Eng on the Engram category, where F maps:
+Each cross-cut defines an endofunctor F: Eng -> Eng on the Signal category, where F maps:
 - Each trait implementation T to an enriched version F(T)
-- Each Engram to an enriched Engram with additional metadata
+- Each Signal to an enriched Signal with additional metadata
 
 | Cross-Cut | Functor F | F(Router) | F(Composer) |
 |---|---|---|---|
@@ -12965,7 +12965,7 @@ The HDC vectors used by Neuro provide three algebraic operations that map to cat
 | **Bundle** (majority vote) | Direct sum / coproduct | Combining multiple related concepts |
 | **Permute** (rotation) | Cyclic action | Sequencing: permute(step, position) |
 
-These operations make the HDC vector space a proper Vector Symbolic Architecture, which is algebraically richer than a simple embedding space. The bind/bundle/permute algebra enables compositional knowledge representation that is structurally compatible with the Engram's categorical structure.
+These operations make the HDC vector space a proper Vector Symbolic Architecture, which is algebraically richer than a simple embedding space. The bind/bundle/permute algebra enables compositional knowledge representation that is structurally compatible with the Signal's categorical structure.
 
 **Reference**: Kleyko, D. et al. (2022). "A Survey on Hyperdimensional Computing." Artificial Intelligence Review 56.
 
@@ -12997,7 +12997,7 @@ The three cognitive speeds (Gamma/Theta/Delta) apply uniformly across domains, b
 |---|---|
 | **Gamma** (~5s) | Neuro injects relevant citations and prior findings. Daimon enters exploration mode when novelty is high. |
 | **Theta** (~75s) | Neuro checks for contradictions with existing knowledge. Daimon assesses whether the research direction is productive. |
-| **Delta** (~hours) | Dreams generates cross-domain hypotheses via HDC recombination, then writes consolidated Engrams back to Neuro. |
+| **Delta** (~hours) | Dreams generates cross-domain hypotheses via HDC recombination, then writes consolidated Signals back to Neuro. |
 
 ---
 
@@ -13008,7 +13008,7 @@ The three cognitive speeds (Gamma/Theta/Delta) apply uniformly across domains, b
 - **Dreams**: `roko-dreams` scaffolded but not fully implemented. Three-phase cycle specified. Hypnagogia engine specified. NREM replay and REM imagination not yet shipping.
 - **Gap**: Cross-cut interaction (Daimon, Neuro, Dreams) not yet fully wired into the seven-step loop operators everywhere they are expected.
 - **Gap**: Cross-cut functorial composition not formally verified; commutativity of the Daimon/Neuro/Dreams triangle depends on arbitration correctness.
-- **Opportunity**: VSA algebraic operations (bind/bundle/permute) on knowledge vectors are defined but not yet exposed as composable operations on Engrams.
+- **Opportunity**: VSA algebraic operations (bind/bundle/permute) on knowledge vectors are defined but not yet exposed as composable operations on Signals.
 
 ---
 
@@ -13036,7 +13036,7 @@ The three cognitive speeds (Gamma/Theta/Delta) apply uniformly across domains, b
 **Prerequisites**: [06-synapse-traits](./06-synapse-traits.md), [12-five-layer-taxonomy](./12-five-layer-taxonomy.md), [13-cognitive-cross-cuts](./13-cognitive-cross-cuts.md), [01-naming-and-glossary](./01-naming-and-glossary.md)
 **Key sources**:
 - `tmp/refinements/13-collective-intelligence-c-factor.md` — canonical refinement source for this chapter
-- `docs/00-architecture/01-naming-and-glossary.md` — authoritative naming map for `Engram`, `Pulse`, `Bus`, `Topic`, `Datum`, and `TopicFilter`
+- `docs/00-architecture/01-naming-and-glossary.md` — authoritative naming map for `Signal`, `Pulse`, `Bus`, `Topic`, `Datum`, and `TopicFilter`
 - `/Users/will/dev/nunchi/roko/refactoring-prd/00-overview.md` — original collective-intelligence framing
 - `/Users/will/dev/nunchi/roko/roko/docs/00-architecture/13-cognitive-cross-cuts.md` — Neuro, Daimon, and Dreams injection points
 
@@ -13109,7 +13109,7 @@ In the target-state design, the learned scalar is a weighted combination of the 
 | Social perceptiveness | How well members predict each other's outputs | `peer.prediction` vs `peer.outcome` residuals |
 | Trust calibration | How often citations are useful and verified | citation reciprocity and downstream gate survival in the Substrate |
 | Channel openness | How much intended traffic is actually delivered | Bus delivery confirmation and subscriber reach |
-| Cognitive diversity | How different the cohort's working set is | HDC distance across cohort Engrams |
+| Cognitive diversity | How different the cohort's working set is | HDC distance across cohort Signals |
 
 These are the same five signals described in the refinement source, expressed in runtime terms that the Bus and Substrate can already observe.
 
@@ -13220,7 +13220,7 @@ This is the clearest place for heuristic calibration. Heuristic models of teamma
 
 ### 4.3 Trust calibration
 
-Trust is not a social vibe; it is a measurable citation relation. If an agent cites an Engram that later fails verification, that citation should reduce trust on the relevant topic. If the citation survives and helps a later task, trust should increase.
+Trust is not a social vibe; it is a measurable citation relation. If an agent cites an Signal that later fails verification, that citation should reduce trust on the relevant topic. If the citation survives and helps a later task, trust should increase.
 
 That gives the system a structural way to distinguish:
 
@@ -13328,7 +13328,7 @@ The runtime then folds those signals into a continuous cohort score.
 ### 6.2 Data flow
 
 1. Bus Pulses record turns, predictions, outcomes, and cohort completion
-2. Substrate Engrams record durable artifacts, citations, and lineage
+2. Substrate Signals record durable artifacts, citations, and lineage
 3. the learner computes `CohortMetrics`
 4. `CohortWeightsLearner` updates the scalar model
 5. Policy reads the current c-factor and acts on it conditionally
@@ -13426,7 +13426,7 @@ The remaining work is mostly in wiring those pieces into one continuous metric l
 
 - See [01-naming-and-glossary](./01-naming-and-glossary.md) for the canonical vocabulary used in this chapter
 - See [13-cognitive-cross-cuts](./13-cognitive-cross-cuts.md) for the Neuro, Daimon, and Dreams injection points
-- See [02-engram-data-type](./02-engram-data-type.md) for HDC fingerprinting on durable artifacts
+- See [02-signal-data-type](./02-signal-data-type.md) for HDC fingerprinting on durable artifacts
 - See [25-attention-as-currency](./25-attention-as-currency.md) for the attention-economy lever used to curb dominance
 - See [11-dual-process-and-active-inference](./11-dual-process-and-active-inference.md) for online calibration from prediction error
 - See [../13-coordination/INDEX.md](../13-coordination/INDEX.md) for coordination and collective-metric chapters
@@ -13491,7 +13491,7 @@ The current workspace has the following load-bearing crates relevant to the modu
 
 | Crate | Current role | Notes |
 |---|---|---|
-| `roko-core` | Kernel contracts | Holds the durable Engram model and the core traits today. |
+| `roko-core` | Kernel contracts | Holds the durable Signal model and the core traits today. |
 | `roko-runtime` | Runtime infrastructure | Houses process supervision, clocks, and bus-like runtime plumbing. |
 | `roko-primitives` | HDC support | Contains the vector/similarity machinery that the target plan isolates more narrowly. |
 | `roko-std` | Default implementations + built-in tools | Currently mixes defaults with tool inventory. |
@@ -13672,7 +13672,7 @@ REF20 also implies a public-API stability model for the target workspace:
 
 | Tier | Stability | Examples |
 |---|---|---|
-| Core | Semver-major-only breaks | `Engram`, `Substrate`, and today's kernel traits; target core adds `Bus` and `Topic` |
+| Core | Semver-major-only breaks | `Signal`, `Substrate`, and today's kernel traits; target core adds `Bus` and `Topic` |
 | Extended | Minor-version breaks with notice | `Pulse`, `TopicFilter`, gate/routing helpers, default compositions |
 | Experimental | Anything goes behind feature flags or scaffolds | future chain, dreams, and host-specific boundaries |
 
@@ -13832,7 +13832,7 @@ The architecture story here is simple: Roko gets better by using itself. The mec
 not one loop, but seven compounding loops tied together by two mediums, two fabrics, and the
 seven-step loop.
 
-- Two mediums: `Engram` for durable content-addressed records, `Pulse` for ephemeral
+- Two mediums: `Signal` for durable content-addressed records, `Pulse` for ephemeral
   topic-addressed transport.
 - Two fabrics: `Substrate` for storage, `Bus` for transport.
 - Seven-step loop: `SENSE`, `ASSESS`, `COMPOSE`, `ACT`, `VERIFY`, `PERSIST` /
@@ -13887,7 +13887,7 @@ the two fabrics, the seven-step loop, and the learning primitives from adjacent 
 
 Demurrage gives memory a cost for sitting idle. That changes retrieval from "store everything"
 to "store what continues to earn its keep." The result is a self-trimming substrate: useful
-Engrams retain balance, weak ones fade toward cold tier, and the retrieval surface stays
+Signals retain balance, weak ones fade toward cold tier, and the retrieval surface stays
 indexed toward what has actually been used.
 
 The compounding effect is subtle but real. More usage produces more reinforcement evidence,
@@ -13921,7 +13921,7 @@ on a stable semantic neighborhood instead of a noisy miss.
 
 This loop compounds because the codebook is not just bigger; it is better organized by use.
 The more real interactions the system sees, the more likely a future query will collapse to
-the right Engram cluster on the first pass. The KPI here is the percentage of Composer prompts
+the right Signal cluster on the first pass. The KPI here is the percentage of Composer prompts
 that hit HDC-clean cache on the first attempt.
 
 ### 2.4 c-factor feedback
@@ -14206,7 +14206,7 @@ scores.
 > innovations catalog with an explicit split between primitive innovations and composed
 > innovations. This document preserves the design principles, then explains which capabilities
 > are genuinely primitive, which are integrations of prior art, and why the moat comes from
-> the composition across Engram, Pulse, Bus, Substrate, HDC fingerprint, demurrage,
+> the composition across Signal, Pulse, Bus, Substrate, HDC fingerprint, demurrage,
 > heuristics/falsifiers, c-factor, the replication ledger, and the plugin SPI. See
 > [tmp/refinements/19-net-new-innovations.md](../../tmp/refinements/19-net-new-innovations.md)
 > for the refinement note that drove this rewrite.
@@ -14215,7 +14215,7 @@ scores.
 > **Implementation**: Mixed
 
 > **Reality check**: This document mixes shipping architecture with target-state
-> frontier claims. Shipping today: Engram/Substrate, the six kernel traits, the
+> frontier claims. Shipping today: Signal/Substrate, the six kernel traits, the
 > runtime event bus in its current concrete form, HDC primitives, multi-backend
 > orchestration, the gate pipeline, episode logging, and the TUI. Research
 > hypotheses or planned primitives: `Pulse`, demurrage, heuristics with explicit
@@ -14255,7 +14255,7 @@ capability catalog (what is genuinely net-new, what is primitive, and what is co
 
 | Category | What belongs here today |
 |---|---|
-| **Shipping** | Engram/Substrate, the six kernel traits, the current concrete event bus, HDC primitives, gate pipeline, multi-backend orchestration, episode logging, TUI |
+| **Shipping** | Signal/Substrate, the six kernel traits, the current concrete event bus, HDC primitives, gate pipeline, multi-backend orchestration, episode logging, TUI |
 | **Research hypotheses / target-state** | Pulse, demurrage, falsifier commons, replication ledger, worldview clusters, full plugin SPI |
 | **Prior art integrations** | Many higher-level compositions such as T0 probes, VCG attention, predictive foraging, and cross-domain resonance |
 
@@ -14286,7 +14286,7 @@ This is a sign that domain behavior should be factored into a trait implementati
 ### P2: Verify Everything
 
 **Statement**: Every agent output passes through the Gate pipeline before being persisted
-or acted upon. No unverified Engrams enter the audit DAG as trusted.
+or acted upon. No unverified Signals enter the audit DAG as trusted.
 
 **Rationale**: LLMs hallucinate. Tools fail silently. External data sources lie. Without
 systematic verification, errors compound through the lineage DAG. The Gate pipeline is the
@@ -14300,7 +14300,7 @@ firewall between "the agent produced something" and "the system trusts it."
 - Chain transactions pass through simulation gate (mirage-rs) → gas estimation → balance
   check before submission.
 
-**Escape hatch**: Engrams can be marked with low confidence and stored as Transient tier
+**Escape hatch**: Signals can be marked with low confidence and stored as Transient tier
 knowledge without full verification, allowing speculative hypotheses to exist in the system
 while clearly flagged as unverified.
 
@@ -14324,27 +14324,27 @@ Composer takes a Budget parameter).
 
 ### P4: Content-Addressed Everything
 
-**Statement**: Every Engram has a BLAKE3 content hash computed from its identity fields
-(kind, body, author, tainted, lineage, tags). The hash is the Engram's identity. Two
-Engrams with identical content have identical hashes.
+**Statement**: Every Signal has a BLAKE3 content hash computed from its identity fields
+(kind, body, author, tainted, lineage, tags). The hash is the Signal's identity. Two
+Signals with identical content have identical hashes.
 
 **Rationale**: Content addressing provides three properties simultaneously:
 1. **Deduplication**: Identical content is automatically deduplicated.
-2. **Integrity verification**: Any modification to an Engram changes its hash, making
+2. **Integrity verification**: Any modification to an Signal changes its hash, making
    tampering detectable.
 3. **Lineage verification**: The audit DAG is a hash chain — replaying the lineage
-   verifies that no intermediate Engram was modified.
+   verifies that no intermediate Signal was modified.
 
 This is the foundation of the Forensic AI capability — causal replay of agent decisions
 with cryptographic verification.
 
 ### P5: Decay as Feature, Not Bug
 
-**Statement**: Engrams decay by default. Information that is not reinforced fades. This is
+**Statement**: Signals decay by default. Information that is not reinforced fades. This is
 a feature that prevents knowledge hoarding and ensures the system's working memory stays
 relevant.
 
-**Rationale**: Without decay, the Substrate grows unboundedly. Old, irrelevant Engrams
+**Rationale**: Without decay, the Substrate grows unboundedly. Old, irrelevant Signals
 dilute search results. The system cannot distinguish between current knowledge and historical
 artifacts. Biological memory systems (Ebbinghaus 1885) demonstrate that forgetting is
 essential for efficient recall.
@@ -14378,7 +14378,7 @@ cannot decide when to escalate to a stronger model.
 
 ### P7: Observable by Default
 
-**Statement**: Every Engram, every trait invocation, every gate verdict, every tier
+**Statement**: Every Signal, every trait invocation, every gate verdict, every tier
 selection is observable. The system is transparent to its operators at every level of
 abstraction.
 
@@ -14387,10 +14387,10 @@ undebuggable in development. Roko's content-addressed lineage DAG, provenance tr
 and taint propagation provide full observability without requiring additional instrumentation.
 
 **Application examples**:
-- `roko replay <hash>` walks the lineage DAG backward from any Engram to its root inputs.
+- `roko replay <hash>` walks the lineage DAG backward from any Signal to its root inputs.
 - Gate verdicts include the gate name, score, reason, test counts, and error digest.
 - CascadeRouter logs every tier selection decision with confidence and cost.
-- Daimon PAD vector changes are recorded as Engrams, creating a visible emotional history.
+- Daimon PAD vector changes are recorded as Signals, creating a visible emotional history.
 
 ---
 
@@ -14407,9 +14407,9 @@ for the source note.
 
 | # | Primitive innovation | What is net-new here | Closest prior art | Why it matters |
 |---|---|---|---|---|
-| 1 | **Engram / Pulse / Bus / Substrate split** | A clean separation between durable record, ephemeral transport, transport fabric, and storage fabric. | Event sourcing, actor systems, message buses, hexagonal architecture | This gives the kernel a stable vocabulary and boundary model for both durability and live traffic. |
-| 2 | **HDC fingerprint** | A deterministic 10,240-bit fingerprint on each Engram for similarity, clustering, consensus, and analogy. | Hyperdimensional computing, sparse distributed memory, embedding search | Semantic locality becomes a first-class runtime primitive instead of a side index. |
-| 3 | **Demurrage** | A continuous holding cost on idle Engrams with reinforcement for useful reuse and retrieval. | Gesell demurrage, forgetting curves, memory decay models | The durable medium stays selective instead of turning into dead weight. |
+| 1 | **Signal / Pulse / Bus / Substrate split** | A clean separation between durable record, ephemeral transport, transport fabric, and storage fabric. | Event sourcing, actor systems, message buses, hexagonal architecture | This gives the kernel a stable vocabulary and boundary model for both durability and live traffic. |
+| 2 | **HDC fingerprint** | A deterministic 10,240-bit fingerprint on each Signal for similarity, clustering, consensus, and analogy. | Hyperdimensional computing, sparse distributed memory, embedding search | Semantic locality becomes a first-class runtime primitive instead of a side index. |
+| 3 | **Demurrage** | A continuous holding cost on idle Signals with reinforcement for useful reuse and retrieval. | Gesell demurrage, forgetting curves, memory decay models | The durable medium stays selective instead of turning into dead weight. |
 | 4 | **Heuristics / falsifiers commons** | Heuristics live with explicit falsifiers, recalibration, and exportable calibration history. | Scientific method, calibration logs, prediction markets | Belief revision becomes auditable and shared across deployments instead of local and informal. |
 | 5 | **c-factor** | A cohort-process scalar learned from Bus and Substrate evidence, not declared by fiat. | Collective-intelligence research, team-process metrics | Group quality becomes measurable and actionable without collapsing into a single hard objective. |
 | 6 | **Replication ledger** | A durable record of replications, failures, and outcome conditions for claims and heuristics. | Provenance graphs, experimental registries, audit logs | Later agents inherit tested knowledge instead of starting from scratch. |
@@ -14425,7 +14425,7 @@ for the source note.
 | 4 | **Hypnagogia Engine** | HDC recall + episodic recombination + guarded partial completions | Dormio-style hypnagogia research, creative recombination systems | It forces divergent hypothesis generation when single-model convergence would flatten alpha. |
 | 5 | **Predictive Foraging** | Heuristics + falsifiers + retrieval prediction + stopping rules | Marginal Value Theorem, information foraging theory | Retrieval becomes self-correcting and budget-aware. |
 | 6 | **Collective calibration loop** | c-factor + replication ledger + verified outcomes + shared heuristics | Calibration tracking, team learning loops | The system learns from each cohort instead of resetting at deployment boundaries. |
-| 7 | **Forensic AI** | Engram lineage + Bus history + Gate verdicts + replay tooling | Audit trails, causal reconstruction, provenance systems | Decisions can be replayed with the evidence that actually existed at the time. |
+| 7 | **Forensic AI** | Signal lineage + Bus history + Gate verdicts + replay tooling | Audit trails, causal reconstruction, provenance systems | Decisions can be replayed with the evidence that actually existed at the time. |
 | 8 | **EvoSkills / ADAS family** | Plugin SPI + gates + replication ledger + trait search | Adversarial skill verification, meta-agent architecture search | Skills and architectures can improve through selection pressure instead of manual curation alone. |
 | 9 | **Cross-Domain Insight Resonance** | HDC fingerprint + heuristic commons + diverse evidence | Analogy engines, HDC similarity search | Structural similarity across domains becomes a low-latency capability. |
 | 10 | **Generative Interfaces (A2UI)** | Plugin SPI + design system + runtime descriptions | Schema-driven UI generation, generated admin surfaces | Agents can expose usable interfaces without hand-built screens for every workflow. |
@@ -14440,7 +14440,7 @@ can wire them together so the outputs of one become the inputs of the next.
 ## 3. Innovation Interconnection Map
 
 The moat is not any one primitive innovation by itself. The moat is the composition across
-Engram, Pulse, Bus, Substrate, HDC fingerprint, demurrage, heuristics/falsifiers, c-factor,
+Signal, Pulse, Bus, Substrate, HDC fingerprint, demurrage, heuristics/falsifiers, c-factor,
 the replication ledger, and the plugin SPI. Those pieces reinforce one another:
 
 REF31 turns that composition claim into an explicit architecture artifact: see
@@ -14450,7 +14450,7 @@ for the 10-primitive matrix and the named mechanisms behind this moat framing.
 
 | Primitive / invariant | Composed capability it enables | Moat effect |
 |---|---|---|
-| Engram / Pulse / Bus / Substrate | Forensic AI, live coordination, durable replay | Separating durable record from ephemeral transport makes the system auditable without freezing runtime traffic. |
+| Signal / Pulse / Bus / Substrate | Forensic AI, live coordination, durable replay | Separating durable record from ephemeral transport makes the system auditable without freezing runtime traffic. |
 | HDC fingerprint | Somatic Landscape, Hypnagogia, Cross-Domain Insight Resonance | Similarity becomes a shared computation surface instead of a bespoke index in each feature. |
 | Demurrage | Predictive Foraging, memory hygiene, selective persistence | The durable medium stays live, which prevents the commons from turning into dead weight. |
 | Heuristics / falsifiers | Collective calibration, VCG routing, EvoSkills | Learned rules stay falsifiable, exportable, and revisable instead of becoming folklore. |
@@ -14460,7 +14460,7 @@ for the 10-primitive matrix and the named mechanisms behind this moat framing.
 
 The structural lesson from REF19 is that competitors can copy a feature surface, but they do
 not automatically inherit the linked primitives that make the surface self-reinforcing. The
-two-mediums / two-fabrics kernel matters here: `Engram` and `Pulse` separate durable record
+two-mediums / two-fabrics kernel matters here: `Signal` and `Pulse` separate durable record
 from ephemeral transport; `Substrate` and `Bus` separate storage from transport; the seven-step
 loop then reuses those primitives on every turn so learning, verification, persistence, and
 broadcast compound instead of resetting.
@@ -14487,8 +14487,8 @@ Each innovation has different validation requirements:
 
 | Innovation | Validation status | What would validate it |
 |---|---|---|
-| Engram / Pulse / Bus / Substrate split | Core architecture | Round-trip fidelity across live transport, durable storage, replay, and graduation boundaries. |
-| HDC fingerprint | Implemented in primitives | Similarity search quality, collision behavior, and clustering usefulness on real Engrams. |
+| Signal / Pulse / Bus / Substrate split | Core architecture | Round-trip fidelity across live transport, durable storage, replay, and graduation boundaries. |
+| HDC fingerprint | Implemented in primitives | Similarity search quality, collision behavior, and clustering usefulness on real Signals. |
 | Demurrage | Specified and partially wired | Retention curves that keep useful knowledge live while trimming dead weight. |
 | Heuristics / falsifiers commons | Specified | Falsifier closure rates, calibration improvement, and reuse across deployments. |
 | c-factor | Specified | Correlation with cohort outcome quality without becoming a gaming target. |
@@ -14540,9 +14540,9 @@ Fix: introduce a new module whose secret is the template format.
 ### 5.3 Clean Architecture / Hexagonal Architecture
 
 Martin's Clean Architecture (2017) and Cockburn's Hexagonal Architecture (2005) converge on
-the same principle: **dependencies point inward**. Domain types (Engram, Score, Kind) are in
+the same principle: **dependencies point inward**. Domain types (Signal, Score, Kind) are in
 the center. Infrastructure (Substrate backends, LLM APIs) is on the outside. The Substrate
-does not define what an Engram is; the Engram defines what the Substrate must store.
+does not define what an Signal is; the Signal defines what the Substrate must store.
 
 Hexagonal Architecture adds the **port/adapter** distinction that Roko implements exactly:
 - **Ports** = Synapse traits (Substrate, Scorer, Gate, Router, Composer, Policy)
@@ -14602,7 +14602,7 @@ amplifies at each step through conformity bias and chain-of-thought amplificatio
 
 **Roko's design**: P2 (Verify Everything) structurally prevents this. Every output passes
 through the Gate pipeline before being persisted or used as input. The lineage DAG traces
-every Engram to its verified sources.
+every Signal to its verified sources.
 
 ### 6.3 Unbounded Context Sharing
 
@@ -14646,7 +14646,7 @@ no core changes needed.
 skipped for speed.
 
 **Roko's design**: P2 places verification in the seven-step loop as a load-bearing phase,
-not an appendable afterthought. Gate verdicts are Engrams in the lineage DAG; skipping them
+not an appendable afterthought. Gate verdicts are Signals in the lineage DAG; skipping them
 leaves an audit gap that is visible to any DAG traversal.
 
 ---
@@ -14684,10 +14684,10 @@ leaves an audit gap that is visible to any DAG traversal.
 
 - **Design principles (P1-P7)**: Documented and enforced in architectural review. Not
   formally encoded as automated checks; a linter for principle violations would be useful.
-- **Engram / Pulse / Bus / Substrate split**: `Engram` and `Substrate` ship. The current event
+- **Signal / Pulse / Bus / Substrate split**: `Signal` and `Substrate` ship. The current event
   bus exists in runtime code, but `Pulse` and a generic kernel `Bus` trait are target-state.
 - **HDC fingerprint**: HDC primitives ship, but there is not yet an HDC fingerprint field on
-  every `Engram`.
+  every `Signal`.
 - **Demurrage**: Target-state only. Standard decay exists; the demurrage model does not.
 - **Heuristics / falsifiers commons**: Target-state only. Shared falsifier-aware calibration is
   not yet a live runtime surface.
@@ -14739,7 +14739,7 @@ leaves an audit gap that is visible to any DAG traversal.
 
 # Decay x Knowledge Tier matrix
 
-> Layer 0 Kernel -- Engram Lifecycle
+> Layer 0 Kernel -- Signal Lifecycle
 > Status: **Specification** -- parameters ready for implementation
 > Canonical source: `crates/roko-core/src/decay.rs`, `crates/roko-neuro/` (planned)
 > Cross-references: [04-decay-variants.md](04-decay-variants.md), [13-cognitive-cross-cuts.md](13-cognitive-cross-cuts.md), [01-naming-and-glossary.md](01-naming-and-glossary.md), [tmp/refinements/12-knowledge-demurrage.md](../../tmp/refinements/12-knowledge-demurrage.md)
@@ -15118,7 +15118,7 @@ The integration point that matters most is the Scorer: it should read effective 
 > Layer 0 Kernel -- Signal Type System
 > Status: **Specification** -- migration path from flat enum to compound kinds
 > Canonical source: `crates/roko-core/src/kind.rs`
-> Cross-references: [02-engram-data-type.md](02-engram-data-type.md), [08-scorer-gate-router-composer-policy.md](08-scorer-gate-router-composer-policy.md)
+> Cross-references: [02-signal-data-type.md](02-signal-data-type.md), [08-scorer-gate-router-composer-policy.md](08-scorer-gate-router-composer-policy.md)
 
 > **Implementation**: Specified
 
@@ -15400,13 +15400,13 @@ impl Kind {
 
 ## Cross-References
 
-- [02-engram-data-type.md](02-engram-data-type.md) -- Engram struct with Kind field
+- [02-signal-data-type.md](02-signal-data-type.md) -- Signal struct with Kind field
 - [08-scorer-gate-router-composer-policy.md](08-scorer-gate-router-composer-policy.md) -- Trait dispatch by Kind
 - [09-universal-cognitive-loop.md](09-universal-cognitive-loop.md) -- Loop stages that filter by Kind
 - [01-naming-and-glossary.md](./01-naming-and-glossary.md) -- Canonical kind vocabulary, including heuristic and worldview terms
 - [tmp/refinements/14-worldview-validation.md](../../tmp/refinements/14-worldview-validation.md) -- Heuristic and worldview learning refinement
 - `crates/roko-core/src/kind.rs` -- Current Kind enum
-- `crates/roko-core/src/engram.rs` -- Engram struct
+- `crates/roko-core/src/__PATH_ENGRAM_RS__0` -- Signal struct
 
 
 ---
@@ -15591,7 +15591,7 @@ Constraint: `warn_threshold < block_threshold`.
 | `adaptive_thresholds` | bool | `true` | -- | Enable EMA-based gate threshold adaptation |
 | `cascade_router_persistence` | bool | `true` | -- | Persist cascade router state |
 
-`episode_retention_days` remains a coarse cap for raw logs, but REF12 shifts durable-knowledge freshness away from fixed retention windows and toward demurrage-governed `balance` on Engrams, playbooks, and distilled heuristics.
+`episode_retention_days` remains a coarse cap for raw logs, but REF12 shifts durable-knowledge freshness away from fixed retention windows and toward demurrage-governed `balance` on Signals, playbooks, and distilled heuristics.
 
 ### 2.10a Demurrage (`[demurrage]`, specified by REF12)
 
@@ -15599,14 +15599,14 @@ This section tunes the durable-memory attention economy. The values below come f
 
 | Parameter | Type | Default | Range | Description |
 |---|---|---|---|---|
-| `flat_tax_per_day` | f64 | `0.01` | `>= 0.0` | Flat carrying cost `r` charged against an Engram's `balance` each day. |
+| `flat_tax_per_day` | f64 | `0.01` | `>= 0.0` | Flat carrying cost `r` charged against an Signal's `balance` each day. |
 | `exp_decay_per_day` | f64 | `0.005` | `>= 0.0` | Exponential term `β` that compounds demurrage as balance persists idle. |
-| `min_balance` | f64 | `0.0` | `>= 0.0` | Floor below which an Engram becomes a candidate for cold-tier freeze. |
-| `cited_bonus` | f64 | `0.05` | `>= 0.0` | Reinforcement added when other Engrams cite this Engram in lineage. |
-| `retrieved_bonus` | f64 | `0.02` | `>= 0.0` | Reinforcement added when retrieval actually surfaces the Engram. |
-| `gated_bonus` | f64 | `0.03` | `>= 0.0` | Reinforcement added when a gate compares against the Engram and it holds up. |
+| `min_balance` | f64 | `0.0` | `>= 0.0` | Floor below which an Signal becomes a candidate for cold-tier freeze. |
+| `cited_bonus` | f64 | `0.05` | `>= 0.0` | Reinforcement added when other Signals cite this Signal in lineage. |
+| `retrieved_bonus` | f64 | `0.02` | `>= 0.0` | Reinforcement added when retrieval actually surfaces the Signal. |
+| `gated_bonus` | f64 | `0.03` | `>= 0.0` | Reinforcement added when a gate compares against the Signal and it holds up. |
 | `surprised_bonus` | f64 | `0.15` | `>= 0.0` | Novelty-heavy reinforcement for prediction error or informative surprise. |
-| `agent_quoted_bonus` | f64 | `0.08` | `>= 0.0` | Reinforcement added when an agent explicitly quotes or references the Engram in output. |
+| `agent_quoted_bonus` | f64 | `0.08` | `>= 0.0` | Reinforcement added when an agent explicitly quotes or references the Signal in output. |
 | `policy_confidence_tax` | f64 | `0.002` | `>= 0.0` | Demurrage applied to learned Policy confidences so stale thresholds become challengeable again. |
 
 Illustrative shape:
@@ -15894,7 +15894,7 @@ adaptive_thresholds = true
 
 Roko performs numerical computation throughout: decay curves, scoring, HDC similarity, bandit arm selection, EMA threshold adaptation, cost normalization, and observability aggregation. This document specifies the time/space complexity of each algorithm, precision targets, normalization rules, instrumentation overhead budgets, and strategies for handling NaN/Inf/underflow without making the telemetry surface itself distort the system being measured.
 
-Terminology in this chapter follows the current kernel vocabulary in [01-naming-and-glossary.md](01-naming-and-glossary.md), especially `Engram`, `Pulse`, `Bus`, and `Topic`.
+Terminology in this chapter follows the current kernel vocabulary in [01-naming-and-glossary.md](01-naming-and-glossary.md), especially `Signal`, `Pulse`, `Bus`, and `Topic`.
 
 ---
 
@@ -15917,7 +15917,7 @@ Terminology in this chapter follows the current kernel vocabulary in [01-naming-
 | Histogram bucket bounds | f64 | Stable bucket boundaries must survive repeated serialization |
 | Trace/log queue watermarks | usize | Queue depth is an integer occupancy, not an estimate |
 
-Rule of thumb: use f32 for per-Engram or per-Pulse fields stored at high volume, f64 for aggregate statistics and telemetry values that accumulate over time, and integers for counters, token totals, timestamps, and queue depths.
+Rule of thumb: use f32 for per-Signal or per-Pulse fields stored at high volume, f64 for aggregate statistics and telemetry values that accumulate over time, and integers for counters, token totals, timestamps, and queue depths.
 
 ### 1.2 Serialization precision
 
@@ -15981,7 +15981,7 @@ Telemetry-specific rules:
 |---|---|---|---|
 | `Score::effective()` | O(1) | O(1) | Weighted sum of 7 axes |
 | `Scorer::score(datum)` | O(k) | O(1) | k = number of scoring rules |
-| Batch score all data | O(n * k) | O(n) | n = Engrams or Pulses, k rules per item |
+| Batch score all data | O(n * k) | O(n) | n = Signals or Pulses, k rules per item |
 
 ### 2.3 HDC vectors
 
@@ -16040,7 +16040,7 @@ For LinUCB with a = 10 arms and d = 8 features: select takes ~640 multiply-adds.
 | Histogram observe | O(b) | O(1) | b = bucket search cost; keep small fixed families |
 | Span start + finish | O(a) | O(a) | a = span attributes copied into the sink envelope |
 | Structured log enqueue | O(1) amortized | O(1) | Formatting happens off the hot path when possible |
-| Replay reconstruction | O(e + p) | O(e + p) | e = Engrams, p = Pulses in the retained episode window |
+| Replay reconstruction | O(e + p) | O(e + p) | e = Signals, p = Pulses in the retained episode window |
 
 Instrumentation must remain cheaper than the operator it measures. Log and trace emission therefore enqueue into bounded buffers and return quickly; exporter I/O, formatting, and downstream network stalls are not allowed to block step execution on the seven-step loop.
 
@@ -16144,7 +16144,7 @@ Ebbinghaus decay with small strength and large age produces values below f32 eps
 exp(-age / (0.01 * scale)) where age >> scale
 ```
 
-This underflows to 0.0, which is the correct behavior -- a fully decayed Engram has zero weight.
+This underflows to 0.0, which is the correct behavior -- a fully decayed Signal has zero weight.
 
 ### 4.4 Defensive pattern
 
@@ -16203,7 +16203,7 @@ Instrumentation budget rule: end-to-end observability overhead should stay below
 
 | Component | Target | Notes |
 |---|---|---|
-| Engram or Pulse header (in memory) | < 1 KB each | Body is the variable part |
+| Signal or Pulse header (in memory) | < 1 KB each | Body is the variable part |
 | HDC vector | 1.25 KB | 10,240 bits = 1,280 bytes |
 | Knowledge entry | < 2 KB | HDC vector + metadata |
 | Episode record | < 4 KB | Compressed JSON |
@@ -16218,7 +16218,7 @@ Instrumentation budget rule: end-to-end observability overhead should stay below
 
 | File | Growth rate | Target max | Rotation |
 |---|---|---|---|
-| `engrams.jsonl` | ~1 KB/Engram | 100 MB | Prune by demurrage / decay policy |
+| `engrams.jsonl` | ~1 KB/Signal | 100 MB | Prune by demurrage / decay policy |
 | `episodes.jsonl` | ~2 KB/episode | 50 MB | Retain `episode_retention_days` |
 | `efficiency.jsonl` | ~500 B/telemetry event | 20 MB | Monthly rotation |
 | `cascade-router.json` | Rewritten on update | < 1 MB | Single file, overwritten |
@@ -16314,13 +16314,13 @@ Add a second benchmark group for observability paths: counter increment throughp
 
 - [04-decay-variants.md](04-decay-variants.md) -- Decay math
 - [03-score-7-axis-appraisal.md](03-score-7-axis-appraisal.md) -- Score normalization
-- [01-naming-and-glossary.md](01-naming-and-glossary.md) -- Current architecture vocabulary for Engram, Pulse, Bus, Topic, replay, and telemetry terms
+- [01-naming-and-glossary.md](01-naming-and-glossary.md) -- Current architecture vocabulary for Signal, Pulse, Bus, Topic, replay, and telemetry terms
 - [../05-learning/03-bandits-ucb-thompson-linucb.md](../05-learning/03-bandits-ucb-thompson-linucb.md) -- Bandit precision
 - [../05-learning/04-cascade-router.md](../05-learning/04-cascade-router.md) -- Router complexity
 - [../05-learning/08-cost-normalization.md](../05-learning/08-cost-normalization.md) -- Cost precision
 - [../../tmp/refinements/33-observability-telemetry.md](../../tmp/refinements/33-observability-telemetry.md) -- Canonical observability and telemetry refinement propagated into this chapter
 - `crates/roko-core/src/decay.rs` -- Decay implementation
-- `crates/roko-core/src/engram.rs` -- Engram structure and durable metadata
+- `crates/roko-core/src/__PATH_ENGRAM_RS__0` -- Signal structure and durable metadata
 - `crates/roko-core/src/score.rs` -- Score representation
 - `crates/roko-core/src/obs/metrics.rs` -- Metrics sink implementation
 
@@ -16724,7 +16724,7 @@ roko plan run plans/ --resume .roko/state/executor.json
 
 > **Abstract:** A comprehensive analysis of Roko's current architecture as a v1 snapshot and
 > its v2 rewrite path: the six-operator snapshot, five-layer taxonomy, three cognitive speeds,
-> Engram/Pulse split, two mediums (durable Engram and ephemeral Pulse), two fabrics (Substrate
+> Signal/Pulse split, two mediums (durable Signal and ephemeral Pulse), two fabrics (Substrate
 > and Bus), and cognitive cross-cuts — evaluated against modern research in cognitive
 > architectures (SOAR, ACT-R, LIDA), trait-based systems (Scala typeclasses, Haskell type
 > classes), category theory (functors, monoids, natural transformations), and active inference
@@ -16757,10 +16757,10 @@ analyzed actual Cargo.toml dependency graphs across the workspace, read trait de
 
 Roko's current architecture is **remarkably coherent** as a v1 snapshot, but the current shape
 is not the endpoint. The architecture docs now need to treat the two-medium, two-fabric kernel
-as the v2 rewrite path: Engram and Pulse moving through Substrate and Bus. The five-layer
+as the v2 rewrite path: Signal and Pulse moving through Substrate and Bus. The five-layer
 taxonomy has **one confirmed dependency violation** (`roko-conductor` L3/L4 → `roko-learn`
 L2/Cross-cut) and **six unclassified crates**. The three cognitive speeds map cleanly to all
-three primary domains (coding, chain, research). The current Engram model is genuinely
+three primary domains (coding, chain, research). The current Signal model is genuinely
 universal, with edge cases that are handled by existing extension mechanisms (`Kind::Custom`,
 `Body::Json`, `tags`).
 
@@ -16809,15 +16809,15 @@ understood as `Datum`-aware operators rather than special cases:
 
 | Operation | Current Implementation | Fit Quality |
 |---|---|---|
-| **Engram transformation** (e.g., summarize, translate) | `Composer::compose(&[Datum], &Budget, &dyn Scorer, ctx)` | Adequate. Composer can ingest either medium, so the same path can absorb mixed Engram/Pulse context without inventing a separate boundary abstraction. |
-| **Telemetry emission** (metrics, traces) | `Policy::decide(&[Pulse], ctx)` returning `PolicyOutputs` | Better fit. Policy is intentionally Pulse-native, so live telemetry and reactive follow-ups can emit both Pulses and Engrams directly instead of masquerading as an empty Engram slice. |
-| **Batch verification** (verify N Engrams at once) | Loop calling `Gate::verify` N times, or `Gate::verify_stream(&[Pulse], ctx)` for stream windows | Adequate. Gate keeps the durable Engram path while also supporting stream verification over Pulses when the boundary is temporal rather than stored. |
+| **Signal transformation** (e.g., summarize, translate) | `Composer::compose(&[Datum], &Budget, &dyn Scorer, ctx)` | Adequate. Composer can ingest either medium, so the same path can absorb mixed Signal/Pulse context without inventing a separate boundary abstraction. |
+| **Telemetry emission** (metrics, traces) | `Policy::decide(&[Pulse], ctx)` returning `PolicyOutputs` | Better fit. Policy is intentionally Pulse-native, so live telemetry and reactive follow-ups can emit both Pulses and Signals directly instead of masquerading as an empty Signal slice. |
+| **Batch verification** (verify N Signals at once) | Loop calling `Gate::verify` N times, or `Gate::verify_stream(&[Pulse], ctx)` for stream windows | Adequate. Gate keeps the durable Signal path while also supporting stream verification over Pulses when the boundary is temporal rather than stored. |
 
 The trait boundary now lines up with the medium split: `Datum` covers polymorphic Scorer and
-Composer inputs; Router gains a native Pulse-selection path beside its durable Engram path;
+Composer inputs; Router gains a native Pulse-selection path beside its durable Signal path;
 `Gate::verify_stream` covers verification over Pulse windows; `Policy::decide(&[Pulse], ctx)`
 and `PolicyOutputs` make stream reaction explicit; and the Bus handles Pulse transport while
-Substrate remains the storage path for Engrams. REF01 treats that boundary as evidence for the
+Substrate remains the storage path for Signals. REF01 treats that boundary as evidence for the
 two mediums and two fabrics reframing rather than as a harmless quirk.
 
 ### 2.3 When a rewrite beats incremental refactor
@@ -16828,7 +16828,7 @@ changed assumption is local, the interface surface is already large, and the new
 be layered without changing the medium model.
 
 REF21 argues the opposite here. The current design collapses durable and ephemeral traffic into
-one surface, but the v2 path wants two mediums moving through two fabrics: Engram and Pulse over
+one surface, but the v2 path wants two mediums moving through two fabrics: Signal and Pulse over
 Substrate and Bus. That is a kernel-level assumption, so stretching the old shape would leave
 the architecture split between old and new mental models.
 
@@ -17028,11 +17028,11 @@ output feeds the next speed's input, creating the autocatalytic loop described i
 
 ---
 
-## 5. Analysis D: Engram Universality and Edge Cases
+## 5. Analysis D: Signal Universality and Edge Cases
 
 ### 5.1 What the Universal Type Handles Well
 
-| Data Category | Engram Representation | Fit |
+| Data Category | Signal Representation | Fit |
 |---|---|---|
 | LLM output | `Kind::AgentOutput`, `Body::Text(response)` | Excellent |
 | Gate verdict | `Kind::GateVerdict`, `Body::Json(verdict_data)` | Excellent |
@@ -17046,10 +17046,10 @@ output feeds the next speed's input, creating the autocatalytic loop described i
 
 | Edge Case | Problem | Current Handling | Adequacy |
 |---|---|---|---|
-| **Large binary blobs** (e.g., model weights) | Engram struct held in memory | `Body::Bytes` exists but no streaming | Adequate for current use; streaming needed at scale |
+| **Large binary blobs** (e.g., model weights) | Signal struct held in memory | `Body::Bytes` exists but no streaming | Adequate for current use; streaming needed at scale |
 | **Structured multi-part data** (e.g., PR with title + body + files) | Single Body can't hold structured parts | `Body::Json` with nested structure | Adequate but verbose |
-| **Cross-Engram relationships** (e.g., "this gate verdict is about that agent output") | Lineage is a Vec of parent hashes | Lineage + tags (`"target_id": hash`) | Adequate |
-| **Real-time streaming data** (e.g., live price feed) | Engram is a snapshot, not a stream | Create new Engrams per tick with Decay::TTL | Adequate; TTL handles ephemerality |
+| **Cross-Signal relationships** (e.g., "this gate verdict is about that agent output") | Lineage is a Vec of parent hashes | Lineage + tags (`"target_id": hash`) | Adequate |
+| **Real-time streaming data** (e.g., live price feed) | Signal is a snapshot, not a stream | Create new Signals per tick with Decay::TTL | Adequate; TTL handles ephemerality |
 | **Confidential data** (e.g., API keys in context) | Provenance.tainted exists but no encryption | Taint flag + scrub policy | Adequate for current threat model |
 
 ### 5.3 Comparison to Agent Data Protocol (ADP)
@@ -17058,9 +17058,9 @@ The Agent Data Protocol (arXiv:2510.24702) addresses exactly the same problem: u
 representation for agent systems. ADP unifies all agent data into Trajectory objects composed of
 Actions (API calls, code execution, text exchange) and Observations (text, web).
 
-| Dimension | ADP | Roko Engram |
+| Dimension | ADP | Roko Signal |
 |---|---|---|
-| **Universal type** | Trajectory | Engram |
+| **Universal type** | Trajectory | Signal |
 | **Identity** | Sequential index | Content-addressed (BLAKE3 hash) |
 | **Quality assessment** | None | 4-axis Score (confidence, novelty, utility, reputation) |
 | **Temporal dynamics** | None | Four Decay variants (None, HalfLife, TTL, Ebbinghaus) |
@@ -17068,14 +17068,14 @@ Actions (API calls, code execution, text exchange) and Observations (text, web).
 | **Composition** | Concatenation | Composer trait with budget constraints |
 | **Complexity reduction** | O(D+A) vs O(D×A) | Same: universal type enables O(D+A) integration |
 
-Roko's Engram is strictly richer than ADP's Trajectory: it adds scoring, decay, provenance,
+Roko's Signal is strictly richer than ADP's Trajectory: it adds scoring, decay, provenance,
 content-addressing, and lineage tracking. The ADP paper validates the core insight that a
 universal type reduces integration complexity from multiplicative to additive.
 
 ### 5.4 VSA/HDC Algebraic Extension
 
 The vector-symbolic primitives crate provides 10,240-bit Hyperdimensional Computing vectors.
-These could extend the Engram with algebraic operations:
+These could extend the Signal with algebraic operations:
 
 ```rust
 // Potential extension: Engram algebraic operations
@@ -17091,9 +17091,9 @@ impl Engram {
 }
 ```
 
-This would make Engram a proper Vector Symbolic Architecture element, enabling compositional
+This would make Signal a proper Vector Symbolic Architecture element, enabling compositional
 knowledge representation directly at the type level. Currently, HDC operations exist in the
-vector-symbolic primitives crate but are not exposed on the Engram struct.
+vector-symbolic primitives crate but are not exposed on the Signal struct.
 
 **Reference**: Kleyko, D. et al. (2022). "A Survey on Hyperdimensional Computing."
 Artificial Intelligence Review 56.
@@ -17124,7 +17124,7 @@ Rust pattern for cross-cutting concerns. Analysis of the actual injection points
 ### 6.3 Functorial Composition Properties
 
 As analyzed in the categorical framework (Section 10 of 06-synapse-traits.md), cross-cuts
-form endofunctors on the Engram category. For the functorial composition to be correct,
+form endofunctors on the Signal category. For the functorial composition to be correct,
 the following diagram must commute:
 
 ```
@@ -17146,17 +17146,17 @@ VCG tiebreaker) ensures this commutativity by defining a canonical resolution or
 
 ## 7. Analysis F: Category Theory Perspectives
 
-### 7.1 The Engram Category (Eng)
+### 7.1 The Signal Category (Eng)
 
-**Objects**: Types in the pipeline — `Vec<Engram>`, `Engram`, `Score`, `Selection`, `Verdict`
+**Objects**: Types in the pipeline — `Vec<Signal>`, `Signal`, `Score`, `Selection`, `Verdict`
 
 **Morphisms**: Trait operations, parameterized by `Context`:
-- `query_ctx : 1 → Vec<Engram>` (Substrate)
-- `score_ctx : Engram → Score` (Scorer)
-- `select_ctx : Vec<Engram> → Option<Selection>` (Router)
-- `compose_ctx : (Vec<Engram>, Budget) → Engram` (Composer)
-- `verify_ctx : Engram → Verdict` (Gate)
-- `decide_ctx : Vec<Engram> → Vec<Engram>` (Policy)
+- `query_ctx : 1 → Vec<Signal>` (Substrate)
+- `score_ctx : Signal → Score` (Scorer)
+- `select_ctx : Vec<Signal> → Option<Selection>` (Router)
+- `compose_ctx : (Vec<Signal>, Budget) → Signal` (Composer)
+- `verify_ctx : Signal → Verdict` (Gate)
+- `decide_ctx : Vec<Signal> → Vec<Signal>` (Policy)
 
 **Identity morphisms**: NoOp implementations (NoOpScorer, NoOpRouter, NoOpComposer, etc.)
 
@@ -17246,7 +17246,7 @@ properties will compose correctly with existing code. Any feature that violates 
 (e.g., a Gate that mutates shared state outside the Substrate) will break composition.
 
 **Design rule derived from category theory**: Every new trait implementation must:
-1. Accept and return types that are objects in the Engram category
+1. Accept and return types that are objects in the Signal category
 2. Preserve the monoidal structure of Score (no Score that breaks associativity)
 3. Be implementable as a natural transformation on the pipeline (no hidden side effects)
 
@@ -17402,15 +17402,15 @@ of how many Gamma ticks produced how many outcomes.
 | 12-five-layer-taxonomy.md | Lists `roko-fs` as L3 Harness | `roko-fs` is L0 Runtime (implements FileSubstrate). Mislabeled. |
 | 06-synapse-traits.md | Says "4 Substrate implementations" | Actually 4 are spec'd; 2 are shipped (Memory, File) |
 | TUI status | STATUS.md says "Scaffold"; QUICKSTART.md shows `roko dashboard` as working command | Both correct: command exists, outputs text; "Scaffold" means no interactive ratatui UI |
-| 02-engram-data-type.md | References "7-axis appraisal" | Code has 4 axes (Score struct). 3 extended axes specified but not implemented. |
+| 02-signal-data-type.md | References "7-axis appraisal" | Code has 4 axes (Score struct). 3 extended axes specified but not implemented. |
 
 ### 9.2 Code-Documentation Mismatches
 
 | Aspect | Documentation | Code | Impact |
 |---|---|---|---|
-| **Data type name** | "Engram" | current kernel struct name | None (see 01-naming-and-glossary.md) |
+| **Data type name** | "Signal" | current kernel struct name | None (see 01-naming-and-glossary.md) |
 | **Score axes** | 7 (4 stable + 3 extended) | 4 (confidence, novelty, utility, reputation) | Medium — documentation overpromises |
-| **Attestation field** | Specified in Engram docs | Not in current kernel struct | Low — Phase 2+ feature |
+| **Attestation field** | Specified in Signal docs | Not in current kernel struct | Low — Phase 2+ feature |
 | **Conductor layer** | Documented as L3 or L4 | Depends on roko-learn (L2) — actual layer unclear | Medium — layer violation |
 
 ### 9.3 `roko-fs` Layer Assignment
@@ -17421,7 +17421,7 @@ collection, file layout") but functionally it is an L0 Runtime crate. It impleme
 `FileSubstrate`, which is a `Substrate` trait implementation — and Substrate is assigned to L0.
 
 **Resolution**: Move `roko-fs` to L0 Runtime in the documentation. Its sole purpose is
-persistent storage of Engrams, which is the canonical L0 responsibility.
+persistent storage of Signals, which is the canonical L0 responsibility.
 
 ---
 
@@ -17450,7 +17450,7 @@ persistent storage of Engrams, which is the canonical L0 responsibility.
 | # | Improvement | Effort | Impact |
 |---|---|---|---|
 | 9 | CompetitiveRouter (LIDA-inspired, Section 8.1) | Large | More robust attention/selection |
-| 10 | VSA/HDC operations on Engram struct (Section 5.4) | Large | Compositional knowledge representation |
+| 10 | VSA/HDC operations on Signal struct (Section 5.4) | Large | Compositional knowledge representation |
 | 11 | Formal category theory verification of pipeline laws | Large | Mathematical guarantees of composability |
 
 ### 10.4 From-scratch rewrite candidates as the v2 path
@@ -17460,7 +17460,7 @@ wrong assumption, the interface surface is small enough to restabilize, and the 
 capabilities that the current architecture cannot reach cleanly.
 
 For this codebase, the decisive assumption is the medium model. The v2 path is the from-scratch
-kernel rewrite that separates Engram from Pulse and places both on the right fabrics: Substrate
+kernel rewrite that separates Signal from Pulse and places both on the right fabrics: Substrate
 for storage and Bus for transport. Once that foundation is in place, the remaining candidates
 sequence naturally: substrate after kernel, then learning and composition, then gates if the
 incremental path still leaves too much surface tension.
@@ -17535,7 +17535,7 @@ it should no longer be read as the final shape. The current operator model handl
 surface with only minor boundary awkwardness, while REF21 defines the v2 rewrite path around the
 two-medium/two-fabric kernel. The five-layer taxonomy is clean with one fixable dependency
 violation. The three cognitive speeds are a strong compositional design claim that extends
-classical dual-process theory. The Engram model is still universal, validated by comparison to
+classical dual-process theory. The Signal model is still universal, validated by comparison to
 the Agent Data Protocol.
 
 The architecture's deepest strength is its **categorical composability**: the pipeline is a
@@ -17579,7 +17579,7 @@ signals in this analysis that the kernel wants the two-medium / two-fabric vocab
 > [01-naming-and-glossary.md](./01-naming-and-glossary.md).
 
 > REF31 adds a separate primitive-level synergy map for the ten load-bearing primitives
-> (Engram, Pulse, Bus, Substrate, HDC fingerprint, demurrage, heuristics, c-factor,
+> (Signal, Pulse, Bus, Substrate, HDC fingerprint, demurrage, heuristics, c-factor,
 > replication ledger, and plugin SPI). This section stays at the section-to-section layer:
 > it answers which docs, crates, and subsystems depend on each other, while the synergy map
 > answers which primitives reinforce each other and why the moat comes from interaction density.
@@ -17632,10 +17632,10 @@ Bus and Substrate consumers or backends:
 
 | Subsystem | Durable side | Live side | Net effect |
 |---|---|---|---|
-| Chain | `ChainSubstrate` stores and queries on-chain Engrams | `ChainBus` maps chain logs into `chain.*` Pulses `[target-state]` | Chain consumers stop polling chain state just to notice fresh work `[target-state]` |
+| Chain | `ChainSubstrate` stores and queries on-chain Signals | `ChainBus` maps chain logs into `chain.*` Pulses `[target-state]` | Chain consumers stop polling chain state just to notice fresh work `[target-state]` |
 | Dreams | Substrate scan remains the complete consolidation source | Bus subscription to `substrate.engram.stored` wakes Delta work reactively `[target-state]` | Delta-speed can be threshold-triggered instead of fixed polling `[target-state]` |
-| Coordination | Pheromones persist as Engrams in shared Substrates `[target-state]` | `mesh.pheromone.deposited` and related Pulses alert nearby agents `[target-state]` | Stigmergy becomes literal storage plus transport rather than custom plumbing `[target-state]` |
-| Heartbeat | Tick history may still persist as Engrams when needed | `HeartbeatPolicy` publishes `heartbeat.{gamma,theta,delta}.tick` Pulses `[target-state]` | Clock consumers subscribe by topic instead of importing a scheduler `[target-state]` |
+| Coordination | Pheromones persist as Signals in shared Substrates `[target-state]` | `mesh.pheromone.deposited` and related Pulses alert nearby agents `[target-state]` | Stigmergy becomes literal storage plus transport rather than custom plumbing `[target-state]` |
+| Heartbeat | Tick history may still persist as Signals when needed | `HeartbeatPolicy` publishes `heartbeat.{gamma,theta,delta}.tick` Pulses `[target-state]` | Clock consumers subscribe by topic instead of importing a scheduler `[target-state]` |
 | Interfaces | REST and query APIs hydrate StateHub projections from Substrate while Bus topics feed live deltas `[target-state]` | WebSocket and SSE stream the same typed projections to TUI, web, audit, and analytics consumers `[target-state]` | `roko-serve` becomes a StateHub consumer bridge rather than a custom fanout path `[target-state]` |
 
 This overlay is the architecture-level summary of `tmp/refinements/09-phase-2-implications.md`.
@@ -17669,7 +17669,7 @@ mechanisms make the composition compounding?"
 
 Each cell encodes the relationship type(s) from the **row section** to the **column section**:
 
-- **D** = Data flow (Engrams flow from row → column)
+- **D** = Data flow (Signals flow from row → column)
 - **T** = Trait usage (row implements traits that column consumes)
 - **C** = Configuration (row's parameters affect column's behavior)
 - **I** = Integration point (currently wired)
@@ -17708,7 +17708,7 @@ FROM ↓
 ### 2.3 How to Read the Matrix
 
 **Example:** Cell (04, 05) = `DI` means: Section 04 (Verification) sends data to Section 05
-(Learning) and this integration is currently **wired**. Specifically, `GateVerdict` Engrams
+(Learning) and this integration is currently **wired**. Specifically, `GateVerdict` Signals
 flow from the gate pipeline into the `LearningRuntime.record_completed_run()` method, which
 updates episodes, cascade router arms, and adaptive thresholds.
 
@@ -17723,7 +17723,7 @@ into the orchestration loop.
 
 ### 3.1 Primary Data Flows (Currently Wired)
 
-These are the Engram flows that exist in shipping code today.
+These are the Signal flows that exist in shipping code today.
 
 ```mermaid
 graph LR
@@ -17800,7 +17800,7 @@ graph TB
 ### 3.3 Datum Flow Taxonomy
 
 Cross-section exchange is documented here in the target-state two-medium vocabulary: durable
-Engrams in Substrate and ephemeral Pulses on the Bus. In current code, the durable Engram side
+Signals in Substrate and ephemeral Pulses on the Bus. In current code, the durable Signal side
 is much more real than the named Pulse topic surface below. The map highlights the Phase-2 flows
 that REF09 clarifies.
 
@@ -17819,14 +17819,14 @@ that REF09 clarifies.
 | 10-Dreams | `engram.promoted`, `neuro.insight.promoted` Pulses | Bus | 03-Composition, 06-Neuro, 12-Interfaces | Proposed `[target-state]` |
 | 13-Coordination | `Kind::Pheromone` | Substrate | 06-Neuro, 01-Orchestration, 08-Chain | Proposed `[target-state]` |
 | 13-Coordination | `mesh.pheromone.deposited` Pulse | Bus | 02-Agents, 03-Composition, 12-Interfaces | Proposed `[target-state]` |
-| 16-Heartbeat | optional tick or telemetry Engrams | Substrate | 05-Learning, 12-Interfaces | Planned `[target-state]` |
+| 16-Heartbeat | optional tick or telemetry Signals | Substrate | 05-Learning, 12-Interfaces | Planned `[target-state]` |
 | 16-Heartbeat | `heartbeat.gamma.tick`, `heartbeat.theta.tick`, `heartbeat.delta.tick` Pulses | Bus | 07-Conductor, 09-Daimon, 10-Dreams | Proposed `[target-state]` |
 | 20-Tech Analysis | `Kind::Prediction` | Substrate | 05-Learning, 16-Heartbeat | Partial |
 
 ### 3.4 StateHub Projection Flows
 
 REF26 promotes StateHub from a TUI helper to the target-state consumer-facing projection layer that
-bridges transport and storage. The same typed projection can hydrate from durable Engrams,
+bridges transport and storage. The same typed projection can hydrate from durable Signals,
 listen for Bus-delivered deltas, and serve multiple consumers without each surface inventing
 its own fanout path.
 
@@ -18265,15 +18265,15 @@ becomes ~20-40 LOC instead of the current 40-200 LOC estimates.
 
 **Research basis:** arXiv:2509.13978 (LLM Agent Workflow Provenance).
 
-**Problem:** Debugging cross-section interactions requires tracing Engrams through multiple
+**Problem:** Debugging cross-section interactions requires tracing Signals through multiple
 subsystems. Currently, the lineage DAG records parent-child relationships but does not
-distinguish WHY an Engram was created.
+distinguish WHY an Signal was created.
 
 **Proposal:** Tag each cross-section data flow with one of four provenance dimensions:
 
 | Dimension | What It Records | Consumers |
 |---|---|---|
-| **Dataflow** | Input→output Engram connections | 05-Learning, 10-Dreams |
+| **Dataflow** | Input→output Signal connections | 05-Learning, 10-Dreams |
 | **Control Flow** | Task dependency ordering | 01-Orchestration |
 | **Telemetry** | Latency, cost, token counts | 07-Conductor, 12-Interfaces |
 | **Scheduling** | Which agent ran where, when | 13-Coordination, 19-Deployment |
@@ -18350,7 +18350,7 @@ impl DreamProjection {
 
 **Integration points:**
 - Dreams subscribes to `substrate.engram.stored` for reactivity but still scans Substrate for completeness.
-- Consolidated `Kind::Insight` and `Kind::Heuristic` Engrams persist through Substrate.
+- Consolidated `Kind::Insight` and `Kind::Heuristic` Signals persist through Substrate.
 - Promotion Pulses such as `engram.promoted` and `neuro.insight.promoted` let Neuro,
   Composition, and Interfaces react without re-querying.
 - Delta-speed remains slower than Gamma and Theta, but it no longer implies fixed polling.
@@ -18689,7 +18689,7 @@ Total expected zero-dependency pairs: ~180 (39% of the 462-pair space).
 > three previously disjoint mechanisms (VCG attention auction, CascadeRouter model selection,
 > and budget management) into a single coherent economy where attention tokens are the universal
 > unit of account. It also treats durable memory as a separate ledger: attention tokens spend in
-> the loop, while demurrage taxes idle Engram balance between loops so stale knowledge does not
+> the loop, while demurrage taxes idle Signal balance between loops so stale knowledge does not
 > keep its seat for free. The result is an attention market that enables principled,
 > incentive-compatible allocation of cognitive resources across competing goals, agents, and
 > timescales.
@@ -18722,13 +18722,13 @@ a separate memory-side ledger:
    accounting.
 
 3. **VCG Attention Auction** (specified in [17-design-principles-and-frontier-summary](./17-design-principles-and-frontier-summary.md)):
-   Designed to allocate "attention slots" among competing Engrams, but never wired to the
+   Designed to allocate "attention slots" among competing Signals, but never wired to the
    actual Router or Composer.
 
 4. **Proposed Neuro demurrage** (see [04-decay-variants](./04-decay-variants.md),
    [18-decay-tier-matrix](./18-decay-tier-matrix.md), [Topic 06: Neuro](../06-neuro/INDEX.md),
    and [tmp/refinements/12-knowledge-demurrage.md](../../tmp/refinements/12-knowledge-demurrage.md)):
-   The deferred design says durable Engrams would carry `balance`, a holding-cost ledger that
+   The deferred design says durable Signals would carry `balance`, a holding-cost ledger that
    decays when memory sits idle and is reinforced by use, citation, retrieval, or surprise.
 
 These mechanisms make locally rational decisions that are globally incoherent. An agent
@@ -18830,7 +18830,7 @@ impl Default for AttentionBudget {
 ### 2.3 The Memory Ledger
 
 Attention tokens buy compute inside a tick. In the deferred companion design, demurrage would tax
-the right to keep a durable Engram warm after the tick ends.
+the right to keep a durable Signal warm after the tick ends.
 
 ```text
 balance(t + Δt) = balance(t) - r·Δt - β·balance(t)·Δt + reinforcement
@@ -18838,7 +18838,7 @@ balance(t + Δt) = balance(t) - r·Δt - β·balance(t)·Δt + reinforcement
 
 The `reinforcement` term comes from reads, citations, successful gates, and surprise. In the
 memory layer, `balance` is not interchangeable with the live attention pool: a session can be
-well-budgeted and still be fed by a petrified memory base if stale Engrams never pay a holding
+well-budgeted and still be fed by a petrified memory base if stale Signals never pay a holding
 cost.
 
 | Ledger | Charged when | Governs | Example |
@@ -18884,8 +18884,8 @@ See also [04-decay-variants](./04-decay-variants.md), [18-decay-tier-matrix](./1
 
 ### 3.1 Mechanism Design
 
-The VCG (Vickrey-Clarke-Groves) auction allocates attention slots to Engrams competing for
-inclusion in the cognitive loop. Each Engram "bids" based on its Score; the auction selects
+The VCG (Vickrey-Clarke-Groves) auction allocates attention slots to Signals competing for
+inclusion in the cognitive loop. Each Signal "bids" based on its Score; the auction selects
 winners and charges them the externality they impose on others — ensuring truthful bidding
 is the dominant strategy.
 
@@ -19143,8 +19143,8 @@ The pricing structure creates aligned incentives:
 
 | Behavior | AT Cost | Incentive |
 |---|---|---|
-| Include high-relevance Engram (Score > 0.7) | 10 AT/KB | Neutral — pay base rate |
-| Include low-relevance Engram (Score < 0.3) | 20 AT/KB | Discouraged — pay premium |
+| Include high-relevance Signal (Score > 0.7) | 10 AT/KB | Neutral — pay base rate |
+| Include low-relevance Signal (Score < 0.3) | 20 AT/KB | Discouraged — pay premium |
 | Reuse cached context from previous tick | 5 AT/KB | Encouraged — pay discount |
 | Include AntiKnowledge (known-false) | 0 AT | Free — always include to prevent re-exploration |
 | Exceed 80% of context window | 1.5× multiplier | Discouraged — marginal cost increases |
@@ -19193,7 +19193,7 @@ reduces future loop spend by compressing and distilling knowledge; demurrage red
 of stale durable memory that can claim future attention at all.
 
 That distinction matters operationally. A cheaper Router does not fix a bloated memory base, and
-more aggressive Composer budgeting does not prevent old Engrams from ossifying. Only the memory
+more aggressive Composer budgeting does not prevent old Signals from ossifying. Only the memory
 ledger can do that, which is why the demurrage rules live with Neuro and the decay/tier docs
 rather than inside the attention budget itself.
 
@@ -19360,9 +19360,9 @@ pub struct AttentionTelemetry {
 - **Balance distribution**: how much durable memory is sitting warm versus drifting cold.
 - **Reinforcement-by-kind**: whether citation, retrieval, gate success, or surprise is keeping
   knowledge alive.
-- **Thaw rate**: how often cold Engrams return to the warm path, which indicates whether the
+- **Thaw rate**: how often cold Signals return to the warm path, which indicates whether the
   demurrage curve is too steep.
-- **Attention leaderboard**: the highest-balance Engrams, useful for spotting hoarding or
+- **Attention leaderboard**: the highest-balance Signals, useful for spotting hoarding or
   over-consolidation.
 
 These tiles should sit next to the Router and Composer spend charts, not behind a separate
@@ -19384,11 +19384,11 @@ knowledge that never pays its holding cost.
 | `test_delta_dividend_reduces_future_cost` | After consolidation, average tick AT decreases | Integration |
 | `test_daimon_high_arousal_more_slots` | High arousal increases auction slots | Unit |
 | `test_displeasure_increases_reserve` | Negative pleasure increases emergency reserve | Unit |
-| `test_low_relevance_premium_applied` | Score < 0.3 Engrams cost 2× AT in composer | Unit |
+| `test_low_relevance_premium_applied` | Score < 0.3 Signals cost 2× AT in composer | Unit |
 | `test_cache_discount_applied` | Cached context costs 0.5× AT | Unit |
 | `test_telemetry_logged_per_tick` | AttentionTelemetry written every tick | Integration |
 | `test_circuit_breaker_on_overspend` | AT burn > 3× triggers conductor circuit breaker | Integration |
-| `test_demurrage_reduces_idle_balance` | Idle durable Engrams lose balance between loops | Unit |
+| `test_demurrage_reduces_idle_balance` | Idle durable Signals lose balance between loops | Unit |
 | `test_reinforcement_refunds_balance` | Citation, retrieval, or surprise increases balance | Unit |
 | `test_zero_balance_thaws_to_cold_tier` | Balance floor moves memory into cold storage | Integration |
 
@@ -19402,9 +19402,9 @@ The Vickrey-Clarke-Groves mechanism (Vickrey 1961, Clarke 1971, Groves 1973) is 
 mechanism that is simultaneously dominant-strategy incentive compatible (DSIC), allocatively
 efficient, and individually rational. Applied to cognitive attention:
 
-- **DSIC**: Each Engram's optimal strategy is to bid its true Score. No Engram benefits from
+- **DSIC**: Each Signal's optimal strategy is to bid its true Score. No Signal benefits from
   inflating or deflating its bid.
-- **Allocative efficiency**: The winners are the K highest-value Engrams. Total attention
+- **Allocative efficiency**: The winners are the K highest-value Signals. Total attention
   value is maximized.
 - **Individual rationality**: No winner pays more than their bid. Participating in the auction
   is never worse than not participating.
@@ -19503,14 +19503,14 @@ confidence. Roko's `AttentionCascadeRouter` extends FrugalGPT with three innovat
 ### 1.1 Attack Surfaces
 
 The CIS exists because knowledge corruption is usually indirect: hostile input enters through one
-surface, mutates a durable Engram somewhere else, and only becomes visible when a later action is
+surface, mutates a durable Signal somewhere else, and only becomes visible when a later action is
 about to cross a real-world boundary.
 
 | Vector | Example | Why CIS Cares | Primary Response |
 |---|---|---|---|
 | Prompt injection | Tool output includes instructions that alter later tool use | Can taint composed prompts and derived outputs | Mark taint at ingestion, require stronger gates at ACT |
 | Memory poisoning | False claim survives into durable Neuro state | Contaminates later retrieval and planning | Quarantine, replay, reviewer release only |
-| Adversarial retrieval | Crafted Engrams score high despite low integrity | Pulls the Composer toward bad context | Contradiction and score-distribution checks |
+| Adversarial retrieval | Crafted Signals score high despite low integrity | Pulls the Composer toward bad context | Contradiction and score-distribution checks |
 | Plugin abuse | Third-party plugin output exceeds declared capability intent | Untrusted output can steer later actions | `ThirdPartyPlugin` taint, sandbox violation handling |
 | Legacy import corruption | Imported archives contain stale or forged lineage | Pollutes trusted local state | `LegacyImport` taint plus quarantine-on-ingest |
 | Cross-tenant contamination | Shared deployment leaks a tenant's data into another tenant's query | Breaks isolation and audit boundaries | Immediate quarantine and escalation |
@@ -19528,7 +19528,7 @@ The defensive story is clearer when the responsibilities are split explicitly:
 | Who may act | Safety spine authorization | Consume role and approval outcomes as evidence |
 | Where untrusted code may run | Safety spine sandbox tiers | Treat violations as high-severity findings |
 | What entered the system | CIS taint model | Label, propagate, and expose risk to gates |
-| What must be isolated | CIS quarantine plus Substrate filtering | Remove suspect Engrams from default query paths |
+| What must be isolated | CIS quarantine plus Substrate filtering | Remove suspect Signals from default query paths |
 | What happened and why | Custody and attestation | Attach findings, taint sources, and replay evidence |
 | How the system learns after failure | CIS immune memory plus policy updates | Turn incidents into future defenses |
 
@@ -19622,7 +19622,7 @@ later incident handling can cite.
 ### 3.1 Canonical Taint Model
 
 REF32 makes the taint rule explicit: untrusted origin is durable metadata, not a temporary score
-penalty. Every Engram that enters through a trust boundary carries a first-class `Taint`:
+penalty. Every Signal that enters through a trust boundary carries a first-class `Taint`:
 
 ```rust
 pub struct Provenance {
@@ -19650,8 +19650,8 @@ This keeps the CIS aligned with the safety chapter and with
 
 The propagation rule is intentionally simple:
 
-1. If any Engram or Pulse consumed during composition is tainted, the derived output is tainted.
-2. Pulses carry taint metadata while in motion on the Bus; when a Pulse graduates to an Engram,
+1. If any Signal or Pulse consumed during composition is tainted, the derived output is tainted.
+2. Pulses carry taint metadata while in motion on the Bus; when a Pulse graduates to an Signal,
    that taint becomes durable provenance.
 3. Taint is monotonic. It propagates forward through lineage and does not silently disappear.
 4. Human review can approve later use, but approval is recorded through `Custody` or attestation;
@@ -19675,7 +19675,7 @@ decides consequences.
 
 | Situation | Default CIS output | Typical safety response |
 |---|---|---|
-| Tainted context used for drafting only | Warning marker on composed Engram | Allow with visible taint annotation |
+| Tainted context used for drafting only | Warning marker on composed Signal | Allow with visible taint annotation |
 | Tainted tool output proposes file mutation | `ThreatFinding(TaintCascade)` | Confirmation or denial depending on role |
 | Tainted address or credential reaches a high-risk sink | High-severity finding | Escalate or refuse |
 | Repeated plugin-tainted outputs fail gates | Sandbox-related finding | Disable plugin and quarantine descendants |
@@ -19694,7 +19694,7 @@ knowledge graph is behaving unlike itself:
 
 | Indicator | Example | Likely class |
 |---|---|---|
-| Contradiction burst | Many new claims suddenly conflict with established Engrams | `MemoryPoisoning` |
+| Contradiction burst | Many new claims suddenly conflict with established Signals | `MemoryPoisoning` |
 | Score spike without support | Retrieval rank rises but gates and lineage do not justify it | `AdversarialRetrieval` |
 | Taint fan-out burst | One import suddenly contaminates a large lineage region | `TaintCascade` |
 | Sandbox violation cluster | One plugin repeatedly exceeds permission envelope | `SandboxViolation` |
@@ -19710,7 +19710,7 @@ An anomaly does not immediately make new truth. It creates evidence that must be
 
 1. Emit a `ThreatFinding` with severity and recommended containment.
 2. Publish a matching safety Pulse for dashboards and replay.
-3. Raise the quarantine candidate set if the finding touches durable Engrams.
+3. Raise the quarantine candidate set if the finding touches durable Signals.
 4. If an auditable action is involved, attach the finding to the action's `Custody` record.
 
 This keeps the CIS from becoming an uncontrolled policy engine. It finds, classifies, and routes.
@@ -19722,7 +19722,7 @@ Human approval, role policy, and attestation remain in the safety spine.
 
 ### 5.1 Quarantine Partition
 
-Quarantine is a first-class containment boundary inside the Substrate. Suspect Engrams stay
+Quarantine is a first-class containment boundary inside the Substrate. Suspect Signals stay
 durable and queryable for reviewers, but they disappear from default retrieval and composition.
 
 ```rust
@@ -19750,13 +19750,13 @@ Operational rules:
 REF32's one-way taint rule changes quarantine semantics. The system may release use of a record,
 but it never pretends the contamination never existed.
 
-1. Detect and place the Engram in quarantine.
+1. Detect and place the Signal in quarantine.
 2. Run full reverification against current gates and any domain-specific checks.
-3. Open review if the Engram could influence visible, destructive, or cross-tenant actions.
+3. Open review if the Signal could influence visible, destructive, or cross-tenant actions.
 4. Record the reviewer decision in `Custody`; require `OrgRole` attestation for high-risk release.
 5. Either:
-   - keep the original Engram quarantined and produce a reviewed successor Engram for reuse, or
-   - keep the Engram quarantined permanently and publish a falsifier or postmortem.
+   - keep the original Signal quarantined and produce a reviewed successor Signal for reuse, or
+   - keep the Signal quarantined permanently and publish a falsifier or postmortem.
 
 Quarantine is therefore both a storage partition and a workflow checkpoint.
 
@@ -19796,9 +19796,9 @@ The linked custody record tells the auditor:
 The CIS follows the same incident sequence as the REF32 safety spine:
 
 1. Identify the action's custody record when one exists.
-2. Walk backward through contributing Engrams and taint sources.
+2. Walk backward through contributing Signals and taint sources.
 3. Reconstruct the exact gate, heuristic, and context state through replay.
-4. Publish an incident Engram or postmortem linked to the custody chain.
+4. Publish an incident Signal or postmortem linked to the custody chain.
 5. Update the relevant defense:
    - tighten a gate,
    - lower a plugin's permissions,
@@ -19900,7 +19900,7 @@ attestation requirements stay consistent with the safety spine.
 
 | Loop step | CIS integration |
 |---|---|
-| 1. SENSE | Filter quarantined Engrams from default queries; attach taint metadata to incoming Pulses |
+| 1. SENSE | Filter quarantined Signals from default queries; attach taint metadata to incoming Pulses |
 | 2. ASSESS | Run contradiction, fan-out, and lineage checks; classify findings |
 | 3. COMPOSE | Exclude quarantine by default; surface taint annotations in composed context |
 | 4. ACT | Gates read taint before tool use, egress, signing, or other high-risk actions |
@@ -19915,7 +19915,7 @@ same way REF32 places taint, custody, and attestation into the broader safety st
 
 | Component | CIS responsibility |
 |---|---|
-| `roko-core` | Durable `Taint` and provenance shape on Engrams |
+| `roko-core` | Durable `Taint` and provenance shape on Signals |
 | `roko-agent` | Gate-time checks before risky actions and plugin calls |
 | `roko-neuro` | Quarantine-aware query and lineage traversal |
 | `roko-daimon` | Caution bias from recent finding severity |
@@ -19930,7 +19930,7 @@ same way REF32 places taint, custody, and attestation into the broader safety st
 |---|---|---|
 | `test_taint_propagates_from_pulse_to_engram` | Graduated durable records keep the Pulse taint | Unit |
 | `test_taint_never_clears_without_review` | Normal derivation cannot erase taint | Unit |
-| `test_quarantine_hidden_from_default_query` | Suspect Engrams stay out of normal retrieval | Integration |
+| `test_quarantine_hidden_from_default_query` | Suspect Signals stay out of normal retrieval | Integration |
 | `test_compose_refuses_quarantine_without_scope` | Composer cannot silently use quarantined lineage | Integration |
 | `test_plugin_violation_opens_containment` | Sandbox violation produces containment and review work | Integration |
 | `test_incident_links_back_to_custody` | High-risk incident can be reconstructed from custody plus replay | Integration |
@@ -19974,7 +19974,7 @@ scope, consistent with the threat model in REF32.
 ## Cross-References
 
 - [tmp/refinements/32-safety-sandbox-provenance.md](../../tmp/refinements/32-safety-sandbox-provenance.md) - canonical safety spine refinement propagated here
-- [01-naming-and-glossary](./01-naming-and-glossary.md) - current terminology for Engram, Pulse, Bus, Topic, TypedContext, and Custody
+- [01-naming-and-glossary](./01-naming-and-glossary.md) - current terminology for Signal, Pulse, Bus, Topic, TypedContext, and Custody
 - [05-provenance-and-attestation](./05-provenance-and-attestation.md) - durable provenance, attestation levels, and custody-linked auditability
 - [09-universal-cognitive-loop](./09-universal-cognitive-loop.md) - seven-step loop that CIS injects into rather than extending
 - [Topic 04: Verification](../04-verification/INDEX.md) - gate pipeline that consumes taint and emits verdicts
@@ -19995,18 +19995,18 @@ scope, consistent with the threat model in REF32.
 > temporal knowledge layer that augments Roko's Neuro knowledge store with Allen's interval
 > algebra for temporal relation reasoning, an event calculus for tracking fluent changes, and
 > a temporal knowledge graph that maintains the full history of knowledge evolution. Under
-> REF11, each supporting Engram also carries a first-class HDC fingerprint, so temporal
+> REF11, each supporting Signal also carries a first-class HDC fingerprint, so temporal
 > consolidation can cluster related episodes by both interval overlap and semantic proximity.
 > The result enables agents to answer not just "what is true?" but "what was true when?",
 > "what caused what?", and "which temporal patterns are converging into durable categories?"
 > See [tmp/refinements/11-hyperdimensional-substrate.md](../../tmp/refinements/11-hyperdimensional-substrate.md),
-> [02-engram-data-type.md](./02-engram-data-type.md), and
+> [02-signal-data-type.md](./02-signal-data-type.md), and
 > [07-substrate-trait.md](./07-substrate-trait.md).
 
 > **Implementation**: Specified
 
 **Topic**: [00-architecture](./INDEX.md)
-**Prerequisites**: [02-engram-data-type](./02-engram-data-type.md), [13-cognitive-cross-cuts](./13-cognitive-cross-cuts.md), [04-decay-variants](./04-decay-variants.md)
+**Prerequisites**: [02-signal-data-type](./02-signal-data-type.md), [13-cognitive-cross-cuts](./13-cognitive-cross-cuts.md), [04-decay-variants](./04-decay-variants.md)
 **Key sources**:
 - Allen 1983, CACM — Maintaining Knowledge about Temporal Intervals
 - Kowalski & Sergot 1986, New Gen. Computing — A Logic-based Calculus of Events
@@ -20019,7 +20019,7 @@ scope, consistent with the threat model in REF32.
 
 ## 1. The Problem: Timeless Knowledge in a Temporal World
 
-Roko's Neuro knowledge store currently treats knowledge as effectively atemporal. An Engram has
+Roko's Neuro knowledge store currently treats knowledge as effectively atemporal. An Signal has
 a `created_at` timestamp and a `Decay` variant that controls how its weight diminishes over
 time. But the knowledge itself — "Rust 1.91 is the minimum version", "alloy requires nightly" —
 has no explicit temporal structure. There is no way to express:
@@ -20134,7 +20134,7 @@ impl TemporalInterval {
 
 Allen's algebra supports constraint propagation — if we know that A is before B and B overlaps
 C, we can infer the possible relations between A and C. This is implemented as a constraint
-network over Engram validity intervals.
+network over Signal validity intervals.
 
 ```rust
 /// Temporal constraint network over Engram validity intervals.
@@ -20327,7 +20327,7 @@ impl EventCalculus {
 ### 4.1 Three-Tier Architecture (Inspired by Graphiti/Zep)
 
 Rasmussen et al. (2025) demonstrated a three-tier temporal KG architecture that outperforms
-flat memory systems. Roko adapts this for its Engram-based knowledge:
+flat memory systems. Roko adapts this for its Signal-based knowledge:
 
 ```rust
 /// Temporal Knowledge Graph with three tiers.
@@ -20437,12 +20437,12 @@ pub struct TemporalCommunity {
 
 Allen relations explain *when* two records relate. HDC fingerprints explain *how close in
 meaning* those records are. REF11 makes that second signal native by carrying a deterministic
-10,240-bit fingerprint on every Engram rather than in an optional side index. The temporal
+10,240-bit fingerprint on every Signal rather than in an optional side index. The temporal
 topology uses those fingerprints at each tier:
 
-- **Tier 1 episodes** bundle the fingerprints of their member Engrams, producing an episode
+- **Tier 1 episodes** bundle the fingerprints of their member Signals, producing an episode
   centroid that can be compared with other episodes in constant time.
-- **Tier 2 entities** maintain a running centroid over the Engrams that mention or update the
+- **Tier 2 entities** maintain a running centroid over the Signals that mention or update the
   entity, so "the same thing evolving through time" becomes a similarity query instead of a
   fragile string join.
 - **Tier 3 communities** are formed when temporal overlap and HDC similarity both exceed
@@ -20450,7 +20450,7 @@ topology uses those fingerprints at each tier:
   because they happened near each other.
 
 That combination is what lets the Neuro cross-cut graduate repeated episodes into broader
-category Engrams. Temporal overlap supplies the candidate window; HDC similarity supplies the
+category Signals. Temporal overlap supplies the candidate window; HDC similarity supplies the
 semantic bundle center.
 
 ### 4.4 HDC-Guided Tier Progression
@@ -20458,10 +20458,10 @@ semantic bundle center.
 The tier progression loop in Neuro already distinguishes episodes, entities, and durable
 knowledge. HDC fingerprints make the promotion path explicit:
 
-1. Episode Engrams land with their own fingerprints.
+1. Episode Signals land with their own fingerprints.
 2. Delta consolidation groups temporally overlapping episodes whose fingerprints fall within a
    similarity radius.
-3. The cluster center becomes a candidate semantic Engram: less specific than any single
+3. The cluster center becomes a candidate semantic Signal: less specific than any single
    episode, but still anchored to the contributing lineage.
 4. As older episodes accumulate noise through decay or demurrage-driven fuzzing, the centroid
    remains close to the broad pattern while drifting away from one-off details.
@@ -20562,7 +20562,7 @@ The temporal layer enriches Roko's existing Decay system by adding context-aware
 | **None** | No change (axioms and definitions don't decay) |
 
 REF11 adds a second effect alongside scalar decay: the effective HDC fingerprint can become
-progressively noisier as an Engram ages. Old records still match their broad category, but
+progressively noisier as an Signal ages. Old records still match their broad category, but
 their exact episodic neighborhood fades. Temporal community detection should therefore prefer
 fresh exact fingerprints for episode recall and bundled centroids for long-horizon semantic
 promotion.
@@ -20646,18 +20646,18 @@ max_horizon_secs = 604800  # 7 days
 | Loop Step | Temporal Integration |
 |---|---|
 | 1. SENSE | `TemporalQuery` augments `Substrate.query()` and `query_similar()` with time-aware retrieval. |
-| 2. ASSESS | Score is boosted for temporally relevant Engrams and HDC-near prior episodes. |
+| 2. ASSESS | Score is boosted for temporally relevant Signals and HDC-near prior episodes. |
 | 3. COMPOSE | Temporal context is injected as "as of [timestamp], the following holds...". |
 | 4. ACT | Agents emit outputs that can reference historical state and predicted next-state. |
 | 5. VERIFY | Gates check temporal consistency and semantic continuity against supporting fingerprints. |
-| 6. PERSIST / BROADCAST | New Engrams create `TemporalEvent`s while Pulses publish timeline updates for live consumers. |
+| 6. PERSIST / BROADCAST | New Signals create `TemporalEvent`s while Pulses publish timeline updates for live consumers. |
 | 7. REACT | Policies update the temporal constraint network and promotion queues based on fresh evidence. |
 
 ### 8.2 Into Existing Crates
 
 | Crate | Integration Point | Change |
 |---|---|---|
-| `roko-core` | `Engram` struct | Add optional `valid: TemporalInterval` field alongside the HDC fingerprint metadata |
+| `roko-core` | `Signal` struct | Add optional `valid: TemporalInterval` field alongside the HDC fingerprint metadata |
 | `roko-neuro` | `NeuroStore` | Wrap in `TemporalKnowledgeGraph`; use HDC centroids for temporal clustering and promotion |
 | `roko-learn` | `EpisodeLogger` | Episodes become `TemporalEpisode` with interval |
 | `roko-gate` | `GatePipeline` | Add `TemporalConsistencyGate` |
@@ -20679,14 +20679,14 @@ max_horizon_secs = 604800  # 7 days
 | `test_holds_at_terminated` | Fluent terminated at T2, queried at T3 > T2: not holds | Unit |
 | `test_causal_chain_transitive` | A caused B, B caused C → A caused C | Unit |
 | `test_causal_chain_max_depth` | Chain stops at max_depth | Unit |
-| `test_tkg_episode_creation` | Engram sequence creates a TemporalEpisode | Integration |
-| `test_tkg_entity_extraction` | Repeated Engram references create TemporalEntity | Integration |
+| `test_tkg_episode_creation` | Signal sequence creates a TemporalEpisode | Integration |
+| `test_tkg_entity_extraction` | Repeated Signal references create TemporalEntity | Integration |
 | `test_tkg_community_detection` | Co-temporal entities clustered by overlap + fingerprint similarity | Integration |
-| `test_tkg_cluster_promotion_centroid` | Stable episode cluster yields a promoted category Engram fingerprint | Integration |
+| `test_tkg_cluster_promotion_centroid` | Stable episode cluster yields a promoted category Signal fingerprint | Integration |
 | `test_diff_query_detects_changes` | DiffQuery between T1 and T2 finds added/removed/changed | Unit |
 | `test_prediction_linear_trend` | Linear fluent value extrapolates correctly | Unit |
 | `test_modulated_decay_stability` | Stable community → slower decay | Unit |
-| `test_temporal_consistency_gate` | New Engram contradicting timeline is rejected | Integration |
+| `test_temporal_consistency_gate` | New Signal contradicting timeline is rejected | Integration |
 
 ---
 
@@ -20727,8 +20727,8 @@ reasoning from 18.6% to 37.0% accuracy on benchmark tasks, matching models 80× 
 ## Cross-References
 
 - [01-naming-and-glossary](./01-naming-and-glossary.md) — Canonical naming for HDC fingerprint and related terms
-- [02-engram-data-type](./02-engram-data-type.md) — Engram struct that gains temporal intervals and HDC fingerprints
-- [07-substrate-trait](./07-substrate-trait.md) — Native similarity queries over fingerprinted Engrams
+- [02-signal-data-type](./02-signal-data-type.md) — Signal struct that gains temporal intervals and HDC fingerprints
+- [07-substrate-trait](./07-substrate-trait.md) — Native similarity queries over fingerprinted Signals
 - [04-decay-variants](./04-decay-variants.md) — Decay system modulated by temporal stability
 - [13-cognitive-cross-cuts](./13-cognitive-cross-cuts.md) — Neuro knowledge tiers enhanced by TKG
 - [18-decay-tier-matrix](./18-decay-tier-matrix.md) — Decay-tier interactions with temporal modulation
@@ -21336,13 +21336,13 @@ max_unvalidated_hours = 168
 
 | Loop Step | Goal Emergence Integration |
 |---|---|
-| 1. PERCEIVE | Active goals influence query (goal-relevant Engrams prioritized) |
-| 2. EVALUATE | Score boosted for goal-aligned Engrams |
+| 1. PERCEIVE | Active goals influence query (goal-relevant Signals prioritized) |
+| 2. EVALUATE | Score boosted for goal-aligned Signals |
 | 3. ATTEND | Active goals get dedicated VCG auction slots |
 | 4. INTEGRATE | Active goal description injected into system prompt |
 | 5. ACT | Agent works toward active goal |
 | 6. VERIFY | Gate verdicts feed goal progress tracking |
-| 7. PERSIST | Goal state changes persisted as Engrams |
+| 7. PERSIST | Goal state changes persisted as Signals |
 | 8. ADAPT | Policy runs GoalSelection during Theta reflections |
 | 9. META-COGNIZE | Goal completion/failure feeds Daimon and somatic markers |
 
@@ -25161,7 +25161,7 @@ In REF21, the five rewrite-track candidates are the roko-core kernel, roko-learn
 Rewrite-track work needs stronger governance than ordinary feature work:
 
 1. Feature-flag the new kernel path so the old and new shapes can coexist briefly.
-2. Keep a one-shot compatibility reader for existing Engram data rather than a permanent dual-world shim.
+2. Keep a one-shot compatibility reader for existing Signal data rather than a permanent dual-world shim.
 3. Record current test outputs before cutover and require parity or explicit justification afterward.
 4. Land at most one rewrite per week and allow a bake period before removing the old path.
 5. Require a named owner, a written before/after contract, a rollback plan, and two sign-offs for the kernel rewrite.
@@ -25228,7 +25228,7 @@ not systematic.
 | Scaffold | 14, 16, 17, 19, 22–29 (12 files) |
 | Concept only | 30 (1 file) |
 
-**Strengths:** Engram/Score/Decay/Provenance/Kind/Body/ContentHash data types are the most fully specified
+**Strengths:** Signal/Score/Decay/Provenance/Kind/Body/ContentHash data types are the most fully specified
 layer in the codebase. The cognitive loop (09) and five-layer taxonomy (12) have tight spec-code alignment.
 60+ config params in RokoConfig schema with validation rules.
 
@@ -25238,7 +25238,7 @@ layer in the codebase. The cognitive loop (09) and five-layer taxonomy (12) have
   dense specifications but zero shipping code and no test criteria
 - Cross-section integration map (doc 24) identifies 20 missing wiring points
 
-**Crate reality:** roko-core is Stable with 610 tests across 59 files (~6,500 LOC). Core types (`Engram`,
+**Crate reality:** roko-core is Stable with 610 tests across 59 files (~6,500 LOC). Core types (`Signal`,
 6 Synapse traits, `Kind`, `Body`, `Score`, `Config`) are complete and well-tested.
 
 ---
@@ -25689,7 +25689,7 @@ These are not ordinary backlog items. They are choice points that change the int
 
 | # | Candidate | What changes | Unlocks | Cost | Audit stance |
 |---|---|---|---|---|---|
-| R1 | roko-core kernel | Replace the single-medium kernel with Engram + Pulse, add Bus as a first-class fabric, and generalize the operator surface | Coherent v2 kernel, cleaner dependency graph, unified operator signatures | 2–3 weeks, ~15 consumer crates | Yes |
+| R1 | roko-core kernel | Replace the single-medium kernel with Signal + Pulse, add Bus as a first-class fabric, and generalize the operator surface | Coherent v2 kernel, cleaner dependency graph, unified operator signatures | 2–3 weeks, ~15 consumer crates | Yes |
 | R2 | roko-learn reorganization | Split the monolith into episode, playbook, bandit, experiment, and heuristic crates; make learning subscription-driven | Cleaner dep graph, independent strategy swaps, easier plugin contributions | Significant churn, ~3K lines, ~2 weeks | Yes, after R1 |
 | R3 | Substrate trait rewrite | Expand storage from get/put/delete/list to put/get/query/scan/freeze/thaw | HDC similarity query, cold tier semantics, uniform storage backends | ~1 week | Yes |
 | R4 | Gate pipeline | Replace the state machine with pure gates plus composition combinators | Third-party gates, easier tests, inspectable composition data | 1–2 weeks | Maybe; schedule only if the payoff is clear |
@@ -25975,7 +25975,7 @@ The kernel must be the most thoroughly tested crate. Every type is used by every
 
 | Module | What to test | Current | Target |
 |--------|-------------|---------|--------|
-| `signal.rs` (Engram) | Builder pattern, field access, ContentHash uniqueness, lineage DAG construction, serialization round-trip, clone independence | ~50 | 80 |
+| `signal.rs` (Signal) | Builder pattern, field access, ContentHash uniqueness, lineage DAG construction, serialization round-trip, clone independence | ~50 | 80 |
 | `score.rs` | All 7 axes in range [-1,1], effective_score formula, arithmetic (add, mul, weighted_merge), NaN rejection, constant correctness | ~40 | 60 |
 | `decay.rs` | Four variants (None, HalfLife, Ttl, Ebbinghaus) at t=0, t=half_life, t=∞; negative time; overflow; serialization | ~30 | 50 |
 | `kind.rs` | All 28 Kind variants serialize/deserialize, display, equality, ordering | ~20 | 30 |
@@ -26456,7 +26456,7 @@ non-replayable telemetry is a failed test.
 
 | Surface | Contract under test | Representative assertions |
 |---------|---------------------|---------------------------|
-| Structured logs | JSON log lines stay schema-stable and correlate with trace/span context | Required keys (`ts`, `level`, `target`, `fields`) present; large payloads summarized by hash/length; safety decisions, cost-bearing actions, Engram writes, Pulse publishes, and gate verdicts include their shared labels |
+| Structured logs | JSON log lines stay schema-stable and correlate with trace/span context | Required keys (`ts`, `level`, `target`, `fields`) present; large payloads summarized by hash/length; safety decisions, cost-bearing actions, Signal writes, Pulse publishes, and gate verdicts include their shared labels |
 | Metrics | Prometheus exposition remains name-, type-, and label-stable | `roko.c_factor`, `roko.demurrage.*`, `roko.prediction.*`, `roko.gate.*`, `roko.bus.*`, and `roko.cost.*` appear when a scenario should emit them; counters are monotonic; histograms expose expected buckets |
 | Traces | Seven-step loop emits the expected span tree and attributes | Operator spans exist for SENSE/ASSESS/COMPOSE/ACT/VERIFY/PERSIST/BROADCAST/REACT; `operator_id`, `principal_id`, `content_hash`, and `pulse_seq` are attached where relevant |
 | Pulses + projections | Bus traffic and StateHub views stay typed, filterable, and replayable | Topic/TopicFilter matching holds; projection snapshots equal the folded stream of deltas; a replayed episode rebuilds the same view |
@@ -26487,7 +26487,7 @@ benchmarks (CI, deterministic, no flaky results from CPU frequency scaling).
 
 ### 5.3 Benchmark targets by hot path
 
-#### Hot path 1: Signal/Engram operations (roko-core)
+#### Hot path 1: Signal/Signal operations (roko-core)
 
 These run millions of times in any session. Sub-microsecond budget.
 
@@ -26498,8 +26498,8 @@ These run millions of times in any session. Sub-microsecond budget.
 | ContentHash (BLAKE3, 1MB payload) | < 500μs | criterion |
 | Score::effective_score() | < 10ns | criterion |
 | Decay::weight_at() (all 4 variants) | < 50ns each | criterion |
-| Engram serialization (serde_json) | < 5μs | criterion |
-| Engram deserialization (serde_json) | < 5μs | criterion |
+| Signal serialization (serde_json) | < 5μs | criterion |
+| Signal deserialization (serde_json) | < 5μs | criterion |
 | Query::matches(signal) | < 100ns | criterion |
 
 ```rust
@@ -27229,7 +27229,7 @@ executor state, episode logs, and gate thresholds must not cause panics or undef
 
 | Target | Input | Goal |
 |--------|-------|------|
-| `fuzz_engram_deserialize` | Arbitrary bytes → `serde_json::from_slice::<Engram>` | No panic, no UB |
+| `fuzz_engram_deserialize` | Arbitrary bytes → `serde_json::from_slice::<Signal>` | No panic, no UB |
 | `fuzz_verdict_deserialize` | Arbitrary bytes → `serde_json::from_slice::<Verdict>` | No panic |
 | `fuzz_executor_state` | Arbitrary bytes → `ExecutorState::load()` | Graceful error or valid state |
 | `fuzz_gate_thresholds` | Arbitrary bytes → `AdaptiveThresholds::load()` | Graceful fallback to defaults |
@@ -27458,7 +27458,7 @@ Focus: mutation testing, full adversarial suite, behavioral fingerprinting.
 
 Roko's refactoring path is deliberately staged so the documentation can land before the kernel changes, and the kernel changes can land before subsystem migration. The work is split into four phases:
 
-1. **Phase A - Docs Alignment**: normalize the architecture docs around Engram, Pulse, Substrate, Bus, Topic, TopicFilter, Datum, and the seven-step loop.
+1. **Phase A - Docs Alignment**: normalize the architecture docs around Signal, Pulse, Substrate, Bus, Topic, TopicFilter, Datum, and the seven-step loop.
 2. **Phase B - Kernel Addition**: add `Pulse`, `Topic`, `TopicFilter`, `Bus`, and the supporting types without changing existing behavior.
 3. **Phase C - Subsystem Migration**: move callers from ad hoc transport shapes to Bus-backed Pulses, subsystem by subsystem.
 4. **Phase D - Chain & Mesh Buses**: add the additional Bus backends required for Phase 2+ deployment shapes.
@@ -27487,7 +27487,7 @@ Phase A updates the architecture narrative before the kernel changes exist. The 
 
 ### 2.2 Expected deliverables
 
-- Architecture chapters describe Engram as the durable medium and Pulse as its ephemeral sibling.
+- Architecture chapters describe Signal as the durable medium and Pulse as its ephemeral sibling.
 - Bus is treated as a kernel fabric, not a later proposal.
 - Topic and TopicFilter are named as first-class routing concepts.
 - The universal loop reads as seven steps with co-equal PERSIST and BROADCAST.
@@ -27512,8 +27512,8 @@ Phase B adds the transport vocabulary to the kernel without forcing the workspac
 - Add `Pulse` as the ephemeral medium.
 - Add `Topic` and `TopicFilter` as routing primitives.
 - Add `Bus` as a kernel trait alongside the existing storage and operator traits.
-- Extend `Datum<'_>` so operator signatures can accept either Engram or Pulse.
-- Add the graduation path so a Pulse can become an Engram when lineage matters.
+- Extend `Datum<'_>` so operator signatures can accept either Signal or Pulse.
+- Add the graduation path so a Pulse can become an Signal when lineage matters.
 
 ### 3.2 Implementation shape
 
@@ -27619,7 +27619,7 @@ The main mitigation is the phase boundary itself: keep additive work additive, a
 ### Phase A done when
 
 - The architecture chapter set consistently uses the two-medium / two-fabric framing.
-- The glossary has entries for Engram, Pulse, Bus, Topic, and TopicFilter.
+- The glossary has entries for Signal, Pulse, Bus, Topic, and TopicFilter.
 - The loop chapter and layer chapter both reflect the seven-step / L0 Bus framing.
 - No canonical chapter still relies on the old equivalence disclaimer as its primary explanation.
 
@@ -27687,11 +27687,11 @@ This plan is intentionally conservative: it lands the docs first, then the kerne
 
 > **Implementation**: Reference
 
-> **Implementation status:** This is a mixed reality map, not a shipping-only inventory. `Engram` and `Substrate` are live primitives in code today, and `EventBus<E>` is the live transport surface. `HdcVector`/fingerprinting and `c-factor` exist partially. `Pulse`, the generalized `Bus` trait (distinct from today's `EventBus<E>`), `Demurrage`, the replication ledger, and the plugin SPI/domain-profile ecosystem remain target-state. Matrix cells tagged `[target-state]` depend on one or more of those planned pieces.
+> **Implementation status:** This is a mixed reality map, not a shipping-only inventory. `Signal` and `Substrate` are live primitives in code today, and `EventBus<E>` is the live transport surface. `HdcVector`/fingerprinting and `c-factor` exist partially. `Pulse`, the generalized `Bus` trait (distinct from today's `EventBus<E>`), `Demurrage`, the replication ledger, and the plugin SPI/domain-profile ecosystem remain target-state. Matrix cells tagged `[target-state]` depend on one or more of those planned pieces.
 
 **Part of**: [Roko PRD](../INDEX.md)
 **Status**: Written
-**Prerequisites**: [Naming and Glossary](./01-naming-and-glossary.md), [Engram Data Type](./02-engram-data-type.md), [Pulse Medium](./02b-pulse-ephemeral-event.md), [Bus Transport Fabric](./07b-bus-transport-fabric.md), [C-Factor: Collective Intelligence](./14-c-factor-collective-intelligence.md), [Heuristics, Worldviews, and Falsifiers](../05-learning/19-heuristics-worldviews-and-falsifiers.md)
+**Prerequisites**: [Naming and Glossary](./01-naming-and-glossary.md), [Signal Data Type](./02-signal-data-type.md), [Pulse Medium](./02b-pulse-ephemeral-event.md), [Bus Transport Fabric](./07b-bus-transport-fabric.md), [C-Factor: Collective Intelligence](./14-c-factor-collective-intelligence.md), [Heuristics, Worldviews, and Falsifiers](../05-learning/19-heuristics-worldviews-and-falsifiers.md)
 
 ---
 
@@ -27711,7 +27711,7 @@ These are the nodes of the synergy graph. Each one is already established in the
 
 | # | Primitive | Home doc | Role in the weave |
 |---|---|---|---|
-| P1 | Engram | [02](./02-engram-data-type.md) | Durable record, lineage anchor, and substrate resident |
+| P1 | Signal | [02](./02-signal-data-type.md) | Durable record, lineage anchor, and substrate resident |
 | P2 | Pulse | [02b](./02b-pulse-ephemeral-event.md) | Ephemeral wire medium, live coordination unit |
 | P3 | Bus / current EventBus transport | [07b](./07b-bus-transport-fabric.md) | Live code uses `EventBus<E>`; the generalized `Bus` trait, topic routing, and replay surface are target-state |
 | P4 | Substrate | [07](./07-substrate-trait.md) | Storage fabric, durable persistence, query surface |
@@ -27730,9 +27730,9 @@ The key point is not that these primitives exist independently. It is that each 
 
 The matrix below is intentionally compact. Each cell says what the row primitive gives to the column primitive. Empty cells are not bugs; they are places where the architecture stays clean by refusing to force a coupling.
 
-| gives \ to | P1 Engram | P2 Pulse | P3 Bus | P4 Substrate | P5 HDC | P6 Demurrage | P7 Heuristics | P8 c-factor | P9 Ledger | P10 Plugins |
+| gives \ to | P1 Signal | P2 Pulse | P3 Bus | P4 Substrate | P5 HDC | P6 Demurrage | P7 Heuristics | P8 c-factor | P9 Ledger | P10 Plugins |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **P1 Engram** | - | graduation source `[target-state]` | publish target `[target-state]` | store target | encode target | balance owner `[target-state]` | lineage anchor | cohort artifact | paper body `[target-state]` | plugin config target `[target-state]` |
+| **P1 Signal** | - | graduation source `[target-state]` | publish target `[target-state]` | store target | encode target | balance owner `[target-state]` | lineage anchor | cohort artifact | paper body `[target-state]` | plugin config target `[target-state]` |
 | **P2 Pulse** | graduation destination `[target-state]` | - `[target-state]` | payload `[target-state]` | sub-event `[target-state]` | live evidence `[target-state]` | reinforcement signal `[target-state]` | calibration trial `[target-state]` | cohort event `[target-state]` | ledger observation `[target-state]` | plugin event `[target-state]` |
 | **P3 Bus** | `substrate.*` wakeups `[target-state]` | delivery `[target-state]` | - `[target-state]` | notify `[target-state]` | routing input `[target-state]` | freshness pressure `[target-state]` | falsifier watch `[target-state]` | cohort floor `[target-state]` | watchdog stream `[target-state]` | lifecycle events `[target-state]` |
 | **P4 Substrate** | home | - `[target-state]` | bridge `[target-state]` | - | fingerprint store | balance home `[target-state]` | heuristic store | metric source | ledger store `[target-state]` | plugin state `[target-state]` |
@@ -27740,8 +27740,8 @@ The matrix below is intentionally compact. Each cell says what the row primitive
 | **P6 Demurrage** | weight `[target-state]` | - `[target-state]` | - `[target-state]` | tier logic `[target-state]` | - `[target-state]` | - `[target-state]` | freshness decay `[target-state]` | minority support `[target-state]` | anti-drift `[target-state]` | plugin aging `[target-state]` |
 | **P7 Heuristics** | record variant | - `[target-state]` | prediction / outcome `[target-state]` | store | cluster | reinforcement signal `[target-state]` | - | peer model | claim body `[target-state]` | heuristic plugin `[target-state]` |
 | **P8 c-factor** | cohort record | - `[target-state]` | metrics topic `[target-state]` | metric store | diversity source | - `[target-state]` | peer prediction | - | replication support `[target-state]` | c-factor plugin `[target-state]` |
-| **P9 Ledger** | paper Engram `[target-state]` | - `[target-state]` | watchdog topic `[target-state]` | ledger store `[target-state]` | paper fingerprint `[target-state]` | claim decay `[target-state]` | lifted claim `[target-state]` | ledger observation `[target-state]` | - `[target-state]` | claim plugin `[target-state]` |
-| **P10 Plugins** | plugin Engram `[target-state]` | plugin events `[target-state]` | plugin topics `[target-state]` | plugin reads `[target-state]` | plugin encoder `[target-state]` | plugin budget `[target-state]` | new heuristic source `[target-state]` | new metric `[target-state]` | new claim `[target-state]` | - `[target-state]` |
+| **P9 Ledger** | paper Signal `[target-state]` | - `[target-state]` | watchdog topic `[target-state]` | ledger store `[target-state]` | paper fingerprint `[target-state]` | claim decay `[target-state]` | lifted claim `[target-state]` | ledger observation `[target-state]` | - `[target-state]` | claim plugin `[target-state]` |
+| **P10 Plugins** | plugin Signal `[target-state]` | plugin events `[target-state]` | plugin topics `[target-state]` | plugin reads `[target-state]` | plugin encoder `[target-state]` | plugin budget `[target-state]` | new heuristic source `[target-state]` | new metric `[target-state]` | new claim `[target-state]` | - `[target-state]` |
 
 Read the matrix as a design test. If a feature does not connect to at least two nodes, it is probably too thin to matter. If it connects to too many nodes without a clear purpose, it is probably too broad to land cleanly.
 
@@ -27753,7 +27753,7 @@ This section turns the matrix into concrete mechanisms. Some are partially live 
 
 ### 3.1 Demurrage × HDC -> self-trimming semantic memory
 
-Substrate stores each Engram with a fingerprint. Demurrage charges holding cost over time. HDC makes novelty measurable by comparing a record to its nearest neighbors. The result is memory that gradually favors uniquely useful records rather than raw accumulation.
+Substrate stores each Signal with a fingerprint. Demurrage charges holding cost over time. HDC makes novelty measurable by comparing a record to its nearest neighbors. The result is memory that gradually favors uniquely useful records rather than raw accumulation.
 
 This is the core "unique-and-used" pressure. Without HDC, demurrage becomes a blunt tax. Without demurrage, HDC becomes an expensive search primitive with no pruning force. Together they make the memory layer economically selective.
 
@@ -27769,9 +27769,9 @@ Bus statistics show how work is being distributed. HDC shows whether the system'
 
 This is not just observability. It is regulation. The system is watching for monoculture and actively correcting toward broader cognitive variety.
 
-### 3.4 Replication ledger × Heuristics × paper Engram -> living research
+### 3.4 Replication ledger × Heuristics × paper Signal -> living research
 
-Papers live as Engrams. Claims extracted from them become heuristics. The replication ledger records which claims have held up under test and which have been falsified.
+Papers live as Signals. Claims extracted from them become heuristics. The replication ledger records which claims have held up under test and which have been falsified.
 
 This turns research into runtime material. A claim is not a static citation; it is a living object whose status can change as evidence arrives.
 
@@ -27816,18 +27816,18 @@ The synergy is auditability. Domain-sensitive actions remain inspectable after t
 ## 4. The Seven-Step Loop Across the Matrix
 
 The synergy matrix is not separate from the universal loop. It explains why the same seven-step
-cycle compounds instead of resetting each turn. In current code, the Engram/Substrate/EventBus
+cycle compounds instead of resetting each turn. In current code, the Signal/Substrate/EventBus
 parts of the loop are much more real than the Pulse, demurrage, ledger, and custody portions
 described below.
 
 1. `SENSE` draws from `Substrate` queries, `Bus` subscriptions, and external I/O, then anchors
-   those reads in `Engram`, `Pulse`, and `TypedContext`.
+   those reads in `Signal`, `Pulse`, and `TypedContext`.
 2. `ASSESS` uses `HDC fingerprint`, `demurrage`, `heuristics`, and `c-factor` signals to decide
    what deserves attention and which policy lever should move next.
 3. `COMPOSE` pulls the right durable records into scope, injects domain-profile structure, and
    uses the same matrix to decide which evidence belongs in the prompt.
 4. `ACT` emits live `Pulse` traffic, produces tool and agent outcomes, and creates the next
-   candidates for durable `Engram` storage.
+   candidates for durable `Signal` storage.
 5. `VERIFY` turns gates, falsifiers, and replication checks into evidence about whether the
    current behavior should be reinforced, revised, or quarantined.
 6. `PERSIST` writes durable artifacts back to `Substrate`, assigns economic weight through
@@ -27860,13 +27860,13 @@ When proposing a new refinement, walk the matrix before writing the spec.
 
 The practical test is simple: a strong refinement usually strengthens at least two existing edges, or creates one edge that clearly unlocks several others.
 
-Use the matrix to avoid dead-end features. If a proposal has no durable connection to Engram, no live connection to Pulse or Bus, and no policy or calibration consequence, it probably belongs in a narrower subsystem note instead of a chapter-level refinement.
+Use the matrix to avoid dead-end features. If a proposal has no durable connection to Signal, no live connection to Pulse or Bus, and no policy or calibration consequence, it probably belongs in a narrower subsystem note instead of a chapter-level refinement.
 
 ---
 
 ## 7. The Moat Restated
 
-The moat framing here is target-state rather than a claim about the fully shipped system. P1 through P4 are important, but today that mostly means Engram, Substrate, and the live `EventBus<E>` transport. P5 through P7 are individually useful, but they have prior art. P8 through P10 become strategically important only if the planned primitives around them are implemented and integrated into a coherent runtime.
+The moat framing here is target-state rather than a claim about the fully shipped system. P1 through P4 are important, but today that mostly means Signal, Substrate, and the live `EventBus<E>` transport. P5 through P7 are individually useful, but they have prior art. P8 through P10 become strategically important only if the planned primitives around them are implemented and integrated into a coherent runtime.
 
 The competitive claim is therefore architectural: a competitor can copy any node, and often a pair, but not the full interaction lattice without committing to the same dependency order and the same cross-cut discipline. That is what makes the system hard to clone.
 
@@ -27894,7 +27894,7 @@ Three properties are meant to emerge from the composition once the planned primi
 
 The first is self-improvement without a separate training pipeline. The runtime predicts, calibrates, and updates through its own Bus-mediated feedback.
 
-The second is inspectability at every level. Pulse lineage, Engram lineage, heuristic provenance, and ledger status together make decisions traceable instead of opaque.
+The second is inspectability at every level. Pulse lineage, Signal lineage, heuristic provenance, and ledger status together make decisions traceable instead of opaque.
 
 The third is substrate neutrality. Because the key behaviors are driven by HDC, demurrage, heuristics, and policy, the system can swap storage or transport implementations without changing its core cognitive behavior.
 
@@ -27908,7 +27908,7 @@ This chapter connects outward to the rest of the architecture tree and to the re
 
 - See also [tmp/refinements/31-synergy-integration-map.md](../../tmp/refinements/31-synergy-integration-map.md) for the canonical proposal.
 - See [Naming and Glossary](./01-naming-and-glossary.md) for the vocabulary that keeps the matrix stable.
-- See [Engram Data Type](./02-engram-data-type.md) and [Pulse Medium](./02b-pulse-ephemeral-event.md) for the two mediums.
+- See [Signal Data Type](./02-signal-data-type.md) and [Pulse Medium](./02b-pulse-ephemeral-event.md) for the two mediums.
 - See [Bus Transport Fabric](./07b-bus-transport-fabric.md) and [Substrate Trait (Deep Dive)](./07-substrate-trait.md) for the two fabrics.
 - See [C-Factor: Collective Intelligence](./14-c-factor-collective-intelligence.md) for the diversity and policy side of the matrix.
 - See [Heuristics, Worldviews, and Falsifiers](../05-learning/19-heuristics-worldviews-and-falsifiers.md) and [Research to Runtime](../21-references/25-research-to-runtime.md) for the calibration and replication side of the matrix.
@@ -28030,7 +28030,7 @@ start migrating away from ad hoc transport surfaces.
 
 | Track | Scope | Primary docs |
 |---|---|---|
-| Kernel | Land Phases A-C of the refactor sequence: `Pulse`, `Bus`, `Datum`, operator generalization, seven-step loop, and first subsystem migration | [02](./02-engram-data-type.md), [07b](./07b-bus-transport-fabric.md), [33](./33-refactor-plan-phases.md) |
+| Kernel | Land Phases A-C of the refactor sequence: `Pulse`, `Bus`, `Datum`, operator generalization, seven-step loop, and first subsystem migration | [02](./02-signal-data-type.md), [07b](./07b-bus-transport-fabric.md), [33](./33-refactor-plan-phases.md) |
 | Naming | Finish the canonical rename pass and keep the glossary authoritative | [01](./01-naming-and-glossary.md) |
 | Modularity | Extract kernel seams such as `roko-bus` and scaffold the SPI boundary | [15](./15-crate-map.md), [23](./23-architectural-analysis-improvements.md) |
 | Observability baseline | Ship the first Roko-specific dashboards and transport-level telemetry needed to watch the migration | [31](./31-implementation-readiness-audit.md), [32](./32-comprehensive-test-strategy.md), `tmp/refinements/33-observability-telemetry.md` |
@@ -28047,7 +28047,7 @@ runtime starts learning from prediction and falsification loops.
 
 | Track | Scope | Primary docs |
 |---|---|---|
-| HDC fingerprint | Add a first-class HDC fingerprint to every durable Engram and expose similarity queries | [02](./02-engram-data-type.md), [27](./27-temporal-knowledge-topology.md) |
+| HDC fingerprint | Add a first-class HDC fingerprint to every durable Signal and expose similarity queries | [02](./02-signal-data-type.md), [27](./27-temporal-knowledge-topology.md) |
 | Demurrage | Replace age-only pruning with balance, reinforcement, and cold-tier durable memory management | [04](./04-decay-variants.md), [18](./18-decay-tier-matrix.md), [25](./25-attention-as-currency.md) |
 | Heuristics | Promote heuristics, falsifiers, and calibration into inspectable library objects | [../05-learning/19-heuristics-worldviews-and-falsifiers.md](../05-learning/19-heuristics-worldviews-and-falsifiers.md) |
 | Self-learning and c-factor | Wire prediction/outcome topics, calibration policies, and visible c-factor measurement | [11](./11-dual-process-and-active-inference.md), [14](./14-c-factor-collective-intelligence.md) |
@@ -28203,7 +28203,7 @@ preempt the critical path described above.
 
 If Q1 through Q4 land in order on a full-team schedule, the resulting one-year story is coherent:
 
-1. The kernel speaks one transport and storage language: `Engram`, `Pulse`, `Substrate`, `Bus`,
+1. The kernel speaks one transport and storage language: `Signal`, `Pulse`, `Substrate`, `Bus`,
    `Topic`, `TopicFilter`, `Datum`, and `PulseSource`.
 2. The learning layer compounds through HDC fingerprint, demurrage, heuristics, and c-factor
    instead of treating them as isolated experiments.
@@ -28241,7 +28241,7 @@ This chapter is the architecture-level source of truth for sequencing.
 
 # Architecture
 
-> Roko's architecture is organized around two mediums: durable `Engram` records and a
+> Roko's architecture is organized around two mediums: durable `Signal` records and a
 > target-state ephemeral `Pulse` stream. Those mediums move through two fabrics:
 > `Substrate` for storage and a planned `Bus` abstraction for transport. Six operators
 > coordinate the system across five layers, three speeds, and three cross-cuts. Use
@@ -28258,7 +28258,7 @@ This chapter is the architecture-level source of truth for sequencing.
 ## Abstract
 
 Roko is a Rust toolkit for building cognitive agents that improve through use. Its architecture
-centers durable `Engram` records and a target-state ephemeral `Pulse` stream. In the current
+centers durable `Signal` records and a target-state ephemeral `Pulse` stream. In the current
 codebase, `Substrate` is the durable storage seam and `EventBus<E>` is the live transport
 implementation; `Bus` remains the planned transport abstraction. Where target-state terms such
 as `Pulse`, `Bus`, `Topic`, `TopicFilter`, `Datum`, or `PulseSource` appear in this topic, they
@@ -28271,7 +28271,7 @@ layers via trait objects, providing the self-improving capabilities that make Ro
 static framework.
 
 This topic is the entry point for understanding Roko. It covers the core data structures
-(`Engram`, `Score`, `Decay`, `Provenance`, `ContentHash`), the operator composition model, the
+(`Signal`, `Score`, `Decay`, `Provenance`, `ContentHash`), the operator composition model, the
 cognitive loop, layer boundaries, and the main cross-cuts. It is also the place where the docs
 separate shipped implementation from target-state architecture so readers can see what exists
 today versus what is still planned.
@@ -28294,11 +28294,11 @@ the shared session and surface model.
 |---|---|---|
 | 00 | [Vision and Core Thesis](./00-vision-and-thesis.md) | "The scaffold IS the product" thesis, empirical evidence, modern agent-systems mapping, active inference foundations, design principles overview |
 | 01 | [Naming and Glossary](./01-naming-and-glossary.md) | Canonical glossary and vocabulary reference: A-Z terms, current naming, and explicitly retired terminology; see `tmp/refinements/34-glossary.md` |
-| 02 | [Engram Data Type](./02-engram-data-type.md) | The durable content-addressed record medium: struct fields, ContentHash (BLAKE3), HDC fingerprint, Kind enum, Body enum, lineage DAG, and builder pattern |
+| 02 | [Signal Data Type](./02-signal-data-type.md) | The durable content-addressed record medium: struct fields, ContentHash (BLAKE3), HDC fingerprint, Kind enum, Body enum, lineage DAG, and builder pattern |
 | 02b | [Pulse Ephemeral Event Medium](./02b-pulse-ephemeral-event.md) | The durable-versus-ephemeral medium split: Pulse, graduation rules, and the storage/stream boundary between Substrate and Bus |
 | 03 | [Score: 7-Axis Appraisal](./03-score-7-axis-appraisal.md) | 4 stable axes (confidence, novelty, utility, reputation) + 3 extended (precision, salience, coherence), effective formula, arithmetic, constants |
 | 04 | [Decay Variants](./04-decay-variants.md) | Demurrage superseding decay-first durable-memory framing: `balance`, reinforcement, novelty weighting, cold-tier freeze/thaw, and legacy rate-shaping mechanisms |
-| 05 | [Provenance and Attestation](./05-provenance-and-attestation.md) | Durable audit context for Engrams: provenance, one-way `Taint`, `Custody` records for auditable actions, and attestation levels from `LocalAgent` through `ChainWitness`; see `tmp/refinements/32-safety-sandbox-provenance.md` |
+| 05 | [Provenance and Attestation](./05-provenance-and-attestation.md) | Durable audit context for Signals: provenance, one-way `Taint`, `Custody` records for auditable actions, and attestation levels from `LocalAgent` through `ChainWitness`; see `tmp/refinements/32-safety-sandbox-provenance.md` |
 | 06 | [Synapse Traits](./06-synapse-traits.md) | Six operators across two mediums and two fabrics, the trait composition model, all six trait signatures, trait × layer map, composability example via loop_tick |
 | 07 | [Substrate Trait (Deep Dive)](./07-substrate-trait.md) | The durable storage fabric: Substrate's trait surface, fingerprint population, `query_similar`, backends, concurrency, pruning, and its relationship to the Bus sibling fabric |
 | 07b | [Bus Transport Fabric](./07b-bus-transport-fabric.md) | The transport fabric: Bus trait, Topic and TopicFilter routing, replay/ring semantics, backend families, and topic-driven decoupling |
@@ -28336,13 +28336,13 @@ the shared session and surface model.
 ## Prerequisites
 
 This is the foundational topic. No prerequisites are required. All other topics in the Roko
-PRD assume familiarity with the concepts introduced here — particularly the Engram and Pulse
+PRD assume familiarity with the concepts introduced here — particularly the Signal and Pulse
 mediums, the six operators, the two fabrics, and the five-layer taxonomy.
 
 **Recommended reading order within this topic**:
 1. Start with [00-vision-and-thesis](./00-vision-and-thesis.md) for the high-level thesis
 2. Read [01-naming-and-glossary](./01-naming-and-glossary.md) for terminology
-3. Read [02-engram-data-type](./02-engram-data-type.md) and [02b-pulse-ephemeral-event](./02b-pulse-ephemeral-event.md) through [05-provenance-and-attestation](./05-provenance-and-attestation.md) for the core data types and medium split
+3. Read [02-signal-data-type](./02-signal-data-type.md) and [02b-pulse-ephemeral-event](./02b-pulse-ephemeral-event.md) through [05-provenance-and-attestation](./05-provenance-and-attestation.md) for the core data types and medium split
 4. Read [06-synapse-traits](./06-synapse-traits.md) through [08-scorer-gate-router-composer-policy](./08-scorer-gate-router-composer-policy.md) for the trait system, including the Substrate/Bus fabric split
 5. Read [09-universal-cognitive-loop](./09-universal-cognitive-loop.md) through [11-dual-process-and-active-inference](./11-dual-process-and-active-inference.md) for the cognitive loop
 6. Read [12-five-layer-taxonomy](./12-five-layer-taxonomy.md) through [13-cognitive-cross-cuts](./13-cognitive-cross-cuts.md) for the architectural layers
@@ -28399,7 +28399,7 @@ This topic connects to:
 ## Current Status and Implementation Gaps
 
 ### What's Built
-- **roko-core** (376 tests): Engram type, all 6 Synapse traits, Score, Decay,
+- **roko-core** (376 tests): Signal type, all 6 Synapse traits, Score, Decay,
   Kind, Body, ContentHash, Provenance, loop_tick, OperatingFrequency, config schema.
 - **roko-agent** (346 tests): 5 LLM backends, CascadeRouter, MCP client, tool dispatch, safety.
 - **roko-gate** (200 tests): 11+ gates, 6-rung pipeline, adaptive thresholds.
@@ -28437,7 +28437,7 @@ This topic connects to:
 - **Total lines**: ~10,500+
 - **Primary sources consulted**:
   - `/Users/will/dev/nunchi/roko/refactoring-prd/00-overview.md` through `09-innovations.md`
-  - `/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/` (core Engram/trait/score/decay/query/verdict sources)
+  - `/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/` (core Signal/trait/score/decay/query/verdict sources)
   - historical archive: pre-refactor vision notes (04-trust.md, 05-manifesto.md)
   - historical archive: shared glossary from the pre-refactor source corpus
   - `/Users/will/dev/nunchi/roko/roko/tmp/prd-migration/context-pack/` (all 7 files)
@@ -28447,7 +28447,7 @@ This topic connects to:
   - Kept all academic citations from both refactoring-prd and legacy sources
   - Applied the current naming map consistently and marked legacy names only in explicitly retired contexts
   - Applied reframe rules consistently, favoring budget/confidence/time constraints over older lifecycle metaphors
-  - Included full Rust code from the shipping codebase with comments aligned to current Engram terminology
+  - Included full Rust code from the shipping codebase with comments aligned to current Signal terminology
   - Maintained 31.6× collective calibration claim with explicit caveats about it being a heuristic
 - **Open questions**:
   - Exact line count of the 14 previously written sub-docs was not re-verified after context window compaction (estimated 5,500+ lines for sub-docs 00-13, ~1,000+ for sub-docs 14-17)

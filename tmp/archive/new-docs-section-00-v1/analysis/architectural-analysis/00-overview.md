@@ -46,7 +46,7 @@ dependency to its target crate's layer assignment. Checked for upward dependenci
 **Step 3: Domain mapping** — For each of the three cognitive domains (coding, chain, research),
 mapped which operations occur at Gamma, Theta, and Delta speed.
 
-**Step 4: Edge case census** — Enumerated all data categories that the Engram type must
+**Step 4: Edge case census** — Enumerated all data categories that the Signal type must
 represent, including binary blobs, structured multi-part data, real-time streams, and
 confidential data.
 
@@ -75,9 +75,9 @@ agent data protocols (ADP, arXiv:2510.24702), and hyperdimensional computing.
    Delta speed is a genuine innovation with no classical architecture equivalent.
    See [04-finding-cognitive-speeds.md](04-finding-cognitive-speeds.md).
 
-5. **Engram/Signal is universal.** Edge cases are handled by existing extension mechanisms.
-   Engram is strictly richer than the Agent Data Protocol (ADP).
-   See [05-finding-engram-universality.md](05-finding-engram-universality.md).
+5. **Signal/Signal is universal.** Edge cases are handled by existing extension mechanisms.
+   Signal is strictly richer than the Agent Data Protocol (ADP).
+   See [05-finding-signal-universality.md](05-finding-signal-universality.md).
 
 6. **Cross-cut isolation has two gaps.** Daimon is not injected via trait object; Dreams
    imports Neuro and Learn directly. Both fixable.
@@ -122,5 +122,5 @@ Key papers:
 
 ## Open Questions
 
-- Should the architectural analysis be re-run after the Signal→Engram rename lands?
+- Should the architectural analysis be re-run after the Signal→Signal rename lands?
 - Does the category theory analysis change if the Pipeline struct is formalized per Proposal 8.3?

@@ -1,5 +1,15 @@
 # Implementation Plan: Production Deployment Reality (from R4)
 
+Last updated: 2026-08-13
+
+## What is this?
+
+Nine tasks (D1-D9) focused on production economics: budget enforcement,
+semantic caching, cost metrics, compliance export, and observability. These
+build on top of existing cost-tracking infrastructure (costs_db.rs,
+efficiency.rs, episode_logger.rs) and add the enforcement and reporting
+layers needed for real-world operation.
+
 > Source: `docs/v2-depth/RESEARCH-PROMPT-4.md`
 > Scope: Bridge the gap between roko's technical capabilities and production-readiness.
 > Covers: cost management, caching, developer experience, measurement, compliance,
@@ -509,7 +519,7 @@ D4 (Bench regression detection)
 Independent: D2, D3, D5, D7, D8
 ```
 
-## Checklist
+## Checklist (0/9 complete)
 
 - [ ] D1: Budget enforcement with per-plan/task/session limits
 - [ ] D2: Semantic caching using HDC fingerprints

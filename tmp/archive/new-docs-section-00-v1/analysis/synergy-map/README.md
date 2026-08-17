@@ -16,7 +16,7 @@
 | S1 | [synergy-01-demurrage-x-hdc.md](synergy-01-demurrage-x-hdc.md) | Self-trimming semantic memory | P6 Demurrage × P5 HDC |
 | S2 | [synergy-02-heuristics-pulse-bus.md](synergy-02-heuristics-pulse-bus.md) | Continuous calibration | P7 Heuristics × P2 Pulse × P3 Bus |
 | S3 | [synergy-03-cfactor-bus-hdc.md](synergy-03-cfactor-bus-hdc.md) | Diversity-aware routing | P8 c-factor × P3 Bus × P5 HDC |
-| S4 | [synergy-04-replication-living-research.md](synergy-04-replication-living-research.md) | Living research | P9 Replication ledger × P7 Heuristics × P1 paper Engram |
+| S4 | [synergy-04-replication-living-research.md](synergy-04-replication-living-research.md) | Living research | P9 Replication ledger × P7 Heuristics × P1 paper Signal |
 | S5 | [synergy-05-plugin-spi-ecosystem.md](synergy-05-plugin-spi-ecosystem.md) | Ecosystem growth path | P10 Plugin SPI × P4 Substrate × P3 Bus |
 | S6 | [synergy-06-cfactor-heuristics-peer-model.md](synergy-06-cfactor-heuristics-peer-model.md) | Peer-model learning | P8 c-factor × P7 Heuristics |
 | S7 | [synergy-07-dreams-retroactive.md](synergy-07-dreams-retroactive.md) | Retroactive insight | Dreams × P4 Substrate × P2 Pulse |

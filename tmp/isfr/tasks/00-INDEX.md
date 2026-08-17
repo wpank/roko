@@ -1,4 +1,13 @@
-# ISFR Implementation Tasks — Master Index
+# ISFR Implementation Tasks -- Master Index
+
+> **What is this?** Task breakdown for the ISFR (Information Sourcing, Filtering,
+> and Routing) subsystem. ISFR connects roko agents to live blockchain data feeds --
+> rate observations, oracle submissions, and DeFi protocol state. The ISFR vertical
+> is substantially built (sources -> keeper -> oracle -> bootstrap -> serve). These
+> tasks cover the remaining relay upgrade, feed trait integration, CLI/serve wiring,
+> and demo-app UI.
+>
+> Last updated: 2026-08-13
 
 ## Build Order & Dependency Graph
 

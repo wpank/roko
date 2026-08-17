@@ -1,6 +1,6 @@
 # Pruning
 
-> Pruning removes `Engram`s from the store to reclaim capacity. Roko supports two eviction
+> Pruning removes `Signal`s from the store to reclaim capacity. Roko supports two eviction
 > strategies: decay-driven (records whose `Decay` schedule has expired) and
 > capacity-driven (records evicted to stay within a size budget).
 
@@ -36,13 +36,13 @@ biological memory, where disuse reduces recall probability.
 
 ### 1. Decay-Driven Eviction
 
-Each `Engram` has a [`Decay`](../10-types/decay.md) schedule. The `balance` field decreases
+Each `Signal` has a [`Decay`](../10-types/decay.md) schedule. The `balance` field decreases
 over time according to the decay variant (exponential, step, freeze/thaw, etc.). When an
-`Engram`'s effective balance reaches zero (or falls below a configured floor `decay_floor`),
+`Signal`'s effective balance reaches zero (or falls below a configured floor `decay_floor`),
 it is eligible for pruning.
 
 During `prune()`:
-1. Compute the current effective balance for every stored `Engram`.
+1. Compute the current effective balance for every stored `Signal`.
 2. Mark those with `balance <= decay_floor` as expired.
 3. Remove expired records.
 

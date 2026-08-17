@@ -10,8 +10,8 @@ Generated: 2026-04-16
 
 Use these before trusting the docs literally:
 
-- `EngramBuilder::new(...)` defaults to `Decay::None` in `crates/roko-core/src/engram.rs:165-169`. The doc-15 24h verdict half-life is **not** implicit.
-- `Engram::derive(...)` at `crates/roko-core/src/engram.rs:131-135` carries lineage only. It does **not** inherit tags from the parent engram.
+- `EngramBuilder::new(...)` defaults to `Decay::None` in `crates/roko-core/src/__PATH_ENGRAM_RS__0:165-169`. The doc-15 24h verdict half-life is **not** implicit.
+- `Engram::derive(...)` at `crates/roko-core/src/__PATH_ENGRAM_RS__0:131-135` carries lineage only. It does **not** inherit tags from the parent engram.
 - `run_gate_rung(...)` at `crates/roko-cli/src/orchestrate.rs:11423-11461` still uses ad-hoc numeric semantics (`1 => Test`, `2 => Clippy`) rather than the canonical `Rung` enum ordering.
 - `select_rungs(...)` is fully implemented in `roko-gate`, but has **no production caller** today.
 - `feedback_for_agent(...)` is fully implemented in `roko-gate`, but has **no production caller** today.
@@ -21,14 +21,14 @@ Use these before trusting the docs literally:
 
 ## crates/roko-core/src/
 
-### Gate trait + engram contract
+### Gate trait + signal contract
 
 | File | What | Section |
 |------|------|---------|
-| `traits.rs:102-108` | canonical `Gate` trait: `verify(&self, signal: &Engram, ctx: &Context) -> Verdict` plus `name()` | A.01-A.02 |
-| `engram.rs:131-135` | `Engram::derive(kind, body)` — lineage helper, no automatic tag inheritance | G.08, G.10 |
-| `engram.rs:165-169` | `EngramBuilder::new` defaults (`Decay::None`, neutral score, empty tags) | G.10 |
-| `engram.rs:183-186` | explicit `.decay(...)` setter on builder | G.10 |
+| `traits.rs:102-108` | canonical `Gate` trait: `verify(&self, signal: &Signal, ctx: &Context) -> Verdict` plus `name()` | A.01-A.02 |
+| `__PATH_ENGRAM_RS__0:131-135` | `Engram::derive(kind, body)` — lineage helper, no automatic tag inheritance | G.08, G.10 |
+| `__PATH_ENGRAM_RS__0:165-169` | `EngramBuilder::new` defaults (`Decay::None`, neutral score, empty tags) | G.10 |
+| `__PATH_ENGRAM_RS__0:183-186` | explicit `.decay(...)` setter on builder | G.10 |
 | `kind.rs:42` | `Kind::GateVerdict` enum variant | G.09-G.10 |
 | `decay.rs:21-29` | `Decay::HalfLife { half_life_ms }` contract | G.10 |
 | `decay.rs:104-106` | `Decay::WISDOM` constant = 24h half-life | G.10 |
@@ -140,7 +140,7 @@ Use these before trusting the docs literally:
 | `orchestrate.rs:5284-5356` | one narrow consolidation loop: gate -> episode -> enrichment -> skill | E.14, F.07 |
 | `orchestrate.rs:8897-9000` | `handle_autofix(plan_id)` raw gate-context retry path | D.03, D.10, E.04 |
 | `orchestrate.rs:11144-11272` | `run_gate_pipeline(plan_id, rung)` main verification path | B.04-B.06, G.09 |
-| `orchestrate.rs:11175-11185` | derived `Kind::GateVerdict` engram builder with only `gate` / `passed` tags | G.09-G.10 |
+| `orchestrate.rs:11175-11185` | derived `Kind::GateVerdict` signal builder with only `gate` / `passed` tags | G.09-G.10 |
 | `orchestrate.rs:11246` | conductor-side `Kind::GateVerdict` emission with plan / rung / duration fields | G.09 |
 | `orchestrate.rs:11339` | post-merge follow-up calls `run_gate_rung(..., 3)` using the current ad-hoc numeric contract | B.04 |
 | `orchestrate.rs:11423-11461` | `run_gate_rung(payload_sig, rung)` hardcoded dispatch | B.04 |

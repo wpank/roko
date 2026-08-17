@@ -1,6 +1,6 @@
-# Engram — The Universal Datum
+# Signal — The Universal Datum
 
-> Every durable record in Roko is an Engram. This folder is the canonical reference for the Engram type.
+> Every durable record in Roko is an Signal. This folder is the canonical reference for the Signal type.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -8,20 +8,20 @@
 
 ---
 
-## What Is an Engram?
+## What Is an Signal?
 
-An Engram is the single data type through which every component in the Roko system
+An Signal is the single data type through which every component in the Roko system
 communicates durable information. Agent outputs, gate verdicts, tool traces, knowledge
-entries, predictions, scoring metadata — every persistent record is an Engram.
+entries, predictions, scoring metadata — every persistent record is an Signal.
 
-The name comes from neuroscience: an engram is the hypothetical physical trace of a memory
-in the brain (Semon 1904). In Roko, an Engram is its digital analogue — a content-addressed,
+The name comes from neuroscience: an signal is the hypothetical physical trace of a memory
+in the brain (Semon 1904). In Roko, an Signal is its digital analogue — a content-addressed,
 scored, decaying, lineage-tracked unit of cognition.
 
 > **Historical note.** The shipping Rust codebase uses the identifier `Signal` for the
-> Engram type, in `roko-core`. `Signal` is the retired name. All architecture documentation
-> uses `Engram`. When you read code you will see `Signal`; when you read docs you will read
-> `Engram`. They refer to the same struct.
+> Signal type, in `roko-core`. `Signal` is the retired name. All architecture documentation
+> uses `Signal`. When you read code you will see `Signal`; when you read docs you will read
+> `Signal`. They refer to the same struct.
 
 ---
 
@@ -29,7 +29,7 @@ scored, decaying, lineage-tracked unit of cognition.
 
 | # | Page | What it covers | Status |
 |---|------|----------------|--------|
-| [00](00-overview.md) | Overview | What an Engram is; why one universal datum | Shipping |
+| [00](00-overview.md) | Overview | What an Signal is; why one universal datum | Shipping |
 | [01](01-struct-reference.md) | Struct reference | Every field, every type, every invariant | Shipping |
 | [02](02-content-hash.md) | ContentHash | BLAKE3 identity, canonicalization | Shipping |
 | [03](03-hdc-fingerprint.md) | HDC fingerprint | 10240-bit vector, binding, similarity | Shipping |
@@ -37,9 +37,9 @@ scored, decaying, lineage-tracked unit of cognition.
 | [05](05-body-enum.md) | Body enum | Every Body variant, payload types | Shipping |
 | [06](06-lineage-dag.md) | Lineage DAG | Parent links, cycle prevention, query patterns | Shipping |
 | [07](07-builder-pattern.md) | Builder pattern | Builder API, defaults, required fields | Shipping |
-| [08](08-scoring-fields.md) | Scoring fields | How Score attaches to an Engram | Shipping |
-| [09](09-decay-fields.md) | Decay fields | How Decay attaches to an Engram | Shipping |
-| [10](10-provenance-fields.md) | Provenance fields | How Provenance attaches to an Engram | Shipping |
+| [08](08-scoring-fields.md) | Scoring fields | How Score attaches to an Signal | Shipping |
+| [09](09-decay-fields.md) | Decay fields | How Decay attaches to an Signal | Shipping |
+| [10](10-provenance-fields.md) | Provenance fields | How Provenance attaches to an Signal | Shipping |
 | [11](11-serialization.md) | Serialization | JSONL, binary, versioning, migration | Shipping |
 | [12](12-invariants.md) | Invariants | What must always be true; where it is enforced | Shipping |
 | [13](13-examples.md) | Examples | 10+ worked examples, minimal to complex | Shipping |
@@ -65,4 +65,4 @@ scored, decaying, lineage-tracked unit of cognition.
 - [`reference/10-types/provenance/`](../10-types/provenance/README.md) — author, trust, taint, custody
 - [`reference/10-types/content-hash/`](../10-types/content-hash/README.md) — BLAKE3 identity
 - [`reference/10-types/hdc-fingerprint/`](../10-types/hdc-fingerprint/README.md) — HDC vectors
-- [`reference/02-pulse/README.md`](../02-pulse/README.md) — ephemeral events (the Engram's counterpart)
+- [`reference/02-pulse/README.md`](../02-pulse/README.md) — ephemeral events (the Signal's counterpart)

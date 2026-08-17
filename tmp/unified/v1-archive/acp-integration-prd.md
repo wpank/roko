@@ -52,7 +52,7 @@ Every other agent in the ACP registry is essentially a single-loop LLM wrapper: 
 
 - **Gate pipeline**: Compile, test, clippy, and formal verification gates that objectively verify agent output. When a user sees "Gate: 147/147 tests passed" in their editor, they know the code works — not because the LLM said so, but because the EVM/compiler proved it.
 - **Multi-phase execution**: Enriching → Implementing → Gating → Verifying → Reviewing → Merging. ACP's plan support renders this as a visual step-by-step pipeline in the editor.
-- **Knowledge store**: Persistent knowledge entries (Engrams) with confidence scores, decay dynamics, and HDC fingerprints. The agent remembers and learns across sessions.
+- **Knowledge store**: Persistent knowledge entries (Signals) with confidence scores, decay dynamics, and HDC fingerprints. The agent remembers and learns across sessions.
 - **Daimon affect state**: PAD vectors modulate agent behavior. High arousal from repeated failures triggers strategy shifts visible to the user.
 - **Session modes**: Not just "ask" vs "code" — Roko offers plan-first, research, review, and full autonomous modes that map naturally to ACP's session mode system.
 - **Conductor watchers**: GhostTurn, ReviewLoop, CompileFailThreshold — autonomous corrective actions that run in the background during execution.
@@ -397,7 +397,7 @@ crates/roko-acp/
 ```
 roko-acp
 ├── agent-client-protocol   # Official Rust SDK from crates.io (types + transport)
-├── roko-core                # L1: Engram, AgentRole, PlanPhase, Verdict, Budget
+├── roko-core                # L1: Signal, AgentRole, PlanPhase, Verdict, Budget
 ├── roko-compose             # L2: PromptComposer, RoleSystemPromptSpec
 ├── roko-gate                # L2: CompileGate, TestGate, ClippyGate
 ├── roko-agent               # L3: ClaudeCliAgent, ExecAgent, McpConfig

@@ -1,6 +1,6 @@
 # Kind
 
-> The semantic type of an Engram, declaring what cognitive role the knowledge plays.
+> The semantic type of an Signal, declaring what cognitive role the knowledge plays.
 
 ## Contents
 
@@ -19,5 +19,5 @@ For implementers writing a serializer or content hash: 00 → 03.
 
 ## See also
 
-- [`../../01-engram/04-kind-enum.md`](../../01-engram/04-kind-enum.md) — Kind in Engram context
+- [`../../01-engram/04-kind-enum.md`](../../01-engram/04-kind-enum.md) — Kind in Signal context
 - [`../decay/08-tier-matrix.md`](../decay/08-tier-matrix.md) — per-Kind default decay

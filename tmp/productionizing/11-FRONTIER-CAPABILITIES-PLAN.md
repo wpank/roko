@@ -1,5 +1,15 @@
 # Implementation Plan: Frontier Capabilities (from R3)
 
+Last updated: 2026-08-13
+
+## What is this?
+
+Seven tasks (F1-F7) for wiring frontier capabilities that are already built
+but not yet connected to the runtime. These extend roko's self-improvement
+loop with capabilities like novelty search, dynamic agent spawning, and
+tropical algebra routing. All tasks depend on the production baseline
+(P1-P15 from `10-IMPLEMENTATION-PLAN.md`) being stable first.
+
 > Source: `docs/v2-depth/RESEARCH-PROMPT-3.md`
 > Scope: Wire existing code + implement missing pieces for self-bootstrapping, metacognition,
 > emergent economics, cross-system composition, temporal reasoning, agents-as-infrastructure,
@@ -336,7 +346,7 @@ DEPENDS ON F1:
   F5 (Novelty search) — needs ADAS wired first
 ```
 
-## Checklist
+## Checklist (0/7 complete)
 
 - [ ] F1: ADAS wired into CurriculumScheduler
 - [ ] F2: Research pipeline callable from CLI or orchestrator hook

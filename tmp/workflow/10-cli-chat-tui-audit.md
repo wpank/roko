@@ -437,7 +437,7 @@ With implementations: `InlineRenderer`, `PlainRenderer`, `TuiRenderer`.
 | F4 | Git | Branch tree, commit graph, worktrees |
 | F5 | Logs | Filtered log viewer, signal stream |
 | F6 | Config | Config view, provider health, model comparison |
-| F7 | Inspect | Engram DAG, episode replay, knowledge browser |
+| F7 | Inspect | Signal DAG, episode replay, knowledge browser |
 | F8 | Marketplace | Job list, job detail, create job |
 | F9 | Atelier | PRD workshop, plan explorer |
 | F10 | Learning | Route decisions, history, efficiency metrics |

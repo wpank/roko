@@ -1038,13 +1038,13 @@ feat(roko-runtime): add regime state machine and adaptive tier threshold
 
 The `Conductor` in `roko-conductor/src/conductor.rs:59` runs 10 watchers. All 10 monitor code-task process health: ghost turns, review loops, compile failures, context window pressure, cost overruns, stuck patterns. None monitors DeFi market conditions.
 
-The watchers implement `Policy` from `roko-core` (trait at `crates/roko-core/src/lib.rs`). Each watcher receives `&[Engram]` (the signal stream) and emits intervention signals. The conductor merges watcher outputs through an `InterventionPolicy` (line 63) and feeds them to the circuit breaker (line 65).
+The watchers implement `Policy` from `roko-core` (trait at `crates/roko-core/src/lib.rs`). Each watcher receives `&[Signal]` (the signal stream) and emits intervention signals. The conductor merges watcher outputs through an `InterventionPolicy` (line 63) and feeds them to the circuit breaker (line 65).
 
 The existing watchers live in `crates/roko-conductor/src/watchers/` with one file per watcher. Each file exports a struct that implements `Policy`. The `Conductor::new()` method at line 97 registers all 10 default watchers in a `Vec<Box<dyn Policy>>`.
 
 This batch adds 4 DeFi-specific watchers that produce `WatcherOutput` values with `Severity` levels. The watchers fit the existing conductor architecture -- they are additional `Box<dyn Policy>` entries in the watcher vec, producing signals that the existing `WorstSeverityPolicy` merges.
 
-The watchers need chain data. Rather than depend on `roko-chain`, they consume `Engram` signals tagged with chain-domain kinds (price, gas, liquidity, health). The chain event consumer from batch 6.1 translates chain events into `Engram` signals on the bus, and the conductor reads them.
+The watchers need chain data. Rather than depend on `roko-chain`, they consume `Signal` signals tagged with chain-domain kinds (price, gas, liquidity, health). The chain event consumer from batch 6.1 translates chain events into `Signal` signals on the bus, and the conductor reads them.
 
 ### Read First
 
@@ -1253,7 +1253,7 @@ impl Conductor {
 
 Do not change `Conductor::new()`. DeFi watchers are opt-in via the builder. Code-task users get the existing 10 watchers; DeFi users call `.with_defi_watchers()` for 14 total.
 
-**Warning**: The four DeFi watchers consume engram signals tagged with specific `Kind` values (price_update, gas_update, position_health, tvl_update). These signal kinds must be emitted by the chain event consumer (batch 6.1) or by the heartbeat probes. If no signals of the right kind appear in the stream, the watchers produce no output -- they do not crash.
+**Warning**: The four DeFi watchers consume signal signals tagged with specific `Kind` values (price_update, gas_update, position_health, tvl_update). These signal kinds must be emitted by the chain event consumer (batch 6.1) or by the heartbeat probes. If no signals of the right kind appear in the stream, the watchers produce no output -- they do not crash.
 
 ### Wiring
 

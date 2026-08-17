@@ -30,11 +30,11 @@ max_size_gb = 10.0
 When the substrate directory exceeds `max_size_gb`:
 
 1. Emergency GC triggers immediately.
-2. Cold-tier Engrams (all score axes < 0.01) have their decay accelerated (decay
+2. Cold-tier Signals (all score axes < 0.01) have their decay accelerated (decay
    rate multiplied by 10×) for the duration of the GC pass.
 3. A `SubstrateDiskPressure` warning Pulse is emitted.
 4. If still over the cap after GC, the warning is repeated every 60 minutes.
-5. **The runtime does not hard-fail.** New Engrams continue to be written.
+5. **The runtime does not hard-fail.** New Signals continue to be written.
 
 **Hard failure behaviour**: not implemented (the cap is a soft cap). If you need a
 hard cap (fail rather than overflow), monitor the `substrate_size_mb` metric and
@@ -93,7 +93,7 @@ A configurable maximum HDC index size (entries before LRU eviction) is planned b
 not yet implemented. Today the HDC index grows unbounded until the process exits or
 GC removes entries from the substrate.
 
-**Workaround**: run `roko substrate gc` periodically to remove old Engrams from the
+**Workaround**: run `roko substrate gc` periodically to remove old Signals from the
 substrate, which reduces the HDC index size on the next startup.
 
 ### OS-Level Memory Limits

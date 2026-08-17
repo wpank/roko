@@ -1,8 +1,8 @@
 [meta]
 plan = "E25-learning-loops-advanced"
 total = 10
-done = 0
-status = "ready"
+done = 10
+status = "done"
 max_parallel = 2
 
 # ── T01: L3 HDC defragmentation — knowledge consolidation ───────────
@@ -34,7 +34,7 @@ Implementation steps:
 - Call k_medoids internally to find clusters, then bundle each cluster
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-learn/src/hdc_clustering.rs"]
 depends_on = []
@@ -108,7 +108,7 @@ Implementation steps:
   staleness window small
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-learn/src/hindsight.rs"]
 depends_on = []
@@ -177,7 +177,7 @@ Uses existing types:
 - CollectivePathology (cfactor.rs:63) for pathology detection
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-learn/src/cfactor.rs"]
 depends_on = []
@@ -242,7 +242,7 @@ Implementation steps:
 - Add ExperimentArchive struct with concluded_at, final_stats, p_value, effect_size
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-learn/src/prompt_experiment.rs"]
 depends_on = []
@@ -311,7 +311,7 @@ Implementation steps:
 - Add pub async fn match_playbooks(&self, task_description: &str, limit: usize) -> io::Result<Vec<Playbook>>
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-learn/src/playbook.rs"]
 depends_on = []
@@ -374,7 +374,7 @@ Add VICheck result struct with:
 Add the check as a method on CFactor: fn variance_inequality_check(&self, episodes: &[Episode]) -> VICheck
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-learn/src/cfactor.rs"]
 depends_on = []
@@ -441,7 +441,7 @@ computed_at: DateTime<Utc> and episode_window: usize.
 Add fn compute_compounding_metrics(episodes: &[Episode]) -> AutocatalyticMetrics.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-learn/src/aggregate.rs"]
 depends_on = []
@@ -503,7 +503,7 @@ Implementation: Add PlaybookStore::match_with_rules(description, rules, limit)
 that wraps match_playbooks and applies rule filtering.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-learn/src/playbook.rs", "crates/roko-learn/src/playbook_rules.rs"]
 depends_on = ["E25-T05"]
@@ -543,17 +543,16 @@ fail_msg = "roko-learn must compile"
 
 [[task]]
 id = "E25-T09"
-title = "Wire c-factor governance and playbook matching into orchestrate.rs dispatch"
+title = "Wire c-factor governance and playbook matching into runner dispatch"
 description = """
-Extend orchestrate.rs to: (1) after each plan run, compute c-factor and
+Extend the runner event loop to: (1) after each plan run, compute c-factor and
 check governance recommendations via CFactorGovernance, (2) before
 dispatching an agent, query PlaybookStore::match_playbooks for the task
 description and inject matched playbook steps into the system prompt via
 the existing enrichment path, (3) log autocatalytic metrics after each
 plan completion using AutocatalyticMetrics.
 
-The existing orchestrate.rs already queries playbooks at dispatch time
-(search for "playbook" in orchestrate.rs). Extend this to use the new
+The runner event loop owns playbook enrichment at dispatch time. Extend it to use the new
 when/then matching from T05. The existing dispatch_agent_with function
 handles enrichment — add playbook match results there.
 
@@ -566,25 +565,25 @@ Implementation steps:
    .roko/learn/compounding.jsonl.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
-files = ["crates/roko-cli/src/orchestrate.rs"]
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
 depends_on = ["E25-T03", "E25-T05", "E25-T07"]
 max_loc = 80
 
 [task.context]
 read_files = [
-  { path = "crates/roko-cli/src/orchestrate.rs", lines = "1-50", why = "Module imports and top-level structure" },
+  { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1-120", why = "Runner imports and live dispatch/completion structure after the orchestrator split" },
   { path = "crates/roko-learn/src/cfactor.rs", lines = "14-31", why = "CFactor struct for governance input" },
   { path = "crates/roko-learn/src/playbook.rs", lines = "642-681", why = "PlaybookStore for match_playbooks" },
   { path = "crates/roko-learn/src/aggregate.rs", lines = "1-20", why = "Where compounding metrics should be computed" },
 ]
 symbols = [
-  "dispatch_agent_with — main dispatch function in orchestrate.rs",
+  "dispatch_agent_with — live agent dispatch path in runner/event_loop.rs",
   "CFactorGovernance — governance recommendations from T03",
   "PlaybookStore::match_playbooks — playbook matching from T05",
   "AutocatalyticMetrics — compounding metrics from T07",
-  "CFactorSummary — existing c-factor summary used in orchestrate.rs",
+  "CFactorSummary — existing c-factor summary used by the runner",
 ]
 anti_patterns = [
   "Do NOT block dispatch on c-factor computation — run governance checks asynchronously post-plan",
@@ -594,8 +593,8 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'match_playbooks\\|CFactorGovernance\\|AutocatalyticMetrics' crates/roko-cli/src/orchestrate.rs"
-fail_msg = "Learning loop integration must exist in orchestrate.rs"
+command = "grep -q 'match_playbooks\\|CFactorGovernance\\|AutocatalyticMetrics' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "Learning loop integration must exist in the live runner event loop"
 
 [[task.verify]]
 phase = "compile"
@@ -632,7 +631,7 @@ Existing test patterns can be found in:
 - cfactor.rs (if present)
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-learn/src/cfactor.rs", "crates/roko-learn/src/prompt_experiment.rs", "crates/roko-learn/src/hdc_clustering.rs"]
 depends_on = ["E25-T01", "E25-T02", "E25-T03", "E25-T04", "E25-T06"]

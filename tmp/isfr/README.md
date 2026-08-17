@@ -1,5 +1,20 @@
 # ISFR Implementation Plans
 
+> **What is this?** ISFR = Information Sourcing, Filtering, and Routing -- the chain
+> integration subsystem for on-chain data feeds. ISFR connects roko agents to live
+> blockchain data: rate observations, oracle submissions, and DeFi protocol state.
+> The vertical pipeline is: ISFRSource (data providers) -> ISFRKeeper (agent) ->
+> Relay (pub/sub) -> ISFROracle (on-chain contract) -> Bootstrap/Serve (API).
+>
+> **Status (2026-08-13):** The ISFR vertical is **substantially built**
+> (sources -> keeper -> oracle -> bootstrap -> serve). Core types (`IsfrConfig`,
+> `ClearingPhase`, weighted median, QP solver) exist in `roko-chain/src/isfr.rs`.
+> The relay upgrade (topic pub/sub) and ISFRFeed integration are designed but not
+> yet wired at runtime. 16 remaining chain modules (witness, x402, marketplace,
+> registries, etc.) are shelved as Phase 2+ pending the daeji devnet.
+>
+> Last updated: 2026-08-13
+
 Implementation plans for integrating ISFR into roko as a keeper agent, upgrading the relay to support feeds, and adding chain-specific tools.
 
 ## Documents

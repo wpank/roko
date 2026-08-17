@@ -7,7 +7,7 @@ The docs establish canonical terminology. These are places where the code uses d
 ### NF-01: signals.jsonl -> engrams.jsonl
 - [x] Rename the main data log file
 
-**Spec** (doc 01, 02): The primary data type is Engram. Files should reflect this.
+**Spec** (doc 01, 02): The primary data type is Signal. Files should reflect this.
 **Current code** (`crates/roko-fs/src/layout.rs`): `fn signals_path()` returns `.roko/signals.jsonl`
 **What to change**:
 1. Rename `signals_path()` -> `engrams_path()`
@@ -34,7 +34,7 @@ grep -rn 'signals\.jsonl\|signals_path' crates/ --include='*.rs' | grep -v targe
 **Decision needed**: Is "signal" the right term for external event kinds in the doc vocabulary, or should these be "event kinds"? Check doc 01 glossary.
 **Accept when**:
 - [x] Name aligns with doc 01 glossary terminology
-  - Decision: "signal" is the correct term for external event triggers per doc 01. These are intentionally distinct from the old Signal type (now Engram). The module name `signal_kinds` accurately describes external event kind constants.
+  - Decision: "signal" is the correct term for external event triggers per doc 01. These are intentionally distinct from the old Signal type (now Signal). The module name `signal_kinds` accurately describes external event kind constants.
 **Priority**: P1
 
 ### NF-03: EventBus -> Bus (when trait is built)

@@ -18,8 +18,8 @@ Text(String)
 **Purpose**: A UTF-8 string carrying a written claim, answer, or natural-language
 knowledge item. The most common Body for `KnowledgeEntry`, `AgentOutput`, and `Reflection`.
 
-**Size**: No hard limit. Recommend ≤ 32 KB for a single Engram; split longer content into
-a lineage chain of smaller Engrams.
+**Size**: No hard limit. Recommend ≤ 32 KB for a single Signal; split longer content into
+a lineage chain of smaller Signals.
 
 **HDC encoding**: Word-level tokenization (lowercase, punctuation stripped). Short texts
 (< 3 tokens) produce sparse vectors with low discrimination.
@@ -30,7 +30,7 @@ a lineage chain of smaller Engrams.
 - Written factual claims.
 - Agent answers to questions.
 - Reflective self-assessments.
-- Error messages (prefer `ErrorRecord` Kind with `Text` body over a bare `Text` Engram).
+- Error messages (prefer `ErrorRecord` Kind with `Text` body over a bare `Text` Signal).
 
 ---
 
@@ -102,7 +102,7 @@ image thumbnails, or any payload that cannot be meaningfully tokenized.
 pointer (hash of the binary + URL) stored in a `Text` or `Json` body instead.
 
 **HDC encoding**: **Not encodable.** `HdcEncoder::encode()` returns `None` for `Body::Binary`.
-The Engram will have `fingerprint = None`.
+The Signal will have `fingerprint = None`.
 
 **ContentHash encoding**: Bytes directly, without transformation.
 
@@ -135,7 +135,7 @@ pair is encoded with length prefixes. See [canonical bytes](02-canonical-bytes.m
 **When to use**:
 - When the record schema is defined in code (`struct`-like).
 - When individual fields need to be findable via key-specific search.
-- `ContextAssembly` bodies (`{engrams: [id1, id2], token_count: 1024}`).
+- `ContextAssembly` bodies (`{signals: [id1, id2], token_count: 1024}`).
 - `Prediction` bodies (`{subject: "...", expected_value: "...", confidence: 0.8}`).
 
 **Notes**: `Structured` bodies support recursive nesting (`Body::Structured` containing

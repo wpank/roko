@@ -1,5 +1,14 @@
 # Model/Provider Routing: The Problem and Fix
 
+Last updated: 2026-08-13
+
+## What is this?
+
+Describes the model/provider routing problem (Critical finding C1 in
+`06-AUDIT-FINDINGS.md`): hardcoded fallbacks to models whose providers
+may not have API keys, causing silent dispatch failures. Includes the
+root cause analysis and the concrete fix.
+
 ## The Problem
 
 Model routing silently falls back to providers you don't have keys for, then fails at dispatch time. This is the #1 usability issue.

@@ -14,7 +14,7 @@ slow-wave sleep, when the hippocampus replays and consolidates memories into cor
 
 Delta is not a real-time processing speed — it is a scheduled offline pass over the
 agent's Substrate. It runs QUERY, SCORE, and PERSIST only (no ACT, no model call). Its
-job is to reorganize knowledge: promoting frequently-used Engrams to higher-durability
+job is to reorganize knowledge: promoting frequently-used Signals to higher-durability
 tiers, pruning stale ones, rebuilding HDC indexes, and updating routing priors. The
 Dreams cross-cut runs exclusively at Delta.
 
@@ -25,16 +25,16 @@ Dreams cross-cut runs exclusively at Delta.
 | Does | Does not |
 |---|---|
 | Query the full Substrate (up to 24 h lookback) | Call any model or tool |
-| Score all Engrams by current relevance/utility | Produce any external output |
-| Promote high-utility Engrams to longer half-lives | Accept or process user stimuli |
-| Prune Engrams below utility threshold | Run ROUTE, COMPOSE, ACT, or VERIFY |
+| Score all Signals by current relevance/utility | Produce any external output |
+| Promote high-utility Signals to longer half-lives | Accept or process user stimuli |
+| Prune Signals below utility threshold | Run ROUTE, COMPOSE, ACT, or VERIFY |
 | Rebuild HDC similarity index | Accept real-time Pulses during execution |
 | Update routing priors (CascadeRouter's Wilson CI table) | Block Gamma/Theta processing |
 | Integrate Dreams cross-cut (replay and imagination) | — |
 
 Delta runs **concurrently** with Gamma/Theta. A Delta consolidation pass does not
 pause the agent's real-time loop — it runs in a background task, writing its results
-to the Substrate. Gamma/Theta ticks see the updated Engrams as they arrive.
+to the Substrate. Gamma/Theta ticks see the updated Signals as they arrive.
 
 ---
 
@@ -80,20 +80,20 @@ Delta Tick:
 
 ### Promotion
 
-An Engram is promoted when its utility axis has been consistently high over the last
-N ticks. Promotion increases `half_life` — the Engram decays more slowly and will
+An Signal is promoted when its utility axis has been consistently high over the last
+N ticks. Promotion increases `half_life` — the Signal decays more slowly and will
 surface more reliably in future QUERY calls.
 
 ### Pruning
 
-An Engram is pruned (its `half_life` reduced to near-zero, triggering rapid decay)
+An Signal is pruned (its `half_life` reduced to near-zero, triggering rapid decay)
 when:
 - Its utility axis has been consistently low for K ticks
 - It has not been retrieved in the last `pruning_window` (default: 7 days)
 - Its trust axis has fallen below the trust floor (e.g., because its source was
   later found to be unreliable)
 
-Pruning is soft: the Engram is marked with `decaying = true` and its half-life is
+Pruning is soft: the Signal is marked with `decaying = true` and its half-life is
 reduced, but it is not deleted. It will naturally expire over the next few ticks.
 Hard deletion is never performed during consolidation — only during explicit storage
 reclamation when the substrate approaches its quota.
@@ -104,9 +104,9 @@ reclamation when the substrate approaches its quota.
 
 The Dreams cross-cut runs as part of the Delta pass. It has two phases:
 
-1. **NREM replay**: surface Engrams from recent memory (last 24 h) and "replay"
+1. **NREM replay**: surface Signals from recent memory (last 24 h) and "replay"
    them — re-score, re-connect to related knowledge, update routing priors.
-2. **REM imagination**: generate novel Engrams by combining existing knowledge in new
+2. **REM imagination**: generate novel Signals by combining existing knowledge in new
    ways, using compositional HDC algebra. These are marked `Kind::Imagined` and have
    low initial trust — they are hypotheses, not facts.
 
@@ -148,8 +148,8 @@ free_energy_trigger      = 0.35    # triggers emergency Delta
 | Metric | Description |
 |---|---|
 | `delta.pass_count` | Total Delta passes completed |
-| `delta.engrams_promoted` | Engrams promoted per pass |
-| `delta.engrams_pruned` | Engrams marked for pruning per pass |
+| `delta.engrams_promoted` | Signals promoted per pass |
+| `delta.engrams_pruned` | Signals marked for pruning per pass |
 | `delta.duration_secs` | Wall time per Delta pass |
 | `delta.free_energy_before` | Rolling free energy before the pass |
 | `delta.free_energy_after` | Rolling free energy after the pass |

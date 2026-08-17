@@ -1,4 +1,6 @@
-# 03: ISFR Keeper Agent — ISFRSource Trait + Relay Integration
+# 03: ISFR Keeper Agent -- ISFRSource Trait + Relay Integration
+
+> Last updated: 2026-08-13
 
 The ISFR keeper agent that fetches rates from DeFi protocols, publishes observations to the relay, coordinates block-range voting, and submits on-chain. Designed for extensibility — adding a new rate source is one struct.
 

@@ -55,18 +55,18 @@ The `roko-golem` crate is being removed. Its subsystems are redistributed:
 
 After dissolution: `roko-golem` is removed from workspace members in `Cargo.toml`.
 
-**Composability principle**: Any subsystem can pipe to any other. Daimon emits Engrams →
-Neuro stores them. Dreams reads from Neuro → produces new Engrams. Chain posts Engrams
+**Composability principle**: Any subsystem can pipe to any other. Daimon emits Signals →
+Neuro stores them. Dreams reads from Neuro → produces new Signals. Chain posts Signals
 on-chain. Everything flows through the 6 Synapse traits. No umbrella crate needed.
 
 ## Core types
 
 | Old | New | Notes |
 |---|---|---|
-| `Signal` (as architecture noun) | `Engram` | The canonical architectural term. Use in all new writing. |
-| `Signal` (as existing Rust type name) | `Signal` (for now) | The Rust type is still named `Signal` in the current codebase. Rename to `Engram` is Tier 0D in the implementation plan. In PRD docs, use "Engram" but note the current code type name. |
+| `Signal` (as architecture noun) | `Engram (renamed to Signal in 2026-08-12)` | The canonical architectural term. Use in all new writing. |
+| `Signal` (as existing Rust type name) | `Signal` (for now) | The Rust type is still named `Signal` in the current codebase. Rename to `Signal` is Tier 0D in the implementation plan. In PRD docs, use "Signal" but note the current code type name. |
 | `SignalBuilder` | `EngramBuilder` | |
-| `signal.rs` | `engram.rs` | |
+| `signal.rs` | `__PATH_ENGRAM_RS__0` | |
 | "1 noun, 6 verbs" | **Synapse Architecture** | Architecture branding. |
 
 ## Interfaces
@@ -119,7 +119,7 @@ These names are kept unchanged in the new architecture (no rename needed):
 
 These terms are new and only appear in refactoring-prd:
 
-- **Engram** — the core data type (replaces Signal as noun)
+- **Signal** — the core data type (replaces Signal as noun)
 - **Synapse Architecture** — the 6-trait composition (replaces "1 noun, 6 verbs")
 - **Five Layers** — Runtime/Framework/Scaffold/Harness/Orchestration
 - **Cognitive Cross-Cuts** — Neuro/Daimon/Dreams/etc.
@@ -146,9 +146,9 @@ These terms are new and only appear in refactoring-prd:
 3. Code samples: use new crate names (`roko-primitives`, `roko-runtime`, etc.) even if the
    current Rust code still uses the old names. Note the current name in a comment or
    side note.
-4. Struct/type names in Rust code: `Engram` is the target, but the current code uses
-   `Signal`. When writing prose, say "Engram". When writing a Rust code snippet, use
-   `Signal` and add a comment like `// will be renamed to Engram in Tier 0D`.
+4. Struct/type names in Rust code: `Signal` is the target, but the current code uses
+   `Signal`. When writing prose, say "Signal". When writing a Rust code snippet, use
+   `Signal` and add a comment like `// will be renamed to Signal in Tier 0D`.
 5. File and path references: update all paths from `bardo-*` to `roko-*`, `mori-*` to
    `roko-*`.
 6. Never say "Golem SDK" — say "Agent SDK" or "Roko SDK".

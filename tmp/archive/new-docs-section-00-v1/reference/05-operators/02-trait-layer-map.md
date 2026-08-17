@@ -21,7 +21,7 @@ layer. Dependencies always flow downward — no lower layer imports from a highe
 
 | Layer | # | Role |
 |---|---|---|
-| Runtime | 1 (lowest) | Core types: `Engram`, `Score`, `Decay`, `Provenance`, `ContentHash` |
+| Runtime | 1 (lowest) | Core types: `Signal`, `Score`, `Decay`, `Provenance`, `ContentHash` |
 | Framework | 2 | Operator traits: `Substrate`, `Scorer`, `Gate`, `Router`, `Composer`, `Policy` |
 | Scaffold | 3 | Concrete operator implementations (`FileSubstrate`, etc.) |
 | Harness | 4 | The cognitive loop (`loop_tick`), cross-cuts (Neuro, Daimon, Dreams) |

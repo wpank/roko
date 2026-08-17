@@ -14,7 +14,7 @@
 
 ## Headline
 
-The two-medium kernel (`Engram` + `Pulse`) becomes the canonical runtime story and existing subsystems start migrating away from ad hoc transport surfaces.
+The two-medium kernel (`Signal` + `Pulse`) becomes the canonical runtime story and existing subsystems start migrating away from ad hoc transport surfaces.
 
 ---
 
@@ -89,7 +89,7 @@ Not started. Strategy docs migration (Cluster I) is the first groundwork.
 
 | REF | Scope | Lands in |
 |---|---|---|
-| REF02 | `Pulse` (Engram vs. Pulse distinction) | Phase B |
+| REF02 | `Pulse` (Signal vs. Pulse distinction) | Phase B |
 | REF03 | `Bus` as first-class | Phase B |
 | REF04 | `Datum` and generalized operators | Phase B |
 | REF05 | Seven-step loop | Phase A (docs) + Phase B (code) |

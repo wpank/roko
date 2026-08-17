@@ -21,7 +21,7 @@ The docs describe **~42 distinct implementation gaps beyond naming changes**:
 
 ## Why this order matters
 
-Phase A must come first because the docs reference `roko-runtime`, `roko-primitives`, `Engram` — names that don't exist in code yet. Fresh agents would be confused by the mismatch.
+Phase A must come first because the docs reference `roko-runtime`, `roko-primitives`, `Signal` — names that don't exist in code yet. Fresh agents would be confused by the mismatch.
 
 Phase B must come before Phase C because the new subsystems (pheromone field, dreams, mesh) depend on the remaining type extensions and integrations from Phase B (attestation, emotional tags, affect integration, lineage tracking).
 

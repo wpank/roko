@@ -19,8 +19,8 @@
 | F5 | `roko-fs` mislabeled as L3 Harness (should be L0 Runtime) | Low | Doc bug | [09-finding-inconsistencies.md](09-finding-inconsistencies.md) |
 | F6 | Three cognitive speeds map cleanly to all four domains | Informational | Validation | [04-finding-cognitive-speeds.md](04-finding-cognitive-speeds.md) |
 | F7 | Delta speed is a genuine innovation — no classical architecture equivalent | Informational | Finding | [04-finding-cognitive-speeds.md](04-finding-cognitive-speeds.md) |
-| F8 | Engram/Signal is universal — edge cases handled by existing mechanisms | Informational | Validation | [05-finding-engram-universality.md](05-finding-engram-universality.md) |
-| F9 | Engram is strictly richer than the Agent Data Protocol (ADP) | Informational | Finding | [05-finding-engram-universality.md](05-finding-engram-universality.md) |
+| F8 | Engram (renamed to Signal in 2026-08-12)/Signal is universal — edge cases handled by existing mechanisms | Informational | Validation | [05-finding-signal-universality.md](05-finding-signal-universality.md) |
+| F9 | Signal is strictly richer than the Agent Data Protocol (ADP) | Informational | Finding | [05-finding-signal-universality.md](05-finding-signal-universality.md) |
 | F10 | Cross-cut isolation has two gaps: Daimon not injected via trait object; Dreams imports directly | **Medium** | Bug | [06-finding-crosscut-isolation.md](06-finding-crosscut-isolation.md) |
 | F11 | Cross-cut arbitration protocol not yet implemented | **Medium** | Gap | [06-finding-crosscut-isolation.md](06-finding-crosscut-isolation.md) |
 
@@ -34,7 +34,7 @@
 | D2 | 12-five-layer-taxonomy.md | `roko-fs` listed as L3 Harness, should be L0 Runtime | Low | [09-finding-inconsistencies.md](09-finding-inconsistencies.md) |
 | D3 | 06-synapse-traits.md | Says "4 Substrate implementations" — 2 are shipped, 2 spec'd | Low | [09-finding-inconsistencies.md](09-finding-inconsistencies.md) |
 | D4 | TUI status | STATUS.md says "Scaffold"; QUICKSTART.md shows `roko dashboard` as working | Low | [09-finding-inconsistencies.md](09-finding-inconsistencies.md) |
-| D5 | 02-engram-data-type.md | References "7-axis appraisal"; code has 4 axes | **Medium** | [09-finding-inconsistencies.md](09-finding-inconsistencies.md) |
+| D5 | 02-signal-data-type.md | References "7-axis appraisal"; code has 4 axes | **Medium** | [09-finding-inconsistencies.md](09-finding-inconsistencies.md) |
 
 ---
 
@@ -42,9 +42,9 @@
 
 | # | Aspect | Documentation | Code | Impact |
 |---|---|---|---|---|
-| M1 | Data type name | "Engram" | `Signal` | None (documented in glossary) |
+| M1 | Data type name | "Signal" | `Signal` | None (documented in glossary) |
 | M2 | Score axes | 7 (4 stable + 3 extended) | 4 (confidence, novelty, utility, reputation) | Medium — docs overpromise |
-| M3 | Attestation field | Specified in Engram docs | Not in Signal struct | Low — Phase 2+ feature |
+| M3 | Attestation field | Specified in Signal docs | Not in Signal struct | Low — Phase 2+ feature |
 | M4 | Conductor layer | Documented as L3 or L4 | Depends on roko-learn (L2) | Medium — layer violation |
 
 ---

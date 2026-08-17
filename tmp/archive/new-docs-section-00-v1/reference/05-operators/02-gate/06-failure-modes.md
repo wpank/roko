@@ -21,7 +21,7 @@ overflow).
 **Recovery**:
 - Default loop policy: treat as `Abstain` (log warning, continue pipeline).
 - Safety override: configure `gate_error_policy = Reject` for safety-critical gates. With
-  this policy, a crashing safety gate rejects the engram rather than silently passing it.
+  this policy, a crashing safety gate rejects the signal rather than silently passing it.
 
 ---
 
@@ -41,7 +41,7 @@ treats the gate as `Err(GateError::Computation("panic"))`.
 **Scenario**: Every gate in the pipeline returns `Abstain`.
 
 **Behaviour**: The loop treats an all-abstain result as `Pass` — no gate objected, so the
-Engram proceeds.
+Signal proceeds.
 
 This is intentional: the absence of a veto is not a rejection. If you want a mandatory
 check, use a gate that only returns `Pass` or `Reject` (never `Abstain`).

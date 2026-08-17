@@ -10,7 +10,7 @@
 
 ### `ConfidenceGate`
 
-Rejects `Engram`s whose `score.confidence` is below a configurable threshold.
+Rejects `Signal`s whose `score.confidence` is below a configurable threshold.
 
 ```rust
 // source: crates/roko-gate/src/lib.rs
@@ -35,12 +35,12 @@ impl Gate for ConfidenceGate {
 
 ### `SafetyGate`
 
-Checks the `Engram` body against a list of prohibited patterns (regex or literal). Returns
+Checks the `Signal` body against a list of prohibited patterns (regex or literal). Returns
 `Reject` on a match.
 
 ### `CoherenceGate`
 
-Uses `score.coherence` (from the extended axes) to reject `Engram`s that contradict stored
+Uses `score.coherence` (from the extended axes) to reject `Signal`s that contradict stored
 facts. Requires the extended axis to be populated by a `Scorer`.
 
 ### `PassAllGate`

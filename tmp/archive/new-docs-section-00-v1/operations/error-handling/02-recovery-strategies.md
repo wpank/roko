@@ -157,7 +157,7 @@ safety errors; LLM safety refusals.
 **How it works:**
 
 1. The task state is set to `Failed(<reason>)`.
-2. A failure Engram is written to the Substrate with kind `TaskFailed`.
+2. A failure Signal is written to the Substrate with kind `TaskFailed`.
 3. A `TaskFailed` Pulse is emitted on the event bus.
 4. The executor logs the failure at `error` level with the full error chain.
 5. Downstream tasks that depend on the failed task are marked `Blocked(depends_on_failed_task)`.

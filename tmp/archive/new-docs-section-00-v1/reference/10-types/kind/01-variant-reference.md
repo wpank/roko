@@ -20,20 +20,20 @@ decision produced by the agent for a task.
 **Lifetime**: Working tier. Retrieved when reviewing what an agent concluded about a task.
 Reinforced when the same task type is encountered again.
 
-**Notes**: Gate pipeline reads `AgentOutput` Engrams to assess agent quality over time.
+**Notes**: Gate pipeline reads `AgentOutput` Signals to assess agent quality over time.
 
 ---
 
 ## GateVerdict
 
 **Purpose**: Records the outcome of a Gate evaluation — pass, fail, or conditional pass —
-along with the score and the Engram that was evaluated.
+along with the score and the Signal that was evaluated.
 
 **Typical Body**: `Body::Json` containing `{verdict, score, engram_id, reason}`.
 
 **Lifetime**: Working tier. Verdicts are consulted during learning loops and post-mortems.
 
-**Notes**: `GateVerdict` Engrams are the input to the learning loop's policy update. They
+**Notes**: `GateVerdict` Signals are the input to the learning loop's policy update. They
 must not be modified after creation (immutable audit record).
 
 ---
@@ -47,7 +47,7 @@ output, and duration.
 
 **Lifetime**: Transient tier. Fast decay — a tool trace from last week is rarely needed.
 
-**Notes**: ToolTrace Engrams are the primary input to the `ErrorRecord` creation pipeline
+**Notes**: ToolTrace Signals are the primary input to the `ErrorRecord` creation pipeline
 when a tool fails.
 
 ---
@@ -74,7 +74,7 @@ or a task outcome.
 **Typical Body**: `Body::Json` containing `{subject, expected_value, confidence, deadline_ms}`.
 
 **Lifetime**: Working tier with Exponential decay. Predictions become stale after their
-deadline; the system scores prediction accuracy via `GateVerdict` Engrams.
+deadline; the system scores prediction accuracy via `GateVerdict` Signals.
 
 ---
 
@@ -88,7 +88,7 @@ environment — before any interpretation.
 
 **Lifetime**: Transient tier. Short Exponential decay (default 1 day).
 
-**Notes**: Observations are typically processed into higher-level Engrams (KnowledgeEntry,
+**Notes**: Observations are typically processed into higher-level Signals (KnowledgeEntry,
 Prediction) and then allowed to decay.
 
 ---
@@ -113,7 +113,7 @@ and outcome.
 
 **Lifetime**: Consolidated tier. Episodes are the long-term episodic memory of the agent.
 
-**Notes**: Episodes reference their component ToolTrace and AgentOutput Engrams in their
+**Notes**: Episodes reference their component ToolTrace and AgentOutput Signals in their
 `lineage` field.
 
 ---
@@ -142,7 +142,7 @@ to an opportunity, a warning, or a recommended path.
 
 **Lifetime**: Transient tier with fast Exponential decay (default 1 hour).
 
-**Notes**: Pheromone Engrams are the mechanism for inter-agent coordination. See the
+**Notes**: Pheromone Signals are the mechanism for inter-agent coordination. See the
 cross-pollination research on stigmergic bandits for the full protocol.
 
 ---
@@ -163,13 +163,13 @@ The Metric Kind in the Substrate is for agent-internal metrics, not system telem
 ## ContextAssembly
 
 **Purpose**: A snapshot of the context window assembled for a specific inference call —
-which Engrams were included, their weights, and the total token count.
+which Signals were included, their weights, and the total token count.
 
 **Typical Body**: `Body::Json` or `Body::Structured`.
 
 **Lifetime**: Transient tier with Linear decay (default 30-minute lifetime — session-scoped).
 
-**Notes**: ContextAssembly Engrams are used for debugging "why did the agent say X" queries
+**Notes**: ContextAssembly Signals are used for debugging "why did the agent say X" queries
 and for context-aware caching.
 
 ---
@@ -188,7 +188,7 @@ learning loop.
 ## ErrorRecord
 
 **Purpose**: A structured record of an error event with full context: the error type,
-the Engram or operation that failed, the stack trace, and recovery steps taken.
+the Signal or operation that failed, the stack trace, and recovery steps taken.
 
 **Typical Body**: `Body::Structured` or `Body::Json`.
 
@@ -214,7 +214,7 @@ collisions. The name is used verbatim as the canonical bytes for the ContentHash
 
 - Should `Pheromone` be a separate top-level subsystem rather than a Kind? Currently
   modelled as a Kind for simplicity.
-- Should `ContextAssembly` reference its component Engrams via `lineage`? Currently
+- Should `ContextAssembly` reference its component Signals via `lineage`? Currently
   the component list is stored in the body, not lineage.
 
 ## See Also

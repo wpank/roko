@@ -5,7 +5,7 @@
 
 **Status**: Shipping
 **Crate**: `roko-agent`
-**Depends on**: [Score](../10-types/score.md), [Engram](../01-engram/README.md),
+**Depends on**: [Score](../10-types/score.md), [Signal](../01-engram/README.md),
 [Substrate](../03-substrate/README.md), [Operators](../05-operators/README.md)
 **Used by**: [Three Cognitive Speeds](../07-speeds/README.md),
 [Cross-Cuts](../09-cross-cuts/README.md)
@@ -18,7 +18,7 @@
 Roko agents think in a fixed eight-stage cycle called the **universal cognitive loop**.
 The stages are: **QUERY → SCORE → ROUTE → COMPOSE → ACT → VERIFY → PERSIST → REACT**.
 Every tick is an atomic unit of cognition; every tick produces at least one persistent
-outcome (a new or updated Engram). The loop is the unit of testability, the unit of
+outcome (a new or updated Signal). The loop is the unit of testability, the unit of
 tracing, and the unit of budget accounting.
 
 ---
@@ -145,12 +145,12 @@ See [Five-Layer Taxonomy](../08-layers/README.md) and
 The loop maintains several invariants per tick. The full list is in
 [Invariants](12-invariants.md). The two most important:
 
-1. **Every tick produces at least one Engram write.** A tick that produces no output
-   is a bug; the PERSIST stage will write a `tick.null` Engram if nothing else was
+1. **Every tick produces at least one Signal write.** A tick that produces no output
+   is a bug; the PERSIST stage will write a `tick.null` Signal if nothing else was
    created.
 2. **VERIFY always runs before PERSIST.** A result that fails verification is never
    persisted, even partially. The failed attempt is itself persisted as a
-   `verify.failure` Engram.
+   `verify.failure` Signal.
 
 ---
 

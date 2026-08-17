@@ -46,7 +46,7 @@ future work unless code lands.
 ## Highest-Value Follow-Up
 
 The next bridge is not more decay theory. It is **putting an HDC fingerprint on
-`Engram`** so the kernel-level memory object can participate in the same HDC
+`Signal`** so the kernel-level memory object can participate in the same HDC
 story that neuro and learning already use.
 
 ## Recommended Wording For Source Docs

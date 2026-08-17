@@ -20,7 +20,7 @@ And `a₁.hash_of_previous == None` (root attestation has no predecessor).
 
 ## Why It Matters
 
-Provenance is used to answer "who asserted this Engram and when". Chain integrity ensures the provenance record cannot be retroactively altered without detection.
+Provenance is used to answer "who asserted this Signal and when". Chain integrity ensures the provenance record cannot be retroactively altered without detection.
 
 ---
 

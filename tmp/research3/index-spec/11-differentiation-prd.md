@@ -17,6 +17,13 @@ refinements:
     focus: 'Second pass — added eight extension primitives V1–V8 (sub-block-time IRO, composable feeds, cross-agent proof composition, robotics privacy, EU-compliance loop, multi-agent ensembles, light-client streaming, symphony-of-life), Q2–Q4 sequencing matrix, seven investor kill lines, public-materials publication path, and 8 open questions including terminology lock items (kora vs Roko, DKG vs threshold).'
 ---
 
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a PRD for Daeji chain differentiation (coordination primitives beyond EVM rollups).
+> It is reference material for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Daeji Differentiation PRD — Coordination Primitives Ethereum and Rollups Cannot Run
 
 **Date:** 2026-04-30

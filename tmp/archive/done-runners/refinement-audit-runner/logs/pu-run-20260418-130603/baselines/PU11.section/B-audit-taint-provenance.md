@@ -33,12 +33,12 @@ The hash algorithm is custom canonical-encoding, not literally BLAKE3 — but th
 
 ---
 
-## B.02 — Engram lineage DAG via `ContentHash` (Doc 02 §"Engram Lineage DAG")
+## B.02 — Signal lineage DAG via `ContentHash` (Doc 02 §"Signal Lineage DAG")
 
 **Status**: DONE
 **Severity**: —
-**Doc claim**: Every Engram carries its lineage via `ContentHash` references to parents.
-**Reality**: `roko-core/src/provenance.rs` + `engram.rs` define provenance tracking (per grep earlier). `roko-core::ContentHash` is the canonical content-addressing primitive (imported in audit_chain.rs:31, taint_propagation.rs:30). Engram lineage is a core-crate invariant.
+**Doc claim**: Every Signal carries its lineage via `ContentHash` references to parents.
+**Reality**: `roko-core/src/provenance.rs` + `__PATH_ENGRAM_RS__0` define provenance tracking (per grep earlier). `roko-core::ContentHash` is the canonical content-addressing primitive (imported in audit_chain.rs:31, taint_propagation.rs:30). Signal lineage is a core-crate invariant.
 
 ---
 
@@ -47,7 +47,7 @@ The hash algorithm is custom canonical-encoding, not literally BLAKE3 — but th
 **Status**: PARTIAL
 **Severity**: LOW
 **Doc claim**: An `AuditSink` trait allows pluggable persistence backends; `FileSubstrate` persists audit entries to JSONL.
-**Reality**: `AuditChain` ships in-memory (`Mutex<Vec<AuditEntry>>` per `audit_chain.rs:30+`). Doc 16 §"Stage-level audit emit" mentions the dispatcher emits audit Engrams via `emit_audit()`. Whether those Engrams persist through `roko-fs::FileSubstrate` to `.roko/audit.jsonl` or similar is unverified; the plumbing exists but verification requires deeper reading.
+**Reality**: `AuditChain` ships in-memory (`Mutex<Vec<AuditEntry>>` per `audit_chain.rs:30+`). Doc 16 §"Stage-level audit emit" mentions the dispatcher emits audit Signals via `emit_audit()`. Whether those Signals persist through `roko-fs::FileSubstrate` to `.roko/audit.jsonl` or similar is unverified; the plumbing exists but verification requires deeper reading.
 **Fix sketch**: Doc 02 §"AuditSink Trait" should cite the shipping `AuditChain::append` path and flag the sink-to-FileSubstrate wiring as partial/unverified.
 
 ---

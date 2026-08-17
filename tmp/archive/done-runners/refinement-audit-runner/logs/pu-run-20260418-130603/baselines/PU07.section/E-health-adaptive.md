@@ -315,7 +315,7 @@ Generated 2026-04-16.
 **Status**: NOT DONE
 **Severity**: LOW
 **Doc claim**: Doc 12 §"Stigmergy and Pressure" lines 334-364 frames git commits as stigmergic traces and argues the conductor must preserve high-quality traces by calibrating pressure below the collapse point.
-**Reality**: The only stigmergy-tagged code is `Kind::Pheromone` at `roko-core/src/kind.rs:91` with doc comment "A stigmergic pheromone (threat/opportunity/wisdom)" and the `SystemPromptBuilder` comment at `roko-compose/src/system_prompt_builder.rs:11` mentioning "Pheromone / stigmergic guidance". These are the pheromone Engram variant surfaced in F.15, unrelated to the git-commit-as-trace framing. No code inspects commit quality or adjusts pressure based on stigmergic quality. Purely conceptual framing for the pheromone context chunker.
+**Reality**: The only stigmergy-tagged code is `Kind::Pheromone` at `roko-core/src/kind.rs:91` with doc comment "A stigmergic pheromone (threat/opportunity/wisdom)" and the `SystemPromptBuilder` comment at `roko-compose/src/system_prompt_builder.rs:11` mentioning "Pheromone / stigmergic guidance". These are the pheromone Signal variant surfaced in F.15, unrelated to the git-commit-as-trace framing. No code inspects commit quality or adjusts pressure based on stigmergic quality. Purely conceptual framing for the pheromone context chunker.
 **Fix sketch**: No fix needed; Doc 12 §"Stigmergy and Pressure" is explanatory narrative for the O(1)-per-agent coordination model, not a spec.
 
 ---

@@ -26,7 +26,7 @@ All 3 methods present at `crates/roko-agent/src/agent.rs:119-137`. Signatures ma
 | Aspect | Doc | Code | Match |
 |--------|-----|------|-------|
 | Trait bounds | `Send + Sync` | `Send + Sync` | MATCH |
-| `run` input type | `&Signal` | `&Engram` | NAME ONLY (Engram = Signal) |
+| `run` input type | `&Signal` | `&Signal` | NAME ONLY (Signal = Signal) |
 | `run` context type | `&Context` | `&Context` | MATCH |
 | `run` return type | `AgentResult` | `AgentResult` | MATCH |
 | `name` signature | `fn name(&self) -> &str` | `fn name(&self) -> &str` | MATCH |
@@ -38,7 +38,7 @@ Doc comment at lines 96-109 matches the documented rationale (4 reasons agents d
 ### Gaps
 | ID | Gap | Where | Severity |
 |----|-----|-------|----------|
-| A.01.1 | Doc says `Signal`, code says `Engram` (cosmetic name mismatch documented in doc 01 glossary) | doc 00 line 81 vs agent.rs:128 | LOW |
+| A.01.1 | Doc says `Signal`, code says `Signal` (cosmetic name mismatch documented in doc 01 glossary) | doc 00 line 81 vs agent.rs:128 | LOW |
 
 ### Verify
 ```bash
@@ -69,8 +69,8 @@ All 4 fields present at `crates/roko-agent/src/agent.rs:9-23`:
 
 | Field | Doc | Code (line) | Match |
 |-------|-----|-------------|-------|
-| `output` | `Signal` | `Engram` (line 12) | NAME ONLY |
-| `trace` | `Vec<Signal>` | `Vec<Engram>` (line 16) | NAME ONLY |
+| `output` | `Signal` | `Engram (renamed to Signal in 2026-08-12)` (line 12) | NAME ONLY |
+| `trace` | `Vec<Signal>` | `Vec<Signal>` (line 16) | NAME ONLY |
 | `usage` | `Usage` | `Usage` (line 19) | MATCH |
 | `success` | `bool` | `bool` (line 22) | MATCH |
 

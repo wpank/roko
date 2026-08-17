@@ -26,6 +26,13 @@ sources:
   - "proposed/dashboard/2026-04-30-agent-coordination-ui-surfaces.md"
 ---
 
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is an expansion catalog of DKG-enabled agent use cases (C13-C43, P5-P7) for the
+> Daeji chain. It is reference material for chain design, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 ## Summary
 
 Daeji ships with Commonware DKG wired into consensus — distributed key generation, threshold signatures (BLS12-381), and threshold decryption are chain-native primitives, not application-layer add-ons. The 2026-04-30 USC confidential-compute assessment mapped the first 12 capabilities (C1–C12) and 4 Path 3 patterns (P1–P4). This PRD extends that catalog with **29 net-new capabilities (C13–C43)** and **3 Path 3 generalizations (P5–P7)**, drawn from sweeping all 38 open PRs in this repo plus the canonical chat spec, PRD-11 agent-to-agent learning, the privacy-robotics spec, the hybrid perp PRD, and the Nunchi HOUSE PRD. Output: a priority-tiered catalog plus a concrete proposal for 7 precompile slots in the open `0xA10–0xA1F` agent-comm namespace.

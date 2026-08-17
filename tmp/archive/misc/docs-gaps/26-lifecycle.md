@@ -170,16 +170,16 @@ cargo test --workspace
 - [x] Implement `roko neuro backup` command
 
 **Spec** (doc 05 `docs/17-lifecycle/05-knowledge-backup-export.md`): `roko neuro backup <path>` exports the Neuro knowledge store to a portable archive. Archive format (tar.gz) contains:
-- `manifest.json` — agent ID, schema version, export timestamp, Engram count, total size
-- `engrams/` — serialized Engrams with scores, tiers, provenance, decay state
+- `manifest.json` — agent ID, schema version, export timestamp, Signal count, total size
+- `engrams/` — serialized Signals with scores, tiers, provenance, decay state
 - `hdc/` — HDC vectors (10,240-bit BSC) for similarity search
 - `metadata.json` — knowledge type distribution, tier distribution, age histogram
 
-Optional **genomic bottleneck compression**: export only top-N Engrams by score (e.g., top 1000), discarding low-confidence knowledge. This simulates biological information bottleneck at reproduction — only the most valuable knowledge transfers.
+Optional **genomic bottleneck compression**: export only top-N Signals by score (e.g., top 1000), discarding low-confidence knowledge. This simulates biological information bottleneck at reproduction — only the most valuable knowledge transfers.
 
 **Current code**: `crates/roko-neuro/src/knowledge_store.rs` has knowledge store with `iter_engrams()`, `get_by_hash()`, tier management. No `backup` subcommand in CLI. No archive format defined. No export function.
 
-**What to change**: Add `NeuroCommand::Backup { path: PathBuf, top_n: Option<usize> }` to CLI in `crates/roko-cli/src/main.rs`. Implement `fn backup_neuro(store: &KnowledgeStore, path: &Path, top_n: Option<usize>) -> Result<()>` that creates tar.gz archive with manifest, Engrams, HDC vectors, and metadata.
+**What to change**: Add `NeuroCommand::Backup { path: PathBuf, top_n: Option<usize> }` to CLI in `crates/roko-cli/src/main.rs`. Implement `fn backup_neuro(store: &KnowledgeStore, path: &Path, top_n: Option<usize>) -> Result<()>` that creates tar.gz archive with manifest, Signals, HDC vectors, and metadata.
 
 **Reference files**:
 - `crates/roko-neuro/src/knowledge_store.rs` — `KnowledgeStore` with `iter_engrams()`, tier management
@@ -191,7 +191,7 @@ Optional **genomic bottleneck compression**: export only top-N Engrams by score 
 - [x] `roko neuro backup <path>` CLI command exists
 - [x] Creates backup directory with manifest.json, knowledge.jsonl, confirmations
 - [x] Optional `--top-n <N>` flag for genomic bottleneck compression
-- [x] Archive is self-describing (manifest includes schema version and Engram count)
+- [x] Archive is self-describing (manifest includes schema version and Signal count)
 - [x] `cargo test --workspace` passes
 **Verify**:
 ```bash
@@ -208,12 +208,12 @@ cargo test --workspace
 
 **Spec** (doc 08 `docs/17-lifecycle/08-selective-restore.md`): `roko neuro restore <path>` imports knowledge from a backup archive with selective filtering and generational confidence decay.
 
-**0.85^N confidence decay**: each generation hop (backup -> restore) multiplies all Engram confidence scores by 0.85. First restore: 0.85x. Second-generation restore: 0.72x. This prevents unbounded confidence inheritance.
+**0.85^N confidence decay**: each generation hop (backup -> restore) multiplies all Signal confidence scores by 0.85. First restore: 0.85x. Second-generation restore: 0.72x. This prevents unbounded confidence inheritance.
 
 **Quarantine/validate/adopt pipeline**:
-1. **Quarantine** — imported Engrams start at `Transient` tier, isolated from active context
+1. **Quarantine** — imported Signals start at `Transient` tier, isolated from active context
 2. **Validate** — run imported heuristics against recent outcomes, check for contradictions with existing knowledge
-3. **Adopt** — Engrams that pass validation are promoted to `Working` tier; those that fail are discarded
+3. **Adopt** — Signals that pass validation are promoted to `Working` tier; those that fail are discarded
 
 **Selective restore options**: filter by knowledge type (`--types insight,warning`), by domain, by minimum confidence, by age. Cross-agent restore supported (restore from a different agent's backup).
 
@@ -221,7 +221,7 @@ cargo test --workspace
 
 **What to change**: Add `NeuroCommand::Restore { path: PathBuf, types: Option<Vec<String>>, min_confidence: Option<f64> }` to CLI. Implement `fn restore_neuro(store: &mut KnowledgeStore, archive: &Path, generation: u32, filters: &RestoreFilters) -> Result<RestoreReport>` that:
 1. Reads tar.gz archive, parses manifest
-2. Applies 0.85^generation confidence decay to all Engrams
+2. Applies 0.85^generation confidence decay to all Signals
 3. Filters by type/domain/confidence as requested
 4. Inserts at Transient tier (quarantine)
 5. Returns `RestoreReport` with counts (imported, filtered, quarantined)
@@ -235,7 +235,7 @@ cargo test --workspace
 **Accept when**:
 - [x] `roko neuro restore <path>` CLI command exists
 - [x] 0.85^N confidence decay applied (N = generation count from --generation flag)
-- [x] Restored Engrams start at Transient tier (quarantine)
+- [x] Restored Signals start at Transient tier (quarantine)
 - [x] Filter options: `--types`, `--min-confidence`
 - [x] RestoreReport printed with import/filter/quarantine counts
 - [x] `cargo test --workspace` passes
@@ -254,7 +254,7 @@ cargo test --workspace
 
 **Spec** (doc 06 `docs/17-lifecycle/06-agent-deletion.md`): `roko delete [--force]` performs an 8-step clean shutdown with 30s per-step budget. Steps:
 1. **Stop processing** — cancel current task, drain message queue
-2. **Flush pending** — complete in-flight tool calls, write pending Engrams
+2. **Flush pending** — complete in-flight tool calls, write pending Signals
 3. **Backup knowledge** — auto-invoke `roko neuro backup` to `.roko/backups/<timestamp>/`
 4. **Deregister from mesh** — notify peers, remove from collective
 5. **Release resources** — free compute slots, close connections
@@ -396,12 +396,12 @@ cargo test --workspace
 
 **Spec** (doc 09 `docs/17-lifecycle/09-knowledge-transfer-via-mesh.md`): While backup/restore handles knowledge transfer between deleted agents and successors, the Agent Mesh enables **live knowledge sharing between running agents**. Three sharing modes:
 1. **Collective sync** — bidirectional delta sync between agents in the same Collective
-2. **P2P Engram sharing** — direct agent-to-agent knowledge transfer
-3. **Public knowledge feeds** — subscribe to curated Engram streams from other Collectives
+2. **P2P Signal sharing** — direct agent-to-agent knowledge transfer
+3. **Public knowledge feeds** — subscribe to curated Signal streams from other Collectives
 
-**Protocol**: version-vector-based delta sync (Lamport 1978, Fidge 1988). Each agent maintains a `VersionVector = HashMap<String, u64>` tracking highest sequence number received from each peer. `SyncDelta` contains only unseen Engrams. `SharedEngram` wraps a `BackupEngram` with sequence number and attestation.
+**Protocol**: version-vector-based delta sync (Lamport 1978, Fidge 1988). Each agent maintains a `VersionVector = HashMap<String, u64>` tracking highest sequence number received from each peer. `SyncDelta` contains only unseen Signals. `SharedEngram` wraps a `BackupEngram` with sequence number and attestation.
 
-**Bloom filter discovery**: before requesting full Engram content, agents exchange Bloom filters to discover novel knowledge without redundant transfers.
+**Bloom filter discovery**: before requesting full Signal content, agents exchange Bloom filters to discover novel knowledge without redundant transfers.
 
 **Daimon-driven sharing thresholds**: high arousal -> lower threshold (share more), high dominance -> higher threshold (share selectively). Behavioral state modulates: Struggling shares more, Focused shares less.
 
@@ -412,16 +412,16 @@ Config: `[mesh.sharing]` with `share_types`, `min_share_confidence`, `received_c
 **What to change**: Implement mesh sharing protocol in `crates/roko-neuro/src/` or a new mesh module. Define `SyncDelta`, `SharedEngram`, `VersionVector` types. Implement delta sync loop. Wire Daimon PAD state into sharing threshold computation.
 
 **Reference files**:
-- `crates/roko-neuro/src/knowledge_store.rs` — knowledge store (source and destination of shared Engrams)
+- `crates/roko-neuro/src/knowledge_store.rs` — knowledge store (source and destination of shared Signals)
 - `crates/roko-agent/src/lifecycle.rs` — `MeshConfig` field in `AgentExtendedManifest`
 - `crates/roko-core/src/config/schema.rs` — `[mesh]` config section
 - `docs/17-lifecycle/09-knowledge-transfer-via-mesh.md` — full spec: version-vector sync, Bloom filter, Daimon-driven thresholds, sharing protocol
 **Depends on**: LIFE-01 (agent creation), BEAT-06 (CorticalState PAD fields for threshold modulation)
 **Accept when**:
 - [x] `SyncDelta`, `SharedEngram`, `VersionVector` types defined (lifecycle.rs)
-- [x] Delta sync loop sends only unseen Engrams (via `roko neuro sync`)
+- [x] Delta sync loop sends only unseen Signals (via `roko neuro sync`)
 - [x] Version-vector-based discovery reduces redundant transfers
-- [x] Received Engrams discounted by `received_confidence_discount` (0.7x)
+- [x] Received Signals discounted by `received_confidence_discount` (0.7x)
 - [x] Rate limited to `max_received_per_hour` (configurable via --max-send)
 - [x] `cargo test --workspace` passes
 **Verify**:
@@ -438,14 +438,14 @@ cargo test --workspace
 - [x] Implement periodic demurrage cycle runner and wire into heartbeat
 
 **Spec** (doc 11 `docs/17-lifecycle/11-knowledge-demurrage.md`): Knowledge demurrage applies Gesell's Freigeld principle to knowledge. Two levels:
-1. **Knowledge-level demurrage** — periodic confidence reduction on un-validated Engrams via `DemurrageConfig`:
+1. **Knowledge-level demurrage** — periodic confidence reduction on un-validated Signals via `DemurrageConfig`:
    - `validation_interval: u64 = 250` (iterations between checks, ~2.9h at 1 iter/40s)
    - `decay_per_interval: f64 = 0.03` (3% confidence loss per missed interval)
-   - `archive_threshold: f64 = 0.1` (below this, Engram archived to cold storage)
+   - `archive_threshold: f64 = 0.1` (below this, Signal archived to cold storage)
    - `domain_multipliers: HashMap<String, f64>` (volatile domains decay faster: gas_patterns=2.0x, price_direction=1.5x, protocol_behavior=0.5x)
 2. **Token-level demurrage** — 1% annual demurrage on KORAI tokens (chain domain only, mainnet)
 
-The demurrage cycle runs every `validation_interval` iterations: scan all Engrams, reduce confidence by `decay_per_interval * domain_multiplier` for those not re-validated, archive Engrams below `archive_threshold`. This incentivizes circulation — use knowledge or lose it.
+The demurrage cycle runs every `validation_interval` iterations: scan all Signals, reduce confidence by `decay_per_interval * domain_multiplier` for those not re-validated, archive Signals below `archive_threshold`. This incentivizes circulation — use knowledge or lose it.
 
 **Current code** (`crates/roko-agent/src/lifecycle.rs:1428`):
 - `DemurrageConfig` struct at line 1430 with `validation_interval: u64`, `decay_per_interval: f64`, `archive_threshold: f64`, `domain_multipliers: HashMap<String, f64>` — **matches spec exactly**
@@ -453,28 +453,28 @@ The demurrage cycle runs every `validation_interval` iterations: scan all Engram
 - `DemurrageReport` at line 1461 with `entries_processed`, `entries_archived`, `total_confidence_lost`, `average_confidence_after`
 - `apply_demurrage()` function at line 1473 applies decay to a single `BackupEngram`
 - `AgentExtendedManifest.demurrage: Option<DemurrageConfig>` at line 210-211 (initialized to `Some(DemurrageConfig::default())`)
-**Config struct, report struct, and per-Engram decay function exist. Missing: `DemurrageCycle` runner that periodically scans `KnowledgeStore` and applies `apply_demurrage()` to all Engrams. Not wired into Theta/Delta heartbeat loop.**
+**Config struct, report struct, and per-Signal decay function exist. Missing: `DemurrageCycle` runner that periodically scans `KnowledgeStore` and applies `apply_demurrage()` to all Signals. Not wired into Theta/Delta heartbeat loop.**
 
 **What to change**:
 1. Add `DemurrageCycle` struct in `crates/roko-neuro/src/` or `crates/roko-runtime/src/` that:
    - Tracks iteration count
-   - Every `validation_interval` iterations, calls `apply_demurrage()` on all un-validated Engrams
-   - Archives Engrams below `archive_threshold` to cold storage
+   - Every `validation_interval` iterations, calls `apply_demurrage()` on all un-validated Signals
+   - Archives Signals below `archive_threshold` to cold storage
    - Returns `DemurrageReport` for observability
 2. Wire `DemurrageCycle` as a Theta or Delta heartbeat consumer (BEAT-01 or BEAT-02)
 3. Emit demurrage events to `.roko/learn/efficiency.jsonl`
 
 **Reference files**:
 - `crates/roko-agent/src/lifecycle.rs:1430` — `DemurrageConfig` (fully defined), `DemurrageReport` at 1461, `apply_demurrage()` at 1473
-- `crates/roko-neuro/src/knowledge_store.rs` — `KnowledgeStore`, tier management, Engram iteration
+- `crates/roko-neuro/src/knowledge_store.rs` — `KnowledgeStore`, tier management, Signal iteration
 - `crates/roko-neuro/src/lib.rs:64` — existing tier half-life constants (Ebbinghaus, complementary to demurrage)
 - `docs/17-lifecycle/11-knowledge-demurrage.md` — full spec: demurrage cycle algorithm, domain multipliers, archiving
 **Depends on**: None (config + function exist; only the runner + wiring needed)
 **Accept when**:
 - [x] `DemurrageConfig` struct defined with all specified fields (exists at lifecycle.rs:1430)
-- [x] `apply_demurrage()` function applies per-Engram decay (exists at lifecycle.rs:1473)
+- [x] `apply_demurrage()` function applies per-Signal decay (exists at lifecycle.rs:1473)
 - [x] `DemurrageCycle` runner periodically scans `KnowledgeStore`
-- [x] Engrams below `archive_threshold` moved to cold storage
+- [x] Signals below `archive_threshold` moved to cold storage
 - [x] Demurrage events emitted for observability
 - [x] Wired into Theta/Delta heartbeat consumer
 - [ ] `cargo test --workspace` passes

@@ -26,7 +26,7 @@ The eight-stage loop is cleanly decomposed, but some concerns cannot be localize
 one stage:
 
 - **Knowledge indexing** needs to happen in QUERY (retrieval), SCORE (utility history),
-  PERSIST (writing new Engrams), and the Delta consolidation pass. That is not one
+  PERSIST (writing new Signals), and the Delta consolidation pass. That is not one
   stage — it is "everywhere that touches memory."
 
 - **Emotional salience** needs to affect SCORE (valence axis), ROUTE (urgency-driven
@@ -34,7 +34,7 @@ one stage:
   "everywhere that weights information."
 
 - **Offline learning** needs to run during Delta ticks across QUERY + SCORE + PERSIST.
-  But it also needs to *influence* future Gamma/Theta ticks (by updating Engram
+  But it also needs to *influence* future Gamma/Theta ticks (by updating Signal
   quality and routing priors). That is not one stage — it is "across time."
 
 The cross-cut pattern solves this by giving each of these concerns its own
@@ -49,11 +49,11 @@ the points where they participate.
 
 Neuro is the agent's long-term knowledge manager. It provides:
 - The HDC index for semantic search
-- Tier promotion/demotion logic for Engrams
-- The "knowledge graph" view of related Engrams
+- Tier promotion/demotion logic for Signals
+- The "knowledge graph" view of related Signals
 - Integration with the Korai chain for shared knowledge (planned)
 
-Neuro participates in: QUERY (search), SCORE (utility), PERSIST (indexing new Engrams),
+Neuro participates in: QUERY (search), SCORE (utility), PERSIST (indexing new Signals),
 Delta (consolidation and pruning).
 
 Status: **Shipping**. See [Neuro](01-neuro.md) and
@@ -65,7 +65,7 @@ Daimon is the agent's affective system. It maintains a PAD (Pleasure-Arousal-Dom
 emotional state vector and translates it into behavioral influences. It provides:
 - The `valence` value for SCORE
 - An `urgency` signal that shifts routing confidence thresholds
-- A `somatic landscape` of marked Engrams (emotionally significant memories)
+- A `somatic landscape` of marked Signals (emotionally significant memories)
 - Behavioral state labels (focused, exploratory, anxious, etc.)
 
 Daimon participates in: SCORE (valence), ROUTE (urgency adjustment), COMPOSE
@@ -77,8 +77,8 @@ Status: **Built** (code exists, not wired into default runtime). See [Daimon](02
 
 Dreams is the offline consolidation engine. It runs exclusively during Delta ticks.
 It has two phases:
-- **NREM-like replay**: surface and re-score recent Engrams; update routing priors
-- **REM-like imagination**: generate novel `Kind::Imagined` Engrams by combining
+- **NREM-like replay**: surface and re-score recent Signals; update routing priors
+- **REM-like imagination**: generate novel `Kind::Imagined` Signals by combining
   existing knowledge via HDC compositional algebra
 
 Dreams participates in: Delta QUERY, Delta SCORE, Delta PERSIST.

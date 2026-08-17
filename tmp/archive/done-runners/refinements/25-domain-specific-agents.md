@@ -76,7 +76,7 @@ Has partial support (`roko research *` subcommands). Expansions:
   (not a duplicate of existing lit).
 - **Heuristics**: seeded from `16-research-to-runtime.md` starter
   kit.
-- **Memory**: Paper + Claim Engrams with Replication Ledger. Search
+- **Memory**: Paper + Claim Signals with Replication Ledger. Search
   is HDC-similarity rather than keyword.
 - **Output modes**: literature review, annotated bibliography,
   research plan, replication report.
@@ -106,7 +106,7 @@ catastrophic and audit trail is legally useful.
 - **Heuristics**: seeded from historical exploits (reentrancy
   patterns, integer overflows, missing access controls).
   Replication ledger against published audits.
-- **Memory**: chain-of-custody — every transaction is an Engram
+- **Memory**: chain-of-custody — every transaction is an Signal
   with a witness (the actual on-chain receipt). Phase 2+
   `roko-chain` is purpose-built for this.
 
@@ -136,7 +136,7 @@ requires.
 
 New need: **notebook-first workflow**. Roko should be able to
 author, execute, and inspect Jupyter notebooks as first-class
-artifacts. Notebooks can be Engrams; cells can be Pulses.
+artifacts. Notebooks can be Signals; cells can be Pulses.
 
 ## 6. Ops / SRE agent
 
@@ -153,7 +153,7 @@ High-risk because mistakes affect running systems.
   - **Change-window gate**: actions outside approved windows
     require override.
 - **Heuristics**: from postmortems — the "we've been here before"
-  database. Postmortems as Paper Engrams.
+  database. Postmortems as Paper Signals.
 - **Memory**: incident archives, runbook executions, pattern
   library.
 - **Modes**:

@@ -1,5 +1,8 @@
 # M141 — ISFR Score Cell + ClearingHouse Pipeline + Settlement Verify
 
+> **ISFR DEPRECATED (2026-08-13):** The ISFR vertical is deprecated and scheduled
+> for removal. See `.roko/GAPS.md` for tracking.
+
 **[BLOCKED:chain]** -- Requires M140 (Payment Connect Cells), M132 (ReputationStoreCell), M131 (ChainConnector). Chain deployment is Tier 6.
 
 ## Objective
@@ -34,7 +37,7 @@ Implement three components that complete the payment and settlement layer: (1) `
    grep -rn 'pub trait Route' crates/roko-core/src/traits.rs
    grep -rn 'pub trait Verify' crates/roko-core/src/traits.rs
    ```
-   **Expected**: `Cell` at `cell.rs:14`. `Score` at `traits.rs:167` (sync: `score(&Engram, &Context) -> ScoreValue`). `Store` at `traits.rs:37` (async: `put`, `get`, `query`, `query_similar`). `Compose` at `traits.rs:285` (sync: `compose(&[Engram], &Budget, &dyn Score, &Context) -> Result<Engram>`). `Route` at `traits.rs:242` (sync: `select`, `feedback`, `name`). `Verify` at `traits.rs:214` (async: `verify(&Engram, &Context) -> Verdict`).
+   **Expected**: `Cell` at `cell.rs:14`. `Score` at `traits.rs:167` (sync: `score(&Signal, &Context) -> ScoreValue`). `Store` at `traits.rs:37` (async: `put`, `get`, `query`, `query_similar`). `Compose` at `traits.rs:285` (sync: `compose(&[Signal], &Budget, &dyn Score, &Context) -> Result<Signal>`). `Route` at `traits.rs:242` (sync: `select`, `feedback`, `name`). `Verify` at `traits.rs:214` (async: `verify(&Signal, &Context) -> Verdict`).
 
 4. Verify phase2 DisputeLevel for multi-level dispute:
    ```bash
@@ -50,7 +53,7 @@ Implement three components that complete the payment and settlement layer: (1) `
    use roko_core::cell::{Cell, CellId};
    use roko_core::score::Score as ScoreValue;
    use roko_core::traits::Score;
-   use roko_core::{Context, Engram};
+   use roko_core::{Context, Signal};
 
    /// Individual payment history record for ISFR computation.
    #[derive(Debug, Clone)]

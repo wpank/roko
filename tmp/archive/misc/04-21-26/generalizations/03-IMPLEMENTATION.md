@@ -15,7 +15,7 @@ These subsystems are production-grade, battle-tested through thousands of self-h
 **Core trait system (roko-core)**
 
 The 1-noun-6-verb architecture is clean and domain-agnostic:
-- `Engram` (the universal signal type): content-addressed, typed, timestamped
+- `Signal` (the universal signal type): content-addressed, typed, timestamped
 - `Substrate`: read/write persistence
 - `Scorer`: relevance ranking
 - `Gate`: pass/fail verification

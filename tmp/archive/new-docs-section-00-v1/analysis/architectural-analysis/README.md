@@ -20,9 +20,9 @@ all 28 crates, read trait definitions in `roko-core/src/traits.rs`, surveyed rec
 | 02 | [Trait Sufficiency](02-finding-trait-sufficiency.md) | Are six traits enough? Boundary operations, merge candidates | Low risk |
 | 03 | [Layer Taxonomy Coherence](03-finding-layer-taxonomy.md) | Dependency violations, unclassified crates, VSM mapping | Medium risk |
 | 04 | [Three Cognitive Speeds](04-finding-cognitive-speeds.md) | Domain mapping completeness, comparison to classical architectures | No risk |
-| 05 | [Engram Universality](05-finding-engram-universality.md) | Edge cases, comparison to Agent Data Protocol, VSA extension | Low risk |
+| 05 | [Signal Universality](05-finding-signal-universality.md) | Edge cases, comparison to Agent Data Protocol, VSA extension | Low risk |
 | 06 | [Cross-Cut Isolation](06-finding-crosscut-isolation.md) | Trait object injection, isolation gaps, functorial properties | Medium risk |
-| 07 | [Category Theory](07-finding-category-theory.md) | Engram category, Score monoid, Verdict monoid, pipeline as Kleisli | Informational |
+| 07 | [Category Theory](07-finding-category-theory.md) | Engram (renamed to Signal in 2026-08-12) category, Score monoid, Verdict monoid, pipeline as Kleisli | Informational |
 | 08 | [Novel Proposals](08-novel-proposals.md) | CompetitiveRouter, gradient Gate feedback, hierarchical pipeline | Enhancement |
 | 09 | [Inconsistencies](09-finding-inconsistencies.md) | Documentation inconsistencies, code-doc mismatches | Low-Medium risk |
 | 10 | [Prioritized Improvements](10-prioritized-improvements.md) | 11 improvements ranked by priority and effort | Action |

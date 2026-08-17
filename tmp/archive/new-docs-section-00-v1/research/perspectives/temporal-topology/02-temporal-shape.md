@@ -18,35 +18,35 @@ Four processes drive the temporal evolution of knowledge topology:
 
 ## 1. Ingestion: Expansion at the Frontier
 
-When new Engrams are added to the knowledge base, the topology changes at the **frontier** —
+When new Signals are added to the knowledge base, the topology changes at the **frontier** —
 the boundary between known and unknown.
 
-**Good ingestion**: a new Engram connects to existing knowledge (it references concepts
+**Good ingestion**: a new Signal connects to existing knowledge (it references concepts
 already in the graph, extends a chain of reasoning, confirms or refines existing beliefs).
-This expands the topology **continuously**: the new Engram attaches smoothly to the existing
+This expands the topology **continuously**: the new Signal attaches smoothly to the existing
 structure, increasing local connectivity.
 
-**Poor ingestion**: a new Engram arrives as an isolated fact with no connections to existing
+**Poor ingestion**: a new Signal arrives as an isolated fact with no connections to existing
 knowledge. This creates a new connected component — it increases fragmentation rather than
 connectivity.
 
 The quality of ingestion from a topological perspective depends on:
-- **Richness of provenance metadata**: Engrams with detailed origin information can be linked
-  to other Engrams from the same source, same event, or same reasoning chain.
+- **Richness of provenance metadata**: Signals with detailed origin information can be linked
+  to other Signals from the same source, same event, or same reasoning chain.
 - **Semantic tagging**: HDC vectors that encode semantic content enable semantic-distance
   connections even without explicit linkage.
-- **Cross-referencing in the Composer**: synthesis operations that link multiple Engrams
+- **Cross-referencing in the Composer**: synthesis operations that link multiple Signals
   create explicit topological connections.
 
 ---
 
 ## 2. Decay: Erosion and Disconnection
 
-Decay is the process by which Engrams lose confidence and eventually expire. Topologically,
+Decay is the process by which Signals lose confidence and eventually expire. Topologically,
 decay is an **erosion** of the knowledge space:
-- As individual Engrams decay, their edge weights decrease.
-- When Engrams expire, their nodes and edges are removed.
-- If a decaying Engram was a hub or bridge, its decay creates disconnection.
+- As individual Signals decay, their edge weights decrease.
+- When Signals expire, their nodes and edges are removed.
+- If a decaying Signal was a hub or bridge, its decay creates disconnection.
 
 The four decay models in Roko ([reference/10-types/decay.md](../../../reference/10-types/decay.md))
 have different topological effects:
@@ -71,8 +71,8 @@ This is the biological analog of semantic memory: specific episodic memories fad
 general semantic knowledge persists.
 
 In Roko, graceful degradation requires the Dreams consolidation process to produce
-**summaries before sources decay**: creating bridging Engrams that preserve connectivity
-even after the specific Engrams that originally created it have expired.
+**summaries before sources decay**: creating bridging Signals that preserve connectivity
+even after the specific Signals that originally created it have expired.
 
 ---
 
@@ -84,11 +84,11 @@ topology rather than eroding it.
 In biological terms, sleep consolidation transforms episodic memory (specific event records)
 into semantic memory (general knowledge structures). In topological terms, this is:
 - **Local clustering increase**: consolidation creates new connections among related facts.
-- **Bridge creation**: summary Engrams link domains that were previously loosely connected.
+- **Bridge creation**: summary Signals link domains that were previously loosely connected.
 - **Dimensionality reduction**: many specific facts are summarized by fewer general facts,
   reducing the number of nodes while preserving connectivity.
 - **Confidence elevation**: consolidated knowledge achieves higher confidence than the
-  individual Engrams from which it was derived.
+  individual Signals from which it was derived.
 
 The topological ideal for consolidation: the post-consolidation topology should be a
 **topological simplification** of the pre-consolidation topology — homeomorphic to the
@@ -99,7 +99,7 @@ connections).
 
 ## 4. Contradiction: Topological Tearing
 
-When an Engram contradicts existing high-confidence knowledge, the topology is "torn" at
+When an Signal contradicts existing high-confidence knowledge, the topology is "torn" at
 the site of contradiction: the contradicted fact can no longer serve as a bridge between
 facts that depend on it.
 
@@ -107,7 +107,7 @@ facts that depend on it.
 and D2 become topologically separated until either:
 1. B is replaced by an updated fact B' that connects them differently.
 2. An alternative path connecting D1 and D2 is found.
-3. The contradiction is resolved in favor of B (the contradicting Engram is rejected).
+3. The contradiction is resolved in favor of B (the contradicting Signal is rejected).
 
 Unresolved contradictions create **topological holes** — facts that exist on both sides of
 a gap but cannot be reconciled without tearing the topology. The cognitive analog is

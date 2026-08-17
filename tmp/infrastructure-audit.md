@@ -1369,7 +1369,7 @@ Only OpenAI and Gemini translators implement `render_assistant_message`. Anthrop
 
 ### 24.2 No Prometheus Scrape Endpoint
 
-`roko-serve` has ~85 routes but no `/metrics`. The `MetricRegistry` renders to `metrics/prometheus.txt` at session end. No live scraping for Grafana/Prometheus dashboards during a run.
+`roko-serve` has ~317 routes but no `/metrics`. The `MetricRegistry` renders to `metrics/prometheus.txt` at session end. No live scraping for Grafana/Prometheus dashboards during a run.
 
 ### 24.3 No Distributed Request Tracing
 

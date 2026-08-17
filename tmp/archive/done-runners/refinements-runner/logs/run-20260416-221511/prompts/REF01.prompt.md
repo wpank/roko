@@ -36,7 +36,7 @@ framing.
    suffice.
 6. **Retired terms must not appear.** Verify-step `terminology_check` will
    fail the batch if retired terms (`Grimoire`, `Styx`, `Clade`, `Mori`,
-   `Bardo`, `Golem`, mortal/death/reincarnation framing, "Signal = Engram"
+   `Bardo`, `Golem`, mortal/death/reincarnation framing, "Signal = Signal"
    disclaimers, etc.) appear in lines you introduce — *except* when the
    line explicitly frames them as "retired / deprecated / historical /
    legacy / formerly / renamed / see also / old name". Use that phrasing
@@ -44,7 +44,7 @@ framing.
 7. **Cross-link to refinements.** Docs that change should include a
    `see tmp/refinements/NN-slug.md` pointer for readers who want the full
    proposal. Use the exact refinement filename (e.g.
-   `tmp/refinements/02-engram-vs-pulse.md`).
+   `tmp/refinements/02-signal-vs-pulse.md`).
 8. **Cross-link to glossary.** Docs introducing new terminology should
    point at `docs/00-architecture/01-naming-and-glossary.md` (or wherever
    the glossary has landed).
@@ -145,7 +145,7 @@ the 35 refinements propagate into `docs/`.
 
 ## The one-liner
 
-> Roko's kernel is two mediums (**Engram** — durable, content-addressed,
+> Roko's kernel is two mediums (**Signal** — durable, content-addressed,
 > decayed; **Pulse** — ephemeral, topic-addressed, sequenced) moving
 > through two fabrics (**Substrate** — storage; **Bus** — transport),
 > acted on by six operators (**Scorer**, **Gate**, **Router**,
@@ -156,7 +156,7 @@ the 35 refinements propagate into `docs/`.
 
 ## Canonical term definitions
 
-**Engram** — Durable medium. Content-addressed by BLAKE3 over
+**Signal** — Durable medium. Content-addressed by BLAKE3 over
 `(kind, body, author, tags)`. Has `lineage: Vec<ContentHash>`,
 `decay` / `balance`, `score` (7 axes), `provenance`, optional
 `attestation`, and (post-refinement) an HDC `fingerprint`. Lives in a
@@ -164,11 +164,11 @@ Substrate.
 
 **Pulse** — Ephemeral medium (new). Typed, topic-addressed,
 sequence-numbered, ring-buffered message on a Bus. Not content-
-addressed; not persisted by default. May *graduate* to an Engram when
+addressed; not persisted by default. May *graduate* to an Signal when
 its lineage matters.
 
 **Substrate** — Storage fabric (kernel trait). Backends: Memory, File,
-HDC, Chain. Persists Engrams. Retrieval by filter or (new)
+HDC, Chain. Persists Signals. Retrieval by filter or (new)
 HDC similarity.
 
 **Bus** — Transport fabric (promoted to kernel trait). Backends:
@@ -179,7 +179,7 @@ Publishes and delivers Pulses by Topic.
 **Topic** — Routing handle for Pulses. Dot-separated lowercase
 strings (`gate.verdict.emitted`, `agent.msg.chunk`, `prediction.error`).
 
-**Datum** — `enum Datum<'a> { Engram(&'a Engram), Pulse(&'a Pulse) }`
+**Datum** — `enum Datum<'a> { Signal(&'a Signal), Pulse(&'a Pulse) }`
 used by polymorphic operators (Scorer, Composer, Router).
 
 **Six operators** — `Scorer`, `Gate`, `Router`, `Composer`, `Policy`,
@@ -246,7 +246,7 @@ consolidated knowledge back into Substrate for the next cycle.
 
 | Term | Use | Avoid |
 |---|---|---|
-| Engram | the durable record | Signal (retired in code 877:5) |
+| Engram (renamed to Signal in 2026-08-12) | the durable record | Signal (retired in code 877:5) |
 | Pulse | the ephemeral message | Event, Envelope, Message, Signal |
 | Bus | the transport trait | EventBus<E> as a trait name |
 | Substrate | the storage trait | (unchanged) |
@@ -274,8 +274,8 @@ match lands outside a line that also signals "retired", "deprecated",
 
 | Retired term | Use instead | Notes |
 |---|---|---|
-| `Signal` (as the durable record) | `Engram` | Rename landed in code (877 Engram vs 5 Signal). Docs should say Engram. |
-| `Signal is the same as Engram` | (delete disclaimer) | The equivalence disclaimer is stale. Remove. |
+| `Signal` (as the durable record) | `Signal` | Rename landed in code (877 Signal vs 5 Signal). Docs should say Signal. |
+| `Signal is the same as Signal` | (delete disclaimer) | The equivalence disclaimer is stale. Remove. |
 | `EventBus<E>` (as trait name) | `Bus` + `Pulse` | The generic struct stays as `BroadcastBus` implementation detail. |
 | `Envelope<E>` (as user-facing type) | `Pulse` | Envelope name retained only as internal impl detail. |
 | `Event` (as type name) | `Pulse` | Collides with tokio/winit. Use Pulse. |
@@ -308,12 +308,12 @@ in the same line (case-insensitive): `retired`, `deprecated`,
 
 | New term | Must appear after batch | Home refinement |
 |---|---|---|
-| `Pulse` | REF02, REF07 | 02-engram-vs-pulse.md |
+| `Pulse` | REF02, REF07 | 02-signal-vs-pulse.md |
 | `Bus` (as kernel trait) | REF03 | 03-bus-as-first-class.md |
 | `Topic` | REF03, REF07 | 03-bus-as-first-class.md |
 | `TopicFilter` | REF03, REF07 | 03-bus-as-first-class.md |
 | `Datum` | REF04 | 04-operators-generalized.md |
-| `PulseSource` | REF02, REF07 | 02-engram-vs-pulse.md |
+| `PulseSource` | REF02, REF07 | 02-signal-vs-pulse.md |
 | `two mediums` | REF01, REF02 | 01-critique-one-noun.md |
 | `two fabrics` | REF03 | 03-bus-as-first-class.md |
 | `seven-step loop` | REF05 | 05-loop-retold.md |
@@ -332,8 +332,8 @@ in the same line (case-insensitive): `retired`, `deprecated`,
 Every refinement propagation should include a trailing "See also" or
 inline cross-reference to the refinement file:
 
-- `see [02-engram-vs-pulse](../../tmp/refinements/02-engram-vs-pulse.md)`
-- or `see tmp/refinements/02-engram-vs-pulse.md §3` for section-specific
+- `see [02-signal-vs-pulse](../../tmp/refinements/02-signal-vs-pulse.md)`
+- or `see tmp/refinements/02-signal-vs-pulse.md §3` for section-specific
   references.
 
 Use the project's existing link conventions where a doc subfolder has
@@ -387,7 +387,7 @@ to update:
 
 - `00-vision-and-thesis.md`
 - `01-naming-and-glossary.md` — every naming-related refinement touches this
-- `02-engram-data-type.md` — REF02
+- `02-signal-data-type.md` — REF02
 - `03-score-7-axis-appraisal.md` — mostly stable
 - `04-decay-variants.md` — REF12 (supersedes decay with demurrage)
 - `05-provenance-and-attestation.md` — REF32
@@ -461,7 +461,7 @@ with the others.
 
 ## Ten load-bearing primitives
 
-1. **Engram** (durable medium) — home: REF02
+1. **Signal** (durable medium) — home: REF02
 2. **Pulse** (ephemeral medium) — home: REF02
 3. **Bus** (transport fabric) — home: REF03
 4. **Substrate** (storage fabric) — home: REF03
@@ -509,7 +509,7 @@ BROADCAST, REACT) uses every primitive:
 
 - SENSE — Substrate (query) + Bus (subscribe) + external I/O.
 - ASSESS — Scorer (weights via HDC/demurrage/heuristic calibration).
-- COMPOSE — Composer (picks from HDC-similar Engrams, injects heuristics,
+- COMPOSE — Composer (picks from HDC-similar Signals, injects heuristics,
   TypedContext shapes prompt).
 - ACT — produces Pulses (agent stream, tool calls).
 - VERIFY — Gate pipeline; gate-verdict Pulses feed heuristic calibration.
@@ -535,12 +535,12 @@ without reading its full source.
 - `01-critique-one-noun.md` — Diagnosis: "one noun, six verbs" framing
   conflates two data shapes, hides the event bus, stretches trait
   signatures.
-- `02-engram-vs-pulse.md` — Introduce Pulse (ephemeral) as Engram's
+- `02-signal-vs-pulse.md` — Introduce Pulse (ephemeral) as Signal's
   sibling; define graduation law.
 - `03-bus-as-first-class.md` — Promote Bus to a kernel trait at L0
   alongside Substrate.
 - `04-operators-generalized.md` — Generalize the six operators over a
-  `Datum` enum that is either Engram or Pulse.
+  `Datum` enum that is either Signal or Pulse.
 - `05-loop-retold.md` — Universal loop collapses from 9 to 7 steps;
   PERSIST and BROADCAST become co-equal; cross-cuts aren't steps.
 - `06-refactoring-plan.md` — Three-phase refactor (docs → kernel →
@@ -557,7 +557,7 @@ without reading its full source.
 - `10-self-learning-cybernetic-loops.md` — Every operator becomes a
   predictor; active inference literal via predict/outcome Pulses.
 - `11-hyperdimensional-substrate.md` — 10,240-bit HDC fingerprint on
-  every Engram; similarity/consensus/analogy as O(1) vector ops.
+  every Signal; similarity/consensus/analogy as O(1) vector ops.
 - `12-knowledge-demurrage.md` — Economic memory: balance, holding
   cost, reinforcement-by-kind; self-trimming playbooks.
 - `13-collective-intelligence-c-factor.md` — Woolley's c-factor
@@ -566,7 +566,7 @@ without reading its full source.
   worldviews as co-citation clusters; lived-experience calibration.
 - `15-exponential-scaling.md` — Seven compounding loops; "every week
   your Roko gets better on your codebase."
-- `16-research-to-runtime.md` — Papers as Engrams, Claims as testable
+- `16-research-to-runtime.md` — Papers as Signals, Claims as testable
   hypotheses, Replication Ledger — living research.
 - `17-plugin-extension-architecture.md` — Five-tier SPI (prompts,
   profiles, manifests, native, WASM) with matched sandboxes.
@@ -657,10 +657,10 @@ file; only edit docs under `docs/`.
 > **TL;DR**: The current foundational framing conflates two distinct data
 > shapes, pretends the event bus isn't an architectural primitive, and
 > stretches trait signatures to cover cases they don't naturally fit. The
-> framing should evolve, not just have "Signal" renamed to "Engram."
+> framing should evolve, not just have "Signal" renamed to "Signal."
 
 > **For first-time readers**: Roko's current docs describe the system as
-> "one noun (Engram — a durable, hashed, scored record) and six verb traits
+> "one noun (Signal — a durable, hashed, scored record) and six verb traits
 > (Substrate, Scorer, Gate, Router, Composer, Policy)." This doc argues that
 > framing no longer matches the code. The subsequent docs (02–09) propose the
 > replacement — a two-medium, two-fabric, six-operator kernel. Read this one
@@ -671,9 +671,9 @@ file; only edit docs under `docs/`.
 The phrase appears verbatim in at least three places:
 
 - `crates/roko-core/src/lib.rs` lines 5–15: "The entire Roko system is built
-  from **one noun** ([`Engram`]) and **six verbs**".
+  from **one noun** ([`Signal`]) and **six verbs**".
 - `docs/00-architecture/INDEX.md` abstract: "The Synapse Architecture is
-  Roko's compositional foundation: one noun (Engram) and six verb traits".
+  Roko's compositional foundation: one noun (Signal) and six verb traits".
 - `docs/00-architecture/06-synapse-traits.md` §1.1: "The number six is not
   arbitrary. It emerged from analyzing the complete Roko design corpus…
   Every capability, without exception, reduces to one of these six operations."
@@ -684,9 +684,9 @@ stale.
 
 ## 2. Problem A — There are already two data shapes
 
-### 2.1 Engram (durable)
+### 2.1 Signal (durable)
 
-`crates/roko-core/src/engram.rs` defines the content-addressed,
+`crates/roko-core/src/__PATH_ENGRAM_RS__0` defines the content-addressed,
 lineage-bearing record:
 
 ```
@@ -725,20 +725,20 @@ to fan out to subscribers and live briefly in a ring buffer for replay.
 
 The EventBus is parameterized over the user's event type `E`. Every caller
 invents its own event enum — `OrchestrationEvent`, `AgentEvent`, `UiEvent`,
-and so on. None of them are Engrams. None of them need to be.
+and so on. None of them are Signals. None of them need to be.
 
 ### 2.3 The architecture cannot explain this cleanly today
 
-Because the docs say "one noun, Engram," every subsystem that wants to
+Because the docs say "one noun, Signal," every subsystem that wants to
 communicate either (a) forces its messages through the EventBus and calls
 them "events" (undocumented in architecture docs, invisible to the
-universal loop), or (b) materializes everything as Engrams and writes to
+universal loop), or (b) materializes everything as Signals and writes to
 the Substrate, which is expensive and wrong for things like heartbeat
 ticks or cancellation signals.
 
 The docs compensate with phrases like "Policy observes a stream of
 signals," but never acknowledge that those streams are Envelopes on a
-Bus, not Engrams in a Substrate.
+Bus, not Signals in a Substrate.
 
 ## 3. Problem B — The bus isn't part of the architectural lexicon
 
@@ -765,32 +765,32 @@ computing EMAs — and the dependency would flow the right way.
 ## 4. Problem C — The trait signatures stretch to fit
 
 The trait definitions in `crates/roko-core/src/traits.rs` claim to operate
-uniformly on `&Engram`:
+uniformly on `&Signal`:
 
-- `Substrate::put(signal: Engram)` — fine, Engram is what gets stored.
-- `Scorer::score(signal: &Engram, ctx: &Context) -> Score` — fine when
-  scoring a stored Engram, awkward when scoring a live event (you have to
+- `Substrate::put(signal: Signal)` — fine, Signal is what gets stored.
+- `Scorer::score(signal: &Signal, ctx: &Context) -> Score` — fine when
+  scoring a stored Signal, awkward when scoring a live event (you have to
   materialize).
-- `Gate::verify(signal: &Engram, ctx: &Context) -> Verdict` — fine, gates
-  verify Engrams.
-- `Router::select(candidates: &[Engram], ctx: &Context) -> Option<Selection>`
+- `Gate::verify(signal: &Signal, ctx: &Context) -> Verdict` — fine, gates
+  verify Signals.
+- `Router::select(candidates: &[Signal], ctx: &Context) -> Option<Selection>`
   — mostly fine, but model routing and tool selection don't really produce
-  Engram candidates; they produce *choices*, which are then logged as
-  Engrams after the fact.
-- `Composer::compose(signals: &[Engram], budget, scorer, ctx) -> Result<Engram>`
-  — fine, the Composer's output is an Engram (the prompt).
-- `Policy::decide(stream: &[Engram], ctx: &Context) -> Vec<Engram>` — this
-  one is the tell. "Stream of Engrams" is a workaround for "stream of
+  Signal candidates; they produce *choices*, which are then logged as
+  Signals after the fact.
+- `Composer::compose(signals: &[Signal], budget, scorer, ctx) -> Result<Signal>`
+  — fine, the Composer's output is an Signal (the prompt).
+- `Policy::decide(stream: &[Signal], ctx: &Context) -> Vec<Signal>` — this
+  one is the tell. "Stream of Signals" is a workaround for "stream of
   Pulses." Conductor watchers, circuit breakers, and heartbeat policies
-  all want to react to live events, not to historical Engrams. Today they
-  either (a) convert Envelopes to synthetic Engrams, or (b) bypass the
+  all want to react to live events, not to historical Signals. Today they
+  either (a) convert Envelopes to synthetic Signals, or (b) bypass the
   trait entirely and subscribe to the EventBus directly.
 
 `docs/00-architecture/23-architectural-analysis-improvements.md` §2.2
 explicitly acknowledges this:
 
 > Telemetry emission (metrics, traces) — current implementation:
-> `Policy::decide(&[], ctx)` returning metric Engrams. Fit quality:
+> `Policy::decide(&[], ctx)` returning metric Signals. Fit quality:
 > Adequate. Empty stream input is awkward but functional.
 
 "Adequate" and "awkward but functional" are the usual symptoms of an
@@ -802,14 +802,14 @@ abstraction doing two jobs.
 → Substrate.query() → What is happening?" In practice the agent runtime
 perceives three different ways:
 
-1. **Substrate.query** — durable Engrams. Used for context retrieval,
+1. **Substrate.query** — durable Signals. Used for context retrieval,
    episode lookup, plan discovery.
 2. **Bus.subscribe** — live Pulses. Used for process lifecycle, approval
    requests, cancellation, circuit-breaker trips, gate verdicts in
    flight, token streams.
 3. **External I/O** — WebSocket chunks from the LLM, stdout from a tool
    subprocess, HTTP requests on `roko-serve`. These are the edge of the
-   runtime; they produce Pulses (and eventually Engrams), but they aren't
+   runtime; they produce Pulses (and eventually Signals), but they aren't
    either of the above.
 
 Flattening these three into "Substrate.query" either forces everything
@@ -818,14 +818,14 @@ routes most real work outside the loop description (the status quo).
 
 ## 6. Problem E — The name "Signal" is sitting idle
 
-The rename `Signal → Engram` in code (per
+The rename `Signal → Signal` in code (per
 `docs/00-architecture/01-naming-and-glossary.md` and verified by
-`grep -rn`: Engram 877, Signal 5) freed an excellent name. "Signal" in
+`grep -rn`: Signal 877, Signal 5) freed an excellent name. "Signal" in
 engineering usage *means* an in-flight event — a notification, an
 interrupt, a pub/sub message. It is the natural name for what
 `EventBus<E>::Envelope<E>` carries.
 
-Leaving the name idle while carrying a stale "Signal = Engram" disclaimer
+Leaving the name idle while carrying a stale "Signal = Signal" disclaimer
 in every doc is a missed opportunity.
 
 ## 7. What the critique does *not* say
@@ -851,7 +851,7 @@ the project. It remains useful for explaining the durable half of the
 system. But the runtime grew a second half — the bus and its messages —
 that the framing doesn't acknowledge, and the gap now shows up as layer
 violations, awkward trait usage, leaky loop descriptions, and a stale
-Signal-vs-Engram disclaimer in every foundational doc.
+Signal-vs-Signal disclaimer in every foundational doc.
 
 The rest of this folder proposes the minimal refactor that dissolves
 these problems without throwing away anything that works today.
@@ -871,7 +871,7 @@ the codebase today:
 3. **`Policy::decide(&[], ctx)` appears with empty slices.** Run
    `rg 'decide\(\s*&\[\]' crates/` — every hit is a Policy that really
    wanted to subscribe to a stream but was forced to materialize nothing as
-   a zero-length Engram slice.
+   a zero-length Signal slice.
 
 If any of these three predictions fails, the critique should be tempered.
 As of 2026-04-16, all three hold. See `08-code-sketches.md` for the
@@ -925,7 +925,7 @@ the primary candidates are:
 - The lead paragraph / abstract of `docs/00-architecture/INDEX.md`
   (and `docs/INDEX.md` if it carries a similar framing) evolves to
   something like:
-  > Roko's kernel has two mediums (durable Engram + ephemeral Pulse)
+  > Roko's kernel has two mediums (durable Signal + ephemeral Pulse)
   > moving through two fabrics (Substrate + Bus), acted on by six
   > operators, across five layers at three speeds with three
   > cross-cuts.
@@ -950,7 +950,7 @@ Follow all rules in `context-pack/00-REFINEMENTS-RULES.md`:
 
 - Only touch files under `docs/`.
 - Substantive edits — no placeholders.
-- Any retired terms ("Signal = Engram" disclaimer, `Bardo`, `Golem`,
+- Any retired terms ("Signal = Signal" disclaimer, `Bardo`, `Golem`,
   `Mori`, `Grimoire`, `Styx`, `Clade`) must either be removed or
   explicitly framed as retired.
 - Required new vocabulary for this batch (verify): words matching

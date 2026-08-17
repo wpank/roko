@@ -218,7 +218,7 @@ inner gates and themselves implement the `Gate` trait:
 **Current code** (`crates/roko-gate/src/gate_pipeline.rs:68`): `GatePipeline` runs gates
 sequentially with short-circuit on first failure. No parallel execution, no voting, no
 fallback. The `Gate` trait at `crates/roko-core/src/traits.rs:118` is
-`async fn verify(&self, signal: &Engram, ctx: &GateContext) -> Verdict`. `Verdict` at
+`async fn verify(&self, signal: &Signal, ctx: &GateContext) -> Verdict`. `Verdict` at
 `crates/roko-core/src/verdict.rs:51` has `score: f64`, `passed: bool`, `details: String`.
 
 **What to change**: Create `crates/roko-gate/src/composition.rs` with:
@@ -254,9 +254,9 @@ cargo test -p roko-gate
 **Priority**: P2
 
 ### GATE-05: Verdict-as-signal reentry -- downstream consumers
-- [x] Wire verdict Engrams to Scorer and Router for downstream learning
+- [x] Wire verdict Signals to Scorer and Router for downstream learning
 
-**Spec** (doc 15 §Verdicts as Signals): Gate verdicts are first-class Engrams that re-enter
+**Spec** (doc 15 §Verdicts as Signals): Gate verdicts are first-class Signals that re-enter
 the cognitive loop. Four downstream consumers should react to verdict signals:
 1. **Scorer**: Appraise verdict relevance (a compile error on a file the agent just modified
    scores higher than a pre-existing warning). Use `Kind::GateVerdict` to weight future
@@ -269,18 +269,18 @@ the cognitive loop. Four downstream consumers should react to verdict signals:
 4. **Dreams**: Replay verdict patterns during consolidation (Phase 2+).
 
 **Current code**: Verdict emission is DONE: `Verdict` at `crates/roko-core/src/verdict.rs:51`,
-`Kind::GateVerdict` at `crates/roko-core/src/kind.rs:43`, verdicts emitted as Engrams at
+`Kind::GateVerdict` at `crates/roko-core/src/kind.rs:43`, verdicts emitted as Signals at
 `crates/roko-cli/src/orchestrate.rs:13957` and `crates/roko-cli/src/run.rs:164`. Episodes
 log verdicts via `GateVerdict` at `crates/roko-learn/src/episode_logger.rs:90`.
 
-Missing: (1) No Scorer implementation reads `Kind::GateVerdict` engrams -- the `Scorer` trait
+Missing: (1) No Scorer implementation reads `Kind::GateVerdict` signals -- the `Scorer` trait
 at `crates/roko-core/src/traits.rs:95` has no verdict-aware implementation. (2) `CascadeRouter`
 at `crates/roko-learn/src/cascade_router.rs:1006` does not query verdict history when selecting
 models -- it uses bandit rewards derived from final task outcomes, not per-gate verdicts.
 
 **What to change**:
 (1) Add a `VerdictAwareScorer` in `crates/roko-learn/src/` (or `crates/roko-core/src/`) that
-implements the `Scorer` trait and reads `Kind::GateVerdict` engrams from the Substrate. Score
+implements the `Scorer` trait and reads `Kind::GateVerdict` signals from the Substrate. Score
 = recency_weight * severity_weight * relevance_to_current_task.
 (2) In `CascadeRouter::select_model()`, query the episode log for recent `GateVerdict` entries
 matching the current `(task_type, crate)` pair. If the model that produced the last attempt
@@ -290,7 +290,7 @@ has a streak of >2 compile failures, penalize its bandit reward by 0.5x.
 - `crates/roko-core/src/verdict.rs:51` -- `Verdict` struct with `score: f64`, `passed: bool`, `details: String`
 - `crates/roko-core/src/kind.rs:43` -- `Kind::GateVerdict` variant
 - `crates/roko-core/src/traits.rs:95` -- `Scorer` trait signature
-- `crates/roko-cli/src/orchestrate.rs:13957` -- where verdicts become engrams (already wired)
+- `crates/roko-cli/src/orchestrate.rs:13957` -- where verdicts become signals (already wired)
 - `crates/roko-learn/src/cascade_router.rs:1006` -- `CascadeRouter` (add verdict history query)
 - `crates/roko-learn/src/episode_logger.rs:90` -- episode log with `GateVerdict` entries
 - `docs/04-verification/15-verdicts-as-signals.md` -- full spec for verdict re-entry
@@ -298,7 +298,7 @@ has a streak of >2 compile failures, penalize its bandit reward by 0.5x.
 **Depends on**: None
 
 **Accept when**:
-- [x] Verdicts emitted as Engrams with `Kind::GateVerdict` (ALREADY DONE)
+- [x] Verdicts emitted as Signals with `Kind::GateVerdict` (ALREADY DONE)
 - [x] `VerdictAwareScorer` implements `Scorer` and weights verdict signals by recency and severity
 - [x] `CascadeRouter` queries verdict history for the current `(task_type, crate)` pair
 - [x] Model with streak of compile failures receives penalized reward
@@ -398,7 +398,7 @@ evidence (compiler output, test results, diff) supports the verdict. This enable
   artifact storage with `store()`, `retrieve()`, `verify_integrity()` methods
 - `EpisodeLogger` at `crates/roko-learn/src/episode_logger.rs` -- episode records with
   turn-by-turn agent actions and gate results
-- Signal log at `.roko/signals.jsonl` -- append-only Engram log
+- Signal log at `.roko/signals.jsonl` -- append-only Signal log
 - `ContentHash` type at `crates/roko-core/src/hash.rs` -- BLAKE3 hash wrapper
 - `EventLog` at `crates/roko-orchestrator/src/event_log.rs` -- hash-chained event log with
   integrity verification

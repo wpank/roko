@@ -61,7 +61,7 @@ Module existence and coverage are separate questions. This pack treats those orc
 - NIST / MITRE / STRIDE / OWASP / CSA mapping depth
 - advanced adaptive-risk math
 - MEV / LTL / witness-DAG expansion / formal-verification pipeline
-- cognitive-kernel namespaces / scheduling / Engram syscalls
+- cognitive-kernel namespaces / scheduling / Signal syscalls
 - regulator-facing forensic export packaging
 
 ---

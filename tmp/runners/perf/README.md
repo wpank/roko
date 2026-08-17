@@ -1,5 +1,12 @@
 # Perf Runner
 
+> **What is this?** A runner for 21 performance optimization batches derived from the
+> bottleneck analysis in `tmp/solutions/perf/`. Covers config caching, learning runtime
+> single-open, prompt assembly caching, routing memoization, warm dispatch pool, gate
+> pipeline optimization, and PGO builds. Uses the standard parallel-template machinery.
+>
+> **Last updated: 2026-08-13**
+
 **Purpose:** drive the 18 performance optimization plans in
 `tmp/solutions/perf/implementation/` to completion using the standard
 parallel-template machinery (codex, worktrees, cherry-pick, configurable

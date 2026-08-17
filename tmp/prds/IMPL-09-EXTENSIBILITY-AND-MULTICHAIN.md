@@ -1070,7 +1070,7 @@ Goal: build the actor-per-chain model that subscribes to multiple chains simulta
 ### Task 6.5: Implement `CanonicalEvent` schema and `DeterministicId`
 
 **Read first:**
-- `/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/engram.rs` (Engram, ContentHash)
+- `/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/engram.rs` (Signal, ContentHash)
 - `/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/hash.rs` (ContentHash, blake3)
 
 **Implementation:**

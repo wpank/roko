@@ -26,13 +26,13 @@ For the Signal sweep, also read:
 
 Fix factual errors found by the codebase reality check across the entire docs
 tree. Three categories: (1) Replace stale `Signal` type references with
-`Engram`, (2) Fix incorrect LOC/crate/route counts wherever they appear,
+`Signal`, (2) Fix incorrect LOC/crate/route counts wherever they appear,
 (3) Mark 0-code concepts as planned wherever they are presented in present
 tense.
 
 ## Current state (evidence)
 
-### Category 1: Signal -> Engram stragglers
+### Category 1: Signal -> Signal stragglers
 
 The doc quality audit found `Signal` still used as a live Rust type in code
 snippets across at least 8 pre-existing docs that the refinements-runner did
@@ -79,35 +79,35 @@ The reality check confirmed these have zero code:
 | Claim / Paper | 0 |
 | Replication ledger | 0 |
 | Plugin SPI / roko-spi | 0 |
-| Graduation (Pulse -> Engram) | 0 |
+| Graduation (Pulse -> Signal) | 0 |
 
-Any doc that describes these in present tense ("Engrams carry demurrage
+Any doc that describes these in present tense ("Signals carry demurrage
 balance", "Pulse types flow through the Bus") needs qualifying. Previous
 batches (AUD02-AUD06) handle specific sections; this batch catches any
 remaining instances across the full tree.
 
 ## Implementation
 
-### 1. Signal -> Engram sweep
+### 1. Signal -> Signal sweep
 
 For each file listed in the table above:
 
-- Replace `Signal` with `Engram` in Rust code snippets
-- Replace `signal` with `engram` in variable names within code snippets
+- Replace `Signal` with `Signal` in Rust code snippets
+- Replace `signal` with `signal` in variable names within code snippets
 - Replace `Signal::builder` with `Engram::builder`
-- Replace `&[Signal]` with `&[Engram]`
-- Replace `Vec<Signal>` with `Vec<Engram>`
-- Replace `use roko_core::{..., Signal, ...}` with `use roko_core::{..., Engram, ...}`
-- In prose, replace "Signal hash" with "Engram hash", "Signal kind" with
-  "Engram kind", etc.
-- If a doc has a note like "will be renamed to Engram in Tier 0D", remove that
+- Replace `&[Signal]` with `&[Signal]`
+- Replace `Vec<Signal>` with `Vec<Signal>`
+- Replace `use roko_core::{..., Signal, ...}` with `use roko_core::{..., Signal, ...}`
+- In prose, replace "Signal hash" with "Signal hash", "Signal kind" with
+  "Signal kind", etc.
+- If a doc has a note like "will be renamed to Signal in Tier 0D", remove that
   note since the rename is complete
 
 Also search for any OTHER docs not in the audit's list that still use `Signal`
 as a type name. Run a search across `docs/` for the pattern. Exclude:
 - The glossary's "Retired Terms" table (which correctly lists Signal as retired)
 - Unix signal references (SIGTERM, SIGKILL) which are unrelated
-- Meta-references ("the Signal -> Engram rename is complete")
+- Meta-references ("the Signal -> Signal rename is complete")
 
 ### 2. Fix stale numbers across all docs
 
@@ -125,7 +125,7 @@ changed.
 
 Search `docs/` for present-tense usage of the 0-code concepts listed above.
 Focus on claims like:
-- "Engrams carry demurrage balance"
+- "Signals carry demurrage balance"
 - "Pulse messages flow through..."
 - "The Bus trait provides..."
 - "Datum abstracts over..."
@@ -154,7 +154,7 @@ Tertiary (0-code qualifiers):
 
 ## Rules
 
-1. **Signal -> Engram is mechanical.** Do not rewrite surrounding prose. Just
+1. **Signal -> Signal is mechanical.** Do not rewrite surrounding prose. Just
    swap the type name and update variable names in code snippets.
 2. **Number fixes are mechanical.** Replace old number with new number. Do not
    rewrite surrounding context.
@@ -180,6 +180,6 @@ Tertiary (0-code qualifiers):
   a qualifier
 - All edits are mechanical (type swap, number swap, brief qualifier) -- no
   prose rewrites
-- Final message lists: (a) number of files with Signal->Engram fixes, (b) number
+- Final message lists: (a) number of files with Signal->Signal fixes, (b) number
   of files with stale numbers fixed, (c) number of files with 0-code qualifiers
   added, (d) the full list of files edited

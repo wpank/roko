@@ -34,7 +34,7 @@ Log fields to look for:
 | `llm_first_token_ms` | LLM | Time to first streaming token |
 | `llm_full_response_ms` | LLM | Time for full LLM response |
 | `gate_duration_ms` + `gate_name` | Gate | Per-gate execution time |
-| `substrate_append_ms` | Substrate | Engram persist time |
+| `substrate_append_ms` | Substrate | Engram (renamed to Signal in 2026-08-12) persist time |
 | `episode_flush_ms` | Learning | Episode batch flush time |
 | `hdc_search_ms` | Learning | HDC similarity search time |
 
@@ -68,11 +68,11 @@ perf script | inferno-collapse-perf | inferno-flamegraph > flamegraph.svg
 ### Reading the Flamegraph
 
 Focus on:
-- `roko_core::engram` — if this is > 5% of CPU, Engram construction is unexpectedly hot.
+- `roko_core::signal` — if this is > 5% of CPU, Signal construction is unexpectedly hot.
 - `roko_fs::substrate` — if > 2%, the write buffer is flushing too often (reduce
   batch size or increase buffer).
 - `serde_json` — if > 10%, JSON serialisation is a bottleneck (expected for high
-  Engram throughput; switch to `rkyv` if this matters).
+  Signal throughput; switch to `rkyv` if this matters).
 - `regex::` — if present, a regex is being compiled on the hot path (should not happen).
 - `alloc::` or `jemalloc::` — if > 5%, unexpected heap allocation.
 
@@ -90,7 +90,7 @@ heaptrack_gui heaptrack.roko.<pid>.gz
 ```
 
 Look for:
-- `roko_core::engram::new` — should allocate only into the arena, not the global heap.
+- `roko_core::signal::new` — should allocate only into the arena, not the global heap.
 - `Vec::with_capacity` calls that are outside the startup path.
 - Any `String` allocation inside the core hot loop.
 

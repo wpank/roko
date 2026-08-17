@@ -127,7 +127,7 @@ A gate with `threshold = 0.7` requires:
 0.35c + 0.20n + 0.30u + 0.15r ≥ 0.7
 ```
 
-An Engram with `confidence=0.95, novelty=0.5, utility=0.8, reputation=0.5`:
+An Signal with `confidence=0.95, novelty=0.5, utility=0.8, reputation=0.5`:
 ```
 0.35 × 0.95 + 0.20 × 0.50 + 0.30 × 0.80 + 0.15 × 0.50
 = 0.3325 + 0.10 + 0.24 + 0.075

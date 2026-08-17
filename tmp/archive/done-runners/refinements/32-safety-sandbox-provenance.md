@@ -22,7 +22,7 @@
 Three distinct concerns, all of which belong in this doc:
 
 1. **Authorization**: who (user, agent, plugin) is allowed to do
-   what. Tool calls, Engram writes, Pulse publishes, topic
+   what. Tool calls, Signal writes, Pulse publishes, topic
    subscriptions, substrate reads. Enforcement is trait-level.
 2. **Isolation**: when untrusted code runs (tier-3 tool, tier-4
    native extension, tier-5 WASM extension), it can't violate its
@@ -43,7 +43,7 @@ Every permission-gated action names:
 
 - **Principal**: user id, agent id, or plugin id.
 - **Action**: a verb from a controlled vocabulary.
-- **Target**: Engram kind, Bus topic, tool id, substrate region,
+- **Target**: Signal kind, Bus topic, tool id, substrate region,
   file-system path, network endpoint.
 - **Context**: the TypedContext (25 §8.1) at call time.
 - **Authorization source**: role grant, session approval, one-shot
@@ -142,7 +142,7 @@ rule applied.
 
 ## 5. Chain of custody
 
-Every auditable action produces a `Custody` Engram (25 §8.2):
+Every auditable action produces a `Custody` Signal (25 §8.2):
 
 ```
 Custody {
@@ -238,7 +238,7 @@ auto-disable.
 ## 7. Taint tracking
 
 Data from untrusted sources (web scrape, user paste, plugin output)
-carries a `taint: Taint` field on the Engram:
+carries a `taint: Taint` field on the Signal:
 
 ```
 enum Taint {
@@ -250,8 +250,8 @@ enum Taint {
 }
 ```
 
-Propagation rule: any Engram whose *input* is tainted is itself
-tainted. A Composer reads tainted Engrams and produces a tainted
+Propagation rule: any Signal whose *input* is tainted is itself
+tainted. A Composer reads tainted Signals and produces a tainted
 composed prompt; an LLM turn reads the prompt and produces a tainted
 output.
 
@@ -267,7 +267,7 @@ explicit human action (a reviewer approves the output with sign-off).
 
 ## 8. Attestation
 
-Some Engrams deserve cryptographic commitment:
+Some Signals deserve cryptographic commitment:
 
 ```
 Attestation {
@@ -293,7 +293,7 @@ Attestation is always opt-in per-kind. Defaults:
   cross-deployment trust).
 
 Verification is `roko attest verify <hash>` which walks the chain of
-attestations along the Engram's lineage.
+attestations along the Signal's lineage.
 
 ## 9. Network egress control
 
@@ -323,7 +323,7 @@ in the dashboard.
 
 From `24-deployment-ux.md` §3, expanded:
 
-- Secrets never appear in Engrams, Pulses, or logs.
+- Secrets never appear in Signals, Pulses, or logs.
 - A `Secret` type wraps values; `Display` and `Debug` print `****`.
 - Substrate and Bus both scrub `Secret`-typed fields on the way out.
 - Secret rotation is observable: a `secrets.rotated` Pulse fires;
@@ -411,13 +411,13 @@ When something goes wrong, the combination of custody + attestation
 + taint + replay makes postmortems tractable:
 
 1. Identify the problematic action's custody record.
-2. Walk its lineage backward through contributing Engrams.
+2. Walk its lineage backward through contributing Signals.
 3. Check which heuristics + claims were cited; note their
    calibration at the time (not now — time-travel via replay).
 4. Check taint sources.
 5. Replay the decision with the same inputs to confirm
    reproducibility.
-6. Publish a postmortem Engram (`Kind::Postmortem`) linked to the
+6. Publish a postmortem Signal (`Kind::Postmortem`) linked to the
    custody chain.
 7. If the root cause was a heuristic, update its calibration; if
    a plugin, update its permissions; if a gate, tighten the pipeline.

@@ -1,6 +1,6 @@
 # Decay — Demurrage
 
-> The Demurrage model: idle tax + reinforcement on retrieval. The primary decay model for most Engrams.
+> The Demurrage model: idle tax + reinforcement on retrieval. The primary decay model for most Signals.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -11,10 +11,10 @@
 
 ## TL;DR
 
-Demurrage is the "use it or lose it" model. An Engram starts with `balance = 1.0`.
+Demurrage is the "use it or lose it" model. An Signal starts with `balance = 1.0`.
 Each day of non-retrieval, the balance decreases by `idle_tax_per_day`. Each retrieval
 increases the balance by `reinforcement_per_use`, capped at 1.0. The current balance
-is the effective weight. An Engram that is retrieved daily can remain at full weight
+is the effective weight. An Signal that is retrieved daily can remain at full weight
 indefinitely.
 
 ---
@@ -136,5 +136,5 @@ impl Default for DemurrageParams {
 ## See Also
 
 - [`06-reinforcement.md`](06-reinforcement.md) — how reinforcement interacts with the substrate
-- [`08-tier-matrix.md`](08-tier-matrix.md) — which Engrams use Demurrage by default
+- [`08-tier-matrix.md`](08-tier-matrix.md) — which Signals use Demurrage by default
 - [`00-overview.md`](00-overview.md) — comparison to other decay models

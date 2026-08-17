@@ -80,7 +80,7 @@ speed tier (which controls how aggressively to fill the window).
    `RouteTarget`).
 2. Always include the stimulus as the final user message.
 3. Walk the scored candidates in order. For each:
-   a. Estimate token cost of including this Engram.
+   a. Estimate token cost of including this Signal.
    b. If adding it would exceed the budget, stop.
    c. Otherwise, format it as a `ContextMessage` and append.
 4. Return `ComposedContext`.
@@ -136,7 +136,7 @@ observations before generating its response.
 ### 3. Single-message tool call
 
 The route target is a `Tool` (e.g., `web_search`). The Composer formats the tool call
-spec from the stimulus. No prior Engrams are included — tool calls are typically
+spec from the stimulus. No prior Signals are included — tool calls are typically
 stateless. The `ComposedContext.messages` has one entry.
 
 ---

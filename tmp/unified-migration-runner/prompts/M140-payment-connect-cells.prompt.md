@@ -30,7 +30,7 @@ Implement two payment Connect Cells: `X402ConnectCell` for per-request stateless
    grep -rn 'pub trait Connect' crates/roko-core/src/traits.rs
    grep -rn 'pub trait Route' crates/roko-core/src/traits.rs
    ```
-   **Expected**: `Connect` at `traits.rs:408` (supertrait of `Cell`, methods: `connect() -> Result<()>`, `health() -> bool`, `disconnect() -> Result<()>`). `Route` at `traits.rs:242` (sync: `select(&[Engram], &Context) -> Option<Selection>`, `feedback(&Outcome)`, `name() -> &str`).
+   **Expected**: `Connect` at `traits.rs:408` (supertrait of `Cell`, methods: `connect() -> Result<()>`, `health() -> bool`, `disconnect() -> Result<()>`). `Route` at `traits.rs:242` (sync: `select(&[Signal], &Context) -> Option<Selection>`, `feedback(&Outcome)`, `name() -> &str`).
 
    **IMPORTANT**: The `Connect` trait only has lifecycle methods (connect/health/disconnect). Payment-specific operations (`query_terms()`, `authorize_payment()`, `open_channel()`, `close_channel()`) are inherent methods on the Cell structs, NOT part of the Connect trait.
 

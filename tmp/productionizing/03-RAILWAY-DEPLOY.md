@@ -1,5 +1,13 @@
 # Railway Deployment Guide
 
+Last updated: 2026-08-13
+
+## What is this?
+
+Step-by-step guide for deploying roko to Railway. Covers project setup,
+secret configuration, Dockerfile selection, and post-deploy verification.
+Read `04-DOCKERFILE-FIX.md` first if your Dockerfile needs updating.
+
 ## Prerequisites
 
 - Railway CLI installed, e.g. `npm i -g @railway/cli && railway login` or `yarn global add @railway/cli && railway login`

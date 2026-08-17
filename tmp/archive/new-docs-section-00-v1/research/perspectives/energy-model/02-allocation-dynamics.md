@@ -17,7 +17,7 @@ T2 reasoning means spending less on T0/T1 monitoring, Substrate maintenance, or
 background consolidation. There is no free lunch.
 
 This seems obvious but is violated regularly in system design: adding features (new processing
-paths, new Engram types, new operators) increases total energy demand without explicitly
+paths, new Signal types, new operators) increases total energy demand without explicitly
 decreasing allocations elsewhere. Eventually the system is over-committed — more energy
 demand than supply.
 
@@ -28,7 +28,7 @@ real processes produce waste heat.
 
 **Cognitive implication**: all cognitive processing produces entropy — waste products that
 require energy to clean up. These include:
-- Processed-but-not-retained Engrams cluttering the Substrate
+- Processed-but-not-retained Signals cluttering the Substrate
 - Accumulated prediction errors in the confidence graph
 - Context window pollution from low-value content
 - Queue buildup in the Router
@@ -98,12 +98,12 @@ In physics, **resonance** occurs when a driving force matches a system's natural
 producing large amplitude oscillations with low energy input. Acoustic resonance amplifies
 sound; electrical resonance (LC circuits) amplifies signals.
 
-**Cognitive analog**: when a new Engram resonates with the current context (its content,
+**Cognitive analog**: when a new Signal resonates with the current context (its content,
 timing, and relevance align with the current processing state), it can be integrated with
-low energy cost. When an Engram is out of resonance (irrelevant, poorly timed, or
+low energy cost. When an Signal is out of resonance (irrelevant, poorly timed, or
 contradictory to current context), integration requires more energy.
 
-The Scorer's coherence axis measures, in part, this resonance: a high-coherence Engram is
+The Scorer's coherence axis measures, in part, this resonance: a high-coherence Signal is
 in resonance with the current context and can be integrated cheaply.
 
 ---
@@ -118,7 +118,7 @@ Biological systems have explicit recovery mechanisms:
 - **Rest**: lower-intensity activity that allows partial recovery between peak efforts.
 
 **Cognitive analog**:
-- **Dreams consolidation**: the delta-speed processing cycle that consolidates Engrams,
+- **Dreams consolidation**: the delta-speed processing cycle that consolidates Signals,
   updates Neuro, and clears processed-but-not-retained content. This is the "sleep" cycle.
 - **T0/T1 periods between T2 bursts**: lower-intensity processing between peaks of deliberate
   reasoning. This is "rest."

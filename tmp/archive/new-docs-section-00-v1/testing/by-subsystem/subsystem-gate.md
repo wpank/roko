@@ -71,7 +71,7 @@ EMA (Exponential Moving Average) thresholds adjust based on recent verdicts:
 - After 10 consecutive passes, the threshold tightens by a configurable factor.
 - After 3 consecutive fails, the threshold loosens by a configurable factor.
 - The threshold never exceeds 1.0 or drops below a configured floor.
-- Threshold changes are persisted in the Engram substrate.
+- Threshold changes are persisted in the Signal substrate.
 
 Key property: [../by-property/gate-adaptive-threshold-bounds.md](../by-property/gate-adaptive-threshold-bounds.md).
 

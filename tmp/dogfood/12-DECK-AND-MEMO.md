@@ -1,8 +1,21 @@
 # Deck and Memo Build Checklist
 
-> **Context**: Nunchi is pitching a16z on May 6, 2026 for a Series A ($20-30M). Two written artifacts must be ready: a 13-slide pitch deck (PDF) and a 2,000-word pre-read memo. Both go out by Friday May 1.
+> **Last updated**: 2026-08-13
 >
-> **Category**: Agent Coordination Plane — the infrastructure layer that separates agent coordination from agent execution (SDN analogy).
+> **STATUS: HISTORICAL.** This document was written for a May 6, 2026 a16z pitch. That
+> date has passed. Kept for reference on pitch narrative, slide structure, and memo
+> template decisions.
+>
+> **What is this?** A build checklist for a 13-slide pitch deck and 2,000-word pre-read
+> memo for a Series A pitch. Part of the dogfood documentation set -- "dogfooding" means
+> roko developing itself (reading PRDs, generating plans, executing tasks via LLM agents,
+> validating results). The deck was designed to demonstrate this self-hosting workflow.
+>
+> **Original context**: Nunchi is pitching a16z on May 6, 2026 for a Series A ($20-30M).
+> Two written artifacts must be ready: a 13-slide pitch deck (PDF) and a 2,000-word
+> pre-read memo. Both go out by Friday May 1.
+>
+> **Category**: Agent Coordination Plane -- the infrastructure layer that separates agent coordination from agent execution (SDN analogy).
 > **Target**: Martin Casado (infra fund) via warm intro through Malika Aubakirova.
 > **Design system**: Geist Sans + Geist Mono, `#000000` bg, `#FAFAFA` text, `#0070F3` accent. Build in Figma, present from Keynote, export PDF.
 

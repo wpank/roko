@@ -1,6 +1,6 @@
 # roko-core — Test Coverage
 
-> 376 tests for the kernel: Engram type, Score axes, ContentHash, decay models, provenance, HDC fingerprints.
+> 376 tests for the kernel: Signal type, Score axes, ContentHash, decay models, provenance, HDC fingerprints.
 
 **Status**: Shipping
 **Crate**: `roko-core`
@@ -16,7 +16,7 @@ Source: implementation status audit, 2026-04-17.
 
 | Module | Approx. tests | Focus |
 |---|---|---|
-| `engram` | ~80 | Construction, field access, metadata, serialization |
+| `signal` | ~80 | Construction, field access, metadata, serialization |
 | `score` | ~70 | 7-axis arithmetic, normalization, aggregation |
 | `content_hash` | ~40 | BLAKE3 determinism, equality, ordering |
 | `decay` | ~50 | Exponential, linear, step, none variants; monotonicity |
@@ -29,7 +29,7 @@ Source: implementation status audit, 2026-04-17.
 
 ## Key Test Focus Areas
 
-### Engram
+### Signal
 
 - Construction with all field combinations.
 - Content hash computed at construction time equals recomputed hash.
@@ -85,7 +85,7 @@ Source: implementation status audit, 2026-04-17.
 | Score axis independence | `score_axis_independence` |
 | Score normalization range | `score_axes_in_range` |
 | Decay monotone non-increasing | `decay_monotone_nonincreasing` |
-| Engram serialization round-trip | `engram_serde_roundtrip` |
+| Engram (renamed to Signal in 2026-08-12) serialization round-trip | `engram_serde_roundtrip` |
 | Lineage acyclicity | `lineage_is_acyclic` |
 | HDC bundling commutativity | `hdc_bundle_commutative` |
 
@@ -103,7 +103,7 @@ See [../by-property/](../by-property/README.md) for full property definitions.
 
 ## Known Gaps
 
-- No fuzz tests yet for `Engram` deserialization from malformed JSON (planned in [06-fuzz-tests.md](../tiers/06-fuzz-tests.md)).
+- No fuzz tests yet for `Signal` deserialization from malformed JSON (planned in [06-fuzz-tests.md](../tiers/06-fuzz-tests.md)).
 - `Score::aggregate` with negative weights is not explicitly tested (would be an error path).
 
 ## See also

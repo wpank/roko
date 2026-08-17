@@ -225,7 +225,7 @@ behavior in Roko's policy layer.
 
 - To what extent does Roko's T0/T1/T2 tier structure map cleanly onto precision regimes, vs.
   being a coarser engineering approximation?
-- Can Markov blanket structure be made explicit in the Engram graph, enabling formal
+- Can Markov blanket structure be made explicit in the Signal graph, enabling formal
   verification of agent boundaries?
 - Does allostatic prediction require a separate temporal prediction layer, or does it emerge
   from deep temporal hierarchies in the existing loop?

@@ -55,10 +55,10 @@ ticks), this is the dominant substrate cost. Key factors:
 
 `query_similar` allocates:
 - One `Vec<(usize, ContentHash)>` of length n (distances + hashes) — heap allocated.
-- The result `Vec<Engram>` — heap allocated, length k.
+- The result `Vec<Signal>` — heap allocated, length k.
 
-Total allocation per call: O(n · sizeof(usize + ContentHash)) + O(k · sizeof(Engram)).
-At n=10K, k=16, Engram ≈ 512 bytes:
+Total allocation per call: O(n · sizeof(usize + ContentHash)) + O(k · sizeof(Signal)).
+At n=10K, k=16, Signal ≈ 512 bytes:
 - Distance vec: ~10K × 40 bytes = ~400 KB.
 - Result vec: 16 × 512 bytes = ~8 KB.
 
@@ -71,10 +71,10 @@ thread-local buffer or a pre-allocated arena passed to `query_similar`.
 
 `put` allocates:
 - The fingerprint computation (HDC encode): ~10K bits × token count ÷ 8 bytes.
-- The serialized JSON string (FileSubstrate only): O(size of Engram).
-- A clone of the `Engram` for the in-memory index.
+- The serialized JSON string (FileSubstrate only): O(size of Signal).
+- A clone of the `Signal` for the in-memory index.
 
-For typical `Engram`s (100–500 bytes serialised), total allocation per `put` is under 10 KB.
+For typical `Signal`s (100–500 bytes serialised), total allocation per `put` is under 10 KB.
 
 ---
 

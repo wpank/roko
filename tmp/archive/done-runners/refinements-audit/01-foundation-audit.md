@@ -67,7 +67,7 @@ inputs as a baseline assertion.
    could fix that by unifying the enums without introducing Pulse at all.
 
 3. **Problem E (idle Signal name)** — the audit of the codebase shows the
-   rename Signal -> Engram is indeed done (only `CatalystSignalSource`
+   rename Signal -> Signal is indeed done (only `CatalystSignalSource`
    remains in `roko-core/src/lib.rs` exports, plus doc comments in
    `Substrate` trait still say "signal" 6+ times). But reclaiming "Signal"
    for a new purpose is a documentation maintenance nightmare, and the
@@ -100,20 +100,20 @@ is not the absence of Pulse — it's the absence of discipline.
 
 ---
 
-## 02 — Two Mediums: Engram (Durable) and Pulse (Ephemeral)
+## 02 — Two Mediums: Signal (Durable) and Pulse (Ephemeral)
 
 **Verdict: OVERCOMPLICATED**
 
 ### Diagnosis accuracy
 
 The split between durable and ephemeral data is real. Token stream chunks
-should not be Engrams. Heartbeat ticks should not be Engrams. The
+should not be Signals. Heartbeat ticks should not be Signals. The
 diagnosis is correct.
 
 ### What is wrong with the proposed solution
 
-1. **Pulse reuses `Kind` and `Body` from Engram.** This sounds elegant but
-   creates a semantic mismatch. `Kind::GateVerdict` on an Engram means
+1. **Pulse reuses `Kind` and `Body` from Signal.** This sounds elegant but
+   creates a semantic mismatch. `Kind::GateVerdict` on an Signal means
    "this is a verified, hashed, lineage-bearing gate result." The same
    `Kind::GateVerdict` on a Pulse means "this is an ephemeral notification
    that a gate ran." These are different things wearing the same name. When
@@ -124,7 +124,7 @@ diagnosis is correct.
 2. **`Pulse::graduate()` is a factory method pretending to be a conversion.**
    The method takes `provenance`, `decay`, `score`, and `tags` — four
    fields the Pulse does not have. This is not "graduating" an existing
-   datum; it's constructing a new Engram that happens to share `kind` and
+   datum; it's constructing a new Signal that happens to share `kind` and
    `body` with a Pulse. You could get the same result with
    `Engram::builder(pulse.kind).body(pulse.body).build()`, which is
    shorter and makes the construction explicit.
@@ -135,10 +135,10 @@ diagnosis is correct.
    adding correctness.
 
 4. **The `lineage_hint: Option<ContentHash>` field** is a half-measure. An
-   Engram has `lineage: Vec<ContentHash>` (multiple parents); a Pulse gets
+   Signal has `lineage: Vec<ContentHash>` (multiple parents); a Pulse gets
    a single optional hint. If lineage matters, why limit it to one? If it
    does not, why carry it at all? The answer ("some Pulses contextualize an
-   Engram") is better handled by including the Engram hash in the Pulse's
+   Signal") is better handled by including the Signal hash in the Pulse's
    `body` JSON, not by adding a structural field.
 
 ### What is actually needed
@@ -220,10 +220,10 @@ The `roko-conductor -> roko-learn` layer violation is real. Confirmed:
 
 ### What the proposal does
 
-Changes every trait signature to accept `Datum<'a>` (either Engram or
-Pulse) instead of just `&Engram`. Adds `score_engram` / `score_pulse`
-pairs to every trait. Changes Policy from `&[Engram]` to `&[Pulse]`.
-Introduces `PolicyOutputs { pulses: Vec<Pulse>, engrams: Vec<Engram> }`.
+Changes every trait signature to accept `Datum<'a>` (either Signal or
+Pulse) instead of just `&Signal`. Adds `score_engram` / `score_pulse`
+pairs to every trait. Changes Policy from `&[Signal]` to `&[Pulse]`.
+Introduces `PolicyOutputs { pulses: Vec<Pulse>, signals: Vec<Signal> }`.
 
 ### Problems
 
@@ -241,7 +241,7 @@ Introduces `PolicyOutputs { pulses: Vec<Pulse>, engrams: Vec<Engram> }`.
    flexibility.
 
 3. **The Policy signature change is breaking for every existing
-   implementation.** `decide(&[Engram], ctx) -> Vec<Engram>` changes to
+   implementation.** `decide(&[Signal], ctx) -> Vec<Signal>` changes to
    `decide(&[Pulse], ctx) -> PolicyOutputs`. The doc acknowledges this is
    "the most consequential signature change" and proposes a shim. A shim
    that persists through a migration window is architecture debt being
@@ -249,7 +249,7 @@ Introduces `PolicyOutputs { pulses: Vec<Pulse>, engrams: Vec<Engram> }`.
 
 4. **The "generalized Router" with `select_pulse` returning
    `Option<Selection>` does not make sense.** A Selection in the current
-   code carries a `ContentHash` of the chosen Engram. Pulses do not have
+   code carries a `ContentHash` of the chosen Signal. Pulses do not have
    content hashes. The Selection type would need to change too, which
    ripples further.
 
@@ -259,9 +259,9 @@ If Pulse exists (which I argue against, per 02), the traits that need it
 should get it:
 - **Policy**: yes, change to accept events/pulses. This is the one trait
   that genuinely wants to react to live streams.
-- **Gate, Scorer, Router, Composer**: leave them on `&Engram`. They
+- **Gate, Scorer, Router, Composer**: leave them on `&Signal`. They
   operate on durable data. If you need to verify a stream, graduate the
-  stream into a synthetic Engram first (which the existing code already
+  stream into a synthetic Signal first (which the existing code already
   does implicitly).
 
 Do not generalize all six traits to save one or two future call sites.
@@ -380,7 +380,7 @@ Do not generalize all six traits to save one or two future call sites.
 
 ### What is right
 
-1. **`Engram` stays.** Correct. 877 occurrences. The rename is done and
+1. **`Signal` stays.** Correct. 877 occurrences. The rename is done and
    should not be revisited.
 
 2. **Do not reclaim `Signal`.** Correct. The rename history would make
@@ -481,7 +481,7 @@ Do not generalize all six traits to save one or two future call sites.
 2. **Dreams subscribing to `substrate.engram.stored`** is a clean pattern.
    Reactive consolidation instead of polling.
 
-3. **Stigmergy as Engram+Pulse** is elegant on paper.
+3. **Stigmergy as Signal+Pulse** is elegant on paper.
 
 4. **HTTP control plane as Bus projection** matches what `roko-serve`
    already does with `ServerEvent`. The SSE/WebSocket endpoints are
@@ -527,7 +527,7 @@ The critique (01) correctly identifies real problems:
 - Four incompatible event enums
 - `roko-conductor -> roko-learn` layer violation
 - `Policy::decide(&[], ctx)` anti-pattern in production code
-- Stale "Signal = Engram" references in docs
+- Stale "Signal = Signal" references in docs
 
 The prescription (02-08) proposes a 6-7 week refactor introducing two new
 kernel types (Pulse, Datum), one new kernel trait (Bus), signature changes
@@ -539,8 +539,8 @@ with targeted fixes.
 ### 2. The Pulse type solves a real problem the wrong way
 
 The real problem: ephemeral messages (token chunks, heartbeats, UI
-refreshes) should not be Engrams. The right fix is: do not make them
-Engrams. The current code already does not make them Engrams — it sends
+refreshes) should not be Signals. The right fix is: do not make them
+Signals. The current code already does not make them Signals — it sends
 them on `EventBus<AgentEvent>` and `EventBus<RokoEvent>`. The problem is
 not the absence of a Pulse type; it is the proliferation of incompatible
 event enums. Unify the enums. Document the pattern. Move on.
@@ -569,7 +569,7 @@ The codebase still has "signal" references in:
 - `crates/roko-core/src/traits.rs` — Substrate trait doc comments say
   "Store a signal" (line 35), "Retrieve a signal" (line 38), etc.
 - `crates/roko-core/README.md:3` — "One noun (`Signal`)"
-- `crates/roko-core/src/kind.rs:1` — "Engram kinds -- what a signal
+- `crates/roko-core/src/kind.rs:1` — "Signal kinds -- what a signal
   represents"
 - `CLAUDE.md:59` — "1 noun (Signal)"
 
@@ -605,7 +605,7 @@ genuine architectural insight:
 
 - The event bus is an L0 primitive that deserves trait-level recognition.
 - The conductor/learn dependency should be inverted via pub/sub.
-- Policy's current signature (`&[Engram]`) does not match how policies
+- Policy's current signature (`&[Signal]`) does not match how policies
   actually consume data in the runtime.
 - The 9-step loop should be 7 steps.
 - "One noun, six verbs" is no longer an accurate summary of the system.
@@ -627,7 +627,7 @@ flagging: do not update docs to describe Pulse until Pulse exists in code.
 | Doc | Verdict | Key finding |
 |-----|---------|-------------|
 | 01 — Critique | PARTIALLY AGREE | Diagnosis is correct; predictions 1 and 3 confirmed, prediction 2 weaker than claimed |
-| 02 — Engram vs Pulse | OVERCOMPLICATED | Pulse solves a real problem the wrong way; unified RokoEvent enum is simpler |
+| 02 — Signal vs Pulse | OVERCOMPLICATED | Pulse solves a real problem the wrong way; unified RokoEvent enum is simpler |
 | 03 — Bus as First-Class | PARTIALLY AGREE | Bus trait in roko-core is right; but keep generic, keep minimal |
 | 04 — Operators Generalized | OVERCOMPLICATED | Datum enum and dual signatures are premature; only Policy actually needs change |
 | 05 — Loop Retold | PARTIALLY AGREE | 7-step revision is correct; TickConfig struct is overengineered |

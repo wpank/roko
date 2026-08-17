@@ -28,14 +28,14 @@ returns intervention signals, and the `Context` provides the current tick
 position.
 **Reality**: `Policy` is defined in `roko-core` (not `roko-conductor`), at
 `crates/roko-core/src/traits.rs:166-172` with exact signature
-`pub trait Policy: Send + Sync { fn decide(&self, stream: &[Engram], ctx: &Context) -> Vec<Engram>; fn name(&self) -> &str; }`.
-The only naming drift vs the doc snippet is `Signal` → `Engram` (the
+`pub trait Policy: Send + Sync { fn decide(&self, stream: &[Signal], ctx: &Context) -> Vec<Signal>; fn name(&self) -> &str; }`.
+The only naming drift vs the doc snippet is `Signal` → `Signal` (the
 engram/signal rename is consistent across the whole tree — `Kind` is the
-`Engram` discriminator). Every watcher in `crates/roko-conductor/src/watchers/`
-imports `roko_core::{Body, Context, Engram, Kind, Policy}` and supplies
+`Signal` discriminator). Every watcher in `crates/roko-conductor/src/watchers/`
+imports `roko_core::{Body, Context, Signal, Kind, Policy}` and supplies
 both methods. `Context::at(_)` / `Context::now()` at `crates/roko-core/src/context.rs`
 provides the tick. Doc 01 §"The Policy Trait" accurately reflects the
-production signature modulo the Signal/Engram alias.
+production signature modulo the Signal/Signal alias.
 
 ---
 
@@ -74,7 +74,7 @@ throughout the catalog).
 `WatcherOutput::new(watcher, severity, description)` at `:65-76`,
 chainable `.with_metric(v)` at `:80-83`, `to_decision()` adaptor at
 `:86-89`. `outputs_to_signals()` helper at `:124-144` serializes these
-into `Kind::Custom("conductor:alert:<watcher>")` engrams while filtering
+into `Kind::Custom("conductor:alert:<watcher>")` signals while filtering
 `Severity::Info` entries. Full serde roundtrip verified by the
 `watcher_output_serde_roundtrip` test at `:227-232`. The doc never names
 `WatcherOutput` as a type, but the implementation matches the documented
@@ -156,7 +156,7 @@ Tests `identical_errors_fires`, `different_errors_no_fire`,
 `non_consecutive_at_end_no_fire` at `:146-179` pass.
 **Fix sketch**: Doc 01 §2 should say `MAX_IDENTICAL_COMPILE_FAILURES`
 (not `MAX_COMPILE_FAIL_REPEAT`) and the watcher consumes
-`Kind::CompileDiagnostic` engrams rather than `GateVerdict`. The
+`Kind::CompileDiagnostic` signals rather than `GateVerdict`. The
 Diagnosis-Engine tie-in claim at lines 106-112 is narrative, not wired
 through this watcher — the watcher emits only a generic warning.
 
@@ -175,7 +175,7 @@ the constant is named `DEFAULT_BUDGET: f64 = 10.0` at `:22`, NOT
 `DEFAULT_BUDGET_USD`. Watcher name `cost-overrun` matches at `:10`.
 `PLAN_COST_METRIC = "plan_cost"` at `:15` and `PLAN_BUDGET_METRIC = "plan_budget"`
 at `:17` are the canonical metric names. `latest_metric()` at `:51-58`
-pulls the most-recent `Kind::Metric` engram matching the name. Decide
+pulls the most-recent `Kind::Metric` signal matching the name. Decide
 path at `:60-87`: when `cost > budget`, emits intervention with
 `severity=warning` (contrary to Doc 01 line 133 "escalates based on
 overage" — there is no escalation logic, severity is always Warning).
@@ -208,7 +208,7 @@ tagged at `:104` (`tag("severity", "critical")`) — confirmed at
 this is indeed the only watcher emitting critical — `Grep '"critical"' crates/roko-conductor/src/watchers/`
 returns only `iteration_loop.rs:104`. Tests at `:145-207` pass.
 **Fix sketch**: Doc 01 §4 should say `MAX_IMPLEMENTER_ATTEMPTS` (not
-`MAX_ITERATION_LOOP`) and the watcher consumes `PlanPhase` engrams (with
+`MAX_ITERATION_LOOP`) and the watcher consumes `PlanPhase` signals (with
 `event=GateFailed`), not `GateVerdict` directly.
 
 ---
@@ -329,7 +329,7 @@ at `:13`, watcher name `time-overrun` at `:10`. `TaskTimingEvent` at
 `:22-28` has `plan_id, task, duration_ms, timeout_secs`. The integer
 arithmetic at `:50-57` is `duration_ms.saturating_mul(5) > timeout_ms.saturating_mul(4)`,
 matching the doc snippet at lines 386-391 exactly. Decide path at
-`:59-100` finds the most recent timing engram in reverse, computes
+`:59-100` finds the most recent timing signal in reverse, computes
 threshold, emits intervention with `severity=warning` and tags
 `duration_ms`, `timeout_secs`, `threshold=0.8`, `ratio`. Zero-timeout
 guard at `:51-53`. Tests `above_threshold_fires` (8_001ms of 10s
@@ -403,7 +403,7 @@ circuit breaker at `:158-166`, returning
 `ConductorDecision::fail("circuit-breaker", FailureKind::MaxIterations)`
 if tripped; (2) calls `collect_watcher_outputs(&self.watchers, stream, ctx)`
 at `:169` which iterates each watcher sequentially, reads `severity` and
-`watcher` tags off each emitted engram, and pushes `WatcherOutput`
+`watcher` tags off each emitted signal, and pushes `WatcherOutput`
 records (`:201-224`); (3) updates routing bias via `update_routing_bias`
 at `:170`; (4) applies `self.policy.evaluate()` at `:173`; (5) records
 failures back into the circuit breaker at `:176-184`. A parallel
@@ -486,7 +486,7 @@ should apply only to the 10-watcher catalog and `WorstSeverityPolicy`.
 **Status**: NOT DONE
 **Severity**: MEDIUM
 **Doc claim**: Doc 09 §"Definition" (lines 12-31) proposes
-`pub enum CognitiveSignal { Pause, Resume, Reprioritize(TaskId), InjectContext(Engram), Escalate, Cooldown, Explore, Shutdown }`.
+`pub enum CognitiveSignal { Pause, Resume, Reprioritize(TaskId), InjectContext(Signal), Escalate, Cooldown, Explore, Shutdown }`.
 Doc 09 §"Implementation Status" (lines 247-271) is **honest** about
 this: "Cognitive Signals are defined in the refactoring PRD (§XII.2,
 09-innovations.md) but not yet implemented as a formal type in the
@@ -537,12 +537,12 @@ honest description of the current collapse.
 
 ---
 
-## B.21 — `Kind` enum variants consumed by watchers (Doc 09 §"Engram" — implicit)
+## B.21 — `Kind` enum variants consumed by watchers (Doc 09 §"Signal" — implicit)
 
 **Status**: DONE
 **Severity**: —
-**Doc claim**: Doc 09 §"InjectContext(Engram)" (lines 89-110) defines an
-Engram as "a unit of persistent context" — a typed piece of information.
+**Doc claim**: Doc 09 §"InjectContext(Signal)" (lines 89-110) defines an
+Signal as "a unit of persistent context" — a typed piece of information.
 Doc 01's per-watcher narrative references `AgentOutput`, `GateVerdict`,
 `PlanPhase`, `Metric`, `TokenUsage`, `CompileDiagnostic`, and
 `Custom("conductor.agent_output")` as the consumed kinds.
@@ -571,7 +571,7 @@ variant; none emit a `CognitiveSignal`-tagged custom kind.
 **Doc claim**: Doc 09's signal vocabulary hints at richer typed
 interrupts ("pause execution", "reprioritize this task", "inject this
 context"). Doc 01 implicitly suggests watchers could consume a broad
-range of engram kinds, though it names only a subset.
+range of signal kinds, though it names only a subset.
 **Reality**: `Kind` includes several chain-participation variants —
 `Insight`, `Pheromone`, `Bounty`, `Transaction`, `Service`, `Prediction`
 at `crates/roko-core/src/kind.rs:89-100` — as well as `RouterChoice`,
@@ -590,7 +590,7 @@ behavior, not tool-call health.
 
 ---
 
-## B.23 — `outputs_to_signals()` bridge + `conductor.decision` engram (Doc 01 §"Adding a New Watcher" — implicit)
+## B.23 — `outputs_to_signals()` bridge + `conductor.decision` signal (Doc 01 §"Adding a New Watcher" — implicit)
 
 **Status**: DONE
 **Severity**: —
@@ -599,17 +599,17 @@ Conductor's `evaluate()` method automatically picks up any watcher in
 the `watchers` vector. No other code needs to change." Implicit in this
 is a stable emission contract.
 **Reality**: `outputs_to_signals()` at `interventions.rs:124-144`
-converts `&[WatcherOutput]` → `Vec<Engram>` for substrate writes. Each
+converts `&[WatcherOutput]` → `Vec<Signal>` for substrate writes. Each
 `WatcherOutput` becomes a `Kind::Custom("conductor:alert:{watcher}")`
-engram (`:133`) with serialized body and tags `watcher`, `severity`
+signal (`:133`) with serialized body and tags `watcher`, `severity`
 (`:138-139`). `Severity::Info` outputs are filtered out at `:128`.
 `Conductor::decide()` at `conductor.rs:227-249` additionally emits a
-`Kind::Custom("conductor.decision")` engram when the decision is
+`Kind::Custom("conductor.decision")` signal when the decision is
 non-continue, with body = serialized `ConductorDecision` and tag
 `decision={continue|restart|fail}` (`:240-244`). So the full emitted
-surface per tick is: zero or more `conductor:alert:<watcher>` engrams +
-one `conductor.decision` engram on anomaly. Test
-`conductor_policy_emits_on_anomaly` at `:439-449` confirms both engram
+surface per tick is: zero or more `conductor:alert:<watcher>` signals +
+one `conductor.decision` signal on anomaly. Test
+`conductor_policy_emits_on_anomaly` at `:439-449` confirms both signal
 kinds appear when ghost turns trigger the pipeline.
 
 ---

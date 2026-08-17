@@ -46,7 +46,7 @@ Tests verify:
 - Each state maps to the correct PAD region.
 - State transitions are triggered by the correct PAD threshold crossings.
 - No terminal state exists: from any state, there is a valid transition to at least one other state.
-- State transition history is recorded in the Engram substrate.
+- State transition history is recorded in the Signal substrate.
 
 Key property: [../by-property/daimon-no-terminal-state.md](../by-property/daimon-no-terminal-state.md).
 

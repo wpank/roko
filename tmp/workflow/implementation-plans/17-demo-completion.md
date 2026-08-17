@@ -12,6 +12,9 @@ The demo docs propose a **CLI-first** VC demo (3 minutes, four primitives: ident
 
 The repo today shows **heavy investment in the web demo app** (`demo/demo-app/` — 15 scenarios, BlockTicker, ISFR, scenario-runners, real-PTY terminals) and **partial investment** in the CLI-first VC story (`roko run --share` exists; `share.rs`, `shared_runs.rs` route present).
 
+> **ISFR DEPRECATED (2026-08-13):** The ISFR vertical is deprecated and scheduled
+> for removal. See `.roko/GAPS.md` for tracking.
+
 Decision needed before this plan can fully land: **is the demo strategy still CLI-first, or has it shifted to the web demo as the primary surface?**
 
 ---

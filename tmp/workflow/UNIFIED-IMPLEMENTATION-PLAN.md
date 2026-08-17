@@ -1,5 +1,40 @@
 # Unified Runtime: Implementation Plan
 
+> Last updated: 2026-08-13
+
+## What is this?
+
+This is the master **refactoring plan** for converging roko's execution runtimes into a
+single, clean engine. It tracks code quality improvements and architectural decomposition
+-- not feature work. It was written in July 2026 when the codebase had three separate
+runtimes doing the same thing differently (orchestrate.rs, event_loop.rs, ACP pipeline).
+It defines 80+ granular tasks across 7 phases, from foundation services through proof runs.
+
+**Current status (August 2026):**
+- **Phase 0 (Foundation Services):** Partially built. `ModelCallService`
+  (`roko-agent/src/model_call_service.rs`), `PromptAssemblyService`
+  (`roko-compose/src/prompt_assembly_service.rs`), and `FeedbackService`
+  (`roko-learn/src/feedback_service.rs`) exist as modules. `PersistenceService` was
+  never extracted as a standalone service -- persistence logic remains inline in
+  event_loop.rs.
+- **Phase 1 (Execution Engine):** Partially built. `PipelineState`
+  (`roko-runtime/src/pipeline_state.rs`), `TaskScheduler`
+  (`roko-runtime/src/task_scheduler.rs`), `EffectDriver`
+  (`roko-runtime/src/effect_driver.rs`), and `WorkflowEngine`
+  (`roko-runtime/src/workflow_engine.rs`) exist in `roko-runtime/`. However, the live
+  runtime (`event_loop.rs`) has not been refactored to delegate to them -- it still
+  implements everything inline.
+- **Phase 6 (Retirement):** `orchestrate.rs` was **deleted** (the 21K-line monolith).
+  But `event_loop.rs` grew to **19,846 lines** absorbing its features rather than
+  decomposing into the planned services. The god-file problem migrated, not solved.
+- **Phases 2-5, 7:** Not started.
+
+The plan remains the right direction. The services were built but not wired as the
+primary execution path. The next step is refactoring `event_loop.rs` to delegate to
+the existing service modules rather than implementing everything inline.
+
+---
+
 One runtime. Every feature works. Designed from scratch.
 
 This plan converges runner v2 (`runner/event_loop.rs`), the dead `orchestrate.rs`, and the ACP pipeline (`roko-acp/pipeline.rs`) into a single, clean execution engine.
@@ -39,7 +74,11 @@ This plan converges runner v2 (`runner/event_loop.rs`), the dead `orchestrate.rs
 
 ## Reference: What Each Runtime Does Today
 
-| Capability | runner v2 (`event_loop.rs`) | orchestrate.rs (dead) | ACP pipeline |
+> **Note (Aug 2026):** `orchestrate.rs` has been deleted. `event_loop.rs` has grown from
+> 3K to 19,846 lines absorbing features from both. The "dead" column below is historical
+> reference for which features came from where.
+
+| Capability | runner v2 (`event_loop.rs`) | orchestrate.rs (DELETED) | ACP pipeline |
 |---|---|---|---|
 | State machine | `ParallelExecutor` (external) | `PlanRunner` (monolithic) | `PipelineState` (pure, elegant) |
 | Agent spawn | `spawn_agent()` via `CliProviderConfig` | `run_prepared_agent()` | `run_claude_cli()` (bare) |
@@ -411,11 +450,11 @@ Every CLI command, HTTP route, and ACP prompt goes through one engine.
 
 ### 6.1 Kill the Dead Code
 
-- [ ] **6.1.1** Add `#[deprecated]` banner to `orchestrate.rs`
-- [ ] **6.1.2** Verify no CLI path calls `PlanRunner` (already true)
-- [ ] **6.1.3** Extract any remaining unique behavior into the new services (check all features against parity matrix)
-- [ ] **6.1.4** Move `orchestrate.rs` to `orchestrate_legacy.rs` (or delete if all behavior migrated)
-- [ ] **6.1.5** Delete `runner/event_loop.rs` (replaced by EffectDriver)
+- [x] **6.1.1** ~~Add `#[deprecated]` banner to `orchestrate.rs`~~ -- **DONE: orchestrate.rs was deleted entirely.**
+- [x] **6.1.2** ~~Verify no CLI path calls `PlanRunner`~~ -- **DONE: confirmed, orchestrate.rs removed.**
+- [x] **6.1.3** ~~Extract any remaining unique behavior into the new services~~ -- **Partially done: features were absorbed into event_loop.rs (not into services).**
+- [x] **6.1.4** ~~Delete `orchestrate.rs`~~ -- **DONE.**
+- [ ] **6.1.5** Decompose + delete `runner/event_loop.rs` (19,846 lines -- replaced by EffectDriver). **Blocked on Phases 0-1 wiring.**
 - [ ] **6.1.6** Delete `roko-acp/src/runner.rs` bare claude spawn (replaced by ModelCallService)
 
 ### 6.2 Simplifications
@@ -471,17 +510,17 @@ Each proof must pass before claiming the feature works.
 
 ## What Gets Deleted
 
-| Component | Reason |
-|---|---|
-| `orchestrate.rs` (21K lines) | Dead code, all valuable features extracted |
-| `runner/event_loop.rs` (3K lines) | Replaced by EffectDriver |
-| `roko-acp/src/runner.rs` bare `run_claude_cli()` | Replaced by ModelCallService |
-| VCG auction payments | Greedy knapsack is sufficient |
-| Daimon PAD/somatic/strategy | Replaced by FailureTracker with simple rules |
-| Pheromone system | Replaced by Vec<String> warnings |
-| HDC fingerprinting | No retrieval consumer exists |
-| 12 of 18 per-task feedback hooks | Noise reduction |
-| CascadeRouter 17-dim features | Simplified to 6-dim |
+| Component | Status | Reason |
+|---|---|---|
+| `orchestrate.rs` (21K lines) | **DELETED** | Dead code, all valuable features extracted |
+| `runner/event_loop.rs` (now 19,846 lines) | Pending | Replaced by EffectDriver (but grew instead of shrinking -- needs decomposition first) |
+| `roko-acp/src/runner.rs` bare `run_claude_cli()` | Pending | Replaced by ModelCallService |
+| VCG auction payments | Pending | Wired but greedy knapsack dominates at runtime; VCG adds complexity without value |
+| Daimon PAD/somatic/strategy | Pending | Replaced by FailureTracker with simple rules |
+| Pheromone system | Pending | Replaced by Vec<String> warnings |
+| HDC fingerprinting | Pending | No retrieval consumer exists |
+| 12 of 18 per-task feedback hooks | Pending | Noise reduction |
+| CascadeRouter 17-dim features | Pending | Simplified to 6-dim |
 
 ## What Gets Preserved
 

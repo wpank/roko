@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a deep research report on frontier capabilities (round 3).
+> It is reference material for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Frontier capabilities for an agent orchestration OS: round 3
 
 **The arena-of-one capabilities are now visible.** Across 10 research directions and ~140 papers from the last 18 months, five capabilities emerge that *literally cannot be built without your specific stack* — they require Signal/Block/Graph + HDC + stigmergy + active inference + self-evolution + ZK + economic bonding *together*. The rest of this report maps the empirical, theoretical, and philosophical frontier, with explicit verdicts and the catches that prevent wasted effort.

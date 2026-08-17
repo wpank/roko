@@ -1,9 +1,16 @@
 # Live task status — source of truth for what's claimed/done
 #
+# What is this?
+# Final status snapshot for the original taskrunner system. All 100 tasks
+# reached "implemented" status across 4 batches (May 2026). This file is
+# historical -- the taskrunner is no longer the active execution mechanism.
+#
 # Updated by scripts/claim.sh, scripts/complete.sh
 # Read by scripts/next.sh, scripts/status.sh
 #
 # Status: pending|claimed|implemented|tested|wired|verified|done
+#
+# Last updated: 2026-08-13 (header added; task statuses unchanged from 2026-05-06)
 
 [meta]
 last_updated = "2026-05-06T01:00:00Z"

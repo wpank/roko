@@ -11,8 +11,9 @@ Plan: `tmp/status-quo/backlog/plans/DOC-v2-core/tasks.toml`
 
 ## Contract
 
-- Source Markdown files covered: **34**.
-- Executable tasks preserved: **10**; task IDs and `ready` status are unchanged.
+- Source Markdown files covered: **35**.
+- Executable tasks preserved: **10**; 3 independently accepted roll-ups are `done`
+  and 7 remain `ready`.
 - Product implementation tasks in this plan: **0**.
 - Every roll-up has `role = "scribe"`, writes only explicit `docs/v2/*.md`
   files, and depends on the canonical implementation plans for its claims.
@@ -23,8 +24,8 @@ Plan: `tmp/status-quo/backlog/plans/DOC-v2-core/tasks.toml`
   target/deferred label; it is never silently presented as current behavior.
 - Documentation defects do not authorize product changes. A missing capability
   returns to its canonical owner; the roll-up records the verified limitation.
-- Completion still requires independent documentation review. No CTRL-09 task
-  is marked done by this control-plane change.
+- Completion requires independent documentation review. DOCV2-T01, T03, and T04
+  passed that review on 2026-08-17; the other seven roll-ups remain ready.
 
 ## Task and product-owner map
 
@@ -39,7 +40,7 @@ Plan: `tmp/status-quo/backlog/plans/DOC-v2-core/tasks.toml`
 | `DOCV2-T07` | `15-TELEMETRY`, `16-SECURITY`, `17-AUTH`, `18-PAYMENTS`, `19-CONFIG` | E02 storage, E04 security, E09 observability, E18 docs/config/ops, E33 telemetry, E34 IFC, E35 auth, E36 payments, E42 config |
 | `DOCV2-T08` | `20-SURFACES`, `21-MARKETPLACE` | E10 frontend, E33 telemetry, E36 payments, E37 surfaces, E38 marketplace, E39 identity |
 | `DOCV2-T09` | `22-REGISTRIES`, `23-ARENAS`, `24-DEFI` | E11 chain/ISFR, E39 registries, E40 arenas/evals, E41 DeFi |
-| `DOCV2-T10` | `00-INDEX`, `25-DEPLOYMENT`, `28-ROADMAP`, all five public guides | all nine earlier DOCV2 roll-ups; E01, E10, E11, E16, E17, E18, E43 deployment, E45 runner/Mori |
+| `DOCV2-T10` | `00-INDEX`, `25-DEPLOYMENT`, `28-ROADMAP`, all six public guides | all nine earlier DOCV2 roll-ups; E01, E10, E11, E16, E17, E18, E43 deployment, E45 runner/Mori |
 
 All E19-E45 implementation plans occur in at least one prerequisite mapping.
 The local DAG makes `DOCV2-T10` the final global-status/public-guide pass after
@@ -82,6 +83,7 @@ all topical writers have completed.
 | `docs/v2/API-REFERENCE.md` | `DOCV2-T10` | — | Public HTTP/API and route contract. |
 | `docs/v2/ARCHITECTURE-GUIDE.md` | `DOCV2-T10` | `DOCV2-T01`–`T04` | Public architecture and integrated code mapping. |
 | `docs/v2/CLI-REFERENCE.md` | `DOCV2-T10` | — | Public CLI contract and examples. |
+| `docs/v2/GITHUB-INTEGRATION.md` | `DOCV2-T10` | — | GitHub MCP, webhook, runner workflow, credentials, and operator contract. |
 | `docs/v2/INTEGRATION-GUIDE.md` | `DOCV2-T10` | — | Setup, config, providers, MCP, gates, events, deployment, engine. |
 
 ## Validation
@@ -110,18 +112,21 @@ context = {
 writes = [path for task in data["task"] for path in task["files"]]
 owners = {dep for task in data["task"] for dep in task["depends_on_plan"]}
 
-assert len(sources) == 34
+assert len(sources) == 35
 assert sources <= context
 assert sources <= set(writes)
-assert len(writes) == len(set(writes)) == 34
+assert len(writes) == len(set(writes)) == 35
 assert all(path in ledger for path in sources)
 assert len(data["task"]) == data["meta"]["total"] == 10
-assert data["meta"]["done"] == 0
-assert all(task["status"] == "ready" for task in data["task"])
+assert data["meta"]["done"] == 3
+assert {task["id"] for task in data["task"] if task["status"] == "done"} == {
+    "DOCV2-T01", "DOCV2-T03", "DOCV2-T04"
+}
+assert sum(task["status"] == "ready" for task in data["task"]) == 7
 assert all(task["role"] == "scribe" for task in data["task"])
 assert all(task.get("ownership") == "documentation-acceptance-roll-up" for task in data["task"])
 assert all(path.startswith("docs/v2/") for path in writes)
 assert all(next(iter(Path("tmp/status-quo/backlog/plans").glob(f"E{n:02d}-*/tasks.toml"))).parent.name in owners for n in range(19, 46))
-print("34 sources; 34 disjoint doc writers; 10 ready roll-ups; E19-E45 all mapped")
+print("35 sources; 35 disjoint doc writers; 3 done/7 ready roll-ups; E19-E45 all mapped")
 PY
 ```

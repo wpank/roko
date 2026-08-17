@@ -1,6 +1,6 @@
 # Backend: JSONL File (`FileSubstrate`)
 
-> `FileSubstrate` is the primary durable backend. It appends `Engram` records as newline-
+> `FileSubstrate` is the primary durable backend. It appends `Signal` records as newline-
 > delimited JSON to a single `.jsonl` file, builds an in-memory index on open, and handles
 > compaction.
 
@@ -35,7 +35,7 @@ bound until compaction runs.
 
 ## File Format
 
-Each line in the `.jsonl` file is a JSON-serialised `Engram`:
+Each line in the `.jsonl` file is a JSON-serialised `Signal`:
 
 ```
 {"hash":"sha256:abc123...","kind":"Fact","body":{"text":"..."},"score":{...},"decay":{...},"fingerprint":"...","created_at":1713456789}\n
@@ -64,7 +64,7 @@ println!("Loaded {} records", substrate.len());
 On open, `FileSubstrate`:
 1. Reads and parses every line in the file.
 2. Skips malformed lines (logs a warning per skipped line).
-3. Builds a `HashMap<ContentHash, Engram>` (the primary index) and an HDC index array
+3. Builds a `HashMap<ContentHash, Signal>` (the primary index) and an HDC index array
    (`Vec<(ContentHash, HdcFingerprint)>`) for `query_similar`.
 
 Startup cost is O(n) reads + O(n) deserialisation + O(n) HDC index build.
@@ -73,8 +73,8 @@ Startup cost is O(n) reads + O(n) deserialisation + O(n) HDC index build.
 
 ## Write Path
 
-`put(engram)`:
-1. Serialise `engram` to a JSON string.
+`put(signal)`:
+1. Serialise `signal` to a JSON string.
 2. Append `json_line + "\n"` to the file (single `write` syscall + optional `fsync`).
 3. Insert/replace in the in-memory `HashMap` and HDC index.
 

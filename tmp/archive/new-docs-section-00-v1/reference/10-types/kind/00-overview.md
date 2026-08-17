@@ -1,10 +1,10 @@
 # Kind — Overview
 
-> The enum that declares what cognitive role an Engram plays in the agent's knowledge graph.
+> The enum that declares what cognitive role an Signal plays in the agent's knowledge graph.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
-**Depends on**: [Engram](../../01-engram/00-overview.md)  
+**Depends on**: [Signal](../../01-engram/00-overview.md)  
 **Used by**: [ContentHash](../content-hash/00-overview.md), [Decay Tier Matrix](../decay/08-tier-matrix.md)  
 **Last reviewed**: 2026-04-19
 
@@ -13,7 +13,7 @@
 ## TL;DR
 
 `Kind` is an enum with 15 concrete variants plus `Custom(String)`. It is part of the
-Engram's `ContentHash` — two Engrams with identical bodies but different Kinds have
+Signal's `ContentHash` — two Signals with identical bodies but different Kinds have
 different identities. Kind determines the default decay policy, influences Gate filtering,
 and informs the Substrate's indexing strategy.
 
@@ -28,7 +28,7 @@ these distinctions.
 
 Kind enables the system to:
 - Apply appropriate default decay (tool traces decay fast; reflections decay slowly).
-- Route Engrams to the right consumers (e.g., only `GateVerdict` Engrams are read by
+- Route Signals to the right consumers (e.g., only `GateVerdict` Signals are read by
   the gate audit trail).
 - Provide meaningful introspection ("what does the agent know and what kind is it?").
 

@@ -106,7 +106,7 @@ Supporting risks active across multiple quarters:
 
 If Q1–Q4 land in order on a full-team schedule:
 
-1. The kernel speaks one transport and storage language: `Engram`, `Pulse`, `Substrate`, `Bus`, `Topic`, `TopicFilter`, `Datum`, `PulseSource`.
+1. The kernel speaks one transport and storage language: `Signal`, `Pulse`, `Substrate`, `Bus`, `Topic`, `TopicFilter`, `Datum`, `PulseSource`.
 2. The learning layer compounds through HDC fingerprint, demurrage, heuristics, and c-factor — not isolated experiments.
 3. Plugins, StateHub projection, and surface clients share one runtime contract.
 4. Domain profiles and safety infrastructure make the system auditable for team workflows.

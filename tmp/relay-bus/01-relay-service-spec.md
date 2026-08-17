@@ -1,5 +1,19 @@
 # Relay Service Spec
 
+> **What is this?** This is the canonical spec for the WebSocket relay service
+> (`apps/agent-relay/`). The relay is the cross-instance half of roko's event
+> distribution system -- the other half is the in-process `EventBus` in
+> `roko-runtime`. This doc covers architecture, deployment models, wire protocol,
+> topic namespace, and known gaps.
+>
+> **Status (2026-08-13):** The relay is implemented and deployed as a Railway
+> sidecar. The wire protocol described here matches the current implementation.
+> Topic examples in this doc use dot-separated names (the decided grammar), but
+> **the codebase still uses colons** -- migration has not landed yet. See
+> `04-topic-grammar.md` for the migration plan.
+>
+> Last updated: 2026-08-13
+
 ## What This Is
 
 The relay is a standalone WebSocket pub/sub service that carries agent presence, chain events, feed data, and marketplace signals. Anyone can run one. Agents connect to one or more relays simultaneously.
@@ -266,18 +280,20 @@ The relay exists at `apps/agent-relay/` (~1,700 LOC):
 
 Plus the client at `crates/roko-agent-server/src/features/relay_client.rs` (~520 LOC) and subscriber wrapper at `relay_subscriber.rs` (~200 LOC).
 
-## Gaps (v1 → v2)
+## Gaps (v1 -> v2)
 
-| Gap | Priority | Notes |
-|---|---|---|
-| Topic grammar migration (colons → dots) | High | Change `chain:{id}` to `chain.{id}`, etc. |
-| `ts` field in outbound `topic_message` | High | Already stored internally, not serialized |
-| `resume_after` on subscribe | High | Resume from specific seq instead of full ring replay |
-| Multi-topic subscribe (`topics: [...]`) | Medium | Batch subscription in one frame |
-| Chain watcher: decode contract logs | Medium | Currently only publishes `new_block` |
-| Chain watcher: use `eth_subscribe` not polling | Medium | Instant vs 2s delay |
-| Topic wildcard subscriptions | Medium | `chain.*` matches `chain.31337` |
-| Auth (agent passport verification) | Medium | Required for shared/public relays |
-| Topic GC (unused topics) | Low | Topics with zero subscribers accumulate |
-| Backpressure policies | Low | Per-topic or per-subscriber rate limits |
-| Metrics/observability | Low | Ring buffer depth, message rates, connection counts |
+All gaps below are **still pending** as of 2026-08-13.
+
+| Gap | Priority | Status | Notes |
+|---|---|---|---|
+| Topic grammar migration (colons -> dots) | High | **Pending** | Decision settled (see `04-topic-grammar.md`), code still uses colons |
+| `ts` field in outbound `topic_message` | High | **Pending** | Already stored internally, not serialized |
+| `resume_after` on subscribe | High | **Pending** | Resume from specific seq instead of full ring replay |
+| Multi-topic subscribe (`topics: [...]`) | Medium | **Pending** | Batch subscription in one frame |
+| Chain watcher: decode contract logs | Medium | **Pending** | Currently only publishes `new_block` |
+| Chain watcher: use `eth_subscribe` not polling | Medium | **Pending** | Instant vs 2s delay |
+| Topic wildcard subscriptions | Medium | **Pending** | `chain.*` matches `chain.31337` |
+| Auth (agent passport verification) | Medium | **Pending** | Required for shared/public relays |
+| Topic GC (unused topics) | Low | **Pending** | Topics with zero subscribers accumulate |
+| Backpressure policies | Low | **Pending** | Per-topic or per-subscriber rate limits |
+| Metrics/observability | Low | **Pending** | Ring buffer depth, message rates, connection counts |

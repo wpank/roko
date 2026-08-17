@@ -4,8 +4,8 @@ Use this when a topic shows up during the `06-neuro` refresh but should be carri
 
 | Item | Better Home | Keep In 06 As | Why |
 |------|-------------|---------------|-----|
-| HDC-on-Engram | next neuro runtime pass | top-priority queued seam | highest-value missing neuro change, but still beyond a docs-only refresh |
-| Substrate `query_similar` | later substrate / retrieval pass | explicit not-yet note | depends on the Engram fingerprint seam and should not be implied as live |
+| HDC-on-Signal | next neuro runtime pass | top-priority queued seam | highest-value missing neuro change, but still beyond a docs-only refresh |
+| Substrate `query_similar` | later substrate / retrieval pass | explicit not-yet note | depends on the Signal fingerprint seam and should not be implied as live |
 | cross-domain HDC transfer | later neuro-transfer pass | deferred status note | current code does not support the broader transfer story the docs describe |
 | Pulse / Datum / Worldview / Custody | later architecture / chain passes | target-state label | target-state vocabulary, not present neuro-runtime contract |
 | Library of Babel | later exchange / archive pass | deferred note | design concept, not current runtime surface |

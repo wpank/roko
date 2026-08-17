@@ -11,7 +11,7 @@
 > **Implementation**: Scaffold
 
 **Topic**: [12-interfaces](./INDEX.md)
-**Prerequisites**: [00-architecture](../00-architecture/INDEX.md) for Engram, Synapse traits, and the universal cognitive loop
+**Prerequisites**: [00-architecture](../00-architecture/INDEX.md) for Signal, Synapse traits, and the universal cognitive loop
 **Key sources**: `refactoring-prd/06-interfaces.md`, `refactoring-prd/10-developer-guide.md`, `roko-cli/src/main.rs`, `roko-cli/src/lib.rs`, `bardo-backup/prd/18-interfaces/01-cli.md`, `bardo-backup/prd/25-mori/mori-interfaces.md`
 
 ---
@@ -40,7 +40,7 @@ REF23's user-facing rule is simple: learn one verb set once, then carry it betwe
 | `plan` | `roko plan ...` | Proposal and inspection without committing to execution. |
 | `do` | `roko do ...` or `roko plan run ...` | Execute a task or approved plan. |
 | `watch` | `roko watch <session-or-episode>` | Render live Bus activity as a continuous progress stream. |
-| `inspect` | `roko inspect <episode|engram|heuristic>` | Drill into durable records and supporting evidence. |
+| `inspect` | `roko inspect <episode|signal|heuristic>` | Drill into durable records and supporting evidence. |
 | `replay` | `roko replay <episode>` | Re-run a prior episode, optionally with changed inputs. |
 | `learn` | `roko learn ...` | Browse heuristics, playbooks, experiments, and calibration state. |
 | `tune` | `roko tune ...` or `roko config ...` | Adjust routing, thresholds, permissions, and other operator settings. |
@@ -110,7 +110,7 @@ The first-turn classifier routes to `ask`, `/edit`, or `/plan` based on scope. I
 roko run "Add error handling to the auth module"
 ```
 
-Executes a single prompt through the full universal cognitive loop (query → score → route → compose → act → verify → persist) and exits. This is the simplest and most common usage. The loop runs once: the prompt becomes an Engram of kind `Task`, flows through the Synapse pipeline, dispatches to an LLM backend, verifies with the gate pipeline, and writes results to disk.
+Executes a single prompt through the full universal cognitive loop (query → score → route → compose → act → verify → persist) and exits. This is the simplest and most common usage. The loop runs once: the prompt becomes an Signal of kind `Task`, flows through the Synapse pipeline, dispatches to an LLM backend, verifies with the gate pipeline, and writes results to disk.
 
 One-shot mode is implemented in `roko-cli/src/run.rs` via the `run_once` function. It loads the layered configuration (`roko.toml` → env vars → CLI flags), wires the default trait implementations, and drives a single iteration.
 
@@ -125,7 +125,7 @@ One-shot mode is implemented in `roko-cli/src/run.rs` via the `run_once` functio
 roko repl
 ```
 
-Opens an interactive read-eval-print loop. Each line entered becomes a prompt that runs through the cognitive loop. State persists across prompts — the Substrate accumulates Engrams, the Daimon tracks affect across turns, and Neuro knowledge entries persist. This mode is useful for exploratory development where the operator wants to iterate on prompts and observe how the agent learns across interactions.
+Opens an interactive read-eval-print loop. Each line entered becomes a prompt that runs through the cognitive loop. State persists across prompts — the Substrate accumulates Signals, the Daimon tracks affect across turns, and Neuro knowledge entries persist. This mode is useful for exploratory development where the operator wants to iterate on prompts and observe how the agent learns across interactions.
 
 The REPL is implemented in `roko-cli/src/repl.rs`. It maintains a persistent `FileSubstrate` and `EpisodeLogger` across the session.
 
@@ -383,7 +383,7 @@ Most users never need Level 3. The defaults handle 80% of use cases.
 
 The `roko` binary is defined in `roko-cli/src/main.rs`. It uses `clap::Parser` for argument parsing with a top-level `Cli` struct and a `Command` enum for subcommands. The binary links against `roko-cli` (the library crate) which re-exports key types from:
 
-- `roko-core` — Engram types, Synapse traits, configuration schema
+- `roko-core` — Signal types, Synapse traits, configuration schema
 - `roko-agent` — LLM backends, tool dispatch, MCP client
 - `roko-compose` — prompt assembly, context engineering
 - `roko-gate` — verification pipeline
@@ -531,7 +531,7 @@ These verbs are the user-facing contract that should survive across surfaces and
 | `plan` | `roko plan ...` | Current command family. |
 | `do` | `roko do ...` or `roko plan run ...` | Target-state execution noun over task or plan work. |
 | `watch` | `roko watch <session|episode>` | Target-state live-progress surface over the shared event stream. |
-| `inspect` | `roko inspect <episode|engram|heuristic>` | Target-state drill-down verb for durable artifacts. |
+| `inspect` | `roko inspect <episode|signal|heuristic>` | Target-state drill-down verb for durable artifacts. |
 | `replay` | `roko replay <episode>` | Current debugging verb; promoted to first-class user verb. |
 | `learn` | `roko learn ...` | Target-state surface for heuristics, playbooks, and experiments. |
 | `tune` | `roko tune ...` or `roko config ...` | Target-state configuration noun; `config` remains the detailed subtree. |
@@ -618,7 +618,7 @@ Runs: query → score → route → compose → act → verify → persist. Retu
 
 ### `roko status`
 
-Print Engram counts, most recent episode, gate pass/fail rates, and optionally compute C-Factor.
+Print Signal counts, most recent episode, gate pass/fail rates, and optionally compute C-Factor.
 
 ```
 roko status [--workdir PATH] [--cfactor]
@@ -737,7 +737,7 @@ roko explain <TOPIC>
 | `neuro` | Knowledge management and tier progression |
 | `daimon` | The affect engine and behavioral states |
 | `dreams` | Offline consolidation and hypnagogia |
-| `engram` | The Engram data type and Synapse traits |
+| `signal` | The Signal data type and Synapse traits |
 | `cfactor` | Collective intelligence metrics |
 
 **Status**: Not yet implemented. Planned for Tier 4 (interfaces).
@@ -757,7 +757,7 @@ The interactive shell, TUI chat pane, and browser chat surface should all accept
 | `/plan` | Convert the current thread into a plan | `roko plan create` |
 | `/execute` | Execute the current plan | `roko plan run <PLAN>` |
 | `/watch` | Attach to the live progress stream | `roko watch <SESSION_OR_EPISODE>` |
-| `/inspect <id>` | Drill into an Engram, heuristic, episode, or session | `roko inspect <kind> <id>` |
+| `/inspect <id>` | Drill into an Signal, heuristic, episode, or session | `roko inspect <kind> <id>` |
 | `/explain` | Show why the agent made a choice | `roko explain <topic>` and `roko inspect` on the latest episode |
 | `/heuristics` | Browse active heuristics | `roko learn heuristics` or `roko inspect heuristic <id>` |
 | `/learn` | Promote the exchange into a heuristic or playbook candidate | `roko learn import-session` or equivalent learning verb |
@@ -795,7 +795,7 @@ Target-state completion coverage includes:
 
 - subcommand names after `roko <TAB>`
 - plan IDs after `roko plan show <TAB>`
-- Engram hashes and episode IDs after `roko inspect <TAB>`
+- Signal hashes and episode IDs after `roko inspect <TAB>`
 - role names after `roko ask --role <TAB>`
 - config keys after `roko config set <TAB>`
 
@@ -1026,7 +1026,7 @@ roko provider <SUBCOMMAND>
 
 ### `roko replay`
 
-Walk the Engram lineage DAG rooted at a content hash.
+Walk the Signal lineage DAG rooted at a content hash.
 
 ```
 roko replay <HASH|SESSION_FILE> [--workdir PATH] [--modify TEXT] [--assert]
@@ -1034,14 +1034,14 @@ roko replay <HASH|SESSION_FILE> [--workdir PATH] [--modify TEXT] [--assert]
 
 `roko replay` serves two related workflows:
 
-- lineage replay for a durable Engram or episode
+- lineage replay for a durable Signal or episode
 - transcript replay for a recorded session stream
 
 `--modify` reapplies the prior flow with one changed operator instruction. `--assert` turns replay into a regression check suitable for CI by failing when the recorded expectations and the new run diverge beyond the configured tolerance.
 
 ### `roko inject`
 
-Inject an Engram into a running session for testing or steering.
+Inject an Signal into a running session for testing or steering.
 
 ```
 roko inject <SESSION> <PAYLOAD> [--kind directive|abort|context] [--workdir PATH]
@@ -1051,7 +1051,7 @@ roko inject <SESSION> <PAYLOAD> [--kind directive|abort|context] [--workdir PATH
 |---|---|---|---|
 | `SESSION` | String | (required) | Target session ID |
 | `PAYLOAD` | String | (required) | Payload text |
-| `--kind` | String | `directive` | Kind of Engram to inject |
+| `--kind` | String | `directive` | Kind of Signal to inject |
 
 ### `roko dashboard`
 
@@ -1228,7 +1228,7 @@ roko-domain-medical/
 
 ### `roko new gate <name>`
 
-Generates a custom Gate implementation. Gates are the L3 Harness verification layer — they check Engrams against ground truth and return a `Verdict`.
+Generates a custom Gate implementation. Gates are the L3 Harness verification layer — they check Signals against ground truth and return a `Verdict`.
 
 ```bash
 roko new gate schema-validator
@@ -1301,11 +1301,11 @@ mod tests {
 }
 ```
 
-The generated code uses `Engram` as the current Rust type name.
+The generated code uses `Signal` as the current Rust type name.
 
 ### `roko new scorer <name>`
 
-Generates a custom Scorer that rates Engrams along the 7-axis Score.
+Generates a custom Scorer that rates Signals along the 7-axis Score.
 
 ```bash
 roko new scorer recency-weighted
@@ -1321,7 +1321,7 @@ roko new router domain-specific
 
 ### `roko new policy <name>`
 
-Generates a custom Policy that observes Engram streams and emits new Engrams.
+Generates a custom Policy that observes Signal streams and emits new Signals.
 
 ```bash
 roko new policy anomaly-detector
@@ -1651,7 +1651,7 @@ Apply? [y/N/edit/explain]
 Selecting `explain` should reveal:
 
 - which heuristic or target-state worldview pushed the agent toward this step
-- which Engrams, episodes, or transcripts were cited as support
+- which Signals, episodes, or transcripts were cited as support
 - what gate or role policy is constraining the action
 - what direct command would reproduce or override the decision
 
@@ -2136,7 +2136,7 @@ The layered configuration system is **fully implemented** in `roko-cli/src/confi
 
 The server is built on `axum` (Tokio-based async HTTP framework), uses `tower-http` for middleware (CORS, tracing), and should expose the kernel's two-fabric reality directly: writes land in `Substrate`, live changes travel on the `Bus`, and remote consumers read typed `StateHub` projections instead of bespoke per-surface fanout. The architecture follows the `ServerBuilder` pattern, allowing configuration of auth, CORS origins, and projection transports before binding.
 
-`roko-serve` sits at the Application layer and consumes the same runtime abstractions that `roko-cli` uses. The `CliRuntime` trait bridges the server to the CLI's `run_once`, status, and dashboard functions. This means the HTTP API drives the exact same cognitive loop as the CLI — same Engram pipeline, same gates, same learning.
+`roko-serve` sits at the Application layer and consumes the same runtime abstractions that `roko-cli` uses. The `CliRuntime` trait bridges the server to the CLI's `run_once`, status, and dashboard functions. This means the HTTP API drives the exact same cognitive loop as the CLI — same Signal pipeline, same gates, same learning.
 
 REF23 makes this more explicit: the HTTP API is the transport layer behind the Web surface and the bridge that keeps CLI, TUI, Chat, and Web on the same verb set and the same live progress stream. The API should expose the same `ask`, `plan`, `do`, `watch`, `inspect`, `replay`, `learn`, `tune`, and `connect` actions instead of inventing a separate mental model. See [21-user-ux-running-agents.md](./21-user-ux-running-agents.md) and [tmp/refinements/23-user-ux-running-agents.md](../../tmp/refinements/23-user-ux-running-agents.md).
 
@@ -2166,7 +2166,7 @@ REF27 adds the missing wire contract: those projections and filtered Topic views
 | `plan` | `POST /api/plans` or plan-generation route | Proposal without mandatory execution. |
 | `do` | `POST /api/plans/:id/run` or equivalent task execution route | Starts real work. |
 | `watch` | `GET /projections/:name` plus `GET /projections/:name/stream` | Progress is queried, then streamed from typed projections with cursors. |
-| `inspect` | Episode, Engram, heuristic, and agent detail reads | Durable artifact drill-down. |
+| `inspect` | Episode, Signal, heuristic, and agent detail reads | Durable artifact drill-down. |
 | `replay` | Episode replay endpoint family | Re-run a prior episode from stored inputs and context. |
 | `learn` | Learning and heuristic endpoints | Curate heuristics, playbooks, experiments, and calibration state. |
 | `tune` | Config and threshold routes | Operator-level settings. |
@@ -2219,7 +2219,7 @@ The rule is:
 - `GET /projections/:name/stream` upgrades to WebSocket or SSE and emits typed `Delta` envelopes.
 - Filters execute server-side by tenant, role, user, lineage, topic, or time range.
 - Each envelope carries a cursor so reconnecting clients resume per projection rather than per raw socket.
-- Projection updates are trace-linked back to the causing `Engram` or `Pulse`.
+- Projection updates are trace-linked back to the causing `Signal` or `Pulse`.
 
 This keeps `roko-serve` small: command verbs mutate the runtime; projections report the runtime.
 
@@ -2318,7 +2318,7 @@ Request body:
 }
 ```
 
-Response: The Engram produced by the cognitive loop, with gate verdicts and episode ID.
+Response: The Signal produced by the cognitive loop, with gate verdicts and episode ID.
 
 ### Orchestrate
 
@@ -2335,7 +2335,7 @@ POST   /api/plans/:id/run           # Execute a specific plan
 GET    /api/status                   # System status + C-Factor
 ```
 
-Returns: Engram count, episode stats, gate pass rate, cost summary, model usage distribution, C-Factor value, and Neuro tier distribution.
+Returns: Signal count, episode stats, gate pass rate, cost summary, model usage distribution, C-Factor value, and Neuro tier distribution.
 
 ---
 
@@ -2485,15 +2485,15 @@ One-off endpoint families may still exist, but they should be treated as compati
 
 ## Dispatch Loop
 
-The `TemplateAgentDispatcher` (`roko-serve/src/dispatch.rs`) monitors the Substrate for incoming task Engrams and dispatches them to agent templates. The dispatch loop:
+The `TemplateAgentDispatcher` (`roko-serve/src/dispatch.rs`) monitors the Substrate for incoming task Signals and dispatches them to agent templates. The dispatch loop:
 
-1. Polls the Substrate for unprocessed Engrams of kind `Task` or `WebhookReceived`
-2. Matches the Engram to a subscription rule
+1. Polls the Substrate for unprocessed Signals of kind `Task` or `WebhookReceived`
+2. Matches the Signal to a subscription rule
 3. Instantiates the appropriate agent template
 4. Runs the cognitive loop
-5. Persists results and publishes Pulses plus final Engrams
+5. Persists results and publishes Pulses plus final Signals
 
-Built-in input sources (cron scheduler, file watcher) are started automatically from `roko.toml` configuration. As durable task Engrams are created and Pulses are emitted during execution, StateHub folds them into `active_tasks`, `recent_episodes`, and `agent_trails` so every consumer sees the same task state.
+Built-in input sources (cron scheduler, file watcher) are started automatically from `roko.toml` configuration. As durable task Signals are created and Pulses are emitted during execution, StateHub folds them into `active_tasks`, `recent_episodes`, and `agent_trails` so every consumer sees the same task state.
 
 ---
 
@@ -2573,16 +2573,16 @@ This keeps browser UIs, mobile feeds, Slack bots, dashboards, and another Roko i
 The realtime surface is the wire layer that externalizes the kernel's two fabrics:
 
 - `Bus` is still the transport fabric for live `Pulse` delivery inside the runtime.
-- `Substrate` is still the storage fabric for durable `Engram` history.
+- `Substrate` is still the storage fabric for durable `Signal` history.
 - `StateHub` turns Bus plus Substrate into typed projections that external consumers can query and subscribe to.
 
 Remote clients therefore do not tap arbitrary internal queues. They attach to one of three external shapes:
 
 - a named `projection:*` channel from `StateHub`
 - a filtered `topic:*` view over raw Bus Topics
-- a filtered `engram-stream:*` view over live Substrate writes
+- a filtered `signal-stream:*` view over live Substrate writes
 
-That distinction matters operationally. Interactive surfaces mostly consume projections; bots and diagnostics may consume filtered Topics; replication or audit flows may consume live Engram streams.
+That distinction matters operationally. Interactive surfaces mostly consume projections; bots and diagnostics may consume filtered Topics; replication or audit flows may consume live Signal streams.
 
 ## 3. Canonical Frame Vocabulary
 
@@ -2602,7 +2602,7 @@ The logical frame shape is transport-agnostic. JSON is the baseline encoding for
 |---|---|---|
 | `subscribe` | client -> server | Open a live subscription on one channel |
 | `unsubscribe` | client -> server | Close one live subscription |
-| `query` | client -> server | One-shot read of a projection, Engram, or heuristic |
+| `query` | client -> server | One-shot read of a projection, Signal, or heuristic |
 | `publish` | client -> server | Publish a user-originated Pulse; allowed on bidirectional transports |
 | `state` | server -> client | Full state snapshot, usually the first reply for a projection |
 | `delta` | server -> client | Incremental update for a projection |
@@ -2685,7 +2685,7 @@ The subscription unit is a `channel` string. The channel is not a replacement fo
 |---|---|---|
 | `projection:` | Named `StateHub` projection | `projection:cohort_health` |
 | `topic:` | Raw Bus Topic stream, pattern allowed | `topic:gate.failed.*` |
-| `engram-stream:` | Live filtered Substrate writes | `engram-stream:kind=heuristic` |
+| `signal-stream:` | Live filtered Substrate writes | `signal-stream:kind=heuristic` |
 | `agent:` | Per-agent activity feed | `agent:agt_042` |
 | `session:` | Per-session conversation and progress | `session:sess_xyz` |
 
@@ -2771,7 +2771,7 @@ Recommended defaults:
 - `agent_trails` token chunks coalesce in short windows
 - `cohort_health` metric updates coalesce aggressively
 - `gate_pipeline` rung transitions should not be dropped
-- `engram-stream:*` for audit or replication should prefer `ResumeRequired`
+- `signal-stream:*` for audit or replication should prefer `ResumeRequired`
 
 These rules keep the external surface honest about delivery guarantees instead of hiding drops behind best-effort transport behavior.
 
@@ -2819,8 +2819,8 @@ Those clients should share the same schema definitions as the StateHub projectio
 | Mobile or passive browser view | `SSE` | `projection:cohort_health`, `projection:active_tasks` |
 | Slack or chat bot | `WebSocket` | `topic:gate.failed.*`, `topic:safety.approval.requested` |
 | Grafana or metrics-tail consumer | `SSE` | `projection:bus_stats`, `projection:substrate_stats` |
-| Audit log or compliance sink | `gRPC` | `engram-stream:*`, `topic:safety.*` |
-| Cross-instance replication | `gRPC` | `engram-stream:*` with kind filters |
+| Audit log or compliance sink | `gRPC` | `signal-stream:*`, `topic:safety.*` |
+| Cross-instance replication | `gRPC` | `signal-stream:*` with kind filters |
 | Browser extension | `WebSocket` | `session:*`, `projection:active_tasks` |
 
 The transport choice is a deployment detail. The channel vocabulary is the product contract.
@@ -3314,7 +3314,7 @@ The TUI should render the shared verb set as keyboard-first actions rather than 
 | `plan` | Plans tab with propose-only flow and editable markdown |
 | `do` | Execute selected plan or task from the current view |
 | `watch` | Default live stream in the focused panel and status rail |
-| `inspect` | Detail drill-down for an episode, Engram, heuristic, or agent |
+| `inspect` | Detail drill-down for an episode, Signal, heuristic, or agent |
 | `replay` | Re-run a selected episode from Episodes or History |
 | `learn` | Heuristics and experiment views with curation actions |
 | `tune` | Threshold, config, and routing adjustments from keyboard-driven forms |
@@ -4074,7 +4074,7 @@ Shows Agent Mesh connectivity — peer discovery, pheromone channels, and synchr
 **Displays:**
 - Peer count and connectivity graph (ASCII topology)
 - Active pheromone channels with type, source, and target
-- Synchronization metrics (engram count, replication lag)
+- Synchronization metrics (signal count, replication lag)
 
 **Pheromone types** (from Stigmergy system):
 - `Wisdom` — successful strategy discovered
@@ -4763,7 +4763,7 @@ HDC (Hyperdimensional Computing) similarity map showing knowledge connections ac
 
 ### Screen 4.4: Knowledge Graph
 
-Full knowledge entry graph with lineage (parent Engram) connections.
+Full knowledge entry graph with lineage (parent Signal) connections.
 
 ```
 ┌─ KNOWLEDGE GRAPH ───────────────────────┐
@@ -4797,7 +4797,7 @@ Full knowledge entry graph with lineage (parent Engram) connections.
 - Force-directed graph layout rendered in braille characters (`roko-cli/src/tui/widgets/braille.rs`)
 - Nodes colored by knowledge type
 - Node size proportional to score
-- Edges represent lineage (parent Engram → child Engram)
+- Edges represent lineage (parent Signal → child Signal)
 - Clustering by HDC similarity
 - Click/select a cluster to zoom into detail
 
@@ -7345,7 +7345,7 @@ rust-impl ────·──•──◉──▸ reviewer
               (knowledge dot growing as it transfers)
 ```
 
-The dot grows from `·` to `•` to `◉` as the knowledge engram moves from the source agent's Neuro store to the target's.
+The dot grows from `·` to `•` to `◉` as the knowledge signal moves from the source agent's Neuro store to the target's.
 
 ### Collective Knowledge Heat Map
 
@@ -8102,7 +8102,7 @@ The canonical verb set for the onboarding surfaces is:
 - `plan` for a proposal without execution
 - `do` for execution
 - `watch` for progress
-- `inspect` for episodes, Engrams, and heuristics
+- `inspect` for episodes, Signals, and heuristics
 - `replay` for rerunning a prior session or episode
 - `learn` for heuristic and playbook curation
 - `tune` for configuration changes
@@ -8506,7 +8506,7 @@ The first task exercises every critical path:
 | COMPOSE | Composer builds prompt under budget | Context engineering is functional |
 | ACT | LLM produces output | Model routing is connected |
 | VERIFY | Gate pipeline runs | Gates are configured |
-| PERSIST | Output stored as Engram | Substrate write is working |
+| PERSIST | Output stored as Signal | Substrate write is working |
 | BROADCAST | Bus publishes progress pulses | Live progress is visible on every surface |
 | REACT | Policy emits learning events | Learning loop is connected |
 
@@ -9063,9 +9063,9 @@ The UI renderer will display these as formatted components.
 Available colors: primary, success, warning, danger, info, muted, accent, highlight.
 ```
 
-### A2UI as Engram
+### A2UI as Signal
 
-A2UI components emitted by agents are stored as Engrams with `kind: Kind::UiComponent`. This allows:
+A2UI components emitted by agents are stored as Signals with `kind: Kind::UiComponent`. This allows:
 - **Replay**: Reviewing past agent output with A2UI components intact
 - **Lineage**: Tracing which agent produced which UI element
 - **Learning**: Analyzing which A2UI components correlate with task success
@@ -9282,7 +9282,7 @@ mod tests {
 
 **Built:**
 - Agent output streaming (text mode)
-- Engram storage for agent output
+- Signal storage for agent output
 - ROSEDUST theme system (TUI and planned CSS)
 - Braille chart rendering widget
 
@@ -9294,7 +9294,7 @@ mod tests {
 - A2UI → CLI text renderer
 - Agent system prompt A2UI documentation
 - Sandboxing and validation
-- A2UI as Engram kind
+- A2UI as Signal kind
 - Component library (table, chart, progress, status, code, callout, tree, kv, diagram, form, markdown)
 
 ---
@@ -10374,7 +10374,7 @@ All seven innovations inherit these principles from the existing interface archi
 2. **Progressive disclosure**: Overview first, detail on demand. Every innovation has a 200ms-glance summary and a minutes-of-study detail mode.
 3. **TUI-primary**: The terminal is the primary development interface. Web Portal versions exist as complements, never replacements.
 4. **Data-grounded**: Every visual element traces to a data source (Tufte's data-ink ratio principle). If it can't be grounded, it doesn't render.
-5. **Engram-native**: Every interaction produces Engrams. Conversations, debug sessions, dream reviews, plan edits — all persisted as content-addressed signals.
+5. **Signal-native**: Every interaction produces Signals. Conversations, debug sessions, dream reviews, plan edits — all persisted as content-addressed signals.
 6. **Keyboard-first**: All interactions accessible via keyboard. Mouse is optional.
 
 ---
@@ -10613,7 +10613,7 @@ impl Default for ConversationalConfig {
 | `ConversationalSession.phase == Researching` | `roko research enhance-prd` | Auto-triggered if `auto_research` |
 | `ConversationalSession.phase == Planning` | `roko prd plan <slug>` | Plan generation |
 | `ConversationalSession.phase == Executing` | `roko plan run` | PlanRunner with live feedback |
-| `OperatorDecision` | `ConversationalSession.decisions` | Persisted as Engrams |
+| `OperatorDecision` | `ConversationalSession.decisions` | Persisted as Signals |
 | `ConversationTurn` | `.roko/conversations/<id>.jsonl` | Append-only session log |
 
 ### Test Criteria
@@ -12694,14 +12694,14 @@ mod tests {
 
 All seven innovations share these infrastructure components:
 
-### Engram Persistence
+### Signal Persistence
 
-Every innovation produces Engrams:
-- `ConversationTurn` → Engram with `kind: ConversationTurn`
-- `TimelineEntry` → Engram with `kind: DebugTrace`
-- `DreamJournalEntry` → Engram with `kind: DreamJournal`
-- `PlanEdit` → Engram with `kind: PlanEdit`
-- `KnowledgeNode` (position) → Engram with `kind: MapLayout`
+Every innovation produces Signals:
+- `ConversationTurn` → Signal with `kind: ConversationTurn`
+- `TimelineEntry` → Signal with `kind: DebugTrace`
+- `DreamJournalEntry` → Signal with `kind: DreamJournal`
+- `PlanEdit` → Signal with `kind: PlanEdit`
+- `KnowledgeNode` (position) → Signal with `kind: MapLayout`
 
 ### A2UI Integration
 
@@ -12793,7 +12793,7 @@ New color assignments for innovation-specific elements (within existing palette)
 > **Implementation**: Deferred target-state
 
 **Topic**: [12-interfaces](./INDEX.md)
-**Prerequisites**: [00-architecture](../00-architecture/INDEX.md) for Engram, Pulse, Substrate, and Bus; [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md) for shared vocabulary
+**Prerequisites**: [00-architecture](../00-architecture/INDEX.md) for Signal, Pulse, Substrate, and Bus; [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md) for shared vocabulary
 **Key source**: [tmp/refinements/22-developer-ux-rust.md](../../tmp/refinements/22-developer-ux-rust.md)
 
 > **Implementation status**: The 6 kernel traits in `crates/roko-core/src/traits.rs` are the current extension surface. No `roko::run()` one-liner, `Agent::builder()`, proc macros, or `cargo roko` plugin exist. This chapter describes a **deferred** SDK surface for future external users. Near-term useful work: better public error types, `#[warn(missing_docs)]`, and a small set of runnable examples.
@@ -13839,7 +13839,7 @@ The target-state verb set is:
 | `plan` | Propose a plan without executing it | Step list, scope, risks, and checkpoints |
 | `do` | Execute a plan or single task | Live progress, tool calls, and final result |
 | `watch` | Observe active work in real time | Streaming status, gate feedback, and banners |
-| `inspect` | Drill into an episode, Engram, or heuristic | Full context, citations, and provenance |
+| `inspect` | Drill into an episode, Signal, or heuristic | Full context, citations, and provenance |
 | `replay` | Re-run a prior episode with the same or modified inputs | Replay controls, diffs, and comparison view |
 | `learn` | Browse, curate, or challenge heuristics and playbooks | Heuristic library, calibration history, and review actions |
 | `tune` | Change configuration, thresholds, routing, or defaults | Settings editor or config wizard |
@@ -14061,7 +14061,7 @@ Today, `StateHub` is a shared dashboard hub that sits between the runtime event 
 The important boundary is simple:
 
 - The **Bus** carries live Pulses.
-- The **Substrate** holds durable Engrams.
+- The **Substrate** holds durable Signals.
 - **StateHub** turns both into live projections that can be queried, streamed, replayed, restored, and used as the source of truth for rich UI primitives.
 
 That makes StateHub the right abstraction for TUI panes, Web pages, dashboards, audit views, and analytics clients. It is not a rendering layer and not a transport layer. It is the shared state contract those layers consume, including the data needed for reasoning streams, tool banners, heuristic footnotes, uncertainty bars, replay scrubbers, and alternative renderings.
@@ -14089,7 +14089,7 @@ pub trait Projection: Send + Sync + 'static {
 
 The contract is intentionally narrow:
 
-- `hydrate()` builds the initial state from historical Engrams and recent Pulses.
+- `hydrate()` builds the initial state from historical Signals and recent Pulses.
 - `reduce()` converts incoming Pulses into a typed Delta.
 - `apply()` folds a Delta into the current State.
 - `topics()` declares which Bus Topics matter for the projection.
@@ -14160,7 +14160,7 @@ Subscriptions need to be narrower than "everything." StateHub should accept serv
 | `tenant` | only that tenant's state |
 | `role` | only the views permitted for that role |
 | `user` | only one principal's sessions or artifacts |
-| `lineage` | only one Engram or episode chain |
+| `lineage` | only one Signal or episode chain |
 | `topic` | only the matching Bus Topics |
 | `agent` | only one agent trail or consensus participant |
 | `episode` | only one episode's replay data |
@@ -14210,7 +14210,7 @@ Access control belongs in the projection layer because the projection itself def
 
 StateHub needs a durable lifecycle so projection state can be inspected and recovered.
 
-- `snapshot()` should write the current State to an Engram.
+- `snapshot()` should write the current State to an Signal.
 - `restore()` should rebuild the projection from that snapshot and then catch up from the Bus.
 - `replay()` should reconstruct state over a historical cursor range.
 - `replay_cursors` should expose the seek points and window bounds that make the scrubber deterministic.
@@ -14384,7 +14384,7 @@ This is the always-available version of `/explain`. It complements progressive d
 
 ### 5.2 Annotation As A Durable Feedback Primitive
 
-Annotations should be first-class Engrams attached to episodes, heuristics, plans, diffs, and replay moments. The important UX rule is unification: correction, confirmation, follow-up, and questions all use one durable annotation object instead of ad hoc thumbs-up/down widgets spread across surfaces.
+Annotations should be first-class Signals attached to episodes, heuristics, plans, diffs, and replay moments. The important UX rule is unification: correction, confirmation, follow-up, and questions all use one durable annotation object instead of ad hoc thumbs-up/down widgets spread across surfaces.
 
 That matters because annotations are not just comments:
 
@@ -14557,7 +14557,7 @@ This topic builds on:
 
 | Topic | What it provides |
 |---|---|
-| [01-core](../00-architecture/INDEX.md) | Engram data model, Synapse traits |
+| [01-core](../00-architecture/INDEX.md) | Engram (renamed to Signal in 2026-08-12) data model, Synapse traits |
 | [03-scaffold](../01-orchestration/INDEX.md) | Context engineering, prompt assembly |
 | [04-harness](../04-verification/INDEX.md) | Gate pipeline (displayed in TUI) |
 | [05-orchestration](../01-orchestration/INDEX.md) | Plan DAG (displayed in TUI, Portal) |
@@ -14610,7 +14610,7 @@ This topic was generated from:
 - `bardo-backup/prd/shared/` (branding, port allocation)
 - Active code: `roko-cli/src/tui/`, `roko-serve/src/routes/`, `roko-cli/src/main.rs`
 
-All naming follows the authoritative naming map. Legacy/renamed terms include bardo→Roko, golem→agent, grimoire→Neuro, Signal→Engram, clade→collective/mesh, and mori→Roko Orchestrator. Legacy lifecycle and death framing has been removed per the reframe rules. Sonification presets have been remapped from lifecycle phases to behavioral states.
+All naming follows the authoritative naming map. Legacy/renamed terms include bardo→Roko, golem→agent, grimoire→Neuro, Signal→Signal, clade→collective/mesh, and mori→Roko Orchestrator. Legacy lifecycle and death framing has been removed per the reframe rules. Sonification presets have been remapped from lifecycle phases to behavioral states.
 REF17 adds the interface-side plugin surface; start with [00-cli-overview.md](./00-cli-overview.md),
 [01-cli-command-reference.md](./01-cli-command-reference.md), and
 [tmp/refinements/17-plugin-extension-architecture.md](../../tmp/refinements/17-plugin-extension-architecture.md).
@@ -14665,10 +14665,10 @@ REF30 adds the shared rich UX primitive vocabulary; start with
 > **Layer**: L4 Orchestration (coordination mechanisms), with cross-cuts into L0 Runtime (event
 > persistence) and L1 Framework (transport)
 >
-> **Synapse traits**: `Substrate` (store pheromone Engrams), `Scorer` (rate pheromone intensity),
-> `Policy` (observe pheromone streams, emit reactive Engrams)
+> **Synapse traits**: `Substrate` (store pheromone Signals), `Scorer` (rate pheromone intensity),
+> `Policy` (observe pheromone streams, emit reactive Signals)
 >
-> **Prerequisites**: `13-coordination/INDEX.md` (overview), familiarity with the Engram struct
+> **Prerequisites**: `13-coordination/INDEX.md` (overview), familiarity with the Signal struct
 > (Roko's content-addressed, scored, decaying unit of cognition)
 
 
@@ -14713,8 +14713,8 @@ Stigmergy." *Artificial Life*, 5(2):97-116, 1999]:
 | Condition | Description | Roko Equivalent |
 |-----------|-------------|-----------------|
 | **Shared environment** | All agents can read from and write to a common medium | NeuroStore (local Substrate), Agent Mesh (peer network), Korai chain (global ledger) |
-| **Persistent modifications** | Agent actions leave traces that outlast the agent's presence | Engrams with configurable decay rates (2h–∞) |
-| **Stimulus-response coupling** | Traces in the environment trigger specific behaviors in agents that encounter them | `Policy` trait implementations that react to scored Engrams |
+| **Persistent modifications** | Agent actions leave traces that outlast the agent's presence | Signals with configurable decay rates (2h–∞) |
+| **Stimulus-response coupling** | Traces in the environment trigger specific behaviors in agents that encounter them | `Policy` trait implementations that react to scored Signals |
 
 When all three conditions are met, coordination emerges without any agent needing a global view,
 without any central coordinator, and without agents needing to know about each other's existence.
@@ -14759,7 +14759,7 @@ urgency, type, confidence, and decay over time. Ant trail pheromones are the can
 a foraging ant that finds food deposits a trail pheromone on its return path, and the
 pheromone's concentration encodes the quality and proximity of the food source.
 
-**In Roko**: Digital pheromones — typed Engrams with explicit `kind`, `intensity`, `scope`, and
+**In Roko**: Digital pheromones — typed Signals with explicit `kind`, `intensity`, `scope`, and
 exponential decay profiles — implement marker-based stigmergy. When an agent detects a threat
 (e.g., a failing test suite, an anomalous metric, a security vulnerability), it deposits a
 `Threat` pheromone that other agents can sense and react to. The pheromone decays over time
@@ -14832,7 +14832,7 @@ cognitive architecture:
 |----------------|---------------|----------------|
 | T0 (System-1, fast) | ~15 seconds | Sense ambient pheromones, react to high-intensity signals |
 | T1 (System-2, deliberate) | ~60 seconds | Analyze pheromone patterns, deposit new observations |
-| T2 (Reflective) | ~5 minutes | Consolidate pheromone history, emit Wisdom Engrams |
+| T2 (Reflective) | ~5 minutes | Consolidate pheromone history, emit Wisdom Signals |
 
 An agent running at T0 speed can sense pheromones deposited by a T2 agent hours earlier. The
 decoupling of production and consumption in time is a fundamental advantage over synchronous
@@ -14842,8 +14842,8 @@ communication protocols.
 
 Each agent only needs to implement two operations:
 
-1. **Deposit**: Write an Engram to the Substrate with a pheromone kind and intensity.
-2. **Sense**: Query the Substrate for nearby Engrams above a threshold intensity.
+1. **Deposit**: Write an Signal to the Substrate with a pheromone kind and intensity.
+2. **Sense**: Query the Substrate for nearby Signals above a threshold intensity.
 
 The agent does not need to know how many other agents exist, what strategies they follow, or
 whether they are online. This dramatically reduces the complexity of individual agents while
@@ -14852,7 +14852,7 @@ enabling sophisticated collective behavior.
 In terms of the Synapse Architecture, deposit maps to the `Substrate::store()` trait method,
 and sense maps to `Substrate::query()` followed by `Scorer::score()` to rank the sensed
 pheromones by relevance. The `Policy` trait then observes the scored pheromone stream and
-decides whether to emit a reactive Engram (closing the stigmergic loop).
+decides whether to emit a reactive Signal (closing the stigmergic loop).
 
 ---
 
@@ -14892,7 +14892,7 @@ Key properties identified by Parunak:
 
 | Property | Biological | Digital (Roko) |
 |----------|-----------|----------------|
-| Deposition | Chemical secretion | `Substrate::store(Engram { kind: PheromoneKind::Threat, ... })` |
+| Deposition | Chemical secretion | `Substrate::store(Signal { kind: PheromoneKind::Threat, ... })` |
 | Diffusion | Brownian motion through medium | Mesh gossip propagation (see `06-agent-mesh-sync.md`) |
 | Evaporation | Chemical degradation | Exponential decay: `intensity(t) = base × e^(-0.693 × elapsed / τ)` |
 | Sensing | Chemoreceptors | `Substrate::query()` with pheromone kind filter |
@@ -14925,7 +14925,7 @@ coordination primitive rather than an afterthought.
 
 | Layer | Stigmergic Component | Implementation |
 |-------|---------------------|----------------|
-| L0 Runtime | Engram persistence, decay timers, event emission | `roko-fs` (FileSubstrate JSONL), adaptive clock |
+| L0 Runtime | Signal persistence, decay timers, event emission | `roko-fs` (FileSubstrate JSONL), adaptive clock |
 | L1 Framework | Pheromone type system, transport backends | `PheromoneKind` enum, `PheromoneScope` enum, WebSocket/Iroh/ERC-8004 |
 | L2 Scaffold | Pheromone-enriched context assembly | Context composer includes ambient pheromone summary |
 | L3 Harness | Pheromone-based gate thresholds | Threat pheromone concentration adjusts gate strictness |
@@ -14952,7 +14952,7 @@ Agent B acts in response → deposits its own pheromone Engram
 ```
 
 This loop is isomorphic to Roko's universal cognitive loop (query → score → route → compose →
-act → verify → write → react), with pheromone Engrams serving as the coordination substrate.
+act → verify → write → react), with pheromone Signals serving as the coordination substrate.
 
 ### Three Knowledge Scopes as Stigmergic Layers
 
@@ -15034,7 +15034,7 @@ The theoretical foundations of stigmergy draw from multiple disciplines:
 - [Lamport, L. "Time, Clocks, and the Ordering of Events in a Distributed System." *CACM*,
   21(7), 1978] — Foundation for version vectors used in pheromone deduplication across transports
 - [Fidge, C.J. "Timestamps in Message-Passing Systems." *ACSC*, 10(1), 1988] — Vector clock
-  formalization applied to Engram sequence tracking
+  formalization applied to Signal sequence tracking
 
 ---
 
@@ -15270,7 +15270,7 @@ scope model (`05-pheromone-scope.md`), and transport layer (`06-agent-mesh-sync.
 
 - `01-stigmergy-beyond-termites.md` — Stigmergy in non-biological systems
 - `02-git-as-stigmergy.md` — Version control as a stigmergic environment
-- `03-digital-pheromones.md` — Roko's typed pheromone Engram system
+- `03-digital-pheromones.md` — Roko's typed pheromone Signal system
 - `07-morphogenetic-specialization.md` — Turing reaction-diffusion for role emergence
 - `10-exponential-flywheel.md` — How stigmergy enables superlinear scaling
 
@@ -15304,7 +15304,7 @@ adopts it as a **universal coordination primitive** rather than a domain-specifi
 The key insight: **any system where work products guide future work is stigmergic.** This
 includes open-source development, scientific publishing, market price formation, urban
 planning, and neural computation. Roko generalizes these patterns into a single framework of
-typed, decaying, scoped Engrams (digital pheromones) that work identically regardless of the
+typed, decaying, scoped Signals (digital pheromones) that work identically regardless of the
 domain.
 
 ---
@@ -15397,7 +15397,7 @@ Behaviour with Rule-Based Simulations and Genetic Algorithms." *Journal of Theor
 Biology*, 185(3):321-331, 1997].
 
 **Roko parallel**: The dual nature of Roko's stigmergic system — sematectonic (code structure
-guides agents) and marker-based (explicit pheromone Engrams) — mirrors the spider's dual
+guides agents) and marker-based (explicit pheromone Signals) — mirrors the spider's dual
 signaling strategy.
 
 ---
@@ -15419,7 +15419,7 @@ Elliott identified four properties that make Wikipedia stigmergic:
 | Property | Wikipedia | Roko |
 |----------|-----------|------|
 | **Openness** | Anyone can edit | Any agent can deposit pheromones within its scope |
-| **Persistence** | Edits persist in revision history | Engrams persist with configurable decay |
+| **Persistence** | Edits persist in revision history | Signals persist with configurable decay |
 | **Self-selection** | Editors choose what to work on based on article state | Agents select tasks based on pheromone gradients |
 | **Emergence** | Encyclopedia quality emerges without top-down editorial control | Collective intelligence emerges without centralized coordination |
 
@@ -15442,7 +15442,7 @@ planner deciding what research should be done.
 **Roko parallel**: Wisdom pheromones (24-hour half-life) that encode validated insights.
 Citation-like reinforcement through the confirmation mechanism. Anti-pheromones through
 contradicting deposits (a `Threat` pheromone deposited against a previously trusted `Wisdom`
-Engram).
+Signal).
 
 ### Urban Development as Stigmergy (Heylighen 2016)
 
@@ -15546,7 +15546,7 @@ the environment (the codebase) by past development activity that triggers a spec
 | Dead code | `Anomaly` (staleness signal) | Delete unused code |
 | Missing tests | `Opportunity` (coverage gap) | Write tests |
 
-In Roko, a coding agent can explicitly deposit `Pattern` pheromone Engrams when it detects
+In Roko, a coding agent can explicitly deposit `Pattern` pheromone Signals when it detects
 code smells, making the stigmergic signaling explicit and typed rather than implicit and
 subjective.
 
@@ -15685,7 +15685,7 @@ The examples in this sub-doc demonstrate a universal pattern:
 
 Roko's contribution is to make this pattern **explicit, typed, and programmable** through the
 Synapse Architecture. Instead of relying on implicit stigmergy (code structure happens to guide
-agents), Roko adds explicit stigmergy (typed pheromone Engrams with controlled decay,
+agents), Roko adds explicit stigmergy (typed pheromone Signals with controlled decay,
 confirmation, and scoping) on top. Both forms coexist and reinforce each other.
 
 The next sub-doc (`02-git-as-stigmergy.md`) examines the most important stigmergic environment
@@ -15883,7 +15883,7 @@ the shared environment that encode information about code quality:
 | Build failure | `Threat` — "broken build" | Very High |
 
 In Roko's gate pipeline (`roko-gate` crate), these CI results are explicitly converted into
-scored Engrams that enter the stigmergic loop. A `Threat` Engram from a failing test triggers
+scored Signals that enter the stigmergic loop. A `Threat` Signal from a failing test triggers
 remediation behavior in subsequent agents.
 
 ### Git Blame as Historical Pheromone Map
@@ -15994,12 +15994,12 @@ deposited during development:
 | Trace Type | Mechanism | Example | Half-Life |
 |-----------|-----------|---------|-----------|
 | **Test coverage** | Tests written by one agent guide other agents' confidence | `#[test] fn scorer_handles_empty_input()` | Permanent (sematectonic) |
-| **Documentation** | Doc comments signal intent and usage | `/// Scores an Engram using LinUCB contextual bandit` | Permanent (sematectonic) |
-| **Type signatures** | Types constrain and guide usage | `fn score(&self, engram: &Engram) -> Result<Score>` | Permanent (sematectonic) |
+| **Documentation** | Doc comments signal intent and usage | `/// Scores an Signal using LinUCB contextual bandit` | Permanent (sematectonic) |
+| **Type signatures** | Types constrain and guide usage | `fn score(&self, signal: &Signal) -> Result<Score>` | Permanent (sematectonic) |
 | **Error types** | Error variants document failure modes | `enum ScoringError { InvalidInput, ModelNotReady }` | Permanent (sematectonic) |
 | **Feature flags** | Flags signal optional capabilities | `#[cfg(feature = "mesh-sync")]` | Permanent (sematectonic) |
 | **Commit messages** | Trail markers in the version history | `fix(gate): Handle NaN scores in threshold comparison` | Permanent (marker) |
-| **Pheromone Engrams** | Explicit typed signals in NeuroStore | `PheromoneKind::Pattern` with intensity and decay | Configurable (marker) |
+| **Pheromone Signals** | Explicit typed signals in NeuroStore | `PheromoneKind::Pattern` with intensity and decay | Configurable (marker) |
 
 ### The Coding Agent's Stigmergic Behavior
 
@@ -16010,7 +16010,7 @@ When a Roko coding agent works on a task, it naturally operates as a stigmergic 
 2. **Act**: Modify code, write tests, add documentation — all modifications to the shared
    environment
 3. **Deposit**: Commit changes with descriptive messages; optionally deposit explicit
-   pheromone Engrams (e.g., `PheromoneKind::Pattern` noting "this module has been heavily
+   pheromone Signals (e.g., `PheromoneKind::Pattern` noting "this module has been heavily
    refactored, downstream consumers should verify compatibility")
 4. **Signal**: Push the branch, triggering CI (which produces environmental feedback signals)
 
@@ -16022,18 +16022,18 @@ and be guided by them — without any direct communication between the two agent
 ## Git as Roko's Primary Substrate
 
 In the Synapse Architecture, Git functions as a specialized `Substrate` implementation. While
-`roko-fs` provides the `FileSubstrate` for Engram persistence (JSONL files), Git provides a
+`roko-fs` provides the `FileSubstrate` for Signal persistence (JSONL files), Git provides a
 higher-level Substrate for code artifacts:
 
 | Substrate Operation | Git Implementation |
 |--------------------|-------------------|
-| `store(engram)` | `git add` + `git commit` (deposit a code modification) |
+| `store(signal)` | `git add` + `git commit` (deposit a code modification) |
 | `query(filter)` | `git log`, `git diff`, `git blame` (sense the environment) |
 | `get(hash)` | `git show <hash>` (retrieve a specific modification) |
 | `gc()` | `git gc` (compact the object store, prune unreachable objects) |
 
 The content-addressing property of Git (every object is identified by its SHA-1/SHA-256 hash)
-aligns with Engram's content-addressing property (`hash: [u8; 32]`). Both systems provide
+aligns with Signal's content-addressing property (`hash: [u8; 32]`). Both systems provide
 tamper-evident, immutable records of modifications to the shared environment.
 
 ---
@@ -16108,12 +16108,12 @@ Complex coordinated behavior emerged from simple local interactions with the sha
 
 # SOURCE: /Users/will/dev/nunchi/roko/roko/docs/13-coordination/03-digital-pheromones.md
 
-# Digital Pheromones: Typed Engrams with Decay Profiles
+# Digital Pheromones: Typed Signals with Decay Profiles
 
 > **Layer**: L0 Runtime (Substrate persistence and decay timers), L1 Framework (Bus
 > publication and type system), L2 Scaffold (context assembly enrichment)
 >
-> **Synapse traits**: `Substrate` (store pheromone Engrams), `Bus` (announce Pulses),
+> **Synapse traits**: `Substrate` (store pheromone Signals), `Bus` (announce Pulses),
 > `Scorer` (rate pheromone intensity and relevance), `Router` (select highest-priority
 > Pulse), `Policy` (react to pheromone streams)
 >
@@ -16131,7 +16131,7 @@ Complex coordinated behavior emerged from simple local interactions with the sha
 ## What Are Digital Pheromones?
 
 Digital pheromones are software analogs of the chemical pheromones used by social insects for
-indirect coordination. In Roko, a digital pheromone is a typed Engram that lives in a shared
+indirect coordination. In Roko, a digital pheromone is a typed Signal that lives in a shared
 Substrate and is announced as a Pulse on the Bus. The same coordination fact therefore has two
 faces in the two-fabric model: durable storage and ephemeral announcement.
 
@@ -16154,9 +16154,9 @@ Roko extends Parunak's framework with three additions:
 
 ---
 
-## Engram-First Pheromone View
+## Signal-First Pheromone View
 
-The primary durable object is still an `Engram`. The `Pheromone` struct below is an implementation-facing view over that Engram's tags and body when the system wants typed ergonomics. Storage stays Engram-first; live notification stays Pulse-first.
+The primary durable object is still an `Signal`. The `Pheromone` struct below is an implementation-facing view over that Signal's tags and body when the system wants typed ergonomics. Storage stays Signal-first; live notification stays Pulse-first.
 
 ```rust
 /// A digital pheromone — a typed Engram carrying coordination information.
@@ -16215,10 +16215,10 @@ pub struct Pheromone {
 }
 ```
 
-### Relationship to the Engram Type
+### Relationship to the Signal Type
 
-A `Pheromone` is a specialized view of the `Engram` type — Roko's universal unit of cognition.
-The durable record is the Engram; the typed pheromone view is how coordination code interprets
+A `Pheromone` is a specialized view of the `Signal` type — Roko's universal unit of cognition.
+The durable record is the Signal; the typed pheromone view is how coordination code interprets
 that record, while `mesh.pheromone.deposited` on `MeshBus` is the live announcement that a new
 deposit landed. The relationship is:
 
@@ -16233,7 +16233,7 @@ Engram {
 }
 ```
 
-The Engram's `tags` field carries metadata that the `Substrate::query()` method can filter on:
+The Signal's `tags` field carries metadata that the `Substrate::query()` method can filter on:
 
 | Tag Key | Example Value | Purpose |
 |---------|--------------|---------|
@@ -16378,7 +16378,7 @@ System." *J. Bacteriology*, 104(1):313-322, 1970]. In quorum sensing:
 
 In Roko's pheromone system:
 
-- Individual agents deposit pheromone Engrams into the Substrate.
+- Individual agents deposit pheromone Signals into the Substrate.
 - When the confirmation count exceeds a threshold, the pheromone's effective half-life extends
   significantly, making it a durable coordination signal.
 - The threshold ensures that only collectively validated signals persist long enough to
@@ -16430,7 +16430,7 @@ specification [Hölldobler, B. & Wilson, E.O. *The Superorganism*. W.W. Norton, 
 
 | Operation | Description | Synapse Trait |
 |-----------|-------------|---------------|
-| **Deposition** | Agent deposits a new pheromone Engram | `Substrate::store()` |
+| **Deposition** | Agent deposits a new pheromone Signal | `Substrate::store()` |
 | **Sensing** | Agent queries for pheromones above a threshold | `Substrate::query()` + `Scorer::score()` |
 | **Reinforcement** | Agent confirms an existing pheromone | Specialized `Substrate::store()` with proximity matching |
 | **Evaporation** | Pheromone intensity decreases over time | Computed on-read via `pheromone_decay()` |
@@ -16527,7 +16527,7 @@ The complete lifecycle of a digital pheromone in Roko:
 ### 1. Creation
 
 An agent detects a condition worth signaling (a bug, an opportunity, an insight) and deposits
-a pheromone Engram:
+a pheromone Signal:
 
 ```rust
 let pheromone = Pheromone {
@@ -16546,7 +16546,7 @@ substrate.store(pheromone.into_engram())?;
 Based on the `scope`, the pheromone is announced on the Bus:
 
 - `Local`: Stays in the agent's own NeuroStore. No propagation.
-- `Mesh`: Published as `mesh.pheromone.deposited` and routed by `MeshBus` to the Collective while the durable Engram remains queryable in shared Substrate.
+- `Mesh`: Published as `mesh.pheromone.deposited` and routed by `MeshBus` to the Collective while the durable Signal remains queryable in shared Substrate.
 - `Global`: Replicated to the Korai chain for all agents worldwide, with durable state on `ChainSubstrate` and chain-side announcements available via `ChainBus`.
 
 ### 3. Sensing
@@ -16590,14 +16590,14 @@ After acting, the agent may deposit its own pheromone:
 - **Contradict**: "I investigated this threat and it's a false positive" → deposit a counter-
   pheromone (same kind, negative tag) that weakens the original signal
 - **Extend**: "I found additional context about this threat" → deposit a new pheromone with
-  the original as a parent (lineage tracking via `parents` field in Engram)
+  the original as a parent (lineage tracking via `parents` field in Signal)
 
 ### 7. Decay and Garbage Collection
 
 Over time, the pheromone's intensity decays toward zero. When it drops below the sensing
 threshold (default 0.01), it becomes invisible to other agents. When it drops below the GC
 threshold (default 0.001), it is eligible for garbage collection by the `Substrate`
-implementation. The Bus announcement remains ephemeral; only the Engram persists.
+implementation. The Bus announcement remains ephemeral; only the Signal persists.
 
 ---
 
@@ -17169,7 +17169,7 @@ pheromone that guides worker ants toward a rich food source.
 | Confirmation threshold | 1 (opportunities confirmed by 1+ agents are validated) |
 | Competition | Multiple agents may respond to the same opportunity; first to act claims it |
 
-**Opportunity types** (encoded in Engram tags, not in the enum):
+**Opportunity types** (encoded in Signal tags, not in the enum):
 
 | Tag Value | Description | Domain Example |
 |-----------|-------------|----------------|
@@ -17190,7 +17190,7 @@ and confirmed through operational experience.
 | Default initial intensity | 0.9 |
 | Typical agent response | Integrate into local knowledge base, apply to current work |
 | Confirmation threshold | 3 (wisdom requires strong collective validation) |
-| Promotion | Wisdom pheromones with 5+ confirmations may be promoted to permanent Engrams |
+| Promotion | Wisdom pheromones with 5+ confirmations may be promoted to permanent Signals |
 
 **Wisdom creation pathway**: Wisdom pheromones are typically not deposited directly. They emerge
 through a pipeline:
@@ -17486,7 +17486,7 @@ The full promotion pipeline has three stages, each with explicit thresholds and 
 ```
 Pattern ──[3+ confirmations, age > 50% half-life]──> Wisdom
 Wisdom  ──[4+ confirmations]──────────────────────> Consensus
-Consensus ──[5+ confirmations]────────────────────> Permanent Engram (optional)
+Consensus ──[5+ confirmations]────────────────────> Permanent Signal (optional)
 ```
 
 **Who checks**: The `PheromonePromoter` runs as a background task inside the Curator cycle
@@ -17509,7 +17509,7 @@ pub struct PromotionConfig {
     /// Default: 4. Range: [3, 20].
     pub wisdom_to_consensus_confirmations: u32,
 
-    /// Minimum confirmations for Consensus → permanent Engram.
+    /// Minimum confirmations for Consensus → permanent Signal.
     /// Default: 5. Range: [4, 50].
     pub consensus_to_engram_confirmations: u32,
 
@@ -20780,7 +20780,7 @@ Subnet-scope pheromone (private)
     ↓ [Publishing gate: minimum confirmations + human approval]
 Mesh-scope pheromone (Collective-wide)
     ↓ [Promotion gate: consensus + reputation]
-Global-scope Engram (public)
+Global-scope Signal (public)
 ```
 
 Each transition is controlled by a gate:
@@ -22578,9 +22578,9 @@ Each heartbeat tick used to be described as a 9-step pipeline. That framing is r
 3. COMPOSE        — Assemble the prompt/context under budget
 4. ACT            — LLM, tool, or chain action
 5. VERIFY         — Gate pipeline + stream-gates
-6. PERSIST        — Store Engrams in Substrate
+6. PERSIST        — Store Signals in Substrate
    BROADCAST      — Publish Pulses on the Bus
-7. REACT          — Policy.decide, emit follow-on Pulses + Engrams
+7. REACT          — Policy.decide, emit follow-on Pulses + Signals
 ```
 
 The older 9-step list in this chapter was a CoALA-adjacent way to explain the same runtime, but it hid the Bus, split scoring from routing too aggressively, and treated cross-cuts as sequential. The seven-step version matches the canonical architecture and keeps the transport fabric visible.
@@ -25800,16 +25800,16 @@ The T1 context is assembled by the `Composer` using a fixed-structure template (
 **Top-5 Neuro entry selection.** The `PredictiveScorer` (see [10-active-inference-compute-allocation.md](./10-active-inference-compute-allocation.md)) scores all candidate Engrams and returns the top 5. The scorer computes `salience = pragmatic_weight * utility + epistemic_value - cost_penalty` for each entry and sorts descending. Ties are broken by recency (more recent wins).
 
 ```rust
-/// Select top-k Engrams for T1 context.
+/// Select top-k Signals for T1 context.
 ///
 /// Uses PredictiveScorer for ranking. Falls back to recency
 /// if the scorer returns fewer than k candidates.
 fn select_t1_engrams(
-    candidates: &[Engram],
+    candidates: &[Signal],
     scorer: &PredictiveScorer,
     ctx: &Context,
     k: usize,  // default: 5
-) -> Vec<Engram> {
+) -> Vec<Signal> {
     let mut scored: Vec<(usize, f32)> = candidates.iter()
         .enumerate()
         .map(|(i, e)| {
@@ -26992,9 +26992,9 @@ Entries with high expected utility gain (they help the agent achieve its goal) a
 This produces a principled alternative to top-k retrieval or manual priority ordering. The `PredictiveScorer` now lives in `roko-core` and is wired into `roko-cli` prompt-section ranking; broader subsystem adoption remains in progress. It computes this EFE approximation for each candidate Engram:
 
 ```rust
-/// Scores Engrams using an active inference EFE approximation.
+/// Scores Signals using an active inference EFE approximation.
 ///
-/// Each Engram is evaluated for:
+/// Each Signal is evaluated for:
 /// 1. Pragmatic value: how useful is this for achieving current goals?
 /// 2. Epistemic value: how much uncertainty does this resolve?
 /// 3. Token cost: how many tokens does this consume?
@@ -27008,9 +27008,9 @@ pub struct PredictiveScorer {
 }
 
 impl Scorer for PredictiveScorer {
-    fn score(&self, engram: &Engram, ctx: &Context) -> Score {
-        let pragmatic = self.compute_pragmatic_value(engram, ctx);
-        let epistemic = self.compute_epistemic_value(engram, ctx);
+    fn score(&self, signal: &Signal, ctx: &Context) -> Score {
+        let pragmatic = self.compute_pragmatic_value(signal, ctx);
+        let epistemic = self.compute_epistemic_value(signal, ctx);
         let cost_penalty = engram.estimated_tokens() as f32 / 1000.0 * 0.01;
 
         let effective = pragmatic * self.pragmatic_weight
@@ -27110,7 +27110,7 @@ pub enum EFETarget {
     Tier(InferenceTier),
     /// Model selection within a tier.
     Model(String),
-    /// Context entry (Engram) inclusion.
+    /// Context entry (Signal) inclusion.
     ContextEntry { engram_id: String },
 }
 
@@ -28096,11 +28096,11 @@ impl ContextGovernor {
         let allocations = run_attention_auction(&candidates, budget, pad);
 
         // Assemble via Composer
-        let engrams: Vec<Engram> = allocations.iter()
+        let signals: Vec<Signal> = allocations.iter()
             .map(|a| candidates[a.candidate_idx].to_engram(a.tokens_allocated))
             .collect();
 
-        composer.compose(&engrams, &Context::with_budget(budget))
+        composer.compose(&signals, &Context::with_budget(budget))
     }
 }
 ```

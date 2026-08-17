@@ -61,7 +61,7 @@ These concepts and names are kept as-is in the new architecture:
 - **CoALA** — 9-step cognitive cycle (maps into universal loop)
 - **HDC / VSA** — 10,240-bit BSC vectors, XOR bind, majority bundle, Hamming similarity, cyclic-shift permutation
 - **Stigmergy theory** — generalized beyond termites to git commits, code patterns, HDC pheromones
-- **Pheromone system** — typed Engrams with Threat/Opportunity/Wisdom + Alpha/Pattern/Anomaly/Consensus decay profiles
+- **Pheromone system** — typed Signals with Threat/Opportunity/Wisdom + Alpha/Pattern/Anomaly/Consensus decay profiles
 - **Sleepwalker** — reduced-capability sleep mode
 - **Oneirography / Hypnagogia** — dream journals, hypnagogia engine for Alpha Convergence
 - **ALMA** — three-layer temporal affect model (emotion/mood/personality)
@@ -71,7 +71,7 @@ These concepts and names are kept as-is in the new architecture:
 - **Portal** (interface concept, renamed Bardo Sanctum → Roko Portal)
 - **Testament** (repurposed: knowledge transfer between agents, not death inheritance)
 - **Library of Babel** (cross-collective knowledge)
-- **Lethe** (knowledge exchange — now P2P Engram sharing via Mesh)
+- **Lethe** (knowledge exchange — now P2P Signal sharing via Mesh)
 - **Venice dreaming**
 - **Xenocognition** (hypnagogia-related)
 - **Hauntology** (Derrida trace concept — grounds hypnagogia engine)
@@ -94,7 +94,7 @@ citations, and mechanisms are preserved; the narrative is updated.
 | **TUI 29 screens** | Full TUI with vitality dashboards | Full TUI with C-Factor dashboard, Neuro tier visualization, Spectre viewport |
 | **Signal decay (half-life)** | Memory management + mortality metaphor | Memory management only (Ebbinghaus, half-life, Ttl) |
 | **Epistemic decay** | Knowledge freshness → agent death clock | Knowledge freshness → knowledge tier demotion (NOT agent lifespan) |
-| **Knowledge demurrage** | Economic death + knowledge decay | Token-level decay on KORAI (mirrors Engram half-life) |
+| **Knowledge demurrage** | Economic death + knowledge decay | Token-level decay on KORAI (mirrors Signal half-life) |
 
 ## INTRODUCED (new concepts)
 
@@ -102,10 +102,10 @@ These concepts are new in the refactoring-prd and did not exist (or were unnamed
 the legacy docs.
 
 ### Core
-- **Engram** — content-addressed, scored, decaying, lineage-tracked unit of cognition. BLAKE3(kind+body+author+tags). Replaces "Signal" as architectural noun.
+- **Signal** — content-addressed, scored, decaying, lineage-tracked unit of cognition. BLAKE3(kind+body+author+tags). Replaces "Signal" as architectural noun.
 - **Synapse Architecture** — the 6-trait composition (Substrate/Scorer/Gate/Router/Composer/Policy) crystallized across 5 layers.
 - **7-axis Score** — confidence, novelty, utility, reputation (existing) + **precision, salience, coherence** (new).
-- **Attestation** — optional cryptographic proof on Engrams (Ed25519 signature + optional ChainAttestation).
+- **Attestation** — optional cryptographic proof on Signals (Ed25519 signature + optional ChainAttestation).
 
 ### Layers
 - **Five Layers**: L0 Runtime, L1 Framework, L2 Scaffold, L3 Harness, L4 Orchestration. Dependencies flow downward. Cross-cuts via trait objects.

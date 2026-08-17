@@ -5,7 +5,7 @@
 **Status**: Shipping  
 **Crate**: `roko-core`  
 **Depends on**: [Overview](00-overview.md)  
-**Used by**: [Engram Invariants](../../01-engram/12-invariants.md)  
+**Used by**: [Signal Invariants](../../01-engram/12-invariants.md)  
 **Last reviewed**: 2026-04-19
 
 ---
@@ -33,7 +33,7 @@ and corresponding tests, to serve as a single reference for audits and CI expans
 
 | # | Invariant | Enforcement |
 |---|---|---|
-| M1 | `author` is immutable after construction | No setter exposed on `Provenance`; updating author requires constructing a new Engram |
+| M1 | `author` is immutable after construction | No setter exposed on `Provenance`; updating author requires constructing a new Signal |
 | M2 | `trust` is monotonically escalatable only — never downgraded | `escalate_trust()` returns `Err` if `new_level ≤ current` |
 | M3 | `taint` is append-only — flags can be added, never removed | `add_taint()` only inserts; no `remove_taint()` method exists |
 
@@ -54,8 +54,8 @@ and corresponding tests, to serve as a single reference for audits and CI expans
 
 | # | Invariant | Enforcement |
 |---|---|---|
-| PR1 | Derived Engrams' `author` is the deriving agent — never inherited | Builder requires explicit `author` |
-| PR2 | Derived Engrams' `trust` starts at `LocalAgent` — never inherited | Builder defaults `trust` to `LocalAgent` |
+| PR1 | Derived Signals' `author` is the deriving agent — never inherited | Builder requires explicit `author` |
+| PR2 | Derived Signals' `trust` starts at `LocalAgent` — never inherited | Builder defaults `trust` to `LocalAgent` |
 | PR3 | Only `CompromisedAuthor` and `PossibleHallucination` propagate via `inherit_taint()` | `inherit_taint()` filters by match arm |
 | PR4 | If no propagating taint exists in parents, `inherit_taint()` returns `None` | Empty-collection check in `inherit_taint()` |
 
@@ -147,5 +147,5 @@ fn only_propagating_flags_inherited() {
 ## See Also
 
 - [`00-overview.md`](00-overview.md) — Provenance struct
-- [`../../01-engram/12-invariants.md`](../../01-engram/12-invariants.md) — Engram-level invariants
+- [`../../01-engram/12-invariants.md`](../../01-engram/12-invariants.md) — Signal-level invariants
 - [`08-api-reference.md`](08-api-reference.md) — API signatures

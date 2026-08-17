@@ -25,11 +25,11 @@ coded; this folder documents the target state.
 
 | Medium | Lifetime | Fabric | Status |
 |---|---|---|---|
-| `Engram` | Durable | `Substrate` | Shipping |
+| `Engram (renamed to Signal in 2026-08-12)` | Durable | `Substrate` | Shipping |
 | `Pulse` | Ephemeral | `Bus` (target) / `EventBus<E>` (today) | Specified / Shipping |
 
 A `Pulse` is a short-lived event — a trigger, a signal, a notification. It is not persisted
-by default (though it may be graduated to an `Engram` by the graduation pipeline; see
+by default (though it may be graduated to an `Signal` by the graduation pipeline; see
 [Pulse](../02-pulse/README.md)). Bus is the channel through which `Pulse`s flow between
 producers and consumers.
 

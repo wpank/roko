@@ -1,5 +1,7 @@
 # 06: End-to-End Integration
 
+> Last updated: 2026-08-13
+
 How all the pieces connect — startup sequence, configuration, demo flow, and the path from "no ISFR" to "rates flowing through the system." Chain-agnostic throughout; examples use mirage-rs as the default dev profile.
 
 ## Startup Sequence

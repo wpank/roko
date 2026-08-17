@@ -22,7 +22,7 @@ The refactoring-prd set (12 files):
 | # | File | Covers |
 |---|---|---|
 | 00 | `00-overview.md` | Synapse Architecture, naming map, crate map, C-Factor, recommended reading order |
-| 01 | `01-synapse-architecture.md` | Engram struct + 7-axis Score, 6 Synapse traits, cognitive loop, provenance/attestation, active inference, cybernetic loops, composability |
+| 01 | `01-synapse-architecture.md` | Engram (renamed to Signal in 2026-08-12) struct + 7-axis Score, 6 Synapse traits, cognitive loop, provenance/attestation, active inference, cybernetic loops, composability |
 | 02 | `02-five-layers.md` | L0 Runtime, L1 Framework, L2 Scaffold, L3 Harness, L4 Orchestration; trait×layer map; dependency rules; stigmergy |
 | 03 | `03-cognitive-subsystems.md` | Neuro (6 knowledge types, tiers, HDC), Daimon (PAD, somatic markers, behavioral states), Dreams (3-phase), Oracles, cybernetic self-learning, VSM mapping |
 | 04 | `04-knowledge-and-mesh.md` | Korai chain, HDC on-chain precompile, KORAI/DAEJI tokenomics (demurrage), agent mesh (WS/Iroh), ERC-8004, stigmergy, C-Factor |
@@ -57,9 +57,9 @@ table, this table wins.
 | `bardo-primitives` | **`roko-primitives`** | HDC vectors, shared types |
 | `bardo-runtime` | **`roko-runtime`** | Event bus, process supervision, adaptive clock |
 | `roko-golem` | **Dissolved** | Subsystems redistributed: Daimon→`roko-daimon`, Dreams+Hypnagogia→`roko-dreams`, Grimoire→`roko-neuro`, ChainWitness→`roko-chain`, Mortality→removed |
-| `Signal` (architecture noun) | **`Engram`** | Core data type. The existing Rust type is still named `Signal` in code — rename is Tier 0D |
+| `Signal` (architecture noun) | **`Signal`** | Core data type. The existing Rust type is still named `Signal` in code — rename is Tier 0D |
 | `SignalBuilder` | `EngramBuilder` | |
-| `signal.rs` | `engram.rs` | |
+| `signal.rs` | `__PATH_ENGRAM_RS__0` | |
 | "1 noun, 6 verbs" | **Synapse Architecture** | Architecture branding |
 | Bardo Sanctum | **Roko Portal** | Web dashboard |
 | bardo-terminal | **Roko TUI** | Terminal dashboard |
@@ -92,7 +92,7 @@ table, this table wins.
 - **CoALA** — 9-step cognitive cycle, mapped into universal loop
 - **HDC / VSA** — 10,240-bit BSC vectors, XOR bind, majority bundle, Hamming similarity
 - **Stigmergy** — generalized beyond termites to git commits, code patterns, HDC pheromones
-- **Pheromone / Pheromone system** — typed Engrams with Threat/Opportunity/Wisdom/Alpha/Pattern/Anomaly/Consensus decay profiles
+- **Pheromone / Pheromone system** — typed Signals with Threat/Opportunity/Wisdom/Alpha/Pattern/Anomaly/Consensus decay profiles
 - **Sleepwalker** — reduced-capability sleep mode
 - **Oneirography / Hypnagogia** — dream journals, hypnagogia engine for alpha convergence
 - **ALMA** — three-layer temporal affect model (emotion/mood/personality)
@@ -117,10 +117,10 @@ table, this table wins.
 These are in the new architecture and did not exist (or were unnamed) in the legacy docs.
 
 ### Core
-- **Engram** (replaces Signal as architectural noun) — content-addressed, scored, decaying, lineage-tracked unit of cognition. BLAKE3(kind+body+author+tags).
+- **Signal** (replaces Signal as architectural noun) — content-addressed, scored, decaying, lineage-tracked unit of cognition. BLAKE3(kind+body+author+tags).
 - **Synapse Architecture** — the 6-trait composition (Substrate/Scorer/Gate/Router/Composer/Policy) crystallized across 5 layers.
 - **7-axis Score** — confidence, novelty, utility, reputation (existing) + **precision, salience, coherence** (new).
-- **Attestation** — optional cryptographic proof on Engrams (Ed25519 signature + optional ChainAttestation).
+- **Attestation** — optional cryptographic proof on Signals (Ed25519 signature + optional ChainAttestation).
 
 ### Layers
 - **Five Layers**: L0 Runtime, L1 Framework, L2 Scaffold, L3 Harness, L4 Orchestration. Dependencies flow strictly downward. Cross-cuts injected via trait objects.
@@ -145,7 +145,7 @@ These are in the new architecture and did not exist (or were unnamed) in the leg
 - **Forensic AI / Causal Replay Engine** — content-addressed lineage enables cryptographically verifiable decision replay; regulatory pre-compliance moat (EU AI Act, SEC/CFTC, HIPAA, SOX).
 - **EvoSkills** — self-evolving skill libraries via adversarial surrogate verification.
 - **ADAS** — Automated Design of Agentic Systems; meta-agent architecture search.
-- **Cognitive Kernel Primitives**: Cognitive Namespaces (isolated knowledge), Cognitive Signals (Pause/Resume/Reprioritize/InjectContext/Escalate/Cooldown/Explore/Shutdown), Cognitive Scheduling, Engram Syscalls.
+- **Cognitive Kernel Primitives**: Cognitive Namespaces (isolated knowledge), Cognitive Signals (Pause/Resume/Reprioritize/InjectContext/Escalate/Cooldown/Explore/Shutdown), Cognitive Scheduling, Signal Syscalls.
 - **Cross-Domain Insight Resonance** — HDC structural analogy detection across domains (threshold 0.526 for 10,240-bit with Bonferroni correction).
 - **Generative Interfaces (A2UI)** — agents create their own UI using ROSEDUST primitives.
 - **Distributed Context Engineering** — Write/Select/Compress/Isolate strategies at network scale.
@@ -181,7 +181,7 @@ These are in the new architecture and did not exist (or were unnamed) in the leg
    "Crate Map"), not the old monolith.
 5. **Apply the 5-layer taxonomy** (Runtime / Framework / Scaffold / Harness / Orchestration).
    Every subsystem lives at a specific layer.
-6. **Integrate Synapse Architecture language** (Engrams flowing through 6 traits).
+6. **Integrate Synapse Architecture language** (Signals flowing through 6 traits).
 7. **Domain-agnostic core** — chain is a domain plugin (`roko-chain`), not the default framing.
    Coding is another domain plugin. Research, ops, medical, etc. are domain plugins.
 8. **Remove all death/mortality framing** — reframe as resource constraints, cognitive pressure,
@@ -210,12 +210,12 @@ When you encounter legacy language, apply these rewrites:
 | "Succession / thanatopsis / generational inheritance" | "Knowledge backup/restore + mesh sharing" |
 | "Dying golem selects heirs" | "User exports NeuroStore and selectively imports into new agent" |
 | "Death-approach dreams / terminal dreams" | "Idle-triggered / scheduled dream consolidation" |
-| "Lineage (golem families across generations)" | "Provenance (Engram lineage DAG across time)" |
+| "Lineage (golem families across generations)" | "Provenance (Signal lineage DAG across time)" |
 | "Mortality anxiety in Daimon" | "Task performance + gate outcomes + prediction accuracy inputs" |
 | "Terminal requiem / death-mapped sonification" | "Behavioral-state-mapped sonification (Engaged/Struggling/Coasting/Exploring/Focused/Resting)" |
 | "Golem-X" (e.g., golem runtime, golem inference, golem tools, golem safety, golem eval) | Check if domain-specific (keep as chain domain plugin) or general (promote to core framework: roko-runtime, CascadeRouter, domain plugin tools, roko-core capabilities, roko-gate) |
 | "Mori + Golem as separate systems" | "Roko Framework with coding and chain domain plugins" |
-| "Signal" (architecture noun) | "Engram" — but keep `Signal` as the Rust type name where code currently uses it |
+| "Signal" (architecture noun) | "Signal" — but keep `Signal` as the Rust type name where code currently uses it |
 
 ---
 
@@ -353,7 +353,7 @@ testing. You do not need to do anything special — the runner does it for you.
    - Checks total topic line count is ≥2500 lines.
    - Scans for forbidden terms (`Thanatopsis`, `Necrocracy`, `clade → fleet`, `GNOS token`,
      `terminal requiem`, `Thriving → Terminal`, etc.).
-   - Scans for required terms (Roko, Engram, Synapse).
+   - Scans for required terms (Roko, Signal, Synapse).
    - Counts citation-like patterns (warn if below floor).
 5. **Summary**: Per-topic pass/warn/fail/skipped/dry counts. Logs point to
    `logs/<run-id>/<topic>.log` for each agent's full transcript.

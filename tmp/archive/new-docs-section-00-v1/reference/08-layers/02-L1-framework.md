@@ -27,13 +27,13 @@ These are the universal primitives. Every other layer can use them:
 
 | Type | What it is |
 |---|---|
-| `Engram` | The durable knowledge unit ([full spec](../01-engram/README.md)) |
+| `Engram (renamed to Signal in 2026-08-12)` | The durable knowledge unit ([full spec](../01-engram/README.md)) |
 | `Pulse` | The ephemeral event ([full spec](../02-pulse/README.md)) |
 | `Score` | Seven-axis appraisal ([full spec](../10-types/score.md)) |
 | `HdcFingerprint` | 10 240-bit hyperdimensional vector |
 | `Provenance` | Causal chain record |
-| `Kind` | Engram kind enum |
-| `Body` | Engram body enum |
+| `Kind` | Signal kind enum |
+| `Body` | Signal body enum |
 | `Decay` | Half-life variant |
 
 ### Core Traits

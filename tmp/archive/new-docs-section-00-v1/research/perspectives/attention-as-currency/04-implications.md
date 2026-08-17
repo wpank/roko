@@ -33,11 +33,11 @@ it explicit enables principled debate about its design.
 
 Currently, compute allocation is managed at the infrastructure level (CPU/memory quotas).
 The attention economy framing suggests complementing this with **semantic attention budgets**:
-caps on how many Engrams from a given topic, source, or type can acquire T2 attention in
+caps on how many Signals from a given topic, source, or type can acquire T2 attention in
 a given time window.
 
 Without semantic attention budgets, a high-volume signal source (an agent that produces many
-high-scoring Engrams about the same topic) can monopolize T2 attention, starving other
+high-scoring Signals about the same topic) can monopolize T2 attention, starving other
 topics.
 
 **Implementation suggestion**: Add a rate-limiting dimension to the Policy operator's rules
@@ -51,11 +51,11 @@ regardless of individual bid scores.
 The attention-as-currency lens predicts measurable allocation patterns. These should be
 instrumented:
 
-- **Attention Gini coefficient**: how unequally is T2 attention distributed across Engram
+- **Attention Gini coefficient**: how unequally is T2 attention distributed across Signal
   categories? High Gini → attention monopoly risk.
-- **Attention poverty rate**: what fraction of Engrams that were manually retrospectively
+- **Attention poverty rate**: what fraction of Signals that were manually retrospectively
   judged important were, in fact, gate-rejected? Non-zero rate → systematic blind spots.
-- **Allocation efficiency**: for Engrams that received T2 attention, how often did the T2
+- **Allocation efficiency**: for Signals that received T2 attention, how often did the T2
   response exceed the quality of a hypothetical T1 response? Low rate → over-spending on T2.
 
 These metrics translate the economic concepts into operational measurements that can be
@@ -71,12 +71,12 @@ maximize expected return (synthesis quality) subject to a budget constraint (con
 
 Portfolio theory (Markowitz, 1952) tells us that:
 - Diversification reduces variance without necessarily reducing expected return.
-- Correlated assets (Engrams about the same topic) do not diversify risk.
+- Correlated assets (Signals about the same topic) do not diversify risk.
 - The efficient frontier is the set of portfolios with the best risk-adjusted return.
 
-Applied to Engram bundle selection: prefer bundles that cover diverse aspects of the query
+Applied to Signal bundle selection: prefer bundles that cover diverse aspects of the query
 (diversification) over bundles that repeat the same content (correlated assets), even if
-individual Engram scores are similar.
+individual Signal scores are similar.
 
 ---
 
@@ -88,11 +88,11 @@ research on human multi-tasking (Rubinstein, Meyer, & Evans, 2001) shows signifi
 
 In Roko, attention switching between T2 tasks has an analogous cost: context windows must
 be cleared and rebuilt; Neuro probes must be re-run; coherence must be re-established.
-These switch costs are currently not accounted for in the allocation decision — each Engram
+These switch costs are currently not accounted for in the allocation decision — each Signal
 is allocated attention as if the system starts fresh.
 
 **Implication**: The Router should model switch costs when deciding whether to promote an
-Engram to T2. An Engram that would marginally justify T2 attention in isolation may not
+Signal to T2. An Signal that would marginally justify T2 attention in isolation may not
 justify it if the system is currently engaged in a different T2 task and switching would
 incur a large cost.
 

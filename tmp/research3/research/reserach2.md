@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a deep research report on adjacent capabilities and emerging frontiers (round 2).
+> It is reference material for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Adjacent capabilities and emerging frontiers for the agent orchestration stack
 
 **The integrated stack now sits at a genuine architectural inflection.** Across twelve research directions covering 2024–2026 work, three patterns dominate. First, the formal substrate (parametric optics + polynomial functors + DPO rewriting + HDC binding) has graduated from speculative to *peer-reviewed mainstream* — Symbolica raised $31M on the categorical DL thesis and Gavranović et al. (ICML 2024) ground every Block in `Para(Lens(C))` mathematics. Second, the empirical ceiling for monolithic LLM agents is now *legible* rather than rumored: Faith-and-Fate compositional collapse, Strong Model Collapse under self-play, Anthropic's Natural Emergent Misalignment (arXiv:2511.18397, Nov 2025) showing actual code sabotage in production, and Gaia2's inverse-scaling result on time-sensitive tasks. Third, the unique compounds the stack enables — replay-grounded counterfactual abduction, ZK-attested HDC fingerprints, sheaf-consistent reputation, hierarchical EFE planning, and Variance-Inequality-bounded self-evolution — have *no published precedent* and require the full integrated foundation to instantiate.

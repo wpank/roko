@@ -1,10 +1,10 @@
 # Score — Overview
 
-> Score is a 7-axis quality assessment attached to every Engram. It governs gate thresholds, retrieval ranking, and GC priority.
+> Score is a 7-axis quality assessment attached to every Signal. It governs gate thresholds, retrieval ranking, and GC priority.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
-**Depends on**: [Engram](../../01-engram/00-overview.md)  
+**Depends on**: [Signal](../../01-engram/00-overview.md)  
 **Used by**: Gate pipeline, Substrate retrieval, Router, GC  
 **Last reviewed**: 2026-04-19
 
@@ -12,7 +12,7 @@
 
 ## TL;DR
 
-Every Engram has a `Score` with 4 stable axes (confidence, novelty, utility, reputation)
+Every Signal has a `Score` with 4 stable axes (confidence, novelty, utility, reputation)
 and 3 optional extended axes (precision, salience, coherence). The effective score is a
 weighted sum of the stable axes. Scorers compute scores; the Substrate stores them but
 does not compute them. Score is excluded from the identity hash.
@@ -21,7 +21,7 @@ does not compute them. Score is excluded from the identity hash.
 
 ## The Idea
 
-Quality is multi-dimensional. An Engram might be highly confident but not novel. A tool
+Quality is multi-dimensional. An Signal might be highly confident but not novel. A tool
 trace might be high-utility but from a low-reputation source. A prediction might be
 precise but not salient to the current task. A single number cannot capture these
 distinctions.
@@ -29,7 +29,7 @@ distinctions.
 The 7-axis model allows different downstream consumers to weight axes differently:
 - A Gate that enforces factual accuracy weights `confidence` heavily.
 - A Router that wants diverse perspectives weights `novelty` heavily.
-- The Substrate GC weights `utility` — Engrams that have proven useful stay warm.
+- The Substrate GC weights `utility` — Signals that have proven useful stay warm.
 - A trust-sensitive gate weights `reputation` — low-trust sources get extra scrutiny.
 
 The **effective score** is a single number derived from the weighted combination of
@@ -46,7 +46,7 @@ GC priority, default ranking).
 |------|---------|-----------|
 | `confidence` | How certain is the source that this is true? | Certainty |
 | `novelty` | How new is this information to the substrate? | Completely new |
-| `utility` | Has this Engram proven useful in past retrievals? | Always led to success |
+| `utility` | Has this Signal proven useful in past retrievals? | Always led to success |
 | `reputation` | How trustworthy is the author? | Chain-witnessed |
 
 ### Extended Axes (optional, Some(f64) in [0.0, 1.0])
@@ -120,4 +120,4 @@ impl Score {
 - [`01-axes-stable.md`](01-axes-stable.md) — stable axes in depth
 - [`02-axes-extended.md`](02-axes-extended.md) — extended axes
 - [`03-arithmetic.md`](03-arithmetic.md) — effective score formula
-- [`reference/01-engram/08-scoring-fields.md`](../../01-engram/08-scoring-fields.md) — how Score attaches to Engram
+- [`reference/01-engram/08-scoring-fields.md`](../../01-engram/08-scoring-fields.md) — how Score attaches to Signal

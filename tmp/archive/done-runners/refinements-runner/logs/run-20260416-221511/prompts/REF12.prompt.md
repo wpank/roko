@@ -36,7 +36,7 @@ framing.
    suffice.
 6. **Retired terms must not appear.** Verify-step `terminology_check` will
    fail the batch if retired terms (`Grimoire`, `Styx`, `Clade`, `Mori`,
-   `Bardo`, `Golem`, mortal/death/reincarnation framing, "Signal = Engram"
+   `Bardo`, `Golem`, mortal/death/reincarnation framing, "Signal = Signal"
    disclaimers, etc.) appear in lines you introduce — *except* when the
    line explicitly frames them as "retired / deprecated / historical /
    legacy / formerly / renamed / see also / old name". Use that phrasing
@@ -44,7 +44,7 @@ framing.
 7. **Cross-link to refinements.** Docs that change should include a
    `see tmp/refinements/NN-slug.md` pointer for readers who want the full
    proposal. Use the exact refinement filename (e.g.
-   `tmp/refinements/02-engram-vs-pulse.md`).
+   `tmp/refinements/02-signal-vs-pulse.md`).
 8. **Cross-link to glossary.** Docs introducing new terminology should
    point at `docs/00-architecture/01-naming-and-glossary.md` (or wherever
    the glossary has landed).
@@ -145,7 +145,7 @@ the 35 refinements propagate into `docs/`.
 
 ## The one-liner
 
-> Roko's kernel is two mediums (**Engram** — durable, content-addressed,
+> Roko's kernel is two mediums (**Signal** — durable, content-addressed,
 > decayed; **Pulse** — ephemeral, topic-addressed, sequenced) moving
 > through two fabrics (**Substrate** — storage; **Bus** — transport),
 > acted on by six operators (**Scorer**, **Gate**, **Router**,
@@ -156,7 +156,7 @@ the 35 refinements propagate into `docs/`.
 
 ## Canonical term definitions
 
-**Engram** — Durable medium. Content-addressed by BLAKE3 over
+**Signal** — Durable medium. Content-addressed by BLAKE3 over
 `(kind, body, author, tags)`. Has `lineage: Vec<ContentHash>`,
 `decay` / `balance`, `score` (7 axes), `provenance`, optional
 `attestation`, and (post-refinement) an HDC `fingerprint`. Lives in a
@@ -164,11 +164,11 @@ Substrate.
 
 **Pulse** — Ephemeral medium (new). Typed, topic-addressed,
 sequence-numbered, ring-buffered message on a Bus. Not content-
-addressed; not persisted by default. May *graduate* to an Engram when
+addressed; not persisted by default. May *graduate* to an Signal when
 its lineage matters.
 
 **Substrate** — Storage fabric (kernel trait). Backends: Memory, File,
-HDC, Chain. Persists Engrams. Retrieval by filter or (new)
+HDC, Chain. Persists Signals. Retrieval by filter or (new)
 HDC similarity.
 
 **Bus** — Transport fabric (promoted to kernel trait). Backends:
@@ -179,7 +179,7 @@ Publishes and delivers Pulses by Topic.
 **Topic** — Routing handle for Pulses. Dot-separated lowercase
 strings (`gate.verdict.emitted`, `agent.msg.chunk`, `prediction.error`).
 
-**Datum** — `enum Datum<'a> { Engram(&'a Engram), Pulse(&'a Pulse) }`
+**Datum** — `enum Datum<'a> { Signal(&'a Signal), Pulse(&'a Pulse) }`
 used by polymorphic operators (Scorer, Composer, Router).
 
 **Six operators** — `Scorer`, `Gate`, `Router`, `Composer`, `Policy`,
@@ -246,7 +246,7 @@ consolidated knowledge back into Substrate for the next cycle.
 
 | Term | Use | Avoid |
 |---|---|---|
-| Engram | the durable record | Signal (retired in code 877:5) |
+| Engram (renamed to Signal in 2026-08-12) | the durable record | Signal (retired in code 877:5) |
 | Pulse | the ephemeral message | Event, Envelope, Message, Signal |
 | Bus | the transport trait | EventBus<E> as a trait name |
 | Substrate | the storage trait | (unchanged) |
@@ -274,8 +274,8 @@ match lands outside a line that also signals "retired", "deprecated",
 
 | Retired term | Use instead | Notes |
 |---|---|---|
-| `Signal` (as the durable record) | `Engram` | Rename landed in code (877 Engram vs 5 Signal). Docs should say Engram. |
-| `Signal is the same as Engram` | (delete disclaimer) | The equivalence disclaimer is stale. Remove. |
+| `Signal` (as the durable record) | `Signal` | Rename landed in code (877 Signal vs 5 Signal). Docs should say Signal. |
+| `Signal is the same as Signal` | (delete disclaimer) | The equivalence disclaimer is stale. Remove. |
 | `EventBus<E>` (as trait name) | `Bus` + `Pulse` | The generic struct stays as `BroadcastBus` implementation detail. |
 | `Envelope<E>` (as user-facing type) | `Pulse` | Envelope name retained only as internal impl detail. |
 | `Event` (as type name) | `Pulse` | Collides with tokio/winit. Use Pulse. |
@@ -308,12 +308,12 @@ in the same line (case-insensitive): `retired`, `deprecated`,
 
 | New term | Must appear after batch | Home refinement |
 |---|---|---|
-| `Pulse` | REF02, REF07 | 02-engram-vs-pulse.md |
+| `Pulse` | REF02, REF07 | 02-signal-vs-pulse.md |
 | `Bus` (as kernel trait) | REF03 | 03-bus-as-first-class.md |
 | `Topic` | REF03, REF07 | 03-bus-as-first-class.md |
 | `TopicFilter` | REF03, REF07 | 03-bus-as-first-class.md |
 | `Datum` | REF04 | 04-operators-generalized.md |
-| `PulseSource` | REF02, REF07 | 02-engram-vs-pulse.md |
+| `PulseSource` | REF02, REF07 | 02-signal-vs-pulse.md |
 | `two mediums` | REF01, REF02 | 01-critique-one-noun.md |
 | `two fabrics` | REF03 | 03-bus-as-first-class.md |
 | `seven-step loop` | REF05 | 05-loop-retold.md |
@@ -332,8 +332,8 @@ in the same line (case-insensitive): `retired`, `deprecated`,
 Every refinement propagation should include a trailing "See also" or
 inline cross-reference to the refinement file:
 
-- `see [02-engram-vs-pulse](../../tmp/refinements/02-engram-vs-pulse.md)`
-- or `see tmp/refinements/02-engram-vs-pulse.md §3` for section-specific
+- `see [02-signal-vs-pulse](../../tmp/refinements/02-signal-vs-pulse.md)`
+- or `see tmp/refinements/02-signal-vs-pulse.md §3` for section-specific
   references.
 
 Use the project's existing link conventions where a doc subfolder has
@@ -387,7 +387,7 @@ to update:
 
 - `00-vision-and-thesis.md`
 - `01-naming-and-glossary.md` — every naming-related refinement touches this
-- `02-engram-data-type.md` — REF02
+- `02-signal-data-type.md` — REF02
 - `03-score-7-axis-appraisal.md` — mostly stable
 - `04-decay-variants.md` — REF12 (supersedes decay with demurrage)
 - `05-provenance-and-attestation.md` — REF32
@@ -461,7 +461,7 @@ with the others.
 
 ## Ten load-bearing primitives
 
-1. **Engram** (durable medium) — home: REF02
+1. **Signal** (durable medium) — home: REF02
 2. **Pulse** (ephemeral medium) — home: REF02
 3. **Bus** (transport fabric) — home: REF03
 4. **Substrate** (storage fabric) — home: REF03
@@ -509,7 +509,7 @@ BROADCAST, REACT) uses every primitive:
 
 - SENSE — Substrate (query) + Bus (subscribe) + external I/O.
 - ASSESS — Scorer (weights via HDC/demurrage/heuristic calibration).
-- COMPOSE — Composer (picks from HDC-similar Engrams, injects heuristics,
+- COMPOSE — Composer (picks from HDC-similar Signals, injects heuristics,
   TypedContext shapes prompt).
 - ACT — produces Pulses (agent stream, tool calls).
 - VERIFY — Gate pipeline; gate-verdict Pulses feed heuristic calibration.
@@ -535,12 +535,12 @@ without reading its full source.
 - `01-critique-one-noun.md` — Diagnosis: "one noun, six verbs" framing
   conflates two data shapes, hides the event bus, stretches trait
   signatures.
-- `02-engram-vs-pulse.md` — Introduce Pulse (ephemeral) as Engram's
+- `02-signal-vs-pulse.md` — Introduce Pulse (ephemeral) as Signal's
   sibling; define graduation law.
 - `03-bus-as-first-class.md` — Promote Bus to a kernel trait at L0
   alongside Substrate.
 - `04-operators-generalized.md` — Generalize the six operators over a
-  `Datum` enum that is either Engram or Pulse.
+  `Datum` enum that is either Signal or Pulse.
 - `05-loop-retold.md` — Universal loop collapses from 9 to 7 steps;
   PERSIST and BROADCAST become co-equal; cross-cuts aren't steps.
 - `06-refactoring-plan.md` — Three-phase refactor (docs → kernel →
@@ -557,7 +557,7 @@ without reading its full source.
 - `10-self-learning-cybernetic-loops.md` — Every operator becomes a
   predictor; active inference literal via predict/outcome Pulses.
 - `11-hyperdimensional-substrate.md` — 10,240-bit HDC fingerprint on
-  every Engram; similarity/consensus/analogy as O(1) vector ops.
+  every Signal; similarity/consensus/analogy as O(1) vector ops.
 - `12-knowledge-demurrage.md` — Economic memory: balance, holding
   cost, reinforcement-by-kind; self-trimming playbooks.
 - `13-collective-intelligence-c-factor.md` — Woolley's c-factor
@@ -566,7 +566,7 @@ without reading its full source.
   worldviews as co-citation clusters; lived-experience calibration.
 - `15-exponential-scaling.md` — Seven compounding loops; "every week
   your Roko gets better on your codebase."
-- `16-research-to-runtime.md` — Papers as Engrams, Claims as testable
+- `16-research-to-runtime.md` — Papers as Signals, Claims as testable
   hypotheses, Replication Ledger — living research.
 - `17-plugin-extension-architecture.md` — Five-tier SPI (prompts,
   profiles, manifests, native, WASM) with matched sandboxes.
@@ -656,7 +656,7 @@ file; only edit docs under `docs/`.
 # Knowledge Demurrage: Economic Memory
 
 > **TL;DR**: Borrow Silvio Gesell's *demurrage* idea from economics and
-> apply it to memory. Every Engram carries a *holding cost* that decays
+> apply it to memory. Every Signal carries a *holding cost* that decays
 > its weight unless it is actively used, cited, or reinforced. The
 > result: memory that stays fresh, playbooks that don't ossify,
 > worldviews that can't petrify, and a system that preferentially
@@ -675,7 +675,7 @@ file; only edit docs under `docs/`.
 
 ## 1. The problem with indefinite retention
 
-Roko already has mild decay: `Engram.decay: f64` starts at 1.0 and is
+Roko already has mild decay: `Signal.decay: f64` starts at 1.0 and is
 reduced by the GC pass in `roko-fs`. But decay today is:
 
 - **Time-based only**, not usage-based
@@ -708,7 +708,7 @@ gradient: *information that is useful to multiple subscribers stays
 alive; information that nothing cares about fades, making room for new
 information*. It is a market for attention, with a carrying cost.
 
-Proposed addition to Engram:
+Proposed addition to Signal:
 
 ```rust
 pub struct Engram {
@@ -771,8 +771,8 @@ balance ← balance + bonus(kind) * novelty(engram)
 
 Where `novelty` is `1 - max(similarity)` against the top-K HDC
 neighbors (see `11-hyperdimensional-substrate.md`). **Novelty-weighted
-reinforcement** is the key: citing a common engram gives it a tiny
-bump, citing a rare engram gives it a big bump. This is the core
+reinforcement** is the key: citing a common signal gives it a tiny
+bump, citing a rare signal gives it a big bump. This is the core
 anti-hoarding mechanism — high-balance memory has to be *earning* its
 balance from uniquely useful contributions.
 
@@ -780,7 +780,7 @@ balance from uniquely useful contributions.
 
 ### 4.1 Playbook freshness without manual GC
 
-A playbook is an Engram. It earns balance every time an agent
+A playbook is an Signal. It earns balance every time an agent
 successfully applies it, loses balance every tick it sits unused. When
 the codebase drifts and the playbook stops working, its successful-use
 rate drops; demurrage eats its balance; the Router stops proposing it.
@@ -788,7 +788,7 @@ rate drops; demurrage eats its balance; the Router stops proposing it.
 
 ### 4.2 Surprise-weighted retention
 
-`ReinforceKind::Surprised` lets the Bus upweight Engrams whose
+`ReinforceKind::Surprised` lets the Bus upweight Signals whose
 predictions were violated in interesting ways (see
 `10-self-learning-cybernetic-loops.md`). This keeps the
 high-information-content memories preferentially. It is Shannon's
@@ -796,7 +796,7 @@ surprise, operationalized as an economic bonus.
 
 ### 4.3 A natural "forgetting floor"
 
-Balance can reach zero. At that point the Engram becomes a candidate
+Balance can reach zero. At that point the Signal becomes a candidate
 for cold storage or deletion — but its *hash* remains valid (lineage
 doesn't break), the body just moves to a slower tier. This is the
 primitive that lets us build a biologically plausible
@@ -811,7 +811,7 @@ use it as a confidence coefficient:
 consensus = Σ_i (fingerprint(e_i) * effective_weight(e_i))
 ```
 
-Worldviews held by still-earning Engrams dominate; petrified ones
+Worldviews held by still-earning Signals dominate; petrified ones
 recede naturally.
 
 ## 5. Demurrage for the Policy layer
@@ -861,7 +861,7 @@ forgetting rate.
 
 ## 7. Cold-tier graduation
 
-Engrams whose balance hits the floor are graduated to a *cold*
+Signals whose balance hits the floor are graduated to a *cold*
 substrate: same content-address, but the body moves off the hot path.
 Retrieval becomes slower but still possible. This is the inverse of
 the `graduate_to_engram` operation from `08-code-sketches.md` — we
@@ -904,7 +904,7 @@ Three new metrics that surface the attention economy:
 - **Balance histogram** per tier — shape of the distribution tells
   you whether the rates are too aggressive (everything is cold) or
   too lenient (hoarding).
-- **Thaw rate** — how often cold engrams are pulled back. High thaw
+- **Thaw rate** — how often cold signals are pulled back. High thaw
   rate = the demurrage curve is too steep.
 - **Reinforcement-by-kind** breakdown — what *kind* of use is
   keeping memory alive? If `Surprised` is low, the system isn't
@@ -916,7 +916,7 @@ These become first-class tiles on the `roko dashboard`.
 ## 10. Migration path
 
 1. Add `balance`, `demurrage_paid`, `last_touched_at` fields.
-   Backfill existing engrams with `balance = 1.0`.
+   Backfill existing signals with `balance = 1.0`.
 2. Implement `Demurrage` trait and wire charge-on-read into Substrate.
 3. Wire reinforcement into the five call sites (Router, Gate, Scorer,
    Composer, agent turns).
@@ -936,7 +936,7 @@ makes their outputs self-trimming.
   Probably yes; distilled knowledge should be stickier to reflect
   the work that went into it.
 - **Interaction with chain witnesses** (Phase 2) — a chain-witnessed
-  Engram probably cannot be deleted even if balance hits zero; cold
+  Signal probably cannot be deleted even if balance hits zero; cold
   tier but never forget. Demurrage rate respects witness class.
 
 ## 12. Worked example: a playbook's life
@@ -967,27 +967,27 @@ failure is small novelty (cluster is known). Tax continues. Balance
 drops below `min_balance = 0.0`. Substrate schedules `freeze(hash)`.
 
 Day 91. Playbook moves to cold tier. Its hash is still resolvable;
-lineage from Engrams that cited it still works. Full body is on slower
+lineage from Signals that cited it still works. Full body is on slower
 storage.
 
-Day 400. A fork of the codebase reuses an old pattern. A new Engram
+Day 400. A fork of the codebase reuses an old pattern. A new Signal
 references the frozen playbook. Substrate `thaw(hash)` returns it
 with balance reset to a starter value (configurable — default 0.3,
 low enough that one failure sends it back to cold, high enough to
-compete with fresh Engrams). The system is neither forgetting nor
+compete with fresh Signals). The system is neither forgetting nor
 hoarding; it is adapting with memory.
 
 ## 13. Interaction with the Composer and Scorer
 
 Two concrete effects on the other operators:
 
-- **Scorer**: reads `effective_weight(engram)` instead of the old
-  `decay` field. A low-balance Engram scores lower across every
-  axis, not just freshness. High-balance Engrams with strong axis
+- **Scorer**: reads `effective_weight(signal)` instead of the old
+  `decay` field. A low-balance Signal scores lower across every
+  axis, not just freshness. High-balance Signals with strong axis
   scores dominate Router selection naturally. See
   `04-operators-generalized.md` §2 for the new Scorer signature.
 - **Composer**: budget-aware composition now respects *attention
-  budget*, not just token budget. Engrams with balance < 0.3 are
+  budget*, not just token budget. Signals with balance < 0.3 are
   candidates for the budget's last slots; they contribute only if
   nothing higher-balance is available. The composed prompt becomes
   preferentially fresh while retaining access to deep knowledge when
@@ -1001,7 +1001,7 @@ should touch them in this order:
 1. **`min_balance`** — raise from 0.0 to, say, 0.1 if cold storage
    is growing too fast; lower if memory is bloated.
 2. **`flat_tax_per_day`** — raise if memory is hoarding; lower if
-   warming up new Engrams is too expensive.
+   warming up new Signals is too expensive.
 3. **`surprised_bonus`** — raise this first when the system isn't
    learning from prediction errors visibly. `Surprised` is the
    novelty channel; cranking it emphasizes what's changing.
@@ -1028,7 +1028,7 @@ expose via StateHub `demurrage_health` projection — see
 - **Reinforcement breakdown**: pie chart of `ReinforceKind` over the
   last 24h.
 - **Thaw rate**: line graph of cold-to-warm thaws per hour.
-- **Attention-leaderboard**: top 20 Engrams by balance, link to
+- **Attention-leaderboard**: top 20 Signals by balance, link to
   inspect.
 
 Each tile answers a specific operator question ("is memory bloating?"

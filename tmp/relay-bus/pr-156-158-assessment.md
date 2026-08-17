@@ -1,5 +1,15 @@
 # Relay Bus PR Assessment
 
+> **What is this?** The original detailed assessment of collaboration PRs #156
+> (IDE MCP gateway) and #158 (agent coordination / chat vs bus) against the
+> actual relay implementation in `apps/agent-relay/`. This is the source
+> analysis that led to the nine decisions in `05-decisions.md`. The assessment
+> is **historical** -- the decisions it raised are now settled. Read
+> `05-decisions.md` for the outcomes; read this doc for the full reasoning
+> and per-PR critique.
+>
+> Last updated: 2026-08-13
+
 Date: 2026-05-08
 
 Scope:

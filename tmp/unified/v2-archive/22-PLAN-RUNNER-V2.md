@@ -389,7 +389,7 @@ Simple `find_plan_dirs()` (which already exists and works correctly).
 3. Remove `--runner legacy` after confidence period
 
 ### Phase D: Align with unified spec (future)
-1. Rename types (Engram→Signal, etc.) per Phase 1 kernel
+1. Rename types (Signal rename DONE 2026-08-12, remaining trait renames pending) per Phase 1 kernel
 2. Add Activity recording per-node (unified resumability)
 3. Add Pulse-based lifecycle events
 4. Replace event loop with Engine interpretation of TOML Graphs

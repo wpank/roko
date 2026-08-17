@@ -21,7 +21,7 @@ tags: [code-intelligence, composition, roko-index, symbol-graph, context-assembl
 
 | Signal | From | To | Status |
 |---|---|---|---|
-| `Kind::Symbol` Engrams | `roko-index` | `SystemPromptBuilder` | **Missing** |
+| `Kind::Symbol` Signals | `roko-index` | `SystemPromptBuilder` | **Missing** |
 | PageRank-ranked symbol list | `roko-index::HdcIndex` | Composition context assembler | **Missing** |
 | Caller/callee chains | `roko-index::SymbolGraph` | Composition context | **Missing** |
 | HDC similarity-ranked symbols | `roko-index::HdcIndex` | Context budget allocator | **Missing** |

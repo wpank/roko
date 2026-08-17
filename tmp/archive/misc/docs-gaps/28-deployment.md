@@ -344,11 +344,11 @@ cargo test --workspace
 
 **Spec** (doc 02 `docs/19-deployment/02-wasm-browser-edge.md`): Core Synapse traits and cognitive primitives compile to `wasm32-wasi` for browsers, edge functions, and embedded WASM runtimes.
 
-**What works in WASM**: Engram struct, Score (7-axis), Scorer/Router/Composer/Policy traits (pure computation), HDC vectors (pure bit operations), decay calculations, content addressing (BLAKE3 compiles to WASM).
+**What works in WASM**: Signal struct, Score (7-axis), Scorer/Router/Composer/Policy traits (pure computation), HDC vectors (pure bit operations), decay calculations, content addressing (BLAKE3 compiles to WASM).
 
 **What does NOT work**: FileSubstrate (needs filesystem), LLM backends (need HTTP+TLS), MCP client (needs stdio/TCP), ProcessSupervisor (needs process spawning), roko-orchestrator (needs git/filesystem), tree-sitter (C FFI).
 
-**MemorySubstrate**: WASM-compatible implementation using `BTreeMap<ContentHash, Engram>` in memory with indexed lookups.
+**MemorySubstrate**: WASM-compatible implementation using `BTreeMap<ContentHash, Signal>` in memory with indexed lookups.
 
 **Current code**: No WASM build target configured. No MemorySubstrate implementation. No feature flags for WASM exclusion.
 

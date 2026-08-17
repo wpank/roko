@@ -331,11 +331,11 @@ cargo test -p roko-cli
 ### DREAM-09: Bus Pulse reactivity
 - [x] Wire dream scheduling to Bus Pulse subscriptions
 
-**Spec** (doc 13, 15): The Bus-reactive trigger is the third trigger type (alongside idle and scheduled). In the two-fabric model, the dream scheduler subscribes to `substrate.engram.stored` Pulses on the Bus. When a high-value engram is stored (e.g., a task completion with novel insights, a gate failure with diagnostic data), the Bus delivers a Pulse that wakes the dream scheduler. This enables event-driven consolidation: the agent dreams specifically about high-value new material rather than waiting for idle time.
+**Spec** (doc 13, 15): The Bus-reactive trigger is the third trigger type (alongside idle and scheduled). In the two-fabric model, the dream scheduler subscribes to `substrate.engram.stored` Pulses on the Bus. When a high-value signal is stored (e.g., a task completion with novel insights, a gate failure with diagnostic data), the Bus delivers a Pulse that wakes the dream scheduler. This enables event-driven consolidation: the agent dreams specifically about high-value new material rather than waiting for idle time.
 
-Trigger criteria: not every engram storage triggers a dream. The Pulse must meet a minimum "dream-worthiness" threshold:
-- Engram score > 0.7 (high-value)
-- Engram kind is one of: `GateVerdict`, `EpisodeComplete`, `KnowledgeIngested`
+Trigger criteria: not every signal storage triggers a dream. The Pulse must meet a minimum "dream-worthiness" threshold:
+- Signal score > 0.7 (high-value)
+- Signal kind is one of: `GateVerdict`, `EpisodeComplete`, `KnowledgeIngested`
 - Time since last dream > minimum_dream_interval (default 30m, prevents dream storms)
 
 **Current code**: `trigger_delay()` at `crates/roko-dreams/src/runner.rs:730` implements idle-time trigger only -- returns a `Duration` based on idle threshold. `DreamRunner` at runner.rs has `schedule_next()` and `consolidate_now()` but no Bus integration. No Bus trait exists in the codebase yet (K-02 kernel gap). `DreamCycle` at `cycle.rs:333` is trigger-agnostic -- it runs regardless of how it was invoked.
@@ -366,7 +366,7 @@ Trigger criteria: not every engram storage triggers a dream. The Pulse must meet
 **Depends on**: K-02 (Bus trait in `tmp/docs-gaps/02-missing-kernel-types.md`)
 **Accept when**:
 - [ ] Dream scheduler subscribes to `substrate.engram.stored` Bus topic
-- [ ] High-value engrams (score > 0.7) trigger immediate consolidation
+- [ ] High-value signals (score > 0.7) trigger immediate consolidation
 - [ ] Minimum dream interval (30m) prevents dream storms
 - [ ] Trigger source recorded in DreamCycleReport
 - [ ] `cargo test -p roko-dreams` passes

@@ -1,5 +1,16 @@
 # Current State — What's Wired, What's Dead, What's Floating
 
+> **What is this?** Snapshot of the codebase categorized by runtime status: actively
+> used, dead/deleted, or built-but-never-wired. Used to prioritize v2 refactoring work.
+>
+> **For first-time readers:** This document helps you understand which parts of roko's
+> ~177K LOC are actually exercised at runtime vs. compiled but never called. If you are
+> looking for where to contribute, the "Floating Code" section lists modules that need
+> wiring into runtime paths. The "What's WIRED and WORKS" table shows what is
+> production-ready.
+>
+> **Last updated: 2026-08-13**
+
 ## Active Codepaths (ACTUALLY USED)
 
 ### `roko run <prompt>` — Single-shot agent execution
@@ -36,14 +47,13 @@
 
 ---
 
-## Dead Code (FEATURE-GATED, NOT COMPILED BY DEFAULT)
+## Dead Code (DELETED or FEATURE-GATED)
 
-### `orchestrate.rs` — 23,331 lines
-- **Status**: Behind `#[cfg(feature = "legacy-orchestrate")]`, NOT enabled
-- **Contains**: PlanRunner, batch executor, 9-layer prompt builder integration,
-  episode logging, model routing — all superseded by Runner v2
-- **Would only run if**: feature enabled AND `--engine legacy` flag used
-- **Actually**: raises error stub even if feature disabled
+### `orchestrate.rs` — DELETED (2026-07)
+- **Status**: **Deleted** in E12-T07. Previously 23,331 lines behind `legacy-orchestrate` feature.
+- **What happened**: All useful patterns (system prompt builder, episode logging, model
+  routing) were reimplemented in Runner v2. The file was deleted entirely rather than
+  kept behind a feature gate. (QW-4 complete.)
 
 ### `dispatch_direct.rs`
 - **Status**: Behind `legacy-direct-dispatch` feature, NOT enabled
@@ -98,7 +108,7 @@
 - Built but not mounted in agent MCP dispatch
 
 ### Other
-- roko-calc: skeleton with no lib.rs
+- ~~roko-calc~~: DELETED (QW-5 complete). Was an empty skeleton with no lib.rs.
 - roko-acp: exists, listed as dependency, not called from runtime paths
 - VCG auction: built in roko-compose but greedy path dominates at runtime
 
@@ -130,7 +140,7 @@
 | V2 Concept | Current Code | Gap |
 |------------|-------------|-----|
 | Cell | `roko-core/src/cell.rs` — CellId, CellVersion, protocols(), estimated_cost() | Missing execute(), CellContext, schemas |
-| Signal | `Engram` in `roko-core/src/engram.rs`, alias in `signal.rs` | Rename, add balance/demurrage |
+| Signal | `Signal` in `roko-core/src/engram.rs` (file retains old name); `pub type Engram = Signal` backward-compat alias. `balance` field added (QW-3). | DONE (2026-08-12). Struct is `Signal`; backward-compat alias retained. |
 | Pulse | `roko-core/src/pulse.rs` — topic, kind, body, lineage_hint | Matches v2 closely |
 | Bus | `PulseBus` in `roko-core/src/pulse_bus.rs` wrapping EventBus | Matches v2, missing And/Or/Not filters |
 | Store | 6 methods in traits.rs, 4+ implementations | Matches v2 exactly |

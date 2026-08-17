@@ -10,7 +10,7 @@ tags: [learning, verification, gate-verdict, episodes, cascade-router, wired]
 # Learning × Verification
 
 **Direction**: 04-Verification → 05-Learning (verdict feedback into learning runtime)  
-**Status**: **Wired** — `GateVerdict` Engrams flow into `LearningRuntime.record_completed_run()`  
+**Status**: **Wired** — `GateVerdict` Signals flow into `LearningRuntime.record_completed_run()`  
 **Interface**: `roko-gate::GateVerdict` → `roko-learn::LearningRuntime`
 
 ## What Flows
@@ -28,7 +28,7 @@ tags: [learning, verification, gate-verdict, episodes, cascade-router, wired]
 1. Every gate verdict is forwarded to the learning runtime — no silent discarding.
 2. The `AgentEfficiencyEvent` is the richest data structure in the system (28 fields); all learning subsystems consume it.
 3. The learning runtime does not modify gate pipeline behavior directly — it updates router arms and threshold parameters that the gate reads on the next tick.
-4. Verdict Engrams have content-addressed identity — the same verdict cannot be recorded twice.
+4. Verdict Signals have content-addressed identity — the same verdict cannot be recorded twice.
 
 ## Enhancement Opportunities
 

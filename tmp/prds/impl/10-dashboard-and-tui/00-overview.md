@@ -14,7 +14,7 @@ Stabilize the Roko backend surfaces, add the Nexus relay path, complete the dash
 ## Current codebase reality
 
 - TUI tabs F8 Marketplace and F9 Atelier already exist in `crates/roko-cli/src/tui/`.
-- `ProviderHealth`, `ModelComparison`, `EngramDag`, `EpisodeReplay`, and `KnowledgeBrowse` are already represented in the TUI page/subview enums.
+- `ProviderHealth`, `ModelComparison`, `SignalDag`, `EpisodeReplay`, and `KnowledgeBrowse` are already represented in the TUI page/subview enums.
 - `roko-serve` already exposes routes for plans, agents, providers, websocket streaming, projections, and status.
 - The dashboard repo already has routing, design-system components, pages, stores, mock data, websocket helpers, and docs, but still mixes mock/live behavior.
 - The original IMPL assumes more Nexus and jobs infrastructure than currently exists in Roko.

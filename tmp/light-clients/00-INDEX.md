@@ -1,4 +1,11 @@
-# Verified Chain Layer — Design & Implementation Docs
+# Verified Chain Layer -- Design & Implementation Docs
+
+> **What is this?** Phase 2+ design docs for light client chain verification in `roko-chain`.
+> None of these 22 work units have been implemented. The ISFR vertical is wired; everything
+> else is shelved pending the daeji devnet. See `.roko/GAPS.md` for current chain module status.
+>
+> **Status**: ARCHIVED -- not implemented
+> **Last updated**: 2026-08-13
 
 ## Quick Start for Implementing Agents
 

@@ -1,6 +1,6 @@
 # Architecture
 
-> The foundational specification of Roko: the one durable datum (`Engram`), the one
+> The foundational specification of Roko: the one durable datum (`Signal`), the one
 > ephemeral datum (`Pulse`), the two fabrics that move them (`Substrate` and the
 > target-state `Bus`), and the six operators (Scorer, Gate, Router, Composer, Policy, and
 > the Substrate/Bus operators) that coordinate the whole system.
@@ -15,7 +15,7 @@
 
 This is Roko's architecture: what the system *is*, not what it *does*. Every concept in
 the runtime — every type, every trait, every composition rule, every layer boundary —
-has its canonical home here. If you need to look up what an Engram is, or how the
+has its canonical home here. If you need to look up what an Signal is, or how the
 universal cognitive loop fits together, or why Roko has three cognitive speeds instead
 of one, this is the place.
 
@@ -30,11 +30,11 @@ passes. It also does not contain guides or tutorials; it is reference.
 Roko is a Rust toolkit for building cognitive agents that improve through use. Its
 architecture is built around:
 
-- **Two mediums.** [`Engram`](concepts/engram.md) is the durable, content-addressed
+- **Two mediums.** [`Signal`](concepts/engram.md) is the durable, content-addressed
   record of cognition. [`Pulse`](concepts/pulse.md) is the ephemeral event that flows
-  through the system and, on graduation, becomes an Engram.
+  through the system and, on graduation, becomes an Signal.
 - **Two fabrics.** [`Substrate`](concepts/substrate.md) is the storage fabric for
-  Engrams. [`Bus`](concepts/bus.md) is the target-state transport fabric for Pulses.
+  Signals. [`Bus`](concepts/bus.md) is the target-state transport fabric for Pulses.
   In the current codebase, `EventBus<E>` is the shipping transport; `Bus` is the
   architectural generalisation it will converge on.
 - **Six operators.** [`Scorer`](concepts/operators.md), [`Gate`](concepts/operators.md),

@@ -1,8 +1,8 @@
 [meta]
 plan = "E31-trigger-system"
 total = 8
-done = 0
-status = "ready"
+done = 8
+status = "done"
 max_parallel = 2
 
 # ── T01: Define TriggerProtocol trait and core types in roko-core ───────
@@ -33,7 +33,7 @@ protocol-level with full spec fidelity (7 source kinds, state machine,
 etc.) -- distinct from the manifest-level stubs.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-core/src/trigger.rs", "crates/roko-core/src/lib.rs"]
 depends_on = []
@@ -119,7 +119,7 @@ from T01. Make it serde-compatible for TOML deserialization with both
 string shorthand ("skip") and struct form ({ kind = "queue", max_depth = 50 }).
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-core/src/trigger.rs"]
 depends_on = ["E31-T01"]
@@ -181,7 +181,7 @@ Check if roko-core already has a SecretRef-like type in the secrets module
 import and use it. If not, define here.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "mechanical"
 files = ["crates/roko-core/src/trigger.rs"]
 depends_on = ["E31-T01"]
@@ -244,7 +244,7 @@ participate in the trigger system without rewriting them. The adapter maps:
 Register the new module in conductor's mod.rs.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-conductor/src/adapter.rs", "crates/roko-conductor/src/lib.rs"]
 depends_on = ["E31-T01"]
@@ -304,7 +304,7 @@ Use the same TOML serde pattern as `load_manifest` in roko-plugin
 from T01-T03. Add a roundtrip unit test.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-fs/src/layout.rs", "crates/roko-core/src/trigger.rs"]
 depends_on = ["E31-T01", "E31-T02", "E31-T03"]
@@ -369,7 +369,7 @@ skeleton for the 4 most important: list, show, create, fire.
 Follow the pattern used by `plan.rs` and other subcommand modules.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-cli/src/commands/trigger.rs", "crates/roko-cli/src/commands/mod.rs"]
 depends_on = ["E31-T05"]
@@ -428,7 +428,7 @@ Follow the pattern of existing route modules like projections.rs (routes at
 projections.rs:21-26) which returns `Router<Arc<AppState>>`.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-serve/src/routes/triggers.rs", "crates/roko-serve/src/routes/mod.rs"]
 depends_on = ["E31-T05"]
@@ -493,7 +493,7 @@ as Pulses on Bus. Add to `crates/roko-core/src/trigger.rs`:
    Queued do NOT graduate (they're noise/ephemeral per spec).
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "mechanical"
 files = ["crates/roko-core/src/trigger.rs"]
 depends_on = ["E31-T01"]

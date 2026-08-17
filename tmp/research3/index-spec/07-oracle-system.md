@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a reference for the Nunchi oracle infrastructure (ISFR rate feeds, attestation).
+> It is reference material for the ISFR product vertical, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # The Oracle System
 
 ## A Self-Contained Reference for the Nunchi Oracle Infrastructure
@@ -266,7 +273,7 @@ Validators perform health checks independently during each computation round. No
 
 **Block header publication.** The finalized ISFR value is included in the block header. Light clients can verify the rate without querying precompile state.
 
-### Structured Knowledge Entries (Engrams)
+### Structured Knowledge Entries (Signals)
 
 Every oracle update produces a structured knowledge entry that enters the InsightStore -- Korai's on-chain knowledge repository:
 

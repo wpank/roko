@@ -37,8 +37,8 @@ Generated: 2026-04-16.
 
 **Status**: DONE
 **Severity**: —
-**Doc claim**: Safety uses `Gate` for verification + `Policy` for enforcement. Every Engram carries provenance by construction.
-**Reality**: `crates/roko-chain/src/gate/{tx_sim_gate,wallet_gate}.rs` implement `roko_core::traits::Gate` (batch 08 F.09-F.10). `roko-agent/src/safety/` enforces via policy composition. Engram provenance tracked in `roko-core/src/provenance.rs` + `engram.rs` (see B.02).
+**Doc claim**: Safety uses `Gate` for verification + `Policy` for enforcement. Every Signal carries provenance by construction.
+**Reality**: `crates/roko-chain/src/gate/{tx_sim_gate,wallet_gate}.rs` implement `roko_core::traits::Gate` (batch 08 F.09-F.10). `roko-agent/src/safety/` enforces via policy composition. Signal provenance tracked in `roko-core/src/provenance.rs` + `__PATH_ENGRAM_RS__0` (see B.02).
 
 ---
 

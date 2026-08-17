@@ -15,7 +15,7 @@ infinity are bugs.
 value they had in `prior`. A scorer that only sets `confidence` must not change `novelty`,
 `utility`, or other axes.
 
-**I3 — Determinism**: Given the same `Engram` and the same `prior`, a scorer must return
+**I3 — Determinism**: Given the same `Signal` and the same `prior`, a scorer must return
 the same `Score` (pure function, no hidden mutable state).
 
 **I4 — No Side Effects on Substrate**: A scorer must not call `substrate.put()` or

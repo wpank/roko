@@ -1,10 +1,24 @@
 # main.rs Decomposition — Implementation Prompt
 
-> **What this is**: Self-contained implementation guide. Each task (M-D001–M-D012)
+> **Last updated: 2026-08-13**
+
+## What is this?
+
+This file is a self-contained implementation plan for decomposing the monolithic `main.rs`
+file, part of the mori-to-roko migration. The goal was to split `main.rs` (12,690 lines,
+135 functions) into focused subcommand modules with zero behavior change.
+
+**Status: DONE.** main.rs was reduced from 12,690 to ~5,600 lines. A `commands/` module
+directory was created with plan, prd, agent, config, knowledge, learn, job, and server
+submodules. This file is retained as a historical reference.
+
+---
+
+> **What this is**: Self-contained implementation guide. Each task (M-D001-M-D012)
 > can be executed by an independent agent.
 >
 > **Goal**: Split `crates/roko-cli/src/main.rs` (12,690 lines, 135 functions) into
-> focused subcommand modules. Zero behavior change — pure extraction.
+> focused subcommand modules. Zero behavior change -- pure extraction.
 
 ## Context
 

@@ -1,3 +1,11 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is the Korai litepaper v2 (April 2026) -- the investor-facing document describing
+> the Korai chain, ISFR benchmark rate, yield perpetuals, and the roko cognitive runtime.
+> It is reference material for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # KORAI
 ## Intelligence Blockchain — Litepaper
 

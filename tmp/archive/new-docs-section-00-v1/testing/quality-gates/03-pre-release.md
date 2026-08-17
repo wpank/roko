@@ -32,7 +32,7 @@ All PR checks plus:
 The E2E suite (see [../tiers/05-end-to-end-tests.md](../tiers/05-end-to-end-tests.md)) verifies:
 1. Full `roko prd → plan run → gate → persist → resume` loop.
 2. Crash-and-resume correctness.
-3. Content-addressing integrity of all persisted Engrams.
+3. Content-addressing integrity of all persisted Signals.
 4. Learning updates are applied correctly.
 
 All E2E tests must pass with zero failures (no retries counted as passing).

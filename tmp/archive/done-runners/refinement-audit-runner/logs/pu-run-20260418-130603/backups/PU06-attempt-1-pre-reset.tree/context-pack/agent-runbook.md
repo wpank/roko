@@ -18,7 +18,7 @@ Refresh the neuro docs so they match the audited repo state. This is a parity an
 
 - State plainly that `roko-neuro` is 7 source files and wired.
 - State plainly that `HdcVector` exists in `crates/roko-primitives/src/hdc.rs` at 345 LOC.
-- Put HDC-on-Engram at the top of the priority list.
+- Put HDC-on-Signal at the top of the priority list.
 - Treat Substrate `query_similar`, cross-domain transfer, Library of Babel, mesh sync, publish/economics, and demurrage as not current-runtime features here.
 - Treat Pulse / Datum / Worldview / Custody as target-state vocabulary unless a source file proves otherwise.
 - Do not rewrite the pack as instructions to modify `orchestrate.rs`, Substrate, or chain code.
@@ -29,7 +29,7 @@ Every PU06 completion note should include:
 
 - which context-pack files changed,
 - that the rewrite follows the 2026-04-17 audit and PU06 prompt,
-- that HDC-on-Engram is listed as top priority,
+- that HDC-on-Signal is listed as top priority,
 - and which concepts were explicitly marked `deferred` or `target-state`.
 
 ## Failure Modes To Avoid

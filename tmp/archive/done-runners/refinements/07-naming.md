@@ -1,6 +1,6 @@
 # Naming Decisions
 
-> **TL;DR**: Keep `Engram` for the durable record. For the ephemeral
+> **TL;DR**: Keep `Signal` for the durable record. For the ephemeral
 > message use **`Pulse`**. Reclaim the name `Signal` only if we really
 > want to — it's on the table but has downsides. Don't use `Event` alone
 > (too generic). The transport trait is `Bus`. The topic identifier is
@@ -8,9 +8,9 @@
 
 ## 1. What we know for sure
 
-**`Engram` stays.** The rename Signal → Engram is already done in code
+**`Signal` stays.** The rename Signal → Signal is already done in code
 (877 occurrences vs. 5 for Signal). The name has neuroscience
-lineage (Semon 1904, Lashley, Tonegawa), and `docs/00-architecture/02-engram-data-type.md`
+lineage (Semon 1904, Lashley, Tonegawa), and `docs/00-architecture/02-signal-data-type.md`
 has a solid justification paragraph for it. Don't touch this.
 
 **`Bus` is the transport trait.** Short, standard in systems-programming
@@ -28,7 +28,7 @@ Bus.
 ### 2.1 `Pulse` — recommended
 
 **Pro**:
-- Neuro-coherent with Engram. An engram is a persistent memory trace;
+- Neuro-coherent with Signal. An signal is a persistent memory trace;
   a pulse is the instantaneous signal that deposits it. The cognitive
   metaphor extends naturally.
 - Not currently used anywhere in the Roko codebase (grep
@@ -53,7 +53,7 @@ distinctive vocabulary.
 ### 2.2 `Signal` (reclaiming)
 
 **Pro**:
-- The name is literally free: the rename Signal → Engram moved the
+- The name is literally free: the rename Signal → Signal moved the
   old type out. Reclaiming `Signal` for the transient event matches
   the original *engineering* meaning of the word (Shannon
   information, POSIX signals, electrical signals).
@@ -61,11 +61,11 @@ distinctive vocabulary.
 
 **Con**:
 - **This is the problem.** Roko's docs and commit history still carry
-  heavy "Signal = Engram" content. Reclaiming `Signal` for a
+  heavy "Signal = Signal" content. Reclaiming `Signal` for a
   different meaning in the same codebase will confuse readers for
   years. Every old doc that says "Signal" will now be wrong in a
   subtly different way.
-- The doc 23 audit and the "Signal ↔ Engram" naming glossary at
+- The doc 23 audit and the "Signal ↔ Signal" naming glossary at
   `docs/00-architecture/01-naming-and-glossary.md` explicitly call
   the two concepts "the same" — reclaiming Signal contradicts that
   statement without erasing it from history.
@@ -86,7 +86,7 @@ distinctive vocabulary.
   an Event type. Imports become noisy.
 - Generic — doesn't carry Roko-specific meaning. The framework's
   distinctive vocabulary gets diluted.
-- Doesn't pair as well with `Engram` (Engram is specific to Roko;
+- Doesn't pair as well with `Signal` (Signal is specific to Roko;
   Event is specific to nothing).
 
 **Verdict**: Workable fallback if `Pulse` is vetoed, but weaker.
@@ -122,21 +122,21 @@ physics-coded; `Ping` is too network-coded; `Beat` is too music-coded.
 
 ## 3. Recommendation
 
-- **Durable**: `Engram`
+- **Durable**: `Signal`
 - **Ephemeral**: `Pulse`
 - **Storage trait**: `Substrate`
 - **Transport trait**: `Bus`
 - **Routing handle**: `Topic`
 - **Filter**: `TopicFilter`
 - **Sequence id**: `u64` (per-bus, per-topic)
-- **Either-medium enum**: `Datum<'a> { Engram(&'a Engram), Pulse(&'a Pulse) }`
+- **Either-medium enum**: `Datum<'a> { Signal(&'a Signal), Pulse(&'a Pulse) }`
 
-The `Signal` name stays retired — it was the old name for Engram, it
+The `Signal` name stays retired — it was the old name for Signal, it
 stays that way, and we don't reclaim it.
 
 ## 4. Module naming
 
-- `crates/roko-core/src/engram.rs` — exists, unchanged
+- `crates/roko-core/src/__PATH_ENGRAM_RS__0` — exists, unchanged
 - `crates/roko-core/src/pulse.rs` — new
 - `crates/roko-core/src/topic.rs` — new
 - `crates/roko-core/src/traits.rs` — extend with `Bus`
@@ -153,8 +153,8 @@ stays that way, and we don't reclaim it.
 
 ## 5. File name for the core docs
 
-- `docs/00-architecture/02a-engram-durable-record.md` (rename from
-  `02-engram-data-type.md`, redirect preserved)
+- `docs/00-architecture/02a-signal-durable-record.md` (rename from
+  `02-signal-data-type.md`, redirect preserved)
 - `docs/00-architecture/02b-pulse-ephemeral-event.md` (new)
 - `docs/00-architecture/07a-substrate-storage-fabric.md` (rename
   from `07-substrate-trait.md`)
@@ -162,13 +162,13 @@ stays that way, and we don't reclaim it.
 
 ## 6. One-line summary that uses all the names
 
-> Roko's kernel has two mediums (**Engram** — durable, content-addressed,
+> Roko's kernel has two mediums (**Signal** — durable, content-addressed,
 > decayed; **Pulse** — ephemeral, topic-addressed, sequenced) moving
 > through two fabrics (**Substrate** — storage; **Bus** — transport),
 > acted on by six operators (**Scorer**, **Gate**, **Router**,
 > **Composer**, **Policy**, and the fabric traits themselves). Data
-> has lineage via the Engram DAG; events have ordering via Bus
-> sequence numbers. Pulses graduate to Engrams when their lineage
+> has lineage via the Signal DAG; events have ordering via Bus
+> sequence numbers. Pulses graduate to Signals when their lineage
 > matters.
 
 Every bolded term is a type or trait in `roko-core` after Phase B.
@@ -229,7 +229,7 @@ bus.publish(Pulse {
 ```
 
 A future `Topic` newtype could carry stronger validation (the dot-separated
-lowercase convention in §2.1 of `02-engram-vs-pulse.md`). Punt that until
+lowercase convention in §2.1 of `02-signal-vs-pulse.md`). Punt that until
 the registry has 100+ topics and reader confusion becomes real.
 
 ## 8. Reserved topic prefixes
@@ -265,10 +265,10 @@ don't accidentally resurrect them:
 
 | Avoided | Why | Prefer |
 |---|---|---|
-| `Signal` for an ephemeral event | Collides with the old `Signal → Engram` rename history | `Pulse` |
+| `Signal` for an ephemeral event | Collides with the old `Signal → Signal` rename history | `Pulse` |
 | `Event` as the primary type name | Collides with tokio/winit/many crates | `Pulse` |
 | `Message` | Overloaded with LLM chat messages | `Pulse` (wire), `ChatMessage` (LLM-specific) |
-| `Signal` for the durable record | Legacy; renamed to Engram | `Engram` |
+| `Signal` for the durable record | Legacy; renamed to Engram (renamed to Signal in 2026-08-12) | `Signal` |
 | `EventBus<E>` as the trait | Ad-hoc generic; not canonical | `Bus` + `Pulse` |
 | `Topic<String>` | Roko uses `Topic` (wraps `String`) | `Topic` |
 | `Channel` | Too generic; used by tokio for different things | `Topic` |

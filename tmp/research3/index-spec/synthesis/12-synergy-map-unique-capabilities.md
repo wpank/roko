@@ -1,3 +1,11 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a synthesis report from a structured deep-research run. It is reference material
+> for pitch/strategy planning, not a roko runtime implementation plan. Some terminology is
+> outdated -- "Engram" has been renamed to "Signal" in the codebase.
+>
+> Last updated: 2026-08-13
+
 # Cross-Direction Synergy Map, Unique Capabilities, and Competitive Moat Analysis
 
 This document synthesizes twelve research directions into compound capabilities that no other technology stack can replicate. It is written for readers with no prior exposure to the project. Every concept is explained from first principles, every paper is cited with its arXiv identifier, and every claim traces to a specific architectural mechanism.
@@ -18,7 +26,7 @@ Three capabilities distinguish Korai from general-purpose EVM chains. First, nat
 
 Roko is approximately 177,000 lines of Rust organized across 18 crates. Its defining property is self-hosting: Roko is the tool that develops Roko. The self-hosting loop has six phases, each a CLI command: capture work items as PRDs, enrich them with research, generate implementation plans as task DAGs, execute those plans by dispatching LLM-backed agents in parallel, validate results through an 11-gate verification pipeline, and persist outcomes while updating learning state.
 
-The runtime supports seven LLM backends (Claude CLI, Codex CLI, Cursor ACP, Ollama, OpenAI HTTP, Perplexity Sonar, Cerebras), a 9-layer system prompt builder with VCG-auction-based context assembly, a cascade model router using contextual bandits (LinUCB) for automatic model selection, and a knowledge store with four-tier demurrage-based retention (Transient/Working/Consolidated/Persistent). Architecture follows one noun (Signal/Engram) and six verb traits (Substrate, Scorer, Gate, Router, Composer, Policy), composing into a universal loop: query, score, route, compose, act, verify, write, react.
+The runtime supports seven LLM backends (Claude CLI, Codex CLI, Cursor ACP, Ollama, OpenAI HTTP, Perplexity Sonar, Cerebras), a 9-layer system prompt builder with VCG-auction-based context assembly, a cascade model router using contextual bandits (LinUCB) for automatic model selection, and a knowledge store with four-tier demurrage-based retention (Transient/Working/Consolidated/Persistent). Architecture follows one noun (Signal) and six verb traits (Substrate, Scorer, Gate, Router, Composer, Policy), composing into a universal loop: query, score, route, compose, act, verify, write, react.
 
 ### ISFR: The SOFR of DeFi
 

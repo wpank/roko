@@ -336,7 +336,7 @@ The useful subset:
 The scope-creep:
 - gRPC: zero use case, adds tonic + protobuf build deps.
 - Three first-party client libraries: for zero external consumers.
-- Five channel types (projection:, topic:, engram-stream:, agent:,
+- Five channel types (projection:, topic:, signal-stream:, agent:,
   session:): over-specified. The current "subscribe to DashboardEvents"
   works.
 - GraphQL (even "maybe, carefully"): no.
@@ -464,7 +464,7 @@ The scope-creep:
 Ten UX primitives: reasoning streams, tool-call banners, gate badges,
 heuristic footnotes, uncertainty bars, replay scrubber, alternative
 renderings, confidence-weighted aggregation, progressive disclosure,
-spatial memory. Plus annotations as Engrams, explainability panel,
+spatial memory. Plus annotations as Signals, explainability panel,
 voice I/O, collaborative presence, keyboard registry.
 
 ### What actually exists
@@ -508,7 +508,7 @@ The rest is premature:
 - Collaborative presence with cursors and live edits: for a
   single-user tool.
 - Voice I/O and ambient sound design: no.
-- Annotation system as Engrams: interesting but premature.
+- Annotation system as Signals: interesting but premature.
 - Keyboard shortcut registry shared across TUI and web: the web
   UI does not exist.
 
@@ -528,9 +528,9 @@ base that doesn't exist.
 
 Docs 29 (web UI) and 30 (rich primitives) depend on 26 (StateHub)
 and 27 (realtime surface). Docs 26 and 27 depend on 03 (Bus) and 02
-(Engram). The dependency chain means you can't ship the UX story
+(Signal). The dependency chain means you can't ship the UX story
 without shipping the kernel story first. And the kernel story
-(engrams, bus, projections) is itself a refactoring proposal, not
+(signals, bus, projections) is itself a refactoring proposal, not
 existing code. The existing StateHub works without any of these
 abstractions.
 

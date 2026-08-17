@@ -42,7 +42,7 @@ where `N = sum of all n_a` and `C` is the exploration constant.
 ## LinUCB (Planned)
 
 LinUCB is a contextual bandit: the reward is a linear function of context features derived
-from the `Engram`'s `Score` and fingerprint. This allows the router to learn that
+from the `Signal`'s `Score` and fingerprint. This allows the router to learn that
 `Action::ExecuteTask` is best when `score.confidence > 0.8 AND kind == Task`, rather than
 globally.
 
@@ -70,7 +70,7 @@ offline evaluation of routing strategies, not live agent operation.
 | Explicit outcome (`outcome.quality`) | User rates the response explicitly |
 | Implicit outcome (session continuation) | User continued the session → positive |
 | Prediction error reduction | Policy reports lower error → positive |
-| Gate rejection on next tick | The action led to a low-quality engram → negative |
+| Gate rejection on next tick | The action led to a low-quality signal → negative |
 
 ---
 

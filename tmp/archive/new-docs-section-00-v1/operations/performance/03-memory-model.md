@@ -14,7 +14,7 @@
 
 Roko's steady-state RSS is ~50–150 MB per process, excluding agent subprocesses and
 the workspace symbol index. Each agent subprocess (spawned for a task) is ~100–200 MB.
-The hot path uses arena allocators and avoids per-Engram heap allocation.
+The hot path uses arena allocators and avoids per-Signal heap allocation.
 
 ---
 
@@ -47,11 +47,11 @@ within a single agent turn:
 The tick arena allocates from a pre-reserved region (default: 1 MB) and resets entirely
 at the end of each agent turn. This means:
 
-- **No per-Engram `malloc` calls** in steady state (Engram fields are allocated in the arena).
-- **No per-Engram `free` calls** — the entire arena is released at turn boundary.
+- **No per-Engram (renamed to Signal in 2026-08-12) `malloc` calls** in steady state (Signal fields are allocated in the arena).
+- **No per-Signal `free` calls** — the entire arena is released at turn boundary.
 - **Cache-friendly** — all data for a single turn is contiguous.
 
-Objects that must outlive a turn (persisted Engrams, playbook rules) are moved from the
+Objects that must outlive a turn (persisted Signals, playbook rules) are moved from the
 arena into the heap-allocated Substrate write buffer before the arena is reset.
 
 ---

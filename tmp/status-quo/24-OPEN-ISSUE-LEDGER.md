@@ -1,6 +1,24 @@
 # Open Issue Ledger
 
-**Date**: 2026-07-08 · HEAD `5852c93c05` on `main`. Evidence detail: [95-ENGINE-DRIFT.md](95-ENGINE-DRIFT.md), [92-RUNNER-V2-MODULE-FAMILY.md](92-RUNNER-V2-MODULE-FAMILY.md), [75-SECURITY-AUTH-SCOPE-MATRIX.md](75-SECURITY-AUTH-SCOPE-MATRIX.md), [60-STATE-PERSISTENCE-LEDGER.md](60-STATE-PERSISTENCE-LEDGER.md), [40-LEARNING-TELEMETRY.md](40-LEARNING-TELEMETRY.md). Second-pass execution traces: [96-TRACE-RUNNER-V2-EXECUTION.md](96-TRACE-RUNNER-V2-EXECUTION.md), [97-TRACE-SERVE-LIFECYCLE.md](97-TRACE-SERVE-LIFECYCLE.md), [99-TRACE-AGENT-TURN.md](99-TRACE-AGENT-TURN.md), [101-TRACE-GATE-PIPELINE.md](101-TRACE-GATE-PIPELINE.md), plus censuses [102](102-SPEC-DEBT-LEDGER.md)/[103](103-DUPLICATE-TYPES-CENSUS.md)/[104](104-DEAD-CODE-AND-FACADE-CENSUS.md).
+**Date**: 2026-08-13 · HEAD `5852c93c05` on `main`. Evidence detail: [95-ENGINE-DRIFT.md](95-ENGINE-DRIFT.md), [92-RUNNER-V2-MODULE-FAMILY.md](92-RUNNER-V2-MODULE-FAMILY.md), [75-SECURITY-AUTH-SCOPE-MATRIX.md](75-SECURITY-AUTH-SCOPE-MATRIX.md), [60-STATE-PERSISTENCE-LEDGER.md](60-STATE-PERSISTENCE-LEDGER.md), [40-LEARNING-TELEMETRY.md](40-LEARNING-TELEMETRY.md). Second-pass execution traces: [96-TRACE-RUNNER-V2-EXECUTION.md](96-TRACE-RUNNER-V2-EXECUTION.md), [97-TRACE-SERVE-LIFECYCLE.md](97-TRACE-SERVE-LIFECYCLE.md), [99-TRACE-AGENT-TURN.md](99-TRACE-AGENT-TURN.md), [101-TRACE-GATE-PIPELINE.md](101-TRACE-GATE-PIPELINE.md), plus censuses [102](102-SPEC-DEBT-LEDGER.md)/[103](103-DUPLICATE-TYPES-CENSUS.md)/[104](104-DEAD-CODE-AND-FACADE-CENSUS.md).
+
+## 2026-08-13 Resolution Update
+
+The following items from this ledger have been RESOLVED since the original audit (2026-07-08):
+
+- **Cold-substrate copy-not-move**: RESOLVED per E02-T12 (cold archival fixed)
+- **Split episode roots**: RESOLVED on 2026-08-14 by layout V3; active readers and writers use `.roko/episodes.jsonl`, with lossless migration and legacy archives
+- **Config secret leak (`config show --effective`)**: RESOLVED per E04-T04 (redaction added)
+- **Custody verify false assurance**: RESOLVED per E04-T07 (SHA-256 hash chain + tamper detection)
+- **RBAC CLI bypass**: ACCEPTED as tech debt (RBAC enforced in serve routes, not CLI — acceptable for now)
+
+The following items remain OPEN but are now tracked in `.roko/GAPS.md`:
+- events.jsonl unbounded firehose — P1
+- Worker callback auth — P1
+- TOOL_COUNT mismatch — P1
+
+### ISFR Deprecation (NEW)
+All ISFR-related items in this ledger are now moot — ISFR is DEPRECATED (2026-08-13).
 
 ## P0
 
@@ -17,7 +35,7 @@
 | Docs teach unsafe/stale commands | Root docs and v2 orchestration docs still imply default plan run is live. | User-facing docs match current engine semantics. |
 | Demo/API has known hard breaks | 4 frontend→serve 404s: `share` vs `shared`, `bench/matrix`, `isfr/stream`, `ws/agents`; plus camelCase/snake_case event drift. | Route aliases or frontend fixes are committed and route-contract tests cover them. |
 | Storage divergence hides dashboards & breaks serve | Gate verdicts write `signals.jsonl` but dashboards read `engrams.jsonl` (empty panels); serve still tries to READ `state/executor.json` (real snapshot is `state-snapshot.json`) → error; `events.jsonl` 44 MB / 97% `feed_tick` firehose. See [60](60-STATE-PERSISTENCE-LEDGER.md). | signals↔engrams converge; serve reads `state-snapshot.json`; event firehose trimmed. |
-| Source docs lack status/provenance tags | 636 source docs plus research/reference corpora are not assigned current/partial/target/stale/archive status. | Generated manifest tags every source doc and maps it to a status-pack owner. |
+| Source docs lack status/provenance tags | 637 source docs plus research/reference corpora require current/partial/target/stale/archive ownership. | Generated manifest tags every source doc and maps it to a status-pack owner. |
 | Ops docs overstate deployment readiness | Root Docker/Railway/dev-compose assume `roko.toml`; compose uses stale `--listen`; Fly configs disagree. | Clean-checkout Docker, compose, Railway, and Fly smoke proofs pass or docs are downgraded. |
 | Maintained root docs are stale | README and CLAUDE still carry old counts, unsafe default `plan run`, old resume/neuro/TUI/tool/safety claims. | Rewrite queue in `81` is completed and root docs cite current proof gates. |
 
@@ -41,7 +59,7 @@
 | `events.jsonl` is a write-only firehose nothing reads ([97](97-TRACE-SERVE-LIFECYCLE.md)) | 44 MB / 157,264 lines, **97% `feed_tick`**; `DashboardSnapshot::apply` treats `FeedTick`/`FeedAgentOnline/Offline` as no-ops (`dashboard_snapshot.rs:1223-1225`) and snapshot bootstrap reads a *different* file (`state/events.json`, `dashboard_snapshot.rs:1277`). Two producers (serve StateHub `DashboardEvent` + `roko plan run` runtime records) append to one uncapped file with two schemas; nothing on the dashboard path reads it back. Reinforces empty-panels. | Cap/rotate `events.jsonl` or stop persisting no-op `DashboardEvent`s; feed panels hydrate from the snapshot on reconnect. |
 | Builtin tool count vs executable handlers ([99](99-TRACE-AGENT-TURN.md)) | `TOOL_COUNT=37` counts registry `ToolDef`s, but only **16** have executable handlers via `handler_for` (`roko-std/.../tool/handlers.rs:28-43`); a call to any of the other ~21 defs passes dispatcher schema/registry stages then fails at handler resolution (`Other("no handler")`, `dispatcher/mod.rs:462`). | `handler_for` and the registry `ToolDef` set agree, or the def-without-handler set is documented explicitly. |
 | Live prompt path bypasses the canonical builder ([103](103-DUPLICATE-TYPES-CENSUS.md) row 12) | Runner-v2 prompts are assembled by the CLI-side `PromptAssembler` (`dispatch/prompt_builder.rs:717`), **not** `SystemPromptBuilder`/12-slot/`RoleSystemPromptSpec`/VCG. The 9-layer builder + VCG attention auction (`roko-compose/auction.rs:380`) run only on non-default paths and are reachable-but-cold (greedy dominates); `AttentionBidder` is compose-path only ([102](102-SPEC-DEBT-LEDGER.md)). So "the 9-layer builder is the live prompt path" is false for `roko plan run`. | One prompt-assembly surface (see [26](26-CANONICAL-DECISIONS.md) D15), or the two are documented as an explicit compat split with the live one named. |
-| Episode roots split | Root, learn, and memory episode logs coexist. | One canonical write path; compatibility readers documented. |
+| Episode roots split — **RESOLVED 2026-08-14** | Layout V3 makes `.roko/episodes.jsonl` the sole active sink and migrates the former learn/memory logs with de-duplication, quarantine, and byte-preserving legacy archives. | Resolved; retain migration regression coverage. |
 | Event model split | Runtime `EventBus`, server `EventBus`, StateHub, DashboardEvent, ServerEvent, RuntimeEvent, learn bus. | Canonical event taxonomy and bridge loss policy documented/tested. |
 | Server auth scopes under-protect routes | Scope matrix escalates only a few prefixes. | Mutating routes require write/admin scopes by default. |
 | API docs are partial | OpenAPI omits many mounted namespaces and does not label synthetic/proxy/in-memory routes. | Generated route manifest and API docs agree on every mounted route family. |

@@ -1,6 +1,15 @@
-# Operations Runbook — Roko + demo-app end-to-end
+# Operations Runbook -- Roko + demo-app end-to-end
 
-Companion to **00-INDEX.md**. Use this after deploy to verify behavior, debug failures, and align load balancers with the right HTTP paths.
+Last updated: 2026-08-13
+
+## What is this?
+
+End-to-end operations guide for a deployed roko instance. Covers health
+check URLs, Railway vs local `roko serve` differences, volume mounts,
+log locations, and troubleshooting. Use this after deploy to verify behavior
+and debug failures.
+
+Companion to **00-INDEX.md**.
 
 ---
 

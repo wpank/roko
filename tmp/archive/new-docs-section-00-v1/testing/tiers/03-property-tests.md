@@ -38,9 +38,9 @@ For the full catalog, see [../by-property/README.md](../by-property/README.md). 
 | Decay | Exponential/linear/step/none all reach or approach zero; decay is monotone non-increasing |
 | Lineage | Parent chain is acyclic; depth is finite; root has no parent |
 | Gate verdicts | Monotonicity with threshold; idempotence on identical input |
-| Substrate operations | Write idempotence; read-after-write consistency; GC preserves living engrams |
+| Substrate operations | Write idempotence; read-after-write consistency; GC preserves living signals |
 | HDC fingerprints | Bundling commutativity; binding is bijective on disjoint bundles |
-| Engram serialization | Round-trip identity; deserialization of any valid serialization succeeds |
+| Engram (renamed to Signal in 2026-08-12) serialization | Round-trip identity; deserialization of any valid serialization succeeds |
 
 ---
 
@@ -87,11 +87,11 @@ Common strategies are defined in `roko-test::strategies`:
 
 | Strategy | Type generated |
 |---|---|
-| `arb_engram()` | `Engram` with valid field ranges |
+| `arb_engram()` | `Signal` with valid field ranges |
 | `arb_score()` | `Score` with axes in [0,1] |
 | `arb_content_hash()` | `ContentHash` (from random bytes) |
 | `arb_decay_params()` | Decay type + parameters in valid ranges |
-| `arb_lineage_dag()` | DAG of `Engram`s with parent chains (no cycles by construction) |
+| `arb_lineage_dag()` | DAG of `Signal`s with parent chains (no cycles by construction) |
 | `arb_gate_input()` | Structurally valid `GateInput` for any gate |
 | `arb_verdict_config()` | Gate config with valid threshold range |
 
@@ -185,7 +185,7 @@ Use both: property tests find what you didn't think of; unit tests assert what y
 ## Open Questions
 
 - Should the property corpus be shared across developers via a git-tracked `proptest-regressions/` directory or via CI artifacts?
-- Is `proptest-derive` worth adding for complex types like `Engram` and `GateInput`?
+- Is `proptest-derive` worth adding for complex types like `Signal` and `GateInput`?
 
 ## See also
 

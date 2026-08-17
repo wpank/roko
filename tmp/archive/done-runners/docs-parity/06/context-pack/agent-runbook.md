@@ -10,7 +10,7 @@ carrying forward the audit's overscope.
 1. Read the current `docs/06-neuro/` pages and the audit notes.
 2. Rewrite only files under `tmp/docs-parity/06/`.
 3. Separate `shipping`, `partial`, and `deferred` claims.
-4. Keep HDC-on-Engram as the top follow-up item.
+4. Keep HDC-on-Signal as the top follow-up item.
 5. Finish by checking `bash -n tmp/docs-parity/06/run-docs-parity.sh`.
 
 Docs-only PASS is valid for PU06 when the batch leaves verified status
@@ -27,4 +27,4 @@ corrections and explicit deferrals.
 
 - files changed under `tmp/docs-parity/06/`
 - the shell syntax check result
-- explicit note that HDC-on-Engram is the next concrete follow-up
+- explicit note that HDC-on-Signal is the next concrete follow-up

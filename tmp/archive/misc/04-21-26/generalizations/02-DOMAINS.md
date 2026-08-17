@@ -1801,7 +1801,7 @@ Roko's 19 built-in tools execute as direct function calls within the same proces
 
 Four reasons this cannot be retrofitted:
 
-**1. You cannot retrofit learning into a stateless loop.** Learning requires a universal data type (Engram) that flows through a substrate (durable store) in a feedback loop (`score → route → compose → act → verify → write → react`). Every component must speak the same type. You cannot add this to a system designed around string-in/string-out tool calls -- the type foundation must exist from day zero.
+**1. You cannot retrofit learning into a stateless loop.** Learning requires a universal data type (Signal) that flows through a substrate (durable store) in a feedback loop (`score → route → compose → act → verify → write → react`). Every component must speak the same type. You cannot add this to a system designed around string-in/string-out tool calls -- the type foundation must exist from day zero.
 
 **2. You cannot retrofit gating into subprocess-based tools.** If tools execute as subprocesses (shell out to `git`, spawn a file editor, call MCP over stdio), the harness cannot gate them in the same stack frame. Gates must inspect tool call intent before execution, in microseconds. Subprocess IPC adds 50-100ms minimum. Over thousands of calls, this is hours of overhead. Native function-call tools enable sub-millisecond gating.
 

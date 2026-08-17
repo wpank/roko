@@ -14,10 +14,10 @@
 
 | Method | Signature | Mut? | Returns |
 |---|---|---|---|
-| `put` | `put(&mut self, engram: Engram) -> Result<(), SubstrateError>` | Yes | Unit or error |
-| `get` | `get(&self, id: &ContentHash) -> Result<Option<Engram>, SubstrateError>` | No | Option or error |
-| `query` | `query(&self, q: &SubstrateQuery) -> Result<Vec<Engram>, SubstrateError>` | No | Vec or error |
-| `query_similar` | `query_similar(&self, fp: &HdcFingerprint, k: usize) -> Result<Vec<Engram>, SubstrateError>` | No | Vec or error |
+| `put` | `put(&mut self, signal: Signal) -> Result<(), SubstrateError>` | Yes | Unit or error |
+| `get` | `get(&self, id: &ContentHash) -> Result<Option<Signal>, SubstrateError>` | No | Option or error |
+| `query` | `query(&self, q: &SubstrateQuery) -> Result<Vec<Signal>, SubstrateError>` | No | Vec or error |
+| `query_similar` | `query_similar(&self, fp: &HdcFingerprint, k: usize) -> Result<Vec<Signal>, SubstrateError>` | No | Vec or error |
 | `prune` | `prune(&mut self) -> Result<usize, SubstrateError>` | Yes | Count removed or error |
 | `len` | `len(&self) -> usize` | No | Record count |
 | `is_empty` | `is_empty(&self) -> bool` | No | `self.len() == 0` |
@@ -29,7 +29,7 @@
 | Variant | Meaning |
 |---|---|
 | `SubstrateError::Io(std::io::Error)` | OS-level I/O failure |
-| `SubstrateError::Serialization(String)` | Cannot serialize/deserialize an `Engram` |
+| `SubstrateError::Serialization(String)` | Cannot serialize/deserialize an `Signal` |
 | `SubstrateError::NotFound(ContentHash)` | Not used by `get` (returns `None`); reserved for future use |
 | `SubstrateError::Backend(String)` | Backend-specific error (e.g., dimension mismatch) |
 

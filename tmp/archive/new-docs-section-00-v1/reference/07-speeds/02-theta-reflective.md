@@ -110,7 +110,7 @@ The Neuro cross-cut has enhanced participation in Theta ticks. When the agent ru
 Theta, Neuro may:
 
 - Perform a "deep retrieval" from the HDC index using a broader similarity threshold
-- Surface related semantic clusters, not just directly matching Engrams
+- Surface related semantic clusters, not just directly matching Signals
 - Include recently-written research notes from prior research agent runs
 
 This is configured in Neuro's speed-tier policy. See

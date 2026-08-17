@@ -1,6 +1,6 @@
-# Engram — Invariants
+# Signal — Invariants
 
-> A complete list of what must always be true about an Engram, and where each invariant is enforced.
+> A complete list of what must always be true about an Signal, and where each invariant is enforced.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -12,7 +12,7 @@
 
 ## TL;DR
 
-Engram invariants fall into three groups: identity invariants (properties of `id`),
+Signal invariants fall into three groups: identity invariants (properties of `id`),
 structural invariants (field constraints), and consistency invariants (relationships
 between fields). Most are enforced by `EngramBuilder::build()`. The Substrate
 re-enforces hash integrity on every ingest. Tests should verify all invariants.
@@ -55,7 +55,7 @@ re-enforces hash integrity on every ingest. Tests should verify all invariants.
 |---|-----------|-------------|
 | C1 | No transitive lineage cycles | `Substrate::ingest()` cycle detection |
 | C2 | `fingerprint.encoder_version` is a registered version (if `Some`) | `Substrate::ingest()` registry lookup |
-| C3 | Tainted Engrams propagate taint to all descendants | `Substrate::taint()` propagation pass |
+| C3 | Tainted Signals propagate taint to all descendants | `Substrate::taint()` propagation pass |
 | C4 | `TrustLevel` upgrades are monotonic (no downgrade without explicit reset) | `Substrate::attest()` validation |
 | C5 | `created_at_ms` clock skew ≤ 60 s produces a warning; > 3600 s produces an error | `Substrate::ingest()` |
 
@@ -67,7 +67,7 @@ re-enforces hash integrity on every ingest. Tests should verify all invariants.
 
 Enforces: I1, S1, S2, S3, S4, S10, S11
 
-The build step is the primary enforcement gate. Any Engram that passes `build()` satisfies
+The build step is the primary enforcement gate. Any Signal that passes `build()` satisfies
 the identity and structural invariants by construction.
 
 ### Substrate::ingest()
@@ -75,9 +75,9 @@ the identity and structural invariants by construction.
 Enforces: I1 (re-verification), C1, C2, C5
 
 The Substrate verifies the hash on every ingest. This catches:
-- Engrams constructed by bypassing the builder.
-- Engrams modified after construction.
-- Engrams replicated from untrusted sources.
+- Signals constructed by bypassing the builder.
+- Signals modified after construction.
+- Signals replicated from untrusted sources.
 
 ```rust
 <!-- source: crates/roko-core/src/substrate.rs -->

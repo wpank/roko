@@ -1,6 +1,19 @@
 # Taskrunner Progress Report
 
-**Last updated**: 2026-05-06T01:30Z
+> **What is this?** Progress tracking for the original taskrunner system that ran 100
+> tasks in 4 batches of parallel agents. This is a historical snapshot -- all 100 tasks
+> completed on `wp-arch2` and that work has long since been merged to main.
+>
+> **Key stale references in this doc (2026-08-13):**
+> - `orchestrate.rs` -- **deleted**. The runner event loop replaced it.
+> - `Engram` references (task 027, 038) -- rename to `Signal` is **complete** (`pub type Signal = Engram`).
+> - Branch `wp-arch2` -- merged to main; the branch may still exist in git history.
+> - "Audit 2 (PENDING)" -- this audit was never formally run as a separate pass; subsequent
+>   runners (post-parity, solutions, etc.) covered the same ground.
+>
+> **Last updated: 2026-08-13**
+
+**Last updated**: 2026-05-06T01:30Z (original)
 **Branch**: `wp-arch2`
 
 ## Summary
@@ -51,7 +64,7 @@ review is critical before merging to main.
    - OTLP tracing layer (flag wired, layer installation is placeholder)
 6. **P1 items from prior audit** (may still be open):
    - Config test isolation (`merge_global: false` in 5 tests)
-   - `ApplyDagMutation` wildcard arm in orchestrate.rs
+   - `ApplyDagMutation` wildcard arm in orchestrate.rs (file since deleted)
    - roko-graph dead files — batch 4 should have resolved most of these
 
 ### Files changed in batch 4
@@ -270,7 +283,7 @@ P0 fixes (all applied in batch 4):
 
 P1 items (may still be open — verify in audit 2):
 - Config test isolation (`merge_global: false` in 5 tests)
-- `ApplyDagMutation` wildcard arm in orchestrate.rs
+- `ApplyDagMutation` wildcard arm in orchestrate.rs (file since deleted)
 - roko-graph dead files (most should be resolved by batch 4 tasks 066-071)
 
 ### Audit 2 (PENDING — next step)

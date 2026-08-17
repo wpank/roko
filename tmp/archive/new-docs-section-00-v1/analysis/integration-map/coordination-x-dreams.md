@@ -13,7 +13,7 @@ tags: [coordination, dreams, pheromones, collective-memory, consolidation]
 
 **Direction**: 13-Coordination → 10-Dreams (pheromone history as input to dream consolidation)  
 **Status**: **Missing (M19)** — Tier 4, ~120 LOC. Depends on M7 (Dreams→Neuro) and M12 (Coordination→Orchestration).  
-**Interface**: `Kind::Pheromone` Engram history → `DreamRunner` consolidation input
+**Interface**: `Kind::Pheromone` Signal history → `DreamRunner` consolidation input
 
 ## What Flows
 
@@ -21,7 +21,7 @@ In multi-agent systems, pheromone trails encode collective knowledge about which
 
 | Signal | From | To | Status |
 |---|---|---|---|
-| Historical `Kind::Pheromone` Engrams | `Substrate` (coordination events) | `DreamRunner` as consolidation input | **Missing** (M19) |
+| Historical `Kind::Pheromone` Signals | `Substrate` (coordination events) | `DreamRunner` as consolidation input | **Missing** (M19) |
 | Collective success patterns (multi-agent) | Pheromone trail analysis | `NeuroStore` collective insights | **Missing** |
 
 ## Dependencies

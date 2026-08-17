@@ -5,7 +5,7 @@
 **Status**: Shipping  
 **Crate**: `roko-core`  
 **Depends on**: [Overview](00-overview.md)  
-**Used by**: [Engram Invariants](../../01-engram/12-invariants.md)  
+**Used by**: [Signal Invariants](../../01-engram/12-invariants.md)  
 **Last reviewed**: 2026-04-19
 
 ---
@@ -28,9 +28,9 @@ These hold regardless of which `Decay` variant is active.
 | U1 | `weight_at(t)` returns a value in `[0.0, 1.0]` for any `t ≥ created_at` | `weight_at()` has a `.clamp(0.0, 1.0)` call |
 | U2 | `weight_at(t)` is non-negative | `max(0.0)` floor in all implementations |
 | U3 | `weight_at(t2) ≤ weight_at(t1)` for `t2 > t1` between mutations (monotonically non-increasing) | Enforced by the math of each model |
-| U4 | Decay is excluded from the Engram's `ContentHash` | `canonical_encode()` skips the `decay` field |
-| U5 | Decay mutation (reinforce, apply_elapsed) never changes the Engram's `ContentHash` | Follows from U4 |
-| U6 | The `Decay` variant may not change for the lifetime of an Engram | Enforced by Substrate; a stored `Decay::Exponential` cannot become `Decay::Demurrage` |
+| U4 | Decay is excluded from the Signal's `ContentHash` | `canonical_encode()` skips the `decay` field |
+| U5 | Decay mutation (reinforce, apply_elapsed) never changes the Signal's `ContentHash` | Follows from U4 |
+| U6 | The `Decay` variant may not change for the lifetime of an Signal | Enforced by Substrate; a stored `Decay::Exponential` cannot become `Decay::Demurrage` |
 | U7 | Serialized `Decay` must deserialize to the same variant | `serde` round-trip test in CI |
 
 ---
@@ -96,9 +96,9 @@ These hold regardless of which `Decay` variant is active.
 
 | # | Invariant | Enforcement layer |
 |---|---|---|
-| T1 | Cold-tier Engrams are not subject to idle decay while cold | Compaction skips cold tier |
-| T2 | Thawed Engrams have `balance = THAW_RESTORE_BALANCE` (for balance-tracking models) | `thaw()` method |
-| T3 | An Engram cannot be in both warm and cold storage simultaneously | Substrate move-then-delete protocol |
+| T1 | Cold-tier Signals are not subject to idle decay while cold | Compaction skips cold tier |
+| T2 | Thawed Signals have `balance = THAW_RESTORE_BALANCE` (for balance-tracking models) | `thaw()` method |
+| T3 | An Signal cannot be in both warm and cold storage simultaneously | Substrate move-then-delete protocol |
 | T4 | `frozen_at_ms ≤ now_ms` at all times | Set at freeze, never updated |
 
 ---
@@ -162,8 +162,8 @@ fn weight_excluded_from_content_hash() {
 |---|---|---|
 | `balance > 1.0` | Score inflation, incorrect ranking | Missing `min(1.0)` cap after deserialization from legacy data |
 | `weight_at` returns negative | GC errors, sort panics | Missing `max(0.0)` floor; only on buggy custom handlers |
-| Decay variant changed for existing Engram | Semantically wrong decay curve | Substrate must reject variant changes on update |
-| Hash includes decay | Different Engrams for same knowledge at different balance | `canonical_encode()` must be audited to exclude `decay` field |
+| Decay variant changed for existing Signal | Semantically wrong decay curve | Substrate must reject variant changes on update |
+| Hash includes decay | Different Signals for same knowledge at different balance | `canonical_encode()` must be audited to exclude `decay` field |
 
 ---
 
@@ -171,7 +171,7 @@ fn weight_excluded_from_content_hash() {
 
 - Should invariant U6 (variant immutability) be relaxed to allow a deliberate
   "decay upgrade" operation (e.g., upgrading Exponential to Demurrage for a
-  heavily-accessed Engram)? This would require a new Substrate operation with
+  heavily-accessed Signal)? This would require a new Substrate operation with
   a migration audit trail.
 - Should invariants be checked at deserialization time with a dedicated `validate()`
   function rather than relying on construction-time checks? Currently no runtime
@@ -180,5 +180,5 @@ fn weight_excluded_from_content_hash() {
 ## See Also
 
 - [`00-overview.md`](00-overview.md) — all decay variants
-- [`../../01-engram/12-invariants.md`](../../01-engram/12-invariants.md) — Engram-level invariants
+- [`../../01-engram/12-invariants.md`](../../01-engram/12-invariants.md) — Signal-level invariants
 - [`10-api-reference.md`](10-api-reference.md) — API signatures for all decay operations

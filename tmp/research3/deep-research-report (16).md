@@ -1,3 +1,11 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a deep research report on agentic UI development with visual gates. The companion
+> architecture spec (`compass_artifact_wf-512d...md` in this directory) is the most
+> implementation-ready proposal for UiGate.
+>
+> Last updated: 2026-08-13
+
 # Agentic UI Development With Self-Improving Visual Gates
 
 ## Executive assessment

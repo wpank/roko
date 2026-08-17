@@ -56,7 +56,7 @@ From the audit master summary — this is the recommended priority order.
 
 ## Ship Now (1-2 weeks total)
 
-1. Add HDC fingerprint field to Engram — `roko-core/src/engram.rs` — 1 day
+1. Add HDC fingerprint field to Signal — `roko-core/src/__PATH_ENGRAM_RS__0` — 1 day
 2. Unify event enums into `RokoEvent` — across 4 crates — 1 week
 3. Add generic `Bus<E>` trait to roko-core — ~100 lines — 2-3 days
 4. Clean up stale "Signal" references — traits.rs, README, kind.rs — 1 hour
@@ -147,7 +147,7 @@ Roko is a Rust workspace at `/Users/will/dev/nunchi/roko/roko/`.
 
 | Crate | Path | LOC | Status |
 |---|---|---|---|
-| roko-core | `crates/roko-core/` | kernel | Stable — Engram + 6 traits + config + tools |
+| roko-core | `crates/roko-core/` | kernel | Stable — Signal + 6 traits + config + tools |
 | roko-agent | `crates/roko-agent/` | large | 8 LLM backends, pools, MCP, tool loop, safety |
 | roko-agent-server | `crates/roko-agent-server/` | medium | Per-agent HTTP sidecar, real LLM dispatch |
 | roko-serve | `crates/roko-serve/` | 30K | HTTP control plane, 200+ routes, SSE, WebSocket |
@@ -176,7 +176,7 @@ Roko is a Rust workspace at `/Users/will/dev/nunchi/roko/roko/`.
 - Test functions: 3,761
 - orchestrate.rs: 17,087 lines
 - Event bus event types: exactly 2 (PlanRevision, PrdPublished)
-- Signal→Engram rename: 99.6% complete
+- Signal→Signal rename: 99.6% complete
 
 ## Concepts with 0 lines of code
 
@@ -267,7 +267,7 @@ A five-tier plugin SPI ranging from "drop a TOML file" (Tier 1) to "WASM sandbox
 
 3. **Are Tiers 4-5 premature?** Massively. Tier 4 proposes a C-FFI ABI bridge (`roko-extension-abi`) for cdylib loading. Tier 5 proposes a full WASM runtime with 7 host imports, CPU budgeting, memory limits, and rate limiting. These are multi-month engineering efforts that solve the problem of untrusted third-party code execution. There are no third parties.
 
-4. **The `roko-wasm-host` crate with host imports like `engram_get`, `bus_publish`, `substrate_query_similar`**: These reference types (`Pulse`, `Engram` graduation, HDC substrate queries) that do not exist in the codebase. There is no `Pulse` type anywhere. There is no `substrate_query_similar`. The WASM host surface is specified against a future codebase that has not been built.
+4. **The `roko-wasm-host` crate with host imports like `engram_get`, `bus_publish`, `substrate_query_similar`**: These reference types (`Pulse`, `Signal` graduation, HDC substrate queries) that do not exist in the codebase. There is no `Pulse` type anywhere. There is no `substrate_query_similar`. The WASM host surface is specified against a future codebase that has not been built.
 
 5. **The plugin registry (`plugins.roko.dev`)**: This is aspirational infrastructure for a community that does not exist. The doc acknowledges this is Phase 2+ but still specifies it in detail.
 
@@ -348,17 +348,17 @@ Checking each claimed innovation:
 | Claimed innovation | Exists in code? | Notes |
 |---|---|---|
 | 1.1 Pulse as first-class type | No | No `struct Pulse` anywhere. The Bus has `RokoEvent`, which is a concrete enum, not a typed ephemeral medium. |
-| 1.2 HDC fingerprint on every Engram | Partial | HDC exists and is used, but Engrams do not have a fingerprint field. The `Engram` struct has no HDC vector. Fingerprinting happens in `roko-learn` and `roko-dreams` as a side-channel, not as a per-Engram property. |
+| 1.2 HDC fingerprint on every Signal | Partial | HDC exists and is used, but Signals do not have a fingerprint field. The `Signal` struct has no HDC vector. Fingerprinting happens in `roko-learn` and `roko-dreams` as a side-channel, not as a per-Signal property. |
 | 1.3 Demurrage | No | Zero code. |
 | 1.4 Heuristic with explicit falsifier | No | One `HeuristicRule` struct in `roko-neuro` with `condition` and `action` fields. No falsifier field, no calibration, no Bayesian updating. |
 | 1.5 Replication ledger | No | Zero code. |
 | 1.6 c-factor as runtime signal | Partial | `CFactor` struct exists, used in routing. Not continuously computed, not surfaced in dashboards. |
 | 1.7 Worldview as emergent object | No | Zero matches for "worldview" or "Worldview" in crates/. |
-| 1.8 Two-fabric operator generalization | No | All six traits operate on `Engram` only. No `Pulse` medium, no dual-fabric dispatch. |
+| 1.8 Two-fabric operator generalization | No | All six traits operate on `Signal` only. No `Pulse` medium, no dual-fabric dispatch. |
 | 1.9 Demurrage-taxed learned parameters | No | Zero code. |
 | 1.10 Prediction markets on heuristics | No | Zero code. |
 | 2.1 Predict-publish-correct loops | No | No prediction-correction wiring. |
-| 2.2 Stigmergy via Engrams | Partial | Agents read/write Engrams, which is trivially stigmergic, but not as a designed coordination pattern. |
+| 2.2 Stigmergy via Signals | Partial | Agents read/write Signals, which is trivially stigmergic, but not as a designed coordination pattern. |
 | 2.4 Dream cycles | Partial | `roko-dreams` exists (~6K lines) with `DreamReplayPolicy`, `DreamReplayMode`, cycle/hypnagogia/imagination modules. But it is Phase 2+ and not wired into the runtime. |
 | 3.1 `roko heuristic` CLI | No | Not a CLI command. |
 | 3.2 `roko dashboard` with c-factor tile | Partial | Dashboard exists. Whether it has a c-factor tile is unclear but c-factor is defined in the dashboard snapshot types. |
@@ -445,7 +445,7 @@ Total: ~10 weeks of focused rewrite work.
 
 ### What the codebase actually has
 
-1. **`roko-core` kernel** is ~41K lines. The "1 noun + 6 verbs" framing is coherent and well-documented. The Engram type is clean. The six traits are clean. The doc says "the current framing actively misrepresents the system" because there is no Pulse -- but the system does not *have* Pulses. The framing is accurate for what exists. Adding Pulse means building a new concept, not correcting a misrepresentation.
+1. **`roko-core` kernel** is ~41K lines. The "1 noun + 6 verbs" framing is coherent and well-documented. The Signal type is clean. The six traits are clean. The doc says "the current framing actively misrepresents the system" because there is no Pulse -- but the system does not *have* Pulses. The framing is accurate for what exists. Adding Pulse means building a new concept, not correcting a misrepresentation.
 
 2. **`roko-learn`** is ~36K lines across 42 files. It is large and has mixed concerns (episodes, bandits, cascade routing, experiments, HDC clustering, pattern discovery, efficiency tracking). But splitting it into 5 crates does not make the code better -- it makes it spread across 5 `Cargo.toml` files. The coupling between components (e.g., cascade router using c-factor, efficiency events feeding into episodes) is *feature-level*, not *accidental*. Breaking these apart means adding `pub` APIs and `Bus` subscriptions where direct function calls currently work.
 
@@ -453,7 +453,7 @@ Total: ~10 weeks of focused rewrite work.
 
 4. **Gate pipeline** in `roko-gate/` is ~11K lines across 24 files. It has 11 gate implementations, a 7-rung pipeline, and adaptive thresholds. The doc's own verdict: "Maybe. Gates are already working; this is cleaner but not unlocking a specific user-facing capability." Correct. The current gates work. Leave them alone.
 
-5. **`roko-compose` engine** is ~25K lines. The 6-layer prompt builder with role templates works. The proposed "query-driven compose" (assemble prompts from HDC-retrieved Engrams instead of fixed templates) is a fascinating idea but depends on (a) HDC fingerprints being on every Engram (they are not), (b) the Substrate having a `query_similar` method (it does not), and (c) enough Engrams existing in the Substrate to make retrieval useful (unknown).
+5. **`roko-compose` engine** is ~25K lines. The 6-layer prompt builder with role templates works. The proposed "query-driven compose" (assemble prompts from HDC-retrieved Signals instead of fixed templates) is a fascinating idea but depends on (a) HDC fingerprints being on every Signal (they are not), (b) the Substrate having a `query_similar` method (it does not), and (c) enough Signals existing in the Substrate to make retrieval useful (unknown).
 
 ### Honest assessment
 
@@ -472,7 +472,7 @@ Section 8 ("what we risk by not committing") argues that incremental patching pr
 ### What to do instead
 
 - **Do not rewrite anything.** Build the features you want (Pulse, demurrage, etc.) when you want them, as new code alongside existing code. The existing code works.
-- **When adding Pulse**: add it as a new type in `roko-core`. Do not rewrite Engram. Let both exist. If they converge on a shared operator trait later, refactor then.
+- **When adding Pulse**: add it as a new type in `roko-core`. Do not rewrite Signal. Let both exist. If they converge on a shared operator trait later, refactor then.
 - **When adding `query_similar` to Substrate**: add it as a default method on the trait that returns `Ok(vec![])`. Implementations opt in. No rewrite needed.
 - **Leave gates and compose alone** until a specific user-facing problem demands a change.
 
@@ -490,9 +490,9 @@ The composition *as specified* would indeed be hard to replicate. But the compos
 
 | Component | Exists in code | Moat claim depends on |
 |---|---|---|
-| Substrate (Engram storage) | Yes | Substrate + HDC + demurrage + freeze/thaw integrated |
+| Substrate (Signal storage) | Yes | Substrate + HDC + demurrage + freeze/thaw integrated |
 | Bus (event system) | Yes (2 event types) | Bus as kernel trait with topic-based subscribe, backpressure |
-| HDC vectors | Yes | HDC fingerprint on every Engram, query_similar |
+| HDC vectors | Yes | HDC fingerprint on every Signal, query_similar |
 | Demurrage | No | Central to memory management and cold-tier |
 | c-factor | Partial | Continuously computed, surfaced in dashboards |
 | Heuristics with falsifiers | No | Calibrated, commons-shared, prediction-market staked |
@@ -529,7 +529,7 @@ That is a real product with real capabilities. The moat docs describe a *future*
 
 1. **Stop writing refinement docs.** 35 is enough. The design is over-specified relative to implementation.
 2. **Ship items 10-11 from `CLAUDE.md`.** Automatic plan generation and feedback loop. One week of work. Closes the self-hosting loop completely.
-3. **If you want one big-bet feature from these docs, pick HDC-per-Engram (innovation 1.2).** The HDC code exists and works. Adding a fingerprint field to `Engram` and populating it at `Substrate::put` time is tractable and would be genuinely novel.
+3. **If you want one big-bet feature from these docs, pick HDC-per-Signal (innovation 1.2).** The HDC code exists and works. Adding a fingerprint field to `Signal` and populating it at `Substrate::put` time is tractable and would be genuinely novel.
 4. **Defer everything else** (Pulse, demurrage, WASM plugins, replication ledger, kernel rewrite, crate splits) until the self-hosting loop has run for a month and produced real data about what needs improving.
 5. **When you do build new features, build them incrementally.** Add methods to existing traits with default implementations. Add types alongside existing types. Do not rewrite working code to accommodate unbuilt features.
 
@@ -737,7 +737,7 @@ These emerged consistently across all 7 audit workstreams as high-value, low-ris
 
 | # | What | Where | Effort | Why |
 |---|---|---|---|---|
-| 1 | **Add HDC fingerprint field to Engram** | `roko-core/src/engram.rs` | 1 day | HdcVector exists (10,240-bit, tested). Episode fingerprinting already works. This is the single highest-value bridge between the learning and memory layers. |
+| 1 | **Add HDC fingerprint field to Signal** | `roko-core/src/__PATH_ENGRAM_RS__0` | 1 day | HdcVector exists (10,240-bit, tested). Episode fingerprinting already works. This is the single highest-value bridge between the learning and memory layers. |
 | 2 | **Unify event enums into `RokoEvent`** | Across 4 crates | 1 week | Four incompatible event enums (2x `AgentEvent`, `RokoEvent`, `ServerEvent`) is the real problem. Unify them. |
 | 3 | **Add generic `Bus<E>` trait to roko-core** | `roko-core/src/traits.rs` | 2-3 days | ~100 lines. Keep it generic (not Pulse-specific). Solves the layer violation. |
 | 4 | **Clean up stale "Signal" references** | traits.rs, README, kind.rs, CLAUDE.md | 1 hour | 40+ stale occurrences across docs and code comments. |
@@ -799,7 +799,7 @@ From the reality-check audit:
 | roko-serve routes | 200+ (not ~85) |
 | TUI code | 58K LOC |
 | roko-learn modules | 42 modules, 35,847 LOC |
-| Signal→Engram rename | 99.6% complete (4 real stragglers) |
+| Signal→Signal rename | 99.6% complete (4 real stragglers) |
 | Event bus event types | Exactly 2 (PlanRevision, PrdPublished) |
 | Demurrage in code | 0 lines |
 | Pulse in code | 0 lines |
@@ -826,7 +826,7 @@ Overall: **3.8 / 5**
 The diagnosis is correct. The prescription (Pulse, Datum, generalized operators, 7-step TickConfig) is overcomplicated. Fix: unify events, add generic Bus trait, update docs. ~1 week instead of 6-7 weeks.
 
 ### Learning (10-16): SIMPLIFY
-The docs undercount what already exists. roko-learn has 42 modules and 36K LOC. HDC fingerprint field on Engram is the highest-value change. Demurrage/worldviews/replication-ledger are premature.
+The docs undercount what already exists. roko-learn has 42 modules and 36K LOC. HDC fingerprint field on Signal is the highest-value change. Demurrage/worldviews/replication-ledger are premature.
 
 ### Moat (17-21): DEFER/SKEPTICAL
 Zero plugin authors, zero external users. The moat is aspirational. Plugin tier 3 (tool manifests) is useful later. Everything else waits.
@@ -877,7 +877,7 @@ Legend:
 | Ref | Title | Verdict | Audit note |
 |---|---|---|---|
 | REF01 | critique one noun | `keep` | The diagnosis is real: transport is under-modeled and the kernel story is too storage-centric. |
-| REF02 | Engram vs Pulse | `keep` | `Pulse` is a good transport noun if used to clarify the redesign rather than force a total renaming campaign. |
+| REF02 | Engram (renamed to Signal in 2026-08-12) vs Pulse | `keep` | `Pulse` is a good transport noun if used to clarify the redesign rather than force a total renaming campaign. |
 | REF03 | Bus as first class | `keep` | This is the strongest foundational follow-up: unify and formalize transport. |
 | REF04 | operators generalized | `narrow` | Good local idea, bad universal law. Medium polymorphism should be proven operator by operator. |
 | REF05 | loop retold | `keep` | Useful as a reference architecture for the redesign, but should guide migration rather than dictate every interface immediately. |
@@ -1009,7 +1009,7 @@ The audit found these specific issues:
 1. **Plugin SPI (REF17)**: Tiers 1-3 (TOML manifests, prompt packs, declarative
    tools) are reasonable but unbuilt. Tiers 4-5 (C-FFI ABI bridge, WASM
    runtime with 7 host imports) are premature -- no third-party code execution
-   need exists. The WASM host surface references types (`Pulse`, `Engram`
+   need exists. The WASM host surface references types (`Pulse`, `Signal`
    graduation, `substrate_query_similar`) that do not exist in code.
 
 2. **Plugin registry (`plugins.roko.dev`)**: Aspirational infrastructure for a
@@ -1060,7 +1060,7 @@ In `docs/20-technical-analysis/00-vision-ta-generalized.md`:
 - If this doc makes moat claims based on the interaction density of 10
   primitives, add a callout:
   `> **Reality check**: Of the 10 primitives cited as moat components, 2 exist
-  > fully (Engram, Substrate), 2 partially (HDC, c-factor), and 6 are
+  > fully (Signal, Substrate), 2 partially (HDC, c-factor), and 6 are
   > unimplemented (Pulse, Bus trait, Demurrage, Heuristic commons, Replication
   > ledger, Plugin SPI). The moat framing is aspirational.`
 

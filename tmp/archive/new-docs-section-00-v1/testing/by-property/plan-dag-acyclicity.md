@@ -61,7 +61,7 @@ proptest! {
 
 ## Related Properties
 
-- [lineage-acyclicity.md](lineage-acyclicity.md) — same structural invariant in Engram lineage
+- [lineage-acyclicity.md](lineage-acyclicity.md) — same structural invariant in Signal lineage
 - [crash-recovery-consistency.md](crash-recovery-consistency.md) — crash recovery assumes valid DAG
 
 ## See also

@@ -1,9 +1,28 @@
 # Implementation Plan: Productionize Roko
 
-This is the master implementation plan. Each task is self-contained with enough context
-for an agent without codebase knowledge to execute it.
+Last updated: 2026-08-13
+
+## What is this?
+
+Master plan for making roko production-ready. 18 tasks (P1-P18) covering
+error handling, security, logging, deployment, and operational hardening.
+Each task is self-contained with enough context for an agent to execute it
+without prior codebase knowledge.
 
 **Read `07-ANTI-PATTERNS.md` before starting any task.**
+
+### Task status (0/18 formally complete)
+
+No tasks have been formally completed through this plan. However, two tasks
+have had significant progress from batch work done outside this plan:
+
+| Task | Concern | External progress (batch 2026-08-12) |
+|------|---------|--------------------------------------|
+| P10  | `.expect()` cleanup | ~25 production `.expect()` calls fixed. ~690 remain but mostly in tests. Mutex-poisoning `.expect()` (priority 1) not yet addressed. |
+| P12  | `eprintln!` -> `tracing` | ~40 calls converted. Largely addressed. |
+| P7   | HTTP timeouts | 8 outbound `reqwest` clients now have 30s timeouts. Inbound Axum `TimeoutLayer` not yet added. |
+
+All other tasks (P1-P6, P8-P9, P11, P13-P18) have had no progress.
 
 ## Task Dependency Graph
 
@@ -569,9 +588,15 @@ cargo run -p roko-cli -- serve 2>&1 | grep "Auth is DISABLED"
 
 ## P7: HTTP server hardening (timeouts, limits, health codes)
 
-**Priority**: HIGH
+**Priority**: HIGH -- PARTIALLY ADDRESSED (see note)
 **Estimated scope**: ~50 lines, 1-2 files
 **Depends on**: nothing
+
+> **Status (2026-08-12):** 8 outbound `reqwest::Client` instances in roko-serve
+> now set 30-second connect/read timeouts. The inbound Axum request-level
+> hardening described below (tower `TimeoutLayer`, `RequestBodyLimitLayer`) has
+> NOT yet been added. Health endpoint still returns 200 regardless of provider
+> status.
 
 ### Context
 
@@ -794,14 +819,20 @@ python3 -c "print('x ' * 100000)" | cargo run -p roko-cli -- run --model claude-
 
 ## P10: Replace critical `expect()` and `unwrap()` calls
 
-**Priority**: HIGH
+**Priority**: HIGH -- PARTIALLY ADDRESSED (see note)
 **Estimated scope**: ~200 lines across 3 files (focus on critical paths only)
 **Depends on**: nothing
 
+> **Status (2026-08-12):** ~25 production `.expect()` calls were fixed in batch
+> 2026-08-12 across multiple crates. ~690 remain workspace-wide, but the vast
+> majority are in `#[cfg(test)]` modules. The priority 1 items below (mutex
+> lock poisoning) have NOT yet been addressed and remain the highest-risk
+> subset. Priority 3 (the generic 92 in orchestrate.rs) is partially done.
+
 ### Context
 
-92 `expect()` calls in orchestrate.rs + 11 mutex `unwrap()`/`expect()` calls that will
-permanently crash on lock poisoning. Focus on the ones in hot paths.
+Originally 92 `expect()` calls in orchestrate.rs + 11 mutex `unwrap()`/`expect()` calls
+that will permanently crash on lock poisoning. Focus on the ones in hot paths.
 
 ### What to do
 
@@ -941,14 +972,20 @@ cargo run -p roko-cli -- knowledge gc
 
 ## P12: Replace `eprintln!()` with structured logging
 
-**Priority**: MEDIUM
+**Priority**: MEDIUM -- ADDRESSED (see note)
 **Estimated scope**: ~80 lines, 1 file
 **Depends on**: nothing
 
+> **Status (2026-08-12):** ~40 `eprintln!()` calls were converted to
+> `tracing::info!` / `tracing::warn!` / `tracing::error!` in batch 2026-08-12.
+> A handful may remain in CLI user-facing output paths, which is acceptable
+> (see anti-pattern #4). This task is largely complete; run the verification
+> commands below to confirm.
+
 ### Context
 
-~50 `eprintln!()` calls in `orchestrate.rs` bypass structured logging. These are in the
-conductor feedback loop, health checks, fleet status, and progress output.
+Originally ~50 `eprintln!()` calls in `orchestrate.rs` bypassed structured logging. These
+were in the conductor feedback loop, health checks, fleet status, and progress output.
 
 ### What to do
 

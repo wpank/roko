@@ -36,9 +36,9 @@ Second-price auctions are **incentive-compatible**: truthful revelation is optim
 each bidder regardless of what others do. This makes the mechanism robust to strategic
 manipulation.
 
-For attention allocation: if Engrams bid for attention using their true importance scores
+For attention allocation: if Signals bid for attention using their true importance scores
 (rather than inflated scores to game the system), a second-price-like mechanism would produce
-efficient allocations. In Roko's current architecture, Engrams do not "bid" strategically
+efficient allocations. In Roko's current architecture, Signals do not "bid" strategically
 (they cannot misrepresent their scores), so incentive compatibility is trivially satisfied —
 but the second-price logic still informs why the Scorer should produce *accurate* importance
 assessments rather than biased ones.
@@ -61,8 +61,8 @@ The practical challenge is computational: finding the welfare-maximizing allocat
 NP-hard in general.
 
 **For Roko:** The VCG framework is relevant when the [Composer](../../../reference/05-operators/composer.md)
-must select a *bundle* of Engrams to include in a synthesis context. Including Engram A
-may increase the value of including Engram B (complementarity) or decrease it (substitution).
+must select a *bundle* of Signals to include in a synthesis context. Including Signal A
+may increase the value of including Signal B (complementarity) or decrease it (substitution).
 VCG would select the bundle that maximizes total synthesis value, accounting for these
 interactions. Current practice uses a greedy selection heuristic — not VCG — because
 the optimization problem is too large. Understanding the VCG ideal clarifies what the
@@ -85,7 +85,7 @@ under partial information. It has been extensively studied (Varian, 2007; Edelma
 - **Reserve prices**: a minimum bid that stimuli must exceed to acquire any attention.
 
 The reserve price concept maps directly to Roko's Gate: the Gate sets the minimum score
-threshold that an Engram must reach to be routed further. It is a reserve price for attention.
+threshold that an Signal must reach to be routed further. It is a reserve price for attention.
 
 ---
 
@@ -100,7 +100,7 @@ condition where information abundance creates attention scarcity. He wrote:
 > attention efficiently among the overabundance of information sources that might consume it."
 
 This is the cognitive economic condition that any sufficiently rich data environment
-(including a high-volume Engram substrate) creates. The allocation mechanism — implicit
+(including a high-volume Signal substrate) creates. The allocation mechanism — implicit
 or explicit — determines what the agent effectively knows and acts on.
 
 ### Goldhaber's Attention Economy
@@ -108,7 +108,7 @@ or explicit — determines what the agent effectively knows and acts on.
 Michael Goldhaber (1997) articulated the concept of the **attention economy**: in a world
 of information abundance, attention is the binding scarce resource, and economic value
 flows to whatever captures attention. While Goldhaber was writing about the internet economy,
-the same logic applies within a cognitive architecture: the "currency" that enables Engrams
+the same logic applies within a cognitive architecture: the "currency" that enables Signals
 to be acted upon is attention, and the design of the attention allocation mechanism is
 equivalent to designing the economic rules of the system.
 

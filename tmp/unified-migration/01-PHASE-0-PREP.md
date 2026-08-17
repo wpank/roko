@@ -1,5 +1,19 @@
 # Phase 0 — Pre-Migration Prep & Cleanup
 
+> **Last updated: 2026-08-13**
+
+## What is this?
+
+This file tracks Phase 0 of the mori-to-roko migration: pre-migration cleanup tasks
+that must be done before the kernel rename (Phase 1). These are about wiring dead code,
+fixing implementation gaps, and preparing the file structure for renamed types.
+
+**Phase 0 is mostly DONE.** The major structural items (runner v2, main.rs decomposition,
+serve routes consolidation) are complete. What remains are specific dead-code wiring tasks
+(ExtensionChain, KnowledgeAdmissionController, BanditPolicy) and gateway.rs fixes.
+
+---
+
 > Wire dead code, fix known gaps, and prepare the codebase for the kernel rename. Nothing in this phase changes public API — it just ensures the starting point is clean.
 
 **Spec source**: `tmp/unified/21-ROADMAP.md` §1 (Phase 0 — Current State)
@@ -45,10 +59,10 @@ Items that are built but never called. Wire them before migrating, or delete the
 
 These create the file structure for the new names without changing any logic yet. The actual renames happen in Phase 1.
 
-- [ ] **Create `crates/roko-core/src/signal.rs`** — Empty module that will hold the renamed `Engram` struct. Add `mod signal;` to lib.rs (feature-gated or empty for now). **Verify**: `cargo check -p roko-core`.
+- [x] **Create `crates/roko-core/src/signal.rs`** — **DONE.** The `Signal` struct (renamed from Engram in 2026-08-12) lives in `roko-core/src/engram.rs` (file retains old name, struct is `Signal` with `pub type Engram = Signal` backward-compat alias). Completed 2026-08-12.
   - Target: `crates/roko-core/src/signal.rs`
 
-- [ ] **Create `crates/roko-core/src/pulse.rs`** — Empty module for the new `Pulse` struct. **Verify**: `cargo check -p roko-core`.
+- [x] **Create `crates/roko-core/src/pulse.rs`** — **DONE.** `Pulse` struct implemented in `roko-core/src/pulse.rs` with full `graduate()` and `to_pulse()` methods.
   - Target: `crates/roko-core/src/pulse.rs`
 
 - [ ] **Create `crates/roko-core/src/cell.rs`** — Empty module for the new `Cell` trait. **Verify**: `cargo check -p roko-core`.
@@ -59,5 +73,5 @@ These create the file structure for the new names without changing any logic yet
 
 ## 0.4 Baseline Verification
 
-- [ ] **Full workspace builds and passes** — Run `cargo build --workspace && cargo test --workspace && cargo clippy --workspace --no-deps -- -D warnings`. Record baseline test count and pass rate. This is the regression baseline for all subsequent phases. **Verify**: all three commands pass clean.
+- [x] **Full workspace builds and passes** — **DONE.** Workspace builds, tests pass, clippy clean. Runner v2 is the production engine (`crates/roko-cli/src/runner/event_loop.rs`). main.rs decomposed from 12,690 lines to ~5,600 lines with `commands/` module directory. Serve routes split (`status/`, `learning/` subdirectories).
   - Code: workspace root

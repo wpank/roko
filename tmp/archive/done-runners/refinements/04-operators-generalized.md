@@ -2,14 +2,14 @@
 
 > **TL;DR**: Keep the six existing traits — Scorer, Gate, Router,
 > Composer, Policy, plus the two fabric traits Substrate and Bus. Change
-> their signatures so they naturally accept either a durable Engram or an
+> their signatures so they naturally accept either a durable Signal or an
 > ephemeral Pulse where it makes sense. No new traits; no merges.
 
 > **For first-time readers**: Roko today has five non-fabric traits — Scorer
 > (rate), Gate (verify), Router (choose), Composer (assemble under budget),
 > Policy (react to streams) — plus Substrate (storage). This doc adds Bus
 > (transport) as a seventh trait and generalizes the five over a new `Datum`
-> enum that is either an Engram or a Pulse. The six-operator count stays the
+> enum that is either an Signal or a Pulse. The six-operator count stays the
 > same; the seventh slot is the Bus we promoted in 03. Read 02 and 03 first
 > for the two mediums and two fabrics; this doc is how the verbs align to
 > both.
@@ -18,13 +18,13 @@
 
 | Trait | Role | Input | Output | Medium |
 |---|---|---|---|---|
-| **Substrate** | Persist / query durable records | `Engram` | `Vec<Engram>` | Engram |
+| **Substrate** | Persist / query durable records | `Engram (renamed to Signal in 2026-08-12)` | `Vec<Signal>` | Signal |
 | **Bus** | Publish / subscribe live events | `Pulse`, `TopicFilter` | `BusReceiver<Pulse>` | Pulse |
 | **Scorer** | Rate an item along multi-dim axes | `&Datum` (either) | `Score` | Either |
-| **Gate** | Verify against external truth | `&Datum` (usually Engram, sometimes Pulse window) | `Verdict` (which is itself an Engram) | Either → Engram |
+| **Gate** | Verify against external truth | `&Datum` (usually Signal, sometimes Pulse window) | `Verdict` (which is itself an Signal) | Either → Signal |
 | **Router** | Choose among candidates | `&[Datum]` | `Option<Selection>` | Either |
-| **Composer** | Combine many into one under a budget | `&[Datum]`, `&Budget`, `&dyn Scorer` | `Engram` | Either → Engram |
-| **Policy** | React to streams, emit new data | `&[Pulse]` | `PolicyOutputs` ( Pulses + Engrams ) | Pulse → Either |
+| **Composer** | Combine many into one under a budget | `&[Datum]`, `&Budget`, `&dyn Scorer` | `Signal` | Either → Signal |
+| **Policy** | React to streams, emit new data | `&[Pulse]` | `PolicyOutputs` ( Pulses + Signals ) | Pulse → Either |
 
 `Datum` is a small enum:
 
@@ -43,13 +43,13 @@ impl Datum<'_> {
 }
 ```
 
-Each operator decides whether it accepts `&Engram`, `&Pulse`, or
+Each operator decides whether it accepts `&Signal`, `&Pulse`, or
 `&Datum`. The trait signatures below describe the recommended choice.
 
 ## 2. Substrate — unchanged
 
 `Substrate` stays exactly as it is today. It is the storage fabric for
-Engrams. Zero signature changes.
+Signals. Zero signature changes.
 
 ## 3. Bus — new
 
@@ -93,7 +93,7 @@ pub trait Scorer: Send + Sync {
 ```
 
 The second form is probably better — it lets hot-path scorers stay
-zero-allocation on Engrams and only pay conversion cost on Pulses if
+zero-allocation on Signals and only pay conversion cost on Pulses if
 they're scored at all.
 
 **Use cases enabled by Pulse-scoring:**
@@ -148,7 +148,7 @@ pub trait Gate: Send + Sync {
 - **LivenessGate** that watches `agent.msg.chunk` timing and trips if
   an agent goes silent for N seconds.
 
-A Verdict is still always an Engram — the audit DAG is preserved.
+A Verdict is still always an Signal — the audit DAG is preserved.
 
 ## 6. Router — generalizes across both mediums
 
@@ -222,10 +222,10 @@ pub trait Composer: Send + Sync {
 **Use cases enabled by Pulse-input composers:**
 
 - **LiveContextComposer** that builds an up-to-the-moment context
-  window including both stored episodes (Engrams) and the last N
+  window including both stored episodes (Signals) and the last N
   stream chunks (Pulses).
 - **TelemetryRollupComposer** that consolidates a minute of
-  `agent.tokens.used` Pulses into a single `TokenUsageSummary` Engram.
+  `agent.tokens.used` Pulses into a single `TokenUsageSummary` Signal.
 
 ## 8. Policy — the big reshape
 
@@ -256,22 +256,22 @@ pub struct PolicyOutputs {
 
 This is the most consequential signature change. Policies are the
 reactive layer, and reacting naturally happens over Pulses, not
-stored Engrams. Today's implementations that want to react to stored
-Engrams (e.g. EpisodePolicy consolidating recent episodes) subscribe
+stored Signals. Today's implementations that want to react to stored
+Signals (e.g. EpisodePolicy consolidating recent episodes) subscribe
 to a `substrate.engram.stored` topic that the Substrate emits when
-an Engram lands. That topic is one of the "Substrate emits, Bus
+an Signal lands. That topic is one of the "Substrate emits, Bus
 delivers" bridges.
 
 **Existing Policy implementations and their migration:**
 
 | Policy | Today | After |
 |---|---|---|
-| `EpisodePolicy` | Iterates over episode Engrams | Subscribes to `substrate.engram.stored` filtered to `kind = Episode` |
+| `EpisodePolicy` | Iterates over episode Signals | Subscribes to `substrate.engram.stored` filtered to `kind = Episode` |
 | `ConductorPolicy` | Watches circuit breaker state | Subscribes to `gate.failure.rate`, `agent.health.*` |
-| `PheromonePolicy` (Phase 2) | Watches pheromone Engrams | Subscribes to `mesh.pheromone.deposited` |
+| `PheromonePolicy` (Phase 2) | Watches pheromone Signals | Subscribes to `mesh.pheromone.deposited` |
 | `CircuitBreakerPolicy` | Watches gate history | Subscribes to `gate.verdict.emitted`, computes rolling EMA, publishes `gate.failure.rate` |
 | `HeartbeatPolicy` (new) | n/a | Publishes `heartbeat.tick` at Gamma/Theta/Delta rates |
-| `MetricPolicy` | `decide(&[], ctx) -> Vec<Engram{Metric}>` | Publishes `metric.*` Pulses; optionally graduates on a cadence |
+| `MetricPolicy` | `decide(&[], ctx) -> Vec<Signal{Metric}>` | Publishes `metric.*` Pulses; optionally graduates on a cadence |
 
 ## 9. Why no new traits
 
@@ -281,7 +281,7 @@ holds. What changes is:
 
 - **Signatures generalize** to accept `Datum` or a `&[Pulse]`.
 - **Bus joins the kernel** at the same level as Substrate.
-- **Policy's input changes** from `&[Engram]` to `&[Pulse]` because
+- **Policy's input changes** from `&[Signal]` to `&[Pulse]` because
   that's what it was secretly already consuming.
 
 No new traits, no merges, no splits. The six operations plus two
@@ -291,12 +291,12 @@ fabrics plus two mediums is the complete kernel grammar.
 
 Replace:
 
-> Roko is one noun (Engram) and six verb traits (Substrate, Scorer,
+> Roko is one noun (Signal) and six verb traits (Substrate, Scorer,
 > Gate, Router, Composer, Policy).
 
 With:
 
-> Roko's kernel is two mediums (durable Engrams, ephemeral Pulses)
+> Roko's kernel is two mediums (durable Signals, ephemeral Pulses)
 > moving through two fabrics (Substrate for storage, Bus for
 > transport), acted on by six operators (Scorer, Gate, Router,
 > Composer, Policy — and Substrate/Bus count as the storage and
@@ -361,21 +361,21 @@ this section is the per-call-site checklist.
 
 | Trait | Today's sig | After | Per call-site change |
 |---|---|---|---|
-| Scorer | `score(&Engram, &Context) -> Score` | add `score_pulse`, `score` | old calls still compile; new Pulse calls land as work unblocks them |
-| Gate | `verify(&Engram, &Context) -> Verdict` | add `verify_stream(&[Pulse], &Context)` | only stream-gates need change; Engram gates unchanged |
-| Router | `select(&[Engram], &Context)` | add `select_pulse` | only Pulse-routing use cases need change |
-| Composer | `compose(&[Engram], budget, scorer, ctx)` | `compose(&[Datum], ...)` | callers wrap `&Engram` as `Datum::Engram(e)` — trivial |
-| Policy | `decide(&[Engram], ctx)` | `decide(&[Pulse], ctx)` | breaking. Migrate per subsystem via temporary shim that subscribes to `substrate.engram.stored` |
+| Scorer | `score(&Signal, &Context) -> Score` | add `score_pulse`, `score` | old calls still compile; new Pulse calls land as work unblocks them |
+| Gate | `verify(&Signal, &Context) -> Verdict` | add `verify_stream(&[Pulse], &Context)` | only stream-gates need change; Signal gates unchanged |
+| Router | `select(&[Signal], &Context)` | add `select_pulse` | only Pulse-routing use cases need change |
+| Composer | `compose(&[Signal], budget, scorer, ctx)` | `compose(&[Datum], ...)` | callers wrap `&Signal` as `Datum::Engram(e)` — trivial |
+| Policy | `decide(&[Signal], ctx)` | `decide(&[Pulse], ctx)` | breaking. Migrate per subsystem via temporary shim that subscribes to `substrate.engram.stored` |
 
 The Policy change is the only breaking one. The phased plan in 06
 introduces a shim Policy that subscribes to a `substrate.engram.stored`
-topic and re-emits as an Engram-slice Policy call so existing
+topic and re-emits as an Signal-slice Policy call so existing
 implementations work during the migration. The shim deletes when the
 last consumer is migrated.
 
 ## 13. Cross-references
 
-- The two-medium split is in `02-engram-vs-pulse.md`.
+- The two-medium split is in `02-signal-vs-pulse.md`.
 - The Bus trait and its methods are in `03-bus-as-first-class.md`.
 - The revised seven-step loop that uses these generalized operators is
   in `05-loop-retold.md`.

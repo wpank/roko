@@ -1,10 +1,10 @@
 # Pulse — Overview
 
-> A Pulse is a lightweight, ephemeral event that flows across the Bus without being stored as an Engram.
+> A Pulse is a lightweight, ephemeral event that flows across the Bus without being stored as an Signal.
 
 **Status**: Specified  
 **Crate**: `roko-core` (planned)  
-**Depends on**: [Engram](../01-engram/00-overview.md), [Bus](../04-bus/README.md) (planned)  
+**Depends on**: [Signal](../01-engram/00-overview.md), [Bus](../04-bus/README.md) (planned)  
 **Last reviewed**: 2026-04-19
 
 > **Legend:**  
@@ -15,11 +15,11 @@
 
 ## TL;DR
 
-The Roko system uses two kinds of records: Engrams (durable, stored in the Substrate)
+The Roko system uses two kinds of records: Signals (durable, stored in the Substrate)
 and Pulses (ephemeral, routed over the Bus). Most runtime signals — heartbeat ticks,
 probe results, prediction errors, gate events — do not need to persist. They are Pulses.
 When a Pulse is significant enough to warrant durable storage, a subscriber graduates it
-into an Engram.
+into an Signal.
 
 ---
 
@@ -40,11 +40,11 @@ properties:
 Pulse addresses both: it is a typed event envelope with a named `Topic`, a `TopicFilter`
 subscription mechanism, and a `PulseSource` origin attribution field.
 
-### Engram vs. Pulse: When to Use Which
+### Signal vs. Pulse: When to Use Which
 
-| Question | Engram | Pulse |
+| Question | Engram (renamed to Signal in 2026-08-12) | Pulse |
 |----------|--------|-------|
-| Should it be retrievable tomorrow? | Yes → Engram | No → Pulse |
+| Should it be retrievable tomorrow? | Yes → Signal | No → Pulse |
 | Is it content-addressed? | Yes | No |
 | Does it need scoring? | Yes | No (Pulses have no score axis) |
 | Does it need decay? | Yes | No (Pulses have no decay; they expire on delivery) |
@@ -53,7 +53,7 @@ subscription mechanism, and a `PulseSource` origin attribution field.
 | Is it produced by the current heartbeat tick? | Possibly | Typically |
 
 A useful heuristic: if you would ever want to retrieve this event by content hash or
-by semantic similarity 24 hours later, it should be an Engram. If it is purely for
+by semantic similarity 24 hours later, it should be an Signal. If it is purely for
 immediate notification, it should be a Pulse.
 
 ---
@@ -74,7 +74,7 @@ External world
 ```
 
 The Bus receives Pulses, routes them by Topic and TopicFilter, and delivers them to
-registered subscribers. Subscribers decide whether to graduate a Pulse into an Engram.
+registered subscribers. Subscribers decide whether to graduate a Pulse into an Signal.
 The graduation decision is governed by configurable rules (see
 [`03-graduation-rules.md`](03-graduation-rules.md)).
 
@@ -85,10 +85,10 @@ The graduation decision is governed by configurable rules (see
 See [`05-today-vs-planned.md`](05-today-vs-planned.md) for the full migration plan.
 
 **Today:** `EventBus<E>` with type-based dispatch. No named topics, no filter subscriptions,
-no `PulseSource`. The Engram type (as `Signal`) flows through both the Bus and the Substrate.
+no `PulseSource`. The Signal type (as `Signal`) flows through both the Bus and the Substrate.
 
 **Target state:** `Pulse` envelope with `Topic`, `TopicFilter`, and `PulseSource`. The
-`EventBus<E>` is wrapped or replaced by `Bus`. Engrams are never sent over the Bus directly;
+`EventBus<E>` is wrapped or replaced by `Bus`. Signals are never sent over the Bus directly;
 a `Pulse` wraps a reference or a `Datum` union type.
 
 ---
@@ -96,5 +96,5 @@ a `Pulse` wraps a reference or a `Datum` union type.
 ## See Also
 
 - [`01-specification.md`](01-specification.md) — Pulse struct fields and lifecycle
-- [`../01-engram/00-overview.md`](../01-engram/00-overview.md) — Engram (durable counterpart)
+- [`../01-engram/00-overview.md`](../01-engram/00-overview.md) — Signal (durable counterpart)
 - [`05-today-vs-planned.md`](05-today-vs-planned.md) — migration plan

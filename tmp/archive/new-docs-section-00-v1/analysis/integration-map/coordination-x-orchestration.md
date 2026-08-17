@@ -13,7 +13,7 @@ tags: [coordination, orchestration, pheromones, stigmergy, agent-mesh, multi-age
 
 **Direction**: 13-Coordination → 01-Orchestration (pheromone signals inform task scheduling)  
 **Status**: **Missing (M12)** — Tier 4, ~150 LOC. Blocked on Agent Mesh transport (Readiness Audit G26).  
-**Interface**: `Kind::Pheromone` Engrams from coordination subsystem → `roko-orchestrator::PlanRunner`
+**Interface**: `Kind::Pheromone` Signals from coordination subsystem → `roko-orchestrator::PlanRunner`
 
 ## What Flows
 
@@ -57,7 +57,7 @@ Estimated LOC: ~150 (single-agent path; multi-agent path requires Agent Mesh).
 ## Invariants of the Interaction
 
 1. Pheromone signals are advisory, not mandatory — the orchestrator can override them.
-2. Pheromone Engrams are time-decaying (`Decay::HalfLife`) — stale signals have diminishing influence.
+2. Pheromone Signals are time-decaying (`Decay::HalfLife`) — stale signals have diminishing influence.
 3. In single-agent mode, pheromone signals encode cross-session memory of path quality.
 4. In multi-agent mode, pheromone signals encode real-time stigmergic coordination.
 

@@ -15,14 +15,14 @@ Generated: 2026-04-18.
 
 **Status**: DEFERRED
 **Severity**: LOW
-**Doc claim**: Doc 14 specifies namespaces with ACLs, typed cognitive signals, cognitive scheduling, and Engram syscalls.
+**Doc claim**: Doc 14 specifies namespaces with ACLs, typed cognitive signals, cognitive scheduling, and Signal syscalls.
 **Audit reality**: These are not shipped as a coherent kernel subsystem. Some adjacent primitives exist elsewhere in the platform, but the chapter should be rewritten as deferred status-calibration material, not as a near-term architecture program.
 
 This applies to:
 - namespace / ACL kernel objects
 - typed interrupt channels as a dedicated kernel surface
 - kernel-style scheduling
-- universal Engram syscall enforcement
+- universal Signal syscall enforcement
 
 ---
 

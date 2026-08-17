@@ -209,7 +209,7 @@ primitive because every other primitive sits on top of it.
 ## 3. Annotations as first-class objects
 
 Users should be able to *annotate* anything: an episode, a
-heuristic, a plan, a diff. Annotations are Engrams too:
+heuristic, a plan, a diff. Annotations are Signals too:
 
 ```rust
 pub struct Annotation {
@@ -395,7 +395,7 @@ the `16-research-to-runtime.md` spirit):
 - Progressive disclosure (Nielsen again).
 - Krug's "don't make me think" (spatial memory).
 
-Each primitive cites. Each cite becomes a Paper Engram and the
+Each primitive cites. Each cite becomes a Paper Signal and the
 primitive's effectiveness becomes a Claim to replicate.
 
 ## 14. Priority
@@ -508,13 +508,13 @@ Several primitives need TUI-native renderings, not just web:
 - **Uncertainty bars**: unicode block characters `▁▂▃▄▅▆▇█`.
 
 Implementation shares state with web via StateHub projections, so
-the same Engrams and Pulses drive both. Difference is purely
+the same Signals and Pulses drive both. Difference is purely
 rendering.
 
 ## 20. Cross-references
 
 - Data contracts each primitive consumes:
-  `02-engram-vs-pulse.md`, `03-bus-as-first-class.md`.
+  `02-signal-vs-pulse.md`, `03-bus-as-first-class.md`.
 - Projections that feed most primitives:
   `26-statehub-rearchitecture.md`.
 - TUI-specific implementation:

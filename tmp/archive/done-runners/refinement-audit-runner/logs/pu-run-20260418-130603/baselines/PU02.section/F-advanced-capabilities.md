@@ -148,7 +148,7 @@ pub trait EventSource: Send + Sync + 'static {
     async fn start(&self, sender: SignalSender, cancel: CancellationToken) -> Result<()>;
 }
 ```
-The implementation exceeds the doc spec: it is async, long-lived, and publishes `Engram` signals rather than returning a `Vec<DomainEvent>`. Two concrete implementations ship:
+The implementation exceeds the doc spec: it is async, long-lived, and publishes `Signal` signals rather than returning a `Vec<DomainEvent>`. Two concrete implementations ship:
 - `CronEventSource` (`crates/roko-plugin/src/lib.rs:198`) — schedule-driven
 - `FileWatchEventSource` (`crates/roko-plugin/src/lib.rs:67`) — filesystem-driven
 
@@ -245,7 +245,7 @@ pub enum AgentComposition {
 `CompositeAgent` struct at line 214 wraps a named `AgentComposition` and implements `Agent` at line 451. All four composition methods are fully implemented:
 - `run_pipeline()` at line 310 — sequential with short-circuit on failure
 - `run_parallel()` at line 355 — uses `futures::join_all`
-- `run_conditional()` at line 391 — deserializes `Task` from engram body, uses `SkillSelector`
+- `run_conditional()` at line 391 — deserializes `Task` from signal body, uses `SkillSelector`
 - `run_mixture()` at line 412 — fan-out via parallel, then aggregator agent
 
 `SkillSelector` at line 44 routes by `TaskCategory`, `TaskComplexityBand`, `TaskReasoningLevel`, `TaskSpeedPriority`, `TaskQualityProfile` — richer than the doc's HDC-based proposal.

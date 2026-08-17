@@ -23,7 +23,7 @@ or more refinement docs:
 
 | # | Primitive | Home doc |
 |---|---|---|
-| P1 | Engram (durable medium) | 02 |
+| P1 | Engram (renamed to Signal in 2026-08-12) (durable medium) | 02 |
 | P2 | Pulse (ephemeral medium) | 02 |
 | P3 | Bus (transport fabric) | 03 |
 | P4 | Substrate (storage fabric) | 03, existing code |
@@ -44,18 +44,18 @@ A compact table. Rows are what each primitive *provides*. Columns are
 what it provides *to*. Entries are short — see the subsections for
 depth.
 
-| ↓ gives → to → | P1 Engram | P2 Pulse | P3 Bus | P4 Substrate | P5 HDC | P6 Dem. | P7 Heur. | P8 c-fct | P9 Repl. | P10 Plug. |
+| ↓ gives → to → | P1 Signal | P2 Pulse | P3 Bus | P4 Substrate | P5 HDC | P6 Dem. | P7 Heur. | P8 c-fct | P9 Repl. | P10 Plug. |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **P1 Engram** | — | graduation src | publish target | store target | encode target | balance owner | lineage | cohort artifacts | paper body | plugin config target |
+| **P1 Signal** | — | graduation src | publish target | store target | encode target | balance owner | lineage | cohort artifacts | paper body | plugin config target |
 | **P2 Pulse** | graduation dest | — | payload | sub events | — | reinforce sig | calib trial | cohort events | ledger obs | plugin event |
 | **P3 Bus** | `substrate.*` | delivery | — | notify | — | reinforce ch | falsif watch | cohort floor | watchdog | lifecycle evt |
 | **P4 Substrate** | home | — | bridge | — | store fp | balance home | heur store | metric src | ledger store | plugin state |
 | **P5 HDC** | fp field | — | — | index key | — | novelty score | fp-matching | diversity | paper search | encoder slot |
 | **P6 Dem.** | weight | — | — | tier logic | — | — | freshness | minority sub. | anti-drift | plugin aging |
-| **P7 Heur.** | Engram var | — | prediction/outcome | store | cluster | rein signal | — | peer model | claim body | heuristic plugin |
+| **P7 Heur.** | Signal var | — | prediction/outcome | store | cluster | rein signal | — | peer model | claim body | heuristic plugin |
 | **P8 c-fct** | cohort record | — | metrics topic | metric store | diversity src | — | peer-pred | — | cohort repl | c-factor plugin |
-| **P9 Repl.** | paper engram | — | watchdog topic | ledger store | paper fp | claim decay | lifted claim | ledger obs | — | claim plugin |
-| **P10 Plug.** | plugin engram | plugin events | plugin topics | plugin reads | plugin encoder | plugin budget | new heur src | new metric | new claim | — |
+| **P9 Repl.** | paper signal | — | watchdog topic | ledger store | paper fp | claim decay | lifted claim | ledger obs | — | claim plugin |
+| **P10 Plug.** | plugin signal | plugin events | plugin topics | plugin reads | plugin encoder | plugin budget | new heur src | new metric | new claim | — |
 
 Reading the matrix: the column "P5 HDC" shows what everybody gives to
 HDC — P1 provides encoding targets, P4 provides the index key slot,
@@ -73,11 +73,11 @@ you can point at in a running Roko instance (or a future one).
 
 Ingredients: P4, P5, P6.
 
-- Substrate stores each Engram with fingerprint.
+- Substrate stores each Signal with fingerprint.
 - Demurrage taxes balance per unit time.
 - `ReinforceKind::Surprised` weight is `bonus × novelty`, where
   `novelty = 1 - max(similarity with top-K neighbors)` via HDC.
-- Common/duplicate Engrams get little bonus; unique Engrams get
+- Common/duplicate Signals get little bonus; unique Signals get
   large bonus.
 
 Effect: memory self-trims toward *uniquely useful* rather than
@@ -110,11 +110,11 @@ Ingredients: P3, P5, P8.
 Effect: the runtime actively guards against monoculture. Requires all
 three; any one alone is descriptive, not regulatory.
 
-### 3.4 Replication ledger × Heuristics × Paper Engram → living research
+### 3.4 Replication ledger × Heuristics × Paper Signal → living research
 
 Ingredients: P1, P7, P9.
 
-- Paper as Engram lives in Substrate.
+- Paper as Signal lives in Substrate.
 - Claims derived from the paper become Heuristics (lifted from the
   `From<Claim>` impl in 16 §4).
 - Watchdogs subscribe to outcome Pulses; ledger updates when
@@ -155,7 +155,7 @@ on heuristic-level predictions.
 
 Ingredients: P1, P2, P4.
 
-- Delta-speed Dreams loop reads recent Engrams (P4, P1).
+- Delta-speed Dreams loop reads recent Signals (P4, P1).
 - Re-consolidates with *current* priors — retrospective learning.
 - Publishes `engram.promoted` Pulses (P2) so consumers (Composer,
   StateHub) update their caches.
@@ -200,7 +200,7 @@ Ingredients: P10 (domain profiles) + 25 §8.1 (TypedContext) + 25 §8.2
 - Every action carries a `TypedContext` of the situation it happens in.
 - Gates match on typed predicates rather than free-text.
 - Custody records who acted, why (heuristics), how (claims), and
-  what happened, signed and stored as Engrams.
+  what happened, signed and stored as Signals.
 
 Effect: every Ops/Blockchain/Compliance-sensitive action is auditable
 after the fact with full provenance, without the team having to
@@ -231,9 +231,9 @@ starting:
 
 Example: "live voice interface for the agent." Walking the matrix:
 - P2 Pulse: voice chunks are Pulses on `agent.voice.chunk`. New topic.
-- P4 Substrate: does voice produce Engrams? Only if transcribed and
+- P4 Substrate: does voice produce Signals? Only if transcribed and
   graduated. Introduce a `VoiceTurn` kind.
-- P6 Demurrage: voice-turn Engrams should decay quickly (high volume,
+- P6 Demurrage: voice-turn Signals should decay quickly (high volume,
   low per-turn value).
 - P10 Plugin: voice is a tier-3 plugin (tool) and tier-4 client
   (speaker/microphone binding).
@@ -288,7 +288,7 @@ Three properties Roko-the-whole has that Roko-any-subset doesn't:
    predicts, every prediction is calibrated, every calibration
    updates weights via Bus. The runtime is a distributed online
    learner with no central training script.
-2. **Inspectability at every level.** Pulse lineage + Engram
+2. **Inspectability at every level.** Pulse lineage + Signal
    lineage + heuristic provenance + claim citation means no
    decision is black-box. Contrast: an LLM wrapper with logs.
 3. **Substrate neutrality.** HDC + demurrage + heuristics produce

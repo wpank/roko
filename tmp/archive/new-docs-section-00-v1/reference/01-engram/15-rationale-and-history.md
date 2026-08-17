@@ -1,6 +1,6 @@
-# Engram — Rationale and History
+# Signal — Rationale and History
 
-> Why the Engram is designed the way it is; what was rejected; the retirement of the `Signal` name.
+> Why the Signal is designed the way it is; what was rejected; the retirement of the `Signal` name.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -11,11 +11,11 @@
 
 ## TL;DR
 
-The Engram evolved from a simple `Signal` struct used as an event envelope into a
+The Signal evolved from a simple `Signal` struct used as an event envelope into a
 universal datum with content addressing, scoring, decay, provenance, and HDC fingerprinting.
 The key design decisions: one type (not many), content addressing (not id assignment), 
 score-excluded-from-hash (not frozen quality), and the Demurrage model (not simple exponential).
-The name changed from `Signal` to `Engram` to better reflect the neuroscience analogy
+The name changed from `Signal` to `Signal` to better reflect the neuroscience analogy
 and to distinguish it from `Pulse` (ephemeral events).
 
 ---
@@ -28,29 +28,29 @@ The original type was named `Signal`, following the analogy of neural signals. T
 was accurate for the original use case (an event envelope flowing through a pipeline) but
 became misleading as the type grew:
 
-1. "Signal" implies transience — signals happen and are gone. But Engrams are durable.
-2. "Signal" implies a narrow purpose. Engrams carry knowledge, verdicts, traces, plans.
+1. "Signal" implies transience — signals happen and are gone. But Signals are durable.
+2. "Signal" implies a narrow purpose. Signals carry knowledge, verdicts, traces, plans.
 3. The planned `Pulse` type (ephemeral events) would be a much better "signal" analogy.
 
-The canonical term is now **Engram**. The Rust code still uses `Signal` pending a rename
-refactor. Callers should treat `Signal` and `Engram` as identical.
+The canonical term is now **Signal**. The Rust code still uses `Signal` pending a rename
+refactor. Callers should treat `Signal` and `Signal` as identical.
 
 The retirement of `Signal` is tracked in
 [`_migration/cluster-A-engram.md`](../../_migration/cluster-A-engram.md).
 
-### `Engram` (canonical architectural term — current)
+### `Signal` (canonical architectural term — current)
 
-"Engram" comes from neuroscience: the hypothetical physical trace of a memory in the brain
-(Richard Semon, *Die Mneme*, 1904; Karl Lashley, 1950 engram search experiments; Tonegawa
-et al., *Science* 2015, first direct observation of memory engrams). 
+"Signal" comes from neuroscience: the hypothetical physical trace of a memory in the brain
+(Richard Semon, *Die Mneme*, 1904; Karl Lashley, 1950 signal search experiments; Tonegawa
+et al., *Science* 2015, first direct observation of memory signals). 
 
 In Roko, the analogy is precise:
-- A memory engram is content-addressed by the pattern of neural activation.
-- A Roko Engram is content-addressed by BLAKE3.
-- Memory engrams decay unless reinforced (synaptic potentiation).
-- Roko Engrams decay unless retrieved (Demurrage reinforcement).
-- Memory engrams have a lineage — one memory triggers recall of related memories.
-- Roko Engrams have a lineage DAG.
+- A memory signal is content-addressed by the pattern of neural activation.
+- A Roko Signal is content-addressed by BLAKE3.
+- Memory signals decay unless reinforced (synaptic potentiation).
+- Roko Signals decay unless retrieved (Demurrage reinforcement).
+- Memory signals have a lineage — one memory triggers recall of related memories.
+- Roko Signals have a lineage DAG.
 
 ---
 
@@ -93,7 +93,7 @@ worthwhile given the composability gains.
 **Chosen**: BLAKE3 content hash. Two agents observing the same fact produce the same id.
 No coordination required. Deduplication is automatic.
 
-The cost: if two Engrams with different content accidentally hash to the same value
+The cost: if two Signals with different content accidentally hash to the same value
 (collision), the system would treat them as identical. BLAKE3 collision probability is ≈
 2⁻¹²⁸ per pair. This is treated as impossible in practice.
 
@@ -105,13 +105,13 @@ The cost: if two Engrams with different content accidentally hash to the same va
 
 **Rejected** because:
 
-1. A Scorer evaluating an Engram it just produced would produce a circular dependency
+1. A Scorer evaluating an Signal it just produced would produce a circular dependency
    (the score depends on the id, the id depends on the score).
 
 2. Outcome-driven scoring (updating `utility` after a gate verdict) would require creating
-   a new Engram — the old one would be orphaned in the lineage DAG.
+   a new Signal — the old one would be orphaned in the lineage DAG.
 
-3. Reputation updates (from attestation) would similarly require creating new Engrams.
+3. Reputation updates (from attestation) would similarly require creating new Signals.
 
 **Chosen**: score is excluded from the hash. Scorers can recompute freely. Outcome-driven
 and reputation-driven score updates modify the score in-place without changing identity.
@@ -141,7 +141,7 @@ but never retrieving it) incurs a cost.
 
 ## Design Decision: Optional HDC Fingerprint (Not Mandatory)
 
-**Considered**: mandatory fingerprint on every Engram.
+**Considered**: mandatory fingerprint on every Signal.
 
 **Rejected** because:
 
@@ -181,13 +181,13 @@ the fingerprint. Test substrates can skip it with `EngramBuilder::skip_fingerpri
 | 2025 Q3 | HDC fingerprint added; BLAKE3 content addressing |
 | 2025 Q4 | Provenance (author, trust, taint); Demurrage decay model |
 | 2026 Q1 | Lineage DAG formalized; 3 extended score axes added |
-| 2026 Q2 (current) | `Signal` → `Engram` rename in architecture docs; code rename pending |
+| 2026 Q2 (current) | `Signal` → `Signal` rename in architecture docs; code rename pending |
 
 ---
 
 ## Open Questions
 
-- When will the code rename from `Signal` to `Engram` occur? (Tracked as a refactor task)
+- When will the code rename from `Signal` to `Signal` occur? (Tracked as a refactor task)
 - Should `body` sub-structs be moved to `roko-types` crate for cleaner dependencies?
 - Should Body have a `Raw(Vec<u8>)` catch-all variant for forward compatibility?
 
@@ -197,13 +197,13 @@ the fingerprint. Test substrates can skip it with `EngramBuilder::skip_fingerpri
 
 - Semon, R. (1904). *Die Mneme*. Engelmann, Leipzig.
 - Lashley, K. S. (1950). In search of the engram. *Symposia of the Society for Experimental Biology*, 4, 454–482.
-- Tonegawa, S., Liu, X., Ramirez, S., & Redondo, R. (2015). Memory engram cells have come of age. *Neuron*, 87(5), 918–931.
+- Tonegawa, S., Liu, X., Ramirez, S., & Redondo, R. (2015). Memory signal cells have come of age. *Neuron*, 87(5), 918–931.
 - Kanerva, P. (2009). Hyperdimensional computing: An introduction to computing in distributed representation with high-dimensional random vectors. *Cognitive Computation*, 1(2), 139–159.
 
 ---
 
 ## See Also
 
-- [`00-overview.md`](00-overview.md) — the Engram today
+- [`00-overview.md`](00-overview.md) — the Signal today
 - [`reference/02-pulse/00-overview.md`](../02-pulse/00-overview.md) — the `Pulse` type that replaced `Signal` for ephemeral events
 - [`reference/10-types/decay/01-demurrage.md`](../10-types/decay/01-demurrage.md) — Demurrage rationale

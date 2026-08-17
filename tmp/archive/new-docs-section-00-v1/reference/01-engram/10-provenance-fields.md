@@ -1,6 +1,6 @@
-# Engram — Provenance Fields
+# Signal — Provenance Fields
 
-> The `provenance: Provenance` field records who produced the Engram, at what trust level, and what taint it inherits.
+> The `provenance: Provenance` field records who produced the Signal, at what trust level, and what taint it inherits.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -12,9 +12,9 @@
 
 ## TL;DR
 
-Every Engram carries a `Provenance` that records the author (included in identity hash),
+Every Signal carries a `Provenance` that records the author (included in identity hash),
 the trust level (not in hash), and any taint inherited from upstream. Taint is
-one-directional: once an Engram is tainted, its descendants inherit that taint. Trust
+one-directional: once an Signal is tainted, its descendants inherit that taint. Trust
 levels form a hierarchy from `LocalAgent` to `ChainWitness`.
 
 ---
@@ -25,8 +25,8 @@ Without provenance, you cannot answer: "Who said this? Should I trust it? Has it
 contaminated by a known-bad source?" Provenance makes these questions answerable at
 any point in the lineage chain.
 
-Taint is the "blast radius" mechanism: if an Engram is discovered to be produced by a
-compromised or untrustworthy source, its `taint` flag is set, and all descendant Engrams
+Taint is the "blast radius" mechanism: if an Signal is discovered to be produced by a
+compromised or untrustworthy source, its `taint` flag is set, and all descendant Signals
 inherit the taint automatically. The system can then quarantine the entire affected subtree.
 
 ---
@@ -35,7 +35,7 @@ inherit the taint automatically. The system can then quarantine the entire affec
 
 The `Provenance` type is specified in detail in
 [`../10-types/provenance/`](../10-types/provenance/README.md). This page covers the
-attachment of Provenance to Engram.
+attachment of Provenance to Signal.
 
 ### The Provenance Field
 
@@ -123,7 +123,7 @@ let engram = EngramBuilder::new()
 
 ## Taint Propagation
 
-Taint is a boolean flag that propagates through the lineage DAG. When an Engram's
+Taint is a boolean flag that propagates through the lineage DAG. When an Signal's
 `tainted` is set to `true`, all its descendants are automatically tainted by the Substrate's
 taint propagation pass:
 
@@ -148,7 +148,7 @@ explicit operator action.
 
 ## Trust Upgrades via Attestation
 
-Trust levels can be upgraded without changing the Engram's id:
+Trust levels can be upgraded without changing the Signal's id:
 
 ```rust
 <!-- source: crates/roko-core/src/substrate.rs -->
@@ -191,7 +191,7 @@ engram.provenance.trust < min_trust → fail
 
 ### Taint Filtering
 
-Retrievals can exclude tainted Engrams:
+Retrievals can exclude tainted Signals:
 
 ```rust
 substrate.find_similar(query, threshold, limit, /* exclude_tainted = */ true)
@@ -201,7 +201,7 @@ substrate.find_similar(query, threshold, limit, /* exclude_tainted = */ true)
 
 ## Invariants
 
-1. `provenance.author` is included in the identity hash; changing author → new Engram
+1. `provenance.author` is included in the identity hash; changing author → new Signal
 2. `provenance.tainted` is not in the identity hash; taint can be set post-hoc
 3. `provenance.trust` is not in the identity hash; trust can be upgraded by attestation
 4. `TrustLevel` values are ordered: `LocalAgent < SelfVerified < PeerVerified < ChainWitness`
@@ -214,7 +214,7 @@ substrate.find_similar(query, threshold, limit, /* exclude_tainted = */ true)
 |---------|-------|----------|
 | Taint not propagated | Substrate taint pass not run | Run `substrate.propagate_taint()` on schedule |
 | Incorrect trust level | Author misconfigured | `attest()` to correct; audit custody record |
-| Anonymous Engram in production | `.provenance()` not called on builder | Lint rule: warn on `Provenance::anonymous()` in production |
+| Anonymous Signal in production | `.provenance()` not called on builder | Lint rule: warn on `Provenance::anonymous()` in production |
 
 ---
 

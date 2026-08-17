@@ -187,7 +187,7 @@ interaction-pair pages, use:
 
 - Concept pages target **8–25 KB**. If a page is much shorter, it probably does
   not have enough substance to justify a file. If a page is much longer, it
-  probably covers two concepts — but check first: some concepts (the Engram, the
+  probably covers two concepts — but check first: some concepts (the Signal, the
   cognitive loop, the five-layer taxonomy) are genuinely large and belong on one
   page.
 - Analysis pages and perspective essays have no length limit; they are

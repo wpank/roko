@@ -1,4 +1,6 @@
-# 02: Feed Trait — ISFRFeed as Third Concrete Implementation
+# 02: Feed Trait -- ISFRFeed as Third Concrete Implementation
+
+> Last updated: 2026-08-13
 
 How ISFRFeed integrates with the Feed trait from taskrunner Wave 4 (task 097), becoming the third concrete Feed implementation alongside FileWatchFeed and ProviderHealthFeed.
 

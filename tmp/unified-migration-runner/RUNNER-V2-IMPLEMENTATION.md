@@ -1,7 +1,22 @@
 # Plan Runner v2 — Implementation Prompt
 
-> **What this is**: A self-contained implementation guide. Each task (R001–R045) can be
-> executed by an independent agent with no prior context. Tasks are ordered — complete
+> **Last updated: 2026-08-13**
+
+## What is this?
+
+This file is a self-contained implementation plan for Runner v2, part of the mori-to-roko
+migration. Runner v2 replaces the monolithic `orchestrate.rs` (21K lines) with a clean
+`runner/` module that streams agent output, flushes persistence per-task, and shows
+real-time progress in the TUI.
+
+**Status: DONE.** Runner v2 is the production plan execution engine. The implementation
+lives at `crates/roko-cli/src/runner/event_loop.rs`. The old `orchestrate.rs` is superseded.
+This file is retained as a historical reference for the design decisions and task breakdown.
+
+---
+
+> **What this is**: A self-contained implementation guide. Each task (R001-R045) can be
+> executed by an independent agent with no prior context. Tasks are ordered -- complete
 > them in sequence. Each task has scope, steps, files, and verification.
 >
 > **Goal**: Replace `orchestrate.rs` (21,478 lines) with a clean `runner/` module

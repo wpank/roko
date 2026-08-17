@@ -12,7 +12,7 @@ tags: [learning, composition, skills, prompts, skill-library, voyager, context-i
 # Learning × Composition
 
 **Direction**: 05-Learning → 03-Composition (skill injection into prompts); also 03-Composition → 05-Learning (playbooks, wired)  
-**Status**: **Partially Wired** — `Kind::Playbook` Engrams flow from Learning to Composition; **Missing**: Skill library injection (M4 gap)  
+**Status**: **Partially Wired** — `Kind::Playbook` Signals flow from Learning to Composition; **Missing**: Skill library injection (M4 gap)  
 **Interface**: `roko-learn::SkillLibrary` → `roko-compose::SystemPromptBuilder`
 
 ## What Flows
@@ -75,7 +75,7 @@ Expected after implementation:
 
 ## Open Questions
 
-1. Should skills have an explicit freshness/decay model (like Engram decay), or just a `last_used` timestamp?
+1. Should skills have an explicit freshness/decay model (like Signal decay), or just a `last_used` timestamp?
 2. HDC-based cross-domain skill retrieval (the enhancement above) requires roko-index integration — is that M4 scope or a separate M item?
 3. Should skill injection be shown in the TUI dashboard? Users might want to see what skills are being applied.
 

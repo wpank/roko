@@ -5,7 +5,7 @@
 
 **Status**: Shipping
 **Crate**: `roko-core`
-**Depends on**: [Engram](../01-engram/README.md), [ContentHash](../10-types/content-hash.md)
+**Depends on**: [Signal](../01-engram/README.md), [ContentHash](../10-types/content-hash.md)
 **Last reviewed**: 2026-04-19
 
 ---
@@ -167,9 +167,9 @@ pub struct SubstrateQuery {
 | Method | Mutates store | Can error | Returns |
 |---|---|---|---|
 | `put` | Yes | Yes | `()` or error |
-| `get` | No | Yes (I/O only) | `Option<Engram>` |
-| `query` | No | Yes (I/O only) | `Vec<Engram>` |
-| `query_similar` | No | Yes (I/O only) | `Vec<Engram>` |
+| `get` | No | Yes (I/O only) | `Option<Signal>` |
+| `query` | No | Yes (I/O only) | `Vec<Signal>` |
+| `query_similar` | No | Yes (I/O only) | `Vec<Signal>` |
 | `prune` | Yes | Yes | count removed |
 | `len` | No | Never | `usize` |
 | `is_empty` | No | Never | `bool` (default impl) |

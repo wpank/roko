@@ -12,12 +12,12 @@ Roko's core is already domain-agnostic:
 
 | Layer | Generic? | Notes |
 |-------|----------|-------|
-| **Engram** (noun) | Yes | Content-addressed blob with `Kind`, `Body`, `Score`, `Decay`, `Attestation` — no domain coupling |
-| **Substrate** (store) | Yes | `put(Engram)`, `query(Query)`, `query_similar(HdcVector)` — treats data as opaque |
+| **Signal** (noun) | Yes | Content-addressed blob with `Kind`, `Body`, `Score`, `Decay`, `Attestation` — no domain coupling |
+| **Substrate** (store) | Yes | `put(Signal)`, `query(Query)`, `query_similar(HdcVector)` — treats data as opaque |
 | **Scorer** (rate) | Yes | 7 axes: confidence, novelty, utility, reputation, precision, salience, coherence — universal |
-| **Gate** (verify) | Yes* | Trait is generic (`verify(Engram) → Verdict`); implementations skew Rust/code — extensible |
+| **Gate** (verify) | Yes* | Trait is generic (`verify(Signal) → Verdict`); implementations skew Rust/code — extensible |
 | **Router** (decide) | Yes | Bandit-based selection with reward feedback — domain-agnostic |
-| **Composer** (assemble) | Yes | Budget-constrained engram assembly — works for prompts, tx bundles, anything |
+| **Composer** (assemble) | Yes | Budget-constrained signal assembly — works for prompts, tx bundles, anything |
 | **Policy** (react) | Yes | Stream processing: observe engrams/pulses → emit interventions |
 
 **The wrong approach**: Create `TradingStrategy`, `PreTradeGuard`, `VenueAdapter`, `DecisionEngine`, `PositionGuard`, `TradingReflect` — parallel domain-locked traits that duplicate the existing system.
@@ -62,7 +62,7 @@ HeartbeatPolicy (gamma=50ms, theta=2s, delta=30s)
 - Off-chain: Rate limit check before API call, budget check before LLM call, permission check before file write
 - Code: Dry-run before destructive operations, lint before commit
 
-**What to build**: The Gate trait already supports this — `verify(Engram, Context) → Verdict`. The gap is that the *rung pipeline* only runs post-execution in `orchestrate.rs`. Add a second pipeline insertion point:
+**What to build**: The Gate trait already supports this — `verify(Signal, Context) → Verdict`. The gap is that the *rung pipeline* only runs post-execution in `orchestrate.rs`. Add a second pipeline insertion point:
 
 ```
 Action intent (Engram with kind=ActionIntent)
@@ -117,7 +117,7 @@ Each offchain component maps to a *composition* of existing roko traits, not a n
 |----------|-----------------|
 | `BaseStrategy.on_tick()` | `TickPolicy.decide_with_pulses()` on heartbeat interval |
 | 14 strategy implementations | 14 `AgentDefinition` configs with domain-specific prompts + tool allowlists |
-| Strategy parameters (spread, grid intervals) | `AgentDefinition.metadata` (arbitrary key-value) + `tags` on engrams |
+| Strategy parameters (spread, grid intervals) | `AgentDefinition.metadata` (arbitrary key-value) + `tags` on signals |
 | Ensemble voting | `CompositePolicy` with N sub-policies + `VotingGate` aggregation (already exists in roko-gate) |
 | `ClaudeAgentStrategy` | Native roko agent dispatch — already works |
 
@@ -168,14 +168,14 @@ pre_action_gates = ["rate_limit", "branch_protection"]
 
 | Offchain | Roko Composition |
 |----------|-----------------|
-| `evaluate(state, signals, opps, guards)` | `TickPolicy.decide_with_pulses(engrams, pulses, ctx)` |
+| `evaluate(state, signals, opps, guards)` | `TickPolicy.decide_with_pulses(signals, pulses, ctx)` |
 | Priority: risk → exits → entries | Priority `Router` that sorts action candidates by urgency tier |
 | Multi-slot management | `CompositePolicy` with per-slot sub-policies |
 | Pure engine (zero I/O) | `Policy` trait is already pure: `decide()` takes data in, returns actions out |
 
 **Not a new trait.** APEX is a `Policy` implementation that:
 1. Receives pulses (tick events) from heartbeat
-2. Queries substrate for current state (engrams tagged with slot IDs)
+2. Queries substrate for current state (signals tagged with slot IDs)
 3. Runs pre-action gates on each candidate action
 4. Returns prioritized actions via `PolicyOutputs`
 
@@ -184,11 +184,11 @@ pre_action_gates = ["rate_limit", "branch_protection"]
 | Offchain | Roko Composition |
 |----------|-----------------|
 | 5-tier signal classification | `Scorer` with tiers mapped to score axes (confidence for tier, salience for urgency) |
-| OI/volume/funding data | Domain-specific `Engram` kinds ingested via event subscription |
+| OI/volume/funding data | Domain-specific `Signal` kinds ingested via event subscription |
 | Live data feed | Event subscription (already built in roko-conductor: 10 watchers) |
 | Breakout detection | `PatternDiscovery` (already built) + domain-specific pattern definitions |
 
-**What changes**: ChainOracle's `PricePoint` needs additional fields (volume, OI, funding) — but these are just new `Engram` kinds with richer `Body::Json` payloads. The scoring and tier logic uses existing `Scorer` trait with domain-aware axis weights.
+**What changes**: ChainOracle's `PricePoint` needs additional fields (volume, OI, funding) — but these are just new `Signal` kinds with richer `Body::Json` payloads. The scoring and tier logic uses existing `Scorer` trait with domain-aware axis weights.
 
 **Generalized**: the same signal engine pattern works for:
 - DeFi: price/volume/funding signals
@@ -200,10 +200,10 @@ pre_action_gates = ["rate_limit", "branch_protection"]
 
 | Offchain | Roko Composition |
 |----------|-----------------|
-| Multi-market scanning | `Scorer::score()` applied to engrams from multiple sources |
+| Multi-market scanning | `Scorer::score()` applied to signals from multiple sources |
 | Technical overlay (MACD/RSI) | Additional `Scorer` implementations — each indicator is a scoring dimension |
 | Opportunity ranking | `Router::select()` with `UcbBandit` over scored candidates |
-| Liquidation cascade detection | Pattern discovery on chain event stream (sequence of engrams) |
+| Liquidation cascade detection | Pattern discovery on chain event stream (sequence of signals) |
 
 **Already 90% covered by existing traits.** The only gap is that nobody has written DeFi-specific `Scorer` implementations yet. The framework is there.
 
@@ -211,10 +211,10 @@ pre_action_gates = ["rate_limit", "branch_protection"]
 
 | Offchain | Roko Composition |
 |----------|-----------------|
-| Phase 1 (breathe) → Phase 2 (lock) | `Gate` impl with internal state machine (states stored as engrams in substrate) |
+| Phase 1 (breathe) → Phase 2 (lock) | `Gate` impl with internal state machine (states stored as signals in substrate) |
 | Tier-based profit locking | Gate config: `thresholds: Vec<(f32, f32)>` — ROE trigger → lock percentage |
 | Per-slot guard state | `CompositePolicy` manages N gate instances, each with own state |
-| GuardAction: HOLD/CLOSE/TIER_CHANGED | Maps to `Verdict { passed, reason, detail }` + action engrams |
+| GuardAction: HOLD/CLOSE/TIER_CHANGED | Maps to `Verdict { passed, reason, detail }` + action signals |
 
 **Generalizes to**: any progressive state machine where conditions tighten over time. CI example: build starts with lenient timeout → after N minutes, starts failing slow tests → after M minutes, hard-kills everything.
 
@@ -222,10 +222,10 @@ pre_action_gates = ["rate_limit", "branch_protection"]
 
 | Offchain | Roko Composition |
 |----------|-----------------|
-| FIFO P&L attribution | Domain-specific episode post-processor — reads episode engrams, computes round-trip P&L |
+| FIFO P&L attribution | Domain-specific episode post-processor — reads episode signals, computes round-trip P&L |
 | Per-strategy stats | Episodes tagged with `agent_name` — group + aggregate via `Scorer` |
 | Nightly review cycle | Dreams subsystem (already built) triggered on schedule |
-| ReflectMetrics | New `Engram` kind with `Body::Json` containing domain-specific metrics |
+| ReflectMetrics | New `Signal` kind with `Body::Json` containing domain-specific metrics |
 | Convergence analysis | `ForensicReplay` (already built) + domain-specific analysis logic |
 
 **Key reframe**: Don't create `TradingReflect`. Instead, make the episode logger *extensible* — it already records agent turns. Add a post-processing hook that computes domain-specific metrics from episodes:
@@ -248,8 +248,8 @@ For CI: `CIPostProcessor` computes build success rate, mean time to fix, coverag
 | Offchain | Roko Generalization |
 |----------|-------------------|
 | `VenueAdapter.connect()` | `Connector.connect()` — establish session with any external system |
-| `VenueAdapter.get_snapshot()` | `Connector.query(params) → Engram` — read state from any external system |
-| `VenueAdapter.place_order()` | `Connector.execute(action) → Engram` — write to any external system |
+| `VenueAdapter.get_snapshot()` | `Connector.query(params) → Signal` — read state from any external system |
+| `VenueAdapter.place_order()` | `Connector.execute(action) → Signal` — write to any external system |
 | 4 implementations (HyperLiquid, Nunchi, mock, factory) | N implementations: DEX, CEX, RPC, REST API, GitHub, Slack, database, etc. |
 
 ```rust
@@ -325,10 +325,10 @@ Don't create `roko-mcp-defi`. Instead, make tool registration dynamic:
 
 | Offchain Pattern | Generalized Roko Pattern | Status | Domains |
 |-----------------|-------------------------|--------|---------|
-| **Pure Engine** | `Policy` trait: `decide(engrams, ctx) → actions` | Exists | All |
-| **Config + State** | `roko.toml` (immutable) + `.roko/` (mutable) + Engrams in Substrate | Exists | All |
+| **Pure Engine** | `Policy` trait: `decide(signals, ctx) → actions` | Exists | All |
+| **Config + State** | `roko.toml` (immutable) + `.roko/` (mutable) + Signals in Substrate | Exists | All |
 | **Venue Abstraction** | `Connector` trait: `connect/query/execute/health` | **New** | All external systems |
-| **Signal Composition** | `Composer` trait: assemble N scored engrams under budget | Exists | All |
+| **Signal Composition** | `Composer` trait: assemble N scored signals under budget | Exists | All |
 | **Multi-Slot** | `CompositePolicy`: N sub-policies with shared budget | **New** | Parallel sub-tasks in any domain |
 | **Tick-Driven Loop** | `TickPolicy` + heartbeat clock | **Wire** | Continuous agents in any domain |
 | **Pre-Action Pipeline** | Gate pipeline with pre-action insertion point | **Wire** | All domains need pre-checks |

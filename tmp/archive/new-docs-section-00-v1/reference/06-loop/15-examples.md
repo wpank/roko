@@ -25,10 +25,10 @@ This is a routine question — the agent has answered similar questions before.
 
 ### QUERY
 - `QuerySpec`: HDC fingerprint of "scoring axes Roko Score", lookback 60 s, cap 16
-- Result: 8 `Engram` candidates (prior answers about scoring, the Score type docs, etc.)
+- Result: 8 `Signal` candidates (prior answers about scoring, the Score type docs, etc.)
 
 ### SCORE
-- Top candidate: `Engram{kind: Documentation, body: "Score: relevance, recency..."}`,
+- Top candidate: `Signal{kind: Documentation, body: "Score: relevance, recency..."}`,
   composite 0.82 (high relevance + trust)
 - Ranked list of 8 ScoredEngrams
 
@@ -57,8 +57,8 @@ This is a routine question — the agent has answered similar questions before.
 - Verdict: Pass
 
 ### PERSIST
-- Outcome Engram written: `{ verified: true, body: the response, cost: $0.000042 }`
-- Provenance Engram written
+- Outcome Signal written: `{ verified: true, body: the response, cost: $0.000042 }`
+- Provenance Signal written
 
 ### REACT
 - Published: `tick.completed`, `tick.outcome`, `predict.error` (small: prediction
@@ -105,8 +105,8 @@ This is a routine question — the agent has answered similar questions before.
 - Verdict: SoftFail with flag `hallucination_suspected`
 
 ### PERSIST
-- Outcome Engram: `{ verified: false, flags: ["hallucination_suspected"] }`
-- Provenance + Failure Engram written (soft fail)
+- Outcome Signal: `{ verified: false, flags: ["hallucination_suspected"] }`
+- Provenance + Failure Signal written (soft fail)
 
 ### REACT
 - `predict.error` has moderate error (prediction was "pass"; actual was "soft fail")
@@ -139,9 +139,9 @@ a web search. The policy blocks all external network calls.
 - `VerifyResult::skipped_due_to_act_error`
 
 ### PERSIST
-- No Outcome Engram (null output)
-- Provenance Engram: `{ act_blocked: true, policy_reason: "network_calls_disabled" }`
-- Failure Engram written
+- No Outcome Signal (null output)
+- Provenance Signal: `{ act_blocked: true, policy_reason: "network_calls_disabled" }`
+- Failure Signal written
 
 ### REACT
 - Published: `act.blocked`, `tick.failed`, `predict.error` (large: expected "pass")
@@ -176,7 +176,7 @@ distributed deployment).
 - Model call: responds in 1.1 s with a response based solely on the stimulus
 
 ### VERIFY → PERSIST → REACT
-- Normal path; Outcome Engram written without prior-knowledge context
+- Normal path; Outcome Signal written without prior-knowledge context
 
 **Observation**: The agent answered the question without its memory. The answer may be
 less accurate than usual (no prior context), but the tick completed. The

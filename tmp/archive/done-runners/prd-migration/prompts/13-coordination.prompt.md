@@ -4,7 +4,7 @@ You are a fresh Claude Opus agent. Zero prior context. Read every file this prom
 
 ## Your mission
 
-Generate `/Users/will/dev/nunchi/roko/roko/docs/13-coordination/`. Covers stigmergy theory (Grassé, Parunak, Dorigo), digital pheromones (typed Engrams), PheromoneKind enum, PheromoneScope (Local/Mesh/Global), agent mesh sync (WS/Iroh/ERC-8004), morphogenetic specialization, exponential flywheels (Reed's Law), **generalized stigmergy beyond blockchain**.
+Generate `/Users/will/dev/nunchi/roko/roko/docs/13-coordination/`. Covers stigmergy theory (Grassé, Parunak, Dorigo), digital pheromones (typed Signals), PheromoneKind enum, PheromoneScope (Local/Mesh/Global), agent mesh sync (WS/Iroh/ERC-8004), morphogenetic specialization, exponential flywheels (Reed's Law), **generalized stigmergy beyond blockchain**.
 
 ## Step 1 — Context pack (MANDATORY)
 
@@ -49,7 +49,7 @@ Write **13 sub-docs** plus `INDEX.md`:
 | 00 | `00-stigmergy-theory.md` | Grassé 1959 (Insectes Sociaux 6(1)) — the original termite stigmergy paper. Theraulaz 1999 (Artificial Life 5(2)). Dorigo 1997 Ant Colony Optimization (IEEE Trans. Evol. Comp. 1(1)). Indirect coordination through environmental modification. No direct messaging. |
 | 01 | `01-stigmergy-beyond-termites.md` | Generalized to any domain. Coding (git repo commits). Blockchain (Korai knowledge entries). Research (shared Substrate insights). Operations (infrastructure state). Cross-domain (HDC vector space structural patterns). Full table. |
 | 02 | `02-git-as-stigmergy.md` | Git repository as shared environment for coding agents. Each commit is a pheromone. Agents read workspace state, modify it, commit, leave traces. No coordination protocol needed. |
-| 03 | `03-digital-pheromones.md` | Parunak et al. 2002 digital pheromones for multi-agent coordination. Pheromones as typed Engrams with specific decay profiles and response patterns. Full `Pheromone` struct (kind, intensity, decay_rate, source, scope). |
+| 03 | `03-digital-pheromones.md` | Parunak et al. 2002 digital pheromones for multi-agent coordination. Pheromones as typed Signals with specific decay profiles and response patterns. Full `Pheromone` struct (kind, intensity, decay_rate, source, scope). |
 | 04 | `04-pheromone-kinds.md` | Universal: Threat (fast decay, hours), Opportunity (medium decay, days), Wisdom (slow decay, weeks). Domain-specific: Alpha (very fast, minutes — blockchain), Pattern (medium, code), Anomaly (medium), Consensus (slow — multi-agent agreement). User-extensible: Custom(String). |
 | 05 | `05-pheromone-scope.md` | Local(SubstrateId) — this agent's store only. Mesh(CollectiveId) — within a permissioned subnet. Global — public Korai chain. How scope affects decay and propagation. |
 | 06 | `06-agent-mesh-sync.md` | WebSocket (co-located, low latency) + Iroh (NAT-traversing P2P, encrypted) + ERC-8004 (service discovery via Agent Cards). Cross-reference 08-chain.md for chain-side details. |
@@ -58,7 +58,7 @@ Write **13 sub-docs** plus `INDEX.md`:
 | 09 | `09-stigmergy-scaling.md` | O(1) per agent — agents read/write to shared state, not to each other. Adding agents doesn't increase coordination overhead. Self-organizing (useful knowledge rises, bad knowledge decays). Cross-domain (HDC structural analogy). Asynchronous (no clock sync). Fault-tolerant (individual failure doesn't break coordination). |
 | 10 | `10-exponential-flywheel.md` | More agents → more knowledge posted → better collective knowledge → each agent performs better → more agents attracted → even more knowledge → superlinear scaling. Reed's Law (2^N for groups). Metcalfe's Law (N² for networks). O(N) individual contributions → O(N²) network value. |
 | 11 | `11-collective-intelligence-metrics.md` | Connection to C-Factor (cross-reference 00-architecture.md). Turn-taking equality. Knowledge flow rate. Cross-domain transfer. Emergent coordination. Measuring collective intelligence. Woolley et al. 2010. |
-| 12 | `12-current-status-and-gaps.md` | Pheromone types designed but not implemented (Tier 5E P2). Code uses basic Engrams with Decay::THREAT/OPPORTUNITY/WISDOM constants. Pheromone-specific routing and scope enforcement are target features. Agent Mesh not yet wired (Tier 5). |
+| 12 | `12-current-status-and-gaps.md` | Pheromone types designed but not implemented (Tier 5E P2). Code uses basic Signals with Decay::THREAT/OPPORTUNITY/WISDOM constants. Pheromone-specific routing and scope enforcement are target features. Agent Mesh not yet wired (Tier 5). |
 
 Plus `INDEX.md`.
 

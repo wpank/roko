@@ -18,7 +18,7 @@ Concise runtime picture for agents entering `05` without prior context.
 
 ## Highest-Value Near-Term Bridges
 
-- Adding `fingerprint: Option<HdcVector>` to `Engram` remains the clearest ship-now bridge between learning, neuro, and core.
+- Adding `fingerprint: Option<HdcVector>` to `Signal` remains the clearest ship-now bridge between learning, neuro, and core.
 - A typed heuristic calibration struct is a ship-soon follow-on, building on `prediction.rs`, `drift.rs`, `regression.rs`, and `tier_progression.rs`.
 
 ## Explicitly Deferred

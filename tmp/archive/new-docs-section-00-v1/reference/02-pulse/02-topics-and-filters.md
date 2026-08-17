@@ -55,7 +55,7 @@ impl Topic {
 | `agent.output` | Agent produced output |
 | `tool.complete` | Tool call completed |
 | `substrate.gc` | Substrate garbage collection ran |
-| `taint.propagated` | Taint propagated to N Engrams |
+| `taint.propagated` | Taint propagated to N Signals |
 | `health.degraded` | Subsystem health degraded |
 | `health.restored` | Subsystem health restored |
 

@@ -1,5 +1,12 @@
 # productionizing runner
 
+> **What is this?** A runner for 28 batches covering production hardening, frontier
+> capabilities, and deployment economics. Derived from three plans in `tmp/productionizing/`
+> (plans 10, 11, 12). Targets items like panic elimination, security hardening, config
+> consistency, and deployment to Railway/Fly.
+>
+> **Last updated: 2026-08-13**
+
 **Purpose**: Land the unfinished items from `tmp/productionizing/` (plans 10, 11, 12) on `wp-arch2`.
 **Runner format**: parallel-template (codex, worktrees, cherry-pick, 12 concurrent).
 **Issue tracker**: [`ISSUES.md`](./ISSUES.md). Single source of truth for what's open vs done.

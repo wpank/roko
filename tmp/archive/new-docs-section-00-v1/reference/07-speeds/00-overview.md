@@ -86,7 +86,7 @@ the quality improvement is significant.
 Named after the slow-wave sleep band. Delta ticks are not real-time — they run on a
 schedule (typically every few hours) or are triggered by high accumulated free energy.
 Delta ticks execute only the QUERY, SCORE, and PERSIST stages. They do not call models
-or produce external outputs. Instead, they reorganize the substrate: promoting Engrams
+or produce external outputs. Instead, they reorganize the substrate: promoting Signals
 to higher-durability tiers, pruning stale knowledge, rebuilding HDC indexes, and
 updating routing priors.
 

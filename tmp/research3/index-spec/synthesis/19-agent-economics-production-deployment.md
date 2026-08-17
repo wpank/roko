@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a synthesis report from a structured deep-research run. It is reference material
+> for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Agent Economics in Production, Real-World Deployment Lessons, and the Cost Reduction Wedge
 
 This document maps the economics of deploying LLM-backed agents in production as of May 2026. It covers the pricing landscape across model providers, measured per-agent-hour costs by application type, the structural sources of token waste that inflate those costs, the documented levers for cost reduction and how they stack multiplicatively, the break-even calculus for self-hosting versus API consumption, the actual revenue and volume numbers behind Web3 agent economy claims, the deployment patterns that have survived contact with production, and the security incidents that are reshaping procurement decisions across the industry. Every number is sourced. The document is written from scratch for a reader with no prior exposure to agent economics, LLM pricing, or the production deployment landscape.

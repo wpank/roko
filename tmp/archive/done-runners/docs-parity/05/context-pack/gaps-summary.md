@@ -11,7 +11,7 @@ Concise gap list for agents working on learning parity batches.
 
 ### 2. The Best Near-Term Bridge Is Cross-Crate, Not A New Learning Theory — HIGH
 
-- the highest-value learning-adjacent change is still the `Engram` HDC fingerprint field,
+- the highest-value learning-adjacent change is still the `Signal` HDC fingerprint field,
 - that is a small bridge into `roko-core` and `roko-neuro`, not a batch-05 architecture rewrite.
 
 ### 3. Heuristic Calibration Is Ship Soon, Not Missing From Scratch — MEDIUM

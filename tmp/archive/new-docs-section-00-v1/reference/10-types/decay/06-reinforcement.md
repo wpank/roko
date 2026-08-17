@@ -1,6 +1,6 @@
 # Decay — Reinforcement
 
-> The mechanism by which successful Engram retrieval increases its effective weight, countering idle decay.
+> The mechanism by which successful Signal retrieval increases its effective weight, countering idle decay.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -12,7 +12,7 @@
 
 ## TL;DR
 
-Reinforcement is the counterpart to decay. When an Engram is successfully retrieved, its
+Reinforcement is the counterpart to decay. When an Signal is successfully retrieved, its
 decay state is updated to reflect the access: under Demurrage, `balance` increases by
 `reinforcement_per_use`; under Custom/Ebbinghaus, `stability` doubles. Linear and Step decay
 models are **not** reinforced — they are time-only. This page covers the reinforcement
@@ -51,12 +51,12 @@ with a usage-dependent lifetime. -->
 
 ## Reinforcement Protocol
 
-The Substrate calls `reinforce()` on an Engram's decay state under these conditions:
+The Substrate calls `reinforce()` on an Signal's decay state under these conditions:
 
-1. A retrieval query matches the Engram (`ContentHash` or semantic search).
-2. The retrieval is **successful** — the Engram is returned to the caller (not filtered by
+1. A retrieval query matches the Signal (`ContentHash` or semantic search).
+2. The retrieval is **successful** — the Signal is returned to the caller (not filtered by
    score threshold or trust gate).
-3. The Substrate has write access to the Engram's decay fields (non-read-only substrate).
+3. The Substrate has write access to the Signal's decay fields (non-read-only substrate).
 
 ```rust
 <!-- source: crates/roko-core/src/decay.rs -->
@@ -93,7 +93,7 @@ Calling `reinforce()` on an already-full Demurrage balance (`balance = 1.0`) is 
 balance = (1.0 + reinforcement_per_use).min(1.0) = 1.0
 ```
 
-This means a hot Engram retrieved thousands of times stays at exactly 1.0 and does not
+This means a hot Signal retrieved thousands of times stays at exactly 1.0 and does not
 accumulate any overshoot.
 
 ---
@@ -101,7 +101,7 @@ accumulate any overshoot.
 ## Equilibrium Analysis
 
 For Demurrage, there is an equilibrium balance where reinforcement exactly compensates
-for idle tax. If an Engram is retrieved exactly once per day:
+for idle tax. If an Signal is retrieved exactly once per day:
 
 ```
 Δ_decay = balance × idle_tax_per_day         (per day)
@@ -148,8 +148,8 @@ pub fn record_retrieval(&self, id: &ContentHash, now_ms: i64) -> Result<(), Subs
 }
 ```
 
-The `last_retrieved_ms` field is **not** part of the Engram's identity hash (it is mutable
-metadata). It lives in the Substrate's meta-layer alongside the Engram.
+The `last_retrieved_ms` field is **not** part of the Signal's identity hash (it is mutable
+metadata). It lives in the Substrate's meta-layer alongside the Signal.
 
 ---
 
@@ -158,9 +158,9 @@ metadata). It lives in the Substrate's meta-layer alongside the Engram.
 1. `balance ∈ [0.0, 1.0]` after reinforcement — the `min(1.0)` cap enforces this.
 2. Reinforcement is called **at most once per retrieval** — not once per matching query
    in a batch.
-3. Reinforcement on a Custom Engram is delegated to the registered handler; it is never
+3. Reinforcement on a Custom Signal is delegated to the registered handler; it is never
    a no-op silently.
-4. Reinforcement does not change the Engram's `ContentHash` (decay is excluded from the
+4. Reinforcement does not change the Signal's `ContentHash` (decay is excluded from the
    hash — see [ContentHash](../content-hash/00-overview.md)).
 
 ---
@@ -180,13 +180,13 @@ metadata). It lives in the Substrate's meta-layer alongside the Engram.
 
 - Should reinforcement be tracked separately from balance (i.e., a `reinforcement_count`
   field) to enable analytics on retrieval patterns? Not currently stored.
-- Should there be an anti-reinforcement path (mark an Engram as "penalized" after a bad
-  gate verdict)? The pheromone system uses `anti_deposit` for this; an Engram-level
+- Should there be an anti-reinforcement path (mark an Signal as "penalized" after a bad
+  gate verdict)? The pheromone system uses `anti_deposit` for this; an Signal-level
   equivalent is not yet specified.
 
 ## See Also
 
 - [`01-demurrage.md`](01-demurrage.md) — the model where reinforcement has the most effect
 - [`05-custom-decay.md`](05-custom-decay.md) — custom handlers implement `on_retrieve()`
-- [`07-cold-tier-freeze-thaw.md`](07-cold-tier-freeze-thaw.md) — how frozen Engrams skip reinforcement
+- [`07-cold-tier-freeze-thaw.md`](07-cold-tier-freeze-thaw.md) — how frozen Signals skip reinforcement
 - [`08-tier-matrix.md`](08-tier-matrix.md) — per-kind default decay and reinforcement params

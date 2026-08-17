@@ -1,6 +1,6 @@
 # Score — Stable Axes
 
-> The 4 stable axes: confidence, novelty, utility, reputation. Present on every Engram; always in [0.0, 1.0].
+> The 4 stable axes: confidence, novelty, utility, reputation. Present on every Signal; always in [0.0, 1.0].
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -11,7 +11,7 @@
 
 ## TL;DR
 
-The 4 stable axes are mandatory — every Engram has them. They are the axes that enter
+The 4 stable axes are mandatory — every Signal has them. They are the axes that enter
 the effective score formula and are the primary inputs to gate thresholds. Each axis
 has a clear semantic meaning and a set of Scorers that compute it.
 
@@ -19,7 +19,7 @@ has a clear semantic meaning and a set of Scorers that compute it.
 
 ## Axis 1: `confidence` — Certainty of the Source
 
-**What it measures:** How certain is the component that produced this Engram that the
+**What it measures:** How certain is the component that produced this Signal that the
 content is correct?
 
 **Semantic range:**
@@ -48,8 +48,8 @@ content is correct?
 Substrate? High novelty = the Substrate has not seen this before.
 
 **Semantic range:**
-- 1.0 = Completely new; no similar Engrams exist in the Substrate
-- 0.5 = Moderate novelty; some related Engrams exist
+- 1.0 = Completely new; no similar Signals exist in the Substrate
+- 0.5 = Moderate novelty; some related Signals exist
 - 0.0 = Identical to existing content; pure duplicate
 
 **How it is computed:**
@@ -79,8 +79,8 @@ fn score_novelty(engram: &Engram, substrate: &impl Substrate) -> f64 {
 
 ## Axis 3: `utility` — Proven Usefulness
 
-**What it measures:** Has this Engram been useful in past agent runs? High utility
-means: when this Engram was retrieved, the downstream agent succeeded.
+**What it measures:** Has this Signal been useful in past agent runs? High utility
+means: when this Signal was retrieved, the downstream agent succeeded.
 
 **Semantic range:**
 - 1.0 = Always led to a successful gate verdict when retrieved
@@ -90,7 +90,7 @@ means: when this Engram was retrieved, the downstream agent succeeded.
 **How it is computed:**
 
 Utility is an outcome-driven score. At emission time, utility = 0.5 (no data). After
-a gate verdict resolves on downstream Engrams that had this in their lineage or context,
+a gate verdict resolves on downstream Signals that had this in their lineage or context,
 the utility is updated:
 
 ```rust
@@ -107,10 +107,10 @@ substrate.update_score(&x.id, Score { utility: (x.score.utility - UTILITY_DELTA)
 
 ## Axis 4: `reputation` — Source Trustworthiness
 
-**What it measures:** How trustworthy is the author of this Engram?
+**What it measures:** How trustworthy is the author of this Signal?
 
 **Semantic range:**
-- 1.0 = Chain-witnessed: the Engram's provenance has been attested on a distributed ledger
+- 1.0 = Chain-witnessed: the Signal's provenance has been attested on a distributed ledger
 - 0.75 = Peer-verified: another agent in the mesh has reviewed and attested
 - 0.5 = Self-verified: the author checked its own output
 - 0.25 = Local agent: unverified, local-process output
@@ -148,8 +148,8 @@ relationships:
   score reflects this naturally: if reputation is 0.25 and confidence is 0.9, the
   effective score is lower than if reputation were 0.75.
 
-- **novelty × utility**: A highly novel Engram has low utility by definition (it has
-  not been used yet). As the Engram is retrieved and proves useful, utility rises while
+- **novelty × utility**: A highly novel Signal has low utility by definition (it has
+  not been used yet). As the Signal is retrieved and proves useful, utility rises while
   novelty typically stays the same.
 
 ---

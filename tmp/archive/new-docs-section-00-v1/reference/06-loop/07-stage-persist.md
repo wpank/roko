@@ -1,11 +1,11 @@
 # PERSIST — Stage 7 of the Cognitive Loop
 
-> Write the verified output back to the Substrate as durable Engrams.
+> Write the verified output back to the Substrate as durable Signals.
 
 **Status**: Shipping
 **Crate**: `roko-agent`
 **Depends on**: [Substrate trait](../03-substrate/README.md),
-[Engram](../01-engram/README.md), [VerifyResult](06-stage-verify.md)
+[Signal](../01-engram/README.md), [VerifyResult](06-stage-verify.md)
 **Used by**: [REACT](08-stage-react.md), [loop\_tick()](09-loop-tick-code.md)
 **Last reviewed**: 2026-04-19
 
@@ -13,7 +13,7 @@
 
 ## TL;DR
 
-PERSIST converts the `ActOutput` and `VerifyResult` into `Engram` records and writes
+PERSIST converts the `ActOutput` and `VerifyResult` into `Signal` records and writes
 them to the Substrate. It is the stage that makes a tick's work durable. After
 PERSIST, the agent's long-term memory has changed; before PERSIST, the tick is
 ephemeral.
@@ -24,24 +24,24 @@ ephemeral.
 
 A tick without a PERSIST is a tick that forgets itself. PERSIST is where Roko's
 "nothing is lost" principle lives at the implementation level: every significant
-outcome — whether success, failure, soft-fail, or error — is captured as an Engram.
+outcome — whether success, failure, soft-fail, or error — is captured as an Signal.
 
-Three kinds of Engrams may be written per tick:
+Three kinds of Signals may be written per tick:
 
-1. **Outcome Engram** — the main result of the tick (the model's response, the tool
+1. **Outcome Signal** — the main result of the tick (the model's response, the tool
    output, the sub-agent's report). Written with `verified = true` or `false` per the
-   VERIFY result. This is the only Engram that may be absent (on HardFail).
+   VERIFY result. This is the only Signal that may be absent (on HardFail).
 
-2. **Provenance Engram** — records the full tick lineage: which stimulus triggered the
+2. **Provenance Signal** — records the full tick lineage: which stimulus triggered the
    tick, which candidates were composed, which route was taken, what the cost was. Always
    written; enables audit and debugging.
 
-3. **Failure Engram** — written if VERIFY returned HardFail or if any prior stage
-   errored. Never written on clean success. The Failure Engram carries the full failure
+3. **Failure Signal** — written if VERIFY returned HardFail or if any prior stage
+   errored. Never written on clean success. The Failure Signal carries the full failure
    reason and gate reports.
 
-The invariant is: **every tick produces at least one Engram write.** Even a tick where
-everything fails writes a Provenance Engram (and a Failure Engram).
+The invariant is: **every tick produces at least one Signal write.** Even a tick where
+everything fails writes a Provenance Signal (and a Failure Signal).
 
 ---
 
@@ -68,13 +68,13 @@ pub trait PersistStage: Send + Sync {
 ```
 
 `PersistContext` carries the tick ID, stimulus Pulse, route decision, composed context
-summary, and budget consumption — all of which go into the Provenance Engram.
+summary, and budget consumption — all of which go into the Provenance Signal.
 
 ---
 
-## Engram Construction
+## Signal Construction
 
-### Outcome Engram
+### Outcome Signal
 
 ```rust
 Engram {
@@ -90,9 +90,9 @@ Engram {
 }
 ```
 
-### Provenance Engram
+### Provenance Signal
 
-The Provenance Engram captures the complete causal chain:
+The Provenance Signal captures the complete causal chain:
 - Tick ID
 - Stimulus Pulse ID
 - Candidate IDs surfaced by QUERY
@@ -101,18 +101,18 @@ The Provenance Engram captures the complete causal chain:
 - Wall time per stage
 - Verification verdict
 
-This is the Engram that powers audit trails and debugging. It is written even when the
-Outcome Engram is absent.
+This is the Signal that powers audit trails and debugging. It is written even when the
+Outcome Signal is absent.
 
 ---
 
 ## Substrate Write Properties
 
-PERSIST calls `substrate.put(engram)` for each Engram. The substrate guarantees:
+PERSIST calls `substrate.put(signal)` for each Signal. The substrate guarantees:
 
 - **Durability**: the write is fsync'd before PERSIST returns (for durable substrates).
 - **Idempotency**: re-writing the same `EngramId` is a no-op.
-- **Atomicity**: all Engrams for a tick are written in a single transaction where the
+- **Atomicity**: all Signals for a tick are written in a single transaction where the
   substrate supports transactions.
 
 In-memory substrates (used in tests) do not fsync. Production deployments use
@@ -126,7 +126,7 @@ In-memory substrates (used in tests) do not fsync. Production deployments use
 |---|---|---|
 | `PersistError::SubstrateDown` | Substrate unavailable | Retry 3× with backoff; publish `persist.failed` Pulse |
 | `PersistError::QuotaExceeded` | Substrate storage limit reached | Trigger decay pass; retry once |
-| `PersistError::SchemaError` | Engram body invalid | HardFail this tick; write Failure Engram to backup substrate |
+| `PersistError::SchemaError` | Engram (renamed to Signal in 2026-08-12) body invalid | HardFail this tick; write Failure Signal to backup substrate |
 | Partial write | Substrate connection dropped mid-write | Re-run from last successful write on reconnect |
 
 ---
@@ -138,7 +138,7 @@ In-memory substrates (used in tests) do not fsync. Production deployments use
 | Wall time (in-process substrate) | < 1 ms | < 3 ms |
 | Wall time (sled on NVMe) | < 3 ms | < 8 ms |
 | Wall time (Postgres) | < 10 ms | < 25 ms |
-| Engrams written per tick | 2–3 | — |
+| Signals written per tick | 2–3 | — |
 
 ---
 
@@ -146,19 +146,19 @@ In-memory substrates (used in tests) do not fsync. Production deployments use
 
 ### 1. Successful tick
 
-VERIFY passed. PERSIST writes: (1) Outcome Engram with the model's response,
-`verified = true`; (2) Provenance Engram with full tick lineage. Two Engrams written.
+VERIFY passed. PERSIST writes: (1) Outcome Signal with the model's response,
+`verified = true`; (2) Provenance Signal with full tick lineage. Two Signals written.
 
 ### 2. HardFail tick
 
-VERIFY returned HardFail on safety grounds. PERSIST writes: (1) Provenance Engram;
-(2) Failure Engram with gate reports. Zero Outcome Engrams. The long-term memory has
+VERIFY returned HardFail on safety grounds. PERSIST writes: (1) Provenance Signal;
+(2) Failure Signal with gate reports. Zero Outcome Signals. The long-term memory has
 a record of the attempted and rejected tick.
 
 ### 3. ACT error (timeout)
 
-ACT timed out. VERIFY skipped. PERSIST writes: (1) Provenance Engram with
-`act_timed_out = true`; (2) Failure Engram. The agent can query these to detect
+ACT timed out. VERIFY skipped. PERSIST writes: (1) Provenance Signal with
+`act_timed_out = true`; (2) Failure Signal. The agent can query these to detect
 repeated timeouts on the same stimulus.
 
 ---
@@ -168,5 +168,5 @@ repeated timeouts on the same stimulus.
 - [VERIFY](06-stage-verify.md) — the verdict that controls what is written here
 - [REACT](08-stage-react.md) — fires Pulses based on what was persisted
 - [Substrate trait](../03-substrate/README.md) — the backing store
-- [Engram](../01-engram/README.md) — the data type written here
+- [Signal](../01-engram/README.md) — the data type written here
 - [Invariants](12-invariants.md) — the every-tick-produces-one-write invariant

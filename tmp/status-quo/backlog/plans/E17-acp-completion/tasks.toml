@@ -1,8 +1,8 @@
 [meta]
 plan = "E17-acp-completion"
 total = 8
-done = 1
-status = "ready"
+done = 8
+status = "done"
 max_parallel = 1
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -94,7 +94,7 @@ acceptance = ["An ACP turn that calls write_file/edit_file/bash emits an outboun
 [[task]]
 id = "E17-T02"
 title = "Consult ExperimentStore for ACP prompt/model variant selection"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 80
@@ -149,7 +149,7 @@ acceptance = ["When an experiment is active in .roko/learn/experiments.json, an 
 [[task]]
 id = "E17-T03"
 title = "Thread session_mcp_servers into run_anthropic_cognitive_task and register MCP tools"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 90
@@ -198,7 +198,7 @@ acceptance = ["An ACP session created with an mcpServers entry and an Anthropic-
 id = "E17-T04"
 title = "Derive ACP tool_context.capabilities from session and role consent"
 description = "Replace the hard-forced all-true ToolPermission assignments in bridge_events.rs with one small derivation path that starts from the ACP session/client capability declarations and the role/session consent substrate from P22. The task is only about the ToolContext capabilities passed into the tool loop; it must not rebuild the interactive PermissionRequest flow from E17-T01."
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 80
@@ -253,7 +253,7 @@ acceptance = ["An ACP session that does not grant exec cannot run bash from the 
 id = "E17-T05"
 title = "Guard ACP advertised prompt capabilities against accepted image and audio inputs"
 description = "Add a single source of truth for ACP PromptCapabilities so initialize cannot advertise image/audio support that disagrees with the dispatch path. P28 owns model-vision detection; this task ties that result to InitializeResult and adds a guard for audio remaining false until an audio dispatch path exists."
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 70
@@ -309,7 +309,7 @@ acceptance = ["InitializeResult.prompt_capabilities.image is derived from the sa
 id = "E17-T06"
 title = "Add ACP conformance test covering consent, experiment selection, MCP, and capabilities"
 description = "Add an end-to-end ACP conformance test in the existing bridge_events.rs test module. The test should exercise the completed ACP surface across E17-T01 through E17-T05: permission before side effects, experiment assignment and recording, Anthropic session MCP tool registration, and advertised capabilities matching enforcement."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 160
@@ -368,7 +368,7 @@ acceptance = ["A single ACP conformance regression proves: Reject blocks a permi
 [[task]]
 id = "E17-T07"
 title = "Add cost budget display in ACP turns"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 100
@@ -436,7 +436,7 @@ acceptance = [
 [[task]]
 id = "E17-T08"
 title = "Add rate limit status in ACP provider selection"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 100

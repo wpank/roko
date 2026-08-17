@@ -9,9 +9,9 @@ The generated full manifest is [80-SOURCE-DOC-MANIFEST.md](80-SOURCE-DOC-MANIFES
 | Source | Count | Status |
 |---|---:|---|
 | `docs/v1` | 417 md files | Richest design source, but many status claims are stale. |
-| `docs/v2` | 34 md files | Higher-level migration narrative; useful but not current proof. |
+| `docs/v2` | 35 md files | Higher-level migration narrative; useful but not current proof. |
 | `docs/v2-depth` | 185 md files | Deep target-state design; coverage is uneven by directory. |
-| Total | 636 md files | All must be treated as source material, not implementation truth. |
+| Total | 637 md files | All must be treated as source material, not implementation truth. |
 
 ## Current Coverage Shape
 

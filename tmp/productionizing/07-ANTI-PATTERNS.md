@@ -1,6 +1,15 @@
 # Anti-Patterns and Things NOT To Do
 
-Read this BEFORE making any changes. These are hard-learned patterns from the codebase.
+Last updated: 2026-08-13
+
+## What is this?
+
+A checklist of 13 things NOT to do when working on roko. Each anti-pattern
+comes from real bugs or design mistakes found during the production audit
+(see `06-AUDIT-FINDINGS.md`). Read this BEFORE making any changes to the
+codebase -- especially if you are new to the project.
+
+These are hard-learned patterns from the codebase.
 
 ## 1. DO NOT add new providers or models to roko.toml without key validation
 
@@ -14,7 +23,7 @@ router, role configs, and task hints can all override it.
 
 ## 2. DO NOT use `unwrap()` or `expect()` in runtime code
 
-**The problem**: 92 `expect()` calls in orchestrate.rs. Any one of them panics = process crash.
+**The problem**: Originally 92 `expect()` calls in orchestrate.rs alone. Any one of them panics = process crash. As of 2026-08-12, ~25 production `.expect()` calls have been fixed; ~690 remain workspace-wide but the vast majority are in test code, not runtime paths.
 
 **DO**: Use `?` operator for Result propagation. Use `anyhow::Context` for descriptive errors.
 **DO NOT**: Use `.unwrap()` or `.expect("should exist")` in any non-test code.
@@ -52,8 +61,7 @@ if let Err(e) = state.state_hub.bootstrap_from_workdir(&state.workdir) {
 
 ## 4. DO NOT add `eprintln!()` for production output
 
-**The problem**: ~50 `eprintln!()` calls bypass structured logging. No log levels, no
-integration with observability systems, no alerting.
+**The problem**: Originally ~50 `eprintln!()` calls bypassed structured logging. As of 2026-08-12, ~40 were converted to `tracing::*` macros. Do not introduce new ones.
 
 **DO**: Use `tracing::info!()`, `tracing::warn!()`, `tracing::error!()`.
 **DO NOT**: Use `println!()` or `eprintln!()` in library/server code.

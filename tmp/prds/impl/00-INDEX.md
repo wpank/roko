@@ -1,5 +1,17 @@
 # Implementation Plan Rewrite Index
 
+> **What is this?** PRDs (Product Requirement Documents) capture work items for roko.
+> Roko can read PRDs, generate implementation plans, and execute them via agents
+> (see `roko prd` and `roko plan` CLI subcommands).
+>
+> **Status of this directory:** These implementation plans are **historical rewrites**
+> of the parent `IMPL-*.md` documents, broken into agent-assignable chunks. Many items
+> here have been superseded by work tracked in `.roko/prd/` (the canonical PRD storage)
+> and `.roko/GAPS.md` (the canonical gap tracker). See [STATUS.md](STATUS.md) for an
+> honest audit of which items are done, partial, or not started.
+
+Last updated: 2026-08-13
+
 This directory is the execution-oriented rewrite of the large `IMPL-*.md` files in the parent folder.
 
 The goal of this rewrite is:

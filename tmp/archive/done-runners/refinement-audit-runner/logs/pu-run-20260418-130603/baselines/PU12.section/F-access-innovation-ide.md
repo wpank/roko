@@ -102,7 +102,7 @@ Doc 17's "Scaffold" banner is misleading — topic 12 is substantially SHIPPING 
 
 **Status**: NOT DONE
 **Severity**: LOW
-**Doc claim**: Doc 18's visualization proposals include chord diagrams for agent communication, Sankey diagrams for plan progression, force-directed Engram DAG layout.
+**Doc claim**: Doc 18's visualization proposals include chord diagrams for agent communication, Sankey diagrams for plan progression, force-directed Signal DAG layout.
 **Reality**: Shipping TUI widgets (C.04) are text-based. These are web-portal-adjacent visualizations depending on E.01 portal.
 
 ---

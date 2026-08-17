@@ -1,6 +1,6 @@
 # Score — 7-Axis Quality Assessment
 
-> Score quantifies the quality of an Engram across 7 axes. This folder is the canonical reference.
+> Score quantifies the quality of an Signal across 7 axes. This folder is the canonical reference.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -11,8 +11,8 @@
 ## What Is Score?
 
 A `Score` is a struct with up to 7 floating-point axes, each in [0.0, 1.0], that together
-describe the quality of an Engram. The score is not part of the Engram's identity hash —
-it can be recomputed at any time by a Scorer without changing the Engram's id.
+describe the quality of an Signal. The score is not part of the Signal's identity hash —
+it can be recomputed at any time by a Scorer without changing the Signal's id.
 
 The 4 stable axes (`confidence`, `novelty`, `utility`, `reputation`) are always present.
 The 3 extended axes (`precision`, `salience`, `coherence`) are optional and typically
@@ -30,7 +30,7 @@ computed by specialized Scorers.
 | [03](03-arithmetic.md) | Arithmetic | How axes combine; effective score formula | Shipping |
 | [04](04-constants.md) | Constants | All named constants with values and rationale | Shipping |
 | [05](05-api-reference.md) | API reference | Score struct, methods, accessors | Shipping |
-| [06](06-examples.md) | Examples | Scoring an Engram through each layer | Shipping |
+| [06](06-examples.md) | Examples | Scoring an Signal through each layer | Shipping |
 | [07](07-invariants.md) | Invariants | Axis bounds, monotonicity | Shipping |
 | [08](08-rationale.md) | Rationale | Why 7 axes; what was dropped | Shipping |
 
@@ -46,5 +46,5 @@ computed by specialized Scorers.
 
 ## See Also
 
-- [`reference/01-engram/08-scoring-fields.md`](../../01-engram/08-scoring-fields.md) — how Score attaches to Engram
+- [`reference/01-engram/08-scoring-fields.md`](../../01-engram/08-scoring-fields.md) — how Score attaches to Signal
 - [`reference/05-operators/scorer/`](../../05-operators/scorer/README.md) — Scorer trait (Cluster B)

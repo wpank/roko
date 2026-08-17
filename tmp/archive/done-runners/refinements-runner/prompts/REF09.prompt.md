@@ -11,7 +11,7 @@ Primary candidates:
 
 - `docs/08-chain/` — introduce ChainBus vs ChainSubstrate split.
 - `docs/10-dreams/` — document Substrate scan + Bus-subscription input.
-- `docs/13-coordination/` — stigmergy as pheromone Engram + mesh.pheromone Pulse.
+- `docs/13-coordination/` — stigmergy as pheromone Signal + mesh.pheromone Pulse.
 - `docs/16-heartbeat/` — HeartbeatPolicy publishes heartbeat.{gamma,theta,delta}.tick Pulses.
 - `docs/00-architecture/24-cross-section-integration-map.md` — Bus-based integration supersedes prior proposals.
 

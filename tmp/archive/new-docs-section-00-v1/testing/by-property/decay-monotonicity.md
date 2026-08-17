@@ -1,6 +1,6 @@
 # Decay Monotone Non-Increasing
 
-> An Engram's decay score at time t+Δ is always ≤ its decay score at time t. Decay only goes down, never up.
+> An Signal's decay score at time t+Δ is always ≤ its decay score at time t. Decay only goes down, never up.
 
 **Crate**: `roko-core`
 **Test type**: Property-based (proptest)
@@ -22,11 +22,11 @@ The four decay variants must all satisfy this: `Exponential`, `Linear`, `Step`, 
 ## Why It Matters
 
 Decay drives the memory management of the Roko substrate:
-- Engrams with score below the GC threshold are candidates for collection.
+- Signals with score below the GC threshold are candidates for collection.
 - The GC scheduler assumes it can compute a monotone time-to-zero estimate.
-- Retrieval scoring gives higher weight to newer or less-decayed Engrams.
+- Retrieval scoring gives higher weight to newer or less-decayed Signals.
 
-If decay were non-monotone (sometimes increasing), the GC scheduler would miss collection windows, retrieval scores would oscillate unpredictably, and the "living" vs. "dead" Engram distinction would become undefined.
+If decay were non-monotone (sometimes increasing), the GC scheduler would miss collection windows, retrieval scores would oscillate unpredictably, and the "living" vs. "dead" Signal distinction would become undefined.
 
 ---
 

@@ -1,6 +1,6 @@
 # Doc Drift Register
 
-**Verified**: 2026-07-08 against `main` @ `5852c93c05`. Every row below was line-checked
+**Last updated**: 2026-08-13. Original verification 2026-07-08 against `main` @ `5852c93c05`. Every row below was line-checked
 against current source. This register records claims in *maintained narrative docs*
 (root `CLAUDE.md`, `README.md`, `docs/v2/*`, deploy/demo docs) that currently mislead
 implementation planning and onboarding.
@@ -53,6 +53,27 @@ Format: **Claim (where) → Current truth (file:line) → Action**. P-tags mark 
 | P3-6 | ACP advertises no image support / permission gates protect all tools | ACP has image-block conversion; capability reporting inconsistent; `request_permission` not universally enforced for builtin execution. | Make ACP capabilities truthful; wire production enforcement. |
 | P3-7 | v2-depth INDEX counts / `12-connectivity` empty / extension unified-doc link | Tree has ~185 md files; `12-connectivity` has relay/connectivity docs; `08-extension-system` links to a missing `docs/unified/08-EXTENSION-SYSTEM.md`. | Regenerate v2-depth manifest; repair link; add stale-index banner. |
 | P3-8 | Test counts imply CI proof | Many tests are env/feature/live-service gated; Playwright/Foundry outside CI; coverage ignores run failures. | Split proof tiers (see `74`, `25`). |
+
+---
+
+## 2026-08-13 Audit Findings
+
+### Claims corrected in this batch:
+- CLAUDE.md: "18 crates, ~177K LOC" → "35 workspace members, ~800K LOC" — FIXED
+- README.md: workspace/LOC/route/test counts corrected — FIXED
+- docs/v2 chapters: implementation status markers added/updated across all 29 chapters — FIXED
+- plans/INDEX.md: stale TOML metadata warning added — FIXED
+
+### New drift items identified:
+- ISFR vertical described as "wired" across docs/v2 chapters 22, 24, 28 and CLAUDE.md — now DEPRECATED
+- docs/v2 chapter 26 (Cross-Cuts) describes CrossCutFunctor pattern — 0% implemented, pure design
+- docs/v2 chapter 10 (Groups) — 0% implemented, entirely aspirational
+- docs/v2 chapter 06 (Memory) — ~5% implemented, doesn't match spec
+- docs/v2 chapter 08 (Gateway) — describes roko-gateway crate that doesn't exist
+
+### Status conflicts resolved:
+- E34 (security-ifc) marked 8/8 done but corrigibility/taint/sandbox not wired at runtime — downgraded to PARTIAL in checklist
+- P16 safety contracts marked 5/5 done but AgentContract falls back to permissive default — noted in GAPS.md
 
 ---
 

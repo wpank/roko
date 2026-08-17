@@ -136,11 +136,11 @@ prediction errors. See [Dreams cross-cut](../09-cross-cuts/03-dreams.md).
 
 The agent's "world model" is not a separate neural network — it is the routing prior
 table plus the scoring weight history. These are persisted as a special class of
-Engram (`Kind::ModelState`) and updated in the PERSIST stage.
+Signal (`Kind::ModelState`) and updated in the PERSIST stage.
 
 This means the world model is:
 - **Durable**: survives agent restarts
-- **Auditable**: each update is a versioned Engram
+- **Auditable**: each update is a versioned Signal
 - **Introspectable**: the prior table can be queried via the Substrate API
 
 ---
@@ -173,4 +173,4 @@ See also [Open Questions](16-open-questions.md) for loop-level open items.
 - [Dual-Process](10-dual-process.md) — how prediction errors drive T0→T1→T2 escalation
 - [REACT stage](08-stage-react.md) — where prediction.error is published
 - [Dreams cross-cut](../09-cross-cuts/03-dreams.md) — offline consolidation triggered by high free energy
-- [Neuro cross-cut](../09-cross-cuts/01-neuro.md) — Neuro maintains the world model Engrams
+- [Neuro cross-cut](../09-cross-cuts/01-neuro.md) — Neuro maintains the world model Signals

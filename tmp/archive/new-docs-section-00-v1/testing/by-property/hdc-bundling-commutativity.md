@@ -18,7 +18,7 @@ For all 10,240-bit hypervectors A and B:
 
 ## Why It Matters
 
-HDC bundling is used to aggregate knowledge items: a concept formed from multiple Engrams is represented as the bundle of their individual hypervectors. If bundling were order-dependent, the same set of Engrams assembled in different orders would produce different concept vectors, making knowledge comparison unreliable.
+HDC bundling is used to aggregate knowledge items: a concept formed from multiple Signals is represented as the bundle of their individual hypervectors. If bundling were order-dependent, the same set of Signals assembled in different orders would produce different concept vectors, making knowledge comparison unreliable.
 
 Commutativity ensures:
 - Two agents independently assembling the same knowledge set produce the same concept vector.

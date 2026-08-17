@@ -13,7 +13,7 @@
 
 | Path | Why it matters |
 |------|----------------|
-| `crates/roko-core/src/engram.rs` | top-priority HDC-on-Engram follow-up |
+| `crates/roko-core/src/__PATH_ENGRAM_RS__0` | top-priority HDC-on-Signal follow-up |
 | `crates/roko-core/src/traits.rs` | `Substrate` still lacks `query_similar()` |
 | `crates/roko-primitives/src/hdc.rs` | real HDC implementation |
 | `crates/roko-neuro/src/` | shipped neuro subsystem |

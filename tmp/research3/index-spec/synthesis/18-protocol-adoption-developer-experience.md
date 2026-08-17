@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a synthesis report from a structured deep-research run. It is reference material
+> for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Protocol Adoption Dynamics, Developer Experience, and Go-to-Market Strategy
 
 This document explains how technology protocols gain adoption, what developer experience patterns drive usage at scale, and how a new agent infrastructure project should sequence its go-to-market. Every claim is grounded in specific case studies, survey data, or production metrics. The document is written from scratch for a reader with no prior exposure to the project, the protocol landscape, or the research program that produced it.

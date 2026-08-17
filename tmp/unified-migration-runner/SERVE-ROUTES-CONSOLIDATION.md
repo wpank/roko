@@ -1,5 +1,19 @@
 # roko-serve Route Consolidation — Implementation Prompt
 
+> **Last updated: 2026-08-13**
+
+## What is this?
+
+This file is a self-contained implementation plan for consolidating oversized route files
+in `roko-serve`, part of the mori-to-roko migration. The goal was to split route files
+that exceeded 1,800 lines into focused sub-modules.
+
+**Status: DONE.** `status/` was split into 8 subfiles (health, metrics, episodes, gates,
+dashboard, disk, helpers, mod). `learning/` was split into 4 subfiles (router_state,
+experiments, helpers, mod). This file is retained as a historical reference.
+
+---
+
 > **Goal**: Split oversized route files in `crates/roko-serve/src/routes/`. Six files
 > exceed 1,800 lines. Split by domain for testability and discoverability.
 

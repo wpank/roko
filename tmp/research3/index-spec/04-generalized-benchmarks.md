@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This describes a generalized benchmark framework expanding ISFR into a suite of indices.
+> It is reference material for the ISFR product vertical, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Generalized Benchmark Framework
 
 ## From a Single Rate to a Suite of Indices

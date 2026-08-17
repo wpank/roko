@@ -1,6 +1,31 @@
 # Production Audit Findings
 
-Complete audit of roko for production deployment. Each finding links to the implementation plan in `10-IMPLEMENTATION-PLAN.md`.
+Last updated: 2026-08-13
+
+## What is this?
+
+Complete audit of roko for production deployment. Each finding below was
+identified from code review and links to a concrete task in
+`10-IMPLEMENTATION-PLAN.md`. Findings are ranked Critical / High / Medium / Low
+by production impact. Start with the Critical items -- they block any public
+deployment.
+
+### Progress at a glance (2026-08-12)
+
+| Severity | Total | Addressed (full or partial) | Still open |
+|----------|-------|-----------------------------|------------|
+| Critical | 3     | 0                           | 3          |
+| High     | 6     | 2 partial (H5, H1)          | 4          |
+| Medium   | 8     | 1 addressed (M5)            | 7          |
+| Low      | 4     | 0                           | 4          |
+
+Key batch-2026-08-12 progress:
+- **H5 (.expect panics):** ~25 production `.expect()` calls fixed. ~690 remain,
+  but the vast majority are in test modules (`#[cfg(test)]`), not runtime code.
+- **M5 (eprintln):** ~40 `eprintln!()` calls converted to `tracing::*` macros.
+- **H1 (HTTP timeouts):** 8 outbound `reqwest` clients in roko-serve now set 30s
+  timeouts. Inbound Axum request-level timeout layer (tower `TimeoutLayer`) not
+  yet added.
 
 ## Critical (blocks production deploy)
 
@@ -11,10 +36,11 @@ Complete audit of roko for production deployment. Each finding links to the impl
 - **Details**: See `02-MODEL-ROUTING-FIX.md`
 - **Plan**: Task P1 in implementation plan
 
-### C2: No file locking for concurrent state writes
+### C2: No file locking for concurrent state writes -- STILL OPEN
 - **Impact**: Multiple roko instances corrupt `.roko/` state files (episodes.jsonl, efficiency.jsonl, cascade-router.json)
 - **Root cause**: All mutexes are process-local (`tokio::sync::Mutex`). No `flock()` or distributed locking.
 - **Files**: `roko-learn/src/episode_logger.rs:921-923`, `roko-fs/src/file_substrate.rs:29`, `roko-learn/src/feedback_service.rs:152-172`, `roko-learn/src/cascade_router.rs:1599`
+- **Status (2026-08-12)**: No progress. This remains the most dangerous open issue for anyone running `roko serve` and `roko plan run` concurrently.
 - **Plan**: Task P5 in implementation plan
 
 ### C3: Auth disabled by default with no warning on public bind
@@ -25,10 +51,11 @@ Complete audit of roko for production deployment. Each finding links to the impl
 
 ## High (should fix before production)
 
-### H1: No request timeouts or body size limits on HTTP server
+### H1: No request timeouts or body size limits on HTTP server -- PARTIALLY ADDRESSED
 - **Impact**: Hanging handlers block indefinitely. Large payloads exhaust memory.
 - **Root cause**: No tower timeout middleware. No `DefaultBodyLimit`. Axum defaults are unbounded.
 - **Files**: `roko-serve/src/lib.rs` (router construction)
+- **Status (2026-08-12)**: 8 outbound `reqwest` clients in roko-serve now have 30s connect/read timeouts. The inbound Axum request timeout layer (`tower_http::timeout::TimeoutLayer`) and `RequestBodyLimitLayer` are NOT yet added.
 - **Plan**: Task P7 in implementation plan
 
 ### H2: No rate limiting on any endpoint
@@ -49,10 +76,11 @@ Complete audit of roko for production deployment. Each finding links to the impl
 - **Files**: `roko-agent/src/dispatcher/truncate.rs` (output only), no input truncation exists
 - **Plan**: Task P9 in implementation plan
 
-### H5: 92 `expect()` calls in orchestrate.rs
+### H5: `.expect()` calls in production code -- PARTIALLY ADDRESSED
 - **Impact**: Any of these panics in production = process crash
 - **Root cause**: Rapid development prioritized `expect()` over proper error propagation
-- **Files**: `roko-cli/src/orchestrate.rs` (92 locations)
+- **Files**: `roko-cli/src/orchestrate.rs` (originally 92 locations), plus other crates
+- **Status (2026-08-12)**: ~25 production `.expect()` calls fixed in batch 2026-08-12 (replaced with `?` + `anyhow::Context` or `unwrap_or_else`). ~690 `.expect()` calls remain workspace-wide, but the vast majority are in `#[cfg(test)]` modules and test helper code, not in runtime paths. The mutex-poisoning `.expect()` calls (priority 1 in P10) have not yet been specifically addressed.
 - **Plan**: Task P10 in implementation plan
 
 ### H6: Mutex lock unwraps will panic on poisoning
@@ -86,10 +114,11 @@ Complete audit of roko for production deployment. Each finding links to the impl
 - **Files**: `roko-serve/src/routes/middleware.rs:495`
 - **Plan**: Task P8 in implementation plan
 
-### M5: `eprintln!()` instead of structured logging
+### M5: `eprintln!()` instead of structured logging -- ADDRESSED
 - **Impact**: ~50 locations bypass log aggregation, alerting, observability
 - **Root cause**: Quick debugging output never migrated to `tracing::*`
 - **Files**: `roko-cli/src/orchestrate.rs:6077-7785` (conductor, health, fleet status)
+- **Status (2026-08-12)**: ~40 `eprintln!()` calls converted to `tracing::info!` / `tracing::warn!` / `tracing::error!` in batch 2026-08-12. A handful may remain in CLI user-facing output paths (which is acceptable per anti-pattern #4).
 - **Plan**: Task P12 in implementation plan
 
 ### M6: Dockerfile doesn't build demo-app

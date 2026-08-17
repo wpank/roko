@@ -1,6 +1,6 @@
 # Exponential Decay Approaches Zero
 
-> An Engram with exponential decay has value approaching 0 as time approaches infinity.
+> An Signal with exponential decay has value approaching 0 as time approaches infinity.
 
 **Crate**: `roko-core`
 **Test type**: Unit test

@@ -15,8 +15,8 @@
 
 `PulseSource` is a small enum that identifies the origin of a Pulse: a local agent, an
 external tool, a chain node, the heartbeat, or a user action. It is lighter than
-`Provenance` (which is for Engrams) and carries no trust level or taint. Trust
-evaluation happens at graduation time when the Pulse becomes an Engram.
+`Provenance` (which is for Signals) and carries no trust level or taint. Trust
+evaluation happens at graduation time when the Pulse becomes an Signal.
 
 ---
 
@@ -66,7 +66,7 @@ pub enum CognitiveTier {
 
 ## Conversion to Provenance Author
 
-When a Pulse is graduated to an Engram, the `PulseSource` maps to the Engram's
+When a Pulse is graduated to an Signal, the `PulseSource` maps to the Signal's
 `provenance.author`:
 
 | PulseSource variant | provenance.author |
@@ -93,4 +93,4 @@ PulseSource.
 ## See Also
 
 - [`01-specification.md`](01-specification.md) — Pulse struct that carries PulseSource
-- [`../10-types/provenance/01-author.md`](../10-types/provenance/01-author.md) — Engram author (for durable records)
+- [`../10-types/provenance/01-author.md`](../10-types/provenance/01-author.md) — Signal author (for durable records)

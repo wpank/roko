@@ -28,7 +28,7 @@ Calibrated heuristics are visible in the product, HDC-backed retrieval is live, 
 
 | Track | Scope | Primary docs | REFs |
 |---|---|---|---|
-| HDC fingerprint | Add first-class HDC fingerprint to every durable `Engram`; expose similarity queries | `reference/10-types/`, `research/perspectives/temporal-topology/` | REF11 |
+| HDC fingerprint | Add first-class HDC fingerprint to every durable `Signal`; expose similarity queries | `reference/10-types/`, `research/perspectives/temporal-topology/` | REF11 |
 | Demurrage | Replace age-only pruning with balance, reinforcement, and cold-tier durable memory management | `reference/10-types/decay.md`, `reference/08-layers/` | REF12 |
 | Heuristics | Promote heuristics, falsifiers, and calibration into inspectable library objects | `subsystems/` (learning section) | REF14 |
 | Self-learning and c-factor | Wire prediction/outcome topics, calibration policies, and visible c-factor measurement | `reference/06-loop/`, `research/foundations/c-factor.md` | REF10, REF13 |
@@ -38,7 +38,7 @@ Calibrated heuristics are visible in the product, HDC-backed retrieval is live, 
 
 ## Deliverables
 
-- [ ] HDC fingerprint added to `Engram` in `roko-core`; similarity queries exposed via `Substrate`
+- [ ] HDC fingerprint added to `Signal` in `roko-core`; similarity queries exposed via `Substrate`
 - [ ] Demurrage policy replaces age-only pruning; cold-tier durable memory management operational
 - [ ] Heuristics and falsifiers are inspectable library objects with calibration state visible
 - [ ] Prediction/outcome Pulse topics wired; calibration policy operational

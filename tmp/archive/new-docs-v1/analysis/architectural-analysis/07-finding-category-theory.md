@@ -13,7 +13,7 @@
 ## TL;DR
 
 The Synapse Architecture's composability is not accidental — it is a structural property. The
-six traits are morphisms in the Engram category. Score is a commutative monoid (under both
+six traits are morphisms in the Signal category. Score is a commutative monoid (under both
 addition and multiplication). Verdict is a filtered monoid (the Maybe monad dual). The full
 pipeline is Kleisli composition in the `Result<T, RokoError>` monad. Cross-cuts are
 endofunctors with natural transformations between them.
@@ -24,7 +24,7 @@ will break composition.
 
 ---
 
-## The Engram Category (Eng)
+## The Signal Category (Eng)
 
 **Objects**: Types in the pipeline — `Vec<Signal>`, `Signal`, `Score`, `Selection`, `Verdict`
 
@@ -147,7 +147,7 @@ protocol gap.
 The categorical analysis yields a concrete design rule:
 
 > Every new trait implementation must:
-> 1. Accept and return types that are objects in the Engram category
+> 1. Accept and return types that are objects in the Signal category
 > 2. Preserve the monoidal structure of Score (no Score that breaks associativity)
 > 3. Be implementable as a natural transformation on the pipeline (no hidden side effects)
 

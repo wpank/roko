@@ -1,5 +1,12 @@
 # audit-2026-05-01 runner
 
+> **What is this?** A parallel batch runner for landing the findings from the May 2026
+> subsystem audits. Contains 92 batches across security hardening, feedback loops,
+> architectural extraction, and subsystem cross-cutting work. Uses the same parallel-template
+> machinery as other runners in this directory.
+>
+> **Last updated: 2026-08-13**
+
 **Purpose**: Land the open items from the 2026-05-01 audit
 (`tmp/subsystem-audits/05-01/` and per-subsystem audits) using the same
 parallel-runner pattern as `productionizing/` and `post-parity/`.

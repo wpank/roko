@@ -1,14 +1,14 @@
 [meta]
 plan = "E39-registries-identity"
 total = 8
-done = 0
-status = "ready"
+done = 8
+status = "done"
 max_parallel = 2
 
 # ─── T01: Upgrade AgentRegistry to ERC-8004 transferable identity ────────────
 #
-# The current AgentRegistry (agent_registry.rs) implements soulbound
-# (non-transferable) ERC-721 passports. The doc header at line 1 says
+# Pre-task state: AgentRegistry (agent_registry.rs) implemented soulbound
+# (non-transferable) ERC-721 passports. The old doc header at line 1 said
 # "soulbound (non-transferable)"; transfer() at line 163 always returns
 # Err(SoulboundTransferDenied) at line 169; RegistryError::SoulboundTransferDenied
 # is at line 75.
@@ -21,7 +21,7 @@ max_parallel = 2
 id = "E39-T01"
 title = "Convert AgentRegistry from soulbound to ERC-8004 transferable identity"
 description = """
-The current AgentRegistry (agent_registry.rs) implements soulbound (non-transferable)
+Pre-task, AgentRegistry (agent_registry.rs) implemented soulbound (non-transferable)
 ERC-721 passports. The v2 spec (22-REGISTRIES.md section 2) requires ERC-8004
 transferable NFTs with delegation caveats. Update the existing AgentRegistry to:
 1. Remove the SoulboundTransferDenied error (line 75) and make transfer() succeed (line 163).
@@ -31,7 +31,7 @@ transferable NFTs with delegation caveats. Update the existing AgentRegistry to:
 Update existing tests to reflect transferability.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-chain/src/agent_registry.rs"]
 depends_on = []
@@ -104,7 +104,7 @@ capabilities to other agents with constraints. Implement:
 Wire into existing capability checking.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-chain/src/agent_registry.rs"]
 depends_on = ["E39-T01"]
@@ -178,7 +178,7 @@ Place in a new module crates/roko-chain/src/knowledge_registry.rs and
 wire into lib.rs.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = [
     "crates/roko-chain/src/knowledge_registry.rs",
@@ -253,7 +253,7 @@ Per spec section 4.3 (Challenge Resolution Governance), extend KnowledgeRegistry
 5. Reputation effects: +0.2 on validation, -0.3 on successful challenge.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-chain/src/knowledge_registry.rs"]
 depends_on = ["E39-T03"]
@@ -332,7 +332,7 @@ with the ReputationRegistry. Wire it by:
 Existing trace_rank.rs has different concerns (payment graph); this is reputation-specific.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-chain/src/reputation_registry.rs"]
 depends_on = []
@@ -403,7 +403,7 @@ This is the local peer discovery layer — no actual networking, just the data
 structures and in-memory registry that a networking layer would use.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = [
     "crates/roko-chain/src/gossip.rs",
@@ -482,7 +482,7 @@ expire_job() (line 492) but does not return reputation effects. Add:
 Caller applies effects to ReputationRegistry.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-chain/src/marketplace.rs"]
 depends_on = []
@@ -556,7 +556,7 @@ Place in the existing identity_economy_identity.rs since it already has the
 identity types. This is the local (non-chain) half of the flow.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-chain/src/identity_economy_identity.rs"]
 depends_on = ["E39-T01"]

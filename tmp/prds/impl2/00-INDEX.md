@@ -1,5 +1,17 @@
 # impl2 gap-fix PRDs: index
 
+> **What is this?** PRDs (Product Requirement Documents) capture work items for roko.
+> Roko can read PRDs, generate implementation plans, and execute them via agents
+> (see `roko prd` and `roko plan` CLI subcommands).
+>
+> **Status of this directory:** These gap-fix PRDs were written 2026-04-22 based on
+> an exhaustive audit. Many of the gaps identified here have since been addressed
+> (config unification, event bridge work, gate wiring, learning corrections). Some
+> items remain open. Check `.roko/GAPS.md` for the canonical gap tracker and
+> CLAUDE.md at the workspace root for current status.
+
+Last updated: 2026-08-13
+
 Audit date: 2026-04-22. These six PRDs address every wiring gap found in the
 exhaustive audit of the roko codebase against the claims in `CLAUDE.md`. The
 audit confirmed that most subsystems are substantially correct; what remains

@@ -17,7 +17,7 @@
 
 `docs/00-architecture/08-chain-layer.md` describes Roko's chain
 integration as shared on-chain state for agent coordination, with
-three transport needs: **storing** signed Engrams (transactions,
+three transport needs: **storing** signed Signals (transactions,
 attestations), **reading** shared knowledge (insights, bounties), and
 **reacting** to on-chain events.
 
@@ -29,7 +29,7 @@ fundamentally a subscription — those are different fabrics.
 
 With two fabrics:
 
-- **`ChainSubstrate`** stores and queries durable on-chain Engrams
+- **`ChainSubstrate`** stores and queries durable on-chain Signals
   (transactions, attestations, insights, bounties, pheromones). It
   already makes sense as a Substrate.
 - **`ChainBus`** (new) maps event-log topics to Bus topics. A smart
@@ -46,25 +46,25 @@ repetition of the polling-vs-streaming bug that's already P0 in
 ## 2. Dreams (offline consolidation — Phase 5C)
 
 `docs/00-architecture/10-dreams.md` describes Dreams as a Delta-speed
-(hours-scale) loop that consolidates recent Engrams into higher-tier
+(hours-scale) loop that consolidates recent Signals into higher-tier
 knowledge. It's scaffold-only today (per `docs/STATUS.md`).
 
 In the one-noun model, Dreams has to walk the Substrate to find
-candidate Engrams for consolidation. It's a polling loop.
+candidate Signals for consolidation. It's a polling loop.
 
 In the two-fabric model, Dreams has two inputs:
 
 1. **Substrate scan** — still the primary source, because
    consolidation is deliberate and wants completeness.
 2. **Bus subscription** — to `substrate.engram.stored` (emitted by
-   the Substrate when new durable Engrams land). This makes Dreams
+   the Substrate when new durable Signals land). This makes Dreams
    reactive: it can wake up when a threshold of new content is
    available rather than polling on a fixed schedule. That matters
    because Delta-speed doesn't mean fixed-cadence; it means
    "slower than Gamma/Theta" — and "slower" can be event-triggered.
 
 Dreams also emits consolidated `Kind::Insight` and `Kind::Heuristic`
-Engrams. In the two-fabric model it emits both the Engram (to
+Signals. In the two-fabric model it emits both the Signal (to
 Substrate) *and* an `engram.promoted` Pulse (to Bus) so the Composer
 at L2 can react and update its enrichment heuristics without
 re-querying.
@@ -78,7 +78,7 @@ environmental state as indirect communication*.
 
 In the two-fabric model, stigmergy is a literal one-liner:
 
-> Pheromones are Engrams persisted to a shared Substrate (chain or
+> Pheromones are Signals persisted to a shared Substrate (chain or
 > mesh) with Ebbinghaus decay. Agents deposit pheromones by
 > `substrate.put`; they detect them by `substrate.query` and/or by
 > subscribing to `mesh.pheromone.deposited` on the Bus.
@@ -97,7 +97,7 @@ broadcast channels through ad-hoc conversions. In the two-fabric
 model, the HTTP layer is trivial:
 
 - REST GET routes → read from Substrate.
-- REST POST routes → publish a Pulse or graduate an Engram.
+- REST POST routes → publish a Pulse or graduate an Signal.
 - WebSocket/SSE streams → forward Bus subscriptions over HTTP.
 
 `roko-serve` becomes mostly a thin Bus-and-Substrate projection to
@@ -121,7 +121,7 @@ With two fabrics, mesh is trivially:
 - **MeshBus** — a Bus backend that fans out Pulses over NATS or a
   libp2p gossipsub topology. Agents subscribe to topics they care
   about.
-- **MeshSubstrate** — a Substrate backend that replicates Engrams
+- **MeshSubstrate** — a Substrate backend that replicates Signals
   over the same transport. Could be CRDT-based; could use the
   chain as arbiter.
 
@@ -138,7 +138,7 @@ Collectives in the two-fabric model are pub/sub topologies:
 
 - A **Swarm** is N agents subscribed to the same topic set; each
   publishes its own findings; the collective outcome is the union
-  of all Pulses and Engrams.
+  of all Pulses and Signals.
 - A **Pipeline** is a chain of topic subscriptions — agent A
   publishes to `work.stage1.done`, agent B subscribes, publishes
   `work.stage2.done`, etc.
@@ -162,12 +162,12 @@ fifty lines.
 
 ## 8. Safety / Provenance (Phase 11)
 
-Safety's audit model already assumes content-addressed Engrams for
+Safety's audit model already assumes content-addressed Signals for
 the long-term forensic DAG. Two-fabric doesn't change that — it
 adds live *detection* of violations. A `SafetyPolicy` subscribes to
 `tool.call.started` Pulses, checks the intended op against role
 permissions, and publishes `safety.approval.requested` or
-`safety.violation.detected` Pulses as appropriate. The Engram DAG
+`safety.violation.detected` Pulses as appropriate. The Signal DAG
 preserves the whole trail.
 
 ## 9. Daimon (affect engine, Phase 9) — cross-cut
@@ -186,7 +186,7 @@ exactly what the cross-cut concept is supposed to be.
 
 A specific Phase-2+ win: when Dreams produces consolidated
 insights, it publishes `neuro.insight.promoted` Pulses. Neuro's
-tier-progression policy subscribes and moves Engrams between
+tier-progression policy subscribes and moves Signals between
 tiers (Transient → Working → Semantic → Procedural). The
 orchestrator's context-enrichment path subscribes and rebuilds its
 enrichment cache. All of this is reactive in two-fabric; in
@@ -199,7 +199,7 @@ those arrows as MISSING.
 |---|---|---|---|
 | 6 | Chain | ChainSubstrate conflates storage and events | Split into ChainSubstrate + ChainBus |
 | 5C | Dreams | Polling Substrate | Subscribe to `substrate.engram.stored` |
-| 13 | Coordination / Stigmergy | Custom pheromone plumbing | Pheromone = Engram in shared Substrate + `mesh.pheromone.*` Pulse |
+| 13 | Coordination / Stigmergy | Custom pheromone plumbing | Pheromone = Signal in shared Substrate + `mesh.pheromone.*` Pulse |
 | 12 | HTTP serve | Ad-hoc stream conversion | Bus projection over HTTP |
 | 2+ | Mesh | Requires new trait family | Just another Bus/Substrate backend |
 | 5+ | Multi-agent collectives | Requires bespoke orchestration | Pub/sub topologies |
@@ -251,11 +251,11 @@ to find it.
 
 1. **Agent A** (coder, working on `src/net/client.rs`) hits a flaky
    test. The agent decides the failure is a race condition.
-2. Agent A authors an Engram of kind `Pheromone` with body
+2. Agent A authors an Signal of kind `Pheromone` with body
    `"race condition suspected in retry loop around line 142"` and
    tags `{ file: "src/net/client.rs", function: "with_retry" }`.
-   The Engram's fingerprint (HDC, see 11) encodes the tags.
-3. Agent A calls `substrate.put(engram)`. Substrate stores it with
+   The Signal's fingerprint (HDC, see 11) encodes the tags.
+3. Agent A calls `substrate.put(signal)`. Substrate stores it with
    `Decay::Ebbinghaus` (fades if never reinforced) and publishes
    `Pulse { topic: "mesh.pheromone.deposited", kind: Pheromone,
    body: ... , lineage_hint: Some(engram_hash) }` to the Bus.
@@ -264,12 +264,12 @@ to find it.
    kind=Pheromone)` and finds Agent A's note. It gets injected into
    the prompt.
 5. Agent B's first action reinforces the pheromone (demurrage §2
-   `ReinforceKind::AgentQuoted`). The Engram's balance goes up; it
+   `ReinforceKind::AgentQuoted`). The Signal's balance goes up; it
    persists past its natural decay.
 6. Agent B proposes a fix. Gate pipeline verifies; `GateVerdict`
    lands; `gate.verdict.emitted` Pulse fires.
 7. The `FixProvenancePolicy` observes the verdict, checks which
-   Engrams were cited in the input context (Agent A's pheromone
+   Signals were cited in the input context (Agent A's pheromone
    was), and publishes `pheromone.successful` with lineage pointing
    at Agent A's original. Agent A's pheromone is now a validated
    heuristic candidate (see 14).
@@ -279,7 +279,7 @@ Every step is a Substrate put or a Bus publish. There is no
 falls out of the kernel primitives. And because every step has
 lineage, the audit trail for *why* the fix was proposed is
 inspectable end-to-end — the forensic capability from
-`docs/00-architecture/02-engram-data-type.md` gets the social
+`docs/00-architecture/02-signal-data-type.md` gets the social
 coordination story for free.
 
 ## 14. Timing of Phase-2 unlocks
@@ -291,8 +291,8 @@ with dependencies:
 |---|---|---|---|
 | Heartbeat clock | Phase C done | Immediate | Under 50 lines; unlocks three-speed consumers |
 | Safety-live (subscribe to tool-call Pulses) | Phase C done | High | Closes P0 safety gap |
-| Dreams (subscribe to `substrate.engram.stored`) | Phase C + demurrage (12) | Medium | Needs stable Engram lineage |
-| Stigmergy (pheromone) | HDC-on-Engram (11) | Medium | Depends on `query_similar` |
+| Dreams (subscribe to `substrate.engram.stored`) | Phase C + demurrage (12) | Medium | Needs stable Signal lineage |
+| Stigmergy (pheromone) | HDC-on-Signal (11) | Medium | Depends on `query_similar` |
 | Mesh (NatsBus) | `roko-mesh` crate scaffold | Medium | Depends on new crate |
 | ChainBus | `roko-chain` integration | Low | Requires on-chain attestation story |
 | Collectives (pub/sub topologies) | Mesh done | Low | Patterns on top of mesh |

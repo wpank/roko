@@ -826,9 +826,9 @@ async fn graduated_engram_retains_lineage_from_pulse_hint() {
 }
 ```
 
-## 10. Engram → Pulse projection
+## 10. Signal → Pulse projection
 
-The reverse direction (§3 of `02-engram-vs-pulse.md`) is a short impl:
+The reverse direction (§3 of `02-signal-vs-pulse.md`) is a short impl:
 
 ```rust
 impl Engram {
@@ -877,7 +877,7 @@ async fn put(&self, engram: Engram) -> Result<ContentHash> {
 }
 ```
 
-The substrate-engram-stored topic is the bridge that lets Policy
+The substrate-signal-stored topic is the bridge that lets Policy
 decide over live Bus Pulses even when the event was produced by a
 Substrate put (see `04-operators-generalized.md` §8).
 

@@ -10,6 +10,13 @@
 > - Inputs: `03-WORK-BREAKDOWN-EPICS.md`, `00-INDEX.md`, `docs/v2/28-ROADMAP.md`,
 >   `05-MASTER-CHECKLIST.md`, `04-EXECUTION-READINESS.md`
 
+> **2026-08-15 status note:** this remains the sequencing/design roadmap, not the current
+> completion ledger. The canonical roll-up is 39 complete, no partial epics, and 9
+> greenfield epics / 82 tasks. E25, E36, E42, and E44 joined the accepted set in the latest
+> closure pass. Broader native telemetry, Component-hostcall/adapter, provider-internal
+> security, renderer/runtime-source, and on-chain deployment residuals are tracked in
+> `.roko/GAPS.md`. Use `plans/00-INDEX.md` for raw manifest metadata.
+
 ---
 
 ## 1. Phase Overview Table
@@ -34,7 +41,7 @@ All 48 epics, sorted by phase/milestone, with task counts and dependency gates.
 | E08 | Conductor Supervision | M2 | 7 | E01 | roko-conductor |
 | E09 | Observability | M2 | 9 | E01 | roko-conductor, roko-serve |
 | E10 | Frontend / API Contract | M2 | 7 | E03 | demo/demo-app, roko-serve |
-| E17 | ACP Completion | M2 | 6 | E04, E07, E15 | roko-acp |
+| E17 | ACP Completion | M2 | 8 | E04, E07, E15 | roko-acp |
 | E18 | Docs, Config, CI & Ops | M2 | 13 | E01 | repo-wide |
 | E33 | Telemetry & Lens | M2 | 9 | E09 | roko-conductor |
 | E34 | Security IFC | M2 | 8 | E04 | roko-gate, roko-agent |
@@ -53,7 +60,7 @@ All 48 epics, sorted by phase/milestone, with task counts and dependency gates.
 | E24 | Memory Advanced | Phase 2 | 10 | E07 | roko-neuro |
 | E25 | Learning Loops Advanced | Phase 2 | 10 | E07 | roko-learn |
 | E26 | Inference Gateway | Phase 2 | 12 | E14 | roko-agent |
-| E27 | Feeds System | Phase 2 | 8 | E19, E20 | roko-core, roko-runtime |
+| E27 | Feeds System | Phase 2 | 10 | E19, E20 | roko-core, roko-runtime |
 | E28 | Groups & Coordination | Phase 2 | 8 | E20 | roko-runtime |
 | E29 | Connectivity & Relay | Phase 2 | 9 | E04 | roko-agent, roko-runtime |
 | E30 | Extension System | Phase 2 | 8 | E20 | roko-agent |
@@ -220,7 +227,7 @@ loop. Wire advanced telemetry.
 | **E08** Conductor Supervision | 7 | Wire anomaly supervision into live event loop (ghost-turn, compile-loop, cost-blowout) |
 | **E09** Observability | 9 | Thread `MetricRegistry` into `RunConfig`, rotate logs, trim events firehose |
 | **E10** Frontend / API Contract | 7 | Fix 4 frontend 404s, casing drift, double-SSE, replay-drop |
-| **E17** ACP Completion | 6 | Make ACP turn consent-gated, learning-informed, MCP-equipped, honest |
+| **E17** ACP Completion | 8 | Make ACP turn consent-gated, learning-informed, MCP-equipped, honest |
 | **E18** Docs, Config, CI & Ops | 13 | Fix CI gates, secrets, MSRV, then rewrite lying docs |
 | **E33** Telemetry & Lens | 9 | 7 StateHub projections, Lens stacking, Observe protocol, c-factor |
 | **E34** Security IFC | 8 | Taint lattice, immune system pipeline, 5-head corrigibility, sandbox |
@@ -354,7 +361,7 @@ Phase 1 kernel.
 
 | Epic | Tasks | What it does | Depends On |
 |---|---:|---|---|
-| **E27** Feeds System | 8 | Feed trait, registry, raw/derived/composite taxonomy, recipes, marketplace | E19, E20 |
+| **E27** Feeds System | 10 | Feed trait, registry, raw/derived/composite taxonomy, recipes, marketplace | E19, E20 |
 | **E28** Groups & Coordination | 8 | Group as Space, 4 coordination modes, membership, pheromone fields | E20 |
 | **E29** Connectivity & Relay | 9 | Connect protocol, relay wire protocol, A2A cards, reconnection FSM, backpressure | E04 |
 | **E30** Extension System | 8 | Extension trait, 22 hooks, CaMeL IFC, discovery/resolution, circuit breaking | E20 |
@@ -683,7 +690,7 @@ Assuming roko self-hosting with `roko plan run` executing tasks via Claude agent
 - [ ] Type-state Agent enforces lifecycle at compile time
 - [ ] EFE routing replaces LinUCB in CascadeRouter
 - [ ] 9-stage inference pipeline live
-- [ ] L3 HDC defragmentation + L4 c-factor governance operational
+- [x] L3 HDC defragmentation + bounded L4 c-factor governance recommendations operational (E25)
 - [ ] Feeds, Groups, Relay, Extensions, Triggers, Plugins all wired
 - [ ] 5-tier SPI: all tiers load and run
 - [ ] 5 named surfaces implemented in TUI
@@ -692,7 +699,7 @@ Assuming roko self-hosting with `roko plan run` executing tasks via Claude agent
 ### Phase 3 -- Economy
 
 - [ ] Agent registers ERC-8004 identity on-chain
-- [ ] x402 per-request payment works end-to-end
+- [x] x402 paid-feed challenge/authorization works end-to-end at the HTTP route boundary (E36); cryptographic recovery and chain submission remain roadmap scope
 - [ ] Cells publishable/installable from marketplace
 - [ ] Arena 7-step flywheel runs end-to-end
 - [ ] VCG clearing Cell produces allocation

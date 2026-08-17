@@ -158,7 +158,7 @@ All implement `ProviderAdapter` trait:
 - Timeout + cancellation via `tokio::select!`
 - Result truncation at `DEFAULT_MAX_RESULT_BYTES` (16KB)
 - Tool result caching for dedup
-- Audit emission (Engram signals)
+- Audit emission (Signal signals)
 
 **No anti-patterns detected** — single unified dispatch path, safety checks short-circuit, handler resolver is abstract.
 

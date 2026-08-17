@@ -217,7 +217,7 @@ Every concept from the previous specs maps to the unified vocabulary. Nothing is
 
 | Old Concept | Unified Equivalent | Notes |
 |---|---|---|
-| Engram | Signal (durable) | Direct identity. Rust struct remains `Engram`. |
+| Engram | Signal (durable) | Direct identity. Rust struct is now `Signal` (renamed from Engram in 2026-08-12); `pub type Engram = Signal` alias retained. |
 | Pulse (event bus) | Pulse (ephemeral) | Promoted from `Envelope<E>` to first-class. |
 | Substrate | Store protocol | Identical semantics. |
 | Scorer | Score protocol | Identical semantics. |
@@ -275,7 +275,7 @@ Every concept from the previous specs maps to the unified vocabulary. Nothing is
 
 | Decision | Rationale |
 |---|---|
-| Signal (not Engram) | "Signal" is immediately meaningful. "Engram" is domain-specific jargon. The Rust struct remains `Engram`; "Signal" is the spec-level name. |
+| Signal (not Engram) | "Signal" is immediately meaningful. "Engram" (renamed to Signal in 2026-08-12) was domain-specific jargon. The Rust struct is now `Signal`; `pub type Engram = Signal` alias retained for compat. |
 | Pulse (not Envelope/Event) | "Pulse" names the ephemeral sibling. The code has `Envelope<E>` in `roko-runtime::event_bus`; "Pulse" is the canonical name. |
 | Bus (not EventBus) | "Bus" is the transport fabric. Promoted from implementation detail to kernel trait alongside Store. |
 | Block (not Module) | "Block" implies composable, small, pluggable — like a Eurorack module or a Scratch block. |

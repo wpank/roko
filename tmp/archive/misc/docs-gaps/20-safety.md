@@ -56,9 +56,9 @@ cargo test --workspace
 
 ### SAFE-02: Custody records not persisted
 
-- [x] Emit and persist `Custody` Engrams when tools execute
+- [x] Emit and persist `Custody` Signals when tools execute
 
-**Spec** (doc 02 `02-audit-chain.md`): Every tool dispatch should produce a `Custody` record persisted as an Engram. The Custody record captures: who did what (`action`, `principal`), with what authorization (`authorized: Vec<AuthorizationEvidence>`), under what taint (`taint: Option<Taint>`), which gates passed (`gates_passed: Vec<String>`), and at what attestation level (`attestation: Option<AttestationLevel>` — `LocalAgent`, `OrgRole`, or `ChainWitness`). Additional fields include `why_heuristics`, `why_claims`, `simulation`, `result`, and `witness`. The `Custody::new()` constructor requires `(action, principal, when, authorized)` and provides builder methods `with_taint()`, `with_result()`, `with_attestation()`.
+**Spec** (doc 02 `02-audit-chain.md`): Every tool dispatch should produce a `Custody` record persisted as an Signal. The Custody record captures: who did what (`action`, `principal`), with what authorization (`authorized: Vec<AuthorizationEvidence>`), under what taint (`taint: Option<Taint>`), which gates passed (`gates_passed: Vec<String>`), and at what attestation level (`attestation: Option<AttestationLevel>` — `LocalAgent`, `OrgRole`, or `ChainWitness`). Additional fields include `why_heuristics`, `why_claims`, `simulation`, `result`, and `witness`. The `Custody::new()` constructor requires `(action, principal, when, authorized)` and provides builder methods `with_taint()`, `with_result()`, `with_attestation()`.
 
 **Current code**: `Custody` struct at `crates/roko-agent/src/safety/provenance.rs:50` with all documented fields. Constructor `Custody::new()` at line 80. Builder methods: `with_taint()` at line 104, `with_result()` at line 113, `with_attestation()` at line 120. Exported via `safety/mod.rs:65`. `ToolDispatcher::dispatch()` at `crates/roko-agent/src/dispatcher/mod.rs:135` calls `emit_audit()` at multiple stages (lines 141, 154, 178, etc.) producing JSON audit events, but never constructs `Custody` records. The `emit_audit()` method at line 354 writes to `ctx.audit_log` (a `Vec<serde_json::Value>`) — these are flat JSON objects, not structured `Custody` records.
 
@@ -329,7 +329,7 @@ cargo test -p roko-agent
 
 - [x] Implement Buchi automaton monitor for safety and liveness properties
 
-**Spec** (doc 11 `11-temporal-logic.md`): LTL runtime monitoring. Safety properties (Always P, Never Q) and liveness properties (Eventually R) specifiable per agent role. Violations detected at runtime and persisted as Engrams. The doc specifies two property classes: (1) safety properties are universally quantified ("for all time steps, P holds") and can be checked incrementally on each tool call — violation is immediate; (2) liveness properties are existentially quantified ("eventually R happens") and require a timeout or progress check — violation after N turns without progress. The monitor is a deterministic Buchi automaton: each property compiles to a state machine that transitions on each event (tool call, gate result, output). Accepting states indicate property satisfaction; rejecting states indicate violation.
+**Spec** (doc 11 `11-temporal-logic.md`): LTL runtime monitoring. Safety properties (Always P, Never Q) and liveness properties (Eventually R) specifiable per agent role. Violations detected at runtime and persisted as Signals. The doc specifies two property classes: (1) safety properties are universally quantified ("for all time steps, P holds") and can be checked incrementally on each tool call — violation is immediate; (2) liveness properties are existentially quantified ("eventually R happens") and require a timeout or progress check — violation after N turns without progress. The monitor is a deterministic Buchi automaton: each property compiles to a state machine that transitions on each event (tool call, gate result, output). Accepting states indicate property satisfaction; rejecting states indicate violation.
 
 **Current code**: No LTL, Buchi automaton, or temporal logic types in `crates/roko-agent/src/safety/`. Ghost turn detection in the tool loop (`crates/roko-agent/src/tool_loop/mod.rs`) enforces one ad-hoc liveness property (no repeated empty turns). `AgentContract` at `crates/roko-agent/src/safety/contract.rs:1` has `Invariant` rules at line 17 (checked by `check_pre_execution()` at line 94) — these are static checks, not temporal. `RateLimiter` at `crates/roko-agent/src/safety/rate_limiter.rs` enforces rate limits but not temporal ordering constraints.
 
@@ -353,7 +353,7 @@ cargo test -p roko-agent
   ```
 - Add `safety.never` and `safety.eventually` arrays to `roko.toml` schema in `crates/roko-core/src/config/schema.rs`
 - Wire `TemporalMonitor::check()` into `SafetyLayer::check_pre_execution()` at `crates/roko-agent/src/safety/mod.rs:216` — violations return `ToolError::PermissionDenied`
-- Violations should be persisted as Engrams via the existing `EpisodeLogger` pattern
+- Violations should be persisted as Signals via the existing `EpisodeLogger` pattern
 
 **Reference files**:
 - `crates/roko-agent/src/safety/mod.rs:216` — `check_pre_execution()` (add temporal check call)
@@ -451,9 +451,9 @@ cargo test --workspace
 
 - [x] Implement isolated knowledge spaces with ACL; route all actions through `Policy.decide()`
 
-**Spec** (doc 14 `14-cognitive-kernel-safety.md`): `CognitiveNamespace` provides isolated knowledge spaces per agent or per task. Each namespace has: (1) an ACL specifying which agents can read/write, (2) typed channels for cross-namespace data flow (explicit, auditable, rate-limited), (3) a rate limiter scoped to the namespace. `Policy.decide()` is the universal enforcement point — currently only tool calls go through the syscall-like dispatch; the spec requires ALL actions (Substrate writes, signal emissions, Engram reads, Neuro store queries) to pass through `Policy.decide()` with the namespace as context. The doc specifies `CognitiveNamespace { id: String, owner: AgentId, acl: NamespaceAcl, channels: Vec<Channel>, rate_limit: Option<RateLimitConfig> }` where `NamespaceAcl { readers: HashSet<AgentId>, writers: HashSet<AgentId>, admins: HashSet<AgentId> }` and `Channel { name: String, source_ns: String, target_ns: String, direction: ChannelDirection, schema: Option<JsonSchema> }`.
+**Spec** (doc 14 `14-cognitive-kernel-safety.md`): `CognitiveNamespace` provides isolated knowledge spaces per agent or per task. Each namespace has: (1) an ACL specifying which agents can read/write, (2) typed channels for cross-namespace data flow (explicit, auditable, rate-limited), (3) a rate limiter scoped to the namespace. `Policy.decide()` is the universal enforcement point — currently only tool calls go through the syscall-like dispatch; the spec requires ALL actions (Substrate writes, signal emissions, Signal reads, Neuro store queries) to pass through `Policy.decide()` with the namespace as context. The doc specifies `CognitiveNamespace { id: String, owner: AgentId, acl: NamespaceAcl, channels: Vec<Channel>, rate_limit: Option<RateLimitConfig> }` where `NamespaceAcl { readers: HashSet<AgentId>, writers: HashSet<AgentId>, admins: HashSet<AgentId> }` and `Channel { name: String, source_ns: String, target_ns: String, direction: ChannelDirection, schema: Option<JsonSchema> }`.
 
-**Current code**: No `CognitiveNamespace` type exists anywhere in `crates/`. The `Policy` trait at `crates/roko-core/src/lib.rs` defines `decide()` but it is only called from `ToolDispatcher::dispatch()` at `crates/roko-agent/src/dispatcher/mod.rs:135`. `FileSubstrate` at `crates/roko-fs/src/` writes directly to disk without Policy checks. `KnowledgeStore` at `crates/roko-neuro/src/` reads/writes Engrams without Policy checks. Signal emission in `crates/roko-cli/src/orchestrate.rs` writes to `FileSubstrate` directly.
+**Current code**: No `CognitiveNamespace` type exists anywhere in `crates/`. The `Policy` trait at `crates/roko-core/src/lib.rs` defines `decide()` but it is only called from `ToolDispatcher::dispatch()` at `crates/roko-agent/src/dispatcher/mod.rs:135`. `FileSubstrate` at `crates/roko-fs/src/` writes directly to disk without Policy checks. `KnowledgeStore` at `crates/roko-neuro/src/` reads/writes Signals without Policy checks. Signal emission in `crates/roko-cli/src/orchestrate.rs` writes to `FileSubstrate` directly.
 
 **What to change**:
 - Add `crates/roko-core/src/namespace.rs` module with:
@@ -478,7 +478,7 @@ cargo test --workspace
   pub enum ChannelDirection { Unidirectional, Bidirectional }
   ```
 - Wrap `FileSubstrate` write methods to call `Policy.decide()` with namespace context before persisting
-- Wrap `KnowledgeStore` read methods to check `acl.can_read()` before returning Engrams
+- Wrap `KnowledgeStore` read methods to check `acl.can_read()` before returning Signals
 - Add `[namespaces]` table to `roko.toml` schema in `crates/roko-core/src/config/schema.rs` for declaring namespace ACLs
 
 **Reference files**:
@@ -510,7 +510,7 @@ cargo test --workspace
 
 - [x] Implement `ForensicReplay` struct and causal replay reconstruction
 
-**Spec** (doc 15 `15-forensic-ai.md`): Causal replay reconstructs the complete decision context for any past agent action. Seven-step reconstruction: (1) identify action Engram by `ContentHash`, (2) reconstruct Substrate state at action timestamp, (3) reconstruct Scorer outputs for each Engram, (4) reconstruct Router selection including rejected alternatives, (5) reconstruct Composer output under budget constraints, (6) reconstruct Gate verdict, (7) reconstruct Policy decisions. The replay itself is persisted as a `kind: Replay` Engram with lineage pointing to all reconstructed Engrams. The `ForensicReplay` struct has fields: `action: ContentHash`, `action_timestamp_ms: i64`, `substrate_state: Vec<ContentHash>`, `scorer_outputs: Vec<(ContentHash, Score)>`, `router_selection: RouterDecision`, `composer_output: ComposerContext`, `gate_verdict: Verdict`, `policy_decisions: Vec<PolicyDecision>`. All steps are cryptographically verifiable via BLAKE3 content-addressed hashes.
+**Spec** (doc 15 `15-forensic-ai.md`): Causal replay reconstructs the complete decision context for any past agent action. Seven-step reconstruction: (1) identify action Signal by `ContentHash`, (2) reconstruct Substrate state at action timestamp, (3) reconstruct Scorer outputs for each Signal, (4) reconstruct Router selection including rejected alternatives, (5) reconstruct Composer output under budget constraints, (6) reconstruct Gate verdict, (7) reconstruct Policy decisions. The replay itself is persisted as a `kind: Replay` Signal with lineage pointing to all reconstructed Signals. The `ForensicReplay` struct has fields: `action: ContentHash`, `action_timestamp_ms: i64`, `substrate_state: Vec<ContentHash>`, `scorer_outputs: Vec<(ContentHash, Score)>`, `router_selection: RouterDecision`, `composer_output: ComposerContext`, `gate_verdict: Verdict`, `policy_decisions: Vec<PolicyDecision>`. All steps are cryptographically verifiable via BLAKE3 content-addressed hashes.
 
 **Current code**: No `ForensicReplay` struct anywhere in the codebase. No `roko-forensic` crate. `roko replay` CLI command at `crates/roko-cli/src/main.rs` walks the signal DAG by hash but does NOT reconstruct decision context. Episode records in `.roko/episodes.jsonl` capture agent turns but not the full seven-step replay context. Gate verdicts persist in `.roko/learn/gate-thresholds.json`. Custody records (once SAFE-02 is done) persist in `.roko/custody.jsonl`.
 
@@ -518,7 +518,7 @@ cargo test --workspace
 - Define `ForensicReplay` struct in `crates/roko-core/src/` or a new `crates/roko-forensic/src/lib.rs`
 - Implement `pub async fn replay(action_hash: &ContentHash, substrate: &dyn Substrate) -> Result<ForensicReplay>` that performs the seven-step reconstruction
 - Extend `roko replay <hash>` to support `--forensic` flag that triggers full causal replay instead of simple DAG walk
-- Persist replay result as an Engram in the Substrate
+- Persist replay result as an Signal in the Substrate
 
 **Reference files**:
 - `docs/11-safety/15-forensic-ai.md` — full spec with `ForensicReplay` struct definition
@@ -530,7 +530,7 @@ cargo test --workspace
 **Accept when**:
 - [x] `ForensicReplay` struct defined with all seven reconstruction fields -- `crates/roko-core/src/forensic.rs` with full struct + builder pattern
 - [ ] `roko replay <hash> --forensic` reconstructs decision context -- no `--forensic` flag found in CLI
-- [x] Replay persisted as an Engram with lineage to all reconstructed records -- `ForensicReplayLogger` writes to JSONL, `find_by_action()` retrieves by hash
+- [x] Replay persisted as an Signal with lineage to all reconstructed records -- `ForensicReplayLogger` writes to JSONL, `find_by_action()` retrieves by hash
 - [x] `cargo test --workspace`
 **Verify**:
 ```bash

@@ -1,5 +1,13 @@
 # Environment Variables Reference
 
+Last updated: 2026-08-13
+
+## What is this?
+
+Complete inventory of environment variables (~70 vars) needed for roko in
+production. Covers LLM provider keys, server config, auth secrets, and
+optional feature flags. Start here to understand what to set before deploying.
+
 ## Required for Production
 
 ### LLM Provider Keys

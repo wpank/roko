@@ -6,7 +6,7 @@ from the default runtime.** Second, deeper pass — every row re-verified by cal
 ## Verification
 
 - **HEAD**: `5852c93c05` on `main`
-- **Date**: 2026-07-08
+- **Date**: 2026-08-13
 - **Method**: For each symbol, searched all of `crates/` for non-test callers, excluding
   `/tests/` dirs and `#[cfg(test)]` blocks. "LEGACY-ONLY" = the sole prod caller is
   `crates/roko-cli/src/orchestrate.rs`, which sits behind the **default-off**
@@ -141,6 +141,29 @@ prod constructors (`event_loop.rs:3564,3663,3727` never call `.with_audit_chain`
 | Dream triggers not ported | ✅ Consolidation auto-fires: runner post-completion `event_loop.rs:5473` (`learning.dream_on_completion` default true) + serve daemon `daemon.rs:368`. Only the *coordination-pattern* trigger stays legacy |
 | AgentContract fails open (permissive) | ✅ **Fails CLOSED** — missing YAML → `AgentContract::restricted(role)` deny-all (`safety/mod.rs:929-940`, `contract.rs:256-264`) |
 | `error_recovery.rs` never called | Symbol **does not exist** anywhere in `crates/` |
+
+---
+
+## 2026-08-13 Update
+
+### ISFR Deprecation
+The ISFR vertical (previously the ONLY wired chain integration) is now **DEPRECATED**.
+Modules to remove: isfr_keeper, isfr_sources, isfr_oracle_submit, isfr_bootstrap in roko-chain;
+ISFR tools in roko-std; ISFR routes and state in roko-serve.
+
+### Engram→Signal Rename (2026-08-12)
+Type alias `pub type Signal = Engram` added to roko-core. All crates updated to use Signal
+in new code. Underlying struct remains `pub struct Engram` for backward compatibility.
+
+### Still Built-but-Unwired:
+- AgentPool / MultiAgentPool (roko-agent) — 600+ LOC, production quality, zero callers
+- VCG auction (roko-compose) — vcg_allocate exists, learning_bidders never populated
+- ExperimentStore (roko-learn) — A/B testing infrastructure, never instantiated
+- Tier progression (roko-neuro) — D1→D2→D3 compression pipeline, never called
+- Cold substrate archival (roko-fs) — architecture present, no cron/trigger
+- Corrigibility evaluate_action() — never called outside tests
+- TaintTracker — never instantiated outside tests
+- SandboxPolicy — never used outside test module
 
 ---
 

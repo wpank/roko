@@ -420,7 +420,7 @@ Doc 13 §2.1 lists `ContextProvider` as **Wired** into orchestrate.rs. Doc 08 do
 - `symbol_resolver: SymbolResolver` (line 448)
 - `brief_generator: TaskBriefGenerator` (line 450)
 - `context_average_tracker: ContextAverageTracker` (line 452) — rolling EMA from `.roko/learn/context-averages.json`
-- `pheromone_signals: Vec<Engram>` (line 454)
+- `pheromone_signals: Vec<Signal>` (line 454)
 
 Public API:
 - `new(workdir)` at line 460

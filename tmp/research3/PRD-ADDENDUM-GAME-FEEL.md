@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a PRD addendum specifying interactive "game-feel" miniatures for the Nunchi landing page.
+> It is reference material for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # PRD Addendum: Game-Feel Miniatures
 
 **Supplement to:** PRD-NUNCHI-LANDING.md

@@ -38,8 +38,8 @@ CoT scaffold used. Answer passes VERIFY. Theta tick cost: $0.04.
 **Tick 3 (Gamma)**: "What was the KORAI price yesterday?" → prior similar question,
 confidence 0.88 → Gamma.
 
-**After 4 h (Delta)**: Consolidation pass runs. 47 Engrams promoted (high utility
-from the research session). 12 Engrams pruned (stale price data). Routing priors
+**After 4 h (Delta)**: Consolidation pass runs. 47 Signals promoted (high utility
+from the research session). 12 Signals pruned (stale price data). Routing priors
 updated. `free_energy_avg` drops from 0.28 to 0.19.
 
 **Observation**: This agent runs 90% Gamma, 10% Theta. The Delta pass each night
@@ -57,7 +57,7 @@ stimuli are unfamiliar.
 
 **Emergency Delta triggered**:
 - Background Delta pass starts immediately
-- 200 Engrams from previous deployments are reviewed
+- 200 Signals from previous deployments are reviewed
 - Routing priors for the new environment are bootstrapped from semantic similarity
   to prior environments
 - `free_energy_avg` drops to 0.22 after the pass

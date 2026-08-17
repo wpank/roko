@@ -1,8 +1,19 @@
 # Landing Page Updates Checklist
 
-> **Context**: Nunchi is pitching a16z on May 6, 2026. The landing page at `nunchi.network` will be checked by partners during diligence. It must align with the pitch narrative ("Agent Coordination Plane"), contain NO fake data, and signal production-readiness.
+> **Last updated**: 2026-08-13
 >
-> **Current state**: The page has 7 scroll sections (Loop, Scaffold, Anatomy, Memory, Collective, Chain, Proof) with ROSEDUST dark aesthetic. Problems: mock data counters (84,213 / 12,425 / 3,240), no mention of "Agent Coordination Plane," no cost comparison with HAL numbers, inscrutable "Twelve organs. Five zones." section, no /changelog or /docs pages.
+> **STATUS: HISTORICAL.** This document was written for landing page polish ahead of a
+> May 6, 2026 a16z pitch. That date has passed. These items may or may not have been
+> completed. Kept for reference on design system decisions and landing page requirements.
+>
+> **What is this?** A checklist for updating the nunchi.network landing page to align with
+> the "Agent Coordination Plane" pitch narrative. Part of the dogfood documentation set --
+> "dogfooding" means roko developing itself (reading PRDs, generating plans, executing
+> tasks via LLM agents, validating results). The landing page was meant to reflect this
+> self-hosting capability to investors.
+>
+> **Original context**: Nunchi is pitching a16z on May 6, 2026. The landing page at
+> `nunchi.network` will be checked by partners during diligence.
 >
 > **Dashboard app code**: `/Users/will/dev/nunchi/nunchi-dashboard/`
 > **Screenshots of current page**: `/Users/will/dev/nunchi/roko/roko/tmp/deck/` (11 PNGs)

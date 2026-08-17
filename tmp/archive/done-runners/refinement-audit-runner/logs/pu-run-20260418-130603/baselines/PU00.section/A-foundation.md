@@ -7,7 +7,7 @@ Use these facts consistently in this arc:
 
 - 36 workspace members
 - 322,088 Rust LOC
-- Engram is the live durable kernel noun; only small legacy naming residue remains
+- Signal is the live durable kernel noun; only small legacy naming residue remains
 - docs `23-35` are proposal posture unless matching code exists
 
 The core correction for docs `00-05` is scope control: keep shipped primitives in present tense,
@@ -19,8 +19,8 @@ keep thesis claims qualified, and keep later rewrite ideas out of the "missing b
 
 | Item | Status | Current truth |
 |------|--------|---------------|
-| 01 — Naming / Glossary | MOSTLY DONE | `Engram` is canonical; old naming is legacy residue, not a live design center |
-| 02 — Engram Data Type | SHIPPED | `Engram` is the real durable runtime type |
+| 01 — Naming / Glossary | MOSTLY DONE | `Engram (renamed to Signal in 2026-08-12)` is canonical; old naming is legacy residue, not a live design center |
+| 02 — Signal Data Type | SHIPPED | `Signal` is the real durable runtime type |
 | 03 — Score: 7-Axis Appraisal | SHIPPED | the score model is implemented and richer than the original doc baseline |
 | 04 — Decay Variants | SHIPPED | decay variants are real and testable |
 | 05 — Provenance / Attestation | SHIPPED | provenance and attestation exist in code today |
@@ -44,7 +44,7 @@ should not borrow authority from later active-inference, custody, or memory-econ
 
 | Ref | Audit verdict | What parity should say |
 |-----|---------------|------------------------|
-| `REF01` | `narrow` | "one noun, six verbs" is a diagnostic simplification; today the noun is still `Engram` |
+| `REF01` | `narrow` | "one noun, six verbs" is a diagnostic simplification; today the noun is still `Signal` |
 | `REF02` | `defer` | `Pulse` is a target-state idea with 0 production LOC |
 | `REF03` | `narrow` | a generic `Bus<E>` trait is a plausible future cleanup, but the live runtime transport is still a narrow `EventBus<E>` with exactly two live RokoEvent variants |
 
@@ -63,7 +63,7 @@ batch `00` merely needs to "finish" them:
 | Ref | Proposed change | Audit posture |
 |-----|-----------------|---------------|
 | `REF01` | make the foundation story cleaner and more explicit | keep as wording cleanup, not as a new runtime model |
-| `REF02` | add `Pulse` as an ephemeral sibling to `Engram` | planned / deferred, 0 LOC in current workspace |
+| `REF02` | add `Pulse` as an ephemeral sibling to `Signal` | planned / deferred, 0 LOC in current workspace |
 | `REF03` | promote `Bus` as a second kernel fabric | planned / narrow; current runtime bus is a small utility, not a full fabric split |
 | `REF04` | generalize operators around `Datum` | deferred, 0 LOC in current workspace |
 | `REF05` | restate the loop as seven co-equal steps | documentation target only; runtime has not migrated |
@@ -72,9 +72,9 @@ batch `00` merely needs to "finish" them:
 
 - `00-vision-and-thesis.md`: describe the thesis as directionally grounded. The runtime scaffold
   exists, but the closed self-improvement loop is not yet proven at production scale.
-- `01-naming-and-glossary.md`: say `Engram` is canonical. Legacy wording may appear as residue,
+- `01-naming-and-glossary.md`: say `Signal` is canonical. Legacy wording may appear as residue,
   but it must not anchor new parity notes.
-- `02-engram-data-type.md`: keep `Engram` as the live durable kernel noun; do not retrofit
+- `02-signal-data-type.md`: keep `Signal` as the live durable kernel noun; do not retrofit
   `Pulse` or `Datum` into the same present-tense story.
 - `03-score-7-axis-appraisal.md`: keep the score model in present tense; do not connect it to a
   broader attention-token economy or VCG system.
@@ -90,7 +90,7 @@ kernel migration.
 
 Prefer:
 
-- `Engram remains the live durable kernel type`
+- `Signal remains the live durable kernel type`
 - `directionally grounded thesis`
 - `planned generic bus trait`
 - `deferred Pulse concept`

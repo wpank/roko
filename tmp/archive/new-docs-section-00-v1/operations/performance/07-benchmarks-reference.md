@@ -91,7 +91,7 @@ detector — see [08-regression-detection.md](08-regression-detection.md)):
 
 | Benchmark | Current p99 | Regression threshold |
 |-----------|------------|---------------------|
-| `engram::bench_engram_new` | 280 ns | > 350 ns |
+| `signal::bench_engram_new` | 280 ns | > 350 ns |
 | `score::bench_score_compute` | 80 ns | > 100 ns |
 | `hdc::bench_hdc_hamming` | 65 ns | > 85 ns |
 | `hdc::bench_hdc_bind` | 18 ns | > 25 ns |
@@ -130,7 +130,7 @@ New benchmarks must be added when:
 
 1. A new hot-path operation is introduced (any function called in the 5 hot paths).
 2. The threshold for an existing benchmark is changed.
-3. A new subsystem that has per-Engram or per-task processing is added.
+3. A new subsystem that has per-Signal or per-task processing is added.
 
 Template for a new benchmark:
 

@@ -1,5 +1,14 @@
 # Validator-Embedded Relay
 
+> **What is this?** A design doc exploring whether daeji validators should embed
+> the relay service directly, and if so, how. This is **future work** -- the relay
+> currently runs as a standalone sidecar binary (`apps/agent-relay/`), not inside
+> the validator. The recommendation (Mode B: full embedded relay as a supervised
+> task) is settled as the intended direction for the small validator set, but no
+> implementation work has been done on the validator side.
+>
+> Last updated: 2026-08-13
+
 ## Context
 
 Daeji is designed as an agent coordination chain. The question is whether validators should also serve as relay operators, and if so, what that looks like architecturally.

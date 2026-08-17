@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a reference for the Nunchi DeFi stack (yield perps, ISFR, agent-native finance).
+> It is reference material for the ISFR product vertical, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # DeFi Integration Layer
 
 ## A Self-Contained Reference for the Nunchi DeFi Stack

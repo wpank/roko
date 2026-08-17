@@ -193,7 +193,7 @@ command = "cargo test -p roko-cli --lib -- --ignored 2>/dev/null; cargo test -p 
 
 ## Template: Multi-Crate Breaking Change (use multi-plan)
 
-See [03-REFACTOR-SEQUENCE.md](03-REFACTOR-SEQUENCE.md) Step 6 for the Signal → Engram example.
+See [03-REFACTOR-SEQUENCE.md](03-REFACTOR-SEQUENCE.md) Step 6 for the Signal → Signal example.
 
 Key principles:
 - **Plan P1**: Change the source of truth (roko-core), add compat alias

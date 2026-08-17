@@ -1,8 +1,8 @@
 [meta]
 plan = "E18-DOCS-CONFIG-OPS"
 total = 15
-done = 3
-status = "ready"
+done = 15
+status = "done"
 max_parallel = 3
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -18,7 +18,7 @@ max_parallel = 3
 [[task]]
 id = "E18-T01"
 title = "Bump workspace rust-version 1.85 -> 1.91 to match msrv.yml + Dockerfile"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 3
@@ -71,7 +71,7 @@ acceptance = ["Cargo.toml declares rust-version 1.91, matching msrv.yml (toolcha
 [[task]]
 id = "E18-T02"
 title = "Gate release.yml on cargo clippy + cargo test before building binaries"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 30
@@ -168,7 +168,7 @@ acceptance = ["`.github/workflows/deny.yml` runs `cargo deny check` on push/PR a
 id = "E18-T04"
 title = "Drop --ignore-run-fail from coverage workflow"
 description = "Remove the --ignore-run-fail flag from the cargo llvm-cov invocation in coverage.yml so the coverage job turns red when the test run fails. Do not change the report upload or filename ignore regex."
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 5
@@ -256,7 +256,7 @@ acceptance = ["A checkout containing only tracked files has the Dockerfile COPY 
 id = "E18-T06"
 title = "Make load_resolved_config consume core validation and warn on dropped keys"
 description = "Stop load_resolved_config from validating with roko_core and discarding the result before reparsing through the legacy ConfigLayer path. The implementation may keep legacy CLI-only projections, but it must surface core diagnostics/unknown-key warnings and make the core validated config authoritative for provider/model/env behavior."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 160
@@ -367,7 +367,7 @@ acceptance = ["Running roko config show and roko config show --effective with se
 id = "E18-T08"
 title = "Add docker deploy --push and align Fly/compose port and health"
 description = "Add a --push flag to roko deploy docker that runs docker push after a successful build/tag, and align deploy health/port drift across docker-compose, root fly.toml, .github/workflows/deploy-fly.yml, and the FLY_TOML_TEMPLATE in server.rs. Use --bind/--port instead of removed --listen in compose."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 150
@@ -433,13 +433,13 @@ acceptance = ["roko deploy docker builds and tags as before, pushes only when --
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# E18-T09: Runtime-dead config surface notes
+# E18-T09: Runtime config-liveness notes
 # ─────────────────────────────────────────────────────────────────────────────
 [[task]]
 id = "E18-T09"
-title = "Document dead conductor config surfaces and review cold_storage config"
-description = "Mark conductor.watchers.* and conductor.context_pressure_enabled as deprecated/runtime-dead for runner-v2 with a roko doctor warning or schema note. Review cold_storage only as a live config surface: field docs, defaults, and an optional doctor note. Do not label cold_storage runtime-dead; its copy-not-move growth bug belongs to E02-T12."
-status = "ready"
+title = "Document runner-v2 conductor and cold-storage config liveness"
+description = "Mark conductor.context_pressure_enabled as deprecated/runtime-dead for runner-v2 with a roko doctor warning and schema note. Document conductor.watchers.* as runtime-live threshold overrides consumed by Conductor::from_config. Keep cold_storage documented as runtime-live; its historical copy-not-move growth bug belongs to E02-T12."
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 90
@@ -452,7 +452,7 @@ depends_on = []
 
 [task.context]
 read_files = [
-    { path = "crates/roko-core/src/config/schema.rs", lines = "1250-1315", why = "ConductorConfig context_pressure_enabled and watchers config surface to deprecate or warn about." },
+    { path = "crates/roko-core/src/config/schema.rs", lines = "1355-1390", why = "ConductorConfig context_pressure_enabled is runtime-dead while watcher threshold overrides are runtime-live." },
     { path = "crates/roko-core/src/config/schema.rs", lines = "1560-1605", why = "ColdStorageConfig docs/defaults; review but do not mark runtime-dead." },
     { path = "crates/roko-serve/src/lib.rs", lines = "2085-2110", why = "Cold archival timer consumes cold_storage at runtime, proving it is live." },
     { path = "crates/roko-cli/src/doctor.rs", lines = "160-195", why = "Doctor check assembly; add a warning check here if using doctor rather than comments only." },
@@ -460,14 +460,14 @@ read_files = [
 ]
 symbols = [
     "ConductorConfig.context_pressure_enabled - runtime-dead in runner-v2 until a subscriber exists",
-    "ConductorConfig.watchers - threshold overrides for an unwired runner-v2 watcher surface",
+    "ConductorConfig.watchers - runtime-live threshold overrides consumed by Conductor::from_config",
     "ColdStorageConfig - runtime-live config consumed by start_cold_archival_timer",
     "DoctorCheck { id, status, message, detail, fix } - doctor warning shape",
 ]
 anti_patterns = [
     "Do NOT mark cold_storage as runtime-dead; it is consumed by the serve cold archival timer.",
     "Do NOT fix the copy-not-move archival growth bug here; E02-T12 owns that runtime defect.",
-    "Do NOT delete conductor config fields unless every parser/default/doc surface is updated safely.",
+    "Do NOT label conductor.watchers.* runtime-dead; the runner builds its live conductor through Conductor::from_config.",
     "Do NOT add a doctor failure for these fields; use warning/deprecation language because existing configs should still load.",
 ]
 
@@ -491,7 +491,7 @@ phase = "test"
 command = "cargo test -p roko-cli doctor_dead_config 2>&1"
 fail_msg = "a doctor/schema regression test must cover the dead conductor config warning"
 
-acceptance = ["Users can see that conductor.watchers.* and conductor.context_pressure_enabled are deprecated/runtime-dead under runner-v2, while cold_storage remains documented as runtime-live with any growth bug cross-referenced to E02-T12."]
+acceptance = ["Users can see that conductor.context_pressure_enabled is deprecated/runtime-dead under runner-v2, while conductor.watchers.* and cold_storage are documented as runtime-live; the historical cold-storage growth bug remains cross-referenced to E02-T12."]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -500,8 +500,8 @@ acceptance = ["Users can see that conductor.watchers.* and conductor.context_pre
 [[task]]
 id = "E18-T10"
 title = "Rewrite CLAUDE.md from status-quo truth"
-description = "Rewrite CLAUDE.md so it reflects the fixed state after E01 and E18-T05 through T08: current workspace count, Engram terminology, runner-v2 as the live engine, fail-closed safety, state-snapshot.json, 37 tools, 10 TUI tabs, roko knowledge, and corrected deploy/config behavior."
-status = "ready"
+description = "Rewrite CLAUDE.md so it reflects the fixed state after E01 and E18-T05 through T08: current workspace count, Engram terminology, runner-v2 as the live engine, fail-closed safety, state-snapshot.json, 35 default tools, 10 TUI tabs, roko knowledge, and corrected deploy/config behavior."
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 220
@@ -551,7 +551,7 @@ acceptance = ["CLAUDE.md is a concise, truthful operator guide for the post-E01/
 id = "E18-T11"
 title = "Rewrite README.md with runner-v2 and current command semantics"
 description = "Rewrite README.md to match the same post-fix truth as CLAUDE.md: current workspace count, runner-v2 examples, roko knowledge, --bind/--port, /health and /ready, 10 TUI tabs, and current route/tool language."
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 260
@@ -602,7 +602,7 @@ acceptance = ["README.md matches CLAUDE.md on the corrected engine/config/ops cl
 id = "E18-T12"
 title = "Patch docs/v2 and docker README with current engine and deploy semantics"
 description = "Patch only the selected docs/v2 files and docker/README.md so examples and runbooks reflect runner-v2, --bind/--port, /health and /ready, clean-checkout Docker config, and Fly/compose health behavior. Keep the docs-lint scope narrow to these files plus README.md and CLAUDE.md."
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 240
@@ -665,7 +665,7 @@ acceptance = ["The selected docs/v2 files and docker/README.md agree with README
 id = "E18-T13"
 title = "Add docs-lint workflow guarding status-quo drift patterns"
 description = "Add a blocking docs-lint workflow that greps only README.md, CLAUDE.md, docs/v2, and docker/README.md for the forbidden drift patterns fixed by E18-T10 through T12. The lint scope must match T12; do not grep all docs/ unless T12 is broadened."
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 60
@@ -722,7 +722,7 @@ acceptance = ["A CI run fails if README.md, CLAUDE.md, docs/v2, or docker/README
 [[task]]
 id = "E18-T14"
 title = "Create GitHub Actions workflow for roko plan validation"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 60
@@ -779,7 +779,7 @@ acceptance = [
 [[task]]
 id = "E18-T15"
 title = "Document the GitHub integration setup in docs/v2"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 200

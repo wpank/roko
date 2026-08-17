@@ -41,7 +41,7 @@ The synergy attacks all three failure modes.
 
 ### How it works
 
-1. A proposal Engram is entered into Substrate and its HDC fingerprint is computed. The
+1. A proposal Signal is entered into Substrate and its HDC fingerprint is computed. The
    proposal is published on the Bus.
 2. Each evaluating agent forms its own view of the proposal: it independently composes or
    retrieves the idea it endorses. The agent computes the HDC fingerprint of its endorsed idea.
@@ -123,9 +123,9 @@ Consensus decision:
 - **S3** (c-factor × Bus × HDC): S3 uses HDC to detect whether system **outputs** are
   converging (bad). S9 uses HDC to detect whether agent **endorsements** are converging on the
   same idea (good). The fingerprint primitive serves opposite directional purposes.
-- **S1** (Demurrage × HDC): Proposal Engrams are subject to demurrage like any other Engram.
+- **S1** (Demurrage × HDC): Proposal Signals are subject to demurrage like any other Signal.
   Proposals that never reach consensus decay out of Substrate without special treatment.
-- **S4** (Replication ledger × Heuristics × paper Engram): Divergent endorsements (low
+- **S4** (Replication ledger × Heuristics × paper Signal): Divergent endorsements (low
   similarity to the proposal) can be stored as counter-claims in the replication ledger —
   feeding S4's living-research loop.
 
@@ -133,7 +133,7 @@ Consensus decision:
 
 ## Today vs. Planned
 
-**Today**: HDC fingerprints are computed for Engrams. `EventBus<E>` routes typed events. The
+**Today**: HDC fingerprints are computed for Signals. `EventBus<E>` routes typed events. The
 Consensus subsystem has stub structures. No agreement-Pulse type exists. No similarity-based
 aggregation is implemented.
 
@@ -160,5 +160,5 @@ emits consensus-reached or consensus-failed events.
 - Can the consensus aggregator detect structured disagreement (multiple clusters of
   semantically similar but mutually divergent endorsements) rather than just pass/fail?
 - Should the consensus result Pulse carry the centroid fingerprint of the endorsing cluster
-  so that downstream components can find which Engrams are most semantically aligned with
+  so that downstream components can find which Signals are most semantically aligned with
   the consensus?

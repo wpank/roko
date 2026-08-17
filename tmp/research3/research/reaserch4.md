@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a deep research report on agent protocol deployment reality (round 4, May 2026).
+> It is reference material for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Operational reality of agent protocols: the May 2026 deployment brief
 
 **The window for a new agent orchestration protocol is narrow but real.** MCP, A2A, x402, and ERC-8004 have already locked in the canonical interop stack between November 2024 and February 2026; the Linux Foundation's Agentic AI Foundation reached 170+ members and is now the legitimacy gate. Microsoft Agent Framework 1.0 (Apr 3), Google's Gemini Enterprise Agent Platform (Apr 22), AWS AgentCore expansions (Apr 22), and OpenAI's Symphony orchestration spec (Apr 27) all shipped in the last 30 days, compressing the window for "horizontal orchestration" pure plays to perhaps 90 days. Two production incidents — the Replit database deletion (July 2025) and the Anthropic GTG-1002 state-actor cyber-espionage campaign (disclosed Nov 2025) — have crystallized the threat model every enterprise CISO now references. Against this backdrop, the **10–30× cost reduction wedge is empirically defensible at 7–10× through stacked optimizations** (cache + tier-routing + loop-discipline + batching), expandable to 20× via DeepSeek V4 substitution; the path to a credible May 2026 launch is to compose with MCP/A2A/x402 rather than compete, ship security-first primitives that defeat both Replit-style autonomy failures and GTG-1002-style task decomposition jailbreaks, and target the NeurIPS 2026 May 6 deadline for academic legitimacy.

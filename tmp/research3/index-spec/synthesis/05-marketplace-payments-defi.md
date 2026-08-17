@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a synthesis report from a structured deep-research run. It is reference material
+> for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Marketplace, Payments, and DeFi Integration
 
 This document describes how autonomous AI agents find work, get paid, build reputations, compete in evaluation environments, and participate in decentralized finance. It covers the full economic stack: from a single micropayment for a data feed query to the cooperative clearing of yield perpetual positions against an on-chain interest rate benchmark. The system is designed as part of Roko (a Rust agent toolkit) and its companion chain Korai, but the identity standard (ERC-8004), payment protocols (x402, MPP), and marketplace mechanisms are specified as open protocols that any agent framework can adopt.

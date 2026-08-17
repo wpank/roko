@@ -1,4 +1,6 @@
-# 05: Contract Deployment — Chain Profiles, Bootstrapping, ABI Generation
+# 05: Contract Deployment -- Chain Profiles, Bootstrapping, ABI Generation
+
+> Last updated: 2026-08-13
 
 Chain-agnostic deployment of ISFR contracts. Everything is parameterized by `ChainProfile` — mirage-rs is the default dev profile, but daeji, a mainnet fork, or any EVM chain with ERC-8004/8183 contracts works by swapping the profile.
 

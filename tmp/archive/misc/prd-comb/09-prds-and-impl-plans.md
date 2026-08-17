@@ -621,7 +621,7 @@ This glossary defines every term used across the PRD set. Terms are grouped by s
 
 ### Core primitives
 
-**Engram.** The universal data type in Roko. A content-addressed (BLAKE3 hash), scored, decaying unit of knowledge. Every piece of information that flows through the system -- a task, a prompt, an LLM output, a gate verdict, a knowledge entry -- is an Engram. Content addressing means the same piece of knowledge has the same identity whether it lives on disk, in memory, or on chain. Engrams carry provenance (who created it, what model, what context), lineage (parent Engrams that contributed to it), and scores (relevance, novelty, utility). This is the atom of the system.
+**Signal.** The universal data type in Roko. A content-addressed (BLAKE3 hash), scored, decaying unit of knowledge. Every piece of information that flows through the system -- a task, a prompt, an LLM output, a gate verdict, a knowledge entry -- is an Signal. Content addressing means the same piece of knowledge has the same identity whether it lives on disk, in memory, or on chain. Signals carry provenance (who created it, what model, what context), lineage (parent Signals that contributed to it), and scores (relevance, novelty, utility). This is the atom of the system.
 
 **Signal.** An event-sourced record that captures a state change in the system. Signals are the nouns of the architecture -- they represent observations, actions, outcomes, and metadata. Every signal is typed, timestamped, and stored in a content-addressed DAG (directed acyclic graph). Signals compose into traces that reconstruct any sequence of decisions.
 
@@ -629,8 +629,8 @@ This glossary defines every term used across the PRD set. Terms are grouped by s
 
 | Trait | Role | What it does |
 |-------|------|-------------|
-| **Substrate** | Store | Persist and query Engrams -- memory, file, or on-chain |
-| **Scorer** | Evaluate | Rank Engrams by relevance, novelty, utility, and source reputation |
+| **Substrate** | Store | Persist and query Signals -- memory, file, or on-chain |
+| **Scorer** | Evaluate | Rank Signals by relevance, novelty, utility, and source reputation |
 | **Gate** | Verify | Check output against external ground truth -- compiler, test suite, blockchain state |
 | **Router** | Select | Choose the best candidate via cascade routing, bandit selection, or active inference |
 | **Composer** | Integrate | Build the context window under token budget constraints |
@@ -20887,7 +20887,7 @@ TUI: F3 Agents sub-view (braille density map). See `widgets/braille.rs` for rend
 
 #### 7.4.3 Knowledge graph
 
-**Purpose:** Browse the knowledge store -- engrams organized by kind, with relationships and decay visualization.
+**Purpose:** Browse the knowledge store -- signals organized by kind, with relationships and decay visualization.
 **TUI mapping:** F7 Inspect sub-view 4 (Knowledge Browser). See Task 3.3 in IMPL-10.
 **Dashboard route:** `/network/knowledge`
 
@@ -22517,7 +22517,7 @@ These are declared in the TUI code but never rendered:
 |------------|----------|-------------------|
 | F6 Config | ProviderHealth | `GET /api/providers` + per-provider health bars |
 | F6 Config | ModelComparison | Cost/speed/quality comparison across configured models |
-| F7 Inspect | EngramDag | Browse engram graph by hash chain (like `roko replay`) |
+| F7 Inspect | EngramDag | Browse signal graph by hash chain (like `roko replay`) |
 | F7 Inspect | EpisodeReplay | Step through episodes chronologically with gate results |
 | F7 Inspect | KnowledgeBrowse | Browse knowledge store by kind and freshness |
 
@@ -22528,7 +22528,7 @@ F7 Inspect sub-views are accessed via number keys 1-5 when F7 is the active tab:
 | Key | Sub-view | Content | Status |
 |-----|----------|---------|--------|
 | 1 | System Health (default) | Token burn, cost by model, cascade router, alerts | EXISTING |
-| 2 | Engram DAG | Interactive engram dependency graph | NEW -- Task 3.3 in IMPL-10 |
+| 2 | Engram (renamed to Signal in 2026-08-12) DAG | Interactive signal dependency graph | NEW -- Task 3.3 in IMPL-10 |
 | 3 | Episode Replay | Step-through episode turns with gate results | NEW -- Task 3.3 in IMPL-10 |
 | 4 | Knowledge Browser | Searchable neuro store by kind and freshness | NEW -- Task 3.3 in IMPL-10 |
 | 5 | Conductor | Watcher status, circuit breakers, interventions | NEW -- move from F1 sub-tab |
@@ -36834,7 +36834,7 @@ Goal: build the actor-per-chain model that subscribes to multiple chains simulta
 ### Task 6.5: Implement `CanonicalEvent` schema and `DeterministicId`
 
 **Read first:**
-- `/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/engram.rs` (Engram, ContentHash)
+- `/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/__PATH_ENGRAM_RS__0` (Signal, ContentHash)
 - `/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/hash.rs` (ContentHash, blake3)
 
 **Implementation:**
@@ -40298,17 +40298,17 @@ fn render_model_comparison(frame: &mut Frame<'_>, area: Rect, data: &DashboardDa
 
 **Files to modify:**
 - `crates/roko-cli/src/tui/views/context_view.rs` -- implement three sub-views
-- `crates/roko-cli/src/tui/dashboard.rs` -- add engram, episode, knowledge data
+- `crates/roko-cli/src/tui/dashboard.rs` -- add signal, episode, knowledge data
 
 **What to implement:**
 
 **EngramDag sub-view:**
 
-Renders an ASCII-art directed graph of engrams and their provenance links. Read from `.roko/engrams.jsonl`.
+Renders an ASCII-art directed graph of signals and their provenance links. Read from `.roko/engrams.jsonl`.
 
-Layout: two-panel. Left 40%: list of engrams (newest first) with kind badge (Signal, Insight, Memory). Right 60%: selected engram detail showing content, provenance chain (what signal triggered it, what it produced), and metadata.
+Layout: two-panel. Left 40%: list of signals (newest first) with kind badge (Signal, Insight, Memory). Right 60%: selected signal detail showing content, provenance chain (what signal triggered it, what it produced), and metadata.
 
-Navigation: Up/Down to select engram, Enter to expand, Tab to switch panels.
+Navigation: Up/Down to select signal, Enter to expand, Tab to switch panels.
 
 ```rust
 fn render_engram_dag(frame: &mut Frame<'_>, area: Rect, data: &DashboardData, ...) {
@@ -40358,10 +40358,10 @@ fn render_knowledge_browse(frame: &mut Frame<'_>, area: Rect, data: &DashboardDa
 ```
 
 **Acceptance criteria:**
-- [ ] F7 + key "1" shows EngramDag with real engram data
+- [ ] F7 + key "1" shows EngramDag with real signal data
 - [ ] F7 + key "2" shows EpisodeReplay with real episode data
 - [ ] F7 + key "3" shows KnowledgeBrowse with real neuro store data
-- [ ] Engram list scrolls and updates when new engrams appear
+- [ ] Signal list scrolls and updates when new signals appear
 - [ ] Episode replay steps through turns with correct timing
 - [ ] Knowledge search filters entries in real-time
 - [ ] All sub-views handle empty data gracefully
@@ -40851,7 +40851,7 @@ Built-in commands:
 - "Switch to Crisis mode" (Ctrl+3)
 - "Show provider health" (F6 + 2)
 - "Show model comparison" (F6 + 3)
-- "Show engram DAG" (F7 + 1)
+- "Show signal DAG" (F7 + 1)
 - "Show episode replay" (F7 + 2)
 - "Show knowledge browser" (F7 + 3)
 
@@ -45566,7 +45566,7 @@ Engrams:
   └─ "Agent dispatch" (0.88)
 ```
 
-If the file does not exist, show: "No engrams recorded yet. Run tasks to build knowledge."
+If the file does not exist, show: "No signals recorded yet. Run tasks to build knowledge."
 
 **Step 3: EpisodeReplay sub-view**
 

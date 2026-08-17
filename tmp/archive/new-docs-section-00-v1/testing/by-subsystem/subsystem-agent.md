@@ -62,7 +62,7 @@ The safety pipeline runs on every LLM call. Tests verify each step:
 | Context injection | Safety context is injected into the prompt |
 | Response validation | Malformed or unsafe responses are rejected |
 | Post-call content check | Output is checked for policy violations |
-| Provenance recording | Every LLM call is recorded in the Engram provenance chain |
+| Provenance recording | Every LLM call is recorded in the Signal provenance chain |
 | Audit log | Every call produces an audit event |
 
 Key property: [../by-property/safety-pipeline-ordering.md](../by-property/safety-pipeline-ordering.md).

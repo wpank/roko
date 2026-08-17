@@ -10,7 +10,7 @@
 
 ## Main Gap
 
-The highest-value next step is **adding an HDC fingerprint field to `Engram`**.
+The highest-value next step is **adding an HDC fingerprint field to `Signal`**.
 
 That is the missing bridge between:
 

@@ -1,6 +1,6 @@
 # Provenance — Trust Level
 
-> The four-tier verification scale that determines how much weight an Engram's provenance contributes to reputation scoring.
+> The four-tier verification scale that determines how much weight an Signal's provenance contributes to reputation scoring.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -15,7 +15,7 @@
 `TrustLevel` is an enum with four variants, each carrying a numeric weight: `LocalAgent(0.25)`,
 `SelfVerified(0.50)`, `PeerVerified(0.75)`, `ChainWitness(1.00)`. The weight is used in the
 `Score::reputation` calculation. Trust level is **not** part of the ContentHash — it can
-be upgraded as an Engram gains verification, without changing its identity.
+be upgraded as an Signal gains verification, without changing its identity.
 
 ---
 
@@ -27,8 +27,8 @@ independently confirmed. `TrustLevel` formalises this intuition as an ordered sc
 unverified (LocalAgent) to chain-witnessed (ChainWitness).
 
 The numeric weights (`0.25`, `0.50`, `0.75`, `1.00`) are the reputation multipliers fed
-into `Score::reputation`. A ChainWitness Engram can achieve a reputation score 4× that of
-a LocalAgent Engram with identical content quality.
+into `Score::reputation`. A ChainWitness Signal can achieve a reputation score 4× that of
+a LocalAgent Signal with identical content quality.
 
 ---
 
@@ -84,7 +84,7 @@ impl TrustLevel {
 
 ## Use in Score::reputation
 
-`Score::reputation` is computed at Engram creation as:
+`Score::reputation` is computed at Signal creation as:
 
 ```
 reputation = author_base_reputation × trust_level.weight()
@@ -142,7 +142,7 @@ impl Default for TrustLevel {
 > Shipped today: `LocalAgent`, `SelfVerified`, `PeerVerified`. ChainWitness variant exists
 > in the enum but the chain integration that would produce it is Deferred.
 >
-> Target state: Chain-integrated Roko nodes automatically escalate Engrams to `ChainWitness`
+> Target state: Chain-integrated Roko nodes automatically escalate Signals to `ChainWitness`
 > after sufficient consensus confirmations.
 
 ---
@@ -153,7 +153,7 @@ impl Default for TrustLevel {
 2. `weight()` is in `[0.0, 1.0]`.
 3. `ChainWitness` has the maximum weight (`1.0`) — no trust level exists above it.
 4. `Default::default()` returns `LocalAgent` — the most conservative trust level.
-5. Trust escalation does not change the Engram's `ContentHash`.
+5. Trust escalation does not change the Signal's `ContentHash`.
 
 ---
 
@@ -162,7 +162,7 @@ impl Default for TrustLevel {
 | Failure | Cause | Recovery |
 |---|---|---|
 | Trust downgraded | Bug in escalation path | Enforce monotonicity check before write |
-| ChainWitness assigned to non-chain Engram | Manual override | Substrate validates source before setting ChainWitness |
+| ChainWitness assigned to non-chain Signal | Manual override | Substrate validates source before setting ChainWitness |
 | Weight returns value outside [0.0, 1.0] | Bug in `weight()` | Unit test `trust_weights_in_range` covers all variants |
 
 ---

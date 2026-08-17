@@ -1,6 +1,22 @@
 # Bardo Deep Aesthetics — The Source Material
 
-This document captures the deeper aesthetic, philosophical, and consciousness-driven visual language from the original bardo system. Use it for richer, more expressive sites that go beyond standard product pages into experiential territory.
+> **What is this?** The deep aesthetic source layer for ROSEDUST (roko's design system).
+> Covers consciousness states, emotional modulation, lifecycle degradation, hauntological
+> rendering, demoscene algorithms, and the ambient philosophy engine. These patterns are
+> the most expressive tier of the design system -- use them for experiential/atmospheric
+> sites, not standard product pages.
+>
+> **Legacy naming:** "Bardo" is the original project name from before the rename to roko.
+> The aesthetic concepts here remain canonical even though the project name has changed.
+> Similarly, any references to "mori" in related docs refer to roko's predecessor
+> orchestrator, also renamed.
+>
+> **Adoption status (2026-08-13):** Partially adopted. The Spectre avatar system and
+> lifecycle degradation visuals are specified here but not yet fully implemented in the
+> shipped demo-app. The emotional color modulation and hauntological rendering concepts
+> inform the design direction but are aspirational for now.
+
+This document captures the deeper aesthetic, philosophical, and consciousness-driven visual language from the original bardo system (now roko). Use it for richer, more expressive sites that go beyond standard product pages into experiential territory.
 
 ---
 
@@ -320,3 +336,7 @@ THE single most important visual element on any screen. Used ONCE per screen max
 ```
 
 Maximum contrast: bone on bg_void = ~12:1. It's the brightest thing on screen.
+
+---
+
+*Last updated: 2026-08-13*

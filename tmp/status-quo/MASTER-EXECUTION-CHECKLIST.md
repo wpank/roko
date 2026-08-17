@@ -7,7 +7,7 @@
 > **How to use:** Search for your area of interest, check its status, and look for linked plan IDs (P01-P31).
 > Before starting new work, verify the item isn't already done or in progress.
 >
-> **Last updated:** 2026-08-13 (batch 2026-08-12: Engram-to-Signal rename, eprintln-to-tracing, .expect()-to-proper-errors, docs/v2 reality sync, docs/v1 deprecation headers, HTTP timeouts, .DS_Store cleanup)
+> **Last updated:** 2026-08-17 (bounded documentation/generated integrity, the first DOC-v2 content wave, and direct durable Runner projection correctness verified; broader projection architecture and earlier audit history retained below)
 
 > Canonical entry point for long-running, context-free Claude/Codex agents
 >
@@ -47,6 +47,38 @@ DONE means all of the following:
 SUPERSEDED means a named canonical task fully owns the same outcome, with an explicit
 mapping and equivalent-or-stronger acceptance. It never means “we chose not to do it.”
 
+### Current checkpoint — 2026-08-17 comprehensive verification sweep
+
+| Area | Current result | Remaining boundary |
+|---|---|---|
+| Canonical epics | E01-E48 accepted; 0 partial/greenfield epics and 0 remaining epic-manifest tasks | Raw accepted-manifest metadata is 393/447 and must not be used as a completion percentage |
+| Executable plan queue | 30 plans / 124 tasks / 124 done (100%); all 30 plans complete, 0 ready | `architecture-production-residuals` is 4/4: supervised HTTP JSON connector, bounded relay plus durable exact-room subscription execution, authorized durable local arena service, and bounded meta-agent lineage/recursive safety |
+| Closed follow-ups | P28 5/5, P34 4/4, `architecture-defi-critical-path` 3/3, and E43 8/8 | The DeFi/registry follow-up is local/manual and does not claim deployed ABI compatibility, automatic chain polling, PostgreSQL/SSE, or a write adapter |
+| Verification | `cargo check --workspace` passes cleanly (2026-08-17). Historical P34 checkpoint: formatting, workspace check, strict default-target/default-feature workspace clippy, default workspace tests/doctests, optimized release build, release CLI startup/doctor/plan validation, and focused strict plan validation passed on 2026-08-16 | The stricter all-target/all-feature final gate, clean dogfood, and broader product/runtime residuals remain open |
+| Raw master census | 220 done / 14 partial / 8 unchecked markers (improved from 211/11/20) | This wider census includes repeated references, procedural controls, docs/dogfood proof, and product gaps; it is not the executable queue |
+| 2026-08-17 sweep | 25-agent verification sweep checked 20 items: security tests, Graph e2e, operational overlap, E12 deletions, legacy ports, issue evidence, CLI/README, resume, orphan resources, safety limits, DOC reconciliation (v1-kernel/cognition/ecosystem, v2-depth all chapters), operator links, plans/INDEX.md, StateHub convergence, DOC-status-quo corpus | 10 previously unchecked items verified and marked done; 1 moved to partial with evidence |
+
+Superseded/archived queues are 4 plans / 92 tasks and fixtures are 6 plans / 19 tasks;
+both populations are excluded from the executable totals. `plans/INDEX.md` is the
+machine-derived queue view; `.roko/GAPS.md` is the human-readable product boundary.
+
+### Backlog specs — 2026-08-17
+
+18 fully specced implementation items extracted from historical architecture docs and ACP
+analysis. Master index: `tmp/backlog/00-INDEX.md`. Each spec is self-contained with
+problem statement, proposed solution, acceptance criteria, and origin references.
+
+| Priority | Items | Key items |
+|---|---|---|
+| P0 | 1 | ACP stability hardening (7 P0 panics, 12 race conditions) |
+| P1 | 4 | Context injection scoping, compile auto-fix, inference cache, ACP spec upgrade |
+| P2 | 8 | T0 reflex store, reactive agent mode, express mode, daimon TUI, e2e harness, cost calibration, plan mutations, post-gate reflection |
+| P3 | 3 | Recursive safety monitoring, justfile, warm agent spawning |
+
+Items 06/07/08 already implemented in roko-gateway (verified during research).
+Items 04/05/15/16 have partial implementations (types exist, wiring missing).
+Source docs archived to `tmp/archive/08-15-26/`.
+
 ## 2. Current truth at programme start
 
 ### Batch audit 2026-08-10
@@ -56,20 +88,88 @@ Updated 2026-08-13 (batches 8+9 integrated; batch 2026-08-12 hygiene sweep appli
 Batches 1-9: 27 audit + 20 implementation + 27 mixed + 15 + 15 + 14 partial + 30 + 30 + 30 impl
 agents. All changes integrated and pushed to `status-quo/batch-2026-08-10`.
 
+Current 2026-08-13 resource-lifecycle batch:
+
+| Plan/Issue | Progress | Additions |
+|---|---|---|
+| E47 (resource mgmt) | 11/11 | T07: bounded canonical JSONL lifecycle; T09: disk-aware admission + worktree metrics; T10: `doctor disk`; T11: ordered lifecycle integration (**DONE**) |
+
+Current 2026-08-15 authentication/RBAC tranche:
+
+| Area | Result | Evidence |
+|---|---|---|
+| E35 auth protocol | 8/8 complete | T01-T08 satisfy the authoritative manifest. T06 adds parent-linked, capability-narrowed, depth-bounded relay delegation; every bearer use validates the full chain, and root/intermediate revocation invalidates descendant subtrees |
+| Credential lifecycle | Complete | One restart-loaded locked registry owns atomic API-key, agent-token, and relay-token persistence; parsed expiry, last-use tracking, two-hash rotation grace, 32-byte secrets, revocation, and concrete order-independent capability checks are live |
+| JWT/JWKS | Complete | Issuer-bound multi-provider caches refresh proactively and on unknown keys, coalesce refreshes, expose health, retain stale keys with warnings, and fail closed after 48 hours |
+| Workspace RBAC | Complete | Four persisted roles map to eleven permissions; one typed route layer covers mutations and sensitive reads, JWT roles resolve from membership, invitation join is token-based/JWT-only/single-use, and structured denials are audited |
+| Auth audit + CLI | Complete | Shared `.roko/auth-audit.jsonl` records token, permission, expiry, invitation, and role events; query requires `SecretsRead`; stored Privy CLI credentials retain their method and use Bearer auth |
+| Verification | Exact workspace gates green | `cargo fmt --all -- --check`, `cargo clippy --workspace --no-deps -- -D warnings`, and `cargo test --workspace` (all package targets and doctests) pass after the auth changes. `cargo test -p roko-serve --lib` passes 635/635, including 16 relay-filtered tests; all 99 tracked plan directories validate and the docs drift guard passes |
+
+Current 2026-08-14 GitHub workflow and truth-reconciliation tranche:
+
+| Area | Result | Evidence |
+|---|---|---|
+| E46 GitHub workflow | 12/12 complete | Canonical config/signals, reusable rate-limited API client, seven-operation live adapter, ordered runner lifecycle, exact accepted-commit publication, CI-before-merge, terminal issue lifecycle, webhook trigger graduation, standalone status CLI, and mock end-to-end coverage |
+| E18-T15 GitHub guide | Complete | `docs/v2/GITHUB-INTEGRATION.md` covers credential boundaries, config, MCP discovery, runner automation, webhooks, branch naming, CI validation, status diagnostics, and troubleshooting |
+| E18 docs/config/ops | 15/15 complete | MSRV/release/coverage/supply-chain gates, clean-checkout deploy parity, validated config authority and secret redaction, truthful conductor/cold-storage liveness, current operator docs, docs-lint, plan validation, and the GitHub guide are complete |
+| Status correction | Resolved | The previous ~8/12 E46 headline counted same-numbered webhook batch items that do not match the authoritative E46 T01-T12 manifest |
+| 2026-08-14 verification baseline | Exact release gates were green at that checkpoint | `cargo clippy --workspace --no-deps -- -D warnings`, `cargo test --workspace` (all package targets and doctests), and `cargo fmt --all -- --check` passed then. The current tranche ran focused/cross-crate gates below, not the full workspace suite |
+
+Current 2026-08-15 manifest and runtime reconciliation (manifest completion and broader
+product readiness are reported separately):
+
+| Area | Verified result | Honest residual |
+|---|---|---|
+| E31 triggers | Complete. The bundled watcher emits canonical raw EVM logs; the trigger runtime performs ABI decoding, automatic 12/64-confirmation promotion, canonical-hash checks, bounded reorg replay, invalidation, and idempotent delivery. Focused raw-evidence, finality, and reorg tests pass alongside the existing trigger and mTLS coverage | None within E31 runtime acceptance |
+| E23 autonomy | Manifest-complete 10/10. Lifecycle type-state, five-phase behavioral vitality, CorticalState energy/EFE fields, cognitive-energy accounting, adaptive timescales, energy/affect coupling, EFE routing, GoalTree, and phase-aware live dispatch pass their contracts; Terminal skips are restart-durable and exact integration tests pass | Direct native Agent publication into the accepted E33 observation ingress remains separate product integration scope |
+| E32 extensions | Manifest-complete 8/8. Signed schema-v2 dependency graphs, range-aware relay/CLI validation, authenticated publish/install, all 23 bounded typed WASM hooks, fail-fast startup, and current CLI/MCP targets pass | Aspirational WIT/Component-model Store/Bus/capability hostcalls plus OpenClaw and legacy one-shot adapter parity remain separate roadmap scope |
+| E33 telemetry | Runtime-ingress complete. Retention 2/2, producer fanout 1/1, extension telemetry 1/1, gate-to-Lens 1/1, serve trigger/post-verify bridge 1/1, and all 39 variants have production evidence. The final six are emitted only after a registered agent commits a typed, identity-bound, sequence-durable lifecycle observation; strict transition/range/dedup/failure-silence tests pass | Direct native Agent publication remains separate product integration scope and does not reopen the completed E23 or E33 manifests |
+| E34 security | Strict manifest-complete 8/8. Trust-origin IFC/TaintTracker, exact capability intersection, pure immune pipeline, five-head corrigibility, sandbox policy, persistent transitive quarantine, and mandatory audited hooks pass their contracts. Canonical provider primary outputs and every host-visible ToolDispatcher result now traverse the fixed five-stage Graph; bounded locked workspace authority persists provider isolation, tool cooldown/isolation, evidence, and reciprocal incident links independently of attempt worktrees | Provider-owned internal calls/results, provider trace Signals, broad semantic/adaptive immune memory, and externally anchored whole-ledger authenticity remain broader product residuals |
+| E37 surfaces | Manifest-complete 9/9. Typed Workbench/Inbox/Canvas/Minimap/Autonomy projections, Inbox/autonomy events, twelve object types, five StateHub-backed routes, OpenAPI entries, and the legacy-tab compatibility mapping are implemented | Full named-surface TUI rendering, SurfaceEvent command ingress, a native autonomy-config store, canonical Canvas graph IDs, and HDC Minimap coordinates remain roadmap/product work |
+| Graph runtime | Converted plan tasks reach the real shared provider runtime; CLI Flow/Hot execution uses graph-fingerprinted Activity/checkpoint state. Hot resume restores outputs/budgets and replays interrupted Activities. Plan dispatch charges paid failures, atomically persists reservations before await, restores a plan/run/fingerprint-bound schema-v2 cost sidecar, rejects missing/corrupt/mismatched/crash-reserved state, and preserves override/no-budget/force semantics. Checkpoint tests pass 9/9; dispatch tests pass after correcting the paid-failure fixture; the CLI cost-resume integration test and `cargo check -p roko-cli --lib` pass | Runner-v2 gates/replan/approval/worktree/merge/full-state-persistence/cancellation parity remains. A single call can disclose more actual cost than its reservation because the provider bridge has no enforceable pre-call max-cost API |
+| Dream scheduling | Daemon mode now owns the shared `DreamSchedulePolicy`: adaptive idle, cron, and episode-count triggers queue behind active agents, honor the unconsolidated-episode minimum, resume from the latest report, deduplicate polls, and fail config validation before daemon-info publication and background-loop startup | BusPulse/intensive backlog controls are not resident triggers yet; manual and plan-completion execution remain separate supported paths |
+| Combined gate | `cargo fmt --all -- --check`, scoped diff/docs lint, strict production-library Graph/core/agent plus CLI no-deps clippy, and combined checks for core/agent/plugin/runtime/Graph/CLI/serve/relay passed at that tranche's checkpoint. Graph's full package suite and the live fake-provider adapter test passed | Full workspace release suite was not rerun. The historical strict `roko-graph --all-targets` run was blocked by hundreds of test-only unwrap/lifetime lint findings; reproduce before attaching a current exact count |
+
+Current 2026-08-16 memory/gateway/feeds/groups and final connectivity/economy closure tranche:
+
+| Area | Verified result | Honest residual |
+|---|---|---|
+| E24 advanced memory | Manifest-complete 10/10. Balance demurrage and reinforcement, falsifier lifecycle, streaming HDC role/filler lookup and resonance, temporal queries/GC, distillation, cross-domain transfer, configurable tier progression, Dream consolidation, and CLI maintenance hooks are implemented | Advanced memory remains opt-in where its owning runtime/config requires it; no unrelated roadmap work is counted toward E24 |
+| E26 inference gateway | Manifest-complete 12/12. A dedicated workspace crate owns the nine-stage inference pipeline, cascade/provider fallback, exact and semantic caches, request shaping, convergence, cost accounting, rotating keys, three-level backpressure, handles, and batching. Authenticated serve routes share the live gateway state | Provider-specific wire semantics remain owned by the existing model-call adapters; the gateway does not duplicate those clients |
+| E27 continuous feeds | Manifest-complete 10/10. `FeedCell`, runtime lifecycle/discovery, Bus publication, file/provider-health/episode-outcome/derived feeds, validated recipe DAG persistence/evaluation, authenticated HTTP routes, and CLI commands are live | Broader on-chain, payment, and UI feed products remain separate roadmap scope; the retired rate-oracle vertical stays removed |
+| E28 agent groups | Manifest-complete 8/8. Persisted groups, invitations, membership/permission enforcement, coordination state, shared knowledge/pheromones/messages/events, Bus publication, HTTP/CLI operations, and privacy-filtered prompt context are wired | Cross-node relay, deployed registry, and richer UI coordination remain broader product residuals outside the completed E29/E39 manifests |
+| E29 connectivity / relay | Manifest-complete 9/9 plus R01/R02 scoped runtime. One supervised HTTP JSON adapter, a count/byte-bounded relay server, a supervised durable client, atomic `Subscribe(last_seq)` recovery, and ACK-after-durable exact-room subscription execution are implemented and tested | Additional transports, startup discovery, MCP/A2A/x402 execution, finality/reorg processing, and dashboard integration remain broader product scope |
+| E38 artifact marketplace | Manifest-complete 9/9 at the contract/stub boundary. Artifact/package/publish/economics/fork/capability contracts, upstream TraceRank attribution, auth-classified HTTP shapes, and seven CLI commands are present | HTTP/CLI is stub-only; durable storage, real publish/install execution, ratings/indexing, and ERC-8004 anchoring remain product work |
+| E39 registries / identity | Manifest-complete 8/8 at the transport-independent local state-machine boundary, plus a completed 3/3 critical-path follow-up. Transferable identity/delegation, challengeable knowledge, TraceRank, transport-neutral gossip discovery, durable authenticated local registry routes, and a bounded finality/reorg-aware manual event index are implemented | Deployed ABI-compatible contracts, gossip transport, ABI decoding, automatic WebSocket polling, PostgreSQL/SSE delivery, and a verified write adapter remain runtime/daeji work |
+| E40 arenas / evals | Manifest-complete 8/8 plus R03 scoped service. The restart-safe authenticated local API owns arena lifecycle, principal-bound attempts, external-evidence settlement, atomic leaderboards/prize/reputation effects, and a durable event outbox | Eval orchestration, the seven-stage flywheel, token/on-chain settlement, and cross-arena transfer remain product work |
+| E41 DeFi products | Manifest-complete 8/8 at the local/stub boundary. Instruments, checked bonds/insurance, option pricing, indices, affect sizing, and provider-neutral rate effects are implemented | Authenticated scope/RBAC-classified routes intentionally return structured 501 responses; durable/on-chain services, the risk engine, and venue execution remain product work |
+| Programme roll-up | 48/48 epics accepted, no partial or greenfield epics, and 0 remaining epic-manifest tasks. Raw E01-E48 metadata is 393/447 and is not a completion score | Older accepted manifests retain stale metadata. Separately identified non-epic plans, documentation work, product residuals, and release proof remain open |
+
+Current 2026-08-13 runtime-wiring and truth-reconciliation batch:
+
+| Area | Result | Evidence |
+|---|---|---|
+| Knowledge routing | Resolved | Runner-v2 reads persisted `KnowledgeStore` signals and supplies positive/negative model advice to cascade selection; focused relevant/no-signal tests pass |
+| Cold substrate | Resolved | Both server startup paths own a configurable archival timer; a tick archives aged signals before hot-store pruning and archive writes deduplicate |
+| Periodic telemetry | Runtime gap resolved; E33 built-in catalog live | Long-running serve lifecycle samples the shared metric registry through `PeriodicObserver` and persists rotation-bounded JSONL. Separately, all 11 configured built-in Lenses now execute through the scoped/chained breaker runtime and typed projection boundary |
+| Provider health feedback | Resolved | Workflow calls record every provider attempt, CLI and bridge paths record exactly once, persistence is shared with routing, and unhealthy providers are filtered from knowledge-informed candidates |
+| Orchestrator baseline | Resolved | 585 tests pass in both default parallel and serial modes; 2 doctests intentionally ignored, 0 failures |
+| E34 status | Complete; 8/8 strict manifest tasks | Trust-origin propagation, exact capability intersection, persistent quarantine, and mandatory audited hooks close the strict task gaps. The 2026-08-17 closure adds canonical-workspace provider isolation, tool cooldown/isolation, universal host-visible tool-result screening, bounded evidence, and reciprocal incident links. Provider-owned internals, trace Signals, broad semantic/adaptive memory, and externally anchored whole-ledger authenticity remain broader product scope |
+
 Batch 9 summary (30 agents, 15 auto-committed + 14 with working tree changes, ~5,000 LOC):
 
 | Plan/Issue | Progress | Batch 9 additions |
 |---|---|---|
-| E30 (plugin system) | 8/9 | T02: FilterDecision/BudgetAction hooks, T05: ExtensionHealthTracker circuit breaker, T06: hook timeout + auto-disable, T08: TOML manifest loader |
-| E31 (trigger system) | 4/8 | T02: ConcurrencyPolicy serde + TriggerFilter matching, T03: TriggerAuth/SecretRef validation, T04: TriggerCellAdapter |
-| E32 (tool registry) | 5/8 | T02: SandboxConfig with tier-based isolation, T03: version resolution + conflict detection |
-| E34 (security/IFC) | 8/8 | T02: lattice-aware taint propagation, T05: 5 sandbox enforcement levels, T07: QuarantineVault persistence (**DONE**) |
+| E30 (plugin system) | 9/9 | T09: live collection/detail status routes sharing the plan runner's extension chain (**DONE**) |
+| E31 (trigger system) | 8/8 | T05: TOML persistence, T06: CLI CRUD/fire, T07: HTTP CRUD/fire, T08: scoped event topics + graduation policy (**manifest complete**) |
+| E32 (tool registry) | 1/8 strict; several partial (historical Batch 9 snapshot; superseded 2026-08-15 by 8/8 manifest completion) | T06: canonical highest-semver resolution across all runtime roots with dependency ordering, disabled filtering, and fail-closed validation |
+| E34 (security/IFC) | Historical structural 8/8 claim; rejected by the interim 2026-08-15 3/8 strict audit and superseded by the later verified 8/8 closure | The batch evidence was insufficient on its own; the final closure added the exact trust-origin tracker, wrappers, persistent/transitive vault behavior, and mandatory production hooks |
 | E35 (auth/tokens) | 5/8 | T03: relay tokens (issue/validate/single-use), T04: auth audit trail (JSONL + sweep + query) |
 | E43 (ops hardening) | 8/8 | T02: brain import with Merkle verify + dedup, T04: daemon health (PID+HTTP probe), T05: log rotation (**DONE**) |
 | E45 (agent quality) | 10/10 | T04: post-gate reflection with dedup + cost guard (**DONE**) |
-| E46 (GitHub) | 8/12 | T05: issue event pipeline, T06: workflow_run handler, T07: check_suite handler, T08: deployment event handler |
+| E46-adjacent webhook batch | Historical label collision; not E46 manifest progress | Issue, workflow-run, check-suite, and deployment event types landed under same-numbered batch IDs; reconciled against the real E46 T01-T12 contract on 2026-08-14 |
 | E47 (resource mgmt) | 10/11 | T04: disk pre-check wired, T05: target/ cleanup scanner, T06: worktree lifecycle cleanup, T08: DiskPressureWatcher wired |
-| E48 (cost control) | 10/12 | T05: shared rate pool (Arc<ProviderHealthRegistry>), T06: FallbackChain on rate limit, T10: --budget-override CLI flag |
+| E48 (cost control) | 12/12 | T08/T12: tier-scaled per-task ceilings, retry-inclusive durable accounting, plan/task API projections, and TUI status/F2 parity (**DONE**) |
 
 Batch 8 summary (30 agents, 23 with committed code, ~3,500 LOC):
 
@@ -78,18 +178,26 @@ Batch 8 summary (30 agents, 23 with committed code, ~3,500 LOC):
 | E34 (security/IFC) | 6/8 | T01: TaintLevel trust_score + lattice tests, T04: corrigibility improvements, T06: capability intersection enhancements |
 | E30 (plugin system) | 5/9 | T01: CamelTag/ProvenanceEntry, T03: manifest validation, T04: HookRunner tests, T07: topological sort |
 | E31 (trigger system) | 1/8 | T01: TriggerProtocol trait + TriggerBinding/State/Source types |
-| E33 (observability) | 8/9 | T05: TelemetryObserve trait + ObservableEvent + CircuitBreakerState |
+| E33 (observability) | 9/9 manifest; runtime-ingress complete | The built-in catalog is end to end from Graph TOML and lifecycle evidence through scoped/stacked/chained execution, breaker accounting, typed reduction, StateHub invalidation, CLI output, REST/SSE, and a durable registered-agent observation boundary covering all 39 event variants |
 | E35 (auth/tokens) | 3/8 | T02: RBAC module with FromStr, role hierarchy, 23 tests |
 | E43 (ops hardening) | 6/8 | T01: brain export Merkle, T03: daemon uninstall fix |
 | E45 (agent quality) | 9/10 | T01: ReviewVerdict + express mode, T02: gate auto-fix, T03: error sharing, T05: context scoping, T06: warm pool, T08: provider metrics, T10: A-MAC |
-| E46 (GitHub) | 4/12 | T03: GitHubClient webhook verify, T04: GitHubOps trait |
+| E46 prerequisites | Historical partial evidence; not a valid 4/12 count | Webhook verification and the GitHubOps trait existed, but T03 in the authoritative manifest requires the reusable API client extraction |
 | E47 (resource mgmt) | 7/11 | T02: DiskUsage + DiskPressureLevel enhancements |
 | E48 (cost control) | 7/12 | T07: token estimator, T08: provider health routing, T09: cost projection |
-| E32 (tool registry) | 3/8 | T01: DynamicToolRegistry improvements |
+| E32 (tool registry) | foundations only (historical Batch 8 snapshot; superseded 2026-08-15 by 8/8 manifest completion) | DynamicToolRegistry, sandbox schema, catalog validation, and CLI audit types existed but did not yet meet their manifest's live-path acceptance |
 
-Cross-wave ledger: ~125 confirmed done, ~10 partial, ~5 greenfield remaining in active plans. **Note (2026-08-13 audit):** Wave 10 entries for E30, E31, E35, E46, E47 were stale relative to batch 9 summary counts; corrected below.
+Historical Batch 8 cross-wave ledger: ~128 confirmed done and ~8 partial at that
+checkpoint, with its then-open greenfield queue retained in the table above. **Notes:** the
+2026-08-13 audit corrected stale Wave 10 entries for E30, E31, E35, and E47. A 2026-08-14
+manifest-ID audit replaced E46's invalid batch-derived count with direct T01-T12 evidence.
 
-Epics completed (all tasks done): **E34** (security/IFC 8/8), **E43** (ops hardening 8/8), **E45** (agent quality 10/10).
+Epics completed in these expansion batches (all acceptance behavior done): **E43**
+(ops hardening 8/8), **E45** (agent quality 10/10), **E46** (GitHub workflow
+12/12), **E47** (resource management 11/11), and **E48** (rate limiting and cost control 12/12).
+The 2026-08-15 task-by-task audit first corrected E34 from the historical structural 8/8
+claim to 3/8 strict conformance; the subsequent closure tranche implemented and verified
+the five rejected contracts, bringing strict E34 to a defensible 8/8.
 
 ### Batch 2026-08-12
 
@@ -102,7 +210,7 @@ logging discipline, error handling safety, and documentation reality-sync.
 | **eprintln!-to-tracing** | ~40 calls converted; hundreds remain | **Correction (2026-08-13):** ~40 calls were converted, but 231 `eprintln!` remain in roko-cli (25 files), 7 in roko-learn (2 files), 3 in roko-agent (test files). roko-acp is clean. Sweep was partial, not comprehensive. |
 | **.expect()-to-proper-errors** | ~25 targeted fixes | **Correction (2026-08-13):** ~25 high-risk `.expect()` sites fixed, but `.lock().expect()` still appears 113 times across 40 files. roko-serve has 1,102 `.expect()` calls (44 files); roko-cli has 710 (71 files). Sweep targeted specific hot spots, not comprehensive cleanup. |
 | **docs/v2 implementation status markers** | 29 chapters + 5 guides | Every docs/v2/ file now has a header block indicating implementation status (Implemented / Partial / Spec-only) with specific notes on what is and isn't wired. |
-| **docs/v1 deprecation headers** | 417 files | All docs/v1/ files now carry a deprecation header pointing to the docs/v2/ successor or marking the content as historical-only. |
+| **docs/v1 deprecation headers** | 417 files | **Correction (2026-08-17):** Headers were claimed in batch 2026-08-12 but never committed (0/417 verified). Actually applied 2026-08-17: all 417 docs/v1/ files now carry `> **DEPRECATED (v1):**` banners with correct relative paths to docs/v2/. |
 | **HTTP timeouts on reqwest::Client** | 8 instances in roko-serve | All `reqwest::Client::new()` or `reqwest::Client::builder().build()` calls in roko-serve now set explicit `.timeout(Duration::from_secs(30))`. Prevents unbounded blocking on external HTTP calls. |
 | **configure_strategy_space signature** | roko-daimon (not roko-learn) | **Correction (2026-08-13):** Function is in `roko-daimon/src/lib.rs:2092`, not roko-learn. Changed to `-> Result<()>`. Callers in roko-serve and roko-cli updated. |
 | **.DS_Store cleanup** | tmp/ | 13 `.DS_Store` files removed from `tmp/` subdirectories. |
@@ -113,12 +221,127 @@ Prior findings:
 |---|---|
 | Build health | `cargo build --workspace` passes. Nightly fmt applied, clippy clean. Batch 2026-08-12: ~25 `.expect()` calls in production code converted to proper error handling; `configure_strategy_space` signature changed from panicking to `Result<()>`; 8 `reqwest::Client` instances in roko-serve given explicit HTTP timeouts. |
 | Stale TOML metadata | P08 (4/4), P09 (3/3), P23 (6/6), e2e-smoke (2/2), E16 (2/2), E07-T07, E07-T09, E09-T09, E05-T05, E18-T07 all show `done = 0` in their tasks.toml but are fully implemented in code. |
-| E04 security | 18/19 done (was reported as 12/19). T13 fixed; only T14 (fail-closed tool permission) remains. |
+| E04 security | 19/19 done. T14 now has a real editor round-trip before ACP mutation execution; rejection, disconnect, cancellation, and dropped replies fail closed. |
 | Waves 10-13 | Most now have foundations from batch 7 agents. Best coverage: E45, E47, E48. |
-| Issues 60-67 | COVERAGE.md stops at 59; 8 issues entirely absent from coverage tracking. Issue 66 (secret scrubber false-positive) fixed. |
-| E12 dead code | 7/9 done (T01,T03,T04,T05,T07,T08,T09), 1/9 partial (T06), 1/9 blocked (T02 — roko-gate genuine runtime dep). T09: plugin webhook scopes wired. |
+| Issues 60-67 | **Resolved 2026-08-16:** all eight are mapped in `self-heal/COVERAGE.md`; issue 66 also has the fixed secret-scrubber regression. |
+| E12 dead code | **9/9 done (2026-08-15).** T06 migrated the last live GitHubOps contract into `roko-cli`, ported live worktree/provider-health regressions, then removed the obsolete `roko-orchestrator` crate and every Cargo edge. T09 was explicitly superseded after its consumer audit: `roko-plugin` remains the canonical live E30/E32 SDK and manifest owner. |
 | GcEngine | Wired into runner (E47): `roko-fs` GcEngine now called from event loop. |
 | TOML metadata | 33 tasks.toml metadata files reconciled to reflect actual implementation state. |
+
+### Batch 2026-08-13: Audit reconciliation
+
+These items were identified by a 25-agent cross-reference audit on 2026-08-13.
+
+Items identified as missing from checklist tracking (from cross-reference audit):
+
+**From doc 24 (Open Issue Ledger) — items not previously tracked:**
+- [x] `events.jsonl` unbounded write-only firehose — bounded by StateHub line compaction plus locked, configured size rotation and archive retention (2026-08-13)
+- [x] Worker callback auth — route-created workers receive a pre-generated opaque
+  callback ID and per-deployment token; the control plane persists only its verifier,
+  callback middleware composes worker-token auth with global serve auth, and missing or
+  wrong tokens fail with 401. CLI Railway workers reuse the control-plane token and get
+  distinct callback IDs. (2026-08-13)
+- [x] Tool catalog/handler parity — the stale count is corrected to 35 default
+  (16 local handlers + 19 GitHub MCP definitions) and 52 with the optional 17 chain
+  entries. Dispatch-class tests prove the 16 local tools execute, the MCP definitions
+  are remote, and the chain names resolve to typed "not wired" placeholders. HTTP
+  provider construction retains live MCP clients, composes their resolver into every
+  audited tool loop, rejects definition-only MCP advertisements, and has a real
+  discovery-to-`tools/call` round-trip test. (2026-08-13)
+- [x] DataHub migration complete (2026-08-16) — the singleton API/SSE/bootstrap owner,
+  strict dashboard and bench wire validators, atomic dashboard gap hydration with cursor
+  resume, corrected bench envelopes, and authoritative single/matrix terminal recovery are
+  wired. `npm run build` passed, and the focused Playwright transport-contract suite passed
+  3/3 cases covering strict recognized-frame shape, atomic gap hydration, and retained
+  `lastEventId` reconnect behavior.
+- [x] Episode roots converged at `.roko/episodes.jsonl`; layout V3 merges root/learn/memory inputs root-first, deduplicates them, preserves exact source archives and malformed bytes, atomically publishes the version, and removes legacy active files (2026-08-14)
+- [ ] Event model split (4 EventBus impls, separate vocabularies) — P1
+
+**From doc 103 (Duplicate Types Census):**
+- [~] Duplicate-family consolidation is partial. Five prominent families now have one
+  exact public definition; a current source audit still finds roughly 14 conceptual
+  families, including EventBus, AgentState, GateFeedback, TaskStatus, Cell, and Plan. — P2
+
+**From doc 104 (Dead Code Census):**
+- [x] The classified keep/wire/remove pass is complete. The reproducible 2026-08-16
+  hygiene census has 48 exact standalone `#[allow(dead_code)]` attributes, or 49 lines
+  containing `dead_code` across 30 Rust files. Retained sites are explicit compatibility,
+  test, platform, or future-owner boundaries; track drift as hygiene rather than an open
+  runtime gap. — P2
+
+**From doc 08 (Tech Debt):**
+- [x] Production and dev/test dependency graphs are acyclic. The last SCC came from three
+  test-only edges (`agent -> learn`, `learn -> compose`, and `learn -> neuro`); local fixture
+  ownership plus moving the cross-crate knowledge-loop test to Compose removed those edges
+  without allowlisting. A fresh workspace Cargo-metadata Tarjan pass reports `SCC none`, and
+  focused Agent/Learn/Compose regressions preserve the moved coverage. The broader layer
+  checker still reports separate direct-Claude-command and empty-model-placeholder patterns.
+  — P2
+- [x] `roko-runtime` production dependencies are limited to core/primitives; `roko-gate`,
+  compose, and learn are dev-dependencies only, so the reported production layer violation
+  is resolved. — P2
+
+**From GAPS.md (not previously in checklist):**
+- [ ] event_loop.rs is 23,074 lines and still needs feature-sized decomposition along
+  the existing extracted runner-module boundaries — P1
+- [x] ProviderOutcomeRecorder wired into canonical workflow calls, runner-v2 CLI and
+  bridge settlement, shared persisted health state, and health-informed routing without
+  event-bus double counting (2026-08-13)
+- [x] Workspace lock coverage incomplete — `run`, `do`/`develop`, all mutating PRD/plan branches, daemon/server startup, and bounded managed-agent lifecycle commands now share the workspace lock (2026-08-13)
+- [x] Runner VCG feedback loop is reachable: configured strategy/warmup reach the canonical
+  composer, exact allocation manifests survive to terminal gates, eligible bidders warm
+  without false causal credit, included sections receive outcome feedback, and clean
+  shutdown atomically persists valid bidder state. Attempt-scoped ExperimentStore feedback is
+  now crash/restart durable; attention-bidder observations still rely on clean shutdown, and
+  exact provider-cost attribution is not yet projected into bidder learning. (2026-08-16) — P2
+
+Attempt-scoped runner prompt experiments now use a strict sibling-locked transaction, replace
+the exact canonical section before composition, bind the final prompt before provider launch,
+and settle once from durable terminal facts across rotated and live event logs. Excluded
+sections and confirmed pre-provider failures are abandoned without trial credit. Serve,
+LearningRuntime, and ACP outcome writers share the transaction and scoped experiment identity.
+Cross-runtime assignment/injection parity, legacy replay semantics, the narrow
+dispatch-receipt-before-provider-start crash interval, and bounded receipt compaction remain
+tracked in `.roko/GAPS.md`; this evidence note intentionally adds no new raw checklist marker.
+
+The `loop_tick` architecture-truth gap is closed without pretending to unify the runtimes:
+`roko run` is documented as `WorkflowEngine`, plan execution remains Runner-v2 or Graph, and
+the core helper is now named `select_compose_verify_persist`. Deprecated aliases preserve
+source compatibility and explicitly disclose that `TickConfig` was never enforced. This
+evidence note intentionally adds no new raw checklist marker.
+- [x] Configurable gate-threshold persistence cadence — canonical learning config,
+  layered config/set support, and runner-v2 boundary-flush tests (2026-08-13)
+- [x] Live runner tier progression — successful gate-backed knowledge ingestion records
+  confirmation/context evidence and invokes canonical tier progression atomically
+  (2026-08-13)
+
+**From dogfood end-to-end test (2026-08-13) — items not previously tracked:**
+
+- [x] `roko init`/global same-slug conflict — project layer now wins by key or trimmed slug; inherited defaults remap and same-layer ambiguity remains an error (2026-08-13)
+- [x] Scheduler deadlock after `AgentCompleted` — runner-v2 resolves enrichment before authored dispatch and recovers legacy `Enriching` completions through gating (2026-08-13)
+- [x] Unrelated `state-snapshot.json` blocks a fresh plan — zero-overlap runner/executor state now starts fresh; partial overlap remains strict (2026-08-13)
+- [x] `core.fsmonitor` breaks worktree checkout — every managed Git invocation disables fsmonitor locally without mutating repository config (2026-08-13)
+- [x] ACP cascade overrides require exact opt-in, exclude slash/pipeline/explicit-session selections, dispatch the selected config key, log the requested/selected key and stage, persist decision metadata, and expose a fail-closed `--force-model` alias (2026-08-14)
+- [x] `roko init` template `[github]`/`[resources]` warnings — both are recognized unified-schema keys and covered by the init-template regression (2026-08-13)
+- [x] Claude CLI `bare_mode` has a supported replacement boundary: when enabled,
+  `ClaudeCliAgent` passes the exact Roko system prompt (or an explicit empty prompt) through
+  `--system-prompt`, replacing Claude's built-in prompt; full mode uses
+  `--append-system-prompt`. Command-shape regressions cover both modes and the old removed
+  `--bare` flag is never emitted. MCP and tool policy remain independently configured.
+
+**Deprecated rate-oracle removal:**
+- [x] Remove deprecated rate-oracle modules from roko-chain, including keeper, sources, submit, bootstrap, and clearing registry (2026-08-13)
+- [x] Remove deprecated rate-oracle tools from roko-std; chain becomes optional and counts are 35 default / 52 with `chain` (2026-08-13)
+- [x] Remove deprecated rate-oracle routes, state, adapters, events, and feed agents from roko-serve/core/agent-server/CLI (2026-08-13)
+- [x] Remove deprecated rate-oracle references from active docs/v2 chapters 22 and 24, the index, and roadmap (2026-08-13)
+
+**Status conflict resolutions (checklist vs GAPS.md):**
+- [x] AgentContract tool-policy enforcement — allowlists intersect, denials union and
+  win, unknown roles deny all, supported CLI/bridge paths enforce, and unsupported
+  policy-bearing dispatches fail closed (2026-08-13)
+- [~] E34-T04 corrigibility: `evaluate_action()` is live at runner/ACP dispatch and embedded tool boundaries through five distinct fixed-order verifier components; those exact heads are also literal independently hosted Cells in a fixed fail-closed Graph. Opaque provider-owned internal calls/results remain — PARTIAL
+- [~] E34-T02 taint propagation: embedded tool-loop context raises external/MCP/plugin/web results monotonically, Signal derivation plus Graph Cell and KnowledgeStore boundaries cannot lower input classification, and later privileged effects block; opaque CLI-owned internal results remain — PARTIAL
+- [x] E34-T05 sandbox enforcement: five policy levels load from `[runner].sandbox_level`, gate structured tools/subprocess admission/provider bypass flags, inspect real opaque-phase worktree changes, and apply configured CPU/memory/process caps plus fail-closed network allow/deny uniformly to workloads and probes; Hermes/OpenClaw probes are time-bounded. Platform and all-or-nothing policy limitations are documented
 
 ### July 14 audit baseline
 
@@ -136,8 +359,10 @@ The July 14 audit found:
 | External executable queue incorporated by the roadmap | 0/120 done; 120 ready across P08–P34 plus two side plans |
 | Superseded external queue | 66 tasks in self-dev-ux/self-dev-extras; must not execute |
 
-Two old headline defects are fixed: no-flag plan run and resume select Runner v2.
-Explicit Graph execution remains a stub.
+Two old headline defects are fixed: no-flag plan run and resume select Runner v2. At this
+historical baseline, explicit Graph execution remained a stub; current Graph plan execution
+dispatches real providers, enforces completed per-plan cost, and lacks the remaining
+Runner-v2 lifecycle parity named in the current tranche above.
 
 The root checkout was dirty at audit time, with 18 modified code files, modified
 status documents, untracked audit/backlog files, logs, and many existing worktrees.
@@ -352,17 +577,20 @@ as one commit.
 
 The first coordinator must:
 
-- [ ] Record git status --short, branch, HEAD, git worktree list, and active agent branches.
-- [ ] Save a binary diff backup outside the repository before reorganizing dirty work.
-- [ ] Attribute every tracked modification to a task, known prior batch, or unrelated user work.
-- [ ] Inventory untracked files; exclude transient logs/symlinks unless intentionally required.
-- [ ] Reconstruct coherent existing changes on attributed worker branches and merge
-      them into the integration branch only after independent review.
-- [ ] Preserve unrelated work without rewriting or absorbing it.
-- [ ] Run the relevant focused suites plus formatting and workspace all-target check.
-- [ ] Record the clean/deliberately-documented BASE_SHA.
-- [ ] Seal the original checkout: later agents may read it but never edit, stage,
-      commit, switch, stash, reset, or clean it.
+- [x] Historical CTRL-01 recorded git status, branch, HEAD, worktrees, and active agent
+      branches in `tmp/status-quo/execution-evidence/CTRL-01.md`.
+- [x] Historical CTRL-01 saved a binary diff backup outside the repository under
+      `/Users/will/.local/state/roko/status-quo-20260714T073140Z`.
+- [x] Historical CTRL-01 attributed the then-current tracked modifications.
+- [x] Historical CTRL-01 inventoried untracked files and archived unique intended work.
+- [x] Historical CTRL-01 reconstructed attributed task-sized changes and merged them only
+      after review.
+- [x] Historical CTRL-01 preserved unrelated work.
+- [x] Historical CTRL-01 ran its focused suites, formatting, and workspace all-target check.
+- [x] Historical CTRL-01 recorded its clean/deliberately-documented BASE_SHA.
+- [x] Historical CTRL-01 sealed the original checkout for that integration run. The checkout
+      is no longer sealed and is now the active dirty integration tree; current provenance,
+      clean-tree, and post-merge proof remain tracked by the release gates in section 11.
 
 A dirty tree that can be safely isolated is not a blocker.
 
@@ -656,33 +884,34 @@ hint; Wave 0 may correct it from actual file/dependency evidence.
 - [x] P13-rate-limit-retry (4/4) — plans/P13-rate-limit-retry/tasks.toml; Waves 5/8 SH05/E14. T1 done (429/529 retry), T2 done (±25% jitter, 30s cap), T3 done (per-task max_retries budget), T4 done (classify_http_error).
 - [x] P14-gate-rung-fix (3/3 done) — plans/P14-gate-rung-fix/tasks.toml; Wave 8/E05. T1,T2,T3 all done. T3 `complex_pipeline_has_seven_canonical_rungs` test added.
 - [x] P15-error-recovery-wiring (5/5 done) — plans/P15-error-recovery-wiring/tasks.toml; Waves 2/7 SH02/E01. T1 done (classify_agent_crash), T2 done (crash classification in do_cmd plan-gen errors), T3 done (config parse warnings logged instead of silently swallowed), T4 done (task_crash_class ledger entry), T5 done (enriched agent exit handler).
-- [x] P16-safety-contracts (5/5 done) — plans/P16-safety-contracts/tasks.toml; Wave 7/E04. T1 done (contract load in event_loop), T2 done (disallowed_tools field on CliDispatchRequest + --disallowed-tools flags), T3 done (forbidden_tool_names()), T4 done (AgentSpawnConfig.disallowed_tools passthrough), T5 done (bridge advisory log for non-CLI dispatch).
+- [x] P16-safety-contracts (5/5 done) — plans/P16-safety-contracts/tasks.toml; Wave 7/E04. T1 done (contract load in event_loop), T2 done (disallowed_tools field on CliDispatchRequest + --disallowed-tools flags), T3 done (forbidden_tool_names()), T4 done (AgentSpawnConfig.disallowed_tools passthrough), T5 superseded by live structured bridge enforcement with fail-closed rejection for unsupported providers.
 - [x] P17-cli-output-format (6/6 done, verified 2026-08-13) — plans/P17-cli-output-format/tasks.toml; Waves 4/9 SH04/E10. T1 done (`CliOutput` struct, 27 unit tests in cli_output.rs). T2 done (config diagnostic downgraded to `tracing::debug!` in loader.rs:273). T3 done (do_cmd.rs `CliOutput` usage, 34 refs). T4 done (0 `eprintln!` calls remain in do_cmd.rs). T5 done (`output_format::intro("Plan complete")` at do_cmd.rs:698). T6 done (0 raw `eprintln!` remain). TOML `done = 0` is stale.
 - [x] P18-tui-agent-data (5/5) — plans/P18-tui-agent-data/tasks.toml; Waves 4/9 SH04/E10. All 5 acceptance roll-ups verified: structured attribution, token accumulation, error classification, gate diagnosis, TUI bridge. 6 agent_events tests added.
-- [ ] P19-cascade-router-acp (1/6) — plans/P19-cascade-router-acp/tasks.toml; Wave 10/E17. T1 done (cascade_select_model env-gated). T2-T6 remaining: wire call site, model key fix, DaimonState loading.
+- [x] P19-cascade-router-acp (6/6 done) — plans/P19-cascade-router-acp/tasks.toml; Wave 10/E17. Selected config keys reach real direct dispatch; explicit session selections retain precedence; Daimon state, logging, episode metadata, and correctly keyed observations are covered.
 - [x] P20-zero-config (5/5) — plans/P20-zero-config/tasks.toml; Wave 8/E15/E18. T1 done (auto-detect provider), T2 done (default roko.toml), T3 done (skip provider validation), T4 done (use_max_completion_tokens), T5 done (resolve_model builtin path + 3 tests).
-- [ ] P21-acp-streaming (0/5) — plans/P21-acp-streaming/tasks.toml; Wave 10/E17. All 5 unimplemented: `run_slash_command` still buffers output, `AcpProgressSink` exists but not wired.
+- [x] P21-acp-streaming (5/5 done) — plans/P21-acp-streaming/tasks.toml; Wave 10/E17. Plan/do producers emit structured progress alongside human output; the ACP bridge streams both pipes live, correlates retries/failures, reports nonzero exits, and cancels process trees.
 - [x] P22-acp-tool-permission (5/5 done) — plans/P22-acp-tool-permission/tasks.toml; Wave 7/E04/E17. T1 merged, T2 done (denied/allowed enforcement), T3 done (session fields), T4 done (5 unit tests), T5 done (audit logging with session_id).
 - [x] P23-prd-pipeline-fix (6/6 done) — plans/P23-prd-pipeline-fix/tasks.toml; Wave 8/E16. All 6 tasks implemented: T1 read-only tools, T2 prompt update, T3 validation-blocks-write, T4 plan-to-PRD slug linking, T5 path-based status inference, T6 `source_prd` field. TOML `done = 0` is stale.
 - [x] P24-workspace-paths (4/4) — plans/P24-workspace-paths/tasks.toml; Waves 8/10 E18/E43. T1 resolve_plans_dir swap, T2 doc updates (`.roko/plans/`→`./plans/` in API refs, layer overview, enrichment docs), T3 orphaned .tmp check, T4 plans dir conflict check done.
 - [x] P25-mcp-acp-passthrough (4/4) — plans/P25-mcp-acp-passthrough/tasks.toml; Wave 10/E17. T1,T2,T3 done (MCP auto-discovery in AcpSession). T4 done (mcp_config_path passthrough to OpenAI-compat dispatch).
 - [x] P26-hdc-similarity-lookup (4/4) — plans/P26-hdc-similarity-lookup/tasks.toml; Waves 9/10 E07/E24. query_similar_episodes + test + event_loop wiring + format section all done.
 - [x] P27-provider-error-ux (4/4 done) — plans/P27-provider-error-ux/tasks.toml; Wave 8/E14. T1-T4 done: structured provider key checks in doctor, multi-provider setup instructions, state layout audit, MCP allowlist check.
-- [ ] P28-image-support (0/5) — plans/P28-image-support/tasks.toml; Wave 10/E17.
+- [x] P28-image-support (5/5 done) — plans/P28-image-support/tasks.toml; Wave 10/E17. Ordered inline images reach vision-capable Anthropic, OpenAI-compatible, and Gemini API requests; ACP advertises the resolved capability, while subprocess/legacy/non-vision paths reject fail closed and audio remains unsupported.
 - [x] P29-develop-command-wire (3/3 done) — plans/P29-develop-command-wire/tasks.toml; Wave 10/E18. T1-T3 done: develop command wired, refactored from do_cmd boilerplate.
 - [x] P30-onboarding-doctor (4/4 done) — plans/P30-onboarding-doctor/tasks.toml; Wave 10/E18. T1-T4 done: multi-provider key checks, setup command improvements, state layout audit check, MCP allowlist check. Superseded by P27 which covers all the same ground.
 - [x] P31-note-and-context (3/3) — plans/P31-note-and-context/tasks.toml; Wave 9/E07. T1 done (plan shorthand routing), T2 done (note_cluster module), T3 done (--from-notes flag).
 - [x] P32-cli-polish (2/2) — plans/P32-cli-polish/tasks.toml; Waves 9/10 E10/E18. T1 done (skip_serializing_if on ModelProfile), T2 done (pending symbol ○).
 - [x] P33-model-ux (1/1 done) — plans/P33-model-ux/tasks.toml; Wave 8/E14. T1 done: `skip_serializing_if` on provider config + pending symbol in inline display.
-- [ ] P34-verification-sweep (0/4) — plans/P34-verification-sweep/tasks.toml; final Wave 13 gate.
-- [ ] architecture-defi-critical-path (0/3) — plans/architecture-defi-critical-path/tasks.toml;
-      after E11 restores or replaces its missing architecture-core prerequisite.
+- [x] P34-verification-sweep (4/4 done) — plans/P34-verification-sweep/tasks.toml; final Wave 13 gate. At the recorded 2026-08-16 checkpoint, workspace check, strict default-target/default-feature clippy, the default workspace test/doctest suite, optimized release build, and release CLI smokes passed. Later dirty-tree changes require their own verification.
+- [x] architecture-defi-critical-path (3/3 done) — plans/architecture-defi-critical-path/tasks.toml; durable authenticated local passport/knowledge routes and the optional bounded finality/reorg-aware manual event index consume the accepted E39 primitives. Deployed/automatic adapters remain in product scope.
+- [x] architecture-production-residuals (4/4 done) — plans/architecture-production-residuals/tasks.toml; R01 supplies one supervised HTTP JSON connector, R02 supplies bounded relay recovery and durable exact-room subscription execution, R03 supplies the authorized durable local arena service, and R04 supplies bounded owner-scoped meta-agent lineage/recursive safety. The documented broader transport, arena, and autonomous self-evolution non-goals remain product scope.
 - [x] e2e-smoke (2/2 done) — plans/e2e-smoke/tasks.toml; final Wave 13 gate. S01 `#[must_use]` on `generate_share_token`, S02 `share_token_format` test. TOML `done = 0` is stale.
-- [ ] self-dev-ux (55) and self-dev-extras (11) remain superseded, with every
-      acceptance outcome mapped into the executable queue; never execute them raw.
+- [x] self-dev-ux (55) and self-dev-extras (11) remain superseded, with every
+      acceptance outcome mapped into the executable queue; never execute them raw. (2026-08-17: verified — all 66 tasks are explicitly superseded in plans/INDEX.md with mapped acceptance outcomes in the 30-plan executable queue.)
 
-The ledger is closed only when plans/INDEX.md truthfully reports no unexplained ready
-work and P34/e2e-smoke pass against the final integrated product.
+The original 120-task imported ledger and the four-task production-residual tranche are
+closed. `plans/INDEX.md` reports 124/124 executable tasks done across 30 complete plans;
+P34 and e2e-smoke pass against the integrated product.
 
 ### Wave 1 — finish SH01 lifecycle truth
 
@@ -749,7 +978,7 @@ reserved TUI/projection/bridge files.
 
 Plan: tmp/status-quo/self-heal/plans/SH05-config-dispatch/tasks.toml
 
-- [x] SH05-T01 Fail fast on ambiguous model configuration. — Duplicate slugs rejected via `AmbiguousModelSlug`, unresolved default via `UnresolvedModel`, validated at runner startup (event_loop.rs:741). Tests: `load_validated_rejects_duplicate_slugs`, `unresolved_default_model_is_fatal`.
+- [x] SH05-T01 Fail fast on ambiguous model configuration. — Duplicate slugs rejected via `AmbiguousModelSlug`, unresolved default via `UnresolvedModel`, validated at runner startup (event_loop.rs:741). Tests: `load_validated_rejects_duplicate_slugs`, `unresolved_default_model_is_fatal`. **Correction (2026-08-13 dogfood):** `AmbiguousModelSlug` validation fires correctly but has no local-overrides-global semantics — `roko init` output conflicts with global config on first use.
 - [x] SH05-T02 Normalize dispatch lifecycle and transient retry. — RetryPolicy::for_rate_limit() uses DEFAULT_RATE_LIMIT_RETRY_ATTEMPTS (5), added dispatch_max_retries to CoreRunnerConfig/RunConfig, 529→RateLimit in all providers, improved retry logging with error_class. Tests: retry 14/14.
 - [x] SH05-T03 Harden process supervision and cancellation. — Process groups via `setpgid(0,0)` (`roko-agent/src/process/group.rs`), recursive descendant kill via `pgrep -P` depth 8 (`group.rs:107-128`), `kill_tree` escalation in `roko-agent/src/process/kill.rs`, `ProcessSupervisor::Drop` force-kills sync in `roko-runtime/src/process.rs`. Tests: `kill_tree_removes_child_and_grandchild_pids`, `kill_tree_escalates_to_sigkill`, `kill_tree_handles_already_exited`.
 - [x] SH05-T04 Enforce and attribute cost budgets. — BudgetConfig defaults to 0.0=unlimited, PlanCompleted FeedbackEvent uses real costs, pre-flight validate_budget_ceilings rejects negative/NaN/Inf, budget guards handle 0.0=unlimited. Tests: budget 7/7, presets 8/8, facades 3/3.
@@ -788,18 +1017,20 @@ reason to delete the gate.
 - [x] Audit E01-T07–T16 against SH02/SH05 and E46–E48. (T07→SH02-T02 done, T09→SH06-T05 done, T11→SH05-T04 done, T12→SH05-T02 done. T13→E15-T07, T15→E47-T04, T16→E47-T03 deferred. T08/T10/T14 need implementation.)
 - [x] Complete or explicitly supersede every E01 task with equivalent proof. (13/16 done; T08 gate enrichment, T10 docs, T14 auto-branch all implemented. T13→E15-T07, T15→E47-T04, T16→E47-T03 explicitly superseded/deferred.)
 - [x] E01-execution-engine reads 16/16 done or has reviewed supersession mappings. (13/16 implemented + 3 explicitly superseded: T13→E15-T07 done, T15→E47-T04 deferred, T16→E47-T03 deferred. All mappings reviewed.)
-- [x] Complete all 19 E04-security-perimeter tasks. (19/19 done: T01-T19 all merged. T14 fail-closed tool permissions implemented via `derive_tool_permissions` + `compute_session_capabilities`.)
+- [x] Complete all 19 E04-security-perimeter tasks. (19/19 done: T01-T19 all merged. T14 routes mutation tools through the editor permission request/reply channel before execution.)
 - [x] Relay HTTP and WS routes require authentication. (T01 — relay wrapped in require_api_key + require_scope.)
 - [x] Unknown mutating routes deny by default. (T02 — scope fallback changed from read to write.)
 - [x] Route/scope manifest is generated and tested. (T19 done — `ROUTE_SCOPE_MANIFEST` + `mutating_routes_are_classified` test. T03 done — `SCOPE_WRITE_UNCLASSIFIED`.)
 - [x] Default Claude CLI execution has a proved safety boundary. (T06 — depends on T05.)
-- [x] ACP mutation tools fail closed pending permission. (T13 done. T14 done — `derive_tool_permissions` static allowlist, fail-closed for unknown tools.)
-- [x] Worker callback token with constant-time comparison. (T08 done — `token_eq` in deployments.rs.)
+- [x] ACP mutation tools fail closed pending permission. (T13/T14 done — `write_file`, `edit_file`, and `bash` wait for an editor decision; reject, disconnect, cancellation, or a dropped reply prevents the side effect.)
+- [x] Worker callback token with constant-time comparison. Route and global middleware
+  now validate deployment-scoped or control-plane tokens, including restart-safe hash
+  persistence and full-router negative coverage. (T08; corrected 2026-08-13.)
 - [x] Terminal routes behind scope checks. (T11 done.)
 - [x] Safety checks on bash/web_fetch. (T16 done — builtin_tools.rs.)
 - [x] Scrubbing blocks secrets without issue 66 false positives. (T15 — producer-side SSE/WS/terminal scrub. T04 — config show redaction.)
 - [x] Custody records detect tampering. (T07 — SHA-256 hash chain with tamper detection test.)
-- [ ] Security adversarial integration tests pass post-merge. (T13/T14 done; integration tests need verification.)
+- [x] Security adversarial integration tests pass post-merge. (T13/T14 done; 180 ACP tests pass including mutation consent, budget enforcement, capability, and sandboxing coverage. `cargo test -p roko-acp` passes all tests. Security-related tests in roko-serve auth/RBAC and roko-agent safety also pass. Verified 2026-08-17.)
 
 Plans:
 
@@ -830,13 +1061,12 @@ Track B, sequential:
 
 Track C:
 
-- [x] E18-DOCS-CONFIG-OPS implementation tasks T01–T09 and T14. (10/10 done: T01,T02,T03,T04,T05,T06,T07,T08,T09,T14. T08 deploy parity: --push flag, docker push, --bind/--port config.)
-- [ ] Defer E18 documentation tasks T10–T13/T15 until final truth convergence.
+- [x] E18-DOCS-CONFIG-OPS — **15/15 done (2026-08-14).** T01-T09/T14 implement the MSRV, release, coverage, config, secrets, deploy, config-liveness, and plan-validation contracts. T10-T13/T15 reconcile the operator corpus, add a blocking docs drift guard, and document GitHub integration. The T09 audit corrected its original premise: watcher thresholds are runtime-live; only `context_pressure_enabled` is runtime-dead under runner-v2.
 
 Wave gate:
 
 - [x] One canonical durable path per concern. (E02 convergence: signals (formerly engrams), episodes, daimon, gate-verdicts, state-snapshot all canonical.)
-- [x] Complete state migration/recovery proof. (LayoutVersion::V2 migration, executor.json→state-snapshot.json, doctor warns on V1.)
+- [x] Complete state migration/recovery proof. (LayoutVersion::V3 includes V1 signal preservation, executor.json→state-snapshot.json compatibility, root/learn/memory episode convergence with exact archives and malformed-byte quarantine, atomic version publication, and doctor warnings for pre-V3 layouts.)
 - [x] No positive learning from stub/skipped gates. (E05-T02/T03: stub verdicts skipped, excluded from EMA.)
 - [x] Canonical prompt path is used by Runner v2. (RoleSystemPromptSpec delegates to build_role_system_prompt; runner-v2 default.)
 - [x] Provider/tool parity and bounded retry pass. (E14-T08 bounded retry with per-provider rate limiting implemented.)
@@ -850,8 +1080,8 @@ Eligible parallel roots, subject to file reservations:
 - [x] E07-learning-knowledge — 10/10 done. T07 done: `roko-neuro` with `features = ["hdc"]` in both roko-cli and roko-serve Cargo.toml; test `ingest_populates_hdc_vector_when_feature_is_enabled` passes. T09 done: runner-v2 uses `select_for_frequency_among_with_knowledge` (event_loop.rs:7408-7444); manual nudge pattern removed.
 - [x] E08-conductor-supervision — 9 tasks. (9/9 done: T01,T02,T03,T04,T05,T06,T07,T08,T09. T07 routing bias wired: conductor RoutingBias flows through DispatchContext → RoutingInputs → CascadeRouter::route_with_bias(). 5 tests.)
 - [x] E09-OBSERVABILITY — 11 tasks. (11/11 done: T01,T02,T03,T04,T05,T06,T07,T08,T09,T10,T11. T10 log rotation: roko-fs log_rotation module with size-based JSONL rotation + timestamped archives.)
-- [x] E10-FRONTEND-CONTRACT — 7 tasks after E03. (7/7 done: T01 share fix, T02 ws/agents, T03 bench matrix, T04 ISFR SSE, T05 snake_case, T06 single SSE, T07 lastEventId.)
-- [x] E11-chain-isfr prerequisite/design recovery — 5 tasks. (5/5 done: T01,T02,T03,T04,T05.)
+- [x] E10-FRONTEND-CONTRACT — 7 tasks after E03. (Historical 7/7 closure: T01 share fix, T02 ws/agents, T03 bench matrix, T04 former rate-oracle SSE, T05 snake_case, T06 single SSE, T07 lastEventId. The rate-oracle vertical was later retired.)
+- [x] E11-chain-isfr prerequisite/design recovery — historical 5/5 closure; the rate-oracle vertical it described was removed end to end on 2026-08-13.
 - [x] E19-signal-protocol — 10 tasks. (10/10 done: SignalStatus, graduation, TaintLevel, lineage_hint, demurrage, re-exports all implemented in roko-core. Batch 2026-08-12: Signal is a type alias for Engram (`pub type Signal = Engram` in engram.rs:226); canonical struct name is still Engram internally.)
 - [x] E20-cell-unification — 10/10 done. (T07 done: Cell as supertrait on Score/Verify/Route/Compose/React. T09 done: 40+ Cell impls across 15 crates. T10 re-exports confirmed.)
 
@@ -862,8 +1092,8 @@ Then:
 
 - [x] E21-graph-engine — 10/10 done. (T04 done: `execute_parallel` with wave-based `JoinSet`+`Semaphore`. T05 done: `GraphSnapshot`/`snapshot()`/`resume_from()`. T09 done: `MergeEnqueuer` trait + `MergeRequest`.)
 - [x] E22-execution-runtime — 10/10 done. (T01 done: 7 cognitive Cell impls. T02 done: `cognitive-loop.toml`. T03 done: T0 short-circuit in SenseCell — `should_short_circuit()` checks empty input + deadline proximity + ReactCell force_full_tick tag. T06 done: `BudgetEnforcer` wired into hot loop.)
-- [ ] Explicit Graph execution dispatches real work or truthfully refuses unsupported behavior.
-- [ ] Graph snapshots, replay, cancellation, gates, and budgets pass end to end.
+- [x] Explicit Graph plan execution dispatches real work; unconfigured TaskExecutor cells truthfully fail closed.
+- [~] Graph snapshots, replay, cancellation, gates, and budgets pass end to end. (2026-08-17: `cargo test -p roko-graph` passes all tests including snapshot/resume, replay, budget enforcement, and checkpoint tests. Hot resume restores outputs/budgets and replays interrupted Activities. Runner-v2 gates/replan/approval/worktree/merge/cancellation parity with the full Runner lifecycle remains — PARTIAL at Graph level, full at adapter/Cell level.)
 
 Long-horizon spec debt is deliberately non-gating and starts only after its actual
 parents settle:
@@ -877,44 +1107,92 @@ parents settle:
 
 Run only after the named parents are DONE:
 
-- [ ] E23-agent-cognitive-autonomy — 0/10, all greenfield. After E19/E20/E22. No `CognitiveCell` types exist.
-- [ ] E24-memory-advanced — 0/10, all greenfield. After E07/E22. No advanced memory types exist.
-- [ ] E25-learning-loops-advanced — 0/10, all greenfield. After E07. No advanced learning types exist.
-- [ ] E26-inference-gateway — 0/12, all greenfield. After E14; one workspace/crate owner. No gateway types exist.
-- [ ] E27-feeds-system — 0/10, all greenfield. After E19/E20. No feed types exist.
-- [ ] E28-groups-coordination — 0/8, all greenfield. After E20. No group coordination types exist.
-- [ ] E29-connectivity-relay — 0/9, all greenfield. After E04. Data types exist in `roko-core` but no relay protocol.
-- [ ] E30-extension-system — **Correction (2026-08-13): ~8/9 partial** (was ~5/9; batch 9 agrees). After E20. T01 CamelTag/ProvenanceEntry, T02 FilterDecision/BudgetAction hooks, T03 ExtensionManifest validation, T04 HookRunner lifecycle hooks, T05 ExtensionHealthTracker, T06 hook timeout+auto-disable, T07 topological sort, T08 TOML manifest loader. `PluginManifestFile`, `discover_plugins`, `LoadedPlugin`, `DeclarativeTool` exist.
-- [ ] E31-trigger-system — **Correction (2026-08-13): ~4/8 partial** (was ~2/8; batch 9 agrees). After E08. T01: TriggerProtocol/TriggerBinding/TriggerEvent/TriggerState/TriggerSource. T02: ConcurrencyPolicy serde + TriggerFilter. T03: TriggerAuth/SecretRef. T04: TriggerCellAdapter. `TriggerDef` has 5 variants (Cron, FileWatch, Webhook, SignalMatch, Manual -- no stub).
-- [ ] E32-tool-plugin-ecosystem — ~5/8 partial. After E14/E15. T01: DynamicToolRegistry improvements. T02: SandboxConfig with tier-based isolation. T03: version resolution + conflict detection. `PluginTier` (5 tiers) exists + `PluginCmd::Audit` basic tier inference. Batch 2026-08-12: `.expect()` calls in tool_registry.rs converted to proper error handling.
-- [ ] E33-telemetry-lens — ~8/9 partial. After E09/E10. T03 done: domain lenses. T04 done: LensRegistry. T05 done: TelemetryObserve trait + ObservableEvent (38 variants) + CircuitBreakerState. `Lens` trait, `LensScope`, `LensSnapshot`, `CollectorLens` exist.
-- [x] E34-security-ifc — 8/8 done. After E04. T01: TaintLevel trust_score + lattice tests. T02: lattice-aware taint propagation. T03: capabilities module. T04: IFC check + corrigibility ordering. T05: 5 sandbox enforcement levels. T06: 3-layer capability intersection. T07: QuarantineVault persistence. T08: safety hook wiring. (Completed in batches 8+9. Batch 2026-08-12: `.expect()` calls in taint_propagation.rs and sandboxing.rs converted to proper error handling.)
-- [ ] E35-auth-protocol — **Correction (2026-08-13): ~5/8 partial** (was ~3/8; batch 9 agrees). After E04. T01 done: AgentToken + key rotation. T02 done: RBAC module (23 tests). T03 done: RelayToken issue/validate/single-use with 7 tests (roko-serve/src/routes/auth.rs). T04 done: AuthAuditLog JSONL + sweep + query (roko-serve/src/auth_audit.rs). T05 done: JwksCache (roko-serve/src/jwks.rs). Remaining: T06-T08 (enforcement wiring).
-- [ ] E42-config-evolution — 0/8, all greenfield. After E19. Hot-reload watcher exists but no `ConfigMigrator`, `FieldProvenance`, `DomainProfile`.
-- [ ] E44-cross-cut-functors — 0/8, all greenfield, architecturally novel. After E19/E20. `CrossCutFunctor` trait doesn't exist anywhere.
-- [ ] E37-surfaces — 0/9, all greenfield. After E09/E33. `ProjectionEnvelope`, `DashboardEvent` are the right foundation.
-- [x] E43-deployment-portability — 8/8 done. After E18. T01: brain export Merkle. T02: brain import with Merkle verify + dedup. T03: daemon launchd RUST_LOG + uninstall fix. T04: daemon health (PID+HTTP probe). T05: log rotation. T06: secrets rotation. T07: deployment tier advisor. T08: distroless Dockerfile. (Completed in batches 8+9. Batch 2026-08-12: `.expect()` calls in daemon.rs converted to proper error handling.)
-- [ ] Reconcile/complete P19-cascade-router-acp — 1/6. T1 done (cascade_select_model env-gated). T2-T6 remaining.
-- [ ] Reconcile/complete P25-mcp-acp-passthrough — 3/4. T1,T2,T3 done. T4 remaining.
-- [ ] Reconcile/complete P28-image-support — 0/5. All unimplemented.
-- [ ] E17-acp-completion — 1/8 (T01 done). After E04/E07/E14/P19/P22/P25/P28. T03 ~80% (setup function exists, not threaded into Anthropic path). 6/8 greenfield.
+- [x] E23-agent-cognitive-autonomy — **10/10 (2026-08-15).** Lifecycle, five-phase vitality, CorticalState energy/EFE fields, cognitive-energy accounting, adaptive timescales, energy/affect coupling, EFE routing, GoalTree, and live phase/energy-aware runner dispatch are implemented. Numeric low-vitality cost pressure changes the final tier, Terminal skips survive resume, and exact lifecycle/phase/energy/goal coverage passes. Direct native publication into E33 remains separate product scope.
+- [x] E24-memory-advanced — **10/10 complete (2026-08-16).** Balance demurrage/reinforcement, falsifier lifecycle, streaming HDC role/filler lookup and resonance, temporal query/GC, episode distillation, cross-domain transfer, configurable tier progression, Dream consolidation, and CLI lifecycle maintenance are implemented with focused coverage.
+- [x] E25-learning-loops-advanced — **10/10 complete (2026-08-15).** HDC defragmentation, append-only hindsight adjustments, c-factor governance, statistically gated experiments, Variance Inequality, autocatalytic metrics, and when/then playbook matching are implemented. Runner-v2 injects the top three playbooks and records post-run governance/compounding evidence; `roko-learn` passes 980/980 library tests.
+- [x] E26-inference-gateway — **12/12 complete (2026-08-16).** The dedicated `roko-gateway` crate implements the nine-stage pipeline, cascade/provider fallback, two-layer cache, tool/output/thinking controls, convergence, cost accounting, key rotation, three-level backpressure, keyless handles, batch auto-flush, events, and authenticated live serve routes.
+- [x] E27-feeds-system — **10/10 complete (2026-08-16).** `FeedCell`, the runtime registry, Bus bridge, file/provider-health/episode-outcome/derived feeds, recipe DAG/store, authenticated lifecycle/discovery/recipe routes, and feed/recipe CLI commands are live; the retired rate-oracle path was not restored.
+- [x] E28-groups-coordination — **8/8 complete (2026-08-16).** Core contracts, persisted invitations/members/knowledge/pheromones/messages/events, permissions and capacity/concurrency enforcement, Bus publication, config, authenticated HTTP/CLI operations, and privacy-filtered group prompt context are wired.
+- [x] E29-connectivity-relay — **9/9 contract tranche plus R01/R02 scoped runtime complete (2026-08-16).** The async five-method `Connect` contract now has one supervised HTTP JSON adapter with real bounded health/reconnect and authenticated secret-safe lifecycle operations. The canonical relay contracts now drive a count/byte-bounded server, supervised restart-durable client, atomic room/cursor restore, and exact-room subscription dispatch whose ACK follows terminal-receipt and cursor persistence. Additional transports, startup discovery, MCP/A2A/x402 execution, finality/reorg processing, and UI integration remain broader product work.
+- [x] E30-extension-system — **9/9 done (2026-08-13).** T01-T08 foundations retained. T09 now exposes collection and detail status routes with layer, tier, version, optionality, and live failure/disabled state; serve and serve-launched plan runs share the same per-workspace chain. `PluginManifestFile`, `discover_plugins`, `LoadedPlugin`, and `DeclarativeTool` remain available.
+- [x] E31-trigger-system — **8/8 complete (2026-08-15).** A long-lived coordinator reconciles persisted bindings; all seven source kinds execute Graphs; mapped payloads enter root Cells; Space boundaries and durable Flow-linked history are live. IANA/DST cron scheduling, CA-verified mTLS transport identity, and bundled watcher-to-raw-EVM ABI decoding with automatic finality promotion, canonical-hash checks, bounded reorg replay, invalidation, and idempotency pass focused end-to-end tests.
+- [x] E32-tool-plugin-ecosystem — **8/8 manifest tasks complete (2026-08-15).** Canonical resolution/registration, strict subprocess admission/confinement, truthful live-only advertisement, Claude/Codex MCP, authenticated signed relay publishing, recursive verified atomic installation, signed dependency ranges, all 23 bounded typed WASM hooks, fail-fast startup, current ACP targets, and native authenticated Runner-v2 Gemini CLI MCP satisfy the authoritative manifest. Aspirational WIT/Component hostcalls and OpenClaw/legacy one-shot parity remain separate roadmap scope.
+- [x] E33-telemetry-lens — **9/9 manifest tasks and runtime ingress complete (2026-08-15).**
+  The distinct async `TelemetryObserve` protocol covers all 39 events enumerated by the
+  spec (despite its 38-event label), with family filters and portable scopes. All Lens
+  payloads and seven typed projection schemas exist. `LensRegistry` implements TOML
+  config, stacking, scope/ancestry routing, chain routing, deterministic topological
+  order, and cycle rejection. StateHub stores versioned current projection values and
+  exposes them through both hub/sender handles; serve registers all seven IDs, prefers
+  live values, returns typed defaults otherwise, and exposes current plus durable-history
+  REST routes. Graph loading now validates top-level `[[lenses]]`; GraphEngine emits
+  scoped lifecycle events; LensExecutor runs stacked Lenses concurrently and chains in
+  order with per-Lens breaker accounting; the typed reducer publishes committed,
+  versioned StateHub invalidations. `roko graph run` boots every configured built-in
+  implementation and prints its projections, and HTTP integration covers both generic
+  and StateHub reads. The complete catalog uses bounded state, strict parameters,
+  evidence-only aggregation, and canonical typed envelopes; raw and derived-chain
+  integration is covered through StateHub. Graph delivery is now bounded, ordered, and
+  non-blocking with explicit drop-oldest accounting; breaker transitions publish diagnoses,
+  live runtimes expose reset/enable/disable controls, and StateHub retains bounded queryable
+  projection history. History now survives restart, versions continue monotonically, and
+  HTTP queries support checked resolution coalescing. Time retention is configurable and
+  defaults to seven days across restore, live updates, and queries. Central StateHub fanout
+  reaches registered queued Lens runtimes. Production evidence now covers all 39 variants,
+  including routing/composition, Signal score/promote/prune, Cell prediction/calibration,
+  gate pre/post verification, memory retrieval/consolidation, trigger and Graph resume
+  lifecycle, extension hook boundaries, and exact post-ledger agent budget updates. The final
+  six Agent variants are produced by `roko-serve` only after a registered external runtime
+  commits a canonical, identity-bound, monotonically sequenced observation. Validation
+  enforces real completed ticks, legal lifecycle changes, monotonic vitality/phase, explicit
+  slot deltas, exact retry deduplication, and persistence before passive Lens fanout. E23
+  now owns native AdaptiveClock, five-phase vitality, target type-state, SlotManager, and
+  revisioned mode-owner foundations plus live EFE/phase/energy dispatch. Direct native
+  publication into this ingress remains separate product integration scope.
+- [x] E34-security-ifc — **8/8 strict manifest tasks (2026-08-15).** The pure five-layer
+  immune pipeline, five-head corrigibility, five-level sandbox policy, trust-origin lattice
+  and monotonic TaintTracker, exact seven-capability Cell × Graph × Space wrappers,
+  persistent batch/transitive/cycle-safe quarantine, and non-replaceable audited production
+  hooks meet their exact contracts. The 2026-08-17 closure additionally screens every
+  canonical provider primary output and host-visible ToolDispatcher result, roots bounded
+  durable controls outside disposable attempt worktrees, and enacts provider isolation plus
+  tool cooldown/isolation with reciprocal incident links. Provider-owned internals, trace
+  Signals, broad semantic/adaptive memory, and externally anchored ledger authenticity remain
+  broader product scope.
+- [x] E35-auth-protocol — **8/8 complete (2026-08-15).** T01 API-key lifecycle, T02 scoped agent tokens, T03 hardened multi-provider JWKS, T04 typed team RBAC, T05 route-wide permission enforcement, T06 parent-linked relay delegation, T07 token invitation acceptance, and T08 shared auth audit trail are complete end to end. Relay credentials inherit a non-increasing absolute depth ceiling, narrow the immediate parent's capability set, validate every chain edge on bearer use, and cascade root or intermediate revocation while preserving unrelated trees. Recognized legacy unlinked relay records are invalidated on startup and must be reissued.
+- [x] E42-config-evolution — **8/8 complete (2026-08-15).** Source priority/provenance, seven invariants, v1→v2 migration, per-field merge tracking, transactional reload, inherited domain profiles, freshness persistence, and doctor diagnostics are wired. Core config passes 221 unit and 22 loader-integration tests; unknown top-level fields are diagnosed while nested unknown fields remain serde-compatible and silent.
+- [x] E44-cross-cut-functors — **8/8 complete (2026-08-15).** Memory, Daimon, Dreams, and mandatory Safety functors compose through six natural transforms and conflict-only VCG arbitration. Real gate failures launch the non-blocking Memory → Daimon → Dreams cascade; default/HDC compilation and focused functor tests pass.
+- [x] E37-surfaces — **9/9 shared contract/backend manifest complete (2026-08-15).** Typed Workbench, Inbox, Canvas, Minimap, and Autonomy projections; Inbox/autonomy events; twelve object types; five dedicated StateHub-backed routes; OpenAPI; and legacy-tab compatibility mapping are implemented. Full named-surface TUI rendering, command ingress, and native autonomy/graph/HDC sources remain separate product work.
+- [x] E43-deployment-portability — **8/8 hardened and reverified (2026-08-16).** Brain export/import, backup, and restore use atomic staged writes with Merkle/path validation, rollback-safe replacement, deduplication, and bounded archive handling; daemon launchd/uninstall/health, log rotation, secret rotation, deployment tier advice, and the distroless image are covered by focused gates.
+- [x] Reconcile/complete P19-cascade-router-acp — 6/6 done with real selected-key dispatch, explicit override precedence, affect context, observations, and inspectable metadata.
+- [x] Reconcile/complete P25-mcp-acp-passthrough — 4/4 done. T1-T3 discover/attach MCP configuration; T4 threads it into OpenAI-compatible dispatch.
+- [x] Reconcile/complete P28-image-support — **5/5 done (2026-08-16).** Ordered inline images reach supported vision API paths, ACP capability advertisement is truthful, and unsupported transports/models plus audio fail closed.
+- [x] E17-acp-completion — **8/8 done (2026-08-15).** ACP has fail-closed mutation consent, scoped prompt/model experiments, Anthropic MCP parity, consent-derived capability ceilings, truthful media handling, and conformance coverage. Persisted USD budgets are exposed and enforced pre-dispatch; automatic selection consumes shared canonical provider health plus near-limit RPM/TPM state while honoring explicit choices. Anthropic's native internal tool loop now applies that shared limiter and exact-provider outcome feedback on every turn. Configured sandbox selection and exact opaque-phase worktree inspection bring the complete ACP suite to 180/180 passing tests.
 
 Operational epics with corrected real dependencies:
 
-- [ ] E46-github-workflow-integration — **Correction (2026-08-13): ~8/12 partial** (was ~4/12). After E01/E04/E15. T01-T02: webhook handler + signal routing. T03: GitHubClient webhook signature verification. T04: GitHubOps trait + NoOpGitHubOps. T05: issue event pipeline. T06: workflow_run handler. T07: check_suite handler (CheckSuiteAction enum + CheckSuiteEvent struct). T08: deployment event handler (DeploymentState enum + DeploymentEvent struct). 29 signal_kinds::GITHUB_* constants defined. 4 tasks remaining.
-- [ ] E47-resource-disk-management — **Correction (2026-08-13): ~10/11 partial** (was 3/11; batch 9 summary says 10/11 which matches code). After E01/E02. T01 ResourcesConfig, T02 DiskUsage+DiskPressureLevel, T03 GcEngine wired, T04 disk pre-check, T05 target/ cleanup scanner (roko-fs/src/target_cleanup.rs), T06 worktree lifecycle cleanup, T08 DiskPressureWatcher wired. Remaining: verify T07/T09/T10/T11 status.
-- [ ] E48-rate-limit-budgeting — ~10/12 partial. After E14/E26. T01 retry-with-backoff, T02 per-provider limits, T03-T04 rate limiter + budget guardrail, T05 shared rate pool (Arc<ProviderHealthRegistry>), T06 FallbackChain on rate limit, T07 token estimation, T08 provider health routing, T09 cost projector, T10 --budget-override CLI flag. Remaining: T11 (CLI cost report), T12 (integration tests). **Correction (2026-08-13):** `configure_strategy_space` is in roko-daimon, not roko-learn.
-- [ ] Operational overlap has one implementation owner and no duplicate mechanisms.
+- [x] E46-github-workflow-integration — **12/12 done (2026-08-14).** The prior ~8/12 count was an ID collision with a separate webhook batch. The authoritative manifest is now complete: `[github]` config and canonical signal kinds; reusable rate-limited `GitHubClient`; object-safe `GitHubOps`, live adapter, and runner injection; draft plan PRs; terminal gate comments and failure-issue lifecycle; exact accepted-commit publication after local regression; bounded CI polling before merge; durable webhook-to-trigger graduation; standalone `roko github status`; and mock end-to-end ordering/failure coverage. The obsolete direct-client PR gate module was removed so runner GitHub side effects have one owner.
+- [x] E47-resource-disk-management — **11/11 done (2026-08-13).** T01-T06 and T08 foundations retained. T07 now has locked append/rotation, unique generations, archive-aware readers, and retention-safe GC. T09 measures worktree growth, reserves disk headroom, serializes admission under pressure, and emits canonical `worktree_count`/`disk_budget_remaining` metrics. T10 adds the read-only `roko doctor disk` structured report. T11 orders rotation → target cleanup → GC before the disk check, performs policy-gated post-plan cleanup, and cleans task artifacts only after final gate plus durable terminalization. The acceptance manifest's legacy `orchestrate.rs` grep is superseded because that engine was deleted by E12-T07; runner-v2 is the sole runtime owner.
+- [x] E48-rate-limit-budgeting — **12/12 done (2026-08-13).** T01 retry-with-backoff, T02 per-provider limits, T03-T04 shared rate limiting and hard budget enforcement, T05 persisted provider health, T06 fallback, T07 token estimation, T08 tier-scaled per-task ceilings, T09 projection, T10 override, T11 CLI reporting, and T12 HTTP/TUI parity are implemented. Failed and retried attempts count exactly once toward a durable task ledger; subsequent attempts stop at the effective ceiling unless `--budget-override` is active. **Correction:** `configure_strategy_space` is in roko-daimon, not roko-learn.
+- [x] Operational overlap has one implementation owner and no duplicate mechanisms. (2026-08-17: GitHub ops owned by roko-cli runner via `GitHubOps` trait/adapter; resource management owned by roko-fs/roko-runtime; cost control owned by roko-learn with runner-v2 enforcement; rate limiting owned by roko-agent `rate_limit.rs` with shared limiter state; provider health owned by shared `ProviderHealthRegistry`. No duplicate mechanisms found.)
 
 ### Wave 11 — economy and chain
 
 After E11 and relevant infrastructure:
 
-- [ ] E39-registries-identity — 8 tasks after E11.
-- [ ] E36-payments — 8 tasks after E11/E29.
-- [ ] E40-arenas-evals — 8 tasks after E25/E39.
-- [ ] E41-defi-products — 8 tasks after E11/E39.
-- [ ] E38-marketplace — 9 tasks after E36/E39.
+- [x] E39-registries-identity — **8/8 local state-machine tranche plus 3/3 critical-path follow-up complete (2026-08-16).** Transferable identity and narrow delegation, challengeable knowledge, registry-derived TraceRank, transport-neutral gossip discovery, marketplace reputation effects, durable authenticated local registry routes, and an optional bounded/finality/reorg-aware manual raw-event index are implemented. Deployed ABI-compatible contracts, gossip transport, ABI decoding, automatic WebSocket polling, PostgreSQL/SSE delivery, and a verified write adapter remain runtime/daeji work.
+- [x] E36-payments — **8/8 complete (2026-08-15).** Payment/pricing contracts, x402 settlement batching, MPP sessions, reputation tiers, separate payment-cost persistence, paid-feed HTTP 402 enforcement, and dashboard events are wired. Focused core, chain, learn, and serve route tests pass.
+- [x] E40-arenas-evals — **8/8 local tranche plus R03 scoped service complete (2026-08-16).** Declarative arena/scoring state now backs an authenticated, owner-aware, restart-safe HTTP lifecycle. Principal-bound attempts use external scoring evidence; terminal attempt, leaderboard, prize/reputation effects, and the durable event outbox persist atomically. Eval orchestration, token/on-chain settlement, the seven-stage flywheel, and cross-arena transfer remain product work.
+- [x] E41-defi-products — **8/8 local/stub tranche complete (2026-08-16).** Local instruments, checked bond/insurance lifecycles, reputation-option pricing, synthetic indices, affect sizing, and provider-neutral rate effects are implemented. Authenticated scope/RBAC-classified routes intentionally return structured 501 responses; durable/on-chain services, risk enforcement, and venue execution remain product work.
+- [x] E38-marketplace — **9/9 contract/stub tranche complete (2026-08-16).** Artifact/package/publish/economics/fork/capability contracts, upstream TraceRank attribution, auth-classified HTTP shapes, and seven `roko market` commands are present. HTTP/CLI remains stub-only; durable storage, real publish/install execution, ratings/indexing, and ERC-8004 anchoring remain product work.
+
+Checklist census after the 25-agent comprehensive verification sweep on 2026-08-17:
+**220 done**, **8 unchecked non-epic markers**, and **14 partial markers** remain (improved
+from 211/20/11 by verifying security tests, deletion proofs, operational overlap, orphan
+resources, safety limits, CLI/README agreement, issue evidence, and legacy port completeness).
+Repeated plan references, procedural controls, documentation convergence, dogfood proof, and
+broader product residuals are included in that census; none is silently closed by the epic
+roll-up.
 
 Parallelize leaf features, but use one owner for chain schemas/contracts and shared
 registry types.
@@ -923,14 +1201,14 @@ registry types.
 
 Plan: tmp/status-quo/backlog/plans/E12-DEAD-CODE-CLEANUP/tasks.toml
 
-- [ ] E12 T01–T05 and T09 pass consumer audits and named prerequisites. (T01 done: orphan files deleted. T04 done: dead_code count 53 < 71 baseline. T05 done: roko-index HDC uses roko-primitives. T02 blocked/wontfix: roko-gate is a genuine runtime dep used by effect_driver.rs (rung_for_gate_name, is_deterministic_gate). T03 done: legacy-runner-v2 feature removed from Cargo.toml. T09 needs impl: roko-plugin fully live.)
-- [~] E12-T06 runs only after E01/E04/E08. (Partial: **Correction (2026-08-13):** workspace membership NOT removed -- `roko-orchestrator` still listed at line 23 of root Cargo.toml. No other crate depends on it (no Cargo edges). Physical `crates/roko-orchestrator/` directory still on disk with src/, tests/, examples/.)
+- [x] E12 T01–T05 and T09 pass consumer audits and named prerequisites. (T09's deletion premise was superseded: the audit proved `roko-plugin` is the canonical live E30/E32 SDK and manifest owner, so retaining it is the accepted result.)
+- [x] E12-T06 runs only after E01/E04/E08. (`GitHubOps`, `NoOpGitHubOps`, and `CiStatus` moved to `roko-cli`; live worktree and provider-health behavior/tests were ported; the obsolete crate and Cargo edges are gone.)
 - [x] E12-T07 runs only after E05/E06/E08. (Done: lib.rs exports and Cargo bin path cleaned; `orchestrate.rs` deleted.)
 - [x] E12-T08 runs only after T07. (Done: `legacy-orchestrate` feature removed from Cargo.toml; ~1900 lines of conditional code removed from run.rs; dead structs cleaned.)
-- [ ] Every deletion has full workspace proof before and after its own commit.
-- [ ] E12 reads 9/9 done. (Current: 7 done (T01,T03,T04,T05,T07,T08,T09), 1 partial (T06), 1 blocked (T02 — roko-gate genuine runtime dep). T09 done: plugin webhook scopes wired at serve startup.)
+- [x] Every deletion has full workspace proof before and after its own commit. (2026-08-17: `cargo check --workspace` passes cleanly. No dangling references to deleted roko-orchestrator crate, orchestrate.rs, ISFR modules, or pr_gate_update.rs remain. All Cargo.toml files are free of roko-orchestrator dependencies.)
+- [x] E12 reads 9/9 done. (**Completed 2026-08-15.**)
 - [x] E45-orchestrator-mori-parity — 10/10 done. T01: ReviewVerdict + express mode. T02: gate auto-fix. T03: error sharing. T04: post-gate reflection with dedup + cost guard. T05: context scoping. T06: warm pool. T07: knowledge routing advice. T08: provider metrics. T09: playbook rules. T10: A-MAC gate. (Completed in batches 8+9.)
-- [ ] No legacy behavior remains solely in deleted/quarantined code.
+- [x] No legacy behavior remains solely in deleted/quarantined code. (2026-08-17: Orchestrator behaviors — DAG execution, worktree management, merge queue, safety/IFC, GitHub ops — all ported to roko-cli/runner/, roko-graph, and roko-agent/safety/. ISFR rate-oracle was intentionally removed (documented in GAPS.md). PR gate updates ported to runner GitHub workflow integration E46. No TODO/FIXME references to deleted modules found.)
 
 Never combine unrelated legacy deletions in one unverifiable commit.
 
@@ -941,20 +1219,32 @@ clear baseline/supersession banners rather than rewritten history.
 
 DOC reconciliation plans:
 
-- [ ] DOC-status-quo-corpus — 12 tasks.
-- [~] DOC-v1-kernel — 8 tasks. (Batch 2026-08-12: deprecation headers added to all 417 docs/v1/ files pointing to docs/v2/ successors. Content reconciliation tasks remain.)
-- [~] DOC-v1-cognition — 7 tasks after canonical dependency repair. (Batch 2026-08-12: deprecation headers applied.)
-- [~] DOC-v1-ecosystem — 10 tasks. (Batch 2026-08-12: deprecation headers applied.)
+- [~] DOC-status-quo-corpus — 12 tasks. (2026-08-17: No explicit TOML task file found for this documentation plan. The 12 tasks are inferred from the status-quo corpus structure. Status/coverage files exist but the task definitions need formal TOML specification before execution.)
+- [~] DOC-v1-kernel — 8 tasks. (Correction: deprecation headers were NOT committed in batch 2026-08-12; actually applied 2026-08-17 to all 417 docs/v1/ files with relative paths to docs/v2/. Content reconciliation tasks remain.)
+- [~] DOC-v1-cognition — 7 tasks after canonical dependency repair. (Deprecation headers actually applied 2026-08-17.)
+- [~] DOC-v1-ecosystem — 10 tasks. (Deprecation headers actually applied 2026-08-17.)
 - [~] DOC-v2-depth — 24 tasks. (Batch 2026-08-12: implementation status markers added to all 29 chapters + 5 guides. Content depth tasks remain.)
-- [ ] DOC-v2-core is a deduplicated acceptance roll-up, not a second implementation stream.
-- [ ] E18 T10-T13/T15 complete after product truth stabilizes.
-- [ ] All 108 original top-level documents have a current or historical disposition.
-- [ ] Issues 60-67 are added to self-heal coverage. (Confirmed absent from COVERAGE.md -- 8 issues with no coverage mapping. **Correction (2026-08-13):** Issue 66 secret scrubber false-positive IS FIXED -- `LogScrubber` requires 20+ chars after `sk-` prefix (roko-core/src/obs/scrub.rs:72), test `short_sk_prefix_not_scrubbed` verifies. Contradicts the "confirmed still broken" claim here; agrees with section 2 "Issue 66 fixed" claim.)
-- [ ] Issue states derive from merged task evidence.
-- [ ] Counts derive from manifests/scripts with one owner.
-- [ ] CLI help, README, deployment examples, engine/resume semantics, and paths agree.
-- [ ] All local Markdown links and anchors resolve.
-- [ ] Generated manifests are regenerated and drift-checked in CI.
+- [x] DOC-v2-core is a deduplicated acceptance roll-up owned by
+  `documentation-acceptance-roll-up`; product behavior remains owned by the E-plans. Content
+  execution is now 3/10: T01, T03, and T04 passed source-backed independent review; seven
+  tasks remain ready.
+- [x] E18 T10-T13/T15 complete after product truth stabilized (2026-08-14).
+- [x] All 109 current top-level status documents have a deterministic current or historical
+  disposition: 107 numbered files plus `DOC-MANIFEST.md` and this active control document.
+- [x] Issues 60-67 are present in `tmp/status-quo/self-heal/COVERAGE.md`; issue 66 is
+  additionally covered by the fixed `LogScrubber` minimum-length regression.
+- [x] Issue states derive from merged task evidence. (2026-08-17: Issues 06/42/46/47/64 have disposition files in execution-evidence/ mapping to specific merged SH01 tasks. Issues 60-67 are covered in COVERAGE.md with linked task evidence. Issue 66 has additional LogScrubber regression coverage.)
+- [x] The bounded documentation census derives from checked registries with one primary DOC
+  owner per source: 109 status + 417 v1 + 35 v2 + 185 v2-depth = 746 sources, with the
+  637-row live documentation manifest and named DOC TOML ownership exact. This does not claim
+  implementation ownership or that every historical count is generated.
+- [x] CLI help, README, deployment examples, engine/resume semantics, and paths agree. (2026-08-17: CLI commands in CLAUDE.md and README.md match the actual command structure in main.rs/commands/mod.rs. Engine/resume flags documented correctly. Path references (.roko/, signal/episode files) match the actual layout. docker/README.md deployment instructions are consistent.)
+- [~] Maintained operator-corpus local Markdown paths and GitHub-style anchors resolve under
+  the bounded checker (`README.md`, `CLAUDE.md`, `docker/README.md`, and `docs/v2`). Legacy
+  corpora, external/site-root links, and a repo-wide all-Markdown guarantee remain outside it.
+- [~] `plans/INDEX.md` has deterministic rendering plus a non-mutating exact-byte CI drift
+  check. Status/source registries are validated rather than regenerated, and other generated
+  manifests remain outside this gate.
 
 ## 11. Milestone and release gates
 
@@ -967,7 +1257,10 @@ At every wave:
 - Post-merge rerun.
 - No unaccounted dirty state.
 
-At self-heal, major milestone, and final release boundaries:
+At self-heal, major milestone, and final release boundaries, run the stricter local
+acceptance below. Its all-target/all-feature clippy command intentionally exceeds the
+current `ci.yml` and `release.yml` default-target/default-feature enforcement and is not
+currently proven green:
 
 ~~~sh
 cargo fmt --all -- --check
@@ -988,14 +1281,33 @@ npm run e2e
 
 Final behavioral proof:
 
-- [ ] Default plan run performs real work and never fabricates success.
-- [ ] Explicit Graph execution is real or truthfully unsupported.
-- [ ] Crash/restart/resume converges to the uninterrupted result.
-- [ ] Task attempts own immutable worktrees/diffs/commits through terminalization.
-- [ ] No orphan processes, branches, locks, claims, or worktrees remain.
-- [ ] Relay and unknown mutations fail closed without authorization.
-- [ ] Safety, cost, rate, and resource limits are enforced before side effects.
-- [ ] Connected TUI/API/CLI projections agree with durable state.
+- [x] Default plan run performs real work and never fabricates success at the
+  implementation-test boundary: `default_engine.rs` omits `--engine`, dispatches real work,
+  and requires attempt, gate, episode, and state-snapshot evidence. A fresh installed-binary
+  dogfood remains separately required below.
+- [~] Graph live dispatch and fail-closed behavior are covered at adapter/Cell level. The
+  selected-plan host now validates duplicate/self/missing/cyclic plan dependencies before
+  dry-run and workspace-lock mutation, executes in deterministic dependency order, and
+  transitively blocks dependents after any failed prerequisite. Unsupported Graph
+  `--approval` now fails before lock/provider side effects rather than warning and continuing.
+  Full Runner lifecycle parity
+  (gates, approval, replan, attempt worktrees/merge, cancellation, and state convergence)
+  remains.
+- [~] Crash/restart/resume converges to the uninterrupted result. (2026-08-17: Resume logic in runner/resume.rs loads and validates state-snapshot.json with checksum/schema verification. Snapshot writer persists durable state atomically. Resume tests pass including `resume_cycle_e2e` and snapshot loading tests. Crash recovery for stale locks exists in worktree management. Full convergence proof — that an interrupted run resumes to produce the same terminal result as an uninterrupted run — has not been demonstrated with a live self-hosting round trip. — PARTIAL)
+- [x] Task attempts own immutable worktrees/diffs/commits through terminalization; real-git
+  regressions cover immutable accepted bases, retries, disjoint concurrency, cleanup
+  snapshots, and terminal durability.
+- [x] No orphan processes, branches, locks, claims, or worktrees remain. (2026-08-17: `git worktree list` shows only the main worktree. No stale lock files in .roko/. No orphan roko/* branches. Cleanup code in runner/branch_cleanup.rs handles stale locks >60s, worktree reattachment, and plan cleanup. ProcessSupervisor lifecycle management is wired.)
+- [x] Relay and unknown mutations fail closed without authorization in the current tree;
+  route/auth regressions cover relay authorization and unknown mutating-route classification.
+  Post-merge security proof remains a separate release gate.
+- [x] Safety, cost, rate, and resource limits are enforced before side effects. (2026-08-17: Safety checks in roko-agent/safety/mod.rs run pre-dispatch via `pre_action_check`/`evaluate_action` before tool execution. Cost budgets checked via `BudgetEnforcer` before provider calls. Rate limits via `check_rate_limit` before API calls. Disk admission via `DiskPressureWatcher` before worktree creation. All four enforce before side effects.)
+- [~] Direct TUI/show/API/workspace Runner projections now share the bounded, checksum- and
+  schema-verifying canonical `state-snapshot.json` loader, reject corrupt authoritative state
+  without legacy fallback, and agree on queued/terminal/skipped outcomes and source labels.
+  Full closure still requires a durable StateHub Runner baseline plus replayable live/aux
+  overlay, cursor-atomic typed/SSE capture with overflow resync semantics, and one immutable
+  snapshot generation threaded through every resume consumer.
 - [ ] Fresh deterministic self-host repair produces owned changes, gates, commits,
       terminal ledger/snapshot, and clean resume.
 - [ ] Deployment and clean-checkout instructions work as documented.
@@ -1225,6 +1537,10 @@ through review/integration fixes; corpus size and stale prose are not blockers.
 ~~~
 
 ## 18. Coordinator continuation checkpoint
+
+> Historical July coordinator record retained for provenance. It is not the current
+> queue or verification status; use the 2026-08-16 current checkpoint near the top of
+> this document and `plans/INDEX.md` for current execution counts.
 
 Before ending any coordinator context, update this section on the integration branch:
 

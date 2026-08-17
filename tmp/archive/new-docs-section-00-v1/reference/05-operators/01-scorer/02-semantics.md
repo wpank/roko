@@ -15,21 +15,21 @@
 ### Stable Axes (Required)
 
 **`confidence`** — How certain is the information? Derived from the source's accuracy history,
-the internal consistency of the `Engram`'s body, and cross-referencing with related memories.
+the internal consistency of the `Signal`'s body, and cross-referencing with related memories.
 A fresh observation from a reliable source starts near 1.0; inference from a noisy sensor
 starts near 0.3.
 
 **`novelty`** — How new is this information relative to what the agent already knows? Derived
-by comparing the `Engram`'s HDC fingerprint distance to the nearest stored memories. A
+by comparing the `Signal`'s HDC fingerprint distance to the nearest stored memories. A
 memory with no close neighbours scores 1.0 (entirely new); a memory identical to an existing
 one scores 0.0.
 
 **`utility`** — How useful is this information for the current task? Utility is context-
-dependent: it is derived from the semantic similarity between the `Engram` and the current
+dependent: it is derived from the semantic similarity between the `Signal` and the current
 task context, and from historical outcome correlation (if this type of memory led to good
 outcomes in the past, its utility is higher).
 
-**`reputation`** — How trustworthy is the source that produced this `Engram`? Derived from the
+**`reputation`** — How trustworthy is the source that produced this `Signal`? Derived from the
 `Provenance` attestation chain: a `LocalAgent` source has neutral reputation (0.5); a
 `PeerWitness` or `ChainWitness` source can have higher or lower reputation based on track
 record.
@@ -42,8 +42,8 @@ a vague general statement scores near 0.0.
 **`salience`** — How attention-capturing is this information? Derived from the `Daimon` affect
 cross-cut: information that triggers high arousal scores higher.
 
-**`coherence`** — How internally consistent is the `Engram`'s body with itself and with
-related memories? An `Engram` that contradicts stored facts scores low.
+**`coherence`** — How internally consistent is the `Signal`'s body with itself and with
+related memories? An `Signal` that contradicts stored facts scores low.
 
 ---
 

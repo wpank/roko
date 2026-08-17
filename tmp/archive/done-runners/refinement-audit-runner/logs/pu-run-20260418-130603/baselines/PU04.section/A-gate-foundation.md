@@ -10,8 +10,8 @@ Parity analysis of `docs/04-verification/00-gate-trait.md` and
 **Status**: DONE
 **Severity**: —
 **Doc claim**: Doc 00 §2 — `async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict`. Doc emphasizes this is the load-bearing design decision.
-**Reality**: `crates/roko-core/src/traits.rs:102-108` defines the trait with `async fn verify(&self, signal: &Engram, ctx: &Context) -> Verdict` plus `fn name(&self) -> &str`. Exactly two methods, no `Result` wrapper. `#[async_trait]` applied. `Send + Sync` bounds present.
-**Notes**: The doc says `Signal`; code says `Engram` — naming-only drift already flagged in the project naming map. Substance matches.
+**Reality**: `crates/roko-core/src/traits.rs:102-108` defines the trait with `async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict` plus `fn name(&self) -> &str`. Exactly two methods, no `Result` wrapper. `#[async_trait]` applied. `Send + Sync` bounds present.
+**Notes**: The doc says `Signal`; code says `Signal` — naming-only drift already flagged in the project naming map. Substance matches.
 
 ---
 

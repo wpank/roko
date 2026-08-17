@@ -1,8 +1,8 @@
 [meta]
 plan = "E29-connectivity-relay"
 total = 9
-done = 0
-status = "ready"
+done = 9
+status = "done"
 max_parallel = 1
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ description = """Add to crates/roko-core/src/connector.rs:
 Keep existing ConnectorKind, ConnectorConfig, ConnectorRegistry unchanged.
 Add async_trait to roko-core Cargo.toml if not already present (it is
 used by extension.rs)."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "integrative"
 max_loc = 100
@@ -114,7 +114,7 @@ Add new ConnectorKind variants to the existing enum (it is #[non_exhaustive]):
 
 Keep all existing variants. Add serde backward compat with #[serde(alias)]
 where needed."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 70
@@ -187,7 +187,7 @@ description = """Create crates/roko-core/src/wire_protocol.rs with:
 
 All types derive Serialize, Deserialize, Debug, Clone.
 Register `pub mod wire_protocol;` in lib.rs."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 70
@@ -262,7 +262,7 @@ Add ring_buffer_size field to RelayConfig in config/chain.rs:
 
 All types derive Serialize, Deserialize, Debug, Clone.
 ReconnectionState and GapAction also derive PartialEq, Eq."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 50
@@ -331,7 +331,7 @@ Add finality_confirmations field to ChainConfig in config/chain.rs:
   pub finality_confirmations: Option<u64>
 
 These are pure data types used by chain connectors and the finality oracle."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 55
@@ -404,7 +404,7 @@ description = """Create crates/roko-core/src/exoskeleton.rs with:
 
 Register `pub mod exoskeleton;` in lib.rs. All types derive Serialize,
 Deserialize, Debug, Clone."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 60
@@ -474,7 +474,7 @@ description = """Add to crates/roko-core/src/wire_protocol.rs:
 
 These are config types consumed by the WS server. Do NOT modify the
 existing BackPressureMode in ws.rs — that will be migrated later."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 45
@@ -536,7 +536,7 @@ description = """Add to crates/roko-core/src/connector.rs:
 
 All enums derive PartialEq, Eq, serde(rename_all = "snake_case").
 These support the 3-source agent discovery merge defined in v2 §13."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 60
@@ -604,7 +604,7 @@ description = """Add to crates/roko-core/src/wire_protocol.rs:
 These support relay workspace registration and dashboard auto-discovery.
 The existing RelayConfig (chain.rs:68) already has url and workspace_name
 fields. The existing relay.rs has RelayConnectionState."""
-status = "ready"
+status = "done"
 role = "implementer"
 tier = "focused"
 max_loc = 55

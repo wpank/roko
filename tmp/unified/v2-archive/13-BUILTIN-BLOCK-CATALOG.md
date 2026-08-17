@@ -479,7 +479,7 @@ sort_by = "relevance"
 
 Cells implementing the React protocol: watch Pulse streams, emit new Signals as interventions.
 
-React Cells operate on **Pulses** (ephemeral), not Signals ([doc-01](01-SIGNAL.md)). This is a breaking change from v1 where Policy took `&[Engram]`. The rationale: policies react to live events (heartbeats, gate verdicts, budget warnings, calibration updates), not stored artifacts. React output can include both Pulses (ephemeral reactions) and Signals (durable reactions that graduate).
+React Cells operate on **Pulses** (ephemeral), not Signals ([doc-01](01-SIGNAL.md)). This is a breaking change from v1 where Policy took `&[Signal]` (at that time called `Engram`, renamed to Signal in 2026-08-12). The rationale: policies react to live events (heartbeats, gate verdicts, budget warnings, calibration updates), not stored artifacts. React output can include both Pulses (ephemeral reactions) and Signals (durable reactions that graduate).
 
 ```rust
 pub struct ReactOutput {

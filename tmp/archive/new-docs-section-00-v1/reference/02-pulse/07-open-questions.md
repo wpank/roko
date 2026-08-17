@@ -14,7 +14,7 @@ process? Should the Bus block, drop Pulses, or buffer?
 
 **Current assumption:** Pulse delivery is best-effort. Slow subscribers are dropped from
 the delivery set after a configurable timeout. If this causes critical events to be missed,
-they should be stored as Engrams before emission.
+they should be stored as Signals before emission.
 
 ---
 
@@ -24,17 +24,17 @@ they should be stored as Engrams before emission.
 were offline? (At-least-once delivery?)
 
 **Current assumption:** No persistence. Pulses are ephemeral. If at-least-once delivery
-is needed, the emitter should store an Engram before emitting the Pulse.
+is needed, the emitter should store an Signal before emitting the Pulse.
 
 ---
 
 ## OQ-3: Datum Union Type
 
-**Question:** The glossary introduces `Datum` as a planned "polymorphic `Engram` or
+**Question:** The glossary introduces `Datum` as a planned "polymorphic `Signal` or
 `Pulse` input" type. Where does Datum fit in the architecture?
 
 **Current assumption:** `Datum` is used at operator boundaries that accept either an
-Engram reference or a Pulse for immediate processing. It is a thin enum:
+Signal reference or a Pulse for immediate processing. It is a thin enum:
 
 ```rust
 pub enum Datum<'a> {
@@ -53,7 +53,7 @@ Not yet specified in full.
 cryptographic attestation attached to the PulseSource?
 
 **Current assumption:** Chain attestation happens at graduation time (when the Pulse
-becomes an Engram with `TrustLevel::ChainWitness`). The PulseSource carries the
+becomes an Signal with `TrustLevel::ChainWitness`). The PulseSource carries the
 chain_id and node identifier; actual attestation is deferred to Provenance.
 
 ---

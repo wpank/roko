@@ -1,5 +1,12 @@
 # Wiring Strategy — How to Avoid the "Built But Never Connected" Trap
 
+> **What is this?** Core philosophy document for the v2 refactoring. Defines the "no build
+> without a wire" rule that all checklist items must follow. Read this before contributing
+> any new code to understand why roko has ~15K LOC of floating (unused) implementations and
+> how to avoid adding more.
+>
+> **Last updated: 2026-08-13**
+
 ## The Anti-Pattern
 
 Roko has ~15K LOC that compiles, exports publicly, and does nothing at runtime. This

@@ -37,16 +37,16 @@ pub struct Pulse {
     pub body: Body,
 }
 ```
-Pulse is the ephemeral counterpart to Engram. It represents live transport traffic that has not been persisted. It may "graduate" to an Engram through deliberate promotion.
+Pulse is the ephemeral counterpart to Signal. It represents live transport traffic that has not been persisted. It may "graduate" to an Signal through deliberate promotion.
 
 **Current code**: No `struct Pulse` exists anywhere in `crates/`.
-**Where to put it**: `crates/roko-core/src/pulse.rs` (alongside `engram.rs`)
+**Where to put it**: `crates/roko-core/src/pulse.rs` (alongside `__PATH_ENGRAM_RS__0`)
 **Accept when**:
 - [x] `pub struct Pulse` exists in roko-core
 - [x] Has at minimum: `seq: u64`, `topic`, `kind: Kind`, `body: Body`
 - [x] Implements `Serialize`, `Deserialize`, `Debug`, `Clone`
-- [x] `Engram::from_pulse_synthetic(p: &Pulse) -> Engram` conversion exists (needed by trait defaults)
-- [x] `Engram::from_pulses(pulses: &[Pulse]) -> Engram` conversion exists (needed by Gate default)
+- [x] `Engram::from_pulse_synthetic(p: &Pulse) -> Signal` conversion exists (needed by trait defaults)
+- [x] `Engram::from_pulses(pulses: &[Pulse]) -> Signal` conversion exists (needed by Gate default)
 - [x] Re-exported from `roko-core/src/lib.rs`
 
 **Verify**:
@@ -68,7 +68,7 @@ pub trait Bus: Send + Sync {
     async fn subscribe(&self, filter: TopicFilter) -> Result<BusReceiver>;
 }
 ```
-Bus is the transport fabric for Pulses, parallel to Substrate (the storage fabric for Engrams). Together they form the "two fabrics" of the kernel.
+Bus is the transport fabric for Pulses, parallel to Substrate (the storage fabric for Signals). Together they form the "two fabrics" of the kernel.
 
 **Current code**: No `trait Bus` exists. Only `EventBus<E>` in roko-runtime -- a concrete generic, not the abstract kernel trait.
 **Where to put it**: `crates/roko-core/src/traits.rs` (alongside Substrate, Scorer, Gate, Router, Composer, Policy)
@@ -109,7 +109,7 @@ Datum is the polymorphic input surface that lets operators work over either medi
 **Where to put it**: `crates/roko-core/src/datum.rs`
 **Depends on**: K-01 (Pulse)
 **Accept when**:
-- [x] `pub enum Datum<'a>` exists with `Engram` and `Pulse` variants
+- [x] `pub enum Datum<'a>` exists with `Signal` and `Pulse` variants
 - [x] Has accessor methods: `kind()`, `body()`, `tags()`, `created_at_ms()`
 - [x] Re-exported from `roko-core/src/lib.rs`
 
@@ -152,13 +152,13 @@ pub struct PolicyOutputs {
     pub engrams: Vec<Engram>,
 }
 ```
-PolicyOutputs makes the Policy reaction step explicit -- policies can publish new Pulses on the Bus for immediate downstream reactions AND persist Engrams for summaries and decisions.
+PolicyOutputs makes the Policy reaction step explicit -- policies can publish new Pulses on the Bus for immediate downstream reactions AND persist Signals for summaries and decisions.
 
-**Current code**: No `PolicyOutputs` exists anywhere. Current Policy returns `Vec<Engram>`.
+**Current code**: No `PolicyOutputs` exists anywhere. Current Policy returns `Vec<Signal>`.
 **Where to put it**: `crates/roko-core/src/pulse.rs` or a dedicated file
 **Depends on**: K-01 (Pulse)
 **Accept when**:
-- [x] `pub struct PolicyOutputs` exists with `pulses: Vec<Pulse>` and `engrams: Vec<Engram>`
+- [x] `pub struct PolicyOutputs` exists with `pulses: Vec<Pulse>` and `signals: Vec<Signal>`
 - [x] Re-exported from `roko-core/src/lib.rs`
 - [x] Used as return type of `Policy::decide_with_pulses` in traits.rs:348 (backwards-compat migration path per 03-trait-migrations.md)
 

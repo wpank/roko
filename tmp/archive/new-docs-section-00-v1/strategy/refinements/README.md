@@ -22,7 +22,7 @@ Until migration, each entry below is a **placeholder** — it records the file e
 
 | ID | Source file | Topic | Status | Roadmap home |
 |---|---|---|---|---|
-| REF02 | `02-engram-vs-pulse.md` | `Engram` vs. `Pulse` distinction | Not yet migrated | Q1 — Phase B |
+| REF02 | `02-signal-vs-pulse.md` | `Engram (renamed to Signal in 2026-08-12)` vs. `Pulse` distinction | Not yet migrated | Q1 — Phase B |
 | REF03 | `03-bus-as-first-class.md` | `Bus` as first-class kernel primitive | Not yet migrated | Q1 — Phase B |
 | REF04 | `04-operators-generalized.md` | `Datum<'_>` and generalized operators | Not yet migrated | Q1 — Phase B |
 | REF05 | `05-loop-retold.md` | Seven-step universal cognitive loop | Not yet migrated | Q1 — Phase A + B |
@@ -36,7 +36,7 @@ Until migration, each entry below is a **placeholder** — it records the file e
 | ID | Source file | Topic | Status | Roadmap home |
 |---|---|---|---|---|
 | REF10 | `10-self-learning-cybernetic-loops.md` | Self-learning loops (prediction/outcome topics) | Not yet migrated | Q2 |
-| REF11 | `11-hyperdimensional-substrate.md` | HDC fingerprint on every `Engram` | Not yet migrated | Q2 |
+| REF11 | `11-hyperdimensional-substrate.md` | HDC fingerprint on every `Signal` | Not yet migrated | Q2 |
 | REF12 | `12-knowledge-demurrage.md` | Demurrage / economically-shaped memory | Not yet migrated | Q2 |
 | REF13 | `13-collective-intelligence-c-factor.md` | c-factor measurement and actuation | Not yet migrated | Q2 + Q4 |
 | REF14 | `14-worldview-validation.md` | Heuristics, falsifiers, calibration | Not yet migrated | Q2 |

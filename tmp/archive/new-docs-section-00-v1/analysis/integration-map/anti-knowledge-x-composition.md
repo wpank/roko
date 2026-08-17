@@ -17,7 +17,7 @@ tags: [anti-knowledge, composition, neuro, disproven-approaches, context-injecti
 
 ## What Flows
 
-`Kind::AntiKnowledge` Engrams store falsified approaches — things the system has tried and proven don't work, with evidence. These are the most actionable safety signal because they prevent agents from re-attempting known dead ends.
+`Kind::AntiKnowledge` Signals store falsified approaches — things the system has tried and proven don't work, with evidence. These are the most actionable safety signal because they prevent agents from re-attempting known dead ends.
 
 | Signal | From | To | Status |
 |---|---|---|---|

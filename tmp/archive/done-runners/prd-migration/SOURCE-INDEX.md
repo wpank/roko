@@ -18,11 +18,11 @@ grouped by target doc. Each target doc lists five source categories in priority 
 
 ## 00-architecture.md
 
-**Covers**: Roko vision, Synapse Architecture, Engrams, 6 traits, universal cognitive loop, 5-layer taxonomy, crate map, C-Factor, autocatalytic improvement, Ashby's Law / VSM / Good Regulator, provenance & attestation.
+**Covers**: Roko vision, Synapse Architecture, Signals, 6 traits, universal cognitive loop, 5-layer taxonomy, crate map, C-Factor, autocatalytic improvement, Ashby's Law / VSM / Good Regulator, provenance & attestation.
 
 ### Refactoring-PRD (canonical)
 - `refactoring-prd/00-overview.md`
-- `refactoring-prd/01-synapse-architecture.md` — Engram, 6 traits, cognitive loop, cybernetic loops, composability
+- `refactoring-prd/01-synapse-architecture.md` — Signal, 6 traits, cognitive loop, cybernetic loops, composability
 - `refactoring-prd/02-five-layers.md` — trait × layer map, dependency rules
 - `refactoring-prd/07-implementation-priorities.md` — current state, Tier 0–6 roadmap, dropped/kept items
 - `refactoring-prd/09-innovations.md` — Blue Ocean summary (§XVIII), Integration Map (§XVII), Autocatalytic loops
@@ -64,7 +64,7 @@ grouped by target doc. Each target doc lists five source categories in priority 
 ### Reference code
 - `roko/crates/roko-core/src/lib.rs`
 - `roko/crates/roko-core/src/traits.rs`
-- `roko/crates/roko-core/src/signal.rs` (to be renamed `engram.rs`)
+- `roko/crates/roko-core/src/signal.rs` (to be renamed `__PATH_ENGRAM_RS__0`)
 - `roko/README.md`, `roko/CLAUDE.md`
 
 ---
@@ -584,11 +584,11 @@ grouped by target doc. Each target doc lists five source categories in priority 
 
 ## 11-safety.md
 
-**Covers**: Defense-in-depth, capability tokens, content-addressed audit chain, taint-aware ingestion and propagation, permits and allowlists, loop detection, sandboxing (validation-only), prompt security and injection prevention, threat model, adaptive risk management, MEV protection, temporal logic verification, witness DAG, formal verification pipeline, Engram Syscalls (Cognitive Namespaces). **CRITICAL**: safety policies exist but dispatcher never calls them — #1 integration gap.
+**Covers**: Defense-in-depth, capability tokens, content-addressed audit chain, taint-aware ingestion and propagation, permits and allowlists, loop detection, sandboxing (validation-only), prompt security and injection prevention, threat model, adaptive risk management, MEV protection, temporal logic verification, witness DAG, formal verification pipeline, Signal Syscalls (Cognitive Namespaces). **CRITICAL**: safety policies exist but dispatcher never calls them — #1 integration gap.
 
 ### Refactoring-PRD (canonical)
 - `refactoring-prd/01-synapse-architecture.md` §Provenance & Attestation, §Taint tracking, §Decay (memory management not mortality)
-- `refactoring-prd/09-innovations.md` §IX Forensic AI / Causal Replay Engine (regulatory compliance table), §XII Cognitive Kernel Primitives (Cognitive Namespaces with ACL, Engram Syscalls single-enforcement-point)
+- `refactoring-prd/09-innovations.md` §IX Forensic AI / Causal Replay Engine (regulatory compliance table), §XII Cognitive Kernel Primitives (Cognitive Namespaces with ACL, Signal Syscalls single-enforcement-point)
 - `refactoring-prd/07-implementation-priorities.md` §Tier 1G Production Hardening
 - `refactoring-prd/08-translation-guide.md`
 

@@ -1,8 +1,14 @@
 # Runner V2 And Graph
 
+> **Superseded runtime note (2026-08-15):** Runner v2 is the default and owns the full
+> agent/gate/replan/worktree/merge/persistence lifecycle. The opt-in Graph plan path now
+> dispatches real providers through an injected `TaskExecutorCell`; generic registries fail
+> closed. It still lacks Runner-v2 lifecycle, resume, and cancellation parity. The original
+> dry-run/default-engine findings below are retained as historical evidence.
+
 > Status-quo audit · re-verified 2026-07-08 · git HEAD 5852c93c05 on `main`. Companion to `31-GRAPH-CELLS-ENGINE.md` (the full graph-crate audit). This file is the operator-facing decision doc: **which plan engine is live, why, and the path to one canonical engine.** All file:line refs re-checked against source on this date.
 
-## TL;DR — there are (at least) three plan paths, and the default does no real work
+## Historical TL;DR (2026-07-08) — the former hollow default
 
 | Path | Selected by | Backing crate | Does real agent work? | State/lock/resume? |
 |---|---|---|---|---|
@@ -12,19 +18,19 @@
 
 `roko plan run plans/` with no flags runs the **Graph Engine**, which is a dry-run stub: it prints `SUCCESS`, spawns no agent, writes nothing. See `31-GRAPH-CELLS-ENGINE.md` for the full mechanism.
 
-## Operational Rule Today
+## Historical operational rule (superseded 2026-08-15)
 
 - Use `roko plan run ... --engine runner-v2` for real plan execution.
 - Do **not** rely on default `roko plan run ...` for real work until the Graph default is fixed. It exits 0 with `SUCCESS` while doing nothing.
 - `roko resume` is broken for real resumption: it hardcodes `engine: PlanEngine::Graph` (`main.rs:2699`), so the snapshot is found then discarded with `"snapshots will be ignored"` (`commands/plan.rs:260-263`) and the run re-executes as a dry-run. Resume real work with `roko plan run plans/ --engine runner-v2` (Runner v2 auto-resumes from `.roko/state/executor.json`, `plan.rs:359-376`).
 - Use `roko graph validate/run/show` for graph authoring and graph-engine tests only, **not** as proof of agent work.
 
-## Why the default is hollow
+## Why the former default was hollow
 
 - The clap field for `PlanCmd::Run` sets `#[arg(long, default_value = "graph")]` (`main.rs:1361`). (Note: the `PlanEngine` enum's `#[derive(Default)]` marks `RunnerV2` as the type-level default — `main.rs:1301` — but the clap `default_value` overrides it for the CLI, so `graph` wins.)
 - The Graph path (`cmd_plan_run_engine`, `plan.rs:1567-1715`) converts each task to a `task-executor` node (`convert.rs:63`) and runs `roko_graph::default_registry()` (`plan.rs:1644`).
 - That registry maps `task-executor` → `TaskExecutorCell::default()` (`engine.rs:356-358`), whose `dry_run` field is `true` (`task_executor.rs:31-34`). It emits a synthetic `task-output:dry-run:<title>` engram and returns `Complete` (`task_executor.rs:70-79`). The `dry_run: false` branch is unimplemented and also falls back to dry-run with a warning (`task_executor.rs:80-92`).
-- The engine path builds `CellContext::new()` (empty trace/run/budget, `plan.rs:1646`), acquires **no** workspace lock (the lock lives only in the Runner v2 branch, `plan.rs:272`), emits no episodes/signals/events, and writes no snapshot.
+- The engine path builds `CellContext::new()` (empty trace/run/budget). It now holds the same command-lifetime workspace lock as runner v2, but emits no episodes/signals/events and writes no snapshot.
 
 Runner v2 (`roko-orchestrator` driven from `orchestrate.rs`) is the only path with real agent dispatch, gates, snapshots, resume, feedback/replan, and merge behavior.
 
@@ -47,7 +53,7 @@ Recommended near-term path: **flip or refuse first** (P0), then implement live G
 - [ ] Live agent dispatch through injected dispatcher (reuse the `AgentDispatcher` pattern in `cells/agent.rs:134`; register a live `task-executor` factory from roko-cli where roko-agent is available, replacing `TaskExecutorCell::default()` at `plan.rs:1644`).
 - [ ] Per-node gate execution or a real `gate-pipeline` cell (roko-gate).
 - [ ] Snapshot/resume (`.roko/state/`), skipping `Complete` nodes on resume.
-- [ ] Workspace lock + state persistence (episodes/signals) on the engine path.
+- [ ] State persistence (episodes/signals) on the engine path. Workspace locking is complete.
 - [ ] Budget/cost enforcement (build `BudgetTracker` from `GraphConfig`; populate `CellContext.budget_remaining`).
 - [ ] Conditional edge evaluation (unify `EdgeCondition` and `condition::Condition`; evaluate in `GraphEngine::execute`).
 - [ ] Parallel frontier execution honoring `max_parallel` (currently a metadata label only, `convert.rs:51`).

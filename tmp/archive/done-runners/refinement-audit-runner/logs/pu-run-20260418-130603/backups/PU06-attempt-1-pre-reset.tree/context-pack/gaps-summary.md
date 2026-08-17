@@ -6,11 +6,11 @@ Post-audit gap list for the `06-neuro` docs-parity refresh.
 
 These are the gaps PU06 should make explicit in the docs:
 
-### 1. HDC-On-Engram Is The Clear Next Step — HIGH
+### 1. HDC-On-Signal Is The Clear Next Step — HIGH
 
 - `HdcVector` is already real in `crates/roko-primitives/src/hdc.rs` at 345 LOC.
 - The HDC toolchain is already used for fingerprinting and retrieval-adjacent work.
-- The highest-value missing seam is still an HDC fingerprint on `Engram`.
+- The highest-value missing seam is still an HDC fingerprint on `Signal`.
 - PU06 should rank this first, but only as a documented priority.
 
 ### 2. Neuro Docs Still Undersell What Already Ships — HIGH
@@ -39,7 +39,7 @@ These are the gaps PU06 should make explicit in the docs:
 
 These are valid topics, but they are not the job of this docs refresh:
 
-- runtime activation of HDC-on-Engram
+- runtime activation of HDC-on-Signal
 - Substrate `query_similar` implementation
 - demurrage and token economics
 - Pulse / Datum / Worldview / Custody realization

@@ -11,8 +11,8 @@ Concise post-audit picture for `tmp/docs-parity/06/context-pack/`.
 
 ## Highest-Value Missing Seam
 
-- `HDC-on-Engram` is the top priority item.
-- In practice this means: the existing HDC substrate is strong enough that the next meaningful neuro step is attaching an HDC fingerprint directly to `Engram`, then treating any broader similarity API as follow-on work.
+- `HDC-on-Signal` is the top priority item.
+- In practice this means: the existing HDC substrate is strong enough that the next meaningful neuro step is attaching an HDC fingerprint directly to `Signal`, then treating any broader similarity API as follow-on work.
 - This context pack should record that priority clearly, but it should not turn PU06 into a runtime activation plan.
 
 ## What The Docs Must Stop Implying
@@ -26,7 +26,7 @@ Concise post-audit picture for `tmp/docs-parity/06/context-pack/`.
 ## What PU06 Should Actually Do
 
 1. Refresh the docs to match the audit reality.
-2. Mark HDC-on-Engram as the top queued neuro improvement.
+2. Mark HDC-on-Signal as the top queued neuro improvement.
 3. State that `query_similar` on Substrate and broader cross-domain HDC transfer are not yet wired.
 4. Push demurrage, Library of Babel, mesh sync, cross-domain transfer, publish/economics, and chain-state concepts into explicit deferred or target-state buckets.
 

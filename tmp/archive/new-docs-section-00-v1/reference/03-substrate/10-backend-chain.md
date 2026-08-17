@@ -1,6 +1,6 @@
 # Backend: Chain (`ChainSubstrate`)
 
-> A chain-backed `Substrate` implementation that stores `Engram`s on-chain for
+> A chain-backed `Substrate` implementation that stores `Signal`s on-chain for
 > verifiability, cross-agent sharing, and permanent provenance. Status: Specified (no code).
 
 **Status**: Specified
@@ -36,7 +36,7 @@ a chain-backed substrate is the right architecture.
 
 ### `put`
 
-Submits an `Engram` to a smart contract that:
+Submits an `Signal` to a smart contract that:
 1. Verifies the `ContentHash` matches the serialised content.
 2. Stores the record in on-chain storage (or IPFS with on-chain hash pointer).
 3. Emits a `EngramStored(hash, block_height)` event.

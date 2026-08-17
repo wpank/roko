@@ -1,8 +1,8 @@
 [meta]
 plan = "E46-github-workflow-integration"
 total = 12
-done = 0
-status = "ready"
+done = 12
+status = "done"
 phase = "M1"
 max_parallel = 2
 depends_on_plan = ["E01-execution-engine"]
@@ -24,7 +24,7 @@ auto_pr (bool, default false), merge_method (enum: merge/squash/rebase, default 
 label_prefix (String, default "roko/").
 Wire into RokoConfig as `pub github: GitHubConfig` with serde defaults.
 Add to scaffold_default_toml output."""
-status = "ready"
+status = "done"
 tier = "focused"
 max_loc = 55
 files = ["crates/roko-core/src/config/schema.rs"]
@@ -87,7 +87,7 @@ Then extend github_signal_kind() in webhooks.rs to map:
 - check_suite events with action=completed -> GITHUB_CHECK_COMPLETED
 - pull_request closed+merged (non-plan branches) -> GITHUB_PR_MERGED
 - pull_request closed+not_merged -> GITHUB_PR_CLOSED"""
-status = "ready"
+status = "done"
 tier = "focused"
 max_loc = 40
 files = ["crates/roko-core/src/signal_kinds.rs", "crates/roko-serve/src/routes/webhooks.rs"]
@@ -153,7 +153,7 @@ description = """Split crates/roko-mcp-github into lib.rs + main.rs:
 - GitHubClient::new(token: &str) constructor.
 - GitHubClient::from_env() reads GITHUB_TOKEN.
 Add `[lib]` section to Cargo.toml so the crate can be used as both binary and library."""
-status = "ready"
+status = "done"
 tier = "integrative"
 max_loc = 60
 files = ["crates/roko-mcp-github/src/lib.rs", "crates/roko-mcp-github/src/main.rs", "crates/roko-mcp-github/Cargo.toml"]
@@ -221,7 +221,7 @@ description = """Add a GitHubOps async trait in crates/roko-orchestrator/src/git
 
 Implement NoOpGitHubOps (all methods return Ok with dummy values) as default.
 Add `pub github_ops: Arc<dyn GitHubOps>` to ExecutorConfig or a new RunnerGitHub wrapper."""
-status = "ready"
+status = "done"
 tier = "focused"
 max_loc = 55
 files = ["crates/roko-orchestrator/src/github_ops.rs", "crates/roko-orchestrator/src/lib.rs"]
@@ -283,7 +283,7 @@ description = """Create crates/roko-cli/src/github_ops_impl.rs:
 - merge_pr: calls merge_pr with merge_method from config.
 - Constructor: LiveGitHubOps::from_config(cfg: &GitHubConfig) -> Result<Self>.
 Uses tokio::task::spawn_blocking to bridge sync GitHubClient to async trait."""
-status = "ready"
+status = "done"
 tier = "integrative"
 max_loc = 55
 files = ["crates/roko-cli/src/github_ops_impl.rs", "crates/roko-cli/Cargo.toml"]
@@ -346,7 +346,7 @@ description = """Modify crates/roko-cli/src/runner/event_loop.rs:
    is set, call github_ops.merge_pr().
 
 Modify crates/roko-cli/src/runner/types.rs to add RunConfig.github_ops field."""
-status = "ready"
+status = "done"
 tier = "integrative"
 max_loc = 50
 files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/types.rs"]
@@ -408,10 +408,10 @@ becomes Failed after max retries):
    TaskAttemptOutcome or RunState tracking).
 3. When a previously-failed task succeeds on retry/replan, call
    github_ops.close_issue() to auto-close the tracking issue."""
-status = "ready"
+status = "done"
 tier = "focused"
 max_loc = 45
-files = ["crates/roko-cli/src/runner/event_loop.rs"]
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/github_workflow.rs"]
 role = "implementer"
 depends_on = ["E46-T06"]
 domain = "runner"
@@ -434,7 +434,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'create_task_issue' crates/roko-cli/src/runner/event_loop.rs"
+command = "grep -q 'create_task_issue' crates/roko-cli/src/runner/github_workflow.rs"
 fail_msg = "event loop must call create_task_issue on terminal failure"
 
 [[task.verify]]
@@ -466,10 +466,10 @@ has a github_pr number (from T06), post a summary comment:
    (tasks passed/failed, total duration, cost).
 4. Rate-limit comments: skip intermediate gate rungs, only comment on
    the final verdict per task (not every rung)."""
-status = "ready"
+status = "done"
 tier = "focused"
 max_loc = 50
-files = ["crates/roko-cli/src/runner/event_loop.rs"]
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/github_workflow.rs"]
 role = "implementer"
 depends_on = ["E46-T06", "E46-T07"]
 domain = "runner"
@@ -491,7 +491,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'comment_pr' crates/roko-cli/src/runner/event_loop.rs"
+command = "grep -q 'comment_pr' crates/roko-cli/src/runner/github_workflow.rs"
 fail_msg = "event loop must call comment_pr for gate results"
 
 [[task.verify]]
@@ -524,10 +524,10 @@ gate passes but before calling github_ops.merge_pr():
    and skip the merge (leave PR open for manual intervention).
 4. If CiStatus::Success, proceed with merge.
 Add a ci_check_retries counter to track attempts."""
-status = "ready"
+status = "done"
 tier = "focused"
 max_loc = 45
-files = ["crates/roko-cli/src/runner/event_loop.rs"]
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/github_workflow.rs"]
 role = "implementer"
 depends_on = ["E46-T06", "E46-T08"]
 domain = "runner"
@@ -550,7 +550,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'check_ci_status' crates/roko-cli/src/runner/event_loop.rs"
+command = "grep -q 'check_ci_status' crates/roko-cli/src/runner/github_workflow.rs"
 fail_msg = "merge handler must call check_ci_status"
 
 [[task.verify]]
@@ -585,7 +585,7 @@ GitHub webhook signals:
 
 Create a github_event_subscriber function (similar pattern to the existing
 prd_publish_subscriber) that takes the event bus receiver and processes events."""
-status = "ready"
+status = "done"
 tier = "integrative"
 max_loc = 55
 files = ["crates/roko-serve/src/routes/webhooks.rs", "crates/roko-serve/src/events.rs"]
@@ -641,7 +641,7 @@ description = """Add a `github` subcommand group to roko-cli with a `status` sub
 5. Output a structured summary to stdout.
 
 Add GithubCmd enum with Status variant. Register in main.rs Command enum."""
-status = "ready"
+status = "done"
 tier = "focused"
 max_loc = 55
 files = ["crates/roko-cli/src/commands/github.rs", "crates/roko-cli/src/main.rs"]
@@ -701,10 +701,10 @@ event_loop.rs) that:
 
 This test does NOT call real GitHub APIs — it validates the wiring through the
 mock trait implementation."""
-status = "ready"
+status = "done"
 tier = "integrative"
 max_loc = 60
-files = ["crates/roko-cli/src/runner/event_loop.rs"]
+files = ["crates/roko-cli/src/runner/github_workflow.rs"]
 role = "implementer"
 depends_on = ["E46-T06", "E46-T07", "E46-T08", "E46-T09"]
 domain = "testing"
@@ -726,12 +726,12 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'MockGitHubOps' crates/roko-cli/src/runner/event_loop.rs"
+command = "grep -q 'MockGitHubOps' crates/roko-cli/src/runner/github_workflow.rs"
 fail_msg = "MockGitHubOps must be defined in the test module"
 
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-cli -- github 2>&1"
+command = "cargo test -p roko-cli --lib github 2>&1"
 fail_msg = "GitHub integration tests must pass"
 
 acceptance = [

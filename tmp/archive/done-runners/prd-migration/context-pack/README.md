@@ -8,7 +8,7 @@
 
 | # | File | What it contains |
 |---|---|---|
-| 00 | [`00-ALWAYS-READ-FIRST.md`](./00-ALWAYS-READ-FIRST.md) | Who you are, what Roko is, architecture summary, Engram, 6 traits, universal loop, 5 layers, cross-cuts, C-Factor, 14 blue ocean innovations, 18-crate structure, critical distinction that refactoring-prd wins |
+| 00 | [`00-ALWAYS-READ-FIRST.md`](./00-ALWAYS-READ-FIRST.md) | Who you are, what Roko is, architecture summary, Signal, 6 traits, universal loop, 5 layers, cross-cuts, C-Factor, 14 blue ocean innovations, 18-crate structure, critical distinction that refactoring-prd wins |
 | 01 | [`01-naming-map.md`](./01-naming-map.md) | Authoritative old→new naming map. Every rename. Tokens (KORAI/DAEJI). Crate dissolution plan for roko-golem. |
 | 02 | [`02-reframe-rules.md`](./02-reframe-rules.md) | Conceptual reframes (Mortality→Resource Management, Succession→Backup/Restore, Styx→Mesh, Golem-specific→Domain-agnostic). Incompatibility flags. Citation preservation rules. |
 | 03 | [`03-concepts-lifecycle.md`](./03-concepts-lifecycle.md) | REMOVED / KEPT / KEPT-REFRAMED / INTRODUCED concept lists. Files to SKIP. Files to extract citations only. |

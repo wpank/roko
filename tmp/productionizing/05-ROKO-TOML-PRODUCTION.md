@@ -1,4 +1,13 @@
-# Production `roko.toml` — Only Real Providers
+# Production `roko.toml` -- Only Real Providers
+
+Last updated: 2026-08-13
+
+## What is this?
+
+A production-ready `roko.toml` template stripped to only the providers you
+actually have API keys for. The stock config lists 50+ models across 10+
+providers; this version eliminates the routing landmines described in
+`02-MODEL-ROUTING-FIX.md`.
 
 ## The Problem
 

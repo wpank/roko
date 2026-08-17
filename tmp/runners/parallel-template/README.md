@@ -1,5 +1,13 @@
 # Parallel Runner Template
 
+> **What is this?** The shared DAG-scheduling engine that powers all runners in
+> `tmp/runners/`. Every runner directory (e.g., `post-parity/`, `solutions/`) delegates
+> to this template via its `run.sh`. The template handles worktree forking, codex
+> dispatch, anti-pattern checks, merge-back serialization, and wave gates. To create
+> a new runner, copy a `run.sh` from an existing runner and point it here.
+>
+> **Last updated: 2026-08-13**
+
 Dependency-aware parallel batch runner. Uses codex to execute batches on separate git worktrees, merges results back, and validates with gates.
 
 ## How it works

@@ -7,7 +7,7 @@
 
 **Status**: Specified (`Bus` trait); Shipping (`EventBus<E>`)
 **Crate**: `roko-runtime` (`EventBus<E>`); `roko-core` (planned trait)
-**Depends on**: [Engram](../01-engram/README.md), [Pulse](../02-pulse/README.md)
+**Depends on**: [Signal](../01-engram/README.md), [Pulse](../02-pulse/README.md)
 **Last reviewed**: 2026-04-19
 
 ---
@@ -15,7 +15,7 @@
 ## What This Folder Contains
 
 `Bus` is the ephemeral counterpart to [`Substrate`](../03-substrate/README.md). Where
-Substrate is for durable `Engram` records, Bus is for short-lived `Pulse` events — things
+Substrate is for durable `Signal` records, Bus is for short-lived `Pulse` events — things
 that happen now and do not need to persist. The folder covers the target-state `Bus` trait,
 Topic-based routing, replay semantics, and the migration from today's `EventBus<E>` to the
 Bus target state.

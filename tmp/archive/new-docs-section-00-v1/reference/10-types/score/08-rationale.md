@@ -32,7 +32,7 @@ specialized needs without cluttering the core structure.
 drives exploration and learning. It is valued as a second-class signal (lower weight than
 confidence and utility) to avoid novelty-seeking at the expense of correctness.
 
-**utility**: The best evidence that an Engram is worth keeping is that it has contributed
+**utility**: The best evidence that an Signal is worth keeping is that it has contributed
 to successful outcomes. Utility is the memory system's feedback signal — the equivalent
 of synaptic potentiation in biological memory.
 

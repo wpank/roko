@@ -1,6 +1,6 @@
 # Substrate Read-After-Write Consistency
 
-> An Engram read immediately after being written is identical to the written Engram.
+> An Signal read immediately after being written is identical to the written Signal.
 
 **Crate**: `roko-fs`
 **Test type**: Property-based (proptest)
@@ -11,7 +11,7 @@
 
 ## Statement
 
-For all substrates S and all valid Engrams E:
+For all substrates S and all valid Signals E:
 
 `S.write(E); S.read(E.id()) == Some(E)`
 

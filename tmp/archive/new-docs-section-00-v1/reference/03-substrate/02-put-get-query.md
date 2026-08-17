@@ -6,7 +6,7 @@
 
 **Status**: Shipping
 **Crate**: `roko-core`
-**Depends on**: [Trait Surface](./01-trait-surface.md), [Engram](../01-engram/README.md)
+**Depends on**: [Trait Surface](./01-trait-surface.md), [Signal](../01-engram/README.md)
 **Last reviewed**: 2026-04-19
 
 ---
@@ -14,17 +14,17 @@
 ## TL;DR
 
 `put` is an upsert keyed on `ContentHash`. `get` is an exact-key lookup returning
-`Option<Engram>`. `query` is a structured filter returning `Vec<Engram>`. None of these
+`Option<Signal>`. `query` is a structured filter returning `Vec<Signal>`. None of these
 methods overlap with `query_similar` (similarity search), which is covered separately in
 [Query Similar](./03-query-similar.md).
 
 ---
 
-## `put(engram: Engram) → Result<(), SubstrateError>`
+## `put(signal: Signal) → Result<(), SubstrateError>`
 
 ### Purpose
 
-Store an `Engram`. If a record with the same `ContentHash` already exists, replace it
+Store an `Signal`. If a record with the same `ContentHash` already exists, replace it
 atomically. `put` is an **upsert** — idempotent on content, destructive on older state.
 
 ### Pre-conditions
@@ -32,7 +32,7 @@ atomically. `put` is an **upsert** — idempotent on content, destructive on old
 | Condition | Description |
 |---|---|
 | `engram.hash` is set | `ContentHash` must be populated. `EngramBuilder` always sets this. |
-| `engram` is valid | All required fields must be non-default. `Engram::validate()` should pass. |
+| `signal` is valid | All required fields must be non-default. `Engram::validate()` should pass. |
 
 ### Post-conditions
 
@@ -47,7 +47,7 @@ atomically. `put` is an **upsert** — idempotent on content, destructive on old
 | Error | Meaning |
 |---|---|
 | `SubstrateError::Io` | Disk full, permission denied, or other OS-level I/O failure. |
-| `SubstrateError::Serialization` | `Engram` could not be serialized to the backend format. |
+| `SubstrateError::Serialization` | `Engram (renamed to Signal in 2026-08-12)` could not be serialized to the backend format. |
 
 ### Example
 
@@ -64,11 +64,11 @@ substrate.put(engram)?;
 
 ---
 
-## `get(id: &ContentHash) → Result<Option<Engram>, SubstrateError>`
+## `get(id: &ContentHash) → Result<Option<Signal>, SubstrateError>`
 
 ### Purpose
 
-Retrieve an `Engram` by its exact `ContentHash`. Returns `Ok(None)` if the record does not
+Retrieve an `Signal` by its exact `ContentHash`. Returns `Ok(None)` if the record does not
 exist. This is a point lookup — O(1) for hash-indexed backends, O(n) for linear scan backends
 like the JSONL file backend (which builds an in-memory index on open).
 
@@ -98,11 +98,11 @@ the cognitive loop should not panic on a cache miss.
 
 ---
 
-## `query(q: &SubstrateQuery) → Result<Vec<Engram>, SubstrateError>`
+## `query(q: &SubstrateQuery) → Result<Vec<Signal>, SubstrateError>`
 
 ### Purpose
 
-Return all `Engram`s that match a structured filter. Filter fields are ANDed; unset fields
+Return all `Signal`s that match a structured filter. Filter fields are ANDed; unset fields
 (`None`) match everything.
 
 ### `SubstrateQuery` Fields

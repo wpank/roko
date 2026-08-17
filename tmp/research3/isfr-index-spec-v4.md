@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This file specifies the ISFR benchmark rate methodology and architecture.
+> It is reference material for the ISFR product vertical, not a roko implementation plan.
+>
+> Last updated: 2026-08-13
+
 # ISFR: The Internet Secured Funding Rate
 
 ## Index Specification v4.0 — Nunchi Labs
@@ -452,9 +459,9 @@ The counter-intuitive property: in most markets, information asymmetry is profit
 
 Most market data is consumed once and discarded. ISFR is designed to produce compounding knowledge — every 10-second update enriches the network's collective intelligence through structured knowledge entries.
 
-### 7.1 Structured Knowledge Entries (Engrams)
+### 7.1 Structured Knowledge Entries (Signals)
 
-Every ISFR update produces a structured knowledge entry (an Engram with `kind: OracleUpdate`) that enters the InsightStore — Korai's on-chain knowledge repository:
+Every ISFR update produces a structured knowledge entry (a Signal with `kind: OracleUpdate`) that enters the InsightStore — Korai's on-chain knowledge repository:
 
 ```
 ISFRInsight {

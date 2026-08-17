@@ -5,7 +5,7 @@ subsection: readiness-audit
 id: ra-subsystem-00
 source: 31-implementation-readiness-audit.md (§00)
 score: 21/30
-tags: [architecture, roko-core, engram, traits, layer-taxonomy]
+tags: [architecture, roko-core, signal, traits, layer-taxonomy]
 ---
 
 # Readiness Audit: Architecture (§00)
@@ -16,7 +16,7 @@ tags: [architecture, roko-core, engram, traits, layer-taxonomy]
 
 | Criterion | Score | Notes |
 |---|---|---|
-| rust_structs | 4 | Engram/Score/Decay/Provenance/Kind/Body/ContentHash fully spec'd |
+| rust_structs | 4 | Engram (renamed to Signal in 2026-08-12)/Score/Decay/Provenance/Kind/Body/ContentHash fully spec'd |
 | pseudocode | 4 | Cognitive loop (09) and five-layer taxonomy (12) have tight spec-code alignment |
 | config_params | 4 | 60+ config params in RokoConfig schema with validation rules |
 | error_handling | 3 | Error enums exist but not systematic |
@@ -25,19 +25,19 @@ tags: [architecture, roko-core, engram, traits, layer-taxonomy]
 
 ## Strengths
 
-- Engram/Score/Decay/Provenance/Kind/Body/ContentHash data types are the most fully specified layer in the codebase
+- Signal/Score/Decay/Provenance/Kind/Body/ContentHash data types are the most fully specified layer in the codebase
 - roko-core: 610 tests across 59 files — solid test coverage for the kernel
 - `Signal`, 6 Synapse traits, `Kind`, `Body`, `Score`, `Config` all complete and well-tested
 
 ## Critical Gaps
 
-- **Signal→Engram rename (G8)**: documented but unexecuted — creates spec/code terminology divergence
+- **Signal→Signal rename (G8)**: documented but unexecuted — creates spec/code terminology divergence
 - Docs 25-29 (Attention Currency, Cognitive Immune, Temporal Topology, Emergent Goals, Energy Model) have dense specifications but zero shipping code and no test criteria
 - Cross-section integration map identifies 20 missing wiring points (see [integration-map/](../integration-map/))
 
 ## Related Gaps
 
-- G8: Signal→Engram rename (Low effort, high clarity value)
+- G8: Signal→Signal rename (Low effort, high clarity value)
 - Integration map M-items: all flow through roko-core types
 
 ## Cross-References

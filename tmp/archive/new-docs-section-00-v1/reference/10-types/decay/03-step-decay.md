@@ -14,7 +14,7 @@
 
 Step decay divides time into discrete epochs of fixed length. At the end of each epoch the
 balance is multiplied by a `step_multiplier` less than 1.0. Within an epoch the weight is
-constant — it does not change until the epoch boundary fires. This model suits Engrams
+constant — it does not change until the epoch boundary fires. This model suits Signals
 whose relevance has a step-function character: still fully valid during a sprint, then
 abruptly less so when the sprint ends.
 
@@ -127,10 +127,10 @@ impl Default for StepDecayParams {
 ## Semantics
 
 Unlike Demurrage, Step decay does **not** interact with retrieval. Retrieving a Step-decayed
-Engram does not reset or increase its balance. The balance is determined entirely by
+Signal does not reset or increase its balance. The balance is determined entirely by
 elapsed epoch count.
 
-This makes Step decay appropriate for Engrams that are factual records of a past period
+This makes Step decay appropriate for Signals that are factual records of a past period
 rather than knowledge that benefits from reinforcement:
 
 - Sprint backlog items — relevant during their sprint, stale afterward
@@ -159,7 +159,7 @@ model instead and choose a `idle_tax_per_day` that matches the epoch cadence.
 |---|---|---|
 | Balance goes to zero prematurely | `step_multiplier` too small (e.g. 0.1 with a long epoch) | Review epoch × multiplier pairing in the [tier matrix](08-tier-matrix.md) |
 | Balance never decays | `step_multiplier` mistakenly set to 1.0 | Validate on construction; reject values ≥ 1.0 |
-| GC misses Engram | `weight_at` returns > threshold because epoch has not yet closed | Use GC horizon of `epoch_secs` look-ahead |
+| GC misses Signal | `weight_at` returns > threshold because epoch has not yet closed | Use GC horizon of `epoch_secs` look-ahead |
 | Epoch boundary never fires | Long-running process not calling `apply_epochs` | Substrate compaction job must call this on every tick |
 
 ---
@@ -167,9 +167,9 @@ model instead and choose a `idle_tax_per_day` that matches the epoch cadence.
 ## Interactions
 
 - **Substrate compaction**: the compaction job computes `epochs_elapsed` for every
-  Step-decayed Engram, calls `apply_epochs`, and marks for GC those with `balance < GC_FLOOR`.
+  Step-decayed Signal, calls `apply_epochs`, and marks for GC those with `balance < GC_FLOOR`.
 - **Score**: `weight_at` is not the same as `score.confidence`. Score is computed at
-  creation; weight modulates how the Engram is ranked at retrieval time.
+  creation; weight modulates how the Signal is ranked at retrieval time.
 - **Demurrage vs. Step**: Step decay is epoch-driven and retrieval-independent;
   Demurrage is continuous and retrieval-reinforced. See [overview](00-overview.md)
   for a comparison table.
@@ -187,4 +187,4 @@ model instead and choose a `idle_tax_per_day` that matches the epoch cadence.
 
 - [`00-overview.md`](00-overview.md) — all decay variants compared
 - [`01-demurrage.md`](01-demurrage.md) — the primary decay model
-- [`08-tier-matrix.md`](08-tier-matrix.md) — which Engram kinds use Step decay by default
+- [`08-tier-matrix.md`](08-tier-matrix.md) — which Signal kinds use Step decay by default

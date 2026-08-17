@@ -13,7 +13,7 @@
 **Headline**: Durable memory becomes semantically indexed (HDC fingerprint) and economically shaped (demurrage) while the runtime starts learning from prediction and falsification loops.
 
 **Key tracks**:
-- HDC fingerprint on every durable `Engram`
+- HDC fingerprint on every durable `Signal`
 - Demurrage replacing age-only pruning
 - Heuristics and falsifiers as inspectable library objects
 - Self-learning loop (prediction/outcome Pulse topics)

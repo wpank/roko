@@ -1,8 +1,8 @@
 [meta]
 plan = "E26-inference-gateway"
 total = 12
-done = 0
-status = "ready"
+done = 12
+status = "done"
 max_parallel = 3
 
 # ── T01: Create roko-gateway crate with InferenceRequest/Response types ──
@@ -41,7 +41,7 @@ types before defining new ones.
 All types derive Serialize + Deserialize. Add to workspace Cargo.toml members.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-gateway/src/lib.rs", "crates/roko-gateway/Cargo.toml", "Cargo.toml"]
 depends_on = []
@@ -123,7 +123,7 @@ Implementation:
 - pub fn take_guidance(&mut self, session_id) -> Option<String> — returns and clears
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-gateway/src/loop_detect.rs"]
 depends_on = ["E26-T01"]
@@ -202,7 +202,7 @@ Implementation:
 - fn hamming_distance(a: u64, b: u64) -> u32
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "architectural"
 files = ["crates/roko-gateway/src/cache.rs"]
 depends_on = ["E26-T01"]
@@ -277,7 +277,7 @@ Implementation:
 - pub fn prune(&self, session_id, tools) -> (Vec<ToolSchema>, PruneStats)
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-gateway/src/tool_prune.rs"]
 depends_on = ["E26-T01"]
@@ -347,7 +347,7 @@ Implementation:
   Returns Some(new_cap) when budget should be applied, None when no change
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-gateway/src/output_budget.rs"]
 depends_on = ["E26-T01"]
@@ -418,7 +418,7 @@ Implementation:
 - pub fn take_guidance(&mut self, session_id) -> Option<String>
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-gateway/src/thinking_cap.rs", "crates/roko-gateway/src/convergence.rs"]
 depends_on = ["E26-T01"]
@@ -494,7 +494,7 @@ Implementation:
   reasoning, thinking (all f64)
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-gateway/src/cost_track.rs"]
 depends_on = ["E26-T01"]
@@ -566,7 +566,7 @@ CRITICAL: The handle contains NO API keys — only a channel sender.
 This is the key isolation boundary from 08-GATEWAY.md.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-gateway/src/handle.rs"]
 depends_on = ["E26-T01"]
@@ -638,7 +638,7 @@ Do NOT implement the actual backends here — just the KeyRing and trait.
 Backend implementations will wire into existing roko-agent dispatchers.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-gateway/src/provider.rs"]
 depends_on = ["E26-T01"]
@@ -709,7 +709,7 @@ Implementation:
 - pub fn stats() -> BackpressureStats (queue_depth, active, rejected per provider)
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-gateway/src/backpressure.rs"]
 depends_on = ["E26-T01"]
@@ -776,7 +776,7 @@ Implementation:
 - pub fn new(flush_interval: Duration, flush_size: usize) -> Self
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-gateway/src/batch.rs"]
 depends_on = ["E26-T01", "E26-T04", "E26-T05", "E26-T06"]
@@ -841,7 +841,7 @@ Start the gateway background loop with spawn_gateway_loop() that reads
 from the mpsc receiver and processes each envelope.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "architectural"
 files = ["crates/roko-gateway/src/lib.rs"]
 depends_on = ["E26-T02", "E26-T03", "E26-T04", "E26-T05", "E26-T06", "E26-T07", "E26-T08", "E26-T09", "E26-T10"]

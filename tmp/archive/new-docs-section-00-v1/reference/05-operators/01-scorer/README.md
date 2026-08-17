@@ -1,12 +1,12 @@
 # Scorer
 
-> `Scorer` assigns a 7-axis `Score` to an `Engram`. It is the appraisal step of the
+> `Scorer` assigns a 7-axis `Score` to an `Signal`. It is the appraisal step of the
 > cognitive loop — the operator that decides how valuable, confident, novel, and useful a
 > piece of memory is.
 
 **Status**: Shipping
 **Crate**: `roko-core`
-**Depends on**: [Engram](../../01-engram/README.md), [Score](../../10-types/score.md)
+**Depends on**: [Signal](../../01-engram/README.md), [Score](../../10-types/score.md)
 **Last reviewed**: 2026-04-19
 
 ---

@@ -112,7 +112,7 @@ when multiple MCP servers expose tools with the same name.
 | `get_workspace_map` | Index | Return the full workspace symbol tree |
 | `web_search` | Research | Web search with citation extraction |
 | `fetch_url` | Research | Fetch and extract content from a URL |
-| `create_engram` | Memory | Create a new Engram in the Substrate |
+| `create_engram` | Memory | Create a new Signal in the Substrate |
 | `query_engrams` | Memory | Query the Substrate by score, kind, or HDC similarity |
 | `emit_pulse` | Events | Emit an ephemeral event on the Bus |
 | `mcp_tool_call` | Meta | Call a tool on any connected MCP server (meta-tool) |

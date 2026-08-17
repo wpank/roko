@@ -27,12 +27,12 @@ Phase B is **additive only**. It does not change any existing behavior.
 
 | Item | Description |
 |---|---|
-| `Pulse` | The ephemeral medium; the counterpart to the durable `Engram` |
+| `Pulse` | The ephemeral medium; the counterpart to the durable `Signal` |
 | `Topic` | A routing primitive that names a stream of Pulses |
 | `TopicFilter` | A subscription predicate over Topics |
 | `Bus` | A kernel trait alongside `Substrate`; the transport fabric |
-| `Datum<'_>` | A generalized operator input type that accepts either `Engram` or `Pulse` |
-| Graduation path | A first-class mechanism to promote a `Pulse` to an `Engram` when lineage matters |
+| `Datum<'_>` | A generalized operator input type that accepts either `Signal` or `Pulse` |
+| Graduation path | A first-class mechanism to promote a `Pulse` to an `Signal` when lineage matters |
 
 ### Crate placement
 
@@ -100,4 +100,4 @@ Phase B is the kernel-addition portion of the **Q1 Foundation** milestone. See [
 - [success-metrics.md](success-metrics.md)
 - [`reference/04-bus/`](../../reference/04-bus/README.md) — Bus specification
 - [`reference/02-pulse/`](../../reference/02-pulse/README.md) — Pulse specification
-- [`reference/01-engram/`](../../reference/01-engram/README.md) — Engram (the durable sibling)
+- [`reference/01-engram/`](../../reference/01-engram/README.md) — Signal (the durable sibling)

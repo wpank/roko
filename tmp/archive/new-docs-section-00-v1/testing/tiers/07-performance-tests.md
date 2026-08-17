@@ -34,9 +34,9 @@ Roko uses `criterion.rs` with the following configuration:
 | `bench_content_hash_1kb` | BLAKE3 hashing of 1KB | < 5µs |
 | `bench_content_hash_1mb` | BLAKE3 hashing of 1MB | < 200µs |
 | `bench_score_aggregate` | Weighted score aggregation over 7 axes | < 100ns |
-| `bench_engram_serialize` | `serde_json` serialization of a full Engram | < 10µs |
-| `bench_engram_deserialize` | `serde_json` deserialization of a full Engram | < 15µs |
-| `bench_decay_step_1000` | Decay computation for 1000 Engrams | < 1ms |
+| `bench_engram_serialize` | `serde_json` serialization of a full Signal | < 10µs |
+| `bench_engram_deserialize` | `serde_json` deserialization of a full Signal | < 15µs |
+| `bench_decay_step_1000` | Decay computation for 1000 Signals | < 1ms |
 
 ### `roko-gate` — Gate Pipeline
 
@@ -54,16 +54,16 @@ Roko uses `criterion.rs` with the following configuration:
 | `bench_hdc_bundle_10` | Bundling 10 hypervectors (10,240-bit) | < 1µs |
 | `bench_hdc_bind` | Binding two 10,240-bit hypervectors | < 500ns |
 | `bench_hdc_similarity_1000` | Similarity search over 1000 hypervectors | < 5ms |
-| `bench_hdc_encode_engram` | Encoding an Engram to a hypervector | < 10µs |
+| `bench_hdc_encode_engram` | Encoding an Signal to a hypervector | < 10µs |
 
 ### `roko-fs` — Substrate I/O
 
 | Benchmark | What it measures | Target latency |
 |---|---|---|
-| `bench_substrate_write_engram` | Single Engram write to JSONL substrate | < 100µs |
-| `bench_substrate_read_by_id` | Single Engram read by content hash | < 50µs |
-| `bench_substrate_list_1000` | List 1000 Engrams by query | < 10ms |
-| `bench_substrate_gc` | GC pass over 10,000 Engrams | < 1s |
+| `bench_substrate_write_engram` | Single Signal write to JSONL substrate | < 100µs |
+| `bench_substrate_read_by_id` | Single Signal read by content hash | < 50µs |
+| `bench_substrate_list_1000` | List 1000 Signals by query | < 10ms |
+| `bench_substrate_gc` | GC pass over 10,000 Signals | < 1s |
 
 ---
 

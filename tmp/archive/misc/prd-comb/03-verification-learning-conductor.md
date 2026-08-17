@@ -26,7 +26,7 @@ this verification step?* The answer is always a `Verdict` — never an error, ne
 maybe, never a "could not determine." This design is deliberate and load-bearing.
 
 > **Citation**: Synapse Architecture (refactoring-prd/01-synapse-architecture.md) — "1
-> noun (Engram) + 6 verb traits" composing the universal loop.
+> noun (Signal) + 6 verb traits" composing the universal loop.
 
 ---
 
@@ -70,7 +70,7 @@ All four are verdicts. The pipeline, ratchet, adaptive thresholds, and feedback 
 never need to pattern-match on `Result::Err`. They receive a `Verdict` and act on it.
 
 > **Citation**: refactoring-prd/01-synapse-architecture.md — Gate trait signature:
-> `async fn verify(&self, engram: &Engram, ctx: &Context) -> Verdict`. The canonical
+> `async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict`. The canonical
 > source explicitly uses `-> Verdict`, not `-> Result<Verdict>`.
 
 > **Citation**: crates/roko-core/src/traits.rs:102–108 — Active implementation
@@ -288,7 +288,7 @@ verification compound, while the returns to stronger generation plateau**.
 
 ## 9. Future: The Gate Trait in Multi-Language Contexts
 
-The current Gate trait signature accepts `Engram`. The Engram's body carries a `GatePayload` with `BuildSystem` (Cargo,
+The current Gate trait signature accepts `Signal`. The Signal's body carries a `GatePayload` with `BuildSystem` (Cargo,
 Npm, Go, Make). This means the Gate trait itself is language-agnostic — only the
 concrete implementations (`CompileGate`, `TestGate`, `ClippyGate`) know about specific
 build systems.
@@ -2138,7 +2138,7 @@ to the same value whether you compute it from the store or from the verdict's de
 field.
 
 > **Citation**: refactoring-prd/01-synapse-architecture.md — "Content-addressed,
-> scored, decaying, lineage-tracked" — Engrams are content-addressed; artifacts follow
+> scored, decaying, lineage-tracked" — Signals are content-addressed; artifacts follow
 > the same principle.
 
 ---
@@ -2149,7 +2149,7 @@ The artifact store is a building block for Forensic AI causal replay (see
 [12-forensic-ai-causal-replay.md](./12-forensic-ai-causal-replay.md)). To replay an
 agent's verification history:
 
-1. Retrieve the signal (engram) by hash from the Substrate.
+1. Retrieve the signal (signal) by hash from the Substrate.
 2. Retrieve the gate artifacts by hash from the ArtifactStore.
 3. Replay the gate pipeline with the original signal and compare verdicts.
 
@@ -6635,7 +6635,7 @@ Each line is a JSON object recording an agent turn:
 
 **Path**: `.roko/signals.jsonl`
 
-Every signal (engram) written to the substrate, including gate verdicts:
+Every signal (signal) written to the substrate, including gate verdicts:
 ```json
 {
   "hash": "0xab1c2d3e...",
@@ -6814,7 +6814,7 @@ manageable with periodic GC of old artifacts.
 |---|---|
 | ArtifactStore | Stores immutable gate artifacts |
 | Episode Logger | Records agent turns |
-| Signal Log | Records engrams and verdicts |
+| Signal Log | Records signals and verdicts |
 | GateRatchet | Ratchet state at each point in time |
 | AdaptiveThresholds | Threshold state at each point in time |
 | Efficiency Events | Per-turn cost and timing data |
@@ -6852,15 +6852,15 @@ answered definitively.
 
 ## Purpose
 
-Gate verdicts are not terminal events. They are signals -- first-class Engrams that re-enter the signal pipeline. A compile failure is knowledge. A test pass is evidence. A clippy warning is a heuristic.
+Gate verdicts are not terminal events. They are signals -- first-class Signals that re-enter the signal pipeline. A compile failure is knowledge. A test pass is evidence. A clippy warning is a heuristic.
 
-This document specifies how gate verdicts become Engrams, how they flow through the universal cognitive loop, and how downstream consumers (Scorer, Router, Composer, Dreams) use them.
+This document specifies how gate verdicts become Signals, how they flow through the universal cognitive loop, and how downstream consumers (Scorer, Router, Composer, Dreams) use them.
 
 ---
 
 ## 1. The core claim: verification is cognition
 
-In a standard CI pipeline, a gate verdict is an end state: pass or fail, logged and forgotten. In Roko, a gate verdict is a beginning. When a compile gate fails, that failure is an Engram with a Kind, Score, Decay, and lineage. It enters the Substrate. Other components query it:
+In a standard CI pipeline, a gate verdict is an end state: pass or fail, logged and forgotten. In Roko, a gate verdict is a beginning. When a compile gate fails, that failure is an Signal with a Kind, Score, Decay, and lineage. It enters the Substrate. Other components query it:
 
 - The **Scorer** appraises the verdict (a compile error on a file the agent just modified scores higher than a pre-existing warning).
 - The **Router** uses verdict history to select models (tasks that repeatedly fail compile get routed to stronger models).
@@ -6906,7 +6906,7 @@ pub struct GateVerdict {
 
 ### 2.2 Transformation to Signal
 
-When a gate completes, the orchestrator transforms its verdict into an Engram:
+When a gate completes, the orchestrator transforms its verdict into an Signal:
 
 ```
 fn verdict_to_engram(verdict: &GateVerdict, task_engram: &Engram) -> Engram {
@@ -8065,7 +8065,7 @@ implementation agent from generating easy-to-pass tests.
 | Golem | Agent | Actor entity |
 | Mori | Roko Orchestrator | Orchestration subsystem |
 | Grimoire | Neuro | Knowledge/memory subsystem |
-| Signal | Engram | Used "Signal" in code, "Engram" in docs |
+| Signal | Engram (renamed to Signal in 2026-08-12) | Used "Signal" in code, "Signal" in docs |
 | GNOS | KORAI / DAEJI | Meta-cognitive subsystem |
 | Clade | Collective / Mesh | Multi-agent groups |
 | Succession | Backup / Restore | No death framing |
@@ -8588,7 +8588,7 @@ Hindsight experience replay (HER, Andrychowicz et al. 2017) re-labels failed epi
 - **[02-skill-library-voyager](02-skill-library-voyager.md)** — The skill library extracts reusable capabilities from successful episodes.
 - **[13-8-missing-feedback-loops](13-8-missing-feedback-loops.md)** — Episodes are the data substrate for all 8 cybernetic feedback loops.
 
-See also: [00-architecture](../00-architecture/INDEX.md) for the Engram/Signal data model that episodes extend, and [04-verification](../04-verification/INDEX.md) for the gate pipeline that produces `GateVerdict` records.
+See also: [00-architecture](../00-architecture/INDEX.md) for the Signal/Signal data model that episodes extend, and [04-verification](../04-verification/INDEX.md) for the gate pipeline that produces `GateVerdict` records.
 
 
 ---
@@ -14933,7 +14933,7 @@ The Bus makes per-operator calibration cheap enough to do everywhere, not just i
 | `Composer` | Whether the prompt fits budget and wins the gate | Token count plus gate verdict | Template EMA and variant selection |
 | `Gate` | Whether the task will succeed post-patch | Next verdict plus regression tests | Threshold smoothing and drift correction |
 | `Policy` | Whether a decision will improve a metric | Metric Pulse after the decision | Per-policy online calibration |
-| `Substrate` | Whether an Engram belongs in a given tier | Query frequency, recency, and reuse | Tier-promotion and retention policy |
+| `Substrate` | Whether an Signal belongs in a given tier | Query frequency, recency, and reuse | Tier-promotion and retention policy |
 
 This is the missing middle between fixed heuristics and heavyweight model retraining. The calibration target is not just “did the task pass?” but “which operator was systematically overconfident, underconfident, or stale?”
 
@@ -15029,7 +15029,7 @@ The result is a self-modeling system. Prediction error is no longer an incidenta
 
 ## Purpose
 
-Episodes tell Roko what happened. Playbooks tell it which concrete sequences have worked before. REF14 proposes a richer missing middle: `Heuristic` Engrams that capture a reusable claim, the conditions where it applies, the predicted outcome, and the calibration record showing whether lived experience keeps confirming it. The near-term version of that idea builds on the existing `HeuristicRule` in `roko-neuro` with typed specs and contradiction tracking. See `tmp/refinements/14-worldview-validation.md` for the full proposal.
+Episodes tell Roko what happened. Playbooks tell it which concrete sequences have worked before. REF14 proposes a richer missing middle: `Heuristic` Signals that capture a reusable claim, the conditions where it applies, the predicted outcome, and the calibration record showing whether lived experience keeps confirming it. The near-term version of that idea builds on the existing `HeuristicRule` in `roko-neuro` with typed specs and contradiction tracking. See `tmp/refinements/14-worldview-validation.md` for the full proposal.
 
 REF16 extends that middle into a research pipeline. That full paper/claim/replication-ledger stack is deferred, but the provenance instinct remains useful: heuristics should be able to point back to source material when that source materially informed the rule.
 
@@ -15054,7 +15054,7 @@ Playbooks remain useful, but they are the wrong level of abstraction for many le
 
 Heuristics solve that by turning reusable beliefs into first-class durable records. A playbook can still be compiled later, but now the system knows which prior it came from, how often it held up, and what evidence is currently pushing against it.
 
-## The `Heuristic` Engram
+## The `Heuristic` Signal
 
 REF14 treats heuristics as a first-class durable kind rather than an implementation detail hidden inside playbooks or prompt templates:
 
@@ -15086,7 +15086,7 @@ Three details are load-bearing:
 - `prediction` says what should happen if the heuristic is correct.
 - `receipts` preserve the episode lineage that justified the heuristic in the first place.
 
-Because heuristics are Engrams, they can share the rest of the durable-memory stack: HDC fingerprint similarity where available, provenance, lineage, and tiered retention. The demurrage-balance model described elsewhere remains deferred.
+Because heuristics are Signals, they can share the rest of the durable-memory stack: HDC fingerprint similarity where available, provenance, lineage, and tiered retention. The demurrage-balance model described elsewhere remains deferred.
 
 ## Predicates and Falsifiers
 
@@ -15115,7 +15115,7 @@ That gives the system a consistent contract:
 - A calibrator decides whether those outcomes confirmed, violated, or refined the claim.
 - The falsifier record is durable and queryable after the fact.
 
-This is the REF14 synergy with REF10 and the two-fabric model: heuristics are durable Engrams, while the runtime can eventually deliver the reality-check signals that confirm, contradict, or refine them.
+This is the REF14 synergy with REF10 and the two-fabric model: heuristics are durable Signals, while the runtime can eventually deliver the reality-check signals that confirm, contradict, or refine them.
 
 ## Heuristic Lifecycle
 
@@ -15232,7 +15232,7 @@ REF14 does not remove playbooks. It narrows their role:
 
 - Heuristics are a promising durable belief layer to strengthen on top of today's `HeuristicRule` machinery.
 - Playbooks are compiled procedural projections of heuristics and strategy fragments.
-- Neuro stores heuristics and related knowledge as durable Engrams; broader clustering and demurrage-balance semantics remain target-state.
+- Neuro stores heuristics and related knowledge as durable Signals; broader clustering and demurrage-balance semantics remain target-state.
 - Domain profiles seed an initial heuristic library, but calibration remains per heuristic rather than per profile.
 
 That separation gives the docs a cleaner architecture story. Learning owns episode feedback, calibration, worldview competition, and externalization of beliefs. Neuro owns durable storage, similarity, and tier movement. Playbooks remain the human-readable, highly concrete output surface rather than the only memory object worth preserving.
@@ -15272,7 +15272,7 @@ This chapter is the learning-layer bridge between academic provenance and runtim
 
 The proposed flow is:
 
-1. **Paper** - ingest the source as an Engram with authorship, venue, and provenance.
+1. **Paper** - ingest the source as an Signal with authorship, venue, and provenance.
 2. **Claim** - extract or author a testable hypothesis with an explicit falsifier.
 3. **Heuristic** - lift the claim into a reusable prior once local structure is stable enough.
 4. **Trial** - run the heuristic against real episodes, gates, and outcome Pulses.
@@ -15280,7 +15280,7 @@ The proposed flow is:
 
 The key point is that the same evidence can move through the stack more than once. A claim may begin as a paper-backed prior, then become a heuristic, then be revised by trial results, then be demoted or promoted by its replication ledger. That full lifecycle is deferred for now.
 
-## Paper As Engram (Target-State)
+## Paper As Signal (Target-State)
 
 Papers live in the same durable substrate as other long-lived records. That means the source itself stays addressable, citeable, and comparable over time.
 
@@ -15315,7 +15315,7 @@ The falsifier is the load-bearing part. If the claim cannot be disproved by runt
 
 ## Heuristic Lifting
 
-Claims that survive repeated trials can lift into `Heuristic` Engrams. That lifting preserves lineage rather than flattening the research source into a generic rule.
+Claims that survive repeated trials can lift into `Heuristic` Signals. That lifting preserves lineage rather than flattening the research source into a generic rule.
 
 The practical rule is:
 
@@ -15509,7 +15509,7 @@ CompletedRunInput
 
 | Topic | Relationship |
 |-------|-------------|
-| [00-architecture](../00-architecture/INDEX.md) | Engram data model that episodes extend |
+| [00-architecture](../00-architecture/INDEX.md) | Signal data model that episodes extend |
 | [02-agents](../02-agents/INDEX.md) | Agent dispatch produces the episodes that learning consumes |
 | [03-composition](../03-composition/INDEX.md) | Prompt assembly uses skills and playbook rules from learning |
 | [04-verification](../04-verification/INDEX.md) | Gate pipeline produces GateVerdict records consumed by learning |
@@ -18868,7 +18868,7 @@ what a single-agent retry can solve).
 ### Signal Serialization
 
 The `MetaCognitionAssessment` is serializable and can be emitted as
-an Engram:
+an Signal:
 
 ```rust
 impl MetaCognitionAssessment {
@@ -20682,7 +20682,7 @@ a task's priority should change based on new information. Examples:
 scheduling queue. This does not affect in-flight tasks — only queued
 tasks waiting for dispatch.
 
-### InjectContext(Engram)
+### InjectContext(Signal)
 
 **Intent**: Add specific context to the current agent's prompt.
 
@@ -20695,12 +20695,12 @@ but does not have. Examples:
 - Another agent's work produced relevant context: "Plan 3 just
   modified `mod.rs` — your imports may need updating."
 
-**Engram**: In Roko's naming convention, an Engram is a unit of
-persistent context. An `InjectContext` signal carries an Engram —
+**Signal**: In Roko's naming convention, an Signal is a unit of
+persistent context. An `InjectContext` signal carries an Signal —
 a typed piece of information that the orchestrator injects into the
 agent's next prompt.
 
-**Orchestrator response**: Append the Engram content to the agent's
+**Orchestrator response**: Append the Signal content to the agent's
 context for its next turn. This may be injected via the system prompt
 (`--append-system-prompt`), via `context/in/`, or via MCP tool
 response.
@@ -22340,7 +22340,7 @@ agent's working memory, and it has finite capacity.
 |---------------|---------------------|----------------|
 | Intrinsic load | Task complexity: files to modify, dependency depth, domain specificity | Plan metadata, complexity classification |
 | Extraneous load | Irrelevant context: stale docs, off-topic examples, verbose error history | Prompt sections with low signal_ratio |
-| Germane load | Productive scaffolding: PRD context, error digests, playbook rules, skill hints | InjectContext engrams, high signal_ratio sections |
+| Germane load | Productive scaffolding: PRD context, error digests, playbook rules, skill hints | InjectContext signals, high signal_ratio sections |
 
 **Intrinsic load** is fixed by the task itself. A refactoring that
 touches 15 files across 4 crates has high intrinsic load. A typo

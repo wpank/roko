@@ -61,7 +61,7 @@ properties:
 6. **Replayable**: a consumer can reconnect and catch up from a
    known position without losing events.
 7. **Auditable**: every projection update is trace-linked to the
-   Engram/Pulse that caused it.
+   Signal/Pulse that caused it.
 
 This is MVC's model layer done well, where the M is a living
 projection over durable + ephemeral fabrics.
@@ -281,8 +281,8 @@ A projection's State is effectively a CRDT-like snapshot. For
 debugging and testing:
 
 - `statehub.snapshot(projection)` writes the current State to
-  an Engram.
-- `statehub.restore(projection, engram)` rebuilds the projection
+  an Signal.
+- `statehub.restore(projection, signal)` rebuilds the projection
   from the snapshot and catches up from the Bus.
 - `statehub.replay(projection, from=cursor, to=cursor)` replays
   the projection over a historical range.

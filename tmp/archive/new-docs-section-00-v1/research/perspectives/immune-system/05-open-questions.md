@@ -16,9 +16,9 @@
    determines this balance. Is it a fixed parameter, or does it adapt based on the system's
    operational history?
 
-3. **Can the system detect coordinated attacks?** A single low-quality Engram from a
+3. **Can the system detect coordinated attacks?** A single low-quality Signal from a
    suspicious source might not trigger immune responses. A coordinated campaign of many
-   such Engrams might be detectable only at the aggregate level. Does Roko have aggregate-level
+   such Signals might be detectable only at the aggregate level. Does Roko have aggregate-level
    threat detection?
 
 4. **What is the "cognitive fever" — the acceptable cost of immune activation?** Biological

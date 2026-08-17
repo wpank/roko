@@ -1,16 +1,29 @@
-# Phase 1B: Engram → Signal Rename
+# Phase 1B: Signal Rename (from Engram)
 
-## What Changes
+> **Status: DONE (2026-08-12)**
+>
+> The rename is complete. The Rust struct is now `pub struct Signal` in `engram.rs` (file
+> retains old name). `pub type Engram = Signal` backward-compat alias is retained for
+> downstream crate compilation. New code uses `Signal` everywhere. The `balance: f64`
+> field (QW-3) was also added during this work.
+>
+> **What remains:** Mark `Engram` alias as `#[deprecated]`. Update remaining crate-level
+> references that still use `Engram` directly (via the alias). Cosmetic: rename
+> `engram.rs` file to `signal.rs`.
+>
+> **Last updated: 2026-08-13**
 
-`Engram` becomes `Signal` as the canonical name. This aligns with the v2 spec where
-Signal is the universal durable datum.
+## What Changed
+
+`Signal` is now both the public API name and the underlying struct name (renamed from
+Engram in 2026-08-12). This aligns with the v2 spec where Signal is the universal durable datum.
 
 ## Current State
 
-- `roko-core/src/engram.rs`: defines `pub struct Engram`
-- `roko-core/src/signal.rs`: has `pub type Signal = Engram;` (alias already exists)
-- ~200+ uses of `Engram` across 20+ crates
-- ~50+ uses of `Signal` already (through the alias)
+- `roko-core/src/engram.rs`: defines `pub struct Signal` + `pub type Engram = Signal` (backward-compat alias)
+- `roko-core/src/signal.rs`: re-exports `Signal`, `SignalBuilder`
+- `balance: f64` field added with `#[serde(default)]` for backwards compatibility
+- New code across the codebase uses `Signal`; some older crate code still references `Engram` via the alias
 
 ## Strategy: Gradual, Non-Breaking
 
@@ -66,7 +79,7 @@ fn default_balance() -> f64 { 1.0 }
 
 ## Wire Target
 
-Everything that currently uses `Engram` — this is a rename, not new functionality.
+Everything that uses `Signal` (or the backward-compat `Engram` alias) -- this was a rename, not new functionality.
 
 ## Verification
 
@@ -82,4 +95,4 @@ cargo test --workspace   # All tests pass
 | `crates/roko-core/src/engram.rs` | Rename struct |
 | `crates/roko-core/src/signal.rs` or `lib.rs` | Flip alias direction |
 | `crates/roko-core/src/lib.rs` | Export Signal as primary |
-| All crates using Engram | Incremental rename (non-breaking) |
+| All crates using `Engram` alias | Incremental migration to `Signal` (non-breaking) |

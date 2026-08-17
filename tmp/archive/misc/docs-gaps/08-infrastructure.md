@@ -13,7 +13,7 @@ Gaps between the test/CI infrastructure described in docs 31-32 and what actuall
 **Accept when**:
 - [x] Each crate with proptest dependency has at least one `proptest!` test block
   - `roko-primitives`: 10 property tests in `tests/property_tests.rs` (bind, bundle, similarity, bytes roundtrip, permute)
-  - `roko-core`: 13 property tests in `tests/property_tests.rs` (Pulse, Topic, TopicFilter, Datum, Score, Engram serde/hash)
+  - `roko-core`: 13 property tests in `tests/property_tests.rs` (Pulse, Topic, TopicFilter, Datum, Score, Signal serde/hash)
   - `roko-conductor`: 12 property tests in `tests/property_tests.rs` (CircuitBreaker trips/count/reset/snapshot, YerkesDodson performance/symmetry/clamp/serde)
 - [x] OR: unused proptest dependencies removed from Cargo.toml
 - [x] `cargo test --workspace`

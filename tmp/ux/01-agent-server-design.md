@@ -256,7 +256,7 @@ flowchart TB
 ```
 roko-agent-server
   depends on:
-    roko-core       — Engram type, trait definitions, common types
+    roko-core       — Signal type, trait definitions, common types
     roko-agent      — LLM backends (Claude, OpenAI, local)
     roko-learn      — C-Factor, efficiency tracking, cascade router
     roko-neuro      — Knowledge store, prediction engine
@@ -269,7 +269,7 @@ roko-agent-server
 
 | Crate | What `roko-agent-server` Uses From It |
 |-------|--------------------------------------|
-| `roko-core` | `Engram`, `AgentId`, `Capability`, trait defs |
+| `roko-core` | `Signal`, `AgentId`, `Capability`, trait defs |
 | `roko-agent` | `LlmBackend` trait, model provider implementations |
 | `roko-learn` | `CFactorTracker`, `EfficiencyMetrics` for accuracy reporting |
 | `roko-neuro` | `KnowledgeStore` for local insight cache, `PredictionEngine` |

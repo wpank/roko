@@ -1,6 +1,6 @@
 # Substrate Write Idempotence
 
-> Writing the same Engram twice leaves the substrate in the same state as writing it once.
+> Writing the same Signal twice leaves the substrate in the same state as writing it once.
 
 **Crate**: `roko-fs`
 **Test type**: Property-based (proptest)
@@ -11,7 +11,7 @@
 
 ## Statement
 
-For all substrates S and all valid Engrams E:
+For all substrates S and all valid Signals E:
 
 `S.write(E); S.write(E); S` has the same observable state as `S.write(E); S`.
 
@@ -23,8 +23,8 @@ Observable state means: `S.read(E.id())` returns the same result, and `S.list_al
 
 Idempotent writes are critical for:
 - **Crash recovery**: if the orchestrator crashes after writing E but before recording the completion, it re-sends E on resume. The substrate must not duplicate it.
-- **Multi-agent**: two agents that independently derive the same Engram (same content → same hash) should not create two substrate entries.
-- **Retry logic**: gate-approved Engrams are written with at-least-once semantics. Idempotence makes at-least-once equivalent to exactly-once.
+- **Multi-agent**: two agents that independently derive the same Signal (same content → same hash) should not create two substrate entries.
+- **Retry logic**: gate-approved Signals are written with at-least-once semantics. Idempotence makes at-least-once equivalent to exactly-once.
 
 ---
 

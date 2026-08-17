@@ -1,8 +1,24 @@
 # Cell Trait + Protocol Renames — Implementation Prompt
 
+> **Last updated: 2026-08-13**
+
+## What is this?
+
+This file is a self-contained implementation plan for defining the `Cell` trait and
+renaming 6 existing traits to match the unified spec, part of the mori-to-roko migration.
+This is the architectural keystone -- everything downstream depends on these renames.
+
+**Status: PARTIAL.** The `Engram` -> `Signal` rename is **DONE** (2026-08-12). The `Signal`
+struct lives at `crates/roko-core/src/engram.rs` with a `pub type Engram = Signal` compat
+alias. The remaining 6 trait renames (Substrate->Store, Scorer->Score, Gate->Verify,
+Router->Route, Composer->Compose, Policy->React) and the Cell trait definition are still
+pending.
+
+---
+
 > **Goal**: Define the `Cell` trait in `roko-core`, rename 6 existing traits to
 > match the unified spec, and make all protocol implementations conform to Cell.
-> This is the architectural keystone — everything downstream depends on it.
+> This is the architectural keystone -- everything downstream depends on it.
 >
 > **Spec**: `tmp/unified/02-CELL.md` §1-2
 
@@ -148,8 +164,9 @@ pub trait Verify: Cell {
 **Steps**: This is the only rename that changes method signatures. The spec says React
 operates on Pulses (ephemeral), not Signals (durable).
 
-For now: just rename the trait. Method signature change (Engram → Pulse input) happens
-in a separate task after Pulse/Bus kernel is ready.
+For now: just rename the trait. Method signature change (Signal -> Pulse input) happens
+in a separate task after Pulse/Bus kernel is ready. (Note: Engram was renamed to Signal
+on 2026-08-12.)
 
 ---
 

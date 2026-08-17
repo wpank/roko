@@ -1,4 +1,4 @@
-# Migration Log — Cluster A: Engram Family
+# Migration Log — Cluster A: Signal Family
 
 > Audit trail recording what moved where, what was added, and what was inferred.
 
@@ -14,7 +14,7 @@
 | # | Source path | Size | Lines |
 |---|---|---|---|
 | 01 | `docs/00-architecture/01-naming-and-glossary.md` | ~8 KB | ~200 |
-| 02 | `docs/00-architecture/02-engram-data-type.md` | ~35 KB | ~856 |
+| 02 | `docs/00-architecture/02-signal-data-type.md` | ~35 KB | ~856 |
 | 02b | `docs/00-architecture/02b-pulse.md` | ~10 KB | ~250 |
 | 03 | `docs/00-architecture/03-score.md` | ~12 KB | ~300 |
 | 04 | `docs/00-architecture/04-decay.md` | ~15 KB | ~380 |
@@ -36,22 +36,22 @@ the cross-pollination innovations file (`30-cross-pollination-innovations.md`).
 | Target file | Source(s) | Notes |
 |---|---|---|
 | `README.md` | Structural | Index from conventions template |
-| `00-overview.md` | 02-engram-data-type.md | Top-level Engram concept |
-| `01-struct-reference.md` | 02-engram-data-type.md | Full struct layout with all fields |
-| `02-content-hash.md` | 02-engram-data-type.md | ContentHash pointer from Engram context |
-| `03-hdc-fingerprint.md` | 02-engram-data-type.md | HdcFingerprint pointer from Engram context |
-| `04-kind-enum.md` | 02-engram-data-type.md, 19 | Kind variants in Engram context |
-| `05-body-enum.md` | 02-engram-data-type.md | Body variants in Engram context |
-| `06-lineage-dag.md` | 02-engram-data-type.md | Lineage Vec and DAG semantics |
-| `07-builder-pattern.md` | 02-engram-data-type.md | EngramBuilder API |
-| `08-scoring-fields.md` | 02-engram-data-type.md, 03 | Score fields in Engram context |
-| `09-decay-fields.md` | 02-engram-data-type.md, 04 | Decay fields in Engram context |
-| `10-provenance-fields.md` | 02-engram-data-type.md, 05 | Provenance fields in Engram context |
-| `11-serialization.md` | 02-engram-data-type.md | Serde, CBOR, JSON serialization |
-| `12-invariants.md` | 02-engram-data-type.md | All Engram-level invariants |
-| `13-examples.md` | 02-engram-data-type.md | 10 worked examples |
-| `14-api-reference.md` | 02-engram-data-type.md | All Engram public methods |
-| `15-rationale-and-history.md` | 01-naming-and-glossary.md, 02 | Signal→Engram rename, design history |
+| `00-overview.md` | 02-signal-data-type.md | Top-level Signal concept |
+| `01-struct-reference.md` | 02-signal-data-type.md | Full struct layout with all fields |
+| `02-content-hash.md` | 02-signal-data-type.md | ContentHash pointer from Signal context |
+| `03-hdc-fingerprint.md` | 02-signal-data-type.md | HdcFingerprint pointer from Signal context |
+| `04-kind-enum.md` | 02-signal-data-type.md, 19 | Kind variants in Signal context |
+| `05-body-enum.md` | 02-signal-data-type.md | Body variants in Signal context |
+| `06-lineage-dag.md` | 02-signal-data-type.md | Lineage Vec and DAG semantics |
+| `07-builder-pattern.md` | 02-signal-data-type.md | EngramBuilder API |
+| `08-scoring-fields.md` | 02-signal-data-type.md, 03 | Score fields in Signal context |
+| `09-decay-fields.md` | 02-signal-data-type.md, 04 | Decay fields in Signal context |
+| `10-provenance-fields.md` | 02-signal-data-type.md, 05 | Provenance fields in Signal context |
+| `11-serialization.md` | 02-signal-data-type.md | Serde, CBOR, JSON serialization |
+| `12-invariants.md` | 02-signal-data-type.md | All Signal-level invariants |
+| `13-examples.md` | 02-signal-data-type.md | 10 worked examples |
+| `14-api-reference.md` | 02-signal-data-type.md | All Signal public methods |
+| `15-rationale-and-history.md` | 01-naming-and-glossary.md, 02 | Signal→Signal rename, design history |
 
 ### reference/02-pulse/ (9 files)
 
@@ -61,7 +61,7 @@ the cross-pollination innovations file (`30-cross-pollination-innovations.md`).
 | `00-overview.md` | 02b-pulse.md | Pulse concept and motivation |
 | `01-specification.md` | 02b-pulse.md | Pulse struct specification |
 | `02-topics-and-filters.md` | 02b-pulse.md | Topic and TopicFilter specs |
-| `03-graduation-rules.md` | 02b-pulse.md | Pulse→Engram graduation |
+| `03-graduation-rules.md` | 02b-pulse.md | Pulse→Signal graduation |
 | `04-pulse-sources.md` | 02b-pulse.md | PulseSource trait |
 | `05-today-vs-planned.md` | 02b-pulse.md | EventBus shipped vs Bus/Pulse planned |
 | `06-examples.md` | 02b-pulse.md | Worked examples |
@@ -121,44 +121,44 @@ the cross-pollination innovations file (`30-cross-pollination-innovations.md`).
 | Target file | Source(s) | Notes |
 |---|---|---|
 | `README.md` | Structural | Index |
-| `00-overview.md` | 02-engram-data-type.md | ContentHash concept |
-| `01-canonical-encoding.md` | 02-engram-data-type.md | Exact byte layout |
-| `02-api-reference.md` | 02-engram-data-type.md | Method signatures |
-| `03-invariants.md` | 02-engram-data-type.md | Security and correctness invariants |
-| `04-examples.md` | 02-engram-data-type.md | 8 worked examples |
+| `00-overview.md` | 02-signal-data-type.md | ContentHash concept |
+| `01-canonical-encoding.md` | 02-signal-data-type.md | Exact byte layout |
+| `02-api-reference.md` | 02-signal-data-type.md | Method signatures |
+| `03-invariants.md` | 02-signal-data-type.md | Security and correctness invariants |
+| `04-examples.md` | 02-signal-data-type.md | 8 worked examples |
 
 ### reference/10-types/hdc-fingerprint/ (8 files)
 
 | Target file | Source(s) | Notes |
 |---|---|---|
 | `README.md` | Structural | Index |
-| `00-overview.md` | 02-engram-data-type.md | HdcFingerprint concept |
-| `01-hdc-vector.md` | 02-engram-data-type.md | [u64; 160] format, operations |
-| `02-encoding-pipeline.md` | 02-engram-data-type.md, inferred | Tokenize → project → bundle |
-| `03-similarity-distance.md` | 02-engram-data-type.md | Hamming distance, thresholds |
-| `04-encoder-versioning.md` | 02-engram-data-type.md | Version lifecycle, migration |
-| `05-invariants.md` | 02-engram-data-type.md | Complete invariant set |
-| `06-examples.md` | 02-engram-data-type.md | 8 worked examples |
+| `00-overview.md` | 02-signal-data-type.md | HdcFingerprint concept |
+| `01-hdc-vector.md` | 02-signal-data-type.md | [u64; 160] format, operations |
+| `02-encoding-pipeline.md` | 02-signal-data-type.md, inferred | Tokenize → project → bundle |
+| `03-similarity-distance.md` | 02-signal-data-type.md | Hamming distance, thresholds |
+| `04-encoder-versioning.md` | 02-signal-data-type.md | Version lifecycle, migration |
+| `05-invariants.md` | 02-signal-data-type.md | Complete invariant set |
+| `06-examples.md` | 02-signal-data-type.md | 8 worked examples |
 
 ### reference/10-types/kind/ (5 files)
 
 | Target file | Source(s) | Notes |
 |---|---|---|
 | `README.md` | Structural | Index |
-| `00-overview.md` | 02-engram-data-type.md, 19 | Kind enum overview |
+| `00-overview.md` | 02-signal-data-type.md, 19 | Kind enum overview |
 | `01-variant-reference.md` | 19-compositional-kinds.md | Per-variant descriptions |
 | `02-kind-and-decay.md` | 18, 04-decay.md | Kind → default decay mapping |
-| `03-api-reference.md` | 02-engram-data-type.md | Methods and invariants |
+| `03-api-reference.md` | 02-signal-data-type.md | Methods and invariants |
 
 ### reference/10-types/body/ (5 files)
 
 | Target file | Source(s) | Notes |
 |---|---|---|
 | `README.md` | Structural | Index |
-| `00-overview.md` | 02-engram-data-type.md | Body enum overview |
-| `01-variant-reference.md` | 02-engram-data-type.md | Per-variant descriptions |
-| `02-canonical-bytes.md` | 02-engram-data-type.md | Encoding for each variant |
-| `03-api-reference.md` | 02-engram-data-type.md | Methods and invariants |
+| `00-overview.md` | 02-signal-data-type.md | Body enum overview |
+| `01-variant-reference.md` | 02-signal-data-type.md | Per-variant descriptions |
+| `02-canonical-bytes.md` | 02-signal-data-type.md | Encoding for each variant |
+| `03-api-reference.md` | 02-signal-data-type.md | Methods and invariants |
 
 ---
 
@@ -184,7 +184,7 @@ the cross-pollination innovations file (`30-cross-pollination-innovations.md`).
 
 The following items from the source files were present and are now in the new tree:
 
-- `Signal` → `Engram` rename history → `reference/01-engram/15-rationale-and-history.md`
+- `Signal` → `Signal` rename history → `reference/01-engram/15-rationale-and-history.md`
 - All 7 Score axes (4 stable + 3 extended) → `reference/10-types/score/01-axes-stable.md` and `02-axes-extended.md`
 - Score weights W_CONFIDENCE=0.35, W_NOVELTY=0.20, W_UTILITY=0.30, W_REPUTATION=0.15 → `04-constants.md`
 - All 5 Decay variants → `01-demurrage.md` through `05-custom-decay.md`
@@ -242,16 +242,16 @@ All additions are marked `<!-- ADDED: rationale -->` in the target files. Key ad
 
 | Old name | New canonical name | Location of change |
 |---|---|---|
-| `Signal` | `Engram` | `reference/01-engram/15-rationale-and-history.md` |
+| `Signal` | `Engram (renamed to Signal in 2026-08-12)` | `reference/01-engram/15-rationale-and-history.md` |
 | `EventBus<E>` | (shipped) / `Bus` (target) | `reference/02-pulse/05-today-vs-planned.md` |
-| `Datum` | Removed from scope | Was a candidate name; `Engram` chosen |
+| `Datum` | Removed from scope | Was a candidate name; `Signal` chosen |
 
 ---
 
 ## Reviewer Notes
 
 - Every Rust code block in the new tree carries a `<!-- source: crates/... -->` comment.
-- Status tags: all 01-engram, 10-types/score, 10-types/decay, 10-types/provenance,
+- Status tags: all 01-signal, 10-types/score, 10-types/decay, 10-types/provenance,
   10-types/content-hash, 10-types/hdc-fingerprint, 10-types/kind, 10-types/body = **Shipping**.
   02-pulse = **Specified**.
 - All links are repo-relative (no `/Users/will/` paths).

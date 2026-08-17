@@ -1,5 +1,9 @@
 # Project Bootstrap Notes
 
+> **STALE**: Historical notes from the April 2026 project bootstrap. All decisions described
+> here remain in effect. See `CLAUDE.md` for current architecture overview.
+> Last updated: 2026-08-13
+
 ## Initial Setup (2026-04-07)
 
 - Workspace layout: 18 crates under `crates/`

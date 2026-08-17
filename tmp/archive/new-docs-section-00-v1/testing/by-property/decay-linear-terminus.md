@@ -1,6 +1,6 @@
 # Linear Decay Reaches Zero at Lifetime
 
-> An Engram with linear decay reaches exactly value 0 at its configured lifetime.
+> An Signal with linear decay reaches exactly value 0 at its configured lifetime.
 
 **Crate**: `roko-core`
 **Test type**: Unit test

@@ -87,7 +87,7 @@ pub trait HealthMetrics: Send + Sync {
 
 **Finding origin**: [AA-09: Inconsistencies](./09-finding-inconsistencies.md), items DI-5 and CM-2
 
-**Problem**: `02-engram-data-type.md` references a "7-axis appraisal" but the `Score` struct in `roko-core` has only 4 axes.
+**Problem**: `02-signal-data-type.md` references a "7-axis appraisal" but the `Score` struct in `roko-core` has only 4 axes.
 
 **Fix**: Update documentation to distinguish:
 - **Stable (current)**: confidence, novelty, utility, reputation
@@ -204,17 +204,17 @@ These three improvements are significant research and engineering investments. T
 
 ### I10: VSA/HDC Operations on Signal Struct
 
-**Finding origin**: [AA-05: Engram Universality](./05-finding-engram-universality.md), §5.4
+**Finding origin**: [AA-05: Signal Universality](./05-finding-signal-universality.md), §5.4
 
 **Problem**: `bardo-primitives` provides 10,240-bit HDC vectors but they are not exposed on the `Signal` struct as algebraic operations.
 
 **Fix**: Add `bind()`, `bundle()`, `permute()` methods to `Signal` that delegate to `bardo-primitives`, making `Signal` a proper Vector Symbolic Architecture element.
 
 **Effort**: Large (2-3 weeks plus correctness verification)  
-**Impact**: Compositional knowledge representation at the type level; enables HDC-based semantic queries on Engrams directly
+**Impact**: Compositional knowledge representation at the type level; enables HDC-based semantic queries on Signals directly
 
 **Cross-references**:
-- [AA-05: Engram Universality](./05-finding-engram-universality.md)
+- [AA-05: Signal Universality](./05-finding-signal-universality.md)
 - Synergy S1 in [synergy-map](../synergy-map/) — HDC is a key node in the synergy graph
 
 ---

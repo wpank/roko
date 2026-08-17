@@ -1,5 +1,7 @@
 # 04: Chain-Specific ISFR Tools
 
+> Last updated: 2026-08-13
+
 ISFR tools following the existing `ToolDef` + `LazyLock` pattern from `crates/roko-chain/src/tools.rs`. These tools let agents interact with the ISFR oracle through the standard tool system.
 
 ## Existing Pattern

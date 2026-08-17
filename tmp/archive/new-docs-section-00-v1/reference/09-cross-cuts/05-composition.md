@@ -25,7 +25,7 @@ are summed and clamped to the valid range.
 | SCORE: Novelty weight | None | Adjusted by behavioral state | Daimon adjusts Scorer weight config |
 | ROUTE: confidence threshold | None | `± urgency_signal × threshold_delta` | Additive |
 | COMPOSE: system prompt | None | Behavioral state note appended | Additive (Daimon appends) |
-| PERSIST: Engram.affect_charge | None | `pad.arousal × sign(pad.pleasure)` | Daimon writes |
+| PERSIST: Signal.affect_charge | None | `pad.arousal × sign(pad.pleasure)` | Daimon writes |
 
 ---
 
@@ -55,9 +55,9 @@ let weights = base_weights.apply_behavioral_modifier(&daimon.behavioral_state())
 
 Dreams depends on Neuro. During the Delta pass:
 1. Dreams requests the full HDC index from Neuro.
-2. Dreams uses the index to find semantically similar Engram pairs for imagination.
-3. Dreams writes new `Kind::Imagined` Engrams via the Substrate.
-4. Neuro indexes the new Engrams immediately.
+2. Dreams uses the index to find semantically similar Signal pairs for imagination.
+3. Dreams writes new `Kind::Imagined` Signals via the Substrate.
+4. Neuro indexes the new Signals immediately.
 
 This means Neuro must be active whenever Dreams is active. `TickContextBuilder`
 enforces this:
@@ -71,12 +71,12 @@ if config.dreams.enabled && !config.neuro.enabled {
 
 ## Daimon + Dreams
 
-During the imagination phase, Daimon's current PAD vector influences which Engram
+During the imagination phase, Daimon's current PAD vector influences which Signal
 pairs Dreams selects for binding:
 
-- High arousal → prefer Engrams with high recency (recent = salient)
-- High pleasure → prefer Engrams with positive affect_charge
-- Low dominance → prefer Engrams from trusted sources
+- High arousal → prefer Signals with high recency (recent = salient)
+- High pleasure → prefer Signals with positive affect_charge
+- Low dominance → prefer Signals from trusted sources
 
 This is the closest thing Roko has to "dreaming about what worries you" — in an
 anxious state (low pleasure, high arousal, low dominance), the imagination phase

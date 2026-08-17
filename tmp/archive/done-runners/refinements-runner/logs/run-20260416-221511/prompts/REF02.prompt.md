@@ -4,8 +4,8 @@ Run id: run-20260416-221511
 Attempt: 2
 Model: gpt-5.4
 Reasoning: high
-Refinement source: /Users/will/dev/nunchi/roko/roko/tmp/refinements/02-engram-vs-pulse.md
-Target docs (candidates): docs/00-architecture/02-engram-data-type.md docs/00-architecture/INDEX.md docs/00-architecture/01-naming-and-glossary.md
+Refinement source: /Users/will/dev/nunchi/roko/roko/tmp/refinements/02-signal-vs-pulse.md
+Target docs (candidates): docs/00-architecture/02-signal-data-type.md docs/00-architecture/INDEX.md docs/00-architecture/01-naming-and-glossary.md
 
 ## Previous attempt failure context
 
@@ -84,7 +84,7 @@ framing.
    suffice.
 6. **Retired terms must not appear.** Verify-step `terminology_check` will
    fail the batch if retired terms (`Grimoire`, `Styx`, `Clade`, `Mori`,
-   `Bardo`, `Golem`, mortal/death/reincarnation framing, "Signal = Engram"
+   `Bardo`, `Golem`, mortal/death/reincarnation framing, "Signal = Signal"
    disclaimers, etc.) appear in lines you introduce — *except* when the
    line explicitly frames them as "retired / deprecated / historical /
    legacy / formerly / renamed / see also / old name". Use that phrasing
@@ -92,7 +92,7 @@ framing.
 7. **Cross-link to refinements.** Docs that change should include a
    `see tmp/refinements/NN-slug.md` pointer for readers who want the full
    proposal. Use the exact refinement filename (e.g.
-   `tmp/refinements/02-engram-vs-pulse.md`).
+   `tmp/refinements/02-signal-vs-pulse.md`).
 8. **Cross-link to glossary.** Docs introducing new terminology should
    point at `docs/00-architecture/01-naming-and-glossary.md` (or wherever
    the glossary has landed).
@@ -193,7 +193,7 @@ the 35 refinements propagate into `docs/`.
 
 ## The one-liner
 
-> Roko's kernel is two mediums (**Engram** — durable, content-addressed,
+> Roko's kernel is two mediums (**Signal** — durable, content-addressed,
 > decayed; **Pulse** — ephemeral, topic-addressed, sequenced) moving
 > through two fabrics (**Substrate** — storage; **Bus** — transport),
 > acted on by six operators (**Scorer**, **Gate**, **Router**,
@@ -204,7 +204,7 @@ the 35 refinements propagate into `docs/`.
 
 ## Canonical term definitions
 
-**Engram** — Durable medium. Content-addressed by BLAKE3 over
+**Signal** — Durable medium. Content-addressed by BLAKE3 over
 `(kind, body, author, tags)`. Has `lineage: Vec<ContentHash>`,
 `decay` / `balance`, `score` (7 axes), `provenance`, optional
 `attestation`, and (post-refinement) an HDC `fingerprint`. Lives in a
@@ -212,11 +212,11 @@ Substrate.
 
 **Pulse** — Ephemeral medium (new). Typed, topic-addressed,
 sequence-numbered, ring-buffered message on a Bus. Not content-
-addressed; not persisted by default. May *graduate* to an Engram when
+addressed; not persisted by default. May *graduate* to an Signal when
 its lineage matters.
 
 **Substrate** — Storage fabric (kernel trait). Backends: Memory, File,
-HDC, Chain. Persists Engrams. Retrieval by filter or (new)
+HDC, Chain. Persists Signals. Retrieval by filter or (new)
 HDC similarity.
 
 **Bus** — Transport fabric (promoted to kernel trait). Backends:
@@ -227,7 +227,7 @@ Publishes and delivers Pulses by Topic.
 **Topic** — Routing handle for Pulses. Dot-separated lowercase
 strings (`gate.verdict.emitted`, `agent.msg.chunk`, `prediction.error`).
 
-**Datum** — `enum Datum<'a> { Engram(&'a Engram), Pulse(&'a Pulse) }`
+**Datum** — `enum Datum<'a> { Signal(&'a Signal), Pulse(&'a Pulse) }`
 used by polymorphic operators (Scorer, Composer, Router).
 
 **Six operators** — `Scorer`, `Gate`, `Router`, `Composer`, `Policy`,
@@ -294,7 +294,7 @@ consolidated knowledge back into Substrate for the next cycle.
 
 | Term | Use | Avoid |
 |---|---|---|
-| Engram | the durable record | Signal (retired in code 877:5) |
+| Engram (renamed to Signal in 2026-08-12) | the durable record | Signal (retired in code 877:5) |
 | Pulse | the ephemeral message | Event, Envelope, Message, Signal |
 | Bus | the transport trait | EventBus<E> as a trait name |
 | Substrate | the storage trait | (unchanged) |
@@ -322,8 +322,8 @@ match lands outside a line that also signals "retired", "deprecated",
 
 | Retired term | Use instead | Notes |
 |---|---|---|
-| `Signal` (as the durable record) | `Engram` | Rename landed in code (877 Engram vs 5 Signal). Docs should say Engram. |
-| `Signal is the same as Engram` | (delete disclaimer) | The equivalence disclaimer is stale. Remove. |
+| `Signal` (as the durable record) | `Signal` | Rename landed in code (877 Signal vs 5 Signal). Docs should say Signal. |
+| `Signal is the same as Signal` | (delete disclaimer) | The equivalence disclaimer is stale. Remove. |
 | `EventBus<E>` (as trait name) | `Bus` + `Pulse` | The generic struct stays as `BroadcastBus` implementation detail. |
 | `Envelope<E>` (as user-facing type) | `Pulse` | Envelope name retained only as internal impl detail. |
 | `Event` (as type name) | `Pulse` | Collides with tokio/winit. Use Pulse. |
@@ -356,12 +356,12 @@ in the same line (case-insensitive): `retired`, `deprecated`,
 
 | New term | Must appear after batch | Home refinement |
 |---|---|---|
-| `Pulse` | REF02, REF07 | 02-engram-vs-pulse.md |
+| `Pulse` | REF02, REF07 | 02-signal-vs-pulse.md |
 | `Bus` (as kernel trait) | REF03 | 03-bus-as-first-class.md |
 | `Topic` | REF03, REF07 | 03-bus-as-first-class.md |
 | `TopicFilter` | REF03, REF07 | 03-bus-as-first-class.md |
 | `Datum` | REF04 | 04-operators-generalized.md |
-| `PulseSource` | REF02, REF07 | 02-engram-vs-pulse.md |
+| `PulseSource` | REF02, REF07 | 02-signal-vs-pulse.md |
 | `two mediums` | REF01, REF02 | 01-critique-one-noun.md |
 | `two fabrics` | REF03 | 03-bus-as-first-class.md |
 | `seven-step loop` | REF05 | 05-loop-retold.md |
@@ -380,8 +380,8 @@ in the same line (case-insensitive): `retired`, `deprecated`,
 Every refinement propagation should include a trailing "See also" or
 inline cross-reference to the refinement file:
 
-- `see [02-engram-vs-pulse](../../tmp/refinements/02-engram-vs-pulse.md)`
-- or `see tmp/refinements/02-engram-vs-pulse.md §3` for section-specific
+- `see [02-signal-vs-pulse](../../tmp/refinements/02-signal-vs-pulse.md)`
+- or `see tmp/refinements/02-signal-vs-pulse.md §3` for section-specific
   references.
 
 Use the project's existing link conventions where a doc subfolder has
@@ -435,7 +435,7 @@ to update:
 
 - `00-vision-and-thesis.md`
 - `01-naming-and-glossary.md` — every naming-related refinement touches this
-- `02-engram-data-type.md` — REF02
+- `02-signal-data-type.md` — REF02
 - `03-score-7-axis-appraisal.md` — mostly stable
 - `04-decay-variants.md` — REF12 (supersedes decay with demurrage)
 - `05-provenance-and-attestation.md` — REF32
@@ -509,7 +509,7 @@ with the others.
 
 ## Ten load-bearing primitives
 
-1. **Engram** (durable medium) — home: REF02
+1. **Signal** (durable medium) — home: REF02
 2. **Pulse** (ephemeral medium) — home: REF02
 3. **Bus** (transport fabric) — home: REF03
 4. **Substrate** (storage fabric) — home: REF03
@@ -557,7 +557,7 @@ BROADCAST, REACT) uses every primitive:
 
 - SENSE — Substrate (query) + Bus (subscribe) + external I/O.
 - ASSESS — Scorer (weights via HDC/demurrage/heuristic calibration).
-- COMPOSE — Composer (picks from HDC-similar Engrams, injects heuristics,
+- COMPOSE — Composer (picks from HDC-similar Signals, injects heuristics,
   TypedContext shapes prompt).
 - ACT — produces Pulses (agent stream, tool calls).
 - VERIFY — Gate pipeline; gate-verdict Pulses feed heuristic calibration.
@@ -583,12 +583,12 @@ without reading its full source.
 - `01-critique-one-noun.md` — Diagnosis: "one noun, six verbs" framing
   conflates two data shapes, hides the event bus, stretches trait
   signatures.
-- `02-engram-vs-pulse.md` — Introduce Pulse (ephemeral) as Engram's
+- `02-signal-vs-pulse.md` — Introduce Pulse (ephemeral) as Signal's
   sibling; define graduation law.
 - `03-bus-as-first-class.md` — Promote Bus to a kernel trait at L0
   alongside Substrate.
 - `04-operators-generalized.md` — Generalize the six operators over a
-  `Datum` enum that is either Engram or Pulse.
+  `Datum` enum that is either Signal or Pulse.
 - `05-loop-retold.md` — Universal loop collapses from 9 to 7 steps;
   PERSIST and BROADCAST become co-equal; cross-cuts aren't steps.
 - `06-refactoring-plan.md` — Three-phase refactor (docs → kernel →
@@ -605,7 +605,7 @@ without reading its full source.
 - `10-self-learning-cybernetic-loops.md` — Every operator becomes a
   predictor; active inference literal via predict/outcome Pulses.
 - `11-hyperdimensional-substrate.md` — 10,240-bit HDC fingerprint on
-  every Engram; similarity/consensus/analogy as O(1) vector ops.
+  every Signal; similarity/consensus/analogy as O(1) vector ops.
 - `12-knowledge-demurrage.md` — Economic memory: balance, holding
   cost, reinforcement-by-kind; self-trimming playbooks.
 - `13-collective-intelligence-c-factor.md` — Woolley's c-factor
@@ -614,7 +614,7 @@ without reading its full source.
   worldviews as co-citation clusters; lived-experience calibration.
 - `15-exponential-scaling.md` — Seven compounding loops; "every week
   your Roko gets better on your codebase."
-- `16-research-to-runtime.md` — Papers as Engrams, Claims as testable
+- `16-research-to-runtime.md` — Papers as Signals, Claims as testable
   hypotheses, Replication Ledger — living research.
 - `17-plugin-extension-architecture.md` — Five-tier SPI (prompts,
   profiles, manifests, native, WASM) with matched sandboxes.
@@ -684,7 +684,7 @@ Required delegation behavior:
 
 Suggested parallel split for batch `REF02`:
 
-- worker: extend `docs/00-architecture/02-engram-data-type.md` with a Pulse
+- worker: extend `docs/00-architecture/02-signal-data-type.md` with a Pulse
   sibling section and a link forward to 02b (if split); remove stale "Signal"
   disclaimers.
 - worker: add a new `docs/00-architecture/02b-pulse-ephemeral-event.md` (or
@@ -699,30 +699,30 @@ This is the verbatim refinement proposal that this batch must propagate
 into `docs/`. Treat it as the authoritative source. Do not edit this
 file; only edit docs under `docs/`.
 
---- BEGIN 02-engram-vs-pulse.md ---
+--- BEGIN 02-signal-vs-pulse.md ---
 
-# Two Mediums: Engram (Durable) and Pulse (Ephemeral)
+# Two Mediums: Signal (Durable) and Pulse (Ephemeral)
 
-> **TL;DR**: Keep the Engram exactly as it is — the content-addressed,
+> **TL;DR**: Keep the Signal exactly as it is — the content-addressed,
 > lineage-bearing, decayed, provenance-stamped record. Introduce a sibling
 > type, **Pulse**, for the in-flight message. Define a clean conversion
-> law so Pulses can graduate into Engrams when their lineage matters.
+> law so Pulses can graduate into Signals when their lineage matters.
 
-> **For first-time readers**: An **Engram** today is a Roko Rust struct —
+> **For first-time readers**: An **Signal** today is a Roko Rust struct —
 > hashed by BLAKE3 over its `kind`/`body`/`author`/`tags`, decayed on a schedule,
-> scored along 7 axes, chained by lineage to parent Engrams. It is Roko's one
+> scored along 7 axes, chained by lineage to parent Signals. It is Roko's one
 > existing data type. A **Pulse** (this proposal) is its sibling: a typed,
 > sequence-numbered, brief message that lives in an event-bus ring buffer
 > and delivers once. This doc names the Pulse, lists which fields it has and
-> doesn't, and defines when a Pulse should "graduate" into an Engram.
+> doesn't, and defines when a Pulse should "graduate" into an Signal.
 
 ## 1. The split
 
-| Property | Engram | Pulse |
+| Property | Signal | Pulse |
 |---|---|---|
 | Identity | `ContentHash` (BLAKE3 over kind + body + author + tags) | `(topic, seq)` within a Bus; no global hash |
 | Durability | Persisted in a `Substrate` | Lives in a Bus ring buffer; drops when ring wraps |
-| Lineage | `Vec<ContentHash>` — audit DAG | Optional `lineage_hint: Option<ContentHash>` pointing at an Engram |
+| Lineage | `Vec<ContentHash>` — audit DAG | Optional `lineage_hint: Option<ContentHash>` pointing at an Signal |
 | Decay | `Decay` enum (HalfLife, Ttl, Ebbinghaus, None) | N/A — Pulses are instantaneous |
 | Score | `Score` (7-axis appraisal) | N/A — Pulses may be scored in flight but don't carry a score |
 | Provenance | Full `Provenance` (author, trust, taint, attestation) | Lightweight: `source: String`, topic implies author class |
@@ -802,21 +802,21 @@ string-namespaced taxonomy.
 
 ### 2.2 Why reuse `Kind` and `Body`?
 
-The Engram's `Kind` enum in `crates/roko-core/src/kind.rs` already
+The Signal's `Kind` enum in `crates/roko-core/src/kind.rs` already
 enumerates the semantic categories of the system (ProcessSpawn,
 AgentMessage, GateVerdict, TokenUsage, …). Reusing it for Pulses means a
-Pulse and an Engram that describe the same event have the same `kind`
+Pulse and an Signal that describe the same event have the same `kind`
 and `body`, which makes graduation trivially an identity function plus
 some extra fields.
 
 This also means existing code that dispatches on `Kind` continues to
 work: a Policy that reacts to `Kind::GateVerdict` Pulses is the
-*same* Policy that reads `Kind::GateVerdict` Engrams from storage
+*same* Policy that reads `Kind::GateVerdict` Signals from storage
 during replay.
 
 ## 3. The conversion law
 
-Graduation is the well-defined path from Pulse to Engram:
+Graduation is the well-defined path from Pulse to Signal:
 
 ```rust
 impl Pulse {
@@ -849,7 +849,7 @@ impl Pulse {
 }
 ```
 
-The reverse — Engram to Pulse — is a lossy projection (loses score,
+The reverse — Signal to Pulse — is a lossy projection (loses score,
 decay, lineage vector):
 
 ```rust
@@ -882,7 +882,7 @@ and should die in the ring buffer. Good defaults:
 | Pulse topic | Graduate? | Reason |
 |---|---|---|
 | `orchestration.plan.started` | Yes | Plan lifecycle belongs in DAG |
-| `orchestration.task.ready` | No | Redundant with Task Engram already in Substrate |
+| `orchestration.task.ready` | No | Redundant with Task Signal already in Substrate |
 | `agent.msg.chunk` | Batch-graduate on stream close | Individual chunks are noise |
 | `agent.process.spawned/exited` | Yes | Process lifecycle is forensic |
 | `agent.tokens.used` | Aggregate then graduate | Per-chunk is noise; per-turn is useful |
@@ -900,21 +900,21 @@ default implementation, overridable via config.
 ### 4.1 It matches what the code already does
 
 `roko-agent-server` already publishes WebSocket token-chunk events that
-are not Engrams. `roko-orchestrator` already emits `OrchestrationEvent`
+are not Signals. `roko-orchestrator` already emits `OrchestrationEvent`
 on a bus. `roko-runtime` already defines `Envelope<E>`. We are
 *naming* what exists, not inventing a second type system.
 
-### 4.2 It preserves the Engram invariants
+### 4.2 It preserves the Signal invariants
 
 The forensic AI capability and the content-addressed DAG depend on
-Engrams being *exactly* what they are today: hashed, lineage-bearing,
+Signals being *exactly* what they are today: hashed, lineage-bearing,
 decayed. Pulses don't weaken this — they just stop forcing ephemeral
 events into the hashed DAG when they don't need to be there.
 
 ### 4.3 It lets the Substrate remain the only persistence surface
 
 Pulses aren't persisted. If a Pulse matters long-term, it graduates to
-an Engram and goes to the Substrate. There is still exactly one
+an Signal and goes to the Substrate. There is still exactly one
 storage surface, with one audit model. We added a transport surface
 alongside it, which is what we have been calling the event bus all
 along.
@@ -935,11 +935,11 @@ fn decide(&self, stream: &[Pulse], ctx: &Context) -> PolicyOutputs;
 ```
 
 Existing Policy implementations that were doing
-`Policy::decide(&[], ctx)` with synthetic empty Engram streams
+`Policy::decide(&[], ctx)` with synthetic empty Signal streams
 (doc 23 calls this "awkward but functional") can now emit their
-metric Pulses cleanly. Policies that want to react to stored Engrams
+metric Pulses cleanly. Policies that want to react to stored Signals
 can still do so — they subscribe to a `substrate.*` topic that the
-Substrate emits when Engrams land.
+Substrate emits when Signals land.
 
 ## 5. Worked example — agent turn
 
@@ -947,26 +947,26 @@ Current state, one-noun model:
 
 1. Agent subprocess spawns → ad-hoc `AgentEvent::ProcessSpawned` on bus.
 2. Token chunks arrive → ad-hoc `AgentEvent::StreamChunk` on bus.
-3. Turn completes → `Engram { kind: AgentOutput, body: Text(...) }`
+3. Turn completes → `Signal { kind: AgentOutput, body: Text(...) }`
    written to Substrate.
-4. GatePipeline verifies the Engram → `Engram { kind: GateVerdict }`
+4. GatePipeline verifies the Signal → `Signal { kind: GateVerdict }`
    written to Substrate.
-5. TUI polls Substrate for new Engrams (doc 24 flags this as the
+5. TUI polls Substrate for new Signals (doc 24 flags this as the
    P0 "polling-vs-streaming" bug).
 
 Two-medium model:
 
 1. Agent subprocess spawns → publish `Pulse { topic:
    "agent.process.spawned", kind: ProcessSpawn, ... }`. Policy
-   graduates it to an Engram (process lifecycle is forensic).
+   graduates it to an Signal (process lifecycle is forensic).
 2. Token chunks arrive → publish `Pulse { topic: "agent.msg.chunk", ... }`
    at 10–100 Hz. Not graduated. TUI subscribes, renders incrementally.
 3. Turn completes → publish `Pulse { topic: "agent.turn.completed", ... }`
-   AND graduate to `Engram { kind: AgentOutput }` written to
+   AND graduate to `Signal { kind: AgentOutput }` written to
    Substrate.
 4. GatePipeline runs → publishes `Pulse { topic:
    "gate.verdict.emitted", ... }` AND graduates to
-   `Engram { kind: GateVerdict }`.
+   `Signal { kind: GateVerdict }`.
 5. TUI never polls — it subscribes to `gate.verdict.*`,
    `agent.msg.*`, `orchestration.*` topics. The P0 bug dissolves.
 
@@ -993,7 +993,7 @@ poll a database.
   stream slice on a topic with 50 subscribers is 250 MB of copies per
   publish. Rule of thumb: bodies under 64 KB for hot topics (`agent.msg.chunk`),
   under 1 MB for structural topics (`orchestration.plan.started`). If it
-  has to be bigger, put the payload in a Substrate Engram and let the
+  has to be bigger, put the payload in a Substrate Signal and let the
   Pulse carry only a `lineage_hint` pointing at it.
 
 ## 7. What else changes if Pulse lands
@@ -1007,7 +1007,7 @@ these in mind when reviewing:
   the prediction-error signal.
 - **`12-knowledge-demurrage.md`** §2 — the `ReinforceKind::Retrieved` and
   `ReinforceKind::Surprised` signals ride on Pulses. Demurrage without
-  Pulse either forces every read to write a new Engram (expensive) or
+  Pulse either forces every read to write a new Signal (expensive) or
   skips reinforcement entirely (misses the point).
 - **`13-collective-intelligence-c-factor.md`** §2.2 — every c-factor
   metric is computable from Bus statistics. Authorship entropy, delivery
@@ -1052,11 +1052,11 @@ See `07-naming.md` for whether to call this type `Pulse`, `Event`, or
 reclaim `Signal`. See `08-code-sketches.md` for the `Pulse::graduate`
 implementation and a full end-to-end test.
 
---- END 02-engram-vs-pulse.md ---
+--- END 02-signal-vs-pulse.md ---
 
 # Batch REF02 — Introduce Pulse (ephemeral medium) across architecture chapter
 
-**Refinement source**: `tmp/refinements/02-engram-vs-pulse.md` (injected above under
+**Refinement source**: `tmp/refinements/02-signal-vs-pulse.md` (injected above under
 "Canonical refinement source"). That source is the authoritative proposal;
 your job is to propagate its substance into the canonical `docs/` tree.
 
@@ -1065,7 +1065,7 @@ your job is to propagate its substance into the canonical `docs/` tree.
 You MAY touch any file under `docs/**` if the refinement applies.
 Primary candidates:
 
-- `docs/00-architecture/02-engram-data-type.md` — extend with Pulse sibling section, graduation law, conversion helpers. Remove "Signal is the same as Engram" disclaimers.
+- `docs/00-architecture/02-signal-data-type.md` — extend with Pulse sibling section, graduation law, conversion helpers. Remove "Signal is the same as Signal" disclaimers.
 - `docs/00-architecture/01-naming-and-glossary.md` — add Pulse, Topic, TopicFilter, PulseSource, Datum entries.
 - `docs/00-architecture/INDEX.md` — add Pulse to the two-medium abstract.
 - Consider adding `docs/00-architecture/02b-pulse-ephemeral-event.md` as a sibling chapter if the content warrants a full file.
@@ -1075,12 +1075,12 @@ Primary candidates:
 - Every updated doc retains its filename and stable anchor IDs.
 - New content is substantive — section-level or full-file rewrites are
   authorised when a doc is deeply misaligned.
-- Cross-references to `tmp/refinements/02-engram-vs-pulse.md` appear in each touched file.
+- Cross-references to `tmp/refinements/02-signal-vs-pulse.md` appear in each touched file.
 - Index docs (`docs/**/INDEX.md`, `docs/INDEX.md`) are updated when a
   new chapter is added or the chapter index needs to reflect the change.
 - Glossary updates (if applicable) land in
   `docs/00-architecture/01-naming-and-glossary.md`.
-- Graduation law (Pulse → Engram) documented with provenance upgrade.
+- Graduation law (Pulse → Signal) documented with provenance upgrade.
 - Graduation policy table (which topics graduate, which don't) included in either the 02 file or 02b.
 
 ## Required vocabulary (verify)

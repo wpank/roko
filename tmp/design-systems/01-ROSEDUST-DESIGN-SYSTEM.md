@@ -1,4 +1,13 @@
-# ROSEDUST Design System — Complete Reference
+# ROSEDUST Design System -- Complete Reference
+
+> **What is this?** ROSEDUST is roko's design system: the canonical color palette,
+> typography scale, spacing tokens, component patterns, and motion design rules used
+> across the demo web app and TUI. This document is the single source of truth for
+> all visual tokens. Feed it to an LLM as context when generating ROSEDUST-themed pages.
+>
+> **Adoption status (2026-08-13):** Heavily adopted in `demo/demo-app` (~1,570
+> occurrences). TUI theme colors (`crates/roko-cli/src/tui/`) are slightly off from
+> this spec -- alignment is a known gap.
 
 Use this document as a design system bible when generating dark, atmospheric, cinematic web experiences. Every token, every value, every craft detail is canonical.
 
@@ -389,3 +398,7 @@ Double-ring: dark inner gap (2px) + rose outer ring (4px).
 - **Serial Experiments Lain**: dissociation, interface-within-interface
 - **James Turrell / Rothko**: sub-perceptual color shifts, immersion
 - **Eve Online**: ambient particle fields, glow effects, dark theme accents
+
+---
+
+*Last updated: 2026-08-13*

@@ -29,7 +29,7 @@ the primary candidates are:
 - The lead paragraph / abstract of `docs/00-architecture/INDEX.md`
   (and `docs/INDEX.md` if it carries a similar framing) evolves to
   something like:
-  > Roko's kernel has two mediums (durable Engram + ephemeral Pulse)
+  > Roko's kernel has two mediums (durable Signal + ephemeral Pulse)
   > moving through two fabrics (Substrate + Bus), acted on by six
   > operators, across five layers at three speeds with three
   > cross-cuts.
@@ -54,7 +54,7 @@ Follow all rules in `context-pack/00-REFINEMENTS-RULES.md`:
 
 - Only touch files under `docs/`.
 - Substantive edits — no placeholders.
-- Any retired terms ("Signal = Engram" disclaimer, `Bardo`, `Golem`,
+- Any retired terms ("Signal = Signal" disclaimer, `Bardo`, `Golem`,
   `Mori`, `Grimoire`, `Styx`, `Clade`) must either be removed or
   explicitly framed as retired.
 - Required new vocabulary for this batch (verify): words matching

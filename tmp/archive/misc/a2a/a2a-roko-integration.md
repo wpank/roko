@@ -45,7 +45,7 @@ Roko's architecture already has most of the internal primitives that map cleanly
 | Agent Config + Passport | Agent Card | No A2A card generation or serving |
 | Plan / Task / Episode | Task lifecycle | No external task delegation protocol |
 | Bus Pulses + StateHub projections | SSE streaming / status updates | No external streaming protocol |
-| Knowledge Entries (Engrams) | Artifacts | No standardized artifact exchange format |
+| Knowledge Entries (Signals) | Artifacts | No standardized artifact exchange format |
 | Agent roles (Strategist, Implementer, Reviewer) | Skills | No external skill advertisement |
 | MCP integration | Tool layer | Already exists — A2A sits above this |
 | Conductor watchers + Gate pipeline | Task monitoring | Internal only — not exposed externally |

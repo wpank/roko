@@ -1,10 +1,25 @@
 # Post-Refactor Roadmap — What's Left After Runner v2 + Cleanup
 
+> **Last updated: 2026-08-13**
+
+## What is this?
+
+This file is a forward-looking roadmap written during the mori-to-roko migration, listing
+what remained to be done after the runner v2 and code cleanup phases completed. It was
+written as a research/planning document.
+
+**Status of prerequisites**: Runner v2 is DONE. main.rs decomposition is DONE. Serve
+routes consolidation is DONE. Engram->Signal rename is DONE (2026-08-12). The "Done"
+column below reflects the state as planned; actual completion is tracked in the phase
+files at `tmp/unified-migration/01-PHASE-0-PREP.md` through `04-PHASE-3-ECONOMY.md`.
+
+---
+
 > Status: **RESEARCH** — not yet actionable. Read after runner v2 + refactoring complete.
 
 ## Where We'll Be After Current Sessions
 
-Assuming runner v2 + parallel refactoring both succeed:
+Assuming runner v2 + parallel refactoring both succeed (note: these are now DONE):
 
 | Done | What |
 |------|------|

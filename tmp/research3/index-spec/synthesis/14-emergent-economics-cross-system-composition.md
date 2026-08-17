@@ -1,3 +1,10 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is a synthesis report from a structured deep-research run. It is reference material
+> for pitch/strategy planning, not a roko runtime implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Emergent Economic Systems, Cross-System Composition, and Agents as Infrastructure
 
 This document synthesizes the current state of research (2024--2026) on three intertwined questions: what happens economically when large populations of AI agents interact over time, why composing agents across heterogeneous systems remains the hardest unsolved problem in the field, and where agents have actually reached production-grade infrastructure status versus where they demonstrably have not. Every claim is traced to a specific paper, benchmark, or production deployment. The document is written for someone with no prior exposure to multi-agent economics, agent orchestration, or the underlying research literature.

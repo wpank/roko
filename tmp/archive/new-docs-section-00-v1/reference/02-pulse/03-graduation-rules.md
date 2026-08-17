@@ -1,10 +1,10 @@
 # Pulse — Graduation Rules
 
-> Graduation is the process by which a Pulse becomes an Engram. This page specifies when and how graduation occurs.
+> Graduation is the process by which a Pulse becomes an Signal. This page specifies when and how graduation occurs.
 
 **Status**: Specified  
 **Crate**: `roko-core` (planned)  
-**Depends on**: [Specification](01-specification.md), [Engram Builder](../01-engram/07-builder-pattern.md)  
+**Depends on**: [Specification](01-specification.md), [Signal Builder](../01-engram/07-builder-pattern.md)  
 **Last reviewed**: 2026-04-19
 
 > **Target state — no code yet.**
@@ -13,22 +13,22 @@
 
 ## TL;DR
 
-Not every Pulse becomes an Engram. Graduation is a conscious decision by a subscriber:
+Not every Pulse becomes an Signal. Graduation is a conscious decision by a subscriber:
 "this event is significant enough to persist." The Bus provides no automatic graduation.
 Graduation rules are configured per subscriber and per topic. After graduation, the
-Engram's `tags` carry the Pulse's `correlation_id` for trace correlation.
+Signal's `tags` carry the Pulse's `correlation_id` for trace correlation.
 
 ---
 
 ## The Idea
 
-If every Pulse became an Engram, the Substrate would fill with transient noise. Most
+If every Pulse became an Signal, the Substrate would fill with transient noise. Most
 heartbeat ticks, most probe readings, most routine gate events are not worth persisting.
 But some are: a prediction-error spike that triggers speed escalation is worth recording.
 A gate failure that caused a retry is worth recording. The difference is significance.
 
 Graduation gives subscribers the choice. A subscriber that monitors prediction errors
-can decide: "if prediction error > 0.8, graduate to an Engram." A subscriber that simply
+can decide: "if prediction error > 0.8, graduate to an Signal." A subscriber that simply
 logs gate events discards the Pulse after logging.
 
 ---
@@ -71,9 +71,9 @@ let handle = bus.subscribe(
 );
 ```
 
-### Step 2: Engram Tags Preserve Correlation
+### Step 2: Signal Tags Preserve Correlation
 
-The graduated Engram's `tags` must carry at minimum:
+The graduated Signal's `tags` must carry at minimum:
 
 | Tag key | Value |
 |---------|-------|
@@ -81,7 +81,7 @@ The graduated Engram's `tags` must carry at minimum:
 | `pulse.topic` | `topic.0` |
 | `pulse.source` | `source.name()` |
 
-This allows log correlation: given an Engram, find the original Pulse that produced it.
+This allows log correlation: given an Signal, find the original Pulse that produced it.
 
 ---
 
@@ -105,14 +105,14 @@ The following predicates are commonly used in graduation decisions:
 would flood the Substrate. Use step-down graduation: only graduate if the value is outside
 normal bounds.
 
-**Do not forget correlation_id.** Without it, the Engram cannot be traced back to the
+**Do not forget correlation_id.** Without it, the Signal cannot be traced back to the
 event that produced it.
 
 ---
 
 ## Invariants
 
-1. A graduated Engram is a valid Engram (passes `EngramBuilder::build()`)
+1. A graduated Signal is a valid Signal (passes `EngramBuilder::build()`)
 2. The Pulse is not modified during graduation (the Bus receives the original)
 3. Graduation is always the subscriber's responsibility; the Bus does not auto-graduate
 
@@ -121,12 +121,12 @@ event that produced it.
 ## Open Questions
 
 - Should the Bus support declarative graduation rules configured externally?
-- Should graduation produce a `Pulse` → `Engram` link in the custody record?
+- Should graduation produce a `Pulse` → `Signal` link in the custody record?
 
 ---
 
 ## See Also
 
 - [`01-specification.md`](01-specification.md) — Pulse lifecycle
-- [`../01-engram/07-builder-pattern.md`](../01-engram/07-builder-pattern.md) — how to build the graduated Engram
+- [`../01-engram/07-builder-pattern.md`](../01-engram/07-builder-pattern.md) — how to build the graduated Signal
 - [`07-open-questions.md`](07-open-questions.md)

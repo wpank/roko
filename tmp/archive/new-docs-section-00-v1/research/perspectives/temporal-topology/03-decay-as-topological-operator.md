@@ -27,7 +27,7 @@ Understanding \( D_t \) mathematically enables:
 ### Monotonicity
 
 A decay operator should be **monotone**: it can only remove or weaken connections, not
-create new ones. If Engram A is connected to Engram B in \( \mathcal{K}(0) \), the
+create new ones. If Signal A is connected to Signal B in \( \mathcal{K}(0) \), the
 connection weight can only decrease over time (under decay alone). New connections are
 created by ingestion and consolidation, not by decay.
 
@@ -36,9 +36,9 @@ effective connection weight between nodes A and B.
 
 ### Commutativity (Independence Assumption)
 
-If decay operators for different Engrams are independent, they commute: the order in which
-individual Engrams decay does not affect the final topology. This is an approximation
-(in reality, the decay of one Engram can affect the context that determines how another
+If decay operators for different Signals are independent, they commute: the order in which
+individual Signals decay does not affect the final topology. This is an approximation
+(in reality, the decay of one Signal can affect the context that determines how another
 decays) but a useful one.
 
 ### Topological Persistence
@@ -53,9 +53,9 @@ regions disconnect). Persistent homology tracks the **lifetime** of each topolog
 features that persist across a wide range of decay parameters are structurally important.
 Features that appear and disappear quickly are fragile.
 
-This provides a formal tool for identifying **topologically important Engrams**: Engrams
+This provides a formal tool for identifying **topologically important Signals**: Signals
 whose decay would produce long-lived topological changes (disconnections, new holes) are
-more important to preserve than Engrams whose loss would be quickly compensated.
+more important to preserve than Signals whose loss would be quickly compensated.
 
 ---
 
@@ -69,7 +69,7 @@ Topologically, exponential decay is **smooth**: it changes connection weights co
 without sharp transitions. Under exponential decay:
 - The topology evolves continuously over time.
 - No phase transitions: the qualitative structure changes only gradually.
-- Hub Engrams lose weight steadily but remain hubs for longer (they started higher).
+- Hub Signals lose weight steadily but remain hubs for longer (they started higher).
 
 **Topological character**: smooth, reversible (up to a threshold), uniform erosion.
 Appropriate when the knowledge environment changes gradually.
@@ -78,10 +78,10 @@ Appropriate when the knowledge environment changes gradually.
 
 Step decay: \( w(t) = w(0) \) for \( t < t_0 \), \( w(t) = 0 \) for \( t \geq t_0 \)
 
-Topologically, step decay produces a **phase transition** at \( t_0 \): the Engram is
+Topologically, step decay produces a **phase transition** at \( t_0 \): the Signal is
 present and fully weighted until expiry, then instantly removed. This produces:
 - A sharp discontinuity in the topology at the expiry time.
-- Potential disconnection of components if the expiring Engram was a bridge.
+- Potential disconnection of components if the expiring Signal was a bridge.
 - No graceful degradation — the agent has full knowledge until expiry, then none.
 
 **Topological character**: discontinuous, irreversible at expiry. Appropriate for
@@ -117,16 +117,16 @@ when superseded).
 ## Designing for Topological Stability
 
 Given the decay operators' effects, the design goal is to produce a topology that is
-**stable** — that maintains essential structural properties even as individual Engrams decay.
+**stable** — that maintains essential structural properties even as individual Signals decay.
 
 Design principles:
 1. **Redundant paths**: ensure multiple topological paths connect important domains, so
-   that the decay of any single Engram does not disconnect them.
+   that the decay of any single Signal does not disconnect them.
 2. **Decay-aware consolidation**: run Dreams consolidation to create bridges before
-   important Engrams approach expiry.
-3. **Hub protection**: identify hub Engrams (high-degree nodes) and apply longer-lived
+   important Signals approach expiry.
+3. **Hub protection**: identify hub Signals (high-degree nodes) and apply longer-lived
    decay models or consolidation priority to them.
-4. **Contradiction isolation**: quarantine contradicted Engrams rather than removing them
+4. **Contradiction isolation**: quarantine contradicted Signals rather than removing them
    immediately; their removal may disconnect components that depended on them.
 
 ---

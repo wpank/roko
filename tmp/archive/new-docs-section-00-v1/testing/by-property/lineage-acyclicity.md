@@ -1,6 +1,6 @@
 # Lineage Acyclicity
 
-> An Engram's parent chain is always a DAG — never a cycle. An Engram cannot be its own ancestor.
+> An Signal's parent chain is always a DAG — never a cycle. An Signal cannot be its own ancestor.
 
 **Crate**: `roko-core`
 **Test type**: Property-based (proptest)
@@ -11,9 +11,9 @@
 
 ## Statement
 
-For all valid Engram graphs G: G contains no directed cycle in the parent-of relation.
+For all valid Signal graphs G: G contains no directed cycle in the parent-of relation.
 
-Equivalently: the set of all Engrams and their parent links forms a DAG (directed acyclic graph). An Engram E cannot appear in its own ancestor chain.
+Equivalently: the set of all Signals and their parent links forms a DAG (directed acyclic graph). An Signal E cannot appear in its own ancestor chain.
 
 ---
 
@@ -21,8 +21,8 @@ Equivalently: the set of all Engrams and their parent links forms a DAG (directe
 
 Lineage is used for:
 - **Provenance**: tracing where a piece of knowledge came from.
-- **Deduplication**: detecting when two agents derived the same Engram from the same source.
-- **Decay propagation**: a child Engram's decay can be linked to its parent's decay.
+- **Deduplication**: detecting when two agents derived the same Signal from the same source.
+- **Decay propagation**: a child Signal's decay can be linked to its parent's decay.
 - **Causal replay**: the forensic replay system follows parent chains backward.
 
 A cycle in the lineage would make provenance tracing non-terminating, decay propagation infinite, and causal replay enter an infinite loop.
@@ -49,7 +49,7 @@ impl Engram {
 }
 ```
 
-<!-- source: crates/roko-core/src/engram.rs -->
+<!-- source: crates/roko-core/src/__PATH_ENGRAM_RS__0 -->
 
 ---
 
@@ -81,12 +81,12 @@ proptest! {
 
 ## Failure Mode
 
-If an Engram construction with a cyclic parent is attempted:
+If an Signal construction with a cyclic parent is attempted:
 - `LineageError::CycleDetected { engram_id, cycle_path }` is returned.
-- The Engram is not written to the substrate.
+- The Signal is not written to the substrate.
 - The cycle path in the error identifies the full cycle for debugging.
 
-A cycle in a stored Engram (substrate corruption) is detected during lineage queries and reported as a `SubstrateError::CorruptLineage`.
+A cycle in a stored Signal (substrate corruption) is detected during lineage queries and reported as a `SubstrateError::CorruptLineage`.
 
 ---
 

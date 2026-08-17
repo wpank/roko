@@ -14,7 +14,7 @@ What is already built, working, and wired. This is the foundation the roadmap bu
 
 | Crate | Unified Concepts | Status |
 |---|---|---|
-| `roko-core` | Signal (Engram), 6 protocols (Store/Score/Verify/Route/Compose/React) | Kernel, stable |
+| `roko-core` | Signal (Signal), 6 protocols (Store/Score/Verify/Route/Compose/React) | Kernel, stable |
 | `roko-agent` | Agent specialization: 9-step pipeline, 5+ LLM backends, MCP, tool loop, safety | Dispatch wired |
 | `roko-orchestrator` | Graph execution (plan DAG, parallel executor, merge queue) | Wired via orchestrate.rs |
 | `roko-gate` | Verify protocol: 11 gates, 7-rung pipeline, adaptive thresholds | Wired, called per-task |
@@ -328,7 +328,7 @@ The unified vocabulary applies at the spec and documentation level. Existing Rus
 
 | Spec Name | Code Name | When to Rename |
 |---|---|---|
-| Signal | `Engram` | Phase 2 (when Graph engine provides migration point) |
+| Signal | `Engram (renamed to Signal in 2026-08-12)` | Phase 2 (when Graph engine provides migration point) |
 | Block | Module/trait impl | Phase 2 (Block trait introduced) |
 | Graph | Plan/tasks.toml | Phase 2 (Graph TOML replaces plan format) |
 | Store | `Substrate` | Phase 1 (add type alias) |

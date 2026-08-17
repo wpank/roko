@@ -1,4 +1,26 @@
-# Roko Development Anti-Patterns
+# Roko Development Anti-Patterns (Legacy Version)
+
+> **Last updated:** 2026-08-12 (header added; body is from 2026-04-28)
+
+## What is this?
+
+This is the **legacy** anti-pattern catalog from April 2026. Many of its "Resolved"
+status claims were later disproven by the 05-01 audit.
+
+**Use `ANTI-PATTERNS-V2.md` instead.** That document supersedes this one with 40+
+patterns, curated agent prompts, CI fitness checks, and honest status tracking.
+
+This file is preserved for historical reference only.
+
+### Staleness notes (2026-08-12)
+
+- **`orchestrate.rs` is deleted.** References to it (21K lines) are historical.
+  The current god-file concern is `runner/event_loop.rs` (~20K lines).
+- **"Resolved" claims are unreliable.** The 05-01 audit found that most patterns
+  marked "Resolved" here had in fact recurred. V2 drops resolved claims entirely.
+- **Engram is renamed to Signal.** All "Engram" references are now "Signal."
+
+---
 
 Hard-won lessons from building 3+ parallel runtimes that don't share anything. Read this before writing code.
 

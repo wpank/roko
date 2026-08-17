@@ -1,6 +1,6 @@
-# Engram — API Reference
+# Signal — API Reference
 
-> Complete public Rust API for `Engram`, `EngramBuilder`, and directly related types in `roko-core`.
+> Complete public Rust API for `Signal`, `EngramBuilder`, and directly related types in `roko-core`.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
@@ -11,13 +11,13 @@
 
 ## TL;DR
 
-The primary public surface consists of `Engram` (the struct, with instance methods),
+The primary public surface consists of `Signal` (the struct, with instance methods),
 `EngramBuilder` (construction), and `ContentHash` (identity). Substrate interactions are
 via the `Substrate` trait, which all storage backends implement.
 
 ---
 
-## `Engram` — Instance Methods
+## `Signal` — Instance Methods
 
 ```rust
 <!-- source: crates/roko-core/src/engram.rs -->

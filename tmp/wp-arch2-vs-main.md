@@ -2,7 +2,7 @@
 
 **Purpose of this doc:** Give someone who has never seen this repo a straight-line story of what changed on branch `wp-arch2` relative to `main`, plus ready-to-paste PR text. It is **not** a line-by-line audit.
 
-**PR metadata (locked in):** **Internal** review, **one large merge** (no stacked split), **no ticket IDs** in title/body, **Railway** is how we deploy (see `Dockerfile` / Railway config), **Signal** and **Engram** both appear in code/docs by design during the rename—no need to “pick one” in review comments. **No separate security / threat-model section** in the PR.
+**PR metadata (locked in):** **Internal** review, **one large merge** (no stacked split), **no ticket IDs** in title/body, **Railway** is how we deploy (see `Dockerfile` / Railway config), **Signal** and **Engram** both appear in code/docs by design during the rename (Engram renamed to Signal in 2026-08-12; backward-compat alias retained)—no need to “pick one” in review comments. **No separate security / threat-model section** in the PR.
 
 **Important:** Your machine may have **local uncommitted changes** on top of `origin/wp-arch2`. The numbers below are from **`main...HEAD`** (committed history). If you open a PR from your local branch without pushing, the GitHub diff may differ from what you see in `git status`.
 
@@ -55,7 +55,7 @@ The CLI continues to move toward a **streaming, event-driven runner** (cancellat
 
 ### 4. Core, serve, learn, compose, gate: naming, persistence, and resilience
 
-- **Signal** and **Engram** both show up on purpose: public-facing names lean **Signal**; implementation and comments still say **Engram** in many places (aliases bridge the two). Reviewers should not treat mixed usage as accidental drift unless it confuses operators.  
+- **Signal** is the canonical name (Engram renamed to Signal in 2026-08-12); some code still references the backward-compat `Engram` alias. Reviewers should not treat mixed usage as accidental drift unless it confuses operators.
 - **Workspaces** on the server: API routes plus a **JSON registry** under `.roko/` with **atomic writes** and tests that simulate restart.  
 - **Demurrage** hooks appear across **knowledge storage** and **background timers** on serve (attention decay over time—Gesell-style semantics in learn/playbook).  
 - **Gate/orchestration** layers gained clearer **retry policy** and **error enrichment** (retries are generally **policy upstream**, not hidden inside every gate).  
@@ -119,7 +119,7 @@ Internal **large platform merge** for Roko: adds **`roko-acp`** (ACP-style **std
 #### Rollout (Railway / config)
 
 - **Deploy path:** **Railway** is canonical; smoke the **Docker** image and **healthchecks** after merge.  
-- **Naming:** **Signal** and **Engram** both appear intentionally (aliases + gradual rename); mixed usage is expected unless it breaks operators or docs.  
+- **Naming:** **Signal** is canonical (Engram was renamed to Signal 2026-08-12); backward-compat `Engram` alias retained. Mixed usage via alias is expected unless it breaks operators or docs.
 - **Config:** Reconcile **`roko.toml`** / serve settings with staging/prod (CORS, workspace GC, provider readiness, any new fields).
 
 #### Test plan
@@ -642,7 +642,7 @@ docs/v2-depth/
   INDEX.md                 → Master index with v1 mapping table
   INGEST-PROMPT.md         → Prompt for ingesting new depth content
   00-index/                → Vision, principles, naming
-  01-signal/               → Engram internals, decay math, HDC vectors
+  01-signal/               → Signal internals, decay math, HDC vectors
   02-block/                → Composition, tools, verification
   03-graph/                → DAG execution, scheduling algorithms
   ...
@@ -656,7 +656,7 @@ docs/v2-depth/
 
 | New (v2) | Old (v1) | What it is |
 |---|---|---|
-| Signal | Engram, Artifact, Knowledge Entry, Pheromone | The universal data unit — content-addressed, decaying, scored |
+| Signal | Engram (renamed to Signal in 2026-08-12), Artifact, Knowledge Entry, Pheromone | The universal data unit -- content-addressed, decaying, scored |
 | Block/Cell | Module, Recipe stage | The universal computation unit |
 | Graph | Workflow, StateGraph, Recipe pipeline | The universal composition |
 | Flow | Workflow execution, Run | A Graph executing at runtime |

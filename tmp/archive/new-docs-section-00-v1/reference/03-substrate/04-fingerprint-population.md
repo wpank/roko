@@ -1,6 +1,6 @@
 # Fingerprint Population
 
-> When an `Engram` is stored via `put`, its HDC fingerprint must exist for `query_similar`
+> When an `Signal` is stored via `put`, its HDC fingerprint must exist for `query_similar`
 > to work. This page explains how and when fingerprints are populated.
 
 **Status**: Shipping
@@ -12,16 +12,16 @@
 
 ## TL;DR
 
-`Substrate::put` is responsible for populating a fingerprint if the incoming `Engram` does
-not already have one. Fingerprints are derived from the `Engram`'s content using the HDC
-encoding pipeline. An `Engram` with a pre-populated fingerprint is stored as-is (no
+`Substrate::put` is responsible for populating a fingerprint if the incoming `Signal` does
+not already have one. Fingerprints are derived from the `Signal`'s content using the HDC
+encoding pipeline. An `Signal` with a pre-populated fingerprint is stored as-is (no
 re-derivation). Records without fingerprints are stored but excluded from `query_similar`.
 
 ---
 
 ## The Pipeline
 
-When `put(engram)` is called:
+When `put(signal)` is called:
 
 ```
 Engram arrives
@@ -79,7 +79,7 @@ HDC encoding converts content into a high-dimensional binary vector. The process
 Callers may supply their own fingerprint before calling `put`. This is correct when:
 
 - A downstream model (embedding model, HDC encoder) ran prior to `put`.
-- The `Engram` was received from another agent with a fingerprint already attached.
+- The `Signal` was received from another agent with a fingerprint already attached.
 - The fingerprint was loaded from a checkpoint.
 
 In these cases, `put` must not re-derive — it must store the supplied fingerprint verbatim.
@@ -89,7 +89,7 @@ This preserves the semantic of "the fingerprint belongs to the content it was de
 
 ## Records Without Fingerprints
 
-An `Engram` may legitimately have no fingerprint (e.g., a `Body::Binary` blob with no
+An `Signal` may legitimately have no fingerprint (e.g., a `Body::Binary` blob with no
 textual content, or a record created before the fingerprint system existed). These records:
 
 - Are stored and retrievable via `get` and `query`.
@@ -115,7 +115,7 @@ step of the loop (not in the hot RECALL path). The cost is dominated by the bund
 
 - [HDC Fingerprint](../10-types/hdc-fingerprint.md) — the vector type and its dimensionality
 - [Query Similar](./03-query-similar.md) — what fingerprints are used for
-- [Engram Data Type](../01-engram/README.md) — the `fingerprint` field location
+- [Signal Data Type](../01-engram/README.md) — the `fingerprint` field location
 
 ## Open Questions
 

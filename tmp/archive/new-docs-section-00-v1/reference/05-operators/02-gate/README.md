@@ -1,6 +1,6 @@
 # Gate
 
-> `Gate` makes a pass/fail/abstain verdict on an `Engram` and its `Score`. It is the filter
+> `Gate` makes a pass/fail/abstain verdict on an `Signal` and its `Score`. It is the filter
 > step — the operator that stops low-quality, unsafe, or irrelevant information from
 > proceeding through the cognitive loop.
 
@@ -30,4 +30,4 @@
 ## See Also
 
 - [Scorer](../01-scorer/README.md) — provides the Score that Gate evaluates
-- [Router](../03-router/README.md) — receives the engram after Gate passes it
+- [Router](../03-router/README.md) — receives the signal after Gate passes it

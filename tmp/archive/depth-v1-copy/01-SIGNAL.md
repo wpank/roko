@@ -2,7 +2,7 @@
 
 > The universal data unit. Everything that flows through Roko is a Signal.
 
-**Subsumes**: Engram, Pulse, Artifact, Knowledge Entry, Pheromone, Evidence, Feed event, ModuleOutput, Finding.
+**Subsumes**: Engram (renamed to Signal in 2026-08-12), Pulse, Artifact, Knowledge Entry, Pheromone, Evidence, Feed event, ModuleOutput, Finding.
 
 ---
 

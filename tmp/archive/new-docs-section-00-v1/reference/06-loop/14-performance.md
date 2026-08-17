@@ -71,14 +71,14 @@ impl TickBudget {
 ```
 
 When `BudgetError::Exceeded` is returned, `loop_tick()` aborts and publishes
-`budget.exceeded`. The tick's Provenance Engram records the per-stage breakdown so
+`budget.exceeded`. The tick's Provenance Signal records the per-stage breakdown so
 operators can identify which stage consumed the budget.
 
 ---
 
 ## Cost Accounting
 
-Every tick records token costs in the Provenance Engram:
+Every tick records token costs in the Provenance Signal:
 
 ```rust
 pub struct TickCost {

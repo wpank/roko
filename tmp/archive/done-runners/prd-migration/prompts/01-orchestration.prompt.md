@@ -91,7 +91,7 @@ Follow schema in `context-pack/06-output-structure.md`. Link all 14 sub-docs. Cr
 - [ ] Each sub-doc ≥200 lines
 - [ ] Total topic ≥3500 lines
 - [ ] No forbidden terms (golem except in rename tables, fleet, Thanatopsis, terminal requiem)
-- [ ] Required terms present (Roko, Engram, Synapse)
+- [ ] Required terms present (Roko, Signal, Synapse)
 - [ ] ≥15 academic citations total
 
 ## CRITICAL REMINDERS

@@ -118,8 +118,8 @@ Plugin teardown:
 
 ## Relationship to Other Synergies
 
-- **S1** (Demurrage × HDC): Plugins that produce Engrams are subject to the same demurrage
-  pressure as core-produced Engrams. The ecosystem growth path does not exempt plugins from
+- **S1** (Demurrage × HDC): Plugins that produce Signals are subject to the same demurrage
+  pressure as core-produced Signals. The ecosystem growth path does not exempt plugins from
   memory economics.
 - **S3** (c-factor × Bus × HDC): Plugins can contribute new roles and models that diversify
   the agent roster. Their Bus output topics feed the c-factor diversity signal.
@@ -156,6 +156,6 @@ Bus validates topic authorship.
 - Should domain profiles be installable at runtime (hot-reload) or only at startup? Hot-reload
   is more flexible but raises invariant-safety concerns during profile transition.
 - What is the minimum viable manifest schema? Must it enumerate every Substrate table a plugin
-  reads, or is a coarser capability set (e.g., "read-only: all Engrams") sufficient?
+  reads, or is a coarser capability set (e.g., "read-only: all Signals") sufficient?
 - How are inter-plugin dependencies expressed? If plugin A depends on plugin B's Substrate
   writes, should the SPI validate this dependency at load time?

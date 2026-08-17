@@ -1,5 +1,13 @@
 # Dockerfile Fix: Multi-Stage Build
 
+Last updated: 2026-08-13
+
+## What is this?
+
+Updated multi-stage Dockerfile recipe that builds both the demo-app (Node)
+and roko (Rust) in a single image. Fixes the root Dockerfile which currently
+only has a Rust stage and lacks the Node build needed for embedded SPA assets.
+
 > **NOTE**: This is the basic fix. For the fast-build version with cargo-chef + sccache
 > (15-30s rebuilds instead of 10-15min), see `08-FAST-BUILD-DEPLOY.md` → Dockerfile.optimized.
 > For the fastest option (5s builds), see Dockerfile.runtime (cross-compile locally).

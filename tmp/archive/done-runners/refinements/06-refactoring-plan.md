@@ -16,28 +16,28 @@
 ## Phase A — Docs Alignment (1 week, doc-only, no code)
 
 **Goal**: Update every foundational doc to the two-medium / two-fabric
-framing. Remove stale "Signal = Engram" disclaimers. No runtime
+framing. Remove stale "Signal = Signal" disclaimers. No runtime
 changes.
 
 ### A.1 Kernel-crate docs (roko-core)
 
 - Rewrite the doc comment at the top of `crates/roko-core/src/lib.rs`.
-  New version: "Roko kernel — two mediums (Engram, Pulse), two
+  New version: "Roko kernel — two mediums (Signal, Pulse), two
   fabrics (Substrate, Bus), six operators…". Preserve the "every
   capability is a trait implementation" line.
-- Update module-level doc on `crates/roko-core/src/engram.rs`:
-  Engram is the durable medium; Pulse is its ephemeral sibling;
+- Update module-level doc on `crates/roko-core/src/__PATH_ENGRAM_RS__0`:
+  Signal is the durable medium; Pulse is its ephemeral sibling;
   see `pulse.rs` (to be added in Phase B).
 
 ### A.2 Architecture chapter (docs/00-architecture/)
 
 - **New** sub-doc: `02b-pulse-ephemeral-event.md` — the Pulse medium
-  (copy substantial content from `02-engram-vs-pulse.md` in this
+  (copy substantial content from `02-signal-vs-pulse.md` in this
   folder).
 - **New** sub-doc: `07b-bus-transport-fabric.md` — the Bus trait
   (copy from `03-bus-as-first-class.md`).
-- **Rewrite**: `02-engram-data-type.md` — remove the
-  "Signal vs Engram" disclaimer, clarify Engram's role as the
+- **Rewrite**: `02-signal-data-type.md` — remove the
+  "Signal vs Signal" disclaimer, clarify Signal's role as the
   durable medium. Cross-link to `02b`.
 - **Rewrite**: `06-synapse-traits.md` — retitle "The Six Synapse
   Traits" → "Synapse Operators Over Two Fabrics". Update signatures
@@ -68,7 +68,7 @@ changes.
   118) to the two-mediums framing.
 - **CLAUDE.md**: Replace line 59 ("1 noun (Signal) + 6 verb traits…")
   with the new phrase.
-- **docs/INDEX.md**: Replace the "Signal / Engram Naming" section
+- **docs/INDEX.md**: Replace the "Signal / Signal Naming" section
   with a "Two Mediums" section.
 
 ### A.4 Status docs
@@ -99,7 +99,7 @@ New modules in `crates/roko-core/src/`:
 - Add `Bus` trait to `traits.rs` (alongside the existing six).
 - Extend `Datum<'_>` enum to cover either medium.
 - Add `BusReceiver`, `PolicyOutputs`.
-- Add `GraduationPolicy` default impl (§3.1 of `02-engram-vs-pulse.md`).
+- Add `GraduationPolicy` default impl (§3.1 of `02-signal-vs-pulse.md`).
 - Add `Engram::to_pulse` and `Pulse::graduate` conversion methods.
 
 Export everything from `lib.rs`.
@@ -123,7 +123,7 @@ Export everything from `lib.rs`.
 
 ### B.4 Test additions
 
-- `crates/roko-core/tests/pulse_graduation.rs` — Pulse → Engram
+- `crates/roko-core/tests/pulse_graduation.rs` — Pulse → Signal
   round-trip, conversion-law property tests.
 - `crates/roko-std/tests/broadcast_bus.rs` — fan-out correctness,
   replay semantics, ring-wrap behavior.
@@ -250,7 +250,7 @@ reversible only within the crate being extended.
 2. **Graduation policy regressions.** A Pulse that should have
    graduated but didn't is a forensic gap. Mitigate with a
    `graduation.missed` metric Pulse emitted by the Substrate when it
-   sees a `Pulse with lineage_hint` but has no matching Engram.
+   sees a `Pulse with lineage_hint` but has no matching Signal.
 3. **Schema drift across Bus backends.** When chain/mesh buses land,
    a Pulse published on broadcast-bus and re-published on chain-bus
    must be the same Pulse. Canonical encoding spec (probably
@@ -285,13 +285,13 @@ check rather than debate.
 
 - Every doc under `docs/00-architecture/` that mentions "one noun" has
   been updated to "two mediums."
-- `docs/00-architecture/02-engram-data-type.md` and
+- `docs/00-architecture/02-signal-data-type.md` and
   `docs/00-architecture/07-substrate-trait.md` are renamed to
   `02a-*` and `07a-*` with redirects.
 - `02b-pulse-ephemeral-event.md` and `07b-bus-transport-fabric.md`
   exist with a "Planned" banner.
 - `CLAUDE.md`, `README.md`, and `docs/INDEX.md` no longer carry
-  "Signal = Engram" disclaimers.
+  "Signal = Signal" disclaimers.
 - A single PR against `docs/00-architecture/23-architectural-analysis-improvements.md`
   adds a footer noting which items the refactor dissolved.
 
@@ -362,7 +362,7 @@ landed. Specifically:
 - `10-self-learning-cybernetic-loops.md` §9 (the "Phase C.5" that
   adds `prediction.*` / `outcome.*` topics) runs right after C.
 - `11-hyperdimensional-substrate.md` §11.1 (fingerprint on every
-  Engram) can run in parallel with C if a second engineer is
+  Signal) can run in parallel with C if a second engineer is
   available.
 - `12-knowledge-demurrage.md` §10 (migration path) runs after C.
 - `17-plugin-extension-architecture.md` Stage A (tier-3 tool

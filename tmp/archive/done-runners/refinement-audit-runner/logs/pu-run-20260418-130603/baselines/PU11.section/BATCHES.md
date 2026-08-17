@@ -131,7 +131,7 @@ rg -n "Capability<K>|CapabilityKind|target design|FileWrite|NetworkEgress" docs/
 
 ---
 
-### M3 — AuditChain and Engram Lineage (Doc 02)
+### M3 — AuditChain and Signal Lineage (Doc 02)
 
 **Owns**: B.01, B.02, B.03, B.04
 
@@ -218,7 +218,7 @@ rg -n "Critical Integration Gap|SafetyLayer Coverage|provider matrix|Phase 1" do
 1. Apply `Design — compliance framework` to Doc 08 §"NIST AI RMF / MITRE ATLAS / STRIDE-AI / OWASP Agentic".
 2. Apply `Design — Phase 2+` to Doc 09 §"Kelly Sizing / Beta-Binomial / 5D Safety Budgets".
 3. Apply `Design — Phase 2+ Tier 6` to Docs 10-13 (MEV / LTL / Witness DAG / formal verification pipeline).
-4. Apply `Design — Phase 2+` to Doc 14 §"Namespaces / Cognitive Scheduling / Engram Syscalls".
+4. Apply `Design — Phase 2+` to Doc 14 §"Namespaces / Cognitive Scheduling / Signal Syscalls".
 5. Doc 15 — mark `Implementation: Positioning — technical foundation ships; compliance-specific exports frontier`. Cross-link F.05 (`roko replay`).
 6. Doc 00 §"CSA MAESTRO mapping" — mark informational.
 7. Doc 07 §"CaMeL dual-LLM" — frontier.

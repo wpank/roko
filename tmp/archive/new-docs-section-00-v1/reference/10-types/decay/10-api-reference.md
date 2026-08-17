@@ -246,7 +246,7 @@ pub enum DecayError {
 
 ## Open Questions
 
-- Should `Decay` implement `Ord` to allow sorting Engrams by decay urgency? Not currently done.
+- Should `Decay` implement `Ord` to allow sorting Signals by decay urgency? Not currently done.
 - Should `weight_at` be fallible (return `Result<f64, DecayError>`) to surface handler errors?
   Currently infallible; errors return `1.0` fallback.
 

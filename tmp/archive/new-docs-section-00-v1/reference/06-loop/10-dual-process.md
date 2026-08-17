@@ -53,7 +53,7 @@ measure of whether the agent "knows what to do."
 - **Context window**: 4 096 tokens
 - **Model**: fastest available (e.g., GPT-4o Mini, Claude Haiku)
 - **Substrate lookback**: last 60 s
-- **Candidate cap**: 16 Engrams
+- **Candidate cap**: 16 Signals
 - **Characteristic**: pattern-matching, reflexive, habits-as-routes
 
 T0 is the steady-state operating mode for well-understood tasks. An agent answering
@@ -68,7 +68,7 @@ the model API call.
 - **Context window**: 16 384 tokens
 - **Model**: more capable (e.g., GPT-4o, Claude Sonnet)
 - **Substrate lookback**: last 10 min
-- **Candidate cap**: 64 Engrams
+- **Candidate cap**: 64 Signals
 - **Characteristic**: deliberate reasoning, cross-referencing, chain-of-thought
 
 T1 activates when the agent encounters an unfamiliar stimulus, a novel routing
@@ -86,7 +86,7 @@ higher-quality output and fewer VERIFY failures.
 - **Characteristic**: offline consolidation, knowledge reorganization, no live execution
 
 T2 does not produce real-time output. It reorganizes knowledge in the Substrate,
-promotes frequently-used Engrams to higher-durability tiers, prunes stale knowledge,
+promotes frequently-used Signals to higher-durability tiers, prunes stale knowledge,
 and updates routing priors. The Dreams cross-cut (offline learning) runs primarily at
 T2.
 

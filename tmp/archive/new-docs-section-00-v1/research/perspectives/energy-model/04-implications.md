@@ -27,7 +27,7 @@ tracked, budgeted, and optimized.
 ### 2. Add Energy State to the Router
 
 The Router should track current T2 "energy available" and adjust tier routing based on
-energy state, not just on Engram score:
+energy state, not just on Signal score:
 
 ```
 tier = if score >= T2_threshold AND t2_energy > t2_energy_minimum:
@@ -38,7 +38,7 @@ else:
     T0
 ```
 
-This prevents T2 budget depletion: once T2 energy is exhausted, no further Engrams can
+This prevents T2 budget depletion: once T2 energy is exhausted, no further Signals can
 access T2 regardless of their score. They queue for T2 when energy recovers, or process
 at T1 immediately.
 
@@ -68,12 +68,12 @@ Energy debt should be:
 
 ### 5. Value-to-Cost Ratio in the Scorer
 
-Add a **processing cost model** to the Scorer's output: for each Engram, estimate the
+Add a **processing cost model** to the Scorer's output: for each Signal, estimate the
 expected CEU cost of processing it at T0, T1, and T2. Combine this with the value score
 to produce a **value-to-cost ratio** for each tier.
 
 The Router then uses the value-to-cost ratio rather than the raw value score for tier
-selection. An Engram with moderate value but very low T1 cost may outrank an Engram with
+selection. An Signal with moderate value but very low T1 cost may outrank an Signal with
 high value but very high T2 cost, when the energy budget is tight.
 
 ### 6. Define a Sustainable Operation Profile

@@ -1,8 +1,8 @@
 [meta]
 plan = "E38-marketplace"
 total = 9
-done = 0
-status = "ready"
+done = 9
+status = "done"
 max_parallel = 2
 
 # ── E38-T01: Define marketplace artifact types and ArtifactRef ──
@@ -17,7 +17,7 @@ max_parallel = 2
 [[task]]
 id = "E38-T01"
 title = "Add ArtifactKind enum and ArtifactRef type to roko-core"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 70
@@ -81,7 +81,7 @@ acceptance = ["ArtifactKind enum with 11 variants (Snippet, PromptPreset, Criter
 [[task]]
 id = "E38-T02"
 title = "Add fork-chain attribution edges to TraceRank algorithm"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 50
@@ -143,7 +143,7 @@ acceptance = ["ForkAttributionEdge struct with original_author: u256, fork_autho
 [[task]]
 id = "E38-T03"
 title = "Define PackageTier enum and per-tier capability constraints"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 60
@@ -202,7 +202,7 @@ acceptance = ["PackageTier enum with Prompt, ConfigProfile, Declarative, Wasm, N
 [[task]]
 id = "E38-T04"
 title = "Define publish pipeline stage types and validation results"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 60
@@ -257,7 +257,7 @@ acceptance = ["PublishStage enum with Checksum, Signature, CapabilityCheck, Semv
 [[task]]
 id = "E38-T05"
 title = "Add marketplace economics types: take-rate schedule, revenue tracking"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 60
@@ -319,7 +319,7 @@ acceptance = ["TakeRateSchedule struct with free_band_cents: u64 (100_000_000 = 
 [[task]]
 id = "E38-T06"
 title = "Add marketplace browse and search routes to roko-serve"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 90
@@ -377,7 +377,7 @@ acceptance = ["New routes/marketplace.rs with routes() -> Router<Arc<AppState>>;
 [[task]]
 id = "E38-T07"
 title = "Add fork lineage chain types and fork operation to marketplace"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 60
@@ -439,7 +439,7 @@ acceptance = ["ForkChainEntry struct with original_ref: String, fork_ref: String
 [[task]]
 id = "E38-T08"
 title = "Implement three-layer capability intersection for marketplace artifacts"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 60
@@ -497,7 +497,7 @@ acceptance = ["CapabilityDeclaration struct with name: String, constraints: Valu
 [[task]]
 id = "E38-T09"
 title = "Add roko market CLI subcommand stubs (browse, install, publish, fork)"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 90

@@ -1,6 +1,6 @@
 # Decay — Cold-Tier Freeze / Thaw
 
-> The mechanism by which low-weight Engrams are frozen into a cold storage tier, suspending decay, and thawed back to warm storage on access.
+> The mechanism by which low-weight Signals are frozen into a cold storage tier, suspending decay, and thawed back to warm storage on access.
 
 **Status**: Shipping  
 **Crate**: `roko-core`, `roko-fs`  
@@ -12,9 +12,9 @@
 
 ## TL;DR
 
-When an Engram's effective weight drops below `COLD_TIER_THRESHOLD` (default: `0.1`), the
+When an Signal's effective weight drops below `COLD_TIER_THRESHOLD` (default: `0.1`), the
 Substrate moves it from the warm tier to the cold tier. In the cold tier, **decay is
-suspended** — the balance is not updated by the idle tax. When a cold Engram is retrieved,
+suspended** — the balance is not updated by the idle tax. When a cold Signal is retrieved,
 it is thawed back into warm storage and its balance is restored to `THAW_RESTORE_BALANCE`
 (default: `0.3`). The goal is to preserve rarely-used knowledge cheaply without losing it.
 
@@ -22,17 +22,17 @@ it is thawed back into warm storage and its balance is restored to `THAW_RESTORE
 
 ## The Idea
 
-Without a cold tier, Engrams would decay toward zero and be garbage-collected even if they
+Without a cold tier, Signals would decay toward zero and be garbage-collected even if they
 hold valid knowledge that is rarely but legitimately needed. This is analogous to archiving
 documents: you move old files to cheap archival storage rather than shredding them.
 
 The freeze-thaw cycle solves this:
 
 1. **Freeze**: When balance crosses below `COLD_TIER_THRESHOLD`, the Substrate moves the
-   Engram to cold storage and records `frozen_at_ms`. Decay stops applying.
-2. **Thaw**: When a query retrieves the Engram, the Substrate moves it back to warm storage
+   Signal to cold storage and records `frozen_at_ms`. Decay stops applying.
+2. **Thaw**: When a query retrieves the Signal, the Substrate moves it back to warm storage
    and sets `balance = THAW_RESTORE_BALANCE`. Normal decay resumes from that point.
-3. **GC after cold dwell time**: If the Engram stays cold longer than `MAX_COLD_DWELL_SECS`,
+3. **GC after cold dwell time**: If the Signal stays cold longer than `MAX_COLD_DWELL_SECS`,
    it is garbage-collected (deleted). This is the true TTL.
 
 The system therefore has two expiry paths: continuous decay to zero (warm, unchecked) and
@@ -59,7 +59,7 @@ pub const MAX_COLD_DWELL_SECS: u64 = 365 * 24 * 3600;
 
 ## State Machine
 
-An Engram moves through three states with respect to the cold tier:
+An Signal moves through three states with respect to the cold tier:
 
 ```
               balance < COLD_TIER_THRESHOLD
@@ -89,7 +89,7 @@ pub fn freeze(&self, id: &ContentHash, now_ms: i64) -> Result<(), SubstrateError
 }
 ```
 
-The compaction cycle runs `freeze` for every warm Engram whose current `weight_at()` is
+The compaction cycle runs `freeze` for every warm Signal whose current `weight_at()` is
 below `COLD_TIER_THRESHOLD`.
 
 ---
@@ -150,12 +150,12 @@ pub fn gc_cold_tier(&self, now_ms: i64) -> GcReport {
 |---|---|---|
 | **Demurrage** | Balance frozen; no idle tax applied | Balance reset to `THAW_RESTORE_BALANCE` |
 | **Exponential** | `weight_at()` would show near-zero; age not advanced | `last_retrieved_ms` reset to thaw time |
-| **Step** | Step boundaries continue (time passes) but compaction ignores cold engrams | On thaw, epochs-since-creation still applies |
+| **Step** | Step boundaries continue (time passes) but compaction ignores cold signals | On thaw, epochs-since-creation still applies |
 | **Linear** | Linear decay pauses at freeze (balance snapshot taken) | Balance restored to `THAW_RESTORE_BALANCE` |
 | **Custom** | Custom handler's `weight_at()` is not called in cold tier | Custom handler's `on_retrieve()` called on thaw |
 
 Note: Step decay is an edge case — epochs continue to pass in wall time, but the Substrate
-does not apply them while the Engram is cold. On thaw, the Substrate applies missed epochs.
+does not apply them while the Signal is cold. On thaw, the Substrate applies missed epochs.
 
 <!-- ADDED: edge case clarification — the interaction of Step decay with the cold tier
 was not specified in the source docs and is inferred here. -->
@@ -164,13 +164,13 @@ was not specified in the source docs and is inferred here. -->
 
 ## Invariants
 
-1. An Engram in the cold tier has balance ≤ `COLD_TIER_THRESHOLD` at freeze time.
-2. An Engram thawed from cold tier has balance = `THAW_RESTORE_BALANCE` (for
+1. An Signal in the cold tier has balance ≤ `COLD_TIER_THRESHOLD` at freeze time.
+2. An Signal thawed from cold tier has balance = `THAW_RESTORE_BALANCE` (for
    balance-tracking models).
-3. Decay is **not applied** to Engrams in the cold tier between freeze and thaw.
-4. An Engram cannot be both in warm and cold storage simultaneously.
+3. Decay is **not applied** to Signals in the cold tier between freeze and thaw.
+4. An Signal cannot be both in warm and cold storage simultaneously.
 5. `frozen_at_ms` is recorded at freeze time and never updated while in cold storage.
-6. Cold dwell GC only applies to the cold tier — warm Engrams are GC'd by hitting
+6. Cold dwell GC only applies to the cold tier — warm Signals are GC'd by hitting
    balance = 0.0.
 
 ---
@@ -179,7 +179,7 @@ was not specified in the source docs and is inferred here. -->
 
 | Failure | Cause | Recovery |
 |---|---|---|
-| Engram stuck in cold tier | GC job not running | Compaction cron must include `gc_cold_tier()` |
+| Engram (renamed to Signal in 2026-08-12) stuck in cold tier | GC job not running | Compaction cron must include `gc_cold_tier()` |
 | Thaw creates duplicate in warm tier | Race between two concurrent retrievals | Thaw is idempotent: if already warm, return warm copy |
 | Balance not restored on thaw | Bug in thaw path | Substrate integration test verifies balance = THAW_RESTORE after thaw |
 | Cold tier grows unbounded | MAX_COLD_DWELL_SECS too large | Monitor cold tier size; tune dwell limit per deployment |
@@ -188,7 +188,7 @@ was not specified in the source docs and is inferred here. -->
 
 ## Open Questions
 
-- Should thawed Engrams get a higher restore balance if they were retrieved after a very
+- Should thawed Signals get a higher restore balance if they were retrieved after a very
   long cold dwell? (Reward for survival.) Not currently implemented.
 - Should the cold tier be a separate physical storage backend (e.g., S3 vs. local RocksDB)?
   Currently both are the same backend, differentiated by a key namespace prefix.

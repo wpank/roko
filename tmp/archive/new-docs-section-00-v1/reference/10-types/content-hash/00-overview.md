@@ -1,10 +1,10 @@
 # ContentHash — Overview
 
-> A 32-byte BLAKE3 digest of an Engram's canonical fields, serving as its unique, stable identity key.
+> A 32-byte BLAKE3 digest of an Signal's canonical fields, serving as its unique, stable identity key.
 
 **Status**: Shipping  
 **Crate**: `roko-core`  
-**Depends on**: [Engram](../../01-engram/00-overview.md)  
+**Depends on**: [Signal](../../01-engram/00-overview.md)  
 **Used by**: [Substrate](../../../subsystems/substrate/), [Lineage DAG](../../01-engram/06-lineage-dag.md)  
 **Last reviewed**: 2026-04-19
 
@@ -12,8 +12,8 @@
 
 ## TL;DR
 
-Every Engram has a `ContentHash` stored in its `id` field. It is a 32-byte BLAKE3 digest
-computed over a canonical encoding of the Engram's stable fields: `kind`, `body`,
+Every Signal has a `ContentHash` stored in its `id` field. It is a 32-byte BLAKE3 digest
+computed over a canonical encoding of the Signal's stable fields: `kind`, `body`,
 `created_at_ms`, `provenance.author`, `lineage`, and `tags`. Fields that can change after
 creation (`decay`, `score`, `provenance.trust`, `provenance.taint`, `fingerprint`) are
 excluded. The same content from the same author at the same time always produces the same
@@ -24,20 +24,20 @@ hash; different content always produces a different hash with overwhelming proba
 ## The Idea
 
 Roko uses content-addressing rather than assigned IDs. There is no auto-incrementing integer
-or random UUID. An Engram's identity is derived entirely from its content and provenance.
+or random UUID. An Signal's identity is derived entirely from its content and provenance.
 
 This has several consequences:
 
-**Deduplication is automatic**: If two agents independently produce an Engram with the same
+**Deduplication is automatic**: If two agents independently produce an Signal with the same
 kind, body, author, and creation time, they get the same `ContentHash` — the Substrate
-treats them as the same Engram.
+treats them as the same Signal.
 
-**Lineage references are stable**: Parent Engrams are referenced by `ContentHash` in the
+**Lineage references are stable**: Parent Signals are referenced by `ContentHash` in the
 `lineage` field. Because the hash is stable, a lineage reference from 6 months ago still
-points to the correct Engram. No foreign key maintenance is needed.
+points to the correct Signal. No foreign key maintenance is needed.
 
-**Mutations require a new Engram**: If you want to update an Engram's body, you create a
-new Engram with the updated content and add the old Engram to its `lineage`. The old Engram
+**Mutations require a new Signal**: If you want to update an Signal's body, you create a
+new Signal with the updated content and add the old Signal to its `lineage`. The old Signal
 is not deleted — it is a permanent record.
 
 ---
@@ -79,7 +79,7 @@ BLAKE3 provides:
   same hash is approximately `2^-128`. Practically impossible.
 - **Preimage resistance**: Given a hash, it is computationally infeasible to find the
   original canonical encoding.
-- **Performance**: BLAKE3 processes ~3 GB/s on modern hardware; hashing a typical Engram
+- **Performance**: BLAKE3 processes ~3 GB/s on modern hardware; hashing a typical Signal
   takes well under 1 µs.
 
 ---

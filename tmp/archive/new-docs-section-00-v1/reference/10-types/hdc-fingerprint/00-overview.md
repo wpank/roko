@@ -4,7 +4,7 @@
 
 **Status**: Shipping  
 **Crate**: `bardo-primitives`  
-**Depends on**: [Engram](../../01-engram/00-overview.md)  
+**Depends on**: [Signal](../../01-engram/00-overview.md)  
 **Used by**: [Substrate](../../../subsystems/substrate/), [Gate](../../../subsystems/gate/)  
 **Last reviewed**: 2026-04-19
 
@@ -12,19 +12,19 @@
 
 ## TL;DR
 
-Each Engram has an optional `fingerprint: Option<HdcFingerprint>`. When present, the
+Each Signal has an optional `fingerprint: Option<HdcFingerprint>`. When present, the
 fingerprint is a 10,240-bit binary vector (`[u64; 160]`) produced by an HDC encoder from
-the Engram's `Body`. Hamming distance between two fingerprints is a fast proxy for
+the Signal's `Body`. Hamming distance between two fingerprints is a fast proxy for
 semantic dissimilarity. Fingerprints are used for near-duplicate detection, novelty
 filtering, and context assembly. They are **not** part of the ContentHash, so encoder
-upgrades are transparent to Engram identity.
+upgrades are transparent to Signal identity.
 
 ---
 
 ## The Idea
 
-The ContentHash answers "is this exactly the same Engram?" Fingerprint answers "is this
-Engram semantically similar to that one?" They serve orthogonal purposes:
+The ContentHash answers "is this exactly the same Signal?" Fingerprint answers "is this
+Signal semantically similar to that one?" They serve orthogonal purposes:
 
 - ContentHash: exact identity, used for deduplication and lineage.
 - Fingerprint: semantic proximity, used for retrieval, novelty scoring, and clustering.
@@ -68,7 +68,7 @@ instead for three reasons:
 1. **Speed**: Hamming distance via POPCNT is faster than cosine similarity via
    floating-point dot product for the same bitwidth.
 2. **Composability**: HDC vectors can be combined (XOR for binding, majority vote for
-   bundling) to build composite fingerprints for multi-body Engrams.
+   bundling) to build composite fingerprints for multi-body Signals.
 3. **Robustness**: Binary vectors are less sensitive to quantization errors and are
    trivially serialized/deserialized without precision loss.
 
@@ -85,7 +85,7 @@ for Roko's use of fingerprints as a coarse filter before exact scoring.
 - Fingerprints are produced by an external encoder that can be upgraded.
 - Encoder v2 might produce different vectors for the same content than v1.
 - If fingerprints were in the hash, every encoder upgrade would require re-creating
-  all Engrams, breaking lineage.
+  all Signals, breaking lineage.
 
 The `encoder_version` field handles compatibility: the Substrate will not compare
 fingerprints from different encoder versions without explicit re-encoding.
@@ -105,7 +105,7 @@ The builder can compute the fingerprint eagerly or leave it as `None` for later 
 ## Open Questions
 
 - Should 10,240 bits be the fixed size, or configurable per deployment? Currently fixed.
-- Should Engrams with `fingerprint = None` participate in similarity search (with a
+- Should Signals with `fingerprint = None` participate in similarity search (with a
   lower-priority score) or be excluded? Currently excluded.
 
 ## See Also

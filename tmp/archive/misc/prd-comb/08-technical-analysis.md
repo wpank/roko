@@ -25,7 +25,7 @@ The core insight: code, markets, research, and operations all share the same str
 This document establishes the vision: TA as a domain-agnostic cognitive capability that any Roko agent can use, regardless of whether it operates on blockchains, codebases, research corpora, or any other structured domain. Under the two-mediums/two-fabrics framing in the [glossary](../00-architecture/01-naming-and-glossary.md), TA is one of the places where Roko's compounding and superlinear product claim becomes measurable: each prediction, correction, and replay cycle should make the next cycle cheaper, faster, and better. It is also the measurement and feedback layer for the structural moat described in [tmp/refinements/18-competitive-moat.md](../../tmp/refinements/18-competitive-moat.md): TA shows whether architectural coherence, heuristic commons, plugin ecosystem, replication ledger, and Rust-level correctness are compounding together or merely existing as separate features. REF19 adds the honesty test on top of that: which oracle-side primitives are genuinely net-new, which are carefully integrated from prior art, and which claims have enough evidence to support publication. See also [tmp/refinements/15-exponential-scaling.md](../../tmp/refinements/15-exponential-scaling.md) and [tmp/refinements/19-net-new-innovations.md](../../tmp/refinements/19-net-new-innovations.md).
 
 > **Reality check**: Under the 10-primitive framing used in this chapter, 2
-> primitives exist fully today (`Engram`, `Substrate`), 2 exist partially or in
+> primitives exist fully today (`Signal`, `Substrate`), 2 exist partially or in
 > a narrower form than described here (HDC, c-factor), and 6 remain target-state
 > (`Pulse`, a kernel `Bus` trait, demurrage, heuristic commons, replication
 > ledger, plugin SPI). The moat framing in this chapter is aspirational.
@@ -39,7 +39,7 @@ This document establishes the vision: TA as a domain-agnostic cognitive capabili
 
 REF18 frames the target-state moat as five interacting components, not a checklist. TA is the
 instrumentation that would tell us whether those components are reinforcing one another across
-deployments and over time. The shared vocabulary for Engram, Pulse, Bus, Substrate, HDC
+deployments and over time. The shared vocabulary for Signal, Pulse, Bus, Substrate, HDC
 fingerprint, demurrage, and c-factor lives in the
 [glossary](../00-architecture/01-naming-and-glossary.md).
 
@@ -136,8 +136,8 @@ The Oracle subsystem operates across multiple layers of Roko's five-layer archit
 
 The Oracle connects to all six Synapse traits:
 
-- **Substrate** — `PredictionStore` persists predictions as Engrams via `Substrate.put()`
-- **Scorer** — `PredictiveScorer` uses oracle accuracy to weight Engram relevance
+- **Substrate** — `PredictionStore` persists predictions as Signals via `Substrate.put()`
+- **Scorer** — `PredictiveScorer` uses oracle accuracy to weight Signal relevance
 - **Gate** — Prediction residuals feed adaptive gate thresholds (EMA per rung)
 - **Router** — Accurate oracle predictions increase routing weight via `Router.feedback()`
 - **Composer** — EFE-based context selection uses prediction confidence for VCG auction bids
@@ -188,7 +188,7 @@ The seven-step loop is where TA turns usage into compounding returns:
                Residual correction, heuristic updates, and routing changes fire
 ```
 
-This mapping keeps TA aligned with the current architecture story in [00-architecture](../00-architecture/INDEX.md) and the moat framing in [tmp/refinements/18-competitive-moat.md](../../tmp/refinements/18-competitive-moat.md): Engrams carry durable prediction history in the Substrate, Pulses carry ephemeral prediction and outcome traffic on the Bus, and Policy closes the learning loop. See also [13-predictive-foraging-and-active-inference.md](./13-predictive-foraging-and-active-inference.md) for the detailed prediction-resolution-calibration path.
+This mapping keeps TA aligned with the current architecture story in [00-architecture](../00-architecture/INDEX.md) and the moat framing in [tmp/refinements/18-competitive-moat.md](../../tmp/refinements/18-competitive-moat.md): Signals carry durable prediction history in the Substrate, Pulses carry ephemeral prediction and outcome traffic on the Bus, and Policy closes the learning loop. See also [13-predictive-foraging-and-active-inference.md](./13-predictive-foraging-and-active-inference.md) for the detailed prediction-resolution-calibration path.
 
 ---
 
@@ -278,7 +278,7 @@ Not every TA-facing capability is net-new in isolation. HDC fingerprinting, demu
 
 | TA-facing claim | Category | Why it matters here | Closest prior art |
 |---|---|---|---|
-| **HDC fingerprint** on every Engram used for oracle-side similarity and analogy | Integrated primitive | Lets coding, chain, and research oracles share one structural retrieval surface | Vector databases and HDC/VSA systems |
+| **HDC fingerprint** on every Signal used for oracle-side similarity and analogy | Integrated primitive | Lets coding, chain, and research oracles share one structural retrieval surface | Vector databases and HDC/VSA systems |
 | **Demurrage** on durable prediction knowledge | Integrated primitive | Keeps stale calibration, weak hypotheses, and idle playbooks from dominating retrieval | TTL/LRU caches and recommender decay |
 | **Heuristic with explicit falsifier** | Genuinely new primitive | Turns prediction guidance into something the oracle loop can actually disconfirm and recalibrate | Rule engines and retrieved tips without mandatory falsifiers |
 | **Replication ledger** for design claims and oracle assumptions | Genuinely new primitive | Makes the runtime's own research basis auditable across deployments | Replication registries in science, not agent runtimes |
@@ -287,7 +287,7 @@ Not every TA-facing capability is net-new in isolation. HDC fingerprinting, demu
 | **Bus subscription API** for predictions and outcomes | Integrated API | Lets dashboards, audits, and external tools subscribe to the same live calibration traffic | Message-bus subscribers and monitoring feeds |
 
 The target-state moat claim stays the same across those rows: a competitor can copy a local
-feature, but copying the whole TA stack would mean reproducing the alignment among Engram,
+feature, but copying the whole TA stack would mean reproducing the alignment among Signal,
 Pulse, Bus, Substrate, HDC fingerprint, demurrage, heuristics with falsifiers, c-factor, and
 the replication ledger. Today that alignment is only partially built, so this section should
 be read as a research-hypothesis and instrumentation roadmap rather than a shipping-claims
@@ -404,7 +404,7 @@ See `tmp/implementation-plans/modelrouting/12-advanced-patterns.md` for the Thom
 > **Implementation**: Specified
 
 **Topic**: [Technical Analysis](./INDEX.md)
-**Prerequisites**: [00-vision-ta-generalized](./00-vision-ta-generalized.md) for motivation, [00-architecture](../00-architecture/INDEX.md) for Synapse traits and Engram
+**Prerequisites**: [00-vision-ta-generalized](./00-vision-ta-generalized.md) for motivation, [00-architecture](../00-architecture/INDEX.md) for Synapse traits and Signal
 **Key sources**: `refactoring-prd/03-cognitive-subsystems.md` §4, `refactoring-prd/01-synapse-architecture.md`
 
 ---
@@ -594,7 +594,7 @@ pub struct ResearchQueryPayload {
 
 ## Prediction — The output
 
-The `Prediction` struct is what an Oracle returns. It is designed to be stored as an Engram (via `Substrate.put()`) and later resolved against actual outcomes:
+The `Prediction` struct is what an Oracle returns. It is designed to be stored as an Signal (via `Substrate.put()`) and later resolved against actual outcomes:
 
 ```rust
 /// A prediction about future state.
@@ -767,7 +767,7 @@ The Oracle trait is not a seventh Synapse trait — it is a **cognitive cross-cu
 
 ### Substrate integration
 
-Predictions and outcomes are persisted as Engrams:
+Predictions and outcomes are persisted as Signals:
 
 ```rust
 // Store a new prediction
@@ -791,7 +791,7 @@ substrate.put(engram).await?;
 
 ### Scorer integration — PredictiveScorer
 
-The `PredictiveScorer` uses oracle accuracy history to weight Engram relevance:
+The `PredictiveScorer` uses oracle accuracy history to weight Signal relevance:
 
 ```rust
 /// Scores Engrams based on how well the oracle that produced them
@@ -860,7 +860,7 @@ High-uncertainty predictions bid more aggressively because resolving them has hi
 
 ### Policy integration — PredictionPolicy
 
-The `PredictionPolicy` observes prediction streams and emits new Engrams based on patterns:
+The `PredictionPolicy` observes prediction streams and emits new Signals based on patterns:
 
 ```rust
 /// Watches prediction accuracy streams and generates meta-predictions,
@@ -3301,7 +3301,7 @@ The witness integrates with Roko's three-timescale memory architecture, mirrorin
 | Timescale | Memory type | What it stores | Decay |
 |---|---|---|---|
 | **Gamma** (seconds) | CorticalState | Current signal values, prediction error | Overwritten each tick |
-| **Theta** (minutes) | Working Engrams | Recent observations, pending predictions | Hours (Ebbinghaus) |
+| **Theta** (minutes) | Working Signals | Recent observations, pending predictions | Hours (Ebbinghaus) |
 | **Delta** (hours) | Neuro knowledge | Validated patterns, calibration data | Days to months (tier-dependent) |
 
 Fast episodic memory (Gamma/Theta) captures details. Slow semantic memory (Delta/Neuro) captures patterns. Dreams consolidate fast to slow, replicating the hippocampal-cortical memory consolidation that CLS theory describes.
@@ -10225,7 +10225,7 @@ pub struct EfeDecomposition {
 
 ### Context foraging stopping rule — Charnov's MVT
 
-The agent forages for context (retrieves Engrams to fill the context window) and must decide when to stop. Charnov's marginal value theorem (Charnov, 1976, *Theoretical Population Biology*) provides the optimal stopping rule:
+The agent forages for context (retrieves Signals to fill the context window) and must decide when to stop. Charnov's marginal value theorem (Charnov, 1976, *Theoretical Population Biology*) provides the optimal stopping rule:
 
 ```rust
 /// Context foraging stopping rule based on Charnov's MVT.
@@ -11070,7 +11070,7 @@ Tropical methods provide EXACT adversarial distances (not bounds), but only for 
 
 > TA is NOT chain-only. It is a general-purpose prediction framework with domain-specific instances.
 
-**Prerequisites**: [00-architecture](../00-architecture/INDEX.md) for Synapse Architecture (Engram, 6 traits, 5 layers), [05-learning](../05-learning/INDEX.md) for cybernetic feedback loops and CascadeRouter, [06-neuro](../06-neuro/INDEX.md) for HDC knowledge encoding and tier progression
+**Prerequisites**: [00-architecture](../00-architecture/INDEX.md) for Synapse Architecture (Signal, 6 traits, 5 layers), [05-learning](../05-learning/INDEX.md) for cybernetic feedback loops and CascadeRouter, [06-neuro](../06-neuro/INDEX.md) for HDC knowledge encoding and tier progression
 
 ---
 
@@ -11245,7 +11245,7 @@ All academic citations used across this topic's sub-documents:
 
 | Topic | Relationship |
 |---|---|
-| [00-architecture](../00-architecture/INDEX.md) | Synapse Architecture, Engram struct, 6 traits, 5 layers, Universal Cognitive Loop |
+| [00-architecture](../00-architecture/INDEX.md) | Synapse Architecture, Signal struct, 6 traits, 5 layers, Universal Cognitive Loop |
 | [05-learning](../05-learning/INDEX.md) | CascadeRouter (LinUCB, Thompson Sampling), adaptive gate thresholds, cybernetic feedback loops |
 | [06-neuro](../06-neuro/INDEX.md) | HDC encoding (10,240-bit BSC), knowledge tier progression, cross-domain transfer |
 | [07-daimon](../09-daimon/INDEX.md) | PAD vector, behavioral states, somatic landscape, affect modulation of oracle behavior |
@@ -11258,7 +11258,7 @@ All academic citations used across this topic's sub-documents:
 
 - **Generated by**: Claude Opus 4.6, PRD migration batch
 - **Source material**: `refactoring-prd/03-cognitive-subsystems.md` §4, `refactoring-prd/09-innovations.md` §I/II/III/VII/XIX, `refactoring-prd/01-synapse-architecture.md`, legacy sources `bardo-backup/prd/23-ta/*` (11 legacy files) and `bardo-backup/tmp/agent-chain/10-predictive-foraging.md`, plus `tmp/implementation-plans/modelrouting/12-advanced-patterns.md`
-- **Legacy naming map applied**: golem→agent, grimoire→neuro, bardo→roko, Signal→Engram, GNOS→KORAI, clade→collective, Styx→Agent Mesh
+- **Legacy naming map applied**: golem→agent, grimoire→neuro, bardo→roko, Signal→Signal, GNOS→KORAI, clade→collective, Styx→Agent Mesh
 - **Legacy reframe rules applied**: mortality→resource management, death clocks→budget limits, succession→backup/restore
 - **Citation count**: 76 unique academic citations across 15 sub-documents
 - **Total lines**: ~11,000 across 16 files

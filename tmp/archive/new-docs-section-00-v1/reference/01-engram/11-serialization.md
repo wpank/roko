@@ -1,6 +1,6 @@
-# Engram — Serialization
+# Signal — Serialization
 
-> Engrams serialize to JSONL for the file substrate and to a compact binary format for in-memory transfer. This page covers both formats, versioning, and migration.
+> Signals serialize to JSONL for the file substrate and to a compact binary format for in-memory transfer. This page covers both formats, versioning, and migration.
 
 **Status**: Shipping  
 **Crate**: `roko-core`, `roko-fs`  
@@ -15,14 +15,14 @@
 The Substrate's wire format is JSONL (one JSON object per line, newline-delimited).
 Each field serializes as a typed JSON value. The ContentHash serializes as a lowercase
 hex string. The HdcVector serializes as a base64-encoded byte array. Schema version is
-embedded in every serialized Engram for forward compatibility.
+embedded in every serialized Signal for forward compatibility.
 
 ---
 
 ## The Idea
 
 JSONL is human-readable, streamable, and append-only — properties that match the
-Substrate's write pattern (append Engrams to a shard file). Binary formats are faster
+Substrate's write pattern (append Signals to a shard file). Binary formats are faster
 but not grep-able; JSONL is a good default for a system where inspecting the substrate
 is a normal debugging operation.
 
@@ -37,7 +37,7 @@ fast.
 
 ### JSONL Format
 
-Each Engram serializes to a single JSON line:
+Each Signal serializes to a single JSON line:
 
 ```json
 {
@@ -103,8 +103,8 @@ Each Engram serializes to a single JSON line:
 
 ### Schema Version
 
-Every serialized Engram carries `"schema_version": N`. The current version is **1**.
-Deserializers must reject Engrams with a version they do not understand, not silently
+Every serialized Signal carries `"schema_version": N`. The current version is **1**.
+Deserializers must reject Signals with a version they do not understand, not silently
 ignore unknown fields.
 
 ---
@@ -113,7 +113,7 @@ ignore unknown fields.
 
 ### Forward Compatibility
 
-When a new field is added to `Engram`:
+When a new field is added to `Signal`:
 
 1. The schema version is incremented.
 2. The old deserializer ignores the new field (JSONL is lenient for reads).
@@ -122,7 +122,7 @@ When a new field is added to `Engram`:
 
 ### ContentHash Stability Across Versions
 
-Adding a field to `Engram` does **not** change the ContentHash of existing Engrams,
+Adding a field to `Signal` does **not** change the ContentHash of existing Signals,
 because the canonical encoding only includes a fixed set of fields (see
 [`02-content-hash.md`](02-content-hash.md)). Adding a `schema_version` field does
 not affect identity.
@@ -154,10 +154,10 @@ The binary format is a length-prefixed sequence of fields in canonical encoding 
 
 ## Invariants
 
-1. Schema version must be present in all serialized Engrams
+1. Schema version must be present in all serialized Signals
 2. `id` in JSONL must be exactly 64 lowercase hex chars
 3. `fingerprint.vector_b64` must decode to exactly 1280 bytes
-4. Deserialized Engram must pass `verify_id()` before use
+4. Deserialized Signal must pass `verify_id()` before use
 
 ---
 
@@ -166,7 +166,7 @@ The binary format is a length-prefixed sequence of fields in canonical encoding 
 | Failure | Cause | Recovery |
 |---------|-------|----------|
 | Deserialization error | Corrupted JSONL line | Skip line; log; increment error counter |
-| Hash mismatch on deserialization | JSONL tampered | Reject Engram; log audit event |
+| Hash mismatch on deserialization | JSONL tampered | Reject Signal; log audit event |
 | Unknown schema version | Reader is older than writer | Hard error; do not silently ignore |
 | Unknown Kind variant | Writer uses a variant the reader doesn't know | Pass through with `Kind::Custom`; log warning |
 

@@ -19,7 +19,7 @@ The old parity pack blurred them together and made the whole section read more u
 
 These are current runtime truths:
 
-- `run_gate_pipeline(...)` persists gate verdict engrams
+- `run_gate_pipeline(...)` persists gate verdict signals
 - the orchestrator emits a conductor-side `Kind::GateVerdict` signal
 - plan state stores gate results
 - gate episodes feed the learning/runtime record
@@ -44,8 +44,8 @@ The refreshed docs should be careful about two things:
 
 Key anchors:
 
-- `crates/roko-core/src/engram.rs:131-136`
-- `crates/roko-core/src/engram.rs:161-187`
+- `crates/roko-core/src/__PATH_ENGRAM_RS__0:131-136`
+- `crates/roko-core/src/__PATH_ENGRAM_RS__0:161-187`
 - `crates/roko-core/src/decay.rs:21-30`
 - `crates/roko-core/src/decay.rs:104-107`
 

@@ -57,7 +57,7 @@ knows about the other's implementation.
 ## Pattern 3: Substrate Reads (Downward)
 
 All layers may read from the Substrate. The Substrate is injected at L3 and flows
-down to L2. Higher layers may query it directly (e.g., L4 querying Engrams for
+down to L2. Higher layers may query it directly (e.g., L4 querying Signals for
 `roko-serve`'s API).
 
 ---

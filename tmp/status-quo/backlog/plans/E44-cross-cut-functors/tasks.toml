@@ -1,8 +1,8 @@
 [meta]
 plan = "E44-cross-cut-functors"
 total = 8
-done = 0
-status = "ready"
+done = 8
+status = "done"
 max_parallel = 1
 
 # ─── T01: Define CrossCutFunctor trait ───
@@ -34,7 +34,7 @@ The trait must be generic over the context and NOT depend on concrete Cell types
 crates. Keep roko-compose as the home since it already owns composition strategy.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-compose/src/cross_cut.rs", "crates/roko-compose/src/lib.rs"]
 depends_on = []
@@ -95,7 +95,7 @@ Implement F_memory as a CrossCutFunctor (spec: 26-CROSS-CUTS.md:75-218):
 Keep MemoryFunctor in a new file `crates/roko-compose/src/memory_functor.rs`.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-compose/src/memory_functor.rs"]
 depends_on = ["E44-T01"]
@@ -161,7 +161,7 @@ Implement F_daimon as a CrossCutFunctor (spec: 26-CROSS-CUTS.md:222-364):
 5. **Short-circuit** — return true when PAD is in the Neutral region (all dims < 0.1 abs).
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-compose/src/daimon_functor.rs"]
 depends_on = ["E44-T01"]
@@ -226,7 +226,7 @@ pre_enrich is always a pass-through (short-circuit). The functor's role is to:
 Keep DreamsFunctor in `crates/roko-compose/src/dreams_functor.rs`.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-compose/src/dreams_functor.rs"]
 depends_on = ["E44-T01"]
@@ -290,7 +290,7 @@ Add a `natural_transforms.rs` in roko-compose/src/ with the 6 transformation fun
 and a `run_gate_failure_cascade()` convenience that fires the 7-step cascade from spec :549.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-compose/src/natural_transforms.rs"]
 depends_on = ["E44-T02", "E44-T03", "E44-T04"]
@@ -353,7 +353,7 @@ Add cross-cut arbitration alongside it (spec: 26-CROSS-CUTS.md:575-660):
 Add to auction.rs as a `CrossCutArbitrator` struct alongside existing `vcg_allocate`.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-compose/src/auction.rs"]
 depends_on = ["E44-T02", "E44-T03"]
@@ -417,7 +417,7 @@ Implement F_safety (spec: 26-CROSS-CUTS.md:724-808):
 Keep in `crates/roko-compose/src/safety_functor.rs`.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-compose/src/safety_functor.rs"]
 depends_on = ["E44-T01", "E44-T06"]
@@ -474,7 +474,7 @@ The cascade should be async and non-blocking. Steps 5-7 (dream cycle) run in bac
 via tokio::spawn since they are delta-speed operations.
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "integrative"
 files = ["crates/roko-cli/src/runner/event_loop.rs"]
 depends_on = ["E44-T05", "E44-T06"]

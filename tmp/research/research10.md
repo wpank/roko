@@ -1,3 +1,9 @@
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This file is reference material for pitch/strategy planning, not an implementation plan.
+>
+> Last updated: 2026-08-13
+
 # Pitch deck design for an a16z infrastructure Series A
 
 The honest answer to your most important question: **Stripe's "original pitch deck" is a myth that didn't exist as a polished artifact, and Cloudflare's Series A deck never existed at all.** Patrick Collison and Matthew Prince both pitched on live product, not slides — every "Stripe Series A deck" circulating online (Slidebean, Zlides, Upmetrics, Karaf.ai) is a third-party reconstruction using post-2018 brand assets. This matters for your strategy: the decks people are imitating aren't real, and the most-revered infrastructure pitches were **distinguished by product credibility, not deck craft**. Your job is to use the deck as a *vehicle for proof*, not as the proof itself. The strongest evidence-backed model in your research targets is **Temporal's $18.75M Series A deck (Sequoia, Oct 2020)**, which Sequoia now uses to train scouts on infrastructure pitches. Below, decision-ready recommendations for each of your 12 sections, organized to match your slide-by-slide build.

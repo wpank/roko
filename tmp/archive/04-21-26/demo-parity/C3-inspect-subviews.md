@@ -44,7 +44,7 @@ The F7 Inspect tab currently renders a single overview layout. Three sub-views a
 | sub_tab | View |
 |---------|------|
 | 0 | Overview (existing layout, unchanged) |
-| 1 | Engram DAG |
+| 1 | Engram (renamed to Signal in 2026-08-12) DAG |
 | 2 | Episode Replay |
 | 3 | Knowledge Browse |
 
@@ -703,21 +703,21 @@ cargo test --workspace
 
 Check that:
 1. F7 tab still shows the overview layout at sub_tab 0 (pressing 1)
-2. Pressing 2 on F7 shows Engram DAG with 8-char truncated hashes and confidence bars
+2. Pressing 2 on F7 shows Signal DAG with 8-char truncated hashes and confidence bars
 3. Pressing 3 on F7 shows Episode Replay with timing column
 4. Pressing 4 on F7 shows Knowledge Browse
 5. All three sub-views show centered empty-state messages when no data exists
 
 ## Acceptance criteria
 
-- [ ] `render()` in context_view.rs dispatches on `view_state.sub_tab` (0=overview, 1=engram, 2=episode, 3=knowledge)
+- [ ] `render()` in context_view.rs dispatches on `view_state.sub_tab` (0=overview, 1=signal, 2=episode, 3=knowledge)
 - [ ] Overview (sub_tab 0) renders unchanged
 - [ ] `render_engram_dag()` renders with 8-char truncated hashes, ASCII tree connectors, confidence bars
 - [ ] `render_episode_replay()` renders with gate icon, task, role, model, turns, cost, `wall_time_ms` column
 - [ ] `render_knowledge_browse()` renders with topic, confidence bar, source, content preview
 - [ ] All three sub-views show informative centered empty-state message when no data
 - [ ] Case-insensitive filtering in KnowledgeBrowse (via `view_state.search_query` or MOCK comment)
-- [ ] `confidence_bar()` and `confidence_style()` are shared by both engram and knowledge sub-views
+- [ ] `confidence_bar()` and `confidence_style()` are shared by both signal and knowledge sub-views
 - [ ] Scrolling via `view_state.scroll` / `view_state.selected` works in all sub-views
 - [ ] Number keys 1-4 switch sub-views on F7 tab
 - [ ] `Block::bordered()` used throughout

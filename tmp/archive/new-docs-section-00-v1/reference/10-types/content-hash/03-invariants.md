@@ -23,10 +23,10 @@ and a test case.
 
 | # | Invariant | Enforcement |
 |---|---|---|
-| C1 | `ContentHash::compute(e) == ContentHash::compute(e)` — same Engram always produces the same hash | Pure function, no external state |
-| C2 | Two Engrams with identical canonical-encoding inputs have the same hash | BLAKE3 determinism |
-| C3 | Two Engrams with any difference in canonical fields have a different hash | BLAKE3 collision resistance |
-| C4 | `ContentHash::verify(engram)` returns `true` iff the stored hash matches the recomputed hash | Explicit recomputation |
+| C1 | `ContentHash::compute(e) == ContentHash::compute(e)` — same Signal always produces the same hash | Pure function, no external state |
+| C2 | Two Signals with identical canonical-encoding inputs have the same hash | BLAKE3 determinism |
+| C3 | Two Signals with any difference in canonical fields have a different hash | BLAKE3 collision resistance |
+| C4 | `ContentHash::verify(signal)` returns `true` iff the stored hash matches the recomputed hash | Explicit recomputation |
 | C5 | `canonical_encode()` reads only the 6 included fields; never reads `score`, `decay`, `provenance.trust`, `provenance.taint`, `fingerprint` | Code-level constraint; verified by CI audit |
 
 ---
@@ -35,8 +35,8 @@ and a test case.
 
 | # | Invariant | Enforcement |
 |---|---|---|
-| M1 | Changing `decay` on an Engram does not change its `id` | `decay` excluded from `canonical_encode()` |
-| M2 | Changing `score` on an Engram does not change its `id` | `score` excluded from `canonical_encode()` |
+| M1 | Changing `decay` on an Signal does not change its `id` | `decay` excluded from `canonical_encode()` |
+| M2 | Changing `score` on an Signal does not change its `id` | `score` excluded from `canonical_encode()` |
 | M3 | Escalating `provenance.trust` does not change the `id` | `trust` excluded from `canonical_encode()` |
 | M4 | Adding a `provenance.taint` flag does not change the `id` | `taint` excluded from `canonical_encode()` |
 | M5 | Updating `fingerprint` does not change the `id` | `fingerprint` excluded from `canonical_encode()` |
@@ -60,7 +60,7 @@ and a test case.
 |---|---|---|
 | ST1 | `ContentHash` is always exactly 32 bytes | `[u8; 32]` type |
 | ST2 | `ContentHash::zero()` returns `[0u8; 32]` | Literal |
-| ST3 | Zero hash is reserved and must not be produced by `compute()` on a valid Engram | Checked in `compute()` — BLAKE3 would not produce all-zeros for any real input |
+| ST3 | Zero hash is reserved and must not be produced by `compute()` on a valid Signal | Checked in `compute()` — BLAKE3 would not produce all-zeros for any real input |
 | ST4 | `from_hex()` rejects strings that are not exactly 64 lowercase hex characters | Validation in `from_hex()` |
 
 ---
@@ -139,7 +139,7 @@ fn hash_is_32_bytes() {
 
 | Failure | Cause | Recovery |
 |---|---|---|
-| `verify()` returns false for unmodified Engram | Clock skew causing `created_at_ms` to change | `created_at_ms` must be frozen at construction |
+| `verify()` returns false for unmodified Signal | Clock skew causing `created_at_ms` to change | `created_at_ms` must be frozen at construction |
 | Hash mismatch after deserialization | Field encoding changed between versions | All canonical encoding changes are breaking; never change without version bump |
 | All-zero hash produced | Hardware RNG failure or bug | `compute()` assertion guards against this; fail hard |
 

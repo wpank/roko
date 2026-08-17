@@ -1,8 +1,8 @@
 [meta]
 plan = "E37-surfaces"
 total = 9
-done = 0
-status = "ready"
+done = 9
+status = "done"
 max_parallel = 2
 
 # ── E37-T01: Define surface projection contracts as typed structs ──
@@ -20,7 +20,7 @@ max_parallel = 2
 [[task]]
 id = "E37-T01"
 title = "Define typed projection contracts for the 5 named surfaces"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 120
@@ -87,7 +87,7 @@ acceptance = ["FlowSummary (run_id, graph_name, progress_pct, cost_usd, elapsed,
 [[task]]
 id = "E37-T02"
 title = "Add InboxCategory enum with urgency routing table to roko-core"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 60
@@ -149,7 +149,7 @@ acceptance = ["InboxCategory has 8 variants (GateVerdict, AgentQuestion, BudgetA
 [[task]]
 id = "E37-T03"
 title = "Add AutonomyLevel enum and per-capability AutonomyConfig to roko-core"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 60
@@ -211,7 +211,7 @@ acceptance = ["AutonomyLevel enum with Observe=0, Suggest=1, ActReview=2, Guardr
 [[task]]
 id = "E37-T04"
 title = "Add v2 surface-to-tab mapping alongside existing Tab enum"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 60
@@ -269,7 +269,7 @@ acceptance = ["A V2Surface enum with Workbench, Canvas, Flows, Inbox, Knowledge,
 [[task]]
 id = "E37-T05"
 title = "Define Workbench surface event types (TaskAssign, FlowCancel, etc.)"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 60
@@ -331,7 +331,7 @@ acceptance = ["SurfaceEvent enum with serde(tag=kind, content=data, rename_all=s
 [[task]]
 id = "E37-T06"
 title = "Add Inbox surface events (Approve, Reject, Defer, Dismiss) to DashboardEvent"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 50
@@ -387,9 +387,9 @@ acceptance = ["DashboardEvent has InboxItemReceived{item_id, category, urgency, 
 [[task]]
 id = "E37-T07"
 title = "Add Autonomy Slider surface events to SurfaceEvent enum"
-status = "ready"
+status = "done"
 tier = "mechanical"
-model_hint = "claude-haiku-4-5"
+model_hint = "claude-sonnet"
 max_loc = 20
 files = ["crates/roko-core/src/runtime_event.rs"]
 role = "implementer"
@@ -442,7 +442,7 @@ acceptance = ["SurfaceEvent has AutonomyLevelChange{agent_id, capability, new_le
 [[task]]
 id = "E37-T08"
 title = "Add surface projection endpoints to roko-serve routes"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 80
@@ -500,9 +500,9 @@ acceptance = ["GET /projections/workbench, /projections/inbox, /projections/canv
 [[task]]
 id = "E37-T09"
 title = "Define the 12 primitive object types enum for authoring system"
-status = "ready"
+status = "done"
 tier = "mechanical"
-model_hint = "claude-haiku-4-5"
+model_hint = "claude-sonnet"
 max_loc = 20
 files = ["crates/roko-core/src/foundation.rs"]
 role = "implementer"

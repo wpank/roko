@@ -156,10 +156,10 @@ Templates, role prompts, tool manifests, gate thresholds, scorer
 weights — all as TOML/YAML. Engines consume data; they don't embed
 it. This produces cleaner deps automatically.
 
-### 4.4 Don't pass `Engram` where a `View` suffices
+### 4.4 Don't pass `Signal` where a `View` suffices
 
 Read-only consumers take `&EngramView` (a trait with just accessors),
-not `&Engram`. This keeps data changes from requiring consumer
+not `&Signal`. This keeps data changes from requiring consumer
 changes.
 
 ### 4.5 Feature flags have to be cheap
@@ -174,7 +174,7 @@ Three tiers, clearly documented per crate:
 
 | Tier | Stability | Examples |
 |---|---|---|
-| **Core** | Semver-major-only breaks | `Engram`, `Substrate`, `Bus`, `Scorer` |
+| **Core** | Semver-major-only breaks | `Engram (renamed to Signal in 2026-08-12)`, `Substrate`, `Bus`, `Scorer` |
 | **Extended** | Minor-version breaks permitted with notice | `Pulse`, `GateRung`, `Calibration` |
 | **Experimental** | Anything goes, gated behind `experimental` feature | `Dream`, `Chain`, `Daimon` |
 

@@ -81,7 +81,7 @@ regulator must be at least as complex as the disturbances it regulates against.
 
 **Implications for Roko:**
 - The [Scorer](../../reference/05-operators/scorer.md) must have enough output dimensions
-  (axes) to represent the relevant variety of Engram quality. A scorer that collapses to
+  (axes) to represent the relevant variety of Signal quality. A scorer that collapses to
   a single scalar loses control authority.
 - The [Policy](../../reference/05-operators/policy.md) must maintain variety proportional
   to the variety of possible agent states and goals. A policy that maps only a few state
@@ -103,7 +103,7 @@ of actions before they occur.
 
 This is the cybernetic basis for why Roko maintains:
 1. **Neuro** (the knowledge layer): a model of domain facts and their relationships
-2. **Prediction Engrams**: explicit forward model predictions that are later resolved
+2. **Prediction Signals**: explicit forward model predictions that are later resolved
 3. **Witness DAG**: a record of past predictions and outcomes that implicitly encodes
    the causal structure of the agent's environment
 
@@ -172,8 +172,8 @@ of observing systems, not just observed systems. First-order cybernetics asks ho
 regulates its environment. Second-order cybernetics asks how a system regulates its own
 perception — how it constructs the observations it then regulates against.
 
-This distinction matters for Roko: the system that processes Engrams is not a passive
-observer. The Scorer, Gate, and Router that process each Engram also, by their selection
+This distinction matters for Roko: the system that processes Signals is not a passive
+observer. The Scorer, Gate, and Router that process each Signal also, by their selection
 and weighting, shape what the agent "sees." The generative model is not just a passive
 observer of the world; it actively constructs the world it then acts upon.
 

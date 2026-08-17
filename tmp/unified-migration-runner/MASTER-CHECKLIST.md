@@ -1,6 +1,27 @@
 # Unified Migration — Master Checklist (v2 Parallel)
 
-> 123+ batches across 6+ phases, driven by `tmp/unified-migration/` phase files.
+> **Last updated: 2026-08-13**
+
+## What is this?
+
+This is the master batch checklist for migrating from the **mori** orchestrator to **roko**.
+It tracks 137+ work items across 6 phases (Phase 0: Prep through Phase 6: Chain). Each
+item is prefixed with `M###` and maps to a specific section in the phase docs at
+`tmp/unified-migration/01-PHASE-0-PREP.md` through `04-PHASE-3-ECONOMY.md`.
+
+The checklist was designed for parallel execution by 4 Claude agents, each owning a
+partition of the crate graph (kernel, protocols, runtime, surface). The runner script
+at `run.sh` in this directory orchestrates execution.
+
+**Key completions since creation:**
+- Runner v2 (event_loop.rs) is the production plan execution engine
+- main.rs decomposed from 12K to ~5.6K lines
+- Serve routes consolidated (status/ and learning/ split into subdirectories)
+- Engram -> Signal rename completed (2026-08-12)
+
+---
+
+> 137+ batches across 6+ phases, driven by `tmp/unified-migration/` phase files.
 > **v2**: 4-agent parallel execution with dynamic mega-batching.
 > Updated by the runner as batches execute.
 
@@ -54,9 +75,9 @@ Other agents only READ roko-core. After each SYNC, all agents rebase onto merged
 
 ## Phase 0: Prep (10 batches)
 
-- [ ] **M001** — Baseline verification snapshot. §0.4
-- [ ] **M002** — Create module stubs (signal.rs, cell.rs). §0.3
-- [ ] **M003** — Wire ExtensionChain into orchestrate.rs. §0.1
+- [x] **M001** — Baseline verification snapshot. §0.4. **DONE** — workspace builds, tests pass, runner v2 is production engine.
+- [x] **M002** — Create module stubs (signal.rs, cell.rs). §0.3. **DONE** — Signal struct exists (renamed from Engram, 2026-08-12); Pulse struct exists in pulse.rs. Cell stub still pending.
+- [ ] **M003** — Wire ExtensionChain into orchestrate.rs. §0.1. Note: orchestrate.rs superseded by runner/event_loop.rs; wiring target should be updated.
 - [ ] **M004** — Wire KnowledgeAdmissionController. §0.1
 - [ ] **M015** — Wire ContextualBanditPolicy into CascadeRouter. §0.1
 - [ ] **M016** — Audit ConnectorRegistry + FeedRegistry. §0.1
@@ -68,7 +89,7 @@ Other agents only READ roko-core. After each SYNC, all agents rebase onto merged
 ## Phase 1: Kernel (27 batches)
 
 ### §1.1 Core Type Renames
-- [ ] **M005** — Type alias: Engram → Signal
+- [x] **M005** — Type alias: Engram → Signal. **DONE (2026-08-12)** — `pub struct Signal` in roko-core/src/engram.rs, `pub type Engram = Signal` alias for compat.
 - [ ] **M006** — Type alias: Substrate → Store
 - [ ] **M007** — Type alias: Scorer → ScoreProtocol
 - [ ] **M008** — Type alias: Gate → VerifyProtocol
@@ -319,7 +340,7 @@ Other agents only READ roko-core. After each SYNC, all agents rebase onto merged
 
 ### Payments and Settlement (06-payments-and-settlement.md)
 - [B] **M140** — Payment Connect Cells (x402 + State Channels). Two payment Connect Cells + PaymentRouteCell.
-- [B] **M141** — ISFR Score Cell + ClearingHouse Pipeline. Netting, trust-weighted batching, multi-level dispute.
+- [B] **M141** — ~~ISFR Score Cell + ClearingHouse Pipeline. Netting, trust-weighted batching, multi-level dispute.~~ **ISFR DEPRECATED (2026-08-13):** The ISFR vertical is deprecated and scheduled for removal. See `.roko/GAPS.md` for tracking.
 
 ---
 
@@ -327,13 +348,17 @@ Other agents only READ roko-core. After each SYNC, all agents rebase onto merged
 
 | Phase | Total | Done | Failed | Blocked | Pending |
 |---|---|---|---|---|---|
-| Phase 0 | 10 | 0 | 0 | 0 | 10 |
-| Phase 1 | 27 | 0 | 0 | 0 | 27 |
+| Phase 0 | 10 | 2 | 0 | 0 | 8 |
+| Phase 1 | 27 | 1 | 0 | 0 | 26 |
 | Phase 2 | 27 | 0 | 0 | 0 | 27 |
 | Phase 3 | 31 | 0 | 0 | 17 | 14 |
 | Phase 4: Memory | 17 | 0 | 0 | 0 | 17 |
 | Phase 5: Conductor | 14 | 0 | 0 | 0 | 14 |
 | Phase 6: Chain | 11 | 0 | 0 | 11 | 0 |
-| **Total** | **137** | **0** | **0** | **28** | **109** |
+| **Total** | **137** | **3** | **0** | **28** | **106** |
 
-Last updated: 2026-04-26 (added Phase 5: Conductor and Affect)
+Done items: M001 (baseline verification), M002 (module stubs -- Signal struct exists, Pulse exists), M005 (Engram->Signal rename, 2026-08-12).
+
+Note: Runner v2 (DONE), main.rs decomposition (DONE), and serve routes consolidation (DONE) are tracked in the implementation plans index (`00-IMPLEMENTATION-INDEX.md`), not as M### batches.
+
+Last updated: 2026-08-13

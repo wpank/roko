@@ -46,7 +46,7 @@ implementation roadmap.
 - TUI: wired, ~58K LOC
 - Event bus: exactly two live `RokoEvent` variants
 - `Pulse`, `Datum`, `Demurrage`, `Worldview`, `Custody`: zero-code concepts
-- Engram is canonical for parity purposes; old naming survives only as legacy residue
+- Signal is canonical for parity purposes; old naming survives only as legacy residue
 
 ## Failure Modes To Avoid
 

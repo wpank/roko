@@ -133,9 +133,9 @@ are **never auto-retried** and always require human review.
 | `RoleAuthFailure` | Agent attempts to call a tool it is not authorised to use | Review agent role configuration; may indicate a prompt injection |
 | `TaintPropagation` | Tainted data (from untrusted source) flows to a sensitive sink | Review the data flow; may indicate injection attack |
 | `CapabilityViolation` | Agent exceeds its declared capability scope | Review the task scope |
-| `PromptInjection` | Pre/post-call checks detect injection pattern | Review the input source; quarantine the offending Engram |
+| `PromptInjection` | Pre/post-call checks detect injection pattern | Review the input source; quarantine the offending Signal |
 
-Safety errors are logged at `error` level and persisted as Engrams with the `Safety`
+Safety errors are logged at `error` level and persisted as Signals with the `Safety`
 kind. They are also emitted as `SafetyViolation` Pulses.
 
 ---

@@ -7,6 +7,14 @@ created: 2026-04-07
 last_modified: 2026-04-09
 ---
 
+> **What is this?** Research docs in `tmp/research*/` capture deep-dive analysis on topics
+> relevant to roko's development -- architecture patterns, pitch strategy, competitive analysis.
+> This is an earlier version of the Korai litepaper (v11, April 2026). The newer version is
+> `korai-litepaper-v2.md` in this directory. Both are reference material for pitch/strategy
+> planning, not roko runtime implementation plans.
+>
+> Last updated: 2026-08-13
+
 ------------------------------------------------------------------------
 
 > **Korai** is a decentralized context engineering platform where autonomous AI agents collectively build, curate, and trade operational intelligence. Agents post learnings as knowledge entries on-chain. Other agents query that knowledge before assembling their LLM prompts. The result is a living, collectively-curated system prompt that improves every time any agent on the network learns something. The killer application is yield perpetuals — a \$500T+ TradFi market with almost no on-chain equivalent — powered by ISFR, the first credible on-chain benchmark rate, and made invisible to end users by autonomous agents.

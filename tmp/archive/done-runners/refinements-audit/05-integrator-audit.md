@@ -15,7 +15,7 @@ abstraction on top of an already-abstract stack?
 
 ### What the doc claims
 
-A 10x10 matrix of ten "load-bearing primitives" (Engram, Pulse, Bus,
+A 10x10 matrix of ten "load-bearing primitives" (Signal, Pulse, Bus,
 Substrate, HDC, Demurrage, Heuristics, c-factor, Replication ledger, Plugin
 SPI), with every cell describing what one primitive gives to another. Ten
 worked synergy examples. The thesis: Roko's moat is the interaction density
@@ -27,13 +27,13 @@ Of the ten primitives:
 
 | Primitive | Exists in code? | Status |
 |---|---|---|
-| P1 Engram | YES | `roko-core/src/engram.rs` -- real, tested, used everywhere |
+| P1 Signal | YES | `roko-core/src/__PATH_ENGRAM_RS__0` -- real, tested, used everywhere |
 | P2 Pulse | NO | No `Pulse` struct exists anywhere in the codebase |
 | P3 Bus trait | NO | `EventBus<E>` exists in `roko-runtime/src/event_bus.rs` as a concrete struct, not a trait |
 | P4 Substrate trait | YES | `roko-core/src/traits.rs` -- real, working |
 | P5 HDC fingerprint | PARTIAL | `HdcVector` exists in `roko-primitives/src/hdc.rs`; `text_fingerprint` used by episode logger; but `query_similar` does not exist on Substrate |
 | P6 Demurrage | NO | Zero occurrences of "demurrage" or "ReinforceKind" in any crate |
-| P7 Heuristics | MINIMAL | `HeuristicRule` in `roko-neuro/src/tier_progression.rs` only; no `Heuristic` engram kind, no Calibrator, no Wilson CI |
+| P7 Heuristics | MINIMAL | `HeuristicRule` in `roko-neuro/src/tier_progression.rs` only; no `Heuristic` signal kind, no Calibrator, no Wilson CI |
 | P8 c-factor | PARTIAL | `CFactorPolicy` in `roko-core/src/cfactor.rs`, `CFactor` struct in `roko-learn/src/cfactor.rs` -- exists, wired to Policy trait |
 | P9 Replication ledger | NO | No `Claim`, `Paper`, or replication ledger code exists |
 | P10 Plugin SPI | NO | No `roko-spi` crate; no plugin manifest schema; no tier system |
@@ -60,13 +60,13 @@ partially. Five are entirely aspirational.
 
 4. **Section 8 claims three "emergent properties"** (self-improvement,
    inspectability, substrate neutrality) that the composition has. But only
-   one (inspectability, via lineage chains on Engrams) is even partially
+   one (inspectability, via lineage chains on Signals) is even partially
    real today. The other two depend on primitives P5-P10 that mostly do
    not exist.
 
 ### Practical alternative
 
-Strip the matrix to the 3-4 primitives that actually exist (Engram,
+Strip the matrix to the 3-4 primitives that actually exist (Signal,
 Substrate, EventBus, HdcVector partial). Document only the synergies that
 are live today: lineage-based auditability, content-addressed storage +
 gate verdicts, HDC fingerprinting in episode logger. Mark everything else
@@ -161,7 +161,7 @@ Start from the existing `SafetyLayer` and extend it:
 - Phase 1: Add `AttestationLevel` to existing `Attestation` struct. Expand
   `Provenance.tainted` from bool to a `Taint` enum. Write the threat model
   doc. (1 week)
-- Phase 2: Add `Custody` engram kind and logging for destructive actions.
+- Phase 2: Add `Custody` signal kind and logging for destructive actions.
   (1 week)
 - Phase 3: Everything else is deferred until a plugin system exists.
 
@@ -275,11 +275,11 @@ I checked every bolded term against the codebase:
 | Datum | Yes | NO | NO -- does not exist |
 | Decay | Yes | `roko-core/src/decay.rs` | YES |
 | Demurrage | Yes | NO | NO -- does not exist |
-| Engram | Yes | `roko-core/src/engram.rs` | YES |
+| Engram (renamed to Signal in 2026-08-12) | Yes | `roko-core/src/__PATH_ENGRAM_RS__0` | YES |
 | Episode | Yes | `roko-learn/src/episode_logger.rs` | YES |
 | EventBus (retired) | Yes | `roko-runtime/src/event_bus.rs` | NOTE: still the live code, not "retired" |
 | Falsifier | Yes | NO | NO -- does not exist |
-| Fingerprint (HDC) | Yes | `roko-primitives/src/hdc.rs` | PARTIAL (HdcVector exists; not "on every Engram at put time") |
+| Fingerprint (HDC) | Yes | `roko-primitives/src/hdc.rs` | PARTIAL (HdcVector exists; not "on every Signal at put time") |
 | Fleet | Yes | NO | NO -- no Fleet struct |
 | Gate | Yes | `roko-core/src/traits.rs` | YES |
 | GateVerdict | Yes | `roko-core/src/kind.rs` | YES |
@@ -289,7 +289,7 @@ I checked every bolded term against the codebase:
 | Heuristic | Yes | `roko-neuro/src/tier_progression.rs` (HeuristicRule) | PARTIAL |
 | HdcVector | Yes | `roko-primitives/src/hdc.rs` | YES |
 | Kind | Yes | `roko-core/src/kind.rs` | YES |
-| Lineage | Yes | `Engram.lineage: Vec<ContentHash>` | YES |
+| Lineage | Yes | `Signal.lineage: Vec<ContentHash>` | YES |
 | loop_tick | Yes | `roko-core/src/loop_tick.rs` | YES |
 | MCP | Yes | `roko-mcp-code/`, etc. | YES |
 | Neuro | Yes | `crates/roko-neuro/` | YES |
@@ -368,7 +368,7 @@ discrepancy -- it is a 5-7x staffing mismatch.
    3-6 months of careful, test-covered migration with high risk of breaking
    the existing working system.
 
-2. **Q2 proposes HDC on every Engram, demurrage, heuristics as a type,
+2. **Q2 proposes HDC on every Signal, demurrage, heuristics as a type,
    c-factor measurement, and research-to-runtime.** These are five
    substantial features, each requiring new types, new storage, new CLI
    commands, and integration tests. For one developer, this is another

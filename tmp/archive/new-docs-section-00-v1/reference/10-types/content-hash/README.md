@@ -1,6 +1,6 @@
 # ContentHash
 
-> The identity digest of an Engram: a 32-byte BLAKE3 hash of its stable, canonical fields.
+> The identity digest of an Signal: a 32-byte BLAKE3 hash of its stable, canonical fields.
 
 ## Contents
 
@@ -20,6 +20,6 @@ For readers debugging identity mismatches: 01 → 03 → 04.
 
 ## See also
 
-- [`../provenance/04-hash-inclusion-rules.md`](../provenance/04-hash-inclusion-rules.md) — which Engram fields enter the hash
-- [`../../01-engram/02-content-hash.md`](../../01-engram/02-content-hash.md) — ContentHash in Engram context
+- [`../provenance/04-hash-inclusion-rules.md`](../provenance/04-hash-inclusion-rules.md) — which Engram (renamed to Signal in 2026-08-12) fields enter the hash
+- [`../../01-engram/02-content-hash.md`](../../01-engram/02-content-hash.md) — ContentHash in Signal context
 - [`../hdc-fingerprint/`](../hdc-fingerprint/) — the complementary semantic fingerprint

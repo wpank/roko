@@ -1,5 +1,14 @@
 # Three.js / WebGL Implementation Patterns
 
+> **What is this?** Implementation recipes for Three.js scenes used in ROSEDUST-themed
+> sites. Covers particle swarms, orrery/armillary spheres, wireframe grids, canvas
+> wrappers, HUD overlays, and performance budgets. All patterns are extracted from
+> the 14 working HTML site iterations catalogued in `06-SITE-CATALOGUE.md`.
+>
+> **Adoption status (2026-08-13):** These patterns are actively used in the demo-app
+> Three.js scenes. Include this doc alongside `01-ROSEDUST-DESIGN-SYSTEM.md` when
+> prompting an LLM to generate pages with 3D backgrounds.
+
 Use this document when building interactive Three.js scenes, particle systems, and WebGL backgrounds for ROSEDUST-themed sites. All patterns are extracted from working implementations.
 
 ---
@@ -487,3 +496,7 @@ const BG_DEEPER  = 0x040406;
 8. **Radial gradient container**: CSS gradient behind canvas creates depth
 9. **HUD overlays**: Absolute-positioned mono text gives data-viz feel
 10. **State toggles**: UI buttons transition between scene configurations smoothly
+
+---
+
+*Last updated: 2026-08-13*

@@ -26,7 +26,7 @@ id = "E02-T01"
 title = "Runner v2 writes gate verdicts to the canonical log; stop writing signals.jsonl"
 status = "done"
 tier = "integrative"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 90
 files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-fs/src/layout.rs"]
 role = "implementer"
@@ -87,7 +87,7 @@ id = "E02-T02"
 title = "Guard signals->engrams init migration to only move rows that parse as Engram"
 status = "done"
 tier = "focused"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 55
 files = ["crates/roko-cli/src/commands/util.rs"]
 role = "implementer"
@@ -143,7 +143,7 @@ id = "E02-T03"
 title = "Repoint executor.json readers at state-snapshot.json; drop executor_snapshot() helper"
 status = "done"
 tier = "integrative"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 80
 files = [
     "crates/roko-serve/src/routes/workspaces.rs",
@@ -195,7 +195,7 @@ id = "E02-T12"
 title = "Cold-substrate archival moves engrams out of the hot store (prune-after-archive + dedup append)"
 status = "ready"
 tier = "focused"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 90
 files = [
     "crates/roko-serve/src/lib.rs",
@@ -259,7 +259,7 @@ id = "E02-T04"
 title = "Materialize gate-thresholds.json from runner snapshots"
 status = "done"
 tier = "focused"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 70
 files = [
     "crates/roko-cli/src/runner/event_loop.rs",
@@ -324,7 +324,7 @@ id = "E02-T05"
 title = "Collapse episodes to root and repoint serve projection off memory"
 status = "done"
 tier = "focused"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 80
 files = [
     "crates/roko-fs/src/layout.rs",
@@ -385,7 +385,7 @@ id = "E02-T06"
 title = "Consolidate daimon state to daimon/affect.json and alias orchestrator state"
 status = "done"
 tier = "focused"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 45
 files = [
     "crates/roko-orchestrator/src/service_factory.rs",
@@ -442,7 +442,7 @@ id = "E02-T07"
 title = "Add retention for events, logs, run ledger, and backup files"
 status = "done"
 tier = "focused"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 80
 files = [
     "crates/roko-serve/src/retention.rs",
@@ -511,7 +511,7 @@ status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "E09-T04"
 tier = "integrative"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 100
 files = []
 role = "quick-reviewer"
@@ -570,7 +570,7 @@ id = "E02-T09"
 title = "Resolve runtime-events.jsonl route contract and writer coverage"
 status = "done"
 tier = "focused"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 80
 files = [
     "crates/roko-serve/src/routes/runs.rs",
@@ -635,7 +635,7 @@ id = "E02-T10"
 title = "Retire dead state/events.json event snapshot path"
 status = "done"
 tier = "mechanical"
-model_hint = "claude-haiku-4-5"
+model_hint = "claude-sonnet"
 max_loc = 55
 files = [
     "crates/roko-cli/src/runner/persist.rs",
@@ -689,14 +689,14 @@ acceptance = [
 ]
 
 # ---------------------------------------------------------------------------
-# E02-T11: LayoutVersion::V2 migration and doctor audit
+# E02-T11: Versioned layout migration and doctor audit
 # ---------------------------------------------------------------------------
 [[task]]
 id = "E02-T11"
-title = "Introduce LayoutVersion::V2 migration and roko doctor state audit"
+title = "Maintain the current versioned layout migration and roko doctor state audit"
 status = "done"
 tier = "integrative"
-model_hint = "claude-sonnet-4-5"
+model_hint = "claude-sonnet"
 max_loc = 150
 files = [
     "crates/roko-fs/src/layout.rs",
@@ -707,7 +707,7 @@ depends_on = ["E02-T01", "E02-T03", "E02-T04", "E02-T05"]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-fs/src/layout.rs", lines = "29-57", why = "LayoutVersion currently only has V1 and CURRENT = V1" },
+    { path = "crates/roko-fs/src/layout.rs", lines = "29-57", why = "LayoutVersion declarations and the CURRENT version" },
     { path = "crates/roko-fs/src/layout.rs", lines = "468-505", why = "ensure_dirs/read_version write and parse .roko/VERSION" },
     { path = "crates/roko-cli/src/doctor.rs", lines = "31-60", why = "DoctorStatus and DoctorCheck shape" },
     { path = "crates/roko-cli/src/doctor.rs", lines = "416-464", why = "layout basics check to extend with version/state audit" },
@@ -722,34 +722,34 @@ symbols = [
 ]
 anti_patterns = [
     "Do not make P24-T3 a local dependency; copy its DoctorCheck pattern if it exists.",
-    "Do not bump VERSION without a migration/audit path for V1 workspaces.",
+    "Do not bump VERSION without a migration/audit path for older workspaces.",
     "Do not mark unknown state files OK by default; classify canonical, legacy, orphan, or warn.",
     "Do not reintroduce memory/episodes or signals.jsonl as canonical during migration.",
 ]
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'V2' crates/roko-fs/src/layout.rs"
-fail_msg = "LayoutVersion::V2 must be introduced"
+command = "grep -q 'V3' crates/roko-fs/src/layout.rs"
+fail_msg = "LayoutVersion::V3 must be present"
 
 [[task.verify]]
 phase = "structural"
-command = "grep -qE 'CURRENT.*V2|V2.*CURRENT' crates/roko-fs/src/layout.rs"
-fail_msg = "LayoutVersion::CURRENT must point at V2"
+command = "grep -qE 'CURRENT.*V3|V3.*CURRENT' crates/roko-fs/src/layout.rs"
+fail_msg = "LayoutVersion::CURRENT must point at V3"
 
 [[task.verify]]
 phase = "structural"
-command = "rg -q 'state.*audit|canonical.*legacy|legacy.*canonical|LayoutVersion::V2' crates/roko-cli/src/doctor.rs"
+command = "rg -q 'state.*audit|canonical.*legacy|legacy.*canonical' crates/roko-cli/src/doctor.rs"
 fail_msg = "roko doctor must include a state layout audit for canonical, legacy, and orphan files"
 
 [[task.verify]]
 phase = "compile"
 command = "cargo check -p roko-fs -p roko-cli 2>&1"
-fail_msg = "layout V2 and doctor audit must compile"
+fail_msg = "the current layout migration and doctor audit must compile"
 
 acceptance = [
-    ".roko/VERSION is written as 2 for newly ensured workspaces.",
-    "V1 workspaces are migrated or explicitly audited into V2 canonical paths.",
+    ".roko/VERSION is written as 3 for newly ensured workspaces.",
+    "V1 and V2 workspaces are migrated or explicitly audited into V3 canonical paths.",
     "roko doctor lists canonical, legacy, and orphan .roko state files with actionable status.",
     "The doctor audit depends on E02-T01, T03, T04, and T05 convergence decisions and does not resurrect superseded paths.",
 ]

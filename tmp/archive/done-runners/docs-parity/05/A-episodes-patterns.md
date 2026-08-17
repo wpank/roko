@@ -7,7 +7,7 @@ Audit-corrected parity view of `docs/05-learning/00-episode-logger.md` and `05-p
 ## What Is Already Shipped
 
 - `EpisodeLogger` is real, append-only, crash-safe, and already supports compaction.
-- HDC fingerprints are already attached to episodes today, but they live in `extra` rather than on `Engram`.
+- HDC fingerprints are already attached to episodes today, but they live in `extra` rather than on `Signal`.
 - `PatternMiner`, `EpisodeView`, cross-episode consolidation, and k-medoids clustering are all live.
 - Pattern discovery already runs on a slower cadence inside `LearningRuntime`; it is not just a design note.
 
@@ -25,11 +25,11 @@ Audit-corrected parity view of `docs/05-learning/00-episode-logger.md` and `05-p
 
 - keep `EpisodeLogger`, `PatternMiner`, and k-medoids in present tense,
 - describe compaction as the current retention mechanism,
-- describe fingerprints as shipping but living on episode records rather than `Engram`.
+- describe fingerprints as shipping but living on episode records rather than `Signal`.
 
 ### Ship Soon
 
-- add `fingerprint` to `Engram`,
+- add `fingerprint` to `Signal`,
 - then update the docs so episode fingerprints are no longer described as a learning-only side channel.
 
 ### Deferred
@@ -50,7 +50,7 @@ When touching `docs/05-learning/00-episode-logger.md` or `05-pattern-discovery-t
 
 ## Batch-Ready Follow-Ups
 
-- carry forward: add the HDC fingerprint bridge to `Engram`
+- carry forward: add the HDC fingerprint bridge to `Signal`
 - `L7`: align the episode and pattern docs with the shipped runtime
 
 ## Source Anchors

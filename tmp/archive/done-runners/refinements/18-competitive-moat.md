@@ -99,7 +99,7 @@ correctness ceiling set by runtime semantics:
 
 - No compile-time guarantees on tool-schema ↔ invocation match.
 - No type-safe routing between heterogeneous backends.
-- No zero-copy paths for large Engrams.
+- No zero-copy paths for large Signals.
 - GC pauses at inconvenient moments in a long orchestration.
 - Weaker threading primitives for the kind of coordination c-factor
   work needs.

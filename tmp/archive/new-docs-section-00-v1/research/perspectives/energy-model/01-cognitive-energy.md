@@ -66,7 +66,7 @@ Processing result + consolidation → durable knowledge (replenishing Neuro)
 ```
 
 The "cognitive heat" (side-channel costs) includes: context pollution from processed but
-not-retained Engrams, increased routing overhead from filled queues, latency from
+not-retained Signals, increased routing overhead from filled queues, latency from
 garbage-collection-equivalent processes.
 
 ---
@@ -91,7 +91,7 @@ Mitochondrial dysfunction (failure of energy production) produces fatigue, cogni
 impairment, and ultimately cell death. The cognitive analog:
 - **Context window saturation**: T2 operations can no longer complete because the context
   window is full. The "power plant" is overwhelmed.
-- **Substrate backpressure**: Engrams cannot be written to the Substrate because of queue
+- **Substrate backpressure**: Signals cannot be written to the Substrate because of queue
   saturation. Processing results are lost.
 - **Scheduler starvation**: high-priority tasks consume all scheduling capacity, starving
   background processes (Dreams, Neuro consolidation).

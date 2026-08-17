@@ -9,7 +9,7 @@ make the redesign more buildable, more legible, and easier to operate.
 ### ADD01. Three-lane kernel rule
 
 The redesign needs one explicit law:
-- durable record lane: `Engram` + `Substrate`;
+- durable record lane: `Signal` + `Substrate`;
 - live transport lane: `Pulse` + `Bus`;
 - derived view lane: `Projection` + `StateHub` host.
 

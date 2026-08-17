@@ -15,9 +15,9 @@ agent, the threshold should increase; if Theta consistently improves, it should 
 
 ## OQ-2: Partial Delta
 
-A full Delta pass processes all Engrams from the last 24 h. For agents with large
+A full Delta pass processes all Signals from the last 24 h. For agents with large
 Substrates, this can take minutes. A "partial Delta" approach — consolidating only
-the highest-utility or most-recently-active Engrams — could reduce Delta latency
+the highest-utility or most-recently-active Signals — could reduce Delta latency
 without meaningfully degrading consolidation quality.
 
 ---

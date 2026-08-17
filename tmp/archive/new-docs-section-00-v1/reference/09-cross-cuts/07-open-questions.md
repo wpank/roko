@@ -35,10 +35,10 @@ can shift thresholds would address this.
 
 ## OQ-4: Dreams and trust bootstrapping
 
-New `Kind::Imagined` Engrams start with trust = 0.20. This means they are unlikely
-to be composed (SCORE will rank them low on Trust). How do imagined Engrams ever
+New `Kind::Imagined` Signals start with trust = 0.20. This means they are unlikely
+to be composed (SCORE will rank them low on Trust). How do imagined Signals ever
 demonstrate utility if they are never composed? A "probationary" mechanism — where
-occasionally a low-trust Imagined Engram is sampled regardless of score — would
+occasionally a low-trust Imagined Signal is sampled regardless of score — would
 allow bootstrapping.
 
 ---

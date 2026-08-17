@@ -11,7 +11,7 @@
 > **Implementation**: Built
 
 **Topic**: [Neuro — Cognitive Knowledge Layer](./INDEX.md)
-**Prerequisites**: [00-architecture](../00-architecture/INDEX.md) for Synapse Architecture concepts (Engrams, 6 traits, Substrate)
+**Prerequisites**: [00-architecture](../00-architecture/INDEX.md) for Synapse Architecture concepts (Signals, 6 traits, Substrate)
 **Key sources**:
 - `refactoring-prd/03-cognitive-subsystems.md` §1 (Neuro architecture note)
 - `refactoring-prd/04-knowledge-and-mesh.md` §1 (Knowledge Architecture)
@@ -29,7 +29,7 @@ Neuro (`roko-neuro`) is the knowledge subsystem of the Roko agent framework. It 
 
 The subsystem was originally called "Grimoire" (now Neuro) in the legacy Bardo (now Roko) architecture. The rename reflects a shift from mystical framing to neuroscience-inspired terminology. The underlying mechanisms — six knowledge types, tier progression, HDC encoding, exponential decay — are preserved intact. Only the naming and certain lifecycle concepts (succession, mortality-driven consolidation) have changed.
 
-Neuro occupies a unique architectural position: it is a **semantic wrapper** around `Substrate` (the generic Engram storage trait from the Synapse Architecture), not a replacement for it. Neuro calls `Substrate.put()` and `Substrate.query()` underneath, but adds knowledge-specific logic on top: type classification (Insight, Heuristic, Warning, CausalLink, StrategyFragment, AntiKnowledge), tier progression (Transient → Working → Consolidated → Persistent), HDC encoding for sub-millisecond similarity search, and Ebbinghaus decay with tier multipliers. Think of Neuro as a domain-specific indexing layer that gives raw Engram storage the semantics of a knowledge management system.
+Neuro occupies a unique architectural position: it is a **semantic wrapper** around `Substrate` (the generic Signal storage trait from the Synapse Architecture), not a replacement for it. Neuro calls `Substrate.put()` and `Substrate.query()` underneath, but adds knowledge-specific logic on top: type classification (Insight, Heuristic, Warning, CausalLink, StrategyFragment, AntiKnowledge), tier progression (Transient → Working → Consolidated → Persistent), HDC encoding for sub-millisecond similarity search, and Ebbinghaus decay with tier multipliers. Think of Neuro as a domain-specific indexing layer that gives raw Signal storage the semantics of a knowledge management system.
 
 This document covers the vision for Neuro, the rename from Grimoire, the architectural relationship to the Synapse Architecture, and the dissolution of the `roko-golem` crate that formerly housed the Grimoire placeholder.
 
@@ -86,9 +86,9 @@ The rename to **Neuro** reflects several architectural decisions:
 
 ### The Synapse Architecture Context
 
-Roko's kernel is the **Synapse Architecture**: one noun (Engram) and six verb traits (Substrate, Scorer, Gate, Router, Composer, Policy). Every capability in Roko flows through these six traits. Neuro is not an exception — it builds on top of them.
+Roko's kernel is the **Synapse Architecture**: one noun (Signal) and six verb traits (Substrate, Scorer, Gate, Router, Composer, Policy). Every capability in Roko flows through these six traits. Neuro is not an exception — it builds on top of them.
 
-The `Substrate` trait provides generic, content-addressed Engram storage:
+The `Substrate` trait provides generic, content-addressed Signal storage:
 
 ```rust
 /// Generic Engram storage and retrieval.
@@ -104,7 +104,7 @@ pub trait Substrate: Send + Sync {
 }
 ```
 
-`Substrate` knows nothing about knowledge types, tiers, decay rates, or HDC vectors. It stores and retrieves Engrams — that is all.
+`Substrate` knows nothing about knowledge types, tiers, decay rates, or HDC vectors. It stores and retrieves Signals — that is all.
 
 ### Where Neuro Sits
 
@@ -127,7 +127,7 @@ Neuro adds a knowledge-specific semantic layer on top of `Substrate`:
 └─────────────────────────────────────────────────────┘
 ```
 
-Neuro uses `Substrate.put()` to persist knowledge entries as Engrams, and `Substrate.query()` to retrieve them. It adds:
+Neuro uses `Substrate.put()` to persist knowledge entries as Signals, and `Substrate.query()` to retrieve them. It adds:
 
 1. **Type classification**: Every knowledge entry has a `KnowledgeKind` (Insight, Heuristic, Warning, CausalLink, StrategyFragment, AntiKnowledge) that determines its base half-life and retrieval behavior.
 
@@ -189,9 +189,9 @@ This umbrella pattern created tight coupling between subsystems that should be i
 
 After dissolution, any subsystem can pipe to any other through the 6 Synapse traits:
 
-- **Daimon** emits Engrams (affect state changes) → **Neuro** stores them (as knowledge about the agent's own cognitive patterns).
-- **Dreams** reads from **Neuro** (knowledge entries to consolidate) → produces new Engrams (synthesized insights, promoted heuristics).
-- **Chain** posts Engrams on-chain (publishing knowledge to Korai) → other agents query them.
+- **Daimon** emits Signals (affect state changes) → **Neuro** stores them (as knowledge about the agent's own cognitive patterns).
+- **Dreams** reads from **Neuro** (knowledge entries to consolidate) → produces new Signals (synthesized insights, promoted heuristics).
+- **Chain** posts Signals on-chain (publishing knowledge to Korai) → other agents query them.
 - **Neuro** receives entries from episode distillation, Dream consolidation, mesh sharing, and user restore — all through the same `NeuroStore.ingest()` interface.
 
 No umbrella crate is needed. Everything flows through the 6 Synapse traits. Composition happens at the application layer (in `roko.toml` configuration and the orchestrator's wiring), not in a monolithic aggregator struct.
@@ -351,7 +351,7 @@ Mattar and Daw (2018) showed that the hippocampus preferentially replays memorie
 - See [07-ebbinghaus-decay-with-tier.md](./07-ebbinghaus-decay-with-tier.md) for decay mechanics
 - See [15-knowledge-backup-restore.md](./15-knowledge-backup-restore.md) for the backup/restore model
 - See [16-current-status-and-gaps.md](./16-current-status-and-gaps.md) for detailed implementation status
-- See topic [00-architecture](../00-architecture/INDEX.md) for the Synapse Architecture (Engrams, 6 traits)
+- See topic [00-architecture](../00-architecture/INDEX.md) for the Synapse Architecture (Signals, 6 traits)
 - See topic [09-daimon](../09-daimon/INDEX.md) for the Daimon motivation/affect subsystem
 - See topic [10-dreams](../10-dreams/INDEX.md) for the Dreams offline consolidation subsystem
 
@@ -762,7 +762,7 @@ The six knowledge types are **domain-agnostic** — they apply equally to any pr
 - See [11-antiknowledge-challenge.md](./11-antiknowledge-challenge.md) for the full AntiKnowledge challenge mechanism
 - See [12-4-tier-distillation-pipeline.md](./12-4-tier-distillation-pipeline.md) for how types interact with the distillation pipeline
 - See topic [05-learning](../05-learning/INDEX.md) for the episode → knowledge feedback loop
-- See topic [00-architecture](../00-architecture/INDEX.md) for the Engram type that underlies all knowledge entries
+- See topic [00-architecture](../00-architecture/INDEX.md) for the Signal type that underlies all knowledge entries
 
 
 ---
@@ -1388,7 +1388,7 @@ publication.
 - `refactoring-prd/09-innovations.md` §XIII (Cross-Domain Insight Resonance), §XIX.D (False Positive Rate)
 - `crates/roko-primitives/src/hdc.rs` (HdcVector implementation)
 - `crates/roko-index/src/hdc.rs` (code symbol fingerprinting)
-- `docs/00-architecture/02-engram-data-type.md` (first-class Engram fingerprint field)
+- `docs/00-architecture/02-signal-data-type.md` (first-class Signal fingerprint field)
 - `docs/00-architecture/07-substrate-trait.md` (native similarity query surface)
 - `docs/00-architecture/27-temporal-knowledge-topology.md` (HDC-cluster-driven tier progression)
 - `../../tmp/refinements/11-hyperdimensional-substrate.md` (canonical refinement source)
@@ -1399,7 +1399,7 @@ publication.
 
 Hyperdimensional Computing (HDC), also called Vector Symbolic Architectures (VSA), represents information as high-dimensional binary vectors and manipulates them with a small set of algebraic operations. The idea rests on a geometric fact: in spaces of dimension D ≥ 8,000, randomly sampled vectors are quasi-orthogonal with overwhelming probability. For D = 10,240 binary vectors (the dimension Roko uses), the probability that two independent vectors share more than 55% of their bits is less than 10⁻⁹. Thousands of distinct concepts can coexist in the same vector space without collision.
 
-HDC is not a replacement for neural network embeddings or traditional database indices. It is a **complementary computational substrate** - a 1,280-byte algebraic representation that now lives on every Engram as a first-class `fingerprint` field. The fingerprint is populated by a deterministic default encoder at insert time, with room for kind-specific encoders when a domain needs specialized structure. That single field unifies similarity search, consensus, analogy, memory compression, and cluster-driven tier progression without a side-table.
+HDC is not a replacement for neural network embeddings or traditional database indices. It is a **complementary computational substrate** - a 1,280-byte algebraic representation that now lives on every Signal as a first-class `fingerprint` field. The fingerprint is populated by a deterministic default encoder at insert time, with room for kind-specific encoders when a domain needs specialized structure. That single field unifies similarity search, consensus, analogy, memory compression, and cluster-driven tier progression without a side-table.
 
 This document covers the mathematical foundations of HDC, the selection of Binary Spatter Codes (BSC) as the specific HDC family, the dimension choice of D = 10,240, the four core algebraic operations, capacity bounds, the default encoder plus specialization model, and the Rust implementation in `roko-primitives`.
 
@@ -1442,13 +1442,13 @@ For Neuro, HDC provides:
 4. **Memory compression**: Bundle thousands of entries into a single 1,280-byte summary
 5. **Collective consensus**: Privacy-preserving vote aggregation via HDC bundling
 
-### Engram fingerprints are first-class
+### Signal fingerprints are first-class
 
-Every Engram carries a 10,240-bit HDC fingerprint field. The default encoder derives that fingerprint deterministically from the Engram's kind, body, and tags when the record is inserted into the Substrate. Kind-specific encoders can extend that base representation for domains that need extra structure, but they do not replace the base contract.
+Every Signal carries a 10,240-bit HDC fingerprint field. The default encoder derives that fingerprint deterministically from the Signal's kind, body, and tags when the record is inserted into the Substrate. Kind-specific encoders can extend that base representation for domains that need extra structure, but they do not replace the base contract.
 
 That framing matters because similarity, consensus, analogy, and HDC-cluster promotion all operate on the stored record itself. The fingerprint is not an optional annotation or a side-table lookup key; it is part of the durable record.
 
-See also [tmp/refinements/11-hyperdimensional-substrate.md](../../tmp/refinements/11-hyperdimensional-substrate.md), [Engram data type](../00-architecture/02-engram-data-type.md), and [Substrate trait](../00-architecture/07-substrate-trait.md).
+See also [tmp/refinements/11-hyperdimensional-substrate.md](../../tmp/refinements/11-hyperdimensional-substrate.md), [Signal data type](../00-architecture/02-signal-data-type.md), and [Substrate trait](../00-architecture/07-substrate-trait.md).
 
 ---
 
@@ -3560,7 +3560,7 @@ pub fn stochastic_decay(&self, factor: f64, seed: u64) -> Self {
 - `refactoring-prd/03-cognitive-subsystems.md` §1 (HDC Encoding section)
 - `crates/roko-index/src/hdc.rs` (code symbol fingerprinting)
 - `crates/roko-primitives/src/hdc.rs` (from_seed, text_fingerprint)
-- `docs/00-architecture/02-engram-data-type.md` (first-class fingerprint field)
+- `docs/00-architecture/02-signal-data-type.md` (first-class fingerprint field)
 - `docs/00-architecture/07-substrate-trait.md` (native similarity query surface)
 - `docs/00-architecture/27-temporal-knowledge-topology.md` (HDC clusters and tier progression)
 - `../../tmp/refinements/11-hyperdimensional-substrate.md` (canonical refinement source)
@@ -3569,9 +3569,9 @@ pub fn stochastic_decay(&self, factor: f64, seed: u64) -> Self {
 
 ## Abstract
 
-Every Engram in Neuro carries a `fingerprint` field - a 10,240-bit Binary Spatter Code vector that encodes the record's semantic structure. The fingerprint is produced by a deterministic default encoder at insert time, so similarity search is native to the durable record rather than a side-table annotation. Queries are matched against stored fingerprints by Hamming distance, a single XOR + POPCNT operation per comparison that completes in ~13 nanoseconds.
+Every Signal in Neuro carries a `fingerprint` field - a 10,240-bit Binary Spatter Code vector that encodes the record's semantic structure. The fingerprint is produced by a deterministic default encoder at insert time, so similarity search is native to the durable record rather than a side-table annotation. Queries are matched against stored fingerprints by Hamming distance, a single XOR + POPCNT operation per comparison that completes in ~13 nanoseconds.
 
-The encoding scheme uses HDC's algebraic operations to capture the **structure** of an Engram - its kind, body, and tags in the default path, with room for kind-specific extensions - in a single fixed-size vector. Because HDC operations are compositional, the resulting vector preserves structural relationships: records about the same topic in different domains will have moderate similarity, records about the same topic in the same domain will have high similarity, and records about unrelated topics will be quasi-orthogonal (similarity ≈ 0.5).
+The encoding scheme uses HDC's algebraic operations to capture the **structure** of an Signal - its kind, body, and tags in the default path, with room for kind-specific extensions - in a single fixed-size vector. Because HDC operations are compositional, the resulting vector preserves structural relationships: records about the same topic in different domains will have moderate similarity, records about the same topic in the same domain will have high similarity, and records about unrelated topics will be quasi-orthogonal (similarity ≈ 0.5).
 
 This document covers the encoding pipeline (default encoder -> concept vectors -> role-filler bindings -> bundled fingerprint), the three-tier search strategy for large knowledge bases, the consensus/analogy uses of HDC fingerprints, and the current implementation in `roko-primitives/src/hdc.rs`.
 
@@ -3703,7 +3703,7 @@ fn encode_knowledge_entry(entry: &KnowledgeEntry) -> HdcVector {
 
 ### Default encoder and specialization
 
-The default Engram encoder should remain deterministic and lightweight, while allowing kind-specific encoders to specialize the representation when needed:
+The default Signal encoder should remain deterministic and lightweight, while allowing kind-specific encoders to specialize the representation when needed:
 
 ```rust
 pub trait HdcEncoder {
@@ -3714,7 +3714,7 @@ pub struct DefaultEncoder;
 ```
 
 The default path should:
-- hash canonical bytes for the Engram kind, body, and tags;
+- hash canonical bytes for the Signal kind, body, and tags;
 - bind each attribute to a stable role vector;
 - bundle the resulting bindings into one fingerprint;
 - let kind-specific encoders extend the base representation with extra fields when needed without changing the storage contract.
@@ -3723,7 +3723,7 @@ The default path should:
 
 The fingerprint is not only for nearest-neighbor lookup. The same vector supports three higher-order behaviors:
 
-- **Consensus**: bundle the fingerprints of multiple candidate Engrams to check whether they converge on the same structure, even if the surface wording differs.
+- **Consensus**: bundle the fingerprints of multiple candidate Signals to check whether they converge on the same structure, even if the surface wording differs.
 - **Analogy**: bind role vectors and compare the resulting fingerprints across domains to find structural matches.
 - **Tier progression**: cluster similar Insight fingerprints before promotion, so the system promotes coherent neighborhoods of knowledge rather than isolated entries.
 
@@ -3791,7 +3791,7 @@ pub fn fingerprint_symbol(kind: SymbolKind, name: &str) -> HdcVector {
 
 ## Three-Tier Search Strategy
 
-For small knowledge bases (<100K entries), brute-force Hamming distance scan is fast enough (~1.3 ms at 100K entries). Because every Engram already carries its fingerprint, `query_similar` is always available; the three-tier search strategy is an optimization for larger collections (collective knowledge on the Korai chain, potentially millions of entries):
+For small knowledge bases (<100K entries), brute-force Hamming distance scan is fast enough (~1.3 ms at 100K entries). Because every Signal already carries its fingerprint, `query_similar` is always available; the three-tier search strategy is an optimization for larger collections (collective knowledge on the Korai chain, potentially millions of entries):
 
 ### Tier 1: Bloom Filter (Fast Reject)
 
@@ -3939,7 +3939,7 @@ else:
 
 ### Trigger and integration
 
-Every Engram ingested into `NeuroStore` should carry a fingerprint. The automatic encoding pipeline fills it at ingestion time, and kind-specific encoders can refine the fingerprint when the record needs domain-specific structure.
+Every Signal ingested into `NeuroStore` should carry a fingerprint. The automatic encoding pipeline fills it at ingestion time, and kind-specific encoders can refine the fingerprint when the record needs domain-specific structure.
 
 ```rust
 use crate::{HdcVector, ItemMemory, KnowledgeEntry, KnowledgeKind};
@@ -4501,7 +4501,7 @@ impl ProvenanceChain {
 - `fingerprint_symbol()` in `roko-index` for code symbol encoding
 - Trigram-based name encoding in `roko-index`
 - Role vectors per `SymbolKind` in `roko-index`
-- `fingerprint: Option<HdcFingerprint>` field on `Engram`
+- `fingerprint: Option<HdcFingerprint>` field on `Signal`
 - Basic similarity comparison in `KnowledgeStore` (HDC `MemoryIndex` feature-gated)
 
 **Missing**:
@@ -4756,7 +4756,7 @@ The practical advantage is replayability: given an entry's type, tier, balance, 
 
 ## Abstract
 
-The most novel capability of Neuro's HDC encoding is **cross-domain insight resonance** — the automatic detection of structural analogies across different problem domains, in nanoseconds. When a coding agent learns "complex code needs more review," the structural pattern transfers to chain agents as "volatile markets need more caution." The surface-level Engrams are different, but the HDC vectors are similar because both encode the abstract relationship `BIND(high_uncertainty, more_verification)`.
+The most novel capability of Neuro's HDC encoding is **cross-domain insight resonance** — the automatic detection of structural analogies across different problem domains, in nanoseconds. When a coding agent learns "complex code needs more review," the structural pattern transfers to chain agents as "volatile markets need more caution." The surface-level Signals are different, but the HDC vectors are similar because both encode the abstract relationship `BIND(high_uncertainty, more_verification)`.
 
 This is not metaphorical similarity — it is geometric. In 10,240-dimensional binary space, structural relationships are preserved by the bind and bundle operations. Two entries that encode the same abstract relationship (even using different domain-specific concepts) will have measurably higher Hamming similarity than unrelated entries. The recommended threshold for cross-domain resonance detection is 0.526 (see [09-false-positive-math.md](./09-false-positive-math.md)), which guarantees <1% false positive rate against a 100K-entry knowledge base.
 
@@ -5759,7 +5759,7 @@ Somatic markers (see [13-somatic-integration.md](./13-somatic-integration.md)) a
 - `crates/roko-neuro/src/lib.rs` (NeuroStore trait, KnowledgeEntry)
 - `crates/roko-neuro/src/knowledge_store.rs` (KnowledgeStore JSONL implementation)
 - `crates/roko-neuro/src/context.rs` (ContextAssembler skeleton)
-- `docs/00-architecture/02-engram-data-type.md` (first-class fingerprint field)
+- `docs/00-architecture/02-signal-data-type.md` (first-class fingerprint field)
 - `docs/00-architecture/07-substrate-trait.md` (native similarity query surface)
 - `../../tmp/refinements/11-hyperdimensional-substrate.md` (canonical refinement source)
 
@@ -5769,7 +5769,7 @@ Somatic markers (see [13-somatic-integration.md](./13-somatic-integration.md)) a
 
 The `NeuroStore` trait is the single entry point for all durable knowledge storage operations in Neuro. It defines six methods - `init`, `query`, `query_similar`, `ingest`, `decay`, and `gc` - that together provide a complete lifecycle for knowledge entries. The trait is implemented by `KnowledgeStore`, which uses append-only JSONL files at `.roko/neuro/knowledge.jsonl` as the storage backend.
 
-The query API now treats HDC fingerprints as first-class record data. Topic-based retrieval remains available for lexical lookup, but native similarity queries operate directly on the stored Engram fingerprint and return nearest neighbors by Hamming distance. The API is designed to be called from the context assembly pipeline, where retrieved knowledge entries are injected into the agent's prompt alongside episode memory, playbook rules, and task context.
+The query API now treats HDC fingerprints as first-class record data. Topic-based retrieval remains available for lexical lookup, but native similarity queries operate directly on the stored Signal fingerprint and return nearest neighbors by Hamming distance. The API is designed to be called from the context assembly pipeline, where retrieved knowledge entries are injected into the agent's prompt alongside episode memory, playbook rules, and task context.
 
 ---
 
@@ -7043,7 +7043,7 @@ Distilled entries enter the NeuroStore at the Transient tier with initial confid
 The D2 stage uses `PatternMiner` from `roko-learn` to identify clusters of related Insights that share a common pattern. The mining process is intentionally structural:
 
 1. Collect all Insights with confidence >= 0.5
-2. Cluster by HDC fingerprint similarity using the per-Engram fingerprint field
+2. Cluster by HDC fingerprint similarity using the per-Signal fingerprint field
 3. Filter clusters with at least 5 members and mean confidence >= 0.7
 4. Extract the common pattern from each qualifying cluster
 5. Emit a durable Heuristic record with calibration metadata and receipts
@@ -7249,7 +7249,7 @@ This mirrors sleep consolidation: fast episodic learning during the day, slow se
 - See [tmp/refinements/12-knowledge-demurrage.md](../../tmp/refinements/12-knowledge-demurrage.md) for the demurrage model reflected in this doc
 - See [tmp/refinements/14-worldview-validation.md](../../tmp/refinements/14-worldview-validation.md) for the heuristic calibration, falsifier, and worldview-clustering refinement reflected here
 - See [04-hdc-vsa-foundations.md](./04-hdc-vsa-foundations.md) for the HDC algebra behind fingerprint similarity
-- See [06-hdc-knowledge-encoding.md](./06-hdc-knowledge-encoding.md) for the default encoder and per-Engram fingerprinting pipeline
+- See [06-hdc-knowledge-encoding.md](./06-hdc-knowledge-encoding.md) for the default encoder and per-Signal fingerprinting pipeline
 - See [10-knowledge-query-api.md](./10-knowledge-query-api.md) for the native similarity query surface
 - See [04-decay-variants.md](../00-architecture/04-decay-variants.md) for the architecture-side retention model
 - See [18-decay-tier-matrix.md](../00-architecture/18-decay-tier-matrix.md) for tier progression and cold-tier calibration
@@ -7921,7 +7921,7 @@ Published entries are encoded as HDC vectors on-chain and can be discovered by a
 
 Neuro's codebase has a solid foundation: the core data types (`KnowledgeEntry`, `KnowledgeKind`, `NeuroStore` trait), the JSONL storage backend (`KnowledgeStore`), the episode distillation pipeline (`Distiller`, `DistillationBackend`), and the tier progression system (`TierProgression` with D1/D2/D3 stages) are all implemented. The HDC vector library (`HdcVector` in `roko-primitives`) is fully functional with bind, bundle, permute, similarity, and deterministic seeding.
 
-However, significant gaps remain between the current implementation and the refactoring-prd design. The tier multiplier system is now implemented on `KnowledgeEntry`, the canonical knowledge types now match the PRD (`Insight`, `Heuristic`, `Warning`, `CausalLink`, `StrategyFragment`, `AntiKnowledge`) with legacy names preserved only as serde aliases, the canonical `ContextAssembler` now lives in `roko-neuro`, AntiKnowledge now enforces its 0.3 confidence floor during decay/GC, CausalLinks now use directional HDC role bindings during ingest and retrieval, `KnowledgeEntry` now carries emotional provenance transferred from episodes and orchestrator-produced engrams, and Neuro's local context allocator now performs auction-style budget selection plus mood-congruent scoring, direct somatic re-ranking, a contrarian affect slice, and a modest emotional-diversity reliability boost instead of naive truncation. Daimon now also has a real somatic landscape used to bias routing, prompt shaping, and dream-time depotentiation, but the full cross-subsystem VCG attention auction and fuller active-inference retrieval are still open.
+However, significant gaps remain between the current implementation and the refactoring-prd design. The tier multiplier system is now implemented on `KnowledgeEntry`, the canonical knowledge types now match the PRD (`Insight`, `Heuristic`, `Warning`, `CausalLink`, `StrategyFragment`, `AntiKnowledge`) with legacy names preserved only as serde aliases, the canonical `ContextAssembler` now lives in `roko-neuro`, AntiKnowledge now enforces its 0.3 confidence floor during decay/GC, CausalLinks now use directional HDC role bindings during ingest and retrieval, `KnowledgeEntry` now carries emotional provenance transferred from episodes and orchestrator-produced signals, and Neuro's local context allocator now performs auction-style budget selection plus mood-congruent scoring, direct somatic re-ranking, a contrarian affect slice, and a modest emotional-diversity reliability boost instead of naive truncation. Daimon now also has a real somatic landscape used to bias routing, prompt shaping, and dream-time depotentiation, but the full cross-subsystem VCG attention auction and fuller active-inference retrieval are still open.
 
 ---
 
@@ -8447,7 +8447,7 @@ impl NeurosymbolicStore {
 
 # Neuro — Cognitive Knowledge Layer
 
-> Neuro (`roko-neuro`) is the agent's persistent, tiered knowledge system. Shipping pieces include `KnowledgeEntry`, `KnowledgeKind`, `KnowledgeStore`, `Distiller`, tier progression, and HDC-backed encoding/query support in parts of the stack. The broader design in this topic treats universal per-Engram fingerprints, demurrage/balance freshness, and worldview-aware heuristic memory as target-state extensions rather than fully implemented behavior.
+> Neuro (`roko-neuro`) is the agent's persistent, tiered knowledge system. Shipping pieces include `KnowledgeEntry`, `KnowledgeKind`, `KnowledgeStore`, `Distiller`, tier progression, and HDC-backed encoding/query support in parts of the stack. The broader design in this topic treats universal per-Signal fingerprints, demurrage/balance freshness, and worldview-aware heuristic memory as target-state extensions rather than fully implemented behavior.
 > REF14 contributes useful direction here, but the near-term layer is heuristic calibration and contradiction tracking around existing knowledge structures, not a finished worldview stack.
 >
 > **Implementation status**
@@ -8458,7 +8458,7 @@ impl NeurosymbolicStore {
 **Part of**: [Roko PRD](../INDEX.md)
 **Status**: Written
 **Last generated**: 2026-04-12
-**Prerequisites**: [00-architecture](../00-architecture/INDEX.md) for Synapse Architecture concepts (Engrams, 6 traits)
+**Prerequisites**: [00-architecture](../00-architecture/INDEX.md) for Synapse Architecture concepts (Signals, 6 traits)
 
 ---
 
@@ -8482,7 +8482,7 @@ Neuro spans all five architectural layers (L0 Runtime through L4 Orchestration) 
 | 03 | [Type Half-Lives](./03-type-half-lives.md) | Base half-life rationale for each type (7d–365d), Ebbinghaus model, current code constants |
 | 04 | [HDC/VSA Foundations](./04-hdc-vsa-foundations.md) | BSC algebra, 10,240-bit fingerprints, capacity bounds, SIMD performance, consensus currency |
 | 05 | [HDC Operations](./05-hdc-operations.md) | Bind (XOR), Bundle (majority vote), Permute (cyclic shift), Similarity (Hamming) — Rust implementation |
-| 06 | [HDC Knowledge Encoding](./06-hdc-knowledge-encoding.md) | Default encoder, per-Engram fingerprints, role-filler bindings, similarity, consensus, analogy |
+| 06 | [HDC Knowledge Encoding](./06-hdc-knowledge-encoding.md) | Default encoder, per-Signal fingerprints, role-filler bindings, similarity, consensus, analogy |
 | 07 | [Demurrage with Tier Shaping](./07-ebbinghaus-decay-with-tier.md) | Target-state demurrage/balance freshness, Ebbinghaus rate shaping, freeze/thaw, HDC novelty reinforcement |
 | 08 | [Cross-Domain HDC Transfer](./08-cross-domain-hdc-transfer.md) | Structural analogy detection, abstract role vectors, insight resonance, analogical reasoning |
 | 09 | [False Positive Math](./09-false-positive-math.md) | Threshold selection (0.526), Bonferroni correction, Johnson-Lindenstrauss validation |
@@ -8500,7 +8500,7 @@ Neuro spans all five architectural layers (L0 Runtime through L4 Orchestration) 
 
 Before reading this topic, we recommend:
 
-- [Topic 00: Architecture](../00-architecture/INDEX.md) — for the Synapse Architecture concepts (Engrams, 6 traits, cognitive loop) that Neuro builds on
+- [Topic 00: Architecture](../00-architecture/INDEX.md) — for the Synapse Architecture concepts (Signals, 6 traits, cognitive loop) that Neuro builds on
 - [Topic 05: Learning](../05-learning/INDEX.md) — for the episode logging system that feeds Neuro's distillation pipeline
 
 ---
@@ -8518,7 +8518,7 @@ This topic connects to:
 - [Topic 11: Safety](../11-safety/INDEX.md) — Knowledge ingestion safety (quarantine → consensus → sandbox → adopt)
 - [Topic 13: Coordination](../13-coordination/INDEX.md) — Agent Mesh connectivity for cross-agent knowledge sync
 - [Topic 15: Code Intelligence](../15-code-intelligence/INDEX.md) — roko-index uses HDC for code symbol fingerprinting
-- [Naming Map and Glossary](../00-architecture/01-naming-and-glossary.md) — canonical architecture terminology, including Engram, demurrage, and HDC vocabulary
+- [Naming Map and Glossary](../00-architecture/01-naming-and-glossary.md) — canonical architecture terminology, including Signal, demurrage, and HDC vocabulary
 - [04-decay-variants](../00-architecture/04-decay-variants.md) — architecture-side retention model
 - [18-decay-tier-matrix](../00-architecture/18-decay-tier-matrix.md) — tier progression and cold-storage calibration
 - [tmp/refinements/11-hyperdimensional-substrate.md](../../tmp/refinements/11-hyperdimensional-substrate.md) — full HDC fingerprint proposal reflected in this chapter
@@ -8556,7 +8556,7 @@ This topic connects to:
 
 **Core knowledge system**: The `KnowledgeEntry`, `KnowledgeKind`, and `NeuroStore` trait are implemented. The JSONL storage backend (`KnowledgeStore`) is functional with decay, GC, and HDC indexing support, and the distillation pipeline (`Distiller`, `TierProgression`) provides episode→insight→heuristic→playbook progression. The docs in this topic also describe a broader demurrage/balance model, but that part remains deferred.
 
-**HDC subsystem**: The `HdcVector` (10,240-bit BSC) is fully implemented with all four operations, deterministic seeding, serde, and rkyv zero-copy support. The docs model every Engram as carrying a first-class fingerprint, but in current code HDC support is partial rather than universal. Code symbol fingerprinting is implemented in `roko-index`.
+**HDC subsystem**: The `HdcVector` (10,240-bit BSC) is fully implemented with all four operations, deterministic seeding, serde, and rkyv zero-copy support. The docs model every Signal as carrying a first-class fingerprint, but in current code HDC support is partial rather than universal. Code symbol fingerprinting is implemented in `roko-index`.
 
 **Key gaps**: The foundational refactor items are now in place: `KnowledgeEntry` has tiers plus emotional provenance, the PRD-native knowledge kinds are present, `ContextAssembler` is implemented in `roko-neuro`, ingest persists HDC fingerprints, CausalLinks now carry directional HDC encodings, Neuro's local context allocator now uses auction-style budget selection plus mood-congruent scoring, direct somatic re-ranking, and a contrarian affect slice, and `PromptComposer` now runs a shared bidder-aware cross-subsystem auction over composed prompt sections with PAD urgency / affect modulation and diagnostic externality payments. Daimon now also owns a real 8D `SomaticLandscape`, config-backed strategy-space registration, and a shared strategy-space computer for routing-time affective bias, runtime somatic events, dream-time depotentiation, and role-aware non-coding projection. The remaining gaps are the higher-order features: exact welfare-maximizing/fair VCG settlement, broader consolidation policy, fuller active inference, true domain-native extractors, and cross-domain resonance.
 
@@ -8609,7 +8609,7 @@ See [16-current-status-and-gaps.md](./16-current-status-and-gaps.md) for the com
 > **Implementation**: Built
 
 **Topic**: [Daimon](./INDEX.md)
-**Prerequisites**: [00-architecture](../00-architecture/INDEX.md) for Engrams, Synapse traits, universal cognitive loop
+**Prerequisites**: [00-architecture](../00-architecture/INDEX.md) for Signals, Synapse traits, universal cognitive loop
 **Key sources**: `refactoring-prd/03-cognitive-subsystems.md` §2, `refactoring-prd/08-translation-guide.md` §INCOMPATIBLE: Emotion Mapped to Mortality, `refactoring-prd/07-implementation-priorities.md` §Tier 2D/2E
 
 ---
@@ -12175,7 +12175,7 @@ compute_coords(action, context)        // raw 8D coordinates
 
 # Mood-Congruent Memory
 
-> How emotional state biases knowledge retrieval: the four-factor scoring model, emotional tags on Engrams, PAD cosine similarity, and the dream-memory-emotion triangle.
+> How emotional state biases knowledge retrieval: the four-factor scoring model, emotional tags on Signals, PAD cosine similarity, and the dream-memory-emotion triangle.
 
 
 > **Implementation**: Built
@@ -12190,15 +12190,15 @@ compute_coords(action, context)        // raw 8D coordinates
 
 Emotional state biases what agents remember. This is not a bug — it's an adaptive mechanism grounded in Bower's (1981) associative network theory and validated by Emotional RAG (2024, arXiv:2410.23041). An anxious agent should retrieve memories of past dangers; a confident agent should retrieve memories of past successes. The four-factor retrieval model integrates emotional congruence as a first-class retrieval signal alongside recency, importance, and semantic relevance.
 
-This document specifies how emotional tags are attached to Engrams (knowledge entries), how the four-factor scoring model computes retrieval priority, how PAD cosine similarity captures emotional direction, and how the dream system interacts with emotional memory through consolidation bias and depotentiation.
+This document specifies how emotional tags are attached to Signals (knowledge entries), how the four-factor scoring model computes retrieval priority, how PAD cosine similarity captures emotional direction, and how the dream system interacts with emotional memory through consolidation bias and depotentiation.
 
 ---
 
-## Emotional Tags on Engrams
+## Emotional Tags on Signals
 
 ### The EmotionalTag Struct
 
-Every Engram in the Neuro knowledge store gains an optional emotional tag. This tag captures the PAD vector and Plutchik classification at the time the Engram was created:
+Every Signal in the Neuro knowledge store gains an optional emotional tag. This tag captures the PAD vector and Plutchik classification at the time the Signal was created:
 
 ```rust
 /// Emotional context attached to a knowledge entry at creation time.
@@ -12230,13 +12230,13 @@ pub struct EmotionalTag {
 }
 ```
 
-The tag is optional — Engrams created before the Daimon is enabled, or during T0 ticks that skip appraisal, have `emotional_tag: None`. The emotional component defaults to a neutral factor (0.5) in the retrieval score for untagged entries.
+The tag is optional — Signals created before the Daimon is enabled, or during T0 ticks that skip appraisal, have `emotional_tag: None`. The emotional component defaults to a neutral factor (0.5) in the retrieval score for untagged entries.
 
-Current code status: `roko-core::Engram` now carries `Option<EmotionalTag>`, the orchestrator stamps both conductor engrams and persisted episodes with live Daimon state, and Neuro distillation preserves those tags as supporting provenance. Retrieval weighting across Neuro is still only partially implemented, so the full four-factor scoring pipeline remains ahead of the runtime.
+Current code status: `roko-core::Engram` now carries `Option<EmotionalTag>`, the orchestrator stamps both conductor signals and persisted episodes with live Daimon state, and Neuro distillation preserves those tags as supporting provenance. Retrieval weighting across Neuro is still only partially implemented, so the full four-factor scoring pipeline remains ahead of the runtime.
 
-### Extension to Engram Storage
+### Extension to Signal Storage
 
-The Engram storage schema (whether in SQLite, JSONL, or the Substrate) includes affect provenance columns:
+The Signal storage schema (whether in SQLite, JSONL, or the Substrate) includes affect provenance columns:
 
 ```
 affect_pleasure     REAL    -- PAD pleasure at discovery
@@ -12245,7 +12245,7 @@ affect_dominance    REAL    -- PAD dominance at discovery
 discovery_emotion   TEXT    -- Plutchik label at time of creation
 ```
 
-These columns enable the four-factor retrieval scoring. They are indexed for efficient filtering (e.g., "all Engrams where arousal > 0.5").
+These columns enable the four-factor retrieval scoring. They are indexed for efficient filtering (e.g., "all Signals where arousal > 0.5").
 
 ---
 
@@ -12791,7 +12791,7 @@ The 0.15 threshold prevents event flooding. A shift from Relaxed to Anxious (PAD
 **Still missing**:
 - Integration Point 3 (VCG auction): exact welfare-maximizing settlement, broader bidder production, and richer fairness policy.
 - Integration Point 4 (somatic landscape): true domain-native strategy extractors, collective contagion, and broader cross-surface coupling.
-- Full emotional-memory propagation: `EmotionalTag` now reaches live conductor engrams, episode logs, and Neuro distillation inputs, but retrieval weighting and consolidation policy are still incomplete.
+- Full emotional-memory propagation: `EmotionalTag` now reaches live conductor signals, episode logs, and Neuro distillation inputs, but retrieval weighting and consolidation policy are still incomplete.
 
 ---
 
@@ -13201,7 +13201,7 @@ Emotional contagion is not continuous — it fires on specific events that one a
 
 | Trigger | Emotional Effect on Receiver | Source |
 |---|---|---|
-| **Peer warning push** | Arousal +0.1 (capped) | Agent shares a Warning-type Engram with the mesh |
+| **Peer warning push** | Arousal +0.1 (capped) | Agent shares a Warning-type Signal with the mesh |
 | **Peer alert** (critical issue) | Arousal +0.1 (capped) | Agent detects a significant anomaly |
 | **Peer sustained success** | Dominance +0.05 | Agent reports consistently high task success rate |
 | **Peer sustained failure** | Pleasure -0.05 | Agent reports consistently low task success rate |
@@ -13420,7 +13420,7 @@ The Daimon exports contagion-related metrics:
 - See [01-pad-vector.md](./01-pad-vector.md) for PAD vector structure
 - See [06-somatic-markers-damasio.md](./06-somatic-markers-damasio.md) for individual somatic landscape
 - See [10-integration-points.md](./10-integration-points.md) for Daimon integration points
-- See topic [04-knowledge](../06-neuro/INDEX.md) for mesh infrastructure and Engram sharing
+- See topic [04-knowledge](../06-neuro/INDEX.md) for mesh infrastructure and Signal sharing
 
 
 ---
@@ -13471,7 +13471,7 @@ The Daimon affect engine has moved the shared emotional vocabulary into `roko-co
 | `DispatchStrategy` enum | **Complete** | 5 variants with effort labels: Conservative, Balanced, Exploratory, Escalating, Proactive |
 | `DispatchParams` struct | **Complete** | model + turn_limit + strategy + effort |
 | `queue_wait_arousal()` | **Complete** | Public function for queue-wait arousal computation |
-| `EmotionalTag` generation | **Partial** | Daimon derives emotional tags, the orchestrator stamps conductor engrams and episodes with them, and Neuro now preserves both emotional tags and derived emotional provenance metadata during consolidation and direct knowledge emission |
+| `EmotionalTag` generation | **Partial** | Daimon derives emotional tags, the orchestrator stamps conductor signals and episodes with them, and Neuro now preserves both emotional tags and derived emotional provenance metadata during consolidation and direct knowledge emission |
 | Tests | **Complete** | Appraisal, persistence, modulation, behavioral-state, emotional-tag, and somatic-landscape coverage |
 
 ### Removed legacy affect implementation
@@ -13503,7 +13503,7 @@ These are fully specified in the legacy PRDs and/or `refactoring-prd` but have n
 | F3 | `AffectEvent` enum and `AffectEngine::appraise()` | **Done** |
 | F4 | Temporal decay (exponential, 4h half-life) | **Done** |
 | F5 | Behavior modulation table | **Done** (both crates) |
-| F6 | Affect signatures on episodes | **Partial** — Engrams, episodes, Neuro distillation, and direct knowledge emission now carry emotional tags plus derived emotional provenance; the remaining gap is the fuller somatic-landscape path and broader cross-subsystem weighting |
+| F6 | Affect signatures on episodes | **Partial** — Signals, episodes, Neuro distillation, and direct knowledge emission now carry emotional tags plus derived emotional provenance; the remaining gap is the fuller somatic-landscape path and broader cross-subsystem weighting |
 | F7 | Affect → SystemPromptBuilder | **Done** — live Daimon PAD now feeds affect guidance in the system prompt |
 | F8 | Affect → CascadeRouter | **Done** — live Daimon behavioral state and confidence now arrive as a first-class `DaimonPolicy` in routing decisions |
 | F9 | Persistence (autosave + load) | **Done** |
@@ -13557,7 +13557,7 @@ These are fully specified in the legacy PRDs and/or `refactoring-prd` but have n
 - Mood-biased replay content selection
 - REM depotentiation (arousal *= 0.70 per cycle for A > 0.5)
 - Dream outcome appraisal (validated/refuted/novel/threat)
-- DreamEmotionalMetadata on dream-produced Engrams
+- DreamEmotionalMetadata on dream-produced Signals
 
 ---
 
@@ -13641,7 +13641,7 @@ The behavioral states are **cyclical** — Engaged, Struggling, Coasting, Explor
 | 06 | [06-somatic-markers-damasio.md](./06-somatic-markers-damasio.md) | Damasio 1994 somatic marker hypothesis. k-d tree over 8D strategy space. SomaticLandscape and SomaticMarker structs. Sub-1ms query latency. Marker creation and consolidation. |
 | 07 | [07-15-percent-contrarian-retrieval.md](./07-15-percent-contrarian-retrieval.md) | Bower 1981 mood-congruent echo chamber prevention. Rolling 200-tick window. Contrarian tracker. Three complementary loop-breaking mechanisms. Mind wandering. |
 | 08 | [08-8-dimensional-strategy-space.md](./08-8-dimensional-strategy-space.md) | Domain-configurable 8D coordinate system. Coding dimensions (Complexity, Risk, Novelty, Confidence, Time Pressure, Scope, Reversibility, Dependency Depth). Chain dimensions. Cross-domain transfer. |
-| 09 | [09-mood-congruent-memory.md](./09-mood-congruent-memory.md) | Emotional state biases retrieval. Four-factor scoring (recency × importance × relevance × emotional congruence). EmotionalTag on Engrams. Emotional provenance. Diversity as quality signal. Dream-memory-emotion triangle. |
+| 09 | [09-mood-congruent-memory.md](./09-mood-congruent-memory.md) | Emotional state biases retrieval. Four-factor scoring (recency × importance × relevance × emotional congruence). EmotionalTag on Signals. Emotional provenance. Diversity as quality signal. Dream-memory-emotion triangle. |
 | 10 | [10-integration-points.md](./10-integration-points.md) | Four integration points: behavioral state selection, tier routing bias, VCG auction bidding (full formula), somatic landscape querying. Integration map. Event emission. |
 | 11 | [11-coding-agent-integration.md](./11-coding-agent-integration.md) | Per-crate confidence. Error pattern sensitivity with familiarity scaling. Fatigue detection (consecutive failure monitoring). SystemPromptBuilder integration. |
 | 12 | [12-collective-emotional-contagion.md](./12-collective-emotional-contagion.md) | Emotional contagion across agent mesh. P/A attenuation 0.3, D attenuation 0.0. Arousal cap +0.3 per sync. Anti-cascade design. Somatic field formation. C-Factor. |
@@ -13718,7 +13718,7 @@ pub struct SomaticMarker { strategy_coords: [f64; 8], valence: f64, intensity: f
 |---|---|---|
 | [05-learning](../05-learning/INDEX.md) | Daimon → Learning | Behavioral state modulates CascadeRouter thresholds |
 | [03-dreams](../10-dreams/INDEX.md) | Bidirectional | Emotional load → dream urgency; REM → depotentiation; dream outcomes → appraisal |
-| [04-knowledge](../06-neuro/INDEX.md) | Daimon → Knowledge | EmotionalTag on Engrams; mood-congruent retrieval; somatic field via mesh |
+| [04-knowledge](../06-neuro/INDEX.md) | Daimon → Knowledge | EmotionalTag on Signals; mood-congruent retrieval; somatic field via mesh |
 | [04-verification](../04-verification/INDEX.md) | Verification → Daimon | Gate pass/fail triggers appraisal; rung level scales emotional impact |
 | [02-runtime](../01-orchestration/INDEX.md) | Daimon → Runtime | Conversational tone mapping; event emission; TUI/Spectre visualization |
 
@@ -13854,8 +13854,8 @@ Dreams flow through the Synapse Architecture:
 2. **Scorer**: The Mattar-Daw utility formula scores episodes for replay priority
 3. **Gate**: The staging buffer's confidence threshold (0.70) gates promotion of dream-generated hypotheses
 4. **Router**: Model routing selects the appropriate LLM tier for each dream phase (cheap models for NREM replay, more capable models for REM imagination)
-5. **Composer**: Dream outputs are composed into Engrams (currently `Signal` in the codebase — will be renamed to `Engram` in Tier 0D) and written to NeuroStore
-6. **Policy**: The dream scheduling policy observes the Engram stream and emits scheduling decisions
+5. **Composer**: Dream outputs are composed into Signals (currently `Signal` in the codebase — will be renamed to `Signal` in Tier 0D) and written to NeuroStore
+6. **Policy**: The dream scheduling policy observes the Signal stream and emits scheduling decisions
 
 ---
 
@@ -13991,7 +13991,7 @@ Key metrics explained:
 
 > **Layer**: Cognitive Cross-Cut (L0 scheduling + L1 agent dispatch + L2 context assembly)
 >
-> **Synapse Traits**: `Scorer` (Mattar-Daw utility scoring), `Gate` (staging buffer validation), `Composer` (Engram assembly from dream outputs)
+> **Synapse Traits**: `Scorer` (Mattar-Daw utility scoring), `Gate` (staging buffer validation), `Composer` (Signal assembly from dream outputs)
 >
 > **Crate**: `roko-dreams` — `cycle.rs`, `runner.rs`
 >
@@ -17128,7 +17128,7 @@ VALIDATE-IMAGINED-STRATEGY(strategy, validator, knowledge_store):
 
 > **Layer**: Cognitive Cross-Cut (L2 Scaffold → L3 Harness gate validation)
 >
-> **Synapse Traits**: `Substrate` (NeuroStore write), `Gate` (confidence threshold validation), `Composer` (Engram assembly)
+> **Synapse Traits**: `Substrate` (NeuroStore write), `Gate` (confidence threshold validation), `Composer` (Signal assembly)
 >
 > **Crate**: `roko-dreams` — Integration logic within `cycle.rs`
 >
@@ -21279,7 +21279,7 @@ pub fn schedule(&self) -> Option<Duration> {
 
 ### 2. Scheduled Trigger (Secondary)
 
-The scheduled trigger is the fallback cadence. In the two-fabric model, Delta-speed consolidation is usually Pulse-triggered: the dream runner subscribes to `substrate.engram.stored` and wakes when enough durable Engrams have landed to justify a consolidation batch. Fixed intervals remain as a safety net for deployments where notifications are delayed or the Bus is temporarily unavailable:
+The scheduled trigger is the fallback cadence. In the two-fabric model, Delta-speed consolidation is usually Pulse-triggered: the dream runner subscribes to `substrate.engram.stored` and wakes when enough durable Signals have landed to justify a consolidation batch. Fixed intervals remain as a safety net for deployments where notifications are delayed or the Bus is temporarily unavailable:
 
 ```toml
 [dreams]
@@ -21304,8 +21304,8 @@ The trigger side is only half of the two-fabric story. When a dream cycle runs, 
 
 | Output | Fabric | Purpose |
 |--------|--------|---------|
-| Consolidated `Kind::Insight` / `Kind::Heuristic` Engrams | Substrate | Persist durable dream results with lineage so later cycles can query them completely |
-| `engram.promoted` Pulse | Bus | Notify generic subscribers that a durable Engram graduated (target-state) |
+| Consolidated `Kind::Insight` / `Kind::Heuristic` Signals | Substrate | Persist durable dream results with lineage so later cycles can query them completely |
+| `engram.promoted` Pulse | Bus | Notify generic subscribers that a durable Signal graduated (target-state) |
 | `neuro.insight.promoted` Pulse | Bus | Wake Neuro and Compose refresh paths without waiting for another full Substrate scan (target-state) |
 
 This means Dreams stay complete on the durable side and reactive on the live side. Delta-speed does not poll for its own downstream effects any more than it polls for its wakeup conditions.
@@ -21463,7 +21463,7 @@ pub struct CircadianScheduler {
 | [01-three-phase-cycle.md](01-three-phase-cycle.md) | Dream cycle structure that scheduling triggers |
 | [12-sleep-time-compute.md](12-sleep-time-compute.md) | Compute budget that constrains dream frequency |
 | [00-vision-and-dream-as-death-reframe.md](00-vision-and-dream-as-death-reframe.md) | Historical-title note on why dreams are idle-triggered, not lifecycle-triggered |
-| [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md) | Canonical Engram, Pulse, Bus, Topic, and TopicFilter definitions |
+| [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md) | Canonical Signal, Pulse, Bus, Topic, and TopicFilter definitions |
 | [tmp/refinements/09-phase-2-implications.md](../../tmp/refinements/09-phase-2-implications.md) | Phase-2 two-fabric implications for dreams, chain, coordination, and heartbeat |
 
 
@@ -22115,9 +22115,9 @@ Dreams use both durable storage and live transport:
 
 | Direction | Fabric | Channel | Purpose |
 |-----------|--------|---------|---------|
-| Substrate → Dreams | Substrate | Query / scan | Completeness pass over durable Engrams during consolidation |
+| Substrate → Dreams | Substrate | Query / scan | Completeness pass over durable Signals during consolidation |
 | Bus → Dreams | Bus | `substrate.engram.stored` | Pulse-triggered Delta wakeup when new durable material lands |
-| Dreams → Substrate | Substrate | `put()` | Persist consolidated Engrams and staged knowledge |
+| Dreams → Substrate | Substrate | `put()` | Persist consolidated Signals and staged knowledge |
 | Dreams → Bus | Bus | `engram.promoted`, `neuro.insight.promoted` | Broadcast promotion so Neuro and Compose can refresh without re-querying |
 
 This is the key Phase 2+ simplification: the Delta loop becomes reactive without becoming a separate subsystem. The Bus notification wakes the cycle; the Substrate scan finishes the batch.
@@ -22173,7 +22173,7 @@ The `TierProgression` system in `roko-neuro` classifies dream-generated insights
 | T3 (Validated Insight) | 0.60–0.79 | Gate-validated dream discoveries |
 | T4 (Established Knowledge) | 0.80–1.00 | Repeatedly confirmed, multi-dream validated |
 
-Dreams primarily generate T1 and T2 entries. Promotion to T3+ requires waking validation — dreams propose, experience disposes. When consolidation finishes, Dreams emit the durable Engram and also publish promotion Pulses (`engram.promoted` for the generic promotion Pulse and `neuro.insight.promoted` for Neuro-specific cache refresh) so downstream consumers can react without polling.
+Dreams primarily generate T1 and T2 entries. Promotion to T3+ requires waking validation — dreams propose, experience disposes. When consolidation finishes, Dreams emit the durable Signal and also publish promotion Pulses (`engram.promoted` for the generic promotion Pulse and `neuro.insight.promoted` for Neuro-specific cache refresh) so downstream consumers can react without polling.
 
 ### Bidirectional Feedback Loop
 
@@ -22646,7 +22646,7 @@ The configuration is loaded by `DreamLoopConfig::from_roko_toml()` and propagate
 | [12-sleep-time-compute.md](12-sleep-time-compute.md) | Compute budget constraining dream inference |
 | [13-scheduling-and-triggers.md](13-scheduling-and-triggers.md) | Scheduling coordinated with orchestrator |
 | [14-oneirography.md](14-oneirography.md) | Art generation consuming DreamCycleReport |
-| [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md) | Canonical Engram, Pulse, Bus, and Topic terminology |
+| [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md) | Canonical Signal, Pulse, Bus, and Topic terminology |
 | [tmp/refinements/09-phase-2-implications.md](../../tmp/refinements/09-phase-2-implications.md) | Phase-2 two-fabric implications for Dreams, Mesh, Chain, and Heartbeat |
 
 
@@ -23738,7 +23738,7 @@ Before reading this topic, familiarity with the following is helpful:
 
 - **Synapse Architecture**: The 6-trait system (Substrate, Scorer, Gate, Router, Composer, Policy) through which all capabilities flow
 - **5-Layer Taxonomy**: L0 Runtime, L1 Framework, L2 Scaffold, L3 Harness, L4 Orchestration
-- **Engram**: The content-addressed, scored, decaying unit of cognition (legacy code name `Signal` still appears in parts of the codebase)
+- **Signal**: The content-addressed, scored, decaying unit of cognition (legacy code name `Signal` still appears in parts of the codebase)
 - **Neuro / NeuroStore**: The agent's persistent knowledge base (episodes, insights, heuristics, causal links)
 - **Daimon**: The affect engine maintaining PAD (Pleasure-Arousal-Dominance) emotional state vectors
 
@@ -23868,7 +23868,7 @@ The dream subsystem draws on extensive academic research:
   - **Legacy death-mask exclusion**: historical-title `22-oneirography/02-death-masks.md` was skipped entirely per prompt instructions. All references to death masks in other oneirography docs were reframed or removed.
   - **EVOLUTION phase**: Presented as a fourth dream phase in `05-dream-evolution.md` based on source material, even though the primary cycle is three-phase (NREM/REM/Integration). The EVOLUTION phase is an extension, not a replacement.
   - **Oneirography domain-agnostic reframe**: The legacy oneirography spec was heavily blockchain/NFT-specific. The Roko version presents the core pipeline (dream→image→score) as domain-agnostic, with NFT minting as a blockchain domain extension.
-  - **Legacy naming consistency**: All legacy instances were mapped to current terms, including Agent, Neuro/NeuroStore, Engram, Agent Mesh/Mesh, KORAI/DAEJI, Collective/Mesh, and `roko.toml`.
+  - **Legacy naming consistency**: All legacy instances were mapped to current terms, including Agent, Neuro/NeuroStore, Signal, Agent Mesh/Mesh, KORAI/DAEJI, Collective/Mesh, and `roko.toml`.
   - **Vitality phases removed**: All references to Thriving/Stable/Conservation/Declining/Terminal behavioral phases have been reframed as continuous budget and knowledge metrics rather than discrete mortality phases.
 - **Unresolved tensions**:
   - The legacy umbrella crate `roko-golem` still exports `ScaffoldEngine`, which `roko-dreams/src/lib.rs` re-exports. This dependency should be removed when that legacy crate is dissolved.

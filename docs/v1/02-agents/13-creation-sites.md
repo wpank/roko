@@ -1,5 +1,8 @@
 # 13 — Eight Creation Sites Refactor
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Sub-doc 13 of **02-agents** · Roko Documentation
 >
 > This document identifies the eight places in the codebase where agents are

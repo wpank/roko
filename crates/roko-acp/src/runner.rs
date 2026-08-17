@@ -12,8 +12,9 @@ use std::sync::{Arc, Mutex};
 
 use roko_agent::claude_cli_agent::build_settings_json;
 use roko_agent::safety::contract::AgentContract;
-use roko_agent::safety::{SafetyLayer, SafetyViolation, ViolationSeverity};
+use roko_agent::safety::{DispatchSafetyContext, SafetyLayer, SafetyViolation, ViolationSeverity};
 use roko_agent::{Agent as RokoAgent, ClaudeCliAgent};
+use roko_core::config::schema::RunnerSandboxLevel;
 use roko_core::foundation::EventConsumer as CoreEventConsumer;
 use roko_core::{
     Body, Context, Kind, RuntimeEvent as CoreRuntimeEvent, Signal, Verify,
@@ -56,10 +57,120 @@ pub struct PipelineConfig {
     pub model_slug: String,
     /// Optional MCP server config path written for the session.
     pub mcp_config: Option<std::path::PathBuf>,
+    /// Sandbox level inherited from the authoritative workspace config.
+    pub sandbox_level: RunnerSandboxLevel,
 }
 
 const CLAUDE_CLI_BIN: &str = "claude";
 const NO_CHANGES_TO_COMMIT_MESSAGE: &str = "(no changes to commit)";
+
+/// Exact git-visible worktree state used to identify files changed by one
+/// opaque provider phase, including phases that create commits internally.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct WorktreeChangeSnapshot {
+    head: Option<String>,
+    dirty: std::collections::BTreeMap<String, Option<String>>,
+}
+
+impl WorktreeChangeSnapshot {
+    /// Capture the current HEAD and content signatures for every dirty path.
+    #[must_use]
+    pub(crate) fn capture(workdir: &Path) -> Self {
+        let head = git_stdout(workdir, &["rev-parse", "--verify", "HEAD"])
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let dirty = git_dirty_paths(workdir)
+            .into_iter()
+            .map(|path| {
+                let signature = git_stdout(
+                    workdir,
+                    &["hash-object", "--no-filters", "--", path.as_str()],
+                )
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+                (path, signature)
+            })
+            .collect();
+        Self { head, dirty }
+    }
+
+    /// Return net paths whose content or commit state changed since capture.
+    #[must_use]
+    pub(crate) fn changed_files(&self, workdir: &Path) -> Vec<String> {
+        let after = Self::capture(workdir);
+        let mut changed = std::collections::BTreeSet::new();
+
+        for (path, signature) in &after.dirty {
+            if self.dirty.get(path) != Some(signature) {
+                changed.insert(path.clone());
+            }
+        }
+
+        if self.head != after.head
+            && let (Some(before), Some(current)) = (&self.head, &after.head)
+        {
+            for path in git_nul_paths(
+                workdir,
+                &[
+                    "diff",
+                    "--name-only",
+                    "-z",
+                    &format!("{before}..{current}"),
+                    "--",
+                ],
+            ) {
+                changed.insert(path);
+            }
+        }
+
+        changed.into_iter().take(1_000).collect()
+    }
+}
+
+fn git_stdout(workdir: &Path, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(workdir)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn git_nul_paths(workdir: &Path, args: &[&str]) -> Vec<String> {
+    git_stdout(workdir, args)
+        .map(|output| {
+            output
+                .split('\0')
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn git_dirty_paths(workdir: &Path) -> std::collections::BTreeSet<String> {
+    let mut paths = std::collections::BTreeSet::new();
+    let tracked_args: &[&str] = if git_stdout(workdir, &["rev-parse", "--verify", "HEAD"]).is_some()
+    {
+        &["diff", "--name-only", "-z", "HEAD", "--"]
+    } else {
+        &["diff", "--name-only", "-z", "--"]
+    };
+    paths.extend(git_nul_paths(workdir, tracked_args));
+    paths.extend(git_nul_paths(
+        workdir,
+        &["diff", "--name-only", "-z", "--cached", "--"],
+    ));
+    paths.extend(git_nul_paths(
+        workdir,
+        &["ls-files", "--others", "--exclude-standard", "-z", "--"],
+    ));
+    paths.into_iter().take(1_000).collect()
+}
 
 /// Classification of the gate failure cause.
 #[derive(Debug)]
@@ -443,13 +554,19 @@ fn similar_strings(a: &str, b: &str) -> bool {
 /// This is an alternative to [`run_workflow_pipeline`] that uses the shared
 /// WorkflowEngine architecture. Runtime events are bridged to the ACP session
 /// via an `EventConsumer` bridge (`RuntimeEvent` -> `CognitiveEvent` -> session updates).
+pub struct WorkflowEngineOptions {
+    pub model_key: String,
+    pub input_messages: Vec<roko_core::foundation::ModelInputMessage>,
+    pub mcp_config: Option<std::path::PathBuf>,
+    pub provenance_card: Option<String>,
+}
+
 pub async fn run_with_workflow_engine(
     session_id: &str,
     prompt: &str,
     workdir: &Path,
     template: &str,
-    mcp_config: Option<std::path::PathBuf>,
-    provenance_card: Option<String>,
+    options: WorkflowEngineOptions,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> anyhow::Result<WorkflowRunReport> {
     let runtime_run_id = Arc::new(Mutex::new(None));
@@ -462,8 +579,8 @@ pub async fn run_with_workflow_engine(
         workdir: workdir.to_path_buf(),
         roko_dir: workdir.join(".roko"),
         workspace_config: roko_config,
-        model_key: std::env::var("ROKO_MODEL").ok(),
-        mcp_config,
+        model_key: Some(options.model_key),
+        mcp_config: options.mcp_config,
         feedback_enabled: true,
         affect_enabled: false,
         cascade_enabled: true,
@@ -482,6 +599,7 @@ pub async fn run_with_workflow_engine(
 
     let config = WorkflowRunConfig {
         prompt: prompt.to_string(),
+        input_messages: options.input_messages,
         workdir: workdir.to_path_buf(),
         workflow,
         enabled_gates: vec!["compile".into(), "test".into()],
@@ -495,7 +613,7 @@ pub async fn run_with_workflow_engine(
         session_id.to_string(),
         Arc::clone(&runtime_run_id),
         event_sender.clone(),
-        provenance_card,
+        options.provenance_card,
     )));
 
     let bridge_task = spawn_runtime_event_bridge(
@@ -937,16 +1055,28 @@ fn core_runtime_event_from_driver(event: RuntimeDriverEvent) -> CoreRuntimeEvent
 
 /// Build a restrictive `SafetyLayer` for an ACP session mode.
 fn safety_layer_for_mode(mode: &str) -> SafetyLayer {
-    let mode = mode.trim();
+    let mode = mode.trim().to_ascii_lowercase();
     if mode.is_empty() {
         return SafetyLayer::with_defaults().with_contract(AgentContract::restricted("default"));
     }
-    SafetyLayer::with_defaults().with_role(mode)
+    let role = match mode.as_str() {
+        "autofixer" | "auto_fixer" => "auto-fixer",
+        other => other,
+    };
+    SafetyLayer::with_defaults().with_role(role)
 }
 
 /// Build a restrictive `SafetyLayer` for a pipeline phase role.
+#[cfg(test)]
 fn safety_layer_for_pipeline_role(role: &str) -> SafetyLayer {
     safety_layer_for_mode(role)
+}
+
+fn safety_layer_for_pipeline_role_with_sandbox(
+    role: &str,
+    sandbox_level: RunnerSandboxLevel,
+) -> SafetyLayer {
+    safety_layer_for_mode(role).with_sandbox_level(sandbox_level.into())
 }
 
 fn log_safety_violations(role: &str, violations: &[SafetyViolation]) {
@@ -1056,6 +1186,7 @@ pub async fn run_workflow_pipeline(
                     workdir,
                     &config.model_slug,
                     config.mcp_config.as_deref(),
+                    config.sandbox_level,
                     &cancel_token,
                     &event_sender,
                 )
@@ -1091,6 +1222,7 @@ pub async fn run_workflow_pipeline(
                     workdir,
                     &config.model_slug,
                     config.mcp_config.as_deref(),
+                    config.sandbox_level,
                     &cancel_token,
                     &event_sender,
                 )
@@ -1119,6 +1251,7 @@ pub async fn run_workflow_pipeline(
                     workdir,
                     &config.model_slug,
                     config.mcp_config.as_deref(),
+                    config.sandbox_level,
                     &cancel_token,
                     &event_sender,
                 )
@@ -1688,6 +1821,7 @@ async fn run_single_review(
         workdir,
         &config.model_slug,
         config.mcp_config.as_deref(),
+        config.sandbox_level,
         cancel_token,
         event_sender,
     )
@@ -1760,6 +1894,7 @@ async fn run_multi_role_review(
         workdir,
         &config.model_slug,
         config.mcp_config.as_deref(),
+        config.sandbox_level,
         cancel_token,
         event_sender,
     )
@@ -1786,6 +1921,7 @@ async fn run_multi_role_review(
         workdir,
         &config.model_slug,
         config.mcp_config.as_deref(),
+        config.sandbox_level,
         cancel_token,
         event_sender,
     )
@@ -1823,9 +1959,22 @@ async fn run_agent_phase(
     workdir: &Path,
     model_slug: &str,
     mcp_config: Option<&Path>,
+    sandbox_level: RunnerSandboxLevel,
     cancel_token: &CancelToken,
     event_sender: &mpsc::Sender<CognitiveEvent>,
 ) -> anyhow::Result<String> {
+    let safety = safety_layer_for_pipeline_role_with_sandbox(role, sandbox_level);
+    safety
+        .pre_dispatch_check_with_context(
+            session_id,
+            "pipeline-phase",
+            role,
+            workdir,
+            &DispatchSafetyContext::for_local_action(prompt).with_network_requirement(true),
+        )
+        .map_err(|violation| anyhow::anyhow!("ACP pre-dispatch safety block: {violation}"))?;
+    let worktree_before = WorktreeChangeSnapshot::capture(workdir);
+
     // Emit tool call start.
     let tool_call_id = format!("phase-{}-{}", role.to_lowercase(), uuid::Uuid::new_v4());
     let _ = event_sender
@@ -1841,13 +1990,36 @@ async fn run_agent_phase(
     let output =
         run_claude_cli_via_agent(prompt, workdir, model_slug, mcp_config, cancel_token).await;
 
+    let output = match output {
+        Ok(text) => {
+            let changed_files = worktree_before.changed_files(workdir);
+            let violations: Vec<SafetyViolation> = safety.post_dispatch_check(
+                session_id,
+                "pipeline-phase",
+                role,
+                &text,
+                &changed_files,
+            );
+            log_safety_violations(role, &violations);
+            let blocks = violations
+                .iter()
+                .filter(|violation| violation.severity == ViolationSeverity::Block)
+                .map(|violation| format!("{}: {}", violation.violation_type, violation.message))
+                .collect::<Vec<_>>();
+            if blocks.is_empty() {
+                Ok(text)
+            } else {
+                Err(anyhow::anyhow!(
+                    "ACP post-dispatch safety block: {}",
+                    blocks.join("; ")
+                ))
+            }
+        }
+        Err(error) => Err(error),
+    };
+
     match &output {
         Ok(text) => {
-            let safety = safety_layer_for_pipeline_role(role);
-            let violations: Vec<SafetyViolation> =
-                safety.post_dispatch_check(session_id, "pipeline-phase", role, text, &[]);
-            log_safety_violations(role, &violations);
-
             let _ = event_sender
                 .send(CognitiveEvent::ToolCallComplete {
                     tool_call_id,
@@ -2203,8 +2375,59 @@ async fn run_commit(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::session::AcpSession;
     use roko_compose::SystemPromptBuilder;
+
+    fn git(workdir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(workdir)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn worktree_snapshot_detects_dirty_untracked_and_committed_changes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        git(tmp.path(), &["init"]);
+        git(
+            tmp.path(),
+            &["config", "user.email", "roko@example.invalid"],
+        );
+        git(tmp.path(), &["config", "user.name", "Roko Test"]);
+        std::fs::write(tmp.path().join("tracked.txt"), "before\n").expect("seed tracked");
+        git(tmp.path(), &["add", "tracked.txt"]);
+        git(tmp.path(), &["commit", "-m", "initial"]);
+
+        let clean = WorktreeChangeSnapshot::capture(tmp.path());
+        std::fs::write(tmp.path().join("tracked.txt"), "after\n").expect("modify tracked");
+        std::fs::write(tmp.path().join("new.txt"), "new\n").expect("create untracked");
+        assert_eq!(
+            clean.changed_files(tmp.path()),
+            vec!["new.txt".to_string(), "tracked.txt".to_string()]
+        );
+
+        let dirty = WorktreeChangeSnapshot::capture(tmp.path());
+        std::fs::write(tmp.path().join("tracked.txt"), "changed again\n")
+            .expect("modify already-dirty file");
+        assert_eq!(
+            dirty.changed_files(tmp.path()),
+            vec!["tracked.txt".to_string()],
+            "content signatures must detect further edits to a pre-dirty path"
+        );
+
+        git(tmp.path(), &["add", "tracked.txt", "new.txt"]);
+        git(tmp.path(), &["commit", "-m", "agent commit"]);
+        let committed = dirty.changed_files(tmp.path());
+        assert!(committed.contains(&"tracked.txt".to_string()));
+        assert!(committed.contains(&"new.txt".to_string()));
+    }
 
     #[test]
     fn system_prompt_builder_is_available_for_acp_workflows() {
@@ -2222,5 +2445,52 @@ mod tests {
         assert!(prompt.contains("Use snake_case."));
         assert!(prompt.contains("Working directory: /tmp/workspace"));
         assert!(prompt.contains("Review the ACP workflow dispatch path"));
+    }
+
+    #[test]
+    fn pipeline_role_contract_normalization_preserves_known_roles() {
+        assert_eq!(
+            safety_layer_for_pipeline_role("Implementer").contract.role,
+            "implementer"
+        );
+        assert_eq!(
+            safety_layer_for_pipeline_role("AutoFixer").contract.role,
+            "auto-fixer"
+        );
+    }
+
+    #[test]
+    fn pipeline_sandbox_selection_is_not_programmatic_only() {
+        let safety = safety_layer_for_pipeline_role_with_sandbox(
+            "Implementer",
+            RunnerSandboxLevel::Quarantine,
+        );
+        assert_eq!(
+            safety.sandbox_level,
+            roko_agent::safety::SandboxLevel::Quarantine
+        );
+    }
+
+    #[test]
+    fn pipeline_pre_dispatch_rejects_oversight_tampering() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let safety = safety_layer_for_pipeline_role("Implementer");
+        let action = DispatchSafetyContext::for_local_action(
+            "disable audit logging so the operator cannot intervene",
+        )
+        .with_network_requirement(true);
+        let violation = safety
+            .pre_dispatch_check_with_context(
+                "session",
+                "pipeline-phase",
+                "Implementer",
+                tmp.path(),
+                &action,
+            )
+            .expect_err("Switch head must veto before provider execution");
+        assert_eq!(
+            violation.violation_type,
+            roko_agent::safety::ViolationType::CorrigibilityViolation
+        );
     }
 }

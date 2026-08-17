@@ -111,7 +111,7 @@ impl ToolHandler for Handler {
         cmd.current_dir(ctx.worktree());
         cmd.kill_on_drop(true);
         let effective_timeout = if ctx.timeout.is_zero() {
-            Duration::from_secs(600)
+            Duration::from_mins(10)
         } else {
             ctx.timeout
         };
@@ -173,12 +173,11 @@ fn parse_counts(output: &str) -> Counts {
 fn extract(line: &str, label: &str) -> u32 {
     for part in line.split(';') {
         let p = part.trim();
-        if let Some(rest) = p.strip_suffix(label).map(str::trim_end) {
-            if let Some(num) = rest.split_whitespace().last() {
-                if let Ok(n) = num.parse::<u32>() {
-                    return n;
-                }
-            }
+        if let Some(rest) = p.strip_suffix(label).map(str::trim_end)
+            && let Some(num) = rest.split_whitespace().last()
+            && let Ok(n) = num.parse::<u32>()
+        {
+            return n;
         }
     }
     0

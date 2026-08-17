@@ -15,8 +15,6 @@ pub struct ContractAddresses {
     pub role_registry: Option<String>,
     /// Worker registry contract address.
     pub worker_registry: Option<String>,
-    /// ISFR oracle contract address.
-    pub isfr_oracle: Option<String>,
     /// Bounty pool contract address.
     pub bounty_pool: Option<String>,
     /// Bounty token contract address.

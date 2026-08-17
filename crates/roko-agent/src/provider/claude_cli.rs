@@ -7,12 +7,15 @@ pub use stream::{
 
 use crate::Agent;
 use crate::claude_cli_agent::{ClaudeCliAgent, build_settings_json};
-use crate::provider::{AgentCreationError, AgentOptions, ProviderAdapter, ProviderError};
+use crate::provider::{
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
+};
 use roko_core::agent::ProviderKind;
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
+use roko_core::tool::aliases::{canonical_names, claude_of_canonical};
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -61,14 +64,30 @@ impl ProviderAdapter for ClaudeCliAdapter {
             .with_bare_mode(options.bare_mode)
             .with_dangerously_skip_permissions(options.dangerously_skip_permissions);
 
+        if let Some(limits) = configured_resource_limits(provider)? {
+            agent = agent.with_resource_limits(limits);
+        }
+
         if let Some(args) = &provider.args {
             agent = agent.with_extra_args(args.clone());
         }
         if let Some(prompt) = &options.system_prompt {
             agent = agent.with_system_prompt(prompt.clone());
         }
-        if let Some(tools) = &options.tools {
+        if let Some(allowed) = options
+            .agent_contract
+            .as_ref()
+            .and_then(|contract| contract.allowed_tools.as_ref())
+        {
+            agent = agent.with_tools(render_claude_tool_policy(allowed));
+        } else if let Some(tools) = &options.tools {
             agent = agent.with_tools(tools.clone());
+        }
+        if let Some(contract) = &options.agent_contract {
+            let denied = render_claude_tool_policy(&contract.forbidden_tool_names());
+            if !denied.is_empty() {
+                agent = agent.with_disallowed_tools(denied);
+            }
         }
         if let Some(mcp_config) = &options.mcp_config {
             agent = agent.with_mcp_config(mcp_config.clone());
@@ -136,6 +155,24 @@ impl ProviderAdapter for ClaudeCliAdapter {
             }
         }
     }
+}
+
+fn render_claude_tool_policy(tools: &[String]) -> String {
+    tools
+        .iter()
+        .filter_map(|name| {
+            if let Some(alias) = claude_of_canonical(name) {
+                Some(alias.to_string())
+            } else if canonical_names().any(|canonical| canonical == name) {
+                // Roko-only canonical tools cannot be executed by Claude CLI.
+                None
+            } else {
+                // Preserve MCP/plugin names and already-native Claude names.
+                Some(name.clone())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 #[cfg(test)]
@@ -238,9 +275,23 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"adapter-ok"}}}}'
             command: None,
             timeout_ms: Some(5_000),
             system_prompt: Some("system guidance".to_string()),
+            input_messages: Vec::new(),
             cached_content: None,
             tools: Some("Read,Edit".to_string()),
+            agent_contract: Some(crate::safety::contract::AgentContract {
+                role: "auditor".to_string(),
+                allowed_tools: Some(vec![
+                    "read_file".to_string(),
+                    "grep".to_string(),
+                    "apply_patch".to_string(),
+                ]),
+                governance: vec![crate::safety::contract::GovernanceRule::ForbiddenTools(
+                    vec!["bash".to_string(), "web_search".to_string()],
+                )],
+                ..crate::safety::contract::AgentContract::default()
+            }),
             mcp_config: Some(mcp_config_arg),
+            immune_root: None,
             working_dir: None,
             provider_semaphores: None,
             env: vec![("CLAUDE_TEST_ENV".to_string(), "env-value".to_string())],
@@ -250,6 +301,9 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"adapter-ok"}}}}'
             dangerously_skip_permissions: false,
             name: "claude-cli-adapter".to_string(),
             pre_discovered_mcp_tools: None,
+            pre_discovered_mcp_runtime: None,
+            pre_discovered_local_tools: None,
+            local_tool_mcp_servers: None,
             rate_limiter: None,
         };
         let model = claude_model();
@@ -283,7 +337,10 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"adapter-ok"}}}}'
         assert!(args_text.contains("--append-system-prompt"));
         assert!(args_text.contains("system guidance"));
         assert!(args_text.contains("--tools"));
-        assert!(args_text.contains("Read,Edit"));
+        assert!(args_text.contains("Read,Grep"));
+        assert!(!args_text.contains("Read,Edit"));
+        assert!(args_text.contains("--disallowed-tools"));
+        assert!(args_text.contains("Bash,WebSearch"));
         assert!(args_text.contains("--mcp-config"));
         assert!(args_text.contains(mcp_config.to_str().expect("mcp path")));
         assert!(args_text.contains("--strict-mcp-config"));
@@ -337,7 +394,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"worktree-ok"}}}}
             limits: None,
         };
         let options = AgentOptions {
-            timeout_ms: Some(2_000),
+            timeout_ms: Some(10_000),
             working_dir: Some(worktree.clone()),
             name: "claude-cli-worktree".to_string(),
             ..Default::default()

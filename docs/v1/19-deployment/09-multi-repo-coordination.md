@@ -1,5 +1,8 @@
 # Multi-Repo Coordination
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > A single Roko daemon can manage multiple repositories simultaneously, each with its own
 > subscription schedule, plan directory, agent configuration, and gate pipeline. This document
 > covers the isolation model, shared resources, cross-repo knowledge via the Agent Mesh,

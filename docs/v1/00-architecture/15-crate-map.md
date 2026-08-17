@@ -1,5 +1,8 @@
 # Crate Map
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** This document describes Roko's current workspace shape and the target crate boundaries proposed by
 > `tmp/refinements/20-modularity-composability.md`. The present tree still contains the organically grown crate map
 > that the audit documents in `docs/00-architecture/23-architectural-analysis-improvements.md` call out. The target

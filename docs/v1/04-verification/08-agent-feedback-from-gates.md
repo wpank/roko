@@ -1,5 +1,8 @@
 # 08 — Agent Feedback from Gates
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L3 Harness — Verification → L2 Engine (feedback channel)
 > **Crate**: `roko-gate` (`crates/roko-gate/src/feedback.rs`)
 > **Status**: Implemented (375 lines)

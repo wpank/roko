@@ -486,67 +486,57 @@ impl SystemPromptBuilder {
         }
 
         // Layer 2: Conventions
-        if let Some(ref conv) = self.conventions {
-            if !conv.is_empty() {
-                if let Some(section) = self.apply_budget_profile(
-                    PromptSection::new("conventions", conv)
-                        .with_priority(
-                            self.effective_priority("conventions", SectionPriority::High),
-                        )
-                        .with_cache_layer(CacheLayer::Role)
-                        .with_placement(Placement::Start),
-                ) {
-                    sections.push(section);
-                }
-            }
+        if let Some(ref conv) = self.conventions
+            && !conv.is_empty()
+            && let Some(section) = self.apply_budget_profile(
+                PromptSection::new("conventions", conv)
+                    .with_priority(self.effective_priority("conventions", SectionPriority::High))
+                    .with_cache_layer(CacheLayer::Role)
+                    .with_placement(Placement::Start),
+            )
+        {
+            sections.push(section);
         }
 
         // Layer 5: Tool Instructions (grouped in System cache tier)
-        if let Some(ref tools) = self.tools {
-            if !tools.is_empty() {
-                if let Some(section) = self.apply_budget_profile(
-                    PromptSection::new("tool_instructions", tools)
-                        .with_priority(
-                            self.effective_priority("tool_instructions", SectionPriority::Normal),
-                        )
-                        .with_cache_layer(CacheLayer::Role)
-                        .with_placement(Placement::Middle),
-                ) {
-                    sections.push(section);
-                }
-            }
+        if let Some(ref tools) = self.tools
+            && !tools.is_empty()
+            && let Some(section) = self.apply_budget_profile(
+                PromptSection::new("tool_instructions", tools)
+                    .with_priority(
+                        self.effective_priority("tool_instructions", SectionPriority::Normal),
+                    )
+                    .with_cache_layer(CacheLayer::Role)
+                    .with_placement(Placement::Middle),
+            )
+        {
+            sections.push(section);
         }
 
         // Layer 3: Domain Context
-        if let Some(ref domain) = self.domain {
-            if !domain.is_empty() {
-                if let Some(section) = self.apply_budget_profile(
-                    PromptSection::new("domain_context", domain)
-                        .with_priority(
-                            self.effective_priority("domain_context", SectionPriority::High),
-                        )
-                        .with_cache_layer(CacheLayer::Workspace)
-                        .with_placement(Placement::Middle),
-                ) {
-                    sections.push(section);
-                }
-            }
+        if let Some(ref domain) = self.domain
+            && !domain.is_empty()
+            && let Some(section) = self.apply_budget_profile(
+                PromptSection::new("domain_context", domain)
+                    .with_priority(self.effective_priority("domain_context", SectionPriority::High))
+                    .with_cache_layer(CacheLayer::Workspace)
+                    .with_placement(Placement::Middle),
+            )
+        {
+            sections.push(section);
         }
 
         // Layer 3b: Relevant Context
-        if let Some(ref context) = self.context {
-            if !context.is_empty() {
-                if let Some(section) = self.apply_budget_profile(
-                    PromptSection::new("context_layer", format!("## Relevant Context\n{context}"))
-                        .with_priority(
-                            self.effective_priority("context_layer", SectionPriority::High),
-                        )
-                        .with_cache_layer(CacheLayer::Workspace)
-                        .with_placement(Placement::Middle),
-                ) {
-                    sections.push(section);
-                }
-            }
+        if let Some(ref context) = self.context
+            && !context.is_empty()
+            && let Some(section) = self.apply_budget_profile(
+                PromptSection::new("context_layer", format!("## Relevant Context\n{context}"))
+                    .with_priority(self.effective_priority("context_layer", SectionPriority::High))
+                    .with_cache_layer(CacheLayer::Workspace)
+                    .with_placement(Placement::Middle),
+            )
+        {
+            sections.push(section);
         }
 
         // Layer 3c: Active pheromone signals
@@ -555,19 +545,18 @@ impl SystemPromptBuilder {
         }
 
         // Layer 4: Task Context
-        if let Some(ref task) = self.task {
-            if !task.is_empty() {
-                if let Some(section) = self.apply_budget_profile(
-                    PromptSection::new("task_context", task)
-                        .with_priority(
-                            self.effective_priority("task_context", SectionPriority::Critical),
-                        )
-                        .with_cache_layer(CacheLayer::Plan)
-                        .with_placement(Placement::End),
-                ) {
-                    sections.push(section);
-                }
-            }
+        if let Some(ref task) = self.task
+            && !task.is_empty()
+            && let Some(section) = self.apply_budget_profile(
+                PromptSection::new("task_context", task)
+                    .with_priority(
+                        self.effective_priority("task_context", SectionPriority::Critical),
+                    )
+                    .with_cache_layer(CacheLayer::Plan)
+                    .with_placement(Placement::End),
+            )
+        {
+            sections.push(section);
         }
 
         // Layer 4b: Retry Gate Feedback
@@ -591,15 +580,15 @@ impl SystemPromptBuilder {
         }
 
         // Layer 6b: Tool Usage Hints (LEARN-12)
-        if let Some(ref hints) = self.tool_hints {
-            if let Some(section) = self.apply_budget_profile(
+        if let Some(ref hints) = self.tool_hints
+            && let Some(section) = self.apply_budget_profile(
                 PromptSection::new("tool_hints", hints.clone())
                     .with_priority(self.effective_priority("tool_hints", SectionPriority::Low))
                     .with_cache_layer(CacheLayer::Plan)
                     .with_placement(Placement::Middle),
-            ) {
-                sections.push(section);
-            }
+            )
+        {
+            sections.push(section);
         }
 
         // Layer 7: Anti-Patterns
@@ -623,17 +612,17 @@ impl SystemPromptBuilder {
         }
 
         // Layer 8: Affect Guidance
-        if let Some(affect) = self.affect_guidance() {
-            if let Some(section) = self.apply_budget_profile(
+        if let Some(affect) = self.affect_guidance()
+            && let Some(section) = self.apply_budget_profile(
                 PromptSection::new("affect_guidance", affect)
                     .with_priority(
                         self.effective_priority("affect_guidance", SectionPriority::Normal),
                     )
                     .with_cache_layer(CacheLayer::Volatile)
                     .with_placement(Placement::End),
-            ) {
-                sections.push(section);
-            }
+            )
+        {
+            sections.push(section);
         }
 
         sort_sections(&mut sections);
@@ -1172,10 +1161,10 @@ fn assemble_selected_sections(
         let next = selected_indices
             .get(position + 1)
             .map(|next_index| sections[*next_index].section.cache_layer);
-        if next != Some(current) {
-            if let Some(marker) = cache_marker(current) {
-                parts.push(marker.to_string());
-            }
+        if next != Some(current)
+            && let Some(marker) = cache_marker(current)
+        {
+            parts.push(marker.to_string());
         }
     }
 
@@ -1364,6 +1353,7 @@ impl SystemPromptBuilder {
                 .with_priority(self.effective_priority("pheromone_signals", SectionPriority::High))
                 .with_cache_layer(CacheLayer::Workspace)
                 .with_placement(Placement::Middle)
+                .with_bidder(AttentionBidder::GroupContext)
                 .with_hard_cap(1_500),
         )
     }
@@ -1500,9 +1490,21 @@ mod tests {
             .with_task("Stabilize orchestration")
             .build();
 
+        let sections = SystemPromptBuilder::new("You are a conductor.")
+            .with_pheromones(&pheromones)
+            .with_task("Stabilize orchestration")
+            .build_sections();
+
         assert!(prompt.contains("## Active Signals"));
         assert!(prompt.contains("[Threat]"));
         assert!(prompt.contains("context assembly is too slow"));
+        assert_eq!(
+            sections
+                .iter()
+                .find(|section| section.name == "pheromone_signals")
+                .map(|section| section.bidder),
+            Some(AttentionBidder::GroupContext)
+        );
     }
 
     #[test]

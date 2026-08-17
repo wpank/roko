@@ -20,5 +20,8 @@ roko-core = { path = "../roko-core" }
 roko-index = { path = "../roko-index" }
 roko-mcp-stdio = { path = "../roko-mcp-stdio" }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [package.metadata.roko]
 layer = 2

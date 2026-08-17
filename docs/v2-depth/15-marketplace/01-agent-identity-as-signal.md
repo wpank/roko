@@ -1,6 +1,8 @@
 # Agent Identity as Signal
 
 > Depth for [21-MARKETPLACE.md](../../unified/21-MARKETPLACE.md). Covers agent identity, Korai Passport, ERC-8004 registries, passport tiers, HDC fingerprinting, Sybil defense, and W3C DID integration -- all expressed as Signal/Cell/Graph primitives.
+>
+> **Implementation status (2026-08-17):** Spec/design document. The local identity and delegation contracts (ERC-8004 data structures, passport tiers, HDC fingerprints) are implemented as local state machines in `crates/roko-chain/src/`. On-chain deployment, network transport, the ERC-721 soulbound mint/transfer, and TEE attestation are product work. See `.roko/GAPS.md`.
 
 ---
 

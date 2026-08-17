@@ -1,5 +1,8 @@
 # 02 — SystemPromptBuilder: 9-Layer Prompt Assembly
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Layer 2 Scaffold — Synapse Architecture
 > Status: **Implemented** — `roko-compose::system_prompt_builder` (726 lines, 12 tests)
 > Canonical source: `crates/roko-compose/src/system_prompt_builder.rs`

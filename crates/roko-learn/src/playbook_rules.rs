@@ -2119,15 +2119,14 @@ error_signatures = []
         let dir = TempDir::new().expect("create tempdir");
         let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
 
-        store
-            .upsert(make_rule("r1", 0.5, role_trigger("implementer")))
-            .expect("upsert");
-        store
-            .upsert(make_rule("r2", 0.6, role_trigger("reviewer")))
-            .expect("upsert");
+        let first = make_rule("r1", 0.5, role_trigger("implementer"));
+        let mut second = make_rule("r2", 0.6, role_trigger("reviewer"));
+        let start_ms = first.last_decay_at_ms;
+        second.last_decay_at_ms = start_ms;
+        store.upsert(first).expect("upsert");
+        store.upsert(second).expect("upsert");
 
-        let snap_before = store.snapshot();
-        let now_ms = snap_before[0].last_decay_at_ms + 3_600_000; // 1 hour later
+        let now_ms = start_ms + 3_600_000; // exactly 1 hour later for both rules
 
         store.tick_demurrage_all(now_ms);
 

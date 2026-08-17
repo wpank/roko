@@ -1,5 +1,8 @@
 # Six Knowledge Types
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Every knowledge entry in Neuro is classified into one of six semantic categories, each with a distinct half-life, retrieval behavior, and role in the agent's cognitive lifecycle.
 
 

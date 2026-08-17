@@ -1,6 +1,6 @@
 # 20 -- Surfaces
 
-> Five named surfaces -- Workbench, Agent Inbox, Generative Canvas, Stigmergy Minimap, Autonomy Slider -- define protocol-level data contracts between system and user. Surfaces are projections from the StateHub plus interaction contracts. Four rendering targets (CLI, TUI, Dashboard, Visual Editor) implement all five surfaces. Third parties build new surfaces consuming the same projections.
+> Five named surfaces -- Workbench, Agent Inbox, Generative Canvas, Stigmergy Minimap, Autonomy Slider -- define protocol-level data contracts between system and user. Surfaces are projections from the StateHub plus interaction contracts. CLI, TUI, Dashboard, and Visual Editor parity is the target architecture; it is not yet fully rendered. Third parties can build surfaces consuming the same projections.
 
 **Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal/Pulse, Bus), [02-CELL](02-CELL.md) (Cell protocol), [03-GRAPH](03-GRAPH.md) (Graph composition), [05-AGENT](05-AGENT.md) (vitality, CorticalState), [15-TELEMETRY](15-TELEMETRY.md) (StateHub, Lenses, c-factor, 7 core projections), [16-SECURITY](16-SECURITY.md) (autonomy levels 0-4, CaMeL), [19-CONFIG](19-CONFIG.md) (TOML schemas, domain profiles)
 
@@ -20,21 +20,28 @@ Five named surfaces. Four rendering targets. Every surface can be rendered by an
 | **Stigmergy Minimap** | RTS-style coordination (fog-of-war, group selection) | Dashboard | TUI |
 | **Autonomy Slider** | Progressive trust (5 levels 0-4 on the Slider, per-capability granularity) | Dashboard | TUI, CLI |
 
-Every operation that one rendering target supports, every other target supports -- possibly through different UX. The contract is the projections and events. The rendering is unconstrained.
+Target invariant: every operation that one rendering target supports should be available to
+the others through appropriate UX. Today the shared projection/event contracts are ahead of
+renderer parity.
 
 ### 1.1 Surface-to-TUI-Tab Mapping
 
-The TUI (`roko dashboard`) has seven tabs (F1-F7). Each tab renders one or more named surfaces. Two tabs (F5 Knowledge, F6 System) do not correspond to named surfaces -- they are rendering-target-specific views that consume StateHub projections directly without defining interaction contracts of their own.
+The TUI (`roko dashboard`) retains its existing ten tabs (F1-F10). E37 adds a separate compatibility mapping to seven v2 navigation identities without renaming or re-keying those tabs.
 
-| TUI Tab | Surfaces Rendered | Projections Consumed | Notes |
-|---|---|---|---|
-| **F1 Workbench** | Workbench, Agent Inbox (badge) | `active_tasks`, `gate_pipeline`, `cost_meter`, `agent_vitality` | Inbox items at urgency 2-3 appear as badges; full Inbox is on F4 |
-| **F2 Canvas** | Generative Canvas | `active_tasks`, `gate_pipeline` | Graph library + state-graph viewer |
-| **F3 Flows** | Workbench (detail view) | `active_tasks`, `gate_pipeline`, `cost_meter` | Flow inspector -- deep-dive into individual Flows |
-| **F4 Inbox** | Agent Inbox | `agent_vitality`, `cohort_health` | Full Inbox surface with quick-action keys |
-| **F5 Knowledge** | *(rendering-target view)* | `knowledge_health` | Not a named surface. Reads `knowledge_health` projection from StateHub ([15-TELEMETRY](15-TELEMETRY.md) SS7). Displays tier distribution, demurrage balances, dream cycle history, lineage graph. |
-| **F6 System** | Autonomy Slider | `agent_vitality`, `c_factor`, `cohort_health`, `cost_meter` | Autonomy controls plus rendering-target-specific daemon/provider/cost views that read projections directly. |
-| **F7 Agents** | Stigmergy Minimap | `c_factor`, `cohort_health`, `knowledge_health`, `agent_vitality` | Fleet overview with compact minimap |
+> **Implementation status (2026-08-15):** E37 is 9/9 for the shared contract/backend scope. Typed Workbench, Inbox, Canvas, Minimap, and Autonomy projections; Inbox and autonomy events; all 12 object types; five dedicated StateHub-backed HTTP routes; OpenAPI discovery; and the compatibility mapping below are implemented. Rendering/integration remains partial: the ten legacy tabs do not yet render every named surface, SurfaceEvents are not a command-ingress API, no production Inbox publisher/action consumer or live AutonomyConfig store exists, Workbench human input has no live source, Canvas graph identity comes from dashboard plan ids, and Minimap coordinates use an explicitly labelled deterministic layout rather than HDC. OpenAPI response bodies are still generic JSON schemas, and unresolved Inbox receipt timestamps are recomputed during JSONL replay because the event has no persisted timestamp.
+
+| Existing TUI Tab | v2 compatibility identities | Notes |
+|---|---|---|
+| **F1 Dashboard** | Workbench, Inbox | Inbox is a badge/attention contribution; full named rendering remains open |
+| **F2 Plans** | Canvas, Flows | Compatibility shell for graph authoring and flow state |
+| **F3 Agents** | Agents | Compatibility shell for the Stigmergy Minimap |
+| **F4 Git** | *(none)* | Existing rendering-target-specific view |
+| **F5 Logs** | *(none)* | Existing rendering-target-specific view |
+| **F6 Config** | System | Compatibility shell for system/autonomy controls |
+| **F7 Inspect** | Knowledge | Existing knowledge inspector |
+| **F8 Marketplace** | *(none)* | Existing rendering-target-specific view |
+| **F9 Atelier** | *(none)* | Existing rendering-target-specific view |
+| **F10 Learning** | *(none)* | Existing rendering-target-specific view |
 
 ### 1.2 Surface-to-StateHub Projection Cross-Reference
 
@@ -92,7 +99,7 @@ The primary interaction surface. Delegates structured work to agents -- not a bl
 |---|---|---|
 | Active Flows | `active_tasks` (ActiveTasksProjection) | `Vec<FlowSummary>` -- id, graph name, progress %, cost, duration, status |
 | Agent Slots | `agent_vitality` (AgentVitalityProjection) | `Vec<SlotState>` -- agent id, slot index, occupied/free, current task, vitality |
-| Graph Topology | GraphRegistry via StateHub | `GraphSummary` -- nodes, edges, Macros, Slots, estimated cost |
+| Graph Topology (target; source unavailable) | Future GraphRegistry projection | `GraphSummary` -- nodes, edges, Macros, Slots, estimated cost |
 | Pending Human Input | `active_tasks` (ActiveTasksProjection) | `Vec<HumanInputRequest>` -- run id, cell id, prompt, urgency, deadline |
 | Recent Completions | Store | `Vec<FlowResult>` -- last N completed Flows with verdicts |
 | Gate Status | `gate_pipeline` (GatePipelineProjection) | `GatePipelineProjection` -- rung snapshots, pass rates, avg reward |
@@ -102,7 +109,7 @@ The primary interaction surface. Delegates structured work to agents -- not a bl
 
 | Event | Payload | Effect |
 |---|---|---|
-| `TaskAssign` | `{ graph, inputs, macros, slots, budget, deadline }` | Starts a new Flow |
+| `TaskAssign` | `{ graph, inputs, budget, deadline }` | Contract exists; a command consumer remains open |
 | `SlotFill` | `{ agent_id, slot_index, cell_ref }` | Fills an Agent's Slot with a Cell |
 | `MacroAdjust` | `{ run_id, macro_name, new_value }` | Adjusts a Macro on a running Flow |
 | `FlowCancel` | `{ run_id }` | Cancels an active Flow |
@@ -156,10 +163,10 @@ Ambient notification surface. Calm technology -- peripheral attention until some
 /// Categories for inbox items. Determines routing behavior:
 /// - Transport strip: Question and Review items appear in the persistent
 ///   Transport strip at the bottom of the TUI for immediate visibility.
-/// - Badge-only: Notify items increment the badge count on F1/F4 tabs
-///   but do not appear in the Transport strip.
-/// - Full Inbox panel: ALL categories appear in the F4 Inbox tab and
-///   the Dashboard Inbox queue, sorted by urgency then recency.
+/// - Badge-only: Notify items increment the Dashboard/Inbox identity count
+///   but do not appear in the target Transport strip.
+/// - Full Inbox panel: ALL categories belong in a future full Inbox renderer;
+///   the current TUI exposes only the F1 Dashboard compatibility identity.
 pub enum InboxCategory {
     /// Gate verdict requiring human decision (approve/reject deploy).
     GateVerdict,
@@ -182,7 +189,7 @@ pub enum InboxCategory {
 
 **Inbox routing by urgency and category:**
 
-| InboxCategory | Typical Urgency | Transport Strip | Badge (F1/F4) | Full Inbox Panel |
+| InboxCategory | Typical Urgency | Target Transport Strip | Dashboard/Inbox Badge | Future Full Inbox Panel |
 |---|---|---|---|---|
 | `GateVerdict` | Review (L3) | Yes | Yes (red dot) | Yes |
 | `AgentQuestion` | Question (L2) | Yes | Yes | Yes |
@@ -330,7 +337,7 @@ Progressive trust control. The Slider exposes five autonomy levels (0-4) with pe
 | Projection | StateHub Core Projection | Shape |
 |---|---|---|
 | Agent Capabilities | AgentRuntime via StateHub | `Vec<CapabilityDeclaration>` |
-| Current Autonomy Levels | `agent_vitality` (AgentVitalityProjection) | `AutonomyConfig` |
+| Current Autonomy Levels | No live config source yet; endpoint reports `config_source = "unavailable"` | `AutonomyConfig` when a store is added |
 | CaMeL Tags | Extension system via StateHub | `Vec<CamelTag>` |
 | Safety Violations | SecurityEventStream | `Vec<SafetyViolation>` |
 | Collective Intelligence | `c_factor` (CFactorProjection) | c-factor trend informs trust calibration |
@@ -466,9 +473,12 @@ roko test [scope]           = roko run test-run --input target=<scope>
 | 15 | Cancelled |
 | 16 | Space error |
 
-### 4.2 TUI Surface
+### 4.2 Target TUI Surface (roadmap; not the current renderer)
 
-The TUI (`roko dashboard`) is a ratatui-based terminal application. Keyboard-driven, no server required. Seven tabs plus a persistent transport strip.
+The intended named-surface TUI is a ratatui-based terminal application with seven
+surface-oriented tabs plus a persistent transport strip. This subsection is target UX,
+not a description of the current renderer. The current executable retains the ten tabs
+and compatibility identities in SS1.1; in particular, F4 is Git, not Inbox.
 
 #### Layout
 
@@ -494,19 +504,19 @@ The bottom **Transport** strip is always visible: shows up to 3 active Flows wit
 
 #### Tabs
 
-**F1 Workbench** -- Task delegation and Flow overview. Renders the **Workbench** surface plus **Agent Inbox** badges for urgency 2-3. Shows Space health, active Flows, pending Triggers, recent completions, cost summary. Auto-refreshes every 1s.
+**Target F1 Workbench** -- Task delegation and Flow overview. Would render the **Workbench** surface plus **Agent Inbox** badges for urgency 2-3. The current F1 Dashboard carries the Workbench/Inbox compatibility identities but does not implement this full renderer.
 
-**F2 Canvas** -- Graph library and state-graph viewer. Renders the **Generative Canvas** surface. Two-pane: Graph list (left, 30%), detail + inline edit (right, 70%). Shows Macros, Slots, capabilities, estimated cost, last 5 runs. Press `r` to launch. Press `->` for Graph View (state-graph via ratatui-canvas).
+**Target F2 Canvas** -- Graph library and state-graph viewer. The current F2 Plans tab only carries Canvas/Flows compatibility identities.
 
-**F3 Flows** -- Flow inspector. Renders a detail view of the **Workbench** surface. List of active and recent Flows (left), detail (right). Sub-views: Overview, Graph (live node colors), Artifacts, Episodes, Logs, Trace (timing waterfall).
+**Target F3 Flows** -- Flow inspector. The current F3 tab is Agents; it does not implement this target layout.
 
-**F4 Inbox** -- Renders the full **Agent Inbox** surface. Items sorted by urgency then recency. Quick-action keys: `a` approve, `r` reject, `d` defer, `x` dismiss. Shows urgency level, category, source agent, summary, deadline countdown.
+**Target F4 Inbox** -- Would render the full **Agent Inbox** surface. The current F4 tab is Git, and no quick-action Inbox renderer is wired.
 
-**F5 Knowledge** -- Knowledge browser. Rendering-target-specific view consuming the `knowledge_health` StateHub projection. Entries with type, confidence, age, decay state. Resonance graph. Lineage walker. Dream cycle history.
+**Target F5 Knowledge** -- Knowledge browser. The current knowledge compatibility identity is F7 Inspect.
 
-**F6 System** -- Space + Daemon + Providers + Costs + **Autonomy Slider** surface. Space details, daemon status, provider health, cost breakdown. Per-agent autonomy levels (0-4) with inline adjustment.
+**Target F6 System** -- Space + Daemon + Providers + Costs + **Autonomy Slider** surface. The current F6 Config tab carries the System identity but has no live autonomy store or slider.
 
-**F7 Agents** -- Fleet overview with compact **Stigmergy Minimap** surface. Agent cards with status, vitality, current task, cost rate. Minimap shows spatial embedding and c-factor components.
+**Target F7 Agents** -- Fleet overview with compact **Stigmergy Minimap** surface. The current Agents tab is F3 and does not render the Minimap.
 
 #### Universal keys
 
@@ -520,7 +530,7 @@ c            create new (overlay: graph, trigger, rack, space)
 :            command line (typed commands)
 q            quit
 ^c           cancel current focus action
-F1-F7        jump to tab
+F1-F10       jump to tab
 Tab / S-Tab  cycle panes within active tab
 ```
 
@@ -824,6 +834,10 @@ POST /api/{object_type}/{id}/publish
 
 ## 10. Acceptance Criteria
 
+The first contract/backend rows correspond to the completed E37 manifest. The CLI/TUI/
+Dashboard/Visual Editor rows below are broader product-roadmap criteria and remain open
+unless explicitly described as implemented in SS1.1; they are not evidence for E37 9/9.
+
 | Criterion | Verification |
 |---|---|
 | **Surface contracts**: Workbench, Inbox, Canvas, Minimap, Slider each have typed projections and events | Schema validation test on each surface contract |
@@ -840,9 +854,9 @@ POST /api/{object_type}/{id}/publish
 | **TUI**: Launches via `roko dashboard`, renders F1 Workbench | Smoke test |
 | **TUI**: F1 auto-refreshes every 1s without flicker | Visual / load test |
 | **TUI**: F3 streams live Flow output within 100ms | Latency test |
-| **TUI**: F4 Inbox shows items with urgency levels, categories, and quick-action keys | Inbox rendering test |
+| **TUI target**: a future full Inbox renderer shows urgency, categories, and quick actions | Inbox rendering test (open; current F4 is Git) |
 | **TUI**: F5 Knowledge consumes `knowledge_health` projection | Projection subscription test |
-| **TUI**: F6 System renders Autonomy Slider (0-4 range) | Slider range test |
+| **TUI target**: System renders Autonomy Slider (0-4 range) | Slider range test (open; no live autonomy store) |
 | **TUI**: State-graph view renders with live node colors | Visual snapshot |
 | **TUI**: Space switcher changes context; tab content updates | Multi-Space test |
 | **TUI**: Surface-to-tab mapping matches SS1.1 table | Cross-reference test |

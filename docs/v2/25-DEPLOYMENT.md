@@ -2,6 +2,8 @@
 
 > Local development, cloud deployment, daemon lifecycle, WASM packaging, brain export/import with Merkle-CRDT sync, secrets management, and worker mode. The same binary runs everywhere; configuration selects the scale. Every deployment artifact is a Graph of Cells processing Signals through Bus and Store.
 
+> **Implementation status:** IMPLEMENTED (~80%) — Daemon lifecycle (start/stop/status/logs/install) IMPLEMENTED with systemd integration. `roko serve` on :6677 IMPLEMENTED. `roko worker` IMPLEMENTED. Integrity-protected knowledge file export/import and staged directory backup/restore IMPLEMENTED. Deploy commands (railway/fly/docker) PARTIAL. WASM packaging and network Merkle-CRDT peer sync NOT implemented.
+
 **Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal/Pulse duality), [02-CELL](02-CELL.md) (Cell and protocol conformance), [03-GRAPH](03-GRAPH.md) (Graph composition), [05-AGENT](05-AGENT.md) (Agent lifecycle, vitality), [15-TELEMETRY](15-TELEMETRY.md) (Lens system, StateHub projections), [16-SECURITY](16-SECURITY.md) (sandboxing by tier, CaMeL IFC), [19-CONFIG](19-CONFIG.md) (5-tier SPI, Tier 4 WASM)
 
 ---
@@ -90,7 +92,11 @@ roko serve --insecure
 roko dashboard
 ```
 
-The control plane starts on `localhost:6677` with ~85 HTTP routes, SSE, and WebSocket. The TUI connects to the same port and displays real-time Agent status, plan progress, and learning metrics via StateHub projections.
+The control plane starts on `localhost:6677` with ~317 HTTP routes, SSE, and WebSocket. The
+explicit operator form is `roko serve --bind 127.0.0.1 --port 6677`. Use `GET /health` for
+liveness and `GET /ready` for readiness; `/api/health` remains the richer diagnostic payload.
+The TUI connects to the same port and displays real-time Agent status, plan progress, and
+learning metrics via StateHub projections.
 
 ### 2.2 Local Agent Workflow
 
@@ -105,10 +111,10 @@ roko agent start --name fix-auth-bug
 roko dashboard
 
 # Or use the self-hosting loop
-roko prd idea "Wire SystemPromptBuilder into orchestrate.rs"
+roko prd idea "Extract runner prompt assembly into a dedicated module"
 roko prd draft new "system-prompt-wiring"
 roko prd plan system-prompt-wiring
-roko plan run plans/
+roko plan run plans/ --engine runner-v2
 ```
 
 ### 2.3 Agent Creation UX
@@ -790,72 +796,55 @@ The host grants capabilities to the WASM guest based on the Cell's declared capa
 
 ## 5. Brain Export and Import
 
-An Agent's learned state — its routing preferences, heuristics, calibration data, knowledge graph, and adaptive thresholds — can be exported as a portable **brain** and imported into a new instance. This enables knowledge transfer between deployments, backup/restore, and Agent cloning.
+Roko can export the durable knowledge portion of an Agent's learned state and import it into another workspace. The current command surface supports a canonical single-file knowledge bundle and a directory backup containing that bundle plus optional confirmation provenance. Broader routing, calibration, episode, and profile snapshots are not part of this command yet.
 
 ### 5.1 What a Brain Contains
 
+```text
+coder-brain/
++-- manifest.json                    # directory format, count, source, digests
++-- knowledge.jsonl                  # v2 header + confidence-sorted entries
++-- knowledge-confirmations.jsonl    # optional confirmation provenance
 ```
-brain-export-2026-04-26.roko-brain
-+-- manifest.toml              # metadata, version, source agent, export time
-+-- knowledge/
-|   +-- signals.jsonl          # Knowledge Signals (Heuristic, Insight, etc.)
-|   +-- hdc-index.bin          # HDC fingerprint index (binary, compact)
-+-- learning/
-|   +-- cascade-router.json    # CascadeRouter state (EFE posteriors)
-|   +-- gate-thresholds.json   # Adaptive gate thresholds (EMA per rung)
-|   +-- experiments.json       # Prompt experiment state
-|   +-- efficiency.jsonl       # Efficiency event history
-|   +-- calibration.json       # Per-operator calibration state
-+-- episodes/
-|   +-- episodes.jsonl         # Episode history (summarized, not full turns)
-+-- profile/
-    +-- profile.toml           # Domain profile snapshot
-    +-- extensions.toml        # Extension configuration
-```
+
+The v2 `knowledge.jsonl` header commits the complete canonical JSON of every exported entry with a SHA-256 Merkle root. Import verifies the version, exact entry count, every JSONL record, and the root before inspecting or changing the destination. Secret-like tags and content are excluded before an optional top-N limit is applied. The directory manifest also binds the optional confirmation file by byte length and SHA-256 digest.
 
 ### 5.2 Export Size
 
-A brain export is compact — typically **100KB to 1MB**:
-
-| Component | Typical Size | Notes |
-|---|---|---|
-| Knowledge Signals | 50-500 KB | Only Consolidated+ tier Signals exported by default |
-| HDC index | 10-100 KB | Binary, compact |
-| Learning state | 5-50 KB | JSON, small |
-| Episode summaries | 20-200 KB | Summarized, not full turns |
-| Profile + config | 2-10 KB | TOML |
-
-Full episode history (with complete turns) is excluded by default. Include it with `--include-episodes=full`, which increases size to 1-10 MB.
+Size is proportional to the selected knowledge entries and confirmation log. Use `--top-n N` for a bounded, confidence-ranked knowledge export. The confirmation log is copied as a complete integrity-bound artifact, so it can still reference knowledge entries omitted by `--top-n`. Episodes and unrelated learning/configuration state are not included.
 
 ### 5.3 Export CLI
 
 ```bash
-# Export current Agent's brain
-roko knowledge backup --agent coder-1 --output coder-brain.roko-brain
+# Export one canonical, integrity-protected knowledge file
+roko knowledge export coder-knowledge.jsonl --workdir ./coder-1
 
-# Export with filters
-roko knowledge backup --agent coder-1 \
-  --min-tier consolidated \     # only high-confidence knowledge
-  --since 2026-04-01 \          # recent learning only
-  --include-episodes=summary \  # episode summaries, not full turns
-  --output coder-brain.roko-brain
+# Create a staged directory backup; keep the 500 highest-confidence safe entries
+roko knowledge backup coder-brain --workdir ./coder-1 --top-n 500
+
+# Replace an existing populated backup directory only after staging succeeds
+roko knowledge backup coder-brain --workdir ./coder-1 --force
 ```
 
 ### 5.4 Import CLI
 
 ```bash
-# Import into a new Agent
-roko knowledge restore --agent coder-2 --input coder-brain.roko-brain
+# Import one canonical knowledge file (default confidence multiplier: 0.8)
+roko knowledge import coder-knowledge.jsonl --workdir ./coder-2
 
-# Import with decay (older knowledge starts at lower balance)
-roko knowledge restore --agent coder-2 \
-  --input coder-brain.roko-brain \
-  --decay-factor 0.8            # imported Signals start at 80% balance
+# Restore a directory backup with filters and per-generation confidence decay
+roko knowledge restore coder-brain --workdir ./coder-2 \
+  --types insight,heuristic --min-confidence 0.5 \
+  --generation 2 --decay-factor 0.8
 ```
+
+Imports merge rather than blindly overwrite: exact IDs and semantic duplicates are skipped, high-confidence AntiKnowledge blocks contradictory claims, and admitted entries start at Transient tier. `--force` authorizes merging into non-empty local knowledge and replacing confirmation provenance. Raw JSONL, v1 manifests, and manifest-less directory backups are rejected unless the operator explicitly opts into the trusted migration path with `--legacy-raw`.
 
 ### 5.5 Merkle-CRDT Sync Protocol
 
-When two Agent instances share a brain lineage (e.g., one was cloned from the other), they can sync learning state via **Merkle-CRDT merge**. This produces convergent state without central coordination.
+> **Target design — not implemented.** The Merkle root used by the implemented file export/import path verifies a complete backup; it does not implement the peer-to-peer CRDT protocol described below. The `roko knowledge sync` network commands shown in this section are targets, not current supported workflows.
+
+When two Agent instances share a brain lineage (e.g., one was cloned from the other), the target design lets them sync learning state via **Merkle-CRDT merge**. This would produce convergent state without central coordination.
 
 ```
 Agent A (original)          Agent B (clone)
@@ -914,10 +903,10 @@ pub enum MerkleNode {
 Two Agents exchange Merkle roots. If roots differ, they walk the tree to find divergent subtrees and exchange only the differing CRDT operations. Typical sync payload: **1-10 KB** for incremental updates.
 
 ```bash
-# One-shot sync
+# Target CLI (not implemented): one-shot sync
 roko knowledge sync --peer wss://other-instance.example.com/sync
 
-# Continuous sync (background)
+# Target CLI (not implemented): continuous sync
 roko knowledge sync --peer wss://other-instance.example.com/sync --continuous
 ```
 
@@ -1026,7 +1015,7 @@ builder = "DOCKERFILE"
 dockerfilePath = "docker/roko.Dockerfile"
 
 [deploy]
-healthcheckPath = "/api/health"
+healthcheckPath = "/health"
 healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
 
@@ -1188,10 +1177,13 @@ RUN cargo build --release -p roko-cli
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /build/target/release/roko /usr/local/bin/roko
+COPY docker/roko.toml /workspace/roko.toml
+WORKDIR /workspace
 EXPOSE 6677
 VOLUME ["/workspace/.roko"]
-HEALTHCHECK CMD curl -f http://localhost:6677/api/health || exit 1
-ENTRYPOINT ["roko", "serve"]
+HEALTHCHECK CMD curl -f http://localhost:6677/health || exit 1
+ENTRYPOINT ["roko"]
+CMD ["serve", "--bind", "0.0.0.0", "--port", "6677"]
 ```
 
 ### 9.2 Docker Compose
@@ -1211,7 +1203,7 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - RUST_LOG=info
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6677/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:6677/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -1283,7 +1275,7 @@ cell = "deploy-shell@^1"
 id = "smoke"
 cell = "smoke-test@^1"
 [nodes.params]
-endpoints = ["/api/health"]
+endpoints = ["/health", "/ready"]
 timeout_secs = 30
 
 [[nodes]]
@@ -1493,7 +1485,9 @@ The relay is embedded in the Mirage container. One deployment covers both chain 
 
 | Endpoint | What |
 |---|---|
-| `GET /api/health` | Basic health check (status, version, uptime) |
+| `GET /health` | Stable liveness probe used by Docker and Fly |
+| `GET /ready` | Stable readiness probe; fails until dependencies are ready |
+| `GET /api/health` | Rich health detail (status, version, uptime) |
 | `GET /api/status` | Detailed status (Agents, plans, learning state) |
 | `GET /api/metrics` | Prometheus-format metrics |
 
@@ -1545,7 +1539,7 @@ inference_latency = { threshold_ms = 30000, action = "notify" }
 
 | # | Criterion | Verification |
 |---|---|---|
-| D-1 | `roko serve` starts on :6677 with health check responding | Integration test: start, hit /api/health |
+| D-1 | `roko serve --bind 0.0.0.0 --port 6677` starts with health check responding | Integration test: start, hit /health and /ready |
 | D-2 | `roko daemon start/stop/status` lifecycle works via daemon-lifecycle Graph | Integration test: start daemon, check status, stop, verify stopped |
 | D-3 | `roko daemon install` generates valid systemd/launchd config | Unit test: validate generated config syntax |
 | D-4 | Daemon lifecycle Graph: each command routes to correct Cell | Unit test: DaemonCommand dispatches to spawn/shutdown/health/install |
@@ -1562,9 +1556,9 @@ inference_latency = { threshold_ms = 30000, action = "notify" }
 | D-15 | WASM ABI: Cell input/output round-trips through wit-bindgen | Unit test |
 | D-16 | WASM sandbox prevents unauthorized fs/net access | Security test: WASM Cell attempts unauthorized syscall -> trapped |
 | D-17 | Progressive enhancement: native -> WASM runtime -> WASM standalone | Build all three targets, verify each runs |
-| D-18 | Brain export: Agent state serialized to ~100KB-1MB file | Unit test: export, verify size and contents |
-| D-19 | Brain export manifest includes version and source agent | Unit test: verify manifest fields |
-| D-20 | Brain import: Imported state restores routing, thresholds, knowledge | Integration test: export A, import into B, verify B has A's learning |
+| D-18 | Knowledge export: durable knowledge is serialized to canonical v2 JSONL | Unit test: export, verify count and contents |
+| D-19 | Directory backup manifest includes format versions, source path, count, and confirmation digest | Unit test: verify manifest fields and tamper rejection |
+| D-20 | Knowledge restore merges verified entries and confirmation provenance | Integration test: backup A, restore into B, verify B has A's knowledge |
 | D-21 | Brain import with decay: Older knowledge starts at reduced balance | Unit test: import with decay-factor 0.8, verify balances at 80% |
 | D-22 | Merkle-CRDT sync: Two instances converge after divergent learning | Integration test: A learns X, B learns Y, sync, both have X+Y |
 | D-23 | Merkle-CRDT incremental sync: Only divergent subtrees exchanged | Unit test: measure sync payload size after small update (~1-10KB) |
@@ -1577,7 +1571,7 @@ inference_latency = { threshold_ms = 30000, action = "notify" }
 | D-30 | Multi-instance: Two roko processes share relay, no Agent duplication | Integration test with relay mock |
 | D-31 | Agent cluster pipeline: stages execute in dependency order | Integration test: 3-stage pipeline completes correctly |
 | D-32 | Worker mode: `roko worker` connects to relay, executes assigned tasks | Integration test: spawn worker, dispatch task, verify result |
-| D-33 | Health endpoints return correct data | Integration test: /api/health, /api/status, /api/metrics |
+| D-33 | Health endpoints return correct data | Integration test: /health, /ready, /api/health, /api/status, /api/metrics |
 | D-34 | Alerts fire when thresholds exceeded | Unit test: simulate budget overrun -> pause_agent action triggered |
 | D-35 | Self-healing supervisor Graph: crash -> dedup -> diagnose -> fix -> restart | Integration test: simulate crash, verify Graph fires correct Cells |
 | D-36 | Supervisor circuit breaker: opens after 3 restarts in 5 minutes | Integration test: crash 3x, verify breaker opens, Graph halts |

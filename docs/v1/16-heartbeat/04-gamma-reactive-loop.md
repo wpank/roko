@@ -1,5 +1,8 @@
 # Gamma: The Reactive Loop (~5-15s)
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The fastest cognitive frequency — perception, gating, and action at the speed of environmental change.
 
 

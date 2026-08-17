@@ -240,7 +240,7 @@ impl CostsLog {
 }
 
 /// Default lookback window for cost-spike detection.
-pub const DEFAULT_COST_SPIKE_WINDOW: Duration = Duration::from_secs(15 * 60);
+pub const DEFAULT_COST_SPIKE_WINDOW: Duration = Duration::from_mins(15);
 
 fn recent_cost_rate_from_records(records: &[CostRecord], window: Duration) -> f64 {
     if window.is_zero() {

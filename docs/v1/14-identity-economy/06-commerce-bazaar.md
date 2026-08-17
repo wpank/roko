@@ -1,5 +1,8 @@
 # 06 — Commerce Bazaar: Three-Tier Knowledge Trade
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The Bazaar is the marketplace infrastructure — not a curated app store but an organic,
 > reputation-driven marketplace where knowledge artifacts change hands through micropayments.
 > This document specifies the three commerce tiers (Collective, Ecosystem, Universal), the

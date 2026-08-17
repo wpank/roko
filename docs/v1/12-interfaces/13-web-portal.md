@@ -1,5 +1,8 @@
 # Web Portal
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** This chapter is a deferred target-state spec for a first-party browser surface. If built later, it should stay small and sit on top of the existing HTTP API plus the evolving StateHub/realtime contracts rather than forking the backend model.
 
 **Topic**: [12-interfaces](./INDEX.md)

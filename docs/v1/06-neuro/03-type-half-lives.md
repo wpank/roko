@@ -1,5 +1,8 @@
 # Type Half-Lives: Rationale and Design
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Each knowledge type has a base half-life calibrated to the expected staleness rate of that category of knowledge, drawn from memory research and practical agent operation.
 
 

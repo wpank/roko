@@ -1,5 +1,8 @@
 # Cognitive Energy Model
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** Roko agents have explicit energy — a finite resource that depletes during
 > cognitive work and replenishes during rest (Delta consolidation cycles). Energy mediates
 > between attention tokens (what work costs) and affect (how the agent feels about working).

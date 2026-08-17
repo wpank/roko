@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};

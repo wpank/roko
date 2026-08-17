@@ -1,5 +1,8 @@
 # Refactoring Plan Phases
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** This chapter turns the phased refactoring plan into the canonical architecture narrative for the two-medium, two-fabric transition. It is the "how, in what order, with what risk" companion to the foundational architecture docs. The primary source is [tmp/refinements/06-refactoring-plan.md](../../tmp/refinements/06-refactoring-plan.md); terminology follows [01-naming-and-glossary.md](01-naming-and-glossary.md).
 
 

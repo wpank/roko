@@ -177,13 +177,13 @@ pub static TOPICS: &[TopicEntry] = &[
                   accomplish complex goals. Each task has dependencies, an agent role, \
                   and must pass gates to complete.",
         detail: "Plans are generated from PRDs via `roko prd plan <slug>`. The DAG \
-                 executor in `roko-orchestrator` runs tasks in parallel where \
+                 CLI runner executor runs tasks in parallel where \
                  dependencies allow. Each task is dispatched to an agent with a role \
                  (implementer, reviewer, architect), runs through gates, and persists \
                  results. Use `roko plan run <dir>` to execute, `--resume` to \
                  continue from a snapshot.",
         internals: "Plan execution lives in `crates/roko-cli/src/orchestrate.rs` via \
-                    `PlanRunner`. DAG scheduling is in `crates/roko-orchestrator/`. \
+                    `PlanRunner`. DAG scheduling is owned by `crates/roko-cli/src/orchestrator/`. \
                     Snapshots persist at `.roko/state/executor.json` for resumability. \
                     The merge queue handles concurrent task outputs. Process \
                     supervision via `roko-runtime` tracks agent lifecycles.",

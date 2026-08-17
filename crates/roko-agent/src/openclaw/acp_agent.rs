@@ -34,6 +34,7 @@ use crate::harness::acp_client::{
 };
 use crate::harness::capability::*;
 use crate::harness::{HarnessAdapter, HarnessCapabilities, ProbeError, TransportFlavor};
+use crate::process::ResourceLimits;
 use crate::streaming::StreamChunk;
 use crate::usage::Usage;
 
@@ -56,6 +57,8 @@ pub struct OpenClawAcpConfig {
     pub timeout: Duration,
     /// Whether to auto-approve permission requests from the agent.
     pub auto_approve_permissions: bool,
+    /// Optional OS-enforced limits for the ACP subprocess.
+    pub resource_limits: Option<ResourceLimits>,
 }
 
 impl Default for OpenClawAcpConfig {
@@ -67,6 +70,7 @@ impl Default for OpenClawAcpConfig {
             session_key: Some("agent:main:roko".into()),
             timeout: Duration::from_secs(120),
             auto_approve_permissions: true,
+            resource_limits: None,
         }
     }
 }
@@ -93,11 +97,14 @@ impl OpenClawAcpAgent {
     /// The `AcpStdioClient` is created but NOT connected. Connection
     /// happens lazily on the first `run()` call.
     pub fn new(config: OpenClawAcpConfig) -> Self {
-        let client = AcpStdioClient::openclaw(
+        let mut client = AcpStdioClient::openclaw(
             &config.binary,
             config.cwd.clone(),
             config.gateway_url.clone(),
         );
+        if let Some(limits) = &config.resource_limits {
+            client = client.with_resource_limits(limits.clone());
+        }
 
         let capabilities = HarnessCapabilities {
             one_shot: OneShotMode::Acp,
@@ -172,12 +179,12 @@ impl OpenClawAcpAgent {
         let mut client = self.client.lock().await;
 
         // --- 1. Connect if not alive ---
-        if !client.is_alive() {
-            if let Err(e) = client.connect().await {
-                let msg = format!("openclaw-acp connect failed: {e}");
-                tracing::error!("{msg}");
-                return (msg, Usage::zero(), false);
-            }
+        if !client.is_alive()
+            && let Err(e) = client.connect().await
+        {
+            let msg = format!("openclaw-acp connect failed: {e}");
+            tracing::error!("{msg}");
+            return (msg, Usage::zero(), false);
         }
 
         // --- 2. Create session (mcp_servers: None -- HARDCODED) ---
@@ -430,6 +437,8 @@ impl HarnessAdapter for OpenClawAcpAgent {
     async fn probe(&self) -> Result<(), ProbeError> {
         let infer_config = super::config::OpenClawInferConfig {
             binary: std::ffi::OsString::from(&self.config.binary),
+            timeout: self.config.timeout,
+            resource_limits: self.config.resource_limits.clone(),
             ..Default::default()
         };
         super::probe::probe_openclaw_infer(&infer_config).await
@@ -568,6 +577,7 @@ mod tests {
             session_key: Some("custom-key".into()),
             timeout: Duration::from_secs(60),
             auto_approve_permissions: false,
+            resource_limits: None,
         };
         assert_eq!(config.binary, "/usr/local/bin/openclaw");
         assert_eq!(config.cwd, PathBuf::from("/tmp/workspace"));

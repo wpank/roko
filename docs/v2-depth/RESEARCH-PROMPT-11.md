@@ -45,7 +45,7 @@ The DeFi benchmark rate lane (ISFR as "DeFi's SOFR") was found to be more crowde
 ## What Nunchi is (complete system description)
 
 **Part 1 — Roko (open-source Rust runtime)**
-18 Rust crates, ~177,000 lines of code, Apache 2.0 licensed.
+34 workspace members, ~800K lines of code, Apache 2.0 licensed.
 - Three primitives: **Signal** (durable, content-addressed, HDC-fingerprinted), **Pulse** (ephemeral on Bus), **Cell** (atomic computation implementing 9 protocols: Store, Score, Verify, Route, Compose, React, Observe, Connect, Trigger)
 - **Graph** composition: TOML-defined DAGs of Cells with type-safe edges
 - **Native 6-stage harness**: OBSERVE → GATE → ASSEMBLE → INFER+TOOLS → REFLECT → CONSOLIDATE

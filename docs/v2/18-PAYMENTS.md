@@ -1,23 +1,38 @@
 # 18 -- Payments
 
-> Two payment protocols (x402 per-request, MPP session-based), reputation-based pricing with 5 tiers, feed marketplace economics, and relay payment flow. Payment is a Cell-level concern -- each protocol is a Verify Cell in the feed subscription pipeline.
+> Two payment protocols (x402 per-request, MPP session-based), reputation-based pricing with 5 tiers, feed marketplace economics, and relay payment flow. The current HTTP payment boundary is implemented in `roko-serve`; protocol-native Verify Cells remain the target architecture.
 
-**Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal), [02-CELL](02-CELL.md) (Verify protocol), [12-CONNECTIVITY](12-CONNECTIVITY.md) (Relay, feeds), [17-AUTH](17-AUTH.md) (agent bearer tokens)
+> **Implementation status (E36, verified 2026-08-15):** payment domain types, feed pricing metadata, x402 challenge/authorization gating for paid feed reads, settlement batching, MPP accounting, reputation tier resolution, payment cost persistence, and dashboard event contracts are implemented. Cryptographic signature verification, on-chain batch submission, MPP HTTP/WS delivery, and concrete `VerifyX402Cell` / `VerifyMppCell` implementations remain planned.
+
+**Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal), [02-CELL](02-CELL.md) (Verify protocol), [11-CONNECTIVITY](11-CONNECTIVITY.md) (Relay, feeds), [17-AUTH](17-AUTH.md) (agent bearer tokens)
 
 ---
 
 ## 1. Overview
 
-Roko supports two payment protocols for paid feeds and agent services. Both are implemented as Verify Cells in the feed subscription pipeline -- a subscription request passes through the payment Verify Cell before data flows.
+Roko models two payment protocols for paid feeds and agent services. x402 has a live HTTP guard on paid `GET /api/feeds/{id}` reads. MPP currently has an in-memory accounting manager but is not connected to an HTTP/WS subscription route. Both are intended to become Verify Cells in the feed subscription pipeline.
 
 | Protocol | Model | Signing | Settlement | Use case |
 |---|---|---|---|---|
 | **x402** | Per-request, stateless | ERC-3009 per request | Batch (10min or 100+ auths) | On-demand queries, trying a feed |
 | **MPP** | Session-based, streaming | One ERC-3009 per session | On session close/expire | Continuous feeds, multi-agent pipelines |
 
-### 1.1 Payment as Verify Cells
+### 1.1 Shipped implementation
 
-Each payment protocol is implemented as a concrete Cell struct conforming to `Cell + VerifyProtocol`. These Cells sit in the feed subscription pipeline: a subscription request must pass through the appropriate payment Verify Cell before any data flows to the subscriber.
+| Area | Current implementation | Boundary |
+|---|---|---|
+| Domain model | `PricingTier`, `PaymentProtocol`, `SessionPricing`, and `FeedPricingConfig` in `roko-core::feed` | Pure serializable data; no chain dependency |
+| Feed metadata | Optional, backward-compatible `FeedInfo.pricing` | Older JSON without `pricing` still deserializes |
+| x402 HTTP gate | `roko-serve::routes::middleware::require_payment` | Missing, malformed, or underfunded authorization returns HTTP 402 with a `PaymentRequest` body and `X-Payment-Request` header |
+| x402 accounting | `X402Manager`, `SettlementBatch` | Verifies amount, recipient, validity window, and nonce reuse before queueing; drains at 100 authorizations or the configured timeout |
+| MPP accounting | `MppSessionManager` | Opens sessions, meters capped usage, detects expiry, and computes final settlement; no transport or chain submission yet |
+| Reputation pricing | `resolve_pricing_tier` and `PricingTierResult` | Mean of all seven effective reputation domains plus discipline gating |
+| Cost persistence | `PaymentCostRecord` and `PaymentSummary` in `CostsDb` | Payment records use a separate lock/vector; mixed LLM/payment JSONL is type-tagged with legacy LLM import support |
+| Dashboard state | `PaymentReceived`, `SettlementCompleted`, and payment counters | Event serialization and snapshot accumulation are implemented; dedicated payment UI remains planned |
+
+### 1.2 Target: payment as Verify Cells
+
+The following is target architecture, not shipped Rust. Concrete structs conforming to `Cell + VerifyProtocol` would move the current HTTP/accounting boundaries into the feed subscription graph so every delivery passes through the appropriate payment Verify Cell.
 
 ```rust
 /// x402 per-request payment verification.
@@ -244,65 +259,50 @@ The simplest payment flow. No session, no state. Each request carries its own au
 
 ### 2.1 Protocol Flow
 
+The shipped HTTP flow protects paid feed descriptor reads:
+
 ```
-Client                                  Server (relay / agent)
-  |                                         |
-  |  GET /relay/feeds/eth-gas-trend/data    |
-  | ---------------------------------------> |
-  |                                         |
-  |  HTTP 402                               |
-  |  X-Payment-Required:                    |
-  |    amount=50, recipient=0xABC...,       |
-  |    nonce=1, expiry=1714000000           |
-  | <--------------------------------------- |
-  |                                         |
-  |  Client signs ERC-3009 authorization    |
-  |  (gasless USDC approval, no on-chain tx)|
-  |                                         |
-  |  GET /relay/feeds/eth-gas-trend/data    |
-  |  X-Payment: <signed authorization>      |
-  | ---------------------------------------> |
-  |                                         |
-  |  Server verifies signature (ecrecover,  |
-  |  no RPC needed), serves content         |
-  |                                         |
-  |  200 OK + feed data                     |
-  | <--------------------------------------- |
+Client                              roko-serve
+  |  GET /api/feeds/{id}                |
+  | -----------------------------------> |
+  |  402 Payment Required               |
+  |  X-Payment-Request: <JSON>           |
+  |  body: PaymentRequest JSON           |
+  | <----------------------------------- |
+  |                                     |
+  |  GET /api/feeds/{id}                |
+  |  X-Payment-Authorization: <JSON>     |
+  | -----------------------------------> |
+  |                                     |
+  |  200 OK + FeedInfo                  |
+  | <----------------------------------- |
 ```
+
+The retry sends the serialized authorization in `X-Payment-Authorization`. The request amount is the configured per-request cost multiplied by the feed tier multiplier and rounded up to KORAI base units. Public and private feeds bypass this payment check. Paid feeds at an effective zero price also pass without a payment header.
 
 ### 2.2 ERC-3009 Signatures
 
-x402 uses ERC-3009 `transferWithAuthorization` signatures. The client signs an authorization for USDC transfer without submitting an on-chain transaction. The server verifies the signature locally via `ecrecover` -- no RPC call needed for verification. The authorization is collected and settled later.
+x402 models ERC-3009 `transferWithAuthorization` through `PaymentAuthorization`. The live HTTP guard deserializes the exact JSON structure and requires `authorization.value >= required_amount`; it deliberately does **not** verify the signature. `X402Manager::verify_authorization` additionally checks recipient, validity window, and nonce reuse for settlement queueing, but cryptographic `ecrecover` verification is still unimplemented.
 
 ### 2.3 Batch Settlement
 
-Settlement happens in batches: every 10 minutes or after 100+ accumulated authorizations, whichever comes first. The server submits a single on-chain transaction that settles all pending authorizations. This amortizes gas costs across many payments.
+`SettlementBatch` stores verified `(PaymentAuthorization, PaymentRequest)` pairs. `should_settle` fires at 100 accumulated authorizations or once a non-empty batch reaches its configurable timeout (600 seconds by default), and `drain` atomically takes the pending pairs. `X402Manager::queue_for_settlement` verifies and replay-protects an authorization before adding it.
+
+The in-memory queue and trigger semantics are shipped. Connecting the paid-feed HTTP guard to this queue and submitting the drained batch on-chain remain integration work.
 
 ```rust
-pub struct X402Settlement {
-    /// Pending authorizations waiting for settlement.
-    pending: Vec<Erc3009Authorization>,
-    /// Settlement triggers.
-    max_pending: usize,         // default: 100
-    settle_interval: Duration,  // default: 10 minutes
-    /// Last settlement timestamp.
-    last_settled_at: Instant,
+pub struct SettlementBatch {
+    pub authorizations: Vec<(PaymentAuthorization, PaymentRequest)>,
+    pub created_at: u64,
+    pub max_batch_size: usize,
+    pub batch_timeout_secs: u64,
 }
 
-impl X402Settlement {
-    /// Check if settlement should fire.
-    pub fn should_settle(&self) -> bool {
-        self.pending.len() >= self.max_pending
-            || self.last_settled_at.elapsed() >= self.settle_interval
-    }
-
-    /// Submit batch settlement on-chain.
-    pub async fn settle(&mut self, chain: &ChainClient) -> Result<TxHash> {
-        let batch = std::mem::take(&mut self.pending);
-        let tx = chain.batch_transfer_with_authorization(&batch).await?;
-        self.last_settled_at = Instant::now();
-        Ok(tx)
-    }
+let mut batch = SettlementBatch::new(100, 600);
+batch.add_authorization(authorization, request);
+if batch.should_settle(now) {
+    let pending = batch.drain();
+    // Planned: submit `pending` through the chain backend.
 }
 ```
 
@@ -310,94 +310,66 @@ impl X402Settlement {
 
 ## 3. MPP: Session-Based Streaming Payment
 
-For continuous feeds. One signature funds an entire session. No re-signing per message.
+MPP is the session-oriented accounting model for continuous feeds. One authorization caps an entire session, so metering does not require a new authorization per usage increment.
 
-### 3.1 Protocol Flow
+### 3.1 Current accounting flow
 
 ```
-Client                                  Server (relay / agent)
-  |                                         |
-  |  POST /mpp/sessions                     |
-  |  { amount: 500, authorization: <sig> }  |
-  | ---------------------------------------> |
-  |                                         |
-  |  201 Created                            |
-  |  { session_id: "abc-123",               |
-  |    funded: 500, status: "active" }      |
-  | <--------------------------------------- |
-  |                                         |
-  |  WS subscribe with session_id           |
-  |  { rooms: ["feed:eth-gas-trend"],       |
-  |    payment: { session_id: "abc-123" } } |
-  | ---------------------------------------> |
-  |                                         |
-  |  Per-message draw from session          |
-  |  (no client interaction needed)         |
-  |                                         |
-  |  feed_data: { ema_12: 42.5, ... }       |
-  |  payment_draw: { amount: 1,             |
-  |    balance_remaining: 499 }             |
-  | <--------------------------------------- |
+open_session(MppSession { authorization, rate_per_unit, max_cost, ... })
+    -> meter_usage(session_id, units)
+    -> expire_stale(now), when appropriate
+    -> settle(session_id)
+    -> MppSettlement { usage_units, amount, subscriber, provider }
 ```
+
+`meter_usage` uses checked arithmetic and rejects an increment whose `usage_units * rate_per_unit` would exceed `max_cost`. `settle` computes that exact product and transitions an active or expired session to `Closed`.
+
+There is currently no `POST /mpp/sessions` route, WebSocket payment binding, top-up endpoint, automatic per-message draw, exhaustion Pulse, refund transaction, or on-chain settlement submission. Those flows below are product targets rather than current API contracts.
 
 ### 3.2 Session Lifecycle
 
 ```
-Active --> Exhausted --> Expired --> Settled
-  |            |                       |
-  |  (top-up)  |                       |
-  +------------+                       +-- Refund unspent balance
+Active -------------------------------> Closed
+  |                                       ^
+  +------------> Expired -----------------+
+  |
+  +------------> Disputed
 ```
 
-- **Active**: draws succeed, messages flow.
-- **Exhausted**: balance hits zero. Server sends exhaustion notice and pauses delivery. Client can top-up to resume.
-- **Expired**: TTL reached (default 24h). No more draws. Transitions to Settled.
-- **Settled**: unspent balance refunded. Session closed. Settlement submitted on-chain.
+- **Active**: usage may be metered up to `max_cost`.
+- **Expired**: `expire_stale` marks an active session once the supplied time is past its deadline; expired sessions may still be settled.
+- **Closed**: final amount has been computed by `settle`; further metering and repeated settlement are rejected.
+- **Disputed**: accounting is paused and the session is not settleable by the current manager.
 
 ```rust
 pub struct MppSession {
-    pub id: SessionId,
-    pub subscriber: AgentId,
-    pub producer: AgentId,
-    pub funded_amount: u64,         // USDC base units
-    pub balance_remaining: u64,
-    pub status: SessionStatus,
-    pub authorization: Erc3009Authorization,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,  // default: created_at + 24h
-    pub draws: Vec<MppDraw>,
+    pub session_id: [u8; 32],
+    pub subscriber: Address,
+    pub provider: Address,
+    pub authorization: PaymentAuthorization,
+    pub usage_units: u64,
+    pub rate_per_unit: u256,
+    pub max_cost: u256,
+    pub started_at: u64,
+    pub deadline: u64,
+    pub state: MppSessionState,
 }
 
-pub enum SessionStatus {
+pub enum MppSessionState {
     Active,
-    Exhausted,
+    Closed,
     Expired,
-    Settled { tx_hash: TxHash, refund_amount: u64 },
-}
-
-pub struct MppDraw {
-    pub amount: u64,
-    pub feed_id: String,
-    pub message_id: String,
-    pub timestamp: DateTime<Utc>,
+    Disputed,
 }
 ```
 
-### 3.3 Top-Up
+### 3.3 Planned transport integration
 
-When a session is exhausted, the client can top-up without creating a new session:
+The intended transport flow is to open a session, attach its id to a streaming subscription, meter delivered usage, and settle on close or expiry. Top-up/resume behavior requires a future extension to the current state model and is not implemented.
 
-```
-POST /mpp/sessions/{session_id}/topup
-{ amount: 500, authorization: <sig> }
--> { balance_remaining: 500, status: "active" }
-```
+### 3.4 One-authorization accounting
 
-Top-up resumes delivery immediately. The session's draw history is preserved.
-
-### 3.4 One-Signature Streaming
-
-The key property of MPP: the client signs once (at session creation or top-up). All subsequent draws happen server-side without client interaction. This enables continuous feed consumption without re-signing for every message -- critical for agents that consume feeds autonomously.
+The accounting layer stores one `PaymentAuthorization` on the session and accumulates usage independently. Cryptographic authorization verification and transport-driven metering must be added before treating this as a production payment path.
 
 ---
 
@@ -418,67 +390,42 @@ The key property of MPP: the client signs once (at session creation or top-up). 
 
 ## 5. Reputation-Based Pricing
 
-Higher ERC-8004 reputation tier = lower markup. Applied on top of the feed producer's base price. The spread goes to the relay as an infrastructure fee.
+Pricing tiers are represented by `roko_core::feed::PricingTier`. `resolve_pricing_tier` in `roko-chain` calculates the mean of the seven effective reputation-domain scores and applies discipline gating before score thresholds. It returns a string-based `PricingTierResult` so `roko-chain` does not depend on `roko-core`; callers map that name to the core enum.
 
 ### 5.1 Five Tiers
 
-| Tier | Markup | Description |
-|---|---|---|
-| **None** | +20% | No on-chain reputation record |
-| **Basic** | +18% | Agent registered on-chain |
-| **Verified** | +15% | Agent has verified identity (Privy + wallet link) |
-| **Trusted** | +12% | Agent has > 100 completed episodes with > 0.7 pass rate |
-| **Sovereign** | +8% | Agent has > 1000 episodes, > 0.85 pass rate, > 90d uptime |
+| Tier | Resolution | Price multiplier |
+|---|---|---:|
+| **Free** | Discipline is not `GoodStanding`; selling is disabled | 0.0 |
+| **Starter** | Good standing and aggregate score `< 0.4` | 0.5 |
+| **Standard** | Good standing and `0.4 <= score < 0.6` | 1.0 |
+| **Professional** | Good standing and `0.6 <= score < 0.8` | 1.5 |
+| **Enterprise** | Good standing and score `>= 0.8` | 2.0 |
 
 ### 5.2 Pricing Example
 
-A feed priced at $0.10/hr:
+A feed with a base per-request cost of 10 KORAI resolves as follows:
 
-| Subscriber tier | Effective price | Relay fee |
-|---|---|---|
-| None | $0.120/hr | $0.020/hr |
-| Basic | $0.118/hr | $0.018/hr |
-| Verified | $0.115/hr | $0.015/hr |
-| Trusted | $0.112/hr | $0.012/hr |
-| Sovereign | $0.108/hr | $0.008/hr |
+| Tier | Effective per-request cost |
+|---|---:|
+| Free | 0 KORAI |
+| Starter | 5 KORAI |
+| Standard | 10 KORAI |
+| Professional | 15 KORAI |
+| Enterprise | 20 KORAI |
 
-The producer always receives the base price ($0.10/hr). The markup is the relay's cut, and it decreases as the subscriber builds reputation.
+The HTTP payment guard uses the tier already stored in `FeedPricingConfig`; automatic registry-to-feed tier refresh is not wired yet.
 
 ```rust
-pub struct ReputationPricing {
-    pub base_price: u64,        // producer's price in USDC base units
-    pub tier: ReputationTier,
-    pub markup_bps: u16,        // basis points added to base price
-}
-
-pub enum ReputationTier {
-    None,       // +2000 bps (20%)
-    Basic,      // +1800 bps (18%)
-    Verified,   // +1500 bps (15%)
-    Trusted,    // +1200 bps (12%)
-    Sovereign,  //  +800 bps (8%)
-}
-
-impl ReputationTier {
-    pub fn markup_bps(&self) -> u16 {
+impl PricingTier {
+    pub const fn price_multiplier(self) -> f64 {
         match self {
-            Self::None => 2000,
-            Self::Basic => 1800,
-            Self::Verified => 1500,
-            Self::Trusted => 1200,
-            Self::Sovereign => 800,
+            Self::Free => 0.0,
+            Self::Starter => 0.5,
+            Self::Standard => 1.0,
+            Self::Professional => 1.5,
+            Self::Enterprise => 2.0,
         }
-    }
-}
-
-impl ReputationPricing {
-    pub fn effective_price(&self) -> u64 {
-        let markup = (self.base_price as u128 * self.tier.markup_bps() as u128) / 10000;
-        self.base_price + markup as u64
-    }
-
-    pub fn relay_fee(&self) -> u64 {
-        self.effective_price() - self.base_price
     }
 }
 ```
@@ -487,9 +434,9 @@ impl ReputationPricing {
 
 ## 6. Relay Payment Flow
 
-The relay manages the feed registry, payment gating, and message forwarding. All feed operations go through the relay -- producers publish to it, subscribers connect through it.
+The target relay owns feed registration, payment gating, and message forwarding. Today `roko-serve` owns the in-memory `FeedRegistry` and applies the x402 structural guard to paid feed descriptor reads. Payment-gated message forwarding, MPP draws, and automated settlement are not wired.
 
-### 6.1 Payment Flow Diagram
+### 6.1 Target Payment Flow Diagram
 
 ```
 Subscriber                    Relay                     Feed Producer
@@ -525,11 +472,11 @@ Subscriber                    Relay                     Feed Producer
 
 ### 6.2 Per-Message Draw Calculation
 
-Each forwarded message triggers a draw from the session balance:
+This calculation is a target for future transport-driven MPP metering; the current `MppSessionManager` accepts explicit usage units and multiplies them by `rate_per_unit`.
 
 ```rust
 pub fn per_message_cost(base_price_per_hour: u64, rate_hz: f64) -> u64 {
-    // base_price_per_hour is in USDC base units (6 decimals)
+    // base_price_per_hour is in KORAI base units
     // rate_hz is messages per second
     // cost per message = price_per_hour / (rate_hz * 3600)
     let messages_per_hour = (rate_hz * 3600.0) as u64;
@@ -542,7 +489,7 @@ pub fn per_message_cost(base_price_per_hour: u64, rate_hz: f64) -> u64 {
 
 ## 7. Payment Disputes
 
-Payment disputes arise when a subscriber believes they were charged for incorrect, stale, or missing data. The dispute system provides a structured resolution flow without requiring external arbitration for most cases.
+This section is planned behavior. E36 defines the `Disputed` MPP state but does not implement dispute creation, arbitration, credits, reputation effects, or feed suspension.
 
 ### 7.1 Dispute Triggers
 
@@ -664,38 +611,40 @@ Dispute outcomes affect TraceRank reputation scores:
 
 ## 8. Feed Registration and Discovery
 
-### 7.1 Feed Registration (Agent -> Relay on Boot)
+### 7.1 Feed Registration
 
 ```json
-POST /relay/feeds/register
+POST /api/feeds
 {
-  "feed_id": "eth-gas-trend",
+  "name": "eth-gas-trend",
   "agent_id": "gas-oracle",
   "kind": "derived",
-  "schema": "gas_trend_v1",
+  "access": "paid",
   "description": "12-block EMA gas price with percentile bands and MEV detection",
-  "rate_hz": 0.5,
-  "access": {
-    "paid": {
-      "base_price_usdc_per_hour": 50,
-      "accepted_protocols": ["x402", "mpp"]
-    }
-  },
-  "sample": {"ema_12": 42.5, "p25": 35.0}
+  "schema": null,
+  "pricing": {
+    "tier": "standard",
+    "per_request_cost": 50.0,
+    "session_pricing": null,
+    "protocol": "x402"
+  }
 }
 ```
+
+The registry assigns the feed id. `pricing` is optional for serialized compatibility, though paid feeds should advertise it.
 
 ### 7.2 Feed Discovery (Dashboard or Agent -> Relay)
 
 ```
-GET /relay/feeds                              # all feeds
-GET /relay/feeds?kind=derived&access=paid     # filter by kind and access
-GET /relay/feeds?agent_id=gas-oracle          # feeds from a specific agent
-GET /relay/feeds/{feed_id}                    # single feed metadata
-GET /relay/feeds/{feed_id}/sample             # sample payload (free, no auth)
+GET /api/feeds                       # all feeds
+GET /api/feeds?kind=derived          # filter by kind
+GET /api/feeds?agent_id=gas-oracle   # filter by producer
+GET /api/feeds/{feed_id}             # single descriptor; paid feeds run the x402 guard
 ```
 
 ### 7.3 Feed Subscription with Payment
+
+The WebSocket MPP subscription payload below is target design. It is not a currently registered route or message contract.
 
 ```json
 {
@@ -708,11 +657,13 @@ GET /relay/feeds/{feed_id}/sample             # sample payload (free, no auth)
 }
 ```
 
-The relay verifies the MPP session with the feed producer's agent, then forwards feed data to the subscriber.
+Planned behavior is for the relay to verify the MPP session and meter forwarded feed data.
 
 ---
 
 ## 9. Feed Marketplace Economics
+
+This section describes the intended marketplace model; E36 does not implement revenue splitting, paid composition, or marketplace settlement.
 
 ### 8.1 Feed Types and Composability
 
@@ -771,7 +722,7 @@ mode = "persistent"
 [[agent.feed_subscriptions]]
 feed_id = "binance-funding-rates"
 agent_id = "cex-connector"
-budget_usdc = 1000  # $0.001 USDC session deposit
+budget_korai = 1000  # KORAI session deposit
 
 [[agent.feed_subscriptions]]
 feed_id = "hyperliquid-funding-rates"
@@ -861,6 +812,8 @@ impl Extension for FundingDivergenceExt {
 ---
 
 ## 10. Setting Up a Paid Feed
+
+The extension and manifest APIs below are target developer ergonomics. The shipped registration path is the `FeedInfo` / `FeedPricingConfig` model and `POST /api/feeds` described in Section 8.
 
 ### 9.1 Declare the Feed in Agent Manifest
 
@@ -990,6 +943,8 @@ Pipeline order: `GasTrendExt` (Cognition layer) runs during `on_observe`, publis
 
 ## 11. Dashboard Subscription (TypeScript)
 
+This is a target client flow. The MPP session endpoints used by the example are not implemented.
+
 ```typescript
 // 1. Discover available feeds
 const feeds = await fetch(`${relayUrl}/relay/feeds`).then(r => r.json());
@@ -997,7 +952,7 @@ const gasFeed = feeds.find(f => f.feed_id === "eth-gas-trend");
 
 // 2. Open an MPP session (one-time ERC-3009 signature)
 const session = await openMppSession(relayUrl, {
-  amount: 500,  // $0.0005 USDC -- enough for ~10 hours at $0.05/hr
+  amount: 500,  // KORAI base units
   recipient: gasFeed.agent_wallet,
 });
 
@@ -1029,6 +984,8 @@ ws.onmessage = (event) => {
 
 ## 12. Agent-to-Agent Feed Subscription (Rust)
 
+This is a target client flow; there is no shipped MPP transport client or paid feed-data subscription route yet.
+
 ```rust
 pub struct GasConsumerExt {
     gas_subscription: Option<FeedSubscription>,
@@ -1039,7 +996,7 @@ impl Extension for GasConsumerExt {
     async fn on_boot(&mut self, ctx: &mut AgentContext) -> Result<()> {
         let session = ctx.mpp.open_session(
             "gas-oracle",  // agent producing the feed
-            500,           // $0.0005 USDC
+            500,           // KORAI base units
         ).await?;
 
         self.gas_subscription = Some(
@@ -1071,6 +1028,8 @@ impl Extension for GasConsumerExt {
 
 ## 13. On-Chain Feed Advertisement (ERC-8004)
 
+On-chain feed advertisement and merged chain/relay discovery remain planned and were not part of E36.
+
 Agents with wallets advertise their feeds in their ERC-8004 passport. This makes feeds discoverable on-chain even when the agent or relay is offline.
 
 ```solidity
@@ -1079,7 +1038,7 @@ struct FeedAdvert {
     bytes32 feedId;        // keccak256 of feed name
     bytes32 schemaHash;    // keccak256 of schema definition
     uint16  rateMilliHz;   // rate in milli-Hz (500 = 0.5 Hz)
-    uint96  pricePerHour;  // USDC base units per hour (0 = free)
+    uint96  pricePerHour;  // KORAI base units per hour (0 = free)
     uint32  updatedAt;     // last update timestamp
 }
 
@@ -1131,6 +1090,8 @@ An agent's feeds appear in its passport even when the agent is offline.
 ---
 
 ## 14. Dashboard Integration
+
+E36 ships the shared dashboard state contract, not the subscription/revenue screens mocked below. `DashboardEvent::PaymentReceived` updates payment count, cumulative KORAI, and per-protocol counts; `DashboardEvent::SettlementCompleted` updates settlement count.
 
 ### 13.1 Feeds Page
 
@@ -1231,16 +1192,35 @@ An agent's feeds appear in its passport even when the agent is offline.
 
 ### 13.5 Dashboard Data Sources
 
-| Section | WS rooms | Event types | REST fallback |
-|---|---|---|---|
-| Fleet / Feeds | `system` | `feed_registered`, `feed_deregistered`, `feed_status` | `GET /relay/feeds` |
-| Fleet / Feed detail | `feed:{id}` | `feed_data`, `feed_status`, `payment_draw` | `GET /relay/feeds/{id}` |
-| Treasury / Subscriptions | `system` | `session_opened`, `session_exhausted`, `session_settled` | `GET /mpp/sessions` |
-| Treasury / Feed Revenue | `system` | `feed_revenue_update`, `settlement_batch` | `GET /relay/feeds/revenue` |
+| Shipped event | Payload | Snapshot effect |
+|---|---|---|
+| `payment_received` | `feed_id`, `protocol`, `amount_korai`, `payer`, `payee` | Increment `payment_count`, add to `total_payment_korai`, increment `payments_by_protocol[protocol]` |
+| `settlement_completed` | `protocol`, `batch_size`, `total_korai` | Increment `settlement_count` |
+
+REST/WS views dedicated to MPP session balances, pending batches, and feed revenue remain planned.
 
 ---
 
-## 15. Acceptance Criteria
+## 15. Verification Status
+
+### 15.1 E36 shipped acceptance
+
+| Task | Verified result |
+|---|---|
+| E36-T01 | Core pricing tiers and per-request/session pricing types serialize and deserialize |
+| E36-T02 | Settlement batch triggers at 100 authorizations or timeout, rejects overflow, drains, and replay-protects manager queueing |
+| E36-T03 | MPP usage metering, max-cost rejection, expiry, and exact settlement accounting |
+| E36-T04 | Seven-domain aggregate tier resolution with exact boundaries and discipline gate |
+| E36-T05 | `FeedInfo.pricing` round-trip plus legacy JSON compatibility |
+| E36-T06 | Separate payment cost storage, queries, summaries, mixed tagged JSONL round-trip, and legacy import |
+| E36-T07 | Paid feed reads: missing/malformed/underfunded authorization returns 402; sufficient authorization passes; public/private feeds bypass |
+| E36-T08 | Payment and settlement events serialize and update dashboard counters |
+
+Focused verification passed in `roko-core`, `roko-chain`, `roko-learn`, and `roko-serve`; the affected crates compile.
+
+### 15.2 Long-term acceptance criteria (roadmap)
+
+The criteria below describe the full target system. They are not all shipped by E36; in particular, signature recovery, on-chain submission, MPP transport/top-up/refunds, Verify Cells, disputes, and dedicated dashboard screens remain open.
 
 | # | Criterion | Verification |
 |---|---|---|

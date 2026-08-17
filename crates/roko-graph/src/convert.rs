@@ -5,7 +5,7 @@
 //! - `depends_on` relationships become Edges
 //! - Tasks with no incoming edges become entry nodes
 //! - Tasks with no outgoing edges become exit nodes
-//! - `TaskMeta.max_parallel` is stored in graph metadata labels
+//! - `TaskMeta.max_parallel` configures the Graph's bounded execution policy
 //! - `TaskDef.timeout_secs` is stored per-node in the config
 //! - All tasks use `ExecutionClass::Activity` (non-deterministic, LLM-dispatched)
 //!
@@ -54,6 +54,7 @@ pub fn plan_to_graph(
     };
 
     let mut graph = Graph::new(metadata);
+    graph.policy.max_concurrent_nodes = usize::try_from(max_parallel.max(1)).unwrap_or(usize::MAX);
 
     // Phase 1: Add all nodes.
     // All plan tasks are Activity nodes: they involve non-deterministic LLM dispatch
@@ -273,6 +274,7 @@ mod tests {
             plan_to_graph_with_endpoints("diamond", "/tmp", &tasks, 2).unwrap();
         assert_eq!(graph.node_count(), 4);
         assert_eq!(graph.edge_count(), 4);
+        assert_eq!(graph.policy.max_concurrent_nodes, 2);
         assert_eq!(entries, vec!["T1"]);
         assert_eq!(exits, vec!["T4"]);
     }
@@ -305,8 +307,16 @@ mod tests {
             plan_to_graph_with_endpoints("parallel", "/tmp", &tasks, 3).unwrap();
         assert_eq!(graph.node_count(), 3);
         assert_eq!(graph.edge_count(), 0);
+        assert_eq!(graph.policy.max_concurrent_nodes, 3);
         assert_eq!(entries.len(), 3);
         assert_eq!(exits.len(), 3);
+    }
+
+    #[test]
+    fn converter_clamps_zero_parallelism_to_one() {
+        let graph =
+            plan_to_graph("serial", "/tmp", &[make_task("T1", &[])], 0).expect("convert plan");
+        assert_eq!(graph.policy.max_concurrent_nodes, 1);
     }
 
     #[test]

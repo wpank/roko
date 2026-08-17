@@ -15,11 +15,15 @@ use crate::agent::{Agent, AgentResult};
 #[cfg(test)]
 use crate::http::HttpPostError;
 use crate::http::{HttpPoster, ReqwestPoster};
+use crate::multimodal::anthropic_messages;
 use crate::translate::claude::{inject_cache_markers, inject_cache_markers_into_content};
 use crate::usage::{UsageObservation, UsageSource};
 use async_trait::async_trait;
 use roko_core::defaults::{DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_REQUEST_TIMEOUT_MS};
-use roko_core::{Body, Context, Kind, Provenance, Signal};
+use roko_core::{
+    Body, Context, Kind, ModelInputBlock, ModelInputMessage, Provenance, Signal,
+    validate_model_input_messages,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -171,6 +175,7 @@ pub struct ClaudeAgent {
     max_tokens: u32,
     anthropic_version: String,
     system_prompt: Option<String>,
+    input_messages: Vec<ModelInputMessage>,
     tools: Option<Vec<AnthropicTool>>,
     tool_choice: Option<ToolChoice>,
     extra_headers: Vec<(String, String)>,
@@ -205,6 +210,7 @@ impl ClaudeAgent {
             max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
             anthropic_version: DEFAULT_ANTHROPIC_VERSION.to_owned(),
             system_prompt: None,
+            input_messages: Vec::new(),
             tools: None,
             tool_choice: None,
             extra_headers: Vec::new(),
@@ -250,6 +256,13 @@ impl ClaudeAgent {
     #[must_use]
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
+        self
+    }
+
+    /// Attach an ordered provider-neutral multimodal message history.
+    #[must_use]
+    pub fn with_input_messages(mut self, messages: Vec<ModelInputMessage>) -> Self {
+        self.input_messages = messages;
         self
     }
 
@@ -320,10 +333,26 @@ impl ClaudeAgent {
     }
 
     fn request_body(&self, prompt_text: &str) -> Result<Value, serde_json::Error> {
-        let mut messages = vec![json!({
-            "role": "user",
-            "content": prompt_text,
-        })];
+        let mut messages = if self.input_messages.is_empty() {
+            vec![json!({
+                "role": "user",
+                "content": prompt_text,
+            })]
+        } else {
+            anthropic_messages(&self.input_messages)
+        };
+
+        let structured_system = self
+            .input_messages
+            .iter()
+            .filter(|message| message.role == roko_core::MessageRole::System)
+            .flat_map(|message| &message.content)
+            .filter_map(|block| match block {
+                ModelInputBlock::Text { text } if !text.trim().is_empty() => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        messages.retain(|message| message.get("role").and_then(Value::as_str) != Some("system"));
         inject_cache_markers(&mut messages);
 
         let mut body = json!({
@@ -332,8 +361,16 @@ impl ClaudeAgent {
             "messages": messages,
         });
 
-        if let Some(system_prompt) = &self.system_prompt {
-            let mut system = Value::String(system_prompt.clone());
+        let system_prompt = self
+            .system_prompt
+            .iter()
+            .chain(structured_system.iter())
+            .filter(|segment| !segment.trim().is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if !system_prompt.is_empty() {
+            let mut system = Value::String(system_prompt);
             let _ = inject_cache_markers_into_content(&mut system);
             body["system"] = system;
         }
@@ -373,6 +410,10 @@ impl Agent for ClaudeAgent {
     #[allow(clippy::too_many_lines)]
     async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
         let started = Instant::now();
+
+        if let Err(error) = validate_model_input_messages(&self.input_messages) {
+            return self.fail(input, &format!("invalid image input: {error}"), started);
+        }
 
         let prompt_text = match input.body.as_text() {
             Ok(s) => s.to_owned(),
@@ -906,6 +947,64 @@ mod tests {
         assert_eq!(v["max_tokens"], 256);
         assert_eq!(v["messages"][0]["role"], "user");
         assert_eq!(v["messages"][0]["content"], "hello there");
+    }
+
+    #[tokio::test]
+    async fn structured_image_request_preserves_system_order_and_exact_bytes() {
+        let body = serde_json::json!({
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })
+        .to_string();
+        let poster = MockPoster::ok(body);
+        let agent = ClaudeAgent::new("k", "claude-vision")
+            .with_http_poster(poster.clone())
+            .with_system_prompt("adapter system")
+            .with_input_messages(vec![
+                ModelInputMessage::new(
+                    roko_core::MessageRole::System,
+                    vec![ModelInputBlock::text("structured system")],
+                ),
+                ModelInputMessage::new(
+                    roko_core::MessageRole::User,
+                    vec![
+                        ModelInputBlock::text("before"),
+                        ModelInputBlock::image("image/png", "aGVsbG8="),
+                        ModelInputBlock::text("after"),
+                    ],
+                ),
+            ]);
+
+        let result = agent
+            .run(&prompt("ignored fallback"), &Context::now())
+            .await;
+        assert!(result.success);
+        let call = poster.last_call().expect("call recorded");
+        let request: Value = serde_json::from_slice(&call.body).expect("request json");
+        assert_eq!(request["system"], "adapter system\n\nstructured system");
+        assert_eq!(request["messages"].as_array().map(Vec::len), Some(1));
+        let content = request["messages"][0]["content"]
+            .as_array()
+            .expect("multipart content");
+        assert_eq!(content[0]["text"], "before");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        assert_eq!(content[1]["source"]["data"], "aGVsbG8=");
+        assert_eq!(content[2]["text"], "after");
+    }
+
+    #[tokio::test]
+    async fn invalid_image_fails_before_http_post() {
+        let poster = MockPoster::ok("{}");
+        let agent = ClaudeAgent::new("k", "claude-vision")
+            .with_http_poster(poster.clone())
+            .with_input_messages(vec![ModelInputMessage::new(
+                roko_core::MessageRole::User,
+                vec![ModelInputBlock::image("image/png", "not base64")],
+            )]);
+
+        let result = agent.run(&prompt("ignored"), &Context::now()).await;
+        assert!(!result.success);
+        assert_eq!(poster.call_count(), 0);
     }
 
     #[tokio::test]

@@ -1,4 +1,4 @@
-//! Orchestration types migrated from the former `roko-orchestrator` crate.
+//! Orchestration types owned by the live CLI runner.
 //!
 //! Plan discovery, task DAG, worktree management, parallel execution,
 //! merge queue, replan strategies, and crash-recovery snapshots.

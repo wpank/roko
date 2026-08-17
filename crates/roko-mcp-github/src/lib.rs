@@ -9,10 +9,20 @@
 //! tokio runtime must use `tokio::task::spawn_blocking` to avoid blocking
 //! the async executor.
 
+use chrono::DateTime;
+use reqwest::StatusCode;
 use reqwest::blocking::Client;
-use reqwest::header::{ACCEPT, HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::blocking::{RequestBuilder, Response};
+use reqwest::header::{ACCEPT, HeaderMap, HeaderValue, RETRY_AFTER, USER_AGENT};
 use serde_json::Value;
 use std::env;
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const RATE_LIMIT_REMAINING_THRESHOLD: u32 = 10;
+const RATE_LIMIT_INITIAL_BACKOFF_MS: u64 = 1_000;
+const RATE_LIMIT_MAX_BACKOFF_MS: u64 = 30_000;
+const RATE_LIMIT_MAX_RETRIES: u32 = 5;
 
 // ─── Error type ────────────────────────────────────────────────────────────
 
@@ -87,8 +97,7 @@ impl GitHubClient {
         Self::new(&token)
     }
 
-    /// Override the API base URL (useful for tests pointing at a local server).
-    #[cfg(any(test, feature = "test-helpers"))]
+    /// Override the API base URL (useful for GitHub Enterprise and local tests).
     pub fn with_api_base(mut self, base: impl Into<String>) -> Self {
         self.api_base = base.into();
         self
@@ -153,11 +162,26 @@ impl GitHubClient {
         number: u64,
         merge_method: &str,
     ) -> Result<Value> {
+        self.merge_pr_with_title(owner, repo, number, merge_method, None)
+    }
+
+    /// Merge a pull request with an optional commit title.
+    pub fn merge_pr_with_title(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        merge_method: &str,
+        commit_title: Option<&str>,
+    ) -> Result<Value> {
         let url = format!(
             "{}/repos/{owner}/{repo}/pulls/{number}/merge",
             self.api_base
         );
-        let payload = serde_json::json!({ "merge_method": merge_method });
+        let mut payload = serde_json::json!({ "merge_method": merge_method });
+        if let Some(commit_title) = commit_title {
+            payload["commit_title"] = Value::String(commit_title.to_string());
+        }
         self.put_json(&url, &payload, "merge pull request")
     }
 
@@ -210,6 +234,36 @@ impl GitHubClient {
         self.get_json(&url, &query, "list pull requests")
     }
 
+    /// List pull requests with the complete MCP-compatible filter set.
+    pub fn list_prs_with_filters(
+        &self,
+        owner: &str,
+        repo: &str,
+        state: &str,
+        head: Option<&str>,
+        base: Option<&str>,
+        per_page: u32,
+    ) -> Result<Value> {
+        let url = format!("{}/repos/{owner}/{repo}/pulls", self.api_base);
+        let mut query = vec![
+            ("state", state.to_string()),
+            ("per_page", per_page.clamp(1, 100).to_string()),
+        ];
+        if let Some(head) = head {
+            query.push(("head", head.to_string()));
+        }
+        if let Some(base) = base {
+            query.push(("base", base.to_string()));
+        }
+        self.get_json(&url, &query, "list pull requests")
+    }
+
+    /// Return the authenticated GitHub user.
+    pub fn authenticated_user(&self) -> Result<Value> {
+        let url = format!("{}/user", self.api_base);
+        self.get_json(&url, &[], "get authenticated user")
+    }
+
     // ── Issues ────────────────────────────────────────────────────────────
 
     /// Create an issue.  Returns `(issue_number, html_url)`.
@@ -221,10 +275,27 @@ impl GitHubClient {
         body: &str,
         labels: &[String],
     ) -> Result<(u64, String)> {
+        self.create_issue_with_assignees(owner, repo, title, body, labels, &[])
+    }
+
+    /// Create an issue with labels and assignees.
+    pub fn create_issue_with_assignees(
+        &self,
+        owner: &str,
+        repo: &str,
+        title: &str,
+        body: &str,
+        labels: &[String],
+        assignees: &[String],
+    ) -> Result<(u64, String)> {
         let url = format!("{}/repos/{owner}/{repo}/issues", self.api_base);
         let mut payload = serde_json::json!({ "title": title, "body": body });
         if !labels.is_empty() {
             payload["labels"] = Value::Array(labels.iter().cloned().map(Value::String).collect());
+        }
+        if !assignees.is_empty() {
+            payload["assignees"] =
+                Value::Array(assignees.iter().cloned().map(Value::String).collect());
         }
         let v = self.post_json(&url, &payload, "create issue")?;
         let number = v["number"]
@@ -239,10 +310,48 @@ impl GitHubClient {
 
     /// Close an issue.
     pub fn close_issue(&self, owner: &str, repo: &str, number: u64) -> Result<()> {
+        self.close_issue_with_reason(owner, repo, number, None)
+    }
+
+    /// Close an issue with an optional GitHub state reason.
+    pub fn close_issue_with_reason(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        reason: Option<&str>,
+    ) -> Result<()> {
         let url = format!("{}/repos/{owner}/{repo}/issues/{number}", self.api_base);
-        let payload = serde_json::json!({ "state": "closed" });
+        let mut payload = serde_json::json!({ "state": "closed" });
+        if let Some(reason) = reason {
+            payload["state_reason"] = Value::String(reason.to_string());
+        }
         self.patch_json(&url, &payload, "close issue")?;
         Ok(())
+    }
+
+    /// List issues using GitHub's state, label, assignee, and page filters.
+    pub fn list_issues(
+        &self,
+        owner: &str,
+        repo: &str,
+        state: &str,
+        labels: &[String],
+        assignee: Option<&str>,
+        per_page: u32,
+    ) -> Result<Value> {
+        let url = format!("{}/repos/{owner}/{repo}/issues", self.api_base);
+        let mut query = vec![
+            ("state", state.to_string()),
+            ("per_page", per_page.clamp(1, 100).to_string()),
+        ];
+        if !labels.is_empty() {
+            query.push(("labels", labels.join(",")));
+        }
+        if let Some(assignee) = assignee.filter(|value| !value.is_empty()) {
+            query.push(("assignee", assignee.to_string()));
+        }
+        self.get_json(&url, &query, "list issues")
     }
 
     /// Add labels to an issue or pull request.
@@ -272,12 +381,10 @@ impl GitHubClient {
             "{}/repos/{owner}/{repo}/issues/{number}/labels/{encoded}",
             self.api_base
         );
-        let resp = self
-            .client
-            .delete(&url)
-            .bearer_auth(&self.token)
-            .send()
-            .map_err(|e| api_err(format!("call GitHub API (remove label): {e}")))?;
+        let resp = self.send_request(
+            || self.client.delete(&url).bearer_auth(&self.token),
+            "remove label",
+        )?;
         let status = resp.status();
         // 200 = removed, 404 = label was not present (idempotent)
         if status.is_success() || status.as_u16() == 404 {
@@ -305,47 +412,76 @@ impl GitHubClient {
     // ── HTTP helpers ──────────────────────────────────────────────────────
 
     fn get_json(&self, url: &str, query: &[(&str, String)], context: &str) -> Result<Value> {
-        let mut req = self.client.get(url).bearer_auth(&self.token);
-        if !query.is_empty() {
-            req = req.query(query);
-        }
-        let resp = req
-            .send()
-            .map_err(|e| api_err(format!("call GitHub API ({context}): {e}")))?;
+        let resp = self.send_request(
+            || {
+                let mut request = self.client.get(url).bearer_auth(&self.token);
+                if !query.is_empty() {
+                    request = request.query(query);
+                }
+                request
+            },
+            context,
+        )?;
         self.parse_response(resp, context)
     }
 
     fn post_json(&self, url: &str, body: &Value, context: &str) -> Result<Value> {
-        let resp = self
-            .client
-            .post(url)
-            .bearer_auth(&self.token)
-            .json(body)
-            .send()
-            .map_err(|e| api_err(format!("call GitHub API ({context}): {e}")))?;
+        let resp = self.send_request(
+            || self.client.post(url).bearer_auth(&self.token).json(body),
+            context,
+        )?;
         self.parse_response(resp, context)
     }
 
     fn put_json(&self, url: &str, body: &Value, context: &str) -> Result<Value> {
-        let resp = self
-            .client
-            .put(url)
-            .bearer_auth(&self.token)
-            .json(body)
-            .send()
-            .map_err(|e| api_err(format!("call GitHub API ({context}): {e}")))?;
+        let resp = self.send_request(
+            || self.client.put(url).bearer_auth(&self.token).json(body),
+            context,
+        )?;
         self.parse_response(resp, context)
     }
 
     fn patch_json(&self, url: &str, body: &Value, context: &str) -> Result<Value> {
-        let resp = self
-            .client
-            .patch(url)
-            .bearer_auth(&self.token)
-            .json(body)
-            .send()
-            .map_err(|e| api_err(format!("call GitHub API ({context}): {e}")))?;
+        let resp = self.send_request(
+            || self.client.patch(url).bearer_auth(&self.token).json(body),
+            context,
+        )?;
         self.parse_response(resp, context)
+    }
+
+    fn send_request<F>(&self, mut build_request: F, context: &str) -> Result<Response>
+    where
+        F: FnMut() -> RequestBuilder,
+    {
+        let mut attempt = 0;
+        loop {
+            let response = build_request()
+                .send()
+                .map_err(|error| api_err(format!("call GitHub API ({context}): {error}")))?;
+            if response.status() == StatusCode::TOO_MANY_REQUESTS {
+                if attempt >= RATE_LIMIT_MAX_RETRIES {
+                    return self.rate_limit_error(response, context);
+                }
+                let delay = retry_after_delay(response.headers())
+                    .unwrap_or_else(|| exponential_backoff_delay(attempt));
+                thread::sleep(delay);
+                attempt += 1;
+                continue;
+            }
+            if let Some(delay) = low_rate_limit_delay(response.headers()) {
+                thread::sleep(delay);
+            }
+            return Ok(response);
+        }
+    }
+
+    fn rate_limit_error(&self, response: Response, context: &str) -> Result<Response> {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        Err(api_err(format!(
+            "GitHub API returned {status} ({context}): {}",
+            body.trim()
+        )))
     }
 
     fn parse_response(&self, resp: reqwest::blocking::Response, context: &str) -> Result<Value> {
@@ -362,6 +498,52 @@ impl GitHubClient {
         serde_json::from_str(&text)
             .map_err(|e| api_err(format!("parse GitHub response ({context}): {e}")))
     }
+}
+
+fn low_rate_limit_delay(headers: &HeaderMap) -> Option<Duration> {
+    let remaining = headers
+        .get("x-ratelimit-remaining")?
+        .to_str()
+        .ok()?
+        .parse::<u32>()
+        .ok()?;
+    if remaining >= RATE_LIMIT_REMAINING_THRESHOLD {
+        return None;
+    }
+    reset_delay(headers).or(Some(Duration::from_secs(1)))
+}
+
+fn reset_delay(headers: &HeaderMap) -> Option<Duration> {
+    let reset_at = headers
+        .get("x-ratelimit-reset")?
+        .to_str()
+        .ok()?
+        .parse::<u64>()
+        .ok()?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    (reset_at > now).then(|| Duration::from_secs(reset_at - now))
+}
+
+fn retry_after_delay(headers: &HeaderMap) -> Option<Duration> {
+    let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    DateTime::parse_from_rfc2822(value)
+        .ok()?
+        .with_timezone(&chrono::Utc)
+        .signed_duration_since(chrono::Utc::now())
+        .to_std()
+        .ok()
+}
+
+fn exponential_backoff_delay(attempt: u32) -> Duration {
+    let factor = 1_u64.checked_shl(attempt).unwrap_or(u64::MAX);
+    Duration::from_millis(
+        RATE_LIMIT_INITIAL_BACKOFF_MS
+            .saturating_mul(factor)
+            .min(RATE_LIMIT_MAX_BACKOFF_MS),
+    )
 }
 
 // ─── GitHub issue webhook event parsing ────────────────────────────────────
@@ -699,7 +881,7 @@ mod tests {
                 }
                 GitHubClient::new(token)
             }
-            check_empty().unwrap_err()
+            check_empty().expect_err("an empty token must be rejected")
         };
         assert!(
             err.0.contains("GITHUB_TOKEN"),
@@ -902,6 +1084,167 @@ mod tests {
 
         let client = test_client(addr);
         client.close_issue("octo", "roko", 7).expect("close_issue");
+        server.join().expect("server thread");
+    }
+
+    #[test]
+    fn authenticated_user_calls_user_endpoint_with_bearer_token() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).expect("read request");
+            assert_eq!(request_line.trim_end(), "GET /user HTTP/1.1");
+
+            let mut authorization = None;
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).expect("read header");
+                if header.trim_end().is_empty() {
+                    break;
+                }
+                if let Some(value) = header
+                    .trim_end()
+                    .to_ascii_lowercase()
+                    .strip_prefix("authorization: ")
+                {
+                    authorization = Some(value.to_string());
+                }
+            }
+            assert_eq!(authorization.as_deref(), Some("bearer test-token"));
+
+            let body = serde_json::json!({"login": "octocat"}).to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("write response");
+        });
+
+        let user = test_client(addr)
+            .authenticated_user()
+            .expect("authenticated user");
+        assert_eq!(user["login"], "octocat");
+        server.join().expect("server thread");
+    }
+
+    #[test]
+    fn list_issues_and_pull_requests_forward_all_filters() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = thread::spawn(move || {
+            for expected in [
+                (
+                    "/repos/octo/roko/issues?",
+                    &[
+                        "state=open",
+                        "per_page=50",
+                        "labels=roko%2Ftask-failure%2Curgent",
+                        "assignee=octocat",
+                    ][..],
+                ),
+                (
+                    "/repos/octo/roko/pulls?",
+                    &[
+                        "state=all",
+                        "per_page=25",
+                        "head=octo%3Aroko%2Fplan%2FE46",
+                        "base=main",
+                    ][..],
+                ),
+            ] {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+                let mut request_line = String::new();
+                reader.read_line(&mut request_line).expect("read request");
+                assert!(request_line.starts_with(&format!("GET {}", expected.0)));
+                for query in expected.1 {
+                    assert!(
+                        request_line.contains(query),
+                        "missing {query}: {request_line}"
+                    );
+                }
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).expect("read header");
+                    if header.trim_end().is_empty() {
+                        break;
+                    }
+                }
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]"
+                )
+                .expect("write response");
+            }
+        });
+
+        let client = test_client(addr);
+        client
+            .list_issues(
+                "octo",
+                "roko",
+                "open",
+                &["roko/task-failure".into(), "urgent".into()],
+                Some("octocat"),
+                50,
+            )
+            .expect("list issues");
+        client
+            .list_prs_with_filters(
+                "octo",
+                "roko",
+                "all",
+                Some("octo:roko/plan/E46"),
+                Some("main"),
+                25,
+            )
+            .expect("list pull requests");
+        server.join().expect("server thread");
+    }
+
+    #[test]
+    fn retries_rate_limited_requests_using_retry_after() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = thread::spawn(move || {
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).expect("read request");
+                    if line.trim_end().is_empty() {
+                        break;
+                    }
+                }
+                if attempt == 0 {
+                    write!(
+                        stream,
+                        "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+                    )
+                    .expect("write rate limit");
+                } else {
+                    let body = serde_json::json!({"login": "octocat"}).to_string();
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                    .expect("write success");
+                }
+            }
+        });
+
+        let user = test_client(addr)
+            .authenticated_user()
+            .expect("retry authenticated user");
+        assert_eq!(user["login"], "octocat");
         server.join().expect("server thread");
     }
 

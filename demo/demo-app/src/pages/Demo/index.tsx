@@ -1,9 +1,9 @@
 import { useState, useCallback, useRef, useEffect, createRef } from 'react';
 import { SCENARIOS } from '../../lib/scenarios';
 import { setSpeedMultiplier } from '../../lib/terminal-session';
-import { useServerHealth } from '../../hooks/useServerHealth';
-import { useRokoConfig } from '../../hooks/useRokoConfig';
-import { useWorkspace } from '../../hooks/useWorkspace';
+import { useServerHealthController } from '../../data/selectors';
+import { useConfigController } from '../../data/selectors';
+import { useWorkspaceActions } from '../../hooks/useWorkspaceActions';
 import { useToast } from '../../components/Toast';
 import Tooltip from '../../components/Tooltip';
 import { useLearningStats } from '../../hooks/useLearningStats';
@@ -26,7 +26,6 @@ const TAB_CATEGORY: Record<string, string> = {
   cost: 'comparison',
   pipeline: 'pipeline',
   memory: 'learning',
-  isfr: 'chain',
   oracle: 'chain',
 };
 
@@ -69,9 +68,9 @@ export default function Demo() {
   const [tabScrollState, setTabScrollState] = useState({ left: false, right: false });
 
   // Shared hooks (called once, passed as props)
-  const { status: serverHealth, checkNow: checkServeHealth } = useServerHealth();
-  const { defaultModel } = useRokoConfig();
-  const { ensureWorkspace, createWorkspace } = useWorkspace();
+  const { status: serverHealth, checkNow: checkServeHealth } = useServerHealthController();
+  const { defaultModel } = useConfigController();
+  const { ensureWorkspace, createWorkspace } = useWorkspaceActions();
   const learningStats = useLearningStats();
   const { handoffs, activeHandoff } = useAgentHandoffs();
   const { toast } = useToast();

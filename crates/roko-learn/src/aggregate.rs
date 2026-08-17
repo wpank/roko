@@ -12,9 +12,170 @@ use chrono::{DateTime, Duration, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::efficiency::AgentEfficiencyEvent;
+use crate::episode_logger::Episode;
 
 /// Maximum number of buckets the aggregator will emit.
 pub const MAX_EFFICIENCY_BUCKETS: usize = 168;
+
+/// Seven feedback-loop metrics that indicate whether learning compounds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutocatalyticMetrics {
+    /// Tasks that reused durable knowledge or a playbook.
+    pub knowledge_reuse_rate: f64,
+    /// Tasks explicitly matched to a playbook.
+    pub playbook_hit_rate: f64,
+    /// Provider inference-cache hit rate when recorded.
+    pub cache_hit_rate: f64,
+    /// Initial routes that matched the eventual successful model.
+    pub routing_accuracy: f64,
+    /// Tasks passing gates without a replan.
+    pub gate_pass_rate: f64,
+    /// Failed gate signatures previously observed in the window.
+    pub error_dedup_rate: f64,
+    /// Dollar cost divided by successful episodes.
+    pub cost_per_success: f64,
+    /// Computation timestamp.
+    pub computed_at: DateTime<Utc>,
+    /// Number of episodes included.
+    pub episode_window: usize,
+}
+
+/// Compute autocatalytic feedback metrics from an already bounded episode window.
+#[must_use]
+pub fn compute_compounding_metrics(episodes: &[Episode]) -> AutocatalyticMetrics {
+    let total = episodes.len();
+    let ratio = |count: usize| {
+        if total == 0 {
+            0.0
+        } else {
+            count as f64 / total as f64
+        }
+    };
+    let knowledge_reuse = episodes
+        .iter()
+        .filter(|episode| {
+            episode.extra.contains_key("knowledge_used")
+                || episode
+                    .extra
+                    .get("playbook_hits")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some_and(|hits| hits > 0)
+        })
+        .count();
+    let playbook_hits = episodes
+        .iter()
+        .filter(|episode| {
+            episode
+                .extra
+                .get("playbook_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|id| !id.is_empty())
+        })
+        .count();
+    let cache_observations = episodes
+        .iter()
+        .filter_map(|episode| {
+            episode
+                .extra
+                .get("cache_hit")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .collect::<Vec<_>>();
+    let cache_hit_rate = if cache_observations.is_empty() {
+        0.0
+    } else {
+        cache_observations.iter().filter(|hit| **hit).count() as f64
+            / cache_observations.len() as f64
+    };
+    let routes = episodes
+        .iter()
+        .filter_map(|episode| {
+            let initial = episode.extra.get("initial_model")?.as_str()?;
+            let successful = episode
+                .extra
+                .get("successful_model")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(&episode.model);
+            Some(initial == successful && episode.success)
+        })
+        .collect::<Vec<_>>();
+    let routing_accuracy = if routes.is_empty() {
+        0.0
+    } else {
+        routes.iter().filter(|accurate| **accurate).count() as f64 / routes.len() as f64
+    };
+    let first_passes = episodes
+        .iter()
+        .filter(|episode| {
+            episode.success
+                && !episode.extra.contains_key("replan")
+                && episode.gate_verdicts.iter().all(|verdict| verdict.passed)
+        })
+        .count();
+    let mut signatures = std::collections::HashSet::new();
+    let mut failures = 0usize;
+    let mut duplicates = 0usize;
+    for verdict in episodes
+        .iter()
+        .flat_map(|episode| episode.gate_verdicts.iter())
+        .filter(|verdict| !verdict.passed)
+    {
+        failures += 1;
+        if let Some(signature) = verdict.signature.as_deref() {
+            if !signatures.insert(signature) {
+                duplicates += 1;
+            }
+        }
+    }
+    let successful = episodes.iter().filter(|episode| episode.success).count();
+    let total_cost = episodes
+        .iter()
+        .map(|episode| episode.usage.cost_usd)
+        .filter(|cost| cost.is_finite() && *cost >= 0.0)
+        .sum::<f64>();
+
+    AutocatalyticMetrics {
+        knowledge_reuse_rate: ratio(knowledge_reuse),
+        playbook_hit_rate: ratio(playbook_hits),
+        cache_hit_rate,
+        routing_accuracy,
+        gate_pass_rate: ratio(first_passes),
+        error_dedup_rate: if failures == 0 {
+            0.0
+        } else {
+            duplicates as f64 / failures as f64
+        },
+        cost_per_success: if successful == 0 {
+            0.0
+        } else {
+            total_cost / successful as f64
+        },
+        computed_at: Utc::now(),
+        episode_window: total,
+    }
+}
+
+/// Append one compounding snapshot as JSONL.
+///
+/// # Errors
+///
+/// Returns an error when the parent cannot be created, serialization fails,
+/// or the append cannot be committed.
+pub fn append_compounding_metrics(path: &Path, metrics: &AutocatalyticMetrics) -> io::Result<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut bytes = serde_json::to_vec(metrics)
+        .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
+    bytes.push(b'\n');
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(&bytes)?;
+    file.sync_data()
+}
 
 /// Incremental cursor for append-only JSONL files.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -585,6 +746,48 @@ mod tests {
     use std::fs::{self, OpenOptions};
     use std::io::Write;
     use tempfile::tempdir;
+
+    #[test]
+    fn autocatalytic_metrics_cover_all_seven_mechanisms() {
+        let mut first = Episode::new("agent-a", "task-a");
+        first.success = true;
+        first.usage.cost_usd = 2.0;
+        first
+            .extra
+            .insert("knowledge_used".into(), serde_json::Value::Bool(true));
+        first
+            .extra
+            .insert("playbook_id".into(), serde_json::Value::String("pb".into()));
+        first
+            .extra
+            .insert("cache_hit".into(), serde_json::Value::Bool(true));
+        first.extra.insert(
+            "initial_model".into(),
+            serde_json::Value::String("model-a".into()),
+        );
+        first.extra.insert(
+            "successful_model".into(),
+            serde_json::Value::String("model-a".into()),
+        );
+        first.gate_verdicts = vec![
+            crate::episode_logger::EpisodeGateVerdict::new("test", false).with_signature("same"),
+        ];
+
+        let mut second = Episode::new("agent-b", "task-b");
+        second.success = true;
+        second.usage.cost_usd = 4.0;
+        second.gate_verdicts = vec![
+            crate::episode_logger::EpisodeGateVerdict::new("test", false).with_signature("same"),
+        ];
+        let metrics = compute_compounding_metrics(&[first, second]);
+        assert_eq!(metrics.episode_window, 2);
+        assert_eq!(metrics.knowledge_reuse_rate, 0.5);
+        assert_eq!(metrics.playbook_hit_rate, 0.5);
+        assert_eq!(metrics.cache_hit_rate, 1.0);
+        assert_eq!(metrics.routing_accuracy, 1.0);
+        assert_eq!(metrics.error_dedup_rate, 0.5);
+        assert_eq!(metrics.cost_per_success, 3.0);
+    }
 
     fn sample_event(timestamp: DateTime<Utc>, idx: usize) -> AgentEfficiencyEvent {
         AgentEfficiencyEvent {

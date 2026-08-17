@@ -254,12 +254,12 @@ fn chain_config_round_trips_through_toml() {
         identity_registry: Some("0x84eA74d481Ee0A5332c457a4d796187F6Ba67fEB".to_string()),
         reputation_registry: Some("0x9E545E3C0baAB3E08CdfD552C960A1050f373042".to_string()),
         validation_registry: Some("0xa82fF9aFd8f496c3d6ac40E2a0F282E47488CFc9".to_string()),
+        knowledge_registry: None,
         deployer: Some(DEPLOYER.to_string()),
         agent_registry: None,
         bounty_market: None,
         profile: "mirage".to_string(),
-        auto_deploy_contracts: false,
-        contracts_dir: None,
+        finality_confirmations: None,
     };
 
     let toml_str = toml::to_string_pretty(&config).expect("serialize to TOML");

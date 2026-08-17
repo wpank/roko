@@ -116,10 +116,13 @@ async fn create_deployment(
         env_vars.insert("ANTHROPIC_API_KEY".to_string(), key);
     }
 
-    // Generate a callback-specific token so the worker can authenticate result
-    // callbacks. This token is NOT a user-facing API key and is never persisted
-    // to disk (the `callback_token` field on `Deployment` has `#[serde(skip)]`).
+    // Generate callback routing and authentication material before handing the
+    // environment to the backend. A provider deployment ID does not exist yet,
+    // so the worker uses this opaque callback ID while status/teardown continue
+    // to use the provider-assigned deployment ID.
+    let callback_id = uuid::Uuid::new_v4().to_string();
     let callback_token = uuid::Uuid::new_v4().to_string();
+    env_vars.insert("ROKO_DEPLOYMENT_ID".to_string(), callback_id.clone());
     env_vars.insert(
         "ROKO_WORKER_CALLBACK_TOKEN".to_string(),
         callback_token.clone(),
@@ -182,11 +185,11 @@ async fn create_deployment(
         .await
         .map_err(|e| ApiError::internal(format!("deploy failed: {e}")))?;
 
-    // Attach the callback token so `receive_callback` can validate it.
+    // Keep the plaintext only in memory. Persist its one-way verifier so a
+    // control-plane restart does not silently disable callback authentication.
+    deployment.callback_id = Some(callback_id);
+    deployment.callback_token_hash = Some(callback_token_hash(&callback_token));
     deployment.callback_token = Some(callback_token);
-
-    // Set the deployment ID in env for callbacks
-    env_vars.insert("ROKO_DEPLOYMENT_ID".to_string(), deployment.id.clone());
 
     let dep_id = deployment.id.clone();
     let dep_name = deployment.name.clone();
@@ -442,7 +445,10 @@ async fn proxy_task(
 /// Infer the backing template name for a deployment, if it follows the worker naming convention.
 async fn template_name_for_deployment(deployment_id: &str, state: &AppState) -> Option<String> {
     let deps = state.deployments.read().await;
-    let deployment = deps.get(deployment_id)?;
+    let deployment = deps.get(deployment_id).or_else(|| {
+        deps.values()
+            .find(|deployment| deployment.callback_id.as_deref() == Some(deployment_id))
+    })?;
     deployment
         .name
         .strip_prefix("roko-worker-")
@@ -462,32 +468,77 @@ fn token_eq(a: &[u8], b: &[u8]) -> bool {
     core::hint::black_box(diff) == 0
 }
 
+fn callback_token_hash(token: &str) -> String {
+    crate::routes::middleware::hash_api_key(token)
+}
+
+/// Authenticate a worker callback and return the canonical provider deployment
+/// ID on success.
+///
+/// Route-created workers use a per-deployment verifier. The process-wide token
+/// is a compatibility path for workers created by the standalone deploy CLI,
+/// whose deployments are not registered in this [`AppState`].
+pub(crate) async fn authenticate_worker_callback_token(
+    state: &AppState,
+    callback_id: &str,
+    supplied: &str,
+) -> Option<String> {
+    let (canonical_id, expected_hash) = {
+        let deps = state.deployments.read().await;
+        let deployment = deps.get(callback_id).or_else(|| {
+            deps.values()
+                .find(|deployment| deployment.callback_id.as_deref() == Some(callback_id))
+        });
+        let canonical_id = deployment.map(|deployment| deployment.id.clone());
+        let deployment_hash = deployment.and_then(|deployment| {
+            deployment.callback_token_hash.clone().or_else(|| {
+                deployment
+                    .callback_token
+                    .as_deref()
+                    .map(callback_token_hash)
+            })
+        });
+        let fallback_hash = state
+            .worker_callback_token
+            .as_deref()
+            .map(callback_token_hash);
+        (
+            canonical_id.unwrap_or_else(|| callback_id.to_string()),
+            deployment_hash.or(fallback_hash),
+        )
+    };
+
+    let expected_hash = expected_hash?;
+    let supplied_hash = callback_token_hash(supplied);
+    token_eq(supplied_hash.as_bytes(), expected_hash.as_bytes()).then_some(canonical_id)
+}
+
 /// `POST /api/deployments/:id/callback` — receive results from a worker callback.
 ///
-/// When serve auth is enabled the worker must present the callback token via
-/// `X-Roko-Worker-Signature`.  The token is generated during `create_deployment`
-/// and injected into the worker environment as `ROKO_WORKER_CALLBACK_TOKEN`.
+/// The worker must present its callback token via `X-Roko-Worker-Token`. The
+/// per-deployment token is generated during `create_deployment` and injected
+/// into the worker environment as `ROKO_WORKER_CALLBACK_TOKEN`.
 async fn receive_callback(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     headers: HeaderMap,
     ApiJson(body): ApiJson<Value>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Validate the callback token when one is configured.
-    // The expected token is loaded into AppState at startup from the
-    // ROKO_WORKER_CALLBACK_TOKEN environment variable so it stays out of
-    // serialised deployment state and log output.
-    if let Some(expected) = &state.worker_callback_token {
-        let supplied = headers
-            .get("X-Roko-Worker-Token")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if !token_eq(supplied.as_bytes(), expected.as_bytes()) {
-            return Err(ApiError::unauthorized(
-                "invalid or missing worker callback token",
-            ));
-        }
-    }
+    // Prefer the deployment-scoped verifier. The process-wide token supports
+    // workers launched by `roko server deploy`, which are not registered in
+    // this in-memory deployment catalog. Missing auth configuration is never
+    // treated as permission to accept an unauthenticated callback.
+    let supplied = headers
+        .get("X-Roko-Worker-Token")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    let Some(canonical_deployment_id) =
+        authenticate_worker_callback_token(&state, &id, supplied).await
+    else {
+        return Err(ApiError::unauthorized(
+            "invalid or missing worker callback token",
+        ));
+    };
 
     let success = body
         .get("success")
@@ -511,7 +562,7 @@ async fn receive_callback(
     }
 
     state.event_bus.publish(ServerEvent::WorkerTaskCompleted {
-        deployment_id: id,
+        deployment_id: canonical_deployment_id,
         task_id: body
             .get("task_id")
             .and_then(|v| v.as_str())
@@ -677,7 +728,9 @@ mod tests {
                 },
                 url: self.next_url.clone(),
                 created_at: chrono::Utc::now(),
+                callback_id: None,
                 callback_token: None,
+                callback_token_hash: None,
             })
         }
 
@@ -785,9 +838,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn deployments_create_returns_id() -> std::result::Result<(), Box<dyn Error>> {
-        let backend: Arc<dyn DeployBackend> = Arc::new(RecordingDeployBackend::with_url(Some(
+        let recording_backend = Arc::new(RecordingDeployBackend::with_url(Some(
             "http://worker.invalid".to_string(),
         )));
+        let backend: Arc<dyn DeployBackend> = recording_backend.clone();
         let (_dir, state) = test_state(backend)?;
         insert_template(&state, test_template("reviewer", "Review {{subject}}")).await?;
         let app = router(Arc::clone(&state));
@@ -824,6 +878,43 @@ mod tests {
         assert_eq!(
             payload["status"], "creating",
             "POST /api/deployments should report the new deployment as creating"
+        );
+
+        let specs = recording_backend.deployed_specs.lock().await;
+        let spec = specs
+            .first()
+            .ok_or_else(|| anyhow!("deployment backend should receive one spec"))?;
+        let callback_id = spec
+            .env_vars
+            .get("ROKO_DEPLOYMENT_ID")
+            .ok_or_else(|| anyhow!("worker env must include a pre-generated callback id"))?;
+        let callback_token = spec
+            .env_vars
+            .get("ROKO_WORKER_CALLBACK_TOKEN")
+            .ok_or_else(|| anyhow!("worker env must include a callback token"))?;
+        assert!(!callback_id.is_empty(), "callback id must not be empty");
+        assert!(
+            !callback_token.is_empty(),
+            "callback token must not be empty"
+        );
+
+        let deployments = state.deployments.read().await;
+        let deployment = deployments
+            .get("dep-1")
+            .ok_or_else(|| anyhow!("created deployment should be retained"))?;
+        assert_eq!(
+            deployment.callback_id.as_deref(),
+            Some(callback_id.as_str())
+        );
+        assert_eq!(
+            deployment.callback_token_hash.as_deref(),
+            Some(callback_token_hash(callback_token).as_str()),
+            "persistable verifier must match the token injected into the worker"
+        );
+        assert_eq!(
+            deployment.callback_token.as_deref(),
+            Some(callback_token.as_str()),
+            "plaintext token should remain available only in memory"
         );
         Ok(())
     }
@@ -939,7 +1030,9 @@ mod tests {
                 },
                 url: Some(worker_url),
                 created_at: chrono::Utc::now(),
+                callback_id: None,
                 callback_token: None,
+                callback_token_hash: None,
             },
         );
 
@@ -1005,7 +1098,9 @@ mod tests {
                 },
                 url: Some("http://worker.invalid".to_string()),
                 created_at: chrono::Utc::now(),
+                callback_id: Some("callback-dep-1".to_string()),
                 callback_token: Some(token.clone()),
+                callback_token_hash: Some(callback_token_hash(&token)),
             },
         );
         let app = router(Arc::clone(&state));
@@ -1014,9 +1109,9 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/deployments/dep-1/callback")
+                    .uri("/api/deployments/callback-dep-1/callback")
                     .header("content-type", "application/json")
-                    .header("x-roko-worker-signature", token.as_str())
+                    .header("x-roko-worker-token", token.as_str())
                     .body(Body::from(
                         json!({
                             "task_id": "task-123",
@@ -1068,16 +1163,7 @@ mod tests {
         let backend: Arc<dyn DeployBackend> = Arc::new(RecordingDeployBackend::with_url(Some(
             "http://worker.invalid".to_string(),
         )));
-        let (_dir, state_inner) = test_state(backend)?;
-        // Inject the callback token directly onto the state so the handler can
-        // validate it without touching env vars (which are global and unsafe to
-        // mutate in concurrent tests).
-        //
-        // Arc::try_unwrap succeeds because test_state returns the sole owner.
-        let mut state_val = Arc::try_unwrap(state_inner)
-            .unwrap_or_else(|_| panic!("test_state should return the sole Arc owner"));
-        state_val.worker_callback_token = Some(token.to_string());
-        let state = Arc::new(state_val);
+        let (_dir, state) = test_state(backend)?;
         state.deployments.write().await.insert(
             "dep-1".to_string(),
             Deployment {
@@ -1087,8 +1173,10 @@ mod tests {
                     url: "http://worker.invalid".to_string(),
                 },
                 url: Some("http://worker.invalid".to_string()),
-                callback_token: None,
                 created_at: chrono::Utc::now(),
+                callback_id: Some("callback-dep-1".to_string()),
+                callback_token: None,
+                callback_token_hash: Some(callback_token_hash(token)),
             },
         );
         let app = router(Arc::clone(&state));
@@ -1099,7 +1187,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/deployments/dep-1/callback")
+                    .uri("/api/deployments/callback-dep-1/callback")
                     .header("content-type", "application/json")
                     .body(Body::from(
                         json!({ "task_id": "t1", "success": true }).to_string(),
@@ -1120,7 +1208,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/deployments/dep-1/callback")
+                    .uri("/api/deployments/callback-dep-1/callback")
                     .header("content-type", "application/json")
                     .header("X-Roko-Worker-Token", "wrong-token")
                     .body(Body::from(
@@ -1141,7 +1229,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/deployments/dep-1/callback")
+                    .uri("/api/deployments/callback-dep-1/callback")
                     .header("content-type", "application/json")
                     .header("X-Roko-Worker-Token", token)
                     .body(Body::from(
@@ -1156,6 +1244,146 @@ mod tests {
             StatusCode::OK,
             "callback with correct token must be accepted"
         );
+        let runs = state.template_runs.read().await;
+        assert_eq!(
+            runs.get("reviewer").map(Vec::len),
+            Some(1),
+            "rejected callback attempts must not mutate template run history"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deployments_callback_worker_token_passes_full_auth_stack()
+    -> std::result::Result<(), Box<dyn Error>> {
+        let token = "deployment-scoped-worker-token";
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        config.serve.auth.enabled = true;
+        config.serve.auth.api_key = "user-api-key".to_string();
+        let api_auth = config.serve.auth.clone();
+        let dir = tempdir()?;
+        let backend: Arc<dyn DeployBackend> = Arc::new(RecordingDeployBackend::with_url(Some(
+            "http://worker.invalid".to_string(),
+        )));
+        let state = Arc::new(AppState::new(
+            dir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            config,
+            backend,
+        )?);
+        state.deployments.write().await.insert(
+            "provider-dep-1".to_string(),
+            Deployment {
+                id: "provider-dep-1".to_string(),
+                name: "roko-worker-reviewer".to_string(),
+                status: DeploymentStatus::Ready {
+                    url: "http://worker.invalid".to_string(),
+                },
+                url: Some("http://worker.invalid".to_string()),
+                created_at: chrono::Utc::now(),
+                callback_id: Some("callback-dep-1".to_string()),
+                callback_token: None,
+                callback_token_hash: Some(callback_token_hash(token)),
+            },
+        );
+        let app = crate::routes::build_router(Arc::clone(&state), &[], api_auth);
+
+        for supplied in [None, Some("wrong-token")] {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/deployments/callback-dep-1/callback")
+                .header("content-type", "application/json");
+            if let Some(supplied) = supplied {
+                request = request.header("X-Roko-Worker-Token", supplied);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::from(r#"{"success":true}"#))?)
+                .await?;
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "missing or wrong worker credentials must be rejected before mutation"
+            );
+        }
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deployments/callback-dep-1/callback")
+                    .header("content-type", "application/json")
+                    .header("X-Roko-Worker-Token", token)
+                    .body(Body::from(r#"{"success":true}"#))?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("X-Auth-Method")
+                .and_then(|value| value.to_str().ok()),
+            Some("worker_token"),
+            "the global API auth stack must recognize the scoped worker credential"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn callback_verifier_survives_deployment_persistence()
+    -> std::result::Result<(), Box<dyn Error>> {
+        let token = "restart-safe-worker-token";
+        let backend: Arc<dyn DeployBackend> = Arc::new(RecordingDeployBackend::with_url(Some(
+            "http://worker.invalid".to_string(),
+        )));
+        let (_dir, state) = test_state(backend)?;
+        state.deployments.write().await.insert(
+            "provider-dep-1".to_string(),
+            Deployment {
+                id: "provider-dep-1".to_string(),
+                name: "roko-worker-reviewer".to_string(),
+                status: DeploymentStatus::Ready {
+                    url: "http://worker.invalid".to_string(),
+                },
+                url: Some("http://worker.invalid".to_string()),
+                created_at: chrono::Utc::now(),
+                callback_id: Some("callback-dep-1".to_string()),
+                callback_token: Some(token.to_string()),
+                callback_token_hash: Some(callback_token_hash(token)),
+            },
+        );
+        persist_deployments(&state).await;
+
+        state.deployments.write().await.clear();
+        load_persisted_deployments(&state).await;
+        {
+            let deployments = state.deployments.read().await;
+            let reloaded = deployments
+                .get("provider-dep-1")
+                .ok_or_else(|| anyhow!("deployment should reload from persistence"))?;
+            assert_eq!(reloaded.callback_id.as_deref(), Some("callback-dep-1"));
+            assert!(
+                reloaded.callback_token.is_none(),
+                "plaintext callback token must not be persisted"
+            );
+            assert_eq!(
+                reloaded.callback_token_hash.as_deref(),
+                Some(callback_token_hash(token).as_str()),
+                "one-way callback verifier must survive restart"
+            );
+        }
+
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deployments/callback-dep-1/callback")
+                    .header("content-type", "application/json")
+                    .header("X-Roko-Worker-Token", token)
+                    .body(Body::from(r#"{"success":true}"#))?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
         Ok(())
     }
 }

@@ -273,7 +273,7 @@ tool_format = "openai_json"
 // ── Validation ──────────────────────────────────────────────────────────
 
 #[test]
-fn validated_detects_orphaned_models() {
+fn validated_rejects_orphaned_models() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("roko.toml"),
@@ -289,12 +289,14 @@ context_window = 4096
     )
     .unwrap();
 
-    let validated = load_config_validated(dir.path()).unwrap();
-    let orphan_warning = validated
-        .diagnostics()
-        .iter()
-        .any(|d| d.message.contains("nonexistent-provider"));
-    assert!(orphan_warning, "should warn about orphaned model");
+    let error = load_config_validated(dir.path()).expect_err("orphan must be rejected");
+    assert!(matches!(
+        error,
+        roko_core::config::LoadConfigError::InvariantViolation {
+            invariant_id: 3,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -310,13 +312,17 @@ schema_version = 2
 kind = "openai_compat"
 base_url = "https://example.com"
 
+[providers.q]
+kind = "openai_compat"
+base_url = "https://other.example.com"
+
 [models.a]
 provider = "p"
 slug = "duplicate-slug"
 context_window = 4096
 
 [models.b]
-provider = "p"
+provider = "q"
 slug = "duplicate-slug"
 context_window = 8192
 "#,

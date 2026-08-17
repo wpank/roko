@@ -1,8 +1,8 @@
 [meta]
 plan = "P33-model-ux"
 total = 1
-done = 0
-status = "ready"
+done = 1
+status = "done"
 max_parallel = 1
 estimated_total_minutes = 30
 skip_enrichment = true
@@ -62,7 +62,7 @@ Change this to:
 This handles edge cases where should_use_max_completion_tokens() misses a model
 slug pattern (e.g. custom-deployed models with non-standard slugs).
 """
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 40

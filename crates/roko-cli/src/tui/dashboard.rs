@@ -34,6 +34,10 @@ use roko_learn::pattern_discovery::CrossEpisodeConsolidator;
 use roko_learn::prompt_experiment::ExperimentStore;
 use roko_learn::provider_health::{CircuitState, ProviderHealth};
 use roko_learn::skill_library::Skill;
+use roko_runtime::{
+    LEGACY_EXECUTOR_RELATIVE_PATH, RunnerProjectionSource, STATE_SNAPSHOT_RELATIVE_PATH,
+    load_durable_runner_projection,
+};
 
 use super::cursors::{EpisodeCursor, EventLogCursor, SignalCursor};
 use super::dashboard_gen::DurableDashboardGenerationCounter;
@@ -59,18 +63,31 @@ const KNOWLEDGE_FILE: &str = "knowledge.jsonl";
 const KNOWLEDGE_CONFIRMATIONS_FILE: &str = "knowledge-confirmations.jsonl";
 
 fn resolve_episodes_path(root: &Path) -> PathBuf {
-    let episodes_path = root.join(MEMORY_DIR).join(EPISODES_FILE);
-    if episodes_path.exists() {
-        episodes_path
-    } else {
-        root.join(".roko").join(EPISODES_FILE)
+    let canonical = root.join(".roko").join(EPISODES_FILE);
+    if canonical.exists() {
+        return canonical;
     }
+    let learn_legacy = root.join(LEARN_DIR).join(EPISODES_FILE);
+    if learn_legacy.exists() {
+        return learn_legacy;
+    }
+    let memory_legacy = root.join(MEMORY_DIR).join(EPISODES_FILE);
+    if memory_legacy.exists() {
+        return memory_legacy;
+    }
+    canonical
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 struct FileStamp {
     modified: Option<SystemTime>,
     len: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+struct RunnerProjectionStamp {
+    state_snapshot: FileStamp,
+    legacy_executor: FileStamp,
 }
 
 impl FileStamp {
@@ -85,7 +102,7 @@ impl FileStamp {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 struct DashboardDataStamps {
-    executor_state: FileStamp,
+    executor_state: RunnerProjectionStamp,
     efficiency: FileStamp,
     experiments: FileStamp,
     gate_thresholds: FileStamp,
@@ -318,10 +335,22 @@ pub struct DashboardData {
     root: PathBuf,
     /// Monotonic token advanced when tracked dashboard source files change.
     pub generation: u64,
-    /// Cached executor state from `.roko/state/executor.json`.
+    /// Effective spend configuration used by HTTP/runner/TUI projections.
+    pub budget: roko_core::config::BudgetConfig,
+    /// Cached executor state from the canonical durable Runner projection.
     executor_state: Value,
-    /// Last observed state file metadata.
-    executor_state_stamp: FileStamp,
+    /// Durable source supplying `executor_state`.
+    runner_projection_source: Option<RunnerProjectionSource>,
+    /// Exact durable source path supplying `executor_state`.
+    runner_projection_path: Option<PathBuf>,
+    /// Stable identity of the exact durable generation.
+    runner_projection_generation: Option<String>,
+    /// Missing/invalid loader status retained for TUI and `roko show`.
+    runner_projection_status: String,
+    /// Loader failure retained instead of silently becoming empty state.
+    runner_projection_error: Option<String>,
+    /// Last observed canonical and legacy state file metadata.
+    executor_state_stamp: RunnerProjectionStamp,
     /// Plans from executor state.
     pub plans: Vec<PlanSummary>,
     /// Currently executing tasks.
@@ -419,7 +448,6 @@ impl DashboardData {
         let root = resolve_snapshot_root(root.as_ref());
         let roko_dir = root.join(".roko");
         let learn_dir = roko_dir.join("learn");
-        let state_path = roko_dir.join("state").join("executor.json");
         let signals_path = roko_dir.join("engrams.jsonl");
         let episodes_path = resolve_episodes_path(&root);
         let efficiency_path = learn_dir.join(EFFICIENCY_FILE);
@@ -428,9 +456,47 @@ impl DashboardData {
         let cascade_router_path = learn_dir.join(CASCADE_ROUTER_FILE);
         let cfactor_path = learn_dir.join("c-factor.jsonl");
         let events_path = roko_dir.join("state").join("events.json");
+        let budget = roko_core::config::loader::load_config_unified(&root)
+            .map(|config| config.budget)
+            .unwrap_or_default();
 
-        let state = read_json_value(&state_path).unwrap_or(Value::Null);
-        let state_stamp = file_stamp(&state_path);
+        let (runner_projection, runner_projection_status, runner_projection_error) =
+            match load_durable_runner_projection(&root) {
+                Ok(projection) => {
+                    let status = projection
+                        .as_ref()
+                        .map_or("missing", |projection| projection.source.label())
+                        .to_string();
+                    (projection, status, None)
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        workdir = %root.display(),
+                        "failed to load durable Runner projection; using empty state"
+                    );
+                    (None, "invalid".to_string(), Some(error.to_string()))
+                }
+            };
+        let state = runner_projection
+            .as_ref()
+            .map_or(Value::Null, |projection| {
+                projection.executor_projection.clone()
+            });
+        let runner_projection_source = runner_projection
+            .as_ref()
+            .map(|projection| projection.source);
+        let runner_projection_path = runner_projection
+            .as_ref()
+            .map(|projection| projection.source_path.clone())
+            .or_else(|| {
+                (runner_projection_status == "invalid")
+                    .then(|| root.join(roko_runtime::STATE_SNAPSHOT_RELATIVE_PATH))
+            });
+        let runner_projection_generation = runner_projection
+            .as_ref()
+            .map(|projection| projection.generation.clone());
+        let state_stamp = runner_projection_stamp(&root);
         let signals_stamp = file_stamp(&signals_path);
         let episodes_stamp = file_stamp(&episodes_path);
         let event_log_stamp = file_stamp(&events_path);
@@ -449,11 +515,30 @@ impl DashboardData {
         let _ = event_log_cursor.tick();
         let event_log = event_log_cursor.event_log().to_vec();
 
-        let plans = load_plan_summaries(&root, &state);
-        let active_tasks = load_active_tasks(&state);
-        let mut agents = load_agents(&state);
-        merge_runtime_agents(&mut agents, &root);
-        let gate_results = load_gate_results(&state, &signal_gate_results);
+        let runner_projection_valid = runner_projection_status != "invalid";
+        let plans = if runner_projection_valid {
+            load_plan_summaries(&root, &state)
+        } else {
+            Vec::new()
+        };
+        let active_tasks = if runner_projection_valid {
+            load_active_tasks(&state)
+        } else {
+            Vec::new()
+        };
+        let mut agents = if runner_projection_valid {
+            load_agents(&state)
+        } else {
+            Vec::new()
+        };
+        if runner_projection_valid {
+            merge_runtime_agents(&mut agents, &root);
+        }
+        let gate_results = if runner_projection_valid {
+            load_gate_results(&state, &signal_gate_results)
+        } else {
+            Vec::new()
+        };
         let efficiency_events = read_efficiency_events_sync(&efficiency_path);
         let efficiency = load_efficiency_summary(&efficiency_path);
         let efficiency_trend = load_efficiency_trend(&efficiency_path);
@@ -470,10 +555,20 @@ impl DashboardData {
             .collect::<Vec<_>>();
         experiments.sort_by(|a, b| a.experiment_id.cmp(&b.experiment_id));
         let experiment_winners = experiment_store.winner_summaries();
-        let adaptive_thresholds = load_json_opt::<AdaptiveThresholds>(&gate_thresholds_path);
+        let adaptive_thresholds = match runner_projection
+            .as_ref()
+            .and_then(|projection| projection.gate_thresholds.as_ref())
+        {
+            Some(thresholds) => serde_json::from_value(thresholds.clone()).ok(),
+            None if runner_projection_status == "invalid" => None,
+            None => load_json_opt::<AdaptiveThresholds>(&gate_thresholds_path),
+        };
         let gate_thresholds_stamp = file_stamp(&gate_thresholds_path);
-        let gate_results_page =
-            build_gate_results_page_data(&gate_signal_summaries, adaptive_thresholds.as_ref());
+        let gate_results_page = if runner_projection_status == "invalid" {
+            GateResultsPageData::default()
+        } else {
+            build_gate_results_page_data(&gate_signal_summaries, adaptive_thresholds.as_ref())
+        };
         let conductor_alerts = recent_signals
             .iter()
             .filter(|signal| signal.kind.starts_with("conductor:alert:"))
@@ -527,7 +622,13 @@ impl DashboardData {
         Self {
             root,
             generation,
+            budget,
             executor_state: state,
+            runner_projection_source,
+            runner_projection_path,
+            runner_projection_generation,
+            runner_projection_status,
+            runner_projection_error,
             executor_state_stamp: state_stamp,
             plans,
             active_tasks,
@@ -593,7 +694,6 @@ impl DashboardData {
     #[deprecated(note = "use push-based TuiDashboardModel instead; kept for standalone mode only")]
     pub fn tick(&mut self) -> Result<()> {
         let roko_dir = self.root.join(".roko");
-        let state_path = roko_dir.join("state").join("executor.json");
         let efficiency_path = roko_dir.join("learn").join(EFFICIENCY_FILE);
         let experiments_path = roko_dir.join("learn").join(EXPERIMENTS_FILE);
         let gate_thresholds_path = roko_dir.join("learn").join(GATE_THRESHOLDS_FILE);
@@ -603,10 +703,47 @@ impl DashboardData {
         let mut state_changed = false;
         let mut generation_changed = false;
         let mut episodes_changed = false;
-        let stamp = file_stamp(&state_path);
+        let stamp = runner_projection_stamp(&self.root);
         if stamp != self.executor_state_stamp {
+            let projection = load_durable_runner_projection(&self.root);
             self.executor_state_stamp = stamp;
-            self.executor_state = read_json_value(&state_path).unwrap_or(Value::Null);
+            match projection {
+                Ok(projection) => {
+                    self.executor_state = projection.as_ref().map_or(Value::Null, |projection| {
+                        projection.executor_projection.clone()
+                    });
+                    self.runner_projection_source =
+                        projection.as_ref().map(|projection| projection.source);
+                    self.runner_projection_path = projection
+                        .as_ref()
+                        .map(|projection| projection.source_path.clone());
+                    self.runner_projection_generation = projection
+                        .as_ref()
+                        .map(|projection| projection.generation.clone());
+                    self.runner_projection_status = projection
+                        .as_ref()
+                        .map_or("missing", |projection| projection.source.label())
+                        .to_string();
+                    self.runner_projection_error = None;
+                    self.adaptive_thresholds = match projection
+                        .as_ref()
+                        .and_then(|projection| projection.gate_thresholds.as_ref())
+                    {
+                        Some(thresholds) => serde_json::from_value(thresholds.clone()).ok(),
+                        None => load_json_opt::<AdaptiveThresholds>(&gate_thresholds_path),
+                    };
+                }
+                Err(error) => {
+                    self.executor_state = Value::Null;
+                    self.runner_projection_source = None;
+                    self.runner_projection_path =
+                        Some(self.root.join(roko_runtime::STATE_SNAPSHOT_RELATIVE_PATH));
+                    self.runner_projection_generation = None;
+                    self.runner_projection_status = "invalid".to_string();
+                    self.runner_projection_error = Some(error.to_string());
+                    self.adaptive_thresholds = None;
+                }
+            }
             state_changed = true;
             generation_changed = true;
         }
@@ -653,7 +790,10 @@ impl DashboardData {
         }
 
         let stamp = file_stamp(&gate_thresholds_path);
-        if stamp != self.gate_thresholds_stamp {
+        if stamp != self.gate_thresholds_stamp
+            && self.runner_projection_source != Some(RunnerProjectionSource::StateSnapshot)
+            && self.runner_projection_status != "invalid"
+        {
             self.gate_thresholds_stamp = stamp;
             self.adaptive_thresholds = load_json_opt::<AdaptiveThresholds>(&gate_thresholds_path);
             self.rebuild_gate_results_page();
@@ -699,15 +839,25 @@ impl DashboardData {
         // via the watcher-driven background path in App::drain_background_channels().
 
         if state_changed || episodes_changed || task_outputs_changed {
-            self.plans = load_plan_summaries(&self.root, &self.executor_state);
-            self.active_tasks = load_active_tasks(&self.executor_state);
-            self.agents = load_agents(&self.executor_state);
-            merge_runtime_agents(&mut self.agents, &self.root);
-            self.gate_results = load_gate_results(&self.executor_state, &self.signal_gate_results);
-            self.current_plan_execution = backfill_agent_output_tail(
-                load_current_plan_execution(&self.root, &self.executor_state, &self.episodes),
-                &self.task_output_cursors,
-            );
+            if self.runner_projection_status == "invalid" {
+                self.plans.clear();
+                self.active_tasks.clear();
+                self.agents.clear();
+                self.gate_results.clear();
+                self.gate_results_page = GateResultsPageData::default();
+                self.current_plan_execution = None;
+            } else {
+                self.plans = load_plan_summaries(&self.root, &self.executor_state);
+                self.active_tasks = load_active_tasks(&self.executor_state);
+                self.agents = load_agents(&self.executor_state);
+                merge_runtime_agents(&mut self.agents, &self.root);
+                self.gate_results =
+                    load_gate_results(&self.executor_state, &self.signal_gate_results);
+                self.current_plan_execution = backfill_agent_output_tail(
+                    load_current_plan_execution(&self.root, &self.executor_state, &self.episodes),
+                    &self.task_output_cursors,
+                );
+            }
         }
 
         // Refresh marketplace jobs + PRDs each tick.
@@ -747,6 +897,40 @@ impl DashboardData {
         &self.root
     }
 
+    /// Durable Runner source used for plan/task/agent/gate state.
+    #[must_use]
+    pub fn runner_projection_source(&self) -> Option<RunnerProjectionSource> {
+        self.runner_projection_source
+    }
+
+    /// Exact durable Runner source path used by this snapshot.
+    #[must_use]
+    pub fn runner_projection_path(&self) -> Option<&Path> {
+        self.runner_projection_path.as_deref()
+    }
+
+    /// Stable durable generation used by this snapshot.
+    #[must_use]
+    pub fn runner_projection_generation(&self) -> Option<&str> {
+        self.runner_projection_generation.as_deref()
+    }
+
+    /// Stable source status exposed by TUI and `roko show`.
+    #[must_use]
+    pub fn runner_projection_status(&self) -> &str {
+        if self.runner_projection_status.is_empty() {
+            "missing"
+        } else {
+            &self.runner_projection_status
+        }
+    }
+
+    /// Durable loader error, when the authoritative snapshot is invalid.
+    #[must_use]
+    pub fn runner_projection_error(&self) -> Option<&str> {
+        self.runner_projection_error.as_deref()
+    }
+
     /// Cached episodes for log display.
     #[must_use]
     pub(crate) fn episodes(&self) -> &[Episode] {
@@ -759,7 +943,7 @@ impl DashboardData {
         &self.task_outputs
     }
 
-    /// Executor-level summary derived from `.roko/state/executor.json`.
+    /// Executor-level summary derived from the canonical durable Runner projection.
     #[must_use]
     pub(crate) fn executor_summary(&self) -> ExecutorSummary {
         summarize_executor_state(&self.executor_state)
@@ -1143,6 +1327,8 @@ pub struct ReadFileSnapshot {
 pub(crate) struct PlanTaskSnapshot {
     pub id: String,
     pub title: String,
+    pub tier: String,
+    pub model_hint: Option<String>,
     pub status: String,
     pub agent_id: Option<String>,
     pub model: Option<String>,
@@ -1732,7 +1918,12 @@ fn backfill_agent_output_tail(
 
 fn load_plan_summaries(root: &Path, state: &Value) -> Vec<PlanSummary> {
     let mut ids = std::collections::BTreeSet::new();
-    let trackers = load_task_trackers(root);
+    let canonical_runner = state.get("_runner_projection").is_some();
+    let trackers = if canonical_runner {
+        HashMap::new()
+    } else {
+        load_task_trackers(root)
+    };
     if let Some(plan_states) = state.get("plan_states").and_then(Value::as_object) {
         ids.extend(plan_states.keys().cloned());
     }
@@ -1781,41 +1972,79 @@ fn load_plan_summaries(root: &Path, state: &Value) -> Vec<PlanSummary> {
             }
         }
 
+        if let Some(task_outcomes) = runner_task_outcomes_for_plan(state, &id) {
+            task_count = task_outcomes.len();
+            tasks_done = task_outcomes
+                .iter()
+                .filter(|(_, status)| status == "passed")
+                .count();
+            tasks_failed = task_outcomes
+                .iter()
+                .filter(|(_, status)| {
+                    matches!(
+                        status.as_str(),
+                        "failed" | "exhausted" | "cancelled" | "timed_out"
+                    )
+                })
+                .count();
+        }
+
         let phase = state
             .get("plan_states")
             .and_then(Value::as_object)
             .and_then(|plans| plans.get(&id))
             .and_then(current_phase_label)
             .unwrap_or_default();
-        let phase_status = PlanPhase::from(phase.as_str());
-        let completed = phase_status.is_done() || phase_status.is_failed();
-        if task_count > 0 && tasks_done == 0 && tasks_failed == 0 && phase_status.is_done() {
+        let runner_plan_status = state
+            .pointer("/_runner_projection/lifecycle/plans")
+            .and_then(Value::as_object)
+            .and_then(|plans| plans.get(&id))
+            .and_then(Value::as_str);
+        let completed = runner_plan_status.is_some_and(|status| status != "started")
+            || state
+                .get("plan_states")
+                .and_then(Value::as_object)
+                .and_then(|plans| plans.get(&id))
+                .is_some_and(plan_state_is_terminal);
+        if task_count > 0
+            && tasks_done == 0
+            && tasks_failed == 0
+            && phase.eq_ignore_ascii_case("complete")
+        {
             tasks_done = task_count;
         }
 
-        let tasks_done = state
-            .get("plan_states")
-            .and_then(Value::as_object)
-            .and_then(|plans| plans.get(&id))
-            .and_then(|plan_state| {
-                plan_state
-                    .get("done")
-                    .and_then(Value::as_u64)
-                    .or_else(|| plan_state.get("tasks_done").and_then(Value::as_u64))
+        let tasks_done = (!canonical_runner)
+            .then(|| {
+                state
+                    .get("plan_states")
+                    .and_then(Value::as_object)
+                    .and_then(|plans| plans.get(&id))
+                    .and_then(|plan_state| {
+                        plan_state
+                            .get("done")
+                            .and_then(Value::as_u64)
+                            .or_else(|| plan_state.get("tasks_done").and_then(Value::as_u64))
+                    })
+                    .unwrap_or(tasks_done as u64) as usize
             })
-            .unwrap_or(tasks_done as u64) as usize;
+            .unwrap_or(tasks_done);
 
-        let tasks_failed = state
-            .get("plan_states")
-            .and_then(Value::as_object)
-            .and_then(|plans| plans.get(&id))
-            .and_then(|plan_state| {
-                plan_state
-                    .get("failed")
-                    .and_then(Value::as_u64)
-                    .or_else(|| plan_state.get("tasks_failed").and_then(Value::as_u64))
+        let tasks_failed = (!canonical_runner)
+            .then(|| {
+                state
+                    .get("plan_states")
+                    .and_then(Value::as_object)
+                    .and_then(|plans| plans.get(&id))
+                    .and_then(|plan_state| {
+                        plan_state
+                            .get("failed")
+                            .and_then(Value::as_u64)
+                            .or_else(|| plan_state.get("tasks_failed").and_then(Value::as_u64))
+                    })
+                    .unwrap_or(tasks_failed as u64) as usize
             })
-            .unwrap_or(tasks_failed as u64) as usize;
+            .unwrap_or(tasks_failed);
 
         let last_error = state
             .get("plan_states")
@@ -1831,13 +2060,36 @@ fn load_plan_summaries(root: &Path, state: &Value) -> Vec<PlanSummary> {
             .map(ToOwned::to_owned);
 
         summaries.push(PlanSummary {
-            id,
+            id: id.clone(),
             title,
             task_count,
             tasks_done,
             tasks_failed,
             completed,
-            status: if completed { "done" } else { "ready" }.into(),
+            status: if completed {
+                if runner_plan_status == Some("failed") || phase.eq_ignore_ascii_case("failed") {
+                    "failed"
+                } else {
+                    "done"
+                }
+            } else if state
+                .get("plan_states")
+                .and_then(Value::as_object)
+                .and_then(|plans| plans.get(&id))
+                .is_some_and(plan_state_is_paused)
+            {
+                "paused"
+            } else if state
+                .get("plan_states")
+                .and_then(Value::as_object)
+                .and_then(|plans| plans.get(&id))
+                .is_some_and(|plan_state| runner_plan_is_started(state, &id, plan_state))
+            {
+                "running"
+            } else {
+                "ready"
+            }
+            .into(),
             superseded_by: None,
             old_format: false,
             last_error,
@@ -1848,6 +2100,86 @@ fn load_plan_summaries(root: &Path, state: &Value) -> Vec<PlanSummary> {
     summaries
 }
 
+fn runner_task_outcomes_for_plan(state: &Value, plan_id: &str) -> Option<Vec<(String, String)>> {
+    let runner = state.get("_runner_projection")?;
+    if let Some(tasks) = runner
+        .pointer("/lifecycle/tasks")
+        .and_then(Value::as_object)
+    {
+        return Some(
+            tasks
+                .values()
+                .filter(|task| task.get("plan_id").and_then(Value::as_str) == Some(plan_id))
+                .filter_map(|task| {
+                    let task_id = task.get("task_id")?.as_str()?;
+                    Some((
+                        task_id.to_string(),
+                        runner_terminal_task_outcome(runner, plan_id, task_id)
+                            .unwrap_or_else(|| {
+                                task.get("status")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("started")
+                            })
+                            .to_string(),
+                    ))
+                })
+                .collect(),
+        );
+    }
+    let mut outcomes = Vec::new();
+    for (field, status) in [("completed_tasks", "passed"), ("failed_tasks", "failed")] {
+        outcomes.extend(
+            runner
+                .get(field)
+                .and_then(|plans| plans.get(plan_id))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(|task_id| (task_id.to_string(), status.to_string())),
+        );
+    }
+    outcomes.extend(
+        runner
+            .get("skipped_tasks")
+            .and_then(|plans| plans.get(plan_id))
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|tasks| tasks.keys())
+            .map(|task_id| (task_id.clone(), "skipped".to_string())),
+    );
+    Some(outcomes)
+}
+
+fn runner_terminal_task_outcome<'a>(
+    runner: &'a Value,
+    plan_id: &str,
+    task_id: &str,
+) -> Option<&'a str> {
+    if runner
+        .get("completed_tasks")
+        .and_then(|plans| plans.get(plan_id))
+        .and_then(Value::as_array)
+        .is_some_and(|tasks| tasks.iter().any(|task| task.as_str() == Some(task_id)))
+    {
+        return Some("passed");
+    }
+    if runner
+        .get("failed_tasks")
+        .and_then(|plans| plans.get(plan_id))
+        .and_then(Value::as_array)
+        .is_some_and(|tasks| tasks.iter().any(|task| task.as_str() == Some(task_id)))
+    {
+        return Some("failed");
+    }
+    runner
+        .get("skipped_tasks")
+        .and_then(|plans| plans.get(plan_id))
+        .and_then(Value::as_object)
+        .filter(|tasks| tasks.contains_key(task_id))
+        .map(|_| "skipped")
+}
+
 fn build_plan_task_snapshots(
     root: &Path,
     state: &Value,
@@ -1855,7 +2187,11 @@ fn build_plan_task_snapshots(
     active_tasks: &[TaskSummary],
     episodes: &[Episode],
 ) -> HashMap<String, PlanTaskListSnapshot> {
-    let trackers = load_task_trackers(root);
+    let trackers = if state.get("_runner_projection").is_some() {
+        HashMap::new()
+    } else {
+        load_task_trackers(root)
+    };
     let plan_states = state.get("plan_states").and_then(Value::as_object);
     let active_by_key: HashMap<(String, String), &TaskSummary> = active_tasks
         .iter()
@@ -1878,7 +2214,7 @@ fn build_plan_task_snapshots(
         });
         let plan_succeeded = PlanPhase::from(phase.as_str()).is_done();
         let active = plan_state
-            .map(|state| !plan_state_is_terminal(state) && !plan_state_is_paused(state))
+            .map(|plan_state| runner_plan_is_started(state, &plan.id, plan_state))
             .unwrap_or(!plan.completed);
         let elapsed_secs = episodes
             .iter()
@@ -1918,12 +2254,30 @@ fn build_plan_task_snapshots(
         }
 
         let tracker = trackers.get(&plan.id);
-        let completed: HashSet<String> = tracker
+        let mut completed: HashSet<String> = tracker
             .map(|tracker| tracker.completed.iter().cloned().collect())
             .unwrap_or_default();
-        let failed: HashSet<String> = tracker
+        let mut failed: HashSet<String> = tracker
             .map(|tracker| tracker.failed.iter().cloned().collect())
             .unwrap_or_default();
+        let runner_outcomes = runner_task_outcomes_for_plan(state, &plan.id).unwrap_or_default();
+        if !runner_outcomes.is_empty() || state.get("_runner_projection").is_some() {
+            completed = runner_outcomes
+                .iter()
+                .filter(|(_, status)| status == "passed")
+                .map(|(task_id, _)| task_id.clone())
+                .collect();
+            failed = runner_outcomes
+                .iter()
+                .filter(|(_, status)| {
+                    matches!(
+                        status.as_str(),
+                        "failed" | "exhausted" | "cancelled" | "timed_out"
+                    )
+                })
+                .map(|(task_id, _)| task_id.clone())
+                .collect();
+        }
         let current_task_id = current_task_by_plan
             .get(plan.id.as_str())
             .map(|task_id| (*task_id).to_string())
@@ -1938,7 +2292,13 @@ fn build_plan_task_snapshots(
                 let active_task = active_by_key
                     .get(&(plan.id.clone(), task.id.clone()))
                     .copied();
-                let status = if completed.contains(&task.id) {
+                let runner_outcome = runner_outcomes
+                    .iter()
+                    .find(|(task_id, _)| task_id == &task.id)
+                    .map(|(_, status)| status.as_str());
+                let status = if runner_outcome == Some("skipped") {
+                    String::from("skipped")
+                } else if completed.contains(&task.id) {
                     String::from("done")
                 } else if failed.contains(&task.id) {
                     String::from("failed")
@@ -1964,6 +2324,8 @@ fn build_plan_task_snapshots(
                 PlanTaskSnapshot {
                     id: task.id.clone(),
                     title: task.title.clone(),
+                    tier: task.tier.clone(),
+                    model_hint: task.model_hint.clone(),
                     status,
                     agent_id: active_task.and_then(|task| task.assigned_agents.first().cloned()),
                     model: runtime
@@ -2122,6 +2484,69 @@ fn is_task_failed_status(status: &str) -> bool {
 }
 
 fn load_active_tasks(state: &Value) -> Vec<TaskSummary> {
+    if let Some(tasks) = state
+        .pointer("/_runner_projection/lifecycle/tasks")
+        .and_then(Value::as_object)
+    {
+        let attempts = state
+            .pointer("/_runner_projection/lifecycle/task_attempts")
+            .and_then(Value::as_object);
+        let plan_states = state.get("plan_states").and_then(Value::as_object);
+        let mut projected = tasks
+            .values()
+            .filter_map(|task| {
+                let plan_id = task.get("plan_id")?.as_str()?;
+                let task_id = task.get("task_id")?.as_str()?;
+                let status = task.get("status")?.as_str()?;
+                let paused = plan_states
+                    .and_then(|states| states.get(plan_id))
+                    .is_some_and(plan_state_is_paused);
+                let plan_started = plan_states
+                    .and_then(|states| states.get(plan_id))
+                    .is_some_and(|plan_state| runner_plan_is_started(state, plan_id, plan_state));
+                if paused || !plan_started || !matches!(status, "started" | "running" | "retrying")
+                {
+                    return None;
+                }
+                let current_attempt = task
+                    .get("current_attempt")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(1);
+                let mut assigned_agents = attempts
+                    .into_iter()
+                    .flat_map(|attempts| attempts.values())
+                    .filter(|attempt| {
+                        attempt.get("plan_id").and_then(Value::as_str) == Some(plan_id)
+                            && attempt.get("task_id").and_then(Value::as_str) == Some(task_id)
+                            && attempt.get("attempt").and_then(Value::as_u64)
+                                == Some(current_attempt)
+                            && matches!(
+                                attempt.get("status").and_then(Value::as_str),
+                                Some("agent_running" | "cancelling" | "cancellation_failed")
+                            )
+                    })
+                    .filter_map(|attempt| attempt.get("agent_id").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                assigned_agents.sort();
+                assigned_agents.dedup();
+                Some(TaskSummary {
+                    plan_id: plan_id.to_string(),
+                    task_id: task_id.to_string(),
+                    status: status.to_string(),
+                    iteration: u32::try_from(current_attempt).unwrap_or(1),
+                    assigned_agents,
+                    latest_gate: None,
+                })
+            })
+            .collect::<Vec<_>>();
+        projected.sort_by(|left, right| {
+            left.plan_id
+                .cmp(&right.plan_id)
+                .then_with(|| left.task_id.cmp(&right.task_id))
+        });
+        return projected;
+    }
     let Some(plan_states) = state.get("plan_states").and_then(Value::as_object) else {
         return Vec::new();
     };
@@ -2129,15 +2554,18 @@ fn load_active_tasks(state: &Value) -> Vec<TaskSummary> {
     let mut tasks = Vec::new();
     for (plan_id, plan_state) in plan_states {
         let status = current_phase_label(plan_state).unwrap_or_else(|| "unknown".to_string());
-        if matches!(status.to_ascii_lowercase().as_str(), "complete" | "skipped") {
+        if !runner_plan_is_started(state, plan_id, plan_state) {
             continue;
         }
-        let task_id = plan_state
+        let Some(task_id) = plan_state
             .get("task_id")
             .and_then(Value::as_str)
             .or_else(|| plan_state.get("id").and_then(Value::as_str))
-            .unwrap_or(plan_id.as_str())
-            .to_string();
+            .filter(|task_id| !task_id.trim().is_empty())
+        else {
+            continue;
+        };
+        let task_id = task_id.to_string();
         let iteration = plan_state
             .get("iteration")
             .and_then(Value::as_u64)
@@ -2180,6 +2608,103 @@ fn load_active_tasks(state: &Value) -> Vec<TaskSummary> {
 }
 
 fn load_agents(state: &Value) -> Vec<AgentSummary> {
+    if let Some(attempts) = state
+        .pointer("/_runner_projection/lifecycle/task_attempts")
+        .and_then(Value::as_object)
+    {
+        let tasks = state
+            .pointer("/_runner_projection/lifecycle/tasks")
+            .and_then(Value::as_object);
+        let plan_states = state.get("plan_states").and_then(Value::as_object);
+        let mut latest = HashMap::<String, &Value>::new();
+        for attempt in attempts.values() {
+            let Some(plan_id) = attempt.get("plan_id").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(task_id) = attempt.get("task_id").and_then(Value::as_str) else {
+                continue;
+            };
+            let number = attempt
+                .get("attempt")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            let current_attempt = tasks
+                .and_then(|tasks| tasks.get(&format!("{plan_id}:{task_id}")))
+                .and_then(|task| task.get("current_attempt"))
+                .and_then(Value::as_u64);
+            let plan_started = plan_states
+                .and_then(|plans| plans.get(plan_id))
+                .is_some_and(|plan_state| runner_plan_is_started(state, plan_id, plan_state));
+            if current_attempt != Some(number) || !plan_started {
+                continue;
+            }
+            let Some(agent_id) = attempt.get("agent_id").and_then(Value::as_str) else {
+                continue;
+            };
+            if latest.get(agent_id).is_none_or(|current| {
+                let current_rank = (
+                    current
+                        .get("started_at_ms")
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default(),
+                    current
+                        .get("attempt")
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default(),
+                    current
+                        .get("plan_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                    current
+                        .get("task_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                );
+                let next_rank = (
+                    attempt
+                        .get("started_at_ms")
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default(),
+                    number,
+                    attempt
+                        .get("plan_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                    attempt
+                        .get("task_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                );
+                current_rank <= next_rank
+            }) {
+                latest.insert(agent_id.to_string(), attempt);
+            }
+        }
+        let mut agents = latest
+            .into_iter()
+            .filter(|(_, attempt)| {
+                matches!(
+                    attempt.get("status").and_then(Value::as_str),
+                    Some("agent_running" | "cancelling" | "cancellation_failed")
+                )
+            })
+            .map(|(agent_id, attempt)| AgentSummary {
+                id: agent_id.clone(),
+                label: agent_id,
+                plan_id: attempt
+                    .get("plan_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                status: attempt
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string(),
+            })
+            .collect::<Vec<_>>();
+        agents.sort_by(|left, right| left.id.cmp(&right.id));
+        return agents;
+    }
     let Some(plan_states) = state.get("plan_states").and_then(Value::as_object) else {
         return Vec::new();
     };
@@ -2354,16 +2879,17 @@ fn load_current_plan_execution(
     episodes: &[Episode],
 ) -> Option<PlanExecutionSnapshot> {
     let plan_states = state.get("plan_states").and_then(Value::as_object)?;
-    let trackers = load_task_trackers(root);
+    let trackers = if state.get("_runner_projection").is_some() {
+        HashMap::new()
+    } else {
+        load_task_trackers(root)
+    };
 
     let mut candidates = plan_states
         .iter()
         .filter_map(|(plan_id, plan_state)| {
             let phase = current_phase_label(plan_state)?;
-            if matches!(
-                phase.to_ascii_lowercase().as_str(),
-                "complete" | "done" | "failed" | "skipped"
-            ) {
+            if !runner_plan_is_started(state, plan_id, plan_state) {
                 return None;
             }
             let priority = execution_phase_priority(&phase);
@@ -2390,13 +2916,34 @@ fn load_current_plan_execution(
     let plan_dir = plans_dir(root).join(&plan_id);
     let tasks_file = TasksFile::parse(&plan_dir.join("tasks.toml")).ok()?;
     let tracker = trackers.get(&plan_id);
-    let completed: HashSet<String> = tracker
+    let mut completed: HashSet<String> = tracker
         .map(|tracker| tracker.completed.iter().cloned().collect())
         .unwrap_or_default();
-    let failed: HashSet<String> = tracker
+    let mut failed: HashSet<String> = tracker
         .map(|tracker| tracker.failed.iter().cloned().collect())
         .unwrap_or_default();
-    let current_task_id = current_task_id(&tasks_file, tracker, &completed, &failed);
+    if let Some(tasks) = runner_task_outcomes_for_plan(state, &plan_id) {
+        completed = tasks
+            .iter()
+            .filter(|(_, status)| status == "passed")
+            .map(|(task_id, _)| task_id.clone())
+            .collect();
+        failed = tasks
+            .iter()
+            .filter(|(_, status)| {
+                matches!(
+                    status.as_str(),
+                    "failed" | "exhausted" | "cancelled" | "timed_out"
+                )
+            })
+            .map(|(task_id, _)| task_id.clone())
+            .collect();
+    }
+    let current_task_id = load_active_tasks(state)
+        .into_iter()
+        .find(|task| task.plan_id == plan_id)
+        .map(|task| task.task_id)
+        .or_else(|| current_task_id(&tasks_file, tracker, &completed, &failed));
     let plan_title = if tasks_file.meta.plan.trim().is_empty() {
         plan_id.clone()
     } else {
@@ -2470,8 +3017,8 @@ fn summarize_executor_state(state: &Value) -> ExecutorSummary {
     }
 
     let has_running = plan_states
-        .values()
-        .any(|plan_state| !plan_state_is_terminal(plan_state) && !plan_state_is_paused(plan_state));
+        .iter()
+        .any(|(plan_id, plan_state)| runner_plan_is_started(state, plan_id, plan_state));
     let has_paused = plan_states
         .values()
         .any(|plan_state| !plan_state_is_terminal(plan_state) && plan_state_is_paused(plan_state));
@@ -2592,7 +3139,7 @@ fn plan_state_is_terminal(plan_state: &Value) -> bool {
         .map(|phase| {
             matches!(
                 phase.to_ascii_lowercase().as_str(),
-                "complete" | "done" | "failed" | "skipped"
+                "complete" | "failed" | "skipped"
             )
         })
         .unwrap_or(false)
@@ -2603,6 +3150,31 @@ fn plan_state_is_paused(plan_state: &Value) -> bool {
         .get("paused")
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+fn plan_state_is_started(plan_state: &Value) -> bool {
+    if plan_state_is_terminal(plan_state) || plan_state_is_paused(plan_state) {
+        return false;
+    }
+    current_phase_label(plan_state).is_some_and(|phase| {
+        !matches!(
+            phase.trim().to_ascii_lowercase().as_str(),
+            "queued" | "pending" | "ready"
+        )
+    })
+}
+
+fn runner_plan_is_started(state: &Value, plan_id: &str, plan_state: &Value) -> bool {
+    match state
+        .pointer("/_runner_projection/lifecycle/plans")
+        .and_then(Value::as_object)
+        .and_then(|plans| plans.get(plan_id))
+        .and_then(Value::as_str)
+    {
+        Some("started") => !plan_state_is_paused(plan_state),
+        Some("succeeded" | "failed" | "skipped") => false,
+        _ => plan_state_is_started(plan_state),
+    }
 }
 
 fn plan_state_has_error(plan_state: &Value) -> bool {
@@ -2667,7 +3239,7 @@ fn most_advanced_active_plan_state<'a>(state: &'a Value) -> Option<(&'a str, &'a
     let mut candidates = plan_states
         .iter()
         .filter_map(|(plan_id, plan_state)| {
-            if plan_state_is_paused(plan_state) || plan_state_is_terminal(plan_state) {
+            if !runner_plan_is_started(state, plan_id, plan_state) {
                 return None;
             }
             let phase = current_phase_label(plan_state)?;
@@ -2998,6 +3570,13 @@ fn load_latest_jsonl_value<T: serde::de::DeserializeOwned>(path: &Path) -> Optio
 
 fn file_stamp(path: &Path) -> FileStamp {
     FileStamp::from_path(path).unwrap_or_default()
+}
+
+fn runner_projection_stamp(root: &Path) -> RunnerProjectionStamp {
+    RunnerProjectionStamp {
+        state_snapshot: file_stamp(&root.join(STATE_SNAPSHOT_RELATIVE_PATH)),
+        legacy_executor: file_stamp(&root.join(LEGACY_EXECUTOR_RELATIVE_PATH)),
+    }
 }
 
 fn next_dashboard_data_generation(root: &Path, stamps: DashboardDataStamps) -> u64 {
@@ -4324,34 +4903,127 @@ impl TuiDashboardModel {
     }
 
     fn render_plan_view_page(&self, page: &PageScaffold) -> Option<String> {
-        // Try to load executor state from .roko/state/executor.json.
-        let state_path = self.root.join(".roko").join("state").join("executor.json");
-        let state_text = std::fs::read_to_string(&state_path).ok()?;
-        let state: serde_json::Value = serde_json::from_str(&state_text).ok()?;
-
         let mut out = page_header(page);
-        let _ = writeln!(out, "source: {}", state_path.display());
+        let projection = match load_durable_runner_projection(&self.root) {
+            Ok(Some(projection)) => projection,
+            Ok(None) => {
+                let _ = writeln!(out, "source: missing");
+                let _ = writeln!(out, "(no durable Runner projection)");
+                return Some(out);
+            }
+            Err(error) => {
+                let _ = writeln!(out, "source: invalid");
+                let _ = writeln!(out, "error: {error}");
+                return Some(out);
+            }
+        };
+        let state = projection.executor_projection;
+        let _ = writeln!(
+            out,
+            "source: {} ({})",
+            projection.source_path.display(),
+            projection.source
+        );
+        let _ = writeln!(out, "generation: {}", projection.generation);
 
-        // Show task list from the executor state.
-        if let Some(tasks) = state.get("tasks").and_then(|t| t.as_array()) {
+        // Canonical snapshots expose task lifecycle as an ID-keyed map.
+        let canonical_tasks = state
+            .pointer("/_runner_projection/lifecycle/tasks")
+            .and_then(Value::as_object)
+            .map(|tasks| {
+                let runner = state
+                    .get("_runner_projection")
+                    .expect("lifecycle tasks require a Runner projection");
+                let mut tasks = tasks
+                    .values()
+                    .filter_map(|task| {
+                        let plan_id = task.get("plan_id")?.as_str()?;
+                        let task_id = task.get("task_id")?.as_str()?;
+                        let mut normalized = task.clone();
+                        if let Some(status) = runner_terminal_task_outcome(runner, plan_id, task_id)
+                        {
+                            normalized["status"] = Value::String(status.to_string());
+                        }
+                        Some(normalized)
+                    })
+                    .collect::<Vec<_>>();
+                tasks.sort_by(|left, right| {
+                    left.get("plan_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .cmp(right.get("plan_id").and_then(Value::as_str).unwrap_or(""))
+                        .then_with(|| {
+                            left.get("task_id")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .cmp(right.get("task_id").and_then(Value::as_str).unwrap_or(""))
+                        })
+                });
+                tasks
+            })
+            .or_else(|| {
+                state.get("_runner_projection")?;
+                let mut tasks = Vec::new();
+                for plan_id in state
+                    .get("plan_states")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flat_map(|plans| plans.keys())
+                {
+                    tasks.extend(
+                        runner_task_outcomes_for_plan(&state, plan_id)
+                            .into_iter()
+                            .flatten()
+                            .map(|(task_id, status)| {
+                                serde_json::json!({
+                                    "plan_id": plan_id,
+                                    "task_id": task_id,
+                                    "status": status
+                                })
+                            }),
+                    );
+                }
+                Some(tasks)
+            });
+        let legacy_tasks = state.get("tasks").and_then(Value::as_array).cloned();
+        if let Some(tasks) = canonical_tasks.or(legacy_tasks) {
             let total = tasks.len();
             let done = tasks
                 .iter()
-                .filter(|t| t.get("status").and_then(|s| s.as_str()) == Some("done"))
+                .filter(|task| {
+                    matches!(
+                        task.get("status").and_then(Value::as_str),
+                        Some("done" | "passed")
+                    )
+                })
                 .count();
             let failed = tasks
                 .iter()
-                .filter(|t| t.get("status").and_then(|s| s.as_str()) == Some("failed"))
+                .filter(|task| {
+                    matches!(
+                        task.get("status").and_then(Value::as_str),
+                        Some("failed" | "exhausted" | "cancelled" | "timed_out")
+                    )
+                })
+                .count();
+            let skipped = tasks
+                .iter()
+                .filter(|task| task.get("status").and_then(Value::as_str) == Some("skipped"))
                 .count();
             let running = tasks
                 .iter()
-                .filter(|t| t.get("status").and_then(|s| s.as_str()) == Some("running"))
+                .filter(|task| {
+                    matches!(
+                        task.get("status").and_then(Value::as_str),
+                        Some("started" | "running" | "retrying")
+                    )
+                })
                 .count();
-            let pending = total - done - failed - running;
+            let pending = total.saturating_sub(done + failed + skipped + running);
             let _ = writeln!(out);
             let _ = writeln!(
                 out,
-                "tasks: {total} total, {done} done, {failed} failed, {running} running, {pending} pending"
+                "tasks: {total} total, {done} done, {failed} failed, {skipped} skipped, {running} running, {pending} pending"
             );
             let _ = writeln!(out);
 
@@ -4362,7 +5034,11 @@ impl TuiDashboardModel {
                     .get("status")
                     .and_then(|s| s.as_str())
                     .unwrap_or("unknown");
-                let id = task.get("id").and_then(|s| s.as_str()).unwrap_or("-");
+                let id = task
+                    .get("task_id")
+                    .or_else(|| task.get("id"))
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("-");
                 let _ = writeln!(out, "  {:>4}  {:>10}  {:>30}", i, status, id);
             }
         } else {
@@ -5209,6 +5885,137 @@ mod tests {
 
     use tempfile::tempdir;
 
+    fn write_runner_snapshot(root: &Path, executor: &Value) {
+        let mut executor = executor.clone();
+        if let Some(object) = executor.as_object_mut() {
+            object.entry("schema_version").or_insert(Value::from(1));
+            object
+                .entry("queue_order")
+                .or_insert_with(|| Value::Array(Vec::new()));
+            object
+                .entry("speculative_executions")
+                .or_insert_with(|| Value::Object(Default::default()));
+            object.entry("timestamp_ms").or_insert(Value::from(42));
+        }
+        let fallback_plan = executor
+            .get("plan_states")
+            .and_then(Value::as_object)
+            .and_then(|plans| plans.keys().next())
+            .cloned()
+            .unwrap_or_else(|| "test-plan".to_string());
+        let mut lifecycle_tasks = serde_json::Map::new();
+        let mut completed = HashMap::<String, Vec<String>>::new();
+        let mut failed = HashMap::<String, Vec<String>>::new();
+        let mut skipped = HashMap::<String, HashMap<String, Value>>::new();
+        for task in executor
+            .get("tasks")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(task_id) = task
+                .get("task_id")
+                .or_else(|| task.get("id"))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            let plan_id = task
+                .get("plan_id")
+                .or_else(|| task.get("plan"))
+                .and_then(Value::as_str)
+                .unwrap_or(&fallback_plan);
+            let status = match task.get("status").and_then(Value::as_str) {
+                Some("done" | "complete" | "completed" | "passed") => "passed",
+                Some("failed" | "exhausted" | "timed_out") => "failed",
+                Some("skipped") => "cancelled",
+                Some("running") => "running",
+                _ => "started",
+            };
+            match status {
+                "passed" => completed
+                    .entry(plan_id.to_string())
+                    .or_default()
+                    .push(task_id.to_string()),
+                "failed" => failed
+                    .entry(plan_id.to_string())
+                    .or_default()
+                    .push(task_id.to_string()),
+                "cancelled" => {
+                    skipped
+                        .entry(plan_id.to_string())
+                        .or_default()
+                        .insert(task_id.to_string(), serde_json::json!({"reason": "test"}));
+                }
+                _ => {}
+            }
+            lifecycle_tasks.insert(
+                format!("{plan_id}:{task_id}"),
+                serde_json::json!({
+                    "plan_id": plan_id,
+                    "task_id": task_id,
+                    "status": status,
+                    "current_attempt": 1,
+                    "next_attempt": 2,
+                    "started_at_ms": 42
+                }),
+            );
+        }
+        let tasks_total = lifecycle_tasks.len();
+        let run_state = serde_json::json!({
+            "schema_version": 1,
+            "run_id": "tui-test",
+            "timestamp_ms": 42,
+            "tasks_total": tasks_total,
+            "tasks_completed": completed.values().map(Vec::len).sum::<usize>(),
+            "tasks_failed": failed.values().map(Vec::len).sum::<usize>(),
+            "total_tokens_in": 0,
+            "total_tokens_out": 0,
+            "total_cost_usd": 0.0,
+            "total_agent_calls": 0,
+            "completed_tasks": completed,
+            "failed_tasks": failed,
+            "skipped_tasks": skipped,
+            "lifecycle": {
+                "run_id": "tui-test",
+                "status": "running",
+                "total_tasks": tasks_total,
+                "plans": {},
+                "tasks": lifecycle_tasks,
+                "task_attempts": {}
+            },
+            "replan_ledger": {}
+        });
+        let snapshot = roko_runtime::StateSnapshot::new(
+            42,
+            executor.to_string(),
+            serde_json::json!({"schema_version": 1, "executor": executor, "timestamp_ms": 42})
+                .to_string(),
+            run_state.to_string(),
+            serde_json::json!({"rungs": {}}).to_string(),
+        );
+        write_json(&root.join(STATE_SNAPSHOT_RELATIVE_PATH), &snapshot);
+    }
+
+    #[test]
+    fn episode_path_prefers_root_then_legacy_fallbacks() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        let canonical = root.join(".roko/episodes.jsonl");
+        let learn = root.join(".roko/learn/episodes.jsonl");
+        let memory = root.join(".roko/memory/episodes.jsonl");
+        for path in [&canonical, &learn, &memory] {
+            fs::create_dir_all(path.parent().expect("episode parent")).expect("create parent");
+            fs::write(path, "{}\n").expect("write episode fixture");
+        }
+
+        assert_eq!(resolve_episodes_path(root), canonical);
+        fs::remove_file(&canonical).expect("remove canonical");
+        assert_eq!(resolve_episodes_path(root), learn);
+        fs::remove_file(&learn).expect("remove learn fallback");
+        assert_eq!(resolve_episodes_path(root), memory);
+    }
+
     fn write_jsonl(path: &Path, lines: &[String]) {
         fs::create_dir_all(path.parent().expect("file has parent"))
             .expect("should create parent dir");
@@ -5396,14 +6203,16 @@ mod tests {
 
     #[test]
     fn page_render_includes_widgets() {
-        let tmpdir = tempdir().expect("tempdir");
-        let dashboard = DashboardScaffold::new_in(tmpdir.path());
+        let dashboard = DashboardScaffold::new();
         let rendered = dashboard
             .render_page_text(PageId::PlanView)
             .expect("plan page should exist");
         assert!(rendered.contains("Plan View (plan-view)"));
-        assert!(rendered.contains("widgets (2):"));
-        assert!(rendered.contains("DAG [dag]"));
+        let widgets = dashboard
+            .render_page_list_text(PageId::PlanView)
+            .expect("plan widget list should exist");
+        assert!(widgets.contains("widgets (2):"));
+        assert!(widgets.contains("DAG [dag]"));
     }
 
     #[test]
@@ -5917,7 +6726,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_view_renders_with_executor_state() {
+    fn plan_view_normalizes_legacy_task_executor_without_inventing_task_rows() {
         let tmpdir = tempdir().expect("tempdir");
         let state_dir = tmpdir.path().join(".roko/state");
         fs::create_dir_all(&state_dir).expect("state dir");
@@ -5940,7 +6749,217 @@ mod tests {
             .render_page_text(PageId::PlanView)
             .expect("plan view page should render");
         assert!(rendered.contains("Plan View"));
-        assert!(rendered.contains("task-1"));
+        assert!(rendered.contains("legacy_executor"));
+        assert!(rendered.contains("no task data"));
+        assert!(!rendered.contains("task-1"));
+    }
+
+    #[test]
+    fn plan_view_and_dashboard_data_prefer_verified_snapshot_over_legacy() {
+        let tmpdir = tempdir().expect("tempdir");
+        let root = tmpdir.path();
+        let state_dir = root.join(".roko/state");
+        fs::create_dir_all(&state_dir).expect("state dir");
+        write_json(
+            &state_dir.join("executor.json"),
+            &serde_json::json!({
+                "tasks": [{"id": "stale-task", "status": "running"}],
+                "plan_states": {"stale-plan": {"current_phase": {"kind": "implementing"}}}
+            }),
+        );
+        write_runner_snapshot(
+            root,
+            &serde_json::json!({
+                "tasks": [{"id": "canonical-task", "status": "running"}],
+                "plan_states": {"canonical-plan": {"current_phase": {"kind": "implementing"}}}
+            }),
+        );
+        let memory_dir = root.join(MEMORY_DIR);
+        fs::create_dir_all(&memory_dir).expect("memory dir");
+        fs::write(memory_dir.join(EPISODES_FILE), "").expect("empty episodes");
+
+        let dashboard = DashboardScaffold::new_in(root);
+        let rendered = dashboard
+            .render_page_text(PageId::PlanView)
+            .expect("plan view page should render");
+        assert!(rendered.contains("canonical-task"));
+        assert!(!rendered.contains("stale-task"));
+        assert!(rendered.contains("state_snapshot"));
+
+        let data = DashboardData::load_best_effort(root);
+        assert_eq!(
+            data.runner_projection_source(),
+            Some(RunnerProjectionSource::StateSnapshot)
+        );
+        assert!(data.plans.iter().any(|plan| plan.id == "canonical-plan"));
+        assert!(!data.plans.iter().any(|plan| plan.id == "stale-plan"));
+    }
+
+    #[test]
+    fn plan_view_uses_skipped_terminal_map_over_cancelled_lifecycle_status() {
+        let tmpdir = tempdir().expect("tempdir");
+        let root = tmpdir.path();
+        write_runner_snapshot(
+            root,
+            &serde_json::json!({
+                "tasks": [
+                    {"id": "passed", "plan": "plan-a", "status": "passed"},
+                    {"id": "failed", "plan": "plan-a", "status": "failed"},
+                    {"id": "skipped", "plan": "plan-a", "status": "skipped"}
+                ],
+                "plan_states": {"plan-a": {"current_phase": {"kind": "done"}}}
+            }),
+        );
+
+        let rendered = DashboardScaffold::new_in(root)
+            .render_page_text(PageId::PlanView)
+            .expect("plan view page should render");
+        assert!(rendered.contains("tasks: 3 total, 1 done, 1 failed, 1 skipped"));
+        assert!(rendered.contains("skipped"));
+    }
+
+    #[test]
+    fn corrupt_snapshot_fails_closed_without_legacy_dashboard_fallback() {
+        let tmpdir = tempdir().expect("tempdir");
+        let root = tmpdir.path();
+        let state_dir = root.join(".roko/state");
+        fs::create_dir_all(&state_dir).expect("state dir");
+        write_json(
+            &state_dir.join("executor.json"),
+            &serde_json::json!({
+                "plan_states": {"legacy-plan": {"current_phase": {"kind": "implementing"}}}
+            }),
+        );
+        let mut snapshot = roko_runtime::StateSnapshot::new(
+            42,
+            serde_json::json!({"plan_states": {"canonical-plan": {}}}).to_string(),
+            "{}".to_string(),
+            "{}".to_string(),
+            "{}".to_string(),
+        );
+        snapshot.checksum = "0".repeat(64);
+        write_json(&state_dir.join("state-snapshot.json"), &snapshot);
+        let learn_dir = root.join(".roko/learn");
+        fs::create_dir_all(&learn_dir).expect("learn dir");
+        write_json(
+            &learn_dir.join(GATE_THRESHOLDS_FILE),
+            &AdaptiveThresholds::default(),
+        );
+
+        let data = DashboardData::load_best_effort(root);
+        assert!(data.plans.is_empty());
+        assert!(data.active_tasks.is_empty());
+        assert!(data.agents.is_empty());
+        assert!(data.gate_results.is_empty());
+        assert!(data.adaptive_thresholds.is_none());
+        assert_eq!(data.gate_results_page, GateResultsPageData::default());
+        assert_eq!(data.runner_projection_source(), None);
+        assert_eq!(
+            data.runner_projection_path(),
+            Some(state_dir.join("state-snapshot.json").as_path())
+        );
+        assert_eq!(data.runner_projection_status(), "invalid");
+        assert!(data.runner_projection_error().is_some());
+        assert!(
+            load_durable_runner_projection(root)
+                .unwrap_err()
+                .to_string()
+                .contains("checksum mismatch")
+        );
+    }
+
+    #[test]
+    fn dashboard_tick_clears_runner_fields_when_canonical_snapshot_becomes_invalid() {
+        let tmpdir = tempdir().expect("tempdir");
+        let root = tmpdir.path();
+        write_runner_snapshot(
+            root,
+            &serde_json::json!({
+                "tasks": [{"id": "task-a", "plan": "plan-a", "status": "running"}],
+                "plan_states": {"plan-a": {"current_phase": {"kind": "implementing"}}}
+            }),
+        );
+        let mut data = DashboardData::load_best_effort(root);
+        assert_eq!(data.runner_projection_status(), "state_snapshot");
+        assert!(!data.plans.is_empty());
+        assert!(!data.active_tasks.is_empty());
+
+        let snapshot_path = root.join(roko_runtime::STATE_SNAPSHOT_RELATIVE_PATH);
+        let mut snapshot: roko_runtime::StateSnapshot =
+            serde_json::from_slice(&fs::read(&snapshot_path).expect("read snapshot"))
+                .expect("parse snapshot");
+        snapshot.checksum = "bad".to_string();
+        write_json(&snapshot_path, &snapshot);
+        let learn_dir = root.join(".roko/learn");
+        fs::create_dir_all(&learn_dir).expect("learn dir");
+        write_json(
+            &learn_dir.join(GATE_THRESHOLDS_FILE),
+            &AdaptiveThresholds::default(),
+        );
+
+        data.tick().expect("tick invalid snapshot");
+        assert_eq!(data.runner_projection_status(), "invalid");
+        assert_eq!(data.runner_projection_path(), Some(snapshot_path.as_path()));
+        assert!(data.plans.is_empty());
+        assert!(data.active_tasks.is_empty());
+        assert!(data.agents.is_empty());
+        assert!(data.gate_results.is_empty());
+        assert!(data.adaptive_thresholds.is_none());
+        assert_eq!(data.gate_results_page, GateResultsPageData::default());
+        assert!(data.current_plan_execution.is_none());
+    }
+
+    #[test]
+    fn canonical_lifecycle_distinguishes_queued_started_terminal_and_skipped_counts() {
+        let tmpdir = tempdir().unwrap();
+        let state = serde_json::json!({
+            "plan_states": {
+                "queued": {"plan_id": "queued", "current_phase": {"kind": "queued"}},
+                "started": {"plan_id": "started", "current_phase": {"kind": "implementing"}},
+                "terminal": {"plan_id": "terminal", "current_phase": {"kind": "done"}}
+            },
+            "_runner_projection": {
+                "completed_tasks": {"terminal": ["passed"]},
+                "failed_tasks": {"terminal": ["failed"]},
+                "skipped_tasks": {"terminal": {"skipped": {"PrerequisiteFailed": {"prerequisite": "failed"}}}},
+                "lifecycle": {
+                    "plans": {
+                        "queued": "started",
+                        "started": "started",
+                        "terminal": "succeeded"
+                    },
+                    "tasks": {
+                        "terminal:passed": {"plan_id": "terminal", "task_id": "passed", "status": "passed"},
+                        "terminal:failed": {"plan_id": "terminal", "task_id": "failed", "status": "failed"},
+                        "terminal:skipped": {"plan_id": "terminal", "task_id": "skipped", "status": "cancelled"}
+                    },
+                    "task_attempts": {}
+                }
+            }
+        });
+        let summaries = load_plan_summaries(tmpdir.path(), &state);
+        let queued = summaries.iter().find(|plan| plan.id == "queued").unwrap();
+        let started = summaries.iter().find(|plan| plan.id == "started").unwrap();
+        let terminal = summaries.iter().find(|plan| plan.id == "terminal").unwrap();
+        assert_eq!(
+            queued.status, "running",
+            "lifecycle started is authoritative"
+        );
+        assert_eq!(started.status, "running");
+        assert_eq!(terminal.status, "done");
+        assert_eq!(terminal.task_count, 3);
+        assert_eq!(terminal.tasks_done, 1);
+        assert_eq!(terminal.tasks_failed, 1, "skipped is not failed");
+
+        let no_lifecycle = serde_json::json!({
+            "plan_states": {"queued": {"current_phase": {"kind": "queued"}}}
+        });
+        let queued = load_plan_summaries(tmpdir.path(), &no_lifecycle)
+            .into_iter()
+            .find(|plan| plan.id == "queued")
+            .unwrap();
+        assert_eq!(queued.status, "ready");
+        assert!(load_current_plan_execution(tmpdir.path(), &no_lifecycle, &[]).is_none());
     }
 
     #[test]

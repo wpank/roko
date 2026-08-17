@@ -1,5 +1,8 @@
 # Autocatalytic Improvement and Cybernetics
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** Roko is designed so that performance, capability, and quality improve
 > superlinearly with accumulated usage, deployment count, and connected data. This is not a
 > claim of literal exponential growth under every workload; it is a claim that the system

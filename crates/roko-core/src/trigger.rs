@@ -49,14 +49,235 @@ pub const TRIGGER_RATE_LIMITED: &str = "trigger:rate_limited";
 /// Topic published when trigger authentication fails (e.g. bad HMAC, expired token).
 pub const TRIGGER_AUTH_FAILED: &str = "trigger:auth_failed";
 
-// ── TriggerGraduationPolicy ──────────────────────────────────────────────────
+// ── Trigger event topics and graduation ─────────────────────────────────────
+
+/// Construct a scoped trigger lifecycle topic such as
+/// `trigger.deploy.fired`.
+#[must_use]
+pub fn trigger_topic(name: &str, event: &str) -> String {
+    format!("trigger.{name}.{event}")
+}
+
+/// Trigger lifecycle events published on the Bus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerEventKind {
+    Armed,
+    Fired,
+    Filtered,
+    Skipped,
+    Queued,
+    RateLimited,
+    Error,
+    Disarmed,
+    FlowStarted,
+    FlowCompleted,
+}
+
+impl TriggerEventKind {
+    /// Stable topic suffix for this lifecycle event.
+    #[must_use]
+    pub const fn as_topic_suffix(self) -> &'static str {
+        match self {
+            Self::Armed => "armed",
+            Self::Fired => "fired",
+            Self::Filtered => "filtered",
+            Self::Skipped => "skipped",
+            Self::Queued => "queued",
+            Self::RateLimited => "rate_limited",
+            Self::Error => "error",
+            Self::Disarmed => "disarmed",
+            Self::FlowStarted => "flow.started",
+            Self::FlowCompleted => "flow.completed",
+        }
+    }
+}
+
+/// Lifecycle events promoted from ephemeral Pulses to durable Signals.
+pub const GRADUATION_EVENTS: [TriggerEventKind; 8] = [
+    TriggerEventKind::Armed,
+    TriggerEventKind::Fired,
+    TriggerEventKind::Skipped,
+    TriggerEventKind::RateLimited,
+    TriggerEventKind::Error,
+    TriggerEventKind::Disarmed,
+    TriggerEventKind::FlowStarted,
+    TriggerEventKind::FlowCompleted,
+];
+
+/// Durable/auditable description of a trigger lifecycle transition.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TriggerLifecycleEvent {
+    /// Binding name.
+    pub trigger_name: String,
+    /// Lifecycle transition.
+    pub kind: TriggerEventKind,
+    /// Scoped bus topic.
+    pub topic: String,
+    /// Event time in Unix milliseconds.
+    pub occurred_at_ms: u64,
+    /// Graph configured for the binding.
+    pub graph: String,
+    /// Trace id of the firing/flow, when applicable.
+    pub trace_id: Option<String>,
+    /// Structured lifecycle metadata.
+    pub detail: Value,
+}
+
+impl TriggerLifecycleEvent {
+    /// Construct a lifecycle event using the current wall clock.
+    #[must_use]
+    pub fn new(
+        binding: &TriggerBinding,
+        kind: TriggerEventKind,
+        trace_id: Option<String>,
+        detail: Value,
+    ) -> Self {
+        Self {
+            trigger_name: binding.name.clone(),
+            kind,
+            topic: trigger_topic(&binding.name, kind.as_topic_suffix()),
+            occurred_at_ms: unix_time_ms(),
+            graph: binding.graph.clone(),
+            trace_id,
+            detail,
+        }
+    }
+}
+
+/// One durable trigger firing and the lifecycle transitions correlated to it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TriggerHistoryRecord {
+    /// The original durable firing event.
+    pub event: TriggerEvent,
+    /// Lifecycle transitions sharing the firing's trace id, in time order.
+    /// Flow transitions include their runtime `run_id` in `detail`.
+    pub lifecycle: Vec<TriggerLifecycleEvent>,
+}
+
+/// Durable firing history returned by the CLI and HTTP API.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TriggerHistory {
+    /// Binding name whose evidence was queried.
+    pub trigger_name: String,
+    /// Number of durable firing events before applying the query limit.
+    pub total: usize,
+    /// Most-recent firing records first.
+    pub records: Vec<TriggerHistoryRecord>,
+}
+
+/// Read durable firing and lifecycle evidence from a trigger directory.
+///
+/// `directory` is the `.roko/triggers` directory. Missing evidence files are
+/// treated as an empty history; malformed durable evidence is reported rather
+/// than silently omitted.
+pub fn load_trigger_history(
+    directory: &Path,
+    trigger_name: &str,
+    limit: usize,
+) -> io::Result<TriggerHistory> {
+    if !valid_trigger_name(trigger_name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid trigger name",
+        ));
+    }
+
+    let mut events = Vec::new();
+    match fs::read_dir(directory.join("events")) {
+        Ok(entries) => {
+            for entry in entries {
+                let path = entry?.path();
+                if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+                    continue;
+                }
+                let bytes = fs::read(&path)?;
+                let event: TriggerEvent = serde_json::from_slice(&bytes).map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("parse trigger event {}: {error}", path.display()),
+                    )
+                })?;
+                if event.trigger_id == trigger_name {
+                    events.push(event);
+                }
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    events.sort_by_key(|event| std::cmp::Reverse(event.fired_at_ms));
+    let total = events.len();
+    events.truncate(limit);
+
+    let selected_traces: std::collections::HashSet<&str> =
+        events.iter().map(|event| event.trace_id.as_str()).collect();
+    let mut lifecycle_by_trace: BTreeMap<String, Vec<TriggerLifecycleEvent>> = BTreeMap::new();
+    match fs::read_to_string(directory.join("lifecycle.jsonl")) {
+        Ok(contents) => {
+            for (index, line) in contents.lines().enumerate() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let lifecycle: TriggerLifecycleEvent =
+                    serde_json::from_str(line).map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("parse trigger lifecycle line {}: {error}", index + 1),
+                        )
+                    })?;
+                let Some(trace_id) = lifecycle.trace_id.as_deref() else {
+                    continue;
+                };
+                if lifecycle.trigger_name == trigger_name && selected_traces.contains(trace_id) {
+                    lifecycle_by_trace
+                        .entry(trace_id.to_string())
+                        .or_default()
+                        .push(lifecycle);
+                }
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    for lifecycle in lifecycle_by_trace.values_mut() {
+        lifecycle.sort_by_key(|event| event.occurred_at_ms);
+    }
+
+    let records = events
+        .into_iter()
+        .map(|event| {
+            let lifecycle = lifecycle_by_trace
+                .remove(&event.trace_id)
+                .unwrap_or_default();
+            TriggerHistoryRecord { event, lifecycle }
+        })
+        .collect();
+    Ok(TriggerHistory {
+        trigger_name: trigger_name.to_string(),
+        total,
+        records,
+    })
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+// ── Binding trust graduation ─────────────────────────────────────────────────
 
 /// Controls when a trigger binding is auto-promoted to a higher trust tier.
 ///
 /// Distinct from [`GraduationPolicy`](crate::config::graduation::GraduationPolicy),
-/// which governs Pulse-to-Signal promotion. `TriggerGraduationPolicy` governs
-/// the promotion of trigger *bindings* themselves (e.g. from draft/sandbox
-/// to production).
+/// which governs Pulse-to-Signal promotion. This policy also provides the
+/// canonical lifecycle-event graduation predicate via [`Self::should_graduate`].
+/// Its enum variants describe promotion of trigger *bindings* themselves
+/// (e.g. from draft/sandbox to production).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "policy", rename_all = "snake_case")]
 pub enum TriggerGraduationPolicy {
@@ -72,6 +293,14 @@ pub enum TriggerGraduationPolicy {
         /// Minimum age in hours before auto-promotion is allowed.
         min_age_hours: u64,
     },
+}
+
+impl TriggerGraduationPolicy {
+    /// Whether a trigger lifecycle event should be retained as a durable Signal.
+    #[must_use]
+    pub fn should_graduate(kind: &TriggerEventKind) -> bool {
+        GRADUATION_EVENTS.contains(kind)
+    }
 }
 
 impl Default for TriggerGraduationPolicy {
@@ -158,10 +387,7 @@ impl TriggerHandle {
     /// Create a new handle in the `Armed` state.
     #[must_use]
     pub fn new_armed(id: TriggerId, binding: TriggerBinding) -> Self {
-        let armed_at_ms = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let armed_at_ms = unix_time_ms();
         Self {
             id,
             binding,
@@ -232,10 +458,7 @@ impl TriggerEvent {
         source: TriggerSource,
         trace_id: TraceId,
     ) -> Self {
-        let fired_at_ms = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let fired_at_ms = unix_time_ms();
         Self {
             trigger_id,
             fired_at_ms,
@@ -373,6 +596,121 @@ impl TriggerBinding {
         }
     }
 
+    /// Validate fields that are used as filesystem/runtime identifiers.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid-data when the name could escape `.roko/triggers/` or
+    /// when the graph reference is empty or contains parent traversal.
+    pub fn validate(&self) -> io::Result<()> {
+        if !valid_trigger_name(&self.name) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "trigger name must contain only ASCII letters, digits, '.', '_' or '-' and must not be '.' or '..'",
+            ));
+        }
+        let graph = Path::new(&self.graph);
+        if self.graph.trim().is_empty()
+            || graph.is_absolute()
+            || graph.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir
+                        | std::path::Component::RootDir
+                        | std::path::Component::Prefix(_)
+                )
+            })
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "trigger graph must be a non-empty worktree-relative path without parent traversal",
+            ));
+        }
+        match &self.kind {
+            TriggerKind::Cron(config) if config.expression.trim().is_empty() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "cron expression must not be empty",
+                ));
+            }
+            TriggerKind::Webhook(config)
+                if !config.path.starts_with('/')
+                    || config.path.contains("..")
+                    || config.path.contains(['?', '#']) =>
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "webhook path must be an absolute URL path without traversal, query, or fragment",
+                ));
+            }
+            TriggerKind::FileWatch(config)
+                if config.path.is_absolute()
+                    || config.path.components().any(|component| {
+                        matches!(
+                            component,
+                            std::path::Component::ParentDir
+                                | std::path::Component::RootDir
+                                | std::path::Component::Prefix(_)
+                        )
+                    }) =>
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "file-watch path must be worktree-relative without parent traversal",
+                ));
+            }
+            TriggerKind::Bus(config) if config.topic.trim().is_empty() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "bus topic must not be empty",
+                ));
+            }
+            TriggerKind::SignalPattern(config)
+                if config.required_kinds.is_empty()
+                    || config
+                        .required_kinds
+                        .iter()
+                        .any(|kind| kind.trim().is_empty())
+                    || config.window_secs == 0 =>
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "signal pattern requires non-empty kinds and a non-zero window",
+                ));
+            }
+            _ => {}
+        }
+        match self.concurrency {
+            ConcurrencyPolicy::Queue { max_depth: Some(0) } => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "queue concurrency max_depth must be greater than zero",
+                ));
+            }
+            ConcurrencyPolicy::Parallel {
+                max_concurrent: Some(0),
+            } => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "parallel concurrency max_concurrent must be greater than zero",
+                ));
+            }
+            _ => {}
+        }
+        if let Some(rate_limit) = self
+            .filter
+            .as_ref()
+            .and_then(|filter| filter.rate_limit.as_ref())
+            && (rate_limit.max_fires == 0 || rate_limit.window_ms == 0)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "rate limit max_fires and window_ms must be greater than zero",
+            ));
+        }
+        Ok(())
+    }
+
     // ── TOML persistence ─────────────────────────────────────────────────
 
     /// Serialize this binding to TOML and write it to `path`.
@@ -383,13 +721,16 @@ impl TriggerBinding {
     ///
     /// Returns an I/O error if serialization or writing fails.
     pub fn save_to_file(&self, path: &Path) -> io::Result<()> {
+        self.validate()?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
         let toml_str = toml::to_string_pretty(self).map_err(|e| {
             io::Error::new(io::ErrorKind::InvalidData, format!("TOML serialize: {e}"))
         })?;
-        fs::write(path, toml_str)
+        let temporary = path.with_extension("toml.tmp");
+        fs::write(&temporary, toml_str)?;
+        fs::rename(temporary, path)
     }
 
     /// Deserialize a `TriggerBinding` from a TOML file at `path`.
@@ -399,12 +740,25 @@ impl TriggerBinding {
     /// Returns an I/O error if the file cannot be read or contains invalid TOML.
     pub fn load_from_file(path: &Path) -> io::Result<Self> {
         let text = fs::read_to_string(path)?;
-        toml::from_str(&text).map_err(|e| {
+        let binding: Self = toml::from_str(&text).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("TOML parse {}: {e}", path.display()),
             )
-        })
+        })?;
+        binding.validate()?;
+        if let Some(file_name) = path.file_stem().and_then(|stem| stem.to_str())
+            && file_name != binding.name
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "trigger binding name '{}' does not match file name '{file_name}'",
+                    binding.name
+                ),
+            ));
+        }
+        Ok(binding)
     }
 
     /// Save every binding in `bindings` to `dir`, one file per binding.
@@ -453,6 +807,17 @@ impl TriggerBinding {
         bindings.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(bindings)
     }
+}
+
+/// Whether `name` is safe as a trigger identifier and TOML file stem.
+#[must_use]
+pub fn valid_trigger_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 // ── TriggerKind ───────────────────────────────────────────────────────────────
@@ -515,6 +880,25 @@ pub struct ChainEventTrigger {
     pub contract: String,
     /// ABI event signature to filter (e.g. `"Transfer(address,address,uint256)"`).
     pub event_signature: String,
+    /// Optional JSON ABI used to decode indexed and non-indexed log fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abi: Option<Value>,
+    /// Minimum finality required before the trigger may fire.
+    #[serde(default)]
+    pub finality: FinalityRequirement,
+}
+
+/// Confidence required for an on-chain log to fire a trigger.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinalityRequirement {
+    /// Fire immediately. The resulting event may later be invalidated by a reorg.
+    Reversible,
+    /// Wait for a high-confidence confirmation threshold.
+    #[default]
+    QuasiFinalized,
+    /// Wait for the chain's final confirmation threshold.
+    Final,
 }
 
 /// SignalPattern trigger: fires when a pattern of signals is detected.
@@ -634,10 +1018,12 @@ pub enum TriggerAuth {
     },
     /// Mutual TLS client certificate authentication.
     MutualTls {
-        /// Path to the client certificate PEM file.
+        /// Path to the PEM certificate chain presented by the Roko HTTPS server.
         cert: PathBuf,
-        /// Reference to the private key secret.
+        /// Reference to the PEM private key for the Roko HTTPS server.
         key: SecretRef,
+        /// PEM trust anchor used to authenticate webhook client certificates.
+        client_ca: PathBuf,
     },
 }
 
@@ -886,7 +1272,7 @@ mod tests {
     #[test]
     fn round_trip_complex_binding() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("complex.toml");
+        let path = dir.path().join("webhook-deploy.toml");
 
         let binding = TriggerBinding {
             name: "webhook-deploy".to_string(),
@@ -1014,7 +1400,27 @@ mod tests {
         }
     }
 
-    // ── TriggerGraduationPolicy tests ────────────────────────────────────
+    // ── Trigger event graduation tests ──────────────────────────────────
+
+    #[test]
+    fn scoped_trigger_topics_follow_bus_contract() {
+        assert_eq!(trigger_topic("deploy", "fired"), "trigger.deploy.fired");
+    }
+
+    #[test]
+    fn only_durable_trigger_events_graduate() {
+        for kind in GRADUATION_EVENTS {
+            assert!(TriggerGraduationPolicy::should_graduate(&kind));
+        }
+        assert!(!TriggerGraduationPolicy::should_graduate(
+            &TriggerEventKind::Filtered
+        ));
+        assert!(!TriggerGraduationPolicy::should_graduate(
+            &TriggerEventKind::Queued
+        ));
+    }
+
+    // ── TriggerGraduationPolicy tests ──────────────────────────────────
 
     #[test]
     fn graduation_policy_default_is_manual_only() {

@@ -1,22 +1,44 @@
 # 11 — Connectivity
 
 > Relay wire protocol, exoskeleton protocol bindings (MCP, A2A, ERC-8004, x402), in-process vs remote agents, WebSocket subscription lifecycle, backpressure, multi-chain connectivity, and finality oracle. All transport is subscription-based. No polling.
+> **Implementation status (2026-08-16): E29 CONTRACT TRANCHE, R01 HTTP CONNECTOR, AND R02 RELAY TRANSPORT IMPLEMENTED.** The portable kernel contracts are shipped and tested. A concrete HTTP JSON adapter runs behind the canonical `Connect`/`ConnectorRegistry` boundary with real health checks, bounded reconnect supervision, cancellation-safe replacement and teardown, secret-safe status, and authenticated lifecycle routes. The `agent-relay` server and the supervised `roko-agent-server` client now provide bounded canonical-envelope delivery, atomic room restore plus replay, durable cursors, and fail-closed recovery. `roko serve` executes enabled exact-room subscriptions only after recording durable intent and acknowledges delivery only after terminal receipts and cursors are atomically committed. Additional transports, startup discovery, MCP auto-registration, three-tier routing, A2A publication, x402 settlement, chain finality/reorg execution, and dashboard auto-connect remain broader roadmap work.
 
 **Subsumes**: Connector trait, Feed system, relay, workspace discovery, agent connectivity, data flow, reconnection protocol, exoskeleton protocol bindings, multi-chain temporal resolution.
 
 **Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal/Pulse duality, Bus, demurrage, HDC), [02-CELL](02-CELL.md) (9 protocols, typed I/O, capabilities), [05-AGENT-RUNTIME](05-AGENT.md) (vitality, type-state, CorticalState), [15-TELEMETRY](15-TELEMETRY.md) (StateHub projections, Lenses)
 
+### Implemented boundary
+
+| Capability | Current implementation |
+|---|---|
+| Connect protocol | `roko_core::connector::Connect` exposes all five async lifecycle methods with typed config, query, execute, response, and health contracts. It deliberately has no `Cell` supertrait so transport adapters can be composed into Cells without a kernel dependency cycle. The older synchronous `roko_core::traits::Connect` remains for source compatibility. |
+| Connector metadata | The legacy six `ConnectorKind` values remain readable; five v2 kinds and compatibility aliases, `ConnectorManifest`, validated reconnect policies, finality/reorg metadata, and merged discovery types are additive. |
+| Concrete connector runtime | `roko-runtime` provides a supervised HTTP JSON `Connect` adapter for API, webhook, and exchange endpoints. Registration requires a successful real transport probe before `Connected`; health/reconnect attempts, delays, request/response sizes, configuration, and connector counts are bounded. Replacement, restart, unregister, and shutdown are generation- and cancellation-safe. `roko-serve` exposes the lifecycle through authenticated-or-loopback control-plane routes without returning credentials or untrusted manifest metadata. |
+| Relay wire contract | `roko_core::wire_protocol` owns the common `seq`/`ts`/`room`/`type` envelope, canonical room constructors, subscribe/unsubscribe/resume/snapshot payloads, reconnection and supersession states, gap actions, and workspace discovery payloads. |
+| Relay server | `apps/agent-relay` enforces entry and serialized-byte limits on the global replay ring and each connection's delivery mailbox, bounded connection/topic/subscription/card/feed/snapshot state, 2 MiB WebSocket frames, canonical envelope validation, and deterministic overload recovery. Its initial `Subscribe` atomically installs 1–64 exact rooms with `last_seq` before live fanout. Standalone `Resume` on an already-live socket is rejected because it cannot provide the same race-free restore boundary. |
+| Durable relay client | `roko-agent-server::features::relay_client` owns bounded command/delivery/response channels, bounded concurrent dispatch, cancellation-aware reconnect with capped jittered backoff, durable-cursor restore, atomic `Subscribe(last_seq)`, ACK-after-handler-success, replay checkpoints, snapshot reconciliation, and terminal supersession handling. |
+| Subscription execution | `roko-serve::subscription_relay` binds one relay origin and sorted exact-room set to a bounded, checksummed 4 MiB/4,096-entry fsync journal. It persists processing intent before dispatch and atomically commits dispatch-or-suppression receipts plus room, subscription, and global cursors before the handler returns success and permits ACK. Interrupted/failed dispatch, an unsafe stream change, or a generic snapshot records reconciliation-required state and halts automatic execution. `GET /api/subscriptions/relay/status` exposes connection, binding, cursors, journal counts, reconciliation, unsupported wildcard triggers, and room-capacity diagnostics under normal API authentication. |
+| Backpressure contract | All four strategies are serializable and validate non-zero intervals/capacities. R02 applies them in the `agent-relay` delivery mailbox under both entry and byte ceilings: coalesce and sample may deliberately reduce data, drop-oldest makes the recovery requirement explicit, and lossless overflow requests resume instead of growing without bound. The separate `roko-serve` local WebSocket remains its own stream surface. |
+| Exoskeleton payloads | `roko_core::exoskeleton` supplies portable JSON-backed MCP Cell payloads, A2A agent cards with HDC metadata, and chain-SDK-neutral x402 payment intents with fail-closed shape validation. |
+| TOML compatibility | `relay.ring_buffer_size` defaults to 65,536 for omitted/legacy config; `chain.finality_confirmations` is optional and round-trips. |
+| Verification | Contract compilation plus focused async lifecycle, serde compatibility, room/envelope, recovery-state serialization, zero-capacity backpressure, invalid range, invalid vitality, payment amount, and configuration default tests. |
+| Explicitly deferred | Additional concrete transports, startup configuration discovery, MCP auto-registration, workspace hello discovery, three-tier agent routing, A2A publication, x402 budget settlement, finality oracle/reorg invalidation, and dashboard/UI auto-connect. Generic snapshots intentionally require serve-side reconciliation rather than reconstructing missed subscription side effects. |
+
 ---
 
 ## 1. Connect Protocol
 
-The **Connect protocol** is one of the 9 Cell protocols ([doc-02](02-CELL.md)). A Cell implementing Connect manages the full lifecycle of an external system connection: establishment, querying, mutation, health monitoring, and teardown. Five methods, no optional.
+The **Connect protocol** is one of the 9 advertised Cell protocols
+([doc-02](02-CELL.md)). Its portable E29 transport contract is independent of `Cell` and
+manages the full lifecycle of an external system connection: establishment, querying,
+mutation, health monitoring, and teardown. A connector Cell composes that contract and
+advertises `ProtocolId::Connect`. Five methods, no optional.
 
 ```rust
 /// The Connect protocol — external system lifecycle.
-/// Every Connector Cell implements this trait.
+/// Portable transport contract composed by Connector Cells.
 #[async_trait]
-pub trait Connect: Cell {
+pub trait Connect: Send + Sync {
     /// Establish connection to an external system.
     /// Called once at Agent startup or on first use.
     /// Fails closed: if connect() fails, the Connector is unavailable.
@@ -32,13 +54,18 @@ pub trait Connect: Cell {
 
     /// Health check. Called at `health_interval` (default 30s).
     /// Returns current health status with latency and error details.
-    async fn health(&self) -> Result<HealthStatus>;
+    async fn health(&self) -> Result<ConnectHealthStatus>;
 
     /// Graceful disconnect. Called at Agent shutdown or on explicit teardown.
     /// Must release all external resources (connections, subscriptions, locks).
     async fn disconnect(&mut self) -> Result<()>;
 }
 ```
+
+The transport contract is exposed at `roko_core::connector::Connect` and is
+independent of `Cell`. A connector Cell composes this contract and advertises
+`ProtocolId::Connect`; requiring every low-level transport adapter to implement
+`Cell` would couple connection I/O to execution identity unnecessarily.
 
 ---
 
@@ -96,11 +123,11 @@ Every Connector carries a manifest declaring its identity, configuration schema,
 pub struct ConnectorManifest {
     pub name: String,
     pub kind: ConnectorKind,
-    pub version: Version,
+    pub version: String,
     pub description: String,
-    pub config_schema: TypeSchema,       // what ConnectConfig expects
-    pub capabilities: Vec<Capability>,   // what system resources it needs
-    pub health_interval: Duration,       // how often to check health (default: 30s)
+    pub config_schema: Option<serde_json::Value>,
+    pub capabilities: Vec<String>,
+    pub health_interval_secs: u64,
     pub reconnect_strategy: ReconnectStrategy,
 }
 
@@ -450,10 +477,11 @@ Every piece of data flows through WebSocket subscriptions. No polling.
 
 | Source | Transport | What it carries |
 |---|---|---|
-| **Relay** | WS `/relay/ws` | Agent presence, message lifecycle, relay health |
+| **Relay agent transport** | WS `/relay/agents/ws` | Agent presence, message lifecycle, canonical room delivery and publishing |
+| **Relay event observer** | WS `/relay/events/ws` | Read-only relay event stream |
 | **roko-serve** | WS `/ws` | Plan progress, gate results, episodes, learning metrics, job updates |
 | **Agent (direct)** | WS (per-agent) | Heartbeats, streaming LLM output, decision traces |
-| **Agent (via relay)** | WS `/relay/ws` | Same as direct, tunneled through relay |
+| **Agent (via relay)** | WS `/relay/agents/ws` | Same as direct, tunneled through the supervised client |
 | **Chain** | WS (RPC sub) | Blocks, contract events, ERC-8004 registry updates, finality tags |
 
 ### WebSocket message envelope
@@ -472,7 +500,7 @@ Every message uses the same envelope:
 
 | Field | Type | Purpose |
 |---|---|---|
-| `seq` | `u64` | Monotonic sequence number per connection. Enables reconnection replay. |
+| `seq` | `u64` | Monotonic global relay sequence. Enables durable multi-room reconnection replay. |
 | `ts` | `u64` | Unix milliseconds. Server clock. |
 | `room` | `string` | Scoping. Clients subscribe to rooms, receive only matching messages. |
 | `type` | `string` | Event discriminant. |
@@ -524,12 +552,19 @@ function useAgentFeed(agentId: string) {
   const [state, setState] = useState<AgentState | null>(null);
 
   useEffect(() => {
-    const ws = new WebSocket(`${relayUrl}/relay/ws`);
+    const ws = new WebSocket(`${relayUrl}/relay/agents/ws`);
 
     ws.onopen = () => {
       ws.send(JSON.stringify({
+        type: "hello",
+        agent_id: `dashboard-${agentId}`,
+        capabilities: [],
+        metadata: {}
+      }));
+      ws.send(JSON.stringify({
         type: "subscribe",
-        rooms: [`agent:${agentId}`, `agent:${agentId}:heartbeat`]
+        rooms: [`agent:${agentId}`, `agent:${agentId}:heartbeat`],
+        last_seq: durableCursor
       }));
     };
 
@@ -550,6 +585,10 @@ function useAgentFeed(agentId: string) {
   return state;
 }
 ```
+
+Production agent consumers use `roko-agent-server::features::relay_client`, which waits for
+the hello acknowledgement, restores the rooms atomically, validates sequence continuity, and
+does not ACK a topic message until its `TopicHandler` returns after durable commit.
 
 ---
 
@@ -745,11 +784,18 @@ High-frequency events (heartbeats at 100ms, chain blocks at 2s) need throttling 
 
 ## 15. Reconnection Protocol
 
-Clients track the last received `seq`. On reconnect, the client sends a `resume` message:
+Clients restore the last durably committed global `seq` as part of the first subscription
+frame on a new connection:
 
 ```json
-{ "type": "resume", "last_seq": 4821 }
+{ "type": "subscribe", "rooms": ["plan:current"], "last_seq": 4821 }
 ```
+
+This `Subscribe(last_seq)` operation installs the complete exact-room set and selects replay
+or snapshot while the relay's stream lock prevents live fanout from racing the recovery
+boundary. A standalone `resume` frame on an already-live socket is rejected. Room changes
+are applied by reconnecting with a new atomic subscription; `roko serve` fails closed if a
+changed origin or room set would make its existing global cursor unsafe.
 
 ### Recovery flow
 
@@ -758,7 +804,8 @@ Client                                  Relay
   |                                       |
   |---- WS connect ---------------------->|
   |                                       |
-  |---- { "type": "resume",              |
+  |---- { "type": "subscribe",           |
+  |       "rooms": ["plan:current"],     |
   |       "last_seq": 4821 } ----------->|
   |                                       |
   |                           +-----------+
@@ -777,7 +824,12 @@ Client                                  Relay
 
 ### Relay ring buffer
 
-The relay maintains a ring buffer (default: 64K entries, ~10 minutes at moderate throughput). If the gap exceeds the buffer, the relay sends a `snapshot` event with current state followed by live events.
+The relay maintains an entry- and serialized-byte-bounded global ring (both limits are
+validated and configurable). Recovery is also bounded by the destination mailbox. If the
+requested cursor has fallen out of the ring, or a complete replay cannot fit, the relay sends
+a size-bounded snapshot instead of an incomplete replay. The generic snapshot describes
+relay state; the serve subscription executor records reconciliation-required state because it
+cannot safely infer missed external dispatch side effects from that snapshot.
 
 ### Snapshot format
 
@@ -800,7 +852,12 @@ The relay maintains a ring buffer (default: 64K entries, ~10 minutes at moderate
 
 ### Gap detection on the client
 
-Clients track the last received `seq` and check every incoming message for continuity. A gap (missing sequence numbers between the last received and the current message) means events were lost. On gap detection, the client should reconnect and send a `resume` message.
+The supervised client compares canonical global sequence numbers with its durable cursor.
+Stale duplicates are not dispatched or acknowledged. A gap, `ResumeRequired`, handler
+failure, or server error closes the connection and enters bounded reconnect unless the
+condition requires durable reconciliation. Reconnect sends the complete desired room set and
+durable cursor in the initial `Subscribe(last_seq)` frame. Topic delivery is acknowledged only
+after the handler commits it; replay completion separately persists quiet-room watermarks.
 
 ### Multi-instance handling
 
@@ -952,15 +1009,27 @@ quasi_finality = "sequencer_confirmed"
 |---|---|
 | `roko-core` | Connect protocol trait, ConnectorKind, QueryRequest/Response, HealthStatus, FinalityLevel, FinalityTag |
 | `roko-agent` | Connector discovery, lifecycle management, MCP auto-registration, A2A card publishing |
-| `roko-runtime` | Bus (Pulse pub/sub), relay WebSocket client, reconnection protocol |
-| `roko-serve` | HTTP control plane, WebSocket server, workspace registration |
-| `roko-agent-server` | Per-agent sidecar, direct HTTP for remote Agents, MCP tool endpoint |
+| `roko-runtime` | Bus (Pulse pub/sub), concrete HTTP JSON connector and bounded connector supervisor |
+| `agent-relay` | Bounded relay server, canonical-envelope fanout, atomic subscription/recovery, replay/snapshot selection, delivery backpressure, ACK tracking, supersession |
+| `roko-serve` | Authenticated connector lifecycle and HTTP control plane, exact-room subscription execution, bounded durable relay journal and status, local WebSocket server |
+| `roko-agent-server` | Supervised durable relay client, per-agent sidecar, direct HTTP for remote Agents, MCP tool endpoint |
 | `roko-chain` | ChainRpcConnector, on-chain feed sources, finality oracle, reorg detection |
 | `roko-cli` | Connector and relay configuration in roko.toml |
 
 ---
 
 ## 19. Acceptance Criteria
+
+The E29 executable manifest covers the kernel contract tranche above, not this
+entire product-level matrix. Its focused tests directly prove CN-1 and CN-15 and
+validate the data/configuration contracts needed by the remaining criteria. R01
+adds concrete runtime evidence for periodic health/reconnect and shutdown at the
+control-plane boundary, including failure, retry-bound, restart, cancellation,
+access-control, and secret-redaction cases. R02 adds bounded server/client replay,
+reconnect, snapshot, supersession, ACK, and restart-durable exact-room subscription
+execution evidence. Startup discovery and the remaining chain, payment, broad agent
+routing, workspace-discovery, and dashboard criteria still need their own end-to-end
+evidence before this full product document can be called implemented.
 
 | # | Criterion | Verification |
 |---|---|---|
@@ -982,7 +1051,7 @@ quasi_finality = "sequencer_confirmed"
 | CN-16 | Coalesce strategy buffers heartbeats to 500ms | Integration test: send 10 heartbeats in 500ms, verify 1 delivered |
 | CN-17 | Drop-oldest strategy uses ring buffer for output_chunk | Integration test: overflow buffer, verify old chunks dropped |
 | CN-18 | Lossless strategy queues gate_result events | Integration test: slow consumer, verify all events delivered |
-| CN-19 | Reconnection with resume replays from last_seq | Integration test: disconnect, reconnect with seq, verify replay |
+| CN-19 | Reconnection with atomic `Subscribe(last_seq)` replays after the durable cursor | Integration test: disconnect, reconnect with rooms + seq, verify complete replay before live delivery |
 | CN-20 | Reconnection gap > 64K sends snapshot | Integration test: large gap, verify snapshot received |
 | CN-21 | In-process Agent routing via mpsc (priority 1) | Unit test: local Agent, verify channel send |
 | CN-22 | Direct HTTP routing for remote Agents (priority 2) | Integration test: remote Agent with URL, verify HTTP post |

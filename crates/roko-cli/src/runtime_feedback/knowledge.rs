@@ -27,6 +27,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use roko_neuro::tier_progression::TierProgression;
 use roko_neuro::{KnowledgeEntry, KnowledgeKind, KnowledgeStore};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -119,6 +120,12 @@ impl KnowledgeIngestor for NeuroKnowledgeIngestor {
                 "task {} completed via {}@{} in {}ms",
                 candidate.task_id, model_label, provider_label, candidate.duration_ms
             ),
+            // A single runtime success is useful but remains a soft signal.
+            // Keep it below the store's inferred Working-tier cutoff; the
+            // gate-backed confirmation below is what advances the entry via
+            // TierProgression.
+            confidence: 0.65,
+            confidence_weight: 0.65,
             source_episodes: vec![candidate.task_id.clone()],
             tags: vec![
                 "runtime-feedback".to_string(),
@@ -126,13 +133,54 @@ impl KnowledgeIngestor for NeuroKnowledgeIngestor {
                 format!("model:{model_label}"),
             ],
             source_model: Some(model_label),
+            confirmation_count: 1,
+            distinct_contexts: vec![format!("{}:{}", candidate.plan_id, candidate.task_id)],
             ..KnowledgeEntry::default()
         };
+        let entry_id = entry.id.clone();
+        let context_id = entry.distinct_contexts[0].clone();
 
         let store = self.store.clone();
-        tokio::task::spawn_blocking(move || store.add(entry))
-            .await
-            .map_err(|e| anyhow::anyhow!("knowledge ingest task join: {e}"))??;
+        tokio::task::spawn_blocking(move || {
+            store.add(entry)?;
+
+            // Runtime-success candidates have already cleared their task
+            // gates, so ingestion constitutes one independent positive
+            // observation. Invoke the canonical tier policy immediately
+            // after admission; previously the runner wrote a Transient entry
+            // but never advanced it through TierProgression.
+            store.update_entries(|stored| {
+                if stored.id != entry_id {
+                    return false;
+                }
+
+                let mut changed = false;
+                if stored.confirmation_count == 0 {
+                    stored.confirmation_count = 1;
+                    changed = true;
+                }
+                if !stored.distinct_contexts.contains(&context_id) {
+                    stored.distinct_contexts.push(context_id.clone());
+                    changed = true;
+                }
+                if let Some(next_tier) = TierProgression::evaluate_tier_progression_v2(
+                    stored,
+                    stored.confirmation_count as usize,
+                    0,
+                )
+                .tier()
+                {
+                    if next_tier != stored.tier {
+                        stored.tier = next_tier;
+                        changed = true;
+                    }
+                }
+                changed
+            })?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("knowledge ingest task join: {e}"))??;
         Ok(())
     }
 }
@@ -332,6 +380,10 @@ mod tests {
         assert!(entry.content.contains("claude-sonnet-4-6"));
         assert!(entry.content.contains("claude_cli"));
         assert!(entry.tags.iter().any(|t| t == "runtime-feedback"));
+        assert_eq!(entry.confidence, 0.65);
+        assert_eq!(entry.confirmation_count, 1);
+        assert_eq!(entry.distinct_contexts, ["plan-x:task-y"]);
+        assert_eq!(entry.tier, roko_neuro::KnowledgeTier::Working);
     }
 
     #[tokio::test]

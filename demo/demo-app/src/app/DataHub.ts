@@ -1,21 +1,28 @@
 /**
  * DataHub — centralised Zustand store for the demo-app.
  *
- * Replaces:
- *   - contexts/EventStreamContext.tsx (event dispatch)
- *   - hooks/useRokoConfig.ts (config state + polling)
- *   - hooks/useLiveApi.ts (health tracking)
- *   - hooks/useServerHealth.ts (status polling)
- *   - hooks/useApiWithFallback.ts (offline detection)
- *   - hooks/useWorkspace.ts (workspace context)
+ * Canonical owner for event dispatch, config, health, and workspace state.
+ * Components consume focused hooks from `data/selectors.ts`.
  *
  * Implementation tasks: T1.9 (core store) + T1.10 (workspace slice).
  */
 
 import { create } from 'zustand';
-import type { ServerEvent } from '../transport/types';
+import type {
+  DashboardEvent,
+  DashboardGapPayload,
+  DashboardSnapshot,
+} from '../transport/types';
 import { api } from '../transport/api';
-import type { BenchRun, BenchSuite, BenchModel } from '../lib/bench-types';
+import { parseBenchRunsListResponse } from '../lib/bench-types';
+import type {
+  BenchModel,
+  BenchModelsResponse,
+  BenchRunListEntry,
+  BenchSSEEvent,
+  BenchSuiteListEntry,
+  BenchSuitesResponse,
+} from '../lib/bench-types';
 import type {
   ConnectedAgent as RelayConnectedAgent,
   ConnectedWorkspace as RelayConnectedWorkspace,
@@ -29,6 +36,12 @@ import {
   fetchRelayFeeds,
   fetchRelayTopics,
 } from '../lib/relay-api';
+import {
+  providerForModelKey,
+  rawModelsToOptions,
+  resolveModelKey,
+  type RawConfigModels,
+} from '../lib/config-models';
 
 // ── Public types ────────────────────────────────────────────────
 
@@ -54,8 +67,9 @@ export interface AgentInfo {
 }
 
 export interface EpisodeInfo {
-  planId: string;
-  taskId: string;
+  episodeId: string;
+  agentId: string;
+  role: string;
   passed: boolean;
   timestamp: number;
 }
@@ -70,50 +84,11 @@ export interface InferenceRecord {
   durationMs: number;
 }
 
-// ── ISFR types ──────────────────────────────────────────────────
-
-export interface IsfrRate {
-  compositeBps: number;
-  lendingBps: number;
-  structuredBps: number;
-  fundingBps: number;
-  stakingBps: number;
-  confidenceBps: number;
-  sourceCount: number;
-  timestampMs: number;
+export interface SequencedBenchEvent {
+  sequence: number;
+  event: BenchSSEEvent;
 }
 
-export interface IsfrSource {
-  id: string;
-  name: string;
-  class: string;
-  weight: number;
-  lastRateBps: number | null;
-  health: 'live' | 'stale' | 'offline';
-  lastPollMs: number | null;
-}
-
-export type IsfrKeeperStatus = 'unknown' | 'running' | 'stopped';
-
-export interface IsfrFieldHistory {
-  composite: number[];
-  lending: number[];
-  structured: number[];
-  funding: number[];
-  staking: number[];
-  confidence: number[];
-}
-
-export interface IsfrSourceSnapshot {
-  bps: number;
-  ts: number;
-}
-
-export interface IsfrEventEntry {
-  ts: number;
-  type: 'rate' | 'source' | 'keeper';
-  message: string;
-}
 
 // ── Feed types ──────────────────────────────────────────────────
 
@@ -202,11 +177,14 @@ export interface DataHub {
   serverStatus: ServerStatus;
   sseStatus: StreamStatus;
   wsStatus: StreamStatus;
+  dashboardMissedEvents: number;
+  dashboardLastMaterializedSeq: number | null;
 
   // -- Config slice ------------------------------------------------
   config: Record<string, unknown> | null;
   defaultModel: string;
   defaultBackend: string;
+  lastConfigSavedAt: number | null;
 
   // -- Workspace slice ---------------------------------------------
   serverWorkdir: string | null;
@@ -228,29 +206,29 @@ export interface DataHub {
   recentInferences: InferenceRecord[]; // ring buffer, max 200
 
   // -- Bench slice -------------------------------------------------
-  benchRuns: BenchRun[];
-  benchSuites: BenchSuite[];
+  benchRuns: BenchRunListEntry[];
+  benchSuites: BenchSuiteListEntry[];
   benchModels: BenchModel[];
-
-  // -- ISFR slice -------------------------------------------------
-  isfrCurrentRate: IsfrRate | null;
-  isfrHistory: IsfrRate[];       // ring buffer, max 256
-  isfrSources: IsfrSource[];
-  isfrKeeperStatus: IsfrKeeperStatus;
-  isfrFieldHistory: IsfrFieldHistory;
-  isfrSourceHistory: Record<string, IsfrSourceSnapshot[]>;
-  isfrEventLog: IsfrEventEntry[];
-  isfrReadingsCache: Record<string, Record<string, unknown>>;
+  benchSseStatus: StreamStatus;
+  benchEventSequence: number;
+  benchEvents: SequencedBenchEvent[];
 
   // -- Actions: event handling -------------------------------------
-  handleServerEvent: (event: ServerEvent) => void;
+  handleServerEvent: (event: DashboardEvent) => void;
+  hydrateDashboardSnapshot: (
+    snapshot: DashboardSnapshot,
+    gap: Pick<DashboardGapPayload, 'missed_events' | 'last_materialized_seq'>,
+  ) => void;
+  handleBenchEvent: (event: BenchSSEEvent) => void;
   setServerStatus: (status: ServerStatus) => void;
   setSseStatus: (status: StreamStatus) => void;
+  setBenchSseStatus: (status: StreamStatus) => void;
   setWsStatus: (status: StreamStatus) => void;
 
   // -- Actions: REST fetches ---------------------------------------
   fetchConfig: () => Promise<void>;
   updateConfig: (partial: Record<string, unknown>) => Promise<boolean>;
+  updateModelConfig: (model: string, backend: string) => Promise<boolean>;
   fetchBenchRuns: () => Promise<void>;
   fetchBenchSuites: () => Promise<void>;
   fetchBenchModels: () => Promise<void>;
@@ -260,13 +238,11 @@ export interface DataHub {
     prefix: string,
     opts?: { gitInit?: boolean },
   ) => Promise<WorkspaceInfo>;
+  createWorkspace: (
+    prefix: string,
+    opts?: { gitInit?: boolean },
+  ) => Promise<WorkspaceInfo>;
   destroyWorkspace: (id: string) => Promise<void>;
-
-  // -- Actions: ISFR REST fetches ---------------------------------
-  fetchIsfrStatus: () => Promise<void>;
-  fetchIsfrCurrent: () => Promise<void>;
-  fetchIsfrHistory: (limit?: number) => Promise<void>;
-  fetchIsfrSources: () => Promise<void>;
 
   // -- Chain slice ------------------------------------------------
   chainBlocks: ChainBlockEntry[];
@@ -306,11 +282,7 @@ export interface DataHub {
 // ── Ring-buffer limits ──────────────────────────────────────────
 
 const MAX_EPISODES = 500;
-const MAX_INFERENCES = 200;
-const MAX_ISFR_HISTORY = 256;
-const MAX_FIELD_HISTORY = 30;
-const MAX_SOURCE_HISTORY = 30;
-const MAX_EVENT_LOG = 500;
+const MAX_BENCH_EVENTS = 500;
 const MAX_CHAIN_BLOCKS = 64;
 const MAX_CHAIN_TXS = 128;
 const MAX_CHAIN_EVENTS = 128;
@@ -319,6 +291,17 @@ const MAX_FEED_LOG = 200;
 const MAX_FEED_SPARKLINE = 30;
 // const MAX_FEED_THROUGHPUT = 60; // reserved for future throughput sparkline
 const MAX_RELAY_EVENT_LOG = 200;
+
+function configState(config: Record<string, unknown>) {
+  const agent = config.agent as Record<string, string> | undefined;
+  const models = rawModelsToOptions(config.models as RawConfigModels | undefined);
+  const defaultModel = agent?.default_model
+    ? resolveModelKey(models, agent.default_model)
+    : '';
+  const defaultBackend =
+    providerForModelKey(models, defaultModel) ?? agent?.default_backend ?? '';
+  return { config, defaultModel, defaultBackend };
+}
 
 // ── Relay dashboard helpers ─────────────────────────────────
 
@@ -386,9 +369,12 @@ export const useDataHub = create<DataHub>()((set, get) => ({
   serverStatus: 'checking',
   sseStatus: 'idle',
   wsStatus: 'idle',
+  dashboardMissedEvents: 0,
+  dashboardLastMaterializedSeq: null,
   config: null,
   defaultModel: '',
   defaultBackend: '',
+  lastConfigSavedAt: null,
   serverWorkdir: null,
   workspace: null,
   workspaceCache: new Map(),
@@ -403,14 +389,9 @@ export const useDataHub = create<DataHub>()((set, get) => ({
   benchRuns: [],
   benchSuites: [],
   benchModels: [],
-  isfrCurrentRate: null,
-  isfrHistory: [],
-  isfrSources: [],
-  isfrKeeperStatus: 'unknown',
-  isfrFieldHistory: { composite: [], lending: [], structured: [], funding: [], staking: [], confidence: [] },
-  isfrSourceHistory: {},
-  isfrEventLog: [],
-  isfrReadingsCache: {},
+  benchSseStatus: 'idle',
+  benchEventSequence: 0,
+  benchEvents: [],
   chainBlocks: [],
   chainTxs: [],
   chainEvents: [],
@@ -429,7 +410,7 @@ export const useDataHub = create<DataHub>()((set, get) => ({
 
   // -- Event handling -----------------------------------------------
 
-  handleServerEvent: (event: ServerEvent) => {
+  handleServerEvent: (event: DashboardEvent) => {
     // Wire events arrive with snake_case field names matching the server
     // serde contract. This handler is the single adapter boundary: it maps
     // snake_case wire fields to the camelCase shapes used by the UI store.
@@ -464,7 +445,7 @@ export const useDataHub = create<DataHub>()((set, get) => ({
         }));
         break;
 
-      case 'agent_stopped':
+      case 'agent_completed':
         set((s) => ({
           agents: s.agents.map((a) =>
             a.agentId === event.agent_id
@@ -474,13 +455,14 @@ export const useDataHub = create<DataHub>()((set, get) => ({
         }));
         break;
 
-      case 'episode':
+      case 'episode_recorded':
         set((s) => ({
           episodes: [
             ...s.episodes.slice(-(MAX_EPISODES - 1)),
             {
-              planId: event.plan_id,
-              taskId: event.task_id,
+              episodeId: event.episode_id,
+              agentId: event.agent_id,
+              role: event.role,
               passed: event.passed,
               timestamp: Date.now(),
             },
@@ -488,131 +470,8 @@ export const useDataHub = create<DataHub>()((set, get) => ({
         }));
         break;
 
-      case 'inference_completed':
-        set((s) => ({
-          totalCost: s.totalCost + event.cost_usd,
-          totalTokens:
-            s.totalTokens + event.input_tokens + event.output_tokens,
-          recentInferences: [
-            ...s.recentInferences.slice(-(MAX_INFERENCES - 1)),
-            {
-              requestId: event.request_id,
-              model: event.model,
-              agentId: event.agent_id,
-              inputTokens: event.input_tokens,
-              outputTokens: event.output_tokens,
-              costUsd: event.cost_usd,
-              durationMs: event.duration_ms,
-            },
-          ],
-        }));
-        break;
-
       case 'gate_result':
         // Consumed by components via raw event subscriptions; no store update.
-        break;
-
-      case 'config_reloaded':
-        get().fetchConfig();
-        break;
-
-      case 'BenchRunCompleted':
-        get().fetchBenchRuns();
-        break;
-
-      case 'isfr_rate_computed': {
-        const capField = (arr: number[], v: number) =>
-          [...arr.slice(-(MAX_FIELD_HISTORY - 1)), v];
-        set((s) => ({
-          isfrCurrentRate: {
-            compositeBps: event.composite_bps,
-            lendingBps: event.lending_bps,
-            structuredBps: event.structured_bps,
-            fundingBps: event.funding_bps,
-            stakingBps: event.staking_bps,
-            confidenceBps: event.confidence_bps,
-            sourceCount: event.source_count,
-            timestampMs: event.timestamp_ms,
-          },
-          isfrHistory: [
-            ...s.isfrHistory.slice(-(MAX_ISFR_HISTORY - 1)),
-            {
-              compositeBps: event.composite_bps,
-              lendingBps: event.lending_bps,
-              structuredBps: event.structured_bps,
-              fundingBps: event.funding_bps,
-              stakingBps: event.staking_bps,
-              confidenceBps: event.confidence_bps,
-              sourceCount: event.source_count,
-              timestampMs: event.timestamp_ms,
-            },
-          ],
-          isfrFieldHistory: {
-            composite: capField(s.isfrFieldHistory.composite, event.composite_bps),
-            lending: capField(s.isfrFieldHistory.lending, event.lending_bps),
-            structured: capField(s.isfrFieldHistory.structured, event.structured_bps),
-            funding: capField(s.isfrFieldHistory.funding, event.funding_bps),
-            staking: capField(s.isfrFieldHistory.staking, event.staking_bps),
-            confidence: capField(s.isfrFieldHistory.confidence, event.confidence_bps),
-          },
-          isfrEventLog: [
-            {
-              ts: event.timestamp_ms,
-              type: 'rate' as const,
-              message: `Composite ${event.composite_bps} bps \u00b7 ${event.source_count} sources \u00b7 ${(event.confidence_bps / 100).toFixed(1)}% conf`,
-            },
-            ...s.isfrEventLog.slice(0, MAX_EVENT_LOG - 1),
-          ],
-        }));
-        // SSE event already carries all BPS values — no REST refetch needed
-        break;
-      }
-
-      case 'isfr_source_health_changed':
-        set((s) => ({
-          isfrSources: s.isfrSources.some((src) => src.id === event.source_id)
-            ? s.isfrSources.map((src) =>
-                src.id === event.source_id
-                  ? { ...src, health: event.health, lastRateBps: event.last_rate_bps }
-                  : src,
-              )
-            : [
-                ...s.isfrSources,
-                {
-                  id: event.source_id,
-                  name: event.source_id,
-                  class: 'unknown',
-                  weight: 0,
-                  health: event.health,
-                  lastRateBps: event.last_rate_bps,
-                  lastPollMs: null,
-                },
-              ],
-          isfrEventLog: [
-            {
-              ts: Date.now(),
-              type: 'source' as const,
-              message: `${event.source_id} \u2192 ${event.health}${event.last_rate_bps != null ? ` (${event.last_rate_bps} bps)` : ''}`,
-            },
-            ...s.isfrEventLog.slice(0, MAX_EVENT_LOG - 1),
-          ],
-        }));
-        // Also refetch full source list to get complete metadata
-        get().fetchIsfrSources();
-        break;
-
-      case 'isfr_keeper_state_changed':
-        set((s) => ({
-          isfrKeeperStatus: event.running ? 'running' : 'stopped',
-          isfrEventLog: [
-            {
-              ts: Date.now(),
-              type: 'keeper' as const,
-              message: event.running ? 'Keeper started' : 'Keeper stopped',
-            },
-            ...s.isfrEventLog.slice(0, MAX_EVENT_LOG - 1),
-          ],
-        }));
         break;
 
       case 'chain_block':
@@ -674,7 +533,11 @@ export const useDataHub = create<DataHub>()((set, get) => ({
               logIndex: event.log_index,
               contract: event.contract,
               eventName: event.event_name,
-              decoded: event.decoded,
+              decoded: event.decoded !== null
+                && typeof event.decoded === 'object'
+                && !Array.isArray(event.decoded)
+                ? event.decoded as Record<string, unknown>
+                : {},
             },
             ...s.chainEvents.slice(0, MAX_CHAIN_EVENTS - 1),
           ],
@@ -761,10 +624,6 @@ export const useDataHub = create<DataHub>()((set, get) => ({
         }));
         break;
 
-      case 'server_shutdown':
-        set({ serverStatus: 'disconnected' });
-        break;
-
       case 'error':
         console.warn('[DataHub] server error:', event.message);
         break;
@@ -775,10 +634,63 @@ export const useDataHub = create<DataHub>()((set, get) => ({
     }
   },
 
+  hydrateDashboardSnapshot: (snapshot, gap) => {
+    const plans = Object.values(snapshot.plans);
+    const selectedPlan = plans.find((plan) => plan.active) ?? null;
+    const agents = Object.values(snapshot.agents).map((agent) => ({
+      agentId: agent.agent_id,
+      role: agent.role,
+      model: agent.model,
+      status: agent.active ? 'running' as const : 'stopped' as const,
+    }));
+    const episodes = snapshot.episodes.map((episode) => ({
+      episodeId: episode.episode_id,
+      agentId: episode.agent_id,
+      role: episode.role,
+      passed: episode.passed,
+      timestamp: episode.ts_millis,
+    }));
+    const totalTokens = Object.values(snapshot.agents).reduce(
+      (sum, agent) => sum + agent.input_tokens + agent.output_tokens,
+      0,
+    );
+
+    // One set() call makes the validated materialized snapshot visible as a
+    // single state transition; no replay subscriber can observe a half-hydrated hub.
+    set({
+      activePlanId: selectedPlan?.plan_id ?? null,
+      activePhase: selectedPlan?.phase ?? null,
+      planCompleted: selectedPlan === null && plans.length > 0,
+      agents,
+      episodes,
+      totalCost: snapshot.stats.cost_usd_total,
+      totalTokens,
+      dashboardMissedEvents: gap.missed_events,
+      dashboardLastMaterializedSeq: gap.last_materialized_seq,
+    });
+  },
+
+  handleBenchEvent: (event) => {
+    set((s) => {
+      const sequence = s.benchEventSequence + 1;
+      return {
+        benchEventSequence: sequence,
+        benchEvents: [
+          ...s.benchEvents.slice(-(MAX_BENCH_EVENTS - 1)),
+          { sequence, event },
+        ],
+      };
+    });
+    if (event.type === 'BenchRunCompleted') {
+      void get().fetchBenchRuns();
+    }
+  },
+
   // -- Status setters -----------------------------------------------
 
   setServerStatus: (status) => set({ serverStatus: status }),
   setSseStatus: (status) => set({ sseStatus: status }),
+  setBenchSseStatus: (status) => set({ benchSseStatus: status }),
   setWsStatus: (status) => set({ wsStatus: status }),
 
   // -- REST fetch actions -------------------------------------------
@@ -786,39 +698,62 @@ export const useDataHub = create<DataHub>()((set, get) => ({
   fetchConfig: async () => {
     const res = await api.get<Record<string, unknown>>('/api/config');
     if (res.ok) {
-      const cfg = res.data;
-      const agent = cfg?.agent as Record<string, string> | undefined;
-      const defaultModel = agent?.default_model ?? '';
-      const defaultBackend = agent?.default_backend ?? '';
-      set({ config: cfg, defaultModel, defaultBackend });
+      set(configState(res.data));
     }
   },
 
   updateConfig: async (partial) => {
+    if (get().serverStatus !== 'connected') return false;
     const res = await api.put<Record<string, unknown>>(
       '/api/config',
       partial,
     );
     if (res.ok) {
-      set({ config: res.data });
+      set({ ...configState(res.data), lastConfigSavedAt: Date.now() });
       return true;
     }
     return false;
   },
 
+  updateModelConfig: async (model, backend) => {
+    if (get().serverStatus !== 'connected') return false;
+    const config = get().config;
+    const models = rawModelsToOptions(config?.models as RawConfigModels | undefined);
+    const modelKey = resolveModelKey(models, model);
+    const modelBackend = providerForModelKey(models, modelKey) ?? backend;
+    return get().updateConfig({
+      agent: { default_model: modelKey, default_backend: modelBackend },
+    });
+  },
+
   fetchBenchRuns: async () => {
-    const res = await api.get<BenchRun[]>('/api/bench/runs');
-    if (res.ok) set({ benchRuns: res.data });
+    const res = await api.get<unknown>('/api/bench/runs');
+    if (res.ok) {
+      const listing = parseBenchRunsListResponse(res.data);
+      if (listing) set({ benchRuns: listing.runs });
+    }
   },
 
   fetchBenchSuites: async () => {
-    const res = await api.get<BenchSuite[]>('/api/bench/suites');
-    if (res.ok) set({ benchSuites: res.data });
+    const res = await api.get<BenchSuitesResponse>('/api/bench/suites');
+    if (res.ok) set({ benchSuites: res.data.suites });
   },
 
   fetchBenchModels: async () => {
-    const res = await api.get<BenchModel[]>('/api/bench/models');
-    if (res.ok) set({ benchModels: res.data });
+    const res = await api.get<BenchModelsResponse>('/api/bench/models');
+    if (res.ok) {
+      set({
+        benchModels: res.data.models.map((model) => ({
+          id: model,
+          name: model,
+          provider: '',
+          cost_per_1k_input: 0,
+          cost_per_1k_output: 0,
+          max_tokens: 0,
+          context_window: 0,
+        })),
+      });
+    }
   },
 
   fetchAgents: async () => {
@@ -835,10 +770,7 @@ export const useDataHub = create<DataHub>()((set, get) => ({
     if (res.ok) set({ serverWorkdir: res.data.path });
   },
 
-  ensureWorkspace: async (prefix, opts) => {
-    const cached = get().workspaceCache.get(prefix);
-    if (cached) return cached;
-
+  createWorkspace: async (prefix, opts) => {
     const res = await api.post<WorkspaceInfo>('/api/workspaces', {
       prefix,
       git_init: opts?.gitInit ?? true,
@@ -849,6 +781,15 @@ export const useDataHub = create<DataHub>()((set, get) => ({
       );
     }
     const ws = res.data;
+    set({ workspace: ws });
+    return ws;
+  },
+
+  ensureWorkspace: async (prefix, opts) => {
+    const cached = get().workspaceCache.get(prefix);
+    if (cached) return cached;
+
+    const ws = await get().createWorkspace(prefix, opts);
     set((s) => {
       const next = new Map(s.workspaceCache);
       next.set(prefix, ws);
@@ -872,145 +813,6 @@ export const useDataHub = create<DataHub>()((set, get) => ({
         workspaceCache: next,
       };
     });
-  },
-
-  // -- ISFR fetch actions -----------------------------------------
-
-  fetchIsfrStatus: async () => {
-    try {
-      const res = await api.get<{ keeper_running: boolean; sources_count: number;
-        current_rate_bps: number | null }>('/api/isfr/status');
-      if (res.ok) {
-        set({
-          isfrKeeperStatus: res.data.keeper_running ? 'running' : 'stopped',
-        });
-      }
-    } catch (err) {
-      console.warn('[DataHub] fetchIsfrStatus failed:', err);
-    }
-  },
-
-  fetchIsfrCurrent: async () => {
-    try {
-      const res = await api.get<{
-        composite_bps: number; lending_bps: number; structured_bps: number;
-        funding_bps: number; staking_bps: number; confidence_bps: number;
-        source_count?: number; timestamp_ms: number;
-        readings?: Array<{
-          source: string; rate_bps: number; is_live: boolean;
-          timestamp_ms: number; metadata: Record<string, unknown> | null;
-        }>;
-      }>('/api/isfr/current');
-      if (res.ok && 'composite_bps' in res.data) {
-        const d = res.data;
-        const capSrc = (arr: IsfrSourceSnapshot[] | undefined, v: IsfrSourceSnapshot) =>
-          [...(arr ?? []).slice(-(MAX_SOURCE_HISTORY - 1)), v];
-        set((s) => {
-          const nextSourceHistory = { ...s.isfrSourceHistory };
-          const nextReadingsCache = { ...s.isfrReadingsCache };
-          if (d.readings) {
-            for (const r of d.readings) {
-              const name = r.source;
-              nextSourceHistory[name] = capSrc(
-                nextSourceHistory[name],
-                { bps: r.rate_bps, ts: d.timestamp_ms },
-              );
-              if (r.metadata) {
-                nextReadingsCache[name] = r.metadata;
-              }
-            }
-          }
-          return {
-            isfrCurrentRate: {
-              compositeBps: d.composite_bps,
-              lendingBps: d.lending_bps,
-              structuredBps: d.structured_bps,
-              fundingBps: d.funding_bps,
-              stakingBps: d.staking_bps,
-              confidenceBps: d.confidence_bps,
-              sourceCount: d.source_count ?? d.readings?.length ?? 0,
-              timestampMs: d.timestamp_ms,
-            },
-            isfrSourceHistory: nextSourceHistory,
-            isfrReadingsCache: nextReadingsCache,
-          };
-        });
-      }
-    } catch (err) {
-      console.warn('[DataHub] fetchIsfrCurrent failed:', err);
-    }
-  },
-
-  fetchIsfrHistory: async (limit = 50) => {
-    try {
-      const res = await api.get<
-        | Array<{
-            composite_bps: number; lending_bps: number; structured_bps: number;
-            funding_bps: number; staking_bps: number; confidence_bps: number;
-            source_count: number; timestamp_ms: number;
-          }>
-        | { rates: Array<{
-            composite_bps: number; lending_bps: number; structured_bps: number;
-            funding_bps: number; staking_bps: number; confidence_bps: number;
-            source_count: number; timestamp_ms: number;
-          }>; total: number }
-      >(`/api/isfr/history?limit=${limit}`);
-      if (res.ok) {
-        const data = res.data;
-        const arr = Array.isArray(data) ? data : (data?.rates ?? []);
-        const mapped = arr.map((r) => ({
-          compositeBps: r.composite_bps,
-          lendingBps: r.lending_bps,
-          structuredBps: r.structured_bps,
-          fundingBps: r.funding_bps,
-          stakingBps: r.staking_bps,
-          confidenceBps: r.confidence_bps,
-          sourceCount: r.source_count ?? 0,
-          timestampMs: r.timestamp_ms,
-        }));
-        set({
-          isfrHistory: mapped,
-          isfrFieldHistory: {
-            composite: mapped.map((r) => r.compositeBps),
-            lending: mapped.map((r) => r.lendingBps),
-            structured: mapped.map((r) => r.structuredBps),
-            funding: mapped.map((r) => r.fundingBps),
-            staking: mapped.map((r) => r.stakingBps),
-            confidence: mapped.map((r) => r.confidenceBps),
-          },
-        });
-      }
-    } catch (err) {
-      console.warn('[DataHub] fetchIsfrHistory failed:', err);
-    }
-  },
-
-  fetchIsfrSources: async () => {
-    try {
-      const res = await api.get<
-        | Array<{ id: string; name: string; class: string; weight: number;
-                  health: string; last_rate_bps: number | null; last_poll_ms: number | null }>
-        | { sources: Array<{ id: string; name: string; class: string; weight: number;
-                             health: string; last_rate_bps: number | null; last_poll_ms: number | null }> }
-      >('/api/isfr/sources');
-      if (res.ok) {
-        const data = res.data;
-        const arr = Array.isArray(data) ? data : (data?.sources ?? []);
-        set({
-          isfrSources: arr.map((s) => ({
-            id: s.id,
-            name: s.name,
-            class: s.class,
-            weight: s.weight,
-            health: s.health as IsfrSource['health'],
-            lastRateBps: s.last_rate_bps,
-            lastPollMs: s.last_poll_ms,
-          })),
-        });
-      }
-    } catch (err) {
-      console.warn('[DataHub] fetchIsfrSources failed:', err);
-    }
   },
 
   // -- Chain fetch actions -----------------------------------------

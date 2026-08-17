@@ -171,7 +171,14 @@ impl HarnessRegistry {
             .unwrap_or("openclaw")
             .to_string();
 
-        let svc = OpenClawGatewayService::new(binary);
+        let mut svc = OpenClawGatewayService::new(binary);
+        if let Some(limits) = crate::process::ResourceLimits::from_provider_config(provider) {
+            if let Err(error) = limits.validate_for_current_platform() {
+                tracing::error!(%error, "OpenClaw resource limits cannot be enforced; service disabled");
+                return;
+            }
+            svc = svc.with_resource_limits(limits);
+        }
         if let Err(e) = registry.register_service(Arc::new(svc)) {
             tracing::warn!(error = %e, "failed to register openclaw gateway service");
         }

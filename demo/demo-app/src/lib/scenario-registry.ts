@@ -50,17 +50,6 @@ export const SCENARIO_REGISTRY: ScenarioMeta[] = [
     tags: ['knowledge', 'learning'],
   },
   {
-    id: 'isfr',
-    label: 'ISFR',
-    description: 'Four specialized AI agents work together to compute a composite DeFi benchmark rate from lending, staking, and structured yield data.',
-    headline: 'Agent swarm computes a DeFi benchmark rate',
-    narrative: 'Four agents run in parallel: a rate keeper polls sources, lending and staking scouts analyze yields, and an oracle synthesizes everything into a single composite rate.',
-    complexity: 'complex',
-    phases: ['Scout', 'Aggregate', 'Validate', 'Publish'],
-    estimatedDuration: 120,
-    tags: ['chain', 'defi', 'agents'],
-  },
-  {
     id: 'oracle',
     label: 'Oracle',
     description: 'One agent reads live DeFi data from an Ethereum fork and writes structured analysis. A second agent reads that analysis and produces an investment strategy.',

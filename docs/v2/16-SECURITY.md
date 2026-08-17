@@ -2,6 +2,28 @@
 
 > Three-layer capability intersection, taint lattice IFC, 5-head lexicographic corrigibility, immune system as a 5-layer Pipeline Graph, and sandboxing at every tier. The system fails closed. Verify gates sit outside the modifiable surface. The agent cannot modify its own verification pipeline.
 
+> **Implementation status:** COMPLETE against the strict E34 manifest (8/8). Trust-origin
+> taint is explicitly distinct from the established data-classification lattice and propagates
+> monotonically through a TaintTracker. Exact Cell × Graph × Space capability intersection,
+> the pure five-layer immune pipeline, five-head corrigibility, five sandbox levels,
+> restart-durable transitive quarantine incidents, and a mandatory audited taint/corrigibility
+> production hook chain are live. Canonical provider primary outputs and every host-visible
+> `ToolDispatcher` result traverse the fixed five-stage immune Graph. Bounded, locked authority
+> is rooted at the canonical workspace rather than disposable attempt worktrees and persists
+> provider isolation, tool cooldown/isolation, exact content-addressed evidence plus security
+> metadata, and reciprocal incident links. Provider-owned internal calls/results, provider trace
+> Signals, broad semantic/adaptive immune memory, externally anchored whole-ledger authenticity,
+> and domain/port network policy remain broader product scope outside strict E34 acceptance.
+
+> **R04 scoped recursive-safety status:** the canonical five-node Verify Graph is live in
+> exact Deference -> Switch -> Truth -> Impact -> Task order. It is mandatory for durable
+> meta-agent activation and explicit role morph/rollback, where it also enforces non-widening
+> tools, data, network, cost, spawn, expiry, depth, fan-out, retry, and lineage-cost bounds.
+> Activation requires independently settled R03 arena evidence bound to the complete proposal
+> artifact; deactivation is owner-authorized and descendant-safe. This is not continuous
+> monitoring of every Flow and does not implement Loop 4, ADAS, HGM, or autonomous execution
+> of generated agents.
+
 **Subsumes**: Cell capability model, Space grants, Extension safety layers, autonomy-level safety mapping, agent contracts, cognitive immune system.
 
 **Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal, Kind, taint, provenance), [02-CELL](02-CELL.md) (Cell protocols: React, Observe/Lens, Verify, Store), [03-GRAPH](03-GRAPH.md) (Graph wiring), [06-MEMORY](06-MEMORY.md) (Store partitions, Memory), [15-TELEMETRY](15-TELEMETRY.md) (AnomalyLens)
@@ -299,7 +321,10 @@ fn compute_output_tags(
 
 ## 5. Five-Head Lexicographic Corrigibility
 
-Every Agent decision passes through a 5-head lexicographic ordering (Nayebi 2024). The heads are evaluated in strict priority order. A higher-priority head ALWAYS trumps a lower-priority head, regardless of magnitude.
+The five-head lexicographic ordering (Nayebi 2024) is evaluated in strict priority order.
+A higher-priority head always trumps a lower-priority head, regardless of magnitude. The
+implemented R04 enforcement boundary is meta-agent activation and role morph/rollback;
+applying this Graph to every Agent decision remains a broader architecture goal.
 
 ### 5.1 The Five Heads
 
@@ -313,7 +338,12 @@ Every Agent decision passes through a 5-head lexicographic ordering (Nayebi 2024
 
 ### 5.2 Implementation as Pipeline of Verify Cells
 
-Each head is a separate Verify-protocol Cell. They run in sequence during the pre-action `verify_pre()` phase. The chain short-circuits on first rejection:
+Each head is a separate Verify-protocol Cell in
+`crates/roko-graph/src/cells/corrigibility.rs`, backed by immutable verifier logic in
+`crates/roko-core/src/corrigibility.rs`. The canonical Graph fixes five nodes in exact order,
+runs with single-node concurrency, and conditionally stops after the first veto. Allowed
+decisions must contain evidence from all five heads. The following pseudocode illustrates
+the equivalent pre-action decision:
 
 ```rust
 async fn verify_pre(action: &ProposedAction, ctx: &VerifyContext) -> VerifyResult {
@@ -1094,7 +1124,16 @@ CaMeL tags propagate through delegation: the child inherits the parent's CaMeL t
 
 ## 10. Recursive Safety Monitoring
 
-The `RecursiveSafetyMonitor` is a React-protocol Cell that runs continuously during any Flow.
+The live `roko_agent::safety::RecursiveSafetyMonitor` is an explicit validation boundary,
+not a continuously running React Cell. It runs for meta-agent activation and role
+morph/rollback, executes the canonical five-head Graph, and returns ordered evidence that is
+persisted with the durable meta-agent record. Activation additionally checks that child
+authority does not widen the parent or role ceiling across tools, data, network, cost, spawn,
+expiry, and bounded lineage dimensions.
+
+The depth/rate/quality structures below describe the broader continuous-Flow design. R04
+implements bounded meta-agent depth, fan-out, retries, lineage cost, and grant lifetime, but
+does not yet install general per-Flow rate and quality monitoring.
 
 ### Depth Limits
 
@@ -1166,7 +1205,7 @@ chain    = { level = 1 }
 |---|---|---|
 | **Rust** | No sandbox (process-level) | Full trust, in-tree only |
 | **WASM** | wasmtime: fuel metering, memory limits, syscall filtering | Primary marketplace tier |
-| **Script** | OS-level process isolation, path restriction, network proxy | Subprocess sandbox |
+| **Script** | OS-level process isolation, path restriction, platform-backed allow/deny network policy | Subprocess sandbox |
 | **Composition** | Inherited from constituent Cells | TOML-only, no execution |
 
 ### WASM Sandbox
@@ -1198,8 +1237,11 @@ pub struct ScriptSandbox {
 
 Agents operate under contracts that define their behavioral bounds.
 
+The following TOML is an aspirational external-contract shape; current production
+contracts are compile-time role assets under `roko-agent/src/safety/contracts/`.
+
 ```toml
-# .roko/contracts/coder.toml
+# Proposed external contract shape (not currently loaded at runtime)
 
 [contract]
 agent = "coder"
@@ -1219,10 +1261,13 @@ must_preserve_existing_tests = true
 escalate_on_security_findings = true
 
 [contract.fallback]
-on_missing_contract = "permissive"
+on_missing_contract = "restricted"
 ```
 
-Contract bounds are enforced through the same Verify pipeline. The ordering is: **5-head corrigibility -> contract bounds -> capability intersection -> execute**.
+Tool policy and shared provider spawn boundaries are live. Provider workload/probe
+subprocesses uniformly receive configured resource and network policy, with unsupported
+guarantees rejected. Non-tool contract bounds and opaque provider-owned internal-result
+taint/corrigibility remain incomplete.
 
 ---
 
@@ -1314,12 +1359,12 @@ The AnomalyLens ([doc-15 Telemetry](15-TELEMETRY.md)) monitors the security even
 | Space grants | `space.capabilities` in `workspace.toml` | Graph-load + runtime |
 | Taint lattice IFC | Monotonic lattice-join on all data flows | Every trust boundary |
 | CaMeL IFC | Capability tags on Extension data flows | Every Extension boundary |
-| 5-head corrigibility | Lexicographic: deference > switch > truth > impact > task | `verify_pre()` |
+| 5-head corrigibility | Fixed five-node Graph: deference > switch > truth > impact > task | Meta-agent activation and explicit morph/rollback (R04); broader per-action wrapping remains |
 | Verify-outside-modifiable | Verification pipeline loaded by engine, not agent | Architectural invariant |
 | Immune pipeline | 5-layer Graph: taint -> anomaly -> quarantine -> incident -> memory | Every Signal at trust boundary |
 | AutoimmuneLens | False positive rate monitoring on quarantine releases | Continuous |
 | Delegation caveats | Time, usage, path, domain, read-only | Every delegated Cell-run |
-| Recursive safety | Depth/rate/quality bounds | Continuous during Flow |
+| Recursive safety | Non-widening grants, bounded lineage, exact five-head evidence | Meta-agent lifecycle boundary (R04); not continuous across every Flow |
 | Autonomy levels | Per-capability granularity | Before every mutation |
 | WASM sandbox | Fuel metering, memory limits, syscall filtering | Every WASM instruction |
 | Script sandbox | Process isolation, path restriction, network proxy | Every script execution |
@@ -1362,7 +1407,7 @@ Every layer fails closed.
 | S-26 | Recursive safety halts on depth limit exceeded | Unit test |
 | S-27 | Rate limits throttle then halt at 10x | Integration test |
 | S-28 | WASM fuel metering terminates runaway Cell | Integration test |
-| S-29 | Agent contract bounds checked at dispatch time | Integration test |
+| S-29 | Agent contract tool bounds checked at dispatch time; unsupported policy-bearing providers reject | Integration test |
 | S-30 | Audit trail logs every capability event with CaMeL tags | Integration test |
 
 ---

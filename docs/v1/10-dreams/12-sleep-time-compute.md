@@ -1,5 +1,8 @@
 # Sleep-Time Compute: The Economics of Offline Processing
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L0 Runtime (scheduling) + L1 Framework (model routing)
 >
 > **Synapse Traits**: `Router` (model selection per dream phase), `Policy` (compute budget allocation)

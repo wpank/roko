@@ -189,6 +189,16 @@ pub struct DashboardInfo {
     pub rendered: String,
 }
 
+/// Capability boundary resolved for a trigger-spawned Graph execution.
+#[derive(Debug, Clone, Default)]
+pub struct TriggerExecutionScope {
+    /// Space in which the Flow executes, when scoped.
+    pub space_id: Option<String>,
+    /// Effective Graph/Space capability intersection. `None` means the legacy
+    /// unscoped workspace boundary applies.
+    pub capabilities: Option<roko_core::CapabilitySet>,
+}
+
 /// No-op runtime used in tests.
 #[cfg(test)]
 pub struct NoOpRuntime;
@@ -290,11 +300,50 @@ pub trait CliRuntime: Send + Sync + 'static {
         })
     }
 
+    /// Execute the graph attached to a trigger firing.
+    ///
+    /// The default preserves compatibility with runtimes that only implement
+    /// plan execution. Implementations may override this method to expose the
+    /// trigger payload and trace directly to a graph-native executor.
+    async fn run_trigger_graph(
+        &self,
+        workdir: &std::path::Path,
+        graph: &std::path::Path,
+        _event: &roko_core::trigger::TriggerEvent,
+    ) -> anyhow::Result<PlanExecutionResult> {
+        self.run_plan(workdir, graph).await
+    }
+
+    /// Execute a trigger Graph with an explicitly resolved Space boundary.
+    ///
+    /// The default keeps lightweight runtimes compatible while concrete
+    /// runtimes can propagate the effective grants into Cell execution.
+    async fn run_trigger_graph_scoped(
+        &self,
+        workdir: &std::path::Path,
+        graph: &std::path::Path,
+        event: &roko_core::trigger::TriggerEvent,
+        scope: &TriggerExecutionScope,
+    ) -> anyhow::Result<PlanExecutionResult> {
+        let _ = scope;
+        self.run_trigger_graph(workdir, graph, event).await
+    }
+
     /// Return current session status for the given workdir.
     fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo;
 
     /// Return a dashboard scaffold rendering.
     fn dashboard_scaffold(&self, workdir: &std::path::Path) -> DashboardInfo;
+
+    /// Return the live extension chain for a workspace when the runtime owns
+    /// one. The HTTP status API uses this same chain as plan execution, so
+    /// circuit-breaker state is reported rather than reconstructed.
+    fn extension_chain(
+        &self,
+        _workdir: &std::path::Path,
+    ) -> Option<std::sync::Arc<tokio::sync::Mutex<roko_core::extension::ExtensionChain>>> {
+        None
+    }
 
     /// Resolve the working directory for a repo identified by its full name
     /// (e.g. from a webhook `repository.full_name`). Returns `None` when the

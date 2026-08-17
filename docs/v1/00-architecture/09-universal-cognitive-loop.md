@@ -1,5 +1,8 @@
 # The Universal Cognitive Loop
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** This chapter describes the target seven-step cognitive loop that every agent
 > in Roko should run at its own timescale. It replaces the older nine-step framing with a
 > version that treats `Pulse` and `Bus` as first-class, makes `PERSIST` and `BROADCAST`

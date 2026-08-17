@@ -1,5 +1,8 @@
 # TUI Main Layout
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The terminal dashboard layout: agent list, plan list, mesh, health panels, agent detail, gate results, Daimon state, Neuro tiers, predictions, and Spectre viewport.
 
 

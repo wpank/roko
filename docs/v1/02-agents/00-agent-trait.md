@@ -1,5 +1,8 @@
 # 00 — The Agent Trait
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Sub-doc 00 of **02-agents** · Roko Documentation
 >
 > This document defines the `Agent` trait, explains why it exists as a separate

@@ -1,5 +1,8 @@
 # Inner Worlds and Dream Rendering
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L3 Harness (monitoring/visualization)
 >
 > **Synapse Traits**: N/A (visualization layer, does not implement Synapse traits)

@@ -1,5 +1,8 @@
 # Critical Integration Gap: SafetyLayer → CLI Pipeline
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L3 Harness (safety enforcement) → L4 Orchestration (CLI invocation)
 >
 > **Crate**: `roko-agent` (SafetyLayer, ToolDispatcher) and `roko-cli` (orchestrate.rs)

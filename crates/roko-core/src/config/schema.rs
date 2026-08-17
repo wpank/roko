@@ -72,12 +72,11 @@ fn text_has_config_version(s: &str) -> bool {
 fn extract_config_version_from_text(s: &str) -> u32 {
     for line in s.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("config_version") {
-            if let Some(val) = trimmed.split('=').nth(1) {
-                if let Ok(v) = val.trim().parse::<u32>() {
-                    return v;
-                }
-            }
+        if trimmed.starts_with("config_version")
+            && let Some(val) = trimmed.split('=').nth(1)
+            && let Ok(v) = val.trim().parse::<u32>()
+        {
+            return v;
         }
     }
     1
@@ -102,6 +101,9 @@ pub struct RokoConfig {
     pub providers: IndexMap<String, ProviderConfig>,
     #[serde(default)]
     pub models: IndexMap<String, ModelProfile>,
+    /// Named domain-specific agent/gate overlays.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub profiles: HashMap<String, DomainProfile>,
     #[serde(default)]
     pub gates: GatesConfig,
     /// Graduation policies: which Bus topics get promoted to the Store.
@@ -123,6 +125,8 @@ pub struct RokoConfig {
     pub tui: TuiConfig,
     #[serde(default)]
     pub timeouts: super::timeouts::TimeoutConfig,
+    #[serde(default)]
+    pub statehub: StateHubConfig,
     #[serde(default)]
     pub serve: ServeConfig,
     #[serde(default)]
@@ -148,9 +152,6 @@ pub struct RokoConfig {
     pub chain: ChainConfig,
     #[serde(default)]
     pub relay: RelayConfig,
-    /// ISFR keeper configuration.
-    #[serde(default)]
-    pub isfr: ISFRSection,
     /// Feed agent configuration.
     #[serde(default)]
     pub feed_agents: FeedAgentsConfig,
@@ -158,6 +159,9 @@ pub struct RokoConfig {
     pub runner: CoreRunnerConfig,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agents: Vec<AgentDefinition>,
+    /// Persistent groups reconciled into the serve runtime at startup.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<GroupDefinition>,
     #[serde(default)]
     pub validation: ValidationConfig,
     /// Cold-storage archival settings.
@@ -239,6 +243,157 @@ pub struct ValidationConfig {
     pub strict_validation: bool,
 }
 
+/// Optional gate settings supplied by a domain profile.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateProfileConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_tests: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clippy_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rung: Option<u32>,
+}
+
+impl GateProfileConfig {
+    fn overlay(parent: Option<Self>, child: Option<Self>) -> Option<Self> {
+        match (parent, child) {
+            (None, None) => None,
+            (parent, child) => {
+                let parent = parent.unwrap_or_default();
+                let child = child.unwrap_or_default();
+                Some(Self {
+                    skip_tests: child.skip_tests.or(parent.skip_tests),
+                    clippy_enabled: child.clippy_enabled.or(parent.clippy_enabled),
+                    max_rung: child.max_rung.or(parent.max_rung),
+                })
+            }
+        }
+    }
+}
+
+/// Inheritable domain-specific config overlay.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DomainProfile {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_limit_k: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_iterations: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_config: Option<GateProfileConfig>,
+    /// Forward-compatible profile-local extension fields.
+    #[serde(default, flatten)]
+    pub extra: HashMap<String, toml::Value>,
+}
+
+impl DomainProfile {
+    fn overlay(parent: Self, child: Self) -> Self {
+        let mut extra = parent.extra;
+        extra.extend(child.extra);
+        Self {
+            name: child.name,
+            base: child.base,
+            model: child.model.or(parent.model),
+            effort: child.effort.or(parent.effort),
+            context_limit_k: child.context_limit_k.or(parent.context_limit_k),
+            max_iterations: child.max_iterations.or(parent.max_iterations),
+            tool_profile: child.tool_profile.or(parent.tool_profile),
+            gate_config: GateProfileConfig::overlay(parent.gate_config, child.gate_config),
+            extra,
+        }
+    }
+}
+
+/// Resolve a named profile through at most five inheritance edges.
+pub fn resolve_profile(
+    name: &str,
+    profiles: &HashMap<String, DomainProfile>,
+) -> Result<DomainProfile, String> {
+    fn resolve(
+        name: &str,
+        profiles: &HashMap<String, DomainProfile>,
+        stack: &mut Vec<String>,
+        depth: usize,
+    ) -> Result<DomainProfile, String> {
+        if stack.iter().any(|seen| seen == name) {
+            stack.push(name.to_string());
+            return Err(format!(
+                "domain profile inheritance cycle: {}",
+                stack.join(" -> ")
+            ));
+        }
+        if depth > 5 {
+            return Err(format!(
+                "domain profile inheritance exceeds maximum depth 5 at '{name}'"
+            ));
+        }
+        let child = profiles
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("domain profile '{name}' does not exist"))?;
+        let Some(base) = child.base.clone() else {
+            return Ok(child);
+        };
+
+        stack.push(name.to_string());
+        let parent = resolve(&base, profiles, stack, depth + 1)?;
+        stack.pop();
+        Ok(DomainProfile::overlay(parent, child))
+    }
+
+    resolve(name, profiles, &mut Vec::new(), 0)
+}
+
+/// Built-in cognitive postures available to config authors as inheritance bases.
+#[must_use]
+pub fn builtin_profiles() -> HashMap<String, DomainProfile> {
+    [
+        (
+            "coding",
+            DomainProfile {
+                name: "coding".to_string(),
+                effort: Some("high".to_string()),
+                max_iterations: Some(3),
+                tool_profile: Some("full".to_string()),
+                ..Default::default()
+            },
+        ),
+        (
+            "research",
+            DomainProfile {
+                name: "research".to_string(),
+                effort: Some("medium".to_string()),
+                context_limit_k: Some(200),
+                gate_config: Some(GateProfileConfig {
+                    skip_tests: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ),
+        (
+            "review",
+            DomainProfile {
+                name: "review".to_string(),
+                effort: Some("low".to_string()),
+                max_iterations: Some(1),
+                ..Default::default()
+            },
+        ),
+    ]
+    .into_iter()
+    .map(|(name, profile)| (name.to_string(), profile))
+    .collect()
+}
+
 const fn default_schema_version() -> u32 {
     CURRENT_SCHEMA_VERSION
 }
@@ -256,6 +411,7 @@ impl Default for RokoConfig {
             agent: AgentConfig::default(),
             providers: IndexMap::new(),
             models: IndexMap::new(),
+            profiles: HashMap::new(),
             gates: GatesConfig::default(),
             graduation: GraduationConfig::default(),
             routing: RoutingConfig::default(),
@@ -266,6 +422,7 @@ impl Default for RokoConfig {
             learning: LearningConfig::default(),
             tui: TuiConfig::default(),
             timeouts: super::timeouts::TimeoutConfig::default(),
+            statehub: StateHubConfig::default(),
             serve: ServeConfig::default(),
             scheduler: SchedulerConfig::default(),
             webhooks: WebhooksConfig::default(),
@@ -278,10 +435,10 @@ impl Default for RokoConfig {
             tools: ToolsConfig::default(),
             chain: ChainConfig::default(),
             relay: RelayConfig::default(),
-            isfr: ISFRSection::default(),
             feed_agents: FeedAgentsConfig::default(),
             runner: CoreRunnerConfig::default(),
             agents: Vec::new(),
+            groups: Vec::new(),
             validation: ValidationConfig::default(),
             cold_storage: ColdStorageConfig::default(),
             prompt: PromptConfig::default(),
@@ -1050,12 +1207,18 @@ impl RokoConfig {
         let _ = writeln!(out, "# -- Spend / token budgets --");
         let _ = writeln!(out, "[budget]");
         let _ = writeln!(out, "max_plan_usd = {:.1}", c.budget.max_plan_usd);
+        let _ = writeln!(out, "max_task_usd = {:.1}", c.budget.max_task_usd);
         let _ = writeln!(out, "max_turn_usd = {:.1}", c.budget.max_turn_usd);
         let _ = writeln!(
             out,
             "prompt_token_budget = {}\n",
             c.budget.prompt_token_budget
         );
+        let _ = writeln!(out, "[budget.tier_multipliers]");
+        let _ = writeln!(out, "mechanical = {}", c.budget.tier_multipliers.mechanical);
+        let _ = writeln!(out, "standard = {}", c.budget.tier_multipliers.standard);
+        let _ = writeln!(out, "complex = {}", c.budget.tier_multipliers.complex);
+        let _ = writeln!(out, "expert = {}\n", c.budget.tier_multipliers.expert);
     }
     fn write_example_conductor(out: &mut String, c: &Self) {
         let _ = writeln!(out, "# -- Conductor (meta-orchestrator) --");
@@ -1109,8 +1272,13 @@ impl RokoConfig {
         );
         let _ = writeln!(
             out,
-            "dream_on_completion = {}\n",
+            "dream_on_completion = {}",
             c.learning.dream_on_completion
+        );
+        let _ = writeln!(
+            out,
+            "gate_threshold_flush_interval = {}\n",
+            c.learning.gate_threshold_flush_interval
         );
     }
     fn write_example_prompt(out: &mut String, c: &Self) {
@@ -1139,7 +1307,12 @@ impl RokoConfig {
         let _ = writeln!(out, "auto_orchestrate = {}", c.serve.auto_orchestrate);
         let _ = writeln!(out, "[serve.auth]");
         let _ = writeln!(out, "enabled = {}", c.serve.auth.enabled);
-        let _ = writeln!(out, "api_key = \"{}\"\n", c.serve.auth.api_key);
+        let _ = writeln!(out, "api_key = \"{}\"", c.serve.auth.api_key);
+        let _ = writeln!(
+            out,
+            "invite_expiry_days = {}\n",
+            c.serve.auth.invite_expiry_days
+        );
         let _ = writeln!(out, "# -- HTTP server / gateway --");
         let _ = writeln!(out, "[server]");
         let _ = writeln!(out, "bind = \"{}\"", c.server.bind);
@@ -1321,13 +1494,12 @@ pub fn validate_references(config: &RokoConfig) -> Vec<ValidationWarning> {
         .as_deref()
         .map(str::trim)
         .filter(|f| !f.is_empty())
+        && !explicit_model_keys.contains(fallback)
     {
-        if !explicit_model_keys.contains(fallback) {
-            warnings.push(ValidationWarning::UnknownModel {
-                field: "agent.fallback_model".to_string(),
-                model: fallback.to_string(),
-            });
-        }
+        warnings.push(ValidationWarning::UnknownModel {
+            field: "agent.fallback_model".to_string(),
+            model: fallback.to_string(),
+        });
     }
 
     let mut tier_entries = config.agent.tier_models.iter().collect::<Vec<_>>();
@@ -1363,14 +1535,13 @@ pub struct ConductorConfig {
     pub max_auto_fix_attempts: u32,
     #[serde(default = "default_auto_fix_model")]
     pub auto_fix_model: String,
-    /// Whether the context window pressure watcher is active.
-    ///
-    /// Default `false`. The watcher emits `conductor.intervention` signals
-    /// but nothing in the runner event loop subscribes to them yet. Enable
-    /// only after wiring a subscriber in orchestrate.rs.
+    /// Deprecated/runtime-dead in runner-v2: opt in to the context-window
+    /// pressure watcher after its `TokenUsage` producer is wired into the
+    /// runner conductor ring. The setting remains parseable for compatibility.
     #[serde(default)]
     pub context_pressure_enabled: bool,
-    /// Per-watcher threshold overrides for the conductor anomaly ensemble.
+    /// Runtime-live per-watcher threshold overrides for runner-v2 conductor
+    /// supervision. These are consumed by `Conductor::from_config`.
     #[serde(default)]
     pub watchers: WatcherThresholds,
 }
@@ -1405,8 +1576,8 @@ impl Default for ConductorConfig {
 /// Per-watcher threshold configuration.
 ///
 /// Every field is optional. A missing field means the watcher uses its
-/// built-in default, which keeps old `roko.toml` files compatible while making
-/// runtime oversight tunable without editing Rust code.
+/// built-in default. Runner-v2 materializes these overrides when it constructs
+/// its live conductor, so this surface is not deprecated.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct WatcherThresholds {
     #[serde(default)]
@@ -1592,6 +1763,29 @@ pub struct AgentDefinition {
     #[serde(default = "default_agent_enabled")]
     pub enabled: bool,
 }
+
+/// Declarative group reconciled by `roko serve` at startup.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroupDefinition {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub coordination: String,
+    #[serde(default)]
+    pub members: Vec<String>,
+    #[serde(default)]
+    pub leader: Option<String>,
+    #[serde(default, alias = "assignment_cell")]
+    pub assignment_strategy: Option<String>,
+    #[serde(default)]
+    pub public: bool,
+    #[serde(default)]
+    pub max_members: Option<usize>,
+    #[serde(default)]
+    pub knowledge_policy: Option<String>,
+    #[serde(default)]
+    pub pheromone_decay_rate: Option<f64>,
+}
 const fn default_agent_enabled() -> bool {
     true
 }
@@ -1686,8 +1880,10 @@ fn run_resolve_api_key_child(test_name: &str, api_key_env: &str, expected: Optio
 
 /// Cold-storage archival settings.
 ///
-/// Controls the automatic migration of aged-out engrams from the hot
-/// `FileSubstrate` to the cold `ArchiveColdSubstrate` (`$ROKO_DIR/cold/`).
+/// Runtime-live configuration consumed by the serve cold-archival timer. It
+/// controls automatic archival of aged-out signals from the hot `FileSubstrate`
+/// to the cold `ArchiveColdSubstrate` (`$ROKO_DIR/cold/`). The historical
+/// copy-not-move growth defect is tracked separately by E02-T12.
 ///
 /// Configurable via `[cold_storage]` in `roko.toml`:
 ///
@@ -1960,6 +2156,27 @@ impl Default for ResourcesConfig {
 
 // ---- CoreRunnerConfig ----------------------------------------------------
 
+/// Runtime sandbox enforcement selected for runner and provider dispatch.
+///
+/// The value lives in `roko-core` so every config consumer observes the same
+/// setting without introducing a dependency on `roko-agent`'s enforcement
+/// implementation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnerSandboxLevel {
+    /// No sandbox. Reserved for explicitly trusted in-tree execution.
+    None,
+    /// Audit policy decisions without blocking them.
+    Observe,
+    /// Enforce bounded filesystem, command, secret, and network policy.
+    #[default]
+    Restrict,
+    /// Deny network and environment inheritance; constrain filesystem access.
+    Isolate,
+    /// Memory-only execution with no filesystem, network, environment, or subprocess.
+    Quarantine,
+}
+
 /// Plan-level runner configuration shared between `roko-core` and
 /// `roko-cli` so that both the CLI config layer and direct `RokoConfig`
 /// consumers (e.g. `RunConfig::from_roko_config`) see the same schema.
@@ -1981,6 +2198,9 @@ pub struct CoreRunnerConfig {
     /// production to require explicit tool approval.
     #[serde(default = "CoreRunnerConfig::default_dangerously_skip_permissions")]
     pub dangerously_skip_permissions: bool,
+    /// Sandbox policy applied to runner, provider, and structured-tool dispatch.
+    #[serde(default)]
+    pub sandbox_level: RunnerSandboxLevel,
     /// Maximum dispatch retry attempts for transient errors (429, 529,
     /// connection timeout). Defaults to 5.
     #[serde(default = "CoreRunnerConfig::default_dispatch_max_retries")]
@@ -2038,6 +2258,7 @@ impl Default for CoreRunnerConfig {
             max_concurrent_plans: None,
             plan_timeout_secs: Self::default_plan_timeout_secs(),
             dangerously_skip_permissions: Self::default_dangerously_skip_permissions(),
+            sandbox_level: RunnerSandboxLevel::default(),
             dispatch_max_retries: Self::default_dispatch_max_retries(),
             warm_pool_size: Self::default_warm_pool_size(),
             warm_pool_idle_timeout_secs: Self::default_warm_pool_idle_timeout_secs(),
@@ -2155,6 +2376,87 @@ mod tests {
     }
 
     #[test]
+    fn domain_profile_resolves_inheritance_with_child_precedence() {
+        let mut profiles = builtin_profiles();
+        profiles.insert(
+            "fast-coding".to_string(),
+            DomainProfile {
+                name: "fast-coding".to_string(),
+                base: Some("coding".to_string()),
+                effort: Some("medium".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let resolved = resolve_profile("fast-coding", &profiles).expect("resolve profile");
+        assert_eq!(resolved.effort.as_deref(), Some("medium"));
+        assert_eq!(resolved.tool_profile.as_deref(), Some("full"));
+        assert_eq!(resolved.max_iterations, Some(3));
+    }
+
+    #[test]
+    fn domain_profile_rejects_cycles() {
+        let profiles = HashMap::from([
+            (
+                "a".to_string(),
+                DomainProfile {
+                    name: "a".to_string(),
+                    base: Some("b".to_string()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "b".to_string(),
+                DomainProfile {
+                    name: "b".to_string(),
+                    base: Some("a".to_string()),
+                    ..Default::default()
+                },
+            ),
+        ]);
+
+        assert!(
+            resolve_profile("a", &profiles)
+                .unwrap_err()
+                .contains("cycle")
+        );
+    }
+
+    #[test]
+    fn domain_profile_builtins_match_contract() {
+        let profiles = builtin_profiles();
+        assert_eq!(profiles["coding"].effort.as_deref(), Some("high"));
+        assert_eq!(profiles["research"].context_limit_k, Some(200));
+        assert_eq!(profiles["review"].max_iterations, Some(1));
+    }
+
+    #[test]
+    fn runner_sandbox_level_defaults_and_parses_strictly() {
+        let defaulted = RokoConfig::from_toml("").expect("parse defaults");
+        assert_eq!(defaulted.runner.sandbox_level, RunnerSandboxLevel::Restrict);
+
+        let isolated = RokoConfig::from_toml(
+            r#"
+[runner]
+sandbox_level = "isolate"
+"#,
+        )
+        .expect("parse isolate sandbox");
+        assert_eq!(isolated.runner.sandbox_level, RunnerSandboxLevel::Isolate);
+
+        assert!(
+            RokoConfig::from_toml(
+                r#"
+[runner]
+sandbox_level = "permissive_typo"
+"#,
+            )
+            .is_err(),
+            "unknown sandbox levels must fail closed during config parsing"
+        );
+    }
+
+    #[test]
     fn config_version_detection_warns_for_legacy_configs() {
         let (cfg, logs) = capture_warn_logs(|| {
             RokoConfig::from_toml(
@@ -2222,6 +2524,37 @@ default_model = "claude-sonnet-4-6"
         let toml = "[agent]\ndefault_model = \"claude-sonnet-4-6\"\n";
         let cfg = RokoConfig::from_toml(toml).expect("parse");
         assert_eq!(cfg.agent.default_model, "claude-sonnet-4-6");
+    }
+    #[test]
+    fn groups_parse_and_roundtrip_with_manifest_aliases() {
+        let toml = r#"
+[[groups]]
+name = "code-review"
+description = "Automated review pipeline"
+coordination = "leader_follower"
+members = ["reviewer-lead", "test-runner"]
+leader = "reviewer-lead"
+assignment_cell = "rule-router:capability-match"
+public = false
+max_members = 8
+knowledge_policy = "write_leader"
+pheromone_decay_rate = 0.5
+"#;
+        let cfg = RokoConfig::from_toml(toml).expect("parse groups");
+        let group = cfg.groups.first().expect("one group");
+        assert_eq!(group.name, "code-review");
+        assert_eq!(group.coordination, "leader_follower");
+        assert_eq!(group.members, ["reviewer-lead", "test-runner"]);
+        assert_eq!(
+            group.assignment_strategy.as_deref(),
+            Some("rule-router:capability-match")
+        );
+        assert_eq!(group.max_members, Some(8));
+        assert_eq!(group.pheromone_decay_rate, Some(0.5));
+
+        let serialized = cfg.to_toml().expect("serialize groups");
+        let reparsed = RokoConfig::from_toml(&serialized).expect("roundtrip groups");
+        assert_eq!(reparsed.groups, cfg.groups);
     }
     #[test]
     fn gates_section_parses() {
@@ -2363,9 +2696,23 @@ default_model = "claude-sonnet-4-6"
 
     #[test]
     fn effective_models_backwards_compat() {
-        let path = workspace_root().join("roko.toml");
-        let text = std::fs::read_to_string(path).expect("read roko.toml");
-        let cfg = RokoConfig::from_toml(&text).expect("parse roko.toml");
+        let cfg = RokoConfig::from_toml(
+            r#"
+[agent]
+default_model = "gpt54-mini"
+
+[providers.openai]
+kind = "openai_compat"
+base_url = "https://api.openai.com/v1"
+
+[models.gpt54-mini]
+provider = "openai"
+slug = "gpt-5.4-mini"
+context_window = 128000
+max_output = 16384
+"#,
+        )
+        .expect("parse legacy-compatible model config");
         let models = cfg.effective_models();
         // `effective_models` keys entries by the config key in `[models.<key>]`,
         // so look up the configured default model by its key (not by slug).
@@ -2380,7 +2727,10 @@ default_model = "claude-sonnet-4-6"
 
     #[test]
     fn project_model_profiles_have_explicit_max_output() {
-        assert_configured_models_have_max_output("roko.toml");
+        // The workspace root config is user-local and intentionally untracked.
+        // Exercise the invariant against the tracked provider-routing fixture
+        // so a developer's active model selection cannot make this test flaky.
+        assert_configured_models_have_max_output("demo/demo-resources/provider-routing/roko.toml");
         // docker/railway.roko.toml was removed -- Railway uses ROKO_* env var overrides.
     }
 

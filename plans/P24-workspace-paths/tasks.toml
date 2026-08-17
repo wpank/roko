@@ -1,8 +1,8 @@
 [meta]
 plan = "P24-workspace-paths"
 total = 4
-done = 3
-status = "active"
+done = 4
+status = "done"
 max_parallel = 1
 
 # ────────────────────────────────────────────────────────────────────
@@ -80,7 +80,7 @@ fail_msg = "resolve_plans_dir tests must pass with updated preference order"
 [[task]]
 id = "T2"
 title = "Update doc strings referencing .roko/plans/ to plans/"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 10

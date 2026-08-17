@@ -1,5 +1,8 @@
 # 01 — Built-in Tools (roko-std)
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The 16 built-in tools shipped with `roko-std` — the domain-agnostic tool set available to
 > every agent regardless of domain configuration.
 

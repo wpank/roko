@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import Pane from '../../components/Pane';
 import Mosaic, { MosaicCell } from '../../components/Mosaic';
 import DreamPhaseViz from '../../components/DreamPhaseViz';
-import { useLiveApi } from '../../hooks/useLiveApi';
+import { useDataApi } from '../../hooks/useDataApi';
 import { domainColor } from '../../lib/palette';
 import { useServerEventSubscription } from '../../hooks/useEventStream';
 import { useDebouncedRefetch } from '../../hooks/useDebouncedRefetch';
@@ -37,7 +37,7 @@ interface KnowledgeEntry {
 /* ── Component ───────────────────────────────────────────── */
 
 export default function DreamsView() {
-  const { get } = useLiveApi();
+  const { get } = useDataApi();
   const [journal, setJournal] = useState<DreamJournal | null>(null);
   const [entries, setEntries] = useState<KnowledgeEntry[]>([]);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -69,7 +69,7 @@ export default function DreamsView() {
   // SSE-triggered refetch
   const debouncedRefetch = useDebouncedRefetch(fetchAll, 2000);
   useServerEventSubscription(
-    ['dream_started', 'dream_completed', 'dream_phase_changed', 'knowledge_ingested', 'knowledge_consumed'],
+    ['knowledge_entries_updated'],
     debouncedRefetch,
   );
 

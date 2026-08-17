@@ -293,20 +293,19 @@ impl HermesHttpAgent {
         prompt_chars: usize,
     ) -> Usage {
         // Level 1: inline usage from response.
-        if let Some(usage) = Self::extract_usage_from_response(response) {
-            if usage.input_tokens > 0 || usage.output_tokens > 0 {
-                return usage;
-            }
+        if let Some(usage) = Self::extract_usage_from_response(response)
+            && (usage.input_tokens > 0 || usage.output_tokens > 0)
+        {
+            return usage;
         }
 
         // Level 2: post-turn run lookup.
-        if let Some(run_id) = run_id {
-            if let Some(usage) = self.fetch_run_usage(run_id).await {
-                if usage.input_tokens > 0 || usage.output_tokens > 0 {
-                    tracing::debug!(run_id, "token accounting: used level-2 (run lookup)");
-                    return usage;
-                }
-            }
+        if let Some(run_id) = run_id
+            && let Some(usage) = self.fetch_run_usage(run_id).await
+            && (usage.input_tokens > 0 || usage.output_tokens > 0)
+        {
+            tracing::debug!(run_id, "token accounting: used level-2 (run lookup)");
+            return usage;
         }
 
         // Level 3: character count estimation.
@@ -454,9 +453,14 @@ impl HarnessAdapter for HermesHttpAgent {
     }
 
     async fn probe(&self) -> Result<(), ProbeError> {
-        super::probe::probe_hermes(&self.config.binary, Some(&self.config.endpoint))
-            .await
-            .map(|_| ())
+        super::probe::probe_hermes_with_limits(
+            &self.config.binary,
+            Some(&self.config.endpoint),
+            self.config.resource_limits.as_ref(),
+            self.config.timeout,
+        )
+        .await
+        .map(|_| ())
     }
 
     fn state_dir(&self) -> Option<&Path> {

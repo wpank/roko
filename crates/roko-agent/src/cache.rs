@@ -58,10 +58,10 @@ impl ResponseCache {
             let lookup = {
                 let mut cache = self.entries.lock().await;
 
-                if let Some(CacheState::Ready(entry)) = cache.get(&prompt_hash) {
-                    if entry.created_at.elapsed() < self.ttl() {
-                        return Ok(entry.response.clone());
-                    }
+                if let Some(CacheState::Ready(entry)) = cache.get(&prompt_hash)
+                    && entry.created_at.elapsed() < self.ttl()
+                {
+                    return Ok(entry.response.clone());
                 }
 
                 match cache.get(&prompt_hash) {

@@ -19,6 +19,7 @@ integration = []
 [dependencies]
 roko-core = { path = "../roko-core" }
 roko-fs = { path = "../roko-fs" }
+roko-graph = { path = "../roko-graph" }
 roko-std = { path = "../roko-std" }
 async-trait = "0.1"
 tokio = { workspace = true, features = ["process", "io-util", "time", "sync", "rt", "macros"] }
@@ -42,7 +43,6 @@ rand = { workspace = true }
 libc = "0.2"
 
 [dev-dependencies]
-roko-learn = { path = "../roko-learn" }
 roko-std = { path = "../roko-std" }
 tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile = { workspace = true }

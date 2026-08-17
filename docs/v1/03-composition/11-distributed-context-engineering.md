@@ -1,5 +1,8 @@
 # 11 — Distributed Context Engineering
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Layer 2 Scaffold — Synapse Architecture
 > Status: **Scaffold** — Framework specified, partial implementation
 > Canonical sources: `refactoring-prd/09-innovations.md` §XV, Karpathy (2025)

@@ -19,9 +19,9 @@ use crate::{
         ACP_PROTOCOL_VERSION, ACP_SPEC_VERSION, AgentCapabilities, AgentInfo, ConfigUpdateParams,
         ConfigUpdateResult, INVALID_PARAMS, InitializeParams, InitializeResult, JsonRpcId,
         JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, METHOD_NOT_FOUND, McpCapabilities,
-        PARSE_ERROR, PromptCapabilities, SESSION_NOT_FOUND, SessionCancelParams,
-        SessionCloseParams, SessionLoadParams, SessionNewParams, SessionPromptParams,
-        SessionSetModeParams,
+        PARSE_ERROR, SESSION_NOT_FOUND, SessionCancelParams, SessionCloseParams, SessionLoadParams,
+        SessionNewParams, SessionPromptParams, SessionSetModeParams,
+        advertised_prompt_capabilities_for_model,
     },
 };
 use roko_core::agent::resolve_model;
@@ -286,17 +286,18 @@ async fn handle_request(
             // Determine image capability from default model's vision support
             let model_key = &sessions.roko_config.agent.default_model;
             let resolved = resolve_model(&sessions.roko_config, model_key);
-            let image_capable = resolved.profile.is_some_and(|p| p.supports_vision);
+            let prompt_capabilities = advertised_prompt_capabilities_for_model(
+                resolved.provider_kind,
+                resolved
+                    .profile
+                    .is_some_and(|profile| profile.supports_vision),
+            );
 
             let result = InitializeResult {
                 protocol_version: ACP_PROTOCOL_VERSION,
                 agent_capabilities: AgentCapabilities {
                     load_session: true,
-                    prompt_capabilities: PromptCapabilities {
-                        image: image_capable,
-                        audio: false,
-                        embedded_context: true,
-                    },
+                    prompt_capabilities,
                     mcp_capabilities: McpCapabilities {
                         http: true,
                         sse: true,
@@ -360,25 +361,26 @@ async fn handle_request(
             };
             let workdir = sessions.workdir.clone();
             let roko_config = sessions.roko_config.clone();
-            let session = match get_session_mut(sessions, &params.session_id) {
-                Ok(session) => session,
-                Err(error) => return send_error_response(transport, id, error).await,
-            };
             let session_id_for_persist = params.session_id.clone();
-            let result =
-                match handle_session_prompt(transport, session, params, &workdir, &roko_config)
-                    .await
-                {
-                    Ok(result) => result,
-                    Err(error) => {
-                        if let Some(rpc_error) = error.rpc_error() {
-                            return send_error_response(transport, id, rpc_error).await;
-                        }
-                        return Err(error).context("failed to handle ACP session prompt");
-                    }
+            let prompt_outcome = {
+                let session = match get_session_mut(sessions, &params.session_id) {
+                    Ok(session) => session,
+                    Err(error) => return send_error_response(transport, id, error).await,
                 };
-            // Persist session after prompt completes.
+                handle_session_prompt(transport, session, params, &workdir, &roko_config).await
+            };
+            // Persist even when a post-dispatch transport/task error occurs: a
+            // completed provider call may already have accrued billable cost.
             sessions.persist_session(&session_id_for_persist);
+            let result = match prompt_outcome {
+                Ok(result) => result,
+                Err(error) => {
+                    if let Some(rpc_error) = error.rpc_error() {
+                        return send_error_response(transport, id, rpc_error).await;
+                    }
+                    return Err(error).context("failed to handle ACP session prompt");
+                }
+            };
             send_success(transport, id, result).await
         }
         "session/config/update" | "session/set_config_option" => {

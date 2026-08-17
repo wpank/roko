@@ -1,5 +1,8 @@
 # StateHub Projection Layer
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** This chapter keeps REF26 as one of the strongest interface directions. `StateHub` already exists and already serves shared dashboard state. The near-term work is to harden that live state path and, over time, evolve it toward smaller named projections with clearer query and replay contracts.
 
 **Topic**: [12-interfaces](./INDEX.md)  

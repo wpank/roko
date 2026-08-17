@@ -1,5 +1,8 @@
 # Agent Onboarding Flow
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The journey from "new agent" to "fully operational Spectre-bearing cognitive agent" - domain-profile selection, template instantiation, model routing, knowledge bootstrapping, Spectre generation, and first-task execution.
 
 

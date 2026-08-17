@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { getCssVar, hexToRgba } from '../lib/color';
 import { useCanvasSetup } from '../hooks/useCanvasSetup';
-import { useLiveApi } from '../hooks/useLiveApi';
+import { useDataApi } from '../hooks/useDataApi';
 
 interface DreamPhase {
   name: string;
@@ -196,7 +196,7 @@ function PhaseArrow({ color }: { color: string }) {
 }
 
 export default function DreamPhaseViz() {
-  const { get } = useLiveApi();
+  const { get } = useDataApi();
   const [journal, setJournal] = useState<DreamJournal | null>(null);
 
   useEffect(() => {

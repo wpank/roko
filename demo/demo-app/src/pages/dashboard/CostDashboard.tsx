@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useLiveApi } from '../../hooks/useLiveApi';
+import { useDataApi } from '../../hooks/useDataApi';
 import { fmtUptime } from '../../lib/format';
 import { useServerEventSubscription } from '../../hooks/useEventStream';
 import { useDebouncedRefetch } from '../../hooks/useDebouncedRefetch';
@@ -113,7 +113,7 @@ const METRICS: { key: string; label: string; color: string }[] = [
 /* ── Component ───────────────────────────────────────────── */
 
 export default function CostDashboard() {
-  const { get } = useLiveApi();
+  const { get } = useDataApi();
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [efficiency, setEfficiency] = useState<EfficiencyResponse | null>(null);
   const [cfactor, setCfactor] = useState<CFactorResponse | null>(null);
@@ -153,7 +153,7 @@ export default function CostDashboard() {
   // SSE-triggered refetch
   const debouncedRefetch = useDebouncedRefetch(fetchAll, 2000);
   useServerEventSubscription(
-    ['efficiency_event', 'gate_result', 'episode', 'inference_completed', 'plan_started', 'plan_completed', 'task_completed'],
+    ['efficiency_event', 'efficiency_trend_updated', 'gate_result', 'episode_recorded', 'plan_started', 'plan_completed', 'task_completed'],
     debouncedRefetch,
   );
 

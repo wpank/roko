@@ -48,7 +48,11 @@ pub mod tool_metrics_sink;
 pub mod trace_sink;
 
 pub use archive::{ArchiveEntry, ArchiveKind, ArchiveStats, Archiver};
-pub use atomic::{atomic_write_bytes, atomic_write_json};
+pub use atomic::{
+    atomic_write_bytes, atomic_write_json, read_json_or_default_strict,
+    read_json_or_default_strict_bounded, sibling_lock_path, with_locked_json_transaction,
+    with_locked_json_transaction_bounded,
+};
 pub use bandit::{ArmSnapshot, BanditStore};
 pub use cold_substrate::{ArchiveColdSubstrate, SubstrateMigrator};
 pub use disk::{

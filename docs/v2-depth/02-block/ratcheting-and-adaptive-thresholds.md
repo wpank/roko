@@ -2,6 +2,8 @@
 
 > Depth for [02-CELL.md](../../unified/02-CELL.md). Quality ratcheting as a monotonic constraint on Verify verdicts. Adaptive thresholds as a calibration Loop: EMA per rung, adjusted by gate pass/fail rates, with SPC extensions for regime detection.
 
+> **Implementation status (2026-08-17):** IMPLEMENTED. EMA adaptive thresholds per rung are persisted to `.roko/learn/gate-thresholds.json` and applied at dispatch. The flush cadence is configurable under `[learning]`. GateRatchet (monotonic non-regression) is wired in runner-v2. SPC extensions (CUSUM, BOCPD) and Hotelling T-squared multi-gate coordination are spec-level design — the core EMA loop and ratchet are production.
+
 ---
 
 ## 1. The GateRatchet: A One-Way Valve

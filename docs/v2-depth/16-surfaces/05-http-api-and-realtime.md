@@ -1,6 +1,6 @@
 # HTTP API and Realtime
 
-> Depth for [20-SURFACES.md](../../unified/20-SURFACES.md). Covers the HTTP API as a Connect Cell with StateHub backing, the ~85 routes grouped by resource, the shared realtime protocol (WebSocket + SSE) as Bus subscriptions through Connect Cells, the canonical frame vocabulary, cursor semantics, and deployment-shape-aware configuration.
+> Depth for [20-SURFACES.md](../../unified/20-SURFACES.md). Covers the HTTP API as a Connect Cell with StateHub backing, the ~317 routes grouped by resource, the shared realtime protocol (WebSocket + SSE) as Bus subscriptions through Connect Cells, the canonical frame vocabulary, cursor semantics, and deployment-shape-aware configuration.
 
 ---
 

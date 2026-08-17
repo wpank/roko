@@ -35,6 +35,9 @@ pub struct ChainConfig {
     /// ERC-8004 ValidationRegistry contract address.
     #[serde(default)]
     pub validation_registry: Option<String>,
+    /// KnowledgeRegistry / InsightBoard contract address used by the read-only indexer.
+    #[serde(default)]
+    pub knowledge_registry: Option<String>,
     /// AgentRegistry contract address. Required for on-chain agent features.
     #[serde(default)]
     pub agent_registry: Option<String>,
@@ -44,13 +47,9 @@ pub struct ChainConfig {
     /// Deployer / funder address.
     #[serde(default)]
     pub deployer: Option<String>,
-    /// Auto-deploy ISFR contracts on startup (dev chains only, default: false).
+    /// Confirmation depth required before an event is considered final.
     #[serde(default)]
-    pub auto_deploy_contracts: bool,
-    /// Path to foundry contracts directory (relative to workspace root).
-    /// Default: "contracts".
-    #[serde(default)]
-    pub contracts_dir: Option<String>,
+    pub finality_confirmations: Option<u64>,
 }
 
 /// Relay registration and workspace discovery settings.
@@ -81,6 +80,9 @@ pub struct RelayConfig {
     /// Heartbeat interval in seconds for workspace presence. Default: 30.
     #[serde(default = "default_relay_heartbeat")]
     pub heartbeat_interval_secs: u64,
+    /// Number of relay events retained for resume replay. Default: 65,536.
+    #[serde(default = "default_ring_buffer_size")]
+    pub ring_buffer_size: usize,
 }
 
 impl Default for RelayConfig {
@@ -90,6 +92,7 @@ impl Default for RelayConfig {
             workspace_name: None,
             public_url: None,
             heartbeat_interval_secs: 30,
+            ring_buffer_size: default_ring_buffer_size(),
         }
     }
 }
@@ -98,7 +101,11 @@ const fn default_relay_heartbeat() -> u64 {
     30
 }
 
-/// `[feed_agents]` section in roko.toml — controls whether the 15 built-in
+const fn default_ring_buffer_size() -> usize {
+    65_536
+}
+
+/// `[feed_agents]` section in roko.toml — controls whether the 10 built-in
 /// feed agents are spawned at serve startup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -124,11 +131,11 @@ impl Default for ChainConfig {
             identity_registry: None,
             reputation_registry: None,
             validation_registry: None,
+            knowledge_registry: None,
             agent_registry: None,
             bounty_market: None,
             deployer: None,
-            auto_deploy_contracts: false,
-            contracts_dir: None,
+            finality_confirmations: None,
         }
     }
 }
@@ -141,107 +148,9 @@ fn default_chain_profile() -> String {
     "mirage".to_string()
 }
 
-/// `[isfr]` section in roko.toml — ISFR keeper configuration.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ISFRSection {
-    /// Whether ISFR features are enabled (default: false).
-    pub enabled: bool,
-    /// Epoch duration in seconds (default: 28800 = 8 hours).
-    pub epoch_duration_secs: u64,
-    /// Source poll interval in seconds (default: 10).
-    pub poll_interval_secs: u64,
-    /// Minimum live source readings required to publish a composite (default: 2).
-    pub min_submissions: u32,
-    /// Outlier rejection sigma threshold (default: 3.0).
-    pub outlier_sigma: f64,
-    /// Rate source definitions.
-    pub sources: Vec<ISFRSourceConfig>,
-    /// Auto-deploy ISFR contracts on startup (dev chains only, default: false).
-    #[serde(default)]
-    pub auto_deploy_contracts: bool,
-    /// Path to foundry contracts directory (contains `out/` with forge artifacts).
-    /// Relative to workspace root. Default: "contracts".
-    #[serde(default)]
-    pub contracts_dir: Option<String>,
-}
-
-impl Default for ISFRSection {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            epoch_duration_secs: 28_800,
-            poll_interval_secs: 10,
-            min_submissions: 2,
-            outlier_sigma: 3.0,
-            sources: Vec::new(),
-            auto_deploy_contracts: false,
-            contracts_dir: None,
-        }
-    }
-}
-
-/// `[[isfr.sources]]` entry in roko.toml.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ISFRSourceConfig {
-    /// Human-readable source name (e.g. "mock-aave-v3").
-    pub name: String,
-    /// Source kind: "mock", "aave_v3", "compound_v3", "ethena", "eth_staking".
-    pub kind: String,
-    /// Composite weight (0.0–1.0, default: 0.25).
-    #[serde(default = "default_isfr_weight")]
-    pub weight: f64,
-    /// Rate class: "lending", "structured", "funding", "staking".
-    pub class: String,
-    /// Base rate in bps — mock sources only (e.g. 620 = 6.20%).
-    #[serde(default)]
-    pub rate_bps: u64,
-    /// Rate jitter in bps — mock sources only.
-    #[serde(default)]
-    pub jitter_bps: u64,
-    /// JSON-RPC endpoint — live sources only.
-    #[serde(default)]
-    pub rpc_url: Option<String>,
-    /// Protocol pool/contract address — live sources only.
-    #[serde(default)]
-    pub pool_address: Option<String>,
-}
-
-fn default_isfr_weight() -> f64 {
-    0.25
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_isfr_section() {
-        let toml_str = r#"
-enabled = true
-poll_interval_secs = 5
-
-[[sources]]
-name = "test"
-kind = "mock"
-weight = 1.0
-class = "lending"
-rate_bps = 500
-"#;
-        let section: ISFRSection = toml::from_str(toml_str).unwrap();
-        assert!(section.enabled);
-        assert_eq!(section.poll_interval_secs, 5);
-        assert_eq!(section.sources.len(), 1);
-        assert_eq!(section.sources[0].name, "test");
-    }
-
-    #[test]
-    fn defaults_when_missing() {
-        let section: ISFRSection = toml::from_str("").unwrap();
-        assert!(!section.enabled);
-        assert_eq!(section.epoch_duration_secs, 28_800);
-        assert_eq!(section.poll_interval_secs, 10);
-    }
 
     #[test]
     fn chain_config_profile_default() {
@@ -262,5 +171,32 @@ rate_bps = 500
     fn chain_config_explicit_enabled_false() {
         let config: ChainConfig = toml::from_str("enabled = false").unwrap();
         assert!(!config.enabled);
+    }
+
+    #[test]
+    fn chain_finality_confirmations_are_optional_and_round_trip() {
+        let legacy: ChainConfig = toml::from_str("enabled = true").unwrap();
+        assert_eq!(legacy.finality_confirmations, None);
+
+        let configured: ChainConfig = toml::from_str("finality_confirmations = 64").unwrap();
+        assert_eq!(configured.finality_confirmations, Some(64));
+        let encoded = toml::to_string(&configured).expect("serialize chain config");
+        assert_eq!(
+            toml::from_str::<ChainConfig>(&encoded)
+                .expect("restore chain config")
+                .finality_confirmations,
+            Some(64)
+        );
+    }
+
+    #[test]
+    fn relay_ring_buffer_defaults_for_legacy_and_default_configs() {
+        let parsed: RelayConfig = toml::from_str("").expect("parse legacy relay config");
+        assert_eq!(parsed.ring_buffer_size, 65_536);
+        assert_eq!(RelayConfig::default().ring_buffer_size, 65_536);
+
+        let custom: RelayConfig =
+            toml::from_str("ring_buffer_size = 128").expect("parse configured relay");
+        assert_eq!(custom.ring_buffer_size, 128);
     }
 }

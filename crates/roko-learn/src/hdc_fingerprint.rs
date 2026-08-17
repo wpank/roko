@@ -55,7 +55,7 @@ pub fn decode(encoded: &str) -> Result<HdcVector, String> {
         .bytes()
         .filter(|byte| !byte.is_ascii_whitespace())
         .collect();
-    if cleaned.len() % 4 != 0 {
+    if !cleaned.len().is_multiple_of(4) {
         return Err("base64 fingerprint length must be a multiple of 4".to_string());
     }
 

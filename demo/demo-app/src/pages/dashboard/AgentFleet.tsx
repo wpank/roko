@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { hexToRgba } from '../../lib/color';
 import { ROLE_COLORS } from '../../lib/palette';
-import { useLiveApi } from '../../hooks/useLiveApi';
+import { useDataApi } from '../../hooks/useDataApi';
 import { useServerEventSubscription } from '../../hooks/useEventStream';
 import { useDebouncedRefetch } from '../../hooks/useDebouncedRefetch';
 import Pane from '../../components/Pane';
@@ -395,7 +395,7 @@ function TopologyGraph({ data, height = 280 }: { data: TopoData; height?: number
 type FleetView = 'list' | 'topology';
 
 export default function AgentFleet() {
-  const { get } = useLiveApi();
+  const { get } = useDataApi();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [topology, setTopology] = useState<TopoData>(EMPTY_TOPOLOGY);
   const [view, setView] = useState<FleetView>('list');
@@ -427,7 +427,7 @@ export default function AgentFleet() {
   // SSE-triggered refetch
   const debouncedRefetch = useDebouncedRefetch(fetchAll, 2000);
   useServerEventSubscription(
-    ['agent_spawned', 'agent_started', 'agent_stopped'],
+    ['agent_spawned', 'agent_completed'],
     debouncedRefetch,
   );
 

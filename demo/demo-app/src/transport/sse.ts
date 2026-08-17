@@ -1,36 +1,9 @@
 export type SseStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'failed';
 
 const KNOWN_SSE_EVENT_TYPES = [
-  'workflow_started',
-  'phase_transition',
-  'workflow_completed',
-  'agent_spawned',
-  'agent_output',
-  'agent_completed',
-  'agent_failed',
-  'gate_started',
-  'gate_passed',
-  'gate_failed',
-  'feedback_recorded',
-  'state_checkpointed',
-  'inference_started',
-  'inference_completed',
-  'inference_failed',
-  'agent_trace',
-  'task_failed',
-  'run_started',
-  'run_completed',
-  'knowledge_ingested',
-  'knowledge_consumed',
-  'isfr_rate_computed',
-  'isfr_source_health_changed',
-  'isfr_keeper_state_changed',
-  'chain_block',
-  'chain_tx',
-  'chain_contract_event',
-  'feed_tick',
-  'feed_agent_online',
-  'feed_agent_offline',
+  // `/api/events` sends DashboardEvent payloads as unnamed SSE messages. Its
+  // only named frame is the replay-gap notification.
+  'gap',
 ] as const;
 
 export interface SseAdapterConfig {
@@ -76,9 +49,12 @@ export class SseAdapter {
     }
   }
 
-  private handlePayload(data: string, fallbackType?: string): void {
+  private handleMessage(event: MessageEvent, fallbackType?: string): void {
+    if (/^\d{1,20}$/.test(event.lastEventId)) {
+      this.lastEventId = event.lastEventId;
+    }
     try {
-      const parsed = JSON.parse(data) as Record<string, unknown>;
+      const parsed = JSON.parse(event.data) as Record<string, unknown>;
       const nested = parsed.data !== null && typeof parsed.data === 'object' && !Array.isArray(parsed.data)
         ? parsed.data as Record<string, unknown>
         : {};
@@ -122,15 +98,12 @@ export class SseAdapter {
 
     es.onmessage = (e: MessageEvent) => {
       if (this.destroyed || es !== this.es) return;
-      if (e.lastEventId) {
-        this.lastEventId = e.lastEventId;
-      }
-      this.handlePayload(e.data);
+      this.handleMessage(e);
     };
     for (const type of KNOWN_SSE_EVENT_TYPES) {
       es.addEventListener(type, (e) => {
         if (this.destroyed || es !== this.es) return;
-        this.handlePayload((e as MessageEvent).data, type);
+        this.handleMessage(e as MessageEvent, type);
       });
     }
 

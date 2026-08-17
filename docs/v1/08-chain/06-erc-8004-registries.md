@@ -1,5 +1,8 @@
 # ERC-8004: Three Agent Registries
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > ERC-8004 is the native identity standard on Nunchi, implemented to its full spec. It defines three on-chain registries: Identity Registry (agent registration, capabilities, tiers), Reputation Registry (authorized feedback, per-domain EMA scores), and Validation Registry (work verification proofs, clearing certificates). Together they form the trust infrastructure of the Nunchi agent economy.
 
 

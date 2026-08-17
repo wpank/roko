@@ -13,7 +13,7 @@ use roko_agent::safety::bash::check_command;
 use roko_agent::safety::network::check_url;
 
 use crate::bridge_events::CognitiveEvent;
-use crate::types::{ContentBlock, ToolCallKind, ToolCallStatus};
+use crate::types::{ContentBlock, PermissionAction, ToolCallKind, ToolCallStatus};
 use roko_core::tool::{ToolCategory, ToolConcurrency, ToolDef, ToolPermission, ToolSchema};
 
 /// Derive the [`ToolPermission`] for a tool by name.
@@ -382,6 +382,33 @@ pub async fn execute_acp_builtin_tool(
 #[must_use]
 pub fn tool_needs_permission(name: &str) -> bool {
     needs_permission(name)
+}
+
+/// Build the permission request metadata for an ACP builtin mutation tool.
+///
+/// Returning `None` means the tool is read-only and does not require an
+/// interactive editor decision. Unknown tools also return `None`; they are
+/// rejected by normal tool lookup and capability checks before execution.
+#[must_use]
+pub fn tool_permission_request(
+    name: &str,
+    args: &serde_json::Value,
+) -> Option<(PermissionAction, String, String)> {
+    let action = match name {
+        "write_file" => PermissionAction::FileCreate,
+        "edit_file" => PermissionAction::FileEdit,
+        "bash" => PermissionAction::TerminalCommand,
+        _ => return None,
+    };
+
+    let detail = match name {
+        "write_file" => "Allow this ACP turn to write the requested file?",
+        "edit_file" => "Allow this ACP turn to edit the requested file?",
+        "bash" => "Allow this ACP turn to run the requested terminal command?",
+        _ => unreachable!("permission metadata is defined only for mutation tools"),
+    };
+
+    Some((action, format_tool_title(name, args), detail.to_owned()))
 }
 
 /// Returns the set of tool names allowed for a given slash command.

@@ -1,5 +1,8 @@
 # 07 — Conductor Subsystem
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The Conductor is the agent's theory-of-mind about its own pipeline.
 > It observes agent behavior, detects anomalies, and issues graduated
 > interventions — not as a timeout manager, but as a cybernetic

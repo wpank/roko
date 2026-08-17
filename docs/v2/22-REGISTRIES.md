@@ -1,6 +1,6 @@
 # 22 -- On-Chain Registries
 
-> Persistent identity and reputation on-chain. ERC-8004 agent identities, per-domain reputation scores, knowledge publication with challenge resolution, chain witness primitives, gossip networking, job market, and the event indexer. Deployed on Korai (production) and Mirage (development). Everything is a Signal persisted to chain substrate.
+> Target architecture for persistent on-chain identity and reputation: ERC-8004 agent identities, per-domain reputation scores, challengeable knowledge, chain witnesses, gossip networking, a job market, and an event indexer. The Rust state-machine subset is implemented as described below; Korai/Mirage registry deployment and production wiring are not owned by a current Roko runtime path.
 
 **Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal, content addressing, HDC fingerprints, demurrage), [02-CELL](02-CELL.md) (Verify protocol, Store protocol), [03-GRAPH](03-GRAPH.md) (Graph composition), [15-TELEMETRY](15-TELEMETRY.md) (CaMeL provenance), [16-SECURITY](16-SECURITY.md) (identity, delegation caveats), [21-MARKETPLACE](21-MARKETPLACE.md) (fork chain attribution)
 
@@ -8,7 +8,7 @@
 
 ## 1. Design Constraints
 
-1. **Standard transferable identities.** Agent identities (ERC-8004) are transferable NFTs. An agent's identity can be transferred to another address.
+1. **Standard transferable identities.** ERC-8004 identities are transferable NFTs. Transfers require the current owner, retain block-addressed ownership history, and revoke caveats issued by the previous owner.
 2. **Reputation is earned, not assigned.** Scores update only from attested sources: arena settlement, clearing outcomes, bounty resolution, eval applications. No manual injection.
 3. **EMA decay is constant.** Reputation decays via exponential moving average unless refreshed. An agent that stops participating gradually loses reputation. Prevents stale high-reputation agents from dominating.
 4. **Knowledge is challengeable.** Published entries can be challenged with counter-evidence. Challenge triggers resolution. Keeps the knowledge store honest.
@@ -19,31 +19,57 @@
 
 ### Implementation maturity and daeji boundary
 
-> **Read this before treating any section below as runtime-live.**
+> **Implementation status (2026-08-16):** E39 is manifest-complete (8/8) at the
+> transport-independent `roko-chain` boundary. Transferable identity/delegation,
+> knowledge lifecycle/challenges, reputation TraceRank, local gossip discovery,
+> marketplace reputation effects, and atomic local identity-state persistence are
+> implemented and tested. These are client-side/state-machine primitives: registry
+> deployment, governance contracts, a gossip network transport, and a compatible,
+> passport-integrated chain write adapter remain dependent on daeji/runtime work. The
+> existing best-effort `register(string,bytes32)` dual-write on agent registration is a
+> legacy path; it does not return or verify a passport and may not match the target ABI.
+> The architecture critical-path follow-up adds a durable, authenticated local
+> passport/knowledge lifecycle plus an optional read-only chain client/indexer. Local
+> state remains available when chain configuration is absent or RPC indexing is degraded.
 >
 > The chain surface is split across two repositories:
 >
 > - **roko-chain** (`crates/roko-chain/`) is the **client/runtime integration side**: signs
->   transactions, reads state via alloy RPC, deploys contracts. Only the **ISFR vertical**
->   (isfr_keeper, isfr_sources, isfr_oracle_submit, isfr_bootstrap, alloy_impl, block_watcher)
->   is wired into the runtime today.
+>   transactions and reads state via alloy RPC. The generic client/wallet and block-watcher
+>   paths are wired. A provider-neutral `RegistryClient` and bounded JSONL `EventIndexer`
+>   now provide named reads, finality-aware log ingestion, restart-safe checkpoints,
+>   explicit reorg detection/rebuild, and fail-closed journal validation.
 >
 > - **daeji** is a **separate devnet repo** that owns node software, BFT consensus,
 >   precompiles, and verified-state. Design-only docs live at `tmp/agentchain-v2/02-daeji/`
 >   in this repo. Do NOT build node-side or consensus features in roko.
 >
-> The registries, witness primitives, gossip, job market, and event indexer described below
-> are **spec-level designs**. Corresponding Rust modules exist in `roko-chain/src/` as tested
-> primitives, but they have **zero runtime callers** and are shelved as Phase 2+ pending
-> daeji devnet maturity. Solidity contracts are authored and forge-tested but only the ISFR
-> subset plus the 6-contract base set are deployed by any path today. See `.roko/GAPS.md`
-> for per-module WIRE/SHELVE verdicts.
+> The deployed contracts, networked GossipCell, witness cells, and production indexer
+> service described below remain **spec-level designs**. `roko serve` now owns local
+> registry state and `/api/registries/*` routes, and can manually synchronize normalized
+> raw chain events when both RPC and contract addresses are configured. It does not own
+> contract deployment, ABI-specific event decoding, a background WebSocket worker,
+> PostgreSQL/SSE delivery, or transaction submission for these lifecycle routes. See
+> `.roko/GAPS.md` for the remaining WIRE/SHELVE boundaries.
+
+### E39 implementation closure
+
+| Task | Delivered boundary | Verification |
+|---|---|---|
+| T01 | Existing `AgentRegistry` now performs owner-authorized transfers, records `TransferRecord { from, to, block }`, clears stale delegation authority, and stores feed/endpoint metadata | Transfer, wrong-owner, invalid-target, metadata-authorization tests |
+| T02 | Narrow-only `DelegationCaveat` add/replace/revoke/check path with block expiry and direct-or-delegated capability checks | Capability widening, self-delegation, expiry-boundary, revoke, and transfer-revocation tests |
+| T03 | `KnowledgeRegistry` publish/validate/query/refresh/staleness state machine with typed event drain | Publication, unique validation, tag query, 90-day boundary, owner refresh tests |
+| T04 | Challenge/open/resolve state machine, configured `ResolutionMode`, and caller-applied `+0.2`/`-0.3` knowledge reputation effects | Both resolution outcomes, repeat resolution, challenged/retracted staleness tests |
+| T05 | `ReputationTraceRank` derived from live domain records with exact `[0.25, 0.15, 0.25, 0.20, 0.15]` weights | Known-input, inactive, recency, and collusion-dilution tests |
+| T06 | Transport-neutral `GossipMessage` plus deterministic TTL `PeerRegistry` | Register/update, capability query, stale replay, heartbeat, expiry tests |
+| T07 | Marketplace settlement/expiry results carry explicit caller-applied reputation effects | Positive quality and assigned-agent timeout tests |
+| T08 | Atomic `.roko/state/identity.json` load/save/check contract | Missing, round-trip, explicit `.roko` path, malformed-state tests |
 
 ---
 
 ## 2. ERC-8004 Agent Identity
 
-A standard transferable NFT representing an agent's on-chain identity. Every agent participating in on-chain activities (arenas, bounties, clearing, knowledge publication) must have an ERC-8004 identity.
+A standard transferable NFT representing an agent's on-chain identity. Every agent participating in on-chain activities (arenas, bounties, clearing, knowledge publication) must have an ERC-8004 identity. Ownership changes remain auditable through transfer history, and delegations issued by the previous owner are revoked on transfer.
 
 ### 2.1 Identity fields
 
@@ -203,13 +229,20 @@ impl IdentityClient {
 
 ### 2.4 Identity registration in agent lifecycle
 
-When an agent starts and `chain.network` is configured, the agent runtime checks for a registered identity. If not found, it auto-registers during startup:
+The target lifecycle for an agent started with `chain.network` configured is:
 
 1. Read agent config (name, capabilities, domain).
 2. Hash capabilities to `bytes32[]`.
 3. Call `IAgentIdentity.register()`.
 4. Store returned `tokenId` in `.roko/state/identity.json`.
 5. On subsequent startups, read stored `tokenId` and verify on-chain.
+
+E39 implements the durable local contract for steps 4-5:
+`load_identity_state`, atomic `save_identity_state`, and `ensure_identity` distinguish a
+persisted token from registration-required state and reject corrupt JSON. A separate
+best-effort agent-registration dual-write calls the legacy `register(string,bytes32)` ABI,
+but it does not populate this passport state or verify the resulting identity. The compatible
+startup lookup/write/verification flow therefore remains deployment/runtime adapter work.
 
 ---
 
@@ -239,6 +272,10 @@ new_score = alpha * delta + (1 - alpha) * old_score
 ### 3.2 TraceRank reputation model
 
 TraceRank extends basic EMA scoring with multi-dimensional analysis, operating as a **Score Cell** ([02-CELL](02-CELL.md)) implementing the Score protocol. It participates in predict-publish-correct: it predicts an agent's composite reputation before new attestations arrive, publishes the prediction as a Pulse, and corrects via the calibration loop.
+
+E39 implements the underlying `ReputationTraceRank` computation directly on
+`ReputationRegistry` domain records. The `TraceRankCell`, Bus prediction/correction loop,
+and cascade-router consumer shown below remain design targets, not runtime-live code.
 
 #### Weight formula
 
@@ -432,7 +469,7 @@ Published knowledge entries on-chain for discoverability, validation, and challe
 ### 4.1 Publication lifecycle
 
 ```
-Publish -> Active -> [Validate -> Active (count++)]
+Publish -> Active -> [Validate -> Validated (count++)]
                  \-> [Challenge -> Challenged -> Resolve -> Validated | Retracted]
                  \-> [90 days no refresh -> Stale]
 ```
@@ -442,6 +479,11 @@ Publish -> Active -> [Validate -> Active (count++)]
 3. **Challenge**: Counter-evidence submitted. Entry enters `Challenged`. Resolution window opens.
 4. **Resolve**: After window, entry is `Validated` (challenge rejected) or `Retracted` (challenge accepted). Reputation flows accordingly.
 5. **Decay**: Entries not refreshed within 90 days enter `Stale`. Still exist but ranked lower in queries.
+
+The local E39 state machine emits typed lifecycle events and caller-applied reputation
+effects. Governance authorization for `resolveChallenge` is enforced by the future chain
+adapter/contract; the three voting/arbitration mechanisms below are not implemented in this
+in-memory twin.
 
 ### 4.2 Solidity interface
 
@@ -748,6 +790,11 @@ impl Cell for WitnessVerifyCell {
 
 Gossip protocol for peer discovery and knowledge propagation between Roko instances without a central relay.
 
+E39 provides only the synchronous local type/table boundary: `PeerInfo`, the
+transport-neutral announce/query/response/heartbeat `GossipMessage`, and a deterministic
+TTL `PeerRegistry`. The networked `GossipCell`, Bus publication, signatures, identity checks,
+and anti-spam policy below remain roadmap work.
+
 ### 6.0 GossipCell (React Protocol)
 
 The gossip subsystem is a **Cell implementing the React protocol** ([02-CELL](02-CELL.md)). It watches Bus for peer announcements and network events, emitting Pulses for peer discovery and knowledge propagation. This makes gossip composable with the rest of the system -- it is not a standalone daemon but a reactive Cell that plugs into any Graph.
@@ -991,7 +1038,30 @@ impl BountyClient {
 
 ## 8. Event Indexer
 
-A background service indexing on-chain events from all registry contracts into queryable storage. Dashboard and runtime query the indexer instead of direct RPC calls for historical data.
+The end-state design is a background service indexing on-chain events from all registry
+contracts into queryable storage. Dashboard and runtime query the indexer instead of direct
+RPC calls for historical data.
+
+### 8.0 Current shipped foundation
+
+The current Roko boundary is intentionally smaller and local-first:
+
+- `roko-chain::RegistryClient` performs named read-only calls and range log reads through
+  the existing `ChainClient` abstraction. Returned logs are checked against each configured
+  contract's own address/topic pairing.
+- `roko-chain::EventIndexer` advances finalized blocks in bounded batches, detects parent-hash
+  reorgs, and atomically commits a checkpoint plus normalized raw events to a JSONL journal.
+  The journal retains at most 100,000 events in `roko serve`; load rejects corrupt, incoherent,
+  or well-formed-but-tampered event/header records instead of resetting silently.
+- Authenticated `/api/registries/*` routes expose durable local passport and challengeable
+  knowledge lifecycles. Read-scoped API keys may query them; typed `ConfigEdit`/admin authority
+  is required for mutations, including manual indexer sync and rebuild.
+- The request `owner` fields are admin-controlled registry lifecycle values. They are not
+  cryptographically derived from, or bound to, the HTTP bearer identity.
+
+There is no automatic polling task, WebSocket subscription, ABI decoder, transaction-hash
+enrichment, PostgreSQL store, SSE stream, or deployed-contract lifecycle in this foundation.
+The architecture below remains the production target.
 
 ### 8.1 Architecture
 
@@ -1001,7 +1071,8 @@ Korai RPC (WebSocket) --> Indexer --> PostgreSQL --> REST API
                           Event stream (SSE) ---------+
 ```
 
-The indexer subscribes to all registry contract events via WebSocket, processes in order, stores in PostgreSQL, and serves queries through REST.
+The target indexer subscribes to all registry contract events via WebSocket, processes in
+order, stores in PostgreSQL, and serves queries through REST.
 
 ### 8.2 Indexed event types
 
@@ -1010,7 +1081,6 @@ The indexer subscribes to all registry contract events via WebSocket, processes 
 | IAgentIdentity | IdentityRegistered, IdentityUpdated, TierChanged |
 | IReputationRegistry | ReputationAttested, TierChanged |
 | IKnowledgeRegistry | EntryPublished, EntryValidated, EntryChallenged, ChallengeResolved |
-| IISFROracle | RateAggregated, DeviationTriggered |
 | IClearingHouse | PositionOpened, PositionClosed, RoundSettled, PositionLiquidated |
 | IArenaRegistry | ArenaCreated, AttemptSubmitted, AttemptScored |
 | IBountyMarket | BountyPosted, BountyClaimed, BountyResolved |
@@ -1160,48 +1230,39 @@ All registry events flow through the event indexer and Bus. Formatted as Pulses 
 
 ### 10.1 Mirage devnet addresses
 
+These are deterministic Hardhat reference addresses from the design deployment order, not
+evidence of a currently running or Roko-managed registry deployment.
+
 | Contract | Address | Notes |
 |---|---|---|
 | AgentIdentity (ERC-8004) | `0x5FbDB2315678afecb367f032d93F642f64180aa3` | First deployed |
 | ReputationRegistry | `0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512` | Linked to AgentIdentity |
 | KnowledgeRegistry | `0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0` | InsightStore on-chain |
-| ISFROracle | `0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9` | Rate oracle |
 | ClearingHouse | `0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9` | Position clearing |
 | ArenaRegistry | `0x5FC8d32690cc91D4c39d9d3abcBD16989F875707` | Arena evaluation |
 | BountyMarket | `0x0165878A594ca255338adfa4d48449f69242Eb8F` | Job market |
 | Daeji Token | `0xa513E6E4b8f2a923D98304ec87F64353C4D5C853` | ERC-20 utility |
 
-Hardhat default deployment addresses. Production Korai addresses will differ.
+Production Korai addresses will differ and remain unassigned here.
 
 ### 10.2 Configuration
 
 ```toml
 [chain]
-network = "mirage"
-
-[chain.mirage]
+enabled = true
+profile = "mirage"
 rpc_url = "http://localhost:8545"
-ws_url = "ws://localhost:8546"
 chain_id = 31337
-
-[chain.korai]
-rpc_url = "https://rpc.korai.network"
-ws_url = "wss://ws.korai.network"
-chain_id = 88888
-
-[chain.contracts]
-agent_identity = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+finality_confirmations = 12
+identity_registry = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
 reputation_registry = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
 knowledge_registry = "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
-isfr_oracle = "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9"
-clearing_house = "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9"
-arena_registry = "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707"
 bounty_market = "0x0165878A594ca255338adfa4d48449f69242Eb8F"
-daeji_token = "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853"
-
-[chain.indexer]
-url = "http://localhost:6678"
 ```
+
+Registry addresses and RPC are optional. With no usable chain client/address pair, the local
+passport and knowledge routes still operate and the indexer status reports that chain indexing
+is not configured.
 
 ---
 
@@ -1220,15 +1281,12 @@ npx hardhat deploy --network korai
 
 ### 11.2 Indexer
 
-```bash
-# Start the indexer
-roko indexer start --chain mirage --db postgres://localhost/roko_index
-
-# Check indexer health
-curl http://localhost:6678/api/index/stats
-```
-
-Production: indexer on Railway alongside control plane, connecting to Korai WebSocket, writing to managed PostgreSQL.
+The standalone `roko indexer start` process, PostgreSQL schema, Railway deployment, and
+`/api/index/*` API shown in the target design are not implemented. Today the indexer is owned
+by `roko serve`, persists under `.roko/chain/events.jsonl`, and advances only through an
+authenticated `POST /api/registries/indexer/sync`. An authenticated
+`POST /api/registries/indexer/rebuild` resets that derived journal so it can be replayed from
+the configured start block.
 
 ---
 
@@ -1240,8 +1298,7 @@ Production: indexer on Railway alongside control plane, connecting to Korai WebS
 
 - Signs and submits transactions via alloy RPC.
 - Reads chain state (balances, logs, receipts).
-- Runs the ISFR keeper loop, submitting rates to `ISFROracle`.
-- Deploys contracts during bootstrap (`isfr_bootstrap.rs`).
+- Runs the generic chain client/wallet and block watcher used by the serve layer.
 
 The **node/consensus/precompile half** lives in the **daeji devnet** (separate repository).
 daeji owns: BFT consensus, EVM precompiles, verified state (QMDB proofs + BLS), and the
@@ -1253,25 +1310,27 @@ KORAI contract), it is Phase 2 in roko. Do not build daeji-side pieces in roko.
 
 ### Module maturity — wire or shelve (E11-T05, 2026-08-03)
 
-The table below records the verdict for every `roko-chain` module with zero runtime callers.
-The **ISFR vertical** (isfr_sources, isfr_keeper, isfr_oracle_submit, isfr_bootstrap) is
-already wired and excluded from this table. Shelf-ware modules are intentionally isolated —
-their Rust logic is tested, but each awaits a daeji primitive or a dedicated follow-up epic.
+The table below records the verdict for every remaining `roko-chain` module with zero runtime
+callers. Shelf-ware modules are intentionally isolated: their Rust logic is tested, but each
+awaits a daeji primitive or a dedicated follow-up epic.
 
 | Module | Verdict | Notes |
 |---|---|---|
 | `witness.rs` | **SHELVE** (Phase 2) | Needs on-chain WitnessRegistry (daeji). No deploy path today. |
 | `x402.rs` | **SHELVE** (Phase 2) | Needs 402 middleware on agent-server + daeji payment precompile (ERC-3009). |
 | `korai_token.rs` | **SHELVE** (Phase 2) | KORAI.sol not authored; deploys use MockERC20. KORAI token is daeji tokenomics. |
-| `marketplace.rs` | **SHELVE** (Phase 2) | Runtime jobs use `.roko/jobs/*.json`; on-chain escrow awaits daeji devnet. |
-| `agent_registry.rs` | **SHELVE** (Phase 2) | ERC-8004 Rust twin. `roko-serve` uses `sol!` ABI bindings instead. |
-| `reputation_registry.rs` | **SHELVE** (Phase 2) | Same as agent_registry. Reputation-informed routing is CLAUDE.md open item 13. |
+| `marketplace.rs` | **SHELVE** (Phase 2) | Runtime jobs use `.roko/jobs/*.json`; its state machine now returns caller-applied settlement/expiry reputation effects, but on-chain escrow awaits daeji devnet. |
+| `agent_registry.rs` | **WIRE (local lifecycle)** | Transferable passport/delegation state is persisted and served through authenticated `/api/registries/passports*` routes. A deployed ERC-8004 adapter remains absent. |
+| `identity_economy_identity.rs` | **SHELVE** (Phase 2) | Atomic local identity state/check exists; startup registration and on-chain verification adapters are not wired. |
+| `knowledge_registry.rs` | **WIRE (local lifecycle)** | Publication/validation/challenge state is persisted and served through authenticated `/api/registries/knowledge*` routes. Contract governance/deployment remains absent. |
+| `indexer.rs` | **WIRE (optional read-only foundation)** | Finality-aware bounded JSONL index plus authenticated manual sync/rebuild is wired when RPC and registry addresses are configured. No background worker, ABI decoder, PostgreSQL/SSE service, or deployment path. |
+| `gossip.rs` | **SHELVE** (Phase 2) | Local peer table and message types exist; no transport, signature verification, Bus cell, or anti-spam runtime. |
+| `reputation_registry.rs` | **SHELVE** (Phase 2) | EMA plus reputation-specific TraceRank computation exists; no routing/marketplace runtime consumer. |
 | `validation_registry.rs` | **SHELVE** (Phase 2) | ERC-8004 Rust twin. No runtime caller; serve uses ABI bindings. |
-| `isfr.rs` (IsfrRegistry clearing) | **SHELVE** (Phase 2) | Keeper submits rates but does NOT run on-chain clearing rounds (needs daeji finality). |
 | `trace_rank.rs` | **SHELVE** (Phase 2) | Awaits reputation_registry wiring + attestation data. CLAUDE.md open item 13. |
 | `collusion.rs` | **SHELVE** (Phase 2) | Phase 2 analytics. No attestation data source wired. |
-| `nelson_siegel.rs` | **SHELVE** (Phase 2) | Useful for multi-tenor ISFR rates; no rate source today. |
-| `futures_market.rs` | **SHELVE** (Phase 2) | No on-chain clearing house wired. Phase 2 DeFi. |
+| `nelson_siegel.rs` | **SHELVE** (Phase 2) | No term-structure consumer is wired. |
+| `futures_market.rs` | **SHELVE** (Phase 2) | Knowledge futures market (agents commit to producing knowledge by deadline with staked collateral), not DeFi futures. No on-chain clearing house wired. |
 | `gate/mev_gate.rs` | **SHELVE** (Phase 2) | Not in 7-rung pipeline. Add when mempool data source available. |
 | `gate/tx_sim_gate.rs` | **SHELVE** (Phase 2) | Same status as mev_gate. |
 | `gate/wallet_gate.rs` | **SHELVE** (Phase 2) | Same status as mev_gate. |
@@ -1281,7 +1340,13 @@ See `.roko/GAPS.md` "E11-T05" section for extended rationale per module.
 
 ---
 
-## 12. Acceptance Criteria
+## 12. Broader product/deployment acceptance (beyond E39 and the local critical path)
+
+The matrix below is the end-state acceptance suite for the full chapter. It is not the E39
+manifest: contract, networking, production-indexer, Cell, and runtime-integration rows remain
+open unless separately implemented. The eight E39 deliverables and the narrower local/indexer
+foundation are recorded above; they do not satisfy the deployment, WebSocket, PostgreSQL, SSE,
+or end-to-end contract criteria below.
 
 | Criterion | Verification |
 |---|---|
@@ -1307,11 +1372,13 @@ See `.roko/GAPS.md` "E11-T05" section for extended rationale per module.
 | Chain witness: verification Cell confirms on-chain anchor | Round-trip test |
 | GossipCell implements React protocol with `watch_topics()` | Compile check |
 | GossipCell watches Bus for peer announcements and emits discovery Pulses | Integration test |
+| Local gossip peer registry filters capability bits, rejects stale replay, and applies exact TTL expiry | `roko-chain` unit tests |
 | Gossip: PeerAnnounce propagates identity to connected peers | Network simulation test |
 | Gossip: KnowledgeShare propagates entry metadata | Network simulation test |
 | Gossip: rate limiting throttles abusive peers | Rate-limit test |
 | Gossip: ERC-8004 identity required for participation | Identity check test |
 | Bounty lifecycle: post -> claim -> submit -> accept -> settle | Contract lifecycle test |
+| Marketplace outcomes return positive settlement and negative assigned-expiry reputation effects | `roko-chain` unit tests |
 | Bounty expiration: unclaimed bounty past deadline refunds poster | Timeout test |
 | Bounty tier gating: low-tier agent cannot claim Premium bounty | Tier enforcement test |
 | Event indexer: processes all 7 contract event types | Indexer integration test |
@@ -1321,5 +1388,5 @@ See `.roko/GAPS.md` "E11-T05" section for extended rationale per module.
 | Indexer REST API: all 11 endpoints return correct data | API contract test |
 | Contract addresses: Mirage addresses match hardhat deployment output | Deployment verification |
 | Reputation in cascade router: higher-tier agents routed to complex tasks | Integration test |
-| Identity auto-registration: agent stores tokenId in `.roko/state/identity.json` | State persistence test |
+| Identity local state atomically stores tokenId in `.roko/state/identity.json` and distinguishes missing/corrupt state | `roko-chain` unit tests |
 | Configuration: `[chain.contracts]` section loads and connects to correct addresses | Config round-trip test |

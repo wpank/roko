@@ -1,5 +1,8 @@
 # 8-Dimensional Strategy Space
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The domain-configurable coordinate system that locates every strategy attempt in an 8D space, enabling k-d tree somatic lookup and pattern matching across agent histories.
 
 

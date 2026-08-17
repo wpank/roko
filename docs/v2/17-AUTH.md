@@ -2,6 +2,8 @@
 
 > Four auth paths as a Pipeline of Verify Cells, followed by an Authorize Cell for workspace membership. Team workspace sharing with role-based access. Secret management with 3-tier priority. Device flow for headless machines. The auth pipeline fails closed -- every request passes through at least one Verify Cell and the Authorize Cell before reaching any route handler.
 
+> **Implementation status:** E35 COMPLETE (8/8). API-key lifecycle, concrete agent capabilities, Privy/JWT with hardened multi-provider JWKS, four-role workspace RBAC, route-wide permission enforcement, parent-linked relay delegation, token-based invitations, and the shared auth audit trail are implemented. Device flow and the Cell/Graph-shaped auth pipeline remain target-architecture work outside the E35 manifest.
+
 **Depends on**: [02-CELL](02-CELL.md) (Verify protocol), [03-GRAPH](03-GRAPH.md) (Pipeline Graph), [16-SECURITY](16-SECURITY.md) (capability intersection, fail-closed principle)
 
 ---
@@ -20,7 +22,7 @@ Four auth paths serve four surfaces:
 |---|---|---|---|
 | Privy/JWT | Dashboard (web) | `VerifyJwt` | JWT signed by Privy JWKS |
 | API key | CLI, external integrations | `VerifyApiKey` | `sk_roko_...` header |
-| Agent bearer token | Agents (relay, sidecar, inference) | `VerifyAgentToken` | `roko_agent_...` bearer |
+| Agent bearer token | Agents (relay, sidecar, inference, delegated authority) | `VerifyAgentToken` / current HTTP middleware | `roko_agent_...` or `roko_relay_...` bearer |
 | Relay auth | Feed subscribers (read path) | `VerifyRelayRead` | No credential (read-public) |
 
 ```
@@ -409,9 +411,10 @@ impl Cell for VerifyApiKey {
 Agents authenticate to the relay and to the inference proxy using bearer tokens issued by the control plane.
 
 ```bash
-# Control plane issues token for an agent
-POST /api/agents/:id/token
--> { "token": "roko_agent_...", "expires_at": "2026-04-25T00:00:00Z" }
+# Control plane issues a scoped token for an agent
+POST /api/agent-tokens
+{ "agent_id": "agent-a", "capabilities": ["Inference"], "ttl_secs": 86400 }
+-> { "token_secret": "roko_agent_...", "expires_at": "..." }
 
 # Agent uses token for relay connection
 WS wss://relay.nunchi.dev/relay/ws
@@ -442,13 +445,20 @@ Agent created                Token issued                 30 days later
                                                           via relay or API
 ```
 
-- **Issuance**: Tokens are issued when an agent is created (`POST /api/agents`). The response body includes the `token` field with the plaintext. This is the only time the plaintext is available.
-- **Expiry**: Tokens expire after 30 days by default. Configurable per agent via `token_ttl_days` in `roko.toml`.
-- **Revocation**: `DELETE /api/agents/{id}/token` immediately invalidates the token. The SHA-256 hash is removed from the valid token set. The agent receives `401 Unauthorized` on its next request.
-- **Rotation with 5-minute grace period**: To rotate without downtime, issue a new token (`POST /api/agents/{id}/token`) before revoking the old one. During rotation, both the old and new tokens are valid for a 5-minute grace period. After 5 minutes, the old token is automatically invalidated.
-- **Re-issuance**: An agent that receives 401 (expired or revoked token) should request a new token through the relay control channel or by calling `POST /api/agents/{id}/token` with admin-scoped auth.
+- **Issuance**: Admin-scoped auth calls `POST /api/agent-tokens` with an agent ID,
+  concrete capabilities, and a TTL. The plaintext `token_secret` is returned once.
+- **Expiry**: The request TTL defaults to 24 hours. Expiry is parsed as an instant and
+  checked on every bearer use.
+- **Revocation**: `DELETE /api/agent-tokens/{token_id}` marks the retained hash-only
+  record revoked. The agent receives `401 Unauthorized` on its next request, and all
+  descendant relay credentials are invalidated.
+- **Re-issuance**: Issue a replacement with `POST /api/agent-tokens`; separately revoke
+  the old token when the replacement has been distributed.
 
-### 5.3 VerifyAgentToken Cell
+### 5.3 VerifyAgentToken Cell (Target Architecture)
+
+The live service currently performs the equivalent checks in HTTP middleware backed by
+the restart-loaded credential registry. The Cell form below is the target Graph shape.
 
 ```rust
 pub struct VerifyAgentToken {
@@ -533,7 +543,7 @@ impl Cell for VerifyAgentToken {
 }
 ```
 
-### 5.4 Grace Period Token Rotation
+### 5.4 Grace Period Token Rotation (Target Architecture)
 
 When a new token is issued for an agent, the old token is moved to the grace period map with the real agent_id preserved.
 
@@ -571,6 +581,67 @@ impl VerifyAgentToken {
     }
 }
 ```
+
+### 5.5 Parent-Linked Relay Delegation (Implemented)
+
+An authenticated agent can delegate a subset of its concrete capabilities to another
+agent. The parent is derived from the `Authorization` bearer credential; callers cannot
+name a parent or issuer in JSON. A relay bearer may create a child only from its own
+effective capabilities.
+
+```http
+POST /api/relay-tokens
+Authorization: Bearer roko_agent_...
+Content-Type: application/json
+
+{
+  "target_agent_id": "agent-b",
+  "delegated_capabilities": ["Inference", "StoreRead"],
+  "max_depth": 4,
+  "ttl_secs": 300
+}
+```
+
+The response returns a `roko_relay_...` secret exactly once plus safe token metadata.
+Only the SHA-256 hash is persisted. Relay secrets contain 32 bytes of operating-system
+randomness and are reusable until expiry or revocation; the obsolete body-secret
+validation/consumption endpoint no longer exists.
+
+The depth invariant is intentionally unambiguous:
+
+- A root agent token is depth 0.
+- A relay child has `depth = parent.depth + 1`.
+- `max_depth` is an absolute, non-increasing ceiling; a child may inherit it or lower it,
+  but never raise it.
+- The remaining delegation budget is `max_depth - depth`. A token at its ceiling can be
+  presented for authorized work but cannot mint another child.
+
+Child capabilities must be a subset of the immediate parent's capabilities; widening is
+rejected with HTTP 400. Child expiry is capped at the parent expiry. On every normal
+`roko_relay_...` bearer request, middleware validates the complete chain back to one
+unexpired, unrevoked root agent token, including unique IDs, canonical capability sets,
+each parent edge, expiry, depth, and cycles. The request then runs as `target_agent_id`
+and is admitted only to routes mapped to the delegated capabilities. Unclassified routes
+fail closed.
+
+`DELETE /api/agent-tokens/{token_id}` invalidates every relay descendant of that root.
+`DELETE /api/relay-tokens/{token_id}` invalidates that relay subtree while leaving sibling
+trees live. Records remain hash-only and restart-safe in the locked, atomically replaced
+credential registries; issuance is serialized against revocation.
+
+#### Upgrade note
+
+Pre-T06 `.roko/relay-tokens.json` records contain no parent token ID or capability chain,
+so Roko cannot safely infer authority for them. On first startup, the exact legacy format
+is recognized and atomically replaced with an empty relay registry; malformed or unknown
+formats fail startup closed. Operators upgrading with active legacy relay credentials
+must reissue them from a valid `roko_agent_...` bearer. Agent tokens are not affected.
+
+Acceptance coverage includes capability widening, immediate-parent narrowing, exact depth
+boundaries, orphan/cycle/ID/depth/capability tampering, parent-capped expiry, root and
+intermediate cascading revocation with sibling preservation, concurrent issuance versus
+revocation, restart/migration behavior, auth-disabled anonymous rejection, and target-agent
+identity plus concrete route capability enforcement.
 
 ---
 
@@ -958,23 +1029,24 @@ User opens dashboard
   -> Privy issues JWT (contains privy_user_id + email)
   -> Dashboard sends JWT to THIS roko instance
   -> VerifyJwt Cell validates JWT signature (public JWKS, no secret)
-  -> AuthorizeCell extracts email from identity
-  -> Looks up email in .roko/users/
-     -> Found? -> authorize with stored role
-     -> Email matches pending invitation? -> auto-create user with invited role
-     -> Not found, no invitation? -> 403 "Not a member of this workspace"
+  -> Route authorization resolves JWT `sub` in .roko/team/members.json
+     -> Found? -> enforce the persisted role on protected routes
+     -> Not found? -> invitation acceptance is the only membership mutation available
+  -> POST /api/team/join with the one-time invite token
+     -> Valid JWT + live token? -> create the member with the invited role
+     -> Invalid, expired, or consumed token? -> fail closed
 ```
 
 ### 9.2 Invitation Flow
 
 1. Owner goes to Settings > Team, types `sarah@example.com`, picks role "Member"
 2. Dashboard calls `POST /api/team/invite` on the roko instance
-3. Roko-serve stores invitation in `.roko/users/invitations.json` (local to this instance)
-4. Dashboard shows a shareable link: `https://your-roko.up.railway.app`
-5. Owner sends the link to Sarah (email, Slack, whatever)
+3. Roko-serve stores only the token hash in `.roko/team/invitations.json` and returns the 32-byte base64url token once
+4. Dashboard creates a shareable link that carries the token client-side
+5. Owner sends the one-time link to Sarah (email, Slack, or another trusted channel)
 6. Sarah opens link -> Privy login -> logs in with `sarah@example.com`
 7. Privy issues JWT -> dashboard sends to roko-serve
-8. AuthorizeCell sees email matches invitation -> creates user record with "member" role
+8. Dashboard submits the token to `POST /api/team/join`; roko-serve uses the verified JWT subject and consumes the token atomically
 9. Sarah sees the dashboard with member-level permissions
 
 ### 9.3 Four Workspace Roles
@@ -982,11 +1054,11 @@ User opens dashboard
 | Role | Agents | Plans | Secrets | Team | System |
 |---|---|---|---|---|---|
 | `owner` | full | full | full | manage | full |
-| `admin` | full | full | view | invite | view |
+| `admin` | full | full | full | -- | view |
 | `member` | full | full | -- | -- | view |
 | `viewer` | view | view | -- | -- | view |
 
-Roles are stored locally in `.roko/users/{email}.json`. No Privy custom_metadata needed.
+Roles are stored locally in `.roko/team/members.json`, keyed by the authenticated JWT subject. No Privy custom metadata or caller-provided role is trusted.
 
 ### 9.4 First-Run Bootstrap
 
@@ -1000,7 +1072,7 @@ Roles are stored locally in `.roko/users/{email}.json`. No Privy custom_metadata
 ### 9.5 Revoking Access
 
 1. Owner removes Sarah from team (`DELETE /api/team/members/:id`)
-2. Roko-serve deletes Sarah's user record from `.roko/users/`
+2. Roko-serve deletes Sarah's member record from `.roko/team/members.json`
 3. Sarah's existing Privy JWT still works (Privy doesn't know about roko-serve's user table)
 4. On Sarah's next API call: AuthorizeCell looks up her email -> not found -> 403 immediately
 5. Dashboard shows "You are no longer a member of this workspace"
@@ -1236,11 +1308,11 @@ condition = "accept"
 | A-4 | Stale JWKS used when endpoint is down (stale-while-revalidate) | Integration test |
 | A-5 | API key with `read` scope can GET any route | Integration test |
 | A-6 | API key with `read` scope gets 403 on POST to agent routes | Integration test |
-| A-7 | API key with `admin` scope can access all routes | Integration test |
+| A-7 | API key with `owner` scope can access owner-only routes; `admin` cannot manage the team | Integration test |
 | A-8 | Insufficient scope response includes required/has/route fields | Unit test |
 | A-9 | Agent token SHA-256 hashed before storage | Unit test: plaintext not in DB |
 | A-10 | Agent token plaintext returned exactly once at issuance | Integration test |
-| A-11 | Agent token rejected after expiry (30 days default) | Unit test with mocked clock |
+| A-11 | Agent token rejected after its configured expiry | Unit test with mocked clock |
 | A-12 | Token rotation: old + new both valid during 5-minute grace period | Integration test |
 | A-13 | Token rotation: old token rejected after grace period expires | Integration test |
 | A-14 | Grace period returns the **real agent_id**, not a placeholder string | Unit test: verify `Identity::Agent { agent_id }` matches original agent |
@@ -1249,7 +1321,7 @@ condition = "accept"
 | A-17 | Device flow: code expires after 10 minutes | Unit test |
 | A-18 | Device flow: poll returns token after browser approval | Integration test |
 | A-19 | First user becomes owner automatically | Integration test: empty `.roko/users/` |
-| A-20 | Invitation flow: matching email auto-creates user with invited role | Integration test |
+| A-20 | Invitation flow: authenticated JWT plus live one-time token creates the member with the invited role | Integration test |
 | A-21 | Non-member gets 403 even with valid Privy JWT | Integration test |
 | A-22 | Revoked member gets 403 immediately | Integration test |
 | A-23 | Wallet-based invitation matches JWT linked accounts | Integration test |
@@ -1258,8 +1330,8 @@ condition = "accept"
 | A-26 | Auth pipeline short-circuits on first acceptance | Unit test |
 | A-27 | Auth pipeline returns 401 when all Verify Cells skip | Unit test |
 | A-28 | AuthorizeCell rejects non-member with 403 (not 401) | Integration test |
-| A-29 | AuthorizeCell resolves correct role from `.roko/users/{email}.json` | Unit test |
-| A-30 | AuthorizeCell auto-creates user on invitation match | Integration test |
+| A-29 | Route authorization resolves the correct role from `.roko/team/members.json` | Unit test |
+| A-30 | Invitation acceptance consumes the hashed token atomically and rejects replay | Integration test |
 | A-31 | AuthorizeCell emits `AuthorizedIdentity` with role and grants on accept | Unit test: verify output Signal payload |
 | A-32 | Owner role grants access to all routes | Unit test: `role_to_grants(Owner)` covers `*` |
 | A-33 | Viewer role grants only GET access | Unit test: `role_to_grants(Viewer)` rejects POST/PUT/DELETE |

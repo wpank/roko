@@ -4,6 +4,61 @@ use serde::{Deserialize, Serialize};
 
 use super::agent::default_true;
 
+// ---- [statehub] ----------------------------------------------------------
+
+/// StateHub projection persistence and retention settings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StateHubConfig {
+    /// Maximum age of retained projection versions (`ms`, `s`, `m`, `h`, or `d`).
+    #[serde(default = "default_projection_history_retention")]
+    pub history_retention: String,
+}
+
+impl StateHubConfig {
+    /// Parse the configured projection-history age window.
+    pub fn history_retention_duration(&self) -> Result<std::time::Duration, String> {
+        parse_duration(&self.history_retention)
+    }
+}
+
+impl Default for StateHubConfig {
+    fn default() -> Self {
+        Self {
+            history_retention: default_projection_history_retention(),
+        }
+    }
+}
+
+fn default_projection_history_retention() -> String {
+    "7d".to_string()
+}
+
+fn parse_duration(value: &str) -> Result<std::time::Duration, String> {
+    let value = value.trim();
+    let split = value
+        .find(|character: char| !character.is_ascii_digit())
+        .ok_or_else(|| "duration requires one of: ms, s, m, h, d".to_string())?;
+    let (amount, unit) = value.split_at(split);
+    let amount = amount
+        .parse::<u64>()
+        .map_err(|error| format!("duration must start with a positive integer: {error}"))?;
+    if amount == 0 {
+        return Err("duration must be greater than zero".to_string());
+    }
+    let multiplier = match unit {
+        "ms" => 1,
+        "s" => 1_000,
+        "m" => 60_000,
+        "h" => 3_600_000,
+        "d" => 86_400_000,
+        _ => return Err("duration unit must be one of: ms, s, m, h, d".to_string()),
+    };
+    amount
+        .checked_mul(multiplier)
+        .map(std::time::Duration::from_millis)
+        .ok_or_else(|| "duration is too large".to_string())
+}
+
 // ---- [serve] -------------------------------------------------------------
 
 /// API serving options.
@@ -92,6 +147,25 @@ pub enum EnforcementMode {
     Disabled,
 }
 
+/// A JSON Web Key Set endpoint and the issuer bound to its keys.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JwksProvider {
+    /// Provider JWKS endpoint.
+    pub url: String,
+    /// Exact JWT `iss` value accepted for keys returned by this endpoint.
+    pub expected_issuer: String,
+}
+
+impl JwksProvider {
+    /// Construct a provider definition.
+    pub fn new(url: impl Into<String>, expected_issuer: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            expected_issuer: expected_issuer.into(),
+        }
+    }
+}
+
 /// Authentication settings for the HTTP API.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServeAuthConfig {
@@ -107,6 +181,10 @@ pub struct ServeAuthConfig {
     /// Privy application ID for JWT validation (Phase 1b -- stub only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub privy_app_id: Option<String>,
+    /// Additional issuer-bound JWKS endpoints. An empty list uses Privy's
+    /// built-in endpoint for backwards compatibility.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jwks_providers: Vec<JwksProvider>,
     /// Privy workspace / org ID that the JWT `org_id` claim must match.
     ///
     /// When set, only tokens whose `org_id` claim equals this value are
@@ -128,6 +206,9 @@ pub struct ServeAuthConfig {
     /// - `disabled`: skip scope checks entirely.
     #[serde(default)]
     pub enforcement_mode: EnforcementMode,
+    /// Lifetime of a workspace invitation before it is rejected and cleaned up.
+    #[serde(default = "default_invite_expiry_days")]
+    pub invite_expiry_days: u64,
 }
 
 impl Default for ServeAuthConfig {
@@ -140,11 +221,17 @@ impl Default for ServeAuthConfig {
             api_key: String::new(),
             api_keys: Vec::new(),
             privy_app_id: None,
+            jwks_providers: Vec::new(),
             privy_workspace_id: None,
             privy_allowed_roles: Vec::new(),
             enforcement_mode: EnforcementMode::default(),
+            invite_expiry_days: default_invite_expiry_days(),
         }
     }
+}
+
+fn default_invite_expiry_days() -> u64 {
+    7
 }
 
 /// A named API key entry with scoped permissions.
@@ -308,6 +395,36 @@ mod tests {
     #[test]
     fn default_auth_is_enabled() {
         assert!(ServeAuthConfig::default().enabled);
+    }
+
+    #[test]
+    fn invite_expiry_defaults_to_seven_days_and_is_configurable() {
+        assert_eq!(ServeAuthConfig::default().invite_expiry_days, 7);
+
+        let cfg: ServeConfig =
+            toml::from_str("[auth]\ninvite_expiry_days = 14\n").expect("parse serve auth config");
+        assert_eq!(cfg.auth.invite_expiry_days, 14);
+    }
+
+    #[test]
+    fn jwks_providers_parse_from_auth_config() {
+        let cfg: ServeConfig = toml::from_str(
+            r#"
+[auth]
+[[auth.jwks_providers]]
+url = "https://identity.example/.well-known/jwks.json"
+expected_issuer = "https://identity.example"
+"#,
+        )
+        .expect("parse JWKS provider config");
+        assert_eq!(cfg.auth.jwks_providers.len(), 1);
+        assert_eq!(
+            cfg.auth.jwks_providers[0],
+            JwksProvider::new(
+                "https://identity.example/.well-known/jwks.json",
+                "https://identity.example"
+            )
+        );
     }
 
     #[test]
@@ -648,6 +765,46 @@ impl Default for GitHubConfig {
             auto_update_prs: false,
             sync_interval_hours: default_github_sync_interval_hours(),
             cleanup_merged_branches: false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod statehub_tests {
+    use super::*;
+
+    #[test]
+    fn statehub_retention_defaults_to_seven_days_and_parses_units() {
+        assert_eq!(
+            StateHubConfig::default()
+                .history_retention_duration()
+                .unwrap(),
+            std::time::Duration::from_secs(7 * 24 * 60 * 60)
+        );
+        for (configured, expected_ms) in [
+            ("250ms", 250),
+            ("60s", 60_000),
+            ("2m", 120_000),
+            ("3h", 10_800_000),
+            ("2d", 172_800_000),
+        ] {
+            let config = StateHubConfig {
+                history_retention: configured.to_string(),
+            };
+            assert_eq!(
+                config.history_retention_duration().unwrap(),
+                std::time::Duration::from_millis(expected_ms)
+            );
+        }
+    }
+
+    #[test]
+    fn statehub_retention_rejects_zero_missing_units_and_overflow() {
+        for configured in ["0s", "60", "1fortnight", "18446744073709551615d"] {
+            let config = StateHubConfig {
+                history_retention: configured.to_string(),
+            };
+            assert!(config.history_retention_duration().is_err(), "{configured}");
         }
     }
 }

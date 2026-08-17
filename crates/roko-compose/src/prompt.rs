@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use roko_core::{
-    Body, Budget, Compose, Context, Kind, PromptSectionAudit, Provenance, Signal,
+    Body, Budget, Compose, Context, Kind, PromptSectionAudit, Provenance, Score, Signal,
     error::{Result, RokoError},
 };
 use serde::{Deserialize, Serialize};
@@ -98,6 +98,8 @@ pub enum AttentionBidder {
     TaskContext,
     /// Predictions, warnings, or forecast-like oracle outputs.
     Oracles,
+    /// Membership-scoped group knowledge and pheromone signals.
+    GroupContext,
 }
 
 /// A single labeled fragment of a prompt.
@@ -385,6 +387,7 @@ const fn bidder_tag(bidder: AttentionBidder) -> &'static str {
         AttentionBidder::Research => "research",
         AttentionBidder::TaskContext => "task_context",
         AttentionBidder::Oracles => "oracles",
+        AttentionBidder::GroupContext => "group_context",
     }
 }
 
@@ -477,6 +480,13 @@ pub struct CompositionManifest {
     pub included: Vec<IncludedSectionMeta>,
     /// Sections excluded by budget or auction pressure.
     pub excluded: Vec<ExcludedSectionMeta>,
+    /// Every decoded source Signal scored during this composition pass.
+    ///
+    /// This preserves the canonical content-addressed identity and complete
+    /// score calculation so downstream telemetry can publish `SignalScored`
+    /// without re-running the scorer or guessing a source reference.
+    #[serde(default)]
+    pub scored_signals: Vec<ScoredSignalMeta>,
     /// VCG diagnostics when the selected strategy is VCG.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vcg_diagnostics: Option<AuctionDiagnostics>,
@@ -484,6 +494,28 @@ pub struct CompositionManifest {
     pub total_tokens: usize,
     /// Budget token limit used for selection.
     pub token_budget_limit: Option<usize>,
+}
+
+/// One source Signal and the score produced for it during composition.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ScoredSignalMeta {
+    /// Full content-addressed Signal reference.
+    pub signal_ref: String,
+    /// Structured score calculation used by the auction.
+    pub result: CandidateScoreResult,
+}
+
+/// Complete result of scoring one prompt candidate.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CandidateScoreResult {
+    /// Multi-axis score returned by the configured scorer.
+    pub axes: Score,
+    /// Scalar reduction of `axes`.
+    pub effective: f32,
+    /// Deterministic section fallback score.
+    pub fallback: f32,
+    /// Score actually used by prompt selection.
+    pub final_score: f32,
 }
 
 impl CompositionManifest {
@@ -810,20 +842,36 @@ impl Compose for PromptComposer {
             .iter()
             .map(|(section, _)| section.name.clone())
             .collect::<Vec<_>>();
+        // Score every successfully decoded source exactly once. Selection,
+        // manifests, and telemetry all reuse this same result.
+        let scored_signals = decoded_sections
+            .iter()
+            .map(|(section, signal)| ScoredSignalMeta {
+                signal_ref: signal.id.to_hex(),
+                result: candidate_score(section, signal, scorer, ctx),
+            })
+            .collect::<Vec<_>>();
+        let score_by_signal = scored_signals
+            .iter()
+            .filter_map(|scored| {
+                roko_core::ContentHash::from_hex(&scored.signal_ref)
+                    .map(|signal_ref| (signal_ref, scored.result))
+            })
+            .collect::<HashMap<_, _>>();
         let (critical, optional): (Vec<_>, Vec<_>) = decoded_sections
             .into_iter()
             .partition(|(p, _)| p.priority == SectionPriority::Critical);
 
         let critical_tokens: usize = critical.iter().map(|(s, _)| s.estimated_tokens()).sum();
 
-        if let Some(max) = budget.max_tokens {
-            if critical_tokens > max {
-                return Err(RokoError::BudgetExceeded {
-                    dimension: "tokens",
-                    used: critical_tokens,
-                    limit: max,
-                });
-            }
+        if let Some(max) = budget.max_tokens
+            && critical_tokens > max
+        {
+            return Err(RokoError::BudgetExceeded {
+                dimension: "tokens",
+                used: critical_tokens,
+                limit: max,
+            });
         }
 
         let remaining_tokens = budget
@@ -841,7 +889,9 @@ impl Compose for PromptComposer {
         let mut optional = optional
             .into_iter()
             .map(|(section, source_signal)| {
-                let score = candidate_score(&section, source_signal, scorer, ctx);
+                let score = score_by_signal
+                    .get(&source_signal.id)
+                    .map_or(0.0, |result| result.final_score);
                 let token_cost = section.estimated_tokens().max(1) as f32;
                 // Multiply by the learning bidder's posterior for this section.
                 let learned_multiplier = self
@@ -956,8 +1006,8 @@ impl Compose for PromptComposer {
             vcg_allocation.as_ref(),
             token_total,
             budget.max_tokens,
-            scorer,
-            ctx,
+            &scored_signals,
+            &score_by_signal,
         );
 
         // Concatenate.
@@ -1393,6 +1443,9 @@ fn bidder_affect_multiplier(section: &PromptSection, affect: Option<&AuctionAffe
         AttentionBidder::Research => 1.0 + low_dominance * 0.30 * exploratory.max(1.0),
         AttentionBidder::TaskContext => 1.0 + urgency * 0.18 * deadline.max(1.0),
         AttentionBidder::Oracles => 1.0 + urgency * 0.22 * prediction.max(1.0),
+        AttentionBidder::GroupContext => {
+            1.0 + urgency * 0.18 * warningish.max(deadline) + low_dominance * 0.18 * exploratory
+        }
     };
 
     urgency * affect_weight * subsystem_bias
@@ -1463,8 +1516,8 @@ fn build_composition_manifest(
     vcg_allocation: Option<&VcgAllocation>,
     total_tokens: usize,
     token_budget_limit: Option<usize>,
-    scorer: &dyn roko_core::traits::Score,
-    ctx: &Context,
+    scored_signals: &[ScoredSignalMeta],
+    score_by_signal: &HashMap<roko_core::ContentHash, CandidateScoreResult>,
 ) -> CompositionManifest {
     let selected_indices = selected
         .iter()
@@ -1514,7 +1567,9 @@ fn build_composition_manifest(
                     },
                 }
             } else {
-                let score = candidate_score(section, source_signal, scorer, ctx);
+                let score = score_by_signal
+                    .get(&source_signal.id)
+                    .map_or(0.0, |result| result.final_score);
                 IncludedSectionMeta {
                     section_id,
                     action_id: section.action_id(),
@@ -1558,6 +1613,7 @@ fn build_composition_manifest(
         selected_strategy,
         included,
         excluded,
+        scored_signals: scored_signals.to_vec(),
         vcg_diagnostics: vcg_allocation.map(|allocation| allocation.diagnostics.clone()),
         total_tokens,
         token_budget_limit,
@@ -1569,11 +1625,16 @@ fn candidate_score(
     signal: &Signal,
     scorer: &dyn roko_core::traits::Score,
     ctx: &Context,
-) -> f32 {
-    let score = scorer.score(signal, ctx);
-    let learned = score.effective();
+) -> CandidateScoreResult {
+    let axes = scorer.score(signal, ctx);
+    let effective = axes.effective();
     let fallback = fallback_section_score(section, signal, ctx);
-    learned.max(fallback)
+    CandidateScoreResult {
+        axes,
+        effective,
+        fallback,
+        final_score: effective.max(fallback),
+    }
 }
 
 fn fallback_section_score(section: &PromptSection, signal: &Signal, ctx: &Context) -> f32 {
@@ -2088,6 +2149,17 @@ mod tests {
                 .iter()
                 .all(|section| !section.action_id.is_empty())
         );
+        assert_eq!(manifest.scored_signals.len(), sections.len());
+        assert!(manifest.scored_signals.iter().all(|scored| {
+            roko_core::ContentHash::from_hex(&scored.signal_ref).is_some()
+                && scored.result.final_score.is_finite()
+        }));
+        let unique_refs = manifest
+            .scored_signals
+            .iter()
+            .map(|scored| scored.signal_ref.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(unique_refs.len(), manifest.scored_signals.len());
     }
 
     #[test]

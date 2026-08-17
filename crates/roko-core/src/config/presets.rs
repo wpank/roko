@@ -82,8 +82,10 @@ fn minimal() -> RokoConfig {
         },
         budget: BudgetConfig {
             max_plan_usd: 5.0,
+            max_task_usd: 1.0,
             max_turn_usd: 1.0,
             prompt_token_budget: 4_000,
+            ..BudgetConfig::default()
         },
         conductor: ConductorConfig {
             max_agents: 2,
@@ -110,6 +112,8 @@ fn minimal() -> RokoConfig {
             use_lookahead_router: false,
             lookahead_threshold: 0.7,
             override_learning_dampening: None,
+            gate_threshold_flush_interval:
+                crate::config::learning::DEFAULT_GATE_THRESHOLD_FLUSH_INTERVAL,
         },
         ..RokoConfig::default()
     }
@@ -147,8 +151,10 @@ fn thorough() -> RokoConfig {
         },
         budget: BudgetConfig {
             max_plan_usd: 100.0,
+            max_task_usd: 10.0,
             max_turn_usd: 5.0,
             prompt_token_budget: 20_000,
+            ..BudgetConfig::default()
         },
         conductor: ConductorConfig {
             max_agents: 16,
@@ -175,6 +181,8 @@ fn thorough() -> RokoConfig {
             use_lookahead_router: true,
             lookahead_threshold: 0.7,
             override_learning_dampening: None,
+            gate_threshold_flush_interval:
+                crate::config::learning::DEFAULT_GATE_THRESHOLD_FLUSH_INTERVAL,
         },
         ..RokoConfig::default()
     }

@@ -9,7 +9,7 @@
 //! may have updated the knowledge store. When stale, the caller rebuilds
 //! with [`PromptCache::load`] and swaps the `Arc`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use roko_learn::episode_logger::Episode;
@@ -109,29 +109,20 @@ fn load_neuro_entries(workdir: &Path) -> Vec<KnowledgeEntry> {
 
 fn load_episodes(workdir: &Path) -> Vec<Episode> {
     let mut episodes = Vec::new();
-    for path in episode_paths(workdir) {
-        if let Ok(file) = std::fs::File::open(&path) {
-            let reader = std::io::BufReader::new(file);
-            for line in std::io::BufRead::lines(reader).map_while(Result::ok) {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if let Ok(episode) = serde_json::from_str::<Episode>(trimmed) {
-                    episodes.push(episode);
-                }
+    let path = roko_learn::runtime_feedback::resolve_project_episode_path(workdir);
+    if let Ok(file) = std::fs::File::open(&path) {
+        let reader = std::io::BufReader::new(file);
+        for line in std::io::BufRead::lines(reader).map_while(Result::ok) {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(episode) = serde_json::from_str::<Episode>(trimmed) {
+                episodes.push(episode);
             }
         }
     }
     episodes
-}
-
-fn episode_paths(workdir: &Path) -> Vec<PathBuf> {
-    vec![
-        workdir.join(".roko").join("episodes.jsonl"),
-        workdir.join(".roko").join("learn").join("episodes.jsonl"),
-        workdir.join(".roko").join("memory").join("episodes.jsonl"),
-    ]
 }
 
 fn load_playbooks(workdir: &Path) -> Vec<Playbook> {

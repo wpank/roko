@@ -1,5 +1,8 @@
 # Roko HTTP API Reference
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../v2/](../v2/) for the current reference.
+
+
 The roko HTTP control plane is started with `roko serve` (default: `127.0.0.1:6677`). All REST endpoints are prefixed with `/api/` except webhooks (`/webhooks/`) and WebSocket (`/ws`).
 
 ## Authentication

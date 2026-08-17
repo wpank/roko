@@ -1,110 +1,14 @@
 //! OCaps-style capability tokens for agent execution.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rand::random;
+pub use roko_core::plugin::{PluginAccessCapability as Capability, PluginTier};
 use roko_std::tool::SandboxConfig;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 // ─── Plugin trust tiers ──────────────────────────────────────────────
-
-/// Trust tier assigned to plugins and MCP servers.
-///
-/// Each tier grants a specific set of capabilities. Lower tiers are
-/// more restricted: tiers 1-2 are denied secrets and network egress by
-/// default. The tier is assigned in `.mcp.json` or at registration time;
-/// absent an explicit tier, plugins default to [`PluginTier::Sandboxed`].
-///
-/// # Tier summary
-///
-/// | Tier | Label | FS | Network | Secrets |
-/// |------|-------------|-----------|---------|---------|
-/// | 1 | Untrusted | none | no | no |
-/// | 2 | Sandboxed | read-only | no | no |
-/// | 3 | Standard | worktree | allow | no |
-/// | 4 | Trusted | full | full | yes |
-/// | 5 | Kernel | full | full | yes |
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PluginTier {
-    /// Tier 1: untrusted WASM — no filesystem, no network, no secrets.
-    Untrusted = 1,
-    /// Tier 2: sandboxed native — read-only filesystem, no network.
-    Sandboxed = 2,
-    /// Tier 3: standard plugin — worktree-scoped filesystem, allowlisted network.
-    Standard = 3,
-    /// Tier 4: trusted native — full filesystem, full network, secrets allowed.
-    Trusted = 4,
-    /// Tier 5: kernel extension — same trust as core.
-    Kernel = 5,
-}
-
-impl Default for PluginTier {
-    /// Plugins default to Sandboxed (tier 2) when no explicit tier is set.
-    fn default() -> Self {
-        Self::Sandboxed
-    }
-}
-
-impl PluginTier {
-    /// Return the set of capabilities that this tier permits.
-    ///
-    /// Higher tiers are strict supersets of lower tiers. The returned
-    /// capabilities are used by [`check_plugin_tier`] to gate tool calls
-    /// originating from plugins.
-    #[must_use]
-    pub fn allowed_capabilities(&self) -> Vec<Capability> {
-        match self {
-            Self::Untrusted => {
-                // Tier 1: only named tool invocation, nothing else.
-                vec![]
-            }
-            Self::Sandboxed => {
-                // Tier 2: read-only paths.
-                vec![Capability::ReadPath(PathBuf::from("/"))]
-            }
-            Self::Standard => {
-                // Tier 3: read + write (worktree-scoped via PathPolicy) + exec.
-                vec![
-                    Capability::ReadPath(PathBuf::from("/")),
-                    Capability::WritePath(PathBuf::from("/")),
-                    Capability::Exec("*".into()),
-                ]
-            }
-            Self::Trusted | Self::Kernel => {
-                // Tier 4-5: full capabilities including network.
-                vec![
-                    Capability::ReadPath(PathBuf::from("/")),
-                    Capability::WritePath(PathBuf::from("/")),
-                    Capability::Exec("*".into()),
-                    Capability::Network {
-                        host: "*".into(),
-                        port: 0,
-                    },
-                ]
-            }
-        }
-    }
-
-    /// Return `true` if this tier permits network egress.
-    #[must_use]
-    pub const fn allows_network(&self) -> bool {
-        matches!(self, Self::Standard | Self::Trusted | Self::Kernel)
-    }
-
-    /// Return `true` if this tier permits access to secrets.
-    #[must_use]
-    pub const fn allows_secrets(&self) -> bool {
-        matches!(self, Self::Trusted | Self::Kernel)
-    }
-
-    /// Return `true` if this tier permits filesystem writes.
-    #[must_use]
-    pub const fn allows_writes(&self) -> bool {
-        matches!(self, Self::Standard | Self::Trusted | Self::Kernel)
-    }
-}
 
 /// Check whether a plugin at the given `tier` is allowed to invoke the
 /// requested `capability`. Returns `Ok(())` on success; returns a
@@ -131,22 +35,6 @@ pub fn check_plugin_tier(tier: PluginTier, capability: &Capability) -> Result<()
         }
         _ => Ok(()),
     }
-}
-
-/// A concrete capability required to execute a tool or resource access.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Capability {
-    /// Named tool invocation.
-    Tool(String),
-    /// Read access to a path.
-    ReadPath(PathBuf),
-    /// Write access to a path.
-    WritePath(PathBuf),
-    /// Shell execution capability.
-    Exec(String),
-    /// Network capability for a host/port pair.
-    Network { host: String, port: u16 },
 }
 
 /// Unforgeable warrant token carrying a reduced capability set.
@@ -198,11 +86,30 @@ pub enum CapabilityError {
     /// The warrant cannot be delegated further.
     #[error("delegation depth exhausted")]
     DepthExhausted,
+    /// The parent warrant has reached or passed its expiry.
+    #[error("warrant expired")]
+    Expired,
 }
 
 /// Check whether `warrant` covers `required`.
 #[must_use]
 pub fn check_capability(warrant: &AgentWarrant, required: &Capability) -> bool {
+    check_capability_at(warrant, required, unix_now())
+}
+
+/// Check a warrant at a trusted unix-second observation.
+#[must_use]
+pub fn check_capability_at(
+    warrant: &AgentWarrant,
+    required: &Capability,
+    observed_at: u64,
+) -> bool {
+    if warrant
+        .expires_at
+        .is_some_and(|expiry| expiry <= observed_at)
+    {
+        return false;
+    }
     warrant
         .capabilities
         .iter()
@@ -214,13 +121,28 @@ pub fn delegate(
     warrant: &AgentWarrant,
     subset: &[Capability],
 ) -> Result<AgentWarrant, CapabilityError> {
+    delegate_at(warrant, subset, unix_now())
+}
+
+/// Delegate a warrant using a trusted unix-second observation.
+pub fn delegate_at(
+    warrant: &AgentWarrant,
+    subset: &[Capability],
+    observed_at: u64,
+) -> Result<AgentWarrant, CapabilityError> {
+    if warrant
+        .expires_at
+        .is_some_and(|expiry| expiry <= observed_at)
+    {
+        return Err(CapabilityError::Expired);
+    }
     if warrant.delegate_depth == 0 {
         return Err(CapabilityError::DepthExhausted);
     }
 
     if subset
         .iter()
-        .any(|required| !check_capability(warrant, required))
+        .any(|required| !check_capability_at(warrant, required, observed_at))
     {
         return Err(CapabilityError::NotCovered);
     }
@@ -232,6 +154,13 @@ pub fn delegate(
         expires_at: warrant.expires_at,
         delegate_depth: warrant.delegate_depth.saturating_sub(1),
     })
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn capability_covers(granted: &Capability, required: &Capability) -> bool {
@@ -432,33 +361,10 @@ pub fn check_plugin_capability(tier: u8, capability: &str) -> bool {
     }
 }
 
-impl PluginTier {
-    /// Convert a raw numeric level (1-5) to a [`PluginTier`].
-    ///
-    /// Levels below 1 map to [`Untrusted`](Self::Untrusted); levels above 5
-    /// map to [`Kernel`](Self::Kernel). This matches the convention used by
-    /// [`SandboxConfig::for_tier_level`].
-    #[must_use]
-    pub const fn from_level(level: u8) -> Self {
-        match level {
-            0 | 1 => Self::Untrusted,
-            2 => Self::Sandboxed,
-            3 => Self::Standard,
-            4 => Self::Trusted,
-            _ => Self::Kernel,
-        }
-    }
-
-    /// Return the numeric level (1-5) for this tier.
-    #[must_use]
-    pub const fn as_level(&self) -> u8 {
-        *self as u8
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn check_capability_matches_exact_tool() {
@@ -483,6 +389,19 @@ mod tests {
         let child = delegate(&warrant, &[Capability::Tool("bash".into())]).unwrap();
         assert_eq!(child.delegate_depth, 0);
         assert_eq!(child.capabilities.len(), 1);
+    }
+
+    #[test]
+    fn warrant_expiry_is_fail_closed_at_exact_boundary() {
+        let warrant = AgentWarrant::new("issuer", vec![Capability::Tool("bash".into())], 1)
+            .with_expiry(Some(100));
+        let required = Capability::Tool("bash".into());
+        assert!(check_capability_at(&warrant, &required, 99));
+        assert!(!check_capability_at(&warrant, &required, 100));
+        assert_eq!(
+            delegate_at(&warrant, std::slice::from_ref(&required), 100),
+            Err(CapabilityError::Expired)
+        );
     }
 
     #[test]

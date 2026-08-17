@@ -36,10 +36,10 @@ fn persist_pids() {
         return;
     };
     let pids: Vec<u32> = set.iter().copied().collect();
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            tracing::warn!(path = %parent.display(), error = %e, "failed to create PID registry directory");
-        }
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!(path = %parent.display(), error = %e, "failed to create PID registry directory");
     }
     if let Err(e) = std::fs::write(&path, serde_json::to_string(&pids).unwrap_or_default()) {
         tracing::warn!(path = %path.display(), error = %e, "failed to persist PID registry to disk");
@@ -224,11 +224,11 @@ pub fn reap_orphaned_children() -> usize {
     }
 
     // Prune dead PIDs from the registry.
-    if !dead_pids.is_empty() {
-        if let Ok(mut set) = spawned_pids().lock() {
-            for pid in &dead_pids {
-                set.remove(pid);
-            }
+    if !dead_pids.is_empty()
+        && let Ok(mut set) = spawned_pids().lock()
+    {
+        for pid in &dead_pids {
+            set.remove(pid);
         }
     }
 

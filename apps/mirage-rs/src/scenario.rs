@@ -659,11 +659,11 @@ fn execute_scenario(fork: &mut crate::fork::ForkState, scenario: &Scenario) -> S
                 );
                 gas_used = gas_used.saturating_add(diff.gas_used);
                 logs.extend(diff.logs);
-                if let Some(max_gas) = scenario.max_gas {
-                    if gas_used > max_gas {
-                        status = ScenarioStatus::GasExceeded;
-                        break;
-                    }
+                if let Some(max_gas) = scenario.max_gas
+                    && gas_used > max_gas
+                {
+                    status = ScenarioStatus::GasExceeded;
+                    break;
                 }
             }
             Err(error) => {
@@ -678,11 +678,11 @@ fn execute_scenario(fork: &mut crate::fork::ForkState, scenario: &Scenario) -> S
         }
     }
 
-    if matches!(status, ScenarioStatus::Success) {
-        if let Err(error) = scenario.evaluate_assertions(fork) {
-            status = ScenarioStatus::Error(error.to_string());
-            revert_reason = Some(error.to_string());
-        }
+    if matches!(status, ScenarioStatus::Success)
+        && let Err(error) = scenario.evaluate_assertions(fork)
+    {
+        status = ScenarioStatus::Error(error.to_string());
+        revert_reason = Some(error.to_string());
     }
 
     let final_balances = tracked_balances(fork, &scenario.track_addresses);

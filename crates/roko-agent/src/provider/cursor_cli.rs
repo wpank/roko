@@ -1,6 +1,8 @@
 use crate::Agent;
 use crate::cursor_cli_agent::CursorCliAgent;
-use crate::provider::{AgentCreationError, AgentOptions, ProviderAdapter, ProviderError};
+use crate::provider::{
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
+};
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
@@ -44,11 +46,19 @@ impl ProviderAdapter for CursorCliAdapter {
 
         let mut agent = CursorCliAgent::new(command, working_dir).with_timeout_ms(timeout_ms);
 
+        if let Some(limits) = configured_resource_limits(provider)? {
+            agent = agent.with_resource_limits(limits);
+        }
+
         if !model.slug.is_empty() {
             agent = agent.with_model(model.slug.clone());
         }
         if !options.name.is_empty() {
             agent = agent.with_name(options.name.clone());
+        }
+        if let Some(servers) = &options.local_tool_mcp_servers {
+            agent =
+                agent.with_mcp_servers(servers.iter().map(|server| server.to_acp_json()).collect());
         }
 
         Ok(Box::new(agent))

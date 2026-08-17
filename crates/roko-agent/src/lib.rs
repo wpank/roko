@@ -61,6 +61,9 @@ pub mod gemini;
 pub mod harness;
 pub mod hermes;
 pub mod http;
+/// Automatic immune screening at the canonical provider final-output boundary.
+pub mod immune_boundary;
+mod immune_evidence;
 pub mod introspection;
 pub mod lifecycle;
 pub mod mcp;
@@ -68,6 +71,7 @@ pub mod metamorphosis;
 pub mod mock;
 pub mod model_call_service;
 pub mod multi_pool;
+mod multimodal;
 pub mod nl_to_format;
 pub mod observer;
 pub mod ollama;
@@ -87,6 +91,7 @@ pub mod streaming;
 pub mod task_runner;
 pub mod testutil;
 pub mod token_estimator;
+mod tool_immune;
 pub mod tool_loop;
 pub mod translate;
 pub mod usage;
@@ -132,6 +137,10 @@ pub use hermes::{
     ToolProgressInspector, probe_hermes,
 };
 pub use http::{HttpPoster, ReqwestPoster, shared_http_client, shared_http_client_from};
+pub use immune_boundary::{
+    AgentIsolationControl, ImmuneScreenedAgent, ProviderBoundaryRecord,
+    detect_provider_output_anomaly, quarantine_store_path,
+};
 pub use introspection::{AgentIdentity, Intervention, MetacognitiveMonitor, Turn};
 pub use lifecycle::*;
 pub use metamorphosis::{MorphError, MorphableAgent, RoleProfile};
@@ -155,7 +164,10 @@ pub use provider::{
     ProviderAdapter, adapter_for_kind, create_agent_for_model, current_safety_layer,
     with_scoped_safety_layer,
 };
-pub use rate_limit::{AcquireOutcome, ProviderHealthChecker, ProviderRateLimiter, RateLimitError};
+pub use rate_limit::{
+    AcquireOutcome, ProviderHealthChecker, ProviderRateLimitSnapshot, ProviderRateLimiter,
+    RateLimitError,
+};
 pub use roko_core::{
     BUILTIN_ROLE_POLICY_MANIFEST_PATH, BUILTIN_ROLE_POLICY_MANIFEST_TOML,
     MANIFEST_BACKED_BUILTIN_ROLE_IDS, PromptPolicy, RolePolicyManifest,
@@ -182,6 +194,10 @@ pub use task_runner::{
 pub use token_estimator::{
     ContextWindowStatus, check_context_window, context_window_for_slug, estimate_prompt_tokens,
     estimate_tokens,
+};
+pub use tool_immune::{
+    ToolBoundaryEffect, ToolBoundaryRecord, ToolControl, ToolControlState,
+    detect_tool_result_anomaly, quarantine_vault_path, tool_controls_path,
 };
 pub use tool_loop::{
     OnTurnCallback, StreamEvent, StreamEventKind, ToolLoopAgent, TurnConfig, TurnProgress,

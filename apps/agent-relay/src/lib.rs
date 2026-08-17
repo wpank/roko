@@ -5,34 +5,38 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
+    extract::DefaultBodyLimit,
     extract::{
         Path, Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    http::StatusCode,
-    response::IntoResponse,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use tokio::sync::mpsc;
 use tower_http::trace::TraceLayer;
 use tracing::warn;
+
+const AGENT_HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 pub mod bus;
 pub mod chain_watcher;
 pub mod protocol;
+pub mod registry;
 pub mod state;
 
 pub use bus::{TopicBus, TopicBusConfig};
 
+use bus::RelayMailbox;
 use protocol::{
     AgentInboundFrame, RelayEvent, RelayMessageRequest, RelayOutboundFrame, TopicEnvelope,
 };
 use state::{AwaitMessageError, BeginMessageError, RegisteredAgent, RelayState};
 
 pub fn app(state: Arc<RelayState>) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/relay/health", get(health))
         .route("/relay/agents", get(list_agents))
         .route("/relay/agents/ws", get(agent_ws))
@@ -55,9 +59,124 @@ pub fn app(state: Arc<RelayState>) -> Router {
         // Feed metadata endpoints (A5)
         .route("/relay/topics", get(list_topics))
         .route("/relay/topics/{topic}/messages", get(topic_messages))
-        .route("/relay/topics/{topic}/subscribers", get(topic_subscribers))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        .route("/relay/topics/{topic}/subscribers", get(topic_subscribers));
+    if state.registry().is_some_and(|registry| registry.can_read()) {
+        router = router
+            .route("/registry/extensions/{name}", get(get_registry_extension))
+            .route(
+                "/registry/extensions/{name}/resolve",
+                get(resolve_registry_extension),
+            )
+            .route(
+                "/registry/extensions/{name}/versions/{version}",
+                get(get_registry_extension_version),
+            );
+        if state
+            .registry()
+            .is_some_and(|registry| registry.can_publish())
+        {
+            router = router.route(
+                "/registry/extensions",
+                post(publish_registry_extension)
+                    .layer(DefaultBodyLimit::max(registry::MAX_PUBLISH_BODY_BYTES)),
+            );
+        }
+    }
+    router.layer(TraceLayer::new_for_http()).with_state(state)
+}
+
+async fn get_registry_extension(
+    State(state): State<Arc<RelayState>>,
+    Path(name): Path<String>,
+    Query(query): Query<RegistryRequirementQuery>,
+) -> Result<Json<roko_plugin::registry::RegistryPackage>, (StatusCode, Json<Value>)> {
+    let registry = state.registry().ok_or_else(registry_unavailable)?;
+    registry
+        .resolve(&name, query.requirement.as_deref().unwrap_or("*"))
+        .map(Json)
+        .map_err(registry_error)
+}
+
+#[derive(Default, serde::Deserialize)]
+struct RegistryRequirementQuery {
+    requirement: Option<String>,
+}
+
+async fn resolve_registry_extension(
+    State(state): State<Arc<RelayState>>,
+    Path(name): Path<String>,
+    Query(query): Query<RegistryRequirementQuery>,
+) -> Result<Json<roko_plugin::registry::ResolvedRegistryGraph>, (StatusCode, Json<Value>)> {
+    let registry = state.registry().ok_or_else(registry_unavailable)?;
+    registry
+        .resolve_graph(&name, query.requirement.as_deref().unwrap_or("*"))
+        .map(Json)
+        .map_err(registry_error)
+}
+
+async fn get_registry_extension_version(
+    State(state): State<Arc<RelayState>>,
+    Path((name, version)): Path<(String, String)>,
+) -> Result<Json<roko_plugin::registry::RegistryPackage>, (StatusCode, Json<Value>)> {
+    let registry = state.registry().ok_or_else(registry_unavailable)?;
+    registry
+        .get(&name, &version)
+        .map(Json)
+        .map_err(registry_error)
+}
+
+async fn publish_registry_extension(
+    State(state): State<Arc<RelayState>>,
+    headers: HeaderMap,
+    Json(package): Json<roko_plugin::registry::RegistryPackage>,
+) -> Result<(StatusCode, Json<roko_plugin::registry::RegistryPackage>), (StatusCode, Json<Value>)> {
+    let registry = state.registry().ok_or_else(registry_unavailable)?;
+    let authorization = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "publisher bearer token is required" })),
+            )
+        })?;
+    let token = authorization.strip_prefix("Bearer ").ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "publisher authorization must use Bearer" })),
+        )
+    })?;
+    registry
+        .publish(package, token)
+        .map(|outcome| {
+            let status = if outcome.created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            };
+            (status, Json(outcome.package))
+        })
+        .map_err(registry_error)
+}
+
+fn registry_unavailable() -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({ "error": "extension registry is not configured" })),
+    )
+}
+
+fn registry_error(error: registry::RegistryError) -> (StatusCode, Json<Value>) {
+    let status = match error {
+        registry::RegistryError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+        registry::RegistryError::NotFound(_) => StatusCode::NOT_FOUND,
+        registry::RegistryError::Conflict(_) => StatusCode::CONFLICT,
+        registry::RegistryError::Invalid(_) | registry::RegistryError::MissingDependency(_) => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
+        registry::RegistryError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (status, Json(json!({ "error": error.to_string() })))
 }
 
 async fn health() -> &'static str {
@@ -78,8 +197,11 @@ async fn register_workspace(
     State(state): State<Arc<RelayState>>,
     Json(hello): Json<protocol::WorkspaceHello>,
 ) -> impl IntoResponse {
-    state.register_workspace(hello);
-    StatusCode::OK
+    if state.register_workspace(hello) {
+        StatusCode::OK
+    } else {
+        StatusCode::UNPROCESSABLE_ENTITY
+    }
 }
 
 async fn workspace_heartbeat(
@@ -123,15 +245,32 @@ async fn forward_message(
         .map_err(await_message_error)
 }
 
-async fn agent_ws(State(state): State<Arc<RelayState>>, ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_agent_socket(state, socket))
+async fn agent_ws(State(state): State<Arc<RelayState>>, ws: WebSocketUpgrade) -> Response {
+    let Some(permit) = state.try_admit_agent_socket() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "relay agent socket capacity reached" })),
+        )
+            .into_response();
+    };
+    ws.max_message_size(2 * 1024 * 1024)
+        .max_frame_size(2 * 1024 * 1024)
+        .on_upgrade(move |socket| handle_agent_socket(state, socket, permit))
+        .into_response()
 }
 
-async fn events_ws(
-    State(state): State<Arc<RelayState>>,
-    ws: WebSocketUpgrade,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_events_socket(state, socket))
+async fn events_ws(State(state): State<Arc<RelayState>>, ws: WebSocketUpgrade) -> Response {
+    let Some(permit) = state.try_admit_events_socket() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "relay events socket capacity reached" })),
+        )
+            .into_response();
+    };
+    ws.max_message_size(2 * 1024 * 1024)
+        .max_frame_size(2 * 1024 * 1024)
+        .on_upgrade(move |socket| handle_events_socket(state, socket, permit))
+        .into_response()
 }
 
 fn begin_message_error(error: BeginMessageError) -> (StatusCode, Json<Value>) {
@@ -143,6 +282,14 @@ fn begin_message_error(error: BeginMessageError) -> (StatusCode, Json<Value>) {
         BeginMessageError::NotConnected => (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "error": "agent connection is not writable" })),
+        ),
+        BeginMessageError::Capacity => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "relay pending response capacity reached" })),
+        ),
+        BeginMessageError::InvalidRequest => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": "invalid or oversized relay message" })),
         ),
     }
 }
@@ -159,9 +306,16 @@ fn await_message_error(error: AwaitMessageError) -> (StatusCode, Json<Value>) {
     }
 }
 
-async fn handle_agent_socket(state: Arc<RelayState>, socket: WebSocket) {
+async fn handle_agent_socket(
+    state: Arc<RelayState>,
+    socket: WebSocket,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+) {
     let (mut sink, mut stream) = socket.split();
-    let Some(first_frame) = next_text_frame(&mut stream).await else {
+    let Ok(Some(first_frame)) =
+        tokio::time::timeout(AGENT_HELLO_TIMEOUT, next_text_frame(&mut stream)).await
+    else {
+        let _ = sink.close().await;
         return;
     };
 
@@ -191,18 +345,38 @@ async fn handle_agent_socket(state: Arc<RelayState>, socket: WebSocket) {
         }
     };
 
-    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<RelayOutboundFrame>();
-    let RegisteredAgent {
+    let outbound_tx = state.bus.delivery_mailbox();
+    outbound_tx.pause_topics();
+    let Ok(RegisteredAgent {
         session_id,
         agent_id,
-    } = state.register_agent(hello, outbound_tx.clone());
+    }) = state.register_agent(hello, outbound_tx.clone())
+    else {
+        let _ = send_raw_json(
+            &mut sink,
+            json!({ "error": "relay connection capacity reached" }),
+        )
+        .await;
+        let _ = sink.close().await;
+        return;
+    };
 
+    let writer_mailbox = outbound_tx.clone();
     let writer = tokio::spawn(async move {
-        while let Some(frame) = outbound_rx.recv().await {
-            let Ok(payload) = serde_json::to_string(&frame) else {
-                continue;
-            };
-            if sink.send(Message::Text(payload.into())).await.is_err() {
+        while let Some(frame) = writer_mailbox.recv_shared().await {
+            let close_after = matches!(
+                frame.frame(),
+                RelayOutboundFrame::ResumeRequired { .. } | RelayOutboundFrame::Superseded(_)
+            );
+            if sink
+                .send(Message::Text(frame.encoded().clone()))
+                .await
+                .is_err()
+            {
+                break;
+            }
+            if close_after {
+                let _ = sink.close().await;
                 break;
             }
         }
@@ -212,10 +386,18 @@ async fn handle_agent_socket(state: Arc<RelayState>, socket: WebSocket) {
         event: "hello".to_string(),
     });
 
+    let mut subscription_initialized = false;
     while let Some(message) = stream.next().await {
         match message {
             Ok(Message::Text(text)) => {
-                if !handle_agent_frame(&state, &agent_id, &outbound_tx, text.as_str()) {
+                if !handle_agent_frame(
+                    &state,
+                    &agent_id,
+                    session_id,
+                    &outbound_tx,
+                    &mut subscription_initialized,
+                    text.as_str(),
+                ) {
                     break;
                 }
             }
@@ -228,35 +410,67 @@ async fn handle_agent_socket(state: Arc<RelayState>, socket: WebSocket) {
         }
     }
 
-    state.bus.unsubscribe_all(&agent_id);
     state.unregister_agent(&agent_id, session_id);
+    outbound_tx.close();
     writer.abort();
 }
 
-#[allow(clippy::too_many_lines)]
 fn handle_agent_frame(
     state: &Arc<RelayState>,
     agent_id: &str,
-    outbound_tx: &mpsc::UnboundedSender<RelayOutboundFrame>,
+    session_id: uuid::Uuid,
+    outbound_tx: &RelayMailbox,
+    subscription_initialized: &mut bool,
     text: &str,
 ) -> bool {
-    match serde_json::from_str::<AgentInboundFrame>(text) {
+    let frame = serde_json::from_str::<AgentInboundFrame>(text);
+    state
+        .with_current_session(agent_id, session_id, || {
+            handle_current_agent_frame(
+                state,
+                agent_id,
+                session_id,
+                outbound_tx,
+                subscription_initialized,
+                frame,
+            )
+        })
+        .unwrap_or(false)
+}
+
+#[allow(clippy::too_many_lines)]
+fn handle_current_agent_frame(
+    state: &Arc<RelayState>,
+    agent_id: &str,
+    session_id: uuid::Uuid,
+    outbound_tx: &RelayMailbox,
+    subscription_initialized: &mut bool,
+    frame: Result<AgentInboundFrame, serde_json::Error>,
+) -> bool {
+    match frame {
         Ok(AgentInboundFrame::Card { card, card_uri }) => {
-            state.update_card(agent_id, card, card_uri);
-            let _ = outbound_tx.send(RelayOutboundFrame::Ack {
-                event: "card".to_string(),
-            });
+            let frame = if state.update_card(agent_id, card, card_uri) {
+                RelayOutboundFrame::Ack {
+                    event: "card".to_string(),
+                }
+            } else {
+                RelayOutboundFrame::Error {
+                    message_id: None,
+                    error: "invalid or oversized relay card".to_owned(),
+                }
+            };
+            let _ = outbound_tx.send(frame);
             true
         }
         Ok(AgentInboundFrame::Response {
             message_id,
             response,
         }) => {
-            state.resolve_response(&message_id, Ok(response));
+            state.resolve_response(agent_id, session_id, &message_id, Ok(response));
             true
         }
         Ok(AgentInboundFrame::Error { message_id, error }) => {
-            state.agent_error(agent_id, message_id.clone(), error.clone());
+            state.agent_error(agent_id, session_id, message_id.clone(), error.clone());
             if message_id.is_none() {
                 let _ = outbound_tx.send(RelayOutboundFrame::Error {
                     message_id: None,
@@ -276,32 +490,92 @@ fn handle_agent_frame(
             });
             true
         }
-        Ok(AgentInboundFrame::Subscribe { topic }) => {
-            tracing::debug!(%agent_id, %topic, "subscribe");
-            let replay = state.bus.subscribe(agent_id, &topic);
-            for envelope in replay {
-                let frame = RelayOutboundFrame::TopicMessage {
-                    topic: envelope.topic,
-                    msg_type: envelope.msg_type,
-                    payload: envelope.payload,
-                    publisher_id: envelope.publisher_id,
-                    seq: envelope.seq,
-                };
-                if outbound_tx.send(frame).is_err() {
-                    tracing::warn!(%agent_id, "failed to send replay — agent disconnected");
-                    break;
-                }
+        Ok(AgentInboundFrame::Subscribe { request, topic }) => {
+            if *subscription_initialized {
+                let _ = outbound_tx.send(RelayOutboundFrame::Error {
+                    message_id: None,
+                    error: "subscriptions are initialized once; reconnect to change cursor rooms"
+                        .to_owned(),
+                });
+                return true;
             }
+            let mut rooms = request.rooms;
+            let last_seq = request.last_seq;
+            if let Some(topic) = topic {
+                rooms.push(topic);
+            }
+            rooms.sort();
+            rooms.dedup();
+            if rooms.is_empty() || rooms.len() > 64 {
+                let _ = outbound_tx.send(RelayOutboundFrame::Error {
+                    message_id: None,
+                    error: "subscribe requires 1-64 valid rooms".to_owned(),
+                });
+                return true;
+            }
+            // Replay is explicit through Resume, so subscription changes never
+            // ambiguously duplicate retained history.
+            if state
+                .bus
+                .subscribe_and_recover(
+                    agent_id,
+                    &rooms,
+                    last_seq,
+                    |budget| state.relay_snapshot_with_budget(budget),
+                    outbound_tx,
+                )
+                .is_err()
+            {
+                let _ = outbound_tx.send(RelayOutboundFrame::Error {
+                    message_id: None,
+                    error: "invalid or unavailable relay room batch".to_owned(),
+                });
+                return true;
+            }
+            *subscription_initialized = true;
             let _ = outbound_tx.send(RelayOutboundFrame::Ack {
-                event: format!("subscribed:{topic}"),
+                event: format!("subscribed:{}", rooms.join(",")),
             });
             true
         }
-        Ok(AgentInboundFrame::Unsubscribe { topic }) => {
-            tracing::debug!(%agent_id, %topic, "unsubscribe");
-            state.bus.unsubscribe(agent_id, &topic);
+        Ok(AgentInboundFrame::Resume(_)) => {
+            // Replay is coupled to subscription installation through
+            // SubscribeMessage::last_seq. A live-socket Resume cannot prevent
+            // the writer from already having dequeued a newer live frame.
+            let _ = outbound_tx.send(RelayOutboundFrame::Error {
+                message_id: None,
+                error: "resume requires reconnect with subscribe.last_seq".to_owned(),
+            });
+            true
+        }
+        Ok(AgentInboundFrame::Ack { room, seq }) => {
+            if state.bus.acknowledge(agent_id, &room, seq).is_err() {
+                let _ = outbound_tx.send(RelayOutboundFrame::Error {
+                    message_id: None,
+                    error: "invalid relay acknowledgement".to_owned(),
+                });
+            }
+            true
+        }
+        Ok(AgentInboundFrame::Unsubscribe { request, topic }) => {
+            let mut rooms = request.rooms;
+            if let Some(topic) = topic {
+                rooms.push(topic);
+            }
+            rooms.sort();
+            rooms.dedup();
+            for room in &rooms {
+                tracing::debug!(%agent_id, %room, "unsubscribe");
+                if state.bus.try_unsubscribe(agent_id, room).is_err() {
+                    let _ = outbound_tx.send(RelayOutboundFrame::Error {
+                        message_id: None,
+                        error: "invalid relay room".to_owned(),
+                    });
+                    return true;
+                }
+            }
             let _ = outbound_tx.send(RelayOutboundFrame::Ack {
-                event: format!("unsubscribed:{topic}"),
+                event: format!("unsubscribed:{}", rooms.join(",")),
             });
             true
         }
@@ -312,20 +586,16 @@ fn handle_agent_frame(
         }) => {
             tracing::debug!(%agent_id, %topic, %msg_type, "publish");
             let envelope = TopicEnvelope::new(&topic, &msg_type, payload).with_publisher(agent_id);
-            let (seq, subscribers) = state.bus.publish(envelope.clone());
-            for sub_id in &subscribers {
-                if sub_id == agent_id {
-                    continue;
+            let (seq, _delivered) = match state.try_publish_topic(envelope, Some(agent_id)) {
+                Ok(published) => published,
+                Err(_) => {
+                    let _ = outbound_tx.send(RelayOutboundFrame::Error {
+                        message_id: None,
+                        error: "invalid relay topic or message type".to_owned(),
+                    });
+                    return true;
                 }
-                let frame = RelayOutboundFrame::TopicMessage {
-                    topic: envelope.topic.clone(),
-                    msg_type: envelope.msg_type.clone(),
-                    payload: envelope.payload.clone(),
-                    publisher_id: envelope.publisher_id.clone(),
-                    seq,
-                };
-                state.send_to_agent(sub_id, frame);
-            }
+            };
             let _ = outbound_tx.send(RelayOutboundFrame::Ack {
                 event: format!("published:{topic}:{seq}"),
             });
@@ -333,10 +603,17 @@ fn handle_agent_frame(
         }
         Ok(AgentInboundFrame::RegisterFeed { feed }) => {
             tracing::debug!(%agent_id, feed_id = %feed.feed_id, "register_feed");
-            state.register_feed(agent_id, feed);
-            let _ = outbound_tx.send(RelayOutboundFrame::Ack {
-                event: "feed_registered".to_string(),
-            });
+            let frame = if state.register_feed(agent_id, feed) {
+                RelayOutboundFrame::Ack {
+                    event: "feed_registered".to_string(),
+                }
+            } else {
+                RelayOutboundFrame::Error {
+                    message_id: None,
+                    error: "invalid feed or relay feed capacity reached".to_owned(),
+                }
+            };
+            let _ = outbound_tx.send(frame);
             true
         }
         Ok(AgentInboundFrame::UnregisterFeed { feed_id }) => {
@@ -357,7 +634,11 @@ fn handle_agent_frame(
     }
 }
 
-async fn handle_events_socket(state: Arc<RelayState>, socket: WebSocket) {
+async fn handle_events_socket(
+    state: Arc<RelayState>,
+    socket: WebSocket,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+) {
     let (mut sink, mut stream) = socket.split();
     let mut events = state.subscribe_events();
 
@@ -464,7 +745,7 @@ async fn topic_messages(
     let limit = params.limit.unwrap_or(50).min(200);
     let messages: Vec<Value> = state
         .bus
-        .peek_ring(&topic)
+        .peek_ring_limited(&topic, limit)
         .into_iter()
         .rev()
         .take(limit)

@@ -99,6 +99,7 @@ impl DistillationBackend for GatewayDistillationBackend {
                     role: MessageRole::User,
                     content: prompt.to_string(),
                 }],
+                input_messages: Vec::new(),
                 max_tokens: None,
                 temperature: None,
                 role: Some("episode-distiller".to_string()),

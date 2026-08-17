@@ -19,6 +19,7 @@ use crate::harness::{
     harness_events_to_agent_result,
 };
 use crate::harness::{EventParser, HarnessAdapter};
+use crate::process::ResourceLimits;
 
 // ---------------------------------------------------------------------------
 // HermesFlavor
@@ -52,6 +53,8 @@ pub struct HermesOneShotConfig {
     pub model_override: Option<String>,
     /// Timeout for the subprocess.
     pub timeout: Duration,
+    /// Optional OS-enforced limits for the one-shot subprocess.
+    pub resource_limits: Option<ResourceLimits>,
 }
 
 impl Default for HermesOneShotConfig {
@@ -67,6 +70,7 @@ impl Default for HermesOneShotConfig {
             source_tag: "roko".to_string(),
             model_override: None,
             timeout: Duration::from_secs(120),
+            resource_limits: None,
         }
     }
 }
@@ -171,9 +175,12 @@ impl HermesOneShotAgent {
     #[must_use]
     pub fn new(config: HermesOneShotConfig) -> Self {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let runner = ChildProcessRunner::new(&config.binary, &cwd)
+        let mut runner = ChildProcessRunner::new(&config.binary, &cwd)
             .with_timeout(config.timeout)
             .with_name("hermes-oneshot");
+        if let Some(limits) = &config.resource_limits {
+            runner = runner.with_resource_limits(limits.clone());
+        }
 
         let capabilities = Self::build_capabilities(config.flavor);
 
@@ -330,9 +337,14 @@ impl HarnessAdapter for HermesOneShotAgent {
     }
 
     async fn probe(&self) -> Result<(), ProbeError> {
-        crate::hermes::probe::probe_hermes(&self.config.binary, None)
-            .await
-            .map(|_| ())
+        crate::hermes::probe::probe_hermes_with_limits(
+            &self.config.binary,
+            None,
+            self.config.resource_limits.as_ref(),
+            self.config.timeout,
+        )
+        .await
+        .map(|_| ())
     }
 
     fn state_dir(&self) -> Option<&Path> {

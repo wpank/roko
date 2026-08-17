@@ -2,6 +2,8 @@
 
 > Depth for [02-CELL.md](../../unified/02-CELL.md). The 11 gate implementations as Verify Cells, the 7-rung pipeline as a Pipeline Graph, and rung selection as a Route Cell that picks minimum viable verification.
 
+> **Implementation status (2026-08-17):** IMPLEMENTED. All 11 gate implementations exist in `crates/roko-gate/`. The 7-rung pipeline with adaptive EMA thresholds (`gate-thresholds.json`) is wired into runner-v2 via `runner/gate_dispatch.rs`. Rung selection (`build_rung_execution_inputs`) and enriched rung inputs are live. Adaptive thresholds per rung are persisted and applied.
+
 This doc covers the concrete verification machinery. For the four simultaneous roles of the Verify protocol (reward function, relabeling oracle, safety boundary, economic attestation), Goodhart-resistance, Variance Inequality, and meta-verification, see [verify-as-universal-oracle.md](verify-as-universal-oracle.md).
 
 ---
@@ -14,7 +16,7 @@ Every gate in roko-gate is a Cell that conforms to the Verify protocol. In the c
 pub trait Gate: Send + Sync {
     /// Always returns Verdict, never Result<Verdict>.
     /// Gate failure is a verdict, not an error.
-    async fn verify(&self, engram: &Engram, ctx: &Context) -> Verdict;
+    async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict;
     fn name(&self) -> &str;
 }
 ```
@@ -50,11 +52,11 @@ ShellGate is the simplest Verify Cell and the building block for CompileGate, Cl
 
 ```rust
 // Pseudocode for the pattern all subprocess-spawning Verify Cells follow
-async fn verify(&self, engram: &Engram, ctx: &Context) -> Verdict {
+async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict {
     let start = Instant::now();
 
     // 1. Extract payload from Signal body for working_dir, extra_env
-    let payload = parse_gate_payload(engram);
+    let payload = parse_gate_payload(signal);
 
     // 2. Build command: program, args, cwd, env, kill_on_drop(true)
     let mut cmd = Command::new(&self.program);

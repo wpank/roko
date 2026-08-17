@@ -32,6 +32,9 @@ use roko_runtime::process::{
     ProcessId, ProcessSessionConfig, SpawnConfig, default_process_session_ledger_path,
 };
 
+use crate::agent_lifecycle::{
+    AgentObservationCommit, AgentObservationError, AgentRuntimeObservation,
+};
 use crate::error::ApiError;
 use crate::extract::{RequestPayload, ValidJson, validate_with_validator};
 use crate::routes::run::spawn_background_run;
@@ -67,7 +70,39 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/agents/{id}/message", post(send_message))
         .route("/agents/{id}/start", post(start_agent))
         .route("/agents/{id}/restart", post(restart_agent))
+        .route("/agents/{id}/observation", post(observe_agent_lifecycle))
         .route("/agents/{id}/token", get(token_status).post(issue_token))
+}
+
+/// Commit a post-mutation or post-cycle lifecycle observation for a registered agent.
+async fn observe_agent_lifecycle(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(observation): Json<AgentRuntimeObservation>,
+) -> Result<Json<AgentObservationCommit>, ApiError> {
+    let registered = state
+        .discovered_agents
+        .read()
+        .await
+        .values()
+        .any(|agent| agent.agent_id == id);
+    if !registered {
+        return Err(ApiError::not_found(format!("agent `{id}` not found")));
+    }
+
+    state
+        .agent_lifecycle
+        .observe(&id, observation)
+        .await
+        .map(Json)
+        .map_err(|error| match error {
+            AgentObservationError::Invalid(message) => ApiError::bad_request(message),
+            AgentObservationError::Stale { .. }
+            | AgentObservationError::ConflictingRetry { .. } => {
+                ApiError::conflict(error.to_string())
+            }
+            AgentObservationError::Persistence(message) => ApiError::internal(message),
+        })
 }
 
 /// `GET /api/managed-agents` — list all managed agent processes **and** registered
@@ -2135,6 +2170,96 @@ mode = "self_hosted"
             .map_err(|error| anyhow!("failed to read response body bytes: {error}"))?;
         serde_json::from_slice(&bytes)
             .map_err(|error| anyhow!("failed to parse JSON response body: {error}"))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_observation_route_commits_real_samples_and_deduplicates_retries()
+    -> std::result::Result<(), Box<dyn Error>> {
+        let tempdir = tempdir().expect("tempdir");
+        let state = Arc::new(
+            AppState::new(
+                tempdir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                RokoConfig::default(),
+                Arc::new(ManualBackend::default()),
+            )
+            .expect("AppState::new"),
+        );
+        state
+            .upsert_discovered_agent(AgentRegistrationRecord {
+                agent_id: "agent-observed".to_string(),
+                ..Default::default()
+            })
+            .await;
+        let app = router(state);
+
+        let post_observation = |body: Value| {
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents/agent-observed/observation")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .expect("observation request")
+        };
+        let baseline = json!({
+            "sequence": 1,
+            "regime": "calm",
+            "vitality": 0.8,
+            "mode": "ephemeral",
+            "phase": "thriving",
+            "lifecycle_state": "provisioning"
+        });
+        let response = app.clone().oneshot(post_observation(baseline)).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = json_body(response).await?;
+        assert_eq!(payload["sequence"], 1);
+        assert_eq!(payload["emitted_events"], 0);
+        assert_eq!(payload["duplicate"], false);
+
+        let active_tick = json!({
+            "sequence": 2,
+            "regime": "normal",
+            "vitality": 0.7,
+            "mode": "persistent",
+            "phase": "stable",
+            "lifecycle_state": "active",
+            "completed_tick": { "prediction_error": 0.25 },
+            "slot_updates": [{ "slot": "worker", "state": "active" }]
+        });
+        let response = app
+            .clone()
+            .oneshot(post_observation(active_tick.clone()))
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = json_body(response).await?;
+        assert_eq!(payload["sequence"], 2);
+        assert_eq!(payload["emitted_events"], 6);
+        assert_eq!(payload["duplicate"], false);
+
+        let response = app.clone().oneshot(post_observation(active_tick)).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = json_body(response).await?;
+        assert_eq!(payload["emitted_events"], 0);
+        assert_eq!(payload["duplicate"], true);
+
+        let missing = Request::builder()
+            .method("POST")
+            .uri("/api/agents/missing/observation")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({
+                    "sequence": 1,
+                    "regime": "calm",
+                    "vitality": 0.8,
+                    "mode": "ephemeral",
+                    "phase": "thriving",
+                    "lifecycle_state": "provisioning"
+                })
+                .to_string(),
+            ))?;
+        assert_eq!(app.oneshot(missing).await?.status(), StatusCode::NOT_FOUND);
+        assert!(tempdir.path().join(".roko/agent-lifecycle.json").is_file());
+        Ok(())
     }
 
     #[test]

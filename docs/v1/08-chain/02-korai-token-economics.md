@@ -1,5 +1,8 @@
 # NUNCHI Token Economics
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > NUNCHI: a demurrage token where stale knowledge decays economically just as it decays in the NeuroStore. Earning rewards quality; spending prevents spam.
 
 

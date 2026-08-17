@@ -11,6 +11,7 @@ use roko_core::defaults::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
@@ -157,6 +158,16 @@ pub struct McpContent {
 pub trait Transport: Send + Sync {
     /// Send a JSON-RPC request and receive the response.
     async fn roundtrip(&self, request: &McpRequest) -> Result<McpResponse, McpError>;
+}
+
+#[async_trait]
+impl<T> Transport for Arc<T>
+where
+    T: Transport + ?Sized,
+{
+    async fn roundtrip(&self, request: &McpRequest) -> Result<McpResponse, McpError> {
+        (**self).roundtrip(request).await
+    }
 }
 
 /// Errors from the MCP client layer.

@@ -660,10 +660,11 @@ fn handle_workspace_map(arguments: Value, index: &WorkspaceIndex) -> Result<Valu
     let mut groups: BTreeMap<String, Vec<ParsedFile>> = BTreeMap::new();
     for file in files {
         let relative = relative_workspace_path(index.root(), &file);
-        if let Some(focus) = args.focus_path.as_deref() {
-            if !file_matches_filter(&relative, focus) && !relative.starts_with(focus) {
-                continue;
-            }
+        if let Some(focus) = args.focus_path.as_deref()
+            && !file_matches_filter(&relative, focus)
+            && !relative.starts_with(focus)
+        {
+            continue;
         }
 
         let content = match fs::read_to_string(&file) {
@@ -742,12 +743,20 @@ fn handle_get_context(arguments: Value, index: &WorkspaceIndex) -> Result<Value,
     let mut blocks = Vec::new();
 
     for hit in hits {
-        let block = format!(
+        let mut block = format!(
             "### {} ({})\n{}:{}\n{}\n",
             hit.symbol, hit.kind, hit.file, hit.line, hit.snippet
         );
-        if !blocks.is_empty() && used_chars.saturating_add(block.len()) > char_budget {
-            break;
+        let remaining = char_budget.saturating_sub(used_chars);
+        if block.len() > remaining {
+            if !blocks.is_empty() || remaining == 0 {
+                break;
+            }
+            let mut end = remaining;
+            while end > 0 && !block.is_char_boundary(end) {
+                end -= 1;
+            }
+            block.truncate(end);
         }
         used_chars = used_chars.saturating_add(block.len());
         included.push(json!({
@@ -1350,19 +1359,19 @@ fn parse_go_summary(path: &str, content: &str) -> ParsedFile {
                 continue;
             }
         }
-        if let Some(rest) = trimmed.strip_prefix("type ") {
-            if let Some(name) = parse_identifier(rest) {
-                let after_name = rest.trim_start_matches(name).trim_start();
-                let kind = if after_name.starts_with("struct") {
-                    "struct"
-                } else if after_name.starts_with("interface") {
-                    "trait"
-                } else {
-                    "type"
-                };
-                symbols.push(parsed_symbol(name, kind, "public", line_no + 1, trimmed));
-                continue;
-            }
+        if let Some(rest) = trimmed.strip_prefix("type ")
+            && let Some(name) = parse_identifier(rest)
+        {
+            let after_name = rest.trim_start_matches(name).trim_start();
+            let kind = if after_name.starts_with("struct") {
+                "struct"
+            } else if after_name.starts_with("interface") {
+                "trait"
+            } else {
+                "type"
+            };
+            symbols.push(parsed_symbol(name, kind, "public", line_no + 1, trimmed));
+            continue;
         }
         if let Some(name) = trimmed.strip_prefix("const ").and_then(parse_identifier) {
             symbols.push(parsed_symbol(name, "const", "public", line_no + 1, trimmed));
@@ -1626,7 +1635,6 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::io::Cursor;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn make_index() -> WorkspaceIndex {
         WorkspaceIndex::from_source_files(vec![roko_index::SourceFile {
@@ -1651,21 +1659,16 @@ mod tests {
         }])
     }
 
-    fn make_workspace(files: &[(&str, &str)]) -> (PathBuf, WorkspaceIndex) {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("roko_mcp_code_{unique}"));
-        fs::create_dir_all(&root).expect("create temp root");
+    fn make_workspace(files: &[(&str, &str)]) -> (tempfile::TempDir, WorkspaceIndex) {
+        let root = tempfile::tempdir().expect("create temp root");
         for (path, content) in files {
-            let full_path = root.join(path);
+            let full_path = root.path().join(path);
             if let Some(parent) = full_path.parent() {
                 fs::create_dir_all(parent).expect("create parent dirs");
             }
             fs::write(&full_path, content).expect("write temp file");
         }
-        let index = WorkspaceIndex::load(&root).expect("load workspace index");
+        let index = WorkspaceIndex::load(root.path()).expect("load workspace index");
         (root, index)
     }
 

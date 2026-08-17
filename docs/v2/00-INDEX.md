@@ -3,6 +3,7 @@
 > **Version**: 3.0
 > **Date**: 2026-04-26
 > **Scope**: Protocol specification for the agent economy. Defines the vocabulary, composition rules, and behavioral contracts for Roko — a system where agents build themselves.
+> **Implementation status:** PARTIAL — Core Signal/Cell/Graph types exist. Protocol trait stack has 9 protocols defined. HDC fingerprints implemented. Demurrage fields exist but mechanics not wired. Bus/Store fabrics implemented.
 
 ---
 
@@ -235,7 +236,7 @@ CaMeL capability-tagged IFC on Extensions. Nayebi 5-head lexicographic corrigibi
 | **[21](21-MARKETPLACE.md)** | Marketplace | Agent identity/passport. Reputation (TraceRank). Commerce. DAW composability. Fork chains. Transparent take-rates. |
 | **[22](22-REGISTRIES.md)** | On-Chain Registries | ERC-8004. ZK-HDC proofs. On-chain InsightStore. Chain witness. Gossip networking. Job market. |
 | **[23](23-ARENAS.md)** | Arenas and Evals | Universal measurement surface. 7-step flywheel. Task sources. Scoring functions. Leaderboards. Bounty market. Meta-arena. |
-| **[24](24-DEFI.md)** | DeFi Infrastructure | ISFR oracle. Yield perpetuals. VCG clearing. VenueAdapter. DeFiRiskEngine. TradingReflect. Multi-chain. Affect-modulated sizing. All as domain-specific Cell specializations. |
+| **[24](24-DEFI.md)** | DeFi Infrastructure | External benchmarks. Yield perpetuals. VCG clearing. VenueAdapter. DeFiRiskEngine. TradingReflect. Multi-chain. Affect-modulated sizing. All as domain-specific Cell specializations. |
 
 ### Meta
 
@@ -252,7 +253,7 @@ CaMeL capability-tagged IFC on Extensions. Nayebi 5-head lexicographic corrigibi
 
 | Decision | Rationale |
 |---|---|
-| **Signal** (not Engram) | Immediately meaningful. `type Signal = Engram;` in code. |
+| **Signal** (not Engram) | Immediately meaningful. Signal is the preferred name (the Rust struct is `Engram`; `type Signal = Engram` is the alias). |
 | **Pulse** (not Envelope) | Names the ephemeral sibling. Code has `Envelope<E>`. |
 | **Bus** (not EventBus) | Promoted to kernel fabric alongside Store. |
 | **Cell** (not Module/Block) | Composable, small, pluggable — Eurorack module, Scratch block. |
@@ -276,7 +277,7 @@ CaMeL capability-tagged IFC on Extensions. Nayebi 5-head lexicographic corrigibi
 
 | Code | Spec | Notes |
 |---|---|---|
-| `Engram` | Signal (durable) | Direct map. Rust struct stays `Engram`. |
+| `Engram` | Signal (durable) | Direct map. `Engram` is the Rust struct; `type Signal = Engram` is the preferred alias. Signal is the preferred name everywhere. |
 | `Envelope<E>` / EventBus | Pulse / Bus | Promoted from impl to kernel. |
 | `Substrate` | Store protocol | + `query_similar`. |
 | `Scorer` | Score protocol | + calibration. |

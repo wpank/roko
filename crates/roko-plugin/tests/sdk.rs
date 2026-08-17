@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -91,7 +93,7 @@ async fn cancellation_token_stops_event_source() {
 
     cancel.cancel();
 
-    timeout(Duration::from_secs(1), runner)
+    let _ = timeout(Duration::from_secs(1), runner)
         .await
         .expect("task should stop after cancellation")
         .expect("source should exit cleanly");

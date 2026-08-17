@@ -255,20 +255,19 @@ impl ChainHeartbeatExtension {
         }
 
         // Check approved assets (if the approved list is non-empty)
-        if !config.approved_assets.is_empty() {
-            if let Some(to) = &tx.to {
-                if !config.approved_assets.contains(to) {
-                    violations.push(PolicyViolation {
-                        constraint: "approved_assets".into(),
-                        description: format!("Target address {to} is not in approved asset list"),
-                        severity: if config.block_unapproved {
-                            ViolationSeverity::Error
-                        } else {
-                            ViolationSeverity::Warning
-                        },
-                    });
-                }
-            }
+        if !config.approved_assets.is_empty()
+            && let Some(to) = &tx.to
+            && !config.approved_assets.contains(to)
+        {
+            violations.push(PolicyViolation {
+                constraint: "approved_assets".into(),
+                description: format!("Target address {to} is not in approved asset list"),
+                severity: if config.block_unapproved {
+                    ViolationSeverity::Error
+                } else {
+                    ViolationSeverity::Warning
+                },
+            });
         }
 
         // Check gas price

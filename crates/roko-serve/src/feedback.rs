@@ -290,22 +290,11 @@ async fn persist_feedback_result(
     if let (Some(experiment_name), Some(variant_id)) =
         (experiment_name, episode_experiment_variant(episode))
     {
-        if let Err(err) =
-            record_experiment_outcome(&state.workdir, &variant_id, observation.success)
-        {
-            warn!(
-                error = %err,
-                episode_id = %episode.episode_id,
-                experiment = %experiment_name,
-                variant_id = %variant_id,
-                "failed to record experiment outcome"
-            );
-        }
-
-        if let Err(err) = record_experiment_metric(
+        if let Err(err) = record_experiment_observation(
             &state.workdir,
             &experiment_name,
             &variant_id,
+            observation.success,
             observation.sentiment,
         ) {
             warn!(
@@ -313,7 +302,7 @@ async fn persist_feedback_result(
                 episode_id = %episode.episode_id,
                 experiment = %experiment_name,
                 variant_id = %variant_id,
-                "failed to record experiment metric"
+                "failed to record scoped experiment observation"
             );
         }
     }
@@ -366,30 +355,28 @@ fn sentiment_to_metric_value(sentiment: f64) -> f64 {
     ((sentiment.clamp(-1.0, 1.0) + 1.0) / 2.0).clamp(0.0, 1.0)
 }
 
-fn record_experiment_outcome(workdir: &Path, variant_id: &str, success: bool) -> Result<()> {
-    let path = workdir.join(".roko/learn/experiments.json");
-    let mut store = ExperimentStore::load_or_new(&path);
-    store.record_outcome(variant_id, success);
-    store
-        .save(&path)
-        .with_context(|| format!("save {}", path.display()))?;
-    Ok(())
-}
-
-fn record_experiment_metric(
+fn record_experiment_observation(
     workdir: &Path,
     experiment_name: &str,
     variant_id: &str,
+    success: bool,
     sentiment: f64,
 ) -> Result<()> {
     let path = workdir.join(".roko/learn/experiments.json");
-    let mut store = ExperimentStore::load_or_new(&path);
     let metric_value = sentiment_to_metric_value(sentiment);
-    store.record_metric(experiment_name, variant_id, metric_value);
-    store
-        .save(&path)
-        .with_context(|| format!("save {}", path.display()))?;
-    Ok(())
+    ExperimentStore::transaction(&path, |store| {
+        if !store.record_outcome_for_experiment(experiment_name, variant_id, success) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "experiment '{experiment_name}' variant '{variant_id}' disappeared before feedback recording"
+                ),
+            ));
+        }
+        store.record_metric(experiment_name, variant_id, metric_value);
+        Ok(())
+    })
+    .with_context(|| format!("update {}", path.display()))
 }
 
 #[derive(Debug, Clone)]
@@ -1042,7 +1029,7 @@ mod tests {
         ));
         store.save(&path).expect("seed experiment store");
 
-        record_experiment_metric(&root, "template-experiment", "variant-a", 0.5)
+        record_experiment_observation(&root, "template-experiment", "variant-a", true, 0.5)
             .expect("record experiment metric");
 
         let saved = std::fs::read_to_string(&path).expect("read experiment store");
@@ -1085,9 +1072,12 @@ mod tests {
         ));
         store.save(&path).expect("seed experiment store");
 
-        record_experiment_outcome(&root, "variant-a", true).expect("record success outcome");
-        record_experiment_outcome(&root, "variant-a", false).expect("record failure outcome");
-        record_experiment_outcome(&root, "variant-b", true).expect("record success outcome b");
+        record_experiment_observation(&root, "outcome-experiment", "variant-a", true, 1.0)
+            .expect("record success outcome");
+        record_experiment_observation(&root, "outcome-experiment", "variant-a", false, -1.0)
+            .expect("record failure outcome");
+        record_experiment_observation(&root, "outcome-experiment", "variant-b", true, 1.0)
+            .expect("record success outcome b");
 
         let reloaded = ExperimentStore::load_or_new(&path);
         let experiment = reloaded
@@ -1100,6 +1090,111 @@ mod tests {
         let stats_b = experiment.stats.get("variant-b").expect("variant-b stats");
         assert_eq!(stats_b.trials, 1);
         assert_eq!(stats_b.successes, 1);
+    }
+
+    #[test]
+    fn experiment_observation_is_scoped_when_variant_ids_overlap() {
+        let root = std::env::temp_dir().join(format!("roko-feedback-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create temp root");
+        let path = root.join(".roko/learn/experiments.json");
+        let variants = |section: &str| {
+            vec![PromptVariant {
+                id: "shared".into(),
+                name: "Shared".into(),
+                section_name: section.into(),
+                content: "Scoped content".into(),
+                slug: None,
+                active: true,
+            }]
+        };
+        let mut store = ExperimentStore::new();
+        store.register(PromptExperiment::new(
+            "experiment-a",
+            "section-a",
+            variants("section-a"),
+        ));
+        store.register(PromptExperiment::new(
+            "experiment-b",
+            "section-b",
+            variants("section-b"),
+        ));
+        store.save(&path).expect("seed experiment store");
+
+        record_experiment_observation(&root, "experiment-b", "shared", true, 0.75)
+            .expect("record scoped observation");
+
+        let reloaded = ExperimentStore::load_or_new(&path);
+        assert_eq!(
+            reloaded.get("experiment-a").expect("experiment a").stats["shared"].trials,
+            0
+        );
+        let experiment_b = reloaded.get("experiment-b").expect("experiment b");
+        assert_eq!(experiment_b.stats["shared"].trials, 1);
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read persisted experiment store"))
+                .expect("parse persisted experiment store");
+        assert_eq!(
+            persisted["experiments"]["experiment-b"]["metric_stats"]["shared"]["samples"],
+            1
+        );
+    }
+
+    #[test]
+    fn concurrent_experiment_observations_do_not_lose_updates() {
+        let root = std::env::temp_dir().join(format!("roko-feedback-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create temp root");
+        let path = root.join(".roko/learn/experiments.json");
+        let mut store = ExperimentStore::new();
+        store.register(PromptExperiment::new(
+            "concurrent-experiment",
+            "concurrent-section",
+            vec![PromptVariant {
+                id: "variant".into(),
+                name: "Variant".into(),
+                section_name: "concurrent-section".into(),
+                content: "Concurrent content".into(),
+                slug: None,
+                active: true,
+            }],
+        ));
+        store.save(&path).expect("seed experiment store");
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let root = root.clone();
+            let barrier = barrier.clone();
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..20 {
+                    record_experiment_observation(
+                        &root,
+                        "concurrent-experiment",
+                        "variant",
+                        true,
+                        1.0,
+                    )
+                    .expect("record concurrent observation");
+                }
+            }));
+        }
+        barrier.wait();
+        for worker in workers {
+            worker.join().expect("worker joins");
+        }
+
+        let reloaded = ExperimentStore::load_or_new(&path);
+        let experiment = reloaded
+            .get("concurrent-experiment")
+            .expect("experiment exists");
+        assert_eq!(experiment.stats["variant"].trials, 40);
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read persisted experiment store"))
+                .expect("parse persisted experiment store");
+        assert_eq!(
+            persisted["experiments"]["concurrent-experiment"]["metric_stats"]["variant"]["samples"],
+            40
+        );
     }
 
     #[test]

@@ -2,9 +2,11 @@
 
 > Plan runner v2: event-driven design (~2,400 LOC replacing 21K). 12 mori parity gaps with full specifications. Current state reconciliation showing what exists vs what needs building. Every runner component is a Cell processing Signals through Bus and Store. The orchestrator is the Engine's concrete realization for plan execution.
 
-**Status**: SPEC DRAFT
-**Replaces**: `crates/roko-cli/src/orchestrate.rs` (21,478 lines)
-**Target**: `crates/roko-cli/src/runner/` (~2,500 lines across 10 files)
+**Status**: IMPLEMENTED; this chapter retains the original migration design for context
+**Replaced**: `crates/roko-cli/src/orchestrate.rs` (deleted by E12-T07)
+**Runtime**: `crates/roko-cli/src/runner/` (runner v2; `event_loop.rs` remains an extraction target)
+
+> **Implementation status:** IMPLEMENTED — Runner v2 is the sole plan runtime and the legacy engine is gone. Plan-execute-gate-persist works end-to-end; the former E45 mori-parity gap list is complete. The main remaining structural debt is decomposing the roughly 20.5K-line event loop.
 
 **Depends on**: [02-CELL](02-CELL.md) (Cell protocol), [03-GRAPH](03-GRAPH.md) (Graph composition), [04-EXECUTION](04-EXECUTION.md) (Engine, Flow, Activity recording), [05-AGENT](05-AGENT.md) (Agent lifecycle), [06-MEMORY](06-MEMORY.md) (Knowledge Store for context injection), [07-LEARNING](07-LEARNING.md) (Episodes, CascadeRouter, efficiency events), [15-TELEMETRY](15-TELEMETRY.md) (StateHub, Lenses)
 
@@ -65,7 +67,7 @@ Use naming conventions from the unified spec where practical. Structure the runn
   |  +--gate_rx-->  |    GateResult => feed executor|
   |  |              |    TuiInput => handle keys   |    --> EpisodeLogger
   |  |  +--tick-->  |    Tick => executor.tick()   |
-  |  |  |           |      => dispatch actions     |    --> executor.json
+  |  |  |           |      => dispatch actions     |    --> state-snapshot.json
   |  |  |           |  }                           |
   |  |  |           +-----------------------------+
   |  |  |                    |
@@ -98,7 +100,7 @@ crates/roko-cli/src/runner/
   agent_stream.rs   -- spawn claude, parse --stream-json per line      (~300 lines)
   agent_events.rs   -- handle AgentEvent variants, update RunState     (~250 lines)
   gate_dispatch.rs  -- spawn gate as background task, collect results  (~200 lines)
-  persist.rs        -- atomic writes: executor.json, episodes, efficiency (~200 lines)
+  persist.rs        -- atomic writes: state-snapshot.json, episodes, efficiency (~200 lines)
   plan_loader.rs    -- load tasks.toml, validate, no discovery magic   (~150 lines)
   state.rs          -- RunState: agent output, tokens, costs, progress (~300 lines)
   tui_bridge.rs     -- publish DashboardEvents to StateHub             (~200 lines)
@@ -695,7 +697,7 @@ Gate result: `Admit | Reject { reason }`. Log rejections for debugging.
 - **RunState** — new, single struct for all TUI data
 
 ### Keep (existing crate APIs, called from runner)
-- `ParallelExecutor` from roko-orchestrator (pure state machine)
+- `ParallelExecutor` from `roko-cli::orchestrator` (pure state machine)
 - `run_rung()` from roko-gate (gate execution)
 - `LearningRuntime` from roko-learn (episodes, routing, efficiency)
 - `ProcessSupervisor` from roko-runtime (PID tracking, kill)
@@ -735,7 +737,7 @@ Gate result: `Admit | Reject { reason }`. Log rejections for debugging.
 3. Remove `--runner legacy` after confidence period
 
 ### Phase D: Align with unified spec (future)
-1. Rename types (Engram -> Signal, etc.) per Phase 1 kernel
+1. Complete Signal naming migration (`Engram` is the Rust struct; `type Signal = Engram` is the preferred alias) per Phase 1 kernel
 2. Add Activity recording per-node (unified resumability)
 3. Add Pulse-based lifecycle events on Bus
 4. Replace event loop with Engine interpretation of TOML Graphs
@@ -780,11 +782,11 @@ A plan run with `--approval`:
 5. **Token counters update** in real time (not "-" or "0k")
 6. **Model name shown** (from SystemInit event, not efficiency.jsonl)
 7. **Task titles shown** (from tasks.toml, not "plan plan")
-8. **executor.json written** after each task (crash-safe)
+8. **state-snapshot.json written** after each task (crash-safe)
 9. **Episodes written** after each task (visible in `.roko/episodes.jsonl`)
 10. **Efficiency events** flushed (visible in `.roko/learn/efficiency.jsonl`)
 11. **Ctrl+C** kills agent + all descendants within 3 seconds
-12. **Resume** from executor.json after crash (skip completed tasks)
+12. **Resume** from state-snapshot.json after crash (skip completed tasks)
 13. **Gate output** visible in TUI (compile/test results stream)
 14. **Cost tracking** accurate per-plan and per-task
 

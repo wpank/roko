@@ -7,7 +7,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     sync::atomic::{AtomicI8, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering},
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use chrono::{DateTime, Utc};
@@ -38,6 +38,131 @@ pub enum HeartbeatSpeed {
     Theta,
     /// Offline consolidation cadence.
     Delta,
+}
+
+/// Configurable cognitive timescale for a pure [`AdaptiveClock`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CognitiveTimescale {
+    /// Fast reactive loop, normally configured in the 100–500 ms range.
+    Gamma,
+    /// Reflective loop, normally configured in the 500 ms–16 s range.
+    Theta,
+    /// Consolidation loop, normally configured in the 60–600 s range.
+    Delta,
+}
+
+impl From<HeartbeatSpeed> for CognitiveTimescale {
+    fn from(speed: HeartbeatSpeed) -> Self {
+        match speed {
+            HeartbeatSpeed::Gamma => Self::Gamma,
+            HeartbeatSpeed::Theta => Self::Theta,
+            HeartbeatSpeed::Delta => Self::Delta,
+        }
+    }
+}
+
+/// Invalid pure-clock configuration.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AdaptiveClockError {
+    /// A zero interval would produce an unbounded busy loop.
+    #[error("adaptive clock base interval must be greater than zero")]
+    ZeroBaseInterval,
+}
+
+/// Pure cognitive clock state; callers own sleeping and runtime integration.
+#[derive(Debug, Clone)]
+pub struct AdaptiveClock {
+    timescale: CognitiveTimescale,
+    base_interval: Duration,
+    current_interval: Duration,
+    last_fired: Option<Instant>,
+    gamma_ticks_since_theta: u32,
+}
+
+impl AdaptiveClock {
+    /// Construct a clock, panicking only for the programmer error of a zero
+    /// interval. Use [`Self::try_new`] for untrusted configuration.
+    #[must_use]
+    pub fn new(timescale: CognitiveTimescale, base_interval: Duration) -> Self {
+        Self::try_new(timescale, base_interval)
+            .expect("adaptive clock base interval must be non-zero")
+    }
+
+    /// Construct a clock from validated external configuration.
+    pub fn try_new(
+        timescale: CognitiveTimescale,
+        base_interval: Duration,
+    ) -> Result<Self, AdaptiveClockError> {
+        if base_interval.is_zero() {
+            return Err(AdaptiveClockError::ZeroBaseInterval);
+        }
+        Ok(Self {
+            timescale,
+            base_interval,
+            current_interval: base_interval,
+            last_fired: None,
+            gamma_ticks_since_theta: 0,
+        })
+    }
+
+    /// Adjust the interval for an observed environmental regime.
+    pub fn adapt(&mut self, regime: Regime) {
+        let multiplier = match (self.timescale, regime) {
+            (CognitiveTimescale::Gamma, Regime::Calm) => 4.0,
+            (CognitiveTimescale::Gamma, Regime::Normal) => 1.0,
+            (CognitiveTimescale::Gamma, Regime::Volatile) => 0.5,
+            (CognitiveTimescale::Gamma, Regime::Crisis) => 0.25,
+            (CognitiveTimescale::Theta, Regime::Calm) => 2.0,
+            (CognitiveTimescale::Theta, Regime::Normal) => 1.0,
+            (CognitiveTimescale::Theta, Regime::Volatile) => 0.5,
+            (CognitiveTimescale::Theta, Regime::Crisis) => 0.25,
+            (CognitiveTimescale::Delta, Regime::Crisis) => 0.5,
+            (CognitiveTimescale::Delta, _) => 1.0,
+        };
+        self.current_interval = self.base_interval.mul_f64(multiplier);
+    }
+
+    /// Record a real gamma tick observed by a theta clock.
+    pub fn record_gamma_tick(&mut self) {
+        if self.timescale == CognitiveTimescale::Theta {
+            self.gamma_ticks_since_theta = self.gamma_ticks_since_theta.saturating_add(1);
+        }
+    }
+
+    /// Scheduled instant after a previous fire, if any.
+    #[must_use]
+    pub fn next_fire_at(&self) -> Option<Instant> {
+        self.last_fired
+            .and_then(|last| last.checked_add(self.current_interval))
+    }
+
+    /// Whether the clock is due. A never-fired clock is immediately due.
+    #[must_use]
+    pub fn should_fire(&self) -> bool {
+        self.next_fire_at()
+            .is_none_or(|next| Instant::now() >= next)
+    }
+
+    /// Mark this clock fired and reset its inter-fire accounting.
+    pub fn fire(&mut self) {
+        self.last_fired = Some(Instant::now());
+        if self.timescale == CognitiveTimescale::Theta {
+            self.gamma_ticks_since_theta = 0;
+        }
+    }
+
+    /// Current adapted interval.
+    #[must_use]
+    pub const fn current_interval(&self) -> Duration {
+        self.current_interval
+    }
+
+    /// Gamma ticks accumulated since the last theta fire.
+    #[must_use]
+    pub const fn gamma_ticks_since_theta(&self) -> u32 {
+        self.gamma_ticks_since_theta
+    }
 }
 
 impl HeartbeatSpeed {
@@ -247,6 +372,9 @@ pub struct CorticalState {
     performance_trend: AtomicU32,
     behavioral_state: AtomicU8,
     compounding_momentum: AtomicU32,
+    cognitive_energy: AtomicU32,
+    fatigue_penalty: AtomicU32,
+    efe_last_tier: AtomicU8,
 }
 
 impl CorticalState {
@@ -276,6 +404,9 @@ impl CorticalState {
             performance_trend: AtomicU32::new(0.0f32.to_bits()),
             behavioral_state: AtomicU8::new(u8::from(BehavioralState::Engaged)),
             compounding_momentum: AtomicU32::new(0.0f32.to_bits()),
+            cognitive_energy: AtomicU32::new(1.0f32.to_bits()),
+            fatigue_penalty: AtomicU32::new(0.0f32.to_bits()),
+            efe_last_tier: AtomicU8::new(0),
         }
     }
 
@@ -360,6 +491,9 @@ impl CorticalState {
             performance_trend: load_f32(&self.performance_trend),
             behavioral_state: self.behavioral_state(),
             compounding_momentum: load_f32(&self.compounding_momentum),
+            cognitive_energy: self.cognitive_energy(),
+            fatigue_penalty: self.fatigue_penalty(),
+            efe_last_tier: self.efe_last_tier(),
         }
     }
 }
@@ -533,6 +667,36 @@ impl CorticalState {
     pub fn set_aggregate_accuracy(&self, accuracy: f32) {
         store_f32(&self.aggregate_accuracy, accuracy.clamp(0.0, 1.0));
     }
+
+    /// Read current normalized cognitive energy.
+    pub fn cognitive_energy(&self) -> f32 {
+        load_f32(&self.cognitive_energy)
+    }
+
+    /// Write current normalized cognitive energy.
+    pub fn set_cognitive_energy(&self, energy: f32) {
+        store_f32(&self.cognitive_energy, energy.clamp(0.0, 1.0));
+    }
+
+    /// Read the accumulated fatigue penalty.
+    pub fn fatigue_penalty(&self) -> f32 {
+        load_f32(&self.fatigue_penalty)
+    }
+
+    /// Write the accumulated fatigue penalty.
+    pub fn set_fatigue_penalty(&self, penalty: f32) {
+        store_f32(&self.fatigue_penalty, penalty.clamp(0.0, 1.0));
+    }
+
+    /// Read the most recently selected EFE tier (`0..=2`).
+    pub fn efe_last_tier(&self) -> u8 {
+        self.efe_last_tier.load(Ordering::Acquire)
+    }
+
+    /// Write the most recently selected EFE tier, clamped to `0..=2`.
+    pub fn set_efe_last_tier(&self, tier: u8) {
+        self.efe_last_tier.store(tier.min(2), Ordering::Release);
+    }
 }
 
 impl Default for CorticalState {
@@ -590,6 +754,12 @@ pub struct CorticalSnapshot {
     pub behavioral_state: BehavioralState,
     /// Derived compounding momentum signal.
     pub compounding_momentum: f32,
+    /// Current normalized cognitive energy.
+    pub cognitive_energy: f32,
+    /// Accumulated fatigue penalty.
+    pub fatigue_penalty: f32,
+    /// Most recently selected EFE tier.
+    pub efe_last_tier: u8,
 }
 
 /// Configuration for heartbeat cadence, budget throttling, and triggers.
@@ -2078,7 +2248,7 @@ pub fn adaptive_interval(speed: HeartbeatSpeed, regime: Regime, config: &ClockCo
             let base = Duration::from_secs(config.delta_idle_timeout_secs);
             // Scale: Calm=300s, Crisis=~50s; clamped to [60s, delta_idle_timeout_secs]
             Duration::from_secs_f64(base.as_secs_f64() * regime_multiplier)
-                .max(Duration::from_secs(60))
+                .max(Duration::from_mins(1))
                 .min(Duration::from_secs(config.delta_idle_timeout_secs))
         }
     }
@@ -2239,6 +2409,61 @@ mod tests {
         assert!((got.pleasure - pad.pleasure).abs() < 1e-6);
         assert!((got.arousal - pad.arousal).abs() < 1e-6);
         assert!((got.dominance - pad.dominance).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cortical_energy_fields_are_lock_free_and_clamped() {
+        let state = CorticalState::default();
+        assert_eq!(state.cognitive_energy(), 1.0);
+        assert_eq!(state.fatigue_penalty(), 0.0);
+        assert_eq!(state.efe_last_tier(), 0);
+
+        state.set_cognitive_energy(-0.5);
+        state.set_fatigue_penalty(1.5);
+        state.set_efe_last_tier(9);
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.cognitive_energy, 0.0);
+        assert_eq!(snapshot.fatigue_penalty, 1.0);
+        assert_eq!(snapshot.efe_last_tier, 2);
+    }
+
+    #[test]
+    fn adaptive_clock_scales_all_cognitive_timescales() {
+        let base = Duration::from_secs(4);
+        let mut gamma = AdaptiveClock::new(CognitiveTimescale::Gamma, base);
+        gamma.adapt(Regime::Calm);
+        assert_eq!(gamma.current_interval(), Duration::from_secs(16));
+        gamma.adapt(Regime::Crisis);
+        assert_eq!(gamma.current_interval(), Duration::from_secs(1));
+
+        let mut theta = AdaptiveClock::new(CognitiveTimescale::Theta, base);
+        theta.adapt(Regime::Volatile);
+        assert_eq!(theta.current_interval(), Duration::from_secs(2));
+        theta.record_gamma_tick();
+        theta.record_gamma_tick();
+        assert_eq!(theta.gamma_ticks_since_theta(), 2);
+        theta.fire();
+        assert_eq!(theta.gamma_ticks_since_theta(), 0);
+
+        let mut delta = AdaptiveClock::new(CognitiveTimescale::Delta, base);
+        delta.adapt(Regime::Calm);
+        assert_eq!(delta.current_interval(), base);
+        delta.adapt(Regime::Crisis);
+        assert_eq!(delta.current_interval(), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn adaptive_clock_is_initially_due_and_rejects_zero_interval() {
+        assert_eq!(
+            AdaptiveClock::try_new(CognitiveTimescale::Gamma, Duration::ZERO)
+                .expect_err("zero interval must fail"),
+            AdaptiveClockError::ZeroBaseInterval
+        );
+        let mut clock = AdaptiveClock::new(CognitiveTimescale::Gamma, Duration::from_secs(60));
+        assert!(clock.should_fire());
+        clock.fire();
+        assert!(!clock.should_fire());
+        assert!(clock.next_fire_at().is_some());
     }
 
     #[test]

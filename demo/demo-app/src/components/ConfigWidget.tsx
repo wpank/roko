@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
-import { useRokoConfig } from '../hooks/useRokoConfig';
+import { useConfigController } from '../data/selectors';
 import {
   flattenProviderModels,
   modelLabel,
@@ -287,7 +287,7 @@ function ModelSection({
   isLive,
   onApply,
 }: {
-  providers: ReturnType<typeof useRokoConfig>['providers'];
+  providers: ReturnType<typeof useConfigController>['providers'];
   allModels: ReturnType<typeof flattenProviderModels>;
   defaultModel: string;
   defaultBackend: string;
@@ -355,7 +355,7 @@ export default function ConfigWidget() {
   const {
     fullConfig, defaultModel, defaultBackend, providers,
     isLive, lastSaved, updateModelConfig, updateConfig,
-  } = useRokoConfig();
+  } = useConfigController();
 
   const [open, setOpen] = useState(false);
 

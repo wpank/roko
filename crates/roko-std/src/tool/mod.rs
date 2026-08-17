@@ -43,5 +43,6 @@ pub use handlers::{HandlerRegistry, handler_for};
 pub use mock_dispatcher::MockToolDispatcher;
 pub use registry::{
     DynamicToolRegistry, StaticToolRegistry, ToolValidationIssue, validate_tool_catalog,
+    validate_tool_catalog_with_handler,
 };
 pub use sandbox_config::{SandboxConfig, SandboxValidationError};

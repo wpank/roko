@@ -521,9 +521,7 @@ impl RoleSystemPromptSpec {
         composer: PromptComposer,
     ) -> Result<PromptBuild> {
         let sections = self.build_sections();
-        let scorer = self.composition_scorer();
-        let ctx = self.composition_context();
-        self.compose_sections_to_build(sections, token_budget, composer, scorer.as_ref(), &ctx)
+        self.compose_build_from_sections_with_budget_and_composer(sections, token_budget, composer)
     }
 
     /// Compose with learned section-effectiveness and return selection metadata.
@@ -547,6 +545,22 @@ impl RoleSystemPromptSpec {
         composer: PromptComposer,
     ) -> Result<PromptBuild> {
         let sections = self.build_sections_with_section_effectiveness(section_effectiveness);
+        self.compose_build_from_sections_with_budget_and_composer(sections, token_budget, composer)
+    }
+
+    /// Compose caller-supplied canonical sections under a token budget.
+    ///
+    /// The sections are scored with this role specification's canonical scorer
+    /// and context, then passed through the supplied [`PromptComposer`]. This
+    /// lets callers replace section content or attach attribution before
+    /// scoring without reimplementing role prompt composition or introducing a
+    /// dependency from `roko-compose` to the caller's policy store.
+    pub fn compose_build_from_sections_with_budget_and_composer(
+        &self,
+        sections: Vec<PromptSection>,
+        token_budget: usize,
+        composer: PromptComposer,
+    ) -> Result<PromptBuild> {
         let scorer = self.composition_scorer();
         let ctx = self.composition_context();
         self.compose_sections_to_build(sections, token_budget, composer, scorer.as_ref(), &ctx)
@@ -1157,6 +1171,91 @@ mod tests {
                 .iter()
                 .any(|section| section.name == "role_identity")
         );
+    }
+
+    #[test]
+    fn compose_from_unmodified_sections_matches_existing_compose_path() {
+        let ctx = TaskContext::new("Keep baseline composition stable")
+            .with_plan_id("baseline-plan")
+            .with_context("bounded context");
+        let spec = RoleSystemPromptSpec::new(AgentRole::Implementer, ctx, "Read,Edit")
+            .with_extra_conventions("Keep changes focused.");
+
+        let existing = spec
+            .compose_build_with_budget_and_composer(4_096, PromptComposer::new())
+            .expect("existing composition path");
+        let supplied = spec
+            .compose_build_from_sections_with_budget_and_composer(
+                spec.build_sections(),
+                4_096,
+                PromptComposer::new(),
+            )
+            .expect("supplied-sections composition path");
+
+        assert_eq!(supplied.prompt, existing.prompt);
+        assert_eq!(
+            supplied.composition_manifest, existing.composition_manifest,
+            "unmodified caller-supplied sections must preserve selection metadata"
+        );
+    }
+
+    #[test]
+    fn compose_from_supplied_sections_preserves_policy_and_emits_attribution() {
+        let ctx = TaskContext::new("Implement an assigned prompt variant");
+        let spec = RoleSystemPromptSpec::new(AgentRole::Implementer, ctx, "Read,Edit")
+            .with_extra_conventions("ORIGINAL_CONVENTIONS_CONTENT");
+        let mut sections = spec.build_sections();
+        let conventions = sections
+            .iter_mut()
+            .find(|section| section.name == "conventions")
+            .expect("canonical conventions section");
+        let policy = (
+            conventions.section_id.clone(),
+            conventions.priority,
+            conventions.cache_layer,
+            conventions.placement,
+            conventions.hard_cap,
+            conventions.bidder,
+        );
+
+        conventions.content = "ASSIGNED_CONVENTIONS_CONTENT".into();
+        conventions.source_type = Some("prompt_experiment".into());
+        conventions.source_id = Some("variant-a".into());
+        conventions.provenance = Some("experiment:experiment-a:variant-a".into());
+        conventions.experiment_id = Some("experiment-a".into());
+
+        assert_eq!(
+            (
+                conventions.section_id.clone(),
+                conventions.priority,
+                conventions.cache_layer,
+                conventions.placement,
+                conventions.hard_cap,
+                conventions.bidder,
+            ),
+            policy,
+            "content replacement must not alter canonical policy metadata"
+        );
+
+        let build = spec
+            .compose_build_from_sections_with_budget_and_composer(
+                sections,
+                64_000,
+                PromptComposer::new(),
+            )
+            .expect("composition from supplied sections");
+
+        assert!(build.prompt.contains("ASSIGNED_CONVENTIONS_CONTENT"));
+        assert!(!build.prompt.contains("ORIGINAL_CONVENTIONS_CONTENT"));
+        let manifest = build.composition_manifest.expect("composition manifest");
+        let included = manifest
+            .included
+            .iter()
+            .find(|section| section.name == "conventions")
+            .expect("assigned section included");
+        assert!(included.action_id.contains("prompt-experiment"));
+        assert!(included.action_id.contains("variant-a"));
+        assert!(included.action_id.contains("experiment-a"));
     }
 
     #[test]

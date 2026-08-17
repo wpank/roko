@@ -2410,24 +2410,23 @@ fn register_state_mutation_methods(
             .parse()
             .map_err(|_| invalid_params("invalid address"))?;
         with_state_write(&ctx.state, |state| {
-            if let Some(balance_val) = obj.get("balance").and_then(|v| v.as_str()) {
-                if let Ok(balance) = U256::from_str_radix(balance_val.trim_start_matches("0x"), 16)
-                {
-                    state.fork.db.set_balance(address, balance);
-                }
+            if let Some(balance_val) = obj.get("balance").and_then(|v| v.as_str())
+                && let Ok(balance) = U256::from_str_radix(balance_val.trim_start_matches("0x"), 16)
+            {
+                state.fork.db.set_balance(address, balance);
             }
-            if let Some(nonce_val) = obj.get("nonce").and_then(|v| v.as_str()) {
-                if let Ok(nonce) = u64::from_str_radix(nonce_val.trim_start_matches("0x"), 16) {
-                    state.fork.db.set_nonce(address, nonce);
-                }
+            if let Some(nonce_val) = obj.get("nonce").and_then(|v| v.as_str())
+                && let Ok(nonce) = u64::from_str_radix(nonce_val.trim_start_matches("0x"), 16)
+            {
+                state.fork.db.set_nonce(address, nonce);
             }
-            if let Some(code_val) = obj.get("deployedBytecode").and_then(|v| v.as_str()) {
-                if let Ok(bytes) = hex::decode(code_val.trim_start_matches("0x")) {
-                    state
-                        .fork
-                        .db
-                        .set_code(address, Bytecode::new_raw(Bytes::from(bytes)));
-                }
+            if let Some(code_val) = obj.get("deployedBytecode").and_then(|v| v.as_str())
+                && let Ok(bytes) = hex::decode(code_val.trim_start_matches("0x"))
+            {
+                state
+                    .fork
+                    .db
+                    .set_code(address, Bytecode::new_raw(Bytes::from(bytes)));
             }
             // state: { "0xslot": "0xvalue", ... }
             if let Some(storage) = obj.get("state").and_then(|v| v.as_object()) {

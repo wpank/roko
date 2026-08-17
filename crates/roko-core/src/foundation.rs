@@ -12,9 +12,221 @@ use crate::runtime_event::RuntimeEvent;
 use crate::tool::ToolDef;
 use crate::{Result, RokoError};
 use async_trait::async_trait;
+use base64::Engine as _;
 use futures_core::Stream;
 use std::path::PathBuf;
 use std::pin::Pin;
+
+/// Maximum decoded size accepted for one inline model image (5 MiB).
+pub const MAX_MODEL_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+/// Maximum aggregate decoded image bytes accepted by one model call (20 MiB).
+pub const MAX_MODEL_IMAGE_TOTAL_BYTES: usize = 20 * 1024 * 1024;
+/// Maximum number of inline images accepted by one model call.
+pub const MAX_MODEL_IMAGES: usize = 20;
+
+/// A validated, provider-neutral inline image attached to a model request.
+///
+/// Provider adapters translate this representation to Anthropic `source`,
+/// OpenAI `image_url`, or Gemini `inlineData` blocks at the final wire boundary.
+#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ModelInputImage {
+    /// IANA image media type. Only provider-portable raster formats are accepted.
+    pub media_type: String,
+    /// Standard, padded base64 payload without a `data:` URI prefix.
+    pub data: String,
+}
+
+impl std::fmt::Debug for ModelInputImage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ModelInputImage")
+            .field("media_type", &self.media_type)
+            .field(
+                "data",
+                &format_args!("[REDACTED; {} base64 bytes]", self.data.len()),
+            )
+            .finish()
+    }
+}
+
+/// One ordered block in a provider-neutral model message.
+#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ModelInputBlock {
+    /// UTF-8 text content.
+    Text { text: String },
+    /// Inline raster image content.
+    Image { media_type: String, data: String },
+}
+
+impl std::fmt::Debug for ModelInputBlock {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Text { text } => formatter.debug_struct("Text").field("text", text).finish(),
+            Self::Image { media_type, data } => formatter
+                .debug_struct("Image")
+                .field("media_type", media_type)
+                .field(
+                    "data",
+                    &format_args!("[REDACTED; {} base64 bytes]", data.len()),
+                )
+                .finish(),
+        }
+    }
+}
+
+impl ModelInputBlock {
+    /// Construct a text block.
+    #[must_use]
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text { text: text.into() }
+    }
+
+    /// Construct an inline image block.
+    #[must_use]
+    pub fn image(media_type: impl Into<String>, data: impl Into<String>) -> Self {
+        Self::Image {
+            media_type: media_type.into(),
+            data: data.into(),
+        }
+    }
+}
+
+/// An ordered provider-neutral message used when a plain string cannot retain
+/// the user's multimodal prompt semantics.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ModelInputMessage {
+    pub role: MessageRole,
+    pub content: Vec<ModelInputBlock>,
+}
+
+impl ModelInputMessage {
+    /// Construct a structured message from ordered blocks.
+    #[must_use]
+    pub fn new(role: MessageRole, content: Vec<ModelInputBlock>) -> Self {
+        Self { role, content }
+    }
+}
+
+impl ModelInputImage {
+    /// Construct an inline image. Call [`validate_model_input_images`] before dispatch.
+    #[must_use]
+    pub fn new(media_type: impl Into<String>, data: impl Into<String>) -> Self {
+        Self {
+            media_type: media_type.into(),
+            data: data.into(),
+        }
+    }
+}
+
+/// Validate inline images before they enter a provider request.
+///
+/// Validation is intentionally conservative and provider-portable: it rejects
+/// unsupported MIME types, malformed base64, excessive image counts, oversized
+/// individual images, and oversized aggregate payloads.
+pub fn validate_model_input_images(images: &[ModelInputImage]) -> std::result::Result<(), String> {
+    if images.len() > MAX_MODEL_IMAGES {
+        return Err(format!(
+            "image count {} exceeds the per-request limit of {MAX_MODEL_IMAGES}",
+            images.len()
+        ));
+    }
+
+    let mut total_bytes = 0_usize;
+    for (index, image) in images.iter().enumerate() {
+        if !matches!(
+            image.media_type.as_str(),
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+        ) {
+            return Err(format!(
+                "image {} has unsupported MIME type {:?}; supported types are image/png, image/jpeg, image/gif, and image/webp",
+                index + 1,
+                image.media_type
+            ));
+        }
+        if image.data.is_empty() {
+            return Err(format!("image {} has an empty base64 payload", index + 1));
+        }
+
+        // Bound encoded input before allocating the decoded buffer. Four base64
+        // characters represent at most three bytes; allow one padded quartet.
+        let max_encoded_len = MAX_MODEL_IMAGE_BYTES.div_ceil(3) * 4;
+        if image.data.len() > max_encoded_len {
+            return Err(format!(
+                "image {} exceeds the decoded per-image limit of {MAX_MODEL_IMAGE_BYTES} bytes",
+                index + 1
+            ));
+        }
+
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(image.data.as_bytes())
+            .map_err(|error| format!("image {} contains invalid base64: {error}", index + 1))?;
+        if decoded.len() > MAX_MODEL_IMAGE_BYTES {
+            return Err(format!(
+                "image {} is {} decoded bytes, exceeding the per-image limit of {MAX_MODEL_IMAGE_BYTES}",
+                index + 1,
+                decoded.len()
+            ));
+        }
+        total_bytes = total_bytes
+            .checked_add(decoded.len())
+            .ok_or_else(|| "aggregate image size overflowed".to_string())?;
+        if total_bytes > MAX_MODEL_IMAGE_TOTAL_BYTES {
+            return Err(format!(
+                "aggregate decoded image size {total_bytes} exceeds the per-request limit of {MAX_MODEL_IMAGE_TOTAL_BYTES} bytes"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validate all inline images in an ordered structured message history.
+pub fn validate_model_input_messages(
+    messages: &[ModelInputMessage],
+) -> std::result::Result<(), String> {
+    for (message_index, message) in messages.iter().enumerate() {
+        if message
+            .content
+            .iter()
+            .any(|block| matches!(block, ModelInputBlock::Image { .. }))
+            && message.role != MessageRole::User
+        {
+            return Err(format!(
+                "message {} attaches an image to a non-user role",
+                message_index + 1
+            ));
+        }
+    }
+    let images = messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .filter_map(|block| match block {
+            ModelInputBlock::Image { media_type, data } => {
+                Some(ModelInputImage::new(media_type.clone(), data.clone()))
+            }
+            ModelInputBlock::Text { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    validate_model_input_images(&images)
+}
+
+/// Primitive object kinds that can be composed by the authoring system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectType {
+    Agent,
+    Extension,
+    Connector,
+    Gate,
+    Feed,
+    Recipe,
+    Plan,
+    Scorer,
+    Arena,
+    Group,
+    Knowledge,
+    Config,
+}
 
 // -- ModelCaller --
 
@@ -30,6 +242,13 @@ pub struct ModelCallRequest {
     /// User messages.
     #[serde(default)]
     pub messages: Vec<ChatMessage>,
+    /// Provider-neutral structured message history for multimodal requests.
+    ///
+    /// Empty preserves the legacy text-only request shape. When non-empty,
+    /// this is the authoritative ordered provider payload and adapters must
+    /// fail closed rather than discard unsupported blocks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_messages: Vec<ModelInputMessage>,
     /// Maximum tokens to generate.
     #[serde(default)]
     pub max_tokens: Option<u32>,
@@ -136,7 +355,7 @@ pub struct ChatMessage {
 }
 
 /// Message role in a conversation.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum MessageRole {
     System,
     User,
@@ -363,10 +582,29 @@ pub struct GateConfig {
     pub max_rung: Option<u8>,
 }
 
+/// Canonical metadata for a gate verdict.
+///
+/// The concrete gate implementation populates this metadata so lower-layer
+/// consumers do not need to depend on a gate registry or reconstruct the
+/// classification from a gate name.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GateClassification {
+    /// Canonical verification-pipeline rung, when the gate belongs to that
+    /// pipeline. Standalone and unknown gates have no canonical rung.
+    #[serde(default)]
+    pub canonical_rung: Option<u8>,
+    /// Whether the gate produces a deterministic binary result.
+    #[serde(default)]
+    pub deterministic: bool,
+}
+
 /// Result from a single gate.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GateVerdict {
     pub gate_name: String,
+    /// Classification supplied by the injected gate runner.
+    #[serde(default)]
+    pub classification: GateClassification,
     /// True when the gate ran and succeeded.
     pub passed: bool,
     /// True when the gate did not run.
@@ -597,6 +835,59 @@ mod tests {
     use super::*;
     use futures_util::StreamExt;
 
+    fn tiny_png() -> ModelInputImage {
+        ModelInputImage::new("image/png", "iVBORw0KGgo=")
+    }
+
+    #[test]
+    fn model_input_images_validate_portable_payloads() {
+        assert!(validate_model_input_images(&[tiny_png()]).is_ok());
+        assert!(validate_model_input_images(&[]).is_ok());
+    }
+
+    #[test]
+    fn model_input_images_fail_closed_on_mime_base64_count_and_size() {
+        let mut invalid_mime = tiny_png();
+        invalid_mime.media_type = "image/svg+xml".to_string();
+        assert!(validate_model_input_images(&[invalid_mime]).is_err());
+
+        let invalid_base64 = ModelInputImage::new("image/png", "not base64!");
+        assert!(validate_model_input_images(&[invalid_base64]).is_err());
+
+        assert!(validate_model_input_images(&vec![tiny_png(); MAX_MODEL_IMAGES + 1]).is_err());
+
+        let oversized = ModelInputImage::new(
+            "image/png",
+            "A".repeat(MAX_MODEL_IMAGE_BYTES.div_ceil(3) * 4 + 4),
+        );
+        assert!(validate_model_input_images(&[oversized]).is_err());
+    }
+
+    #[test]
+    fn model_input_messages_reject_non_user_images_and_redact_payloads() {
+        let payload = "c2Vuc2l0aXZlLWltYWdlLWJ5dGVz";
+        let message = ModelInputMessage::new(
+            MessageRole::Assistant,
+            vec![ModelInputBlock::image("image/png", payload)],
+        );
+
+        assert!(validate_model_input_messages(&[message.clone()]).is_err());
+        let debug = format!("{message:?}");
+        assert!(!debug.contains(payload));
+        assert!(debug.contains("REDACTED"));
+    }
+
+    #[test]
+    fn model_input_images_enforce_aggregate_decoded_limit() {
+        let decoded = vec![0_u8; MAX_MODEL_IMAGE_BYTES];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(decoded);
+        let images = (0..5)
+            .map(|_| ModelInputImage::new("image/png", encoded.clone()))
+            .collect::<Vec<_>>();
+
+        assert!(validate_model_input_images(&images).is_err());
+    }
+
     #[derive(Clone)]
     struct StubModelCaller {
         response: std::result::Result<ModelCallResponse, String>,
@@ -669,6 +960,34 @@ mod tests {
             vec![ModelStreamEvent::Failed {
                 error: "invalid input: provider unavailable".to_string()
             }]
+        );
+    }
+
+    #[test]
+    fn object_type_contract_contains_twelve_unique_primitives() {
+        let all = [
+            ObjectType::Agent,
+            ObjectType::Extension,
+            ObjectType::Connector,
+            ObjectType::Gate,
+            ObjectType::Feed,
+            ObjectType::Recipe,
+            ObjectType::Plan,
+            ObjectType::Scorer,
+            ObjectType::Arena,
+            ObjectType::Group,
+            ObjectType::Knowledge,
+            ObjectType::Config,
+        ];
+        assert_eq!(
+            all.into_iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            12
+        );
+        assert_eq!(
+            serde_json::to_value(ObjectType::Knowledge).expect("serialize object type"),
+            "knowledge"
         );
     }
 }

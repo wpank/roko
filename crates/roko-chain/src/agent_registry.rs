@@ -1,15 +1,18 @@
-//! Agent Registry with soulbound (non-transferable) ERC-721 passports.
+//! Agent Registry with transferable ERC-8004 identity passports.
 //!
-//! CHAIN-02: Each agent gets a soulbound NFT passport with capabilities,
+//! CHAIN-02: Each agent gets an identity NFT with capabilities,
 //! system prompt hash commitment, tier management, and 24h timelock for
 //! prompt updates.
 //!
-//! Soulbound property: `transfer()` always fails.
+//! Transfers require the current owner, record block-addressed history, and
+//! revoke delegations so authority cannot leak across ownership changes.
 //! Ventriloquist defense: system prompt hash committed at registration;
 //! updates require 24h timelock; >3 changes in 30 days triggers reputation
 //! penalty (-0.05).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+use serde::{Deserialize, Serialize};
 
 use crate::phase2::{Address, AgentPassport, PassportTier, u256};
 
@@ -49,7 +52,7 @@ pub const CAP_KNOWLEDGE: u64 = 1 << 8;
 pub const CAP_STRATEGY: u64 = 1 << 9;
 
 /// A pending system prompt hash update with timelock.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingPromptUpdate {
     /// The new prompt hash being proposed.
     pub new_hash: [u8; 32],
@@ -60,10 +63,89 @@ pub struct PendingPromptUpdate {
 }
 
 /// Record of a prompt hash change for rate limiting.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct PromptChangeRecord {
     /// Unix timestamp of the change.
     timestamp: u64,
+}
+
+/// A capability delegation issued by an identity owner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelegationCaveat {
+    /// Passport permitted to act for the delegator.
+    pub delegatee: u256,
+    /// Narrowed capability bitmask.
+    pub allowed_capabilities: u64,
+    /// First block at which the caveat is no longer valid.
+    pub expiry_block: u64,
+    /// Optional maximum amount the delegate may spend.
+    pub max_spend: Option<u256>,
+    /// Optional application-defined scope.
+    pub scope: Option<String>,
+}
+
+/// Ownership change recorded for an ERC-8004 identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferRecord {
+    /// Previous owner.
+    pub from: Address,
+    /// New owner.
+    pub to: Address,
+    /// Block at which the transfer was observed.
+    pub block: u64,
+}
+
+/// Events emitted by identity and delegation mutations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentRegistryEvent {
+    /// A new identity was minted.
+    Minted {
+        /// Assigned passport identifier.
+        passport_id: u256,
+        /// Initial owner.
+        owner: Address,
+        /// Initial capability bitmask.
+        capabilities: u64,
+    },
+    /// Identity ownership changed.
+    Transferred {
+        /// Passport identifier.
+        passport_id: u256,
+        /// Previous owner.
+        from: Address,
+        /// New owner.
+        to: Address,
+        /// Transfer block.
+        block: u64,
+    },
+    /// An owner added or replaced a delegation.
+    CaveatUpdated {
+        /// Delegating passport.
+        passport_id: u256,
+        /// Delegatee passport.
+        delegatee: u256,
+    },
+    /// An owner revoked a delegation.
+    CaveatRevoked {
+        /// Delegating passport.
+        passport_id: u256,
+        /// Delegatee passport.
+        delegatee: u256,
+    },
+    /// Advertised feed URIs changed.
+    FeedsUpdated {
+        /// Passport identifier.
+        passport_id: u256,
+        /// New URI count.
+        count: usize,
+    },
+    /// Advertised service endpoints changed.
+    EndpointsUpdated {
+        /// Passport identifier.
+        passport_id: u256,
+        /// New endpoint count.
+        count: usize,
+    },
 }
 
 /// Error type for agent registry operations.
@@ -71,10 +153,14 @@ struct PromptChangeRecord {
 pub enum RegistryError {
     /// The passport ID does not exist.
     PassportNotFound(u256),
-    /// Transfer attempted on a soulbound token.
-    SoulboundTransferDenied,
     /// Caller is not the passport owner.
     NotOwner,
+    /// Transfer target is empty or unchanged.
+    InvalidTransferTarget,
+    /// Delegation does not narrow the owner's capabilities or is already expired.
+    InvalidDelegation,
+    /// Requested delegation does not exist.
+    CaveatNotFound,
     /// The timelock has not elapsed yet.
     TimelockNotElapsed {
         /// Remaining seconds until the timelock expires.
@@ -89,16 +175,45 @@ pub enum RegistryError {
     },
     /// Only registry admin can call this function.
     AdminOnly,
+    /// A persisted snapshot violated a registry invariant.
+    InvalidSnapshot,
 }
 
 /// Configuration for the agent registry.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentRegistryConfig {
     /// Address of the registry admin (can mint new passports).
     pub admin: String,
 }
 
-/// In-memory Agent Registry implementing soulbound ERC-721 passport management.
+/// Versioned, transport-neutral snapshot of the complete passport registry.
+///
+/// Maps are represented as vectors so the snapshot remains valid JSON even
+/// when keys are numeric or byte arrays. [`AgentRegistry::from_snapshot`]
+/// validates identity and ownership invariants before accepting persisted data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentRegistrySnapshot {
+    /// Snapshot schema version.
+    pub schema_version: u32,
+    /// Registry configuration.
+    pub config: AgentRegistryConfig,
+    /// Passports, sorted by ID.
+    pub passports: Vec<AgentPassport>,
+    /// Pending prompt updates.
+    pub pending_updates: Vec<(u256, PendingPromptUpdate)>,
+    /// Prompt-change timestamps used for rate limiting.
+    prompt_changes: Vec<(u256, Vec<PromptChangeRecord>)>,
+    /// Ownership history, sorted by passport ID.
+    pub transfer_history: Vec<(u256, Vec<TransferRecord>)>,
+    /// Undrained registry events.
+    pub events: Vec<AgentRegistryEvent>,
+    /// Current simulated block.
+    pub current_block: u64,
+    /// Next passport ID.
+    pub next_id: u256,
+}
+
+/// In-memory Agent Registry implementing ERC-8004 passport management.
 #[derive(Debug, Clone)]
 pub struct AgentRegistry {
     config: AgentRegistryConfig,
@@ -108,6 +223,12 @@ pub struct AgentRegistry {
     pending_updates: HashMap<u256, PendingPromptUpdate>,
     /// Prompt change history for rate limiting.
     prompt_changes: HashMap<u256, Vec<PromptChangeRecord>>,
+    /// Ownership history keyed by passport ID.
+    transfer_history: HashMap<u256, Vec<TransferRecord>>,
+    /// Events awaiting publication to the chain event indexer or Bus.
+    events: Vec<AgentRegistryEvent>,
+    /// Current block used by the backward-compatible `transfer` API.
+    current_block: u64,
     /// Next passport ID to mint.
     next_id: u256,
 }
@@ -122,11 +243,14 @@ impl AgentRegistry {
             passports: HashMap::new(),
             pending_updates: HashMap::new(),
             prompt_changes: HashMap::new(),
+            transfer_history: HashMap::new(),
+            events: Vec::new(),
+            current_block: 0,
             next_id: 1,
         }
     }
 
-    /// Mint a new soulbound passport. Only callable by the admin.
+    /// Mint a new transferable passport. Only callable by the admin.
     ///
     /// Returns the new passport ID on success.
     pub fn mint(
@@ -148,7 +272,7 @@ impl AgentRegistry {
 
         let passport = AgentPassport {
             passport_id,
-            owner,
+            owner: owner.clone(),
             capability_list: capabilities,
             system_prompt_hash,
             tier,
@@ -156,22 +280,344 @@ impl AgentRegistry {
         };
 
         self.passports.insert(passport_id, passport);
+        self.events.push(AgentRegistryEvent::Minted {
+            passport_id,
+            owner,
+            capabilities,
+        });
         Ok(passport_id)
     }
 
-    /// Attempt to transfer a passport. Always fails (soulbound).
+    /// Set the block recorded by subsequent calls to [`Self::transfer`].
+    pub fn set_block(&mut self, block: u64) {
+        self.current_block = block;
+    }
+
+    /// Transfer a passport at the registry's current block.
     pub fn transfer(
-        &self,
-        _passport_id: u256,
-        _from: &Address,
-        _to: &Address,
+        &mut self,
+        passport_id: u256,
+        from: &Address,
+        to: &Address,
     ) -> Result<(), RegistryError> {
-        Err(RegistryError::SoulboundTransferDenied)
+        self.transfer_at_block(passport_id, from, to, self.current_block)
+    }
+
+    /// Transfer a passport and record an explicit chain block.
+    pub fn transfer_at_block(
+        &mut self,
+        passport_id: u256,
+        from: &Address,
+        to: &Address,
+        block: u64,
+    ) -> Result<(), RegistryError> {
+        let passport = self
+            .passports
+            .get(&passport_id)
+            .ok_or(RegistryError::PassportNotFound(passport_id))?;
+        if &passport.owner != from {
+            return Err(RegistryError::NotOwner);
+        }
+        if to.is_empty() || to == from {
+            return Err(RegistryError::InvalidTransferTarget);
+        }
+
+        let record = TransferRecord {
+            from: from.clone(),
+            to: to.clone(),
+            block,
+        };
+        let passport = self
+            .passports
+            .get_mut(&passport_id)
+            .expect("passport checked above");
+        passport.owner = to.clone();
+        // Delegations were authorized by the old owner and must never survive
+        // an ownership transfer.
+        passport.delegation_caveats.clear();
+        self.pending_updates.remove(&passport_id);
+        self.transfer_history
+            .entry(passport_id)
+            .or_default()
+            .push(record);
+        self.events.push(AgentRegistryEvent::Transferred {
+            passport_id,
+            from: from.clone(),
+            to: to.clone(),
+            block,
+        });
+        Ok(())
     }
 
     /// Look up a passport by ID.
     pub fn get_passport(&self, passport_id: u256) -> Option<&AgentPassport> {
         self.passports.get(&passport_id)
+    }
+
+    /// Return all passports in stable identifier order.
+    #[must_use]
+    pub fn passports(&self) -> Vec<&AgentPassport> {
+        let mut passports: Vec<_> = self.passports.values().collect();
+        passports.sort_by_key(|passport| passport.passport_id);
+        passports
+    }
+
+    /// Ownership history for a passport, oldest first.
+    #[must_use]
+    pub fn transfer_history(&self, passport_id: u256) -> &[TransferRecord] {
+        self.transfer_history
+            .get(&passport_id)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Add or replace the caveat for one delegatee.
+    pub fn add_caveat(
+        &mut self,
+        passport_id: u256,
+        caller: &Address,
+        caveat: DelegationCaveat,
+    ) -> Result<(), RegistryError> {
+        let passport = self
+            .passports
+            .get_mut(&passport_id)
+            .ok_or(RegistryError::PassportNotFound(passport_id))?;
+        if &passport.owner != caller {
+            return Err(RegistryError::NotOwner);
+        }
+        if caveat.delegatee == passport_id
+            || caveat.allowed_capabilities == 0
+            || caveat.allowed_capabilities & !passport.capability_list != 0
+            || caveat.expiry_block <= self.current_block
+        {
+            return Err(RegistryError::InvalidDelegation);
+        }
+        if let Some(existing) = passport
+            .delegation_caveats
+            .iter_mut()
+            .find(|existing| existing.delegatee == caveat.delegatee)
+        {
+            *existing = caveat.clone();
+        } else {
+            passport.delegation_caveats.push(caveat.clone());
+        }
+        self.events.push(AgentRegistryEvent::CaveatUpdated {
+            passport_id,
+            delegatee: caveat.delegatee,
+        });
+        Ok(())
+    }
+
+    /// Revoke all delegated authority for a delegatee.
+    pub fn revoke_caveat(
+        &mut self,
+        passport_id: u256,
+        caller: &Address,
+        delegatee: u256,
+    ) -> Result<(), RegistryError> {
+        let passport = self
+            .passports
+            .get_mut(&passport_id)
+            .ok_or(RegistryError::PassportNotFound(passport_id))?;
+        if &passport.owner != caller {
+            return Err(RegistryError::NotOwner);
+        }
+        let old_len = passport.delegation_caveats.len();
+        passport
+            .delegation_caveats
+            .retain(|caveat| caveat.delegatee != delegatee);
+        if old_len == passport.delegation_caveats.len() {
+            return Err(RegistryError::CaveatNotFound);
+        }
+        self.events.push(AgentRegistryEvent::CaveatRevoked {
+            passport_id,
+            delegatee,
+        });
+        Ok(())
+    }
+
+    /// Check whether a non-owner may exercise every requested capability bit.
+    #[must_use]
+    pub fn check_delegation(
+        &self,
+        delegator: u256,
+        delegatee: u256,
+        capability: u64,
+        current_block: u64,
+    ) -> bool {
+        capability != 0
+            && self.passports.get(&delegator).is_some_and(|passport| {
+                passport.delegation_caveats.iter().any(|caveat| {
+                    caveat.delegatee == delegatee
+                        && current_block < caveat.expiry_block
+                        && caveat.allowed_capabilities & capability == capability
+                })
+            })
+    }
+
+    /// Update feed URIs. Only the current owner may mutate identity metadata.
+    pub fn update_feeds(
+        &mut self,
+        passport_id: u256,
+        caller: &Address,
+        feeds: Vec<String>,
+    ) -> Result<(), RegistryError> {
+        let passport = self
+            .passports
+            .get_mut(&passport_id)
+            .ok_or(RegistryError::PassportNotFound(passport_id))?;
+        if &passport.owner != caller {
+            return Err(RegistryError::NotOwner);
+        }
+        passport.feeds = feeds;
+        self.events.push(AgentRegistryEvent::FeedsUpdated {
+            passport_id,
+            count: passport.feeds.len(),
+        });
+        Ok(())
+    }
+
+    /// Update service endpoint URIs. Only the current owner may mutate them.
+    pub fn update_service_endpoints(
+        &mut self,
+        passport_id: u256,
+        caller: &Address,
+        endpoints: Vec<String>,
+    ) -> Result<(), RegistryError> {
+        let passport = self
+            .passports
+            .get_mut(&passport_id)
+            .ok_or(RegistryError::PassportNotFound(passport_id))?;
+        if &passport.owner != caller {
+            return Err(RegistryError::NotOwner);
+        }
+        passport.service_endpoints = endpoints;
+        self.events.push(AgentRegistryEvent::EndpointsUpdated {
+            passport_id,
+            count: passport.service_endpoints.len(),
+        });
+        Ok(())
+    }
+
+    /// Events emitted since construction.
+    #[must_use]
+    pub fn events(&self) -> &[AgentRegistryEvent] {
+        &self.events
+    }
+
+    /// Drain events for publication to Bus or an event indexer.
+    pub fn drain_events(&mut self) -> Vec<AgentRegistryEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Capture all lifecycle state in a versioned snapshot.
+    #[must_use]
+    pub fn snapshot(&self) -> AgentRegistrySnapshot {
+        let mut passports: Vec<_> = self.passports.values().cloned().collect();
+        passports.sort_by_key(|passport| passport.passport_id);
+        let mut pending_updates: Vec<_> = self
+            .pending_updates
+            .iter()
+            .map(|(id, update)| (*id, update.clone()))
+            .collect();
+        pending_updates.sort_by_key(|(id, _)| *id);
+        let mut prompt_changes: Vec<_> = self
+            .prompt_changes
+            .iter()
+            .map(|(id, changes)| (*id, changes.clone()))
+            .collect();
+        prompt_changes.sort_by_key(|(id, _)| *id);
+        let mut transfer_history: Vec<_> = self
+            .transfer_history
+            .iter()
+            .map(|(id, history)| (*id, history.clone()))
+            .collect();
+        transfer_history.sort_by_key(|(id, _)| *id);
+        AgentRegistrySnapshot {
+            schema_version: 1,
+            config: self.config.clone(),
+            passports,
+            pending_updates,
+            prompt_changes,
+            transfer_history,
+            events: self.events.clone(),
+            current_block: self.current_block,
+            next_id: self.next_id,
+        }
+    }
+
+    /// Restore a registry after validating persisted identity invariants.
+    pub fn from_snapshot(snapshot: AgentRegistrySnapshot) -> Result<Self, RegistryError> {
+        if snapshot.schema_version != 1 || snapshot.config.admin.trim().is_empty() {
+            return Err(RegistryError::InvalidSnapshot);
+        }
+        if !unique_snapshot_ids(&snapshot.pending_updates)
+            || !unique_snapshot_ids(&snapshot.prompt_changes)
+            || !unique_snapshot_ids(&snapshot.transfer_history)
+            || snapshot.pending_updates.iter().any(|(_, update)| {
+                update.submitted_at.checked_add(PROMPT_UPDATE_TIMELOCK_SECS)
+                    != Some(update.executable_after)
+            })
+        {
+            return Err(RegistryError::InvalidSnapshot);
+        }
+        let mut passports = HashMap::with_capacity(snapshot.passports.len());
+        for passport in snapshot.passports {
+            let mut delegatees = HashSet::new();
+            if passport.passport_id == 0
+                || passport.owner.trim().is_empty()
+                || passport.delegation_caveats.iter().any(|caveat| {
+                    caveat.delegatee == passport.passport_id
+                        || caveat.allowed_capabilities == 0
+                        || caveat.allowed_capabilities & !passport.capability_list != 0
+                        || !delegatees.insert(caveat.delegatee)
+                })
+                || passports.insert(passport.passport_id, passport).is_some()
+            {
+                return Err(RegistryError::InvalidSnapshot);
+            }
+        }
+        let highest_id = passports.keys().copied().max().unwrap_or(0);
+        if snapshot.next_id <= highest_id || snapshot.next_id == 0 {
+            return Err(RegistryError::InvalidSnapshot);
+        }
+        let known = |id: &u256| passports.contains_key(id);
+        if snapshot.pending_updates.iter().any(|(id, _)| !known(id))
+            || snapshot.prompt_changes.iter().any(|(id, _)| !known(id))
+            || snapshot.transfer_history.iter().any(|(id, _)| !known(id))
+            || snapshot
+                .events
+                .iter()
+                .any(|event| !known(&event_passport_id(event)))
+        {
+            return Err(RegistryError::InvalidSnapshot);
+        }
+        for (id, history) in &snapshot.transfer_history {
+            let passport = passports.get(id).ok_or(RegistryError::InvalidSnapshot)?;
+            if history.iter().any(|record| {
+                record.from.trim().is_empty()
+                    || record.to.trim().is_empty()
+                    || record.from == record.to
+            }) || history
+                .windows(2)
+                .any(|records| records[0].to != records[1].from)
+                || history
+                    .last()
+                    .is_some_and(|record| record.to != passport.owner)
+            {
+                return Err(RegistryError::InvalidSnapshot);
+            }
+        }
+
+        Ok(Self {
+            config: snapshot.config,
+            passports,
+            pending_updates: snapshot.pending_updates.into_iter().collect(),
+            prompt_changes: snapshot.prompt_changes.into_iter().collect(),
+            transfer_history: snapshot.transfer_history.into_iter().collect(),
+            events: snapshot.events,
+            current_block: snapshot.current_block,
+            next_id: snapshot.next_id,
+        })
     }
 
     /// Submit a system prompt hash update (starts the 24h timelock).
@@ -282,9 +728,44 @@ impl AgentRegistry {
 
     /// Check if a passport has a specific capability.
     pub fn has_capability(&self, passport_id: u256, capability_bit: u64) -> bool {
+        if capability_bit == 0 {
+            return false;
+        }
         self.passports
             .get(&passport_id)
-            .is_some_and(|p| p.capability_list & capability_bit != 0)
+            .is_some_and(|p| p.capability_list & capability_bit == capability_bit)
+    }
+
+    /// Check direct or delegated capability authority for an acting passport.
+    #[must_use]
+    pub fn has_capability_for(
+        &self,
+        delegator: u256,
+        actor: u256,
+        capability: u64,
+        current_block: u64,
+    ) -> bool {
+        if delegator == actor {
+            self.has_capability(delegator, capability)
+        } else {
+            self.check_delegation(delegator, actor, capability, current_block)
+        }
+    }
+}
+
+fn unique_snapshot_ids<T>(entries: &[(u256, T)]) -> bool {
+    let ids = entries.iter().map(|(id, _)| *id).collect::<HashSet<_>>();
+    ids.len() == entries.len()
+}
+
+const fn event_passport_id(event: &AgentRegistryEvent) -> u256 {
+    match event {
+        AgentRegistryEvent::Minted { passport_id, .. }
+        | AgentRegistryEvent::Transferred { passport_id, .. }
+        | AgentRegistryEvent::CaveatUpdated { passport_id, .. }
+        | AgentRegistryEvent::CaveatRevoked { passport_id, .. }
+        | AgentRegistryEvent::FeedsUpdated { passport_id, .. }
+        | AgentRegistryEvent::EndpointsUpdated { passport_id, .. } => *passport_id,
     }
 }
 
@@ -523,11 +1004,41 @@ mod tests {
     }
 
     #[test]
-    fn transfer_always_fails_soulbound() {
+    fn transfer_changes_owner_and_records_block_history() {
         let mut registry = AgentRegistry::new(ADMIN);
         let id = registry.mint(ADMIN, owner(), 0, [0; 32], 0).unwrap();
-        let err = registry.transfer(id, &owner(), &other()).unwrap_err();
-        assert_eq!(err, RegistryError::SoulboundTransferDenied);
+        registry.set_block(42);
+        registry.transfer(id, &owner(), &other()).unwrap();
+
+        assert_eq!(registry.get_passport(id).unwrap().owner, other());
+        assert_eq!(
+            registry.transfer_history(id),
+            &[TransferRecord {
+                from: owner(),
+                to: other(),
+                block: 42,
+            }]
+        );
+        assert!(matches!(
+            registry.events().last(),
+            Some(AgentRegistryEvent::Transferred { block: 42, .. })
+        ));
+    }
+
+    #[test]
+    fn transfer_requires_current_owner_and_valid_target() {
+        let mut registry = AgentRegistry::new(ADMIN);
+        let id = registry.mint(ADMIN, owner(), 0, [0; 32], 0).unwrap();
+        assert_eq!(
+            registry.transfer(id, &other(), &"0x0003".to_string()),
+            Err(RegistryError::NotOwner)
+        );
+        assert_eq!(
+            registry.transfer(id, &owner(), &owner()),
+            Err(RegistryError::InvalidTransferTarget)
+        );
+        assert!(registry.transfer_history(id).is_empty());
+        assert_eq!(registry.get_passport(id).unwrap().owner, owner());
     }
 
     #[test]
@@ -622,6 +1133,126 @@ mod tests {
         assert!(registry.has_capability(id, CAP_TRADING));
         assert!(registry.has_capability(id, CAP_SECURITY));
         assert!(!registry.has_capability(id, CAP_INFERENCE));
+        assert!(!registry.has_capability(id, 0));
+        assert!(!registry.has_capability(id, CAP_TRADING | CAP_INFERENCE));
+    }
+
+    #[test]
+    fn delegation_narrows_capabilities_and_expires_at_boundary() {
+        let mut registry = AgentRegistry::new(ADMIN);
+        let id = registry
+            .mint(ADMIN, owner(), CAP_INFERENCE | CAP_SECURITY, [0; 32], 0)
+            .unwrap();
+        registry
+            .add_caveat(
+                id,
+                &owner(),
+                DelegationCaveat {
+                    delegatee: 99,
+                    allowed_capabilities: CAP_INFERENCE,
+                    expiry_block: 100,
+                    max_spend: Some(10),
+                    scope: Some("model:small".to_string()),
+                },
+            )
+            .unwrap();
+
+        assert!(registry.check_delegation(id, 99, CAP_INFERENCE, 99));
+        assert!(registry.has_capability_for(id, 99, CAP_INFERENCE, 99));
+        assert!(!registry.check_delegation(id, 99, CAP_SECURITY, 99));
+        assert!(!registry.check_delegation(id, 99, CAP_INFERENCE, 100));
+        assert!(!registry.check_delegation(id, 99, 0, 1));
+    }
+
+    #[test]
+    fn delegation_rejects_widening_non_owner_and_self_delegation() {
+        let mut registry = AgentRegistry::new(ADMIN);
+        let id = registry
+            .mint(ADMIN, owner(), CAP_INFERENCE, [0; 32], 0)
+            .unwrap();
+        let caveat = DelegationCaveat {
+            delegatee: 99,
+            allowed_capabilities: CAP_TRADING,
+            expiry_block: 100,
+            max_spend: None,
+            scope: None,
+        };
+        assert_eq!(
+            registry.add_caveat(id, &other(), caveat.clone()),
+            Err(RegistryError::NotOwner)
+        );
+        assert_eq!(
+            registry.add_caveat(id, &owner(), caveat),
+            Err(RegistryError::InvalidDelegation)
+        );
+        assert_eq!(
+            registry.add_caveat(
+                id,
+                &owner(),
+                DelegationCaveat {
+                    delegatee: id,
+                    allowed_capabilities: CAP_INFERENCE,
+                    expiry_block: 100,
+                    max_spend: None,
+                    scope: None,
+                },
+            ),
+            Err(RegistryError::InvalidDelegation)
+        );
+    }
+
+    #[test]
+    fn caveat_revoke_and_transfer_remove_authority() {
+        let mut registry = AgentRegistry::new(ADMIN);
+        let id = registry
+            .mint(ADMIN, owner(), CAP_INFERENCE, [0; 32], 0)
+            .unwrap();
+        let caveat = DelegationCaveat {
+            delegatee: 99,
+            allowed_capabilities: CAP_INFERENCE,
+            expiry_block: 100,
+            max_spend: None,
+            scope: None,
+        };
+        registry.add_caveat(id, &owner(), caveat.clone()).unwrap();
+        registry.revoke_caveat(id, &owner(), 99).unwrap();
+        assert!(!registry.check_delegation(id, 99, CAP_INFERENCE, 1));
+        assert_eq!(
+            registry.revoke_caveat(id, &owner(), 99),
+            Err(RegistryError::CaveatNotFound)
+        );
+
+        registry.add_caveat(id, &owner(), caveat).unwrap();
+        registry
+            .transfer_at_block(id, &owner(), &other(), 7)
+            .unwrap();
+        assert!(!registry.check_delegation(id, 99, CAP_INFERENCE, 8));
+        assert!(
+            registry
+                .get_passport(id)
+                .unwrap()
+                .delegation_caveats
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn feed_and_endpoint_updates_are_owner_only() {
+        let mut registry = AgentRegistry::new(ADMIN);
+        let id = registry.mint(ADMIN, owner(), 0, [0; 32], 0).unwrap();
+        assert_eq!(
+            registry.update_feeds(id, &other(), vec!["feed://denied".into()]),
+            Err(RegistryError::NotOwner)
+        );
+        registry
+            .update_feeds(id, &owner(), vec!["feed://prices".into()])
+            .unwrap();
+        registry
+            .update_service_endpoints(id, &owner(), vec!["https://agent.example".into()])
+            .unwrap();
+        let passport = registry.get_passport(id).unwrap();
+        assert_eq!(passport.feeds, vec!["feed://prices"]);
+        assert_eq!(passport.service_endpoints, vec!["https://agent.example"]);
     }
 
     #[test]
@@ -781,5 +1412,94 @@ mod tests {
 
         let result = rules.evaluate(PassportTier::Protocol, &state);
         assert_eq!(result, TierEvaluation::Maintain(PassportTier::Protocol));
+    }
+
+    #[test]
+    fn snapshot_round_trip_preserves_owner_history_delegation_and_events() {
+        let mut registry = AgentRegistry::new("admin");
+        let first = registry
+            .mint("admin", "owner-a".into(), CAP_INFERENCE, [7; 32], 0)
+            .unwrap();
+        let delegatee = registry
+            .mint("admin", "owner-b".into(), CAP_INFERENCE, [8; 32], 0)
+            .unwrap();
+        registry.set_block(10);
+        registry
+            .add_caveat(
+                first,
+                &"owner-a".into(),
+                DelegationCaveat {
+                    delegatee,
+                    allowed_capabilities: CAP_INFERENCE,
+                    expiry_block: 100,
+                    max_spend: Some(50),
+                    scope: Some("demo".into()),
+                },
+            )
+            .unwrap();
+        registry
+            .transfer_at_block(first, &"owner-a".into(), &"owner-c".into(), 11)
+            .unwrap();
+
+        let encoded = serde_json::to_vec(&registry.snapshot()).unwrap();
+        let snapshot: AgentRegistrySnapshot = serde_json::from_slice(&encoded).unwrap();
+        let restored = AgentRegistry::from_snapshot(snapshot).unwrap();
+        assert_eq!(restored.get_passport(first).unwrap().owner, "owner-c");
+        assert!(
+            restored
+                .get_passport(first)
+                .unwrap()
+                .delegation_caveats
+                .is_empty()
+        );
+        assert_eq!(restored.transfer_history(first).len(), 1);
+        assert!(restored.events().iter().any(|event| matches!(
+            event,
+            AgentRegistryEvent::Minted { passport_id, .. } if *passport_id == first
+        )));
+    }
+
+    #[test]
+    fn snapshot_rejects_duplicate_identity_records() {
+        let mut registry = AgentRegistry::new("admin");
+        registry
+            .mint("admin", "owner".into(), CAP_INFERENCE, [1; 32], 0)
+            .unwrap();
+        let mut snapshot = registry.snapshot();
+        snapshot.passports.push(snapshot.passports[0].clone());
+        assert_eq!(
+            AgentRegistry::from_snapshot(snapshot).unwrap_err(),
+            RegistryError::InvalidSnapshot
+        );
+    }
+
+    #[test]
+    fn snapshot_rejects_duplicate_auxiliary_keys_and_broken_owner_history() {
+        let mut registry = AgentRegistry::new("admin");
+        let passport_id = registry
+            .mint("admin", "owner-a".into(), CAP_INFERENCE, [1; 32], 0)
+            .unwrap();
+        registry
+            .submit_prompt_update(passport_id, &"owner-a".into(), [2; 32], 10)
+            .unwrap();
+
+        let mut duplicate = registry.snapshot();
+        duplicate
+            .pending_updates
+            .push(duplicate.pending_updates[0].clone());
+        assert_eq!(
+            AgentRegistry::from_snapshot(duplicate).unwrap_err(),
+            RegistryError::InvalidSnapshot
+        );
+
+        registry
+            .transfer_at_block(passport_id, &"owner-a".into(), &"owner-b".into(), 11)
+            .unwrap();
+        let mut broken_history = registry.snapshot();
+        broken_history.transfer_history[0].1[0].to = "different-owner".into();
+        assert_eq!(
+            AgentRegistry::from_snapshot(broken_history).unwrap_err(),
+            RegistryError::InvalidSnapshot
+        );
     }
 }

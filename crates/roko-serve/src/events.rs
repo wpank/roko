@@ -2,10 +2,17 @@
 //! operations. These flow through the shared event bus and are streamed to
 //! connected SSE / WebSocket clients.
 
-use roko_core::trigger::TriggerEvent;
-use roko_core::{ContentHash, Signal};
+use std::sync::Arc;
+
+use roko_core::signal_kinds;
+use roko_core::trigger::FinalityRequirement;
+use roko_core::trigger::{TriggerEvent, TriggerLifecycleEvent};
+use roko_core::{Body, ContentHash, Kind, Provenance, Signal};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::event_bus::Receiver;
+use crate::state::AppState;
 
 /// Progress emitted by the execution loop as plans move through phases,
 /// complete tasks, and finish gate checks.
@@ -383,47 +390,14 @@ pub enum ServerEvent {
         block_number: Option<u64>,
     },
 
-    /// New ISFR composite rate computed by the keeper.
-    IsfrRateComputed {
-        /// Overall composite rate in basis points.
-        composite_bps: u64,
-        /// Lending-class weighted median in basis points.
-        lending_bps: u64,
-        /// Structured-product weighted median in basis points.
-        structured_bps: u64,
-        /// Funding-rate weighted median in basis points.
-        funding_bps: u64,
-        /// Staking-rate weighted median in basis points.
-        staking_bps: u64,
-        /// Confidence score (0–10000, where 10000 = 100% of sources live).
-        confidence_bps: u64,
-        /// Number of source readings that contributed to this composite.
-        source_count: usize,
-        /// Unix millisecond timestamp when this composite was computed.
-        timestamp_ms: i64,
-    },
-
-    /// ISFR source health status changed.
-    IsfrSourceHealthChanged {
-        /// Unique source identifier.
-        source_id: String,
-        /// Health status string: "live", "stale", or "offline".
-        health: String,
-        /// Most recent rate from this source in basis points, if available.
-        last_rate_bps: Option<u64>,
-    },
-
-    /// ISFR keeper started or stopped.
-    IsfrKeeperStateChanged {
-        /// Whether the keeper is now running.
-        running: bool,
-    },
-
     /// A trigger binding was manually fired via the API.
     TriggerFired {
         trigger_name: String,
         event: TriggerEvent,
     },
+
+    /// A trigger transitioned through its armed/fire/flow lifecycle.
+    TriggerLifecycle { event: TriggerLifecycleEvent },
 
     /// The server is shutting down.
     ServerShutdown,
@@ -655,6 +629,37 @@ pub enum ServerEvent {
         contract: String,
         event_name: String,
         decoded: serde_json::Value,
+        /// Whether the watcher also published the cryptographic raw log evidence.
+        #[serde(default)]
+        raw_evidence_available: bool,
+    },
+
+    /// Raw EVM log with explicit chain identity and finality evidence.
+    ChainLogObserved {
+        chain_id: u64,
+        block_number: u64,
+        block_hash: String,
+        tx_hash: String,
+        log_index: u32,
+        contract: String,
+        topics: Vec<String>,
+        data: String,
+        finality: FinalityRequirement,
+        #[serde(default)]
+        removed: bool,
+    },
+
+    /// A canonical log's confidence was upgraded by the chain observer.
+    ChainFinalityUpdated {
+        chain_id: u64,
+        block_hash: String,
+        finality: FinalityRequirement,
+    },
+
+    /// Canonical block hashes invalidated by a chain reorganization.
+    ChainReorg {
+        chain_id: u64,
+        orphaned_block_hashes: Vec<String>,
     },
 
     /// A feed agent published new data.
@@ -677,9 +682,526 @@ pub enum ServerEvent {
     FeedAgentOffline { agent_id: String },
 }
 
+const GITHUB_WEBHOOK_AUTHOR: &str = "github:webhook";
+const PLAN_BRANCH_PREFIX: &str = "roko/plan/";
+
+/// Run the asynchronous GitHub webhook graduation loop.
+///
+/// The HTTP handler only authenticates, persists, and publishes the raw webhook
+/// signal. This subscriber validates the small set of events that can affect a
+/// plan and republishes sanitized signals for the existing subscription/trigger
+/// dispatcher. It never invokes plan execution itself.
+pub async fn github_event_subscriber(state: Arc<AppState>, mut receiver: Receiver<ServerEvent>) {
+    loop {
+        let envelope = tokio::select! {
+            _ = state.cancel.cancelled() => break,
+            event = receiver.recv() => match event {
+                Ok(envelope) => envelope,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "GitHub event subscriber lagged");
+                    continue;
+                }
+            },
+        };
+
+        let ServerEvent::WebhookReceived { signal } = envelope.payload else {
+            continue;
+        };
+
+        let config = state.load_roko_config();
+        let expected_repository = match (&config.github.owner, &config.github.repo) {
+            (Some(owner), Some(repo)) => Some(format!("{owner}/{repo}")),
+            _ => None,
+        };
+        let Some(graduated) = graduate_github_webhook_signal(
+            &signal,
+            &config.github.label_prefix,
+            expected_repository.as_deref(),
+        ) else {
+            continue;
+        };
+
+        if let Err(error) = state.signal_store.put(graduated.clone()).await {
+            tracing::warn!(
+                kind = %graduated.kind,
+                %error,
+                "failed to persist graduated GitHub trigger signal"
+            );
+            continue;
+        }
+
+        tracing::info!(
+            kind = %graduated.kind,
+            plan_id = graduated.tags.get("plan_id").map(String::as_str).unwrap_or(""),
+            "graduated GitHub webhook into trigger signal"
+        );
+        state
+            .event_bus
+            .publish(ServerEvent::WebhookReceived { signal: graduated });
+    }
+}
+
+/// Start the GitHub webhook graduation subscriber for a server state.
+#[must_use]
+pub fn start_github_event_subscriber(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
+    let receiver = state.event_bus.subscribe();
+    tokio::spawn(github_event_subscriber(state, receiver))
+}
+
+fn graduate_github_webhook_signal(
+    signal: &Signal,
+    label_prefix: &str,
+    expected_repository: Option<&str>,
+) -> Option<Signal> {
+    // Only HMAC-verified GitHub ingress uses this author. Derived events use a
+    // different kind and author, so publishing one cannot re-enter this path.
+    if signal.provenance.author != GITHUB_WEBHOOK_AUTHOR {
+        return None;
+    }
+    let Body::Json(payload) = &signal.body else {
+        return None;
+    };
+    let repository = payload.get("repository")?;
+    let repository_name = repository.get("full_name")?.as_str()?.trim();
+    if repository_name.is_empty()
+        || expected_repository
+            .is_some_and(|expected| !repository_name.eq_ignore_ascii_case(expected))
+    {
+        return None;
+    }
+
+    let (kind, plan_id, event, context) = match signal.kind.as_str() {
+        signal_kinds::GITHUB_ISSUE_OPENED | signal_kinds::GITHUB_ISSUE_LABELED => {
+            let plan_label = format!("{label_prefix}plan");
+            let issue = payload.get("issue")?;
+            if !issue_has_plan_label(signal.kind.as_str(), payload, issue, &plan_label) {
+                return None;
+            }
+            let issue_number = issue.get("number")?.as_u64()?;
+            let plan_id = parse_issue_plan_reference(issue.get("body")?.as_str()?)?;
+            (
+                signal_kinds::GITHUB_PLAN_EXECUTION_REQUESTED,
+                plan_id,
+                "execution_requested",
+                serde_json::json!({
+                    "issue": {
+                        "number": issue_number,
+                        "url": issue.get("html_url").and_then(Value::as_str),
+                    },
+                    "label": plan_label,
+                }),
+            )
+        }
+        signal_kinds::GITHUB_PR_REVIEW => {
+            if payload.get("action").and_then(Value::as_str) != Some("submitted") {
+                return None;
+            }
+            let review = payload.get("review")?;
+            let review_state = review.get("state")?.as_str()?.to_ascii_lowercase();
+            if review_state != "changes_requested" && review_state != "request_changes" {
+                return None;
+            }
+            let pull_request = payload.get("pull_request")?;
+            let branch = pull_request.get("head")?.get("ref")?.as_str()?;
+            let plan_id = parse_plan_branch(branch)?.to_owned();
+            (
+                signal_kinds::GITHUB_REPLAN_REQUESTED,
+                plan_id,
+                "replan_requested",
+                serde_json::json!({
+                    "branch": branch,
+                    "pull_request": {
+                        "number": pull_request.get("number")?.as_u64()?,
+                        "url": pull_request.get("html_url").and_then(Value::as_str),
+                    },
+                    "review": {
+                        "id": review.get("id").and_then(Value::as_u64),
+                        "state": review_state,
+                    },
+                }),
+            )
+        }
+        signal_kinds::GITHUB_CHECK_COMPLETED => {
+            if payload.get("action").and_then(Value::as_str) != Some("completed") {
+                return None;
+            }
+            let check_suite = payload.get("check_suite")?;
+            if check_suite.get("conclusion").and_then(Value::as_str) != Some("failure") {
+                return None;
+            }
+            let branch = check_suite.get("head_branch")?.as_str()?;
+            let plan_id = parse_plan_branch(branch)?.to_owned();
+            (
+                signal_kinds::GITHUB_CI_FAILED,
+                plan_id,
+                "ci_failed",
+                serde_json::json!({
+                    "branch": branch,
+                    "check_suite": {
+                        "id": check_suite.get("id").and_then(Value::as_u64),
+                        "head_sha": check_suite.get("head_sha").and_then(Value::as_str),
+                        "conclusion": "failure",
+                    },
+                }),
+            )
+        }
+        _ => return None,
+    };
+
+    let source_signal_id = signal.id.to_hex();
+    Some(
+        Signal::builder(Kind::Custom(kind.into()))
+            .body(Body::Json(serde_json::json!({
+                "event": event,
+                "plan_id": plan_id,
+                "repository": repository,
+                "context": context,
+                "source": {
+                    "kind": signal.kind.as_str(),
+                    "signal_id": source_signal_id,
+                },
+            })))
+            .provenance(Provenance::external("roko-serve/github-event-subscriber"))
+            .lineage([signal.id])
+            .tag("github_event", event)
+            .tag("plan_id", plan_id)
+            .tag("repository", repository_name)
+            .tag("source_signal_id", source_signal_id)
+            .build(),
+    )
+}
+
+fn issue_has_plan_label(kind: &str, payload: &Value, issue: &Value, expected: &str) -> bool {
+    if kind == signal_kinds::GITHUB_ISSUE_LABELED {
+        return payload
+            .get("label")
+            .and_then(|label| label.get("name"))
+            .and_then(Value::as_str)
+            .is_some_and(|label| label == expected);
+    }
+
+    kind == signal_kinds::GITHUB_ISSUE_OPENED
+        && issue
+            .get("labels")
+            .and_then(Value::as_array)
+            .is_some_and(|labels| {
+                labels.iter().any(|label| {
+                    label
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|label| label == expected)
+                })
+            })
+}
+
+fn parse_issue_plan_reference(body: &str) -> Option<String> {
+    let mut found: Option<String> = None;
+    for line in body.lines() {
+        let Some((key, value)) = line.trim().split_once(':') else {
+            continue;
+        };
+        if !key.trim().trim_matches('*').eq_ignore_ascii_case("plan") {
+            continue;
+        }
+        let plan_id = normalize_plan_reference(value)?;
+        if found.as_deref().is_some_and(|existing| existing != plan_id) {
+            return None;
+        }
+        found = Some(plan_id.to_owned());
+    }
+    found
+}
+
+fn normalize_plan_reference(value: &str) -> Option<&str> {
+    let value = value.trim();
+    let value = value.strip_prefix("**").unwrap_or(value).trim();
+    let value = value.trim_matches('`').trim();
+    let value = value.strip_prefix("plans/").unwrap_or(value);
+    let value = value
+        .strip_suffix("/tasks.toml")
+        .or_else(|| value.strip_suffix('/'))
+        .unwrap_or(value);
+    valid_plan_id(value).then_some(value)
+}
+
+fn parse_plan_branch(branch: &str) -> Option<&str> {
+    let plan_id = branch.strip_prefix(PLAN_BRANCH_PREFIX)?;
+    valid_plan_id(plan_id).then_some(plan_id)
+}
+
+fn valid_plan_id(plan_id: &str) -> bool {
+    if plan_id.is_empty() || plan_id.len() > 128 {
+        return false;
+    }
+    let mut bytes = plan_id.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    let last = plan_id.as_bytes()[plan_id.len() - 1];
+    first.is_ascii_alphanumeric()
+        && last.is_ascii_alphanumeric()
+        && plan_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn github_signal(kind: &str, payload: Value) -> Signal {
+        Signal::builder(Kind::Custom(kind.into()))
+            .body(Body::Json(payload))
+            .provenance(Provenance::external(GITHUB_WEBHOOK_AUTHOR))
+            .build()
+    }
+
+    fn repository() -> Value {
+        serde_json::json!({
+            "id": 7,
+            "full_name": "nunchi/roko",
+            "name": "roko",
+            "owner": { "login": "nunchi" },
+        })
+    }
+
+    #[test]
+    fn issue_plan_label_graduates_to_execution_request() {
+        let raw = github_signal(
+            signal_kinds::GITHUB_ISSUE_OPENED,
+            serde_json::json!({
+                "action": "opened",
+                "repository": repository(),
+                "issue": {
+                    "number": 42,
+                    "html_url": "https://github.com/nunchi/roko/issues/42",
+                    "body": "Please run this.\n\n**Plan:** `plans/E46-github-workflow-integration/tasks.toml`",
+                    "labels": [{ "name": "roko/plan" }],
+                },
+            }),
+        );
+
+        let graduated = graduate_github_webhook_signal(&raw, "roko/", Some("NUNCHI/ROKO"))
+            .expect("valid issue should graduate");
+        assert_eq!(
+            graduated.kind.as_str(),
+            signal_kinds::GITHUB_PLAN_EXECUTION_REQUESTED
+        );
+        assert_eq!(
+            graduated.tags.get("plan_id").map(String::as_str),
+            Some("E46-github-workflow-integration")
+        );
+        assert_eq!(graduated.lineage, vec![raw.id]);
+        let Body::Json(body) = graduated.body else {
+            panic!("graduated signal should have a JSON body");
+        };
+        assert_eq!(body["plan_id"], "E46-github-workflow-integration");
+        assert_eq!(body["repository"]["full_name"], "nunchi/roko");
+        assert_eq!(body["context"]["issue"]["number"], 42);
+    }
+
+    #[test]
+    fn issue_plan_graduation_fails_closed_on_label_reference_and_repo_boundaries() {
+        let make = |label: &str, body: &str| {
+            github_signal(
+                signal_kinds::GITHUB_ISSUE_LABELED,
+                serde_json::json!({
+                    "action": "labeled",
+                    "label": { "name": label },
+                    "repository": repository(),
+                    "issue": { "number": 42, "body": body, "labels": [] },
+                }),
+            )
+        };
+
+        assert!(
+            graduate_github_webhook_signal(&make("roko/task", "Plan: safe-plan"), "roko/", None)
+                .is_none()
+        );
+        let labeled_other_while_plan_exists = github_signal(
+            signal_kinds::GITHUB_ISSUE_LABELED,
+            serde_json::json!({
+                "action": "labeled",
+                "label": { "name": "roko/task" },
+                "repository": repository(),
+                "issue": {
+                    "number": 42,
+                    "body": "Plan: safe-plan",
+                    "labels": [{ "name": "roko/plan" }],
+                },
+            }),
+        );
+        assert!(
+            graduate_github_webhook_signal(&labeled_other_while_plan_exists, "roko/", None,)
+                .is_none()
+        );
+        assert!(
+            graduate_github_webhook_signal(&make("roko/plan", "Plan: ../escape"), "roko/", None)
+                .is_none()
+        );
+        assert!(
+            graduate_github_webhook_signal(
+                &make("roko/plan", "Plan: first-plan\nPlan: second-plan"),
+                "roko/",
+                None,
+            )
+            .is_none()
+        );
+        assert!(
+            graduate_github_webhook_signal(
+                &make("roko/plan", "Plan: safe-plan"),
+                "roko/",
+                Some("other/repo"),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn requested_changes_review_graduates_only_for_exact_plan_branch() {
+        let make = |action: &str, state: &str, branch: &str| {
+            github_signal(
+                signal_kinds::GITHUB_PR_REVIEW,
+                serde_json::json!({
+                    "action": action,
+                    "repository": repository(),
+                    "review": { "id": 99, "state": state },
+                    "pull_request": {
+                        "number": 11,
+                        "html_url": "https://github.com/nunchi/roko/pull/11",
+                        "head": { "ref": branch },
+                    },
+                }),
+            )
+        };
+
+        let raw = make("submitted", "changes_requested", "roko/plan/E46-webhooks");
+        let graduated = graduate_github_webhook_signal(&raw, "roko/", None)
+            .expect("requested changes on a plan branch should graduate");
+        assert_eq!(
+            graduated.kind.as_str(),
+            signal_kinds::GITHUB_REPLAN_REQUESTED
+        );
+        assert_eq!(graduated.tags["plan_id"], "E46-webhooks");
+
+        for rejected in [
+            make("edited", "changes_requested", "roko/plan/E46-webhooks"),
+            make("submitted", "approved", "roko/plan/E46-webhooks"),
+            make("submitted", "changes_requested", "feature/E46-webhooks"),
+            make("submitted", "changes_requested", "roko/plan/a/b"),
+            make("submitted", "changes_requested", "roko/plan/../escape"),
+        ] {
+            assert!(graduate_github_webhook_signal(&rejected, "roko/", None).is_none());
+        }
+    }
+
+    #[test]
+    fn failed_check_graduates_on_canonical_completed_check_kind() {
+        let make = |conclusion: &str, branch: &str| {
+            github_signal(
+                signal_kinds::GITHUB_CHECK_COMPLETED,
+                serde_json::json!({
+                    "action": "completed",
+                    "repository": repository(),
+                    "check_suite": {
+                        "id": 123,
+                        "head_branch": branch,
+                        "head_sha": "deadbeef",
+                        "conclusion": conclusion,
+                    },
+                }),
+            )
+        };
+
+        assert_eq!(
+            signal_kinds::GITHUB_CHECK_SUITE_COMPLETED,
+            signal_kinds::GITHUB_CHECK_COMPLETED,
+            "transport-specific compatibility alias must remain stable"
+        );
+        let graduated =
+            graduate_github_webhook_signal(&make("failure", "roko/plan/E46-checks"), "", None)
+                .expect("failed plan check should graduate");
+        assert_eq!(graduated.kind.as_str(), signal_kinds::GITHUB_CI_FAILED);
+        assert_eq!(graduated.tags["plan_id"], "E46-checks");
+        assert!(
+            graduate_github_webhook_signal(&make("success", "roko/plan/E46-checks"), "", None)
+                .is_none()
+        );
+        assert!(graduate_github_webhook_signal(&make("failure", "main"), "", None).is_none());
+    }
+
+    #[test]
+    fn graduated_signal_cannot_reenter_github_subscriber() {
+        let raw = github_signal(
+            signal_kinds::GITHUB_ISSUE_OPENED,
+            serde_json::json!({
+                "repository": repository(),
+                "issue": {
+                    "number": 1,
+                    "body": "Plan: safe-plan",
+                    "labels": [{ "name": "roko/plan" }],
+                },
+            }),
+        );
+        let graduated = graduate_github_webhook_signal(&raw, "roko/", None)
+            .expect("raw webhook should graduate once");
+        assert!(graduate_github_webhook_signal(&graduated, "roko/", None).is_none());
+    }
+
+    #[tokio::test]
+    async fn subscriber_persists_and_publishes_graduated_signal_asynchronously() {
+        use crate::deploy::manual::ManualBackend;
+        use crate::runtime::NoOpRuntime;
+        use roko_core::config::schema::RokoConfig;
+
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let mut config = RokoConfig::default();
+        config.github.owner = Some("nunchi".into());
+        config.github.repo = Some("roko".into());
+        config.github.label_prefix = "roko/".into();
+        let state = Arc::new(
+            AppState::new(
+                tempdir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                config,
+                Arc::new(ManualBackend::default()),
+            )
+            .expect("test state"),
+        );
+        let mut observer = state.event_bus.subscribe();
+        let subscriber = start_github_event_subscriber(Arc::clone(&state));
+
+        state.event_bus.publish(ServerEvent::WebhookReceived {
+            signal: github_signal(
+                signal_kinds::GITHUB_ISSUE_LABELED,
+                serde_json::json!({
+                    "action": "labeled",
+                    "label": { "name": "roko/plan" },
+                    "repository": repository(),
+                    "issue": { "number": 7, "body": "Plan: async-plan", "labels": [] },
+                }),
+            ),
+        });
+
+        let graduated = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let envelope = observer.recv().await.expect("event bus open");
+                if let ServerEvent::WebhookReceived { signal } = envelope.payload
+                    && signal.kind.as_str() == signal_kinds::GITHUB_PLAN_EXECUTION_REQUESTED
+                {
+                    break signal;
+                }
+            }
+        })
+        .await
+        .expect("subscriber should publish without handler-side execution");
+        assert_eq!(graduated.tags["plan_id"], "async-plan");
+        assert!(tempdir.path().join(".roko/engrams.jsonl").exists());
+
+        state.cancel.cancel();
+        subscriber.await.expect("subscriber join");
+    }
 
     #[test]
     fn execution_event_serializes_with_type_tag() {

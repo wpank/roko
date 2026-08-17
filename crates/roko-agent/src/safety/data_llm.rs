@@ -231,10 +231,10 @@ impl DataLlmRouter {
             // keys from the schema exist in the output.
             if let Some(required) = schema.get("required").and_then(|r| r.as_array()) {
                 for key in required {
-                    if let Some(key_str) = key.as_str() {
-                        if parsed.get(key_str).is_none() {
-                            return Err(format!("data LLM output missing required key: {key_str}"));
-                        }
+                    if let Some(key_str) = key.as_str()
+                        && parsed.get(key_str).is_none()
+                    {
+                        return Err(format!("data LLM output missing required key: {key_str}"));
                     }
                 }
             }

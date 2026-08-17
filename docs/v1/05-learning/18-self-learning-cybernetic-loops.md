@@ -1,5 +1,8 @@
 # Self-Learning & Cybernetic Feedback Loops
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **REF10 source:** `../../tmp/refinements/10-self-learning-cybernetic-loops.md`
 > **Glossary:** [Naming and Glossary](../00-architecture/01-naming-and-glossary.md)
 > **Cross-references:** [16-predictive-foraging](16-predictive-foraging.md), [13-8-missing-feedback-loops](13-8-missing-feedback-loops.md), [15-collective-calibration-31x](15-collective-calibration-31x.md), [17-adas-and-autocatalytic](17-adas-and-autocatalytic.md), [20-research-to-runtime](20-research-to-runtime.md), `../../tmp/refinements/16-research-to-runtime.md`

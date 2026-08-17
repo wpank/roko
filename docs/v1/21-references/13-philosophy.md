@@ -1,5 +1,8 @@
 # Philosophy
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Philosophical foundations for agency, cognition, temporal existence, embodiment, and creative destruction in the Roko conceptual framework.
 
 **Topic**: [References](./INDEX.md)

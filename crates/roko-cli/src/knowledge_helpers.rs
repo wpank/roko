@@ -316,6 +316,8 @@ pub(crate) fn record_lifecycle_knowledge(
             id: candidate_id.clone(),
             kind,
             source: Some("lifecycle-monitor".to_string()),
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: content.clone(),
             confidence: candidate_confidence,
             confidence_weight: candidate_confidence,
@@ -336,6 +338,9 @@ pub(crate) fn record_lifecycle_knowledge(
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         };
         knowledge_store.max_similarity(&probe).unwrap_or(0.0)
@@ -554,6 +559,8 @@ pub(crate) fn build_success_knowledge_entry(
         id: format!("task-success:{plan_id}:{task_id}:{}", result.output.id),
         kind,
         source: Some("task-success".to_string()),
+        origin_taint: Default::default(),
+        classification: Default::default(),
         content,
         confidence: 0.75,
         confidence_weight: 0.75,
@@ -578,6 +585,9 @@ pub(crate) fn build_success_knowledge_entry(
         deprecated: false,
         balance: 1.0,
         frozen: false,
+        balance_depleted_at: None,
+        frozen_at: None,
+        falsifier: None,
         catalytic_score: 0,
     }
 }
@@ -809,6 +819,8 @@ mod tests {
             ),
             kind: KnowledgeKind::AntiKnowledge,
             source: Some("lifecycle-monitor".to_string()),
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: format!(
                 "Agent '{}' transitioned from {:?} to {:?} (reason: {:?}) at {}",
                 transition.agent_id,
@@ -840,6 +852,9 @@ mod tests {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         };
         knowledge_store.add(existing).expect("add existing entry");
@@ -878,5 +893,70 @@ mod tests {
             candidates[0].candidate_id.contains("novel-agent"),
             "candidate should reference the agent id"
         );
+    }
+
+    #[test]
+    fn routing_advice_reads_positive_and_negative_model_knowledge() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let store = KnowledgeStore::new(tmp.path().join("knowledge.jsonl"));
+        store
+            .add(KnowledgeEntry {
+                id: "routing-positive".into(),
+                kind: KnowledgeKind::Heuristic,
+                content: "implementer code routing model model-good succeeds reliably".into(),
+                confidence: 0.9,
+                source_model: Some("model-good".into()),
+                ..KnowledgeEntry::default()
+            })
+            .expect("persist positive routing knowledge");
+        store
+            .add(KnowledgeEntry {
+                id: "routing-negative".into(),
+                kind: KnowledgeKind::AntiKnowledge,
+                content: "implementer code routing model model-bad repeatedly fails".into(),
+                confidence: 0.8,
+                source_model: Some("model-bad".into()),
+                ..KnowledgeEntry::default()
+            })
+            .expect("persist negative routing knowledge");
+
+        let advice = build_knowledge_routing_advice(
+            &store,
+            &["model-good".into(), "model-bad".into()],
+            AgentRole::Implementer,
+            "code",
+        );
+
+        assert!(advice.has_signal);
+        assert_eq!(advice.hints.len(), 2);
+        assert!(advice.score_for("model-good") > 0.0);
+        assert!(advice.score_for("model-bad") < 0.0);
+        assert_eq!(advice.hint_for("model-good").unwrap().supporting_entries, 1);
+        assert_eq!(advice.hint_for("model-bad").unwrap().supporting_entries, 1);
+    }
+
+    #[test]
+    fn routing_advice_is_empty_without_relevant_knowledge() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let store = KnowledgeStore::new(tmp.path().join("knowledge.jsonl"));
+        store
+            .add(KnowledgeEntry {
+                id: "unrelated".into(),
+                kind: KnowledgeKind::Insight,
+                content: "database indexing observation".into(),
+                confidence: 1.0,
+                ..KnowledgeEntry::default()
+            })
+            .expect("persist unrelated knowledge");
+
+        let advice = build_knowledge_routing_advice(
+            &store,
+            &["model-good".into()],
+            AgentRole::Implementer,
+            "code",
+        );
+
+        assert!(!advice.has_signal);
+        assert!(advice.hints.is_empty());
     }
 }

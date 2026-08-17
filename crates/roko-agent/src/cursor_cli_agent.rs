@@ -14,7 +14,8 @@
 
 use crate::agent::{Agent, AgentResult};
 use crate::process::{
-    GRACE_STDIN_CLOSE_MS, kill_tree, register_spawned_pid, set_process_group, unregister_pid,
+    GRACE_STDIN_CLOSE_MS, ResourceLimits, confined_command, kill_tree, register_spawned_pid,
+    set_process_group, unregister_pid,
 };
 use crate::usage::Usage;
 use async_trait::async_trait;
@@ -28,7 +29,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::{Duration, timeout};
 
@@ -246,8 +247,10 @@ impl CursorConnection {
         model: Option<&str>,
         event_tx: mpsc::UnboundedSender<CursorEvent>,
         turn_done_tx: mpsc::UnboundedSender<()>,
+        resource_limits: Option<&ResourceLimits>,
     ) -> Result<Self, String> {
-        let mut cmd = Command::new(command);
+        let mut cmd = confined_command(command, resource_limits)
+            .map_err(|error| format!("process confinement unavailable: {error}"))?;
         cmd.arg("--force");
         cmd.arg("--approve-mcps");
         cmd.arg("--workspace").arg(working_dir);
@@ -267,7 +270,6 @@ impl CursorConnection {
 
         set_process_group(&mut cmd);
         cmd.kill_on_drop(true);
-
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn cursor agent: {e}"))?;
@@ -474,7 +476,11 @@ impl CursorConnection {
     }
 
     /// Create a new ACP session.
-    async fn create_session(&mut self, working_dir: &str) -> Result<String, String> {
+    async fn create_session(
+        &mut self,
+        working_dir: &str,
+        mcp_servers: &[Value],
+    ) -> Result<String, String> {
         let cwd = if working_dir.is_empty() {
             ".".to_string()
         } else {
@@ -483,7 +489,7 @@ impl CursorConnection {
         let params = CursorSessionNewParams {
             cwd,
             mode: "agent",
-            mcp_servers: vec![],
+            mcp_servers: mcp_servers.to_vec(),
         };
         let id = self
             .send_request(
@@ -561,6 +567,9 @@ pub struct CursorCliAgent {
     model: Option<String>,
     timeout_ms: u64,
     name: String,
+    resource_limits: Option<ResourceLimits>,
+    /// Standard ACP MCP server objects injected into `session/new`.
+    mcp_servers: Vec<Value>,
     /// Lazy-initialized connection (spawned on first `run()`).
     connection: Arc<Mutex<Option<CursorConnection>>>,
     /// Channel to receive parsed events from the reader task.
@@ -584,6 +593,8 @@ impl CursorCliAgent {
             model: None,
             timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
             name: "cursor-cli".to_string(),
+            resource_limits: None,
+            mcp_servers: Vec::new(),
             connection: Arc::new(Mutex::new(None)),
             event_rx: Arc::new(Mutex::new(Some(event_rx))),
             turn_done_rx: Arc::new(Mutex::new(Some(turn_done_rx))),
@@ -613,6 +624,20 @@ impl CursorCliAgent {
         self
     }
 
+    /// Apply OS resource limits to the persistent Cursor subprocess.
+    #[must_use]
+    pub fn with_resource_limits(mut self, limits: ResourceLimits) -> Self {
+        self.resource_limits = Some(limits);
+        self
+    }
+
+    /// Attach task-scoped MCP servers to the ACP session.
+    #[must_use]
+    pub fn with_mcp_servers(mut self, mcp_servers: Vec<Value>) -> Self {
+        self.mcp_servers = mcp_servers;
+        self
+    }
+
     /// Ensure the connection is initialized (spawn + initialize + create session).
     async fn ensure_connected(&self) -> Result<(), String> {
         let mut conn_guard = self.connection.lock().await;
@@ -634,11 +659,12 @@ impl CursorCliAgent {
             self.model.as_deref(),
             self.event_tx.clone(),
             self.turn_done_tx.clone(),
+            self.resource_limits.as_ref(),
         )
         .await?;
 
         conn.initialize().await?;
-        conn.create_session(&self.working_dir.to_string_lossy())
+        conn.create_session(&self.working_dir.to_string_lossy(), &self.mcp_servers)
             .await?;
 
         *conn_guard = Some(conn);
@@ -860,6 +886,26 @@ done
         assert_eq!(parsed["id"], 42);
         assert_eq!(parsed["method"], "session/prompt");
         assert_eq!(parsed["params"]["test"], true);
+    }
+
+    #[tokio::test]
+    async fn cursor_session_new_preserves_authenticated_per_call_mcp_servers() {
+        let server = serde_json::json!({
+            "type": "http",
+            "name": "roko_plugins",
+            "url": "http://127.0.0.1:1234/mcp",
+            "headers": [{"name": "Authorization", "value": "Bearer scoped"}],
+        });
+        let params = CursorSessionNewParams {
+            cwd: "/tmp/worktree".to_string(),
+            mode: "agent",
+            mcp_servers: vec![server.clone()],
+        };
+        let value = serde_json::to_value(params).unwrap();
+        assert_eq!(value["mcpServers"][0], server);
+
+        let agent = CursorCliAgent::new("agent", "/tmp").with_mcp_servers(vec![server.clone()]);
+        assert_eq!(agent.mcp_servers, vec![server]);
     }
 
     #[tokio::test]

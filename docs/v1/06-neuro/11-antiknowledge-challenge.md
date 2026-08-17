@@ -1,5 +1,8 @@
 # AntiKnowledge and the Challenge Mechanism
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > AntiKnowledge — validated negative knowledge about what is wrong — serves as the epistemic immune system of Neuro, with a confidence floor of 0.3, 0.5× demurrage, and a challenge mechanism that links refutations to the entries they contradict.
 
 

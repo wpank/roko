@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { subscribeServerEvents } from '../app/bootstrap';
-import type { ServerEvent } from '../transport/types';
+import type { DashboardEvent } from '../transport/types';
 
 export type OperationEventType =
   | 'run_started'
@@ -24,7 +24,7 @@ export type OperationEventType =
   | (string & {});
 
 export type OperationEvent = Record<string, unknown> & {
-  type: ServerEvent['type'] | OperationEventType;
+  type: DashboardEvent['type'] | OperationEventType;
   data?: Record<string, unknown>;
   event?: Record<string, unknown>;
 };
@@ -74,24 +74,14 @@ export interface PipelineProgress {
 const MAX_OPERATION_EVENTS = 500;
 
 const PIPELINE_EVENT_TYPES: OperationEventType[] = [
-  'workflow_started',
   'phase_transition',
   'agent_spawned',
   'agent_completed',
-  'agent_failed',
-  'gate_started',
-  'gate_passed',
-  'gate_failed',
-  'workflow_completed',
-  'run_started',
   'plan_started',
   'task_started',
   'task_completed',
-  'task_failed',
   'gate_result',
   'plan_completed',
-  'run_completed',
-  'execution',
 ];
 
 const STAGE_LABELS: Record<PipelineStageId, string> = {
@@ -137,19 +127,6 @@ function readStringFrom(
   }
 
   return undefined;
-}
-
-function readNumber(event: OperationEvent, keys: string[]): number {
-  for (const record of [event, nestedRecord(event, 'data'), nestedRecord(event, 'event')]) {
-    if (!record) continue;
-
-    for (const key of keys) {
-      const value = record[key];
-      if (typeof value === 'number' && Number.isFinite(value)) return value;
-    }
-  }
-
-  return 0;
 }
 
 function readBoolean(event: OperationEvent, keys: string[]): boolean | null {
@@ -344,38 +321,9 @@ function derivePipelineProgress(events: OperationEvent[]): PipelineProgress {
       continue;
     }
 
-    if (type === 'agent_failed' || type === 'task_failed') {
-      completeThrough(stages, ['classify', 'plan']);
-      setStage(stages, 'execute', 'failed');
-      setStage(stages, 'done', 'failed');
-      success = false;
-
-      const taskId = readTaskId(event);
-      if (taskId) {
-        const existing = tasks.get(taskId);
-        tasks.set(taskId, {
-          id: taskId,
-          title: existing?.title ?? readTaskTitle(event),
-          status: 'failed',
-          gates: existing?.gates ?? [],
-        });
-      }
-      continue;
-    }
-
-    if (type === 'gate_started') {
+    if (type === 'gate_result') {
       completeThrough(stages, ['classify', 'plan', 'execute']);
-      setStage(stages, 'gate', 'active');
-      continue;
-    }
-
-    if (type === 'gate_passed' || type === 'gate_failed' || type === 'gate_result') {
-      completeThrough(stages, ['classify', 'plan', 'execute']);
-      const gate = type === 'gate_failed'
-        ? { ...readGate(event), passed: false }
-        : type === 'gate_passed'
-          ? { ...readGate(event), passed: true }
-          : readGate(event);
+      const gate = readGate(event);
       gates.push(gate);
       setStage(stages, 'gate', gate.passed ? 'complete' : 'failed');
       if (!gate.passed) success = false;
@@ -393,17 +341,8 @@ function derivePipelineProgress(events: OperationEvent[]): PipelineProgress {
     }
 
     if (type === 'plan_completed') {
-      completeThrough(stages, ['classify', 'plan', 'execute']);
-      setStage(stages, 'gate', gates.length > 0 ? 'complete' : 'active');
-      continue;
-    }
-
-    if (type === 'workflow_completed' || type === 'run_completed') {
       completed = true;
-      const outcome = readStringFrom(event, ['outcome'])
-        ?? readStringFrom(nestedRecord(event, 'data'), ['outcome']);
-      success = readBoolean(event, ['success', 'passed'])
-        ?? (outcome ? !(outcome.includes('halted') || outcome.includes('cancelled')) : null);
+      success = readBoolean(event, ['success']);
       completeThrough(stages, ['classify', 'plan', 'execute', 'gate']);
       setStage(stages, 'done', success === false ? 'failed' : 'complete');
     }
@@ -462,30 +401,16 @@ export function useOperationEvents(
 }
 
 export function useInferenceCosts(operationId: string | null): InferenceCostSummary {
-  const events = useOperationEvents(operationId, ['inference_completed']);
-
-  return useMemo(
-    () => events.reduce<InferenceCostSummary>((acc, event) => {
-      const inputTokens = readNumber(event, ['input_tokens', 'inputTokens', 'tokens_in', 'tokensIn']);
-      const outputTokens = readNumber(event, ['output_tokens', 'outputTokens', 'tokens_out', 'tokensOut']);
-      const fallbackTokens = readNumber(event, ['total_tokens', 'totalTokens', 'tokens', 'tokens_used', 'tokensUsed']);
-
-      return {
-        totalCost: acc.totalCost + readNumber(event, ['cost_usd', 'costUsd', 'cost']),
-        totalTokens: acc.totalTokens + (inputTokens + outputTokens || fallbackTokens),
-        inputTokens: acc.inputTokens + inputTokens,
-        outputTokens: acc.outputTokens + outputTokens,
-        calls: acc.calls + 1,
-      };
-    }, {
-      totalCost: 0,
-      totalTokens: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      calls: 0,
-    }),
-    [events],
-  );
+  // DashboardEvent does not expose per-inference token/cost telemetry.
+  // Preserve the hook contract without subscribing to a nonexistent event.
+  void operationId;
+  return {
+    totalCost: 0,
+    totalTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    calls: 0,
+  };
 }
 
 export function usePipelineProgress(operationId: string | null): PipelineProgress {

@@ -1,5 +1,8 @@
 # Three Cognitive Speeds
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** Roko agents operate at three timescales concurrently: Gamma (reactive,
 > ~5-15s), Theta (reflective, ~75s), and Delta (consolidation, hours). These three speeds
 > are inspired by neural oscillation bands in neuroscience (Buzsáki 2006) and map to the

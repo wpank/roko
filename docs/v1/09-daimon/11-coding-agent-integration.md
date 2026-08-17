@@ -1,5 +1,8 @@
 # Coding Agent Integration
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > How the Daimon tracks per-crate confidence, error pattern sensitivity, and fatigue detection for software engineering agents.
 
 

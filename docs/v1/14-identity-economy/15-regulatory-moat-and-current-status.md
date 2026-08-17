@@ -1,5 +1,8 @@
 # 15 — Regulatory Moat & Current Status
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Roko's content-addressed provenance architecture creates a natural regulatory
 > compliance moat. The Forensic AI capability enables causal replay of any agent
 > decision — answering "why did the agent do this?" with cryptographically verifiable

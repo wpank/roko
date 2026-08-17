@@ -6,6 +6,9 @@ use super::agent::default_true;
 
 // ---- [learning] ----------------------------------------------------------
 
+/// Default number of gate observations between incremental threshold flushes.
+pub const DEFAULT_GATE_THRESHOLD_FLUSH_INTERVAL: u64 = 10;
+
 /// Learning subsystem configuration.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -67,10 +70,23 @@ pub struct LearningConfig {
     /// Defaults to 0.5 when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub override_learning_dampening: Option<f64>,
+    /// Number of gate observations between incremental writes of adaptive
+    /// thresholds to `.roko/learn/gate-thresholds.json`.
+    ///
+    /// Values below one are normalized to one at the runtime boundary so an
+    /// invalid zero never disables durability or creates an always-due
+    /// comparison. Defaults to 10 for compatibility with the original
+    /// hardcoded cadence.
+    #[serde(default = "default_gate_threshold_flush_interval")]
+    pub gate_threshold_flush_interval: u64,
 }
 
 fn default_lookahead_threshold() -> f64 {
     0.7
+}
+
+const fn default_gate_threshold_flush_interval() -> u64 {
+    DEFAULT_GATE_THRESHOLD_FLUSH_INTERVAL
 }
 
 const fn default_learning_min_occ() -> usize {
@@ -111,6 +127,48 @@ impl Default for LearningConfig {
             use_lookahead_router: false,
             lookahead_threshold: default_lookahead_threshold(),
             override_learning_dampening: None,
+            gate_threshold_flush_interval: default_gate_threshold_flush_interval(),
         }
+    }
+}
+
+impl LearningConfig {
+    /// Return the runtime-safe gate-threshold flush cadence.
+    #[must_use]
+    pub const fn effective_gate_threshold_flush_interval(&self) -> u64 {
+        if self.gate_threshold_flush_interval == 0 {
+            1
+        } else {
+            self.gate_threshold_flush_interval
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gate_threshold_flush_interval_preserves_legacy_default() {
+        let config: LearningConfig = toml::from_str("").expect("parse empty learning config");
+        assert_eq!(
+            config.gate_threshold_flush_interval,
+            DEFAULT_GATE_THRESHOLD_FLUSH_INTERVAL
+        );
+        assert_eq!(
+            config.effective_gate_threshold_flush_interval(),
+            DEFAULT_GATE_THRESHOLD_FLUSH_INTERVAL
+        );
+    }
+
+    #[test]
+    fn gate_threshold_flush_interval_accepts_custom_value_and_normalizes_zero() {
+        let custom: LearningConfig =
+            toml::from_str("gate_threshold_flush_interval = 3").expect("parse custom interval");
+        assert_eq!(custom.effective_gate_threshold_flush_interval(), 3);
+
+        let zero: LearningConfig =
+            toml::from_str("gate_threshold_flush_interval = 0").expect("parse zero interval");
+        assert_eq!(zero.effective_gate_threshold_flush_interval(), 1);
     }
 }

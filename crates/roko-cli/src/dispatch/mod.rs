@@ -33,6 +33,7 @@
 pub mod factory;
 pub mod model_routing;
 pub mod outcome;
+mod plugin_mcp;
 pub mod prompt_builder;
 pub mod prompt_cache;
 pub mod warm_pool;
@@ -51,6 +52,7 @@ pub use model_routing::{ModelChoice, ModelChoiceSource, ModelRouter, RoutingInpu
 pub use outcome::{AgentOutcome, DispatchError};
 pub use prompt_builder::{
     AssembledPrompt, GateFeedback, PromptAssembler, PromptContext, PromptDiagnostics,
+    PromptExperimentAssignmentDiagnostic, ScoredSignalDiagnostic,
 };
 pub use prompt_cache::PromptCache;
 pub use warm_pool::{WarmPool, WarmPoolStats};
@@ -59,6 +61,20 @@ pub use crate::dispatch_v2::AgentDispatchRequest;
 use crate::dispatch_v2::ProviderRuntime;
 use crate::dispatch_v2::{AgentDispatcherV2, CliProviderConfig, ProviderDispatchResolver};
 use crate::task_parser::TaskDef;
+
+/// Durable prompt-experiment identity and root-workspace store location for
+/// one dispatch attempt.
+///
+/// The path is explicit because [`DispatchContext::workdir`] can point at an
+/// attempt worktree while prompt experiment assignments belong to the root
+/// workspace's `.roko/learn` store.
+#[derive(Debug, Clone)]
+pub struct PromptExperimentContext {
+    /// Stable attempt identity used for idempotent assignment preparation.
+    pub attempt_key: roko_learn::prompt_experiment::PromptAttemptKey,
+    /// Absolute or root-resolved path to the durable `experiments.json` store.
+    pub store_path: std::path::PathBuf,
+}
 
 // ─── Per-call value objects ────────────────────────────────────────────
 
@@ -84,6 +100,9 @@ pub struct DispatchContext {
     pub budget_remaining_usd: f64,
     /// Attempt number for this task (0 = first try, > 0 = retry).
     pub attempt: u32,
+    /// Attempt-scoped durable prompt experiment context, when experiments are
+    /// enabled for this dispatch.
+    pub prompt_experiment: Option<PromptExperimentContext>,
     /// Optional structured feedback from a previous gate failure.
     pub gate_feedback: Option<GateFeedback>,
     /// Routing context for the CascadeRouter. Built at the dispatch site
@@ -365,6 +384,7 @@ mod tests {
             force_backend: None,
             budget_remaining_usd: 5.0,
             attempt: 0,
+            prompt_experiment: None,
             gate_feedback: None,
             routing_context: None,
             routing_bias: None,

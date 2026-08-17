@@ -4,7 +4,7 @@
 
 export const TAU = Math.PI * 2;
 
-/* ── ROSEDUST palette (Three.js hex) ─────────────────────────── */
+/* ── ROSEDUST palette (Three.js hex) ────────────────────────── */
 export const COL = {
   roseGlow:    0xdca5bd,
   roseBright:  0xcc90a8,
@@ -25,22 +25,7 @@ export const COL = {
   voidBg:      0x060608,
 } as const;
 
-/* ── ISFR class → color ─────────────────────────────────────── */
-export const CLASS_HEX: Record<string, number> = {
-  lending:    COL.teal,
-  structured: COL.dreamBright,
-  staking:    COL.boneBright,
-  funding:    COL.roseBright,
-};
-
-/* ── Health status → color ──────────────────────────────────── */
-export const HEALTH_HEX: Record<string, number> = {
-  live:    COL.success,
-  stale:   COL.warning,
-  offline: COL.roseBright,
-};
-
-/* ── Feed kind → color ──────────────────────────────────────── */
+/* ── Feed kind → color ─────────────────────────────── */
 export const FEED_KIND_HEX: Record<string, number> = {
   raw:       COL.teal,
   derived:   COL.roseBright,

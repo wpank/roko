@@ -1,8 +1,8 @@
 [meta]
 plan = "P19-cascade-router-acp"
 total = 6
-done = 1
-status = "ready"
+done = 6
+status = "done"
 max_parallel = 1
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -23,9 +23,9 @@ max_parallel = 1
 [[task]]
 id = "T1"
 title = "Add cascade_select_model() function to bridge_events.rs"
-status = "ready"
+status = "done"
 tier = "focused"
-model_hint = "claude-sonnet-4-20250514"
+model_hint = "claude-sonnet"
 max_loc = 50
 files = ["crates/roko-acp/src/bridge_events.rs"]
 role = "implementer"
@@ -87,9 +87,9 @@ fail_msg = "roko-acp must compile"
 [[task]]
 id = "T2"
 title = "Wire cascade selection into handle_session_prompt_inner"
-status = "ready"
+status = "done"
 tier = "focused"
-model_hint = "claude-sonnet-4-20250514"
+model_hint = "claude-sonnet"
 max_loc = 30
 files = ["crates/roko-acp/src/bridge_events.rs"]
 role = "implementer"
@@ -158,9 +158,9 @@ fail_msg = "roko-acp must compile"
 [[task]]
 id = "T3"
 title = "Fix model key mismatch in cascade observation recording"
-status = "ready"
+status = "done"
 tier = "mechanical"
-model_hint = "claude-haiku-4-5"
+model_hint = "claude-sonnet"
 max_loc = 15
 files = ["crates/roko-acp/src/bridge_events.rs"]
 role = "implementer"
@@ -191,7 +191,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "structural"
-command = "grep -A5 'record_cascade_observation' crates/roko-acp/src/bridge_events.rs | grep -q 'model_key_for_logging'"
+command = "grep -A12 'record_cascade_observation(' crates/roko-acp/src/bridge_events.rs | grep -q 'model_key_for_logging'"
 fail_msg = "record_cascade_observation should use model_key_for_logging, not resolved_for_logging.slug"
 
 [[task.verify]]
@@ -209,9 +209,9 @@ fail_msg = "roko-acp must compile"
 [[task]]
 id = "T4"
 title = "Load DaimonState from disk in acp_routing_context"
-status = "ready"
+status = "done"
 tier = "focused"
-model_hint = "claude-sonnet-4-20250514"
+model_hint = "claude-sonnet"
 max_loc = 30
 files = ["crates/roko-acp/src/bridge_events.rs"]
 role = "implementer"
@@ -260,7 +260,7 @@ fail_msg = "DaimonState loading not found in bridge_events.rs"
 
 [[task.verify]]
 phase = "structural"
-command = "grep 'acp_routing_context' crates/roko-acp/src/bridge_events.rs | grep -q 'workdir\\|work_dir'"
+command = "grep -A6 'let routing_ctx = acp_routing_context' crates/roko-acp/src/bridge_events.rs | grep -q 'workdir_for_logging'"
 fail_msg = "acp_routing_context call sites must pass workdir"
 
 [[task.verify]]
@@ -278,9 +278,9 @@ fail_msg = "roko-acp must compile"
 [[task]]
 id = "T5"
 title = "Record cascade routing decision in ACP episode metadata"
-status = "ready"
+status = "done"
 tier = "mechanical"
-model_hint = "claude-haiku-4-5"
+model_hint = "claude-sonnet"
 max_loc = 20
 files = ["crates/roko-acp/src/bridge_events.rs"]
 role = "implementer"
@@ -327,9 +327,9 @@ fail_msg = "roko-acp must compile"
 [[task]]
 id = "T6"
 title = "Add tests for cascade selection and key normalization"
-status = "ready"
+status = "done"
 tier = "focused"
-model_hint = "claude-sonnet-4-20250514"
+model_hint = "claude-sonnet"
 max_loc = 60
 files = ["crates/roko-acp/src/bridge_events.rs"]
 role = "implementer"

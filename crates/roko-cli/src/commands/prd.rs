@@ -303,6 +303,19 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
     let effort_ref = effort.as_deref();
     let resume_session = cli.resume.as_deref();
     let agent_command = command_from_config(&workdir).unwrap_or_else(|| "claude".to_string());
+    let _workspace_lock = matches!(
+        &cmd,
+        PrdCmd::Idea { .. }
+            | PrdCmd::Plan { .. }
+            | PrdCmd::Consolidate
+            | PrdCmd::Draft {
+                cmd: PrdDraftCmd::New { .. }
+                    | PrdDraftCmd::Edit { .. }
+                    | PrdDraftCmd::Promote { .. },
+            }
+    )
+    .then(|| roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko")))
+    .transpose()?;
 
     match cmd {
         PrdCmd::Idea { text } => {
@@ -330,8 +343,6 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                 let feature_keywords = extract_keywords_from_slug_and_description(&slug, &title);
                 let drafts = roko_cli::workspace_paths::drafts_dir(&workdir);
                 roko_cli::prd::ensure_dirs(&workdir)?;
-                let _lock =
-                    roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
                 let target = drafts.join(format!("{slug}.md"));
                 // If the draft exists and has real content (not just scaffold),
                 // point the user to `edit` instead. But if it's only the
@@ -756,7 +767,6 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
         PrdCmd::Plan { slug, dry_run } => {
             let t_total = Instant::now();
             let t_phase = Instant::now();
-            let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
             let prd_path = find_prd(&workdir, &slug)?;
             let model_key = roko_cli::model_selection::resolve_effective_model_key(
                 &workdir,

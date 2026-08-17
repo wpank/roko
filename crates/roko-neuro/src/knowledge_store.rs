@@ -19,12 +19,16 @@ use sha2::{Digest, Sha256};
 
 use crate::admission::evaluate_admission;
 #[cfg(feature = "hdc")]
-use crate::hdc::KnowledgeHdcEncoder;
-use crate::{KnowledgeEntry, KnowledgeKind, KnowledgeTier, NeuroStore};
+use crate::hdc::{KnowledgeHdcEncoder, ResonanceDetector, ResonancePair, RoleFillerEncoder};
+use crate::temporal::{AllenRelation, KnowledgeEpoch, TemporalIndex, TemporalInterval};
+use crate::{
+    Falsifier, KnowledgeEntry, KnowledgeKind, KnowledgeTier, NeuroStore, SourceChannel,
+    apply_source_security_labels,
+};
 
 /// Default garbage-collection threshold for knowledge entries.
 pub const DEFAULT_GC_MIN_CONFIDENCE: f64 = 0.05;
-/// Minimum total query score an entry must exceed to be returned.
+/// Minimum relevance score an entry must exceed to be returned.
 pub const QUERY_SCORE_FLOOR: f64 = 0.0;
 /// Minimum retained confidence for AntiKnowledge entries.
 const ANTI_KNOWLEDGE_CONFIDENCE_FLOOR: f64 = 0.3;
@@ -62,6 +66,13 @@ const MIN_TAG_OVERLAP: usize = 1;
 const MIN_KEYWORD_OVERLAP: usize = 2;
 #[cfg(feature = "hdc")]
 const HDC_SIMILARITY_BASELINE: f64 = 0.5;
+/// Minimum raw HDC similarity treated as a meaningful query signal.
+///
+/// Independent 10,240-bit vectors center tightly around `0.5`; requiring a
+/// modest margin prevents random Hamming noise from making unrelated entries
+/// eligible for freshness and balance boosts.
+#[cfg(feature = "hdc")]
+const HDC_QUERY_RELEVANCE_THRESHOLD: f64 = 0.525;
 
 /// HDC similarity threshold at which an AntiKnowledge match logs a warning.
 #[cfg(feature = "hdc")]
@@ -110,10 +121,22 @@ pub struct AntiKnowledgeConflict {
     pub action: String,
 }
 
+/// Result of checking a learned rule's falsifiable predicate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FalsifierOutcome {
+    /// The predicate survived another observation but is not yet immunized.
+    Survived,
+    /// The predicate survived enough observations to earn durable standing.
+    Immunized,
+    /// An observation violated the predicate and reduced its credibility.
+    Discredited,
+}
+
 const HDC_VECTOR_BYTES: usize = 1280;
 
 #[cfg(feature = "hdc")]
-use roko_primitives::hdc::HdcVector;
+use roko_primitives::hdc::{HdcVector, text_fingerprint};
 
 /// Persistent knowledge store backed by an append-only JSONL file.
 ///
@@ -130,6 +153,7 @@ pub struct KnowledgeStore {
     path: PathBuf,
     confirmations_path: PathBuf,
     write_gate: Arc<Mutex<()>>,
+    temporal_index: Option<Arc<Mutex<TemporalIndex>>>,
 }
 
 /// Aggregate statistics for a durable knowledge store snapshot.
@@ -270,10 +294,13 @@ impl ContextAssemblyWeights {
     }
 }
 
+/// Current canonical knowledge backup format version.
+pub const KNOWLEDGE_BACKUP_VERSION: u32 = 2;
+
 /// Versioned header written as the first line of a backup JSONL file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupHeader {
-    /// Backup format version. Currently `1`.
+    /// Backup format version. Currently `2`.
     pub version: u32,
     /// When the backup was created.
     pub created_at: DateTime<Utc>,
@@ -281,8 +308,9 @@ pub struct BackupHeader {
     pub entry_count: usize,
     /// Path of the source knowledge store that was exported.
     pub source_path: String,
-    /// SHA-256 Merkle root computed over exported entry IDs in sorted order.
-    /// Hex-encoded. Empty string for legacy exports that predate this field.
+    /// SHA-256 Merkle root computed over canonical entry JSON, sorted by ID.
+    /// Hex-encoded. Version 1 used an ID-only root and is accepted only through
+    /// the explicit legacy import path.
     #[serde(default)]
     pub merkle_root: String,
 }
@@ -290,12 +318,12 @@ pub struct BackupHeader {
 /// Bundle returned by [`KnowledgeStore::export_with_verification`].
 ///
 /// Contains the exported entries (confidence-sorted, secrets-filtered) and
-/// the Merkle root computed over their IDs in sorted order.
+/// the Merkle root computed over complete canonical entry JSON.
 #[derive(Debug, Clone)]
 pub struct ExportBundle {
     /// Exported entries, sorted by confidence descending.
     pub entries: Vec<KnowledgeEntry>,
-    /// SHA-256 Merkle root over sorted entry IDs, hex-encoded.
+    /// SHA-256 Merkle root over complete canonical entry JSON, hex-encoded.
     pub merkle_root: String,
 }
 
@@ -323,7 +351,7 @@ const SECRET_PATTERNS: &[&str] = &[
 ];
 
 /// Filter criteria for [`KnowledgeStore::export`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ExportFilter {
     /// Only export entries of these kinds. `None` means all kinds.
     pub kinds: Option<Vec<KnowledgeKind>>,
@@ -333,33 +361,48 @@ pub struct ExportFilter {
     pub tags: Option<Vec<String>>,
     /// Only export entries created after this timestamp.
     pub since: Option<DateTime<Utc>>,
+    /// Maximum number of entries to export after confidence sorting.
+    pub max_entries: Option<usize>,
     /// When `true`, skip entries whose tags or content match known secret patterns.
-    /// Defaults to `false` for backwards compatibility; set to `true` for any
-    /// export that may cross a trust boundary (e.g. backup to shared storage).
+    /// Defaults to `true`. Callers must opt out explicitly for a local-only,
+    /// trusted export.
     pub filter_secrets: bool,
+}
+
+impl Default for ExportFilter {
+    fn default() -> Self {
+        Self {
+            kinds: None,
+            min_confidence: None,
+            tags: None,
+            since: None,
+            max_entries: None,
+            filter_secrets: true,
+        }
+    }
 }
 
 impl ExportFilter {
     fn matches(&self, entry: &KnowledgeEntry) -> bool {
-        if let Some(kinds) = &self.kinds {
-            if !kinds.contains(&entry.kind) {
-                return false;
-            }
+        if let Some(kinds) = &self.kinds
+            && !kinds.contains(&entry.kind)
+        {
+            return false;
         }
-        if let Some(min) = self.min_confidence {
-            if entry.confidence < min {
-                return false;
-            }
+        if let Some(min) = self.min_confidence
+            && entry.confidence < min
+        {
+            return false;
         }
-        if let Some(required_tags) = &self.tags {
-            if !required_tags.iter().any(|t| entry.tags.contains(t)) {
-                return false;
-            }
+        if let Some(required_tags) = &self.tags
+            && !required_tags.iter().any(|t| entry.tags.contains(t))
+        {
+            return false;
         }
-        if let Some(since) = self.since {
-            if entry.created_at < since {
-                return false;
-            }
+        if let Some(since) = self.since
+            && entry.created_at < since
+        {
+            return false;
         }
         if self.filter_secrets && entry_contains_secret(entry) {
             return false;
@@ -441,24 +484,276 @@ pub(crate) fn compute_merkle_root(ids: &[String]) -> String {
     })
 }
 
+/// Compute the version-2 Merkle root over complete canonical entry JSON.
+///
+/// Entries are sorted by ID and then by their serialized bytes. Both content
+/// and identity changes therefore invalidate the root.
+fn compute_entry_merkle_root(entries: &[KnowledgeEntry]) -> Result<String> {
+    if entries.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut canonical = entries
+        .iter()
+        .map(|entry| {
+            serde_json::to_vec(entry)
+                .map(|bytes| (entry.id.clone(), bytes))
+                .context("serialize knowledge entry for Merkle root")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    canonical.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+
+    let mut layer = canonical
+        .into_iter()
+        .map(|(_, bytes)| {
+            let mut hash = Sha256::new();
+            hash.update(bytes);
+            <[u8; 32]>::from(hash.finalize())
+        })
+        .collect::<Vec<_>>();
+
+    while layer.len() > 1 {
+        let mut next = Vec::with_capacity(layer.len().div_ceil(2));
+        let mut index = 0;
+        while index < layer.len() {
+            if let Some(right) = layer.get(index + 1) {
+                let mut hash = Sha256::new();
+                hash.update(layer[index]);
+                hash.update(right);
+                next.push(hash.finalize().into());
+            } else {
+                next.push(layer[index]);
+            }
+            index += 2;
+        }
+        layer = next;
+    }
+
+    Ok(layer[0].iter().fold(String::new(), |mut output, byte| {
+        use std::fmt::Write;
+        let _ = write!(output, "{byte:02x}");
+        output
+    }))
+}
+
 /// Options for [`KnowledgeStore::import`].
 #[derive(Debug, Clone)]
 pub struct ImportOptions {
-    /// Confidence multiplier applied to each imported entry (default 0.85).
+    /// Confidence multiplier applied to each imported entry (default 0.80).
     pub confidence_discount: f64,
     /// Whether to reset all imported entries to `KnowledgeTier::Transient`.
     pub reset_tier: bool,
     /// Label recorded in the `source` field of each imported entry.
     pub source_label: String,
+    /// Optional kind filter applied after integrity validation.
+    pub kinds: Option<Vec<KnowledgeKind>>,
+    /// Optional minimum source confidence applied after integrity validation.
+    pub min_confidence: Option<f64>,
+    /// Explicitly allow strict migration of a legacy raw or version-1 backup.
+    /// Canonical imports reject legacy input by default.
+    pub allow_legacy: bool,
 }
 
 impl Default for ImportOptions {
     fn default() -> Self {
         Self {
-            confidence_discount: 0.85,
+            confidence_discount: 0.80,
             reset_tier: true,
             source_label: "restore".to_owned(),
+            kinds: None,
+            min_confidence: None,
+            allow_legacy: false,
         }
+    }
+}
+
+/// Accurate outcome of a canonical knowledge import.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ImportResult {
+    /// Number of valid entries in the source after integrity validation.
+    pub source_entries: usize,
+    /// Number of entries atomically added to the destination store.
+    pub imported: usize,
+    /// Number skipped by exact-ID or semantic deduplication.
+    pub skipped_dedup: usize,
+    /// Number skipped because they contradict high-confidence AntiKnowledge.
+    pub skipped_contradiction: usize,
+    /// Number skipped by explicit kind or confidence filters.
+    pub skipped_filter: usize,
+    /// Always zero on success; malformed input fails before any write.
+    pub malformed: usize,
+    /// Whether the explicit legacy migration path was used.
+    pub legacy_input: bool,
+}
+
+fn read_import_entries(input: &Path, allow_legacy: bool) -> Result<(Vec<KnowledgeEntry>, bool)> {
+    let file =
+        File::open(input).with_context(|| format!("open import file at {}", input.display()))?;
+    let lines = BufReader::new(file)
+        .lines()
+        .enumerate()
+        .map(|(index, line)| {
+            line.with_context(|| format!("read import line {} from {}", index + 1, input.display()))
+                .map(|line| (index + 1, line))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ensure!(!lines.is_empty(), "import file is empty");
+
+    if let Ok(header) = serde_json::from_str::<BackupHeader>(&lines[0].1) {
+        let entries = parse_strict_import_lines(&lines[1..])?;
+        ensure!(
+            header.entry_count == entries.len(),
+            "backup entry_count mismatch: header={}, actual={}",
+            header.entry_count,
+            entries.len()
+        );
+
+        match header.version {
+            KNOWLEDGE_BACKUP_VERSION => {
+                let actual_root = compute_entry_merkle_root(&entries)?;
+                ensure!(
+                    !header.merkle_root.is_empty() || entries.is_empty(),
+                    "canonical backup is missing its Merkle root"
+                );
+                ensure!(
+                    header.merkle_root == actual_root,
+                    "backup Merkle verification failed"
+                );
+                return Ok((entries, false));
+            }
+            1 if allow_legacy => {
+                ensure!(
+                    !header.merkle_root.is_empty() || entries.is_empty(),
+                    "legacy version-1 backup has no integrity root"
+                );
+                let ids = entries
+                    .iter()
+                    .map(|entry| entry.id.clone())
+                    .collect::<Vec<_>>();
+                ensure!(
+                    header.merkle_root == compute_merkle_root(&ids),
+                    "legacy backup ID Merkle verification failed"
+                );
+                return Ok((entries, true));
+            }
+            1 => {
+                anyhow::bail!("legacy version-1 backup requires explicit allow_legacy migration");
+            }
+            version => {
+                anyhow::bail!(
+                    "unsupported backup version {version} (this build supports version {KNOWLEDGE_BACKUP_VERSION})"
+                );
+            }
+        }
+    }
+
+    ensure!(
+        allow_legacy,
+        "import is not a canonical versioned backup; use explicit allow_legacy migration for a trusted raw JSONL store"
+    );
+    Ok((parse_strict_import_lines(&lines)?, true))
+}
+
+fn parse_strict_import_lines(lines: &[(usize, String)]) -> Result<Vec<KnowledgeEntry>> {
+    let mut entries = Vec::with_capacity(lines.len());
+    for (line_number, line) in lines {
+        ensure!(
+            !line.trim().is_empty(),
+            "malformed_entries=1: blank import record at line {line_number}"
+        );
+        let entry = serde_json::from_str::<KnowledgeEntry>(line).with_context(|| {
+            format!("malformed_entries=1: invalid knowledge entry at line {line_number}")
+        })?;
+        ensure!(
+            !entry.id.trim().is_empty(),
+            "malformed_entries=1: empty knowledge entry ID at line {line_number}"
+        );
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
+fn resolved_transfer_path(path: &Path) -> Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut cursor = absolute.as_path();
+    let mut suffix = Vec::new();
+    while !cursor.exists() {
+        let name = cursor
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("resolve transfer path {}", path.display()))?;
+        suffix.push(name.to_os_string());
+        cursor = cursor
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("resolve parent of {}", path.display()))?;
+    }
+    let mut resolved = fs::canonicalize(cursor)
+        .with_context(|| format!("resolve existing path ancestor {}", cursor.display()))?;
+    for component in suffix.into_iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}
+
+fn import_entry_is_contradicted(
+    candidate: &KnowledgeEntry,
+    existing: &[KnowledgeEntry],
+    admitted: &[KnowledgeEntry],
+) -> bool {
+    if candidate.kind == KnowledgeKind::AntiKnowledge {
+        return false;
+    }
+
+    existing.iter().chain(admitted).any(|entry| {
+        entry.kind == KnowledgeKind::AntiKnowledge
+            && entry.confidence > 0.8
+            && import_contradiction_similarity(entry, candidate) > 0.9
+    })
+}
+
+fn import_entry_is_semantic_duplicate(
+    candidate: &KnowledgeEntry,
+    existing: &[KnowledgeEntry],
+    admitted: &[KnowledgeEntry],
+) -> bool {
+    existing.iter().chain(admitted).any(|entry| {
+        // AntiKnowledge is a refutation, not a duplicate of the ordinary
+        // knowledge it contradicts. Never discard it merely because its
+        // content is highly similar to the claim being refuted.
+        (entry.kind == KnowledgeKind::AntiKnowledge)
+            == (candidate.kind == KnowledgeKind::AntiKnowledge)
+            && import_semantic_similarity(entry, candidate) > 0.95
+    })
+}
+
+#[cfg(feature = "hdc")]
+fn import_semantic_similarity(left: &KnowledgeEntry, right: &KnowledgeEntry) -> f64 {
+    let encoder = KnowledgeHdcEncoder;
+    let structured = encoder
+        .encode_entry(left)
+        .similarity(&encoder.encode_entry(right));
+    let content =
+        fingerprint_content(&left.content).similarity(&fingerprint_content(&right.content));
+    f64::from(structured.max(content))
+}
+
+#[cfg(not(feature = "hdc"))]
+fn import_semantic_similarity(left: &KnowledgeEntry, right: &KnowledgeEntry) -> f64 {
+    entry_similarity(left, right)
+}
+
+fn import_contradiction_similarity(left: &KnowledgeEntry, right: &KnowledgeEntry) -> f64 {
+    let lexical = entry_similarity(left, right);
+    #[cfg(feature = "hdc")]
+    {
+        lexical.max(import_semantic_similarity(left, right))
+    }
+    #[cfg(not(feature = "hdc"))]
+    {
+        lexical
     }
 }
 
@@ -487,6 +782,7 @@ impl KnowledgeStore {
             path,
             confirmations_path,
             write_gate: Arc::new(Mutex::new(())),
+            temporal_index: None,
         }
     }
 
@@ -530,6 +826,63 @@ impl KnowledgeStore {
         &self.confirmations_path
     }
 
+    /// Enable the optional temporal topology and index all durable entries.
+    ///
+    /// Existing entries receive open-ended intervals starting at their
+    /// creation timestamps. New entries and removals are kept synchronized by
+    /// the store's write paths.
+    pub fn enable_temporal_index(&mut self) -> Result<()> {
+        let mut index = TemporalIndex::new();
+        for entry in self.read_all()? {
+            index.add_entry(
+                entry.id,
+                TemporalInterval::new(entry.created_at.timestamp_millis(), i64::MAX),
+            );
+        }
+        self.temporal_index = Some(Arc::new(Mutex::new(index)));
+        Ok(())
+    }
+
+    /// Register an epoch in the optional temporal topology.
+    ///
+    /// Returns `false` when temporal indexing has not been enabled.
+    pub fn add_temporal_epoch(&self, epoch: KnowledgeEpoch) -> bool {
+        let Some(index) = &self.temporal_index else {
+            return false;
+        };
+        index.lock().add_epoch(epoch);
+        true
+    }
+
+    /// Query entries created during a registered temporal epoch.
+    pub fn query_temporal(&self, epoch_seq: u64) -> Result<Vec<KnowledgeEntry>> {
+        let Some(index) = &self.temporal_index else {
+            return Ok(Vec::new());
+        };
+        let ids = index.lock().entries_in_epoch(epoch_seq);
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids = ids.into_iter().collect::<HashSet<_>>();
+        Ok(self
+            .read_all()?
+            .into_iter()
+            .filter(|entry| ids.contains(&entry.id))
+            .collect())
+    }
+
+    /// Compute the Allen relation between two indexed knowledge entries.
+    pub fn query_temporal_relation(
+        &self,
+        source_id: &str,
+        target_id: &str,
+    ) -> Result<Option<AllenRelation>> {
+        Ok(self
+            .temporal_index
+            .as_ref()
+            .and_then(|index| index.lock().relation(source_id, target_id)))
+    }
+
     /// Append a knowledge entry to the JSONL log.
     ///
     /// # Errors
@@ -538,6 +891,52 @@ impl KnowledgeStore {
     /// cannot be serialized, or the write fails.
     pub fn add(&self, entry: KnowledgeEntry) -> Result<()> {
         self.ingest(vec![entry])
+    }
+
+    /// Persist a deterministic compression of at least three admitted entries.
+    ///
+    /// Dream consolidation is a derived rewrite, not a new untrusted claim, so
+    /// it bypasses novelty rejection while retaining strict provenance and ID
+    /// deduplication checks.
+    pub fn add_consolidated(&self, mut entry: KnowledgeEntry) -> Result<bool> {
+        ensure!(
+            entry.source_episodes.len() >= 3,
+            "consolidated knowledge requires at least three source episodes"
+        );
+        entry.source = Some("dream-consolidation".to_string());
+        let entry = normalize_entry_for_ingest(entry);
+        let _guard = self.write_gate.lock();
+        let mut entries = self.read_all()?;
+        if entries.iter().any(|existing| existing.id == entry.id) {
+            return Ok(false);
+        }
+        entries.push(entry.clone());
+        self.rewrite_all(&entries)?;
+        self.register_temporal_entries(std::slice::from_ref(&entry));
+        Ok(true)
+    }
+
+    /// Persist an opt-in, discounted cross-domain derivative.
+    #[cfg(feature = "hdc")]
+    pub fn add_cross_domain_transfer(&self, entry: KnowledgeEntry) -> Result<bool> {
+        ensure!(
+            entry.source_model.as_deref() == Some("cross_domain_transfer"),
+            "cross-domain derivatives require the cross_domain_transfer source model"
+        );
+        ensure!(
+            entry.tags.iter().any(|tag| tag.starts_with("domain:")),
+            "cross-domain derivatives require a target domain tag"
+        );
+        let entry = normalize_entry_for_ingest(entry);
+        let _guard = self.write_gate.lock();
+        let mut entries = self.read_all()?;
+        if entries.iter().any(|existing| existing.id == entry.id) {
+            return Ok(false);
+        }
+        entries.push(entry.clone());
+        self.rewrite_all(&entries)?;
+        self.register_temporal_entries(std::slice::from_ref(&entry));
+        Ok(true)
     }
 
     /// Record a failed gate turn as AntiKnowledge.
@@ -613,9 +1012,15 @@ impl KnowledgeStore {
     pub fn ingest_with_source(
         &self,
         mut entries: Vec<KnowledgeEntry>,
-        channel: crate::SourceChannel,
+        channel: SourceChannel,
     ) -> Result<()> {
         crate::apply_source_discount(&mut entries, channel);
+        for entry in &mut entries {
+            if entry.source.is_none() {
+                entry.source = Some(channel.as_str().to_string());
+            }
+        }
+        apply_source_security_labels(&mut entries, channel);
         self.ingest(entries)
     }
 
@@ -635,8 +1040,13 @@ impl KnowledgeStore {
         }
 
         let _guard = self.write_gate.lock();
-        let existing = self.read_all().unwrap_or_default();
-        let entries = dedupe_entries_for_ingest(prepare_entries_for_ingest(entries), &existing);
+        let mut existing = self.read_all().unwrap_or_default();
+        let entries = coalesce_incoming_security_labels(prepare_entries_for_ingest(entries));
+        let security_upgraded = join_replayed_security_labels(&mut existing, &entries);
+        if security_upgraded {
+            self.rewrite_all(&existing)?;
+        }
+        let entries = dedupe_entries_for_ingest(entries, &existing);
         if entries.is_empty() {
             return Ok(());
         }
@@ -713,6 +1123,7 @@ impl KnowledgeStore {
             }
 
             self.rewrite_all(&current)?;
+            self.register_temporal_entries(&entries);
             return Ok(());
         }
 
@@ -761,7 +1172,7 @@ impl KnowledgeStore {
             .append(true)
             .open(&self.path)
             .with_context(|| format!("open knowledge store at {}", self.path.display()))?;
-        for entry in entries {
+        for entry in &entries {
             let mut line = serde_json::to_string(&entry).context("serialize knowledge entry")?;
             line.push('\n');
             file.write_all(line.as_bytes())
@@ -774,6 +1185,8 @@ impl KnowledgeStore {
         if !confirmations.is_empty() {
             self.append_confirmations(&confirmations)?;
         }
+
+        self.register_temporal_entries(&entries);
 
         Ok(())
     }
@@ -839,16 +1252,109 @@ impl KnowledgeStore {
     ///
     /// The current contract is:
     ///
-    /// `total_score = keyword_score * effective_confidence * recency_factor * emotional_boost + hdc_similarity`
+    /// `relevance_score = keyword_score * effective_confidence * recency_factor * emotional_boost + hdc_similarity`
     ///
-    /// where `hdc_similarity` is zero when the `hdc` feature is disabled or
-    /// the entry has no valid stored HDC vector.
+    /// Entries must clear [`QUERY_SCORE_FLOOR`] with relevance alone. Their
+    /// final score then adds the balance/freshness boost as a tie-breaker.
+    /// `hdc_similarity` is zero when the `hdc` feature is disabled, the entry
+    /// has no valid stored HDC vector, or raw similarity is indistinguishable
+    /// from the random-vector baseline.
     ///
     /// # Errors
     ///
     /// Returns an error if the backing file cannot be read.
     pub fn query_hits(&self, topic: &str, limit: usize) -> Result<Vec<KnowledgeQueryHit>> {
         self.query_hits_filtered(topic, limit, |_| true)
+    }
+
+    /// Query the persisted HDC vectors directly, streaming the JSONL store.
+    #[cfg(feature = "hdc")]
+    pub fn query_hdc(
+        &self,
+        query_vector: &HdcVector,
+        top_k: usize,
+    ) -> Result<Vec<KnowledgeQueryHit>> {
+        if top_k == 0 {
+            return Ok(Vec::new());
+        }
+        let file = match File::open(&self.path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => return Err(err).context("open knowledge store for HDC query"),
+        };
+
+        let mut hits = Vec::new();
+        for (line_idx, line) in BufReader::new(file).lines().enumerate() {
+            let line = line.with_context(|| format!("read HDC query line {}", line_idx + 1))?;
+            let Ok(entry) = serde_json::from_str::<KnowledgeEntry>(&line) else {
+                continue;
+            };
+            if entry.frozen {
+                continue;
+            }
+            let Some(bytes) = entry.hdc_vector.as_deref() else {
+                continue;
+            };
+            let Ok(bytes) = <[u8; HDC_VECTOR_BYTES]>::try_from(bytes) else {
+                continue;
+            };
+            let similarity =
+                f64::from(query_vector.hamming_similarity(&HdcVector::from_bytes(&bytes)));
+            if similarity <= QUERY_SCORE_FLOOR {
+                continue;
+            }
+            hits.push(KnowledgeQueryHit {
+                entry: normalize_entry_security(entry),
+                total_score: similarity,
+                breakdown: KnowledgeQueryBreakdown {
+                    keyword_score: 0.0,
+                    effective_confidence: 0.0,
+                    recency_factor: 0.0,
+                    emotional_boost: 0.0,
+                    balance_freshness_boost: 0.0,
+                    hdc_similarity: Some(similarity),
+                },
+            });
+        }
+        hits.sort_by(|left, right| {
+            right
+                .total_score
+                .partial_cmp(&left.total_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.entry.id.cmp(&right.entry.id))
+        });
+        hits.truncate(top_k);
+        Ok(hits)
+    }
+
+    /// Encode structured role/filler bindings and perform direct HDC lookup.
+    #[cfg(feature = "hdc")]
+    pub fn query_by_role_filler(
+        &self,
+        roles_and_fillers: &[(String, String)],
+        top_k: usize,
+    ) -> Result<Vec<KnowledgeQueryHit>> {
+        self.query_hdc(
+            &RoleFillerEncoder::encode_structured(roles_and_fillers),
+            top_k,
+        )
+    }
+
+    /// Detect structurally resonant entries that belong to different domains.
+    #[cfg(feature = "hdc")]
+    pub fn find_resonances(&self, min_similarity: f64) -> Result<Vec<ResonancePair>> {
+        let entries = self
+            .read_all()?
+            .into_iter()
+            .filter(|entry| {
+                !entry.frozen
+                    && entry
+                        .hdc_vector
+                        .as_ref()
+                        .is_some_and(|vector| vector.len() == HDC_VECTOR_BYTES)
+            })
+            .collect::<Vec<_>>();
+        Ok(ResonanceDetector::new(min_similarity.clamp(0.0, 1.0), 20).detect_resonances(&entries))
     }
 
     /// Query the store for entries of a specific knowledge kind relevant to
@@ -920,6 +1426,32 @@ impl KnowledgeStore {
             .map(|entry| entry_similarity(entry, candidate))
             .fold(0.0, f64::max)
             .clamp(0.0, 1.0))
+    }
+
+    /// Return the most similar existing entry at or above `minimum`.
+    pub fn find_similar_entry(
+        &self,
+        candidate: &KnowledgeEntry,
+        minimum: f64,
+    ) -> Result<Option<KnowledgeEntry>> {
+        let minimum = minimum.clamp(0.0, 1.0);
+        Ok(self
+            .read_all()?
+            .into_iter()
+            .filter(|entry| {
+                entry.id != candidate.id && entry.kind == candidate.kind && !entry.frozen
+            })
+            .map(|entry| {
+                let similarity = entry_similarity(&entry, candidate);
+                (entry, similarity)
+            })
+            .filter(|(_, similarity)| *similarity > minimum)
+            .max_by(|(left_entry, left), (right_entry, right)| {
+                left.partial_cmp(right)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| right_entry.id.cmp(&left_entry.id))
+            })
+            .map(|(entry, _)| entry))
     }
 
     fn query_hits_filtered<F>(
@@ -1040,9 +1572,9 @@ impl KnowledgeStore {
     /// Export the knowledge store to a JSONL file with versioned backup header.
     ///
     /// Entries are filtered by the provided [`ExportFilter`] (including optional
-    /// secret filtering), then sorted by confidence descending so that truncated
-    /// imports receive the most valuable knowledge first. A SHA-256 Merkle root
-    /// over all exported entry IDs (in sorted order) is included in the header.
+    /// secret filtering), then sorted by confidence descending so bounded exports
+    /// retain the most valuable knowledge. A SHA-256 Merkle root over complete
+    /// canonical entry JSON is included in the header.
     ///
     /// Returns the number of entries exported.
     ///
@@ -1051,51 +1583,66 @@ impl KnowledgeStore {
     /// Returns an error if the store cannot be read or the output cannot be
     /// written.
     pub fn export(&self, output: &Path, filter: &ExportFilter) -> Result<usize> {
-        let entries = self.read_all()?;
+        let source = resolved_transfer_path(&self.path)?;
+        let destination = resolved_transfer_path(output)?;
+        ensure!(
+            source != destination,
+            "knowledge export destination resolves to the live store at {}",
+            self.path.display()
+        );
+
+        let entries = self.read_all_strict()?;
         let mut filtered: Vec<_> = entries.into_iter().filter(|e| filter.matches(e)).collect();
 
-        // Sort highest confidence first so truncated imports get the best entries.
+        // Sort highest confidence first so bounded exports retain the best entries.
         filtered.sort_by(|a, b| {
             b.confidence
                 .partial_cmp(&a.confidence)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
         });
+        if let Some(max_entries) = filter.max_entries {
+            filtered.truncate(max_entries);
+        }
 
         let count = filtered.len();
 
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent).context("create export directory")?;
-        }
+        ensure!(
+            filtered.iter().all(|entry| !entry.id.trim().is_empty()),
+            "cannot export a knowledge entry with an empty ID"
+        );
+        let unique_ids = filtered
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<HashSet<_>>();
+        ensure!(
+            unique_ids.len() == filtered.len(),
+            "cannot export duplicate knowledge entry IDs"
+        );
 
-        // Compute Merkle root over entry IDs for integrity verification.
-        let ids: Vec<String> = filtered.iter().map(|e| e.id.clone()).collect();
-        let merkle_root = compute_merkle_root(&ids);
+        // Version 2 commits the complete serialized entries, not only IDs.
+        let merkle_root = compute_entry_merkle_root(&filtered)?;
 
         let header = BackupHeader {
-            version: 1,
+            version: KNOWLEDGE_BACKUP_VERSION,
             created_at: Utc::now(),
             entry_count: count,
             source_path: self.path.display().to_string(),
             merkle_root,
         };
 
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(output)
-            .with_context(|| format!("create export file at {}", output.display()))?;
-
-        let header_line = serde_json::to_string(&header).context("serialize backup header")?;
-        writeln!(file, "{header_line}").context("write backup header")?;
-
+        // Serialize the complete artifact before opening any staging file. The
+        // shared atomic writer then fsyncs a unique same-directory temporary
+        // file, renames it over the target, and fsyncs the parent directory.
+        let mut bytes = Vec::new();
+        serde_json::to_writer(&mut bytes, &header).context("serialize backup header")?;
+        bytes.push(b'\n');
         for entry in &filtered {
-            let line = serde_json::to_string(entry).context("serialize knowledge entry")?;
-            writeln!(file, "{line}").context("write knowledge entry")?;
+            serde_json::to_writer(&mut bytes, entry).context("serialize knowledge entry")?;
+            bytes.push(b'\n');
         }
-
-        file.flush().context("flush export")?;
-        file.sync_all().context("sync export")?;
+        roko_fs::atomic_write_bytes(output, &bytes)
+            .with_context(|| format!("atomically write export file at {}", output.display()))?;
 
         Ok(count)
     }
@@ -1106,8 +1653,8 @@ impl KnowledgeStore {
     /// exported data in memory (e.g. replication, sync) rather than written to a file.
     ///
     /// Applies a default [`ExportFilter`] with `filter_secrets = true`, sorts entries
-    /// by confidence descending, and computes a SHA-256 Merkle root over all exported
-    /// entry IDs in lexicographic order.
+    /// by confidence descending, and computes a SHA-256 Merkle root over complete
+    /// canonical entry JSON.
     ///
     /// # Errors
     ///
@@ -1117,7 +1664,7 @@ impl KnowledgeStore {
             filter_secrets: true,
             ..Default::default()
         };
-        let entries = self.read_all()?;
+        let entries = self.read_all_strict()?;
         let mut filtered: Vec<KnowledgeEntry> =
             entries.into_iter().filter(|e| filter.matches(e)).collect();
 
@@ -1126,10 +1673,10 @@ impl KnowledgeStore {
             b.confidence
                 .partial_cmp(&a.confidence)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
         });
 
-        let ids: Vec<String> = filtered.iter().map(|e| e.id.clone()).collect();
-        let merkle_root = compute_merkle_root(&ids);
+        let merkle_root = compute_entry_merkle_root(&filtered)?;
         Ok(ExportBundle {
             entries: filtered,
             merkle_root,
@@ -1138,61 +1685,128 @@ impl KnowledgeStore {
 
     /// Import knowledge entries from a versioned JSONL backup file.
     ///
-    /// Restored entries are reset to [`KnowledgeTier::Transient`] and their
-    /// confidence is multiplied by the given discount factor (default 0.85)
-    /// per the backup/restore spec. The source label is recorded on each
-    /// imported entry.
+    /// The complete input is parsed and its count and Merkle root are verified
+    /// before the destination is read or written. Restored entries are reset to
+    /// [`KnowledgeTier::Transient`] and their confidence is multiplied by the
+    /// configured discount factor. Deduplication and contradiction checks are
+    /// completed before one atomic destination rewrite.
     ///
-    /// Returns the number of entries imported.
+    /// Returns exact admitted and skipped counts.
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be read, has an unsupported
-    /// version, or entries cannot be ingested.
-    pub fn import(&self, input: &Path, options: &ImportOptions) -> Result<usize> {
-        let file = File::open(input)
-            .with_context(|| format!("open import file at {}", input.display()))?;
-        let reader = BufReader::new(file);
-        let mut lines = reader.lines();
-
-        // Read and validate the header line.
-        let header_line = lines
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("import file is empty"))?
-            .context("read import header")?;
-
-        let header: BackupHeader = serde_json::from_str(&header_line)
-            .context("parse backup header (is this a versioned backup file?)")?;
-
-        if header.version > 1 {
-            anyhow::bail!(
-                "unsupported backup version {} (this build supports version 1)",
-                header.version
+    /// Returns an error if the file cannot be read, aliases the live store, has
+    /// an unsupported version, or entries cannot be ingested.
+    pub fn import(&self, input: &Path, options: &ImportOptions) -> Result<ImportResult> {
+        let source = resolved_transfer_path(input)?;
+        let destination = resolved_transfer_path(&self.path)?;
+        ensure!(
+            source != destination,
+            "knowledge import source resolves to the live store at {}",
+            self.path.display()
+        );
+        ensure!(
+            options.confidence_discount.is_finite()
+                && (0.0..=1.0).contains(&options.confidence_discount),
+            "confidence discount must be between 0.0 and 1.0"
+        );
+        if let Some(minimum) = options.min_confidence {
+            ensure!(
+                minimum.is_finite() && (0.0..=1.0).contains(&minimum),
+                "minimum confidence must be between 0.0 and 1.0"
             );
         }
 
-        let mut entries = Vec::new();
-        for line in lines {
-            let line = line.context("read import line")?;
-            if line.trim().is_empty() {
+        let (entries, legacy_input) = read_import_entries(input, options.allow_legacy)?;
+        let source_entries = entries.len();
+        let mut skipped_filter = 0;
+        let mut transformed = Vec::with_capacity(entries.len());
+        let mut source_contradictions = Vec::new();
+        for mut entry in entries {
+            let kind_matches = options
+                .kinds
+                .as_ref()
+                .is_none_or(|kinds| kinds.contains(&entry.kind));
+            let confidence_matches = options
+                .min_confidence
+                .is_none_or(|minimum| entry.confidence >= minimum);
+            if !kind_matches || !confidence_matches {
+                skipped_filter += 1;
                 continue;
             }
-            if let Ok(mut entry) = serde_json::from_str::<KnowledgeEntry>(&line) {
-                if options.reset_tier {
-                    entry.tier = KnowledgeTier::Transient;
-                }
-                entry.confidence *= options.confidence_discount;
-                entry.source = Some(options.source_label.clone());
-                entries.push(entry);
+            // Preserve the source confidence for contradiction enforcement.
+            // Applying the import discount must not weaken a high-confidence
+            // refutation or make the result depend on source record order.
+            if entry.kind == KnowledgeKind::AntiKnowledge && entry.confidence > 0.8 {
+                source_contradictions.push(normalize_entry_security(entry.clone()));
             }
+            if options.reset_tier {
+                entry.tier = KnowledgeTier::Transient;
+            }
+            entry.confidence = (entry.confidence * options.confidence_discount).clamp(0.0, 1.0);
+            entry.confidence_weight =
+                (entry.confidence_weight * options.confidence_discount).clamp(0.0, 1.0);
+            entry.source = Some(options.source_label.clone());
+            transformed.push(normalize_entry_security(entry));
         }
 
-        let count = entries.len();
-        if !entries.is_empty() {
-            self.ingest(entries)?;
+        let _guard = self.write_gate.lock();
+        let mut merged = self.read_all_strict()?;
+        let security_upgraded = join_replayed_security_labels(&mut merged, &transformed);
+        let mut admitted = Vec::new();
+        let mut skipped_dedup = 0;
+        let mut skipped_contradiction = 0;
+        let mut seen_ids = merged
+            .iter()
+            .filter(|entry| !entry.id.trim().is_empty())
+            .map(|entry| entry.id.clone())
+            .collect::<HashSet<_>>();
+
+        for entry in transformed {
+            if entry.id.trim().is_empty() {
+                anyhow::bail!("malformed_entries=1: imported knowledge entry has an empty ID");
+            }
+            if !seen_ids.insert(entry.id.clone()) {
+                skipped_dedup += 1;
+                continue;
+            }
+            if import_entry_is_contradicted(&entry, &merged, &source_contradictions) {
+                skipped_contradiction += 1;
+                continue;
+            }
+            if import_entry_is_semantic_duplicate(&entry, &merged, &admitted) {
+                skipped_dedup += 1;
+                continue;
+            }
+            admitted.push(entry);
         }
 
-        Ok(count)
+        let imported = admitted.len();
+        if imported > 0 || security_upgraded {
+            merged.extend(admitted.iter().cloned());
+            self.rewrite_all(&merged)?;
+            self.register_temporal_entries(&admitted);
+        }
+
+        let result = ImportResult {
+            source_entries,
+            imported,
+            skipped_dedup,
+            skipped_contradiction,
+            skipped_filter,
+            malformed: 0,
+            legacy_input,
+        };
+        tracing::info!(
+            entries_imported = result.imported,
+            entries_skipped_dedup = result.skipped_dedup,
+            entries_skipped_contradiction = result.skipped_contradiction,
+            entries_skipped_filter = result.skipped_filter,
+            malformed_entries = result.malformed,
+            legacy_input = result.legacy_input,
+            "knowledge import completed"
+        );
+        Ok(result)
     }
 
     /// Decay confidence for old entries using their configured half-life.
@@ -1244,6 +1858,7 @@ impl KnowledgeStore {
             .collect::<Vec<_>>();
         let removed = before_len.saturating_sub(entries.len());
         self.rewrite_all(&entries)?;
+        self.synchronize_temporal_entries(&entries);
         Ok(removed)
     }
 
@@ -1282,11 +1897,12 @@ impl KnowledgeStore {
                 continue;
             }
             // First time below threshold: freeze into cold storage.
-            entry.frozen = true;
+            entry.freeze();
             entries.push(entry);
         }
         let removed = before_len.saturating_sub(entries.len());
         self.rewrite_all(&entries)?;
+        self.synchronize_temporal_entries(&entries);
         Ok(removed)
     }
 
@@ -1313,6 +1929,8 @@ impl KnowledgeStore {
                 entry.confidence = RESURRECTION_CONFIDENCE;
                 entry.tier = KnowledgeTier::Transient;
                 entry.frozen = false;
+                entry.frozen_at = None;
+                entry.balance_depleted_at = None;
                 entry.balance = 1.0; // Fresh balance
                 entry.confirmation_count += 1;
                 if !entry
@@ -1363,7 +1981,7 @@ impl KnowledgeStore {
                     continue;
                 }
                 // Freeze into cold storage (preserves for potential resurrection).
-                entry.frozen = true;
+                entry.freeze();
             }
             entries.push(entry);
         }
@@ -1398,6 +2016,104 @@ impl KnowledgeStore {
             self.rewrite_all(&entries)?;
         }
         Ok(taxed)
+    }
+
+    /// Deduct a fixed balance tax from every active entry.
+    ///
+    /// This daily-style sweep complements confidence decay. Crossing the
+    /// non-positive balance boundary halves the entry's base half-life once;
+    /// remaining depleted for more than seven days moves the entry into cold
+    /// storage.
+    pub fn demurrage(&self, tax_rate: f64) -> Result<usize> {
+        ensure!(tax_rate.is_finite(), "demurrage tax rate must be finite");
+        ensure!(tax_rate >= 0.0, "demurrage tax rate must be non-negative");
+        if tax_rate == 0.0 {
+            return Ok(0);
+        }
+
+        let now = Utc::now();
+        self.update_entries(|entry| {
+            if entry.frozen {
+                return false;
+            }
+
+            let was_positive = entry.balance > 0.0;
+            entry.balance -= tax_rate;
+            if entry.balance <= 0.0 {
+                if was_positive {
+                    entry.half_life_days =
+                        (entry.half_life_days.max(f64::EPSILON) / 2.0).max(f64::EPSILON);
+                }
+                let depleted_at = entry.balance_depleted_at.get_or_insert(now);
+                if now.signed_duration_since(*depleted_at).num_days() > 7 {
+                    entry.freeze();
+                }
+            } else {
+                entry.balance_depleted_at = None;
+            }
+            true
+        })
+    }
+
+    /// Apply the fixed balance bump associated with a reinforcement signal.
+    pub fn reinforce(&self, entry_id: &str, signal: crate::ReinforcementSignal) -> Result<()> {
+        let mut found = false;
+        self.update_entries(|entry| {
+            if entry.id != entry_id {
+                return false;
+            }
+            entry.balance = (entry.balance + signal.base_value()).min(5.0);
+            if entry.balance > 0.0 {
+                entry.balance_depleted_at = None;
+            }
+            found = true;
+            true
+        })?;
+        ensure!(found, "knowledge entry `{entry_id}` was not found");
+        Ok(())
+    }
+
+    /// Check the active falsifier carried by a Heuristic or AntiKnowledge entry.
+    pub fn check_falsifier(&self, entry_id: &str, violated: bool) -> Result<FalsifierOutcome> {
+        const IMMUNITY_OBSERVATIONS: u32 = 3;
+
+        let _guard = self.write_gate.lock();
+        let mut entries = self.read_all()?;
+        let entry = entries
+            .iter_mut()
+            .find(|entry| entry.id == entry_id)
+            .with_context(|| format!("knowledge entry `{entry_id}` was not found"))?;
+        ensure!(
+            matches!(
+                entry.kind,
+                KnowledgeKind::Heuristic | KnowledgeKind::AntiKnowledge
+            ),
+            "falsifiers only apply to heuristic and anti-knowledge entries"
+        );
+        let falsifier: &mut Falsifier = entry
+            .falsifier
+            .as_mut()
+            .context("knowledge entry has no falsifier")?;
+        ensure!(falsifier.active, "knowledge entry falsifier is inactive");
+
+        falsifier.observations = falsifier.observations.saturating_add(1);
+        falsifier.last_checked = Utc::now();
+        let outcome = if violated {
+            falsifier.violations = falsifier.violations.saturating_add(1);
+            falsifier.active = false;
+            entry.confidence = (entry.confidence * 0.5).clamp(0.0, 1.0);
+            FalsifierOutcome::Discredited
+        } else if falsifier.observations >= IMMUNITY_OBSERVATIONS {
+            entry.confidence = entry.confidence.max(0.9);
+            if entry.tier.multiplier() < KnowledgeTier::Consolidated.multiplier() {
+                entry.tier = KnowledgeTier::Consolidated;
+            }
+            FalsifierOutcome::Immunized
+        } else {
+            FalsifierOutcome::Survived
+        };
+        self.rewrite_all(&entries)?;
+        Ok(outcome)
     }
 
     /// NEURO-10: Reinforce a specific entry by ID with the given signal.
@@ -1460,6 +2176,21 @@ impl KnowledgeStore {
                 false
             }
         })
+    }
+
+    /// Apply configurable tier promotion and demotion to the whole store.
+    pub fn apply_tier_progression(
+        &self,
+        config: &crate::tier_progression::TierProgressionConfig,
+    ) -> Result<crate::tier_progression::EntryTierProgressionReport> {
+        let _guard = self.write_gate.lock();
+        let mut entries = self.read_all()?;
+        let report =
+            crate::tier_progression::TierProgression::default().evaluate_all(&mut entries, config);
+        if !report.promoted.is_empty() || !report.demoted.is_empty() {
+            self.rewrite_all(&entries)?;
+        }
+        Ok(report)
     }
 
     /// Score knowledge entries by prediction utility (P0-34).
@@ -1786,9 +2517,22 @@ impl KnowledgeStore {
     ///
     /// # Errors
     ///
-    /// Returns an error if the store file cannot be read or any stored entry
-    /// cannot be decoded from JSON.
+    /// Returns an error if the store file cannot be read. Malformed nonblank
+    /// legacy records are skipped on this compatibility path; imports use a
+    /// strict reader before any rewrite.
     pub fn read_all(&self) -> Result<Vec<KnowledgeEntry>> {
+        self.read_all_impl(false)
+    }
+
+    /// Read every knowledge entry and reject malformed nonblank records.
+    ///
+    /// This stricter path is used before import rewrites so a damaged existing
+    /// store can never be silently shortened by a successful restore.
+    fn read_all_strict(&self) -> Result<Vec<KnowledgeEntry>> {
+        self.read_all_impl(true)
+    }
+
+    fn read_all_impl(&self, strict: bool) -> Result<Vec<KnowledgeEntry>> {
         let file = match File::open(&self.path) {
             Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -1811,8 +2555,18 @@ impl KnowledgeStore {
             if line.trim().is_empty() {
                 continue;
             }
-            if let Ok(entry) = serde_json::from_str::<KnowledgeEntry>(&line) {
-                entries.push(entry);
+            match serde_json::from_str::<KnowledgeEntry>(&line) {
+                Ok(entry) => entries.push(normalize_entry_security(entry)),
+                Err(error) if strict => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "decode knowledge line {} from {}",
+                            line_idx + 1,
+                            self.path.display()
+                        )
+                    });
+                }
+                Err(_) => {}
             }
         }
         Ok(entries)
@@ -1901,35 +2655,40 @@ impl KnowledgeStore {
         }
     }
 
-    fn rewrite_all(&self, entries: &[KnowledgeEntry]) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).context("create knowledge directory")?;
+    fn register_temporal_entries(&self, entries: &[KnowledgeEntry]) {
+        let Some(index) = &self.temporal_index else {
+            return;
+        };
+        let mut index = index.lock();
+        for entry in entries {
+            index.add_entry(
+                entry.id.clone(),
+                TemporalInterval::new(entry.created_at.timestamp_millis(), i64::MAX),
+            );
         }
+    }
 
-        let tmp_path = self.path.with_extension("jsonl.tmp");
-        {
-            let mut tmp = OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(&tmp_path)
-                .with_context(|| format!("open temp knowledge file {}", tmp_path.display()))?;
-            for entry in entries {
-                let line = serde_json::to_string(entry).context("serialize knowledge entry")?;
-                tmp.write_all(line.as_bytes())
-                    .context("write knowledge entry")?;
-                tmp.write_all(b"\n").context("write newline")?;
-            }
-            tmp.flush().context("flush knowledge rewrite")?;
-            tmp.sync_all().context("sync knowledge rewrite")?;
-        }
-
-        fs::rename(&tmp_path, &self.path).with_context(|| {
-            format!(
-                "replace knowledge store {} with {}",
-                self.path.display(),
-                tmp_path.display()
+    fn synchronize_temporal_entries(&self, entries: &[KnowledgeEntry]) {
+        let Some(index) = &self.temporal_index else {
+            return;
+        };
+        index.lock().replace_entries(entries.iter().map(|entry| {
+            (
+                entry.id.clone(),
+                TemporalInterval::new(entry.created_at.timestamp_millis(), i64::MAX),
             )
+        }));
+    }
+
+    fn rewrite_all(&self, entries: &[KnowledgeEntry]) -> Result<()> {
+        let mut bytes = Vec::new();
+        for entry in entries {
+            let entry = normalize_entry_security(entry.clone());
+            serde_json::to_writer(&mut bytes, &entry).context("serialize knowledge entry")?;
+            bytes.push(b'\n');
+        }
+        roko_fs::atomic_write_bytes(&self.path, &bytes).with_context(|| {
+            format!("atomically rewrite knowledge store {}", self.path.display())
         })?;
         Ok(())
     }
@@ -1993,11 +2752,9 @@ impl NeuroStore for KnowledgeStore {
 #[cfg(feature = "hdc")]
 /// A precomputed HDC index over durable knowledge entries.
 ///
-/// The index fingerprints each entry's content with
-/// [`roko_primitives::hdc::HdcVector::from_seed`] and stores the
-/// resulting vectors alongside the source entries. Searches fingerprint
-/// the query string once and rank entries by HDC similarity, which keeps
-/// semantic lookup fast when the corpus is already indexed.
+/// The index stores both a normalized content fingerprint and the entry's
+/// structured HDC vector. Searches rank by the stronger content or structured
+/// match, preserving exact content lookup alongside role-aware causal lookup.
 #[derive(Debug, Clone)]
 pub struct MemoryIndex {
     entries: Vec<IndexedKnowledgeEntry>,
@@ -2008,6 +2765,7 @@ pub struct MemoryIndex {
 struct IndexedKnowledgeEntry {
     entry: KnowledgeEntry,
     fingerprint: HdcVector,
+    content_fingerprint: HdcVector,
 }
 
 #[cfg(feature = "hdc")]
@@ -2024,15 +2782,20 @@ pub struct MemoryHit {
 impl MemoryIndex {
     /// Build an index from a collection of knowledge entries.
     ///
-    /// Each entry is fingerprinted from its content. Empty content still
-    /// receives a deterministic vector, so the index remains total.
+    /// Each entry receives content and structured fingerprints. Empty content
+    /// still receives a deterministic vector, so the index remains total.
     #[must_use]
     pub fn from_entries(entries: Vec<KnowledgeEntry>) -> Self {
         let entries = entries
             .into_iter()
             .map(|entry| {
                 let fingerprint = fingerprint_entry(&entry);
-                IndexedKnowledgeEntry { entry, fingerprint }
+                let content_fingerprint = fingerprint_content(&entry.content);
+                IndexedKnowledgeEntry {
+                    entry,
+                    fingerprint,
+                    content_fingerprint,
+                }
             })
             .collect();
         Self { entries }
@@ -2052,9 +2815,9 @@ impl MemoryIndex {
 
     /// Search the index for the `limit` most similar entries to `query`.
     ///
-    /// The query is fingerprinted once, then compared against each
-    /// precomputed entry vector. Results are sorted from highest to
-    /// lowest similarity.
+    /// The query is encoded as both content and structured probes, then
+    /// compared against each precomputed entry vector. Results are sorted from
+    /// highest to lowest similarity.
     #[must_use]
     pub fn search(&self, query: &str, limit: usize) -> Vec<MemoryHit> {
         if limit == 0 || self.entries.is_empty() {
@@ -2062,12 +2825,18 @@ impl MemoryIndex {
         }
 
         let query_fingerprint = KnowledgeHdcEncoder.encode_query(query);
+        let query_content_fingerprint = fingerprint_content(query);
         let mut scored: Vec<MemoryHit> = self
             .entries
             .iter()
-            .map(|indexed| MemoryHit {
-                entry: indexed.entry.clone(),
-                similarity: query_fingerprint.similarity(&indexed.fingerprint) as f64,
+            .map(|indexed| {
+                let structured_similarity = query_fingerprint.similarity(&indexed.fingerprint);
+                let content_similarity =
+                    query_content_fingerprint.similarity(&indexed.content_fingerprint);
+                MemoryHit {
+                    entry: indexed.entry.clone(),
+                    similarity: structured_similarity.max(content_similarity) as f64,
+                }
             })
             .collect();
 
@@ -2100,6 +2869,11 @@ fn fingerprint_entry(entry: &KnowledgeEntry) -> HdcVector {
 }
 
 #[cfg(feature = "hdc")]
+fn fingerprint_content(content: &str) -> HdcVector {
+    text_fingerprint(&normalize(content))
+}
+
+#[cfg(feature = "hdc")]
 fn prepare_entries_for_ingest(entries: Vec<KnowledgeEntry>) -> Vec<KnowledgeEntry> {
     entries
         .into_iter()
@@ -2128,7 +2902,7 @@ fn ensure_hdc_vector(mut entry: KnowledgeEntry) -> KnowledgeEntry {
 }
 
 fn normalize_entry_for_ingest(entry: KnowledgeEntry) -> KnowledgeEntry {
-    let entry = normalize_entry_tier(entry);
+    let entry = normalize_entry_tier(normalize_entry_security(entry));
     #[cfg(feature = "hdc")]
     {
         ensure_hdc_vector(entry)
@@ -2137,6 +2911,54 @@ fn normalize_entry_for_ingest(entry: KnowledgeEntry) -> KnowledgeEntry {
     {
         entry
     }
+}
+
+fn normalize_entry_security(mut entry: KnowledgeEntry) -> KnowledgeEntry {
+    let channel = entry
+        .source
+        .as_deref()
+        .map(SourceChannel::from_source_label)
+        .unwrap_or(SourceChannel::AgentOutput);
+    apply_source_security_labels(std::slice::from_mut(&mut entry), channel);
+    entry
+}
+
+fn coalesce_incoming_security_labels(entries: Vec<KnowledgeEntry>) -> Vec<KnowledgeEntry> {
+    let mut coalesced: Vec<KnowledgeEntry> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if !entry.id.trim().is_empty()
+            && let Some(existing) = coalesced.iter_mut().find(|item| item.id == entry.id)
+        {
+            existing.origin_taint = existing.origin_taint.max(entry.origin_taint);
+            existing.classification = existing.classification.join(entry.classification);
+        } else {
+            coalesced.push(entry);
+        }
+    }
+    coalesced
+}
+
+fn join_replayed_security_labels(
+    existing: &mut [KnowledgeEntry],
+    incoming: &[KnowledgeEntry],
+) -> bool {
+    let mut changed = false;
+    for candidate in incoming {
+        if candidate.id.trim().is_empty() {
+            continue;
+        }
+        let Some(stored) = existing.iter_mut().find(|entry| entry.id == candidate.id) else {
+            continue;
+        };
+        let joined_origin = stored.origin_taint.max(candidate.origin_taint);
+        let joined_classification = stored.classification.join(candidate.classification);
+        if joined_origin != stored.origin_taint || joined_classification != stored.classification {
+            stored.origin_taint = joined_origin;
+            stored.classification = joined_classification;
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn normalize_entry_tier(mut entry: KnowledgeEntry) -> KnowledgeEntry {
@@ -2346,7 +3168,11 @@ fn hdc_similarity(entry: &KnowledgeEntry, topic: &str) -> f64 {
     };
     let entry_vec = HdcVector::from_bytes(&bytes);
     let topic_vec = KnowledgeHdcEncoder.encode_query(topic);
-    (topic_vec.similarity(&entry_vec) as f64 - HDC_SIMILARITY_BASELINE).max(0.0)
+    let raw_similarity = topic_vec.similarity(&entry_vec) as f64;
+    if raw_similarity < HDC_QUERY_RELEVANCE_THRESHOLD {
+        return 0.0;
+    }
+    raw_similarity - HDC_SIMILARITY_BASELINE
 }
 
 fn score_entry_for_query(
@@ -2379,9 +3205,12 @@ fn score_entry_for_query(
     #[cfg(not(feature = "hdc"))]
     let hdc_contribution = 0.0;
 
-    let total =
-        keyword * confidence * recency * emotional + balance_freshness_boost + hdc_contribution;
-    (total > QUERY_SCORE_FLOOR).then_some(KnowledgeQueryHit {
+    let relevance_score = keyword * confidence * recency * emotional + hdc_contribution;
+    if relevance_score <= QUERY_SCORE_FLOOR {
+        return None;
+    }
+    let total = relevance_score + balance_freshness_boost;
+    Some(KnowledgeQueryHit {
         entry,
         total_score: total,
         breakdown: KnowledgeQueryBreakdown {
@@ -2542,7 +3371,7 @@ fn check_against_anti_knowledge(
     let encoder = KnowledgeHdcEncoder;
     let anti_vectors: Vec<_> = anti_entries
         .iter()
-        .map(|e| (e, fingerprint_entry(e)))
+        .map(|e| (e, fingerprint_entry(e), fingerprint_content(&e.content)))
         .collect();
 
     let mut result = Vec::with_capacity(entries.len());
@@ -2554,11 +3383,14 @@ fn check_against_anti_knowledge(
         }
 
         let entry_vec = encoder.encode_entry(&entry);
+        let entry_content_vec = fingerprint_content(&entry.content);
         let mut worst_similarity = 0.0_f64;
         let mut worst_anti_id = String::new();
 
-        for (anti_entry, anti_vec) in &anti_vectors {
-            let sim = entry_vec.similarity(anti_vec) as f64;
+        for (anti_entry, anti_vec, anti_content_vec) in &anti_vectors {
+            let structured_similarity = entry_vec.similarity(anti_vec);
+            let content_similarity = entry_content_vec.similarity(anti_content_vec);
+            let sim = structured_similarity.max(content_similarity) as f64;
             if sim > worst_similarity {
                 worst_similarity = sim;
                 worst_anti_id = anti_entry.id.clone();
@@ -2674,6 +3506,8 @@ pub fn extract_anti_pattern_from_failure(
         id: format!("anti-{task_id}-{:016x}", stable_hash(id_payload.as_bytes())),
         kind: KnowledgeKind::AntiKnowledge,
         source: Some("bench-gate-failure".to_string()),
+        origin_taint: Default::default(),
+        classification: Default::default(),
         content,
         confidence: 0.6,
         confidence_weight: -0.6,
@@ -2694,6 +3528,9 @@ pub fn extract_anti_pattern_from_failure(
         deprecated: false,
         balance: 1.0,
         frozen: false,
+        balance_depleted_at: None,
+        frozen_at: None,
+        falsifier: None,
         catalytic_score: 0,
     }
 }
@@ -2872,7 +3709,8 @@ mod tests {
     use super::*;
     use crate::{KnowledgeKind, KnowledgeTier};
     use chrono::Duration;
-    use roko_core::PadVector;
+    use roko_core::extension::CamelTaintLevel;
+    use roko_core::{PadVector, TaintLevel};
     use tempfile::TempDir;
 
     fn entry(
@@ -2888,6 +3726,8 @@ mod tests {
             id: id.to_owned(),
             kind,
             source: None,
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: content.to_owned(),
             confidence,
             confidence_weight: confidence,
@@ -2914,8 +3754,88 @@ mod tests {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         }
+    }
+
+    #[test]
+    fn external_ingress_labels_survive_persistence_round_trip() {
+        let temp = TempDir::new().expect("tempdir");
+        let store = KnowledgeStore::new(temp.path().join("knowledge.jsonl"));
+        let candidate = entry(
+            KnowledgeKind::AntiKnowledge,
+            "external-round-trip",
+            "untrusted external observation",
+            &["security"],
+            0.9,
+            &["episode-external"],
+            Utc::now(),
+        );
+
+        store
+            .ingest_with_source(vec![candidate], SourceChannel::ExternalApi)
+            .expect("ingest external entry");
+
+        let persisted = store.read_all().expect("read persisted entry");
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].source.as_deref(), Some("external-api"));
+        assert_eq!(persisted[0].origin_taint, CamelTaintLevel::External);
+        assert_eq!(persisted[0].classification, TaintLevel::Confidential);
+
+        let raw = std::fs::read_to_string(store.path()).expect("read raw knowledge JSONL");
+        assert!(raw.contains("\"origin_taint\":\"external\""));
+        assert!(raw.contains("\"classification\":\"Confidential\""));
+    }
+
+    #[test]
+    fn same_id_replay_can_raise_but_never_lower_security_labels() {
+        let temp = TempDir::new().expect("tempdir");
+        let store = KnowledgeStore::new(temp.path().join("knowledge.jsonl"));
+        let original = entry(
+            KnowledgeKind::AntiKnowledge,
+            "monotonic-replay",
+            "stable content",
+            &["security"],
+            0.9,
+            &["episode-1"],
+            Utc::now(),
+        );
+        store
+            .ingest_with_source(vec![original], SourceChannel::GateVerdict)
+            .expect("ingest trusted entry");
+
+        let mut hostile_replay = entry(
+            KnowledgeKind::AntiKnowledge,
+            "monotonic-replay",
+            "stable content",
+            &["security"],
+            0.9,
+            &["episode-2"],
+            Utc::now(),
+        );
+        hostile_replay.source = Some("user-external-import".to_string());
+        hostile_replay.origin_taint = CamelTaintLevel::Trusted;
+        hostile_replay.classification = TaintLevel::Public;
+        store.add(hostile_replay).expect("replay external entry");
+
+        let raised = store.read_all().expect("read raised label");
+        assert_eq!(raised.len(), 1, "same-ID replay remains deduplicated");
+        assert_eq!(raised[0].origin_taint, CamelTaintLevel::External);
+        assert_eq!(raised[0].classification, TaintLevel::Confidential);
+
+        let mut downgrade = raised[0].clone();
+        downgrade.source = Some("manual-user".to_string());
+        downgrade.origin_taint = CamelTaintLevel::Trusted;
+        downgrade.classification = TaintLevel::Public;
+        store.add(downgrade).expect("attempt lower-label replay");
+
+        let retained = store.read_all().expect("read retained label");
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].origin_taint, CamelTaintLevel::External);
+        assert_eq!(retained[0].classification, TaintLevel::Confidential);
     }
 
     #[test]
@@ -3201,7 +4121,7 @@ mod tests {
         let mut low_diversity = entry(
             KnowledgeKind::Warning,
             "k-narrow",
-            "Check rollback health before retrying a failed rollout",
+            "Check rollback health before retrying a failed rollout after a database migration",
             &["deploy", "rollback"],
             0.8,
             &["ep-c", "ep-d"],
@@ -3429,7 +4349,7 @@ mod tests {
         let mut neutral = entry(
             KnowledgeKind::Warning,
             "k-neutral",
-            "Prefer the rollback path when rollout validation fails",
+            "Prefer the rollback path when rollout validation fails during a routine canary release",
             &["deploy", "rollback"],
             0.8,
             &["ep-a"],
@@ -3485,6 +4405,8 @@ mod tests {
                 id: "anti-floor".to_owned(),
                 kind: KnowledgeKind::AntiKnowledge,
                 source: None,
+                origin_taint: Default::default(),
+                classification: Default::default(),
                 content: "This previously successful pattern regressed badly.".to_owned(),
                 confidence: 0.8,
                 confidence_weight: -0.8,
@@ -3508,6 +4430,9 @@ mod tests {
                 deprecated: false,
                 balance: 1.0,
                 frozen: false,
+                balance_depleted_at: None,
+                frozen_at: None,
+                falsifier: None,
                 catalytic_score: 0,
             })
             .expect("add anti knowledge");
@@ -3655,6 +4580,8 @@ mod tests {
                 id: "anti-gc".to_owned(),
                 kind: KnowledgeKind::AntiKnowledge,
                 source: None,
+                origin_taint: Default::default(),
+                classification: Default::default(),
                 content: "This optimization path is deceptively harmful.".to_owned(),
                 confidence: 0.01,
                 confidence_weight: -0.4,
@@ -3678,6 +4605,9 @@ mod tests {
                 deprecated: false,
                 balance: 1.0,
                 frozen: false,
+                balance_depleted_at: None,
+                frozen_at: None,
+                falsifier: None,
                 catalytic_score: 0,
             })
             .expect("add anti knowledge");
@@ -3713,6 +4643,8 @@ mod tests {
                 id: "anti-1".to_owned(),
                 kind: KnowledgeKind::AntiKnowledge,
                 source: None,
+                origin_taint: Default::default(),
+                classification: Default::default(),
                 content: "Previous insight insight-1 was wrong because it failed in practice."
                     .to_owned(),
                 confidence: 0.9,
@@ -3737,6 +4669,9 @@ mod tests {
                 deprecated: false,
                 balance: 1.0,
                 frozen: false,
+                balance_depleted_at: None,
+                frozen_at: None,
+                falsifier: None,
                 catalytic_score: 0,
             })
             .expect("add anti knowledge");
@@ -3763,6 +4698,8 @@ mod tests {
                 id: "oldest".to_owned(),
                 kind: KnowledgeKind::Insight,
                 source: None,
+                origin_taint: Default::default(),
+                classification: Default::default(),
                 content: "first".to_owned(),
                 confidence: 0.8,
                 confidence_weight: 0.8,
@@ -3786,6 +4723,9 @@ mod tests {
                 deprecated: false,
                 balance: 1.0,
                 frozen: false,
+                balance_depleted_at: None,
+                frozen_at: None,
+                falsifier: None,
                 catalytic_score: 0,
             })
             .expect("add oldest");
@@ -3794,6 +4734,8 @@ mod tests {
                 id: "middle".to_owned(),
                 kind: KnowledgeKind::StrategyFragment,
                 source: None,
+                origin_taint: Default::default(),
+                classification: Default::default(),
                 content: "second".to_owned(),
                 confidence: 0.6,
                 confidence_weight: 0.6,
@@ -3817,6 +4759,9 @@ mod tests {
                 deprecated: false,
                 balance: 1.0,
                 frozen: false,
+                balance_depleted_at: None,
+                frozen_at: None,
+                falsifier: None,
                 catalytic_score: 0,
             })
             .expect("add middle");
@@ -3825,6 +4770,8 @@ mod tests {
                 id: "newest".to_owned(),
                 kind: KnowledgeKind::Insight,
                 source: None,
+                origin_taint: Default::default(),
+                classification: Default::default(),
                 content: "third".to_owned(),
                 confidence: 1.0,
                 confidence_weight: 1.0,
@@ -3848,6 +4795,9 @@ mod tests {
                 deprecated: false,
                 balance: 1.0,
                 frozen: false,
+                balance_depleted_at: None,
+                frozen_at: None,
+                falsifier: None,
                 catalytic_score: 0,
             })
             .expect("add newest");
@@ -4137,6 +5087,8 @@ mod tests {
             id: "anti-1".to_owned(),
             kind: KnowledgeKind::AntiKnowledge,
             source: None,
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: "Rust async actors are not suitable for all concurrent pipelines".to_owned(),
             confidence: 0.9,
             confidence_weight: -0.9,
@@ -4160,6 +5112,9 @@ mod tests {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         };
 
@@ -4329,6 +5284,8 @@ mod tests {
                 id: "tiered".to_owned(),
                 kind: KnowledgeKind::Insight,
                 source: None,
+                origin_taint: Default::default(),
+                classification: Default::default(),
                 content: "Repeatedly validated insight".to_owned(),
                 confidence: 0.92,
                 confidence_weight: 0.92,
@@ -4352,6 +5309,9 @@ mod tests {
                 deprecated: false,
                 balance: 1.0,
                 frozen: false,
+                balance_depleted_at: None,
+                frozen_at: None,
+                falsifier: None,
                 catalytic_score: 0,
             })
             .expect("add tiered");
@@ -4372,6 +5332,8 @@ mod tests {
                 id: "persistent".to_owned(),
                 kind: KnowledgeKind::StrategyFragment,
                 source: None,
+                origin_taint: Default::default(),
+                classification: Default::default(),
                 content: "A durable playbook fragment".to_owned(),
                 confidence: 0.6,
                 confidence_weight: 0.6,
@@ -4395,6 +5357,9 @@ mod tests {
                 deprecated: false,
                 balance: 1.0,
                 frozen: false,
+                balance_depleted_at: None,
+                frozen_at: None,
+                falsifier: None,
                 catalytic_score: 0,
             })
             .expect("add persistent");
@@ -4475,9 +5440,10 @@ mod tests {
             confidence_discount: 0.85,
             reset_tier: true,
             source_label: "backup-test".to_owned(),
+            ..Default::default()
         };
         let imported = store2.import(&backup_path, &options).expect("import");
-        assert_eq!(imported, 1);
+        assert_eq!(imported.imported, 1);
 
         let all = store2.read_all().expect("read");
         assert_eq!(all.len(), 1);
@@ -4562,6 +5528,8 @@ mod tests {
             id: "anti-1".to_owned(),
             kind: KnowledgeKind::AntiKnowledge,
             source: None,
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: "Never retry failed HTTP 5xx requests without backoff".to_owned(),
             confidence: 0.9,
             confidence_weight: 1.0,
@@ -4582,6 +5550,9 @@ mod tests {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         };
 
@@ -4590,6 +5561,8 @@ mod tests {
             id: "new-1".to_owned(),
             kind: KnowledgeKind::Insight,
             source: None,
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: "Never retry failed HTTP 5xx requests without backoff".to_owned(),
             confidence: 0.8,
             confidence_weight: 1.0,
@@ -4610,6 +5583,9 @@ mod tests {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         };
 
@@ -4618,6 +5594,8 @@ mod tests {
             id: "new-2".to_owned(),
             kind: KnowledgeKind::Insight,
             source: None,
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: "PostgreSQL requires regular VACUUM for performance".to_owned(),
             confidence: 0.9,
             confidence_weight: 1.0,
@@ -4638,6 +5616,9 @@ mod tests {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         };
 
@@ -4659,6 +5640,8 @@ mod tests {
             id: "anti-1".to_owned(),
             kind: KnowledgeKind::AntiKnowledge,
             source: None,
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: "Never retry failed HTTP 5xx requests without backoff".to_owned(),
             confidence: 0.9,
             confidence_weight: 1.0,
@@ -4679,6 +5662,9 @@ mod tests {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         };
 
@@ -4686,6 +5672,8 @@ mod tests {
             id: "anti-2".to_owned(),
             kind: KnowledgeKind::AntiKnowledge,
             source: None,
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: "Never retry failed HTTP 5xx requests without backoff -- updated".to_owned(),
             confidence: 0.95,
             confidence_weight: 1.0,
@@ -4706,6 +5694,9 @@ mod tests {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         };
 
@@ -5048,6 +6039,8 @@ mod tests {
 mod anti_pattern_tests {
     use super::*;
     use crate::{KnowledgeKind, KnowledgeTier};
+    use chrono::Duration;
+    use tempfile::TempDir;
 
     #[test]
     fn test_extract_creates_anti_knowledge() {
@@ -5134,6 +6127,8 @@ mod anti_pattern_tests {
             id: id.to_owned(),
             kind,
             source: None,
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: content.to_owned(),
             confidence,
             confidence_weight: confidence,
@@ -5157,6 +6152,9 @@ mod anti_pattern_tests {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         }
     }
@@ -5325,5 +6323,714 @@ mod anti_pattern_tests {
             compute_merkle_root(&ids_b),
             "Merkle root must be order-independent (IDs are sorted internally)"
         );
+    }
+
+    fn write_canonical_test_backup(path: &Path, entries: &[KnowledgeEntry]) {
+        let header = BackupHeader {
+            version: KNOWLEDGE_BACKUP_VERSION,
+            created_at: Utc::now(),
+            entry_count: entries.len(),
+            source_path: "test".to_owned(),
+            merkle_root: compute_entry_merkle_root(entries).expect("compute root"),
+        };
+        let mut contents = serde_json::to_string(&header).expect("serialize header");
+        contents.push('\n');
+        for entry in entries {
+            contents.push_str(&serde_json::to_string(entry).expect("serialize entry"));
+            contents.push('\n');
+        }
+        std::fs::write(path, contents).expect("write canonical backup");
+    }
+
+    fn assert_failed_import_preserves_store(
+        destination: &KnowledgeStore,
+        backup: &Path,
+        expected_error: &str,
+    ) {
+        let before = destination.read_all().expect("read before failed import");
+        let error = destination
+            .import(backup, &ImportOptions::default())
+            .expect_err("import must fail");
+        assert!(
+            format!("{error:#}").contains(expected_error),
+            "expected `{expected_error}` in `{error:#}`"
+        );
+        assert_eq!(
+            destination.read_all().expect("read after failed import"),
+            before,
+            "validation failure must not partially write"
+        );
+    }
+
+    #[test]
+    fn export_default_filters_secrets_before_top_n() {
+        let tmp = TempDir::new().expect("tempdir");
+        let store = KnowledgeStore::new(tmp.path().join("knowledge.jsonl"));
+        let now = Utc::now();
+        store
+            .add(entry(
+                KnowledgeKind::Insight,
+                "secret",
+                "ANTHROPIC_API_KEY=private-value",
+                &["api_key"],
+                0.99,
+                &[],
+                now,
+            ))
+            .expect("add secret");
+        store
+            .add(entry(
+                KnowledgeKind::Insight,
+                "safe",
+                "bounded retries improve reliability",
+                &["reliability"],
+                0.75,
+                &[],
+                now,
+            ))
+            .expect("add safe");
+
+        let backup = tmp.path().join("export.jsonl");
+        let count = store
+            .export(
+                &backup,
+                &ExportFilter {
+                    max_entries: Some(1),
+                    ..Default::default()
+                },
+            )
+            .expect("export");
+        assert_eq!(count, 1);
+        let (entries, legacy) = read_import_entries(&backup, false).expect("validate export");
+        assert!(!legacy);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "safe");
+    }
+
+    #[test]
+    fn import_rejects_content_and_id_tampering_without_partial_writes() {
+        let tmp = TempDir::new().expect("tempdir");
+        let destination = KnowledgeStore::new(tmp.path().join("destination.jsonl"));
+        destination
+            .add(entry(
+                KnowledgeKind::Insight,
+                "existing",
+                "existing durable knowledge",
+                &["existing"],
+                0.9,
+                &[],
+                Utc::now(),
+            ))
+            .expect("seed destination");
+        let source = entry(
+            KnowledgeKind::Insight,
+            "source-id",
+            "original content",
+            &["source"],
+            0.9,
+            &[],
+            Utc::now(),
+        );
+
+        for (name, needle, replacement) in [
+            ("content", "original content", "tampered content"),
+            ("id", "source-id", "tampered-id"),
+        ] {
+            let backup = tmp.path().join(format!("tampered-{name}.jsonl"));
+            write_canonical_test_backup(&backup, std::slice::from_ref(&source));
+            let contents = std::fs::read_to_string(&backup)
+                .expect("read backup")
+                .replace(needle, replacement);
+            std::fs::write(&backup, contents).expect("tamper backup");
+            assert_failed_import_preserves_store(
+                &destination,
+                &backup,
+                "backup Merkle verification failed",
+            );
+        }
+    }
+
+    #[test]
+    fn import_rejects_count_mismatch_malformed_and_truncated_inputs_without_writes() {
+        let tmp = TempDir::new().expect("tempdir");
+        let destination = KnowledgeStore::new(tmp.path().join("destination.jsonl"));
+        let source = entry(
+            KnowledgeKind::Insight,
+            "source",
+            "valid import source",
+            &["source"],
+            0.9,
+            &[],
+            Utc::now(),
+        );
+
+        let count_mismatch = tmp.path().join("count-mismatch.jsonl");
+        write_canonical_test_backup(&count_mismatch, std::slice::from_ref(&source));
+        let contents = std::fs::read_to_string(&count_mismatch)
+            .expect("read")
+            .replacen("\"entry_count\":1", "\"entry_count\":2", 1);
+        std::fs::write(&count_mismatch, contents).expect("write mismatch");
+        assert_failed_import_preserves_store(
+            &destination,
+            &count_mismatch,
+            "backup entry_count mismatch",
+        );
+
+        let malformed = tmp.path().join("malformed.jsonl");
+        write_canonical_test_backup(&malformed, std::slice::from_ref(&source));
+        let header = std::fs::read_to_string(&malformed)
+            .expect("read")
+            .lines()
+            .next()
+            .expect("header")
+            .to_owned();
+        std::fs::write(&malformed, format!("{header}\n{{\n")).expect("write malformed");
+        assert_failed_import_preserves_store(&destination, &malformed, "malformed_entries=1");
+
+        let truncated = tmp.path().join("truncated.jsonl");
+        write_canonical_test_backup(&truncated, &[source]);
+        let header = std::fs::read_to_string(&truncated)
+            .expect("read")
+            .lines()
+            .next()
+            .expect("header")
+            .to_owned();
+        std::fs::write(&truncated, format!("{header}\n")).expect("write truncated");
+        assert_failed_import_preserves_store(
+            &destination,
+            &truncated,
+            "backup entry_count mismatch",
+        );
+    }
+
+    #[test]
+    fn import_reports_exact_id_and_semantic_dedup_counts() {
+        let tmp = TempDir::new().expect("tempdir");
+        let destination = KnowledgeStore::new(tmp.path().join("destination.jsonl"));
+        destination
+            .add(entry(
+                KnowledgeKind::Insight,
+                "existing",
+                "semantic duplicate content",
+                &["dedup"],
+                0.9,
+                &[],
+                Utc::now(),
+            ))
+            .expect("seed destination");
+        let duplicate_semantic = entry(
+            KnowledgeKind::Insight,
+            "semantic-copy",
+            "semantic duplicate content",
+            &["dedup"],
+            0.8,
+            &[],
+            Utc::now(),
+        );
+        let first = entry(
+            KnowledgeKind::Heuristic,
+            "repeated-id",
+            "first repeated ID entry",
+            &["first"],
+            0.8,
+            &[],
+            Utc::now(),
+        );
+        let second = entry(
+            KnowledgeKind::Warning,
+            "repeated-id",
+            "second repeated ID entry",
+            &["second"],
+            0.8,
+            &[],
+            Utc::now(),
+        );
+        let backup = tmp.path().join("duplicates.jsonl");
+        write_canonical_test_backup(&backup, &[duplicate_semantic, first, second]);
+
+        let result = destination
+            .import(&backup, &ImportOptions::default())
+            .expect("import");
+        assert_eq!(result.source_entries, 3);
+        assert_eq!(result.imported, 1);
+        assert_eq!(result.skipped_dedup, 2);
+        assert_eq!(result.skipped_contradiction, 0);
+        assert_eq!(destination.read_all().expect("read").len(), 2);
+    }
+
+    #[test]
+    fn import_unconditionally_skips_high_confidence_contradictions() {
+        let tmp = TempDir::new().expect("tempdir");
+        let destination = KnowledgeStore::new(tmp.path().join("destination.jsonl"));
+        destination
+            .add(entry(
+                KnowledgeKind::AntiKnowledge,
+                "refutation",
+                "never retry an irreversible payment",
+                &["payments", "retry"],
+                0.95,
+                &[],
+                Utc::now(),
+            ))
+            .expect("seed AntiKnowledge");
+        let candidate = entry(
+            KnowledgeKind::Insight,
+            "contradiction",
+            "never retry an irreversible payment",
+            &["payments", "retry"],
+            0.95,
+            &[],
+            Utc::now(),
+        );
+        let backup = tmp.path().join("contradiction.jsonl");
+        write_canonical_test_backup(&backup, &[candidate]);
+
+        let result = destination
+            .import(&backup, &ImportOptions::default())
+            .expect("import");
+        assert_eq!(result.imported, 0);
+        assert_eq!(result.skipped_contradiction, 1);
+        assert_eq!(result.skipped_dedup, 0);
+        assert_eq!(destination.read_all().expect("read").len(), 1);
+    }
+
+    #[test]
+    fn import_default_discount_is_point_eight_and_legacy_requires_opt_in() {
+        assert_eq!(ImportOptions::default().confidence_discount, 0.8);
+
+        let tmp = TempDir::new().expect("tempdir");
+        let raw = tmp.path().join("legacy.jsonl");
+        let source = entry(
+            KnowledgeKind::Insight,
+            "legacy",
+            "trusted legacy entry",
+            &["legacy"],
+            0.5,
+            &[],
+            Utc::now(),
+        );
+        std::fs::write(
+            &raw,
+            format!("{}\n", serde_json::to_string(&source).unwrap()),
+        )
+        .expect("write legacy");
+        let destination = KnowledgeStore::new(tmp.path().join("destination.jsonl"));
+        assert!(destination.import(&raw, &ImportOptions::default()).is_err());
+        let result = destination
+            .import(
+                &raw,
+                &ImportOptions {
+                    allow_legacy: true,
+                    ..Default::default()
+                },
+            )
+            .expect("explicit legacy import");
+        assert!(result.legacy_input);
+        assert_eq!(result.imported, 1);
+        let imported = destination.read_all().expect("read");
+        assert!((imported[0].confidence - 0.4).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn export_and_import_reject_the_live_store_as_their_transfer_path() {
+        let tmp = TempDir::new().expect("tempdir");
+        let empty_store = KnowledgeStore::new(tmp.path().join("empty").join("knowledge.jsonl"));
+        let empty_error = empty_store
+            .export(empty_store.path(), &ExportFilter::default())
+            .expect_err("an absent self-export path must still fail");
+        assert!(format!("{empty_error:#}").contains("live store"));
+        assert!(
+            !empty_store.path().exists(),
+            "failed empty-store self-export must not create a backup header"
+        );
+
+        let store = KnowledgeStore::new(tmp.path().join("knowledge.jsonl"));
+        store
+            .add(entry(
+                KnowledgeKind::Insight,
+                "live",
+                "live knowledge must remain a store",
+                &["safety"],
+                0.9,
+                &[],
+                Utc::now(),
+            ))
+            .expect("seed live store");
+        let before = std::fs::read(store.path()).expect("read live bytes");
+
+        let export_error = store
+            .export(store.path(), &ExportFilter::default())
+            .expect_err("self-export must fail");
+        assert!(format!("{export_error:#}").contains("live store"));
+        let import_error = store
+            .import(
+                store.path(),
+                &ImportOptions {
+                    allow_legacy: true,
+                    ..Default::default()
+                },
+            )
+            .expect_err("self-import must fail");
+        assert!(format!("{import_error:#}").contains("live store"));
+        assert_eq!(std::fs::read(store.path()).expect("read after"), before);
+    }
+
+    #[test]
+    fn export_failure_preserves_an_existing_destination() {
+        let tmp = TempDir::new().expect("tempdir");
+        let store = KnowledgeStore::new(tmp.path().join("knowledge.jsonl"));
+        std::fs::write(store.path(), b"not-json\n").expect("write corrupt source store");
+        let output = tmp.path().join("existing-export.jsonl");
+        std::fs::write(&output, b"previous valid artifact\n").expect("write prior export");
+
+        let error = store
+            .export(&output, &ExportFilter::default())
+            .expect_err("corrupt source must fail export");
+        assert!(format!("{error:#}").contains("decode knowledge line 1"));
+        assert_eq!(
+            std::fs::read(&output).expect("read preserved export"),
+            b"previous valid artifact\n"
+        );
+    }
+
+    #[test]
+    fn import_rejects_a_corrupt_existing_store_without_losing_raw_records() {
+        let tmp = TempDir::new().expect("tempdir");
+        let destination = KnowledgeStore::new(tmp.path().join("destination.jsonl"));
+        let existing = entry(
+            KnowledgeKind::Insight,
+            "existing",
+            "valid existing record",
+            &["existing"],
+            0.9,
+            &[],
+            Utc::now(),
+        );
+        let mut live_bytes = serde_json::to_vec(&existing).expect("serialize existing");
+        live_bytes.extend_from_slice(b"\nnot-json\n");
+        std::fs::write(destination.path(), &live_bytes).expect("write corrupt live store");
+
+        let backup = tmp.path().join("source.jsonl");
+        write_canonical_test_backup(
+            &backup,
+            &[entry(
+                KnowledgeKind::Heuristic,
+                "source",
+                "valid source record",
+                &["source"],
+                0.8,
+                &[],
+                Utc::now(),
+            )],
+        );
+        let error = destination
+            .import(&backup, &ImportOptions::default())
+            .expect_err("corrupt destination must fail closed");
+        assert!(format!("{error:#}").contains("decode knowledge line 2"));
+        assert_eq!(
+            std::fs::read(destination.path()).expect("read preserved live store"),
+            live_bytes
+        );
+    }
+
+    #[test]
+    fn imported_high_confidence_antiknowledge_blocks_regardless_of_record_order_or_decay() {
+        let tmp = TempDir::new().expect("tempdir");
+        let anti = entry(
+            KnowledgeKind::AntiKnowledge,
+            "anti",
+            "never retry an irreversible payment",
+            &["payments", "retry"],
+            0.95,
+            &[],
+            Utc::now(),
+        );
+        let claim = entry(
+            KnowledgeKind::Insight,
+            "claim",
+            "never retry an irreversible payment",
+            &["payments", "retry"],
+            0.95,
+            &[],
+            Utc::now(),
+        );
+
+        for (label, source) in [
+            ("anti-first", vec![anti.clone(), claim.clone()]),
+            ("anti-last", vec![claim.clone(), anti.clone()]),
+        ] {
+            let backup = tmp.path().join(format!("{label}.jsonl"));
+            write_canonical_test_backup(&backup, &source);
+            let destination = KnowledgeStore::new(tmp.path().join(format!("{label}-dest.jsonl")));
+            let result = destination
+                .import(&backup, &ImportOptions::default())
+                .expect("import guarded bundle");
+            assert_eq!(result.imported, 1, "{label}");
+            assert_eq!(result.skipped_contradiction, 1, "{label}");
+            let restored = destination.read_all().expect("read destination");
+            assert_eq!(restored.len(), 1, "{label}");
+            assert_eq!(restored[0].kind, KnowledgeKind::AntiKnowledge, "{label}");
+            assert!(restored[0].confidence < 0.8, "default decay must apply");
+        }
+    }
+
+    #[test]
+    fn imported_antiknowledge_is_not_deduplicated_against_ordinary_knowledge() {
+        let tmp = TempDir::new().expect("tempdir");
+        let destination = KnowledgeStore::new(tmp.path().join("destination.jsonl"));
+        destination
+            .add(entry(
+                KnowledgeKind::Insight,
+                "claim",
+                "retrying an irreversible payment is unsafe",
+                &["payments"],
+                0.9,
+                &[],
+                Utc::now(),
+            ))
+            .expect("seed ordinary knowledge");
+        let backup = tmp.path().join("anti.jsonl");
+        write_canonical_test_backup(
+            &backup,
+            &[entry(
+                KnowledgeKind::AntiKnowledge,
+                "anti",
+                "retrying an irreversible payment is unsafe",
+                &["payments"],
+                0.95,
+                &[],
+                Utc::now(),
+            )],
+        );
+
+        let result = destination
+            .import(&backup, &ImportOptions::default())
+            .expect("import AntiKnowledge");
+        assert_eq!(result.imported, 1);
+        assert_eq!(result.skipped_dedup, 0);
+        assert!(
+            destination
+                .read_all()
+                .expect("read destination")
+                .iter()
+                .any(|entry| entry.kind == KnowledgeKind::AntiKnowledge)
+        );
+    }
+
+    fn e24_store() -> (TempDir, KnowledgeStore) {
+        let temp = TempDir::new().expect("tempdir");
+        let store = KnowledgeStore::new(temp.path().join("knowledge.jsonl"));
+        (temp, store)
+    }
+
+    fn e24_entry(id: &str) -> KnowledgeEntry {
+        let mut value = entry(
+            KnowledgeKind::AntiKnowledge,
+            id,
+            "Avoid repeating an observed verification failure",
+            &["memory", "verification"],
+            0.8,
+            &["episode-1"],
+            Utc::now(),
+        );
+        value.tier = KnowledgeTier::Transient;
+        value
+    }
+
+    #[test]
+    fn e24_demurrage_reduces_balance_and_halves_half_life_once() {
+        let (_temp, store) = e24_store();
+        let mut value = e24_entry("demurrage");
+        value.balance = 0.004;
+        value.half_life_days = 20.0;
+        store.add(value).expect("add");
+
+        assert_eq!(store.demurrage(0.005).expect("demurrage"), 1);
+        let after = store.read_all().expect("read").remove(0);
+        assert!((after.balance + 0.001).abs() < 1e-9);
+        assert_eq!(after.half_life_days, 10.0);
+        assert!(after.balance_depleted_at.is_some());
+
+        store.demurrage(0.005).expect("second demurrage");
+        let after = store.read_all().expect("read").remove(0);
+        assert_eq!(
+            after.half_life_days, 10.0,
+            "half-life changes only at crossing"
+        );
+    }
+
+    #[test]
+    fn e24_demurrage_freezes_after_seven_depleted_days() {
+        let (_temp, store) = e24_store();
+        let mut value = e24_entry("freeze-after-grace");
+        value.balance = 0.0;
+        value.balance_depleted_at = Some(Utc::now() - Duration::days(8));
+        store.add(value).expect("add");
+
+        store.demurrage(0.005).expect("demurrage");
+        let after = store.read_all().expect("read").remove(0);
+        assert!(after.frozen);
+        assert!(after.frozen_at.is_some());
+    }
+
+    #[test]
+    fn e24_reinforce_uses_exact_signal_amounts() {
+        let (_temp, store) = e24_store();
+        let mut value = e24_entry("reinforcement");
+        value.balance = 0.0;
+        value.balance_depleted_at = Some(Utc::now());
+        store.add(value).expect("add");
+        let signals = [
+            (crate::ReinforcementSignal::Retrieved, 0.05),
+            (crate::ReinforcementSignal::Cited, 0.10),
+            (crate::ReinforcementSignal::Gated, 0.15),
+            (crate::ReinforcementSignal::Surprised, 0.08),
+            (crate::ReinforcementSignal::AgentQuoted, 0.12),
+        ];
+        let mut expected = 0.0;
+        for (signal, amount) in signals {
+            store.reinforce("reinforcement", signal).expect("reinforce");
+            expected += amount;
+            let actual = store.read_all().expect("read")[0].balance;
+            assert!((actual - expected).abs() < 1e-9);
+        }
+        assert!(
+            store.read_all().expect("read")[0]
+                .balance_depleted_at
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn e24_falsifier_survives_immunizes_and_discredits() {
+        let (_temp, store) = e24_store();
+        let mut survivor = e24_entry("survivor");
+        survivor.falsifier = Some(Falsifier {
+            predicate: "retries remain bounded".to_string(),
+            observations: 0,
+            violations: 0,
+            last_checked: Utc::now(),
+            active: true,
+        });
+        let mut discredited = e24_entry("discredited");
+        discredited.content = "Avoid a separately falsified retry pattern".to_string();
+        discredited.tags.push("separate".to_string());
+        discredited.falsifier = survivor.falsifier.clone();
+        store.ingest(vec![survivor, discredited]).expect("ingest");
+
+        assert_eq!(
+            store.check_falsifier("survivor", false).expect("check"),
+            FalsifierOutcome::Survived
+        );
+        store.check_falsifier("survivor", false).expect("check");
+        assert_eq!(
+            store.check_falsifier("survivor", false).expect("check"),
+            FalsifierOutcome::Immunized
+        );
+        assert_eq!(
+            store.check_falsifier("discredited", true).expect("check"),
+            FalsifierOutcome::Discredited
+        );
+        let entries = store.read_all().expect("read");
+        let survivor = entries.iter().find(|entry| entry.id == "survivor").unwrap();
+        assert_eq!(survivor.tier, KnowledgeTier::Consolidated);
+        assert!(survivor.confidence >= 0.9);
+        let discredited = entries
+            .iter()
+            .find(|entry| entry.id == "discredited")
+            .unwrap();
+        assert_eq!(discredited.confidence, 0.4);
+        assert!(!discredited.falsifier.as_ref().unwrap().active);
+    }
+
+    #[test]
+    fn e24_tier_progression_promotes_and_demotes() {
+        let (_temp, store) = e24_store();
+        let mut promote = e24_entry("promote");
+        promote.kind = KnowledgeKind::Insight;
+        promote.content = "Independent confirmations support bounded retries".to_string();
+        promote.tags.push("promotion".to_string());
+        promote.confirmation_count = 2;
+        promote.confidence = 0.6;
+        let mut demote = e24_entry("demote");
+        demote.content = "A fragile working rule should leave working memory".to_string();
+        demote.tags.push("demotion".to_string());
+        demote.tier = KnowledgeTier::Working;
+        demote.confidence = 0.1;
+        store.ingest(vec![promote, demote]).expect("ingest");
+
+        let report = store
+            .apply_tier_progression(&crate::TierProgressionConfig::default())
+            .expect("progression");
+        assert!(
+            report
+                .promoted
+                .contains(&("promote".to_string(), KnowledgeTier::Working))
+        );
+        assert!(
+            report
+                .demoted
+                .contains(&("demote".to_string(), KnowledgeTier::Transient))
+        );
+    }
+
+    #[test]
+    fn e24_temporal_index_tracks_add_query_relation_and_gc() {
+        let (temp, mut store) = e24_store();
+        store.enable_temporal_index().expect("enable");
+        let now = Utc::now();
+        let mut epoch = KnowledgeEpoch::at(7, "test", now - Duration::seconds(1));
+        epoch.close(now + Duration::seconds(1));
+        assert!(store.add_temporal_epoch(epoch));
+        let mut first = e24_entry("temporal-a");
+        first.created_at = now - Duration::milliseconds(20);
+        first.kind = KnowledgeKind::Insight;
+        first.content = "Temporal entry alpha has unique context".to_string();
+        first.tags.push("alpha".to_string());
+        let mut second = e24_entry("temporal-b");
+        second.kind = KnowledgeKind::Insight;
+        second.content = "Temporal entry beta has distinct evidence".to_string();
+        second.tags.push("beta".to_string());
+        second.created_at = now;
+        store.ingest(vec![first, second]).expect("ingest");
+        assert_eq!(store.query_temporal(7).expect("query").len(), 2);
+        assert!(
+            store
+                .query_temporal_relation("temporal-a", "temporal-b")
+                .expect("relation")
+                .is_some()
+        );
+        store
+            .update_confidence("temporal-a", -1.0)
+            .expect("confidence update");
+        store.gc(0.5).expect("gc");
+        assert!(
+            store
+                .query_temporal_relation("temporal-a", "temporal-b")
+                .expect("relation")
+                .is_none()
+        );
+        drop(temp);
+    }
+
+    #[cfg(feature = "hdc")]
+    #[test]
+    fn e24_query_hdc_is_similarity_sorted() {
+        let (_temp, store) = e24_store();
+        let query = HdcVector::from_seed(b"e24-exact");
+        let mut exact = e24_entry("hdc-exact");
+        exact.content = "Exact HDC query target".to_string();
+        exact.tags.push("exact".to_string());
+        exact.hdc_vector = Some(query.to_bytes().to_vec());
+        let mut different = e24_entry("hdc-different");
+        different.content = "Different HDC comparison target".to_string();
+        different.tags.push("different".to_string());
+        different.hdc_vector = Some(HdcVector::from_seed(b"e24-different").to_bytes().to_vec());
+        store.ingest(vec![different, exact]).expect("ingest");
+
+        let hits = store.query_hdc(&query, 2).expect("query hdc");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].entry.id, "hdc-exact");
+        assert!(hits[0].total_score >= hits[1].total_score);
     }
 }

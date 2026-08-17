@@ -241,10 +241,11 @@ pub fn unset_env_var_refs(env: &std::collections::HashMap<String, String>) -> Ve
         } else {
             None
         };
-        if let Some(var) = var_name {
-            if !var.is_empty() && std::env::var_os(var).is_none() {
-                missing.push(key.clone());
-            }
+        if let Some(var) = var_name
+            && !var.is_empty()
+            && std::env::var_os(var).is_none()
+        {
+            missing.push(key.clone());
         }
     }
     missing.sort();

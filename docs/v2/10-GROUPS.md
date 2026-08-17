@@ -1,8 +1,23 @@
 # 10 -- Groups and Coordination
 
 > Persistent agent collectives as Space specialization. Owns Bus partition + Store partition. 4 coordination modes (stigmergic, pipeline, broadcast, leader-follower). Membership protocol. Cross-user invitation. Shared knowledge and pheromone fields.
+> **Implementation status (2026-08-16): E28 IMPLEMENTED.** Core contracts, restart-durable group state, membership/invitations, scoped knowledge, pheromone fields, typed Bus publication, `[[groups]]` reconciliation, authenticated HTTP routes, and membership-gated prompt context are live. Cluster execution, remote relay auto-subscription/notification, on-chain registration, and dashboard surfaces remain follow-up work described below.
 
 **Kernel mapping**: Group = Space (one of the 4 universal patterns). A Space owns a Bus partition + Store partition. A Group adds membership management, coordination modes, shared knowledge (Store partition), and pheromone fields (Signals in the Store partition subject to standard demurrage). No new kernel types -- Group is a named convention over Space primitives.
+
+### Implemented Boundary
+
+| Capability | Current implementation |
+|---|---|
+| Identity, policy, invitations, assignment payloads, pheromones, 16 events | Implemented in `roko-core::groups` |
+| Durable runtime | Atomic `.roko/groups/state.json` commits; restart recovery; serialized mutations prevent duplicate invitations and capacity overbooking |
+| HTTP/API security | Group CRUD, invitation decisions, member management, knowledge, pheromones, messages, and event history; authenticated read/write scopes plus typed RBAC and per-group ownership/permission checks |
+| Shared knowledge | Existing Neuro knowledge store with mandatory `group:{id}` tag and membership-filtered group view |
+| Pheromone field | Persistent deposits with exponential demurrage balance, refresh semantics, and `signal_type`/`min_balance` queries |
+| Bus partition | Each mutation records a typed `GroupEvent` and publishes a Pulse to `system`, `group:{id}`, or the appropriate sub-room |
+| Declarative config | `[[groups]]` parses and reconciles idempotently at `roko serve` startup; configured members are local auto-accepted members |
+| Prompt context | Readable group knowledge and pheromones enter the live VCG prompt auction through `AttentionBidder::GroupContext`; the current runner maps its logical role label to `GroupMember.agent_id` |
+| Deferred | Cluster/Flow routes and execution, assignment automation, relay-driven remote auto-subscription and user notification (E29), on-chain registry, dashboard UI, and automatic pheromone pruning/decay events |
 
 ---
 
@@ -50,7 +65,7 @@ Cluster = Flow {
 }
 ```
 
-**Crate mapping**: `roko-orchestrator` runs Clusters as Flows. The PipelineGraph is a standard Graph ([03-GRAPH](03-GRAPH.md)) where each node is an agent dispatch Cell. The GroupSpace scopes Bus topics and Store queries to the parent Group's partitions. Snapshot/resume follows the standard Flow mechanics (run_id + serialized state).
+**Crate mapping**: `roko-graph` owns Flow/Graph execution, while the `roko-cli` runner supplies agent dispatch and lifecycle integration. The PipelineGraph is a standard Graph ([03-GRAPH](03-GRAPH.md)) where each node is an agent dispatch Cell. The GroupSpace scopes Bus topics and Store queries to the parent Group's partitions. Snapshot/resume follows the standard Flow mechanics (run_id + serialized state).
 
 The relationship: a group contains agents, a cluster orchestrates them. You create a cluster from a group's members when you need to run a coordinated pipeline. The group persists after the cluster finishes.
 
@@ -825,15 +840,16 @@ The cluster runs its pipeline. When it completes, results flow into the group kn
 
 | Component | Crate | Status |
 |---|---|---|
-| Group types (`Group`, `GroupMember`, `GroupInvitation`) | `roko-core` | New |
-| Group API routes | `roko-serve` | New |
-| Group pheromone field | `roko-neuro` (extends InsightStore) | New |
-| Group context bidder (`GroupContextBidder`) | `roko-compose` | New |
-| Group relay room management | `roko-runtime` (via relay client) | New |
-| Cluster creation from group | `roko-orchestrator` | Extends existing |
+| Group types (`Group`, `GroupMember`, `GroupInvitation`) | `roko-core` | Implemented |
+| Group API routes | `roko-serve` | Implemented except cluster endpoints |
+| Group knowledge view | `roko-neuro` store + `roko-serve` scope enforcement | Implemented |
+| Group pheromone field | `roko-serve` durable group runtime | Implemented; automatic pruning deferred |
+| Group context bidder (`GroupContextBidder`) | `roko-core`, `roko-compose`, `roko-cli` | Implemented |
+| Group Bus publication | `roko-serve` Pulse bus | Implemented locally; remote relay lifecycle deferred to E29 |
+| Cluster creation from group | `roko-graph` + `roko-cli` runner | Deferred |
 | On-chain group registry | `roko-chain` (Phase 2+) | Deferred |
-| Group config in `roko.toml` | `roko-core` (config module) | New |
-| Dashboard group surfaces | Dashboard | Depends on [20-SURFACES](20-SURFACES.md) |
+| Group config in `roko.toml` | `roko-core` config + `roko-serve` reconciliation | Implemented |
+| Dashboard group surfaces | Dashboard | Deferred; depends on [20-SURFACES](20-SURFACES.md) |
 
 ---
 
@@ -853,36 +869,36 @@ The cluster runs its pipeline. When it completes, results flow into the group kn
 
 ### Group Primitive
 
-- [ ] `Group`, `GroupMember`, `GroupConfig`, `CoordinationMode` types exist in `roko-core`
-- [ ] Group is expressed as a Space specialization (Bus partition + Store partition)
-- [ ] Groups are created with a unique ID, name, and relay room
-- [ ] Four coordination modes are supported: stigmergic, pipeline, broadcast, leader-follower
+- [x] `Group`, `GroupMember`, `GroupConfig`, `CoordinationMode` types exist in `roko-core`
+- [x] Group is expressed as a Space specialization (Bus partition + Store partition)
+- [x] Groups are created with a unique ID, name, and relay room
+- [x] Four coordination modes are represented and validated: stigmergic, pipeline, broadcast, leader-follower
 
 ### Membership Protocol
 
-- [ ] `POST /api/groups/{id}/invite` adds same-owner agents immediately
-- [ ] `POST /api/groups/{id}/invite` creates pending invitation for cross-user agents
-- [ ] `POST /api/invitations/{id}/accept` adds agent to group and publishes `group.member_joined`
-- [ ] `POST /api/invitations/{id}/reject` rejects invitation
-- [ ] Invitations have expiration and transition to Expired status
-- [ ] `DELETE /api/groups/{id}/members/{agent_id}` removes member and publishes `group.member_left`
-- [ ] `GroupInvitation` type tracks status: Pending, Accepted, Rejected, Expired
+- [x] `POST /api/groups/{id}/invite` adds same-owner agents immediately
+- [x] `POST /api/groups/{id}/invite` creates pending invitation for cross-user agents
+- [x] `POST /api/invitations/{id}/accept` adds agent to group and publishes `group.member_joined`
+- [x] `POST /api/invitations/{id}/reject` rejects invitation
+- [x] Invitations have expiration and transition to Expired status
+- [x] `DELETE /api/groups/{id}/members/{agent_id}` removes member and publishes `group.member_left`
+- [x] `GroupInvitation` type tracks status: Pending, Accepted, Rejected, Expired
 
 ### Cross-User Invitation
 
 - [ ] Invitation publishes notification to agent owner's notification room (`user:{id}:notifications`)
-- [ ] Agent owner can accept/reject via API
+- [x] Agent owner can accept/reject via API
 - [ ] Accepted invitation auto-subscribes agent to group relay room
-- [ ] Cross-user agents have separate owner field in `GroupMember`
+- [x] Cross-user agents have separate owner field in `GroupMember`
 
 ### Coordination Modes
 
-- [ ] **Stigmergic**: pheromone deposit creates `Kind::Pheromone` Signal in group Store partition
-- [ ] **Stigmergic**: pheromone deposit publishes notification Pulse to `group:{id}:pheromones` room
-- [ ] **Stigmergic**: pheromone decay uses standard demurrage with `pheromone_decay_rate` as weight modifier
+- [x] **Stigmergic**: pheromone deposit persists a group-scoped pheromone value and emits `Kind::Pheromone`
+- [x] **Stigmergic**: pheromone deposit publishes notification Pulse to `group:{id}:pheromones` room
+- [x] **Stigmergic**: pheromone balances use exponential demurrage with `pheromone_decay_rate` as weight modifier
 - [ ] **Stigmergic**: Store `prune()` removes pheromones below balance threshold
 - [ ] **Pipeline**: `POST /api/groups/{id}/cluster` creates Cluster (Flow with PipelineGraph + GroupSpace)
-- [ ] **Pipeline**: cluster runs via `roko-orchestrator` as a standard Flow with snapshot/resume
+- [ ] **Pipeline**: cluster runs via `roko-graph` and the `roko-cli` runner as a standard Flow with snapshot/resume
 - [ ] **Pipeline**: cluster results flow into group knowledge Store partition
 - [ ] **Broadcast**: messages sent to `group:{id}` room reach all connected members
 - [ ] **Leader-follower**: leader publishes `group.task_assigned` to coordination sub-room
@@ -892,15 +908,15 @@ The cluster runs its pipeline. When it completes, results flow into the group kn
 
 ### Shared Context
 
-- [ ] Group knowledge store is a scoped InsightStore partition
-- [ ] `GET /api/groups/{id}/knowledge` returns group-scoped entries with filtering
-- [ ] Knowledge entries can be tagged with group ID for dual visibility (global + group)
-- [ ] Group pheromone field is queryable with signal_type and min_balance filters via Store `query()`
-- [ ] `GroupContextBidder` competes in VCG auction for context space in Layer 7 enrichment
+- [x] Group knowledge store is a membership-gated, tag-scoped Neuro store view
+- [x] `GET /api/groups/{id}/knowledge` returns group-scoped entries with filtering
+- [x] Knowledge entries are tagged with group ID in the shared durable store
+- [x] Group pheromone field is queryable with `signal_type` and `min_balance` filters
+- [x] `GroupContextBidder` competes in the live VCG auction for prompt context
 
 ### Bus Partition (Relay)
 
-- [ ] Every group has relay room `group:{id}` with sub-rooms for knowledge, pheromones, coordination
+- [x] Every group has Bus room `group:{id}` with sub-rooms for knowledge, pheromones, coordination
 - [ ] All members auto-subscribe to group room on connection
 - [ ] All 16 event types publish to correct rooms (see S8)
 - [ ] Dashboard subscribes on mount, unsubscribes on unmount
@@ -913,21 +929,21 @@ The cluster runs its pipeline. When it completes, results flow into the group kn
 
 ### TOML Config
 
-- [ ] `[[groups]]` in `roko.toml` is parsed and groups reconciled on `roko serve` startup
-- [ ] Configured members are auto-added without invitation flow
-- [ ] Config supports all coordination modes (stigmergic, pipeline, broadcast, leader_follower)
-- [ ] Config supports knowledge_policy (open, write_leader, curated)
+- [x] `[[groups]]` in `roko.toml` is parsed and groups reconciled on `roko serve` startup
+- [x] Configured members are auto-added without invitation flow
+- [x] Config supports all coordination modes (stigmergic, pipeline, broadcast, leader_follower)
+- [x] Config supports knowledge_policy (open, write_leader, curated)
 
 ### API Surface
 
 - [ ] All routes listed in S7 exist and return correct responses
-- [ ] Authentication is enforced on all routes
-- [ ] Permission checks enforce read/write/execute per member role
-- [ ] Group owner has full control (delete, manage members, change config)
+- [x] Authentication is enforced on all routes
+- [x] Permission checks enforce read/write/execute per member role
+- [x] Group owner has full control (delete, manage members, change config)
 
 ### Integration
 
 - [ ] Full cross-user flow works end-to-end (create -> invite -> accept -> operate -> cluster)
 - [ ] Stigmergic coordination produces observable behavior (pheromone-influenced agent decisions)
-- [ ] Group knowledge and pheromone data appear in agent context via GroupContextBidder
+- [x] Group knowledge and pheromone data appear in agent context via GroupContextBidder
 - [ ] Groups compose with Feeds (group agents can produce/consume feeds)

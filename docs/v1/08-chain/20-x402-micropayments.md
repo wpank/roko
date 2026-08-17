@@ -1,5 +1,8 @@
 # x402 Micropayments for Self-Funding Agents
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > x402 is a protocol built on HTTP's 402 Payment Required status code. Agents pay for services with a signed ERC-3009 `transferWithAuthorization` header — no API keys, no accounts, no invoicing. Payment is as fast as the HTTP request that carries it. Enables agent-to-agent commerce at the speed of HTTP.
 
 

@@ -1,5 +1,8 @@
 # 06 — MCP Integration
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Sub-doc 06 of **02-agents** · Roko Documentation
 >
 > This document describes Roko's Model Context Protocol (MCP) integration:

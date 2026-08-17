@@ -1,5 +1,8 @@
 # Mechanism Design and Attention Economics
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for VCG auctions, reputation systems, incentive-compatible mechanisms, and attention allocation in Roko's context bidding and agent marketplace.
 
 **Topic**: [References](./INDEX.md)

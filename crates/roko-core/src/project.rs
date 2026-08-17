@@ -185,10 +185,10 @@ pub fn detect_from_files_with_cargo_toml(
     let mut info = detect_from_files(file_names);
 
     // Refine workspace detection for Rust: look for [workspace] section.
-    if info.language == Language::Rust {
-        if let Some(contents) = cargo_toml {
-            info.has_workspace = contents.contains("[workspace]");
-        }
+    if info.language == Language::Rust
+        && let Some(contents) = cargo_toml
+    {
+        info.has_workspace = contents.contains("[workspace]");
     }
 
     info

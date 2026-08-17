@@ -1,6 +1,26 @@
 # 03 — Graph
 
 > The universal composition primitive. Cells wired by typed edges into a directed acyclic (or cyclic) graph. TOML-defined, serializable, runtime-interpreted. **Hot Graphs** stay resident and re-fire per tick. The **Workflow/Activity split** separates deterministic orchestration from non-deterministic execution for replay.
+> **Implementation status:** PARTIAL — Graph struct, Node, Edge, NodeKind, ExecutionClass,
+> GraphPolicy, Workflow/Activity snapshot/replay, and restart-durable Hot Graph mode are
+> implemented. Production execution honors bounded parallel topological waves and can
+> preserve tick outputs plus cumulative budgets across process restarts. Success/failure/always/output-equality edges
+> route consistently in sequential, parallel, resumed, and live-Flow execution, and
+> library snapshot resume re-derives Workflow nodes. The converted plan path injects
+> live TaskExecutor dispatch; unconfigured registries fail closed. Successful plan
+> Activities are synchronously recorded behind a versioned graph fingerprint, and the
+> CLI safely resumes exact matches without redispatch. Hot execution atomically commits a
+> graph-fingerprinted manifest after each successful tick, fsyncs Activities, replays an
+> interrupted Activity without re-execution, rejects drift/corruption, and exposes
+> background persistence failure. Converted plan execution also keeps a shared per-plan
+> schema-v2 ledger from actual provider-reported costs, atomically reserves admission before
+> dispatch, persists spend and in-flight reservations across exact resume, fails closed on
+> missing/corrupt/mismatched/crash-reserved state, fails hard-limit overage, and reports
+> per-plan plus total spend.
+> Seven typed cognitive Cells, five literal Verify Cells, and a fixed immune decision Graph
+> are implemented. Parallel aggregate over-admission is closed; a single call can still
+> disclose an actual cost greater than its reservation because the provider bridge has no
+> enforceable pre-call maximum-cost API. Runner-v2 lifecycle parity remains.
 
 **Kernel primitives used**: Signal (data on edges), Cell (computation at nodes), Graph (this document), Bus (lifecycle Pulses), Store (run storage, Activity records), Protocol (Score, Verify, Route, Compose, React, Observe — all invocable from Graph nodes).
 
@@ -874,6 +894,10 @@ kind = "feedback"
 ### T0 short-circuit
 
 Most ticks (~80%) short-circuit at ASSESS. When the ASSESS Cell determines that all T0 probes report "no change" and EFE selects T0 (zero-cost reflex), the remaining Cells do not execute. This is expressed as conditional edges:
+
+> **Runtime boundary:** the current loader executes explicit `success`, `failure`,
+> `always`, and `output_equals` conditions (including dotted JSON keys). The arbitrary
+> boolean-expression syntax below and the complete cognitive-loop routing remain spec-only.
 
 ```toml
 # Replace the standard assess->compose edge with conditional edges:

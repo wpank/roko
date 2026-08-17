@@ -1,5 +1,8 @@
 # Rich UX Primitives
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** This chapter keeps the useful design instinct behind REF30 while narrowing its claims. A few primitives are clearly worth preserving as target direction, but most of this chapter depends on projection and telemetry contracts that do not exist yet as stable product surfaces.
 
 **Topic**: [12-interfaces](./INDEX.md)  

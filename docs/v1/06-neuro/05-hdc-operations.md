@@ -1,5 +1,8 @@
 # HDC Operations: Bind, Bundle, Permute, Similarity
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The four algebraic operations of Binary Spatter Codes — XOR bind, majority-vote bundle, cyclic-shift permute, and Hamming similarity — form a complete algebra for encoding, composing, and querying knowledge in Neuro.
 
 

@@ -362,9 +362,8 @@ async fn topic_subscribe_and_receive() {
 
     // Subscriber receives the message.
     let msg = recv_json(&mut subscriber).await;
-    assert_eq!(msg["type"], "topic_message");
-    assert_eq!(msg["topic"], "isfr:rates");
-    assert_eq!(msg["msg_type"], "rate_update");
+    assert_eq!(msg["type"], "rate_update");
+    assert_eq!(msg["room"], "isfr:rates");
     assert_eq!(msg["payload"]["bps"], 620);
     assert_eq!(msg["publisher_id"], "publisher-1");
 }
@@ -437,8 +436,8 @@ async fn subscribe_receives_replay_messages() {
     .await;
     let _ = recv_json(&mut publisher).await; // ack
 
-    // Now a late subscriber joins — it should receive the replayed message
-    // before the subscription ACK.
+    // A late subscriber explicitly supplies its durable cursor. Subscription
+    // install and recovery are one atomic operation.
     let mut late = connect_agent(
         &server,
         json!({"type": "hello", "agent_id": "late-subscriber-1"}),
@@ -446,18 +445,79 @@ async fn subscribe_receives_replay_messages() {
     .await;
     send_json(
         &mut late,
-        json!({"type": "subscribe", "topic": "replay:topic"}),
+        json!({"type": "subscribe", "rooms": ["replay:topic"], "last_seq": 0}),
     )
     .await;
 
     // First frame should be the replayed message.
     let replayed = recv_json(&mut late).await;
-    assert_eq!(replayed["type"], "topic_message");
-    assert_eq!(replayed["msg_type"], "first");
+    assert_eq!(replayed["type"], "first");
+    assert_eq!(replayed["room"], "replay:topic");
     assert_eq!(replayed["payload"]["n"], 1);
 
-    // Second frame should be the subscription ACK.
+    let completed = recv_json(&mut late).await;
+    assert_eq!(completed["type"], "replay_complete");
+    assert_eq!(completed["to_seq"], 1);
+
+    // The terminal subscription ACK comes after recovery completion.
     let ack = recv_json(&mut late).await;
     assert_eq!(ack["type"], "ack");
     assert_eq!(ack["event"], "subscribed:replay:topic");
+}
+
+#[tokio::test]
+async fn standalone_resume_is_rejected_in_favor_of_atomic_subscribe_cursor() {
+    let server = TestServer::spawn().await;
+    let mut agent = connect_agent(
+        &server,
+        json!({"type": "hello", "agent_id": "resume-compat-agent"}),
+    )
+    .await;
+    send_json(
+        &mut agent,
+        json!({"type": "subscribe", "topic": "room:resume"}),
+    )
+    .await;
+    let ack = recv_json(&mut agent).await;
+    assert_eq!(ack["type"], "ack");
+
+    send_json(&mut agent, json!({"type": "resume", "last_seq": 0})).await;
+    let error = recv_json(&mut agent).await;
+    assert_eq!(error["type"], "error");
+    assert!(
+        error["error"]
+            .as_str()
+            .expect("error text")
+            .contains("subscribe.last_seq")
+    );
+}
+
+#[tokio::test]
+async fn subscription_cursor_is_initialized_once_per_connection() {
+    let server = TestServer::spawn().await;
+    let mut agent = connect_agent(
+        &server,
+        json!({"type": "hello", "agent_id": "single-subscribe-agent"}),
+    )
+    .await;
+    send_json(
+        &mut agent,
+        json!({"type": "subscribe", "rooms": ["room:first"], "last_seq": 0}),
+    )
+    .await;
+    let _completion = recv_json(&mut agent).await;
+    let _ack = recv_json(&mut agent).await;
+    send_json(
+        &mut agent,
+        json!({"type": "subscribe", "rooms": ["room:second"], "last_seq": 0}),
+    )
+    .await;
+    let error = recv_json(&mut agent).await;
+    assert_eq!(error["type"], "error");
+    assert!(
+        error["error"]
+            .as_str()
+            .expect("error text")
+            .contains("initialized once")
+    );
 }

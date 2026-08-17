@@ -1,5 +1,8 @@
 # Episode Logger
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Crate:** `roko-learn` · **Module:** `episode_logger.rs`
 > **Persistence:** `.roko/learn/episodes.jsonl` (append-only JSONL)
 > **Wiring:** `LearningRuntime::record_completed_run()` → `EpisodeLogger::append()`

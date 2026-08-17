@@ -646,13 +646,13 @@ pub fn full_inventory() -> Vec<SurfaceEntry> {
         "plugin list",
         SurfaceStatus::Partial,
         "roko-cli plugin",
-        "Lists plugins; plugin system framework exists but registry is not live",
+        "Lists resolved declarative plugin catalogs; registry-installed WASM extensions load at runtime but are not yet unified into this list view",
     ));
     v.push(SurfaceEntry::cli(
-        "plugin install/remove/audit",
+        "plugin install/publish/remove/audit",
         SurfaceStatus::Partial,
         "roko-cli plugin",
-        "Plugin lifecycle commands exist; no live registry backend",
+        "Authenticated signed relay publish and recursive verified registry install are live; local plugin and WASM-extension lifecycle views remain split",
     ));
     v.push(SurfaceEntry::cli(
         "archive",

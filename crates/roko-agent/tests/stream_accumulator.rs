@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use roko_agent::chat_types::FinishReason;
 use roko_agent::{StreamAccumulator, StreamChunk, Usage};
 

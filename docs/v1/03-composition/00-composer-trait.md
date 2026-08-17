@@ -1,5 +1,8 @@
 # 00 — The Composer Trait
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Layer 2 Scaffold — Synapse Architecture
 > Status: **Implemented** — `roko-compose` crate
 > Canonical source: `refactoring-prd/01-synapse-architecture.md`

@@ -5,16 +5,15 @@ import { testScenario } from './helpers';
  * Verify every demo scenario can start and make progress.
  * Each scenario gets its own fresh page to avoid terminal session contention.
  *
- * The demo has been collapsed from 14 scenarios to 5:
- *   Cost, Pipeline, Memory, ISFR, Oracle
+ * The demo has been collapsed from 14 scenarios to 4:
+ *   Cost, Pipeline, Memory, Oracle
  */
 
 const SCENARIOS = [
   { idx: 0, name: 'Cost', panes: 2 },
   { idx: 1, name: 'Pipeline', panes: 1 },
   { idx: 2, name: 'Memory', panes: 2 },
-  { idx: 3, name: 'ISFR', panes: 4 },
-  { idx: 4, name: 'Oracle', panes: 2 },
+  { idx: 3, name: 'Oracle', panes: 2 },
 ];
 
 test.describe('All scenarios', () => {

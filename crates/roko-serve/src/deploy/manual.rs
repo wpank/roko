@@ -78,7 +78,9 @@ impl DeployBackend for ManualBackend {
             },
             url: Some(format!("file://{bundle_path}")),
             created_at: Utc::now(),
+            callback_id: None,
             callback_token: None,
+            callback_token_hash: None,
         })
     }
 

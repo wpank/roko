@@ -1,5 +1,8 @@
 # 12 — Three Hiring Models
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The Roko job market supports three distinct hiring models tuned for different trust
 > levels, job sizes, and urgency requirements. Random VRF assignment handles low-value
 > commodity work. Blind auction (FPSB, Vickrey, or Dutch) handles standard jobs with

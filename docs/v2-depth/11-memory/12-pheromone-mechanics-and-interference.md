@@ -1,6 +1,8 @@
 # Pheromone Mechanics and Interference
 
 > Depth for [06-MEMORY.md](../../unified/06-MEMORY.md). The 7 universal Pulse kinds, their decay as ring-buffer position loss, the SINR interference model for detectability, anti-saturation mechanisms, Hill-function response thresholds, and the promotion cascade that graduates ephemeral Pulses into durable Signals.
+>
+> **Implementation status (2026-08-17):** Spec/design document. The `PheromoneKind` taxonomy, SINR interference model, Hill-function thresholds, and promotion cascade described here are not wired at runtime. The underlying Pulse/Bus/Store graduation primitives exist; the pheromone-specific kind system and multi-agent coordination layer are product work. See `.roko/GAPS.md`.
 
 **Depends on**: [01-SIGNAL](../../unified/01-SIGNAL.md) (Signal/Pulse duality, demurrage, Kind system), [02-CELL](../../unified/02-CELL.md) (Score, Verify, Route, React protocols), [03-GRAPH](../../unified/03-GRAPH.md) (Pipeline, Loop), [11-stigmergy-as-bus](11-stigmergy-as-bus.md) (Bus-native stigmergy, ring-buffer eviction as decay, dual-write insight)
 

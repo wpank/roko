@@ -128,22 +128,22 @@ impl ResourceAccount {
 impl ResourceAccount {
     /// Budget for a trivial plan.
     pub fn trivial(label: impl Into<String>) -> Self {
-        Self::new(label, 50_000, 0.50, Duration::from_secs(5 * 60))
+        Self::new(label, 50_000, 0.50, Duration::from_mins(5))
     }
 
     /// Budget for a simple plan.
     pub fn simple(label: impl Into<String>) -> Self {
-        Self::new(label, 200_000, 2.00, Duration::from_secs(15 * 60))
+        Self::new(label, 200_000, 2.00, Duration::from_mins(15))
     }
 
     /// Budget for a standard plan.
     pub fn standard(label: impl Into<String>) -> Self {
-        Self::new(label, 500_000, 5.00, Duration::from_secs(30 * 60))
+        Self::new(label, 500_000, 5.00, Duration::from_mins(30))
     }
 
     /// Budget for a complex plan.
     pub fn complex(label: impl Into<String>) -> Self {
-        Self::new(label, 2_000_000, 20.00, Duration::from_secs(60 * 60))
+        Self::new(label, 2_000_000, 20.00, Duration::from_hours(1))
     }
 }
 

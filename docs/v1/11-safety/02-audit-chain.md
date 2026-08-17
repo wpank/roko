@@ -1,5 +1,8 @@
 # Cryptographic Audit Trail: Merkle Hash-Chain and Engram Lineage
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer:** L0 Runtime, L3 Harness
 >
 > **Cross-cut:** Safety & Provenance

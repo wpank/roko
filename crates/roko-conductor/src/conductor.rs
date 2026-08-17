@@ -363,17 +363,17 @@ impl Conductor {
         let plan_id = extract_plan_id(stream);
 
         // Check circuit breaker first (count-based + predictive).
-        if let Some(ref pid) = plan_id {
-            if self.circuit_breaker.is_tripped(pid) {
-                self.update_routing_bias(stream, &[]);
-                return ConductorDecision::fail(
-                    "circuit-breaker",
-                    roko_core::FailureKind::MaxIterations,
-                )
-                .with_signals(vec![CognitiveSignal::Shutdown {
-                    reason: "circuit breaker tripped".into(),
-                }]);
-            }
+        if let Some(ref pid) = plan_id
+            && self.circuit_breaker.is_tripped(pid)
+        {
+            self.update_routing_bias(stream, &[]);
+            return ConductorDecision::fail(
+                "circuit-breaker",
+                roko_core::FailureKind::MaxIterations,
+            )
+            .with_signals(vec![CognitiveSignal::Shutdown {
+                reason: "circuit breaker tripped".into(),
+            }]);
         }
 
         // Run all watchers and collect outputs.
@@ -419,44 +419,43 @@ impl Conductor {
         }
 
         // COND-08: Proactive circuit breaker warnings.
-        if let Some(ref pid) = plan_id {
-            if let Some(signal) = self.circuit_breaker.check_proactive(pid) {
-                match signal {
-                    ProactiveTripSignal::Warning { forecast_h3, .. } => {
-                        tracing::warn!(
-                            plan_id = pid.as_str(),
-                            forecast_h3,
-                            "circuit breaker trending toward trip"
-                        );
-                        signals.push(CognitiveSignal::Cooldown { factor: 1.5 });
-                    }
-                    ProactiveTripSignal::ProactiveTrip { forecast_h1, .. } => {
-                        tracing::warn!(
-                            plan_id = pid.as_str(),
-                            forecast_h1,
-                            "circuit breaker proactively tripping"
-                        );
-                        signals.push(CognitiveSignal::Shutdown {
-                            reason: format!(
-                                "proactive circuit break: forecast error rate {forecast_h1:.2}"
-                            ),
-                        });
-                    }
+        if let Some(ref pid) = plan_id
+            && let Some(signal) = self.circuit_breaker.check_proactive(pid)
+        {
+            match signal {
+                ProactiveTripSignal::Warning { forecast_h3, .. } => {
+                    tracing::warn!(
+                        plan_id = pid.as_str(),
+                        forecast_h3,
+                        "circuit breaker trending toward trip"
+                    );
+                    signals.push(CognitiveSignal::Cooldown { factor: 1.5 });
+                }
+                ProactiveTripSignal::ProactiveTrip { forecast_h1, .. } => {
+                    tracing::warn!(
+                        plan_id = pid.as_str(),
+                        forecast_h1,
+                        "circuit breaker proactively tripping"
+                    );
+                    signals.push(CognitiveSignal::Shutdown {
+                        reason: format!(
+                            "proactive circuit break: forecast error rate {forecast_h1:.2}"
+                        ),
+                    });
                 }
             }
         }
 
         // COND-09: Check provider health and emit escalation signals.
-        if let Some(ref tracker) = self.provider_health {
-            if let Some(provider) = extract_provider(stream) {
-                if !tracker.is_healthy(&provider) {
-                    signals.push(CognitiveSignal::Escalate { to_tier: 2 });
-                    tracing::info!(
-                        provider = %provider,
-                        "provider unhealthy — emitting escalate signal"
-                    );
-                }
-            }
+        if let Some(ref tracker) = self.provider_health
+            && let Some(provider) = extract_provider(stream)
+            && !tracker.is_healthy(&provider)
+        {
+            signals.push(CognitiveSignal::Escalate { to_tier: 2 });
+            tracing::info!(
+                provider = %provider,
+                "provider unhealthy — emitting escalate signal"
+            );
         }
 
         // Apply escalation policy. If compound patterns escalated to Critical,
@@ -474,14 +473,11 @@ impl Conductor {
         }
 
         // Record failures in circuit breaker.
-        if let ConductorDecision::Fail { watcher, reason } = &decision {
-            if let Some(pid) = plan_id {
-                self.circuit_breaker.record_failure(
-                    &pid,
-                    format!("{watcher}: {reason}"),
-                    ctx.now_ms,
-                );
-            }
+        if let ConductorDecision::Fail { watcher, reason } = &decision
+            && let Some(pid) = plan_id
+        {
+            self.circuit_breaker
+                .record_failure(&pid, format!("{watcher}: {reason}"), ctx.now_ms);
         }
 
         decision.with_signals(signals)
@@ -643,15 +639,15 @@ impl React for Conductor {
 
         // Also include the decision as a signal.
         let decision = self.policy.evaluate(&watcher_outputs, ctx);
-        if !decision.is_continue() {
-            if let Ok(body) = Body::from_json(&decision) {
-                result.push(
-                    Signal::builder(Kind::Custom("conductor.decision".into()))
-                        .body(body)
-                        .tag("decision", decision.label())
-                        .build(),
-                );
-            }
+        if !decision.is_continue()
+            && let Ok(body) = Body::from_json(&decision)
+        {
+            result.push(
+                Signal::builder(Kind::Custom("conductor.decision".into()))
+                    .body(body)
+                    .tag("decision", decision.label())
+                    .build(),
+            );
         }
 
         result

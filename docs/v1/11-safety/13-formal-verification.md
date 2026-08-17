@@ -1,5 +1,8 @@
 # Formal Verification Pipeline
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L3 Harness (verification gates), integrated with L1 Framework (chain domain plugin)
 >
 > **Crate**: Target: `roko-chain` (chain domain verification), with hooks into `roko-gate` (pipeline as a Gate)

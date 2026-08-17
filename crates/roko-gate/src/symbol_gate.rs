@@ -373,32 +373,32 @@ fn classify_expectation(
             ));
             return;
         }
-        if let Some(sig) = exp.signature.as_deref() {
-            if !found.signature_line.contains(sig) {
-                mismatches.push(format!(
-                    "WRONG_SIG: {} {} at {} (missing substring: {})",
-                    exp.kind.as_str(),
-                    exp.name,
-                    wanted_path,
-                    sig
-                ));
-            }
+        if let Some(sig) = exp.signature.as_deref()
+            && !found.signature_line.contains(sig)
+        {
+            mismatches.push(format!(
+                "WRONG_SIG: {} {} at {} (missing substring: {})",
+                exp.kind.as_str(),
+                exp.name,
+                wanted_path,
+                sig
+            ));
         }
         return;
     }
 
     // Not at the expected path — is it somewhere else?
-    if let Some(candidates) = by_name.get(&exp.name) {
-        if let Some(elsewhere) = candidates.first() {
-            mismatches.push(format!(
-                "WRONG_PATH: {} {} at {} (found at: {})",
-                exp.kind.as_str(),
-                exp.name,
-                wanted_path,
-                elsewhere.module_path
-            ));
-            return;
-        }
+    if let Some(candidates) = by_name.get(&exp.name)
+        && let Some(elsewhere) = candidates.first()
+    {
+        mismatches.push(format!(
+            "WRONG_PATH: {} {} at {} (found at: {})",
+            exp.kind.as_str(),
+            exp.name,
+            wanted_path,
+            elsewhere.module_path
+        ));
+        return;
     }
 
     mismatches.push(format!(
@@ -458,17 +458,16 @@ fn classify_expectation_by_name(
         return;
     }
     // Check signature if specified.
-    if let Some(sig) = exp.signature.as_deref() {
-        if let Some(matched) = best_match {
-            if !matched.signature_line.contains(sig) {
-                mismatches.push(format!(
-                    "WRONG_SIG: {} {} (missing substring: {})",
-                    exp.kind.as_str(),
-                    exp.name,
-                    sig
-                ));
-            }
-        }
+    if let Some(sig) = exp.signature.as_deref()
+        && let Some(matched) = best_match
+        && !matched.signature_line.contains(sig)
+    {
+        mismatches.push(format!(
+            "WRONG_SIG: {} {} (missing substring: {})",
+            exp.kind.as_str(),
+            exp.name,
+            sig
+        ));
     }
 }
 
@@ -483,10 +482,10 @@ fn collect_rust_files(root: &Path) -> Vec<PathBuf> {
         for entry in entries.flatten() {
             let path = entry.path();
             // Skip obvious build artifacts.
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name == "target" || name == ".git" || name == "node_modules" {
-                    continue;
-                }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && (name == "target" || name == ".git" || name == "node_modules")
+            {
+                continue;
             }
             if path.is_dir() {
                 stack.push(path);

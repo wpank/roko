@@ -39,10 +39,13 @@ pub mod network;
 pub mod path;
 pub mod provenance;
 pub mod rate_limit;
+pub mod recursive;
 pub mod result_filter;
 pub mod risk;
+pub mod sandbox;
 pub mod scrub;
 pub mod spending;
+pub mod taint_propagation;
 pub mod temporal;
 pub mod witness;
 
@@ -54,6 +57,8 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use regex::Regex;
 use roko_core::config::schema::{RokoConfig, RoleOverride};
+use roko_core::corrigibility::ActionContext;
+use roko_core::extension::CamelTaintLevel;
 use roko_core::tool::{ToolCall, ToolContext, ToolError, ToolResult};
 
 use self::bash::BashPolicy;
@@ -74,21 +79,32 @@ pub use authz::{
 };
 pub use capabilities::{
     AgentWarrant, Capability, CapabilityError, PluginTier, ToolPermissionPolicy, check_capability,
-    check_plugin_capability, check_plugin_tier, check_tool_permission, delegate,
+    check_capability_at, check_plugin_capability, check_plugin_tier, check_tool_permission,
+    delegate, delegate_at,
 };
 pub use data_llm::{
     DataLlmAuditEntry, DataLlmDecision, DataLlmRouter, SanitizeResult, sanitize_input,
 };
 pub use hallucination::HallucinationDetector;
-pub use hooks::{DataSink, HookDecision, SafetyAuditRecord, SafetyHook, TaintLabel, TaintedString};
+pub use hooks::{
+    CorrigibilityHook, DataSink, HookDecision, SafetyAuditRecord, SafetyHook, TaintLabel,
+    TaintLevelHook, TaintedString, evaluate_tool_corrigibility,
+};
 pub use provenance::{AttestationLevel, Custody, CustodyLogger, Taint};
+pub use recursive::{
+    MAX_META_AGENT_GRANT_TTL_SECS, MetaAgentGrant, RecursiveSafetyError, RecursiveSafetyEvidence,
+    RecursiveSafetyMonitor, SpawnAuthority, intersect_tools, validate_delegation,
+    validate_delegation_at, validate_delegation_structure,
+};
 pub use result_filter::ResultFilter;
 pub use risk::{
     BetaDistribution, BudgetDimension, OperationalConfidenceTracker, SafetyBudget,
     SafetyBudgetTracker, confidence_multiplier, effective_limit, irreversibility_score,
     kelly_fraction,
 };
+pub use sandbox::{SandboxLevel, SandboxPolicy};
 pub use spending::{SpendingLimiter, ToolCostEstimate};
+pub use taint_propagation::{PropagationAudit, TaintReason, TaintTracker};
 pub use temporal::{LtlProperty, MonitorState, TemporalMonitor, Violation};
 pub use witness::{IntegrityViolation, VertexKind, WitnessDag, WitnessLogger, WitnessVertex};
 
@@ -133,6 +149,12 @@ pub enum ViolationType {
     BudgetExhausted,
     /// Forbidden tool was invoked.
     ForbiddenTool,
+    /// Trust-origin taint exceeded the active agent contract.
+    TaintViolation,
+    /// One of the ordered corrigibility heads vetoed an action.
+    CorrigibilityViolation,
+    /// The configured sandbox blocked an action.
+    SandboxViolation,
 }
 
 impl std::fmt::Display for ViolationType {
@@ -143,6 +165,9 @@ impl std::fmt::Display for ViolationType {
             Self::ContractViolation => write!(f, "contract_violation"),
             Self::BudgetExhausted => write!(f, "budget_exhausted"),
             Self::ForbiddenTool => write!(f, "forbidden_tool"),
+            Self::TaintViolation => write!(f, "taint_violation"),
+            Self::CorrigibilityViolation => write!(f, "corrigibility_violation"),
+            Self::SandboxViolation => write!(f, "sandbox_violation"),
         }
     }
 }
@@ -155,6 +180,130 @@ pub enum ViolationSeverity {
     Block,
     /// Log a warning but allow execution to proceed.
     Warn,
+}
+
+/// Immutable action facts supplied to the non-tool dispatch gate.
+#[derive(Debug, Clone)]
+pub struct DispatchSafetyContext {
+    /// Human-readable action proposed for provider dispatch.
+    pub action_description: String,
+    /// Trust-origin taint of the action's inputs.
+    pub input_taint: CamelTaintLevel,
+    /// Five-head evaluation facts.
+    pub corrigibility: ActionContext,
+    /// Whether dispatch needs outbound provider access.
+    pub requires_network: bool,
+}
+
+impl DispatchSafetyContext {
+    /// Trusted compatibility context for existing internal callers.
+    #[must_use]
+    pub fn trusted() -> Self {
+        Self {
+            action_description: "trusted internal dispatch".to_string(),
+            input_taint: CamelTaintLevel::Trusted,
+            corrigibility: ActionContext {
+                autonomy_level: Some("auto".to_string()),
+                reversible: Some(true),
+                modifies_audit: Some(false),
+                outputs_verifiable: Some(true),
+                on_task: Some(true),
+            },
+            requires_network: false,
+        }
+    }
+
+    /// Classify a local user/task action without trusting action-authored
+    /// boolean claims about reversibility or oversight.
+    #[must_use]
+    pub fn for_local_action(action_description: impl Into<String>) -> Self {
+        let action_description = action_description.into();
+        let corrigibility = classify_corrigibility_action(&action_description);
+        Self {
+            action_description,
+            input_taint: CamelTaintLevel::Local,
+            corrigibility,
+            requires_network: false,
+        }
+    }
+
+    /// Mark whether the provider path requires outbound network access.
+    #[must_use]
+    pub const fn with_network_requirement(mut self, required: bool) -> Self {
+        self.requires_network = required;
+        self
+    }
+
+    /// Override the input's trust-origin taint.
+    #[must_use]
+    pub const fn with_input_taint(mut self, taint: CamelTaintLevel) -> Self {
+        self.input_taint = taint;
+        self
+    }
+}
+
+fn classify_corrigibility_action(action: &str) -> ActionContext {
+    let action = action.to_ascii_lowercase();
+    let protective = [
+        "prevent ", "block ", "reject ", "detect ", "guard ", "test ", "never ", "do not ",
+    ]
+    .iter()
+    .any(|marker| action.contains(marker));
+    let defies_user = !protective
+        && [
+            "ignore the user",
+            "ignore user",
+            "ignore human",
+            "override the user",
+            "override human",
+        ]
+        .iter()
+        .any(|phrase| action.contains(phrase));
+    let weakens_oversight = !protective
+        && [
+            "disable audit",
+            "delete audit",
+            "erase audit",
+            "tamper with audit",
+            "remove logging",
+            "disable logging",
+            "erase logs",
+            "suppress logs",
+            "bypass verification",
+            "disable cancellation",
+            "escalate own privileges",
+        ]
+        .iter()
+        .any(|phrase| action.contains(phrase));
+    let deceptive = !protective
+        && [
+            "fabricate results",
+            "falsify results",
+            "suppress errors",
+            "hide failures",
+            "claim tests pass without",
+        ]
+        .iter()
+        .any(|phrase| action.contains(phrase));
+    let irreversible = !protective
+        && [
+            "force push",
+            "delete without backup",
+            "irreversible transaction",
+            "transfer funds",
+            "destroy data",
+        ]
+        .iter()
+        .any(|phrase| action.contains(phrase));
+    let off_task = action.contains("unrelated to the assigned task");
+
+    ActionContext {
+        autonomy_level: Some(if defies_user { "observe" } else { "auto" }.to_string()),
+        reversible: Some(!(defies_user || irreversible)),
+        modifies_audit: Some(weakens_oversight),
+        outputs_verifiable: Some(!deceptive),
+        on_task: Some(!off_task),
+    }
 }
 
 // ─── Tool-name constants used to match calls to policies ─��─────────────��──
@@ -230,6 +379,9 @@ pub struct SafetyLayer {
     /// allow all). The wildcard `"*"` is recognised under `AllowExplicit`
     /// to permit every tool.
     pub tool_permission_list: Vec<String>,
+    /// Sandbox enforcement level applied at tool, subprocess, and agent
+    /// dispatch boundaries.
+    pub sandbox_level: SandboxLevel,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -285,6 +437,7 @@ impl SafetyLayer {
             // without the wildcard.
             tool_permission_policy: ToolPermissionPolicy::AllowExplicit,
             tool_permission_list: vec!["*".to_string()],
+            sandbox_level: SandboxLevel::Restrict,
         }
     }
 
@@ -333,6 +486,7 @@ impl SafetyLayer {
             temporal_monitor: None,
             tool_permission_policy: ToolPermissionPolicy::AllowExplicit,
             tool_permission_list: vec!["*".to_string()],
+            sandbox_level: SandboxLevel::None,
         }
     }
 
@@ -342,6 +496,7 @@ impl SafetyLayer {
         let mut layer = Self::with_defaults();
         layer.role_tools = build_role_tools(&config.agent.roles);
         layer.role_overrides = build_role_overrides_map(&config.agent.roles);
+        layer.sandbox_level = config.runner.sandbox_level.into();
         layer
     }
 
@@ -426,6 +581,19 @@ impl SafetyLayer {
         self
     }
 
+    /// Override the sandbox level for this safety layer.
+    #[must_use]
+    pub const fn with_sandbox_level(mut self, level: SandboxLevel) -> Self {
+        self.sandbox_level = level;
+        self
+    }
+
+    /// Return the effective sandbox policy.
+    #[must_use]
+    pub fn sandbox_policy(&self) -> SandboxPolicy {
+        self.sandbox_level.effective_policy()
+    }
+
     /// Run all pre-execution safety checks for `call` + `ctx`.
     ///
     /// Returns `Ok(())` if all policies pass; the first failure
@@ -433,13 +601,16 @@ impl SafetyLayer {
     pub fn check_pre_execution(&self, call: &ToolCall, ctx: &ToolContext) -> Result<(), ToolError> {
         let name = call.name.as_str();
 
-        if let Some(whitelist) = self.role_tools.get(&self.role) {
-            if !whitelist.matches(name) {
-                return Err(ToolError::PermissionDenied(format!(
-                    "tool `{}` is not allowed for role `{}`",
-                    call.name, self.role
-                )));
-            }
+        self.sandbox_policy()
+            .check_call(call, ctx, &self.path_policy)?;
+
+        if let Some(whitelist) = self.role_tools.get(&self.role)
+            && !whitelist.matches(name)
+        {
+            return Err(ToolError::PermissionDenied(format!(
+                "tool `{}` is not allowed for role `{}`",
+                call.name, self.role
+            )));
         }
 
         // 0. Tool permission policy (fail-closed gate).
@@ -476,18 +647,18 @@ impl SafetyLayer {
         }
 
         // 3. Bash / run_tests policy (command argument).
-        if BASH_TOOLS.contains(&name) {
-            if let Some(cmd) = call.arguments.get("command").and_then(|v| v.as_str()) {
-                bash::check_command_with_policy(cmd, &self.bash_policy)?;
-                git::check_git_command_with_policy(cmd, &self.git_policy)?;
-            }
+        if BASH_TOOLS.contains(&name)
+            && let Some(cmd) = call.arguments.get("command").and_then(|v| v.as_str())
+        {
+            bash::check_command_with_policy(cmd, &self.bash_policy)?;
+            git::check_git_command_with_policy(cmd, &self.git_policy)?;
         }
 
         // 4. Network policy (url argument).
-        if NETWORK_TOOLS.contains(&name) {
-            if let Some(url) = call.arguments.get("url").and_then(|v| v.as_str()) {
-                network::check_url_with_policy(url, &self.network_policy)?;
-            }
+        if NETWORK_TOOLS.contains(&name)
+            && let Some(url) = call.arguments.get("url").and_then(|v| v.as_str())
+        {
+            network::check_url_with_policy(url, &self.network_policy)?;
         }
 
         // 5. Path policy (file_path / path argument).
@@ -530,6 +701,37 @@ impl SafetyLayer {
             .map_err(|violation| violation.into_tool_error())?;
 
         Ok(())
+    }
+
+    /// Run pre-execution checks with the authoritative tool definition.
+    ///
+    /// This supplements name-based compatibility checks with the declared
+    /// permission bits of MCP, plugin, and other dynamic tools.
+    pub fn check_pre_execution_with_def(
+        &self,
+        def: &roko_core::tool::ToolDef,
+        call: &ToolCall,
+        ctx: &ToolContext,
+    ) -> Result<(), ToolError> {
+        self.sandbox_policy()
+            .check_tool(def, &call.arguments, ctx, &self.path_policy)?;
+        let corrigibility = evaluate_tool_corrigibility(def, &call.arguments);
+        if let Some((head, reason)) = corrigibility.first_veto() {
+            return Err(ToolError::PermissionDenied(format!(
+                "corrigibility {:?} head vetoed tool `{}`: {reason}",
+                head, call.name
+            )));
+        }
+        if def.permission.write
+            || def.permission.exec
+            || def.permission.git
+            || def.permission.network
+        {
+            self.contract
+                .check_taint_level(ctx.taint_level())
+                .map_err(|violation| violation.into_tool_error())?;
+        }
+        self.check_pre_execution(call, ctx)
     }
 
     /// Evaluate a tool call through the safety layer and return a unified
@@ -635,6 +837,7 @@ impl SafetyLayer {
     /// rendered command line for direct invocations, and shell-wrapper command
     /// strings.
     pub fn check_exec_command(&self, program: &str, args: &[String]) -> Result<(), ToolError> {
+        self.sandbox_policy().check_exec(program)?;
         let command = shell_command_arg(program, args)
             .map(str::to_owned)
             .unwrap_or_else(|| render_exec_command(program, args));
@@ -752,6 +955,28 @@ impl SafetyLayer {
         role: &str,
         exec_dir: &std::path::Path,
     ) -> Result<(), SafetyViolation> {
+        self.pre_dispatch_check_with_context(
+            plan_id,
+            task_id,
+            role,
+            exec_dir,
+            &DispatchSafetyContext::trusted(),
+        )
+    }
+
+    /// Pre-dispatch enforcement for non-tool actions.
+    ///
+    /// Callers provide immutable facts about the proposed action; the active
+    /// contract applies taint and five-head corrigibility checks before any
+    /// provider or subprocess is started.
+    pub fn pre_dispatch_check_with_context(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        role: &str,
+        exec_dir: &std::path::Path,
+        dispatch: &DispatchSafetyContext,
+    ) -> Result<(), SafetyViolation> {
         // 1. Verify the execution directory is within allowed bounds.
         if self.path_policy.prevent_escapes {
             let canonical = exec_dir
@@ -771,6 +996,46 @@ impl SafetyLayer {
                 });
             }
         }
+
+        if self.sandbox_level == SandboxLevel::Quarantine {
+            return Err(SafetyViolation {
+                plan_id: plan_id.to_string(),
+                task_id: task_id.to_string(),
+                violation_type: ViolationType::SandboxViolation,
+                message: "sandbox quarantine blocks provider/subprocess dispatch".to_string(),
+                severity: ViolationSeverity::Block,
+            });
+        }
+        if dispatch.requires_network && !self.sandbox_policy().config.network_access {
+            return Err(SafetyViolation {
+                plan_id: plan_id.to_string(),
+                task_id: task_id.to_string(),
+                violation_type: ViolationType::SandboxViolation,
+                message: format!(
+                    "sandbox {:?} blocks network-backed dispatch",
+                    self.sandbox_level
+                ),
+                severity: ViolationSeverity::Block,
+            });
+        }
+
+        self.contract
+            .check_dispatch_action(
+                &dispatch.action_description,
+                &dispatch.corrigibility,
+                dispatch.input_taint,
+            )
+            .map_err(|violation| SafetyViolation {
+                plan_id: plan_id.to_string(),
+                task_id: task_id.to_string(),
+                violation_type: if violation.rule == "MaxTaintLevel" {
+                    ViolationType::TaintViolation
+                } else {
+                    ViolationType::CorrigibilityViolation
+                },
+                message: violation.to_string(),
+                severity: ViolationSeverity::Block,
+            })?;
 
         // 2. Check contract-level invariants for the role.
         for inv in &self.contract.invariants {
@@ -868,7 +1133,7 @@ impl SafetyLayer {
                             "role `{role}` forbids file writes but {} files were changed",
                             changed_files.len()
                         ),
-                        severity: ViolationSeverity::Warn,
+                        severity: ViolationSeverity::Block,
                     });
                 }
             }
@@ -1238,6 +1503,84 @@ mod tests {
     }
 
     #[test]
+    fn non_tool_corrigibility_blocks_oversight_tampering() {
+        let layer = SafetyLayer::with_defaults();
+        let action = DispatchSafetyContext::for_local_action(
+            "disable audit logging and then continue the task",
+        )
+        .with_network_requirement(true);
+        let violation = layer
+            .pre_dispatch_check_with_context(
+                "plan",
+                "task",
+                "implementer",
+                std::path::Path::new("/tmp"),
+                &action,
+            )
+            .expect_err("Switch head must veto oversight tampering");
+        assert_eq!(
+            violation.violation_type,
+            ViolationType::CorrigibilityViolation
+        );
+        assert!(violation.message.contains("Switch"));
+    }
+
+    #[test]
+    fn isolate_sandbox_blocks_network_backed_agent_dispatch() {
+        let layer = SafetyLayer::with_defaults().with_sandbox_level(SandboxLevel::Isolate);
+        let action = DispatchSafetyContext::for_local_action("summarize the repository")
+            .with_network_requirement(true);
+        let violation = layer
+            .pre_dispatch_check_with_context(
+                "plan",
+                "task",
+                "researcher",
+                std::path::Path::new("/tmp"),
+                &action,
+            )
+            .expect_err("isolate must deny network-backed dispatch");
+        assert_eq!(violation.violation_type, ViolationType::SandboxViolation);
+    }
+
+    #[test]
+    fn configured_sandbox_level_reaches_live_safety_layer() {
+        let mut config = RokoConfig::default();
+        config.runner.sandbox_level = roko_core::config::schema::RunnerSandboxLevel::Quarantine;
+        let layer = SafetyLayer::from_config(&config);
+        assert_eq!(layer.sandbox_level, SandboxLevel::Quarantine);
+
+        let violation = layer
+            .pre_dispatch_check_with_context(
+                "plan",
+                "task",
+                "implementer",
+                std::path::Path::new("/tmp"),
+                &DispatchSafetyContext::for_local_action("inspect the repository"),
+            )
+            .expect_err("configured quarantine must reach the live dispatch gate");
+        assert_eq!(violation.violation_type, ViolationType::SandboxViolation);
+    }
+
+    #[test]
+    fn protective_security_task_is_not_misclassified_as_tampering() {
+        let layer = SafetyLayer::with_defaults();
+        let action = DispatchSafetyContext::for_local_action(
+            "add a test to prevent agents from disabling audit logging",
+        );
+        assert!(
+            layer
+                .pre_dispatch_check_with_context(
+                    "plan",
+                    "task",
+                    "implementer",
+                    std::path::Path::new("/tmp"),
+                    &action,
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn safety_layer_blocks_force_push_to_main() {
         let layer = SafetyLayer::with_defaults();
         let ctx = test_ctx();
@@ -1593,10 +1936,14 @@ mod tests {
             &["src/lib.rs".to_string()],
         );
         assert!(!violations.is_empty());
-        assert!(
-            violations
-                .iter()
-                .any(|v| v.violation_type == ViolationType::ContractViolation)
+        let violation = violations
+            .iter()
+            .find(|v| v.violation_type == ViolationType::ContractViolation)
+            .expect("forbidden writes must be detected");
+        assert_eq!(
+            violation.severity,
+            ViolationSeverity::Block,
+            "opaque CLI writes forbidden by the contract must fail closed"
         );
     }
 }

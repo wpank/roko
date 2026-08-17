@@ -1,5 +1,8 @@
 # 09 — Predictive Foraging: Marginal Value Theorem for Context Search
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Layer 2 Scaffold — Synapse Architecture
 > Status: **Scaffold** — Formula specified, implementation pending
 > Canonical sources: `refactoring-prd/09-innovations.md` §XIX.C, Charnov (1976)

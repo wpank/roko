@@ -1,8 +1,8 @@
 //! Regression coverage for learn-path alignment.
 //!
-//! These tests write fixture data to the exact `.roko/learn/` and
-//! `.roko/neuro/` locations that the `learn` command reads, then assert
-//! the CLI summary output reflects the stored counts and latest entries.
+//! These tests write fixture data to the canonical `.roko/episodes.jsonl`,
+//! `.roko/learn/`, and `.roko/neuro/` locations that the `learn` command
+//! reads, then assert the CLI summary output reflects the stored data.
 
 use std::fs;
 use std::path::Path;
@@ -181,7 +181,7 @@ fn write_learn_fixture(workdir: &Path) {
     episode_b.started_at = episodes_last.clone();
     episode_b.completed_at = episodes_last.clone();
 
-    let episodes_path = learn_dir.join("episodes.jsonl");
+    let episodes_path = workdir.join(".roko").join("episodes.jsonl");
     write_jsonl(
         &episodes_path,
         &[
@@ -214,7 +214,7 @@ fn learn_all_reads_the_expected_fixtures() {
         .join("learn")
         .join("cascade-router.json");
     let efficiency_path = workdir.join(".roko").join("learn").join("efficiency.jsonl");
-    let episodes_path = workdir.join(".roko").join("learn").join("episodes.jsonl");
+    let episodes_path = workdir.join(".roko").join("episodes.jsonl");
     let knowledge_path = workdir.join(".roko").join("neuro").join("knowledge.jsonl");
 
     let router_first = utc("2026-04-10T08:00:00Z");

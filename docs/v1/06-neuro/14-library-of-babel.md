@@ -1,5 +1,8 @@
 # Library of Babel: Cross-Collective Knowledge
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The Library of Babel is the cross-collective knowledge exchange layer — how agents in different collectives (and on the public Korai chain) share, discover, and import knowledge with confidence discounting and publishing policies.
 
 

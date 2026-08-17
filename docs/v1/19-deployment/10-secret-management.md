@@ -1,5 +1,8 @@
 # Secret Management
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Roko handles sensitive credentials through a layered resolution strategy that works across
 > laptop-local, single-server, container, clustered, and edge profiles. The goal is the same
 > everywhere: secrets should be easy to inject, hard to leak, and portable across shapes.

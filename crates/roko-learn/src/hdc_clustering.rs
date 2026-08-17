@@ -31,7 +31,192 @@
 //! assert_eq!(result.clusters.len(), 3);
 //! ```
 
+use std::collections::BTreeSet;
+
+use chrono::{DateTime, Utc};
 use roko_primitives::HdcVector;
+
+/// A knowledge record suitable for HDC consolidation.
+///
+/// This deliberately lives in `roko-learn` rather than depending on
+/// `roko-neuro` (which already depends on this crate). Callers can project
+/// their durable knowledge records into this small, cycle-free DTO.
+#[derive(Debug, Clone)]
+pub struct KnowledgeEntry {
+    /// Stable source identifier.
+    pub id: String,
+    /// Knowledge kind; only entries of the same kind may be consolidated.
+    pub kind: String,
+    /// HDC representation used for clustering.
+    pub vector: HdcVector,
+    /// Retrieval tags.
+    pub tags: Vec<String>,
+    /// Confidence in `[0, 1]`.
+    pub confidence: f64,
+    /// Original creation time.
+    pub created_at: DateTime<Utc>,
+    /// Replacement id once the entry is durably superseded.
+    pub superseded_by: Option<String>,
+}
+
+/// Controls bounded HDC consolidation.
+#[derive(Debug, Clone)]
+pub struct DefragConfig {
+    /// Minimum similarity required for entries to share a cluster.
+    pub similarity_threshold: f64,
+    /// Minimum number of entries required to produce a representative.
+    pub min_cluster_size: usize,
+    /// Maximum entries inspected in one pass, avoiding an unbounded n-squared matrix.
+    pub max_entries: usize,
+}
+
+impl Default for DefragConfig {
+    fn default() -> Self {
+        Self {
+            similarity_threshold: 0.7,
+            min_cluster_size: 2,
+            max_entries: 500,
+        }
+    }
+}
+
+/// A distilled representative and the source records it replaces.
+#[derive(Debug, Clone)]
+pub struct ConsolidatedEntry {
+    /// Deterministic id derived from the sorted source ids.
+    pub id: String,
+    /// Preserved knowledge kind.
+    pub kind: String,
+    /// Majority-vote bundle of all source vectors.
+    pub vector: HdcVector,
+    /// Union of all source tags.
+    pub tags: Vec<String>,
+    /// Maximum source confidence.
+    pub confidence: f64,
+    /// Earliest source creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Provenance links to every source entry.
+    pub source_entry_ids: Vec<String>,
+}
+
+/// Output of a bounded defragmentation pass.
+#[derive(Debug, Clone, Default)]
+pub struct DefragResult {
+    /// New consolidated representatives.
+    pub consolidated: Vec<ConsolidatedEntry>,
+    /// Source-to-representative markers for callers to persist atomically.
+    pub superseded: Vec<(String, String)>,
+    /// Total number of source entries superseded.
+    pub superseded_count: usize,
+}
+
+/// Consolidate similar entries without mutating or deleting the originals.
+///
+/// Each knowledge kind is clustered independently. The returned
+/// `superseded` mappings let the owning store publish the new representatives
+/// before marking old records, preserving the append-first durability contract.
+#[must_use]
+pub fn defragment(entries: &[KnowledgeEntry], config: &DefragConfig) -> DefragResult {
+    let mut result = DefragResult::default();
+    let bounded = &entries[..entries.len().min(config.max_entries)];
+    let kinds = bounded
+        .iter()
+        .filter(|entry| entry.superseded_by.is_none())
+        .map(|entry| entry.kind.clone())
+        .collect::<BTreeSet<_>>();
+
+    for kind in kinds {
+        let candidates = bounded
+            .iter()
+            .filter(|entry| entry.kind == kind && entry.superseded_by.is_none())
+            .collect::<Vec<_>>();
+        if candidates.len() < config.min_cluster_size.max(2) {
+            continue;
+        }
+
+        // Greedily estimate the number of similarity groups, then use the
+        // canonical PAM implementation for the actual assignments.
+        let mut centers: Vec<&HdcVector> = Vec::new();
+        for candidate in &candidates {
+            if centers.iter().all(|center| {
+                candidate.vector.similarity(center) < config.similarity_threshold as f32
+            }) {
+                centers.push(&candidate.vector);
+            }
+        }
+        let vectors = candidates
+            .iter()
+            .map(|entry| entry.vector)
+            .collect::<Vec<_>>();
+        let clustered = k_medoids(
+            &vectors,
+            &KMedoidsConfig {
+                k: centers.len().max(1),
+                max_iterations: 100,
+            },
+        );
+
+        for cluster in clustered.clusters {
+            let members = cluster
+                .members
+                .iter()
+                .filter_map(|index| candidates.get(*index).copied())
+                .filter(|entry| {
+                    entry.vector.similarity(&cluster.medoid) >= config.similarity_threshold as f32
+                })
+                .collect::<Vec<_>>();
+            if members.len() < config.min_cluster_size.max(2) {
+                continue;
+            }
+
+            let mut source_entry_ids = members
+                .iter()
+                .map(|entry| entry.id.clone())
+                .collect::<Vec<_>>();
+            source_entry_ids.sort();
+            let id = format!("consolidated:{}", source_entry_ids.join("+"));
+            let vector_refs = members
+                .iter()
+                .map(|entry| &entry.vector)
+                .collect::<Vec<_>>();
+            let mut tags = members
+                .iter()
+                .flat_map(|entry| entry.tags.iter().cloned())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            tags.sort();
+            let confidence = members
+                .iter()
+                .map(|entry| entry.confidence)
+                .fold(0.0_f64, f64::max)
+                .clamp(0.0, 1.0);
+            let created_at = members
+                .iter()
+                .map(|entry| entry.created_at)
+                .min()
+                .unwrap_or_else(Utc::now);
+
+            result.superseded.extend(
+                source_entry_ids
+                    .iter()
+                    .cloned()
+                    .map(|source| (source, id.clone())),
+            );
+            result.consolidated.push(ConsolidatedEntry {
+                id,
+                kind: kind.clone(),
+                vector: HdcVector::bundle(&vector_refs),
+                tags,
+                confidence,
+                created_at,
+                source_entry_ids,
+            });
+        }
+    }
+    result.superseded_count = result.superseded.len();
+    result
+}
 
 /// Configuration for k-medoids clustering.
 #[derive(Debug, Clone)]
@@ -438,6 +623,40 @@ mod tests {
 
         assert_eq!(result.clusters.len(), 1);
         assert_eq!(result.clusters[0].members, vec![0, 1]);
+    }
+
+    #[test]
+    fn defragment_bundles_similar_entries_and_preserves_provenance() {
+        let base = HdcVector::from_seed(b"defrag-base");
+        let similar = HdcVector::bundle(&[&base, &base, &HdcVector::from_seed(b"defrag-noise")]);
+        let now = Utc::now();
+        let entries = vec![
+            KnowledgeEntry {
+                id: "a".into(),
+                kind: "heuristic".into(),
+                vector: base,
+                tags: vec!["rust".into()],
+                confidence: 0.7,
+                created_at: now,
+                superseded_by: None,
+            },
+            KnowledgeEntry {
+                id: "b".into(),
+                kind: "heuristic".into(),
+                vector: similar,
+                tags: vec!["testing".into()],
+                confidence: 0.9,
+                created_at: now + chrono::Duration::minutes(1),
+                superseded_by: None,
+            },
+        ];
+
+        let result = defragment(&entries, &DefragConfig::default());
+        assert_eq!(result.consolidated.len(), 1);
+        assert_eq!(result.superseded_count, 2);
+        assert_eq!(result.consolidated[0].source_entry_ids, ["a", "b"]);
+        assert_eq!(result.consolidated[0].confidence, 0.9);
+        assert_eq!(result.consolidated[0].tags, ["rust", "testing"]);
     }
 
     #[test]

@@ -140,6 +140,7 @@ impl GcEngine {
 
         self.scan_runs(&mut report).await?;
         self.scan_episodes(&mut report).await?;
+        self.scan_jsonl_archives(&mut report).await?;
         self.scan_cache(&mut report).await?;
 
         report.total_bytes = report.candidates.iter().map(|c| c.size_bytes).sum();
@@ -173,7 +174,20 @@ impl GcEngine {
         let mut failed = 0usize;
 
         for candidate in &report.candidates {
-            let result = if candidate.path.is_dir() {
+            let is_episode_compaction = candidate.path == self.layout.episodes_path()
+                && candidate.reason.starts_with("episodes exceed limit:");
+            let result = if is_episode_compaction {
+                let path = candidate.path.clone();
+                let max_episodes = self.policy.max_episodes;
+                tokio::task::spawn_blocking(move || {
+                    crate::log_rotation::compact_jsonl_to_latest_sync(&path, max_episodes)
+                        .map(|_| ())
+                })
+                .await
+                .map_err(|error| {
+                    std::io::Error::other(format!("episode compaction task failed: {error}"))
+                })?
+            } else if candidate.path.is_dir() {
                 tokio::fs::remove_dir_all(&candidate.path).await
             } else {
                 tokio::fs::remove_file(&candidate.path).await
@@ -244,9 +258,9 @@ impl GcEngine {
     }
 
     /// Scan `memory/episodes.jsonl` — if the file has more lines than
-    /// `max_episodes`, report the excess as a candidate. The "candidate"
-    /// in this case is a synthetic marker; the actual truncation would
-    /// happen in the archiver. Here we report it for awareness.
+    /// `max_episodes`, report the excess as a compaction candidate. During
+    /// collection this candidate is atomically compacted to the newest
+    /// `max_episodes` records; the live file is never deleted wholesale.
     async fn scan_episodes(&self, report: &mut GcReport) -> std::io::Result<()> {
         let path = self.layout.episodes_path();
         if !path.is_file() {
@@ -268,6 +282,36 @@ impl GcEngine {
                 ),
                 size_bytes: excess_bytes,
             });
+        }
+
+        Ok(())
+    }
+
+    /// Discover immutable timestamped JSONL generations and expire those
+    /// older than the configured archive retention window.
+    async fn scan_jsonl_archives(&self, report: &mut GcReport) -> std::io::Result<()> {
+        let max_age = std::time::Duration::from_secs(
+            u64::from(self.policy.max_archive_age_days).saturating_mul(86_400),
+        );
+        let now = std::time::SystemTime::now();
+
+        for live_path in crate::log_rotation::rotatable_jsonl_paths(&self.layout) {
+            for archive in crate::log_rotation::discover_archives(&live_path).await? {
+                let metadata = tokio::fs::metadata(&archive).await?;
+                let modified = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
+                let age = now.duration_since(modified).unwrap_or_default();
+                if age >= max_age {
+                    report.candidates.push(GcCandidate {
+                        path: archive,
+                        reason: format!(
+                            "JSONL archive older than {} days (age: {} days)",
+                            self.policy.max_archive_age_days,
+                            age.as_secs() / 86_400
+                        ),
+                        size_bytes: metadata.len(),
+                    });
+                }
+            }
         }
 
         Ok(())
@@ -459,6 +503,63 @@ mod tests {
         let engine = GcEngine::new(layout, policy);
         let report = engine.scan().await.expect("scan");
         assert!(report.is_empty());
+    }
+
+    #[tokio::test]
+    async fn gc_collect_compacts_excess_episodes_instead_of_deleting_log() {
+        let (_tmp, layout) = setup().await;
+        let path = layout.episodes_path();
+        let mut content = String::new();
+        for i in 0..10 {
+            content.push_str(&format!("{{\"id\":{i}}}\n"));
+        }
+        tokio::fs::write(&path, content).await.unwrap();
+
+        let engine = GcEngine::new(
+            layout,
+            FsRetentionPolicy {
+                max_episodes: 5,
+                ..Default::default()
+            },
+        );
+        let report = engine.collect().await.unwrap();
+
+        assert_eq!(report.removed_count, 1);
+        assert!(path.is_file(), "GC must preserve the live episode log");
+        let retained = tokio::fs::read_to_string(path).await.unwrap();
+        assert_eq!(retained.lines().count(), 5);
+        assert!(retained.contains("{\"id\":9}"));
+        assert!(!retained.contains("{\"id\":0}"));
+    }
+
+    #[tokio::test]
+    async fn gc_discovers_and_removes_expired_jsonl_archives() {
+        let (_tmp, layout) = setup().await;
+        let live = layout.events_jsonl_path();
+        let archive = layout.root().join("events.20260101T000000Z.jsonl");
+        tokio::fs::write(&live, "live\n").await.unwrap();
+        tokio::fs::write(&archive, "archived\n").await.unwrap();
+
+        let old = filetime::FileTime::from_unix_time(1, 0);
+        filetime::set_file_mtime(&archive, old).unwrap();
+        let engine = GcEngine::new(
+            layout,
+            FsRetentionPolicy {
+                max_archive_age_days: 1,
+                ..Default::default()
+            },
+        );
+
+        let scan = engine.scan().await.unwrap();
+        assert!(
+            scan.candidates
+                .iter()
+                .any(|candidate| candidate.path == archive)
+        );
+        let collected = engine.collect().await.unwrap();
+        assert!(collected.removed_count >= 1);
+        assert!(!archive.exists());
+        assert!(live.exists());
     }
 
     // ── Run scanning ─────────────────────────────────────────────────────

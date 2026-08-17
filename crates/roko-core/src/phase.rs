@@ -262,7 +262,7 @@ pub const fn valid_transitions(from: PhaseKind) -> &'static [PhaseKind] {
 ///
 /// Returns `true` when `to` appears in `valid_transitions(from.kind())`.
 /// This is a convenience wrapper for use by progress-enforcement code
-/// outside `roko-core` (e.g. `roko-orchestrator::progress`).
+/// outside `roko-core` (for example, CLI runner progress reporting).
 #[must_use]
 pub fn is_monotonic_progression(from: &PlanPhase, to: &PlanPhase) -> bool {
     valid_transitions(from.kind()).contains(&to.kind())

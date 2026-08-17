@@ -1,5 +1,8 @@
 # Yerkes-Dodson Pressure Dynamics
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Moderate pressure maximizes cooperation. Extreme pressure collapses
 > cooperative behavior within 5-12 turns. The Conductor's thresholds
 > are not timeouts — they are positions on a cooperation curve.

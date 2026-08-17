@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use indexmap::IndexMap;
 use petgraph::graph::DiGraph;
-use roko_core::TypeSchema;
+use roko_core::{LensRegistry, TypeSchema};
 use serde::{Deserialize, Serialize};
 
 use crate::hot::HotPolicy;
@@ -190,6 +190,9 @@ pub struct Graph {
     pub metadata: GraphMetadata,
     /// Execution policy controlling mode, failure handling, and concurrency.
     pub policy: GraphPolicy,
+    /// Validated telemetry Lens routing and composition declared by
+    /// top-level `[[lenses]]` entries in the graph definition.
+    pub lenses: LensRegistry,
     /// The underlying petgraph directed graph.
     pub inner: DiGraph<Node, Edge>,
     /// Mapping from `NodeId` (string) to petgraph node index.
@@ -203,6 +206,7 @@ impl Graph {
         Self {
             metadata,
             policy: GraphPolicy::default(),
+            lenses: LensRegistry::new(),
             inner: DiGraph::new(),
             node_map: IndexMap::new(),
         }
@@ -212,6 +216,13 @@ impl Graph {
     #[must_use]
     pub fn with_policy(mut self, policy: GraphPolicy) -> Self {
         self.policy = policy;
+        self
+    }
+
+    /// Builder method to attach a validated telemetry Lens registry.
+    #[must_use]
+    pub fn with_lenses(mut self, lenses: LensRegistry) -> Self {
+        self.lenses = lenses;
         self
     }
 
@@ -622,6 +633,7 @@ mod tests {
         assert_eq!(graph.policy.max_concurrent_nodes, 4);
         assert!(graph.policy.timeout_ms.is_none());
         assert!(graph.policy.hot.is_none());
+        assert!(graph.lenses.registrations().is_empty());
     }
 
     #[test]

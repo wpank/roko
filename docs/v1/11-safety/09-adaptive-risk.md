@@ -1,5 +1,8 @@
 # Adaptive Risk Management: Five-Layer Runtime Risk Control
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L3 Harness (runtime risk assessment), Cross-cut (Daimon motivation)
 >
 > **Crate**: Target: `roko-agent` (risk engine), `roko-daimon` (behavioral state modulation)

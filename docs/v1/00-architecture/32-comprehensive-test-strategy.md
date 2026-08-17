@@ -1,5 +1,8 @@
 # Comprehensive test strategy
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Cross-cutting — All Layers
 > Status: **Specification** — informs all crate-level testing, benchmarking, and safety verification
 > Canonical source: workspace root `Cargo.toml`, all `crates/*/tests/`, `crates/*/benches/`

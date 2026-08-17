@@ -73,6 +73,12 @@ pub mod episode;
 pub mod event_sources;
 pub mod explain;
 pub(crate) mod gate_runner;
+pub mod github_ops;
+pub mod github_ops_impl;
+pub mod graph_checkpoint;
+#[path = "commands/graph.rs"]
+pub(crate) mod graph_command;
+pub mod graph_task_dispatch;
 mod heartbeat;
 pub mod hints;
 pub mod index;

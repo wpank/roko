@@ -1,5 +1,8 @@
 # Four-Tier Distillation Pipeline
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Episodes are distilled into Insights, Insights are promoted into Heuristics, and validated Heuristics are compiled into human-readable PLAYBOOK.md files. Durable knowledge keeps its receipts today; explicit falsifier records, worldview history, and demurrage-governed freshness are target-state extensions described in this doc.
 >
 > **Implementation status**

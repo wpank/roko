@@ -1,5 +1,8 @@
 # Reputation System: 7-Domain EMA Framework
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Per-domain reputation with EMA smoothing, adaptive alpha, 30-day half-life decay, 4 discipline states (good standing → probation → suspension → banned), 7 base domains, and configurable slash rates by violation type. Reputation is the primary trust signal in the Nunchi marketplace.
 
 

@@ -10,7 +10,7 @@ The `roko` binary is a single Rust executable that serves as the canonical entry
 
 This matters architecturally because it means the CLI, TUI, HTTP API, and web dashboard all fire the same Graphs. The CLI is one rendering of a universal verb set. See [03-GRAPH.md](../../unified/03-GRAPH.md) for the Graph primitive and [04-EXECUTION.md](../../unified/04-EXECUTION.md) for how Graphs run.
 
-The binary is built with `clap` for argument parsing and links against every layer of the crate stack: `roko-core` (kernel), `roko-agent` (LLM dispatch), `roko-compose` (prompt assembly), `roko-gate` (verification), `roko-orchestrator` (plan DAG), `roko-learn` (feedback loops), `roko-neuro` (knowledge), `roko-daimon` (affect), and `roko-serve` (HTTP).
+The binary is built with `clap` for argument parsing and links against every layer of the crate stack: `roko-core` (kernel), `roko-agent` (LLM dispatch), `roko-compose` (prompt assembly), `roko-gate` (verification), its own `orchestrator`/`runner` modules (plan DAG and execution), `roko-learn` (feedback loops), `roko-neuro` (knowledge), `roko-daimon` (affect), and `roko-serve` (HTTP).
 
 **Source**: `crates/roko-cli/src/main.rs` (entry point), `crates/roko-cli/src/lib.rs` (library surface).
 

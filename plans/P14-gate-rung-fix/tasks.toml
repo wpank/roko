@@ -2,7 +2,7 @@
 plan = "P14-gate-rung-fix"
 total = 3
 done = 3
-status = "ready"
+status = "done"
 max_parallel = 1
 
 # ─────────────────────────────────────────────────────────────────────

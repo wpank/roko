@@ -1,5 +1,8 @@
 # Configuration and Operator Model
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L1 Framework (roles, tools, model routing, capabilities)
 >
 > **Prerequisites**: `docs/17-lifecycle/01-agent-creation.md` (agent manifest), `docs/17-lifecycle/02-provisioning.md` (provisioning pipeline)

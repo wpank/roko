@@ -1,5 +1,8 @@
 # 03 — Composition: Scaffold Layer (L2) — Prompt Assembly & Context Engineering
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Topic:** 03-composition
 > **Layer:** 2 — Scaffold
 > **Crate:** `roko-compose`

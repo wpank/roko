@@ -166,27 +166,27 @@ impl RolePromptTemplate for ScribeTemplate {
         }
 
         // 6. critic_feedback — Dynamic / High (only for Revision variant)
-        if input.variant == ScribeVariant::Revision {
-            if let Some(ref feedback) = input.critic_feedback {
-                sections.push(
-                    PromptSection::new("critic_feedback", feedback.as_str())
-                        .with_priority(SectionPriority::High)
-                        .with_cache_layer(CacheLayer::Volatile)
-                        .with_placement(Placement::End),
-                );
-            }
+        if input.variant == ScribeVariant::Revision
+            && let Some(ref feedback) = input.critic_feedback
+        {
+            sections.push(
+                PromptSection::new("critic_feedback", feedback.as_str())
+                    .with_priority(SectionPriority::High)
+                    .with_cache_layer(CacheLayer::Volatile)
+                    .with_placement(Placement::End),
+            );
         }
 
         // 7. prior_docs — Task / High (only for Critic variant — the docs to review)
-        if input.variant == ScribeVariant::Critic {
-            if let Some(ref docs) = input.prior_docs {
-                sections.push(
-                    PromptSection::new("prior_docs", docs.as_str())
-                        .with_priority(SectionPriority::High)
-                        .with_cache_layer(CacheLayer::Plan)
-                        .with_placement(Placement::End),
-                );
-            }
+        if input.variant == ScribeVariant::Critic
+            && let Some(ref docs) = input.prior_docs
+        {
+            sections.push(
+                PromptSection::new("prior_docs", docs.as_str())
+                    .with_priority(SectionPriority::High)
+                    .with_cache_layer(CacheLayer::Plan)
+                    .with_placement(Placement::End),
+            );
         }
 
         sections

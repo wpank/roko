@@ -1,5 +1,8 @@
 # User UX: Running Agents
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** This chapter carries over the target UX direction from `tmp/refinements/23-user-ux-running-agents.md` and the kept familiar-first CLI parity framing from `tmp/refinements/28-cli-parity-familiar-workflows.md`. Near-term work is narrower than the full four-surface redesign: improve `roko chat`, make `roko init` interactive, and make bare `roko` feel familiar to Claude Code, Aider, Cursor, and Codex-style workflows.
 
 **Topic**: [12-interfaces](./INDEX.md)  

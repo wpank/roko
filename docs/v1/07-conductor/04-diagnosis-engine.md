@@ -1,5 +1,8 @@
 # Diagnosis Engine
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Thirty-four patterns across twenty error categories.
 > Given raw error text, return a typed diagnosis with category,
 > confidence, and suggested intervention.

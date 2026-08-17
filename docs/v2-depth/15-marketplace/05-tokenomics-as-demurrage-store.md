@@ -1,6 +1,8 @@
 # Tokenomics as Demurrage Store
 
 > Depth for [21-MARKETPLACE.md](../../unified/21-MARKETPLACE.md). Covers KORAI tokenomics -- 1% annual demurrage, minting/burning mechanics, curation bonds, bonding curves, Shapley attribution, fee-burn economics, and equilibrium analysis -- all expressed as Store operations with built-in demurrage.
+>
+> **Implementation status (2026-08-17):** Spec/design document. The demurrage mechanics described here are analogous to the Signal demurrage used in the neuro store (wired). KORAI token contracts, on-chain minting/burning, curation bonds, bonding curves, and cadCAD equilibrium simulation are product work — none are wired at runtime. See `.roko/GAPS.md`.
 
 ---
 

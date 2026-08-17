@@ -2,6 +2,32 @@
 
 > Full observability through the Observe protocol. Lenses focus attention without modifying the subject. StateHub projects Lens output into typed projections consumed by every surface.
 
+> **Implementation status:** RUNTIME INGRESS COMPLETE (E33 manifest 9/9; 11/11 built-in executors live) — the production
+> periodic observer persists rotation-bounded metric snapshots. A separate portable
+> async `TelemetryObserve` contract implements all 39 events enumerated below (the
+> prose count of 38 is an arithmetic error), all typed Lens payloads and seven projection
+> schemas, scope/stack/chain registry behavior, C-factor calculations, and the three-stage
+> breaker. StateHub now stores versioned current projection values and bounded history,
+> while serve exposes the seven-ID catalog, generic REST/SSE projection dispatch,
+> current-value/history reads, and live Lens controls. Graph TOML loading, scoped lifecycle delivery,
+> stacked/chained Lens execution, per-Lens breaker accounting, typed aggregation,
+> versioned StateHub invalidations, CLI projection output, and HTTP reads are live end to
+> end for the complete bounded, fail-closed built-in catalog, including derived chains.
+> Graph delivery now uses a bounded ordered queue with drop-oldest accounting; breaker
+> transitions publish diagnoses, live runtimes expose reset/enable/disable controls, and
+> StateHub retains restart-durable bounded history with version/time filters, checked
+> resolution coalescing, and configurable time retention (7 days by default). Central
+> StateHub fanout feeds registered queued Lens runtimes. All 39 event variants now have
+> production ingress: `AgentBudgetUpdate` comes from the runner's exact post-ledger path,
+> while the final six Agent lifecycle variants enter through the typed
+> `POST /api/agents/{id}/observation` boundary. Agent samples are durably committed before
+> best-effort Lens fanout, with monotonic sequence validation and restart-safe exact-retry
+> deduplication. This closes E33 at the runtime boundary. E23 now provides native
+> AdaptiveClock, five-phase vitality, type-state, SlotManager, and revisioned mode-owner
+> foundations, but they do not yet drive this ingress and their lifecycle/phase vocabulary
+> differs from the accepted observation contract. Until E23-T09 reconciles and wires them,
+> registered external Agent runtimes submit the canonical lifecycle sample.
+
 **Depends on**: [01-SIGNAL](01-SIGNAL.md) (Signal/Pulse duality), [02-CELL](02-CELL.md) (Observe protocol, predict-publish-correct, Lens definition), [05-AGENT](05-AGENT.md) (CorticalState, vitality)
 
 ---
@@ -29,7 +55,8 @@ Four principles govern the design:
 The Observe protocol is the seventh of nine Cell protocols ([doc-02](02-CELL.md)). It is the only protocol that is strictly read-only -- calling `observe()` never modifies the event source.
 
 ```rust
-pub trait Observe: Cell {
+#[async_trait]
+pub trait TelemetryObserve: Send + Sync {
     /// Observe a single event. Emit zero or more observation Signals.
     /// The event is immutable -- Lenses cannot modify what they observe.
     async fn observe(&self, event: &ObservableEvent) -> Result<Vec<Signal>>;
@@ -42,6 +69,10 @@ pub trait Observe: Cell {
     fn scope(&self) -> LensScope;
 }
 ```
+
+`TelemetryObserve` is deliberately distinct from the existing synchronous
+`Observe: Cell` trait, which returns stored observations and remains part of the
+original core protocol surface.
 
 ### LensScope
 
@@ -140,6 +171,23 @@ pub enum ObservableEventKind {
 ```
 
 A Lens declaring `observes() = &[ObservableEventKind::CellLifecycle]` receives only Cell lifecycle events. A Lens declaring `All` receives everything within its scope.
+
+### 3.1 Agent lifecycle observation ingress
+
+A registered Agent runtime commits its post-mutation or post-cycle sample through
+`POST /api/agents/{id}/observation`. The payload carries a per-Agent monotonic `sequence`,
+the current regime, vitality, mode, vitality phase, lifecycle state, optional completed-tick
+prediction error, and zero or more slot mutations. The server validates canonical enum and
+numeric ranges, legal lifecycle transitions, monotonic vitality/phase movement, and the
+distinction between a real completed tick and a transition-only update.
+
+On acceptance, the durable baseline is written before the corresponding Agent-scoped Lens
+events are delivered in deterministic order: regime, mode, phase, lifecycle state, sorted
+slot updates, then tick. Replaying the exact committed sequence is a no-op; stale or
+conflicting sequences are rejected without emission. Lens fanout is deliberately
+best-effort after the commit, so observability cannot roll back real Agent state. This
+boundary remains an ingress contract for external runtimes; E23 still owns native Agent
+machinery that will call it internally when those runtime components exist.
 
 ---
 
@@ -382,6 +430,22 @@ Tracks usage analytics for marketplace and developer metrics.
 | **Emits** | `Signal { kind: Observation }` |
 
 Analytics are aggregated -- individual runs are never exposed to publishers. Spaces can opt out via `telemetry.marketplace = false`.
+
+The portable lifecycle protocol deliberately does not attach provider token
+counts to Cell events. UsageLens therefore reports only directly evidenced
+runtime activity; unknown token counts are not converted to zero.
+
+```rust
+pub struct UsagePayload {
+    pub target: String,
+    pub interval: Duration,
+    pub cell_runs: u64,
+    pub graph_runs: u64,
+    pub trigger_fires: u64,
+    pub total_cost_usd: f64,
+    pub total_duration: Duration,
+}
+```
 
 ### 4.11 CollectiveIntelligenceLens (c-factor)
 
@@ -850,8 +914,11 @@ StateHub updates projections on every Lens observation Signal. Each update:
 
 1. Applies the observation to the relevant projection(s).
 2. Increments the projection `version`.
-3. Publishes a Pulse on `statehub:{projection_id}:updated` with the new version number.
-4. Subscribed surfaces receive the Pulse and fetch the updated projection.
+3. Publishes a sequenced `projection_updated` StateHub event carrying the projection ID,
+   source Lens, and new version number (the runtime equivalent of
+   `statehub:{projection_id}:updated`).
+4. REST reads already see the committed value; subscribed SSE/WS consumers receive the
+   invalidation and fetch the updated projection.
 
 Surfaces can subscribe at different resolutions:
 

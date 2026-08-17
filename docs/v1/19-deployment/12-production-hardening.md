@@ -1,5 +1,8 @@
 # Production Hardening
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > When Roko runs in laptop-local, single-server, container, clustered, or edge profiles, the
 > runtime still has to behave like production software: bounded latency, safe retries, clean
 > shutdown, upgradeability, observability, and tenant isolation. See also

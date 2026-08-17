@@ -1,5 +1,8 @@
 # Skill Library (Voyager-Style)
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Crate:** `roko-learn` · **Module:** `skill_library.rs`
 > **Persistence:** `.roko/learn/skills.json`
 > **Wiring:** `LearningRuntime::record_completed_run()` → `SkillLibrary::record_use()`

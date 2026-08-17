@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use roko_core::ContentHash;
 use roko_core::tool::{ToolContext, ToolDef, ToolError};
 
 use crate::safety::hooks::{HookDecision, SafetyAuditRecord, SafetyHook};
@@ -69,9 +70,13 @@ impl SafetyHookChain {
     {
         let mut audit_trail = Vec::with_capacity(self.hooks.len());
         let timestamp = chrono::Utc::now().timestamp();
-        let params_hash = compute_params_hash(&params);
 
         for entry in &self.hooks {
+            // Hash the exact parameters this hook observed. A preceding hook
+            // may have replaced them, and refusal audits must bind to the
+            // rejected proposal without recording its potentially sensitive
+            // plaintext.
+            let params_hash = compute_params_hash(&params);
             let decision = match entry.hook.on_tool_call(tool, &params, ctx).await {
                 Ok(decision) => decision,
                 Err(err) => {
@@ -141,13 +146,10 @@ impl std::fmt::Debug for SafetyHookChain {
     }
 }
 
-/// Compute a SHA-256 digest of serialized parameters for audit records.
+/// Compute a content digest of serialized parameters for audit records.
 fn compute_params_hash(params: &serde_json::Value) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
     let serialized = params.to_string();
-    serialized.hash(&mut hasher);
-    format!("hash:{:016x}", hasher.finish())
+    format!("hash:{}", ContentHash::of(serialized.as_bytes()).to_hex())
 }
 
 #[cfg(test)]

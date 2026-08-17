@@ -1,5 +1,8 @@
 # Coding Oracles — TA Equivalents for Software Engineering
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Every financial TA primitive has a structural equivalent in software engineering. Build time trends are price trends. Test failure probability is risk assessment. Dependency vulnerability scoring is portfolio risk. The mathematics is identical; the vocabulary changes.
 
 

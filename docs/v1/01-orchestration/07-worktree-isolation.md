@@ -1,5 +1,8 @@
 # Worktree Isolation
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Module**: `roko-orchestrator/src/worktree.rs`
 > **Key type**: `WorktreeManager`
 > **Tests**: 20+ tests covering creation, removal, health checks, idle

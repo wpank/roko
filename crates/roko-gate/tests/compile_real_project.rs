@@ -154,6 +154,26 @@ struct PersistingGate<G: Verify> {
     substrate: std::sync::Arc<dyn Store>,
 }
 
+impl<G: Verify> roko_core::Cell for PersistingGate<G> {
+    fn cell_id(&self) -> &str {
+        "persisting-gate"
+    }
+
+    fn cell_name(&self) -> &str {
+        "PersistingGate"
+    }
+
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
+    }
+
+    fn capabilities(&self) -> roko_core::Capabilities {
+        let mut capabilities = self.inner.capabilities();
+        capabilities.store_write = true;
+        capabilities
+    }
+}
+
 #[async_trait]
 impl<G: Verify> Verify for PersistingGate<G> {
     async fn verify(&self, signal: &Signal, ctx: &Context) -> roko_core::Verdict {

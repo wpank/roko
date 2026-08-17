@@ -1,5 +1,8 @@
 # Agent Creation
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L0 Runtime (process lifecycle) + L1 Framework (backend selection, role assignment)
 >
 > **Prerequisites**: `docs/00-architecture/INDEX.md` (5-layer taxonomy), `docs/17-lifecycle/00-vision-and-mortality-replaced.md` (lifecycle model overview)

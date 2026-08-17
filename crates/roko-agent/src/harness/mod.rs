@@ -31,6 +31,7 @@ pub mod child_process_runner;
 pub mod claude_parser;
 pub mod error;
 pub mod events;
+pub(crate) mod probe_runner;
 
 // PR-2: shared ACP stdio client
 pub mod acp_client;

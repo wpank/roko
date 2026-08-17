@@ -33,7 +33,7 @@ Roko runs a local HTTP control plane — `roko serve` — that exposes everythin
 
 **Base URL:** `http://127.0.0.1:6677` (default)
 
-**All API routes live under `/api/`.** Exceptions: `/health` (liveness probe), `/webhook/*` (inbound webhooks), and `/runs/{id}` (shareable run pages) are outside `/api/` and always public.
+**All API routes live under `/api/`.** Exceptions: `/health` (liveness probe), `/webhooks/*` (inbound webhooks), and `/runs/{id}` (shareable run pages) are outside `/api/` and always public.
 
 ---
 
@@ -49,7 +49,7 @@ Roko runs a local HTTP control plane — `roko serve` — that exposes everythin
 8. [One-Shot Runs](#one-shot-runs)
 9. [Dashboard Runs](#dashboard-runs)
 10. [PRDs](#prds)
-11. [Agents — Control Plane](#agents-control-plane)
+11. [Agents — Control Plane](#agents--control-plane)
 12. [Agent Fleet Aggregation](#agent-fleet-aggregation)
 13. [Gates](#gates)
 14. [Episodes and Signals](#episodes-and-signals)
@@ -62,16 +62,18 @@ Roko runs a local HTTP control plane — `roko serve` — that exposes everythin
 21. [Jobs](#jobs)
 22. [Deployments](#deployments)
 23. [Inference Gateway](#inference-gateway)
-24. [Providers and Models](#providers-and-models)
-25. [Config](#config)
-26. [Subscriptions and Workflows](#subscriptions-and-workflows)
-27. [Heartbeats](#heartbeats)
-28. [Secrets](#secrets)
-29. [Chain](#chain)
-30. [Webhooks](#webhooks)
-31. [Terminal](#terminal)
-32. [OpenAPI](#openapi)
-33. [Per-Agent Sidecar API](#per-agent-sidecar-api)
+24. [Extensions](#extensions)
+25. [Providers and Models](#providers-and-models)
+26. [Config](#config)
+27. [Connector, Arena, and Meta-Agent Lifecycles](#connector-arena-and-meta-agent-lifecycles)
+28. [Subscriptions and Workflows](#subscriptions-and-workflows)
+29. [Heartbeats](#heartbeats)
+30. [Secrets](#secrets)
+31. [Chain](#chain)
+32. [Webhooks](#webhooks)
+33. [Terminal](#terminal)
+34. [OpenAPI](#openapi)
+35. [Per-Agent Sidecar API](#per-agent-sidecar-api)
 
 ---
 
@@ -151,7 +153,7 @@ expires_at = "2027-01-01T00:00:00Z"  # optional
 
 Authentication is **opt-in**. When `serve.auth.enabled = false` (the default), all routes are open. Enable it when you expose the server beyond localhost.
 
-When enabled, all `/api/*` routes require a credential. The `/health` (top-level), `/webhook/*`, and `/runs/{id}` routes are always public.
+When enabled, all `/api/*` routes require a credential. The `/health` (top-level), `/webhooks/*`, and `/runs/{id}` routes are always public.
 
 <details>
 <summary>Credential sources and scope enforcement</summary>
@@ -411,7 +413,7 @@ The WebSocket and event bus carry a superset of dashboard events. Additional typ
 | `heartbeat_received` | `sender_id`, `active_tasks`, `active_agents` |
 | `heartbeat` | `agent_id`, `block_number?` |
 | `somatic_marker_fired` | `plan_id`, `task_id`, `valence`, `intensity`, `source_episodes`, `strategy_param` |
-| `webhook_received` | `signal` (full Engram) |
+| `webhook_received` | `signal` (full Signal) |
 | `vision_loop_iteration` | `run_id`, `iteration`, `score`, `notes` |
 | `vision_loop_completed` | `run_id`, `iterations`, `best_score`, `stop_reason` |
 | `config_reloaded` | `applied_sections` (str[]), `restart_required` (str[]) |
@@ -443,10 +445,13 @@ These routes tell you whether the server is alive, what's currently running, and
 | GET | `/api/dashboard` | Dashboard scaffold from the runtime |
 | GET | `/api/operations/{id}` | Look up a background operation by ID |
 | GET | `/api/relay/health` | Relay connection diagnostics |
+| GET | `/api/subscriptions/relay/status` | Durable relay subscription binding, cursors, journal, and reconciliation diagnostics |
 | GET | `/api/parity` | TUI / HTTP API / CLI feature coverage matrix |
 | GET | `/api/retention` | Retention policies and violations for `.roko/` data |
 | GET | `/api/statehub/snapshot` | Current StateHub projection snapshot |
 | GET | `/api/statehub/events` | Bounded replay from the ring buffer |
+| GET | `/api/statehub/{projection_id}` | Current materialized typed Lens projection |
+| GET | `/api/statehub/{projection_id}/history` | Projection history placeholder (currently empty) |
 | GET | `/api/truth_map` | Entity-to-canonical-source registry |
 
 <details>
@@ -590,6 +595,7 @@ Plans are the primary unit of work in Roko. A plan is a collection of tasks, eac
 | POST | `/api/plans/{id}/pause` | Pause execution |
 | POST | `/api/plans/{id}/resume` | Resume execution |
 | GET | `/api/plans/{id}/gates` | Get gate results grouped by task |
+| GET | `/api/plans/{id}/costs` | Retry-inclusive task spend/ceilings, remaining-cost projection, plan-budget status, and provider health |
 | GET | `/api/plans/{id}/reviews` | List human reviews |
 | POST | `/api/plans/{id}/tasks/{task_id}/review` | Submit a human review |
 | GET | `/api/plans/{id}/tasks/{task_id}/diff` | Get code diff from a task agent |
@@ -891,6 +897,7 @@ These routes manage the lifecycle of agent processes: creating them, starting an
 | POST | `/api/agents/{id}/message` | Send a prompt to an agent inline |
 | POST | `/api/agents/{id}/start` | Start or restart a stopped agent |
 | POST | `/api/agents/{id}/restart` | Restart an agent |
+| POST | `/api/agents/{id}/observation` | Commit a canonical post-mutation or completed-tick lifecycle sample |
 | GET | `/api/agents/{id}/token` | Get token status |
 | POST | `/api/agents/{id}/token` | Issue or rotate an agent bearer token |
 
@@ -955,6 +962,39 @@ Sends a prompt to an agent's sidecar and returns the response inline. 30-second 
 ```
 
 Response: agent response object (mirrors sidecar `/message` response).
+
+#### `POST /api/agents/{id}/observation`
+
+Commits a complete Agent lifecycle sample and then emits any changed regime, mode,
+vitality phase, type-state, slot, and completed-tick events to Agent-scoped Lenses. The
+Agent must already be registered. Modern Agent bearer tokens need `bus_publish` and are
+bound to the `{id}` in the path; legacy Agent credentials are identity-bound as well.
+
+```json
+{
+  "sequence": 42,
+  "regime": "normal",
+  "vitality": 0.64,
+  "mode": "persistent",
+  "phase": "stable",
+  "lifecycle_state": "active",
+  "completed_tick": { "prediction_error": 0.18 },
+  "slot_updates": [
+    { "slot": "planner", "state": "active" },
+    { "slot": "reviewer", "state": "blocked", "reason": "awaiting evidence" }
+  ]
+}
+```
+
+`sequence` is monotonic per Agent and survives server restarts. The server validates
+numeric ranges and legal lifecycle progress, persists the new baseline before best-effort
+Lens delivery, and emits transitions in deterministic order. An exact retry returns
+`200 OK` with `duplicate: true` and emits nothing. Invalid samples return `400`, unknown
+Agents `404`, stale or conflicting sequences `409`, and durable-write failures `500`.
+
+```json
+{ "sequence": 42, "emitted_events": 3, "duplicate": false }
+```
 
 #### `GET /api/agents/{id}/episodes`
 
@@ -1118,7 +1158,7 @@ Aggregates gate verdicts from canonical projections (`RuntimeProjectionSet`).
 
 Handler module: `routes/status/episodes.rs`
 
-Episodes are the fundamental record of agent work. Each time an agent completes a task and the gate pipeline runs, an episode is recorded to `.roko/episodes.jsonl` with the agent's output, the gate results, cost, tokens, and a HDC fingerprint. Signals (`Engram` objects) are the raw event log from which episodes are derived.
+Episodes are the fundamental record of agent work. Each time an agent completes a task and the gate pipeline runs, an episode is recorded to `.roko/episodes.jsonl` with the agent's output, the gate results, cost, tokens, and a HDC fingerprint. Signals are the raw event log from which episodes are derived. Signal is the preferred name (the Rust struct is `Engram`; `type Signal = Engram` is the alias).
 
 | Method | Path | Description |
 |---|---|---|
@@ -1138,7 +1178,7 @@ Returns JSON array of episode objects from `.roko/episodes.jsonl`.
 
 **Query parameters:** `limit: usize` — max results (default: 500, max: 500)
 
-Returns JSON array of Engram signal objects from `.roko/engrams.jsonl`.
+Returns JSON array of Signal objects from `.roko/signals.jsonl`. (Signal is the preferred name; the Rust struct is `Engram`, with `type Signal = Engram` as the alias.)
 
 </details>
 
@@ -1981,6 +2021,13 @@ Response: `201 Created` with deployment object. Publishes `DeploymentCreated` ev
 
 </details>
 
+Worker callbacks use the opaque `ROKO_DEPLOYMENT_ID` injected before backend creation,
+which can differ from the provider-assigned deployment ID. They must send the injected
+`ROKO_WORKER_CALLBACK_TOKEN` in `X-Roko-Worker-Token`. Missing or invalid credentials
+return `401`; successful authentication reports `X-Auth-Method: worker_token`. The
+control plane persists only a SHA-256 verifier, so authentication survives restart
+without writing the bearer token to deployment state.
+
 ---
 
 ## Inference Gateway
@@ -1994,6 +2041,7 @@ The inference gateway is a centralized dispatch layer for all LLM requests. Inst
 | POST | `/api/inference/complete` | Submit a completion request |
 | GET | `/api/gateway/stats` | Gateway request statistics |
 | GET | `/api/gateway/models` | Models available through gateway with routing weights |
+| GET | `/api/rate-limits` | Rolling RPM/TPM utilization and circuit state for configured providers |
 | POST | `/api/inference/batch/submit` | Submit a batch of requests |
 | GET | `/api/inference/batch/{id}` | Get batch status and results |
 
@@ -2031,6 +2079,28 @@ If `auto_route: true` and no `model` is specified, the CascadeRouter selects the
 ```
 
 </details>
+
+`GET /api/rate-limits` returns the configured provider IDs with `rpm_used`,
+`rpm_limit`, `tpm_used`, `tpm_limit`, and a nested persisted `health` snapshot
+including circuit state and outcome counters. Usage is counted at the shared
+`ModelCallService` provider-call boundary, so concurrent HTTP workflow calls observe
+one process-wide limiter.
+
+---
+
+## Extensions
+
+Handler module: `routes/extensions.rs`
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/extensions` | List loaded extensions with layer, tier, version, optionality, and live circuit-breaker health |
+| GET | `/api/extensions/{name}` | Inspect one loaded extension; returns `404` when it is not loaded |
+
+The CLI runtime and serve-launched plan runner share one extension chain per workspace.
+Consequently `health.disabled` and `health.consecutive_failures` reflect the chain used
+by live hooks instead of a configuration-only approximation. Lightweight embedded
+runtimes that do not expose a live chain return an empty collection.
 
 ---
 
@@ -2121,6 +2191,74 @@ Hot-applies compatible sections (logging, providers, subscriptions). Sections re
 
 ---
 
+## Connector, Arena, and Meta-Agent Lifecycles
+
+### Supervised HTTP JSON connectors (R01)
+
+Handler module: `routes/connectors.rs`; runtime owner:
+`roko-runtime/src/connector_runtime.rs`
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/connectors` | List secret-safe supervised connector status |
+| POST | `/api/connectors` | Validate, probe, and register/replace an HTTP JSON connector |
+| DELETE | `/api/connectors/{name}` | Cancel, disconnect, and unregister a connector generation |
+| GET | `/api/connectors/{name}/health` | Run/read real transport health through the supervisor |
+| POST | `/api/connectors/{name}/restart` | Cancel the prior generation and restart safely |
+| POST | `/api/connectors/{name}/query` | Execute a bounded idempotent query |
+| POST | `/api/connectors/{name}/execute` | Execute a bounded mutation request |
+
+These routes use authenticated control-plane access, with the configured loopback exception.
+Responses omit credentials and untrusted manifest metadata. The current concrete adapter is
+HTTP JSON for API, webhook, and exchange endpoints; additional transports and startup config
+discovery are not implied.
+
+### Durable local arena service (R03)
+
+Handler module: `routes/arenas.rs`; state owner: `roko-chain/src/arena.rs`
+
+| Method | Path | Description |
+|---|---|---|
+| GET/POST | `/api/arenas` | List filtered arenas / create an authenticated draft arena |
+| GET/PATCH | `/api/arenas/{id}` | Read arena / owner-or-admin lifecycle transition |
+| GET | `/api/arenas/{id}/leaderboard` | Read the leaderboard derived from settled attempts |
+| GET/POST | `/api/arenas/{id}/attempts` | List attempts / start a principal-bound attempt |
+| GET | `/api/arenas/{id}/attempts/{attempt_id}` | Read one attempt |
+| POST | `/api/arenas/{id}/attempts/{attempt_id}/submit` | Bind the participant's output hash |
+| POST | `/api/arenas/{id}/attempts/{attempt_id}/settle` | Owner/admin settlement from external scoring evidence |
+
+The service persists `.roko/chain/arena-state.json`. Each mutation is serialized and rolled
+back if either the operation or atomic persistence fails. Settlement binds scorer principal,
+evidence hash, subject output hash, ground-truth source, and trusted observation; prize,
+reputation, leaderboard, attempt state, and the event outbox commit together. Pending outbox
+events are projected after persistence with a durable at-least-once cursor. This is a local
+service, not the deferred eval/flywheel/on-chain/token/transfer system.
+
+### Durable meta-agent lifecycle (R04)
+
+Handler module: `routes/meta.rs`; safety owners:
+`roko-agent/src/safety/recursive.rs` and
+`roko-graph/src/cells/corrigibility.rs`
+
+| Method | Path | Description |
+|---|---|---|
+| GET/POST | `/api/meta/agents` | List owner-visible records / persist a proposal |
+| GET | `/api/meta/agents/{id}` | Read an owner-visible proposal or active record |
+| POST | `/api/meta/agents/{id}/validate` | Validate and activate from single-use R03 evidence |
+| POST | `/api/meta/agents/{id}/morph` | Explicitly apply a permitted, authority-narrowing role morph |
+| POST | `/api/meta/agents/{id}/morph/rollback` | Restore the exact pre-morph role and grant |
+| POST | `/api/meta/agents/{id}/deactivate` | Durably deactivate after live descendants are removed |
+
+All routes require authentication and enforce owner/admin visibility and mutation. Activation
+hash-binds owner, parent/role history, manifest, grant, and lineage limits; requires an
+externally scored completed R03 attempt for that exact artifact; prevents evidence reuse; and
+persists the exact five-head Deference -> Switch -> Truth -> Impact -> Task evidence. Child
+grants cannot widen tools, data, network, cost, spawn, expiry, or lineage limits. This is not
+Loop 4, ADAS, HGM, autonomous execution of generated agents, or continuous wrapping of every
+Flow.
+
+---
+
 ## Subscriptions and Workflows
 
 Handler module: `routes/subscriptions.rs`, `routes/workflows.rs`
@@ -2131,14 +2269,32 @@ Subscriptions let you register event listeners that trigger actions when specifi
 |---|---|---|
 | GET | `/api/subscriptions` | List event subscriptions |
 | POST | `/api/subscriptions` | Create a subscription |
-| GET | `/api/subscriptions/{id}` | Get subscription |
+| GET | `/api/subscriptions/catalog` | List supported local trigger/filter shapes |
+| GET | `/api/subscriptions/relay/status` | Read durable relay connection, binding, cursor, journal, and reconciliation state |
+| PUT | `/api/subscriptions/{id}` | Replace a subscription |
 | DELETE | `/api/subscriptions/{id}` | Delete subscription |
+| POST | `/api/subscriptions/{id}/enable` | Enable a subscription |
+| POST | `/api/subscriptions/{id}/disable` | Disable a subscription |
 | GET | `/api/workflows` | List workflows |
 | POST | `/api/workflows` | Create workflow |
 | GET | `/api/workflows/{id}` | Get workflow |
 | PUT | `/api/workflows/{id}` | Update workflow |
 | DELETE | `/api/workflows/{id}` | Delete workflow |
 | POST | `/api/workflows/{id}/trigger` | Trigger workflow |
+
+When relay configuration is present, `roko serve` installs enabled exact trigger strings as
+relay rooms. Cron and file-watch triggers remain local; wildcard/glob trigger strings are not
+silently widened and appear in `unsupported_triggers` status diagnostics. The supervised
+client restores all rooms and its durable cursor atomically with `Subscribe(last_seq)`;
+standalone `Resume` is rejected by the relay.
+
+For each canonical envelope, serve writes a processing intent before dispatch. It then records
+an ordered terminal result for every matching subscription (dispatch or explicit policy
+suppression) and atomically commits those receipts with room, subscription, and global
+cursors in a checksummed, bounded 4 MiB/4,096-entry journal. Only that handler success permits
+the client to ACK. Interrupted/failed dispatch, unsafe origin/room changes, or a generic
+snapshot persist `reconciliation_required` and halt automatic execution instead of risking a
+duplicate side effect.
 
 ---
 
@@ -2208,11 +2364,11 @@ Handler module: `routes/webhooks.rs`
 
 Webhooks are always public (no `/api/` prefix, no auth required). They allow external services to push events into Roko's event bus.
 
-### `POST /webhook/{source}`
+### `POST /webhooks/github`
 
-Validates the source, constructs an `Engram` signal, and publishes it to the event bus. Publishes a `WebhookReceived` event.
+Verifies `X-Hub-Signature-256`, maps the GitHub event to a typed Signal, persists it, and publishes a `WebhookReceived` event.
 
-**Path parameter:** `source` — webhook source name (e.g. `github`, `slack`)
+`POST /webhooks/slack` provides the corresponding verified Slack ingress. Arbitrary authenticated webhook payloads use `POST /api/webhooks/generic`.
 
 **Request body:** Arbitrary JSON payload.
 
@@ -2472,7 +2628,7 @@ Response: `200 OK` with updated `TaskEntry`, or `404`.
 {
   "agent_id": "agent-uuid",
   "version": "0.1.0",
-  "owner": "roko-orchestrator",
+  "owner": "roko-cli",
   "capabilities": ["messaging", "predictions"],
   "endpoints": {
     "health": "http://127.0.0.1:7001/health",
@@ -2497,10 +2653,25 @@ Response: `200 OK` with updated `TaskEntry`, or `404`.
 | Method | Path | Handler module | Description |
 |---|---|---|---|
 | GET | `/api/diagnosis` | `diagnosis.rs` | Conductor diagnosis report |
-| GET | `/api/projections` | `projections.rs` | List runtime projections |
+| GET | `/api/projections/catalog` | `projections.rs` | Projection IDs, versions, and invalidation policies |
+| GET | `/api/projections/workbench` | `projections.rs` | Typed Workbench projection envelope |
+| GET | `/api/projections/inbox` | `projections.rs` | Typed unresolved-Inbox projection envelope |
+| GET | `/api/projections/canvas` | `projections.rs` | Typed Canvas live-overlay projection envelope |
+| GET | `/api/projections/minimap` | `projections.rs` | Typed Minimap projection envelope with explicit coordinate source |
+| GET | `/api/projections/autonomy` | `projections.rs` | Typed Autonomy projection envelope with explicit config-source availability |
+
+The Rust handlers and JSON response shapes are typed. The current generated OpenAPI
+entries register all five paths but still describe their response bodies as generic JSON
+`Value`; concrete component-schema `$ref`s for generated clients remain open.
 | GET | `/api/projections/{name}` | `projections.rs` | Get named projection |
+| GET | `/api/projections/{name}/stream` | `projections.rs` | Stream an initial projection state and matching deltas over SSE |
+| GET | `/api/statehub/{projection_id}` | `projections.rs` | Get the versioned current Lens projection value |
+| GET | `/api/statehub/{projection_id}/history` | `projections.rs` | Query bounded, restart-durable retained versions with time/version/resolution filters |
 | GET/POST | `/api/integrations/*` | `integrations.rs` | External integrations (GitHub, Slack, etc.) |
-| GET | `/api/connectors` | `connectors.rs` | MCP connector inventory |
+| GET/POST | `/api/connectors` | `connectors.rs` | Supervised HTTP JSON connector inventory and registration |
+| GET | `/api/subscriptions/relay/status` | `subscriptions.rs` | Durable exact-room relay-consumer diagnostics |
+| GET/POST | `/api/arenas` | `arenas.rs` | Durable local arena inventory and creation |
+| GET/POST | `/api/meta/agents` | `meta.rs` | Durable owner-scoped meta-agent lifecycle |
 | GET | `/api/feeds` | `feeds.rs` | Data feed subscriptions |
 | GET | `/api/templates` | `templates.rs` | System prompt templates |
 | GET | `/api/templates/{name}` | `templates.rs` | Get a template |

@@ -1,5 +1,8 @@
 # Stigmergy Theory: Indirect Coordination Through Environmental Modification
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L4 Orchestration (coordination mechanisms), with cross-cuts into L0 Runtime (event
 > persistence) and L1 Framework (transport)
 >

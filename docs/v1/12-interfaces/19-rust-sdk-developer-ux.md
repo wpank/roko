@@ -1,5 +1,8 @@
 # Rust SDK Developer UX
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Four ergonomic entry points for Rust developers building on Roko: one-liner, builder, trait impl, and runtime impl. The goal is not just API shape, but time to first working agent in under 60 seconds for anyone with `cargo` installed.
 
 > **Implementation**: Deferred target-state

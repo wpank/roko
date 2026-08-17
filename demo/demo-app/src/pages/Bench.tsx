@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Link } from 'react-router';
 import { useBench } from '../hooks/useBench';
 import { handleRowKeyDown } from '../lib/a11y';
-import { useRokoConfig } from '../hooks/useRokoConfig';
+import { useConfigController } from '../data/selectors';
 import { useToast } from '../components/Toast';
 import type { AgentStrategy, BenchRun } from '../lib/bench-types';
 import Pane from '../components/Pane';
@@ -128,7 +128,7 @@ export default function Bench() {
   const [showCountdown, setShowCountdown] = useState(false);
   const [runCompleted, setRunCompleted] = useState(false);
   const pendingStartRef = useRef<(() => void) | null>(null);
-  const { defaultModel, defaultBackend } = useRokoConfig();
+  const { defaultModel, defaultBackend } = useConfigController();
   const { toast } = useToast();
 
   const bench = useBench();

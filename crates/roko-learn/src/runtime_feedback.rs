@@ -5,7 +5,6 @@
 //! subsystems in a consistent order.
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,8 +15,7 @@ use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::fs::OpenOptions;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::cfactor::{CFactor, compute_cfactor};
@@ -204,6 +202,36 @@ impl LearningPaths {
             root,
         }
     }
+
+    /// Build project paths with learning artifacts under `.roko/learn` and
+    /// the sole active episode log at `.roko/episodes.jsonl`.
+    #[must_use]
+    pub fn for_project(workdir: impl AsRef<Path>) -> Self {
+        Self::for_roko_dir(workdir.as_ref().join(".roko"))
+    }
+
+    /// Build project paths from an already-resolved `.roko` directory.
+    #[must_use]
+    pub fn for_roko_dir(roko_dir: impl AsRef<Path>) -> Self {
+        let roko_dir = roko_dir.as_ref();
+        let mut paths = Self::under(roko_dir.join("learn"));
+        paths.episodes_jsonl = roko_dir.join("episodes.jsonl");
+        paths
+    }
+
+    fn for_runtime_root(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        if root.file_name().and_then(|name| name.to_str()) == Some("learn")
+            && root
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                == Some(".roko")
+        {
+            return Self::for_roko_dir(root.parent().expect("learn root has .roko parent"));
+        }
+        Self::under(root)
+    }
 }
 
 /// Optional knobs for regression detection in [`LearningRuntime`].
@@ -245,7 +273,7 @@ pub struct UpdateFrequency {
 impl UpdateFrequency {
     fn due(episode_count: u64, every_n: u32) -> bool {
         let cadence = u64::from(every_n.max(1));
-        episode_count % cadence == 0
+        episode_count.is_multiple_of(cadence)
     }
 
     fn router_due(self, episode_count: u64) -> bool {
@@ -305,6 +333,10 @@ pub struct CompletedRunInput {
     pub task_metric: Option<TaskMetric>,
     /// Optional prompt experiment variant id for A/B outcome recording.
     pub experiment_variant_id: Option<String>,
+    /// Optional prompt experiment id paired with `experiment_variant_id`.
+    /// When present, outcome recording is scoped to this experiment so
+    /// duplicate variant ids in other experiments cannot be updated.
+    pub experiment_id: Option<String>,
     /// Optional serialized adaptive gate-threshold JSON snapshot.
     ///
     /// When provided and the `gate_thresholds_every_n` cadence fires,
@@ -327,6 +359,7 @@ impl CompletedRunInput {
             matched_skill_id: None,
             task_metric: None,
             experiment_variant_id: None,
+            experiment_id: None,
             gate_thresholds_snapshot: None,
         }
     }
@@ -342,6 +375,18 @@ impl CompletedRunInput {
     #[must_use]
     pub fn with_task_metric(mut self, metric: TaskMetric) -> Self {
         self.task_metric = Some(metric);
+        self
+    }
+
+    /// Attach an experiment-scoped variant assignment.
+    #[must_use]
+    pub fn with_experiment_assignment(
+        mut self,
+        experiment_id: impl Into<String>,
+        variant_id: impl Into<String>,
+    ) -> Self {
+        self.experiment_id = Some(experiment_id.into());
+        self.experiment_variant_id = Some(variant_id.into());
         self
     }
 
@@ -1342,54 +1387,67 @@ fn replay_and_open_wal(
     }
 
     for entry in &entries {
-        match entry {
-            WalEntry::CascadeObservation {
+        if let WalEntry::CascadeObservation {
+            model_slug,
+            context_features,
+            model_idx,
+            reward,
+            success,
+            ..
+        } = entry
+        {
+            cascade_router.replay_observation(
                 model_slug,
                 context_features,
-                model_idx,
-                reward,
-                success,
-                ..
-            } => {
-                cascade_router.replay_observation(
-                    model_slug,
-                    context_features,
-                    *model_idx,
-                    *reward,
-                    *success,
-                );
-            }
-            WalEntry::ExperimentOutcome {
-                variant_id,
-                success,
-                ..
-            } => {
-                experiment_store.replay_outcome(variant_id, *success);
-            }
-            WalEntry::GateThresholdUpdate { .. } => {
-                // Gate thresholds are owned by roko-gate / the runner persist
-                // layer. The WAL records them for auditability but replay is
-                // handled by the gate threshold owner at its own startup.
-            }
+                *model_idx,
+                *reward,
+                *success,
+            );
         }
     }
 
     // After replay, promote to durable snapshots and truncate.
+    let mut replay_persisted = true;
     if entry_count > 0 {
         if let Err(e) = cascade_router.save(cascade_router_json) {
             tracing::warn!(error = %e, "[wal] cascade-router snapshot after replay failed");
+            replay_persisted = false;
         }
-        if let Err(e) = experiment_store.save(experiments_json) {
-            tracing::warn!(error = %e, "[wal] experiment snapshot after replay failed");
+        match ExperimentStore::transaction(experiments_json, |latest| {
+            merge_missing_experiments(latest, experiment_store);
+            for entry in &entries {
+                if let WalEntry::ExperimentOutcome {
+                    variant_id,
+                    success,
+                    ..
+                } = entry
+                {
+                    // Legacy WAL records predate attempt/experiment scoping.
+                    // Preserve their historical global lookup during replay;
+                    // new assignments settle through the scoped attempt API.
+                    latest.replay_outcome(variant_id, *success);
+                }
+            }
+            Ok(latest.clone())
+        }) {
+            Ok(committed) => *experiment_store = committed,
+            Err(e) => {
+                tracing::warn!(error = %e, "[wal] experiment transaction after replay failed");
+                replay_persisted = false;
+            }
         }
     }
 
     match WalWriter::open(wal_path) {
         Ok(mut w) => {
-            if entry_count > 0 {
+            if entry_count > 0 && replay_persisted {
                 if let Err(e) = w.truncate() {
                     tracing::warn!(error = %e, "[wal] truncate after replay failed");
                 }
+            } else if entry_count > 0 {
+                tracing::warn!(
+                    "[wal] retaining entries because one or more replay snapshots did not commit"
+                );
             }
             Some(parking_lot::Mutex::new(w))
         }
@@ -1400,10 +1458,23 @@ fn replay_and_open_wal(
     }
 }
 
-/// Bootstrap a [`ProviderHealthTracker`] from the persisted provider-health
-/// registry on disk. Providers with `CircuitState::Open` are replayed as
-/// failures (hitting the threshold) so `is_healthy` returns false immediately.
-/// Closed/HalfOpen providers are recorded as successes so they start healthy.
+fn merge_missing_experiments(target: &mut ExperimentStore, source: &ExperimentStore) {
+    for experiment in source.iter().cloned() {
+        target.register(experiment);
+    }
+}
+
+fn commit_experiment_snapshot(path: &Path, local: &ExperimentStore) -> io::Result<ExperimentStore> {
+    ExperimentStore::transaction(path, |latest| {
+        merge_missing_experiments(latest, local);
+        Ok(latest.clone())
+    })
+}
+
+/// Bootstrap the learning runtime's legacy in-memory health view from the
+/// persisted registry. The provider-call boundary remains the sole owner of
+/// canonical persisted outcomes; replaying state here avoids double-counting
+/// when `record_completed_run` updates its local learning view.
 fn provider_health_tracker_from_persisted(root: &Path) -> ProviderHealthTracker {
     let health_path = root.join("provider-health.json");
     let registry = ProviderHealthRegistry::load_or_new(&health_path);
@@ -1412,8 +1483,6 @@ fn provider_health_tracker_from_persisted(root: &Path) -> ProviderHealthTracker 
     for (provider_id, health) in &snapshot {
         match health.state {
             CircuitState::Open => {
-                // Record 3 failures (the default threshold) so the tracker
-                // transitions to Unhealthy immediately.
                 tracker.record_failure(provider_id);
                 tracker.record_failure(provider_id);
                 tracker.record_failure(provider_id);
@@ -1599,7 +1668,11 @@ impl LearningRuntime {
     ///
     /// Returns an error if persistence files cannot be read/initialized.
     pub async fn open_under(root: impl Into<PathBuf>) -> Result<Self, LearningRuntimeError> {
-        Self::open(LearningPaths::under(root), RegressionConfig::default()).await
+        Self::open(
+            LearningPaths::for_runtime_root(root),
+            RegressionConfig::default(),
+        )
+        .await
     }
 
     /// Open a runtime at `root` with a custom model list for the cascade router.
@@ -1612,7 +1685,48 @@ impl LearningRuntime {
         models: Vec<String>,
     ) -> Result<Self, LearningRuntimeError> {
         Self::open_with_models(
-            LearningPaths::under(root),
+            LearningPaths::for_runtime_root(root),
+            RegressionConfig::default(),
+            models,
+        )
+        .await
+    }
+
+    /// Open the learning runtime for a project, writing episodes only to the
+    /// canonical root `.roko/episodes.jsonl` log.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the project layout cannot be migrated or learning
+    /// persistence cannot be initialized.
+    pub async fn open_for_project(workdir: impl AsRef<Path>) -> Result<Self, LearningRuntimeError> {
+        let workdir = workdir.as_ref();
+        roko_fs::RokoLayout::for_project(workdir)
+            .ensure_dirs()
+            .await?;
+        Self::open(
+            LearningPaths::for_project(workdir),
+            RegressionConfig::default(),
+        )
+        .await
+    }
+
+    /// Open the project learning runtime with an explicit model set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the project layout cannot be migrated or learning
+    /// persistence cannot be initialized.
+    pub async fn open_for_project_with_models(
+        workdir: impl AsRef<Path>,
+        models: Vec<String>,
+    ) -> Result<Self, LearningRuntimeError> {
+        let workdir = workdir.as_ref();
+        roko_fs::RokoLayout::for_project(workdir)
+            .ensure_dirs()
+            .await?;
+        Self::open_with_models(
+            LearningPaths::for_project(workdir),
             RegressionConfig::default(),
             models,
         )
@@ -2222,15 +2336,47 @@ impl LearningRuntime {
     /// Called both from automatic compaction (entry count threshold) and
     /// from explicit snapshot save paths.
     fn compact_wal_locked(&self, wal: &mut WalWriter) {
-        if let Err(e) = self.cascade_router.save(&self.paths.cascade_router_json) {
-            tracing::warn!(error = %e, "[wal] cascade-router snapshot failed during compaction");
+        let cascade_saved = match self.cascade_router.save(&self.paths.cascade_router_json) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(error = %e, "[wal] cascade-router snapshot failed during compaction");
+                false
+            }
+        };
+        let local = self.experiment_store.lock().clone();
+        let experiments_saved = match commit_experiment_snapshot(
+            &self.paths.experiments_json,
+            &local,
+        ) {
+            Ok(committed) => {
+                *self.experiment_store.lock() = committed;
+                true
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "[wal] experiment transaction failed during compaction");
+                false
+            }
+        };
+        if cascade_saved && experiments_saved {
+            if let Err(e) = wal.truncate() {
+                tracing::warn!(error = %e, "[wal] truncate failed during compaction");
+            }
+        } else {
+            tracing::warn!("[wal] retaining entries because compaction snapshots did not commit");
         }
-        if let Err(e) = self
-            .experiment_store
-            .lock()
-            .save(&self.paths.experiments_json)
-        {
-            tracing::warn!(error = %e, "[wal] experiment snapshot failed during compaction");
+    }
+
+    fn commit_experiment_snapshot(&self) -> io::Result<()> {
+        let local = self.experiment_store.lock().clone();
+        let committed = commit_experiment_snapshot(&self.paths.experiments_json, &local)?;
+        *self.experiment_store.lock() = committed;
+        Ok(())
+    }
+
+    fn truncate_wal_after_experiment_snapshot(&self, wal: &mut WalWriter) {
+        if let Err(e) = self.commit_experiment_snapshot() {
+            tracing::warn!(error = %e, "[wal] experiment transaction failed during cascade-router save");
+            return;
         }
         if let Err(e) = wal.truncate() {
             tracing::warn!(error = %e, "[wal] truncate failed during compaction");
@@ -2250,16 +2396,7 @@ impl LearningRuntime {
             let mut w = wal.lock();
             // Also save experiment store so we don't lose experiment entries
             // when truncating the WAL after a cascade-only snapshot.
-            if let Err(e) = self
-                .experiment_store
-                .lock()
-                .save(&self.paths.experiments_json)
-            {
-                tracing::warn!(error = %e, "[wal] experiment snapshot failed during cascade-router save");
-            }
-            if let Err(e) = w.truncate() {
-                tracing::warn!(error = %e, "[wal] truncate after cascade-router save failed");
-            }
+            self.truncate_wal_after_experiment_snapshot(&mut w);
         }
         Ok(())
     }
@@ -2574,37 +2711,72 @@ impl LearningRuntime {
             && self.update_frequency.experiments_due(episode_count)
             && let Some(ref variant_id) = input.experiment_variant_id
         {
-            let mut store = self.experiment_store.lock();
-            let was_running = store
-                .iter()
-                .find(|experiment| experiment.stats.contains_key(variant_id))
-                .is_some_and(|experiment| experiment.status == ExperimentStatus::Running);
-            store.record_outcome(variant_id, input.episode.success);
-            // Drop the experiment store lock before calling wal_append
-            // (which may trigger compaction that re-acquires it).
-            drop(store);
-            self.wal_append(WalEntry::ExperimentOutcome {
-                variant_id: variant_id.clone(),
-                success: input.episode.success,
-                ts_ms: chrono::Utc::now().timestamp_millis(),
-            });
-            let store = self.experiment_store.lock();
-            let static_table_updated = was_running
-                && store
-                    .iter()
-                    .find(|experiment| experiment.stats.contains_key(variant_id))
-                    .is_some_and(|experiment| self.on_experiment_concluded(experiment));
-            if let Err(e) = store.save(&self.paths.experiments_json) {
-                eprintln!("[learn] experiment store save failed: {e}");
-            }
-            if let Err(e) =
-                sync_experiment_winner_artifact(&self.paths.experiment_winners_json, &store)
-            {
-                eprintln!("[learn] experiment winner artifact save failed: {e}");
-            }
-            drop(store);
-            if static_table_updated && let Err(e) = self.save_cascade_router() {
-                eprintln!("[learn] cascade router save failed after experiment conclusion: {e}");
+            let local = self.experiment_store.lock().clone();
+            let experiment_id = input.experiment_id.as_deref();
+            let transaction = ExperimentStore::transaction(
+                &self.paths.experiments_json,
+                |latest| {
+                    merge_missing_experiments(latest, &local);
+                    let matched_id = if let Some(experiment_id) = experiment_id {
+                        let was_running = latest.get(experiment_id).is_some_and(|experiment| {
+                            experiment.status == ExperimentStatus::Running
+                        });
+                        if !latest.record_outcome_for_experiment(
+                            experiment_id,
+                            variant_id,
+                            input.episode.success,
+                        ) {
+                            return Err(io::Error::new(
+                                io::ErrorKind::NotFound,
+                                format!(
+                                    "experiment '{experiment_id}' variant '{variant_id}' disappeared before outcome recording"
+                                ),
+                            ));
+                        }
+                        Some((experiment_id.to_string(), was_running))
+                    } else {
+                        // Legacy runtime inputs carried only a variant id. Keep
+                        // their historical global lookup without extending that
+                        // ambiguity to new scoped inputs.
+                        let matched = latest
+                            .iter()
+                            .find(|experiment| experiment.stats.contains_key(variant_id))
+                            .map(|experiment| {
+                                (
+                                    experiment.experiment_id.clone(),
+                                    experiment.status == ExperimentStatus::Running,
+                                )
+                            });
+                        latest.record_outcome(variant_id, input.episode.success);
+                        matched
+                    };
+                    Ok((latest.clone(), matched_id))
+                },
+            );
+
+            match transaction {
+                Ok((committed, matched)) => {
+                    *self.experiment_store.lock() = committed.clone();
+                    let static_table_updated =
+                        matched.is_some_and(|(experiment_id, was_running)| {
+                            was_running
+                                && committed.get(&experiment_id).is_some_and(|experiment| {
+                                    self.on_experiment_concluded(experiment)
+                                })
+                        });
+                    if let Err(e) = sync_experiment_winner_artifact(
+                        &self.paths.experiment_winners_json,
+                        &committed,
+                    ) {
+                        eprintln!("[learn] experiment winner artifact save failed: {e}");
+                    }
+                    if static_table_updated && let Err(e) = self.save_cascade_router() {
+                        eprintln!(
+                            "[learn] cascade router save failed after experiment conclusion: {e}"
+                        );
+                    }
+                }
+                Err(e) => eprintln!("[learn] experiment store transaction failed: {e}"),
             }
         }
 
@@ -3275,16 +3447,9 @@ async fn append_task_metric(path: &Path, metric: &TaskMetric) -> io::Result<()> 
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    let mut line =
+    let line =
         serde_json::to_string(metric).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    line.push('\n');
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .await?;
-    file.write_all(line.as_bytes()).await?;
-    file.sync_data().await?;
+    append_learning_jsonl(path, line).await?;
     Ok(())
 }
 
@@ -3296,16 +3461,23 @@ async fn append_cfactor_snapshot(
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    let mut line = serde_json::to_string(snapshot)
+    let line = serde_json::to_string(snapshot)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    line.push('\n');
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .await?;
-    file.write_all(line.as_bytes()).await?;
-    file.sync_data().await?;
+    append_learning_jsonl(path, line).await?;
+    Ok(())
+}
+
+async fn append_learning_jsonl(path: &Path, line: String) -> io::Result<()> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        roko_fs::log_rotation::append_jsonl_line_sync(
+            &path,
+            line.as_bytes(),
+            roko_core::config::ResourcesConfig::default().log_rotation_max_mb,
+        )
+    })
+    .await
+    .map_err(|error| io::Error::other(format!("learning JSONL append task failed: {error}")))??;
     Ok(())
 }
 
@@ -3415,20 +3587,17 @@ async fn append_jsonl_record<T: Serialize + Sync + ?Sized>(
 
     let mut line = serde_json::to_string(value)?;
     line.push('\n');
-    // Size-based rotation: shared with EpisodeLogger so efficiency /
-    // efficiency-summaries logs cannot grow unbounded over a long run.
-    crate::jsonl_rotation::rotate_if_needed(
-        path,
-        crate::jsonl_rotation::DEFAULT_ROTATION_THRESHOLD_BYTES,
-    )
-    .await?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .await?;
-    file.write_all(line.as_bytes()).await?;
-    file.sync_data().await?;
+    let path = path.to_path_buf();
+    let max_mb = roko_core::config::ResourcesConfig::default().log_rotation_max_mb;
+    tokio::task::spawn_blocking(move || {
+        roko_fs::log_rotation::append_jsonl_line_sync(&path, line.as_bytes(), max_mb)
+    })
+    .await
+    .map_err(|error| {
+        LearningRuntimeError::Io(std::io::Error::other(format!(
+            "learning JSONL append task failed: {error}"
+        )))
+    })??;
     Ok(())
 }
 
@@ -3458,11 +3627,11 @@ where
 /// Learning artifacts discovered for a project workdir.
 ///
 /// This is intentionally read-only and tolerant. It lets HTTP and CLI surfaces
-/// show runner-produced durable feedback even while different runtimes still
-/// write episodes to legacy and current locations.
+/// show runner-produced durable feedback from the canonical episode log while
+/// retaining a read-only fallback for pre-V3 workspaces.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProjectLearningSnapshot {
-    /// Episode records found across known episode JSONL locations.
+    /// Episode records from the canonical log or one legacy fallback.
     pub episodes: Vec<Episode>,
     /// Efficiency events from `.roko/learn/efficiency.jsonl`.
     pub efficiency_events: Vec<AgentEfficiencyEvent>,
@@ -3501,24 +3670,36 @@ pub struct ProjectLearningSnapshot {
 }
 
 /// Return known episode JSONL locations for `workdir`, canonical paths first,
-/// followed by legacy locations.
+/// followed by legacy migration inputs.
 ///
-/// Order: root episodes (canonical) -> learn dir -> memory dir (legacy fallback).
+/// Order: root episodes (canonical) -> learn dir -> memory dir.
 #[must_use]
 pub fn project_episode_paths(workdir: impl AsRef<Path>) -> Vec<PathBuf> {
     let roko = workdir.as_ref().join(".roko");
     vec![
         // Canonical: root episodes.jsonl
         roko.join("episodes.jsonl"),
-        // Canonical: learn directory
+        // Legacy pre-V3 learning-runtime sink.
         roko.join("learn").join("episodes.jsonl"),
-        // Legacy fallback: memory directory (migration surface only)
+        // Legacy pre-V2 memory sink.
         roko.join("memory").join("episodes.jsonl"),
     ]
 }
 
-/// Read all valid project episodes from known JSONL locations, de-duplicating
-/// records that appear in more than one location.
+/// Resolve the active project episode log, preferring the canonical root and
+/// falling back to historical locations only when it is absent.
+#[must_use]
+pub fn resolve_project_episode_path(workdir: impl AsRef<Path>) -> PathBuf {
+    let paths = project_episode_paths(workdir);
+    paths
+        .iter()
+        .find(|path| path.is_file())
+        .cloned()
+        .unwrap_or_else(|| paths[0].clone())
+}
+
+/// Read all valid project episodes from the canonical log or one legacy
+/// fallback.
 ///
 /// # Errors
 ///
@@ -3526,20 +3707,7 @@ pub fn project_episode_paths(workdir: impl AsRef<Path>) -> Vec<PathBuf> {
 pub async fn read_project_episodes_lossy(
     workdir: impl AsRef<Path>,
 ) -> Result<Vec<Episode>, LearningRuntimeError> {
-    let mut episodes = Vec::new();
-    let mut seen = HashSet::new();
-    for path in project_episode_paths(workdir) {
-        if !path.exists() {
-            continue;
-        }
-        for episode in EpisodeLogger::read_all_lossy(&path).await? {
-            let key = episode_dedupe_key(&episode);
-            if seen.insert(key) {
-                episodes.push(episode);
-            }
-        }
-    }
-    Ok(episodes)
+    Ok(EpisodeLogger::read_all_lossy(&resolve_project_episode_path(workdir)).await?)
 }
 
 /// Read project efficiency events from `.roko/learn/efficiency.jsonl`.
@@ -3573,10 +3741,10 @@ pub async fn read_project_learning_snapshot(
     let knowledge_path = roko.join("neuro").join("knowledge.jsonl");
 
     let episodes = read_project_episodes_lossy(workdir).await?;
-    let episode_paths = project_episode_paths(workdir)
-        .into_iter()
-        .filter(|path| path.exists())
-        .collect();
+    let resolved_episode_path = resolve_project_episode_path(workdir);
+    let episode_paths = resolved_episode_path
+        .exists()
+        .then_some(resolved_episode_path);
     let efficiency_events = read_efficiency_events(&efficiency_path).await?;
     let provider_model_outcomes = read_provider_model_outcomes(&provider_model_outcomes_path)
         .await
@@ -3602,7 +3770,7 @@ pub async fn read_project_learning_snapshot(
         knowledge_seeds,
         cascade_router,
         knowledge_entries,
-        episode_paths,
+        episode_paths: episode_paths.into_iter().collect(),
         efficiency_path,
         provider_model_outcomes_path,
         efficiency_summaries_path,
@@ -3663,8 +3831,8 @@ pub async fn read_runtime_feedback_snapshot(
 
 /// Query canonical project feedback logs using default `.roko/learn` paths.
 ///
-/// This reads episodes from all known project episode locations, then reads the
-/// canonical derived feedback streams from `.roko/learn`.
+/// This reads episodes from the root log (or one legacy fallback), then reads
+/// the canonical derived feedback streams from `.roko/learn`.
 ///
 /// # Errors
 ///
@@ -3674,7 +3842,7 @@ pub async fn read_project_runtime_feedback_snapshot(
     query: &RuntimeFeedbackQuery,
 ) -> Result<RuntimeFeedbackSnapshot, LearningRuntimeError> {
     let workdir = workdir.as_ref();
-    let paths = LearningPaths::under(workdir.join(".roko").join("learn"));
+    let paths = LearningPaths::for_project(workdir);
     let mut snapshot = read_runtime_feedback_snapshot(&paths, query).await?;
 
     let mut project_episodes = read_project_episodes_lossy(workdir).await?;
@@ -3781,22 +3949,6 @@ fn knowledge_seed_matches_query(
         && query_matches_option(model, query.model.as_ref())
 }
 
-fn episode_dedupe_key(episode: &Episode) -> String {
-    if !episode.episode_id.is_empty() {
-        return format!("episode_id:{}", episode.episode_id);
-    }
-    if !episode.id.is_empty() {
-        return format!("id:{}", episode.id);
-    }
-    format!(
-        "fallback:{}:{}:{}:{}",
-        episode.agent_id,
-        episode.task_id,
-        episode.timestamp.to_rfc3339(),
-        episode.model
-    )
-}
-
 async fn count_jsonl_records(path: &Path) -> Result<usize, LearningRuntimeError> {
     let file = match tokio::fs::File::open(path).await {
         Ok(file) => file,
@@ -3826,7 +3978,7 @@ pub async fn refresh_cfactor_snapshot(
     learn_root: impl AsRef<Path>,
 ) -> Result<CFactor, LearningRuntimeError> {
     let learn_root = learn_root.as_ref();
-    let paths = LearningPaths::under(learn_root.to_path_buf());
+    let paths = LearningPaths::for_runtime_root(learn_root.to_path_buf());
     let snapshot = compute_cfactor_snapshot(learn_root).await?;
     append_cfactor_snapshot(&paths.cfactor_jsonl, &snapshot).await?;
     Ok(snapshot)
@@ -3843,7 +3995,7 @@ struct ContextAttributionRecord {
 }
 
 async fn compute_cfactor_snapshot(learn_root: &Path) -> Result<CFactor, LearningRuntimeError> {
-    let paths = LearningPaths::under(learn_root.to_path_buf());
+    let paths = LearningPaths::for_runtime_root(learn_root.to_path_buf());
     let episodes = EpisodeLogger::read_all_lossy(&paths.episodes_jsonl).await?;
     let attribution_path = learn_root
         .parent()
@@ -3866,23 +4018,18 @@ async fn compute_cfactor_snapshot(learn_root: &Path) -> Result<CFactor, Learning
     let mut knowledge_records = read_knowledge_records(&knowledge_path).await?;
     let confirmation_records = read_knowledge_records(&confirmations_path).await?;
     knowledge_records.extend(confirmation_records);
-    let social_perceptiveness = social_perceptiveness_from_attribution(
-        &attribution_records,
-        Duration::from_secs(7 * 24 * 60 * 60),
-    );
-    let knowledge_integration_rate = knowledge_integration_rate(
-        &knowledge_records,
-        &episodes,
-        Duration::from_secs(7 * 24 * 60 * 60),
-    );
+    let social_perceptiveness =
+        social_perceptiveness_from_attribution(&attribution_records, Duration::from_hours(168));
+    let knowledge_integration_rate =
+        knowledge_integration_rate(&knowledge_records, &episodes, Duration::from_hours(168));
     let convergence_velocity = convergence_velocity_from_agreement(
         &knowledge_records,
         &episodes,
-        Duration::from_secs(7 * 24 * 60 * 60),
+        Duration::from_hours(168),
     );
     Ok(compute_cfactor(
         &episodes,
-        Duration::from_secs(7 * 24 * 60 * 60),
+        Duration::from_hours(168),
         social_perceptiveness,
         knowledge_integration_rate,
         convergence_velocity,
@@ -4170,6 +4317,75 @@ mod tests {
         ep.extra
             .insert("gates_executed".to_string(), serde_json::json!(0_u64));
         ep
+    }
+
+    #[test]
+    fn project_paths_keep_learning_state_under_learn_and_episodes_at_root() {
+        let tmp = TempDir::new().expect("tempdir");
+        let paths = LearningPaths::for_project(tmp.path());
+        assert_eq!(paths.root, tmp.path().join(".roko/learn"));
+        assert_eq!(
+            paths.episodes_jsonl,
+            tmp.path().join(".roko/episodes.jsonl")
+        );
+        assert_eq!(
+            paths.cascade_router_json,
+            tmp.path().join(".roko/learn/cascade-router.json")
+        );
+    }
+
+    #[tokio::test]
+    async fn project_runtime_appends_only_the_root_episode_log() {
+        let tmp = TempDir::new().expect("tempdir");
+        let runtime = LearningRuntime::open_for_project(tmp.path())
+            .await
+            .expect("open project runtime");
+        runtime
+            .append_episode(&sample_episode(true))
+            .await
+            .expect("append episode");
+
+        assert!(tmp.path().join(".roko/episodes.jsonl").is_file());
+        assert!(!tmp.path().join(".roko/learn/episodes.jsonl").exists());
+        assert!(!tmp.path().join(".roko/memory/episodes.jsonl").exists());
+    }
+
+    #[tokio::test]
+    async fn project_runtime_migrates_v2_episode_stores_before_append() {
+        let tmp = TempDir::new().expect("tempdir");
+        let layout = roko_fs::RokoLayout::for_project(tmp.path());
+        std::fs::create_dir_all(layout.learn_dir()).expect("create learn dir");
+        std::fs::create_dir_all(layout.memory_dir()).expect("create memory dir");
+        std::fs::write(layout.version_file(), "2").expect("write version");
+
+        let mut legacy = sample_episode(true);
+        legacy.id = "legacy-episode".to_string();
+        legacy.episode_id = "legacy-episode".to_string();
+        write_jsonl(layout.learn_dir().join("episodes.jsonl"), &[legacy]);
+
+        let runtime = LearningRuntime::open_for_project(tmp.path())
+            .await
+            .expect("open project runtime");
+        let mut appended = sample_episode(false);
+        appended.id = "new-episode".to_string();
+        appended.episode_id = "new-episode".to_string();
+        runtime
+            .append_episode(&appended)
+            .await
+            .expect("append episode");
+
+        assert_eq!(
+            layout.read_version().await.expect("read version"),
+            Some(roko_fs::LayoutVersion::V3)
+        );
+        let episodes = EpisodeLogger::read_all_lossy(&layout.episodes_path())
+            .await
+            .expect("read canonical episodes");
+        assert_eq!(episodes.len(), 2);
+        assert_eq!(episodes[0].episode_id, "legacy-episode");
+        assert_eq!(episodes[1].episode_id, "new-episode");
+        assert!(!layout.learn_dir().join("episodes.jsonl").exists());
+        assert!(layout.learn_dir().join("episodes.jsonl.v2-legacy").exists());
     }
 
     fn episode_at(task_id: &str, minutes_ago: i64, success: bool) -> Episode {
@@ -4525,7 +4741,7 @@ mod tests {
         assert_eq!(snapshot.efficiency_events.len(), 1);
         assert_eq!(snapshot.knowledge_entries, 2);
         assert!(snapshot.cascade_router.is_some());
-        assert_eq!(snapshot.episode_paths.len(), 2);
+        assert_eq!(snapshot.episode_paths, vec![roko.join("episodes.jsonl")]);
     }
 
     #[tokio::test]
@@ -4877,6 +5093,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_experiment_transaction_scopes_duplicate_variant_ids_and_preserves_disk() {
+        let tmp = TempDir::new().unwrap();
+        let paths = LearningPaths::under(tmp.path());
+        let runtime = LearningRuntime::open(paths.clone(), RegressionConfig::default())
+            .await
+            .unwrap();
+        let variant = |section: &str| {
+            vec![PromptVariant {
+                id: "shared".to_string(),
+                name: "Shared".to_string(),
+                section_name: section.to_string(),
+                content: "Scoped content".to_string(),
+                slug: None,
+                active: true,
+            }]
+        };
+        runtime
+            .experiment_store()
+            .lock()
+            .register(PromptExperiment::new(
+                "exp-a",
+                "section-a",
+                variant("section-a"),
+            ));
+        runtime
+            .experiment_store()
+            .lock()
+            .register(PromptExperiment::new(
+                "exp-b",
+                "section-b",
+                variant("section-b"),
+            ));
+
+        ExperimentStore::transaction(&paths.experiments_json, |store| {
+            store.register(PromptExperiment::new(
+                "external-exp",
+                "external-section",
+                variant("external-section"),
+            ));
+            Ok(())
+        })
+        .expect("commit concurrent external experiment");
+
+        runtime
+            .record_completed_run(
+                CompletedRunInput::from_episode(sample_episode(true))
+                    .with_experiment_assignment("exp-b", "shared"),
+            )
+            .await
+            .unwrap();
+
+        let committed = ExperimentStore::load_or_new(&paths.experiments_json);
+        assert_eq!(committed.get("exp-a").unwrap().stats["shared"].trials, 0);
+        assert_eq!(committed.get("exp-b").unwrap().stats["shared"].trials, 1);
+        assert!(committed.get("external-exp").is_some());
+        let cached = runtime.experiment_store().lock();
+        assert!(cached.get("external-exp").is_some());
+        assert_eq!(cached.get("exp-b").unwrap().stats["shared"].trials, 1);
+    }
+
+    #[tokio::test]
     async fn experiment_updates_static_table() {
         let tmp = TempDir::new().unwrap();
         let learn_root = tmp.path().join(".roko").join("learn");
@@ -4915,7 +5192,7 @@ mod tests {
             ],
         );
         experiment.role = Some("implementer".to_string());
-        experiment.min_trials_per_variant = 1;
+        experiment.min_trials_per_variant = 5;
         experiment.min_effect_size = 0.5;
         runtime.experiment_store().lock().register(experiment);
 
@@ -4942,31 +5219,33 @@ mod tests {
             "claude-sonnet-4-20250514"
         );
 
-        let mut losing_episode = sample_episode(false);
-        losing_episode.extra.insert(
-            "model".to_string(),
-            serde_json::json!("claude-sonnet-4-20250514"),
-        );
-        runtime
-            .record_completed_run(CompletedRunInput {
-                experiment_variant_id: Some("sonnet".to_string()),
-                ..CompletedRunInput::from_episode(losing_episode)
-            })
-            .await
-            .unwrap();
+        for _ in 0..5 {
+            let mut losing_episode = sample_episode(false);
+            losing_episode.extra.insert(
+                "model".to_string(),
+                serde_json::json!("claude-sonnet-4-20250514"),
+            );
+            runtime
+                .record_completed_run(CompletedRunInput {
+                    experiment_variant_id: Some("sonnet".to_string()),
+                    ..CompletedRunInput::from_episode(losing_episode)
+                })
+                .await
+                .unwrap();
 
-        let mut winning_episode = sample_episode(true);
-        winning_episode.extra.insert(
-            "model".to_string(),
-            serde_json::json!("claude-haiku-4-5-20251001"),
-        );
-        runtime
-            .record_completed_run(CompletedRunInput {
-                experiment_variant_id: Some("haiku".to_string()),
-                ..CompletedRunInput::from_episode(winning_episode)
-            })
-            .await
-            .unwrap();
+            let mut winning_episode = sample_episode(true);
+            winning_episode.extra.insert(
+                "model".to_string(),
+                serde_json::json!("claude-haiku-4-5-20251001"),
+            );
+            runtime
+                .record_completed_run(CompletedRunInput {
+                    experiment_variant_id: Some("haiku".to_string()),
+                    ..CompletedRunInput::from_episode(winning_episode)
+                })
+                .await
+                .unwrap();
+        }
 
         let winner_artifact = std::fs::read_to_string(&runtime.paths().experiment_winners_json)
             .expect("experiment winners artifact");

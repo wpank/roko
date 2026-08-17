@@ -1,5 +1,8 @@
 # C-Factor: Collective Intelligence
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Abstract:** This chapter documents a broader target-state c-factor doctrine for Roko collectives. Shipping code already computes c-factor-like summaries and uses `CFactorPolicy` as a routing signal, but the Bus/Substrate-wide measurement and intervention story described below is still more ambitious than the current implementation. See also [01-naming-and-glossary](./01-naming-and-glossary.md) and [tmp/refinements/13-collective-intelligence-c-factor.md](../../tmp/refinements/13-collective-intelligence-c-factor.md).
 >
 > **Implementation status**: `CFactorPolicy` exists in `roko-core` and is wired into the routing stack as a live signal. The broader c-factor doctrine described here (continuous Woolley-style measurement, Bus/Substrate statistics, conditional Policy intervention) is **target-state**. Current recommendation: treat c-factor as an observability metric first, a control input second.

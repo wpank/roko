@@ -1,5 +1,8 @@
 # Nunchi Chain Specification
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > A dedicated EVM chain with simplex consensus for agent knowledge coordination: 50ms block time, agents as first-class citizens, ERC-8004 native identity, HDC native precompile.
 
 

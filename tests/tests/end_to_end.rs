@@ -31,6 +31,20 @@ use tokio::fs;
 /// whose body records {task_id, verdict, timestamp}.
 struct EpisodePolicy;
 
+impl roko_core::Cell for EpisodePolicy {
+    fn cell_id(&self) -> &str {
+        "episode-policy"
+    }
+
+    fn cell_name(&self) -> &str {
+        "EpisodePolicy"
+    }
+
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::React]
+    }
+}
+
 impl React for EpisodePolicy {
     fn decide(&self, stream: &[Engram], ctx: &Context) -> Vec<Engram> {
         stream
@@ -344,6 +358,20 @@ async fn exec_agent_integrates_with_composer() {
 
 struct FeedbackCounter {
     count: parking_lot_fork::Mutex<u32>,
+}
+
+impl roko_core::Cell for FeedbackCounter {
+    fn cell_id(&self) -> &str {
+        "feedback-counter"
+    }
+
+    fn cell_name(&self) -> &str {
+        "FeedbackCounter"
+    }
+
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Route]
+    }
 }
 
 // Inline a simple parking_lot-like Mutex using std::sync for tests.

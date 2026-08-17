@@ -1,5 +1,8 @@
 # Architecture
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Roko's architecture is organized around two mediums: durable `Engram` records and a
 > target-state ephemeral `Pulse` stream. Those mediums move through two fabrics:
 > `Substrate` for storage and a planned `Bus` abstraction for transport. Six operators
@@ -160,7 +163,7 @@ This topic connects to:
 ### What's Built
 - **roko-core** (376 tests): Engram type, all 6 Synapse traits, Score, Decay,
   Kind, Body, ContentHash, Provenance, loop_tick, OperatingFrequency, config schema.
-- **roko-agent** (346 tests): 5 LLM backends, CascadeRouter, MCP client, tool dispatch, safety.
+- **roko-agent** (346 tests): 11 LLM backends, CascadeRouter, MCP client, tool dispatch, safety.
 - **roko-gate** (200 tests): 11+ gates, 6-rung pipeline, adaptive thresholds.
 - **roko-orchestrator** (158 tests): Plan DAG, parallel executor, state persistence + resume.
 - **roko-learn** (101 tests): Episodes, playbooks, skills, bandits, experiments, efficiency.

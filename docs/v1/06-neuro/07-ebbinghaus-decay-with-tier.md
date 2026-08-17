@@ -1,5 +1,8 @@
 # Demurrage with Tier Shaping
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Neuro keeps knowledge fresh through demurrage: every durable entry carries a balance, earns its keep through use, and cools when it stops being retrieved, cited, or reinforced. Ebbinghaus still matters, but as a rate-shaping component rather than the whole story.
 
 > **Implementation**: Built

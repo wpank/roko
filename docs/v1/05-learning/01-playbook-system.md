@@ -1,5 +1,8 @@
 # Playbook System
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Crate:** `roko-learn` · **Modules:** `playbook.rs`, `playbook_rules.rs`
 > **Persistence:** `.roko/learn/playbooks/` (JSON per playbook), `.roko/learn/playbook-rules.toml`
 > **Wiring:** `LearningRuntime::record_completed_run()` → `PlaybookStore`, `PlaybookRules`

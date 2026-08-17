@@ -81,7 +81,7 @@ impl ToolHandler for Handler {
             Err(e) => return ToolResult::Err(e),
         };
         let effective_timeout = if ctx.timeout.is_zero() {
-            Duration::from_secs(120)
+            Duration::from_mins(2)
         } else {
             ctx.timeout
         };

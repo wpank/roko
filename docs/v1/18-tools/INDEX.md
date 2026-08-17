@@ -1,5 +1,8 @@
 # Topic 18 — Tools, Plugins & Integrations
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The complete tool system: architecture, built-in tools, domain plugins, MCP integration,
 > service integrations, agent templates, and the five-tier plugin SPI. See also
 > [tmp/refinements/17-plugin-extension-architecture.md](../../tmp/refinements/17-plugin-extension-architecture.md).

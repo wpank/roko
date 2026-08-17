@@ -9,10 +9,7 @@
 //!
 //! # Tier
 //!
-//! [`PluginTier`] mirrors the 5-tier enum from `roko-agent/src/safety/capabilities.rs`.
-//! They must be kept in sync. Roko does not add `roko-agent` as a direct
-//! dependency of `roko-plugin` to avoid coupling the plugin SDK to the full
-//! agent runtime.
+//! [`PluginTier`] is the canonical dependency-safe SDK type from `roko-core`.
 //!
 //! # Version resolution
 //!
@@ -44,59 +41,8 @@
 use std::collections::HashMap;
 
 use roko_core::error::{Result, RokoError};
+pub use roko_core::plugin::PluginTier;
 use serde::{Deserialize, Serialize};
-
-// ─── PluginTier ──────────────────────────────────────────────────────────
-//
-// NOTE: This mirrors `PluginTier` in `roko-agent/src/safety/capabilities.rs`.
-// Changes there must be reflected here (and vice versa).
-
-/// Trust tier assigned to a plugin or plugin-declared tool.
-///
-/// 5-tier SPI as specified in the v2 plugin spec (14-TOOLS.md §1):
-///
-/// | Tier | Label | FS | Network | Secrets |
-/// |------|-------------|-----------|---------|---------|
-/// | 1 | Untrusted | none | no | no |
-/// | 2 | Sandboxed | read-only | no | no |
-/// | 3 | Standard | worktree | allow | no |
-/// | 4 | Trusted | full | full | yes |
-/// | 5 | Kernel | full | full | yes |
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PluginTier {
-    /// Tier 1: untrusted WASM — no filesystem, no network, no secrets.
-    Untrusted = 1,
-    /// Tier 2: sandboxed native — read-only filesystem, no network.
-    Sandboxed = 2,
-    /// Tier 3: standard plugin — worktree-scoped filesystem, allowlisted network.
-    Standard = 3,
-    /// Tier 4: trusted native — full filesystem, full network, secrets allowed.
-    Trusted = 4,
-    /// Tier 5: kernel extension — same trust as core.
-    Kernel = 5,
-}
-
-impl Default for PluginTier {
-    /// Plugins default to `Sandboxed` (tier 2) when no explicit tier is set.
-    fn default() -> Self {
-        Self::Sandboxed
-    }
-}
-
-impl PluginTier {
-    /// Human-readable label for the tier.
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Untrusted => "untrusted",
-            Self::Sandboxed => "sandboxed",
-            Self::Standard => "standard",
-            Self::Trusted => "trusted",
-            Self::Kernel => "kernel",
-        }
-    }
-}
 
 // ─── RegisteredTool ───────────────────────────────────────────────────────
 

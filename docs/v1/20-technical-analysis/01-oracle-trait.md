@@ -1,5 +1,8 @@
 # The Oracle Trait — Universal Prediction Interface
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Every domain-specific prediction system in Roko implements a single trait. This document specifies the full Rust signature, supporting types, and integration points.
 
 

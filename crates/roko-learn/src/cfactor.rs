@@ -1,6 +1,6 @@
 //! Composite C-Factor metrics for dashboard and learning feedback.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -48,7 +48,8 @@ pub struct AgentCFactorContribution {
 }
 
 /// Directional routing preference derived from a C-Factor contribution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AgentDispatchBias {
     /// Prefer a stronger / more capable agent or model for this dispatch.
     PreferStronger,
@@ -56,6 +57,194 @@ pub enum AgentDispatchBias {
     PreferCheaper,
     /// Keep the current routing decision.
     Neutral,
+}
+
+/// Scope affected by a governance recommendation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CFactorTarget {
+    /// A particular agent should be rerouted or reassigned.
+    Agent(String),
+    /// A fleet-wide policy should change.
+    System,
+}
+
+/// Non-binding action proposed from a multi-window C-Factor trend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CFactorAction {
+    /// Prefer a stronger model or reassign the role.
+    AdjustModel,
+    /// Increase verification strictness.
+    AdjustGate,
+    /// Increase provider, model, or approach diversity.
+    InjectDiversity,
+}
+
+/// An auditable recommendation; governance never applies it automatically.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CFactorRecommendation {
+    /// Recommendation scope.
+    pub target: CFactorTarget,
+    /// Proposed action.
+    pub action: CFactorAction,
+    /// Concrete routing bias when the action targets model selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_bias: Option<AgentDispatchBias>,
+    /// Evidence-derived confidence in `[0, 1]`.
+    pub confidence: f64,
+    /// Human-readable evidence from the retained snapshots.
+    pub evidence: Vec<String>,
+}
+
+/// Sliding-window governance over collective performance snapshots.
+#[derive(Debug, Clone)]
+pub struct CFactorGovernance {
+    snapshots: VecDeque<CFactor>,
+    capacity: usize,
+}
+
+impl Default for CFactorGovernance {
+    fn default() -> Self {
+        Self {
+            snapshots: VecDeque::with_capacity(20),
+            capacity: 20,
+        }
+    }
+}
+
+impl CFactorGovernance {
+    /// Construct an empty 20-snapshot governance window.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a snapshot, evicting the oldest beyond the fixed capacity.
+    pub fn push_snapshot(&mut self, cfactor: CFactor) {
+        if self.snapshots.len() == self.capacity {
+            self.snapshots.pop_front();
+        }
+        self.snapshots.push_back(cfactor);
+    }
+
+    /// Linear endpoint trend for one agent over snapshots where it appears.
+    #[must_use]
+    pub fn agent_trend(&self, agent_id: &str) -> Option<f64> {
+        let values = self
+            .snapshots
+            .iter()
+            .filter_map(|snapshot| snapshot.agent_contribution(agent_id))
+            .map(|contribution| contribution.contribution_score)
+            .collect::<Vec<_>>();
+        (values.len() >= 2).then(|| values[values.len() - 1] - values[0])
+    }
+
+    /// Compute non-binding recommendations from sustained evidence.
+    #[must_use]
+    pub fn recommendations(&self) -> Vec<CFactorRecommendation> {
+        if self.snapshots.len() < 3 {
+            return Vec::new();
+        }
+        let mut recommendations = Vec::new();
+        let mut agent_ids = self
+            .snapshots
+            .iter()
+            .flat_map(|snapshot| snapshot.agent_contributions.iter())
+            .map(|contribution| contribution.agent_id.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        agent_ids.sort();
+
+        for agent_id in agent_ids {
+            let recent = self
+                .snapshots
+                .iter()
+                .rev()
+                .filter_map(|snapshot| snapshot.agent_contribution(&agent_id))
+                .take(3)
+                .collect::<Vec<_>>();
+            if recent.len() == 3
+                && recent
+                    .iter()
+                    .all(|contribution| contribution.contribution_score < -0.1)
+            {
+                recommendations.push(CFactorRecommendation {
+                    target: CFactorTarget::Agent(agent_id.clone()),
+                    action: CFactorAction::AdjustModel,
+                    dispatch_bias: Some(AgentDispatchBias::PreferStronger),
+                    confidence: 0.8,
+                    evidence: recent
+                        .iter()
+                        .rev()
+                        .map(|item| format!("contribution={:.3}", item.contribution_score))
+                        .collect(),
+                });
+            }
+        }
+
+        if self.snapshots.len() >= 5 {
+            let recent = self
+                .snapshots
+                .iter()
+                .rev()
+                .take(5)
+                .rev()
+                .collect::<Vec<_>>();
+            if recent
+                .windows(2)
+                .all(|pair| pair[1].overall < pair[0].overall)
+            {
+                recommendations.push(CFactorRecommendation {
+                    target: CFactorTarget::System,
+                    action: CFactorAction::AdjustGate,
+                    dispatch_bias: None,
+                    confidence: 0.85,
+                    evidence: recent
+                        .iter()
+                        .map(|snapshot| format!("overall={:.3}", snapshot.overall))
+                        .collect(),
+                });
+            }
+        }
+
+        if let Some(latest) = self.snapshots.back() {
+            let pathologies = latest
+                .pathologies
+                .iter()
+                .filter(|pathology| {
+                    matches!(
+                        pathology,
+                        CollectivePathology::Cascade { .. }
+                            | CollectivePathology::Groupthink { .. }
+                            | CollectivePathology::EchoChamber { .. }
+                    )
+                })
+                .collect::<Vec<_>>();
+            if !pathologies.is_empty() {
+                recommendations.push(CFactorRecommendation {
+                    target: CFactorTarget::System,
+                    action: CFactorAction::InjectDiversity,
+                    dispatch_bias: None,
+                    confidence: 0.9,
+                    evidence: pathologies.iter().map(|item| format!("{item:?}")).collect(),
+                });
+            }
+        }
+        recommendations
+    }
+}
+
+/// Result of the collective-versus-individual variance inequality check.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VICheck {
+    /// True when collective variance is smaller than mean individual variance.
+    pub valid: bool,
+    /// `variance_collective / mean_variance_individual`.
+    pub ratio: f64,
+    /// Explanation when enough evidence exists and the inequality fails.
+    pub warning: Option<String>,
 }
 
 /// Collective pathologies detected from the episode stream.
@@ -219,6 +408,77 @@ impl CFactor {
             AgentDispatchBias::Neutral
         }
     }
+
+    /// Validate whether the score reflects collective stability rather than a
+    /// single dominant agent. Fewer than five episodes are inconclusive and
+    /// therefore do not warn.
+    #[must_use]
+    pub fn variance_inequality_check(&self, episodes: &[Episode]) -> VICheck {
+        if episodes.len() < 5 {
+            return VICheck {
+                valid: true,
+                ratio: 0.0,
+                warning: None,
+            };
+        }
+
+        let mut by_task: HashMap<&str, Vec<f64>> = HashMap::new();
+        let mut by_agent: HashMap<&str, Vec<f64>> = HashMap::new();
+        for episode in episodes {
+            let outcome = if episode.success { 1.0 } else { 0.0 };
+            by_task.entry(&episode.task_id).or_default().push(outcome);
+            by_agent.entry(&episode.agent_id).or_default().push(outcome);
+        }
+        let collective = by_task
+            .values()
+            .map(|values| values.iter().sum::<f64>() / values.len() as f64)
+            .collect::<Vec<_>>();
+        let variance_collective = variance(&collective);
+        let individual_variances = by_agent
+            .values()
+            .filter(|values| values.len() >= 2)
+            .map(|values| variance(values))
+            .collect::<Vec<_>>();
+        if individual_variances.is_empty() {
+            return VICheck {
+                valid: true,
+                ratio: 0.0,
+                warning: None,
+            };
+        }
+        let mean_individual =
+            individual_variances.iter().sum::<f64>() / individual_variances.len() as f64;
+        let ratio = if mean_individual > f64::EPSILON {
+            variance_collective / mean_individual
+        } else if variance_collective <= f64::EPSILON {
+            0.0
+        } else {
+            f64::MAX
+        };
+        let valid = variance_collective < mean_individual
+            || (variance_collective <= f64::EPSILON && mean_individual <= f64::EPSILON);
+        VICheck {
+            valid,
+            ratio,
+            warning: (!valid).then(|| {
+                format!(
+                    "variance inequality failed: collective={variance_collective:.4}, mean individual={mean_individual:.4}"
+                )
+            }),
+        }
+    }
+}
+
+fn variance(values: &[f64]) -> f64 {
+    if values.len() < 2 {
+        return 0.0;
+    }
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    values
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
+        / values.len() as f64
 }
 
 #[derive(Debug, Clone)]
@@ -1387,6 +1647,39 @@ mod tests {
         assert_eq!(cfactor.overall, 0.0);
         assert_eq!(cfactor.components, CFactorComponents::default());
         assert_eq!(cfactor.episode_count, 0);
+    }
+
+    #[test]
+    fn cfactor_governance_requires_sustained_negative_contribution() {
+        let mut governance = CFactorGovernance::new();
+        for score in [-0.11, -0.15, -0.2] {
+            let mut snapshot = CFactor::default();
+            snapshot.agent_contributions = vec![AgentCFactorContribution {
+                agent_id: "weak-agent".into(),
+                episode_count: 3,
+                without_agent_overall: 0.7,
+                contribution_score: score,
+            }];
+            governance.push_snapshot(snapshot);
+        }
+        let recommendations = governance.recommendations();
+        assert!(recommendations.iter().any(|recommendation| {
+            recommendation.action == CFactorAction::AdjustModel
+                && recommendation.target == CFactorTarget::Agent("weak-agent".into())
+        }));
+    }
+
+    #[test]
+    fn variance_inequality_flags_collective_instability() {
+        let mut episodes = Vec::new();
+        for index in 0..6 {
+            let mut episode = Episode::new("stable-agent", format!("task-{index}"));
+            episode.success = index < 3;
+            episodes.push(episode);
+        }
+        let check = CFactor::default().variance_inequality_check(&episodes);
+        assert!(!check.valid);
+        assert!(check.warning.is_some());
     }
 
     #[test]

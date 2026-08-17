@@ -964,7 +964,21 @@ impl WorktreeManager {
         };
 
         let args = ["status", "--porcelain", "--untracked-files=all"];
-        let status = self.git_probe_stdout_at(&handle.path, &args).await?;
+        // A clean `git status --porcelain` succeeds with intentionally empty
+        // stdout, so it cannot use `git_probe_stdout_at`, whose contract
+        // rejects empty output for identity probes such as `rev-parse`.
+        let output = self.git_probe_output_at(&handle.path, &args).await?;
+        if !output.status.success() {
+            return Err(WorktreeError::GitFailed {
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
+        }
+        let status = String::from_utf8(output.stdout).map_err(|_| {
+            WorktreeError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "git status returned non-UTF-8 output",
+            ))
+        })?;
         if !status.trim().is_empty() {
             return Err(WorktreeError::DirtyWorktree {
                 id: id.to_string(),
@@ -2232,11 +2246,12 @@ impl WorktreeManager {
                 let mut fields = line.splitn(2, char::is_whitespace);
                 let key = fields.next().unwrap_or_default().to_ascii_lowercase();
                 let value = fields.next().unwrap_or_default().trim();
-                let harmless_false = matches!(key.as_str(), "core.fsmonitor")
-                    && matches!(value, "false" | "no" | "off" | "0" | "");
+                // Managed Git commands override this setting on the command
+                // line, so repository/user fsmonitor configuration is inert.
+                let harmless_fsmonitor = matches!(key.as_str(), "core.fsmonitor");
                 let harmless_promisor = key.ends_with(".promisor")
                     && matches!(value, "false" | "no" | "off" | "0" | "");
-                if !harmless_false && !harmless_promisor {
+                if !harmless_fsmonitor && !harmless_promisor {
                     return Err(WorktreeError::UnsafeGitExecution {
                         reason: format!("unsupported checkout extension `{key}`"),
                     });
@@ -2279,6 +2294,8 @@ impl WorktreeManager {
         let mut command = Command::new(executable);
         command
             .current_dir(current_dir)
+            .arg("--no-pager")
+            .args(["-c", "core.fsmonitor=false"])
             .args(args)
             .stdin(Stdio::null())
             .kill_on_drop(true);
@@ -4344,6 +4361,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repository_fsmonitor_is_disabled_per_managed_git_invocation() {
+        let Some((_tmp, manager)) = make_manager() else {
+            return;
+        };
+        let status = StdCommand::new("git")
+            .current_dir(&manager.config.repo_root)
+            .args(["config", "core.fsmonitor", "true"])
+            .status()
+            .expect("configure repository fsmonitor");
+        assert!(status.success());
+
+        let handle = manager
+            .create("fsmonitor-compatible", "feature/fsmonitor-compatible")
+            .await
+            .expect("managed worktree commands must override repository fsmonitor");
+        assert!(handle.path.exists());
+        assert_eq!(
+            manager
+                .check_health("fsmonitor-compatible")
+                .await
+                .expect("health probe must override repository fsmonitor"),
+            WorktreeHealth::Ok
+        );
+
+        manager
+            .remove("fsmonitor-compatible")
+            .await
+            .expect("managed removal must also override repository fsmonitor");
+        assert!(!handle.path.exists());
+
+        let configured = StdCommand::new("git")
+            .current_dir(&manager.config.repo_root)
+            .args(["config", "--get", "core.fsmonitor"])
+            .output()
+            .expect("read repository fsmonitor");
+        assert!(configured.status.success());
+        assert_eq!(String::from_utf8_lossy(&configured.stdout).trim(), "true");
+    }
+
+    #[tokio::test]
     async fn direct_create_preserves_outstanding_marker_and_owned_objects() {
         let Some((_tmp, manager)) = make_manager() else {
             return;
@@ -5242,7 +5299,7 @@ mod tests {
         let mut child = StdCommand::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "worktree::tests::repository_lock_process_helper",
+                "orchestrator::worktree::tests::repository_lock_process_helper",
                 "--nocapture",
             ])
             .env("ROKO_TEST_REPO_ROOT", &manager.config.repo_root)
@@ -5287,7 +5344,7 @@ mod tests {
         let mut child = StdCommand::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "worktree::tests::repository_lock_process_helper",
+                "orchestrator::worktree::tests::repository_lock_process_helper",
                 "--nocapture",
             ])
             .env("ROKO_TEST_REPO_ROOT", &manager.config.repo_root)

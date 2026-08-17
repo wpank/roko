@@ -1,5 +1,8 @@
 # Active Inference and Free Energy Principle
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for active inference, expected free energy, Bayesian surprise, and predictive processing in Roko's context selection and action selection.
 
 **Topic**: [References](./INDEX.md)

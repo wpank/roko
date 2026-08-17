@@ -1,5 +1,8 @@
 # Accessibility and Current Implementation Status
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > WCAG 2.1 AA compliance targets, keyboard navigation, screen reader support, reduced motion, port allocation, and comprehensive status of all interface components.
 
 

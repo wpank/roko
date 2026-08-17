@@ -16,7 +16,7 @@ use roko_neuro::KnowledgeStore;
 use roko_serve::bench::{BenchConfigOverrides, BenchStrategy};
 use roko_serve::runtime::{
     CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, RepoInfo, RunResult,
-    RunResultUsage, RuntimeGateResult, SessionStatusInfo,
+    RunResultUsage, RuntimeGateResult, SessionStatusInfo, TriggerExecutionScope,
 };
 
 use crate::config::{Config, RepoRegistry};
@@ -39,6 +39,12 @@ pub struct RokoCliRuntime {
     knowledge_store: OnceLock<KnowledgeStore>,
     // Lazily bound to the workspace used by the first bench task that earns a playbook.
     playbook_store: OnceLock<PlaybookStore>,
+    /// Per-workspace extension chains shared by serve status routes and plan runs.
+    extension_chains: Arc<
+        std::sync::RwLock<
+            BTreeMap<PathBuf, Arc<tokio::sync::Mutex<roko_core::extension::ExtensionChain>>>,
+        >,
+    >,
 }
 
 impl RokoCliRuntime {
@@ -73,11 +79,19 @@ impl RokoCliRuntime {
             metrics,
             knowledge_store: OnceLock::new(),
             playbook_store: OnceLock::new(),
+            extension_chains: Arc::new(std::sync::RwLock::new(BTreeMap::new())),
         }
     }
 
     pub fn into_arc(self) -> Arc<dyn CliRuntime> {
         Arc::new(self)
+    }
+
+    /// Resolve, load, and initialize the extension chain before an HTTP
+    /// server binds for this workspace.
+    pub async fn prepare_workspace_extensions(&self, workdir: &Path) -> anyhow::Result<()> {
+        let chain = self.extension_chain_for_workdir(workdir)?;
+        crate::runner::event_loop::initialize_extensions(Some(&chain)).await
     }
 }
 
@@ -226,6 +240,7 @@ impl CliRuntime for RokoCliRuntime {
         let repo_registry = self.repo_registry.clone();
         let state_hub = self.state_hub.clone();
         let metrics = self.metrics.clone();
+        let extension_chain = self.extension_chain_for_workdir(&workdir)?;
         tokio::task::spawn_blocking(move || {
             run_plan_on_local_runtime(
                 workdir,
@@ -234,10 +249,47 @@ impl CliRuntime for RokoCliRuntime {
                 repo_registry,
                 state_hub,
                 metrics,
+                extension_chain,
             )
         })
         .await
         .map_err(|err| anyhow::anyhow!("plan execution worker failed: {err}"))?
+    }
+
+    async fn run_trigger_graph(
+        &self,
+        _workdir: &Path,
+        graph: &Path,
+        event: &roko_core::trigger::TriggerEvent,
+    ) -> anyhow::Result<PlanExecutionResult> {
+        let output =
+            crate::graph_command::execute_graph(graph, &self.state_hub, Some(event), None).await?;
+        Ok(PlanExecutionResult {
+            success: output.success,
+            output_text: Some(output.summary()),
+            gate_results: Vec::new(),
+        })
+    }
+
+    async fn run_trigger_graph_scoped(
+        &self,
+        _workdir: &Path,
+        graph: &Path,
+        event: &roko_core::trigger::TriggerEvent,
+        scope: &TriggerExecutionScope,
+    ) -> anyhow::Result<PlanExecutionResult> {
+        let output = crate::graph_command::execute_graph(
+            graph,
+            &self.state_hub,
+            Some(event),
+            scope.capabilities.as_ref(),
+        )
+        .await?;
+        Ok(PlanExecutionResult {
+            success: output.success,
+            output_text: Some(output.summary()),
+            gate_results: Vec::new(),
+        })
     }
 
     fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
@@ -257,6 +309,21 @@ impl CliRuntime for RokoCliRuntime {
         DashboardInfo {
             rendered: scaffold.render_overview_text(),
         }
+    }
+
+    fn extension_chain(
+        &self,
+        workdir: &Path,
+    ) -> Option<Arc<tokio::sync::Mutex<roko_core::extension::ExtensionChain>>> {
+        self.extension_chain_for_workdir(workdir)
+            .map_err(|error| {
+                tracing::warn!(
+                    workdir = %workdir.display(),
+                    %error,
+                    "failed to load workspace extensions"
+                );
+            })
+            .ok()
     }
 
     fn resolve_repo_workdir(&self, repo_full_name: &str) -> Option<PathBuf> {
@@ -285,6 +352,33 @@ impl CliRuntime for RokoCliRuntime {
 }
 
 impl RokoCliRuntime {
+    fn extension_chain_for_workdir(
+        &self,
+        workdir: &Path,
+    ) -> anyhow::Result<Arc<tokio::sync::Mutex<roko_core::extension::ExtensionChain>>> {
+        let key = workdir
+            .canonicalize()
+            .unwrap_or_else(|_| workdir.to_path_buf());
+        if let Some(chain) = self
+            .extension_chains
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .cloned()
+        {
+            return Ok(chain);
+        }
+
+        let config = load_effective_roko_config(workdir, &self.repo_registry)?;
+        let chain = load_serve_extension_chain(workdir, &config)?;
+        let chain = Arc::new(tokio::sync::Mutex::new(chain));
+        let mut chains = self
+            .extension_chains
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(chains.entry(key).or_insert_with(|| chain).clone())
+    }
+
     fn knowledge_store(&self, workdir: &Path) -> &KnowledgeStore {
         // `run_once_with_config` is the only bench entry point, so this store can
         // be initialized on demand from the workspace passed into that call.
@@ -301,6 +395,46 @@ impl RokoCliRuntime {
     }
 }
 
+fn load_serve_extension_chain(
+    workdir: &Path,
+    config: &RokoConfig,
+) -> anyhow::Result<roko_core::extension::ExtensionChain> {
+    let registry_base =
+        crate::runner::extension_registry::registry_base_url(config.relay.url.as_deref());
+    let registry_failures = crate::runner::extension_registry::fetch_missing_registry_extensions(
+        workdir,
+        &config.agent.extensions,
+        registry_base.as_deref(),
+    )
+    .into_iter()
+    .map(
+        |(extension, message)| crate::runner::extension_loader::ExtensionStartupFailure {
+            extension,
+            stage: "registry_fetch",
+            message,
+        },
+    )
+    .collect();
+    let mut chain = roko_core::extension::ExtensionChain::new();
+    let report = crate::runner::extension_loader::load_extensions_for_startup(
+        workdir,
+        &config.agent.extensions,
+        &[],
+        &mut chain,
+        registry_failures,
+    );
+    if !report.required_failures.is_empty() {
+        let failures = report
+            .required_failures
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ");
+        anyhow::bail!("workspace extension startup failed: {failures}");
+    }
+    Ok(chain)
+}
+
 fn run_plan_on_local_runtime(
     workdir: PathBuf,
     plan_target: PathBuf,
@@ -308,6 +442,7 @@ fn run_plan_on_local_runtime(
     repo_registry: RepoRegistry,
     state_hub: SharedStateHub,
     metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
+    extension_chain: Arc<tokio::sync::Mutex<roko_core::extension::ExtensionChain>>,
 ) -> anyhow::Result<PlanExecutionResult> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -323,8 +458,14 @@ fn run_plan_on_local_runtime(
             .map(|plan| plan.id.clone())
             .collect::<BTreeSet<_>>();
         let roko_config = load_effective_roko_config(&workdir, &repo_registry)?;
-        let run_config =
-            build_runner_config(&workdir, &execution_root, &config, roko_config, metrics);
+        let run_config = build_runner_config(
+            &workdir,
+            &execution_root,
+            &config,
+            roko_config,
+            metrics,
+            extension_chain,
+        );
         let events_offset = runner_events_offset(&workdir);
         let cancel = tokio_util::sync::CancellationToken::new();
 
@@ -557,6 +698,7 @@ fn build_runner_config(
     cli_config: &Config,
     roko_config: RokoConfig,
     metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
+    extension_chain: Arc<tokio::sync::Mutex<roko_core::extension::ExtensionChain>>,
 ) -> crate::runner::RunConfig {
     let model = non_empty_string(&roko_config.agent.default_model)
         .or_else(|| cli_config.agent.model.clone())
@@ -587,9 +729,6 @@ fn build_runner_config(
     let cascade_router = Arc::new(roko_learn::cascade_router::CascadeRouter::load_or_new(
         &router_path,
         model_slugs,
-    ));
-    let extension_chain = Arc::new(tokio::sync::Mutex::new(
-        roko_core::extension::ExtensionChain::new(),
     ));
     let connector_registry = Arc::new(std::sync::Mutex::new(roko_core::ConnectorRegistry::new()));
     let feed_registry = Arc::new(std::sync::Mutex::new(roko_core::FeedRegistry::new()));
@@ -677,6 +816,7 @@ fn build_runner_config(
         obs_sinks: None,
         conductor: Some(Arc::new(conductor)),
         conductor_ring: Some(conductor_ring),
+        github_ops: None,
     }
 }
 
@@ -779,6 +919,8 @@ pub(crate) async fn dispatch_bench_prompt(
     let cost_table = roko_agent::CostTable::from_config_with_defaults(&model_config.models);
     let mut service = ModelCallService::new(model.clone())
         .with_config(model_config.clone())
+        .with_working_dir(workdir)
+        .with_immune_root(workdir)
         .with_cost_table(cost_table)
         .with_feedback_sink(feedback_sink)
         .with_inference_observer(Arc::new(
@@ -1155,4 +1297,112 @@ fn render_plan_execution_summary(report: &crate::runner::RunReport, gate_count: 
         ));
     }
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests_extension_startup {
+    use super::*;
+
+    fn write_native_manifest(workdir: &Path, name: &str, optional: bool) {
+        let directory = RokoLayout::for_project(workdir).extensions_dir().join(name);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("extension.toml"),
+            format!(
+                r#"[extension]
+name = "{name}"
+version = "1.0.0"
+layer = "action"
+tier = "native_rust"
+optional = {optional}
+"#
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_failing_init_wasm(workdir: &Path, name: &str) {
+        let directory = RokoLayout::for_project(workdir).extensions_dir().join(name);
+        std::fs::create_dir_all(&directory).unwrap();
+        let output = r#"{"error":"fixture init failure"}"#;
+        let escaped = output
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("\\{byte:02x}"))
+            .collect::<String>();
+        let wat = format!(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "roko_alloc") (param i32) (result i32) i32.const 4096)
+                (data (i32.const 0) "{escaped}")
+                (func (export "on_init") (param i32 i32) (result i64)
+                    i64.const {length}))"#,
+            length = output.len(),
+        );
+        std::fs::write(directory.join("hook.wasm"), wat::parse_str(wat).unwrap()).unwrap();
+        std::fs::write(
+            directory.join("extension.toml"),
+            format!(
+                r#"[extension]
+name = "{name}"
+version = "1.0.0"
+layer = "foundation"
+tier = "wasm"
+optional = false
+
+[extension.config]
+module = "hook.wasm"
+memory_mb = 1
+fuel = 100000
+hooks = ["on_init"]
+"#,
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn serve_startup_rejects_configured_required_extension_load_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_native_manifest(tmp.path(), "required-native", false);
+        let mut config = RokoConfig::default();
+        config.agent.extensions = vec!["required-native".to_string()];
+
+        let error = match load_serve_extension_chain(tmp.path(), &config) {
+            Ok(_) => panic!("required extension load failure must reject serve startup"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("required-native"));
+        assert!(error.to_string().contains("native_load"));
+    }
+
+    #[test]
+    fn serve_startup_isolates_configured_optional_extension_load_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_native_manifest(tmp.path(), "optional-native", true);
+        let mut config = RokoConfig::default();
+        config.agent.extensions = vec!["optional-native".to_string()];
+
+        let chain = load_serve_extension_chain(tmp.path(), &config).unwrap();
+        assert!(chain.is_empty());
+    }
+
+    #[tokio::test]
+    async fn serve_preflight_rejects_required_init_failure_before_bind() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_failing_init_wasm(tmp.path(), "init-fail");
+        std::fs::write(
+            tmp.path().join("roko.toml"),
+            "[agent]\nextensions = [\"init-fail\"]\n",
+        )
+        .unwrap();
+        let runtime = RokoCliRuntime::new(Config::default(), RepoRegistry::default());
+
+        let error = runtime
+            .prepare_workspace_extensions(tmp.path())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("init-fail"));
+        assert!(error.to_string().contains("fixture init failure"));
+    }
 }

@@ -11,7 +11,7 @@ use tracing::warn;
 
 use chrono::{DateTime, Utc};
 use roko_core::RuntimeEvent;
-use roko_core::foundation::{EventConsumer, FeedbackEvent, ShellGateCommand};
+use roko_core::foundation::{EventConsumer, FeedbackEvent, ModelInputMessage, ShellGateCommand};
 use roko_core::runtime_event::RuntimeEventEnvelope;
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +29,8 @@ use crate::run_ledger::{EffectErrorKind, RunLedger};
 pub struct WorkflowRunConfig {
     /// User prompt.
     pub prompt: String,
+    /// Ordered structured input used for multimodal provider dispatch.
+    pub input_messages: Vec<ModelInputMessage>,
     /// Working directory.
     pub workdir: PathBuf,
     /// Workflow configuration (express/standard/full).
@@ -174,7 +176,8 @@ impl WorkflowEngine {
             },
             run_id.clone(),
             config.workdir.clone(),
-        );
+        )
+        .with_input_messages(config.input_messages.clone());
 
         self.emit(RuntimeEvent::WorkflowStarted {
             run_id: run_id.clone(),
@@ -427,7 +430,8 @@ impl WorkflowEngine {
             },
             run_id.clone(),
             config.workdir.clone(),
-        );
+        )
+        .with_input_messages(config.input_messages.clone());
 
         self.emit(RuntimeEvent::WorkflowStarted {
             run_id: run_id.clone(),
@@ -1153,6 +1157,7 @@ mod tests {
     fn commit_message_uses_prefix_when_present() {
         let config = WorkflowRunConfig {
             prompt: "short prompt".to_string(),
+            input_messages: Vec::new(),
             workdir: PathBuf::from("."),
             workflow: WorkflowConfig::express(),
             enabled_gates: Vec::new(),
@@ -1336,6 +1341,7 @@ mod tests {
         let report = engine
             .run(WorkflowRunConfig {
                 prompt: "write the smallest useful change".to_string(),
+                input_messages: Vec::new(),
                 workdir,
                 workflow: WorkflowConfig::standard(),
                 enabled_gates: vec!["shell".to_string()],
@@ -1744,6 +1750,7 @@ mod tests {
         let tempdir = isolated_git_workdir();
         let config = WorkflowRunConfig {
             prompt: "fix the bug".into(),
+            input_messages: Vec::new(),
             workdir: tempdir.path().to_path_buf(),
             workflow: WorkflowConfig::express(),
             enabled_gates: Vec::new(),
@@ -1757,6 +1764,7 @@ mod tests {
         let tempdir = isolated_git_workdir();
         let config = WorkflowRunConfig {
             prompt: "fix the bug".into(),
+            input_messages: Vec::new(),
             workdir: tempdir.path().to_path_buf(),
             workflow: WorkflowConfig::standard(),
             enabled_gates: vec!["compile".to_string()],

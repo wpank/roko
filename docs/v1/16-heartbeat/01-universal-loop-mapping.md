@@ -1,5 +1,8 @@
 # Universal Loop Mapping: CoALA → Synapse
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > How the historical CoALA 9-step pipeline maps onto Roko's canonical seven-step universal loop - the domain-agnostic version every agent executes. See `tmp/refinements/05-loop-retold.md`, `tmp/refinements/09-phase-2-implications.md`, and `docs/00-architecture/01-naming-and-glossary.md`.
 
 

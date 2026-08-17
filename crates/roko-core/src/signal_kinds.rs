@@ -20,8 +20,15 @@ pub const GITHUB_WORKFLOW_RUN: &str = "github:workflow_run";
 pub const GITHUB_WORKFLOW_RUN_COMPLETED: &str = "github:workflow_run:completed";
 /// A GitHub `check_suite` event (any action).
 pub const GITHUB_CHECK_SUITE: &str = "github:check_suite";
-/// A GitHub `check_suite` event with `action=completed`.
-pub const GITHUB_CHECK_SUITE_COMPLETED: &str = "github:check_suite:completed";
+/// A completed GitHub check event. GitHub currently delivers this through the
+/// `check_suite` webhook, but consumers should depend on this canonical name.
+pub const GITHUB_CHECK_COMPLETED: &str = "github:check_suite:completed";
+/// Backward-compatible alias for consumers that named the GitHub transport.
+pub const GITHUB_CHECK_SUITE_COMPLETED: &str = GITHUB_CHECK_COMPLETED;
+/// A validated GitHub issue requested execution of a referenced plan.
+pub const GITHUB_PLAN_EXECUTION_REQUESTED: &str = "github:plan:execution_requested";
+/// A validated GitHub PR review requested replanning of its plan branch.
+pub const GITHUB_REPLAN_REQUESTED: &str = "github:plan:replan_requested";
 /// A GitHub `create` event (branch or tag created).
 pub const GITHUB_CREATE: &str = "github:create";
 /// A GitHub `delete` event (branch or tag deleted).
@@ -55,4 +62,5 @@ pub const FS_CHANGED: &str = "fswatcher:changed";
 pub const FS_CREATED: &str = "fswatcher:created";
 pub const FS_MODIFIED: &str = "fswatcher:modified";
 pub const FS_DELETED: &str = "fswatcher:deleted";
+pub const FS_RENAMED: &str = "fswatcher:renamed";
 pub const MANUAL_TRIGGER: &str = "manual:trigger";

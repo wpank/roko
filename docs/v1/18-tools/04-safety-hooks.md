@@ -1,5 +1,8 @@
 # 04 — Safety Hooks & Capability Tokens
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Capability<T> flow, safety hook chain, Revm simulation, WASM sandbox for untrusted tools,
 > TaintedString for sensitive data handling.
 > See also [tmp/refinements/25-domain-specific-agents.md](../../tmp/refinements/25-domain-specific-agents.md).

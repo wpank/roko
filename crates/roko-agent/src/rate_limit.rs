@@ -117,6 +117,21 @@ pub struct ProviderLimits {
     pub tpm: u64,
 }
 
+/// Operational snapshot of one configured provider's rolling limits.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct ProviderRateLimitSnapshot {
+    /// Provider configuration key.
+    pub provider_id: String,
+    /// Requests observed in the current 60-second window.
+    pub rpm_used: u64,
+    /// Configured requests-per-minute limit.
+    pub rpm_limit: u32,
+    /// Tokens observed in the current 60-second window.
+    pub tpm_used: u64,
+    /// Configured tokens-per-minute limit; zero means unlimited.
+    pub tpm_limit: u64,
+}
+
 impl From<roko_core::config::provider::ProviderLimits> for ProviderLimits {
     fn from(c: roko_core::config::provider::ProviderLimits) -> Self {
         Self {
@@ -191,6 +206,10 @@ impl TpmTracker {
 struct ProviderState {
     /// Governor rate limiter using per-provider RPM.
     rpm_limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>>,
+    /// Configured RPM budget.
+    rpm_limit: u32,
+    /// Rolling request counter for operational reporting.
+    rpm_tracker: Arc<TpmTracker>,
     /// TPM budget (0 = unlimited).
     tpm_limit: u64,
     /// Rolling token counter.
@@ -268,6 +287,8 @@ impl ProviderRateLimiter {
                 provider_id,
                 ProviderState {
                     rpm_limiter,
+                    rpm_limit: provider_rpm.get(),
+                    rpm_tracker: Arc::new(TpmTracker::new()),
                     tpm_limit: limit.tpm,
                     tpm_tracker: Arc::new(TpmTracker::new()),
                 },
@@ -284,8 +305,8 @@ impl ProviderRateLimiter {
 
     /// Build from an iterator of `(provider_id, ProviderConfig)` pairs.
     ///
-    /// Providers without a `limits` field use the `default_rpm` budget via the
-    /// shared keyed fallback path in [`acquire`].
+    /// Providers without a `limits` field receive the default RPM budget and
+    /// an unlimited TPM budget, so they still appear in operational snapshots.
     ///
     /// Works with both `HashMap` and `IndexMap` via `.iter()`:
     ///
@@ -301,10 +322,15 @@ impl ProviderRateLimiter {
         I: Iterator<Item = (&'a String, &'a roko_core::config::provider::ProviderConfig)>,
     {
         let limits: HashMap<String, ProviderLimits> = configs
-            .filter_map(|(id, cfg)| {
-                cfg.limits
-                    .as_ref()
-                    .map(|l| (id.clone(), ProviderLimits::from(l.clone())))
+            .map(|(id, cfg)| {
+                let limits = cfg.limits.as_ref().map_or(
+                    ProviderLimits {
+                        rpm: default_rpm,
+                        tpm: 0,
+                    },
+                    |limits| ProviderLimits::from(limits.clone()),
+                );
+                (id.clone(), limits)
             })
             .collect();
         Self::with_provider_limits(default_rpm, limits)
@@ -349,13 +375,17 @@ impl ProviderRateLimiter {
         // Check for a dedicated per-provider governor first (no async inside lock).
         let dedicated = {
             let providers = self.providers.lock().expect("rate limiter lock");
-            providers
-                .get(provider_id)
-                .map(|s| Arc::clone(&s.rpm_limiter))
+            providers.get(provider_id).map(|state| {
+                (
+                    Arc::clone(&state.rpm_limiter),
+                    Arc::clone(&state.rpm_tracker),
+                )
+            })
         };
 
-        if let Some(limiter) = dedicated {
+        if let Some((limiter, tracker)) = dedicated {
             limiter.until_ready().await;
+            tracker.add(1);
         } else {
             self.default_limiter
                 .until_key_ready(&provider_id.to_string())
@@ -406,7 +436,6 @@ impl ProviderRateLimiter {
 
         // RPM slot acquisition (same logic as `acquire`).
         self.acquire(provider_id).await;
-
         Ok(outcome)
     }
 
@@ -457,6 +486,26 @@ impl ProviderRateLimiter {
             .get(provider_id)
             .map(|s| s.tpm_tracker.current())
             .unwrap_or(0)
+    }
+
+    /// Return rolling RPM/TPM utilization for every configured provider.
+    /// Providers without explicit limits report the runtime's default RPM
+    /// budget and an unlimited (`0`) TPM budget.
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<ProviderRateLimitSnapshot> {
+        let providers = self.providers.lock().expect("rate limiter lock");
+        let mut snapshots = providers
+            .iter()
+            .map(|(provider_id, state)| ProviderRateLimitSnapshot {
+                provider_id: provider_id.clone(),
+                rpm_used: state.rpm_tracker.current(),
+                rpm_limit: state.rpm_limit,
+                tpm_used: state.tpm_tracker.current(),
+                tpm_limit: state.tpm_limit,
+            })
+            .collect::<Vec<_>>();
+        snapshots.sort_by(|left, right| left.provider_id.cmp(&right.provider_id));
+        snapshots
     }
 
     #[cfg(test)]
@@ -576,6 +625,7 @@ mod tests {
                 limits: Some(CoreLimits {
                     rpm: 50,
                     tpm: 40_000,
+                    ..Default::default()
                 }),
             },
         );
@@ -588,6 +638,74 @@ mod tests {
         );
         let state = providers.get("anthropic").unwrap();
         assert_eq!(state.tpm_limit, 40_000, "TPM limit should be 40000");
+    }
+
+    #[tokio::test]
+    async fn snapshot_reports_default_and_explicit_provider_utilization() {
+        use roko_core::agent::ProviderKind;
+        use roko_core::config::provider::{ProviderConfig, ProviderLimits as CoreLimits};
+
+        let mut configs = HashMap::new();
+        configs.insert(
+            "defaulted".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: None,
+                api_key_env: None,
+                command: None,
+                args: None,
+                timeout_ms: None,
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: None,
+                max_concurrent: None,
+                limits: None,
+            },
+        );
+        configs.insert(
+            "limited".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                limits: Some(CoreLimits {
+                    rpm: 500,
+                    tpm: 50_000,
+                    ..Default::default()
+                }),
+                base_url: None,
+                api_key_env: None,
+                command: None,
+                args: None,
+                timeout_ms: None,
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: None,
+                max_concurrent: None,
+            },
+        );
+        let limiter = ProviderRateLimiter::from_provider_configs(75, configs.iter());
+
+        limiter.try_acquire("limited").await.expect("acquire");
+        limiter.record_tokens("limited", 123).await;
+
+        assert_eq!(
+            limiter.snapshot(),
+            vec![
+                ProviderRateLimitSnapshot {
+                    provider_id: "defaulted".to_string(),
+                    rpm_used: 0,
+                    rpm_limit: 75,
+                    tpm_used: 0,
+                    tpm_limit: 0,
+                },
+                ProviderRateLimitSnapshot {
+                    provider_id: "limited".to_string(),
+                    rpm_used: 1,
+                    rpm_limit: 500,
+                    tpm_used: 123,
+                    tpm_limit: 50_000,
+                },
+            ]
+        );
     }
 
     // ── Shared health integration tests ─────────────────────────────────

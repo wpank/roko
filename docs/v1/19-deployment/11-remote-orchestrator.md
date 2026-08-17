@@ -1,5 +1,8 @@
 # Remote Orchestrator
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Roko can run as a long-lived HTTP service, letting you interact with it from anywhere —
 > submit plans, trigger runs, query durable state, and subscribe to the shared realtime surface.
 > This document covers the server mode, the HTTP API surface, authentication, remote-consumer

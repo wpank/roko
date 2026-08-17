@@ -14,16 +14,21 @@
 
 pub mod dependency;
 pub mod manifest;
+pub mod registry;
 pub mod tool_registry;
 pub mod trigger_protocol;
+
+pub use roko_core::plugin::{PluginCapability, PluginTier};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use cron::Schedule;
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use notify::{EventKind, RecursiveMode, Watcher, recommended_watcher};
+use notify::{EventKind, RecursiveMode, Watcher, event::ModifyKind, recommended_watcher};
 use roko_core::config::{SchedulerConfig, SchedulerCronConfig, WatcherConfig, WatcherPathConfig};
-use roko_core::{Body, FS_CREATED, FS_DELETED, FS_MODIFIED, Kind, Result, RokoError, Signal};
+use roko_core::{
+    Body, FS_CREATED, FS_DELETED, FS_MODIFIED, FS_RENAMED, Kind, Result, RokoError, Signal,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -620,6 +625,7 @@ fn file_watch_signal(path: &Path, signal_kind: &str, event_kind: &str) -> Signal
 fn classify_file_watch_event(kind: &EventKind) -> Option<(&'static str, &'static str)> {
     match kind {
         EventKind::Create(_) => Some((FS_CREATED, "created")),
+        EventKind::Modify(ModifyKind::Name(_)) => Some((FS_RENAMED, "renamed")),
         EventKind::Modify(_) => Some((FS_MODIFIED, "modified")),
         EventKind::Remove(_) => Some((FS_DELETED, "deleted")),
         _ => None,
@@ -787,13 +793,21 @@ mod tests {
     use std::fs;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use notify::event::{CreateKind, ModifyKind, RemoveKind};
+    use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
     use roko_core::{Body, Kind, Signal};
     use serde_json::json;
     use tokio::time::{sleep, timeout};
 
     struct DummyEventSource;
     struct DummyFeedbackCollector;
+
+    #[test]
+    fn file_watch_classifies_rename_distinctly() {
+        assert_eq!(
+            classify_file_watch_event(&EventKind::Modify(ModifyKind::Name(RenameMode::Both))),
+            Some((FS_RENAMED, "renamed"))
+        );
+    }
 
     #[async_trait]
     impl EventSource for DummyEventSource {

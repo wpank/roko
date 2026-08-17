@@ -1,5 +1,8 @@
 # Conductor Integration
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Crate**: `roko-conductor`
 > **Integration point**: `PlanRunner.conductor` in `roko-cli/src/orchestrate.rs`
 > **Background checker**: `WatcherRunner` (tails signals, runs conductor every

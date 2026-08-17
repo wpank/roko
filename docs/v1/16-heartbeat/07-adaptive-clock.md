@@ -1,5 +1,8 @@
 # Adaptive Clock
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The runtime component that manages all three cognitive speeds — gamma, theta, and delta — adjusting each frequency based on environmental regime and resource constraints.
 
 

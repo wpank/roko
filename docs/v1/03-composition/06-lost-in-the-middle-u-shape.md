@@ -1,5 +1,8 @@
 # 06 — Lost in the Middle: U-Shaped Attention Optimization
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Layer 2 Scaffold — Synapse Architecture
 > Status: **Implemented** — Placement enum in `roko-compose::prompt`
 > Canonical source: Liu et al., TACL 2024 [arXiv:2307.03172]

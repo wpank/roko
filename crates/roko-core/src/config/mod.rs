@@ -40,7 +40,8 @@ pub use cache::ConfigCache;
 pub use compat::from_mori_toml;
 pub use presets::Preset;
 pub use provenance::{
-    ConfigDiagnostic, ConfigProvenance, ConfigSource, ResolvedRuntimeConfig, ValidatedConfig,
+    ConfigDiagnostic, ConfigProvenance, ConfigSource, FieldProvenance, MergeContext,
+    ResolvedRuntimeConfig, ValidatedConfig,
 };
 pub use provider::{
     BackendModelSlug, ConfigIdentityError, DEFAULT_TTFT_TIMEOUT_MS, ModelAlias, ModelCapabilities,
@@ -49,8 +50,9 @@ pub use provider::{
 };
 pub use timeouts::TimeoutConfig;
 pub use validation::{
-    DangerousPermissionOverride, DangerousPermissionOverrideError, StrictConfigSource,
-    StrictConfigValidationError, validate_strict_config_toml,
+    DangerousPermissionOverride, DangerousPermissionOverrideError, InvariantResult,
+    InvariantSeverity, StrictConfigSource, StrictConfigValidationError, validate_invariants,
+    validate_strict_config_toml,
 };
 
 // All section structs are re-exported from schema (which re-exports from submodules).
@@ -58,18 +60,19 @@ pub use schema::{
     AgentBudget, AgentConfig, AgentDefinition, AgentMode, AgentThresholds, ApiKeyEntry,
     BudgetConfig, CURRENT_SCHEMA_VERSION, ChainConfig, ColdStorageConfig, CompileFailRepeatConfig,
     ConductorConfig, ContextWindowPressureConfig, CoreRunnerConfig, CostOverrunConfig,
-    DataLlmConfig, DeployConfig, EnforcementMode, GateRungConfig, GatesConfig, GeminiConfig,
-    GhostTurnConfig, GithubWebhookConfig, GraduationConfig, GraduationPolicy, ISFRSection,
-    ISFRSourceConfig, IterationLoopConfig, LearningConfig, ModelProfile, PerplexityConfig,
-    PipelineBandConfig, PipelineConfig, PipelineReviewerMode, PrdConfig, ProjectConfig,
-    ProviderConfig, ProviderRouting, RelayConfig, ResourcesConfig, ReviewLoopConfig, RewardWeights,
-    RokoConfig, RoleOverride, RoutingAlgorithm, RoutingConfig, RoutingOverrides,
+    DataLlmConfig, DeployConfig, DomainProfile, EnforcementMode, GateProfileConfig, GateRungConfig,
+    GatesConfig, GeminiConfig, GhostTurnConfig, GithubWebhookConfig, GraduationConfig,
+    GraduationPolicy, IterationLoopConfig, JwksProvider, LearningConfig, ModelProfile,
+    PerplexityConfig, PipelineBandConfig, PipelineConfig, PipelineReviewerMode, PrdConfig,
+    ProjectConfig, ProviderConfig, ProviderRouting, RelayConfig, ResourcesConfig, ReviewLoopConfig,
+    RewardWeights, RokoConfig, RoleOverride, RoutingAlgorithm, RoutingConfig, RoutingOverrides,
     RoutingRewardWeightsConfig, SafetySetting, SchedulerConfig, SchedulerCronConfig,
     ServeAuthConfig, ServeConfig, ServeDeployConfig, ServeDeployWebhookConfig, ServerConfig,
-    SpecDriftConfig, StuckPatternConfig, SubscriptionConfig, SubscriptionFilterConfig,
-    SubscriptionTrigger, TestFailureBudgetConfig, TimeOverrunConfig, ToolProfileConfig,
-    ToolsConfig, TracingConfig, TuiConfig, ValidationConfig, WatcherConfig, WatcherPathConfig,
-    WatcherThresholds, WebhooksConfig, WorktreeCountConfig,
+    SpecDriftConfig, StateHubConfig, StuckPatternConfig, SubscriptionConfig,
+    SubscriptionFilterConfig, SubscriptionTrigger, TestFailureBudgetConfig, TimeOverrunConfig,
+    ToolProfileConfig, ToolsConfig, TracingConfig, TuiConfig, ValidationConfig, WatcherConfig,
+    WatcherPathConfig, WatcherThresholds, WebhooksConfig, WorktreeCountConfig, builtin_profiles,
+    resolve_profile,
 };
 pub use serve::GitHubConfig;
 
@@ -128,6 +131,22 @@ pub enum LoadConfigError {
         field: String,
         /// Unresolved model key or slug.
         model: String,
+    },
+    /// A post-merge semantic invariant rejected the effective config.
+    #[error("config invariant {invariant_id} violated: {message}")]
+    InvariantViolation {
+        /// Stable invariant identifier from `validate_invariants`.
+        invariant_id: u8,
+        /// Human-readable validation failure.
+        message: String,
+    },
+    /// A versioned config migration could not reach the current schema.
+    #[error("migrate {path}: {message}")]
+    Migration {
+        /// Config file path.
+        path: std::path::PathBuf,
+        /// Migration failure details.
+        message: String,
     },
 }
 
@@ -232,6 +251,7 @@ fn load_config_impl(
         migrated,
         diagnostics,
         provenance,
+        merge_context: MergeContext::default(),
     })
 }
 
@@ -307,16 +327,17 @@ mod load_config_tests {
     }
 
     #[test]
-    fn outdated_config_version_produces_soft_warning() {
+    fn unversioned_schema_migrates_old_config_version() {
         let dir = tempfile::tempdir().expect("tempdir");
         // Pin config_version to 1 to trip the soft-warning check.
         let toml_text = "config_version = 1\n";
         std::fs::write(dir.path().join("roko.toml"), toml_text).expect("write roko.toml");
 
         let validated = load_config_isolated(dir.path()).expect("older config still loads");
-        let diagnostics = validated.diagnostics();
-        assert_eq!(diagnostics.len(), 1, "got {diagnostics:?}");
-        assert_eq!(diagnostics[0].key, "config_version");
+        assert_eq!(validated.config().config_version, 2);
+        assert!(validated.provenance().iter().any(|entry| {
+            entry.source == ConfigSource::Migration && entry.key == "schema_version"
+        }));
     }
 
     #[test]

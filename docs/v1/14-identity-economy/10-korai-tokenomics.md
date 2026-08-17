@@ -1,5 +1,8 @@
 # 10 — KORAI Tokenomics: Demurrage, Minting, and Knowledge Markets
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > KORAI is the native token of the Korai chain — designed for knowledge markets, not
 > speculation. It uses hybrid deflation: 1% annual demurrage (gentle background decay)
 > plus burn-on-use (tokens destroyed when agents post, query, challenge, and trade).

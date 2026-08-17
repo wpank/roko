@@ -1,5 +1,8 @@
 # 09 — MCP Integration Architecture
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Model Context Protocol (MCP) — JSON-RPC stdio transport, tool converter,
 > dynamic registry, and how MCP extends the Synapse tool system.
 

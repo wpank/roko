@@ -281,28 +281,28 @@ fn check_push(segment: &str, args: &[&str], policy: &GitPolicy) -> Result<(), To
         // Colon-delete refspec: any arg starting with `:` (not `::` — that's
         // a different fetch refspec form, but we're conservative).
         for arg in args {
-            if let Some(branch) = arg.strip_prefix(':') {
-                if !branch.is_empty() && is_protected(branch, policy) {
-                    return Err(blocked(
-                        "block_branch_delete_protected",
-                        segment,
-                        &format!("colon-delete of protected branch `{branch}`"),
-                    ));
-                }
+            if let Some(branch) = arg.strip_prefix(':')
+                && !branch.is_empty()
+                && is_protected(branch, policy)
+            {
+                return Err(blocked(
+                    "block_branch_delete_protected",
+                    segment,
+                    &format!("colon-delete of protected branch `{branch}`"),
+                ));
             }
         }
 
         // `--delete <branch>` flag.
-        if let Some(pos) = args.iter().position(|a| *a == "--delete" || *a == "-d") {
-            if let Some(branch) = args.get(pos + 1) {
-                if is_protected(branch, policy) {
-                    return Err(blocked(
-                        "block_branch_delete_protected",
-                        segment,
-                        &format!("--delete of protected branch `{branch}`"),
-                    ));
-                }
-            }
+        if let Some(pos) = args.iter().position(|a| *a == "--delete" || *a == "-d")
+            && let Some(branch) = args.get(pos + 1)
+            && is_protected(branch, policy)
+        {
+            return Err(blocked(
+                "block_branch_delete_protected",
+                segment,
+                &format!("--delete of protected branch `{branch}`"),
+            ));
         }
     }
 

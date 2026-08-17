@@ -1,5 +1,8 @@
 # Prompt Security: Ventriloquist Defense and CaMeL Architecture
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L2 Scaffold (prompt engineering), L3 Harness (prompt verification)
 >
 > **Crate**: `roko-compose` (SystemPromptBuilder), `roko-agent` (safety layer)

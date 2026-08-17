@@ -8,7 +8,10 @@ pub(crate) async fn cmd_up(cli: &Cli, workdir: PathBuf) -> Result<i32> {
 
     prepare_runtime_hooks(&workdir, cli.quiet);
 
-    // Ensure .roko/ exists (like `roko init` would).
+    let _workspace_lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
+    // Ensure the remaining runtime directories exist only after this process
+    // owns the workspace mutation guard. Lock acquisition bootstraps
+    // `.roko/runtime/` itself.
     let _ = bootstrap_observability_dirs(&workdir);
 
     // Load RokoConfig to get [[agents]] definitions.
@@ -37,8 +40,9 @@ pub(crate) async fn cmd_up(cli: &Cli, workdir: PathBuf) -> Result<i32> {
         repo_registry,
         state_hub.clone(),
         Some(std::sync::Arc::clone(&metrics)),
-    )
-    .into_arc();
+    );
+    runtime.prepare_workspace_extensions(&workdir).await?;
+    let runtime = runtime.into_arc();
     let roko_config = roko_core::config::loader::load_config_unified(&workdir)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let server_config =
@@ -388,15 +392,8 @@ pub(crate) async fn cmd_deploy_railway(
         let template_b64 =
             base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &template_json);
 
-        let mut worker_env = env_vars.clone();
-        worker_env.insert("ROKO_TEMPLATE_JSON".to_string(), template_b64);
-        worker_env.insert(
-            "ROKO_CONTROL_PLANE_URL".to_string(),
-            control_url.to_string(),
-        );
-        // Generate a callback token so the control plane can verify worker callbacks.
-        let callback_token = uuid::Uuid::new_v4().to_string();
-        worker_env.insert("ROKO_WORKER_CALLBACK_TOKEN".to_string(), callback_token);
+        let callback_id = uuid::Uuid::new_v4().to_string();
+        let worker_env = railway_worker_env(&env_vars, template_b64, control_url, callback_id);
 
         let service_name = format!("roko-worker-{template_name}");
         let (_worker_dep, _) = backend
@@ -747,13 +744,74 @@ pub(crate) fn collect_railway_env_vars() -> std::collections::HashMap<String, St
 
     let mut vars = std::collections::HashMap::new();
     for name in NAMES {
-        if let Ok(value) = env::var(name) {
-            if !value.trim().is_empty() {
-                vars.insert((*name).to_string(), value);
-            }
+        if let Ok(value) = env::var(name)
+            && !value.trim().is_empty()
+        {
+            vars.insert((*name).to_string(), value);
         }
     }
     vars
+}
+
+fn railway_worker_env(
+    control_plane_env: &std::collections::HashMap<String, String>,
+    template_b64: String,
+    control_url: &str,
+    callback_id: String,
+) -> std::collections::HashMap<String, String> {
+    let mut worker_env = control_plane_env.clone();
+    worker_env.insert("ROKO_TEMPLATE_JSON".to_string(), template_b64);
+    worker_env.insert(
+        "ROKO_CONTROL_PLANE_URL".to_string(),
+        control_url.to_string(),
+    );
+    worker_env.insert("ROKO_DEPLOYMENT_ID".to_string(), callback_id);
+    worker_env
+}
+
+#[cfg(test)]
+mod tests {
+    use super::railway_worker_env;
+    use std::collections::HashMap;
+
+    #[test]
+    fn railway_worker_env_reuses_control_plane_callback_token_and_sets_callback_id() {
+        let token = "shared-control-plane-token";
+        let base = HashMap::from([
+            ("ROKO_WORKER_CALLBACK_TOKEN".to_string(), token.to_string()),
+            ("OPENAI_API_KEY".to_string(), "provider-key".to_string()),
+        ]);
+
+        let env = railway_worker_env(
+            &base,
+            "encoded-template".to_string(),
+            "https://control.example",
+            "callback-worker-1".to_string(),
+        );
+
+        assert_eq!(
+            env.get("ROKO_WORKER_CALLBACK_TOKEN").map(String::as_str),
+            Some(token),
+            "worker must reuse the token configured on the control plane"
+        );
+        assert_eq!(
+            env.get("ROKO_DEPLOYMENT_ID").map(String::as_str),
+            Some("callback-worker-1")
+        );
+        assert_eq!(
+            env.get("ROKO_CONTROL_PLANE_URL").map(String::as_str),
+            Some("https://control.example")
+        );
+        assert_eq!(
+            env.get("ROKO_TEMPLATE_JSON").map(String::as_str),
+            Some("encoded-template")
+        );
+        assert_eq!(
+            env.get("OPENAI_API_KEY").map(String::as_str),
+            Some("provider-key"),
+            "existing provider environment must remain intact"
+        );
+    }
 }
 
 pub(crate) fn run_command_status(workdir: &Path, program: &str, args: &[&str]) -> Result<()> {

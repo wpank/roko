@@ -6,6 +6,10 @@
 
 **Reconciliation with 11-CONNECTIVITY**: Feed = Cell + Connect + Trigger + Store (canonical kernel decomposition from [00-INDEX](00-INDEX.md)). The Feed's output Pulse streams ride on Bus topics (topic pattern: `feed:{id}:data`). [11-CONNECTIVITY](11-CONNECTIVITY.md) describes the transport layer (relay wire protocol, WebSocket lifecycle, backpressure, reconnection). This document defines what Feeds are and how they compose; doc 11 defines how their Pulses are delivered across process and network boundaries.
 
+> **Implementation status (2026-08-16):** E27 execution slice SHIPPED (10/10). Runtime `FeedCell` composition, bounded lifecycle supervision/reconnect, three live built-ins, derived transforms, canonical Bus routing, recipe DAG evaluation/TOML persistence, REST lifecycle/discovery/recipe APIs, CLI commands, and integration tests are implemented. The larger product roadmap in this document still includes deferred on-chain advertisement, paid remote subscription routing, template packs, backtesting, and dashboard authoring; those are not claimed by E27.
+
+The three serve-time built-ins are `file-watch-roko-dir`, `provider-health-feed`, and `episode-outcome-feed`. Provider health reuses the canonical observed circuit registry instead of creating shadow HTTP probes. The episode feed tails the canonical append-only log; it deliberately does not restore the rate-oracle/ISFR vertical retired on 2026-08-13.
+
 ---
 
 ## 1. Feed Primitive
@@ -1320,14 +1324,15 @@ The Recipe Editor is a 4-stage authoring surface:
 
 | Component | Crate | Status |
 |---|---|---|
-| Feed types (`FeedRegistration`, `FeedKind`, `FeedAccess`) | `roko-core` | Kernel types |
-| Feed registry + relay routing | `roko-serve` (relay routes) | Wired |
+| Feed descriptors and runtime (`FeedInfo`, `FeedCell`, `RuntimeRegistry`) | `roko-core` | Shipped in E27 |
+| Feed lifecycle/discovery REST API + canonical Pulse Bus bridge | `roko-serve`, `roko-runtime` | Shipped in E27 |
 | `FeedPublisherExt` | `roko-agent` (extensions) | Wired |
 | Feed subscription management | `roko-runtime` (relay client) | Wired |
 | Feed on-chain advertisement | `roko-chain` (Phase 2+) | Deferred |
-| Recipe types (`RecipeCell`, `RecipeStage`, `OutputTarget`) | `roko-core` | Kernel types |
-| Recipe templates | `roko-learn`, `roko-primitives` | Existing |
-| Recipe authoring UI | Dashboard | Depends on [20-SURFACES](20-SURFACES.md) |
+| Recipe DAG (`Recipe`, `RecipeNode`, `RecipeEdge`, `ScoreOp`) | `roko-core` | Shipped in E27 |
+| Recipe TOML store, REST API, and CLI evaluation | `roko-core`, `roko-serve`, `roko-cli` | Shipped in E27 |
+| Recipe template pack | `roko-learn`, `roko-primitives` | Deferred; reusable building blocks exist |
+| Recipe authoring UI | Dashboard | Deferred; depends on [20-SURFACES](20-SURFACES.md) |
 | Feed payment protocols (x402, MPP) | See [18-PAYMENTS](18-PAYMENTS.md) | Separate doc |
 
 ---

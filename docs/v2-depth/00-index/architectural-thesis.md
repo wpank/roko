@@ -117,7 +117,7 @@ Each crate instantiates protocols at a specific layer. The current workspace and
 
 ```
 L4 Orchestration
-  roko-orchestrator  -- React: PlanPhasePolicy, plan state machine
+  roko-cli::orchestrator -- React: PlanPhasePolicy, plan state machine
   roko-conductor     -- React: CircuitBreakerPolicy, 10 watchers
   roko-cli           -- Trigger: CLI commands fire Graphs
 
@@ -130,7 +130,7 @@ L2 Scaffold
                      -- target split: roko-compose-core + roko-templates
 
 L1 Framework
-  roko-agent         -- Connect: 5+ LLM backends, MCP client
+  roko-agent         -- Connect: 11 LLM backends, MCP client
                      -- Score: ToolRelevanceScorer
                      -- Route: CascadeRouter, LinUCBRouter
   roko-std           -- Score: builtin scorers

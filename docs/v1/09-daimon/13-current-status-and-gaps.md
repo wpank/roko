@@ -1,5 +1,8 @@
 # Current Status and Gaps
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > What's built, what's scaffolded, what's specified but unimplemented, and which legacy files were deliberately skipped.
 
 

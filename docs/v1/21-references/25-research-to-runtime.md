@@ -1,5 +1,8 @@
 # Research-to-Runtime Pipeline
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Refinement source**: `../../tmp/refinements/16-research-to-runtime.md`
 >
 > This chapter translates research into a target-state runtime loop: `Paper -> Claim -> Heuristic -> Trial -> Calibration`.

@@ -223,11 +223,20 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     ));
 
     // Cost
-    if state.cost_dollars > 0.001 {
+    let aggregate_budget = state.aggregate_plan_budget();
+    if state.cost_dollars > 0.001 || aggregate_budget > 0.0 {
         let cost_str = if state.cost_dollars >= 1.0 {
             format!("${:.2}", state.cost_dollars)
         } else {
             format!("${:.3}", state.cost_dollars)
+        };
+        let cost_str = if aggregate_budget > 0.0 {
+            format!(
+                "{cost_str}/${aggregate_budget:.2} ({:.0}%)",
+                state.cost_dollars / aggregate_budget * 100.0
+            )
+        } else {
+            cost_str
         };
         spans.push(Span::styled(
             format!("  {cost_str}"),
@@ -277,7 +286,7 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         ));
     }
 
-    // ── 6b. Network stats (agents online + ISFR) ──────────────────────
+    // ── 6b. Network stats (agents online + gate pass rate) ────────────
     let agent_color = if state.agents_online > 0 {
         Theme::SAGE
     } else {
@@ -287,19 +296,19 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         format!(" {}ag", state.agents_online),
         Style::default().fg(agent_color).bg(Theme::BG_SECONDARY),
     ));
-    match state.isfr {
-        Some(isfr) => {
-            let pct = (isfr.clamp(0.0, 1.0) * 100.0).round();
+    match state.gate_pass_rate {
+        Some(pass_rate) => {
+            let pct = (pass_rate.clamp(0.0, 1.0) * 100.0).round();
             spans.push(Span::styled(
-                format!(" ISFR:{pct:.0}%"),
+                format!(" GATES:{pct:.0}%"),
                 Style::default()
-                    .fg(hdr_success_color(isfr))
+                    .fg(hdr_success_color(pass_rate))
                     .bg(Theme::BG_SECONDARY),
             ));
         }
         None => {
             spans.push(Span::styled(
-                " ISFR:—",
+                " GATES:—",
                 Style::default()
                     .fg(Theme::TEXT_GHOST)
                     .bg(Theme::BG_SECONDARY),
@@ -435,10 +444,10 @@ mod tests {
     }
 
     #[test]
-    fn header_bar_renders_network_stats_and_missing_isfr() {
+    fn header_bar_renders_network_stats_and_missing_gate_rate() {
         let mut state = TuiState::from_dashboard_data(&DashboardData::default());
         state.agents_online = 0;
-        state.isfr = None;
+        state.gate_pass_rate = None;
         let backend = TestBackend::new(140, 1);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
@@ -450,14 +459,14 @@ mod tests {
 
         let text = rendered_text(&terminal);
         assert!(text.contains("0ag"));
-        assert!(text.contains("ISFR:—"));
+        assert!(text.contains("GATES:—"));
     }
 
     #[test]
-    fn header_bar_renders_isfr_as_percentage() {
+    fn header_bar_renders_gate_pass_rate_as_percentage() {
         let mut state = TuiState::from_dashboard_data(&DashboardData::default());
         state.agents_online = 3;
-        state.isfr = Some(0.75);
+        state.gate_pass_rate = Some(0.75);
         let backend = TestBackend::new(140, 1);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
@@ -469,6 +478,22 @@ mod tests {
 
         let text = rendered_text(&terminal);
         assert!(text.contains("3ag"));
-        assert!(text.contains("ISFR:75%"));
+        assert!(text.contains("GATES:75%"));
+    }
+
+    #[test]
+    fn header_bar_renders_spend_budget_and_utilization() {
+        let mut state = TuiState::from_dashboard_data(&DashboardData::default());
+        state.cost_dollars = 2.5;
+        state.max_plan_budget_usd = 10.0;
+        state.plans.push(Default::default());
+        let backend = TestBackend::new(160, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_header_bar(frame, frame.area(), &state))
+            .unwrap();
+
+        let text = rendered_text(&terminal);
+        assert!(text.contains("$2.50/$10.00 (25%)"));
     }
 }

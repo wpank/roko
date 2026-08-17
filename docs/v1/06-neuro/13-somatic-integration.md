@@ -1,5 +1,8 @@
 # Somatic Landscape Integration
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > The Somatic Landscape integrates Damasio's somatic marker hypothesis into Neuro's retrieval pipeline — a k-d tree over an 8-dimensional strategy space that provides fast emotional heuristics for knowledge selection, with mandatory 15% contrarian retrieval to prevent confirmation bias.
 
 

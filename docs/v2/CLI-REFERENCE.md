@@ -42,15 +42,16 @@ terminal.
 14. [Benchmarks](#benchmarks)
 15. [Configuration](#configuration)
 16. [Code intelligence](#code-intelligence)
-17. [Server and deployment](#server-and-deployment)
-18. [Authentication](#authentication)
-19. [Utilities](#utilities)
-20. [Vision loop](#vision-loop)
-21. [Environment variables](#environment-variables)
-22. [Config file locations and precedence](#config-file-locations-and-precedence)
-23. [Data directory layout](#data-directory-layout)
-24. [Troubleshooting](#troubleshooting)
-25. [Build requirements](#build-requirements)
+17. [GitHub integration](#github-integration)
+18. [Server and deployment](#server-and-deployment)
+19. [Authentication](#authentication)
+20. [Utilities](#utilities)
+21. [Vision loop](#vision-loop)
+22. [Environment variables](#environment-variables)
+23. [Config file locations and precedence](#config-file-locations-and-precedence)
+24. [Data directory layout](#data-directory-layout)
+25. [Troubleshooting](#troubleshooting)
+26. [Build requirements](#build-requirements)
 
 ---
 
@@ -150,7 +151,7 @@ The full self-hosting workflow looks like this. Each box is a CLI command.
         ▼
  Execute the plan                (agents run tasks in parallel, gates validate)
  ─────────────────
- roko plan run plans/
+ roko plan run plans/ --engine runner-v2
         │
         ├──► roko dashboard       (watch live in the TUI)
         │
@@ -182,7 +183,7 @@ These flags are `global = true` and can be placed before any subcommand.
 |---|---|---|---|
 | `--config <path>` | path | `./roko.toml` | Override the config file location. |
 | `--role <string>` | string | from config | Set the agent role / persona. |
-| `--model <string>` | string | from config | Override the model name for this invocation. |
+| `--model <string>`, `--force-model <string>` | string | from config | Force the model for this invocation; explicit selection has highest routing precedence. |
 | `--repo <path>` | path | cwd | Set the repository / working directory root. |
 | `--resume <id>` | string | — | Resume a previous session by ID. |
 | `--effort low\|medium\|high\|max` | enum | from config | Reasoning effort level passed to the agent backend. |
@@ -418,7 +419,7 @@ roko prd idea <text...>
 ```
 
 ```bash
-roko prd idea "Wire SystemPromptBuilder into orchestrate.rs"
+roko prd idea "Extract runner prompt assembly into a dedicated module"
 ```
 
 #### `roko prd list`
@@ -454,7 +455,7 @@ roko prd draft new <title...>
 ```
 
 ```bash
-roko prd draft new "Wire SystemPromptBuilder into orchestrate.rs"
+roko prd draft new "Extract runner prompt assembly into a dedicated module"
 ```
 
 #### `roko prd draft edit`
@@ -539,7 +540,7 @@ roko plan list [--workdir <path>]
 ```
 
 Output includes task count, completion progress, and any persisted run state from
-`.roko/state/executor.json`. Supports `--json`.
+`.roko/state/state-snapshot.json`. Supports `--json`.
 
 #### `roko plan show`
 
@@ -574,14 +575,16 @@ roko plan validate [<dir>] [--strict] [--json]
 
 #### `roko plan run`
 
-**The primary execution command.** Runs all plans in a directory through the orchestration
-loop. Tasks execute in parallel based on their `depends_on` DAG, each running an agent and
-then the gate pipeline. Gate failures feed back into a replan loop unless `--no-replan` is
-set. State is checkpointed after every task so the run can be resumed.
+**The primary execution command.** Runner-v2 executes tasks through the complete
+agent/gate/replan/worktree/merge/persistence lifecycle. The opt-in `graph` engine dispatches
+real providers over the converted DAG and durably resumes completed Activities, but does
+not yet provide all Runner-v2 lifecycle guarantees.
 
 ```
-roko plan run <plans-dir> [--workdir <path>] [--resume-plan [<snapshot>]] [--approval]
-             [--max-retries <n>] [--dry-run] [--fresh]
+roko plan run <plans-dir> [--engine runner-v2] [--workdir <path>]
+             [--resume-plan [<snapshot>]] [--approval]
+             [--max-retries <n>] [--max-tasks <n>] [--dry-run]
+             [--fresh] [--force-resume] [--budget-override <usd>] [--no-budget]
 ```
 
 <details>
@@ -590,17 +593,32 @@ roko plan run <plans-dir> [--workdir <path>] [--resume-plan [<snapshot>]] [--app
 | Arg/Flag | Default | Description |
 |---|---|---|
 | `<plans-dir>` | required | Path to the plans directory. |
+| `--engine <engine>` | `runner-v2` | `runner-v2` is the complete lifecycle. `graph` is an opt-in live-dispatch path with Activity resume and actual-cost accounting, but incomplete gates/replan, approval, attempt worktree/merge, full persistence, and cancellation parity. |
 | `--workdir <path>` | cwd | Working directory (repo root). |
-| `--resume-plan [<path>]` | — | Resume from `.roko/state/executor.json`. Accepts optional path, defaults to `.roko/state/executor.json`. Alias: `--resume-state`. |
+| `--resume-plan [<path>]` | — | Runner-v2 accepts its executor/snapshot handoff. Graph accepts a checkpoint root (one directory per plan) or a manifest file for a single-plan run; its default is `.roko/state/graph/`. Alias: `--resume-state`. |
 | `--approval` | false | Launch the connected approval TUI while the plan runs. |
 | `--max-retries <n>` | from config | Maximum retry attempts per task (overrides per-task and config values). |
+| `--max-tasks <n>` | config/default | Maximum concurrent tasks per plan; `0` keeps configured behavior. |
 | `--dry-run` | false | Parse and display the plan without executing. Shows tasks, dependencies, and estimates. |
-| `--fresh` | false | Archive old run state and start from scratch (ignores any existing `executor.json`). |
+| `--fresh` | false | Archive existing state for the selected engine and start from scratch. |
+| `--force-resume` | false | Runner-v2 re-queues drifted work; Graph archives a mismatched fingerprint and starts a new run. |
+| `--budget-override <usd>` | config | Override the per-plan cost ceiling for either engine; explicit overrides record and report overage but do not block later dispatches. |
+| `--no-budget` | false | Disable the per-plan cost ceiling for either engine. |
 
 </details>
 
+Graph honors `--resume-plan`, `--fresh`, `--force-resume`, `--max-retries`, and
+`--max-tasks`, `--budget-override`, and `--no-budget`. Its checkpoint manifest binds schema
+version, plan ID, converted-graph fingerprint, run ID, and Activity log; drift fails closed
+unless force-resume archives the old state and starts clean. Graph records actual provider
+cost from both successful and unsuccessful paid calls, routes against the tighter Cell or
+plan remainder, blocks later Activities at a configured ceiling, fails a hard-limit run if
+the last call crosses the ceiling, and reports per-plan and total spend. The current Graph
+ledger is based on completed calls, so parallel admissions can overshoot; it is not yet
+restored from the checkpoint. `--approval` remains Runner-v2-only.
+
 <details>
-<summary>How plan run works (internal execution flow)</summary>
+<summary>How Runner-v2 plan run works (internal execution flow)</summary>
 
 1. Plans are loaded from `<plans-dir>`. Each plan is a directory containing `tasks.toml`.
 2. Tasks are arranged into a DAG based on `depends_on` declarations.
@@ -608,7 +626,7 @@ roko plan run <plans-dir> [--workdir <path>] [--resume-plan [<snapshot>]] [--app
 4. Each task runs an agent, collects output, then runs the gate pipeline (compile, test, clippy, diff).
 5. Gate failures trigger the replan loop (unless `--no-replan`). The failure context is
    fed to a strategist agent which generates a revised tasks.toml.
-6. State is flushed to `.roko/state/executor.json` after every task completion.
+6. State is flushed to the checksummed `.roko/state/state-snapshot.json` after every task completion.
 7. Efficiency events, episodes, and C-factor metrics are written to `.roko/learn/`.
 
 </details>
@@ -616,11 +634,11 @@ roko plan run <plans-dir> [--workdir <path>] [--resume-plan [<snapshot>]] [--app
 <details>
 <summary>State persistence and resume</summary>
 
-Snapshots are written to `.roko/state/executor.json`. To resume:
+Runner-v2 writes its authoritative, checksummed snapshot to
+`.roko/state/state-snapshot.json`. To resume:
 
 ```bash
-roko plan run plans/ --resume-plan
-roko plan run plans/ --resume-plan .roko/state/executor.json
+roko plan run plans/ --engine runner-v2 --resume-plan
 ```
 
 </details>
@@ -629,13 +647,14 @@ roko plan run plans/ --resume-plan .roko/state/executor.json
 <summary>Examples</summary>
 
 ```bash
-roko plan run plans/                    # Run all plans
-roko plan run plans/my-plan             # Run a specific plan directory
-roko plan run plans/ --approval         # Run with interactive TUI approval
-roko plan run plans/ --dry-run          # Preview without executing
-roko plan run plans/ --fresh            # Archive old state and start clean
-roko plan run plans/ --resume-plan      # Resume from last checkpoint
-roko plan run plans/ --max-retries 3    # Override retry limit
+roko plan run plans/ --engine runner-v2                    # Run all plans
+roko plan run plans/my-plan --engine runner-v2             # Run one plan directory
+roko plan run plans/ --engine runner-v2 --approval         # Connected approval TUI
+roko plan run plans/ --engine runner-v2 --dry-run          # Preview without executing
+roko plan run plans/ --engine runner-v2 --fresh            # Archive old state and start clean
+roko plan run plans/ --engine runner-v2 --resume-plan      # Resume from last checkpoint
+roko plan run plans/ --engine runner-v2 --max-retries 3    # Override retry limit
+roko plan run plans/ --engine graph                        # Real provider dispatch; lifecycle parity remains incomplete
 ```
 
 </details>
@@ -704,7 +723,7 @@ roko serve --tui   # Zero-copy, reads live state from StateHub, no file polling
 | Git | F4 | `4` | Branch tree, commit graph, worktree list |
 | Logs | F5 | `5` | Scrollable log viewer with level filtering |
 | Config | F6 | `6` | Config editor / effective config view |
-| Inspect | F7 | `7` | Engram DAG inspector, episode replay |
+| Inspect | F7 | `7` | Signal DAG inspector, episode replay |
 | Marketplace | F8 | `8` | Job browser, creation, assignment |
 | Atelier | F9 | `9` | PRD workshop, plan progress |
 | Learning | F10 | `0` | Cascade router, model routing, efficiency metrics |
@@ -1384,7 +1403,8 @@ roko learn efficiency [--workdir <path>]
 
 ### `roko learn episodes`
 
-Show episode summary from `.roko/learn/episodes.jsonl` (or `.roko/episodes.jsonl`).
+Show episode summary from the canonical `.roko/episodes.jsonl`. A pre-V3
+`.roko/learn/episodes.jsonl` is used only as a read-only fallback when the canonical log is absent.
 Displays episode count, date range, and most recent episode (model, task, pass/fail, cost).
 
 ```
@@ -1795,6 +1815,17 @@ Install a plugin from a local path or registry.
 roko config plugins install <source> [--workdir <path>]
 ```
 
+#### `roko config plugins publish`
+
+Build, sign, and publish a WASM extension directory to an authenticated relay registry.
+The bearer token and Ed25519 signing key are read only from
+`ROKO_EXTENSION_REGISTRY_PUBLISH_TOKEN` and `ROKO_EXTENSION_REGISTRY_SIGNING_KEY`.
+
+```
+roko config plugins publish <source> --publisher <id>
+                            [--registry <url>] [--workdir <path>]
+```
+
 #### `roko config plugins remove`
 
 Remove an installed plugin by name.
@@ -1870,6 +1901,31 @@ roko index stats [--path <path>]
 
 ---
 
+## GitHub integration
+
+Use the standalone status command to validate repository configuration and inspect the
+authenticated account, open `roko/plan/*` pull requests and their CI state, and open task
+failure issues. It does not require `roko serve`.
+
+### `roko github status`
+
+```
+roko [--json] github status [--workdir <path>]
+```
+
+| Arg/Flag | Default | Description |
+|---|---|---|
+| `--workdir <path>` | current workspace / `--repo` | Directory whose layered `roko.toml` supplies `[github]`. |
+| `--json` | off | Emit a structured report for automation. This is a global flag and must precede `github`. |
+
+The command exits successfully with a local diagnostic when `GITHUB_TOKEN` is missing,
+empty, or unreadable; remote sections are marked skipped and the output explains how to
+enable them. Individual API failures are reported per section instead of hiding the rest of
+the status report. See [GitHub Integration](GITHUB-INTEGRATION.md) for credentials, runner
+automation, MCP setup, and webhook configuration.
+
+---
+
 ## Server and deployment
 
 **When to use this:** `roko serve` starts the HTTP control plane that the TUI, external
@@ -1887,7 +1943,7 @@ roko up [--workdir <path>]
 
 ### `roko serve`
 
-Start the HTTP API server on `:6677` (~85 REST routes + SSE + WebSocket).
+Start the HTTP API server on `:6677` (~317 REST routes + SSE + WebSocket).
 
 ```
 roko serve [--bind <addr>] [--port <port>] [--workdir <path>] [--tui] [--enable-terminal]
@@ -2112,7 +2168,7 @@ roko replay <hash> [--workdir <path>] [--forensic] [--as-of <step>] [--format tr
 
 | Arg/Flag | Default | Description |
 |---|---|---|
-| `<hash>` | required | Engram hash (64 hex chars) to walk. |
+| `<hash>` | required | Signal hash (64 hex chars) to walk. |
 | `--forensic` | false | Show forensic detail: timestamps, full hashes, metadata. |
 | `--as-of <step>` | — | Filter replay to events from this step forward. |
 | `--format tree\|json` | `tree` | Output format. |
@@ -2303,14 +2359,13 @@ All runtime data lives under `.roko/` in the workspace root.
 │       ├── tasks.toml      # Task definitions with DAG
 │       └── plan.md         # Plan description
 ├── state/
-│   └── executor.json       # Plan runner snapshot (resume state)
+│   └── state-snapshot.json # Checksummed runner-v2 snapshot (resume state)
 ├── research/               # Research artifacts (.md files)
 ├── learn/
 │   ├── cascade-router.json # CascadeRouter persistence
 │   ├── experiments.json    # Prompt experiment store
 │   ├── model-experiments.json
 │   ├── efficiency.jsonl    # Per-turn efficiency events
-│   ├── episodes.jsonl      # Episode log (mirrored from root)
 │   └── gate-thresholds.json
 ├── neuro/
 │   ├── knowledge.jsonl     # Durable knowledge store
@@ -2342,7 +2397,7 @@ Common errors and what to do about them:
 | `plan not found` / `no plans found` | No plan files in the directory | `roko plan list` or `roko plan create` |
 | `connection refused` / `connect error` | roko-serve is not running | `roko serve` in another terminal |
 | Gate failures on every task | Config or code problem, not an agent problem | `roko doctor` then check `.roko/learn/gate-thresholds.json` |
-| Run interrupted, want to continue | Normal state for long plans | `roko plan run plans/ --resume-plan` |
+| Run interrupted, want to continue | Normal state for long plans | `roko plan run plans/ --engine runner-v2 --resume-plan` |
 
 Run `roko doctor` for a comprehensive diagnostic that checks all prerequisites at once.
 

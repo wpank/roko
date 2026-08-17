@@ -1,5 +1,8 @@
 # Process Reward Models and Verification
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for step-level verification, generation-verification gaps, and process supervision in Roko's Gate pipeline.
 
 **Topic**: [References](./INDEX.md)

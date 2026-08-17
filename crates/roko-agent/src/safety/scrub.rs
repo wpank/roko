@@ -133,7 +133,7 @@ fn default_patterns() -> &'static Vec<Pattern> {
             // Group 1: key  Group 2: value
             Pattern {
                 re: RegexBuilder::new(
-                    r"^\s*(PASSWORD|SECRET|TOKEN|API_KEY|APIKEY|PRIVATE_KEY|DATABASE_URL)\s*=\s*(\S+)",
+                    r#"(?:^|[\s{\[,;:])[\"']?([A-Z0-9_]*(?:PASSWORD|SECRET|TOKEN|API_KEY|APIKEY|PRIVATE_KEY|DATABASE_URL))[\"']?\s*[:=]\s*(\"[^\"]*\"|'[^']*'|[^\s,\"'}\]]+)"#,
                 )
                 .case_insensitive(true)
                 .multi_line(true)
@@ -364,6 +364,23 @@ mod tests {
             !result.contains("hunter2"),
             "plaintext value must not appear: {result}"
         );
+    }
+
+    #[test]
+    fn redacts_prefixed_env_assignments_inside_nested_text() {
+        let content = r#"prefix {"value":"CI_JOB_TOKEN=hunter2"} suffix"#;
+        let result = scrub_secrets(content, &default_policy());
+        assert!(result.contains("CI_JOB_TOKEN="), "result: {result}");
+        assert!(result.contains(SCRUB_MARKER), "result: {result}");
+        assert!(!result.contains("hunter2"), "result: {result}");
+    }
+
+    #[test]
+    fn redacts_quoted_colon_assignments() {
+        let content = r#"prefix {"password": "hunter2"} suffix"#;
+        let result = scrub_secrets(content, &default_policy());
+        assert!(result.contains(SCRUB_MARKER), "result: {result}");
+        assert!(!result.contains("hunter2"), "result: {result}");
     }
 
     // ── 11. Env-file — case insensitive ────────────────────────────────────

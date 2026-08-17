@@ -148,6 +148,7 @@ async fn pipeline_produces_combined_telemetry() {
     assert!(ep["extra"]["phases_completed"].as_u64().unwrap() >= 2);
     assert_eq!(ep["tokens_used"], json!(3_700));
     assert_eq!(result.total_tokens, Some(3_700));
+    assert!(result.phases_completed >= 2);
     assert!(result.cost_usd.unwrap() > 0.0);
     assert!(result.notifications.iter().any(has_usage_update));
 

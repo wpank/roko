@@ -1,5 +1,8 @@
 # Stability Mechanisms
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Implementation plan:** `modelrouting/17-meta-learning-and-corrections.md` (tasks 2O.04–2O.06)
 > **Theoretical basis:** Control theory (hysteresis, frequency separation), Ashby's Law
 > **Cross-references:** [04-cascade-router](04-cascade-router.md), [13-8-missing-feedback-loops](13-8-missing-feedback-loops.md), [07-regression-detection](07-regression-detection.md)

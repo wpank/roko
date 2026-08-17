@@ -1,5 +1,8 @@
 # mirage-rs: In-Process EVM Simulator
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > mirage-rs is a full EVM simulator that runs in-process alongside the agent. It emulates the Nunchi chain during development, provides transaction simulation for pre-flight checks, and enables deterministic testing of chain interactions. Built on revm, it supports fork mode (clone mainnet state), scenario replay, and Nunchi-specific chain extensions (HDC precompile, agent registry, reputation registry).
 
 

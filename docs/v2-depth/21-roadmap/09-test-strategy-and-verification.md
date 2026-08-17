@@ -132,7 +132,7 @@ Unit tests verify single-function correctness. They are the cheapest Verify Cell
 | `roko-core` | 376 | 500 | signal, score, decay, kind, verdict, query, loop_tick |
 | `roko-agent` | 346 | 450 | dispatcher (5 backends), cascade_router, tool_loop, safety, mcp |
 | `roko-gate` | 200 | 300 | compile, clippy, test, symbol, diff, pipeline, ratchet, adaptive |
-| `roko-orchestrator` | 158 | 250 | plan_dag, executor, state, merge_queue |
+| `roko-cli` orchestration modules | 158 historical | 250 target | plan_dag, executor, state, merge_queue |
 | `roko-conductor` | 185 | 200 | 10 watchers, circuit breaker, event bus |
 | `roko-learn` | 101 | 200 | episode, playbook, skill, bandit, experiment |
 | `roko-std` | 96 | 150 | 19 built-in tools, mock_dispatcher |

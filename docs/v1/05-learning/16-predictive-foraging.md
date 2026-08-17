@@ -1,5 +1,8 @@
 # Predictive Foraging
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **PRD source:** `refactoring-prd/09-innovations.md` §VII
 > **Implementation plan:** `modelrouting/12-advanced-patterns.md` (tasks 2J.04–2J.06)
 > **Theoretical basis:** Optimal Foraging Theory (MacArthur & Pianka 1966), Calibration (Gneiting & Raftery 2007)

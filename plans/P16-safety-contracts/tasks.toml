@@ -1,8 +1,8 @@
 [meta]
 plan = "P16-safety-contracts"
 total = 5
-done = 1
-status = "ready"
+done = 5
+status = "done"
 max_parallel = 1
 
 # ── T1: Add disallowed_tools field to CliDispatchRequest ──
@@ -16,7 +16,7 @@ max_parallel = 1
 [[task]]
 id = "T1"
 title = "Add disallowed_tools to CliDispatchRequest and wire into CLI args"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 25
@@ -86,7 +86,7 @@ fail_msg = "roko-cli must compile cleanly"
 [[task]]
 id = "T2"
 title = "Add disallowed_tools to AgentSpawnConfig and propagate to CliDispatchRequest"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 15
@@ -234,7 +234,7 @@ fail_msg = "forbidden_tool_names test must pass"
 [[task]]
 id = "T4"
 title = "Load AgentContract for task role and set disallowed_tools on spawn config"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 25
@@ -332,7 +332,7 @@ fail_msg = "roko-cli must compile cleanly"
 [[task]]
 id = "T5"
 title = "Wire contract forbidden tools into bridge dispatch path"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 20

@@ -11,7 +11,7 @@ pub(super) mod metrics;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::routing::get;
+use axum::routing::{delete, get, patch};
 
 use crate::state::AppState;
 
@@ -37,6 +37,8 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/gates/{gate_name}/history", get(gates::gate_history))
         .route("/episodes", get(episodes::episodes))
         .route("/signals", get(episodes::signals))
+        .route("/signals/{id}/promote", patch(episodes::promote_signal))
+        .route("/signals/{id}", delete(episodes::prune_signal))
         .route("/operations/{id}", get(dashboard::operation_status))
         .route("/relay/health", get(health::relay_health))
         .route("/truth_map", get(dashboard::truth_map_handler))
@@ -422,6 +424,24 @@ mod tests {
         assert_eq!(body["providers"]["total"], 0);
         assert_eq!(body["providers"]["healthy"], 0);
         assert_eq!(body["providers"]["unhealthy"], 0);
+        assert_eq!(body["jwks"]["configured"], false);
+        assert_eq!(body["jwks"]["fresh"], false);
+        assert_eq!(body["jwks"]["key_count"], 0);
+        assert_eq!(body["jwks"]["fail_closed"], true);
+    }
+
+    #[tokio::test]
+    async fn health_is_unhealthy_when_configured_jwks_is_fail_closed() {
+        let (_dir, state) = test_state();
+        let mut config = (*state.load_roko_config()).clone();
+        config.serve.auth.privy_app_id = Some("app-id".to_string());
+        state.store_roko_config(config);
+
+        let response = health::health(State(state)).await;
+        assert_eq!(response.0, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.1.0["status"], "unhealthy");
+        assert_eq!(response.1.0["jwks"]["configured"], true);
+        assert_eq!(response.1.0["jwks"]["fail_closed"], true);
     }
 
     #[tokio::test]

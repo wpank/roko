@@ -231,12 +231,12 @@ impl CircuitBreaker {
 
         // Predictive trip: if forecast(1) exceeds threshold, proactively trip.
         // Requires at least 2 observations to have a meaningful trend.
-        if self.predictive {
-            if let Some(f) = self.forecasters.get(plan_id) {
-                if f.observation_count() >= 2 && f.forecast(1) >= self.forecast_trip_threshold {
-                    return true;
-                }
-            }
+        if self.predictive
+            && let Some(f) = self.forecasters.get(plan_id)
+            && f.observation_count() >= 2
+            && f.forecast(1) >= self.forecast_trip_threshold
+        {
+            return true;
         }
 
         false
@@ -322,12 +322,12 @@ impl CircuitBreaker {
         }
 
         // Predictive trip: forecast(1) exceeds threshold.
-        if self.predictive {
-            if let Some(f) = self.forecasters.get(plan_id) {
-                if f.observation_count() >= 2 && f.forecast(1) >= self.forecast_trip_threshold {
-                    return true;
-                }
-            }
+        if self.predictive
+            && let Some(f) = self.forecasters.get(plan_id)
+            && f.observation_count() >= 2
+            && f.forecast(1) >= self.forecast_trip_threshold
+        {
+            return true;
         }
 
         false

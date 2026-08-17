@@ -201,10 +201,8 @@ impl BudgetPredictor {
         }
 
         // If the task failed, inflate the EMA to encourage a larger budget next time.
-        if !success {
-            if let Some(obs) = self.observations.get_mut(&key) {
-                obs.ema_tokens *= self.failure_inflation;
-            }
+        if !success && let Some(obs) = self.observations.get_mut(&key) {
+            obs.ema_tokens *= self.failure_inflation;
         }
     }
 

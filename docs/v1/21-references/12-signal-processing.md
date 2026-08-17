@@ -1,5 +1,8 @@
 # Signal Processing and Time Series
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > Academic foundations for spectral decomposition, predictive filtering, and temporal pattern detection in Roko's cognitive clock and monitoring systems.
 
 **Topic**: [References](./INDEX.md)

@@ -8,6 +8,9 @@
 //! - [`FormattedStderrSink`] — writes structured `[plan/task]` prefixed
 //!   output to stderr with color support, agent output truncation, and
 //!   progress indicators. This is the default for `roko do` / `roko plan run`.
+//! - [`FanOutSink`] — forwards every event to multiple sinks in registration
+//!   order, allowing machine-readable and human-readable output to coexist.
+//! - [`AcpProgressSink`] — writes machine-readable progress records to stdout.
 //! - [`NoopSink`] — discards all events (for testing / embedded use).
 //!
 //! # Design decision (Task 006)
@@ -18,7 +21,7 @@
 //! via `std::sync::Mutex` inside `StderrSink`.
 
 use std::fmt;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use super::inline_output::RunnerInlineTerminal;
 use super::types::StderrSeverity;
@@ -415,6 +418,196 @@ impl fmt::Debug for NoopSink {
 }
 
 impl RunOutputSink for NoopSink {}
+
+// ─── FanOutSink ──────────────────────────────────────────────────────────────
+
+/// Forwards each runner event to multiple output sinks in registration order.
+///
+/// Fan-out is synchronous because [`RunOutputSink`] callbacks are synchronous.
+/// The wrapper owns no mutable event state, so composing sinks does not change
+/// the buffering or flushing semantics of any child sink.
+pub struct FanOutSink {
+    sinks: Vec<Arc<dyn RunOutputSink>>,
+}
+
+impl FanOutSink {
+    /// Compose the provided sinks. An empty collection behaves like [`NoopSink`].
+    pub fn new(sinks: Vec<Arc<dyn RunOutputSink>>) -> Self {
+        Self { sinks }
+    }
+
+    /// Compose two sinks without requiring call sites to construct a vector.
+    pub fn pair(first: Arc<dyn RunOutputSink>, second: Arc<dyn RunOutputSink>) -> Self {
+        Self::new(vec![first, second])
+    }
+
+    /// Number of child sinks receiving every callback.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.sinks.len()
+    }
+
+    /// Whether this fan-out has no child sinks.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.sinks.is_empty()
+    }
+}
+
+impl fmt::Debug for FanOutSink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FanOutSink")
+            .field("sink_count", &self.sinks.len())
+            .finish()
+    }
+}
+
+impl RunOutputSink for FanOutSink {
+    fn task_started(&self, plan_id: &str, task_id: &str, role: &str, title: &str, attempt: u32) {
+        for sink in &self.sinks {
+            sink.task_started(plan_id, task_id, role, title, attempt);
+        }
+    }
+
+    fn task_completed(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        completed: usize,
+        total: usize,
+        duration_ms: u64,
+    ) {
+        for sink in &self.sinks {
+            sink.task_completed(plan_id, task_id, completed, total, duration_ms);
+        }
+    }
+
+    fn task_failed(&self, plan_id: &str, task_id: &str, error: &str) {
+        for sink in &self.sinks {
+            sink.task_failed(plan_id, task_id, error);
+        }
+    }
+
+    fn agent_started(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        provider: &str,
+        model: &str,
+        pid: Option<u32>,
+    ) {
+        for sink in &self.sinks {
+            sink.agent_started(plan_id, task_id, provider, model, pid);
+        }
+    }
+
+    fn agent_text_delta(&self, plan_id: &str, task_id: &str, text: &str) {
+        for sink in &self.sinks {
+            sink.agent_text_delta(plan_id, task_id, text);
+        }
+    }
+
+    fn flush_agent_text(&self, plan_id: &str, task_id: &str) {
+        for sink in &self.sinks {
+            sink.flush_agent_text(plan_id, task_id);
+        }
+    }
+
+    fn tool_call(&self, plan_id: &str, task_id: &str, tool_id: &str, tool_name: &str) {
+        for sink in &self.sinks {
+            sink.tool_call(plan_id, task_id, tool_id, tool_name);
+        }
+    }
+
+    fn tool_output(&self, plan_id: &str, task_id: &str, tool_id: &str, output: &str) {
+        for sink in &self.sinks {
+            sink.tool_output(plan_id, task_id, tool_id, output);
+        }
+    }
+
+    fn token_usage(&self, plan_id: &str, task_id: &str, usage: TokenUsage) {
+        for sink in &self.sinks {
+            sink.token_usage(plan_id, task_id, usage);
+        }
+    }
+
+    fn agent_turn_completed(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        total_cost_usd: Option<f64>,
+        is_error: bool,
+        model: &str,
+        total_input_tokens: u64,
+        total_output_tokens: u64,
+    ) {
+        for sink in &self.sinks {
+            sink.agent_turn_completed(
+                plan_id,
+                task_id,
+                total_cost_usd,
+                is_error,
+                model,
+                total_input_tokens,
+                total_output_tokens,
+            );
+        }
+    }
+
+    fn agent_error(&self, plan_id: &str, task_id: &str, message: &str, severity: StderrSeverity) {
+        for sink in &self.sinks {
+            sink.agent_error(plan_id, task_id, message, severity);
+        }
+    }
+
+    fn gate_result(&self, plan_id: &str, task_id: &str, result: &GateResultSummary) {
+        for sink in &self.sinks {
+            sink.gate_result(plan_id, task_id, result);
+        }
+    }
+
+    fn gate_retry(&self, plan_id: &str, task_id: &str, next_attempt: u32, cooldown_ms: u64) {
+        for sink in &self.sinks {
+            sink.gate_retry(plan_id, task_id, next_attempt, cooldown_ms);
+        }
+    }
+
+    fn warm_cache_started(&self) {
+        for sink in &self.sinks {
+            sink.warm_cache_started();
+        }
+    }
+
+    fn warm_cache_completed(&self, warm_ms: u64) {
+        for sink in &self.sinks {
+            sink.warm_cache_completed(warm_ms);
+        }
+    }
+
+    fn diff_block(&self, plan_id: &str, task_id: &str, entries: &[DiffEntry]) {
+        for sink in &self.sinks {
+            sink.diff_block(plan_id, task_id, entries);
+        }
+    }
+
+    fn plan_summary(
+        &self,
+        plan_id: &str,
+        tasks_passed: usize,
+        tasks_failed: usize,
+        total_duration_ms: u64,
+    ) {
+        for sink in &self.sinks {
+            sink.plan_summary(plan_id, tasks_passed, tasks_failed, total_duration_ms);
+        }
+    }
+
+    fn agent_line(&self, plan_id: &str, task_id: &str, line: &str) {
+        for sink in &self.sinks {
+            sink.agent_line(plan_id, task_id, line);
+        }
+    }
+}
 
 // ─── FormattedStderrSink ────────────────────────────────────────────────────
 
@@ -948,6 +1141,29 @@ impl RunOutputSink for AcpProgressSink {
     }
 }
 
+/// Add machine-readable ACP progress output while preserving the selected
+/// human-facing sink. When `enabled` is false, returns `human_sink` unchanged.
+pub fn with_acp_progress_sink(
+    human_sink: Arc<dyn RunOutputSink>,
+    enabled: bool,
+) -> Arc<dyn RunOutputSink> {
+    if enabled {
+        Arc::new(FanOutSink::pair(
+            human_sink,
+            Arc::new(AcpProgressSink::new()),
+        ))
+    } else {
+        human_sink
+    }
+}
+
+/// Interpret the optional `ROKO_ACP_PROGRESS` value using the producer
+/// protocol's exact opt-in contract. Only the literal value `1` enables it.
+#[must_use]
+pub fn is_acp_progress_enabled(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
 // ─── Shared formatting ─────────────────────────────────────────────────────
 
 /// Format a `DashboardEvent` (from SSE or local state hub) into a single
@@ -1099,6 +1315,35 @@ pub fn format_dashboard_event(
             ">",
             format!("Job {percent}%: {message}"),
         ),
+        DashboardEvent::PaymentReceived {
+            feed_id,
+            protocol,
+            amount_korai,
+            payer,
+            payee,
+        } => (
+            format!("[feed:{feed_id}]"),
+            "+",
+            format!("Payment {amount_korai:.4} KORAI via {protocol}: {payer} -> {payee}"),
+        ),
+        DashboardEvent::SettlementCompleted {
+            protocol,
+            batch_size,
+            total_korai,
+        } => (
+            format!("[settlement:{protocol}]"),
+            "+",
+            format!("Settled {batch_size} payment(s), {total_korai:.4} KORAI total"),
+        ),
+        DashboardEvent::ProjectionUpdated {
+            projection_id,
+            version,
+            source_lens,
+        } => (
+            format!("[projection:{projection_id}]"),
+            ">",
+            format!("Updated to v{version} by {source_lens}"),
+        ),
         // Bulk data refresh events are not useful for CLI streaming.
         DashboardEvent::EfficiencyEvent { .. }
         | DashboardEvent::Diagnosis { .. }
@@ -1112,12 +1357,14 @@ pub fn format_dashboard_event(
         | DashboardEvent::AtelierPrdsUpdated { .. }
         | DashboardEvent::KnowledgeEntriesUpdated { .. }
         | DashboardEvent::EfficiencyTrendUpdated { .. }
-        | DashboardEvent::IsfrRateComputed { .. }
-        | DashboardEvent::IsfrSourceHealthChanged { .. }
-        | DashboardEvent::IsfrKeeperStateChanged { .. }
         | DashboardEvent::FeedTick { .. }
         | DashboardEvent::FeedAgentOnline { .. }
         | DashboardEvent::FeedAgentOffline { .. }
+        | DashboardEvent::InboxItemReceived { .. }
+        | DashboardEvent::InboxApprove { .. }
+        | DashboardEvent::InboxReject { .. }
+        | DashboardEvent::InboxDefer { .. }
+        | DashboardEvent::InboxDismiss { .. }
         | DashboardEvent::ChainBlock { .. }
         | DashboardEvent::ChainTx { .. }
         | DashboardEvent::ChainContractEvent { .. } => return None,
@@ -1180,6 +1427,142 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[derive(Debug)]
+    struct RecordingSink {
+        name: &'static str,
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RecordingSink {
+        fn record(&self, event: &str) {
+            self.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("{}:{event}", self.name));
+        }
+    }
+
+    impl RunOutputSink for RecordingSink {
+        fn task_started(
+            &self,
+            _plan_id: &str,
+            _task_id: &str,
+            _role: &str,
+            _title: &str,
+            _attempt: u32,
+        ) {
+            self.record("task_started");
+        }
+
+        fn agent_text_delta(&self, _plan_id: &str, _task_id: &str, _text: &str) {
+            self.record("agent_text_delta");
+        }
+
+        fn gate_result(&self, _plan_id: &str, _task_id: &str, _result: &GateResultSummary) {
+            self.record("gate_result");
+        }
+
+        fn plan_summary(
+            &self,
+            _plan_id: &str,
+            _tasks_passed: usize,
+            _tasks_failed: usize,
+            _total_duration_ms: u64,
+        ) {
+            self.record("plan_summary");
+        }
+    }
+
+    #[test]
+    fn fan_out_sink_forwards_callbacks_in_registration_order() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let first: Arc<dyn RunOutputSink> = Arc::new(RecordingSink {
+            name: "first",
+            events: Arc::clone(&events),
+        });
+        let second: Arc<dyn RunOutputSink> = Arc::new(RecordingSink {
+            name: "second",
+            events: Arc::clone(&events),
+        });
+        let sink = FanOutSink::pair(first, second);
+        let gate = GateResultSummary {
+            rung: 1,
+            passed: true,
+            gate_name: "test".to_string(),
+            summary: "ok".to_string(),
+            duration_ms: 5,
+        };
+
+        sink.task_started("p", "t", "implementer", "title", 1);
+        sink.agent_text_delta("p", "t", "chunk");
+        sink.gate_result("p", "t", &gate);
+        sink.plan_summary("p", 1, 0, 10);
+
+        assert_eq!(sink.len(), 2);
+        assert!(!sink.is_empty());
+        assert_eq!(
+            *events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![
+                "first:task_started",
+                "second:task_started",
+                "first:agent_text_delta",
+                "second:agent_text_delta",
+                "first:gate_result",
+                "second:gate_result",
+                "first:plan_summary",
+                "second:plan_summary",
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_fan_out_sink_is_a_noop() {
+        let sink = FanOutSink::new(Vec::new());
+        sink.task_failed("p", "t", "error");
+        assert!(sink.is_empty());
+        assert_eq!(format!("{sink:?}"), "FanOutSink { sink_count: 0 }");
+    }
+
+    #[test]
+    fn acp_progress_composition_preserves_or_wraps_human_sink() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let disabled = with_acp_progress_sink(
+            Arc::new(RecordingSink {
+                name: "human",
+                events: Arc::clone(&events),
+            }),
+            false,
+        );
+        disabled.task_started("p", "t", "role", "title", 1);
+        assert!(!format!("{disabled:?}").contains("FanOutSink"));
+
+        let enabled = with_acp_progress_sink(
+            Arc::new(RecordingSink {
+                name: "human",
+                events,
+            }),
+            true,
+        );
+        assert_eq!(format!("{enabled:?}"), "FanOutSink { sink_count: 2 }");
+    }
+
+    #[test]
+    fn acp_progress_requires_exact_opt_in_value() {
+        assert!(is_acp_progress_enabled(Some("1")));
+        for value in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("true"),
+            Some(" 1"),
+            Some("1 "),
+        ] {
+            assert!(!is_acp_progress_enabled(value));
+        }
+    }
 
     #[test]
     fn noop_sink_in_arc_does_not_panic() {
@@ -1427,5 +1810,42 @@ mod tests {
         };
         let line = format_dashboard_event(&event, false).unwrap();
         assert!(line.contains("Error: something broke"));
+    }
+
+    #[test]
+    fn format_event_projection_updated() {
+        use roko_core::dashboard_snapshot::DashboardEvent;
+        let event = DashboardEvent::ProjectionUpdated {
+            projection_id: "cost_meter".to_string(),
+            version: 3,
+            source_lens: "cost-monitor".to_string(),
+        };
+        let line = format_dashboard_event(&event, false).unwrap();
+        assert!(line.contains("[projection:cost_meter]"));
+        assert!(line.contains("Updated to v3 by cost-monitor"));
+    }
+
+    #[test]
+    fn format_event_payment_and_settlement_are_visible() {
+        use roko_core::dashboard_snapshot::DashboardEvent;
+        let payment = DashboardEvent::PaymentReceived {
+            feed_id: "prices".into(),
+            protocol: "x402".into(),
+            amount_korai: 1.25,
+            payer: "agent-a".into(),
+            payee: "agent-b".into(),
+        };
+        let payment_line = format_dashboard_event(&payment, false).unwrap();
+        assert!(payment_line.contains("[feed:prices]"));
+        assert!(payment_line.contains("1.2500 KORAI"));
+
+        let settlement = DashboardEvent::SettlementCompleted {
+            protocol: "mpp".into(),
+            batch_size: 3,
+            total_korai: 4.5,
+        };
+        let settlement_line = format_dashboard_event(&settlement, false).unwrap();
+        assert!(settlement_line.contains("[settlement:mpp]"));
+        assert!(settlement_line.contains("3 payment(s)"));
     }
 }

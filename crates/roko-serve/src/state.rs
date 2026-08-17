@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use anyhow::Context as _;
 use arc_swap::ArcSwap;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -24,11 +25,15 @@ use roko_agent::ModelCallService;
 use roko_core::config::schema::RokoConfig;
 use roko_core::obs::LogScrubber;
 use roko_core::trigger::TriggerBinding;
-use roko_core::{Signal, Store};
+use roko_core::{
+    EpisodeOutcomeFeed, EpisodeOutcomeFeedConfig, FeedAccess, FeedBusBridge, FeedInfo, FeedKind,
+    FileWatchFeed, LensScope, ObservableEvent, ProviderHealthFeed, ProviderHealthSample,
+    RuntimeRegistry, Signal, SignalStatus, Store,
+};
 use roko_daimon::{DaimonState, StrategySpaceDefinition};
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::latency::LatencyRegistry;
-use roko_learn::provider_health::ProviderHealthTracker;
+use roko_learn::provider_health::{ProviderHealthRegistry, ProviderHealthTracker};
 use roko_runtime::cancel::CancelToken;
 use roko_runtime::process::{ProcessId, ProcessSupervisor};
 
@@ -337,29 +342,6 @@ pub struct BatchProgress {
     pub total: usize,
 }
 
-// ---------------------------------------------------------------------------
-// ISFRState
-// ---------------------------------------------------------------------------
-
-/// Per-source health snapshot, reported by the `/api/isfr/sources` endpoint.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ISFRSourceSnapshot {
-    /// Unique source identifier (e.g. "mock-aave-v3").
-    pub id: String,
-    /// Human-readable source name.
-    pub name: String,
-    /// Rate class: "lending", "structured", "funding", "staking".
-    pub class: String,
-    /// Weight used in composite calculation (0.0–1.0).
-    pub weight: f64,
-    /// Most recent rate in basis points, if any.
-    pub last_rate_bps: Option<u64>,
-    /// Health status: "live", "stale", "offline".
-    pub health: String,
-    /// Epoch-ms timestamp of the last successful poll.
-    pub last_poll_ms: Option<i64>,
-}
-
 /// A feed agent entry in the catalog.
 #[derive(Debug, Clone, Serialize)]
 pub struct FeedCatalogAgent {
@@ -396,27 +378,6 @@ pub struct FeedAgentCatalog {
     pub messages_per_sec: f64,
 }
 
-/// Shared ISFR keeper state exposed via REST (`/api/isfr/...`) and SSE.
-///
-/// Updated by the `PublishFn` callback when the keeper computes a new rate.
-/// All fields use async `RwLock` so handlers can read without blocking.
-#[derive(Debug, Default)]
-pub struct ISFRState {
-    /// Most recent composite rate published by the keeper.
-    pub current_rate: tokio::sync::RwLock<Option<roko_chain::isfr_sources::CompositeRate>>,
-    /// Bounded history ring (last 256 composite rates, newest at the end).
-    pub rate_history: tokio::sync::RwLock<Vec<roko_chain::isfr_sources::CompositeRate>>,
-    /// Per-source health snapshots.
-    pub sources: tokio::sync::RwLock<Vec<ISFRSourceSnapshot>>,
-    /// Whether the keeper background task is currently running.
-    pub keeper_running: std::sync::atomic::AtomicBool,
-    /// Current keeper epoch (updated each tick from keeper's epoch counter).
-    pub current_epoch: std::sync::atomic::AtomicU64,
-    /// Contract addresses from ISFR bootstrap (populated on auto-deploy).
-    pub contract_addresses:
-        tokio::sync::RwLock<Option<roko_chain::chain_profile::ContractAddresses>>,
-}
-
 // ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
@@ -443,6 +404,8 @@ pub struct AppState {
     pub affect_engine: Mutex<DaimonState>,
     /// Event bus for streaming server events to clients.
     pub event_bus: EventBus<ServerEvent>,
+    /// Universal Pulse Bus used by trigger subscriptions and lifecycle events.
+    pub pulse_bus: Arc<roko_runtime::pulse_bus::PulseBus>,
     /// Unified state hub for dashboard snapshot + event streaming.
     pub state_hub: roko_runtime::SharedStateHub,
     /// RuntimeEvent SSE adapter for workflow event streaming.
@@ -451,13 +414,24 @@ pub struct AppState {
     pub runtime_event_logger: Arc<roko_runtime::JsonlLogger>,
     /// Event subscriptions loaded at startup.
     pub subscriptions: SubscriptionRegistry,
+    /// Restart-safe relay subscription cursor, dispatch journal, and status.
+    pub(crate) subscription_relay: Arc<crate::subscription_relay::SubscriptionRelayRuntime>,
     /// Runtime bridge to CLI operations (run_once, status, dashboard).
     pub runtime: Arc<dyn CliRuntime>,
     /// Shared model-call gateway service used by HTTP inference adapters.
     pub model_call_service: Arc<ModelCallService>,
+    /// E26 nine-stage provider-neutral inference pipeline and batch queue.
+    pub gateway_http: roko_gateway::GatewayHttpState,
     /// Full `roko.toml` schema configuration with lock-free reads.
     pub roko_config: ArcSwap<RokoConfig>,
-    /// In-memory provider health tracker exposed via serve APIs.
+    /// Restart-safe API-key and agent-token registry.
+    pub(crate) auth_registry: Arc<crate::routes::auth::AuthRegistry>,
+    /// Shared append-only auth audit writer. Missing only when the audit file
+    /// could not be opened; authentication remains available in that case.
+    pub auth_audit: Option<Arc<crate::auth_audit::AuthAuditLog>>,
+    /// Persisted provider-health registry shared with live model dispatch.
+    pub provider_health_registry: Arc<ProviderHealthRegistry>,
+    /// Compatibility view of the canonical registry exposed via serve APIs.
     pub provider_health: ProviderHealthTracker,
     /// In-memory provider latency stats exposed via serve APIs.
     pub latency_registry: LatencyRegistry,
@@ -498,18 +472,28 @@ pub struct AppState {
     pub aggregator_cache: RwLock<HashMap<String, CachedJsonValue>>,
     /// Ring buffer of recent heartbeat payloads.
     pub heartbeats: RwLock<VecDeque<roko_core::HeartbeatPayload>>,
+    /// Monotonic agent lifecycle observations committed before Lens delivery.
+    pub agent_lifecycle: crate::agent_lifecycle::AgentLifecycleStore,
     /// Optional alloy JSON-RPC client for on-chain reads (feature: alloy-backend).
     pub chain_client: Option<Arc<AlloyChainClient>>,
     /// Optional alloy wallet for on-chain writes (feature: alloy-backend).
     pub chain_wallet: Option<Arc<AlloyChainWallet>>,
+    /// Restart-safe local registry lifecycle plus optional read-only chain indexer.
+    pub(crate) registries: crate::routes::registries::RegistryRuntime,
+    /// Restart-safe authorized arena lifecycle and external settlement service.
+    pub(crate) arenas: crate::routes::arenas::ArenaRuntime,
+    /// Restart-safe bounded meta-agent lineage and activation service.
+    pub(crate) meta_agents: crate::routes::meta::MetaAgentRuntime,
     /// Atomic counter of active agents (used by relay workspace heartbeat).
     pub agent_count: Arc<std::sync::atomic::AtomicU32>,
     /// Shared relay health state, updated by the heartbeat circuit breaker.
     pub relay_health: Arc<parking_lot::RwLock<crate::relay::RelayHealth>>,
     /// JWKS cache for Privy JWT verification.
     pub jwks_cache: Arc<crate::jwks::JwksCache>,
-    /// In-memory connector registry.
-    pub connectors: RwLock<roko_core::ConnectorRegistry>,
+    /// Canonical connector descriptor and health registry.
+    pub connectors: roko_runtime::SharedConnectorRegistry,
+    /// Concrete connector transports and their bounded supervisors.
+    pub connector_runtime: Arc<roko_runtime::ConnectorRuntime>,
     /// In-memory feed registry.
     pub feeds: RwLock<roko_core::FeedRegistry>,
 
@@ -533,6 +517,8 @@ pub struct AppState {
 
     /// In-memory trigger binding registry keyed by binding name.
     pub trigger_bindings: RwLock<HashMap<String, TriggerBinding>>,
+    /// Long-lived trigger coordinator, initialized once server tasks are allowed.
+    pub trigger_runtime: OnceCell<crate::trigger_runtime::TriggerRuntimeHandle>,
 
     /// Upstream mirage JSON-RPC URL for reverse proxy (`ROKO_MIRAGE_URL`).
     pub mirage_url: Option<String>,
@@ -542,151 +528,25 @@ pub struct AppState {
     /// Aggregated feed agent catalog snapshot updated by feed_agents module.
     pub feed_agent_catalog: RwLock<FeedAgentCatalog>,
 
-    /// Shared ISFR keeper state exposed via REST and SSE.
-    pub isfr: Arc<ISFRState>,
-
     /// Shared chain watcher state exposed via REST and SSE.
     pub chain: Arc<roko_chain::block_watcher::ChainState>,
 
     /// Runtime feed instances started at serve-time and queryable via
     /// `GET /api/feeds/runtime` and `GET /api/feeds/runtime/{id}`.
-    pub runtime_feeds: ServeFeeds,
+    pub runtime_feeds: Arc<RuntimeRegistry>,
+    /// Routes runtime feed output into the existing universal Pulse Bus.
+    pub feed_bus_bridge: FeedBusBridge<roko_runtime::pulse_bus::PulseBus>,
+    /// Persistent multi-agent group coordination runtime.
+    pub groups: crate::group_runtime::GroupRuntime,
 
     /// Optional shared secret that workers must present as the
     /// `X-Roko-Worker-Token` header when posting to
     /// `POST /api/deployments/:id/callback`. Populated at startup from the
     /// `ROKO_WORKER_CALLBACK_TOKEN` environment variable and validated by the
-    /// `receive_callback` handler. When `None` (or empty) the check is skipped
-    /// so deployments without a configured token continue to work.
+    /// `receive_callback` handler. This is a fallback for externally deployed
+    /// workers; route-created deployments use their own scoped token verifier.
+    /// When neither verifier is available, callbacks fail closed.
     pub worker_callback_token: Option<String>,
-}
-
-// ── Runtime feeds ────────────────────────────────────────────────
-
-/// Active runtime feeds registered with the serve layer.
-///
-/// Each entry is a named feed with static metadata. The feeds do not yet
-/// run background polling (that requires the Bus + CellContext from task 097);
-/// instead they expose queryable status snapshots reflecting serve-layer
-/// information (workspace dir for file-watch, provider health tracker for
-/// provider-health).
-pub struct ServeFeeds {
-    entries: Vec<ServeFeedEntry>,
-}
-
-/// A single runtime feed entry with its static metadata.
-struct ServeFeedEntry {
-    /// Stable feed identifier used for lookup by `ServeFeeds::get`.
-    id: String,
-    /// Dynamic status snapshot callback.
-    status_fn: Box<dyn Fn() -> roko_core::FeedRuntimeStatus + Send + Sync>,
-}
-
-impl std::fmt::Debug for ServeFeeds {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ServeFeeds")
-            .field("count", &self.entries.len())
-            .finish()
-    }
-}
-
-impl ServeFeeds {
-    /// Create the default set of runtime feeds.
-    pub fn new(
-        workdir: &Path,
-        provider_health: &ProviderHealthTracker,
-        isfr_state: &Arc<ISFRState>,
-    ) -> Self {
-        let roko_dir = workdir.join(".roko");
-        let roko_dir_exists = roko_dir.is_dir();
-        let provider_count = provider_health.snapshot().len();
-
-        // file-watch-roko-dir: reports whether the .roko/ directory exists.
-        let file_watch_connected = roko_dir_exists;
-        let file_watch_entry = ServeFeedEntry {
-            id: "file-watch-roko-dir".to_string(),
-            status_fn: Box::new(move || roko_core::FeedRuntimeStatus {
-                id: "file-watch-roko-dir".to_string(),
-                topic: "fs.changed".to_string(),
-                kind: "Raw".to_string(),
-                connected: file_watch_connected,
-                rate_hz: 0.0,
-                pulses_produced: 0,
-                last_update_ms: None,
-                error: if file_watch_connected {
-                    None
-                } else {
-                    Some(".roko/ directory not found".to_string())
-                },
-            }),
-        };
-
-        // provider-health-feed: reports provider health summary.
-        let prov_connected = provider_count > 0;
-        let provider_health_entry = ServeFeedEntry {
-            id: "provider-health-feed".to_string(),
-            status_fn: Box::new(move || roko_core::FeedRuntimeStatus {
-                id: "provider-health-feed".to_string(),
-                topic: "provider.health".to_string(),
-                kind: "Meta".to_string(),
-                connected: prov_connected,
-                rate_hz: 0.0,
-                pulses_produced: 0,
-                last_update_ms: None,
-                error: None,
-            }),
-        };
-
-        // isfr-keeper: reports ISFR composite rate feed status.
-        let isfr = Arc::clone(isfr_state);
-        let isfr_entry = ServeFeedEntry {
-            id: "isfr-keeper".to_string(),
-            status_fn: Box::new(move || {
-                let running = isfr.keeper_running.load(Ordering::Relaxed);
-                let history_len = isfr
-                    .rate_history
-                    .try_read()
-                    .map(|h| h.len() as u64)
-                    .unwrap_or(0);
-                let last_ms = isfr
-                    .current_rate
-                    .try_read()
-                    .ok()
-                    .and_then(|r| r.as_ref().map(|r| r.timestamp_ms));
-                roko_core::FeedRuntimeStatus {
-                    id: "isfr-keeper".to_string(),
-                    topic: "isfr.rates".to_string(),
-                    kind: "Composite".to_string(),
-                    connected: running,
-                    rate_hz: if running { 0.1 } else { 0.0 },
-                    pulses_produced: history_len,
-                    last_update_ms: last_ms,
-                    error: if !running {
-                        Some("keeper not started".into())
-                    } else {
-                        None
-                    },
-                }
-            }),
-        };
-
-        Self {
-            entries: vec![file_watch_entry, provider_health_entry, isfr_entry],
-        }
-    }
-
-    /// List all runtime feed statuses.
-    pub fn list(&self) -> Vec<roko_core::FeedRuntimeStatus> {
-        self.entries.iter().map(|e| (e.status_fn)()).collect()
-    }
-
-    /// Get status for a specific feed by id.
-    pub fn get(&self, id: &str) -> Option<roko_core::FeedRuntimeStatus> {
-        self.entries
-            .iter()
-            .find(|e| e.id == id)
-            .map(|e| (e.status_fn)())
-    }
 }
 
 /// A tracked bench run with its background task handle.
@@ -849,12 +709,40 @@ impl AppState {
     /// Build the shared hub used by AppState and in-process CLI runtimes.
     #[must_use]
     pub fn state_hub_for_workdir(workdir: &Path) -> roko_runtime::SharedStateHub {
+        let config =
+            roko_core::config::loader::load_config_unified(workdir).unwrap_or_else(|error| {
+                tracing::warn!(%error, "failed to load StateHub retention config; using defaults");
+                RokoConfig::default()
+            });
+        Self::state_hub_for_workdir_with_config(workdir, &config)
+    }
+
+    /// Build a shared hub using an already-resolved runtime configuration.
+    #[must_use]
+    pub fn state_hub_for_workdir_with_config(
+        workdir: &Path,
+        config: &RokoConfig,
+    ) -> roko_runtime::SharedStateHub {
         let layout = RokoLayout::for_project(workdir);
         let event_log_path = layout.root().join("events.jsonl");
-        roko_runtime::SharedStateHub::new(roko_runtime::StateHub::with_event_log(
-            1024,
-            &event_log_path,
-        ))
+        let retention = config
+            .statehub
+            .history_retention_duration()
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    %error,
+                    configured = %config.statehub.history_retention,
+                    "invalid StateHub history retention; using seven-day default"
+                );
+                roko_runtime::DEFAULT_PROJECTION_HISTORY_RETENTION
+            });
+        roko_runtime::SharedStateHub::new(
+            roko_runtime::StateHub::with_event_log_and_projection_retention(
+                1024,
+                &event_log_path,
+                retention,
+            ),
+        )
     }
 
     /// Construct a new `AppState` from the working directory and loaded configs.
@@ -945,16 +833,31 @@ impl AppState {
         let cancel = CancelToken::new();
         let supervisor = Arc::new(ProcessSupervisor::new(cancel.child()));
         let subscriptions = SubscriptionRegistry::load_from_project(&workdir, &roko_config);
+        let subscription_relay = Arc::new(
+            crate::subscription_relay::SubscriptionRelayRuntime::open(
+                &workdir,
+                roko_config.relay.url.is_some(),
+            )
+            .context("open relay subscription journal")?,
+        );
         let mut affect_engine = DaimonState::load_or_new(&affect_path);
         let _ = affect_engine.configure_strategy_space(strategy_space);
 
         let mut template_registry = TemplateRegistry::new(workdir.clone());
         template_registry.scan();
 
-        let state_hub = state_hub.unwrap_or_else(|| Self::state_hub_for_workdir(&workdir));
+        let state_hub = state_hub
+            .unwrap_or_else(|| Self::state_hub_for_workdir_with_config(&workdir, &roko_config));
 
         // Initialize chain client + wallet from [chain] config section.
         let (chain_client, chain_wallet) = Self::init_chain(&roko_config);
+        let registries = crate::routes::registries::RegistryRuntime::open(
+            &workdir,
+            &roko_config,
+            chain_client.clone(),
+        );
+        let arenas = crate::routes::arenas::ArenaRuntime::open(&workdir);
+        let meta_agents = crate::routes::meta::MetaAgentRuntime::open(&workdir);
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
@@ -966,6 +869,29 @@ impl AppState {
         let service_bundle = ServiceFactory::build(service_config)
             .map_err(|e| anyhow::anyhow!("build shared service bundle: {e}"))?;
         let model_call_service = service_bundle.model_call_service;
+        let provider_health_registry = service_bundle.provider_health_registry;
+        let effective_models = roko_config.effective_models();
+        let mut gateway_models = effective_models
+            .values()
+            .map(|model| model.slug.clone())
+            .collect::<Vec<_>>();
+        if gateway_models.is_empty() {
+            gateway_models.push("configured".to_string());
+        }
+        let gateway_router =
+            Arc::new(CascadeRouter::new(gateway_models).with_model_tiers(&effective_models));
+        let gateway_caller: Arc<dyn roko_core::ModelCaller> = model_call_service.clone();
+        let gateway_config = roko_gateway::GatewayConfig::from_model_caller(
+            gateway_router,
+            gateway_caller,
+            roko_learn::cost_table::CostTable::from_config(&effective_models).with_defaults(),
+        )
+        .with_event_writer(Arc::new(roko_agent::GatewayEventWriter::for_workdir(
+            &workdir,
+        )));
+        let gateway_http = roko_gateway::GatewayHttpState::new(Arc::new(
+            roko_gateway::InferenceGateway::new(gateway_config),
+        ));
         let terminal_workdir = workdir.clone();
         let terminal_sessions = crate::terminal::SessionManager::new(terminal_workdir);
         terminal_sessions.configure_server_env_from_config(&roko_config);
@@ -974,15 +900,121 @@ impl AppState {
             Arc::new(roko_runtime::JsonlLogger::from_roko_dir(layout.root()));
 
         let ephemeral_workspaces = RwLock::new(load_workspace_registry(&workdir));
+        let trigger_bindings = TriggerBinding::load_all(&layout.triggers_dir())?
+            .into_iter()
+            .map(|binding| (binding.name.clone(), binding))
+            .collect();
 
-        let provider_health = ProviderHealthTracker::new();
-        let isfr = Arc::new(ISFRState::default());
-        let runtime_feeds = ServeFeeds::new(&workdir, &provider_health, &isfr);
+        let provider_health =
+            ProviderHealthTracker::from_registry(Arc::clone(&provider_health_registry));
+        let runtime_feeds = Arc::new(RuntimeRegistry::default());
+        let roko_dir = workdir.join(".roko");
+        let file_watch_dir = roko_dir.clone();
+        runtime_feeds.register(
+            FeedInfo {
+                id: "file-watch-roko-dir".to_string(),
+                cell_id: "file-watch-roko-dir".to_string(),
+                name: "Roko file changes".to_string(),
+                kind: FeedKind::Raw,
+                access: FeedAccess::Private,
+                agent_id: "system".to_string(),
+                description: "Debounced changes below .roko, excluding partial writes".to_string(),
+                schema: Some(serde_json::json!({"topic": "fs.changed"})),
+                pricing: None,
+                created_at: chrono::Utc::now(),
+            },
+            move || FileWatchFeed::build(file_watch_dir.clone()),
+        );
+        let health_registry = Arc::clone(&provider_health_registry);
+        let health_snapshot: roko_core::ProviderHealthSnapshot = Arc::new(move || {
+            health_registry
+                .snapshot()
+                .into_values()
+                .map(|health| ProviderHealthSample {
+                    provider: health.provider_id,
+                    healthy: health.state == roko_learn::provider_health::CircuitState::Closed,
+                    latency_ms: None,
+                    error: (health.state != roko_learn::provider_health::CircuitState::Closed)
+                        .then(|| format!("provider circuit is {:?}", health.state)),
+                })
+                .collect()
+        });
+        let provider_factory = Arc::clone(&health_snapshot);
+        runtime_feeds.register(
+            FeedInfo {
+                id: "provider-health-feed".to_string(),
+                cell_id: "provider-health-feed".to_string(),
+                name: "Provider health".to_string(),
+                kind: FeedKind::Meta,
+                access: FeedAccess::Private,
+                agent_id: "system".to_string(),
+                description: "Canonical model provider circuit health".to_string(),
+                schema: Some(serde_json::json!({"topic": "provider.health"})),
+                pricing: None,
+                created_at: chrono::Utc::now(),
+            },
+            move || {
+                ProviderHealthFeed::build(Arc::clone(&provider_factory), Duration::from_secs(30))
+            },
+        );
+        let episode_path = layout.episodes_path();
+        runtime_feeds.register(
+            FeedInfo {
+                id: "episode-outcome-feed".to_string(),
+                cell_id: "episode-outcome-feed".to_string(),
+                name: "Episode outcomes".to_string(),
+                kind: FeedKind::Raw,
+                access: FeedAccess::Private,
+                agent_id: "system".to_string(),
+                description: "New append-only agent episode outcomes".to_string(),
+                schema: Some(serde_json::json!({"topic": "episode.outcome"})),
+                pricing: None,
+                created_at: chrono::Utc::now(),
+            },
+            move || {
+                EpisodeOutcomeFeed::build(EpisodeOutcomeFeedConfig {
+                    path: episode_path.clone(),
+                    polling_interval: Duration::from_secs(60),
+                })
+            },
+        );
+        let pulse_bus = Arc::new(roko_runtime::pulse_bus::PulseBus::new(16_384));
+        let feed_bus_bridge = FeedBusBridge::new(Arc::clone(&pulse_bus));
+        let groups = crate::group_runtime::GroupRuntime::open(&workdir, &roko_config.groups)
+            .map_err(|error| anyhow::anyhow!("open group runtime: {error}"))?;
+        let jwks_providers = if roko_config.serve.auth.jwks_providers.is_empty() {
+            vec![roko_core::config::JwksProvider::new(
+                crate::jwks::PRIVY_JWKS_URL,
+                "privy.io",
+            )]
+        } else {
+            roko_config.serve.auth.jwks_providers.clone()
+        };
+        let auth_registry = Arc::new(crate::routes::auth::AuthRegistry::load(
+            &workdir,
+            &roko_config.serve.auth.api_keys,
+        )?);
+        let auth_audit = match crate::auth_audit::open_audit_log(&workdir) {
+            Ok(log) => Some(Arc::new(log)),
+            Err(error) => {
+                tracing::warn!(error = %error, "auth_audit: could not open shared audit log");
+                None
+            }
+        };
+
+        let signal_store = SignalStore::new(signal_root, state_hub.sender());
+        let agent_lifecycle = crate::agent_lifecycle::AgentLifecycleStore::open(
+            layout_root.join("agent-lifecycle.json"),
+            state_hub.sender(),
+        );
+        let connectors = Arc::new(RwLock::new(roko_core::ConnectorRegistry::new()));
+        let connector_runtime =
+            Arc::new(roko_runtime::ConnectorRuntime::new(Arc::clone(&connectors)));
 
         Ok(Self {
             workdir,
             layout,
-            signal_store: SignalStore::new(signal_root),
+            signal_store,
             cancel,
             started_at: Instant::now(),
             metrics: {
@@ -992,13 +1024,19 @@ impl AppState {
             supervisor,
             affect_engine: Mutex::new(affect_engine),
             event_bus: EventBus::new(16_384),
+            pulse_bus,
             state_hub,
             sse_adapter: Arc::new(crate::adapters::SseAdapter::new(256)),
             runtime_event_logger,
             subscriptions,
+            subscription_relay,
             runtime,
             model_call_service,
+            gateway_http,
             roko_config: ArcSwap::from_pointee(roko_config.clone()),
+            auth_registry,
+            auth_audit,
+            provider_health_registry,
             provider_health,
             latency_registry: LatencyRegistry::new(),
             active_runs: RwLock::new(HashMap::new()),
@@ -1009,21 +1047,27 @@ impl AppState {
             deployments: RwLock::new(HashMap::new()),
             template_runs: RwLock::new(HashMap::new()),
             scrubber: Arc::new(LogScrubber::new()),
-            jwks_cache: crate::jwks::new_jwks_cache_with_timeout(
+            jwks_cache: crate::jwks::new_jwks_cache_with_providers(
                 http_client.clone(),
+                jwks_providers,
                 roko_config.timeouts.http_request(),
             ),
             http_client,
             discovered_agents: RwLock::new(HashMap::new()),
             aggregator_cache: RwLock::new(HashMap::new()),
             heartbeats: RwLock::new(VecDeque::new()),
+            agent_lifecycle,
             chain_client,
             chain_wallet,
+            registries,
+            arenas,
+            meta_agents,
             agent_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             relay_health: Arc::new(parking_lot::RwLock::new(
                 crate::relay::RelayHealth::default(),
             )),
-            connectors: RwLock::new(roko_core::ConnectorRegistry::new()),
+            connectors,
+            connector_runtime,
             feeds: RwLock::new(roko_core::FeedRegistry::new()),
             cascade_router: RwLock::new(None),
             gateway_model_counters: RwLock::new(HashMap::new()),
@@ -1032,7 +1076,8 @@ impl AppState {
             active_bench_runs: RwLock::new(HashMap::new()),
             active_matrix_runs: RwLock::new(HashMap::new()),
             ephemeral_workspaces,
-            trigger_bindings: RwLock::new(HashMap::new()),
+            trigger_bindings: RwLock::new(trigger_bindings),
+            trigger_runtime: OnceCell::new(),
             mirage_url: std::env::var("ROKO_MIRAGE_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -1041,9 +1086,10 @@ impl AppState {
                 .filter(|s| !s.is_empty())
                 .or_else(|| roko_config.relay.url.clone()),
             feed_agent_catalog: RwLock::new(FeedAgentCatalog::default()),
-            isfr,
             chain: Arc::new(roko_chain::block_watcher::ChainState::default()),
             runtime_feeds,
+            feed_bus_bridge,
+            groups,
             worker_callback_token: std::env::var("ROKO_WORKER_CALLBACK_TOKEN")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -1143,6 +1189,7 @@ impl AppState {
     /// Initiate graceful shutdown: cancel all work and stop supervised processes.
     pub async fn shutdown(&self) {
         tracing::info!("server shutdown initiated");
+        self.connector_runtime.shutdown().await;
         let router_path = self.layout.cascade_router_path();
         if let Some(ref router) = *self.cascade_router.read().await {
             if let Err(err) = router.save(&router_path) {
@@ -1560,15 +1607,19 @@ pub struct ServerStateSnapshot {
 pub struct SignalStore {
     root: PathBuf,
     substrate: OnceCell<Arc<FileSubstrate>>,
+    telemetry: roko_runtime::StateHubSender,
+    mutations: Mutex<()>,
 }
 
 impl SignalStore {
     /// Create a new store rooted at the `.roko/` directory.
     #[must_use]
-    pub fn new(root: PathBuf) -> Self {
+    pub fn new(root: PathBuf, telemetry: roko_runtime::StateHubSender) -> Self {
         Self {
             root,
             substrate: OnceCell::new(),
+            telemetry,
+            mutations: Mutex::new(()),
         }
     }
 
@@ -1583,15 +1634,139 @@ impl SignalStore {
     }
 
     /// Persist a signal through the normal file-backed substrate path.
+    /// Returns the canonical stored content hash and whether this call created it.
     ///
     /// # Errors
     ///
     /// Returns an error if the backing [`FileSubstrate`] cannot be opened or
     /// if the signal cannot be appended to the `.roko/engrams.jsonl` store.
-    pub async fn put(&self, signal: Signal) -> anyhow::Result<()> {
+    pub async fn put(&self, signal: Signal) -> anyhow::Result<(roko_core::ContentHash, bool)> {
+        let _mutation = self.mutations.lock().await;
         let substrate = self.substrate().await?;
-        substrate.put(signal).await?;
-        Ok(())
+        let (signal, created) = substrate.put_if_absent(signal).await?;
+        let signal_ref = signal.id;
+        if !created {
+            return Ok((signal_ref, false));
+        }
+        let signal_id = signal_ref.to_hex();
+        let tier = signal_tier(signal.status);
+        self.emit_telemetry(ObservableEvent::SignalCreated(signal));
+        self.emit_telemetry(ObservableEvent::MemoryStored {
+            signal: signal_id,
+            tier: tier.to_string(),
+        });
+        Ok((signal_ref, true))
+    }
+
+    /// Promote one existing Signal through an exact monotonic tier transition.
+    ///
+    /// Returns `Ok(None)` when the Signal is absent. Successful mutations are
+    /// durably appended before `SignalPromoted` is emitted; invalid or repeated
+    /// transitions return an error and emit nothing.
+    pub async fn promote(
+        &self,
+        signal_id: &roko_core::ContentHash,
+        target: SignalStatus,
+        min_score: f32,
+        min_age_secs: u64,
+        min_accesses: u32,
+    ) -> anyhow::Result<Option<Signal>> {
+        let _mutation = self.mutations.lock().await;
+        let substrate = self.substrate().await?;
+        let Some(mut signal) = substrate.get(signal_id).await? else {
+            return Ok(None);
+        };
+        let old = signal.status;
+        match target {
+            SignalStatus::Transient => anyhow::bail!("signals cannot be promoted to transient"),
+            SignalStatus::Working => signal.promote_to_working(min_score)?,
+            SignalStatus::Consolidated => signal.promote_to_consolidated()?,
+            SignalStatus::Persistent => {
+                signal.promote_to_persistent(min_age_secs, min_accesses)?;
+            }
+        }
+        if !substrate.replace_existing(signal.clone()).await? {
+            anyhow::bail!(
+                "signal disappeared during promotion: {}",
+                signal_id.to_hex()
+            );
+        }
+        self.emit_telemetry(ObservableEvent::SignalPromoted(
+            signal_id.to_hex(),
+            signal_tier(old).to_string(),
+            signal_tier(signal.status).to_string(),
+        ));
+        Ok(Some(signal))
+    }
+
+    /// Permanently prune one non-persistent Signal from hot storage.
+    ///
+    /// Returns `false` for an absent Signal, making retries idempotent. The
+    /// event is emitted only after durable compaction succeeds.
+    pub async fn prune(&self, signal_id: &roko_core::ContentHash) -> anyhow::Result<bool> {
+        let _mutation = self.mutations.lock().await;
+        let substrate = self.substrate().await?;
+        if substrate
+            .get(signal_id)
+            .await?
+            .is_some_and(|signal| signal.status == SignalStatus::Persistent)
+        {
+            anyhow::bail!("persistent signals cannot be pruned");
+        }
+        let removed = substrate.remove_ids_and_compact(&[*signal_id]).await?;
+        if removed.is_empty() {
+            return Ok(false);
+        }
+        self.emit_telemetry(ObservableEvent::SignalPruned(signal_id.to_hex()));
+        Ok(true)
+    }
+
+    /// Archive aged non-persistent Signals, then prune their hot-store copies.
+    ///
+    /// Each `SignalPruned` event corresponds to an exact ID removed after the
+    /// cold archive write has succeeded.
+    pub async fn archive_aged(&self, max_age_ms: i64, batch_size: usize) -> anyhow::Result<usize> {
+        use roko_core::{ColdStore, Context, Query};
+
+        let _mutation = self.mutations.lock().await;
+        let substrate = self.substrate().await?;
+        let cutoff_ms = chrono::Utc::now().timestamp_millis() - max_age_ms;
+        let candidates = substrate
+            .query(&Query::all().until(cutoff_ms), &Context::now())
+            .await?
+            .into_iter()
+            .filter(|signal| signal.status != SignalStatus::Persistent)
+            .take(batch_size)
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+        let candidate_ids = candidates
+            .iter()
+            .map(|signal| signal.id)
+            .collect::<Vec<_>>();
+        let cold = roko_fs::ArchiveColdSubstrate::open(self.root.join("cold")).await?;
+        cold.archive_batch(candidates).await?;
+        let removed = substrate.remove_ids_and_compact(&candidate_ids).await?;
+        for signal in &removed {
+            self.emit_telemetry(ObservableEvent::SignalPruned(signal.id.to_hex()));
+        }
+        Ok(removed.len())
+    }
+
+    fn emit_telemetry(&self, event: ObservableEvent) {
+        for error in self.telemetry.emit_observable(&event, &[LensScope::Global]) {
+            tracing::warn!(%error, "signal-store telemetry delivery failed");
+        }
+    }
+}
+
+const fn signal_tier(status: SignalStatus) -> &'static str {
+    match status {
+        SignalStatus::Transient => "transient",
+        SignalStatus::Working => "working",
+        SignalStatus::Consolidated => "consolidated",
+        SignalStatus::Persistent => "persistent",
     }
 }
 
@@ -1599,11 +1774,39 @@ impl SignalStore {
 mod tests {
     use super::*;
 
+    use std::collections::BTreeMap;
+
+    use roko_core::{Body, Kind, LensConfig, LensRegistry, ObservableEventKind, TelemetryObserve};
+    use roko_runtime::{LensExecutor, LensQueueConfig};
     use tempfile::tempdir;
     use tokio::task::JoinSet;
 
     use crate::deploy::manual::ManualBackend;
     use crate::runtime::NoOpRuntime;
+
+    struct RecordingSignalLens {
+        seen: Arc<std::sync::Mutex<Vec<ObservableEvent>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl TelemetryObserve for RecordingSignalLens {
+        async fn observe(&self, event: &ObservableEvent) -> roko_core::Result<Vec<Signal>> {
+            self.seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event.clone());
+            Ok(Vec::new())
+        }
+
+        fn observes(&self) -> &[ObservableEventKind] {
+            const OBSERVES: &[ObservableEventKind] = &[ObservableEventKind::SignalLifecycle];
+            OBSERVES
+        }
+
+        fn scope(&self) -> LensScope {
+            LensScope::Global
+        }
+    }
 
     #[tokio::test]
     async fn arcswap_config_supports_concurrent_reads_during_swap() {
@@ -1643,5 +1846,129 @@ mod tests {
         }
 
         assert_eq!(state.load_roko_config().server.port, 5000);
+    }
+
+    #[test]
+    fn state_hub_construction_applies_resolved_history_retention() {
+        let tempdir = tempdir().expect("tempdir");
+        let mut config = RokoConfig::default();
+        config.statehub.history_retention = "2h".to_string();
+
+        let hub = AppState::state_hub_for_workdir_with_config(tempdir.path(), &config);
+
+        assert_eq!(
+            hub.projection_history_retention(),
+            std::time::Duration::from_secs(2 * 60 * 60)
+        );
+    }
+
+    #[tokio::test]
+    async fn signal_store_emits_created_and_memory_stored_to_live_lens_runtime() {
+        let tempdir = tempdir().expect("tempdir");
+        let hub = roko_runtime::StateHub::default_capacity();
+        let mut registry = LensRegistry::new();
+        registry
+            .register(LensConfig {
+                name: "memory-drift".to_string(),
+                block: "roko:drift-lens@1".to_string(),
+                scope: "global".to_string(),
+                params: BTreeMap::new(),
+            })
+            .expect("register DriftLens");
+        let queue = LensExecutor::from_registry(&registry, hub.sender())
+            .expect("construct Lens runtime")
+            .into_queued("signal-store-test", LensQueueConfig::default())
+            .expect("queue Lens runtime");
+        let store = SignalStore::new(tempdir.path().to_path_buf(), hub.sender());
+        let signal = Signal::builder(Kind::Task)
+            .body(Body::text("persist me"))
+            .build();
+
+        store.put(signal).await.expect("persist signal");
+
+        assert!(queue.wait_idle(Duration::from_secs(2)).await);
+        let snapshot = queue.snapshot();
+        assert_eq!(snapshot.queue.enqueued, 2);
+        assert_eq!(snapshot.queue.processed, 2);
+        assert_eq!(snapshot.queue.failed_dispatches, 0);
+        assert!(hub.get_projection("knowledge_health").is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn signal_store_emits_exact_mutations_without_duplicate_lifecycle_events() {
+        let tempdir = tempdir().expect("tempdir");
+        let hub = roko_runtime::StateHub::default_capacity();
+        let mut registry = LensRegistry::new();
+        registry
+            .register_with_observes(
+                LensConfig {
+                    name: "signal-lifecycle-recorder".to_string(),
+                    block: "test:signal-lifecycle-recorder".to_string(),
+                    scope: "global".to_string(),
+                    params: BTreeMap::new(),
+                },
+                vec![ObservableEventKind::SignalLifecycle],
+            )
+            .expect("register signal recorder");
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut executor = LensExecutor::new(registry)
+            .expect("construct Lens runtime")
+            .with_projection(hub.sender());
+        executor
+            .register(
+                "signal-lifecycle-recorder",
+                Arc::new(RecordingSignalLens {
+                    seen: Arc::clone(&seen),
+                }),
+            )
+            .expect("attach signal recorder");
+        let queue = executor
+            .into_queued("signal-lifecycle-test", LensQueueConfig::default())
+            .expect("queue Lens runtime");
+        let store = SignalStore::new(tempdir.path().to_path_buf(), hub.sender());
+        let signal = Signal::builder(Kind::Task)
+            .body(Body::text("mutate me once"))
+            .build();
+
+        let (signal_ref, created) = store.put(signal.clone()).await.expect("create signal");
+        assert!(created);
+        let (duplicate_ref, duplicate_created) =
+            store.put(signal.clone()).await.expect("deduplicate create");
+        assert_eq!(duplicate_ref, signal_ref);
+        assert!(!duplicate_created);
+        let promoted = store
+            .promote(&signal_ref, SignalStatus::Working, 0.1, 0, 0)
+            .await
+            .expect("promote signal")
+            .expect("signal exists");
+        assert_eq!(promoted.status, SignalStatus::Working);
+        assert!(
+            store
+                .promote(&signal_ref, SignalStatus::Working, 0.1, 0, 0)
+                .await
+                .is_err(),
+            "a repeated tier transition must not emit"
+        );
+        assert!(store.prune(&signal_ref).await.expect("prune signal"));
+        assert!(!store.prune(&signal_ref).await.expect("deduplicate prune"));
+
+        assert!(queue.wait_idle(Duration::from_secs(2)).await);
+        let observations = seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(observations.len(), 3);
+        assert!(
+            matches!(&observations[0], ObservableEvent::SignalCreated(created) if created.id == signal_ref)
+        );
+        assert!(matches!(
+            &observations[1],
+            ObservableEvent::SignalPromoted(id, old, new)
+                if id == &signal_ref.to_hex() && old == "transient" && new == "working"
+        ));
+        assert!(matches!(
+            &observations[2],
+            ObservableEvent::SignalPruned(id) if id == &signal_ref.to_hex()
+        ));
     }
 }

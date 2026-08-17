@@ -1,6 +1,6 @@
 # roko-serve
 
-The Roko HTTP control plane. Single port (6677 by default), ~85 REST routes,
+The Roko HTTP control plane. Single port (6677 by default), a broad REST surface,
 SSE + WebSocket streams, and webhook ingestion. Designed so a dashboard,
 CLI, or external integration can talk to one base URL and reach every agent,
 plan, PRD, metric, and learning signal.
@@ -90,9 +90,15 @@ server.serve().await?;
 | `POST` | `/api/agents/register` | register an external agent |
 | `POST` | `/api/agents/{id}/stop` | graceful shutdown |
 | `POST` | `/api/agents/{id}/message` | proxied to sidecar `POST /message` |
+| `POST` | `/api/agents/{id}/observation` | durably commit a canonical lifecycle sample, then emit Agent-scoped Lens events |
 | `GET` | `/api/agents/{id}` | detail |
 | `GET` | `/api/agents/{id}/episodes` | per-agent episode log |
 | `GET/POST` | `/api/agents/{id}/token` | agent auth token |
+
+Agent observations use a per-Agent monotonic `sequence`. Exact retries remain idempotent
+across server restarts; stale or conflicting sequences fail before emission. The baseline
+is persisted before best-effort Lens fanout. Modern Agent tokens require `bus_publish`, and
+all Agent credentials are bound to the `{id}` in the request path.
 
 ### Agents — aggregator (discovery + fan-out)
 
@@ -139,11 +145,40 @@ endpoint that owns the data.
 
 | Area | Paths |
 |------|-------|
-| Subscriptions | `GET/POST /api/subscriptions`, `PUT/DELETE /api/subscriptions/{id}`, `POST /api/subscriptions/{id}/{enable|disable}` |
+| Subscriptions | `GET/POST /api/subscriptions`, `GET /api/subscriptions/catalog`, `GET /api/subscriptions/relay/status`, `PUT/DELETE /api/subscriptions/{id}`, `POST /api/subscriptions/{id}/{enable|disable}` |
 | Templates | `GET/POST /api/templates`, `GET/DELETE /api/templates/{name}`, `POST /api/templates/{name}/deploy` |
 | Deployments | `GET/POST /api/deployments`, `GET/DELETE /api/deployments/{id}`, `GET /api/deployments/{id}/logs`, `POST /api/deployments/{id}/task`, `POST /api/deployments/callback` |
 | Config | `GET/PUT /api/config`, `POST /api/config/reload` |
 | Providers | `GET /api/providers/`, `GET /api/providers/{id}/health`, `POST /api/providers/{id}/test`, `GET /api/models/`, `GET /api/models/routing/explain` |
+
+### Connectors / arenas / meta-agents
+
+| Area | Paths |
+|------|-------|
+| Supervised HTTP JSON connectors | `GET/POST /api/connectors`, `DELETE /api/connectors/{name}`, `GET /api/connectors/{name}/health`, `POST /api/connectors/{name}/{restart|query|execute}` |
+| Durable local arenas | `GET/POST /api/arenas`, `GET/PATCH /api/arenas/{id}`, `GET /api/arenas/{id}/leaderboard`, `GET/POST /api/arenas/{id}/attempts`, `GET /api/arenas/{id}/attempts/{attempt_id}`, `POST /api/arenas/{id}/attempts/{attempt_id}/{submit|settle}` |
+| Durable meta-agents | `GET/POST /api/meta/agents`, `GET /api/meta/agents/{id}`, `POST /api/meta/agents/{id}/{validate|morph|deactivate}`, `POST /api/meta/agents/{id}/morph/rollback` |
+
+The connector adapter performs a real bounded transport probe before reporting connected and
+uses generation-safe cancellation for replace/restart/delete. Connector status never returns
+credentials or untrusted manifest metadata.
+
+With relay configuration, enabled exact-room subscriptions run through the supervised
+`roko-agent-server` client. `Subscribe(last_seq)` atomically restores the room set and durable
+cursor; a standalone live-socket `Resume` is rejected. Serve persists dispatch intent first,
+then atomically commits ordered dispatch-or-suppression receipts and room/subscription/global
+cursors to `.roko/state/subscription-relay-journal.json` before returning handler success and
+permitting ACK. The journal is integrity-checked and bounded to 4 MiB, 4,096 entries, and
+4,096 cursor keys. Failed/interrupted dispatch, unsafe stream changes, and generic snapshots
+enter explicit reconciliation instead of replaying side effects blindly. The authenticated
+status route exposes those diagnostics, including unsupported wildcard triggers.
+
+Arena mutations are owner/participant/admin authorized as applicable and persisted atomically
+in `.roko/chain/arena-state.json`; external scoring evidence, attempt settlement, prize and
+reputation effects, leaderboard state, and the durable projection outbox commit together.
+Meta-agent proposals are owner-bound and durable. Activation requires single-use R03 evidence
+for the exact artifact and the fixed five-head safety order; descendant grants cannot widen,
+role morphs narrow with exact rollback, and deactivation is descendant-safe.
 
 ### Streaming + webhooks
 
@@ -191,12 +226,16 @@ curl -X POST http://localhost:6677/api/run \
 │   - /api/* REST                           │
 │   - /ws, /api/ws, /api/events streams     │
 │   - /webhooks/* ingestion                 │
+│   - durable relay/arena/meta state         │
 └──────┬────────────────────────────────────┘
        │
        ├──► roko-core (signals, config, episodes)
        ├──► roko-learn (efficiency, c-factor, experiments)
        ├──► roko-gate (gate history, thresholds)
-       ├──► roko-orchestrator (plan DAG, tasks)
+       ├──► roko-cli runner (plan DAG, tasks)
+       ├──► roko-runtime (supervised HTTP connectors)
+       ├──► roko-chain (durable local arena registry)
+       ├──► agent-relay (bounded canonical event transport)
        │
        └──► aggregator ──► roko-agent-server (per agent)
                            /message, /stream, /predictions, ...
@@ -217,7 +256,12 @@ dedicated integration tests that exercise happy and error paths.
 - **Not an agent**, it only proxies to them. Messaging happens in
   `roko-agent-server`.
 - **Not a scheduler**, it only triggers. Execution runs in `roko-cli`
-  via `roko-orchestrator`.
+  via the `roko-cli` runner.
+- **Not the complete connectivity product**: additional transports, startup discovery,
+  MCP auto-registration, A2A/x402, finality/reorg processing, and dashboard auto-connect remain.
+- **Not the complete arena/autonomy product**: evals, flywheel learning, on-chain/token/transfer
+  systems, Loop 4, ADAS, HGM, and autonomous generated-agent execution remain outside the
+  scoped local R03/R04 services.
 
 ## Related
 

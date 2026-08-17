@@ -1,5 +1,8 @@
 # Forensic AI: Causal Replay and Regulatory Pre-Compliance
 
+> **DEPRECATED (v1):** This document is part of the v1 specification and may be outdated. See [../../v2/](../../v2/) for the current reference.
+
+
 > **Layer**: L3 Harness (audit and replay), L4 Orchestration (cross-agent accountability)
 >
 > **Crate**: Cross-cutting: `roko-core` (Engram lineage), `roko-fs` (persistent audit log), `roko-gate` (Gate verdict history), target: `roko-forensic` (dedicated replay engine)

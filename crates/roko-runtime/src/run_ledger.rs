@@ -309,10 +309,10 @@ impl AgentReportFields {
         if self.selected_agent.is_none() || role == "implementer" {
             self.selected_agent = Some((final_model.to_string(), provider_id.to_string()));
         }
-        if self.fallback_requested_model.is_none() {
-            if let Some(model) = non_empty(requested_model) {
-                self.fallback_requested_model = Some(model.to_string());
-            }
+        if self.fallback_requested_model.is_none()
+            && let Some(model) = non_empty(requested_model)
+        {
+            self.fallback_requested_model = Some(model.to_string());
         }
     }
 
@@ -347,14 +347,14 @@ fn spawned_model_from_events(events: &[RuntimeEventEnvelope]) -> Option<String> 
     let mut implementer: Option<String> = None;
     let mut first: Option<String> = None;
     for envelope in events {
-        if let RuntimeEvent::AgentSpawned { role, model, .. } = &envelope.payload {
-            if let Some(model) = non_empty(model) {
-                if role == "implementer" {
-                    implementer = Some(model.to_string());
-                    break;
-                }
-                first.get_or_insert_with(|| model.to_string());
+        if let RuntimeEvent::AgentSpawned { role, model, .. } = &envelope.payload
+            && let Some(model) = non_empty(model)
+        {
+            if role == "implementer" {
+                implementer = Some(model.to_string());
+                break;
             }
+            first.get_or_insert_with(|| model.to_string());
         }
     }
     implementer.or(first)

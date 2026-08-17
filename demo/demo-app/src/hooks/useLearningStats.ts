@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useServerEventSubscription } from './useEventStream';
-import { useApi } from './useApi';
+import { useDataApi } from './useDataApi';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,21 +26,6 @@ export interface LearningStats {
   }[];
   /** True while initial fetch is in progress. */
   loading: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// SSE event shapes
-// ---------------------------------------------------------------------------
-
-interface InferenceCompletedEvent {
-  type: 'InferenceCompleted';
-  model: string;
-  tier: string;
-  tokens_in: number;
-  tokens_out: number;
-  cost: number;
-  router_confidence?: number;
-  duration_ms: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,12 +65,12 @@ const POLL_INTERVAL_MS = 10_000;
 
 /**
  * Fetches and streams learning feedback loop data:
- * - Cascade router confidence (from SSE InferenceCompleted + initial fetch)
+ * - Cascade router confidence (from REST plus dashboard invalidations)
  * - Gate thresholds (polled every 10s)
  * - Experiments (polled every 10s)
  */
 export function useLearningStats(): LearningStats {
-  const { get } = useApi();
+  const { get } = useDataApi();
 
   const [routerConfidence, setRouterConfidence] = useState(0);
   const [confidenceTrend, setConfidenceTrend] = useState<LearningStats['confidenceTrend']>('stable');
@@ -107,6 +92,16 @@ export function useLearningStats(): LearningStats {
           entries.length > 0
             ? entries.reduce((sum, m) => sum + m.avg_confidence, 0) / entries.length
             : 0;
+        if (prevConfidence.current > 0) {
+          const delta = avgConf - prevConfidence.current;
+          setConfidenceTrend(
+            delta > TREND_DELTA
+              ? 'improving'
+              : delta < -TREND_DELTA
+                ? 'declining'
+                : 'stable',
+          );
+        }
         setRouterConfidence(avgConf);
         setTotalDecisions(data.total_decisions);
         prevConfidence.current = avgConf;
@@ -169,27 +164,19 @@ export function useLearningStats(): LearningStats {
     return () => clearInterval(id);
   }, [fetchThresholds, fetchExperiments]);
 
-  // -- Subscribe to SSE InferenceCompleted events --
+  // DashboardEvent carries typed invalidations for these materialized views;
+  // their full values continue to come from the canonical REST endpoints.
   useServerEventSubscription(
-    ['InferenceCompleted'],
+    ['cascade_router_updated', 'gate_thresholds_updated', 'experiment_winners_updated'],
     useCallback((event: Record<string, unknown>) => {
-      const e = event as unknown as InferenceCompletedEvent;
-      if (e.router_confidence != null) {
-        const newConf = e.router_confidence;
-        const delta = newConf - prevConfidence.current;
-
-        setRouterConfidence(newConf);
-        setConfidenceTrend(
-          delta > TREND_DELTA
-            ? 'improving'
-            : delta < -TREND_DELTA
-              ? 'declining'
-              : 'stable',
-        );
-        prevConfidence.current = newConf;
+      if (event.type === 'cascade_router_updated') {
+        void fetchRouter();
+      } else if (event.type === 'gate_thresholds_updated') {
+        void fetchThresholds();
+      } else if (event.type === 'experiment_winners_updated') {
+        void fetchExperiments();
       }
-      setTotalDecisions((prev) => prev + 1);
-    }, []),
+    }, [fetchExperiments, fetchRouter, fetchThresholds]),
   );
 
   return {

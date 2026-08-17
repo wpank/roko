@@ -356,35 +356,66 @@ async fn get_workspace_state(
     let roko_dir = ws.path.join(".roko");
     let mut errors: Vec<String> = Vec::new();
 
-    // 1. Executor state: extract from state-snapshot.json (unified snapshot).
-    //    Runner v2 writes state-snapshot.json with an embedded executor_json
-    //    field; the old state/executor.json is no longer written.
-    let executor_state =
-        match read_json_file(roko_dir.join("state").join("state-snapshot.json")).await {
-            Ok(snapshot) => {
-                // Extract the embedded executor_json string and parse it.
-                snapshot
-                    .get("executor_json")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| serde_json::from_str::<Value>(s).ok())
-                    .unwrap_or(Value::Null)
-            }
-            Err(ReadFileError::NotFound) => {
-                // Fall back to legacy executor.json for old workspaces.
-                match read_json_file(roko_dir.join("state").join("executor.json")).await {
-                    Ok(v) => v,
-                    Err(_) => Value::Null,
-                }
-            }
-            Err(ReadFileError::Io(e)) => {
-                errors.push(format!("state-snapshot.json: {e}"));
-                Value::Null
-            }
-            Err(ReadFileError::Parse(e)) => {
-                errors.push(format!("state-snapshot.json parse: {e}"));
-                Value::Null
-            }
-        };
+    // 1. Executor state: use the same bounded, checksum-verifying projection
+    //    loader as StateHub, TUI, CLI show, and projection endpoints.
+    let projection_workdir = ws.path.clone();
+    let projection = tokio::task::spawn_blocking(move || {
+        roko_runtime::load_durable_runner_projection(&projection_workdir)
+    })
+    .await;
+    let (
+        executor_state,
+        executor_state_source,
+        executor_state_path,
+        executor_state_generation,
+        executor_state_error,
+    ) = match projection {
+        Ok(Ok(Some(projection))) => (
+            projection.executor_projection,
+            projection.source.label().to_string(),
+            projection.source_path.display().to_string(),
+            Some(projection.generation),
+            None,
+        ),
+        Ok(Ok(None)) => (
+            Value::Null,
+            "missing".to_string(),
+            ws.path
+                .join(roko_runtime::STATE_SNAPSHOT_RELATIVE_PATH)
+                .display()
+                .to_string(),
+            None,
+            None,
+        ),
+        Ok(Err(error)) => {
+            let message = error.to_string();
+            errors.push(format!("durable Runner projection: {message}"));
+            (
+                Value::Null,
+                "invalid".to_string(),
+                ws.path
+                    .join(roko_runtime::STATE_SNAPSHOT_RELATIVE_PATH)
+                    .display()
+                    .to_string(),
+                None,
+                Some(message),
+            )
+        }
+        Err(error) => {
+            let message = format!("projection task failed: {error}");
+            errors.push(format!("durable Runner projection: {message}"));
+            (
+                Value::Null,
+                "invalid".to_string(),
+                ws.path
+                    .join(roko_runtime::STATE_SNAPSHOT_RELATIVE_PATH)
+                    .display()
+                    .to_string(),
+                None,
+                Some(message),
+            )
+        }
+    };
 
     // 2. Episodes: try canonical paths first, then legacy memory fallback.
     //    Order: .roko/episodes.jsonl -> .roko/learn/episodes.jsonl -> .roko/memory/episodes.jsonl
@@ -435,6 +466,10 @@ async fn get_workspace_state(
         "workspace_id": ws.id,
         "workspace_path": ws.path.display().to_string(),
         "executor_state": executor_state,
+        "executor_state_source": executor_state_source,
+        "executor_state_path": executor_state_path,
+        "executor_state_generation": executor_state_generation,
+        "executor_state_error": executor_state_error,
         "episodes": episodes,
         "plans": plans,
         "roko_log_tail": roko_log_tail,
@@ -451,16 +486,6 @@ enum ReadFileError {
     NotFound,
     Io(String),
     Parse(String),
-}
-
-/// Read a JSON file and return its parsed value.
-async fn read_json_file(path: PathBuf) -> Result<Value, ReadFileError> {
-    let data = match tokio::fs::read_to_string(&path).await {
-        Ok(d) => d,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ReadFileError::NotFound),
-        Err(e) => return Err(ReadFileError::Io(e.to_string())),
-    };
-    serde_json::from_str(&data).map_err(|e| ReadFileError::Parse(e.to_string()))
 }
 
 /// Read the last `n` lines of a JSONL file, parsing each line as a JSON value.
@@ -699,5 +724,111 @@ mod tests {
 
         // Clean up the workspace directory.
         let _ = std::fs::remove_dir_all(ws_path);
+    }
+
+    #[tokio::test]
+    async fn workspace_detail_uses_verified_projection_and_fails_closed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("workspace");
+        let state_dir = workspace.join(".roko/state");
+        std::fs::create_dir_all(&state_dir).expect("state dir");
+        let state = test_state(dir.path().to_path_buf());
+        state
+            .insert_workspace(WorkspaceInfo {
+                id: "ws-1".to_string(),
+                path: workspace.clone(),
+                created_at: 1,
+                last_accessed_at: 1,
+                status: WorkspaceStatus::Active,
+            })
+            .await
+            .expect("insert workspace");
+        std::fs::write(
+            state_dir.join("executor.json"),
+            serde_json::json!({"plan_states": {"legacy": {}}}).to_string(),
+        )
+        .expect("legacy executor");
+        let executor = serde_json::json!({
+            "schema_version": 1,
+            "plan_states": {"canonical": {"plan_id": "canonical", "current_phase": {"kind": "implementing"}}},
+            "queue_order": ["canonical"],
+            "speculative_executions": {},
+            "timestamp_ms": 42
+        });
+        let mut snapshot = roko_runtime::StateSnapshot::new(
+            42,
+            executor.to_string(),
+            serde_json::json!({"schema_version": 1, "executor": executor, "timestamp_ms": 42})
+                .to_string(),
+            serde_json::json!({
+                "schema_version": 1,
+                "run_id": "run-canonical",
+                "timestamp_ms": 42,
+                "tasks_total": 0,
+                "tasks_completed": 0,
+                "tasks_failed": 0,
+                "total_tokens_in": 0,
+                "total_tokens_out": 0,
+                "total_cost_usd": 0.0,
+                "total_agent_calls": 0,
+                "replan_ledger": {}
+            })
+            .to_string(),
+            serde_json::json!({"rungs": {}}).to_string(),
+        );
+        let snapshot_path = state_dir.join("state-snapshot.json");
+        std::fs::write(
+            &snapshot_path,
+            serde_json::to_vec(&snapshot).expect("serialize snapshot"),
+        )
+        .expect("write snapshot");
+
+        let app = routes().with_state(Arc::clone(&state));
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/workspaces/ws-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("workspace detail");
+        assert_eq!(response.status(), 200);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload["executor_state_source"], "state_snapshot");
+        assert!(payload["executor_state"]["plan_states"]["canonical"].is_object());
+        assert!(payload["executor_state"]["plan_states"]["legacy"].is_null());
+
+        snapshot.checksum = "0".repeat(64);
+        std::fs::write(
+            &snapshot_path,
+            serde_json::to_vec(&snapshot).expect("serialize corrupt snapshot"),
+        )
+        .expect("write corrupt snapshot");
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/workspaces/ws-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("workspace detail after corruption");
+        assert_eq!(response.status(), 200);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload["executor_state_source"], "invalid");
+        assert!(payload["executor_state"].is_null());
+        assert!(
+            payload["errors"]
+                .as_array()
+                .is_some_and(|errors| errors.iter().any(|error| error
+                    .as_str()
+                    .is_some_and(|error| error.contains("checksum mismatch"))))
+        );
     }
 }

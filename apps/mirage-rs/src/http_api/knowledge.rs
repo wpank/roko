@@ -266,10 +266,10 @@ pub async fn search_knowledge(
         .into_iter()
         .filter_map(|hit| {
             let entry = chain.knowledge.get(hit.id)?;
-            if let Some(k) = kind_filter {
-                if entry.kind != k {
-                    return None;
-                }
+            if let Some(k) = kind_filter
+                && entry.kind != k
+            {
+                return None;
             }
             Some(SearchHit {
                 id: entry.id.to_hex(),

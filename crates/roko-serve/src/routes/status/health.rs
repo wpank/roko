@@ -34,6 +34,8 @@ pub async fn health(State(state): State<Arc<AppState>>) -> (axum::http::StatusCo
         .unwrap_or(0);
     let active_agents = supervised.max(discovered);
     let active_runs = state.active_runs.try_read().map(|r| r.len()).unwrap_or(0);
+    let jwks_health = state.jwks_cache.cache_health().await;
+    let jwks_configured = state.load_roko_config().serve.auth.privy_app_id.is_some();
 
     // Build a compact provider health summary from the tracker, using HealthState
     // for proper classification including degradation detection.
@@ -80,9 +82,14 @@ pub async fn health(State(state): State<Arc<AppState>>) -> (axum::http::StatusCo
     });
 
     // Determine overall system status: "ok" / "degraded" / "unhealthy"
-    let status = if providers_total > 0 && providers_healthy == 0 && providers_degraded == 0 {
+    let status = if (providers_total > 0 && providers_healthy == 0 && providers_degraded == 0)
+        || (jwks_configured && jwks_health.fail_closed)
+    {
         "unhealthy"
-    } else if providers_unhealthy > 0 || providers_degraded > 0 {
+    } else if providers_unhealthy > 0
+        || providers_degraded > 0
+        || (jwks_configured && jwks_health.stale)
+    {
         "degraded"
     } else {
         "ok"
@@ -106,6 +113,14 @@ pub async fn health(State(state): State<Arc<AppState>>) -> (axum::http::StatusCo
             "active_agents": active_agents,
             "active_runs": active_runs,
             "providers": provider_summary,
+            "jwks": {
+                "configured": jwks_configured,
+                "fresh": jwks_health.fresh,
+                "key_count": jwks_health.key_count,
+                "age_secs": jwks_health.age_secs,
+                "stale": jwks_health.stale,
+                "fail_closed": jwks_health.fail_closed,
+            },
             "statehub": {
                 "cursor": format!("0x{:x}", state.state_hub.total_published()),
                 "events_retained": state.state_hub.ring_len(),
@@ -252,6 +267,7 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::Diagnosis { .. } => "diagnosis",
         DashboardEvent::ExperimentWinnersUpdated { .. } => "experiment_winners_updated",
         DashboardEvent::CFactorTrendUpdated { .. } => "c_factor_trend_updated",
+        DashboardEvent::ProjectionUpdated { .. } => "projection_updated",
         DashboardEvent::EpisodeRecorded { .. } => "episode_recorded",
         DashboardEvent::TaskOutputAppended { .. } => "task_output_appended",
         DashboardEvent::EventLogEntry { .. } => "event_log_entry",
@@ -265,15 +281,19 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::JobExecutionStarted { .. } => "job_execution_started",
         DashboardEvent::JobProgress { .. } => "job_progress",
         DashboardEvent::Error { .. } => "error",
-        DashboardEvent::IsfrRateComputed { .. } => "isfr_rate_computed",
-        DashboardEvent::IsfrSourceHealthChanged { .. } => "isfr_source_health_changed",
-        DashboardEvent::IsfrKeeperStateChanged { .. } => "isfr_keeper_state_changed",
         DashboardEvent::ChainBlock { .. } => "chain_block",
         DashboardEvent::ChainTx { .. } => "chain_tx",
         DashboardEvent::ChainContractEvent { .. } => "chain_contract_event",
         DashboardEvent::FeedTick { .. } => "feed_tick",
         DashboardEvent::FeedAgentOnline { .. } => "feed_agent_online",
         DashboardEvent::FeedAgentOffline { .. } => "feed_agent_offline",
+        DashboardEvent::PaymentReceived { .. } => "payment_received",
+        DashboardEvent::SettlementCompleted { .. } => "settlement_completed",
+        DashboardEvent::InboxItemReceived { .. } => "inbox_item_received",
+        DashboardEvent::InboxApprove { .. } => "inbox_approve",
+        DashboardEvent::InboxReject { .. } => "inbox_reject",
+        DashboardEvent::InboxDefer { .. } => "inbox_defer",
+        DashboardEvent::InboxDismiss { .. } => "inbox_dismiss",
     }
 }
 

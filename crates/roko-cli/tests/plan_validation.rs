@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 #[allow(clippy::items_after_test_module)]
 mod plan_validation {
     #![allow(dead_code, unused_imports)]

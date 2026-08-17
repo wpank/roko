@@ -13,6 +13,38 @@
 use crate::ContentHash;
 use serde::{Deserialize, Serialize};
 
+/// Trust-origin taint used by security IFC.
+///
+/// This is an explicit compatibility name for the canonical CaMeL origin tag.
+/// It intentionally remains distinct from [`TaintLevel`], which classifies
+/// data sensitivity (`Public` through `Secret`).
+pub use crate::extension::CamelTaintLevel as TrustOriginTaintLevel;
+
+impl crate::extension::CamelTaintLevel {
+    /// Least upper bound (the less-trusted of two origins).
+    #[must_use]
+    pub fn join(self, other: Self) -> Self {
+        self.max(other)
+    }
+
+    /// Whether this origin may flow to `target` without laundering trust.
+    #[must_use]
+    pub fn can_flow_to(self, target: Self) -> bool {
+        self <= target
+    }
+
+    /// Scalar trust score retained for compatibility with provenance scoring.
+    #[must_use]
+    pub fn trust_score(self) -> f32 {
+        match self {
+            Self::Trusted => 1.0,
+            Self::Local => 0.75,
+            Self::External => 0.1,
+            Self::Untrusted => 0.0,
+        }
+    }
+}
+
 // ─── TaintLevel ──────────────────────────────────────────────────────────────
 
 /// Information-Flow Control (IFC) security classification lattice.
@@ -192,7 +224,7 @@ impl Taint {
 ///
 /// **Deprecated**: Use [`Taint`] enum directly. This struct is retained for
 /// backward compatibility with existing serialized data and the
-/// `TaintTracker` in roko-orchestrator. New code should use `Taint` variants.
+/// legacy orchestration taint tracker. New code should use `Taint` variants.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaintInfo {
     /// Short machine-readable category such as `"external"` or `"propagated"`.
@@ -365,6 +397,13 @@ pub struct Provenance {
     /// Defaults to `Public`; set to a higher level when the data is sensitive.
     #[serde(default)]
     pub taint_level: TaintLevel,
+
+    /// Trust origin for monotonic security IFC.
+    ///
+    /// Kept separate from `taint_level`, whose established meaning is data
+    /// classification. Older serialized records default to `Trusted`.
+    #[serde(default)]
+    pub trust_origin: TrustOriginTaintLevel,
 }
 
 impl Provenance {
@@ -378,6 +417,7 @@ impl Provenance {
             taint_info: None,
             session: None,
             taint_level: TaintLevel::Public,
+            trust_origin: TrustOriginTaintLevel::Trusted,
         }
     }
 
@@ -391,6 +431,7 @@ impl Provenance {
             taint_info: None,
             session: None,
             taint_level: TaintLevel::Public,
+            trust_origin: TrustOriginTaintLevel::Local,
         }
     }
 
@@ -407,6 +448,7 @@ impl Provenance {
             trust: 0.1,
             session: None,
             taint_level: TaintLevel::Public,
+            trust_origin: TrustOriginTaintLevel::External,
         }
     }
 
@@ -423,6 +465,7 @@ impl Provenance {
             trust: 0.5,
             session: None,
             taint_level: TaintLevel::Public,
+            trust_origin: TrustOriginTaintLevel::Local,
         }
     }
 
@@ -467,6 +510,13 @@ impl Provenance {
         self
     }
 
+    /// Set the trust-origin taint without conflating it with classification.
+    #[must_use]
+    pub fn with_trust_origin(mut self, origin: TrustOriginTaintLevel) -> Self {
+        self.trust_origin = origin;
+        self
+    }
+
     /// Derive an effective trust decision from the combination of the [`Taint`]
     /// variant and the [`TaintLevel`] lattice classification.
     ///
@@ -486,6 +536,23 @@ impl Provenance {
             _ => TaintLevel::Confidential,
         };
         self.taint_level.join(implied)
+    }
+
+    /// Combine explicit trust origin with the typed taint reason.
+    ///
+    /// The join is monotonic: a taint reason can lower trust, but can never
+    /// make an explicitly external or untrusted origin more trusted.
+    #[must_use]
+    pub fn effective_trust_origin(&self) -> TrustOriginTaintLevel {
+        let implied = match self.taint {
+            Taint::Clean => TrustOriginTaintLevel::Trusted,
+            Taint::UserInput { .. } => TrustOriginTaintLevel::Local,
+            Taint::UnverifiedSource { .. } | Taint::StaleData { .. } => {
+                TrustOriginTaintLevel::External
+            }
+            _ => TrustOriginTaintLevel::Untrusted,
+        };
+        self.trust_origin.join(implied)
     }
 
     /// Returns `true` when this provenance carries active taint.
@@ -522,6 +589,14 @@ impl Provenance {
     #[must_use]
     pub fn is_trusted(&self, min_trust: f32) -> bool {
         self.trust >= min_trust && !self.is_tainted()
+    }
+}
+
+impl crate::engram::Engram {
+    /// Effective trust-origin taint for this signal.
+    #[must_use]
+    pub fn effective_taint(&self) -> TrustOriginTaintLevel {
+        self.provenance.effective_trust_origin()
     }
 }
 
@@ -811,5 +886,44 @@ mod tests {
         assert!((TaintLevel::Internal.trust_score() - 0.75).abs() < f32::EPSILON);
         assert!((TaintLevel::Confidential.trust_score() - 0.1).abs() < f32::EPSILON);
         assert!((TaintLevel::Secret.trust_score() - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn trust_origin_lattice_is_monotonic_and_distinct_from_classification() {
+        use TrustOriginTaintLevel::{External, Local, Trusted, Untrusted};
+
+        assert_eq!(Trusted.join(External), External);
+        assert_eq!(External.join(Local), External);
+        assert_eq!(Local.join(Untrusted), Untrusted);
+        assert!(Trusted.can_flow_to(Untrusted));
+        assert!(!Untrusted.can_flow_to(External));
+        assert_eq!(
+            TaintLevel::Secret.join(TaintLevel::Public),
+            TaintLevel::Secret
+        );
+    }
+
+    #[test]
+    fn effective_origin_joins_reason_and_explicit_origin() {
+        let external = Provenance::external("api");
+        assert_eq!(
+            external.effective_trust_origin(),
+            TrustOriginTaintLevel::External
+        );
+
+        let flagged = Provenance::trusted("gate").with_taint(Taint::UserFlagged {
+            detail: "bad".into(),
+        });
+        assert_eq!(
+            flagged.effective_trust_origin(),
+            TrustOriginTaintLevel::Untrusted
+        );
+
+        let signal = crate::Signal::builder(crate::Kind::Task)
+            .provenance(
+                Provenance::trusted("gate").with_trust_origin(TrustOriginTaintLevel::External),
+            )
+            .build();
+        assert_eq!(signal.effective_taint(), TrustOriginTaintLevel::External);
     }
 }

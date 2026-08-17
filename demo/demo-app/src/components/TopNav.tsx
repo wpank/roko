@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { NavLink, Link, useLocation } from 'react-router';
-import { useApi } from '../hooks/useApi';
+import { useDataApi } from '../hooks/useDataApi';
 import { fmtUptime } from '../lib/format';
-import { useServerHealth } from '../hooks/useServerHealth';
+import { useServerHealthController } from '../data/selectors';
 import Tooltip from './Tooltip';
 import { PulseIcon, SpinnerIcon } from './icons/AnimatedIcons';
 import './TopNav.css';
 
 const NAV_LINKS = [
   { to: '/demo', label: 'DEMO', full: 'Interactive Demo Scenarios' },
-  { to: '/isfr', label: 'ISFR', full: 'Interest Swap Feed Rate' },
   { to: '/dashboard', label: 'DASH', full: 'System Dashboard' },
   { to: '/bench', label: 'BENCH', full: 'Benchmark Lab' },
   { to: '/explorer', label: 'EXPLORE', full: 'Crate & Route Explorer' },
@@ -29,8 +28,8 @@ interface IndicatorStyle {
 }
 
 export default function TopNav() {
-  const { get } = useApi();
-  const { status: serverHealth } = useServerHealth();
+  const { get } = useDataApi();
+  const { status: serverHealth } = useServerHealthController();
   const [uptime, setUptime] = useState<number | null>(null);
   const [scrolled, setScrolled] = useState(false);
   const [indicator, setIndicator] = useState<IndicatorStyle | null>(null);

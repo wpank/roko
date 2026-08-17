@@ -407,6 +407,8 @@ impl KnowledgeCandidateRecord {
             id: self.candidate_id.clone(),
             kind: self.kind,
             source: Some(self.source.clone()),
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: self.content.trim().to_string(),
             confidence,
             confidence_weight: if self.kind == KnowledgeKind::AntiKnowledge {
@@ -440,6 +442,9 @@ impl KnowledgeCandidateRecord {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         }
     }
@@ -1840,6 +1845,8 @@ mod tests {
             id: id.to_string(),
             kind: KnowledgeKind::Insight,
             source: Some("test".to_string()),
+            origin_taint: Default::default(),
+            classification: Default::default(),
             content: content.to_string(),
             confidence,
             confidence_weight: confidence,
@@ -1860,6 +1867,9 @@ mod tests {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            balance_depleted_at: None,
+            frozen_at: None,
+            falsifier: None,
             catalytic_score: 0,
         }
     }

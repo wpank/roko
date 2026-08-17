@@ -340,6 +340,7 @@ impl TemporalRelation {
 ///
 /// Supports efficient lookup of entries within an epoch, finding the epoch
 /// for a given timestamp, and computing Allen relations between entries.
+#[derive(Debug)]
 pub struct TemporalIndex {
     /// Epochs ordered by sequence number.
     epochs: BTreeMap<u64, KnowledgeEpoch>,
@@ -370,15 +371,105 @@ impl TemporalIndex {
         self.entries.insert(id.into(), interval);
     }
 
+    /// Remove an entry and any cached relations that mention it.
+    pub fn remove_entry(&mut self, entry_id: &str) -> bool {
+        let removed = self.entries.remove(entry_id).is_some();
+        if removed {
+            self.relations
+                .retain(|relation| relation.source != entry_id && relation.target != entry_id);
+        }
+        removed
+    }
+
+    /// Replace indexed entries while preserving registered epochs.
+    pub fn replace_entries<I>(&mut self, entries: I)
+    where
+        I: IntoIterator<Item = (String, TemporalInterval)>,
+    {
+        self.entries = entries.into_iter().collect();
+        self.relations.retain(|relation| {
+            self.entries.contains_key(&relation.source)
+                && self.entries.contains_key(&relation.target)
+        });
+    }
+
+    /// Return the Allen relation without mutating the relation cache.
+    #[must_use]
+    pub fn relation(&self, source: &str, target: &str) -> Option<AllenRelation> {
+        Some(
+            self.entries
+                .get(source)?
+                .allen_relation(self.entries.get(target)?),
+        )
+    }
+
     /// Compute and cache the Allen relation between two entries.
     /// Returns `None` if either entry is not registered.
     pub fn relate(&mut self, source: &str, target: &str) -> Option<AllenRelation> {
-        let src_iv = self.entries.get(source)?;
-        let tgt_iv = self.entries.get(target)?;
-        let relation = src_iv.allen_relation(tgt_iv);
+        let relation = self.relation(source, target)?;
         self.relations
             .push(TemporalRelation::new(source, target, relation));
         Some(relation)
+    }
+
+    /// Return entry IDs created within the requested epoch.
+    ///
+    /// Entry intervals are open-ended until explicitly superseded, so epoch
+    /// membership is based on the interval start rather than overlap.
+    #[must_use]
+    pub fn entries_in_epoch(&self, epoch_seq: u64) -> Vec<String> {
+        let Some(epoch) = self.epochs.get(&epoch_seq) else {
+            return Vec::new();
+        };
+        let interval = epoch.to_interval();
+        let mut ids = self
+            .entries
+            .iter()
+            .filter(|(_, entry_interval)| interval.contains(entry_interval.start))
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+
+    /// Find entries having `relation` from `entry_id` to the result entry.
+    #[must_use]
+    pub fn query_related(&self, entry_id: &str, relation: AllenRelation) -> Vec<String> {
+        let Some(interval) = self.entries.get(entry_id) else {
+            return Vec::new();
+        };
+        let mut ids = self
+            .entries
+            .iter()
+            .filter(|(id, other)| {
+                id.as_str() != entry_id && interval.allen_relation(other) == relation
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+
+    /// Find older/overlapping entries superseded by `entry_id`.
+    #[must_use]
+    pub fn find_superseded(&self, entry_id: &str) -> Vec<String> {
+        let Some(interval) = self.entries.get(entry_id) else {
+            return Vec::new();
+        };
+        let mut ids = self
+            .entries
+            .iter()
+            .filter(|(id, other)| {
+                id.as_str() != entry_id
+                    && matches!(
+                        other.allen_relation(interval),
+                        AllenRelation::Before | AllenRelation::Meets | AllenRelation::Overlaps
+                    )
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
     }
 
     /// Find all entries whose validity interval contains the given timestamp.

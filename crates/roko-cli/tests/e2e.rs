@@ -242,7 +242,11 @@ fn status_cfactor_reports_trend_and_components() {
         "headline": false,
         "extra": {}
     });
-    fs::write(learn_dir.join("episodes.jsonl"), episode.to_string() + "\n").unwrap();
+    fs::write(
+        workdir.join(".roko/episodes.jsonl"),
+        episode.to_string() + "\n",
+    )
+    .unwrap();
 
     // Use timestamps relative to now so the history entries are always
     // inside the 7-day trend window used by trend_arrow.

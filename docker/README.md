@@ -27,12 +27,16 @@ docker compose up --build
 First build pulls the Rust toolchain and warms the cargo registry/target caches
 (takes a few minutes). Subsequent builds reuse BuildKit cache mounts.
 
+The root `Dockerfile` bakes the committed `docker/roko.toml` into
+`/workspace/roko.toml`, so a clean checkout has a valid runtime configuration. A
+mounted workspace can supply its own root `roko.toml` instead.
+
 ## Services and ports
 
 | Service | Port(s) | Notes |
 | --- | --- | --- |
 | `mirage` | `8545` JSON-RPC, `9091` metrics | Default CMD enables `--enable-hdc --enable-knowledge --enable-stigmergy` and binds `0.0.0.0`. |
-| `roko` | `9092` | Long-running `roko serve` so operators can `docker compose exec roko roko <cmd>`. |
+| `roko` | `9092` | Runs `roko serve --bind 0.0.0.0 --port 9092`; operators can `docker compose exec roko roko <cmd>`. |
 | `gateway` | `8080` | Placeholder — see the TODO in `gateway.Dockerfile`. |
 | `prometheus` | `9090` | Scrapes mirage/roko/gateway + itself. |
 | `grafana` | `3000` | Login `admin / admin` unless overridden. |
@@ -81,6 +85,12 @@ See `apps/mirage-rs/README.md` > "State persistence" for full details on what is
 `mirage` has a healthcheck that invokes `mirage-rs healthcheck --url http://127.0.0.1:8545`,
 which issues an `eth_blockNumber` RPC. Other services `depends_on` mirage so
 they wait for it to come up.
+
+The Roko server exposes stable unauthenticated probes at `GET /health` (liveness)
+and `GET /ready` (readiness). With the compose port mapping, check them at
+`http://127.0.0.1:9092/health` and `http://127.0.0.1:9092/ready`. The current
+compose topology starts Roko after Mirage but does not gate other services on a
+Roko healthcheck; Fly and the root runtime image use `/health` directly.
 
 ## Publishing
 

@@ -16,5 +16,13 @@ export type {
   WsUnsubscribeMsg,
 } from './ws';
 
-export { parseServerEvent } from './types';
-export type { ExecutionEvent, ServerEvent } from './types';
+export {
+  DASHBOARD_EVENT_TYPES,
+  parseDashboardEvent,
+  parseDashboardGap,
+} from './types';
+export type {
+  DashboardEvent,
+  DashboardGapPayload,
+  DashboardSnapshot,
+} from './types';

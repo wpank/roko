@@ -2,7 +2,7 @@
 plan = "demo-hello"
 total = 1
 done = 0
-status = "ready"
+status = "fixture"
 max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 2

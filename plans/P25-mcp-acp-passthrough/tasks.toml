@@ -1,8 +1,8 @@
 [meta]
 plan = "P25-mcp-acp-passthrough"
 total = 4
-done = 3
-status = "ready"
+done = 4
+status = "done"
 max_parallel = 1
 
 # ── T1: Add mcp_config field to roko-core AgentConfig ────────────────────────
@@ -111,7 +111,7 @@ fail_msg = "roko-acp must compile after wiring MCP config into runner"
 [[task]]
 id = "T3"
 title = "Run MCP auto-discovery during ACP session creation"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 30
@@ -161,7 +161,7 @@ fail_msg = "roko-acp must compile after adding MCP discovery to session init"
 [[task]]
 id = "T4"
 title = "Wire session MCP config into bridge_events tool-loop dispatch"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 25

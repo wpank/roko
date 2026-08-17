@@ -87,10 +87,10 @@ impl HallucinationDetector {
                             "parameter `{key}` value {n} exceeds maximum ({MAX_LINE_NUMBER})"
                         ));
                     }
-                } else if let Some(n) = val.as_i64() {
-                    if n < 0 {
-                        return Err(format!("parameter `{key}` value {n} is negative"));
-                    }
+                } else if let Some(n) = val.as_i64()
+                    && n < 0
+                {
+                    return Err(format!("parameter `{key}` value {n} is negative"));
                 }
             }
         }

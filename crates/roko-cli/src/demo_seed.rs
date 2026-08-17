@@ -166,7 +166,7 @@ pub fn seed_demo_workspace(
     let workdir = workdir.as_ref();
     let roko_dir = workdir.join(".roko");
     let layout = RokoLayout::for_project(workdir);
-    let learn_paths = LearningPaths::under(roko_dir.join("learn"));
+    let learn_paths = LearningPaths::for_project(workdir);
 
     let model_pool = demo_model_pool(config);
     let task_specs = demo_task_specs();
@@ -203,8 +203,8 @@ pub fn seed_demo_workspace(
     if episode_paths.iter().any(|path| path.exists()) {
         report.record_skipped("episodes (existing episode logs preserved)");
     } else {
-        write_jsonl_group_if_absent(
-            &episode_paths,
+        write_jsonl_if_absent(
+            &layout.episodes_path(),
             &planned_episodes,
             "episodes",
             &mut report,
@@ -1206,34 +1206,6 @@ fn episode_ids_for_indices(episode_ids: &[String], indices: &[usize]) -> Vec<Str
         .iter()
         .map(|index| episode_ids[index % episode_ids.len()].clone())
         .collect()
-}
-
-fn write_jsonl_group_if_absent<T>(
-    paths: &[PathBuf],
-    records: &[T],
-    label: &str,
-    report: &mut DemoSeedReport,
-    mut render: impl FnMut(&T) -> Result<String>,
-) -> Result<()>
-where
-    T: Serialize,
-{
-    if paths.iter().any(|path| path.exists()) {
-        report.record_skipped(format!("{label} (existing files preserved)"));
-        return Ok(());
-    }
-
-    let payload = jsonl_payload(records, &mut render)?;
-    for path in paths {
-        atomic_write_bytes(path, payload.as_bytes())
-            .with_context(|| format!("write {}", path.display()))?;
-    }
-    report.record_seeded(format!(
-        "{label}: {} records written to {} paths",
-        records.len(),
-        paths.len()
-    ));
-    Ok(())
 }
 
 fn write_jsonl_if_absent<T>(

@@ -1,5 +1,10 @@
 import { useState, useEffect, useMemo, useCallback, useRef, Fragment, type CSSProperties } from 'react';
-import { useLiveApi } from '../hooks/useLiveApi';
+import { useDataApi } from '../hooks/useDataApi';
+import {
+  adaptBenchRun,
+  adaptBenchRunEnvelope,
+  parseBenchRunsListResponse,
+} from '../lib/bench-types';
 import type { BenchRun } from '../lib/bench-types';
 import { handleRowKeyDown } from '../lib/a11y';
 import Pane from '../components/Pane';
@@ -234,7 +239,7 @@ function findWinnerIdx(runs: BenchRun[]): number {
 }
 
 export default function BenchCompare() {
-  const { get } = useLiveApi();
+  const { get } = useDataApi();
   const [allRuns, setAllRuns] = useState<BenchRun[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>(getIdsFromUrl);
   const [fullRuns, setFullRuns] = useState<BenchRun[]>([]);
@@ -247,9 +252,18 @@ export default function BenchCompare() {
   useEffect(() => {
     (async () => {
       try {
-        const data = await get<BenchRun[]>('/api/bench/runs');
-        if (Array.isArray(data) && data.length > 0) {
-          setAllRuns(data);
+        const listing = parseBenchRunsListResponse(await get<unknown>('/api/bench/runs'));
+        if (listing && listing.runs.length > 0) {
+          const hydrated = await Promise.all(listing.runs.map(async (entry) => {
+            try {
+              return adaptBenchRun(await get<unknown>(
+                `/api/bench/runs/${encodeURIComponent(entry.id)}`,
+              ));
+            } catch {
+              return null;
+            }
+          }));
+          setAllRuns(hydrated.filter((run): run is BenchRun => run !== null));
           return;
         }
       } catch { /* show empty state */ }
@@ -281,13 +295,13 @@ export default function BenchCompare() {
 
     (async () => {
       try {
-        const data = await get<{ runs: BenchRun[] }>(
+        const data = adaptBenchRunEnvelope(await get<unknown>(
           `/api/bench/runs/compare?ids=${selectedIds.join(',')}`
-        );
-        if (!cancelled && data?.runs?.length >= 2) {
+        ));
+        if (!cancelled && data && data.length >= 2) {
           // Preserve selection order
           const ordered = selectedIds
-            .map((id) => data.runs.find((r) => r.id === id))
+            .map((id) => data.find((r) => r.id === id))
             .filter((r): r is BenchRun => !!r);
           setFullRuns(ordered);
           return;

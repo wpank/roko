@@ -510,20 +510,20 @@ impl WorkspaceIndex {
             .symbols_by_id
             .values()
             .filter_map(|symbol| {
-                if let Some(kind) = &query.kind {
-                    if symbol.id.kind != *kind {
-                        return None;
-                    }
+                if let Some(kind) = &query.kind
+                    && symbol.id.kind != *kind
+                {
+                    return None;
                 }
-                if let Some(visibility) = &query.visibility {
-                    if symbol.visibility != *visibility {
-                        return None;
-                    }
+                if let Some(visibility) = &query.visibility
+                    && symbol.visibility != *visibility
+                {
+                    return None;
                 }
-                if let Some(pattern) = &query.file_pattern {
-                    if !matches_file_pattern(&symbol.id.file_path, pattern) {
-                        return None;
-                    }
+                if let Some(pattern) = &query.file_pattern
+                    && !matches_file_pattern(&symbol.id.file_path, pattern)
+                {
+                    return None;
                 }
                 if let Some(has_callers) = query.has_callers {
                     let callers = !self
@@ -536,10 +536,10 @@ impl WorkspaceIndex {
                 }
 
                 let score = self.pagerank(&symbol.id);
-                if let Some(min_pagerank) = query.min_pagerank {
-                    if score < min_pagerank {
-                        return None;
-                    }
+                if let Some(min_pagerank) = query.min_pagerank
+                    && score < min_pagerank
+                {
+                    return None;
                 }
 
                 Some(SearchResult {

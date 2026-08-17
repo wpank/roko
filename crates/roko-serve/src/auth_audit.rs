@@ -66,6 +66,8 @@ pub enum AuthAuditAction {
     KeyExpired,
     /// A team member's role was changed.
     RoleChanged,
+    /// A relay token was delegated from one agent to another.
+    TokenDelegated,
 }
 
 impl AuthAuditAction {
@@ -84,6 +86,7 @@ impl AuthAuditAction {
             Self::InviteExpired => "InviteExpired",
             Self::KeyExpired => "KeyExpired",
             Self::RoleChanged => "RoleChanged",
+            Self::TokenDelegated => "TokenDelegated",
         }
     }
 }

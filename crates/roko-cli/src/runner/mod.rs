@@ -51,6 +51,7 @@ pub mod resume;
 pub mod snapshot_writer;
 pub mod sse_stream;
 pub mod state;
+pub mod structured_log;
 pub mod task_dag;
 pub mod tui_bridge;
 pub mod types;

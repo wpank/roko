@@ -682,6 +682,7 @@ pub(crate) async fn run_plan_execution(
         conductor: Some(std::sync::Arc::new(conductor)),
         conductor_ring: Some(conductor_ring),
         github_ops: None,
+        structured_log: roko_cli::runner::structured_log::StructuredLogger::noop(),
     };
 
     let cancel = tokio_util::sync::CancellationToken::new();

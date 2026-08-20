@@ -28,26 +28,47 @@ fn display_cost_precise(cost_usd: f64, input_tokens: u64, output_tokens: u64) ->
 }
 
 pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
+    let json = cli.json;
     match cmd {
         LearnCmd::All { workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            cmd_learn(&wd, "all").await
+            if json {
+                cmd_learn_json(&wd, "all").await
+            } else {
+                cmd_learn(&wd, "all").await
+            }
         }
         LearnCmd::Route { workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            cmd_learn(&wd, "router").await
+            if json {
+                cmd_learn_json(&wd, "router").await
+            } else {
+                cmd_learn(&wd, "router").await
+            }
         }
         LearnCmd::Experiments { workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            cmd_learn(&wd, "experiments").await
+            if json {
+                cmd_learn_json(&wd, "experiments").await
+            } else {
+                cmd_learn(&wd, "experiments").await
+            }
         }
         LearnCmd::Efficiency { workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            cmd_learn(&wd, "efficiency").await
+            if json {
+                cmd_learn_json(&wd, "efficiency").await
+            } else {
+                cmd_learn(&wd, "efficiency").await
+            }
         }
         LearnCmd::Episodes { workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            cmd_learn(&wd, "episodes").await
+            if json {
+                cmd_learn_json(&wd, "episodes").await
+            } else {
+                cmd_learn(&wd, "episodes").await
+            }
         }
         LearnCmd::Tune {
             subsystem,
@@ -141,6 +162,353 @@ pub(crate) async fn cmd_learn(workdir: &std::path::Path, what: &str) -> Result<i
     }
 
     Ok(EXIT_SUCCESS)
+}
+
+// ── JSON output ────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct LearnJsonOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cascade_router: Option<LearnJsonRouter>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    experiments: Option<LearnJsonExperiments>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    efficiency: Option<LearnJsonEfficiency>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    episodes: Option<LearnJsonEpisodes>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gate_thresholds: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    knowledge: Option<LearnJsonKnowledge>,
+}
+
+#[derive(serde::Serialize)]
+struct LearnJsonRouter {
+    total_observations: u64,
+    stage: String,
+    models: Vec<LearnJsonRouterModel>,
+}
+
+#[derive(serde::Serialize)]
+struct LearnJsonRouterModel {
+    slug: String,
+    trials: u64,
+    successes: u64,
+    available: bool,
+}
+
+#[derive(serde::Serialize)]
+struct LearnJsonExperiments {
+    prompt: LearnJsonExperimentGroup,
+    model: LearnJsonExperimentGroup,
+}
+
+#[derive(serde::Serialize)]
+struct LearnJsonExperimentGroup {
+    running: usize,
+    concluded: usize,
+}
+
+#[derive(serde::Serialize)]
+struct LearnJsonEfficiency {
+    total_events: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_seen: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_seen: Option<String>,
+    latest: Vec<LearnJsonEfficiencyEntry>,
+}
+
+#[derive(serde::Serialize)]
+struct LearnJsonEfficiencyEntry {
+    timestamp: String,
+    model: String,
+    task_id: String,
+    plan_id: String,
+    gate_passed: bool,
+    cost_usd: f64,
+    input_tokens: u64,
+    output_tokens: u64,
+}
+
+#[derive(serde::Serialize)]
+struct LearnJsonEpisodes {
+    total: usize,
+    passed: usize,
+    failed: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_seen: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_seen: Option<String>,
+    latest: Vec<LearnJsonEpisodeEntry>,
+}
+
+#[derive(serde::Serialize)]
+struct LearnJsonEpisodeEntry {
+    timestamp: String,
+    model: String,
+    task_id: String,
+    success: bool,
+    cost_usd: f64,
+    input_tokens: u64,
+    output_tokens: u64,
+}
+
+#[derive(serde::Serialize)]
+struct LearnJsonKnowledge {
+    total_entries: usize,
+}
+
+/// Maximum number of recent entries to include in JSON output.
+const JSON_LATEST_LIMIT: usize = 10;
+
+/// `roko learn [what] --json` — structured JSON output.
+#[allow(clippy::cast_precision_loss)]
+async fn cmd_learn_json(workdir: &std::path::Path, what: &str) -> Result<i32> {
+    let show_all = what == "all";
+
+    let cascade_router = if show_all || what == "router" {
+        Some(collect_router_json(workdir))
+    } else {
+        None
+    };
+
+    let experiments = if show_all || what == "experiments" {
+        Some(collect_experiments_json(workdir))
+    } else {
+        None
+    };
+
+    let efficiency = if show_all || what == "efficiency" {
+        Some(collect_efficiency_json(workdir).await)
+    } else {
+        None
+    };
+
+    let episodes = if show_all || what == "episodes" {
+        Some(collect_episodes_json(workdir).await)
+    } else {
+        None
+    };
+
+    let gate_thresholds = if show_all {
+        collect_gate_thresholds_json(workdir)
+    } else {
+        None
+    };
+
+    let knowledge = if show_all {
+        Some(collect_knowledge_json(workdir).await)
+    } else {
+        None
+    };
+
+    if !show_all && !["router", "experiments", "efficiency", "episodes"].contains(&what) {
+        anyhow::bail!(
+            "unknown learning area '{what}'. Available: router, experiments, efficiency, episodes, all"
+        );
+    }
+
+    let output = LearnJsonOutput {
+        cascade_router,
+        experiments,
+        efficiency,
+        episodes,
+        gate_thresholds,
+        knowledge,
+    };
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(EXIT_SUCCESS)
+}
+
+fn collect_router_json(workdir: &std::path::Path) -> LearnJsonRouter {
+    let path = learn_router_path(workdir);
+    let snapshot = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<LearnCascadeRouterSnapshot>(&c).ok())
+        .unwrap_or_default();
+
+    let configured_slugs = roko_core::config::loader::load_config_unified(workdir)
+        .ok()
+        .map(|config| {
+            config
+                .model_slugs_for_cascade()
+                .into_iter()
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+
+    let model_rows = learn_router_model_rows(&snapshot, &configured_slugs);
+    let total_observations = if snapshot.total_observations > 0 {
+        snapshot.total_observations
+    } else {
+        model_rows.iter().map(|row| row.trials).sum()
+    };
+
+    LearnJsonRouter {
+        total_observations,
+        stage: cascade_stage_for_observations(total_observations).to_string(),
+        models: model_rows
+            .into_iter()
+            .map(|row| LearnJsonRouterModel {
+                slug: row.slug,
+                trials: row.trials,
+                successes: row.successes,
+                available: row.available,
+            })
+            .collect(),
+    }
+}
+
+fn collect_experiments_json(workdir: &std::path::Path) -> LearnJsonExperiments {
+    let prompt_path = learn_root(workdir).join("experiments.json");
+    let prompt_store = ExperimentStore::load_or_new(&prompt_path);
+
+    let model_path = learn_root(workdir).join("model-experiments.json");
+    let model_store = roko_learn::model_experiment::ModelExperimentStore::load_or_new(&model_path);
+
+    LearnJsonExperiments {
+        prompt: LearnJsonExperimentGroup {
+            running: prompt_store.running_count(),
+            concluded: prompt_store.concluded_count(),
+        },
+        model: LearnJsonExperimentGroup {
+            running: model_store.running_count(),
+            concluded: model_store.concluded_experiments().len(),
+        },
+    }
+}
+
+async fn collect_efficiency_json(workdir: &std::path::Path) -> LearnJsonEfficiency {
+    let path = learn_efficiency_path(workdir);
+    let text = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+
+    let mut count = 0usize;
+    let mut first_seen: Option<chrono::DateTime<chrono::Utc>> = None;
+    let mut last_seen: Option<chrono::DateTime<chrono::Utc>> = None;
+    let mut tail: Vec<LearnJsonEfficiencyEntry> = Vec::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(event) =
+            serde_json::from_str::<roko_learn::efficiency::AgentEfficiencyEvent>(trimmed)
+        else {
+            continue;
+        };
+
+        count += 1;
+        if let Some(ts) = parse_rfc3339_utc(&event.timestamp) {
+            first_seen = Some(first_seen.map_or(ts, |c| c.min(ts)));
+            last_seen = Some(last_seen.map_or(ts, |c| c.max(ts)));
+        }
+
+        let model = efficiency_model_label(&event).to_string();
+        tail.push(LearnJsonEfficiencyEntry {
+            timestamp: event.timestamp.clone(),
+            model,
+            task_id: event.task_id.clone(),
+            plan_id: event.plan_id.clone(),
+            gate_passed: event.gate_passed,
+            cost_usd: event.cost_usd,
+            input_tokens: event.input_tokens,
+            output_tokens: event.output_tokens,
+        });
+        if tail.len() > JSON_LATEST_LIMIT {
+            tail.remove(0);
+        }
+    }
+
+    LearnJsonEfficiency {
+        total_events: count,
+        first_seen: first_seen.map(|ts| ts.to_rfc3339()),
+        last_seen: last_seen.map(|ts| ts.to_rfc3339()),
+        latest: tail,
+    }
+}
+
+async fn collect_episodes_json(workdir: &std::path::Path) -> LearnJsonEpisodes {
+    let path = roko_learn::runtime_feedback::resolve_project_episode_path(workdir);
+    let text = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+
+    let mut total = 0usize;
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    let mut first_seen: Option<chrono::DateTime<chrono::Utc>> = None;
+    let mut last_seen: Option<chrono::DateTime<chrono::Utc>> = None;
+    let mut tail: Vec<LearnJsonEpisodeEntry> = Vec::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(episode) = serde_json::from_str::<roko_learn::episode_logger::Episode>(trimmed)
+        else {
+            continue;
+        };
+
+        total += 1;
+        if episode.success {
+            passed += 1;
+        } else {
+            failed += 1;
+        }
+
+        let ts = episode.timestamp;
+        first_seen = Some(first_seen.map_or(ts, |c| c.min(ts)));
+        last_seen = Some(last_seen.map_or(ts, |c| c.max(ts)));
+
+        tail.push(LearnJsonEpisodeEntry {
+            timestamp: episode.timestamp.to_rfc3339(),
+            model: episode.model.clone(),
+            task_id: episode.task_id.clone(),
+            success: episode.success,
+            cost_usd: episode.usage.cost_usd,
+            input_tokens: episode.usage.input_tokens,
+            output_tokens: episode.usage.output_tokens,
+        });
+        if tail.len() > JSON_LATEST_LIMIT {
+            tail.remove(0);
+        }
+    }
+
+    LearnJsonEpisodes {
+        total,
+        passed,
+        failed,
+        first_seen: first_seen.map(|ts| ts.to_rfc3339()),
+        last_seen: last_seen.map(|ts| ts.to_rfc3339()),
+        latest: tail,
+    }
+}
+
+fn collect_gate_thresholds_json(workdir: &std::path::Path) -> Option<serde_json::Value> {
+    let path = learn_gate_thresholds_path(workdir);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|c| serde_json::from_str(&c).ok())
+}
+
+async fn collect_knowledge_json(workdir: &std::path::Path) -> LearnJsonKnowledge {
+    let path = learn_knowledge_path(workdir);
+    let count = tokio::fs::read_to_string(&path)
+        .await
+        .map(|content| {
+            content
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .filter(|line| serde_json::from_str::<serde_json::Value>(line).is_ok())
+                .count()
+        })
+        .unwrap_or(0);
+
+    LearnJsonKnowledge {
+        total_entries: count,
+    }
 }
 
 pub(crate) fn print_learn_router(workdir: &std::path::Path) {

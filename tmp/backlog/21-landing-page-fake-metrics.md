@@ -1,125 +1,94 @@
-# Audit and fix nunchi.network landing page fake metrics
+# 21 — Landing page fake metrics
 
-**Status**: Backlog
-**Priority**: P1 (reputational risk — fake numbers visible to investors and partners)
+**Priority**: P1 — Reputational risk: fabricated traction numbers are visible to investors and partners
 **Size**: S (1-2 hours)
+**Crates**: None (work is in the `nunchi-dashboard` frontend repo, not the roko workspace)
+**Depends on**: None
 
 ---
 
 ## Background
 
-Nunchi is the company behind roko, an agent toolkit. The public website is
-`nunchi.network`. It is maintained in a separate repository named `nunchi-dashboard`,
-which is not the roko repo. This backlog item is a reminder and pointer — the actual
-work happens there.
+Nunchi is the company behind roko, an agent toolkit for building self-improving AI systems. The public website at `nunchi.network` is maintained in a separate repository named `nunchi-dashboard`, which is not part of this roko workspace.
 
----
+During an April 2026 dogfood audit, the landing page was found to display hardcoded placeholder metrics that were inserted during design scaffolding and never replaced with real data. These numbers have never been updated and have no relationship to actual usage. They are visible to anyone who views the page — including investors and enterprise evaluators.
 
-## Problem
+Displaying fabricated traction numbers is a direct reputational risk, particularly during fundraising. An investor who notices a suspiciously round number like "84,213 agents deployed" and investigates will find it is hardcoded HTML. Separately, two pieces of stale content were flagged: the old internal name "Engram" (renamed to "Signal" workspace-wide on 2026-08-12) may still appear in marketing copy, and a section about EU AI Act compliance may refer to August 2, 2026 as a future date that has since passed.
 
-During an April 2026 dogfood audit (see **Origin** below), the nunchi.network landing
-page was found to display hardcoded, never-updated placeholder metrics:
+## Current State
 
-- "84,213 agents deployed"
-- "12,425 tasks completed"
-- "3,240 active users"
+1. The `nunchi.network` landing page displays three hardcoded metrics:
+   - "84,213 agents deployed"
+   - "12,425 tasks completed"
+   - "3,240 active users"
 
-These numbers were originally inserted as design scaffolding and were never replaced
-with real data or removed. They are visible to anyone who visits the site — including
-investors, enterprise prospects, and technical evaluators who can trivially inspect the
-page source or notice the suspiciously round-looking numbers.
+2. These are static HTML/JSX values in the `nunchi-dashboard` repository. They have no connection to any data source and do not update.
 
-Displaying fabricated traction metrics is a direct reputational risk. Nunchi is in
-fundraising. An investor who asks "where does the 84,213 figure come from?" and receives
-no satisfactory answer will draw the obvious conclusion.
+3. The Engram→Signal rename was completed on 2026-08-12 across all 38 roko crates. Marketing copy on the website was not updated as part of that batch. The term "Engram" may still appear in page content or component source.
 
-The same audit flagged two secondary issues on the same page:
+4. If the landing page includes an EU AI Act compliance section, it may reference August 2, 2026 as a future compliance date. That date has passed.
 
-1. **Stale terminology.** The page may still use "Engram" — the old internal name for
-   the core data primitive. The workspace-wide rename to "Signal" was completed in the
-   2026-08-12 batch. Outward-facing material should match.
+5. No changes are needed in the roko workspace (`nunchi/roko`). All work goes in `nunchi-dashboard`.
 
-2. **Stale regulatory reference.** The landing page may include an EU AI Act section
-   that references an August 2, 2026 compliance date as a future milestone. That date
-   has now passed. Any forward-looking language keyed to that date reads as outdated.
+## Implementation Plan
 
----
+**Step 1: Find and remove the fake counters**
 
-## What to do
+Search the `nunchi-dashboard` frontend source for the hardcoded numbers:
 
-This is a content/frontend task in the `nunchi-dashboard` repo. No roko Rust code
-changes are required.
+```bash
+grep -ri "84,213\|12,425\|3,240\|agents deployed\|tasks completed\|active users" src/
+```
 
-### 1. Remove or replace fake counters
-
-The metric counters must not show fabricated numbers. There are three acceptable
-outcomes — pick whichever fits the current state of real data:
+Once located, choose one of three acceptable outcomes:
 
 | Option | When to use |
 |---|---|
-| **Remove the counters entirely** | No live data pipeline exists; cleanest option |
-| **Replace with honest placeholder text** | e.g., "Early access" or a waitlist CTA |
-| **Wire to real data** | If an API exists that reports actual usage, use it |
+| Remove the counter section entirely | No real data pipeline exists; cleanest approach |
+| Replace with honest placeholder | Use "Early access" or a waitlist CTA instead of numbers |
+| Wire to a real data source | Only if a live API reports actual usage statistics |
 
-Do not replace one set of fake numbers with a different set of fake numbers.
+Do not replace one set of fake numbers with a different set of fake numbers. Do not add "coming soon" counters with zeroes.
 
-### 2. Search for "Engram" on the page and in component source
+**Step 2: Search for "Engram" across the frontend**
 
-Run a case-insensitive search across the `nunchi-dashboard` frontend source:
-
-```
+```bash
 grep -ri "engram" src/
 ```
 
-Replace any occurrence with "Signal" (or the user-facing equivalent). If "Engram"
-appears in marketing copy describing the data model, the updated term is "Signal" —
-the primitive that flows through the roko graph.
+Replace any occurrence with "Signal" (or the user-facing equivalent). In marketing copy, "Signal" is the primitive data type that flows through a roko graph — the unit of information that agents store, route, and transform.
 
-### 3. Review the EU AI Act section
+**Step 3: Update EU AI Act language if present**
 
-If the landing page contains a section about EU AI Act compliance and it refers to
-August 2, 2026 as an upcoming date, update the language to reflect that the date has
-passed. Options:
+If a section about EU AI Act compliance exists and refers to August 2, 2026 as an upcoming date, update the language. Acceptable changes:
 
-- Change "as of August 2, 2026" or "by August 2, 2026" to "as of August 2026" or
-  "effective August 2026"
-- Update to reflect actual current compliance posture
-- Remove if the section is no longer accurate or relevant
+- Change "as of August 2, 2026" or "by August 2, 2026" to "as of August 2026" or "effective August 2026"
+- Update to reflect the actual current compliance posture
+- Remove the section if it is no longer accurate
 
----
+**Step 4: Manual review**
 
-## What not to do
+Read the page as a first-time visitor. Confirm there are no statistics, terms, or dates that are demonstrably false or outdated.
 
-- Do not add new placeholder metrics. Even "coming soon" counters with zeroes can read
-  as misleading.
-- Do not invent real-looking numbers to replace the fake ones.
-- Do not make changes to the roko workspace (`nunchi/roko`) — this work is in
-  `nunchi-dashboard`.
+## Acceptance Criteria
 
----
+1. Loading `nunchi.network` shows no hardcoded numeric traction metrics. If counters exist, they are either absent, replaced with honest placeholder text, or connected to a real data source.
+2. A case-insensitive search for "engram" across the rendered page HTML returns zero matches.
+3. Any EU AI Act language that referenced August 2, 2026 as a future date has been updated to past tense or removed.
+4. A first-time visitor with no roko context reads the page and does not encounter a statistic, term, or date that is demonstrably false or stale.
 
-## Acceptance criteria
+## Verification Checklist
 
-1. Loading nunchi.network shows no hardcoded numeric traction metrics (no "84,213
-   agents deployed" or equivalent). If counters exist, they are either absent, replaced
-   with honest placeholder text, or connected to a real data source.
-2. A case-insensitive search for "engram" across the rendered page HTML returns zero
-   matches.
-3. Any EU AI Act language referencing August 2, 2026 as a future date has been updated
-   to past tense or removed.
-4. The page passes a manual review: a first-time visitor with no roko context reads the
-   page and does not encounter a statistic, term, or date that is demonstrably false or
-   stale.
+- [ ] Load `nunchi.network` in an incognito browser window and inspect the page for numeric traction metrics
+- [ ] View page source (`Ctrl+U`) and search for `84,213`, `12,425`, `3,240`; confirm zero matches
+- [ ] In browser dev tools, search rendered HTML for `engram` (case-insensitive); confirm zero matches
+- [ ] If an EU AI Act section exists, confirm it uses past tense for the August 2, 2026 date
+- [ ] Ask a colleague who has not seen the page to read it and flag anything that looks suspicious or outdated
 
----
+## Files to Modify
 
-## Origin
-
-Discovered during the April 2026 dogfood audit. The original finding is recorded at:
-
-```
-tmp/archive/08-15-26/dogfood/11-LANDING-PAGE-UPDATES.md
-```
-
-(That path is inside the roko workspace, which served as a scratch area for audit
-notes. The fix itself goes in `nunchi-dashboard`.)
+| File | Change |
+|---|---|
+| `src/` (in `nunchi-dashboard` repo) | Remove or replace hardcoded metric counters |
+| `src/` (in `nunchi-dashboard` repo) | Replace "Engram" with "Signal" in all component source and copy |
+| `src/` (in `nunchi-dashboard` repo) | Update EU AI Act compliance date language if present |

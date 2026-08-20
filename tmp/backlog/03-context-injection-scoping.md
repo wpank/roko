@@ -1,154 +1,363 @@
-# Context Injection Scoping
+# 03 — Context Injection Scoping
 
-**Priority**: P1
+**Priority**: P1 — Directly reduces token cost and improves prompt quality (~15% savings per plan)
 **Size**: M (2-3 days)
+**Crates**: `crates/roko-core` (config), `crates/roko-compose` (new module), `crates/roko-cli` (runner wiring)
+**Depends on**: None
 
 ---
 
-## Problem
+## Background
 
-Every agent dispatch applies a flat context budget regardless of role. An implementer
-doing a file edit and a strategist reviewing plan structure both receive the same
-file-level context, error patterns, and playbook rules. This produces two failures:
+Roko dispatches agents in distinct roles: **Implementer** (writes code), **Reviewer** (audits output), and **Strategist** (plans high-level structure). Before each LLM call, the runner assembles a prompt that includes several context sections: file intelligence (neuro store entries for files the task touches), recent error patterns, lint warnings, similar past episodes, and playbook rules (learned best practices).
 
-1. **Strategists are noisy.** They receive file-level context (file intel, error patterns)
-   they cannot act on — wasted tokens that dilute plan-level reasoning.
+The per-role limits for these context sections already exist in the runner. An Implementer receives up to 10 file-intel entries, a Reviewer gets 3, and a Strategist gets 0. These presets are enforced by `ContextScopingConfig` at `crates/roko-cli/src/runner/event_loop.rs` (lines 227-373).
 
-2. **Playbook rules are too broad.** The current `PlaybookRules::select()` call supplies
-   only the task's files as match context, not the files the current *plan* touches.
-   Rules from unrelated plans can fire on loosely-matching tags.
+The problem has two parts:
 
-### What already exists (do NOT rebuild)
+**Part 1 — No operator overrides**: The `ContextScopingConfig` presets are compile-time constants with no way for an operator to tune them via `roko.toml`. A workspace that wants to reduce Reviewer context to 1 entry (to save cost) or increase Implementer context to 15 entries (for a complex codebase) has no mechanism to do so. The CLAUDE.md documents a `[knowledge]` section as configurable, but no config struct for it exists in `crates/roko-core/src/config/`.
 
-**`ContextScopingConfig`** and `role_context_limits()` are live in the runner event loop
-(lines 227-373 of `crates/roko-cli/src/runner/event_loop.rs`). They solve the per-role
-*episode* recall problem — strategists already receive zero similar-episode context:
+**Part 2 — Playbook rules are not scoped to the current plan**: `PlaybookRules::select()` in `crates/roko-learn/src/playbook_rules.rs` accepts a `MatchContext` (files, tags, category, error_signature, role). The runner passes only the current *task's* files as match context. This means a playbook rule for `crates/bar/**` can fire during a plan that only touches `crates/foo/**`, if the task happens to share a tag or role. Cross-plan rule bleed produces irrelevant advice that dilutes the signal-to-noise ratio for the agent.
 
-```rust
-pub struct ContextScopingConfig {
-    pub max_file_intel_entries: usize,   // 10 / 3 / 0 per role
-    pub max_warning_entries: usize,      // 5 / 3 / 0
-    pub max_error_patterns: usize,       // 5 / 3 / 0
-    pub max_similar_episodes: usize,     // 3 / 5 / 0
-}
-```
+## Current State
 
-**`PlaybookRules`** (`crates/roko-learn/src/playbook_rules.rs`) has `select(ctx, limit)`.
-`MatchContext` carries files, tags, category, error_signature, and role.
+1. **`ContextScopingConfig`** exists at `crates/roko-cli/src/runner/event_loop.rs` lines 240-250. It has four fields: `max_file_intel_entries`, `max_warning_entries`, `max_error_patterns`, `max_similar_episodes`. Three compile-time presets exist: `IMPLEMENTER`, `REVIEWER`, `STRATEGIST` (lines 317-343).
 
-### What is missing
+2. **`role_context_limits()`** at line 355 maps `AgentRole` enum values to one of the three presets. This function is already called in the runner before prompt assembly (line 9880).
 
-1. **`KnowledgeConfig`** — a config struct loadable from `roko.toml [knowledge]` that
-   holds per-section enable toggles and size overrides. The `ContextScopingConfig` presets
-   are compile-time constants with no operator-configurable overrides.
-2. **`PlaybookScope`** — restricts rule matching to files touched by the current plan,
-   preventing cross-plan rule bleed.
-3. **`collect_plan_playbook_scope()`** — walks all tasks in a plan, unions their files,
-   returns a `PlaybookScope` for pre-filtering the rule store.
-4. **Config wiring** — `roko.toml [knowledge]` is documented but no config struct is
-   parsed or applied.
+3. **`PlaybookRules::select(ctx, limit)`** in `crates/roko-learn/src/playbook_rules.rs` takes a `MatchContext` struct. `MatchContext` has fields: `files: Vec<String>`, `tags: Vec<String>`, `category: Option<String>`, `error_signature: Option<String>`, `role: Option<String>`. All matching is against these fields. There is no plan-level scope filtering.
 
----
+4. **No `KnowledgeConfig` struct exists** anywhere in `crates/roko-core/src/config/`. Confirmed by searching all `.rs` files in that directory — the struct is absent.
 
-## Solution
+5. **`RokoConfig`** in `crates/roko-core/src/config/schema.rs` does not have a `knowledge` field (line 89-176). Adding one requires adding the field and a corresponding submodule.
 
-### 1. `KnowledgeConfig` (new config section)
+6. **`crates/roko-compose/`** has many modules but no `context_scoping.rs` file. This is the correct home for `PlaybookScope` and its helpers since it is the prompt-composition layer.
 
-Add to `crates/roko-core/src/config/` and wire into `RokoConfig`:
+7. **`crates/roko-compose/src/lib.rs`** exists and must be edited to export the new `context_scoping` module.
+
+## Implementation Plan
+
+### Step 1: Create `KnowledgeConfig` in `crates/roko-core/src/config/knowledge.rs` (new file)
 
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
+//! Knowledge context injection configuration for roko.toml [knowledge].
+
+use serde::{Deserialize, Serialize};
+
+/// Operator overrides for per-role context injection limits.
+///
+/// All fields have defaults that match the compile-time `ContextScopingConfig`
+/// presets so existing configurations continue to behave identically.
+///
+/// Example roko.toml:
+/// ```toml
+/// [knowledge]
+/// file_intel_max_entries = 5       # Implementer default: 10
+/// file_intel_reviewer_entries = 2  # Reviewer default: 3
+/// plan_scoped_playbook_enabled = true
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KnowledgeConfig {
-    pub file_intel_enabled: bool,            // default: true
-    pub file_intel_max_entries: usize,       // default: 10 (implementer)
-    pub file_intel_reviewer_entries: usize,  // default: 3
-    pub warnings_enabled: bool,              // default: true
-    pub warning_max_entries: usize,          // default: 5
-    pub warning_reviewer_entries: usize,     // default: 3
-    pub error_patterns_enabled: bool,        // default: true
-    pub error_pattern_max_entries: usize,    // default: 5
-    pub error_pattern_min_cluster: usize,    // default: 3
-    pub wave_context_enabled: bool,          // default: false
-    pub plan_scoped_playbook_enabled: bool,  // default: true
+    /// Enable file intelligence context injection (default: true).
+    pub file_intel_enabled: bool,
+    /// Max file-intel entries for Implementer role (default: 10).
+    pub file_intel_max_entries: usize,
+    /// Max file-intel entries for Reviewer role (default: 3).
+    /// Strategist always receives 0 regardless of this setting.
+    pub file_intel_reviewer_entries: usize,
+    /// Enable warning context injection (default: true).
+    pub warnings_enabled: bool,
+    /// Max warning entries for Implementer (default: 5).
+    pub warning_max_entries: usize,
+    /// Max warning entries for Reviewer (default: 3).
+    pub warning_reviewer_entries: usize,
+    /// Enable error pattern injection (default: true).
+    pub error_patterns_enabled: bool,
+    /// Max error pattern entries for Implementer (default: 5).
+    pub error_pattern_max_entries: usize,
+    /// Min cluster size before an error pattern is injected (default: 3).
+    pub error_pattern_min_cluster: usize,
+    /// When true, playbook rule matching is pre-filtered to files and tags
+    /// touched by the current plan only. Prevents cross-plan rule bleed (default: true).
+    pub plan_scoped_playbook_enabled: bool,
+}
+
+impl Default for KnowledgeConfig {
+    fn default() -> Self {
+        Self {
+            file_intel_enabled: true,
+            file_intel_max_entries: 10,
+            file_intel_reviewer_entries: 3,
+            warnings_enabled: true,
+            warning_max_entries: 5,
+            warning_reviewer_entries: 3,
+            error_patterns_enabled: true,
+            error_pattern_max_entries: 5,
+            error_pattern_min_cluster: 3,
+            plan_scoped_playbook_enabled: true,
+        }
+    }
 }
 ```
 
-### 2. Per-role filtering table
+### Step 2: Register the config in `crates/roko-core/src/config/mod.rs`
 
-| Section | Implementer | Reviewer | Strategist |
-|---|---|---|---|
-| File intel | 10 (full) | 3 (summary) | 0 |
-| Warnings | 5 | 3 | 0 |
-| Error patterns | 5 | 3 | 0 |
-| Episodes | 3 | 5 | 0 |
+Add:
+```rust
+pub mod knowledge;
+pub use knowledge::KnowledgeConfig;
+```
 
-Strategist is always zero and not configurable.
+### Step 3: Add `knowledge` field to `RokoConfig` in `crates/roko-core/src/config/schema.rs`
 
-### 3. `PlaybookScope` (new, in `crates/roko-compose/src/context_scoping.rs`)
+After the `pub prompt: PromptConfig,` field (around line 172), add:
 
 ```rust
-pub struct PlaybookScope {
-    pub plan_files: Vec<String>,  // union of all task.files in the plan
-    pub plan_tags: Vec<String>,   // union of all task.tags
-}
-
-pub fn collect_plan_playbook_scope(plan_id: &str, tasks: &[TaskDef]) -> PlaybookScope;
-pub fn apply_plan_scope(ctx: MatchContext, scope: &PlaybookScope, enabled: bool) -> MatchContext;
+    /// Context injection tuning for per-role knowledge sections.
+    #[serde(default)]
+    pub knowledge: KnowledgeConfig,
 ```
 
-Computed once at plan startup, stored in executor state, threaded into every dispatch.
+Also add `pub use super::knowledge::*;` to the re-export block at the top of `schema.rs` (around line 34).
 
-### 4. Wiring into `dispatch_agent_with()`
+### Step 4: Create `crates/roko-compose/src/context_scoping.rs` (new file)
 
-At the existing `role_context_limits()` call site in `event_loop.rs`:
-1. Load `KnowledgeConfig` from executor config.
-2. Override `ContextScopingConfig` presets from config values.
-3. Pass `PlaybookScope` into `MatchContext` construction.
-4. Call `apply_plan_scope()` when `plan_scoped_playbook_enabled == true`.
-5. Skip file-intel/warning sections entirely when max == 0 (strategist).
+```rust
+//! Plan-scoped playbook filtering helpers.
+//!
+//! `PlaybookScope` captures the files and tags a plan touches. It is computed
+//! once at plan startup and threaded into every dispatch call so that playbook
+//! rule matching is restricted to rules relevant to the current plan.
 
----
+use roko_core::task::TaskDef;
 
-## Where to implement
+/// Files and tags touched by all tasks in a plan.
+/// Used to pre-filter playbook rule selection.
+#[derive(Debug, Clone, Default)]
+pub struct PlaybookScope {
+    /// Union of all `task.files` across every task in the plan.
+    pub plan_files: Vec<String>,
+    /// Union of all `task.tags` across every task in the plan.
+    pub plan_tags: Vec<String>,
+}
 
-| Component | Path |
+impl PlaybookScope {
+    /// Build a scope from all tasks in a plan.
+    pub fn from_tasks(tasks: &[TaskDef]) -> Self {
+        let mut plan_files: Vec<String> = Vec::new();
+        let mut plan_tags: Vec<String> = Vec::new();
+
+        for task in tasks {
+            for f in &task.files {
+                if !plan_files.contains(f) {
+                    plan_files.push(f.clone());
+                }
+            }
+            for t in &task.tags {
+                if !plan_tags.contains(t) {
+                    plan_tags.push(t.clone());
+                }
+            }
+        }
+
+        Self { plan_files, plan_tags }
+    }
+
+    /// Apply this scope to a `MatchContext` by intersecting its files and tags.
+    ///
+    /// When `enabled` is false, `ctx` is returned unchanged (disables scoping).
+    /// When `enabled` is true and the plan has no files/tags (empty scope),
+    /// the context is also returned unchanged (permissive fallback).
+    pub fn apply_to_match_context(
+        &self,
+        mut ctx: roko_learn::playbook_rules::MatchContext,
+        enabled: bool,
+    ) -> roko_learn::playbook_rules::MatchContext {
+        if !enabled || (self.plan_files.is_empty() && self.plan_tags.is_empty()) {
+            return ctx;
+        }
+        // Restrict files to those that overlap with plan scope.
+        ctx.files.retain(|f| {
+            self.plan_files.iter().any(|pf| {
+                // Simple prefix/substring match; glob matching can be added later.
+                f.starts_with(pf.as_str()) || pf.starts_with(f.as_str())
+            })
+        });
+        // Restrict tags to those that overlap with plan scope.
+        ctx.tags.retain(|t| self.plan_tags.contains(t));
+        ctx
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_scope_is_permissive() {
+        let scope = PlaybookScope::default();
+        let ctx = roko_learn::playbook_rules::MatchContext {
+            files: vec!["crates/foo/src/lib.rs".to_string()],
+            tags: vec!["rust".to_string()],
+            category: None,
+            error_signature: None,
+            role: None,
+        };
+        let result = scope.apply_to_match_context(ctx.clone(), true);
+        assert_eq!(result.files, ctx.files); // unchanged when scope is empty
+    }
+
+    #[test]
+    fn scope_filters_unrelated_files() {
+        let scope = PlaybookScope {
+            plan_files: vec!["crates/foo".to_string()],
+            plan_tags: vec![],
+        };
+        let ctx = roko_learn::playbook_rules::MatchContext {
+            files: vec![
+                "crates/foo/src/lib.rs".to_string(),
+                "crates/bar/src/lib.rs".to_string(),
+            ],
+            tags: vec![],
+            category: None,
+            error_signature: None,
+            role: None,
+        };
+        let result = scope.apply_to_match_context(ctx, true);
+        assert_eq!(result.files, vec!["crates/foo/src/lib.rs".to_string()]);
+    }
+
+    #[test]
+    fn disabled_scope_passes_through_unchanged() {
+        let scope = PlaybookScope {
+            plan_files: vec!["crates/foo".to_string()],
+            plan_tags: vec![],
+        };
+        let ctx = roko_learn::playbook_rules::MatchContext {
+            files: vec!["crates/bar/src/lib.rs".to_string()],
+            tags: vec![],
+            category: None,
+            error_signature: None,
+            role: None,
+        };
+        let result = scope.apply_to_match_context(ctx.clone(), false);
+        assert_eq!(result.files, ctx.files); // unchanged when disabled
+    }
+}
+```
+
+### Step 5: Export the module in `crates/roko-compose/src/lib.rs`
+
+Add one line to the module list:
+
+```rust
+/// Plan-scoped playbook filtering helpers.
+pub mod context_scoping;
+```
+
+### Step 6: Wire into `crates/roko-cli/src/runner/event_loop.rs`
+
+There are two integration points.
+
+**6a. Override `ContextScopingConfig` from `KnowledgeConfig`**
+
+Locate `role_context_limits(role_enum)` call at line 9880. After this call, apply the operator overrides from `KnowledgeConfig`:
+
+```rust
+let mut context_scope = role_context_limits(role_enum);
+// Apply operator overrides from roko.toml [knowledge] if present.
+if let Some(kc) = &config.knowledge_config_ref() {
+    // Strategist presets are always zero; do not override.
+    if context_scope.max_file_intel_entries > 0 {
+        if !kc.file_intel_enabled {
+            context_scope.max_file_intel_entries = 0;
+            context_scope.max_warning_entries = 0;
+            context_scope.max_error_patterns = 0;
+        } else {
+            // Role-specific overrides.
+            use roko_core::AgentRole as R;
+            match role_enum {
+                R::Auditor | R::QuickReviewer | R::Critic
+                | R::SpecDriftDetector | R::RegressionDetector
+                | R::DocVerifier | R::SnapshotComparator => {
+                    context_scope.max_file_intel_entries = kc.file_intel_reviewer_entries;
+                    context_scope.max_warning_entries = kc.warning_reviewer_entries;
+                    context_scope.max_error_patterns = kc.error_pattern_max_entries;
+                }
+                _ => {
+                    // Implementer-class
+                    context_scope.max_file_intel_entries = kc.file_intel_max_entries;
+                    context_scope.max_warning_entries = kc.warning_max_entries;
+                    context_scope.max_error_patterns = kc.error_pattern_max_entries;
+                }
+            }
+        }
+    }
+}
+```
+
+The `KnowledgeConfig` is accessed from `RunConfig` or the executor config. Add a method like `config.knowledge()` that returns a reference to `KnowledgeConfig` from `RokoConfig`.
+
+**6b. Apply `PlaybookScope` before playbook rule selection**
+
+The `PlaybookScope` must be computed once at plan startup (when the plan's `TaskDef` list is known) and stored in `RunState` or threaded into each dispatch. Add a field:
+
+```rust
+// In RunState or the per-plan state:
+pub playbook_scope: roko_compose::context_scoping::PlaybookScope,
+```
+
+Initialize it when loading a plan's tasks:
+
+```rust
+let playbook_scope = roko_compose::context_scoping::PlaybookScope::from_tasks(&task_defs);
+```
+
+At the `PlaybookRules::select()` call site in `event_loop.rs`, wrap the `MatchContext` construction with:
+
+```rust
+let scoped_ctx = playbook_scope.apply_to_match_context(raw_ctx, knowledge_config.plan_scoped_playbook_enabled);
+let rules = playbook_store.select(&scoped_ctx, limit);
+```
+
+To find the `PlaybookRules::select` call site, search `event_loop.rs` for `playbook_rules` or `playbook_store.select`.
+
+## Acceptance Criteria
+
+1. Adding `[knowledge]` to `roko.toml` with `file_intel_max_entries = 3` causes the runner to inject at most 3 file-intel entries for Implementer roles. Verified by unit test.
+
+2. Omitting `[knowledge]` entirely produces the same behavior as the current compile-time presets (backwards compatible).
+
+3. `file_intel_enabled = false` in `[knowledge]` suppresses file-intel in prompts for all roles, including Implementer.
+
+4. Strategist prompts contain zero file-intel entries regardless of `[knowledge]` settings.
+
+5. With `plan_scoped_playbook_enabled = true` (default): a playbook rule with `trigger_files = ["crates/bar/**"]` does not fire during a plan whose `PlaybookScope.plan_files` contains only `crates/foo/` paths.
+
+6. With `plan_scoped_playbook_enabled = false`: the pre-scoping behavior is restored — cross-plan rules can fire.
+
+7. `PlaybookScope::from_tasks(&[])` returns an empty scope (permissive — does not filter anything).
+
+8. Unit tests for `context_scoping.rs` all pass: empty scope is permissive, non-empty scope filters unrelated files, disabled flag passes through unchanged.
+
+## Verification Checklist
+
+- [ ] `cargo build --workspace` passes after adding `KnowledgeConfig` and the new field to `RokoConfig`
+- [ ] `cargo test -p roko-core` passes — add a TOML round-trip test for `[knowledge]` section
+- [ ] `cargo test -p roko-compose context_scoping` passes all three unit tests in the new module
+- [ ] `cargo clippy --workspace --no-deps -- -D warnings` passes clean
+- [ ] Manually verify: add `[knowledge]\nfile_intel_max_entries = 2` to `roko.toml`, run `cargo run -p roko-cli -- plan run plans/ --engine runner-v2` on a small plan, confirm prompt logs show at most 2 file-intel entries for Implementer tasks
+- [ ] Confirm Strategist task prompts still contain zero file-intel entries even with non-zero `file_intel_max_entries` in config
+- [ ] Confirm `plan_scoped_playbook_enabled = false` in config restores pre-scoping behavior
+
+## Files to Modify
+
+| File | Change |
 |---|---|
-| `KnowledgeConfig` struct | `crates/roko-core/src/config/knowledge.rs` (new) |
-| Config registration | `crates/roko-core/src/config/mod.rs` |
-| `PlaybookScope` + helpers | `crates/roko-compose/src/context_scoping.rs` (new) |
-| Module export | `crates/roko-compose/src/lib.rs` |
-| Dispatch wiring | `crates/roko-cli/src/runner/event_loop.rs` |
-
-Files explicitly NOT modified: `playbook_rules.rs` (scoping applied by caller, not store).
-
----
-
-## Acceptance criteria
-
-1. `KnowledgeConfig` loads from `roko.toml [knowledge]` — overriding `file_intel_max_entries = 3`
-   produces the correct value; omitted fields take defaults.
-2. Strategist prompts contain zero file-intel, zero warnings, zero error-patterns.
-3. Implementer prompts receive up to `file_intel_max_entries` file-intel entries.
-4. Reviewer prompts receive at most `file_intel_reviewer_entries` entries.
-5. Plan-scoped playbook matching: a rule with `trigger_files = ["crates/bar/**"]` does not
-   fire during a plan that only touches `crates/foo/**`.
-6. `plan_scoped_playbook_enabled = false` restores pre-scoping behavior.
-7. `file_intel_enabled = false` suppresses file-intel in all prompts regardless of role.
-
-### Token impact estimate
-
-| Role | Before | After | Saving |
-|---|---|---|---|
-| Strategist | ~2,400 tok | ~0 tok | ~2,400/dispatch |
-| Reviewer | ~2,400 tok | ~720 tok | ~1,680/dispatch |
-| Implementer | ~2,400 tok | ~2,400 tok | 0 |
-
-For a typical plan (2 strategist + 3 reviewer + 8 implementer tasks): ~9,840 tokens
-saved per plan execution (~15% of prompt token spend).
-
-### Out of scope
-
-- Dynamic budget adjustment per file complexity.
-- Wave context injection logic (toggle field included, logic deferred).
-- Changes to `PlaybookRules::select()` internals.
+| `crates/roko-core/src/config/knowledge.rs` | **New file** — `KnowledgeConfig` struct with defaults |
+| `crates/roko-core/src/config/mod.rs` | Add `pub mod knowledge; pub use knowledge::KnowledgeConfig;` |
+| `crates/roko-core/src/config/schema.rs` | Add `pub knowledge: KnowledgeConfig` field to `RokoConfig`; add `pub use super::knowledge::*` to re-exports |
+| `crates/roko-compose/src/context_scoping.rs` | **New file** — `PlaybookScope`, `from_tasks()`, `apply_to_match_context()` with unit tests |
+| `crates/roko-compose/src/lib.rs` | Add `pub mod context_scoping;` |
+| `crates/roko-cli/src/runner/event_loop.rs` | Override `ContextScopingConfig` from `KnowledgeConfig` after `role_context_limits()` call (line ~9880); add `PlaybookScope` to `RunState` and apply it before `select()` |

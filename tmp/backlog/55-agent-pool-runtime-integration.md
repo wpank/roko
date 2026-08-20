@@ -1,93 +1,109 @@
-# AgentPool Runtime Integration
+# 55 — AgentPool Runtime Integration
 
-**Priority**: P2 — built with 56 tests but zero runtime callers
-**Size**: M (2-3d)
-**Crate**: `crates/roko-agent/`, `crates/roko-cli/`
-
----
-
-## Problem
-
-`AgentPool` (676 lines, 24 tests) and `MultiAgentPool` (1130 lines, 32 tests) provide
-per-role sequential execution with automatic fallback retry, parallel multi-role dispatch
-with configurable concurrency limits, warm pool pre-spawning, checked reuse policies with
-context fingerprinting, and full lifecycle tracking (Warm/Pending/Active/Done/Failed/Cancelled).
-
-Neither is instantiated anywhere in the runtime. Runner-v2 creates a fresh provider instance
-per task via `factory.spawn_shared_agent_bridge()`. The existing `WarmPool` in
-`dispatch/warm_pool.rs` is a simpler structure that stores `(role, agent)` tuples without
-lifecycle tracking, concurrency limits, or fallback retry.
-
-This means:
-- Every task pays provider setup overhead (subprocess launch for CLI providers)
-- No concurrency limits per role (relies on external semaphores)
-- No automatic fallback retry at the pool level
-- No warm agent reuse with context fingerprint validation
+**Priority**: P2 — `AgentPool` and `MultiAgentPool` have 56 tests but zero runtime callers; every task pays cold-start overhead and has no pool-level fallback retry
+**Size**: M (2-3 days)
+**Crates**: `crates/roko-agent/` (`roko-agent`), `crates/roko-cli/` (`roko-cli`)
+**Depends on**: None
 
 ---
 
-## What already exists
+## Background
 
-| Component | File | Status |
-|---|---|---|
-| `AgentPool` | `roko-agent/src/pool.rs` | Built, 24 tests, 0 callers |
-| `MultiAgentPool` | `roko-agent/src/multi_pool.rs` | Built, 32 tests, 0 callers |
-| `WarmPool` (simpler) | `roko-cli/src/dispatch/warm_pool.rs` | Wired in runner |
-| TUI agent pool modal | `roko-cli/src/tui/modals/agent_pool_modal.rs` | Display-only |
-| Per-task dispatch | `runner/event_loop.rs` | `spawn_shared_agent_bridge()` |
-| Provider semaphores | `roko-agent/src/provider/mod.rs` | Reused across tasks |
-| MCP runtime | `roko-agent/src/mcp/` | Reused across tasks |
+Roko's plan runner dispatches one agent per task. Creating an agent can be expensive: for subprocess-based providers like `ClaudeCliAgent`, this involves forking a new process, establishing MCP connections, and waiting for the provider to initialize. For API-based providers, it involves constructing a new request context and waiting for the first token.
 
-### What the runner currently reuses (no pool needed):
-- `ProviderSemaphores` (concurrency per provider)
-- MCP runtime (tool definitions, clients)
-- `Dispatcher` (model router, prompt assembler)
-- `ProviderRateLimiter` (shared RPM/TPM budget)
-- `ProviderHealthRegistry` (provider health state)
+The codebase has two fully-built pool types that address this: `AgentPool` (in `crates/roko-agent/src/pool.rs`) handles a single role with sequential execution, fallback retry, and lifecycle tracking. `MultiAgentPool` (in `crates/roko-agent/src/multi_pool.rs`) coordinates multiple `AgentPool` instances for concurrent execution with warm pre-spawning, per-role concurrency limits, and bulk cleanup.
 
-### What the runner rebuilds per task (pool would help):
-- The actual provider instance (ClaudeCliAgent, OpenAiAgent, etc.)
-- Subprocess launching (for CLI providers)
-- Provider options + configuration
+Neither pool is called anywhere in the runner. The runner creates a fresh provider instance per task via `SharedAgentFactory::spawn_shared_agent_bridge()` in `crates/roko-cli/src/dispatch/factory.rs`. There is a simpler warm-pool type (`WarmPool` in `crates/roko-cli/src/dispatch/warm_pool.rs`) that stores `(model, agent_handle)` tuples for fast role transitions, but it has no lifecycle tracking, no fallback retry, and no per-role concurrency enforcement.
+
+The TUI has an "Agent Pool" modal (`ModalState::AgentPool` in `crates/roko-cli/src/tui/modals/mod.rs`, line 86) that displays agent rows, but the `agents: Vec<AgentPoolRow>` field is populated with empty metadata because there is no live pool state to read.
 
 ---
 
-## What to do
+## Current State
 
-**Step 1.** Replace the simple `WarmPool` with `MultiAgentPool` in
-`crates/roko-cli/src/dispatch/factory.rs`. Initialize it with the configured roles and
-concurrency limits from `roko.toml`.
+1. `AgentPool` is at `/Users/will/dev/nunchi/roko/roko/crates/roko-agent/src/pool.rs` (675 lines, 24 tests). It manages a queue of `AgentTask` values for a single role, with a primary agent and optional fallback. The `InstanceStatus` enum (line 75) has variants `Warm`, `Pending`, `Active`, `Done`, `Failed`, and `Cancelled`.
 
-**Step 2.** In the runner's task dispatch path (`event_loop.rs` around
-`spawn_shared_agent_bridge`), use `MultiAgentPool::run_task_with_auto_activation()` instead
-of creating a fresh provider per task. This gives:
-- Warm agent promotion (no cold start)
-- Automatic fallback retry on primary failure
-- Per-role concurrency enforcement
+2. `MultiAgentPool` is at `/Users/will/dev/nunchi/roko/roko/crates/roko-agent/src/multi_pool.rs` (1129 lines, 32 tests). Key methods:
+   - `pre_spawn_warm(role, count, agent_fn)` at line 110 — fills warm slots for a role.
+   - `run_task_with_auto_activation(task, agent_fn)` at line 456 — promotes a warm agent or creates one, then runs the task.
+   - `kill_plan_agents(plan_id)` at line 583 — kills all agents whose instance ID contains `plan_id`.
+   - `kill_all(deadline)` at line 541 — terminates everything.
 
-**Step 3.** At phase boundaries (e.g., implementation → review), use
-`MultiAgentPool::pre_spawn_warm()` to prepare agents for the next role while the current
-task's gate is running.
+3. `SharedAgentFactory` is at `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/dispatch/factory.rs`. The `spawn_shared_agent_bridge()` method at line 317 is the current per-task provider creation path. It spawns a Tokio task that creates a fresh `AgentDispatcherV2`, calls `run_agent_result_bridge_with_tools_and_cli_mcp()`, and returns a `JoinHandle`.
 
-**Step 4.** Wire `MultiAgentPool` status into the TUI agent pool modal so it shows live
-pool state rather than just agent metadata.
+4. The existing `WarmPool` is at `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/dispatch/warm_pool.rs` (250 lines). It is a bounded LRU container of `WarmAgent` structs (identified by `id` and `model` strings). It is wired into `SharedAgentFactory::dispatcher()` and used in the runner's event loop (e.g., at line 4128 of `event_loop.rs`) for phase-boundary warm promotion. It does not interface with `MultiAgentPool`.
 
-**Step 5.** On plan completion or cancellation, call `MultiAgentPool::kill_plan_agents()`
-for cleanup.
+5. The TUI agent pool modal is defined in `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/tui/modals/agent_pool_modal.rs`. `AgentPoolRow` (line 12) has fields `role`, `model`, `task`, `tokens`, `cost_usd`, `state`, and `context_pct`. The `ModalState::AgentPool { agents: Vec<AgentPoolRow>, scroll_offset: u16 }` variant is at line 86 of `modals/mod.rs`. Currently the `agents` field is populated with statically constructed rows (e.g., in tests at line 1176 of `input.rs`) rather than live pool data.
+
+6. `WarmReusePolicy` and `WarmReuseRequest` are in `/Users/will/dev/nunchi/roko/roko/crates/roko-agent/src/session.rs`. `WarmReusePolicy::allows()` at line 133 checks TTL and optional `context_fingerprint` matching.
 
 ---
 
-## Acceptance criteria
+## Implementation Plan
 
-- [ ] `MultiAgentPool` instantiated in the runner factory
-- [ ] Task dispatch uses pool instead of per-task provider creation
-- [ ] Warm pre-spawning at phase boundaries reduces cold-start latency
-- [ ] Per-role concurrency limits enforced by the pool
-- [ ] Automatic fallback retry on primary agent failure
-- [ ] TUI modal shows live pool state (warm/active/done counts)
-- [ ] `kill_plan_agents()` called on plan completion/cancellation
-- [ ] All existing tests pass (`cargo test -p roko-agent -p roko-cli`)
+### Step 1: Add `MultiAgentPool` to `SharedAgentFactory`
+
+In `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/dispatch/factory.rs`:
+
+1. Add a field `agent_pool: MultiAgentPool` to `SharedAgentFactory` (line 43).
+2. Initialize it in `SharedAgentFactory::new()` with default concurrency limits (e.g., 4 concurrent implementers, 2 reviewers). Read per-role limits from `RokoConfig` if present.
+3. Add a `pub fn agent_pool_mut(&mut self) -> &mut MultiAgentPool` accessor for the runner to use.
+4. Add a `pub fn agent_pool_snapshot(&self) -> Vec<AgentPoolRow>` method that iterates the pool's active and warm entries and maps them to `AgentPoolRow` structs for the TUI.
+
+`MultiAgentPool` requires a mutable reference for `run_task_with_auto_activation` and `pre_spawn_warm`, so `SharedAgentFactory` must be held behind a `Mutex` or the methods must take `&mut self`. In the runner, `SharedAgentFactory` is already behind an `Arc<Mutex<...>>` pattern — verify this in `event_loop.rs` before proceeding.
+
+### Step 2: Replace per-task provider creation with pool dispatch
+
+In `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/runner/event_loop.rs`, find the `spawn_shared_agent_bridge()` call site (around line 10544). Replace it with a call to `factory.agent_pool_mut().run_task_with_auto_activation(task, &agent_fn)` where:
+
+- `task` is an `AgentTask` constructed from the current runner task's role, plan ID, and task ID.
+- `agent_fn` is a closure that calls the existing `spawn_shared_agent_bridge()` path when no warm agent is available.
+
+This change preserves the existing dispatch path as the cold-start fallback while enabling warm agent reuse when one is available.
+
+### Step 3: Pre-spawn at phase boundaries
+
+In the runner's event loop, at the point where a gate has just passed and the next phase's role is known (around line 10801 of `event_loop.rs`, where the existing `WarmPool` pre-spawn is triggered), add a call to `factory.agent_pool_mut().pre_spawn_warm(next_role, 1, &agent_fn)`. This fills a warm slot for the next phase role while the current gate runs.
+
+This replaces the manual `WarmPool::insert()` + `warm_pool.take()` pattern with the lifecycle-aware `MultiAgentPool` version.
+
+### Step 4: Wire cleanup on plan completion and cancellation
+
+In the runner's plan completion and cancellation paths, call `factory.agent_pool_mut().kill_plan_agents(plan_id)` to release all agents associated with the plan. In the existing code, this is the point where `ProcessSupervisor` teardown happens — add the pool cleanup in the same block.
+
+### Step 5: Feed live pool state into the TUI
+
+In the runner's state publication loop (the code that pushes `RunnerEvent` to the TUI via the state hub), after each task dispatch or completion, call `factory.agent_pool_snapshot()` and publish the result as a `TuiStateUpdate::AgentPool(Vec<AgentPoolRow>)` event. In `crates/roko-cli/src/tui/app.rs`, handle this event by updating `tui_state.active_modal` when `ModalState::AgentPool` is open.
 
 ---
 
-**Origin**: GAPS.md "Built-but-Unwired: AgentPool / MultiAgentPool" (2026-08-17)
+## Acceptance Criteria
+
+1. `SharedAgentFactory` holds a `MultiAgentPool` instance initialized at plan run start.
+2. The runner's task dispatch path calls `run_task_with_auto_activation()` instead of directly calling `spawn_shared_agent_bridge()` for each task. The cold-start path is preserved as the fallback when no warm agent exists.
+3. After each gate pass, `pre_spawn_warm()` is called for the next phase's role.
+4. On plan completion or cancellation, `kill_plan_agents()` is called for the finished plan.
+5. The TUI's Agent Pool modal (`'p'` key or equivalent shortcut) shows live state: warm slot count, active agent count, and per-agent task/model/status.
+6. `cargo test -p roko-agent -p roko-cli` passes with zero failures.
+7. `cargo clippy --workspace --no-deps -- -D warnings` is clean.
+
+---
+
+## Verification Checklist
+
+- [ ] Run a 3-task plan. In the TUI, open the Agent Pool modal and confirm it shows agents with non-empty `state` fields during execution.
+- [ ] Check runner logs for `"warm_pool: promoted pre-spawned agent"` messages — confirm they appear after the first gate pass.
+- [ ] After plan completion, confirm no orphaned subprocess entries remain in the pool.
+- [ ] Run `cargo test -p roko-agent` — all 56 pool tests pass.
+- [ ] Run `cargo test -p roko-cli` — all tests pass.
+- [ ] Run `cargo clippy --workspace --no-deps -- -D warnings` — clean.
+
+---
+
+## Files to Modify
+
+| File | Change |
+|---|---|
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/dispatch/factory.rs` | Add `MultiAgentPool` field to `SharedAgentFactory`; initialize in `new()`; add `agent_pool_mut()` and `agent_pool_snapshot()` accessors |
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/runner/event_loop.rs` | Replace `spawn_shared_agent_bridge()` with `run_task_with_auto_activation()`; add `pre_spawn_warm()` at gate-pass boundaries; add `kill_plan_agents()` at plan completion/cancellation |
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/tui/app.rs` | Handle pool snapshot events to update `ModalState::AgentPool` |

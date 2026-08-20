@@ -1,326 +1,357 @@
-# ACP Stability Hardening
+# 17 — ACP Stability Hardening
 
 **Priority**: P0 — crashes in production, concurrency bugs, silent failures
 **Size**: L (5–7 days)
-**Crate**: `crates/roko-acp/` (19,915 LOC, 15 modules)
+**Crates**: `crates/roko-acp/`
+**Depends on**: None (roko-agent and roko-acp both compile cleanly as of 2026-08-19)
 
-## Source Analysis
+---
 
-This document consolidates findings from the 2026-08-15 audit of `roko-acp`.
-The detailed per-line findings live in:
+## Background
 
-- `tmp/archive/08-15-26/acp-todos/01-PANIC-AND-ERROR-FIXES.md` — 35 findings, 7 P0 crashes in `bridge_events.rs`
-- `tmp/archive/08-15-26/acp-todos/02-OTHER-MODULE-ERROR-FIXES.md` — 14 findings across 12 non-bridge modules
-- `tmp/archive/08-15-26/acp-todos/07-CONCURRENCY-ISSUES.md` — 12 issues (race conditions, lock contention, channel problems)
-- `tmp/archive/08-15-26/acp-todos/08-CODE-QUALITY.md` — clippy blockers, oversized functions, suppression audit
+Roko includes a crate called `roko-acp` that implements the Agent Client Protocol (ACP),
+a JSON-RPC protocol that allows code editors (Zed, Cursor, JetBrains) to send prompts to
+roko agents. When you configure Zed to use roko as its AI assistant, it communicates over
+ACP. The crate handles session lifecycle, model routing, gate pipelines (compile, test,
+clippy), and streaming LLM responses back to the editor.
 
-## What Exists
+The `roko-acp` crate is 19,915 LOC across 15 modules. It has 180 passing tests and runs
+as a subprocess that the editor spawns. If `roko-acp` crashes, the editor's AI assistant
+goes silent — there is no reconnect; the user has to restart. Silent failures (data silently
+discarded, wrong state recorded) are almost as bad: they cause cost budgets to drift,
+learning data to be lost, or code reviews to be auto-approved.
 
-- Full `roko-acp` crate compiles on stable toolchain and passes 180 ACP tests
-- Error types use `thiserror` consistently; no raw `unwrap()` calls anywhere in production code
-- Permission flow is correctly fail-closed on all timeout/cancel/disconnect paths (P3, no action needed)
-- MCP server discovery correctly degrades gracefully with `McpServerStatus::failed(...)` forwarded to editor
-- `BridgeEventsError` propagates from all public entry points back to the JSON-RPC error layer
-- Existing test harness: 164 inline tests + 16 external tests across 3 test files
+This item fixes all of the P0 crashes and the most important P1 silent failures found in
+a 2026-08-15 audit. It does not restructure the code (that is item 18).
 
-## What Is Missing / Broken
+## Current State
 
-### Section A: P0 — Server Process Crashes
+### Verified P0 crashes (will terminate the ACP server process)
 
-Seven `.expect()` and `unreachable!()` calls in production paths in `bridge_events.rs` will
-terminate the ACP server process (not just the current request). All must be replaced with
-`BridgeEventsError` or `anyhow::Error` returns before the next Zed/Cursor test session.
+1. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs` line 1698** — `session.provider_health_registry.as_ref().expect("ACP provider health initialized before prompt")`. This is called from `handle_session_prompt` (line 1657). If provider runtime initialization races or fails silently, the process dies mid-prompt.
 
-**A1. `provider_health_registry` panic** (`bridge_events.rs:1675`)
+2. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs` line 1704** — `session.provider_rate_limiter.as_ref().expect("ACP provider rate limiter initialized before prompt")`. Same function, same pattern, same risk.
+
+3. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs` line 4993** — `child.stdout.take().expect("stdout was piped")` in slash-command dispatch. If the `Command` builder ever omits `Stdio::piped()`, this panics mid-prompt.
+
+4. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs` line 5311** — `child.stdout.take().expect("stdout was piped")` in a second shell-command path. Identical pattern.
+
+5. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs` line 5945** — `text[end..].chars().next().expect("valid char boundary")` in the at-mention parser. User-provided text that is not valid UTF-8 at the expected boundary panics.
+
+6. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs` line 3762** — `unreachable!("suffix search should always find a unique tool name")`. A malicious or buggy MCP server that registers many identically-named tools can hit this.
+
+7. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs` line 5439** — `unreachable!("terminal/async cognitive events are handled before update mapping")`. Adding a new `CognitiveEvent` variant without updating the match arm panics at runtime.
+
+### Verified P1 silent failures
+
+8. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/runner.rs` line 1841** — On reviewer agent error: `warn!(error = %e, "reviewer failed, treating as approved")` then `run.pipeline.step(PipelineEvent::ReviewApproved { ... })`. A crashed review agent silently auto-approves the submission.
+
+9. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/runner.rs` lines 1910–1911 and 1937–1938** — In `run_multi_role_review` (the "thorough" review mode), `all_approved` initializes to `true` (line 1886). If the architect reviewer errors (line 1910), `all_approved` is not set to `false` — it stays `true`. Same for the auditor (line 1937). Both reviewer errors silently approve.
+
+10. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/acp_adapter.rs` line 164** — `let _ = self.sender.try_send(cognitive_event)`. Agent output, gate results, and completion signals are silently dropped when the channel buffer is full, leaving the editor showing stale/incomplete progress.
+
+11. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs` line 1910** — The cognitive event channel at line 1910 is created with capacity 64. The `AcpWorkflowEventConsumer::publish()` at `acp_adapter.rs:164` uses `try_send`, which drops events silently on full buffer.
+
+### Verified concurrency issues
+
+12. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs` lines 1657–1662** — The busy check and set are not atomic:
+    ```rust
+    if session.is_busy() { ... }         // line 1657: LOAD
+    session.ensure_provider_runtime(...); // line 1661: gap
+    session.begin_prompt();              // line 1662: STORE
+    ```
+    The `session.cancel()` path (called from notification handlers) sets `busy = false` via `self.busy.store(false, Ordering::Release)` in `session.rs:649`. This can race with the gap above.
+
+13. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/session.rs` lines 647–660** — `cancel()` and `begin_prompt()` both assign `self.cancel_token`. If `cancel()` fires between `begin_prompt()` creating the new token (line 654) and the cognitive task capturing it, the new prompt may be immediately cancelled or the old cancellation may be lost.
+
+14. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs` line 788** — `assign_acp_experiment()` acquires `EXPERIMENT_STORE_IO_LOCK` (a `std::sync::Mutex`) and reads a JSON file from disk, running on a tokio worker thread. This blocks the tokio worker, violating the async runtime contract. The `record_cascade_observation` function at line 1147 correctly uses `task::spawn_blocking`; the experiment assignment should do the same.
+
+## Implementation Plan
+
+### Fix A1–A2: Replace provider registry expects with error returns
+
+In `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs` lines 1694–1705:
 
 ```rust
-session
+// Before:
+let provider_health = Arc::clone(
+    session
+        .provider_health_registry
+        .as_ref()
+        .expect("ACP provider health initialized before prompt"),
+);
+let provider_rate_limiter = Arc::clone(
+    session
+        .provider_rate_limiter
+        .as_ref()
+        .expect("ACP provider rate limiter initialized before prompt"),
+);
+
+// After:
+let provider_health = session
     .provider_health_registry
     .as_ref()
-    .expect("ACP provider health initialized before prompt")
+    .ok_or_else(|| BridgeEventsError::Pipeline(anyhow::anyhow!(
+        "provider health registry not initialized before prompt"
+    )))?;
+let provider_health = Arc::clone(provider_health);
+
+let provider_rate_limiter = session
+    .provider_rate_limiter
+    .as_ref()
+    .ok_or_else(|| BridgeEventsError::Pipeline(anyhow::anyhow!(
+        "provider rate limiter not initialized before prompt"
+    )))?;
+let provider_rate_limiter = Arc::clone(provider_rate_limiter);
 ```
 
-Called from `handle_session_prompt_inner`. If initialization races or fails silently, the ACP
-process dies mid-prompt. Fix: return `BridgeEventsError::Pipeline(anyhow!("..."))`.
+### Fix A3–A4: Replace stdout/stderr expects in subprocess paths
 
-**A2. `provider_rate_limiter` panic** (`bridge_events.rs:1681`)
-
-Same function as A1. Same pattern. Same fix.
-
-**A3. Slash-command stdout not piped** (`bridge_events.rs:4923`)
+In `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs` at line 4993 and line 5311, replace each `.expect("stdout was piped")` with:
 
 ```rust
+// Before:
 let stdout = child.stdout.take().expect("stdout was piped");
 let stderr = child.stderr.take().expect("stderr was piped");
+
+// After:
+let stdout = child.stdout.take().ok_or_else(|| {
+    anyhow::anyhow!("subprocess stdout was not piped; check Command::stdout(Stdio::piped())")
+})?;
+let stderr = child.stderr.take().ok_or_else(|| {
+    anyhow::anyhow!("subprocess stderr was not piped; check Command::stderr(Stdio::piped())")
+})?;
 ```
 
-Production code in the slash-command dispatch path. Any refactor of the `Command` construction
-that omits `Stdio::piped()` crashes the server mid-prompt. Fix: return `Err(anyhow!(...))` on
-`None`.
+The enclosing functions return `Result<...>` or `anyhow::Result<...>`, so `?` works.
 
-**A4. Shell-command stdout not piped** (`bridge_events.rs:5241`)
+### Fix A5: At-mention char boundary
 
-Identical pattern to A3 in a second shell-command dispatch path. Same fix.
-
-**A5. At-mention char boundary** (`bridge_events.rs:5753`)
+In `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs` at line 5945:
 
 ```rust
+// Before:
 let ch = text[end..].chars().next().expect("valid char boundary");
+
+// After:
+let Some(ch) = text[end..].chars().next() else { break; };
 ```
 
-Parsing user-provided prompt text. The loop invariant makes this theoretically safe, but
-user-input parsers must never panic. Fix: `unwrap_or(' ')` or `let Some(ch) = ... else { break; }`.
+### Fix A6: Unique tool name exhaustion
 
-**A6. Unique tool name exhaustion** (`bridge_events.rs:3694`)
+In `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs` at line 3762:
 
 ```rust
+// Before:
 unreachable!("suffix search should always find a unique tool name")
+
+// After:
+return Err(BridgeEventsError::Pipeline(anyhow::anyhow!(
+    "could not find unique tool name for '{base}' after {MAX_SUFFIX} suffixes"
+)));
 ```
 
-A malicious or buggy MCP server registering 1000+ identically-named tools hits this. Fix:
-return an `Err(...)` instead of `unreachable!`.
+The enclosing function (`make_unique_tool_name` or similar) must also be updated to return `Result<String, BridgeEventsError>`. Update all 1–2 call sites to handle the `Result`.
 
-**A7. Unhandled `CognitiveEvent` variant** (`bridge_events.rs:5369`)
+### Fix A7: Unhandled CognitiveEvent variant
+
+In `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs` at lines 5435–5440:
 
 ```rust
-CognitiveEvent::Complete { .. } | CognitiveEvent::Failure { .. } | ... => {
+// Before:
+CognitiveEvent::Complete { .. }
+| CognitiveEvent::Failure { .. }
+| CognitiveEvent::MaxTokens
+| CognitiveEvent::PermissionRequest { .. } => {
     unreachable!("terminal/async cognitive events are handled before update mapping")
 }
+
+// After:
+CognitiveEvent::Complete { .. }
+| CognitiveEvent::Failure { .. }
+| CognitiveEvent::MaxTokens
+| CognitiveEvent::PermissionRequest { .. } => {
+    warn!("unexpected terminal/async cognitive event reached update mapping; skipping");
+    return None;  // Caller must handle Option<SessionUpdate>
+}
 ```
 
-If a new `CognitiveEvent` variant is added without updating the stream handler, this panics
-at runtime. Fix: replace with `warn!` + return a no-op `SessionUpdate` (empty `AgentMessageChunk`),
-or return `Option<SessionUpdate>` and skip sending.
+Update the enclosing function signature from `-> SessionUpdate` to `-> Option<SessionUpdate>`. Update the call site to skip `None` returns.
 
-**Estimated effort for A1–A7**: ~1 hour total. All are 3–10 minute mechanical substitutions.
+### Fix B1: Reviewer failure auto-approves
 
----
-
-### Section B: P1 — Silent Failures (Data Loss / Incorrect Behavior)
-
-These do not crash the process but silently discard data, produce wrong results, or hide errors
-from the user and the system. They should be fixed in the same batch as the P0 items.
-
-**B1. Reviewer failure treated as approved** (`runner.rs:1839`)
+In `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/runner.rs` lines 1840–1845:
 
 ```rust
+// Before:
 Err(e) => {
     warn!(error = %e, "reviewer failed, treating as approved");
-    run.pipeline.step(PipelineEvent::ReviewApproved { ... })
+    run.pipeline.step(PipelineEvent::ReviewApproved {
+        summary: "Review skipped (agent error)".into(),
+    })
+}
+
+// After:
+Err(e) => {
+    warn!(error = %e, "reviewer agent failed; treating as revision-required");
+    run.pipeline.step(PipelineEvent::ReviewRevise {
+        findings: vec![format!(
+            "Reviewer agent failed and could not complete the review: {e}. \
+             Manual review required before merging."
+        )],
+    })
 }
 ```
 
-A code-review agent crash silently auto-approves the submission. Fix: emit a visible
-`CognitiveEvent::TokenChunk` warning, and treat as `ReviewRevise` with a "could not complete"
-finding so the pipeline retries or the user is explicitly notified.
+### Fix B2–B3: Multi-role reviewer errors silently approve
 
-**B2. Architect reviewer failure not tracked** (`runner.rs:1909`) and
-**B3. Auditor reviewer failure not tracked** (`runner.rs:1936`)
-
-In `run_thorough_review`, both reviewer legs can fail while `all_approved` stays `true`
-(it only flips to `false` on non-approved output, not on errors). Fix: initialize
-`all_approved = false` when any reviewer errors, or accumulate a `reviewer_error` finding.
-
-**B4. Adaptive gate threshold save failure** (`runner.rs:2143`)
-
-Threshold learning data is silently lost on disk write failure. Gate thresholds regress to
-defaults over time. Fix: retry once, then emit a structured warn so the user knows learning
-data is not persisting.
-
-**B5. Session persistence failure** (`session.rs:1317–1330`)
-
-Three separate silent failure paths (directory creation, serialization, file write) when
-persisting session state. Session history, config, and cost tracking are lost. Fix: return
-`Result` from `persist_session` and let `handler.rs` surface the error.
-
-**B6. Workspace trust deserialization swallowed** (`session.rs:519–521`)
+In `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/runner.rs` at lines 1910–1912 and 1937–1939:
 
 ```rust
-std::fs::read_to_string(&path)
-    .ok()
-    .and_then(|data| serde_json::from_str(&data).ok())
-    .unwrap_or_default()
-```
+// Before (architect):
+Err(e) => {
+    warn!(error = %e, "architect reviewer failed, continuing");
+}
 
-If `permissions.json` is corrupt, the user re-approves every tool action with no explanation.
-Fix: log a `warn!` when the file exists but parse fails.
+// After:
+Err(e) => {
+    warn!(error = %e, "architect reviewer failed");
+    all_approved = false;
+    all_findings.push(format!("[architect] agent failed: {e}"));
+}
 
-**B7. Config option serialization failure** (`handler.rs:209`, `447`)
+// Before (auditor):
+Err(e) => {
+    warn!(error = %e, "auditor reviewer failed, continuing");
+}
 
-```rust
-serde_json::to_value(&options).unwrap_or_else(|_| serde_json::json!([]))
-```
-
-IDE config dropdowns silently disappear if serialization fails. Fix: log in the
-`unwrap_or_else` closure.
-
-**B8. Invalid pipeline state transition returns Done** (`pipeline.rs:371–378`)
-
-```rust
-(phase, event) => {
-    tracing::warn!(..., "unexpected pipeline event");
-    PipelineAction::Done
+// After:
+Err(e) => {
+    warn!(error = %e, "auditor reviewer failed");
+    all_approved = false;
+    all_findings.push(format!("[auditor] agent failed: {e}"));
 }
 ```
 
-A logic bug causes the pipeline to silently terminate with a false-success result. Fix: return
-`PipelineAction::Halt { reason }` so the pipeline reports a halted (not completed) state.
+### Fix B9: Silent event drops in acp_adapter.rs
 
-**B9. ACP event forwarding drops silently** (`acp_adapter.rs:164`)
+In `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/acp_adapter.rs` line 164:
 
 ```rust
+// Before:
 let _ = self.sender.try_send(cognitive_event);
-```
 
-Agent output, gate results, and completion signals are dropped when the channel is full,
-leaving the IDE showing stale/incomplete progress. Fix: log on drop, consider increasing
-buffer or using bounded backpressure.
-
-**B10–B12. Cost, efficiency, and experiment recording failures** (multiple locations
-in `bridge_events.rs`: lines 631–651, 1148–1154, 1752–1759, 2306–2314)
-
-All are correctly warn-logged but no counter is incremented. Over time, cost budgets and
-experiment statistics drift silently from reality. Fix: increment a metric counter at minimum.
-
-**Estimated effort for B1–B12**: ~3 hours total.
-
----
-
-### Section C: Race Conditions
-
-**C1. Session busy check-then-act TOCTOU** (`bridge_events.rs:1638–1643`)
-
-```rust
-if session.is_busy() { ... }             // LOAD
-session.ensure_provider_runtime(...);    // gap
-session.begin_prompt();                  // STORE
-```
-
-The check and set are not atomic. Currently mitigated by the sequential handler loop,
-but `session.cancel()` (which sets `busy = false`) can be called from the notification
-handler path concurrently. Fix: replace with an atomic `compare_exchange`:
-
-```rust
-pub fn try_begin_prompt(&mut self) -> bool {
-    let was_idle = self.busy.compare_exchange(
-        false, true, Ordering::AcqRel, Ordering::Acquire,
-    ).is_ok();
-    if was_idle { self.cancel_token = CancelToken::new(); }
-    was_idle
+// After:
+if self.sender.try_send(cognitive_event).is_err() {
+    warn!("acp_adapter: cognitive event channel full; event dropped");
 }
 ```
 
-See `tmp/archive/08-15-26/acp-todos/07-CONCURRENCY-ISSUES.md` issue #3 for full diff.
-
-**C2. CancelToken replacement race** (`session.rs:647–655`)
-
-If `cancel()` fires between `begin_prompt()` creating the new token and the cognitive
-task capturing it, the new prompt is immediately cancelled or the old cancellation is
-lost. Fix: monotonic generation counter — `cancel()` only fires if the generation
-matches the in-flight prompt's generation.
-
-See `07-CONCURRENCY-ISSUES.md` issue #4 for the full interleaving analysis.
-
-**C3. Cascade router read/write race** (`bridge_events.rs:1031` vs `1128–1156`)
-
-The read path (`cascade_select_model`) calls `CascadeRouter::load_or_new()` without
-holding `CASCADE_ROUTER_IO_LOCK`. A concurrent writer in `record_cascade_observation`
-may be mid-`save()`, yielding a truncated JSON read and a silently-reset router. Fix:
-use atomic file writes (`write-to-temp + rename`) in `CascadeRouter::save()` so readers
-always see a complete file, OR guard the read under the same lock as `RwLock` read guard.
-
----
-
-### Section D: Concurrency Bottlenecks (Async Safety)
-
-**D1. `std::sync::Mutex` held during file I/O on tokio thread** (`bridge_events.rs:782–787`)
-
-`assign_acp_experiment()` acquires `EXPERIMENT_STORE_IO_LOCK` (a `std::sync::Mutex`) and
-then reads a JSON file from disk — while running on a tokio worker thread. This blocks the
-worker thread and violates tokio's cooperative scheduling contract. Fix: wrap in
-`tokio::task::spawn_blocking()` (consistent with `record_cascade_observation`).
-
-**D2. Global `Mutex<()>` serializes all cascade router I/O** (`bridge_events.rs:152`)
-
-`CASCADE_ROUTER_IO_LOCK` is a process-wide `std::sync::Mutex` that serializes every cascade
-router disk write across all concurrent ACP sessions. Fix: move to a dedicated actor (channel
-+ `spawn` task) that owns the file, or switch to `tokio::sync::RwLock<()>` with the read
-path also guarded.
-
-**D3. Cognitive event channel capacity causes backpressure stalls** (`bridge_events.rs:1864`)
+Also increase the channel buffer capacity in `bridge_events.rs` at line 1910 from 64 to 256:
 
 ```rust
+// Before:
 let (event_sender, event_receiver) = mpsc::channel(64);
+
+// After:
+let (event_sender, event_receiver) = mpsc::channel(256);
 ```
 
-Capacity of 64 events. If the editor reads stdout slowly, the cognitive task blocks on
-`event_sender.send()`, which can trigger provider-side timeouts. Meanwhile
-`AcpWorkflowEventConsumer::publish()` uses `try_send` which silently drops events on full
-buffer. Fix: increase channel capacity to 256+, add `warn!` on drop in `publish()`, and
-consider unbounded channel for terminal events (Complete, Failure).
+### Fix C1: TOCTOU busy check
 
-**D4. Permission reply channel spin-polls a `std::sync::Mutex`** (`bridge_events.rs:222–269`)
+In `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/session.rs`, replace the separate `is_busy()` + `begin_prompt()` pattern with an atomic `try_begin_prompt()`:
 
-`receiver_is_closed()` acquires `std::sync::Mutex` from an async context every 25ms.
-Fix: replace with `tokio::sync::watch` channel so the async poller can `.changed().await`
-without the sleep-poll.
-
-**D5. `workflow_cost_sink` uses `std::sync::Mutex` across spawn boundary** (`bridge_events.rs:1961`)
-
-Written from a `tokio::spawn` task and read in the parent context. Fix: replace with
-`tokio::sync::oneshot` — the spawned task sends the cost once, the parent `.await`s it.
-
----
-
-### Section E: Upstream Compile Blockers (must fix before clippy runs on roko-acp)
-
-Clippy cannot currently run against `roko-acp` because two errors in `roko-agent` block
-the entire dependency graph:
-
-```
-error[E0425]: cannot find type `Command` in this scope
- --> crates/roko-agent/src/harness/child_process_runner.rs:35:35
-     pub fn apply(&self, cmd: &mut Command) {
-
-error[E0015]: cannot call non-const operator in constant functions
- --> crates/roko-agent/src/process/limits.rs:48:16
-     || self.network == ProviderNetworkPolicy::Deny
+```rust
+// Add to AcpSession impl:
+/// Atomically transition from idle to busy. Returns false if already busy.
+pub fn try_begin_prompt(&mut self) -> bool {
+    // The &mut self receiver ensures we hold exclusive access to the session
+    // from the sequential handler loop. The atomic is still needed because
+    // cancel() can be called from a concurrent notification handler path.
+    if self.busy.compare_exchange(
+        false, true, std::sync::atomic::Ordering::AcqRel,
+        std::sync::atomic::Ordering::Acquire,
+    ).is_err() {
+        return false;
+    }
+    self.cancel_token = CancelToken::new();
+    true
+}
 ```
 
-Plus 3 unused-import warnings in `cursor_cli_agent.rs`, `exec.rs`, `openclaw/probe.rs`.
+In `bridge_events.rs` lines 1657–1662, replace:
 
-These must be fixed first. After fixing, run:
+```rust
+// Before:
+if session.is_busy() {
+    return Err(BridgeEventsError::SessionBusy(session.session_id.clone()));
+}
+session.ensure_provider_runtime(workdir, roko_config);
+session.begin_prompt();
 
-```bash
-cargo clippy -p roko-acp --no-deps -- -D warnings
+// After:
+session.ensure_provider_runtime(workdir, roko_config);
+if !session.try_begin_prompt() {
+    return Err(BridgeEventsError::SessionBusy(session.session_id.clone()));
+}
 ```
 
----
+### Fix D1: Blocking I/O on tokio thread in assign_acp_experiment
+
+In `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs`, `assign_acp_experiment` at line 798 acquires `EXPERIMENT_STORE_IO_LOCK` and reads disk while on a tokio thread. Wrap the entire blocking call in `spawn_blocking`:
+
+```rust
+// In the caller (handle_session_prompt_inner, line ~1710):
+// Before:
+let experiment_assignment = if is_slash_command {
+    None
+} else {
+    assign_acp_experiment(&experiment_path, &session.config_state.agent_mode)
+};
+
+// After:
+let experiment_assignment = if is_slash_command {
+    None
+} else {
+    let path = experiment_path.clone();
+    let mode = session.config_state.agent_mode.clone();
+    tokio::task::spawn_blocking(move || assign_acp_experiment(&path, &mode))
+        .await
+        .unwrap_or(None)
+};
+```
 
 ## Acceptance Criteria
 
-- [ ] All 7 P0 `.expect()` / `unreachable!()` calls in production paths replaced with error returns; no production code panics on malformed input
-- [ ] `run_thorough_review` does not auto-approve when any reviewer errors; a visible finding is emitted
-- [ ] `try_begin_prompt()` uses `compare_exchange` — no TOCTOU window between busy check and set
-- [ ] `CancelToken` replacement is generation-gated — stale `cancel()` calls cannot affect a new prompt
-- [ ] `CascadeRouter::save()` uses atomic write (temp + rename) — readers never see a partial file
-- [ ] `assign_acp_experiment()` runs inside `spawn_blocking` — no blocking I/O on tokio worker threads
-- [ ] `EXPERIMENT_STORE_IO_LOCK` and `CASCADE_ROUTER_IO_LOCK` do not serialize reads and writes together; read path is guarded or file writes are atomic
-- [ ] Cognitive event channel capacity raised; `publish()` logs on drop instead of silently discarding
-- [ ] Upstream `roko-agent` compile errors resolved; `cargo clippy -p roko-acp --no-deps -- -D warnings` passes clean
-- [ ] All existing 180 ACP tests continue to pass after changes
-- [ ] `cargo test -p roko-acp` passes; no new test regressions
+1. All 7 `.expect()` / `unreachable!()` calls in production paths of `bridge_events.rs` are replaced with `Result` returns or `Option`-safe patterns. Verified by: `grep -n '\.expect\|unreachable!' crates/roko-acp/src/bridge_events.rs | grep -v '#\[cfg(test)\]\|test\|//.*safe'` returns zero production hits.
 
-## Prerequisites
+2. `run_multi_role_review` does not auto-approve when any reviewer errors. Verified by: a unit test in `runner.rs` where both reviewer legs return `Err(...)` and the function produces `PipelineEvent::ReviewRevise` with non-empty findings.
 
-- Rust 1.91+ (alloy dependency floor; the 2026-08-16 release used 1.96.1)
-- `roko-agent` compile errors must be fixed before running clippy on `roko-acp`
-- Read `tmp/archive/08-15-26/acp-todos/07-CONCURRENCY-ISSUES.md` before touching `session.rs:647–666` — the atomics ordering analysis there documents why the current Acquire/Release pairing on `busy` does not establish happens-before for `cancel_token`
+3. `try_begin_prompt()` uses `compare_exchange` — the atomic check-and-set is in a single operation. Verified by code review of `session.rs`.
 
-## Not in Scope
+4. The cognitive event channel capacity is 256 (not 64). `acp_adapter.rs:164` logs on drop instead of silently discarding.
 
-- The `bridge_events.rs` module split (covered in backlog/18)
-- Spec version bump to v0.13.6 (covered in backlog/18)
-- Integration gaps (TUI visibility, roko-serve routes, force_backend learning) — covered in backlog/18
-- Editor-specific config generation helpers (`roko acp --emit-config jetbrains`) — covered in backlog/18
-- P3 / no-fix-needed findings from `01-PANIC-AND-ERROR-FIXES.md`: permission flow warn-and-Reject patterns (issues 27, 29), MCP server discovery warn patterns (issue 26), slash command stdout/stderr read errors (issue 33), file context resolution warnings (issue 34), and event-stream-closed-without-completion (issue 28) are all correct defensive behavior and require no changes
+5. `assign_acp_experiment` runs inside `spawn_blocking`. Verified by: no `std::sync::Mutex` guard is held across a `.await` point in any async function in `bridge_events.rs`.
+
+6. All 180 existing ACP tests continue to pass: `cargo test -p roko-acp`.
+
+7. `cargo clippy -p roko-acp --no-deps -- -D warnings` passes clean.
+
+## Verification Checklist
+
+- [ ] `cargo test -p roko-acp` — 180 tests pass, zero failures
+- [ ] `cargo clippy -p roko-acp --no-deps -- -D warnings` — clean
+- [ ] `cargo build -p roko-acp` — zero errors
+- [ ] `grep -n '\.expect\|unreachable!' crates/roko-acp/src/bridge_events.rs | grep -v test | grep -v '//'` — no production panics
+- [ ] Simulate a reviewer failure in a unit test and verify `ReviewRevise` (not `ReviewApproved`) is emitted
+- [ ] Check `bridge_events.rs` for any `std::sync::Mutex` guard held across `.await` — should be zero after D1 fix
+- [ ] Run `roko acp` with a test editor session and verify no crashes on malformed input
+
+## Files to Modify
+
+| File | Change |
+|---|---|
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs` | Fix A1–A7 (expects/unreachables), Fix B9 (event drop), Fix C1 (TOCTOU), Fix D1 (blocking I/O) |
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/runner.rs` | Fix B1 (reviewer auto-approve), Fix B2–B3 (multi-role reviewer silent approve) |
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/session.rs` | Add `try_begin_prompt()` with compare_exchange |
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/acp_adapter.rs` | Log on try_send failure (Fix B9) |

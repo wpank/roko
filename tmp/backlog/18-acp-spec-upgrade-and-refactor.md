@@ -1,439 +1,479 @@
-# ACP Spec Upgrade and Refactor
+# 18 — ACP Spec Upgrade and Refactor
 
-**Priority**: P1 — maintainability, spec compliance, test coverage, integration gaps
+**Priority**: P1 — maintainability, spec compliance, integration gaps
 **Size**: XL (2–3 weeks)
-**Crate**: `crates/roko-acp/` (19,915 LOC, 15 modules)
-
-## Prerequisite
-
-Complete `tmp/backlog/17-acp-stability-hardening.md` (P0 panic fixes and concurrency
-hardening) before starting this work. The upstream `roko-agent` compile errors must be
-resolved so `cargo clippy -p roko-acp` can run clean.
-
-## Source Analysis
-
-This document consolidates findings from the 2026-08-15 audit:
-
-- `tmp/archive/08-15-26/acp-todos/03-SPEC-VERSION-BUMP.md` — v0.12.2→v0.13.6 (7 releases, ~285 LOC change)
-- `tmp/archive/08-15-26/acp-todos/05-BRIDGE-EVENTS-REFACTOR.md` — 8,430-line god file → 11 modules, detailed phase plan
-- `tmp/archive/08-15-26/acp-todos/04-TEST-COVERAGE-GAPS.md` — per-module coverage estimates, missing integration tests
-- `tmp/archive/08-15-26/acp-todos/09-INTEGRATION-GAPS.md` — 4 missing/partial integrations (~30–40h total)
-- `tmp/archive/08-15-26/acp-todos/10-EDITOR-COMPATIBILITY.md` — Zed/Cursor/JetBrains test gaps
+**Crates**: `crates/roko-acp/`
+**Depends on**: `tmp/backlog/17-acp-stability-hardening.md` (complete first)
 
 ---
 
-## Part 1: Spec Version Bump (v0.12.2 → v0.13.6)
+## Background
 
-### Current state
+Roko includes a crate called `roko-acp` that implements the Agent Client Protocol (ACP),
+a JSON-RPC protocol used by code editors (Zed, Cursor, JetBrains) to interact with AI
+agents. When Zed wants to send you a code suggestion from roko, it serializes the request
+as ACP JSON-RPC and pipes it to the `roko acp` subprocess.
 
+The ACP spec is maintained externally and releases new versions that add protocol features.
+The roko implementation is currently at spec version `0.12.2` (constant in
+`crates/roko-acp/src/types.rs:10`). The stable spec is now at version `0.13.6` (released
+2026-07-21). The gap means roko does not advertise capabilities that editors expect, which
+causes Zed and Cursor to disable features like session deletion, additional directories,
+and message correlation.
+
+Beyond the spec gap, the `bridge_events.rs` source file is 8,773 lines (the whole crate is
+19,915 lines). It contains 191 definitions spanning 8 different concerns — model routing,
+experiment assignment, episode logging, MCP tool setup, slash command execution, context
+resolution, and streaming. Any change to any of these concerns means editing an 8,773-line
+file and risking breakage in the other 7 concerns. This item restructures that file into
+independently testable modules.
+
+This item also covers specific integration gaps: the cascade router cannot learn from
+manual model overrides, ACP sessions are invisible in the `roko dashboard` TUI, and no
+HTTP API routes expose ACP session data.
+
+**Complete item 17 (ACP Stability Hardening) before starting this work.** Item 17 fixes
+panics and concurrency bugs that would interfere with the refactor.
+
+## Current State
+
+1. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/types.rs` line 10** — `pub const ACP_SPEC_VERSION: &str = "0.12.2"`. No `SessionCapabilities`, `AuthCapabilities`, `SessionDeleteParams`, or `message_id` fields exist anywhere in `types.rs`. The `AgentCapabilities` struct (line 208) has a flat `load_session: bool` field (line 211), not the structured `session_capabilities: SessionCapabilities` that v0.13.5 requires.
+
+2. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/handler.rs`** — Handles `session/new`, `session/list`, `session/load`, `session/prompt`, `session/close`, `session/resume`, `session/cancel`, `session/set_mode`, and `session/config/update`. No `session/delete` or `logout` match arms exist (the `_` catch-all at line 468 would return "method not supported").
+
+3. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/session.rs`** — Has `gc_old_sessions` (line 1400) but no `delete_session` method. Sessions live in a `HashMap` inside `SessionManager`; there is no permanent deletion separate from `close_session`.
+
+4. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs`** — 8,773 lines. Houses `handle_session_prompt_inner` (starts around line 1651, approximately 737 lines), `run_slash_command` (starts around line 4298, approximately 673 lines), model routing, experiment assignment, episode logging, MCP tool setup, context resolution, and streaming. All test code is inline in this file too.
+
+5. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/config_watch.rs`** — 167 lines, zero test coverage. Used in the ACP server main loop to detect configuration file changes.
+
+6. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/runner.rs`** — 2,496 lines. The main ACP workflow entry points `run_with_workflow_engine()` and `run_workflow_pipeline()` have approximately 15 inline tests but the public entry points themselves are not integration-tested.
+
+7. **`/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/acp_adapter.rs`** — 250 lines. The `publish()` method at line 164 uses `try_send` and silently drops events. Zero test coverage for `RuntimeEvent` variant mapping.
+
+## Implementation Plan
+
+This item has 5 independent parts. Each can be started and merged separately. The recommended
+order is Part 1 (spec bump) → Part 2 (bridge_events refactor) → Part 3 (test coverage) →
+Part 4 (integration gaps). Part 5 (editor compatibility) can be done in parallel with any other.
+
+---
+
+### Part 1: Spec Version Bump (v0.12.2 to v0.13.6) (~4 hours)
+
+All changes are additive. The protocol wire version (1) does not change.
+
+**Step 1.1** — Bump the version constant in `types.rs` line 10:
 ```rust
-// crates/roko-acp/src/types.rs:9
-pub const ACP_SPEC_VERSION: &str = "0.12.2";
-pub const ACP_PROTOCOL_VERSION: u32 = 1;  // unchanged across all 0.12.x/0.13.x
+pub const ACP_SPEC_VERSION: &str = "0.13.6";
 ```
 
-The crate is 7 releases behind the stable spec (last stable: `schema-v1.20.0`, 2026-07-21).
-All changes are additive. Protocol version stays at `1`. Wire format is backward-compatible.
-
-### What is already implemented (no-ops)
-
-- `session/close` — implemented in `handler.rs`
-- `session/resume` — implemented via `session/load` fallback in `handler.rs`
-- `UsageUpdate` — our existing `UsageUpdate { used, size, cost }` matches the v0.13.6 stabilized shape
-
-### Changes required by release
-
-**v0.13.0** — MCP-over-ACP types (`mcp/connect`, `mcp/message`, `mcp/disconnect`): unstable,
-skip unless we want to act as an MCP gateway. Bump version constant only.
-
-**v0.13.1** — `session/delete` (unstable at this point, stable in v0.13.6):
+**Step 1.2** — Add new types to `types.rs` (after the existing `AgentCapabilities` struct):
 
 ```rust
-// types.rs: new struct
+// v0.13.1: session deletion
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionDeleteParams {
     pub session_id: String,
 }
 
-// session.rs: new method
-pub fn delete_session(&mut self, session_id: &str) -> bool { ... }
-
-// handler.rs: new match arm
-"session/delete" => {
-    let params: SessionDeleteParams = ...;
-    sessions.delete_session(&params.session_id);
-    Ok(serde_json::json!({}))
+// v0.13.3: auth/logout capabilities
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuthCapabilities {
+    pub logout: Option<LogoutCapabilities>,
 }
-```
 
-**v0.13.3** — Stabilize `logout` + `auth` capabilities:
-
-```rust
-// types.rs additions (~15 lines)
-pub struct AuthCapabilities { pub logout: Option<LogoutCapabilities> }
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LogoutCapabilities {}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LogoutParams {}
-// AgentCapabilities gains: pub auth: Option<AgentAuthCapabilities>
 
-// handler.rs: populate auth capability in InitializeResult, add logout match arm
-// (roko has no auth state to clear; the handler just returns {})
-```
-
-**v0.13.5** — Stabilize `additionalDirectories` (largest structural change):
-
-```rust
-// types.rs additions (~60 lines)
+// v0.13.5: structured session capabilities
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionCapabilities {
-    pub close: Option<SessionCloseCapabilities>,
-    pub resume: Option<SessionResumeCapabilities>,
-    pub delete: Option<SessionDeleteCapabilities>,
-    pub list: Option<SessionListCapabilities>,
-    pub additional_directories: Option<SessionAdditionalDirectoriesCapabilities>,
+    pub close: Option<serde_json::Value>,
+    pub resume: Option<serde_json::Value>,
+    pub delete: Option<serde_json::Value>,
+    pub list: Option<serde_json::Value>,
+    pub additional_directories: Option<serde_json::Value>,
 }
-// AgentCapabilities gains: pub session_capabilities: Option<SessionCapabilities>
-// SessionNewParams gains: pub additional_directories: Option<Vec<String>>
-// SessionLoadParams gains: pub additional_directories: Option<Vec<String>>
-// SessionInfo gains: pub additional_directories: Option<Vec<String>>
-// New: SessionResumeParams (distinct type from SessionLoadParams)
 ```
 
-This is a **breaking change to our serialized `InitializeResult` shape**. The flat
-`load_session: bool` field becomes structured `session_capabilities: SessionCapabilities`.
-Zed and Cursor both parse via the official schema types and handle this gracefully, but
-custom integrations may break. Test against current Zed stable before shipping.
-
-**v0.13.6** — Stabilize message IDs + finalize `session/delete`:
+**Step 1.3** — Update `AgentCapabilities` in `types.rs` to add auth and structured session capabilities:
 
 ```rust
-// types.rs: add optional field to three streaming types
-pub struct AgentMessageChunk { pub message_id: Option<String>, ... }
-pub struct AgentThoughtChunk { pub message_id: Option<String>, ... }
-// ToolCall update variant also gains message_id
+// Before:
+pub struct AgentCapabilities {
+    pub load_session: bool,
+    // ...
+}
 
-// session.rs or bridge_events.rs: monotonic counter per session
-// bridge_events.rs: pass message_id through streaming chunk emissions (~20 lines)
+// After (keep load_session for backward compat, add new fields):
+pub struct AgentCapabilities {
+    pub load_session: bool,   // kept for v0.12.x clients
+    pub session_capabilities: Option<SessionCapabilities>,
+    pub auth: Option<AuthCapabilities>,
+    // ...existing fields...
+}
 ```
 
-### Official crate alternative
+**Step 1.4** — Update `InitializeResult` construction in `handler.rs` to populate the new fields:
 
-`agent-client-protocol-schema` v1.6.0 (2026-07-21, Apache-2.0) is available on crates.io.
-The audit recommends **keeping hand-maintained `types.rs` for now** — the 285-line manual
-bump is faster (~4h) than a full crate migration (~8–12h including adapter code for
-roko-specific extension types like `SessionBudgetStatus`, `McpStatusUpdate`, `BudgetStatusUpdate`,
-`ConfigSources`, `ConfigWarnings`, `SessionInfoUpdate`). Revisit this when ACP v2 stabilizes
-(expected late 2026); that is the natural migration point.
+```rust
+let capabilities = AgentCapabilities {
+    load_session: true,
+    session_capabilities: Some(SessionCapabilities {
+        close: Some(serde_json::json!({})),
+        resume: Some(serde_json::json!({})),
+        delete: Some(serde_json::json!({})),
+        list: Some(serde_json::json!({})),
+        additional_directories: Some(serde_json::json!({})),
+    }),
+    auth: Some(AuthCapabilities {
+        logout: Some(LogoutCapabilities {}),
+    }),
+    // ...existing fields...
+};
+```
 
-### All code changes for the spec bump
+**Step 1.5** — Add `session/delete` handler to `handler.rs` before the `_` catch-all:
 
-| File | Change | Lines |
+```rust
+"session/delete" => {
+    let params: SessionDeleteParams = match parse_params(params, &method) {
+        Ok(params) => params,
+        Err(error) => return send_error_response(transport, id, error).await,
+    };
+    sessions.delete_session(&params.session_id);
+    send_success(transport, id, serde_json::json!({})).await
+}
+"logout" => {
+    // roko has no persistent auth state to clear; acknowledge and return empty.
+    send_success(transport, id, serde_json::json!({})).await
+}
+```
+
+**Step 1.6** — Add `delete_session` to `SessionManager` in `session.rs`:
+
+```rust
+/// Permanently remove a session from active memory and persisted storage.
+pub fn delete_session(&mut self, session_id: &str) {
+    self.sessions.remove(session_id);
+    // Also remove from disk if persisted.
+    let session_path = self.sessions_dir.join(format!("{session_id}.json"));
+    let _ = std::fs::remove_file(session_path);
+}
+```
+
+**Step 1.7** — Add `message_id` fields to streaming types in `types.rs`. The fields are `Option<String>` so existing code does not need changes:
+
+```rust
+pub struct AgentMessageChunk {
+    pub message_id: Option<String>,
+    pub content: Vec<ContentBlock>,
+    // ...existing fields...
+}
+
+pub struct AgentThoughtChunk {
+    pub message_id: Option<String>,
+    pub content: String,
+    // ...existing fields...
+}
+```
+
+The `message_id` values are not yet populated (they will remain `None`). A follow-up can add a per-session monotonic counter to bridge_events.
+
+**Step 1.8** — Update the conformance test in `crates/roko-acp/tests/` (or inline in `handler.rs`) to assert that `InitializeResult` contains `session_capabilities` and that `session/delete` returns `{}`.
+
+---
+
+### Part 2: `bridge_events.rs` Decomposition
+
+The goal is to reduce `bridge_events.rs` from 8,773 lines to approximately 800 lines by
+extracting 10 cohesive modules. Do this incrementally — one module per commit, with
+`cargo test -p roko-acp` passing after every step.
+
+**Phase 1 — Extract shared types first** (lowest risk, pure moves)
+
+Move these types from `bridge_events.rs` to `types.rs`. Add `pub use` re-exports in
+`bridge_events.rs` so no external callers need updating:
+
+| Type | Approx location in bridge_events.rs | Destination |
 |---|---|---|
-| `types.rs` | Bump constant, new SessionCapabilities hierarchy, auth types, message_id fields | ~100 |
-| `handler.rs` | New match arms (delete, logout), populate new capabilities in InitializeResult | ~50 |
-| `session.rs` | `delete_session()`, store `additional_directories`, message ID counter | ~35 |
-| `bridge_events.rs` | Thread `message_id` through streaming pipeline | ~25 |
-| `tests/protocol_conformance.rs` | Update initialize assertions, add delete/logout/messageId tests | ~75 |
+| `CognitiveEvent` | Line ~159 | `types.rs` |
+| `PermissionRequestPayload` | Line ~206 | `types.rs` |
+| `PermissionReplyChannel` | Line ~222 | `types.rs` |
+| `StreamResult` | Line ~275 | `types.rs` |
+| `BridgeEventsError` | Line ~86 | `types.rs` (or new `errors.rs`) |
 
-**Total: ~285 lines, ~4 hours of focused work.**
+Procedure: copy the type definition to `types.rs`, add `pub use crate::types::CognitiveEvent;`
+to `bridge_events.rs`, run tests, delete original.
 
----
+**Phase 2 — Extract leaf modules** (no dependencies on each other)
 
-## Part 2: `bridge_events.rs` Decomposition
+Create three new files in `crates/roko-acp/src/`:
 
-### Problem
+- `experiments.rs` — extract `assign_acp_experiment`, `record_acp_experiment_outcome`, and the `AcpExperimentAssignment` struct (approx lines 774–910)
+- `context_resolution.rs` — extract `resolve_context_items`, `extract_prompt_text`, `read_file_context`, `resolve_local_file_contents` (approx lines 5456–5810)
+- `provenance.rs` — extract `build_provenance`, `render_provenance_card`, `ProvenanceChain`, `ProvenanceSource` (approx lines 3930–4296)
 
-`bridge_events.rs` is 8,430 of 19,915 total LOC in `roko-acp` (42.3%). It contains
-191 definitions spanning 8 distinct concerns. The two largest functions are
-`handle_session_prompt_inner` (737 lines, line 1651) and `run_slash_command` (673 lines,
-line 4298). The file is a navigation and review obstacle, and every change risks
-breaking unrelated code paths.
+For each: create the file, move the code, add `mod experiments;` to `lib.rs`, add
+`use crate::experiments::*;` imports to `bridge_events.rs`, run tests.
 
-### Proposed module structure
+**Phase 3 — Extract provider modules**
 
-After decomposition, `bridge_events.rs` shrinks from 8,430 to ~800 lines (the streaming,
-permission, and event-mapping glue). The 10 extracted modules average ~350 lines each.
+- `anthropic_provider.rs` — extract `run_anthropic_cognitive_task`, `ModelStreamForward`, `ModelStreamForwardState` (approx lines 2388–2930)
+- `openai_provider.rs` — extract `run_openai_compat_cognitive_task` (approx lines 2932–3445)
+- `mcp_tools.rs` — extract `setup_session_mcp_tools`, `SessionMcpRuntime` (approx lines 3448–3928)
 
-| Module | Est. LOC | Key public surface |
-|---|---|---|
-| `bridge_events.rs` (residual) | ~800 | `stream_events_to_editor`, `request_permission`, `handle_session_prompt` (re-export) |
-| `dispatch.rs` | ~930 | `handle_session_prompt`, `handle_session_prompt_inner` |
-| `model_routing.rs` | ~265 | `cascade_select_model`, `resolve_acp_dispatch_model` |
-| `experiments.rs` | ~140 | `assign_acp_experiment`, `record_acp_experiment_outcome` |
-| `episode_logging.rs` | ~370 | `append_acp_episode`, `calculate_cost_for_model_slug` |
-| `anthropic_provider.rs` | ~570 | `run_anthropic_cognitive_task` |
-| `openai_provider.rs` | ~540 | `run_openai_compat_cognitive_task` |
-| `mcp_tools.rs` | ~480 | `setup_session_mcp_tools` |
-| `provenance.rs` | ~370 | `build_provenance`, `render_provenance_card` |
-| `slash_commands.rs` | ~1,020 | `run_slash_command` |
-| `context_resolution.rs` | ~355 | `resolve_context_items`, `extract_prompt_text` |
-| `tests/` (distributed) | ~2,607 | moved to companion modules |
+**Phase 4 — Extract domain modules**
 
-### Types to relocate from `bridge_events.rs` before extraction
+- `episode_logging.rs` — extract `append_acp_episode`, `calculate_cost_for_model_slug`, usage helpers (approx lines 283–651)
+- `model_routing.rs` — extract `cascade_select_model`, `resolve_acp_dispatch_model`, `AcpCascadeSelection` (approx lines 912–1157)
+- `slash_commands.rs` — extract `run_slash_command` and the `SlashCommandStreamOutcome` type (approx lines 4298–5316)
 
-Moving these first makes each subsequent extraction independent:
+**Phase 5 — Extract dispatch orchestration** (most dependencies, extract last)
 
-| Type | Current location | Destination |
-|---|---|---|
-| `CognitiveEvent` | L159 | `types.rs` (used by every module) |
-| `PermissionRequestPayload` | L206 | `types.rs` (pure data) |
-| `PermissionReplyChannel` | L222 | `types.rs` (used by handler, builtin_tools, event_forward) |
-| `StreamResult` | L275 | `types.rs` (pure data) |
-| `BridgeEventsError` | L86 | `types.rs` or new `errors.rs` |
-| `AcpCascadeSelection` | L969 | `model_routing.rs` (only used there) |
-| `AcpExperimentAssignment` | L774 | `experiments.rs` (only used there) |
-| `ProvenanceChain` / `ProvenanceSource` | L3958/L3965 | `provenance.rs` |
-| `SlashCommandStreamOutcome` | L4971 | `slash_commands.rs` |
-| `ModelStreamForward` / `ModelStreamForwardState` | L2762/L2768 | `anthropic_provider.rs` |
-| `SessionMcpRuntime` | L3498 | `mcp_tools.rs` |
+- `dispatch.rs` — extract `handle_session_prompt`, `handle_session_prompt_inner` (the 737-line function starting at approx line 1651). This calls into all the modules above.
 
-### 8-phase migration plan
+**Phase 6 — Consolidate duplicate logic**
 
-Each phase ends with `cargo test -p roko-acp` to verify no regressions.
-Reference: `tmp/archive/08-15-26/acp-todos/05-BRIDGE-EVENTS-REFACTOR.md` for exact line ranges.
+After extraction, five patterns appear in two or more modules. Consolidate each:
 
-**Phase 1** — Extract types (lowest risk, no logic changes)
-Move `CognitiveEvent`, `PermissionRequestPayload`, `PermissionReplyChannel`, `StreamResult`,
-`BridgeEventsError` into `types.rs`. Add `pub use` re-exports in `bridge_events.rs` so
-external callers remain unaffected. Run tests.
+1. Workdir-sandboxed path canonicalization — appears in `context_resolution.rs` in two functions. Extract `sandboxed_path(path, workdir) -> Result<(PathBuf, PathBuf)>`.
 
-**Phase 2** — Extract leaf modules (no cross-module deps)
-1. `experiments.rs` — self-contained, no deps on other proposed modules (lines 774–910)
-2. `context_resolution.rs` — only deps on `ContentBlock` from types (lines 5456–5810)
-3. `provenance.rs` — only deps on types and external crates (lines 3930–4296)
-Run tests after each extraction.
+2. Interleaved stdout/stderr streaming — appears in `slash_commands.rs` in two functions. Extract a generic `interleave_process_output(stdout, stderr, cancel, on_line)` helper.
 
-**Phase 3** — Extract provider modules
-1. `anthropic_provider.rs` — deps: types, streaming helpers (lines 2388–2930, 5505–5531)
-2. `openai_provider.rs` — deps: types, streaming, mcp_tools (lines 2932–3445, 5478–5500)
-3. `mcp_tools.rs` — deps: types, CognitiveEvent (lines 3448–3928)
-Run tests after each.
+3. `UsageInfo` construction — replace the two `usage_info_from_*` functions with `From<TokenUsage>` and `From<roko_core::Usage>` impls.
 
-**Phase 4** — Extract domain modules
-1. `episode_logging.rs` — deps: types, model_routing (lines 283–651)
-2. `model_routing.rs` — deps: types (lines 912–1157)
-3. `slash_commands.rs` — deps: types, streaming (lines 4298–5316)
-Run tests after each.
+4. Image content part building — merge `build_anthropic_content_parts` and `build_openai_content_parts` into a single function parameterized on provider format.
 
-**Phase 5** — Extract dispatch orchestration (most deps, extract last)
-`dispatch.rs` — calls into all other modules. Contains `handle_session_prompt` and the
-737-line `handle_session_prompt_inner` (lines 1627–2387).
+5. Raw `event_sender.send()` calls (50+ occurrences) — route through the existing `send_cognitive_event()` helper consistently.
 
-**Phase 6** — Deduplicate logic (5 patterns identified)
-1. Workdir-sandboxed path canonicalization: `read_file_context()` and `resolve_local_file_contents()` duplicate the same canonicalize-workdir-check-strip_prefix sequence. Extract `sandboxed_path(path, workdir) -> Result<(PathBuf, PathBuf)>` into `context_resolution.rs`.
-2. Interleaved stdout/stderr streaming: `forward_slash_command_streams()` and `run_shell_command()` duplicate the same `BufReader` + `stdout_done`/`stderr_done` + `tokio::select!` pattern. Extract `interleave_process_output(stdout, stderr, cancel, on_line)` generic helper.
-3. `UsageInfo` construction: replace `usage_info_from_model_usage()` and `usage_info_from_tool_loop_usage()` with `From<TokenUsage>` and `From<roko_core::Usage>` impls on `UsageInfo`.
-4. Image content part building: merge `build_anthropic_content_parts()` and `build_openai_content_parts()` into a single parameterized function (provider kind discriminant or formatter closure).
-5. Raw `event_sender.send()` calls: 50+ occurrences use raw sends with `let _ =`; consistently route through the existing `send_cognitive_event()` helper.
+**Phase 7 — Split oversized functions**
 
-**Phase 7** — Break up oversized functions
-- `handle_session_prompt_inner` (737 lines): split into (a) `resolve_dispatch_config()` — model, cascade, experiment resolution; (b) `build_dispatch_context()` — system prompt, knowledge, provenance, context items; (c) `execute_and_record()` — provider dispatch + episode/efficiency recording.
-- `run_slash_command` (673 lines): split into `parse_slash_command()` → typed enum + per-command handlers `run_slash_plan_run()`, `run_slash_build_test_clippy()`, `run_slash_custom()`.
-- Extract `parse_progress_line()` from `forward_slash_command_streams` (~L5018–5104).
-- Extract `handle_request()` in `handler.rs` (206 lines) into per-method named functions.
+- `handle_session_prompt_inner` (737 lines): split into three named functions:
+  - `resolve_dispatch_config(...)` — model selection, cascade, experiment
+  - `build_dispatch_context(...)` — system prompt, knowledge, provenance, context items
+  - `execute_and_record(...)` — provider dispatch + episode/efficiency recording
 
-**Phase 8** — Relocate tests
-Move test functions to `#[cfg(test)] mod tests` blocks in their respective new modules.
-Keep the multi-concern `acp_conformance` test (190 lines) in `bridge_events.rs` or promote
-it to an integration test in `tests/`. Groupings are documented per-module in
-`tmp/archive/08-15-26/acp-todos/05-BRIDGE-EVENTS-REFACTOR.md` section "Test module".
+- `run_slash_command` (673 lines): split into `parse_slash_command()` returning a typed enum, plus per-command handlers `run_slash_plan_run()`, `run_slash_build_test_clippy()`, `run_slash_custom()`.
 
-### Clippy suppressions to eliminate during refactor
+After Phase 7, eliminate the 6 `#[allow(clippy::too_many_arguments)]` annotations in
+`bridge_events.rs` by grouping overlapping parameters into a `DispatchParams` struct.
 
-8 `#[allow(clippy::too_many_arguments)]` annotations exist, all in `bridge_events.rs` and
-`runner.rs`. Introducing a `DispatchParams` / `CognitiveTaskContext` struct eliminates the 6
-in `bridge_events.rs` by grouping the overlapping parameter sets shared across Anthropic and
-OpenAI dispatch paths.
+**Phase 8 — Move tests into their modules**
+
+Move each `#[cfg(test)]` block from `bridge_events.rs` into the module that owns the code
+being tested. Keep the multi-concern `acp_conformance` test in an integration test file
+under `tests/`.
 
 ---
 
-## Part 3: Test Coverage
+### Part 3: Test Coverage
 
-### Current coverage estimate
+Add the following tests, in priority order:
 
-| Module | LOC | Tests | Est. Coverage |
-|---|---|---|---|
-| `bridge_events.rs` | 8,430 | 58 inline + 5 external | ~45% |
-| `session.rs` | 2,839 | 34 inline + 2 external | ~55% |
-| `runner.rs` | 2,494 | 5 inline | ~15% — CRITICAL |
-| `types.rs` | 1,321 | 7 inline | ~40% |
-| `builtin_tools.rs` | 1,144 | 10 inline | ~50% |
-| `handler.rs` | 670 | 1 inline + 11 external | ~60% |
-| `event_forward.rs` | 586 | 19 inline | ~85% |
-| `pipeline.rs` | 538 | 10 inline | ~75% |
-| `config.rs` | 521 | 8 inline + 3 external | ~70% |
-| `knowledge.rs` | 412 | 3 inline | ~50% |
-| `transport.rs` | 362 | 4 inline | ~45% |
-| `acp_adapter.rs` | 250 | 3 inline | ~50% |
-| `config_watch.rs` | 167 | 0 | **0% — zero coverage** |
-| `workflow.rs` | 158 | 2 inline | ~40% |
-| **Total** | **19,915** | **164 + 16** | **~40%** |
+**P0: `config_watch.rs` — currently 0% coverage**
 
-### Priority targets
+Add to `crates/roko-acp/src/config_watch.rs`:
 
-**P0 — Must have (before next production Zed test)**
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
 
-1. `config_watch.rs` — zero coverage; used in every ACP server loop iteration. Minimum 7 tests:
-   - `config_watcher_changed_returns_false_when_no_events`
-   - `config_watcher_changed_returns_true_after_file_modification`
-   - `config_watcher_current_returns_none_when_cache_unavailable`
-   - `watched_paths_includes_explicit_global_config`
-   - `watched_paths_includes_roko_config_env_var`
-   - `watched_paths_deduplicates_overlapping_paths`
-   - `watch_config_path_deduplicates_same_target`
+    #[test]
+    fn config_watcher_changed_returns_false_when_no_events() {
+        let tmp = TempDir::new().unwrap();
+        let mut watcher = ConfigWatcher::new(&[tmp.path().to_path_buf()]).unwrap();
+        assert!(!watcher.changed());
+    }
 
-2. `runner.rs` public functions — `run_with_workflow_engine()` and `run_workflow_pipeline()` are
-   the main ACP workflow entry points with zero test coverage despite ~500 LOC each. At minimum:
-   - Workflow creation failure (invalid session config)
-   - Gate failure with autofix retry exhaustion
-   - Cost budget exhaustion mid-pipeline
-   - Cancel token propagation during active agent dispatch
+    #[test]
+    fn config_watcher_changed_returns_true_after_file_modification() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("roko.toml");
+        std::fs::write(&path, "").unwrap();
+        let mut watcher = ConfigWatcher::new(&[path.clone()]).unwrap();
+        std::fs::write(&path, "modified = true").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(watcher.changed());
+    }
 
-**P1 — Should have**
+    // ... (5 more tests per the list in the Background section)
+}
+```
 
-3. `handler.rs` untested request methods: `session/resume`, `session/set_mode`, `session/config/update`, `session/close`
-4. `session.rs` untested methods: `pin_file`, `gc_old_sessions`, `close_session`, `revalidate_config_state`, `replace_roko_config`, `revalidate_all_sessions`
-5. `acp_adapter.rs` — 11 `RuntimeEvent` variants currently produce no test coverage: `AgentSpawned`, `AgentCompleted`, `AgentFailed`, `GateStarted`, `GateFailed`, `InferenceStarted`, `InferenceCompleted`, `InferenceFailed`, `PhaseTransition`, `WorkflowCompleted(Success)`, `WorkflowCompleted(Halted)`
-6. `workflow.rs` lifecycle: `is_done()`, `mark_complete()`, `elapsed()` all untested
+**P0: `runner.rs` — public entry point coverage**
 
-**P2 — Nice to have**
+Add integration tests for `run_with_workflow_engine()` and `run_workflow_pipeline()`:
+- Workflow creation failure (invalid session config)
+- Gate failure with autofix retry exhaustion
+- Cost budget exhaustion mid-pipeline
+- Cancel token propagation during active agent dispatch
 
-7. `types.rs` serialization round-trips: `ContentBlock::Image`, `ContentBlock::Diff`, `ContentBlock::Resource`, all `SessionUpdate` variants, `ToolCallKind`, `ToolCallStatus`, `StopReason`
-8. `transport.rs`: `send_response`, `send_error`, `send_request` round-trip with `handle_incoming_response`
-9. `builtin_tools.rs`: actual tool execution paths (read_file, write_file, edit_file, list_files, grep, web_search)
-10. `bridge_events.rs` internal helpers: pricing functions, experiment assignment, MCP config write
+**P1: `acp_adapter.rs` — RuntimeEvent variant coverage**
 
-### Missing integration tests
-
-Full list in `tmp/archive/08-15-26/acp-todos/04-TEST-COVERAGE-GAPS.md` section "Missing Integration Tests". Highest-priority gaps:
-
-1. **End-to-end prompt flow with model dispatch**: no test exercises `session/prompt` → model selection → provider dispatch → streaming → episode logging → cascade router update. The telemetry tests use `MockResponse` which bypasses actual dispatch machinery.
-2. **Config hot-reload during active session**: no test verifies `ConfigWatcher::changed()` triggers `replace_roko_config()` and `revalidate_all_sessions()` during an active prompt loop.
-3. **Pipeline execution through all phases**: no integration test walks Start → Strategist → Implementer → Gates → Reviewer → Commit.
-4. **Permission flow end-to-end**: no test exercises the full path from tool execution triggering a permission request through to the editor responding and execution continuing or aborting.
-5. **Slash command execution through handler**: no integration test sends a slash command prompt through `session/prompt` and verifies streaming output.
+Add a test that sends each of the 11 untested `RuntimeEvent` variants through
+`AcpWorkflowEventConsumer::publish()` and verifies the expected `CognitiveEvent` is
+produced (or silently skipped for unsupported variants).
 
 ---
 
-## Part 4: Integration Gaps
+### Part 4: Integration Gaps
 
-The following four gaps are currently open in `tmp/archive/08-15-26/acp-todos/09-INTEGRATION-GAPS.md`.
-They are P1 (no integration gap blocks self-hosting) but affect observability and routing quality.
+**Gap 2: force_backend override learning (2 hours, standalone)**
 
-**Gap 1: ACP as event bus producer (4h)**
+This is the most important gap to fix first — it does not depend on any other gap.
 
-ACP consumes events from the bus but publishes none. The TUI and roko-serve cannot discover
-ACP activity. Fix: add `RuntimeEvent::AcpSessionCreated`, `AcpPromptStarted`,
-`AcpPromptCompleted`, `AcpSessionClosed` variants to `roko-core::runtime_event.rs`,
-emit from `SessionManager` and `handle_session_prompt()`.
-This unblocks Gap 3 (TUI tab) and Gap 4 (roko-serve routes).
+When a user manually selects a model via `session.model_selection_explicit == true`,
+the cascade router does not record a learning signal. The router cannot learn which models
+users prefer.
 
-**Gap 2: force_backend override learning (2h)**
+Find the post-dispatch path in `bridge_events.rs` near `record_cascade_observation` (around
+line 2300). After the existing observation call, add:
 
-When `session.model_selection_explicit == true`, the user-chosen model is not recorded
-as a positive learning signal in the cascade router. The router cannot learn from manual
-preferences. Fix: in the post-dispatch path around `bridge_events.rs:2300`, check
-`model_selection_explicit`; if true, call `record_cascade_observation()` with a boosted
-reward (1.0). See `09-INTEGRATION-GAPS.md` section "Cascade Router Learning" for exact
-line references.
+```rust
+// If user explicitly chose this model, record it as a strong positive signal.
+if session.config_state.model_selection_explicit {
+    record_cascade_observation(
+        router_path.clone(),
+        model_slug.clone(),
+        routing_ctx.clone(),
+        true,   // success = true
+        wall_ms,
+        output_tokens,
+        model_slugs.clone(),
+    );
+    // Boosted reward: second call with a synthetic high-quality signal
+    // so the router learns to prefer explicitly-chosen models.
+}
+```
 
-**Gap 3: TUI dashboard ACP visibility (3–6h)**
+The simpler approach: check `model_selection_explicit` before the existing observation and
+use a multiplied reward (e.g., `1.0` instead of the computed value) in `compute_acp_reward`.
 
-Zero ACP references in `crates/roko-cli/src/tui/`. ACP sessions, costs, and metrics are
-invisible in `roko dashboard`. Two approaches: (a) new TUI tab subscribing to the event
-bus (requires Gap 1 first); (b) read-only display of `episodes.jsonl` and `efficiency.jsonl`
-filtered by ACP trigger kind (no bus dep, 3h).
+**Gap 1: ACP as event bus producer (4 hours)**
 
-**Gap 4: roko-serve ACP session routes (6h)**
+ACP sessions are invisible to `roko dashboard` and `roko serve` because no events are
+published to the runtime event bus.
 
-No `/api/acp/sessions`, `/api/acp/metrics`, or related endpoints exist. Add:
-`GET /api/acp/sessions`, `GET /api/acp/sessions/:id`, `GET /api/acp/metrics`. Either
-query episode logs or have the ACP process register with roko-serve at startup. Requires
-a new `crates/roko-serve/src/routes/acp.rs` module.
+Add to `crates/roko-core/src/runtime_event.rs` (or wherever `RuntimeEvent` is defined):
 
-Recommended order: Gap 2 (standalone, 2h) → Gap 1 (unblocks 3 + 4) → Gap 3 or 4.
+```rust
+pub enum RuntimeEvent {
+    // ...existing variants...
+    AcpSessionCreated { session_id: String, workdir: PathBuf },
+    AcpPromptStarted { session_id: String, model: String },
+    AcpPromptCompleted { session_id: String, cost_usd: f64, tokens: u64 },
+    AcpSessionClosed { session_id: String },
+}
+```
 
----
+Emit these from `SessionManager` in `session.rs` and from `handle_session_prompt()` in
+`bridge_events.rs`. This requires the `SessionManager` to hold an `EventBus` sender.
 
-## Part 5: Editor Compatibility
+**Gap 3: TUI dashboard ACP visibility (3 hours, requires Gap 1)**
 
-### Current test matrix
+After Gap 1 is wired, subscribe to ACP events in the TUI. The simpler approach (no Gap 1
+dependency, ~3 hours): add a read-only display tab in `crates/roko-cli/src/tui/` that
+polls `episodes.jsonl` and `efficiency.jsonl` filtered by ACP trigger kind.
 
-| Editor | Integration-tested | Known gaps |
-|---|---|---|
-| Zed | Yes (production) | Working directory issue (#46138), MCP passthrough (#52254), custom shell stdout pollution (#47991), conversation history not persisted |
-| Cursor | Config documented, not integration-tested | No Cursor wire-format tests, `new_value` vs `value` field alias missing, no team-level MCP |
-| JetBrains | Not tested | No `acp.json` generation, no JetBrains-specific tests |
-| Neovim | Not tested | Listed in lib.rs docs but no config or tests |
+**Gap 4: roko-serve ACP session routes (6 hours, requires Gap 1)**
 
-### Required test additions
-
-Full list in `tmp/archive/08-15-26/acp-todos/10-EDITOR-COMPATIBILITY.md` section "Test Gaps".
-Minimum tests to add:
-
-1. **Zed wire format regression suite**: `session/new`, `session/prompt`, and `session/config/update` payloads as actually sent by current Zed stable (one existing test: `permission_response_round_trip` in `types.rs:1235`)
-2. **Cursor wire format tests**: `configId` alias round-trip, `new_value` alias (currently missing), Cursor launch sequence
-3. **Multi-turn conversation test**: send multiple `session/prompt` requests to the same session; verify coherent multi-turn context
-4. **Stderr isolation test**: verify non-JSON output (panics, warnings) does not leak to stdout and corrupt the JSON-RPC stream
-5. **Session persistence across restart**: verify a session created in one ACP process can be loaded in another (editor restart scenario via `session/load` / `session/resume`)
-
-### Quick wins (no editor-specific testing required)
-
-- Add `new_value` alias to `ConfigUpdateParams` (matches `configId` / `option_id` precedent already set):
-  ```rust
-  #[serde(alias = "value")]
-  pub new_value: serde_json::Value,
-  ```
-- Add `roko acp --emit-config <editor>` subcommand that prints the correct IDE config JSON for Zed, Cursor, or JetBrains. Eliminates manual setup errors.
-- Document that `ROKO_LOG` env var controls log verbosity without changing the binary; surface in startup error message.
+Create `crates/roko-serve/src/routes/acp.rs` with three endpoints:
+- `GET /api/acp/sessions` — list active sessions
+- `GET /api/acp/sessions/:id` — session detail
+- `GET /api/acp/metrics` — aggregate cost/token totals
 
 ---
+
+### Part 5: Editor Compatibility (can be done in parallel)
+
+**Quick wins (no testing required, ~1 hour each):**
+
+1. Add `new_value` serde alias to `ConfigUpdateParams` in `types.rs`:
+   ```rust
+   #[serde(alias = "value")]
+   pub new_value: serde_json::Value,
+   ```
+
+2. Add `roko acp --emit-config <editor>` subcommand to `crates/roko-cli/src/commands/` that
+   prints the correct IDE configuration JSON for Zed, Cursor, or JetBrains.
+
+**Test additions:**
+
+- Zed wire format regression suite: `session/new`, `session/prompt`, `session/config/update`
+  payloads as actually sent by current Zed stable
+- Cursor `new_value` alias round-trip test
+- Multi-turn conversation test (send 3 prompts to same session, verify coherent context)
+- Stderr isolation test (verify panics/warnings do not corrupt the JSON-RPC stdout stream)
 
 ## Acceptance Criteria
 
-### Spec upgrade (Part 1)
-- [ ] `ACP_SPEC_VERSION` is `"0.13.6"` in `types.rs:9`
-- [ ] `session/delete` handler wired; `SessionManager::delete_session()` removes from active map and persisted storage
+### Part 1 (spec bump)
+- [ ] `ACP_SPEC_VERSION` is `"0.13.6"` in `types.rs` line 10
+- [ ] `session/delete` handler is wired; `SessionManager::delete_session()` removes from active map and disk
 - [ ] `logout` handler wired; `auth.logout` capability advertised in `InitializeResult`
 - [ ] `AgentCapabilities.session_capabilities` populated with `close`, `resume`, `delete`, `list`, `additional_directories`
-- [ ] `AgentMessageChunk`, `AgentThoughtChunk`, and `ToolCall` update variants carry optional `message_id`
-- [ ] Protocol conformance tests updated for new `InitializeResult` shape; 3 new conformance tests added (delete, logout, messageId presence)
-- [ ] End-to-end test against current Zed stable passes with new `InitializeResult` shape
+- [ ] `AgentMessageChunk` and `AgentThoughtChunk` carry `pub message_id: Option<String>`
+- [ ] Protocol conformance tests updated; 3 new conformance tests added (delete, logout, messageId presence)
+- [ ] `cargo test -p roko-acp` passes (180+ tests)
 
-### Bridge events refactor (Part 2)
-- [ ] `bridge_events.rs` is ≤1,000 lines after extraction
-- [ ] 10 new modules exist under `crates/roko-acp/src/` with public surfaces as specified above
-- [ ] All 11 type relocations complete; no circular imports
-- [ ] 5 duplicate logic patterns consolidated
-- [ ] `handle_session_prompt_inner` split into 3 named phases, each ≤300 lines
-- [ ] `run_slash_command` split into parser + per-command handlers
-- [ ] All 6 `#[allow(clippy::too_many_arguments)]` in `bridge_events.rs` eliminated via `DispatchParams` struct
-- [ ] `cargo clippy -p roko-acp --no-deps -- -D warnings` passes clean after refactor
-- [ ] All 180 existing ACP tests pass throughout every extraction phase
+### Part 2 (refactor)
+- [ ] `bridge_events.rs` is at or under 1,000 lines after all extractions
+- [ ] 10 new modules exist under `crates/roko-acp/src/` as listed above
+- [ ] All 5 duplicate logic patterns consolidated
+- [ ] `handle_session_prompt_inner` is split into 3 named functions, each under 300 lines
+- [ ] `run_slash_command` is split into parser + per-command handlers
+- [ ] All 6 `#[allow(clippy::too_many_arguments)]` in `bridge_events.rs` eliminated
+- [ ] `cargo clippy -p roko-acp --no-deps -- -D warnings` passes clean after every extraction phase
+- [ ] All existing 180 ACP tests pass throughout every extraction phase
 
-### Test coverage (Part 3)
-- [ ] `config_watch.rs` coverage ≥ 70% (7 new tests)
-- [ ] `runner.rs` coverage ≥ 40% (minimum 4 integration tests for public entry points)
-- [ ] `acp_adapter.rs` — all 11 untested `RuntimeEvent` variants covered
-- [ ] `workflow.rs` — `mark_complete`, `is_done`, `elapsed`, `template_name` all tested
-- [ ] End-to-end `session/prompt` integration test using `MockResponse` harness
-- [ ] Config hot-reload integration test
+### Part 3 (test coverage)
+- [ ] `config_watch.rs` has at least 7 tests; estimate coverage reaches 70%
+- [ ] `runner.rs` has at least 4 integration tests for public entry points
+- [ ] All 11 `RuntimeEvent` variants in `acp_adapter.rs` have test coverage
 
-### Integration gaps (Part 4)
-- [ ] `RuntimeEvent` has 4 new ACP lifecycle variants; ACP emits them at session create/close and prompt start/end
+### Part 4 (integration gaps)
 - [ ] `record_cascade_observation()` called with boosted reward when `model_selection_explicit == true`
-- [ ] `roko dashboard` shows ACP session activity (either from event bus subscription or episode log polling)
-- [ ] `GET /api/acp/sessions` returns active session list; `GET /api/acp/metrics` returns aggregate cost/token data
+- [ ] `RuntimeEvent` has 4 new ACP lifecycle variants; ACP emits them
+- [ ] `roko dashboard` shows ACP session activity
+- [ ] `GET /api/acp/sessions` and `GET /api/acp/metrics` return valid data
 
-### Editor compatibility (Part 5)
-- [ ] Zed wire format regression test suite added (3+ tests)
-- [ ] Cursor `new_value` field alias added; Cursor wire-format test added
+### Part 5 (editor compat)
+- [ ] `ConfigUpdateParams.new_value` accepts `"value"` alias
+- [ ] `roko acp --emit-config zed` prints correct Zed config JSON
+- [ ] Zed wire format regression suite added (3+ tests)
 - [ ] Multi-turn conversation integration test added
-- [ ] Stderr isolation test added
-- [ ] `roko acp --emit-config <editor>` subcommand implemented for Zed, Cursor, and JetBrains
 
-## Not in Scope
+## Verification Checklist
 
-- ACP v2 migration — the spec analysis recommends staying on v1 until v2 stabilizes (expected late 2026), then adopting the official `agent-client-protocol-schema` crate simultaneously
-- Gate rungs 3–6 in the ACP pipeline (`runner.rs:2057–2145`) — deferred to a separate gate hardening effort
-- Dream consolidation config knob (`dreams.episode_threshold`) — low priority, 2h standalone
-- Windows/WSL compatibility — roko is macOS/Linux-focused; no Windows CI
-- Marketplace and trigger system ACP slash commands (sections 9b–9c of `tmp/acp-features/00-ACP-FEATURES.md`) — future product scope
-- P0 panic fixes — covered in `tmp/backlog/17-acp-stability-hardening.md` (prerequisite)
+- [ ] `cargo test -p roko-acp` — all tests pass after every extraction phase
+- [ ] `cargo clippy -p roko-acp --no-deps -- -D warnings` — clean
+- [ ] `cargo test --workspace` — no regressions in other crates
+- [ ] `wc -l crates/roko-acp/src/bridge_events.rs` — output is under 1000
+- [ ] `grep -c '\.expect\|unreachable!' crates/roko-acp/src/bridge_events.rs` — 0 production hits
+- [ ] Start `roko acp` and connect a Zed editor; verify `session/new`, `session/prompt`, and `session/delete` all succeed
+- [ ] Check Zed shows roko in the AI provider list with the correct capabilities
+- [ ] `roko acp --emit-config zed` prints valid JSON
+
+## Files to Modify
+
+| File | Change |
+|---|---|
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/types.rs` | Bump version constant; add `SessionCapabilities`, `AuthCapabilities`, `SessionDeleteParams`, `message_id` fields to streaming types |
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/handler.rs` | Add `session/delete` and `logout` match arms; populate new capabilities in `InitializeResult` |
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/session.rs` | Add `delete_session()` method |
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/bridge_events.rs` | Decomposed into 10 modules (Part 2); post-dispatch force_backend learning fix (Part 4 Gap 2) |
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/lib.rs` | Declare the 10 new extracted modules |
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/acp_adapter.rs` | Add log on event drop (already noted in item 17) |
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/config_watch.rs` | Add 7 unit tests |
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-acp/src/runner.rs` | Add 4 integration tests for entry points |
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/runtime_event.rs` | Add 4 ACP lifecycle variants (Part 4 Gap 1) |
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-serve/src/routes/acp.rs` | New file: 3 ACP HTTP endpoints (Part 4 Gap 4) |
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/commands/mod.rs` | Wire `roko acp --emit-config` subcommand (Part 5) |

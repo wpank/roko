@@ -1,0 +1,372 @@
+[meta]
+source_prd = "doctor-network-v2"
+done = 0
+max_parallel = 1
+plan = "doctor-network-v2"
+status = "ready"
+total = 7
+
+[[task]]
+allowed_tools = [
+    "read_file",
+    "write_file",
+    "grep",
+]
+denied_tools = []
+depends_on = []
+description = "Add a `Network` variant (with doc-comment) to the `DoctorSubject` enum at line 129 of crates/roko-cli/src/main.rs. This is the only change to main.rs. The enum currently has only `Disk`."
+files = ["crates/roko-cli/src/main.rs"]
+id = "T1"
+max_loc = 5
+role = "implementer"
+status = "ready"
+tier = "mechanical"
+title = "Add Network variant to DoctorSubject enum in main.rs"
+
+[task.context]
+anti_patterns = [
+    "Do NOT touch any other part of main.rs. Only add the Network variant inside the existing DoctorSubject enum block.",
+    "Do NOT add any CLI arg parsing logic here — that happens in T5.",
+]
+symbols = ["DoctorSubject — enum at line 129 with only a Disk variant today"]
+
+[[task.context.read_files]]
+lines = "126-140"
+path = "crates/roko-cli/src/main.rs"
+why = "Exact location of DoctorSubject enum to add the Network variant after Disk."
+
+[[task.verify]]
+command = "grep -q 'Network,' crates/roko-cli/src/main.rs"
+fail_msg = "DoctorSubject::Network variant not found in main.rs"
+phase = "structural"
+
+[[task.verify]]
+command = "cargo check -p roko-cli"
+phase = "compile"
+
+[[task]]
+allowed_tools = [
+    "read_file",
+    "write_file",
+    "grep",
+]
+denied_tools = []
+depends_on = []
+description = "Add `NetworkDoctorOptions`, `NetworkProbeCheck`, `NetworkProbeSummary`, and `NetworkProbeReport` structs plus the `DEFAULT_NETWORK_PROBE_TIMEOUT` constant to crates/roko-cli/src/doctor.rs. Follow the exact type signatures from the PRD §5. Import `roko_core::config::provider::{ProviderConfig, ProviderNetworkPolicy, ProviderKind}` at the top of the file."
+files = ["crates/roko-cli/src/doctor.rs"]
+id = "T2"
+max_loc = 50
+role = "implementer"
+status = "ready"
+tier = "focused"
+title = "Add network probe types to doctor.rs"
+
+[task.context]
+anti_patterns = [
+    "Do NOT implement any function bodies in this task — only struct/enum/const definitions.",
+    "Do NOT modify any existing types. Append new types at the bottom of the file (before the #[cfg(test)] block if one exists).",
+    "Do NOT add new crate dependencies — reqwest, serde, tokio are already present.",
+]
+symbols = [
+    "DoctorStatus — existing enum with Ok/Warn/Fail/Skipped variants, reuse for NetworkProbeCheck.status",
+    "DoctorOptions — existing struct pattern to follow for NetworkDoctorOptions layout",
+]
+
+[[task.context.read_files]]
+lines = "1-70"
+path = "crates/roko-cli/src/doctor.rs"
+why = "Existing imports, DoctorStatus enum, DoctorCheck struct — follow the same derive macro and serde patterns."
+
+[[task.context.read_files]]
+lines = "270-400"
+path = "crates/roko-core/src/config/provider.rs"
+why = "ProviderConfig, ProviderLimits, ProviderNetworkPolicy definitions to import correctly."
+
+[[task.verify]]
+command = "grep -q 'pub struct NetworkProbeReport' crates/roko-cli/src/doctor.rs"
+fail_msg = "NetworkProbeReport struct not found in doctor.rs"
+phase = "structural"
+
+[[task.verify]]
+command = "grep -q 'pub struct NetworkProbeSummary' crates/roko-cli/src/doctor.rs"
+fail_msg = "NetworkProbeSummary struct not found in doctor.rs"
+phase = "structural"
+
+[[task.verify]]
+command = "grep -q 'DEFAULT_NETWORK_PROBE_TIMEOUT' crates/roko-cli/src/doctor.rs"
+fail_msg = "DEFAULT_NETWORK_PROBE_TIMEOUT constant not found in doctor.rs"
+phase = "structural"
+
+[[task.verify]]
+command = "cargo check -p roko-cli"
+phase = "compile"
+
+[[task]]
+allowed_tools = [
+    "read_file",
+    "write_file",
+    "grep",
+]
+denied_tools = []
+depends_on = ["T2"]
+description = "Add two async functions to crates/roko-cli/src/doctor.rs: (1) `fn endpoint_for_kind(kind: ProviderKind) -> Option<&'static str>` returning canonical base URLs for AnthropicApi, OpenAiCompat, GeminiApi, PerplexityApi, CerebrasApi and None for CLI-only providers. (2) `async fn probe_one_provider(provider_id: String, url: String, timeout: Duration) -> NetworkProbeCheck` that issues an HTTP HEAD request via reqwest, records latency_ms, maps HTTP status to DoctorStatus per REQ-007."
+files = ["crates/roko-cli/src/doctor.rs"]
+id = "T3"
+max_loc = 50
+role = "implementer"
+status = "ready"
+tier = "focused"
+title = "Implement endpoint_for_kind and probe_one_provider in doctor.rs"
+
+[task.context]
+anti_patterns = [
+    "Do NOT spawn tasks here — run_network_doctor (T4) owns the JoinSet.",
+    "Do NOT open TCP sockets directly — use reqwest::Client with .head() method.",
+    "Do NOT match on HTTP 404 as Fail — treat it as Warn (endpoint reachable, path may differ).",
+    "endpoint_for_kind MUST return None for ClaudeCli, CursorCli, GeminiCli, CursorAcp, Hermes, OpenClaw (no canonical HTTP endpoint to probe).",
+]
+symbols = [
+    "DOCTOR_HTTP_TIMEOUT_SECS — existing constant at line 15, use same builder pattern",
+    "NetworkProbeCheck — target return type from T2",
+    "DoctorStatus — Ok for 2xx, Warn for 401/403, Fail for 5xx/error",
+]
+
+[[task.context.read_files]]
+lines = "740-780"
+path = "crates/roko-cli/src/doctor.rs"
+why = "check_serve_health uses reqwest::Client::builder().timeout().build() and Url::parse — reuse the exact same pattern for probe_one_provider."
+
+[[task.context.read_files]]
+lines = "59-105"
+path = "crates/roko-core/src/agent.rs"
+why = "Complete ProviderKind enum — match all 11 variants in endpoint_for_kind."
+
+[[task.verify]]
+command = "grep -q 'fn endpoint_for_kind' crates/roko-cli/src/doctor.rs"
+fail_msg = "endpoint_for_kind function not found in doctor.rs"
+phase = "structural"
+
+[[task.verify]]
+command = "grep -q 'async fn probe_one_provider' crates/roko-cli/src/doctor.rs"
+fail_msg = "probe_one_provider function not found in doctor.rs"
+phase = "structural"
+
+[[task.verify]]
+command = "cargo check -p roko-cli"
+phase = "compile"
+
+[[task]]
+allowed_tools = [
+    "read_file",
+    "write_file",
+    "grep",
+]
+denied_tools = []
+depends_on = ["T3"]
+description = "Add `pub async fn run_network_doctor(opts: NetworkDoctorOptions) -> NetworkProbeReport` to crates/roko-cli/src/doctor.rs. This function must: (1) load config via load_resolved_config, (2) iterate configured providers, skip ProviderNetworkPolicy::Deny providers and those with no HTTP endpoint, (3) spawn each probe into a `tokio::task::JoinSet`, (4) await all results, (5) build NetworkProbeSummary with fastest/slowest. Also implement `NetworkProbeReport::render_human()` producing the format from REQ-010 and `exit_code() -> i32`."
+files = ["crates/roko-cli/src/doctor.rs"]
+id = "T4"
+max_loc = 50
+role = "implementer"
+status = "ready"
+tier = "focused"
+title = "Implement run_network_doctor and render_human in doctor.rs"
+
+[task.context]
+anti_patterns = [
+    "Do NOT block on probes sequentially — use tokio::task::JoinSet for parallel dispatch.",
+    "Do NOT call run_doctor or modify the main doctor path. run_network_doctor is a new standalone function.",
+    "render_human MUST emit one line per check in format: [status] network/<provider_id>: <message> (<latency_ms>ms) [<url>]",
+]
+symbols = [
+    "run_disk_doctor — mirror its pattern: load config, build checks, return report",
+    "probe_one_provider — call per provider from T3",
+    "endpoint_for_kind — call per provider from T3",
+    "NetworkProbeReport::exit_code — return 0 if summary.fail == 0, else 1",
+]
+
+[[task.context.read_files]]
+lines = "322-380"
+path = "crates/roko-cli/src/doctor.rs"
+why = "run_disk_doctor is the exact dispatch pattern to mirror — same config-load and report structure."
+
+[[task.context.read_files]]
+lines = "1-30"
+path = "crates/roko-cli/src/doctor.rs"
+why = "Existing imports; check what load_resolved_config is called as in this file."
+
+[[task.verify]]
+command = "grep -q 'pub async fn run_network_doctor' crates/roko-cli/src/doctor.rs"
+fail_msg = "run_network_doctor function not found in doctor.rs"
+phase = "structural"
+
+[[task.verify]]
+command = "grep -q 'fn render_human' crates/roko-cli/src/doctor.rs"
+fail_msg = "render_human method not found in doctor.rs"
+phase = "structural"
+
+[[task.verify]]
+command = "cargo check -p roko-cli"
+phase = "compile"
+
+[[task]]
+allowed_tools = [
+    "read_file",
+    "write_file",
+    "grep",
+]
+denied_tools = []
+depends_on = [
+    "T1",
+    "T4",
+]
+description = "Extend `cmd_doctor` in crates/roko-cli/src/commands/util.rs at line 1112 to handle `DoctorSubject::Network`. Mirror the existing `Disk` arm exactly: call `roko_cli::doctor::run_network_doctor(NetworkDoctorOptions { workdir, config_override, probe_timeout: DEFAULT_NETWORK_PROBE_TIMEOUT })`, then print JSON if `cli.json` else `render_human()`, then `return Ok(report.exit_code())`."
+files = ["crates/roko-cli/src/commands/util.rs"]
+id = "T5"
+max_loc = 15
+role = "implementer"
+status = "ready"
+tier = "mechanical"
+title = "Wire DoctorSubject::Network dispatch in cmd_doctor"
+
+[task.context]
+anti_patterns = [
+    "Do NOT use else-if chaining — use separate `if matches!(subject, Some(DoctorSubject::Network))` block mirroring the Disk block.",
+    "Do NOT modify the Disk arm or the fallthrough run_doctor call.",
+    "Do NOT add the Network arm inside the Disk if-block — it must be a sibling block.",
+]
+symbols = [
+    "cmd_doctor — async fn at line 1105; add Network arm before the fallthrough to run_doctor",
+    "DoctorSubject::Disk arm at line 1112 — copy structure exactly for Network",
+]
+
+[[task.context.read_files]]
+lines = "1105-1137"
+path = "crates/roko-cli/src/commands/util.rs"
+why = "Exact location and pattern of the Disk branch to mirror for the Network branch."
+
+[[task.context.read_files]]
+lines = "1-30"
+path = "crates/roko-cli/src/doctor.rs"
+why = "Check the public API names: run_network_doctor, NetworkDoctorOptions, DEFAULT_NETWORK_PROBE_TIMEOUT."
+
+[[task.verify]]
+command = "grep -q 'DoctorSubject::Network' crates/roko-cli/src/commands/util.rs"
+fail_msg = "DoctorSubject::Network not found in commands/util.rs"
+phase = "structural"
+
+[[task.verify]]
+command = "grep -q 'run_network_doctor' crates/roko-cli/src/commands/util.rs"
+fail_msg = "run_network_doctor call not found in commands/util.rs"
+phase = "structural"
+
+[[task.verify]]
+command = "cargo check -p roko-cli"
+phase = "compile"
+
+[[task.verify]]
+command = "cargo test -p roko-cli -- doctor"
+phase = "test"
+
+[[task]]
+allowed_tools = [
+    "read_file",
+    "write_file",
+    "grep",
+]
+denied_tools = []
+depends_on = ["T4"]
+description = "Add at minimum four unit tests inside the existing `#[cfg(test)]` block in crates/roko-cli/src/doctor.rs: (a) `network_probe_empty_config_all_skip` — no providers configured yields a report with zero fail/ok/warn, (b) `network_probe_deny_policy_yields_skip` — a ProviderConfig with ProviderNetworkPolicy::Deny yields DoctorStatus::Skipped, (c) `cli_only_provider_yields_skip` — ClaudeCli kind yields DoctorStatus::Skipped, (d) `endpoint_for_kind_returns_anthropic_default` — endpoint_for_kind(AnthropicApi) returns Some containing 'anthropic.com'."
+files = ["crates/roko-cli/src/doctor.rs"]
+id = "T6"
+max_loc = 50
+role = "implementer"
+status = "ready"
+tier = "focused"
+title = "Add unit tests for network probe path in doctor.rs"
+
+[task.context]
+anti_patterns = [
+    "Do NOT make real network calls in unit tests — tests (a)(b)(c)(d) must be fully synchronous or use #[tokio::test] with mocked/local data only.",
+    "Tests (b) and (c) test the skip logic, not probe_one_provider directly — verify by checking what endpoint_for_kind returns and what the deny-policy check produces.",
+    "Do NOT create a new #[cfg(test)] module — append inside the existing one.",
+]
+symbols = [
+    "endpoint_for_kind — fn under test for test (d)",
+    "ProviderNetworkPolicy::Deny — value to set in ProviderLimits.network for test (b)",
+    "ProviderKind::ClaudeCli — kind to pass to endpoint_for_kind for test (c)",
+]
+
+[[task.context.read_files]]
+lines = "760-820"
+path = "crates/roko-cli/src/doctor.rs"
+why = "Find the existing #[cfg(test)] block to append unit tests inside it."
+
+[[task.context.read_files]]
+lines = "337-400"
+path = "crates/roko-core/src/config/provider.rs"
+why = "ProviderNetworkPolicy::Deny and ProviderLimits construction for test fixtures."
+
+[[task.verify]]
+command = "grep -q 'fn network_probe_deny_policy_yields_skip' crates/roko-cli/src/doctor.rs"
+fail_msg = "unit test network_probe_deny_policy_yields_skip not found"
+phase = "structural"
+
+[[task.verify]]
+command = "grep -q 'fn endpoint_for_kind_returns_anthropic_default' crates/roko-cli/src/doctor.rs"
+fail_msg = "unit test endpoint_for_kind_returns_anthropic_default not found"
+phase = "structural"
+
+[[task.verify]]
+command = "cargo check -p roko-cli"
+phase = "compile"
+
+[[task.verify]]
+command = "cargo test -p roko-cli -- network_probe"
+phase = "test"
+
+[[task]]
+allowed_tools = [
+    "read_file",
+    "write_file",
+    "grep",
+]
+denied_tools = []
+depends_on = [
+    "T5",
+    "T6",
+]
+description = 'Add test `doctor_network_json_produces_summary_and_checks` in crates/roko-cli/tests/doctor.rs. The test must: bootstrap a temp workspace using the existing `bootstrap_layout` helper, run `roko doctor network --workdir <temp> --json`, assert exit code 0, assert stdout contains `"summary"` and `"checks"`. Follow the exact pattern of `doctor_json_exits_nonzero_when_workspace_is_not_bootstrapped` for Command invocation.'
+files = ["crates/roko-cli/tests/doctor.rs"]
+id = "T7"
+max_loc = 35
+role = "implementer"
+status = "ready"
+tier = "focused"
+title = "Add integration test doctor_network_json_produces_summary_and_checks"
+
+[task.context]
+anti_patterns = [
+    "Do NOT add a new use/import block if assert_cmd and predicates are already imported.",
+    "Do NOT assert a specific exit code other than success (0) — an empty workspace has no providers, so no Fail checks.",
+    "Do NOT make real network calls — an empty workspace config has no providers, so run_network_doctor returns an empty checks list immediately.",
+]
+symbols = [
+    "bootstrap_layout — existing test helper that sets up .roko/ layout in a tempdir",
+    "assert_cmd::Command — test harness already imported at line 3",
+]
+
+[[task.context.read_files]]
+lines = "1-80"
+path = "crates/roko-cli/tests/doctor.rs"
+why = "Existing test helpers (bootstrap_layout, Command::cargo_bin patterns) to follow exactly."
+
+[[task.verify]]
+command = "grep -q 'fn doctor_network_json_produces_summary_and_checks' crates/roko-cli/tests/doctor.rs"
+fail_msg = "integration test doctor_network_json_produces_summary_and_checks not found"
+phase = "structural"
+
+[[task.verify]]
+command = "cargo test -p roko-cli --test doctor -- doctor_network_json_produces_summary_and_checks"
+fail_msg = "integration test failed"
+phase = "test"

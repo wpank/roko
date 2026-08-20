@@ -38,11 +38,12 @@
 | `P34-verification-sweep` | 4 | 4 | 0 | ✅ complete | 1 |
 | `architecture-defi-critical-path` | 3 | 3 | 0 | ✅ complete | 1 |
 | `architecture-production-residuals` | 4 | 4 | 0 | ✅ complete | 2 |
+| `doctor-network-v2` | 7 | 0 | 7 | 📋 ready | 1 |
 | `e2e-smoke` | 2 | 2 | 0 | ✅ complete | 1 |
 
-**Executable Total**: 30 plans, 124 tasks, 124 done (100%), 0 remaining
+**Executable Total**: 31 plans, 131 tasks, 124 done (95%), 7 remaining
 **Complete Plans**: 30
-**Ready/In-Progress Plans**: 0
+**Ready/In-Progress Plans**: 1
 
 ## Superseded / Archived
 

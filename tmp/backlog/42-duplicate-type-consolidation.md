@@ -1,142 +1,104 @@
-# Duplicate Type Consolidation
+# 42 — Duplicate Type Consolidation
 
-**Priority**: P3
+**Priority**: P3 — Maintenance burden; identical structs must be kept in sync independently
 **Size**: S (1 day)
+**Crates**: `roko-core` (`crates/roko-core/`), `roko-runtime` (`crates/roko-runtime/`), `roko-agent` (`crates/roko-agent/`), `roko-cli` (`crates/roko-cli/`), `roko-agent-server` (`crates/roko-agent-server/`), `roko-compose` (`crates/roko-compose/`)
+**Depends on**: None
 
 ---
 
-## Problem
+## Background
 
-Several types are defined identically (or near-identically) in multiple crates. Each copy
-must be maintained independently, and callers in one crate cannot accept values from the
-other without conversion. There are three distinct duplicate clusters:
+In a large codebase that grew through parallel development, the same types sometimes get defined independently in multiple crates when developers cannot use a shared dependency without risking circular imports. The result is duplicated maintenance: any change to the type (adding a field, changing a derive, fixing serialization) must be applied in multiple places, and there is no compile-time guarantee the copies remain consistent.
 
-### Cluster 1 — `GitOpsConfig` / `GitOpsRetryPolicy` / `ConfigDrift`
+This codebase has three such clusters. Each cluster has a clear resolution: either move the canonical type to a shared dependency crate that both users already depend on, or rename the conflicting types so they are unambiguous.
 
-Byte-for-byte (modulo doc-comment wording) identical structs and enums defined twice:
+The `roko-core` crate holds shared primitives and is already a dependency of both `roko-runtime` and `roko-agent`, so it is the correct home for shared types that currently live in the other two. Neither `roko-runtime` nor `roko-agent` depends on the other (no cycle), and both already import from `roko-core`.
 
-| Location | Lines |
-|---|---|
-| `crates/roko-runtime/src/lifecycle.rs` | 310–374 |
-| `crates/roko-agent/src/lifecycle.rs` | 2396–2460 |
+## Current State
 
-Both define the same nine-field `GitOpsConfig`, the same four-field `GitOpsRetryPolicy`,
-and the same `ConfigDrift` enum with `InSync` / `Diverged` / `Pending` variants and
-identical `Default` impls. They exist because `roko-agent` cannot depend on
-`roko-runtime` (cycle risk) so each crate defined its own copy.
+1. **`GitOpsConfig` (9 fields), `GitOpsRetryPolicy` (4 fields), and `ConfigDrift` (3-variant enum) are defined identically in two files:**
+   - `crates/roko-runtime/src/lifecycle.rs` lines 310-390 — authoritative copy, re-exported from `crates/roko-runtime/src/lib.rs:98`
+   - `crates/roko-agent/src/lifecycle.rs` lines 2396-2472 — duplicate copy, used only inside `roko-agent`
+   - `roko-agent` does NOT depend on `roko-runtime` (confirmed: no `roko-runtime` entry in `crates/roko-agent/Cargo.toml`), so the types were duplicated rather than shared. Both crates already depend on `roko-core`.
+   - The GitOps types are NOT used cross-crate outside of these two files. No external crate imports them from either location.
 
-### Cluster 2 — `DispatchError`
+2. **Three separate enums all named `DispatchError` with no relation to each other:**
+   - `crates/roko-core/src/dispatch_plan.rs:272` — provider-selection failures (`MissingAuth`, `UnsupportedProvider`, `CapabilityMismatch`, `AmbiguousProvider`, `AmbiguousModel`, `ProviderFailure`, `Cancelled`, `BudgetExceeded`, …)
+   - `crates/roko-cli/src/dispatch/outcome.rs:77` — pre-spawn runner rejections (`BudgetExceeded`, `NoModelAvailable`, `PreValidationFailed`, `SpawnFailed`)
+   - `crates/roko-agent-server/src/state.rs:40` — sidecar message dispatch failures (`NotConfigured`, `DispatchFailed`)
+   - No cross-crate usage found: none of the three is imported under the `DispatchError` name in any other crate. All three are crate-local.
 
-Three separate enums share the name `DispatchError` with no relation to each other:
+3. **Two separate traits both named `ContextBidder` with different method signatures:**
+   - `crates/roko-compose/src/context_provider.rs:682` — compose-time bidder: `fn propose_context(&self, ...) -> Vec<ContextCandidate>`
+   - `crates/roko-runtime/src/heartbeat_attention.rs:665` — runtime auction bidder: `fn generate_candidates(&self, ctx: &BidderContext) -> Vec<ContextCandidate>`
+   - The runtime trait has six implementations (`NeuroBidder`, `DaimonBidder`, `IterationMemoryBidder`, `CodeIntelligenceBidder`, `PlaybookRulesBidder`, `ResearchArtifactsBidder`, `TaskContextBidder`)
+   - The compose-time trait has a `ContextBidderRegistry` at line 696 with a `LearningContextBidder` (line 447) implementation
 
-| Location | Line | Purpose |
-|---|---|---|
-| `crates/roko-core/src/dispatch_plan.rs` | 272 | Provider-selection failures (MissingAuth, UnsupportedProvider, CapabilityMismatch, …) |
-| `crates/roko-cli/src/dispatch/outcome.rs` | 77 | Pre-spawn runner rejections (BudgetExceeded, NoModelAvailable, SpawnFailed, …) |
-| `crates/roko-agent-server/src/state.rs` | 40 | Sidecar message dispatch failures (NotConfigured, DispatchFailed) |
+## Implementation Plan
 
-The name collision causes confusion when reading code that imports any of them, and means
-`From` conversions or shared error-handling cannot be written without a fully-qualified path.
+### Step 1: Move GitOps types to `roko-core`
 
-### Cluster 3 — `ContextBidder` trait
+Create `crates/roko-core/src/gitops.rs` with the three types copied from `roko-runtime/src/lifecycle.rs` (lines 308-410). Use the `roko-runtime` version as the source of truth for doc comments.
 
-The same trait name is defined in two separate crates with different method signatures:
+Add `pub mod gitops;` to `crates/roko-core/src/lib.rs` and re-export the types at the crate root (`pub use gitops::{GitOpsConfig, GitOpsRetryPolicy, ConfigDrift};`).
 
-| Location | Line | Method signature |
-|---|---|---|
-| `crates/roko-compose/src/context_provider.rs` | 682 | `propose_context(&self, provider, request) -> Vec<ContextCandidate>` |
-| `crates/roko-runtime/src/heartbeat_attention.rs` | 665 | `generate_candidates(&self, ctx: &BidderContext) -> Vec<ContextCandidate>` |
+In `crates/roko-runtime/src/lifecycle.rs`, replace the three struct/enum definitions with `use roko_core::{GitOpsConfig, GitOpsRetryPolicy, ConfigDrift};`. Update `crates/roko-runtime/src/lib.rs:98` to re-export from `roko_core` instead of `lifecycle`.
 
-These represent two parallel systems for the same conceptual role (bidding for context
-budget). Their existence as separate traits prevents a unified registry or shared
-auction logic.
+In `crates/roko-agent/src/lifecycle.rs`, delete the duplicate struct/enum definitions (lines 2394-2475). Replace any usage in that file with `use roko_core::{GitOpsConfig, GitOpsRetryPolicy, ConfigDrift};`. Since `roko-agent` already depends on `roko-core`, no `Cargo.toml` change is needed.
 
-### What already exists
+Estimated diff: ~120 lines removed from two files, ~80 lines added to `roko-core/src/gitops.rs`, ~10 lines of `use` statements added.
 
-| Component | Location | Status |
-|---|---|---|
-| `GitOpsConfig` | `roko-runtime/src/lifecycle.rs:310` | EXISTS (authoritative) |
-| `GitOpsConfig` | `roko-agent/src/lifecycle.rs:2396` | EXISTS (duplicate) |
-| `GitOpsRetryPolicy` | `roko-runtime/src/lifecycle.rs:349` | EXISTS (authoritative) |
-| `GitOpsRetryPolicy` | `roko-agent/src/lifecycle.rs:2435` | EXISTS (duplicate) |
-| `ConfigDrift` | `roko-runtime/src/lifecycle.rs:374` | EXISTS (authoritative) |
-| `ConfigDrift` | `roko-agent/src/lifecycle.rs:2460` | EXISTS (duplicate) |
-| `DispatchError` (provider-selection) | `roko-core/src/dispatch_plan.rs:272` | EXISTS |
-| `DispatchError` (runner pre-spawn) | `roko-cli/src/dispatch/outcome.rs:77` | EXISTS |
-| `DispatchError` (sidecar) | `roko-agent-server/src/state.rs:40` | EXISTS |
-| `ContextBidder` (compose-time) | `roko-compose/src/context_provider.rs:682` | EXISTS |
-| `ContextBidder` (runtime auction) | `roko-runtime/src/heartbeat_attention.rs:665` | EXISTS |
+### Step 2: Rename the three `DispatchError` enums
 
-### What is missing
+Rename each to reflect its layer and purpose:
 
-1. **A shared home for the GitOps types.** `roko-core` already holds shared primitive
-   types and is depended on by both `roko-runtime` and `roko-agent`. Moving
-   `GitOpsConfig`, `GitOpsRetryPolicy`, and `ConfigDrift` there eliminates both copies.
+- `crates/roko-core/src/dispatch_plan.rs:272`: rename `DispatchError` → `ProviderDispatchError`. Update all uses in that file and add `pub type DispatchError = ProviderDispatchError;` temporarily if the old name is used in tests.
+- `crates/roko-cli/src/dispatch/outcome.rs:77`: rename `DispatchError` → `RunnerDispatchError`. Update all uses within `roko-cli`.
+- `crates/roko-agent-server/src/state.rs:40`: rename `DispatchError` → `SidecarDispatchError`. Update all uses within `roko-agent-server`.
 
-2. **Distinct names for the three `DispatchError` enums.** Each covers a different
-   layer; renaming them to `PlanDispatchError` (core), `AgentDispatchError` (cli), and
-   `SidecarDispatchError` (agent-server) ends the ambiguity.
+Check for tests that use the old name and update them. Since none are imported cross-crate, this is a local rename in each crate.
 
-3. **Renamed or merged `ContextBidder` traits.** The compose-time trait should be
-   renamed `ComposeBidder` (or similar) to make the distinction explicit. Whether the
-   two systems are eventually merged is a product decision; the immediate fix is to
-   give them distinct names so callers cannot accidentally import the wrong one.
+Estimated diff: ~15 name occurrences across 3 files.
 
----
+### Step 3: Rename `ContextBidder` in `roko-compose`
 
-## Proposed changes
+In `crates/roko-compose/src/context_provider.rs`, rename:
+- `trait ContextBidder` → `trait ComposeBidder`
+- `ContextBidderRegistry` → `ComposeBidderRegistry`
 
-### Change A: move GitOps types to `roko-core`
+Update all implementations and usages within `roko-compose`. The runtime trait in `roko-runtime/src/heartbeat_attention.rs` keeps the name `ContextBidder` (it has more implementations and is the primary usage).
 
-Add `pub mod gitops;` (or inline into `roko-core/src/types.rs`) and move the three
-types from `roko-runtime/src/lifecycle.rs`. Update `roko-agent/src/lifecycle.rs` to
-remove its copies and re-export or use the `roko-core` versions.
+Estimated diff: ~20 name occurrences in one file.
 
-Estimated diff: ~120 lines removed, ~10 lines of `use roko_core::gitops::*` added.
-Risk: low — `roko-core` has no runtime dep, both crates already depend on it.
+## Acceptance Criteria
 
-### Change B: rename `DispatchError` variants
-
-- `roko-core/src/dispatch_plan.rs`: rename `DispatchError` → `ProviderDispatchError`
-- `roko-cli/src/dispatch/outcome.rs`: rename `DispatchError` → `RunnerDispatchError`
-- `roko-agent-server/src/state.rs`: rename `DispatchError` → `SidecarDispatchError`
-
-Add `pub type` aliases in each crate if any downstream code uses the old names publicly.
-
-Estimated diff: ~15 lines across 3 files (renames + any re-export aliases).
-Risk: low — all three types are crate-local; no cross-crate public usage confirmed.
-
-### Change C: rename `ContextBidder` in `roko-compose`
-
-Rename the compose-time trait from `ContextBidder` to `ComposeBidder` (or
-`ColdStartBidder`). The runtime auction trait in `roko-runtime` is the primary user of
-the name and has more implementations.
-
-Estimated diff: ~20 lines (rename + `ContextBidderRegistry` → `ComposeBidderRegistry`).
-Risk: low — the compose-time trait has no external implementations outside the crate.
-
----
-
-## Acceptance criteria
-
-1. `grep -rn 'struct GitOpsConfig' crates/ --include='*.rs' | grep -v target/` returns
-   exactly 1 hit (in `roko-core`).
-2. `grep -rn 'enum DispatchError' crates/ --include='*.rs' | grep -v target/` returns
-   zero hits; each former use site has a unique name.
-3. `grep -rn 'trait ContextBidder' crates/ --include='*.rs' | grep -v target/` returns
-   at most 1 hit (the runtime auction trait); the compose-time trait has been renamed.
+1. `grep -rn 'struct GitOpsConfig' crates/ --include='*.rs' | grep -v target/` returns exactly 1 hit, located in `crates/roko-core/src/gitops.rs`.
+2. `grep -rn 'enum DispatchError' crates/ --include='*.rs' | grep -v target/` returns zero hits; the three enums exist under unique names.
+3. `grep -rn 'trait ContextBidder' crates/ --include='*.rs' | grep -v target/` returns exactly 1 hit, in `crates/roko-runtime/src/heartbeat_attention.rs`; the compose-time trait has been renamed to `ComposeBidder`.
 4. `cargo build --workspace` passes with no errors.
 5. `cargo test --workspace` passes with no regressions.
 6. `cargo clippy --workspace --no-deps -- -D warnings` is clean.
 
----
+## Verification Checklist
 
-## References
+- [ ] `grep -rn 'struct GitOpsConfig' crates/ --include='*.rs' | grep -v target/` shows exactly 1 result in `roko-core`
+- [ ] `grep -rn 'enum DispatchError' crates/ --include='*.rs' | grep -v target/` shows 0 results
+- [ ] `grep -rn 'trait ContextBidder' crates/ --include='*.rs' | grep -v target/` shows 1 result in `roko-runtime`
+- [ ] `cargo build --workspace` succeeds
+- [ ] `cargo test --workspace` passes
+- [ ] `cargo clippy --workspace --no-deps -- -D warnings` is clean
 
-- `crates/roko-runtime/src/lifecycle.rs` — authoritative GitOps types (lines 310–374)
-- `crates/roko-agent/src/lifecycle.rs` — duplicate GitOps types (lines 2396–2460)
-- `crates/roko-core/src/dispatch_plan.rs:272` — `DispatchError` (provider-selection)
-- `crates/roko-cli/src/dispatch/outcome.rs:77` — `DispatchError` (runner pre-spawn)
-- `crates/roko-agent-server/src/state.rs:40` — `DispatchError` (sidecar)
-- `crates/roko-compose/src/context_provider.rs:682` — `ContextBidder` (compose-time)
-- `crates/roko-runtime/src/heartbeat_attention.rs:665` — `ContextBidder` (runtime auction)
+## Files to Modify
+
+| File | Change |
+|---|---|
+| `crates/roko-core/src/gitops.rs` (new) | Move `GitOpsConfig`, `GitOpsRetryPolicy`, `ConfigDrift` here from `roko-runtime` |
+| `crates/roko-core/src/lib.rs` | Add `pub mod gitops;` and re-export the three types |
+| `crates/roko-runtime/src/lifecycle.rs` | Delete duplicate definitions (lines 308-410); add `use roko_core::{...}` |
+| `crates/roko-runtime/src/lib.rs` | Update re-exports to use `roko_core` source |
+| `crates/roko-agent/src/lifecycle.rs` | Delete duplicate definitions (lines 2394-2475); add `use roko_core::{...}` |
+| `crates/roko-core/src/dispatch_plan.rs` | Rename `DispatchError` → `ProviderDispatchError` (line 272) |
+| `crates/roko-cli/src/dispatch/outcome.rs` | Rename `DispatchError` → `RunnerDispatchError` (line 77) |
+| `crates/roko-agent-server/src/state.rs` | Rename `DispatchError` → `SidecarDispatchError` (line 40) |
+| `crates/roko-compose/src/context_provider.rs` | Rename `ContextBidder` → `ComposeBidder`, `ContextBidderRegistry` → `ComposeBidderRegistry` (line 682) |

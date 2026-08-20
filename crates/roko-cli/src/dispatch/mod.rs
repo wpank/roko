@@ -38,6 +38,7 @@ pub mod prompt_builder;
 pub mod prompt_cache;
 pub mod warm_pool;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use roko_agent::AgentRuntimeEvent;
@@ -141,13 +142,19 @@ pub struct Dispatcher {
 
 impl Dispatcher {
     /// Construct a new dispatcher.
+    ///
+    /// `configured_models` is the set of model slugs that have a configured,
+    /// credential-ready provider in the current workspace.  When non-empty,
+    /// cascade router results are filtered: a model whose slug is not in
+    /// this set is replaced with the default fallback.
     pub fn new(
         cascade: Option<Arc<CascadeRouter>>,
         prompt_assembler: PromptAssembler,
         warm_pool: WarmPool,
+        configured_models: HashSet<String>,
     ) -> Self {
         Self {
-            router: ModelRouter::new(cascade),
+            router: ModelRouter::new(cascade).with_configured_models(configured_models),
             prompt_assembler,
             warm_pool,
         }
@@ -419,7 +426,12 @@ mod tests {
 
     #[tokio::test]
     async fn dispatcher_plan_and_dispatch_round_trip() {
-        let dispatcher = Dispatcher::new(None, PromptAssembler::minimal(), WarmPool::new(0));
+        let dispatcher = Dispatcher::new(
+            None,
+            PromptAssembler::minimal(),
+            WarmPool::new(0),
+            HashSet::new(),
+        );
         let task = make_task("t-1");
         let ctx = make_ctx();
         let plan = dispatcher.plan(&task, &ctx).expect("plan");
@@ -436,7 +448,12 @@ mod tests {
 
     #[tokio::test]
     async fn force_backend_overrides_router() {
-        let dispatcher = Dispatcher::new(None, PromptAssembler::minimal(), WarmPool::new(0));
+        let dispatcher = Dispatcher::new(
+            None,
+            PromptAssembler::minimal(),
+            WarmPool::new(0),
+            HashSet::new(),
+        );
         let task = make_task("t-2");
         let ctx = DispatchContext {
             force_backend: Some("gpt-5".into()),

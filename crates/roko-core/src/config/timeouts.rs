@@ -53,6 +53,11 @@ pub struct TimeoutConfig {
     #[serde(default = "default_llm_call_secs")]
     pub llm_call_secs: u64,
 
+    /// Dream consolidation timeout (seconds). Longer than a single LLM call
+    /// because consolidation is a batch operation over multiple episodes.
+    #[serde(default = "default_dream_consolidation_secs")]
+    pub dream_consolidation_secs: u64,
+
     /// HTTP request timeout (seconds).
     #[serde(default = "default_http_request_secs")]
     pub http_request_secs: u64,
@@ -86,6 +91,9 @@ const fn default_gate_clippy_secs() -> u64 {
 }
 const fn default_llm_call_secs() -> u64 {
     120
+}
+const fn default_dream_consolidation_secs() -> u64 {
+    600
 }
 const fn default_http_request_secs() -> u64 {
     30
@@ -148,6 +156,11 @@ impl TimeoutConfig {
         Duration::from_secs(self.llm_call_secs)
     }
 
+    /// Dream consolidation as [`Duration`].
+    pub fn dream_consolidation(&self) -> Duration {
+        Duration::from_secs(self.dream_consolidation_secs)
+    }
+
     /// HTTP request as [`Duration`].
     pub fn http_request(&self) -> Duration {
         Duration::from_secs(self.http_request_secs)
@@ -182,6 +195,7 @@ impl Default for TimeoutConfig {
             gate_test_secs: default_gate_test_secs(),
             gate_clippy_secs: default_gate_clippy_secs(),
             llm_call_secs: default_llm_call_secs(),
+            dream_consolidation_secs: default_dream_consolidation_secs(),
             http_request_secs: default_http_request_secs(),
             workspace_lock_secs: default_workspace_lock_secs(),
             health_check_secs: default_health_check_secs(),
@@ -202,6 +216,7 @@ mod tests {
         assert_eq!(cfg.gate_test_secs, 900);
         assert_eq!(cfg.gate_clippy_secs, 300);
         assert_eq!(cfg.llm_call_secs, 120);
+        assert_eq!(cfg.dream_consolidation_secs, 600);
         assert_eq!(cfg.http_request_secs, 30);
         assert_eq!(cfg.workspace_lock_secs, 5);
         assert_eq!(cfg.health_check_secs, 3);
@@ -221,6 +236,7 @@ mod tests {
         assert_eq!(cfg.gate_test(), Duration::from_secs(900));
         assert_eq!(cfg.gate_clippy(), Duration::from_secs(300));
         assert_eq!(cfg.llm_call(), Duration::from_secs(120));
+        assert_eq!(cfg.dream_consolidation(), Duration::from_secs(600));
         assert_eq!(cfg.http_request(), Duration::from_secs(30));
         assert_eq!(cfg.workspace_lock(), Duration::from_secs(5));
         assert_eq!(cfg.health_check(), Duration::from_secs(3));
@@ -240,6 +256,7 @@ mod tests {
             gate_test_secs: 600,
             gate_clippy_secs: 90,
             llm_call_secs: 240,
+            dream_consolidation_secs: 900,
             http_request_secs: 60,
             workspace_lock_secs: 10,
             health_check_secs: 5,
@@ -279,5 +296,6 @@ mod tests {
         let cfg = TimeoutConfig::default();
         assert!(cfg.plan_total_secs > cfg.agent_dispatch_secs);
         assert!(cfg.plan_total_secs > cfg.gate_test_secs);
+        assert!(cfg.plan_total_secs > cfg.dream_consolidation_secs);
     }
 }

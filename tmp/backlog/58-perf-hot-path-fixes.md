@@ -1,173 +1,164 @@
-# Perf Hot-Path Fixes
+# 58 — Performance Hot-Path Fixes
 
-**Priority**: P2
+**Priority**: P2 — four concrete latency regressions, each verified in production code
 **Size**: M (2-3 days)
+**Crates**: `crates/roko-compose/`, `crates/roko-serve/`, `crates/roko-agent/`, `crates/roko-runtime/`
+**Depends on**: None
 
 ---
 
-## Problem
+## Background
 
-Four performance anti-patterns add unnecessary latency to every agent dispatch.
-Each issue was verified against the actual codebase and is confirmed present.
+Roko runs agents in an async Tokio runtime. Every agent dispatch starts by assembling a prompt, routing to a model, spawning an agent, and recording the result. Four performance anti-patterns have been confirmed in the current code that add latency to every dispatch.
 
----
+The first two are async-correctness issues: synchronous blocking I/O on a Tokio event-loop thread stalls the entire executor, and a disk-backed model router is loaded from disk unconditionally instead of using an existing in-memory cache. The third is an unnecessary heap allocation: the entire `RokoConfig` struct (which contains multiple maps and vecs) is deep-cloned on every LLM call when a reference-counted pointer would serve. The fourth spawns a `git` subprocess unconditionally after every agent completion even in directories with no git repository.
 
-### Issue 1: Sync I/O on Tokio thread in `PromptAssemblyService`
+All four issues have been manually verified against the source code. None require design changes; they are local fixes.
 
-`crates/roko-compose/src/prompt_assembly_service.rs`
+## Current State
 
-`PromptAssemblyService::assemble` is an `async fn` (line 357) that calls two
-sync blocking helpers without wrapping them in `tokio::task::spawn_blocking`:
+1. `PromptAssemblyService::assemble` at `/Users/will/dev/nunchi/roko/roko/crates/roko-compose/src/prompt_assembly_service.rs:357` is `async fn` but calls two synchronous filesystem helpers directly on the Tokio thread:
+   - `collect_source_context_from` at line 741 calls `std::fs::read_dir` (line 752) in a recursive loop up to depth 5, scanning up to 500 files.
+   - `read_to_string_if_exists` at line 783-784 calls `std::fs::read_to_string`.
+   - These are reachable via: `assemble` (line 373) → `conventions_for_spec` (line 562) → `detect_workdir_conventions` (line 709) → `collect_source_context` (line 728); and `assemble` (line 433) → `workspace_map_for_spec` (line 569) → `collect_source_context` (line 571).
+   - There is no `spawn_blocking` or `tokio::fs` usage anywhere in the file.
 
-- `collect_source_context_from` (line 741) calls `std::fs::read_dir` (line 752)
-  in a recursive loop up to depth 5 and 500 files.
-- `read_to_string_if_exists` (line 783) calls `std::fs::read_to_string` (line
-  784) for up to 12 source files.
+2. `crates/roko-serve/src/dispatch.rs` has an in-memory `AppState.cascade_router: RwLock<Option<CascadeRouter>>` cache that is correctly used by `record_template_dispatch_feedback` (line 2022) but bypassed by the main learning path:
+   - `drain_dispatch_learning_events` (line 2547) fires on every `AgentEvent::TurnCompleted` (line 2559) and calls `record_cascade_router_outcome_with_layout` (line 2560).
+   - `record_cascade_router_outcome_with_layout` (line 2639) → `record_cascade_router_observation_at` (line 2682) → `CascadeRouter::load_or_new` (line 2693) — which loads and parses the router from disk every time, ignoring the cache entirely.
+   - The cache is initialized at line 3214 but never consulted in this code path.
 
-Both are called on the Tokio event-loop thread from within `assemble` via:
+3. `ModelCallService` at `/Users/will/dev/nunchi/roko/roko/crates/roko-agent/src/model_call_service.rs:81` stores `config: RokoConfig` (line 85). `config_for_model` at line 471-473 returns `self.config.clone()` on every call. `call` at line 2278 invokes it on every LLM request. `RokoConfig` (in `crates/roko-core/src/config/schema.rs`) is a deep struct with multiple `IndexMap`, `HashMap`, and `Vec` fields. The clone is passed to `ProviderCallCell::new` at line 2297, which also stores `config: RokoConfig` (line 1804). `ProviderCallCell` is constructed fresh on every call, so the clone exists only for that call's duration.
 
-- `conventions_for_spec` → `detect_workdir_conventions` → `collect_source_context`
-  (line 373 in `assemble`, line 711 in `detect_workdir_conventions`)
-- `workspace_map_for_spec` → `collect_source_context` (line 433 in `assemble`,
-  line 571 in `workspace_map_for_spec`)
+4. `count_changed_files` at `/Users/will/dev/nunchi/roko/roko/crates/roko-runtime/src/effect_driver.rs:708` is called unconditionally from line 262 after every successful agent completion. It always forks a `tokio::process::Command::new("git")` subprocess (line 709-710), even when the `workdir` is not a git repository. The doc comment on line 706-707 says this is "best-effort enrichment, not a gate," so occasional staleness is acceptable.
 
-There is no `spawn_blocking` or `tokio::fs` anywhere in the file. On a large
-workspace this can block the thread for tens to hundreds of milliseconds.
+## Implementation Plan
 
-**Fix**: Wrap `collect_source_context` and `read_to_string_if_exists` calls in
-`tokio::task::spawn_blocking` within `assemble`, or convert to `tokio::fs`
-equivalents. The simplest path is to move the two sync helpers into a
-`tokio::task::spawn_blocking` closure called from the two `assemble` call sites
-at lines 373 and 433.
+**Fix 1: Wrap blocking I/O in `spawn_blocking` in `PromptAssemblyService`**
 
----
+File: `/Users/will/dev/nunchi/roko/roko/crates/roko-compose/src/prompt_assembly_service.rs`
 
-### Issue 2: CascadeRouter loaded from disk on every TurnCompleted event
-
-`crates/roko-serve/src/dispatch.rs`
-
-`AppState` holds a cached `cascade_router: RwLock<Option<CascadeRouter>>` and
-the `record_template_dispatch_feedback` function (line 1991) correctly checks
-this cache when `learn_dir == global_learn_dir` (line 2021–2044). However, two
-separate call sites bypass the cache entirely:
-
-**Call site A** — `drain_dispatch_learning_events` (line 2547) fires on every
-`AgentEvent::TurnCompleted` (line 2559) and calls
-`record_cascade_router_outcome_with_layout` (line 2560), which always calls
-`record_cascade_router_observation_at` (line 2668), which always calls
-`CascadeRouter::load_or_new` (line 2693). There is no check against the
-in-memory cached router here; the cache is ignored unconditionally.
-
-**Call site B** — In `record_template_dispatch_feedback`, when `learn_dir !=
-global_learn_dir` (per-repo worktree dispatch), the code falls through to
-`ModelCallFeedbackRecorder::from_learn_dir` (line 2048). This constructs the
-recorder by calling `CascadeRouter::load_or_new` (in
-`crates/roko-learn/src/model_call_feedback.rs`, line 81) before any I/O is
-needed.
-
-**Fix**: In `record_cascade_router_outcome_with_layout`, check
-`state.cascade_router` first (same pattern as lines 2021–2041 in
-`record_template_dispatch_feedback`). When `path == state.layout.cascade_router_path()`,
-acquire the read lock, call `observe_model_call_on_router` on the in-memory
-router, and save it — exactly matching the existing cache path. Only fall
-through to `load_or_new` when the path is repo-specific. For per-repo paths,
-consider a bounded LRU of per-repo routers rather than loading from disk each
-time.
-
----
-
-### Issue 3: `RokoConfig` cloned on every model call
-
-`crates/roko-agent/src/model_call_service.rs`
-
-`ModelCallService::call` (line 2076) calls `config_for_model` (line 2278) on
-every invocation. `config_for_model` is defined at line 471–473 as:
+The two call sites that invoke sync filesystem work inside `assemble` are at lines 373 and 433. The cleanest fix is to extract the sync work into closures passed to `tokio::task::spawn_blocking`:
 
 ```rust
-fn config_for_model(&self, _model: &str) -> RokoConfig {
-    self.config.clone()
+// At line 373 (inside assemble), change:
+let conventions = conventions_for_spec(&spec, self.default_conventions.as_deref());
+
+// To:
+let spec_clone = spec.clone();
+let default_conv = self.default_conventions.clone();
+let conventions = tokio::task::spawn_blocking(move || {
+    conventions_for_spec(&spec_clone, default_conv.as_deref())
+})
+.await
+.unwrap_or(None);
+```
+
+Apply the same pattern at line 433 for `workspace_map_for_spec`. If `spec` does not implement `Clone`, extract only the fields needed by each helper before the `spawn_blocking` call.
+
+Alternatively, convert `collect_source_context_from` and `read_to_string_if_exists` to use `tokio::fs::read_dir` and `tokio::fs::read_to_string` and make the two helpers async — but this requires making `conventions_for_spec` and `workspace_map_for_spec` async as well, which is a larger change.
+
+**Fix 2: Use the in-memory cascade router cache in `drain_dispatch_learning_events`**
+
+File: `/Users/will/dev/nunchi/roko/roko/crates/roko-serve/src/dispatch.rs`
+
+In `record_cascade_router_outcome_with_layout` (line 2639), add a check that mirrors the existing pattern in `record_template_dispatch_feedback` (lines 2022-2046):
+
+```rust
+async fn record_cascade_router_outcome_with_layout(
+    state: &AppState,
+    template: &DispatchTemplate,
+    success: bool,
+    layout: Option<&RokoLayout>,
+) -> Result<()> {
+    let path = layout
+        .map(RokoLayout::cascade_router_path)
+        .unwrap_or_else(|| RokoLayout::for_project(&state.workdir).cascade_router_path());
+
+    // Use the in-memory cache when the path matches the global learn dir.
+    if path == state.layout.cascade_router_path() {
+        let mut router_guard = state.cascade_router.write().await;
+        if let Some(ref mut router) = *router_guard {
+            let model_slugs: Vec<String> = /* same derivation as below */;
+            if router.record_confidence_outcome(&template.model, success) {
+                router.save(&path)?;
+            }
+            return Ok(());
+        }
+    }
+
+    // Fallback: per-repo path or cache not populated.
+    record_cascade_router_observation_at(&path, model_slugs, &template.model, success)?;
+    Ok(())
 }
 ```
 
-`RokoConfig` (defined in `crates/roko-core/src/config/schema.rs` at line 89) is
-a 30+ field struct containing:
-- `providers: IndexMap<String, ProviderConfig>` — one entry per configured
-  provider
-- `models: IndexMap<String, ModelProfile>` — one entry per model profile
-- `profiles: HashMap<String, DomainProfile>`
-- `subscriptions: Vec<SubscriptionConfig>`
-- `agents: Vec<AgentDefinition>`
-- `groups: Vec<GroupDefinition>`
+The `model_slugs` derivation should match whatever `record_cascade_router_observation_at` currently passes at line 2693. Check the call site for the exact argument.
 
-The clone allocates new heap storage for all of these on every model call. The
-returned config is passed to `ProviderCallCell::new` (line 2297) and only used
-to resolve provider configuration. The model does not change between calls for a
-given service instance, so the clone is unnecessary.
+**Fix 3: Store `Arc<RokoConfig>` in `ModelCallService` and `ProviderCallCell`**
 
-**Fix**: Change `config` in `ModelCallService` to `Arc<RokoConfig>` and update
-`config_for_model` to return `Arc<RokoConfig>`. Update `ProviderCallCell::new`
-to accept `Arc<RokoConfig>`. This makes the "clone" a single atomic increment
-instead of deep-copying all the maps and vecs.
+Files:
+- `/Users/will/dev/nunchi/roko/roko/crates/roko-agent/src/model_call_service.rs`
+- Any types that call `ModelCallService::new` or `with_config`
 
----
+Change the `config` field in `ModelCallService` (line 85) from `RokoConfig` to `Arc<RokoConfig>`. Update `with_config` (line 190) to accept `Arc<RokoConfig>` or wrap the value. Change `config_for_model` (line 471) to return `Arc<RokoConfig>` instead of `RokoConfig`. Change `ProviderCallCell.config` (line 1804) from `RokoConfig` to `Arc<RokoConfig>` and update `ProviderCallCell::new` (line 1818-1819) accordingly.
 
-### Issue 4: Unconditional `git diff` subprocess after every agent completion
+All callers of `with_config` that currently pass `config.clone()` (a deep copy) will instead pass `Arc::clone(&config)` (a pointer increment).
 
-`crates/roko-runtime/src/effect_driver.rs`
-
-`count_changed_files` (line 708) is called unconditionally after every
-successful agent response (line 262):
-
-```rust
-let files_changed = count_changed_files(&self.workdir).await;
+Search for all callers:
+```bash
+grep -rn "with_config\|ModelCallService::new" crates/roko-agent/src/ --include='*.rs'
+grep -rn "ModelCallService" crates/ --include='*.rs' | grep -v target/ | grep -v ".rs:pub struct"
 ```
 
-The function (lines 708–723) forks a `git diff --name-only HEAD` subprocess on
-every call, regardless of whether the caller will actually use the count or
-whether the working directory is even a git repo. For effects that run
-frequently (e.g. streaming turns or high-frequency subscriptions), this is one
-`git` subprocess per completion.
+Update each caller to wrap with `Arc::new(config)` or `Arc::clone(&config)` as appropriate.
 
-**Fix**: Add a fast path: check whether `.git` exists in `self.workdir` before
-spawning the subprocess. If absent, return 0 immediately. Optionally, cache the
-result for a short TTL (1–2 seconds) to absorb burst completions. The result is
-described in the doc comment as "best-effort enrichment, not a gate" so
-occasional staleness is acceptable.
+**Fix 4: Short-circuit `count_changed_files` when `.git` is absent**
 
----
+File: `/Users/will/dev/nunchi/roko/roko/crates/roko-runtime/src/effect_driver.rs`
 
-## What already exists
+At the top of `count_changed_files` (line 708), add a fast path:
 
-| Component | File | Status |
-|---|---|---|
-| `AppState.cascade_router` RwLock | `dispatch.rs` | Exists — used in `record_template_dispatch_feedback` |
-| Cache path in `record_template_dispatch_feedback` | `dispatch.rs:2021–2044` | Exists — not extended to `drain_dispatch_learning_events` |
-| `tokio::task::spawn_blocking` (available) | runtime | Available — not used in `prompt_assembly_service.rs` |
-| `Arc<RokoConfig>` pattern | elsewhere | Used in `AppState.config`; not plumbed into `ModelCallService` |
+```rust
+async fn count_changed_files(workdir: &std::path::Path) -> u32 {
+    // Fast path: skip subprocess if workdir is not a git repository.
+    if !workdir.join(".git").exists() {
+        return 0;
+    }
 
----
+    let result = tokio::process::Command::new("git")
+        // ... existing code unchanged ...
+```
 
-## Acceptance criteria
+The `.git` existence check is synchronous but is a single `stat` syscall and is negligible compared to forking a subprocess.
 
-1. `assemble` in `PromptAssemblyService` does not call any `std::fs` function
-   directly on the async thread — all blocking I/O is wrapped in
-   `spawn_blocking`.
-2. `record_cascade_router_outcome_with_layout` reads from `AppState.cascade_router`
-   for the global learn path instead of loading from disk.
-3. `ModelCallService` stores `Arc<RokoConfig>` and `config_for_model` returns
-   `Arc<RokoConfig>` without deep-cloning.
-4. `count_changed_files` returns 0 immediately when no `.git` directory is
-   present, without forking a subprocess.
+## Acceptance Criteria
+
+1. `PromptAssemblyService::assemble` does not call any `std::fs` function directly on the Tokio thread; all blocking filesystem I/O is wrapped in `tokio::task::spawn_blocking`.
+2. `record_cascade_router_outcome_with_layout` reads from the `AppState.cascade_router` read/write lock for the global learn path and only falls back to `CascadeRouter::load_or_new` for per-repo paths.
+3. `ModelCallService.config` is `Arc<RokoConfig>` and `config_for_model` returns `Arc<RokoConfig>` without deep-cloning the struct.
+4. `count_changed_files` returns `0` immediately — without forking any subprocess — when `workdir/.git` does not exist.
 5. `cargo test --workspace` passes with zero failures.
 6. `cargo clippy --workspace --no-deps -- -D warnings` is clean.
 
----
+## Verification Checklist
 
-## References
+- [ ] Add `tokio::task::spawn_blocking` around `conventions_for_spec` call in `assemble` and confirm the function still returns the correct conventions on a real workspace
+- [ ] Add `tokio::task::spawn_blocking` around `workspace_map_for_spec` call in `assemble`
+- [ ] Confirm `drain_dispatch_learning_events` no longer calls `load_or_new` for the global cascade router path (add a trace log or test assertion)
+- [ ] Confirm `record_template_dispatch_feedback` still works correctly (existing code path, not changed)
+- [ ] Change `ModelCallService.config` to `Arc<RokoConfig>` and build the workspace; fix all type errors
+- [ ] Run `cargo test -p roko-agent` and confirm no regressions
+- [ ] Add unit test for `count_changed_files` in a non-git temp dir and confirm it returns 0 without spawning git
+- [ ] Run `cargo test --workspace`
+- [ ] Run `cargo clippy --workspace --no-deps -- -D warnings`
 
-- `crates/roko-compose/src/prompt_assembly_service.rs` — sync I/O at lines 752, 784; async call sites at lines 373, 433
-- `crates/roko-serve/src/dispatch.rs` — `drain_dispatch_learning_events` (line 2547), `record_cascade_router_observation_at` (line 2682), cached path (line 2021)
-- `crates/roko-learn/src/model_call_feedback.rs` — `ModelCallFeedbackRecorder::from_learn_dir` calls `load_or_new` (line 81)
-- `crates/roko-agent/src/model_call_service.rs` — `config_for_model` (line 471), call site in `call` (line 2278)
-- `crates/roko-core/src/config/schema.rs` — `RokoConfig` struct (line 89), 30+ fields
-- `crates/roko-runtime/src/effect_driver.rs` — `count_changed_files` (line 708), call site (line 262)
+## Files to Modify
+
+| File | Change |
+|---|---|
+| `crates/roko-compose/src/prompt_assembly_service.rs` | Wrap `conventions_for_spec` and `workspace_map_for_spec` calls in `tokio::task::spawn_blocking` |
+| `crates/roko-serve/src/dispatch.rs` | Use `AppState.cascade_router` cache in `record_cascade_router_outcome_with_layout` |
+| `crates/roko-agent/src/model_call_service.rs` | Change `config: RokoConfig` to `config: Arc<RokoConfig>`; update `config_for_model`, `ProviderCallCell` |
+| `crates/roko-runtime/src/effect_driver.rs` | Add `.git` existence check at top of `count_changed_files` |
+| Callers of `ModelCallService::with_config` | Wrap config in `Arc::new()` or `Arc::clone()` as needed |

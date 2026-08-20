@@ -22,7 +22,7 @@
 //!
 //! [`runtime_feedback`]: crate::runtime_feedback
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use roko_core::agent::ModelSpec;
@@ -164,6 +164,11 @@ pub struct ModelRouter {
     /// exceeds this are demoted to secondary candidates during health-aware
     /// routing.  Has no effect when `latency_registry` is `None`.
     latency_threshold_ms: Option<f64>,
+    /// Set of model slugs that have a configured, credential-ready provider
+    /// in the current workspace.  When non-empty, cascade router results are
+    /// filtered: a model whose slug is not in this set is replaced with the
+    /// `default_slug` fallback.  Empty means no filtering (backwards compat).
+    configured_models: HashSet<String>,
 }
 
 impl std::fmt::Debug for ModelRouter {
@@ -178,6 +183,7 @@ impl std::fmt::Debug for ModelRouter {
                 &self.latency_registry.as_ref().map(|_| ".."),
             )
             .field("latency_threshold_ms", &self.latency_threshold_ms)
+            .field("configured_models", &self.configured_models.len())
             .finish()
     }
 }
@@ -192,6 +198,7 @@ impl ModelRouter {
             model_providers: HashMap::new(),
             latency_registry: None,
             latency_threshold_ms: None,
+            configured_models: HashSet::new(),
         }
     }
 
@@ -236,6 +243,19 @@ impl ModelRouter {
     ) -> Self {
         self.latency_registry = Some(registry);
         self.latency_threshold_ms = Some(threshold_ms);
+        self
+    }
+
+    /// Restrict cascade router results to models that have a configured,
+    /// credential-ready provider in the current workspace.
+    ///
+    /// When non-empty, any cascade router result whose slug is absent from
+    /// `models` is replaced with the `default_slug` fallback.  When empty
+    /// (the default), no filtering occurs — preserving backwards
+    /// compatibility.
+    #[must_use]
+    pub fn with_configured_models(mut self, models: HashSet<String>) -> Self {
+        self.configured_models = models;
         self
     }
 
@@ -288,6 +308,25 @@ impl ModelRouter {
                 } else {
                     router.route(ctx)
                 };
+                // Guard: if the workspace has a known set of configured
+                // providers, reject models that lack credentials.  This
+                // prevents the cascade router from selecting a model whose
+                // provider isn't available (e.g. learned state referencing
+                // `claude-opus` when no Anthropic key is present).
+                if !self.configured_models.is_empty()
+                    && !self.configured_models.contains(&cascade_model.primary.slug)
+                {
+                    tracing::warn!(
+                        selected = %cascade_model.primary.slug,
+                        fallback = %self.default_slug,
+                        "cascade router selected model without a configured provider; \
+                         falling back to default"
+                    );
+                    return Ok(ModelChoice {
+                        model: ModelSpec::from_slug(&self.default_slug),
+                        source: ModelChoiceSource::Router,
+                    });
+                }
                 return Ok(ModelChoice {
                     model: cascade_model.primary,
                     source: ModelChoiceSource::Router,
@@ -690,5 +729,88 @@ mod tests {
 
         assert_eq!(choice.model.slug, "gpt-5");
         assert_eq!(choice.source, ModelChoiceSource::Override);
+    }
+
+    // ── Configured-models filtering tests (dogfood critical) ─────────
+
+    #[test]
+    fn cascade_router_falls_back_when_model_not_configured() {
+        // Cascade router knows about model-b but the workspace only has
+        // model-a configured.  The router must fall back to the default
+        // rather than returning a model without credentials.
+        let cascade = Arc::new(CascadeRouter::new(vec!["model-b".into()]));
+        let configured: HashSet<String> = ["model-a".into()].into_iter().collect();
+        let router = ModelRouter::new(Some(cascade))
+            .with_default_slug("model-a")
+            .with_configured_models(configured);
+
+        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
+        inputs.routing_context = Some(routing_context());
+
+        let choice = router.route(&inputs).unwrap();
+        assert_eq!(
+            choice.model.slug, "model-a",
+            "must fall back to default when cascade picks an unconfigured model"
+        );
+        assert_eq!(
+            choice.source,
+            ModelChoiceSource::Router,
+            "source must remain Router (the router made the decision, just filtered)"
+        );
+    }
+
+    #[test]
+    fn cascade_router_passes_through_when_model_is_configured() {
+        // Use two well-known model slugs so the cascade router's internal
+        // role/tier logic picks one of them. Both are in the configured set,
+        // so whichever the router picks must pass through.
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "claude-haiku-4-5".into(),
+        ]));
+        let configured: HashSet<String> = ["claude-sonnet-4-6".into(), "claude-haiku-4-5".into()]
+            .into_iter()
+            .collect();
+        let router = ModelRouter::new(Some(cascade))
+            .with_default_slug("fallback-default")
+            .with_configured_models(configured.clone());
+
+        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
+        inputs.routing_context = Some(routing_context());
+
+        let choice = router.route(&inputs).unwrap();
+        assert!(
+            configured.contains(&choice.model.slug),
+            "configured model must pass through without fallback, got {:?}",
+            choice.model.slug,
+        );
+        assert_ne!(
+            choice.model.slug, "fallback-default",
+            "should NOT have fallen back since the cascade model is configured"
+        );
+        assert_eq!(choice.source, ModelChoiceSource::Router);
+    }
+
+    #[test]
+    fn empty_configured_models_skips_filtering() {
+        // When configured_models is empty, no filtering occurs (backwards compat).
+        // Use real model slugs that the cascade router recognises.
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "claude-haiku-4-5".into(),
+        ]));
+        let router = ModelRouter::new(Some(cascade));
+        // configured_models defaults to empty -- no filtering.
+
+        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
+        inputs.routing_context = Some(routing_context());
+
+        let choice = router.route(&inputs).unwrap();
+        assert!(
+            choice.model.slug == "claude-sonnet-4-6" || choice.model.slug == "claude-haiku-4-5",
+            "empty configured_models must not filter; got {:?}",
+            choice.model.slug,
+        );
+        assert_eq!(choice.source, ModelChoiceSource::Router);
     }
 }

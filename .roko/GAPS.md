@@ -732,13 +732,15 @@ See `crates/roko-graph/src/` for details.
 > Fully specced backlog items. Master index at `tmp/backlog/00-INDEX.md`.
 > Each spec is self-contained: problem, what exists, what to do, acceptance criteria.
 >
-> Last reconciled: 2026-08-17
+> Last reconciled: 2026-08-18 (75-82 added from examples dogfood audit)
 
 ### P0 — Critical
 
 | # | Item | Size |
 |---|---|---|
 | 17 | ACP stability hardening (7 P0 panics, 12 race conditions) | L |
+| 75 | Graph example schema drift (3 of 8 examples broken, wrong condition types) | S |
+| 78 | Efficiency gate_passed structurally 0% (emitted before gate runs) | S |
 
 ### P1 — High
 
@@ -754,6 +756,10 @@ See `crates/roko-graph/src/` for details.
 | 49 | Serve CORS restrictive | S |
 | 50 | Serve rate and body limits | S |
 | 51 | Serve agent name validation (path traversal) | S |
+| 60 | Safety dispatch hardening (contract fail-open, optional SafetyLayer, Hermes/OpenClaw bypass) | M |
+| 76 | Example config quality (16 issues: stale fields, wrong ports, missing config_version) | M |
+| 77 | CLI UX consistency (8 command name/alias/error message mismatches) | S |
+| 79 | Doctor/onboarding diagnostics (misleading API key and base URL warnings) | M |
 
 ### P2 — Medium
 
@@ -786,6 +792,19 @@ See `crates/roko-graph/src/` for details.
 | 56 | ACP single-agent chat tools require client capability declaration | M |
 | 57 | Plan generation escalation (no retry on initial agent crash) | S |
 | 58 | Performance hot-path fixes (sync I/O on Tokio, per-dispatch loads) | M |
+| 61 | Agent dispatch consolidation (5 paths, safety/enrichment divergence) | XL |
+| 62 | Relay topic namespace migration (colon→dot, ~90 call sites) | M |
+| 67 | HDC prompt assembly wiring (feature flag not enabled by consumers) | M |
+| 68 | Budget pre-dispatch admission (roko run has zero budget checks, BudgetPredictor unwired) | S |
+| 69 | SSE parsing deduplication (4 implementations, whitespace divergence) | S |
+| 70 | ACP novel workflow gaps (affect/mood, dream journal, tournament mode) | M |
+| 72 | Pool architecture reconciliation (3 overlapping pools, no migration plan) | S |
+| 80 | Learning subsystem data quality (7 issues: stale temps, empty receipts, per-model staging) | M |
+| 81 | Layer-check false positives (8 violations, all false: --version probes + test code) | S |
+| 82 | Graph stub cell warnings (no user indication that cells are PassthroughCell no-ops) | S |
+| 83 | Dream consolidation deadlock (tokio spawn_blocking + nested block_on) | S |
+| 84 | Cascade router task category awareness (stages 2-3 ignore task_category) | M |
+| 85 | Plan generation TOML reliability (~50% first-attempt success rate) | S |
 
 ### P3 — Low / Phase 2+
 
@@ -798,6 +817,13 @@ See `crates/roko-graph/src/` for details.
 | 41 | TUI push-mode panel data (topology events) | S |
 | 42 | Duplicate type consolidation (~14 families) | S |
 | 59 | HuggingFace provider (Phase 1: OpenAI-compat config-only) | S |
+| 63 | Zero-config onboarding wizard (3 fragmented init paths → unified setup) | M |
+| 64 | Model discovery UX (capabilities/aliases/costs hidden from CLI list) | S |
+| 65 | CLI verb consolidation (42 top-level verbs → ~20, 165 total paths) | L |
+| 66 | Context sources & editor integration (--context gap, ACP editor push, VS Code) | L |
+| 71 | TUI design system alignment (theme RGB drift, 81 inline color literals) | S |
+| 73 | UX backlog rollup (13 uncovered items across 4 themes) | M |
+| 74 | Unified evaluation framework (EvidenceCollector/Criterion/Profile) | XL |
 
 Items 06, 07, 08, 36 (output budgeting, inference cache, key rotation, atomic file I/O)
 are fully implemented and removed from the active index.

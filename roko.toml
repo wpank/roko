@@ -300,6 +300,11 @@ auto_cleanup_on_complete = true
 kind = "claude_cli"
 command = "claude"
 
+[providers.zai]
+kind = "openai_compat"
+base_url = "https://api.z.ai/api/paas/v4"
+api_key_env = "ZAI_API_KEY"
+
 # Overriding global claude-sonnet to use claude_cli provider instead of API.
 # The key must match the global key exactly to override (not create a duplicate).
 [models.claude-sonnet]
@@ -308,6 +313,14 @@ slug = "claude-sonnet-4-6"
 context_window = 200000
 tool_format = "anthropic_blocks"
 max_tools = 32
+
+[models.glm51]
+provider = "zai"
+slug = "glm-5.1"
+supports_tools = true
+supports_thinking = true
+context_window = 128000
+max_output = 4096
 
 # -- Verification gates --
 # Rust projects use cargo for compile, test, and lint checks.

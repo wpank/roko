@@ -1,144 +1,139 @@
-# ACP Test Coverage Gaps
+# 46 — ACP Test Coverage Gaps
 
-**Priority**: P2
+**Priority**: P2 — Known coverage gaps in ACP error handling and cross-provider tool dispatch
 **Size**: M (1-3 days)
+**Crates**: `roko-acp` (`crates/roko-acp/`), `roko-agent` (`crates/roko-agent/`)
+**Depends on**: None
 
 ---
 
-## Problem
+## Background
 
-The ACP (Agent Client Protocol) layer has 180 unit tests that pass, but three specific
-coverage gaps are known and unfixed:
+The ACP (Agent Client Protocol) layer has 16 integration tests across two test files (`protocol_conformance.rs`: 11 tests, `telemetry_integration.rs`: 5 tests) that all pass. However, three specific coverage gaps remain unfixed: one error propagation path that lacks a test verifying it works, one silent failure mode when an MCP subprocess crashes, and one cross-provider tool dispatch scenario where a regression could go undetected.
 
-**Gap 1: stdin-EOF does not produce a clean exit.**
-The `StdioTransport` in `crates/roko-acp/src/transport.rs` reads incoming JSON-RPC messages
-line-by-line. When the editor closes stdin (e.g. when Cursor is shut down mid-session), the
-`read_line` future returns `Ok(0)` to signal EOF. The current handler loop does not
-distinguish this from a transport error; it either hangs waiting for the next message or
-propagates an error code to the caller instead of performing a clean orderly shutdown.
-This shows up as a failure in the 63-test shell-based integration suite.
+**Gap 1: stdin-EOF clean shutdown path is implemented but has no unit test.**
+`StdioTransport::read_message()` in `crates/roko-acp/src/transport.rs:117` returns `Ok(None)` when `read_line` reads 0 bytes (EOF). The handler loop in `run_acp_server_with_transport` at `crates/roko-acp/src/handler.rs:146` correctly handles `Ok(None)` by logging and returning `Ok(())`. The behavior is correct, but there is no test that exercises this path — no test sends EOF to the server and verifies clean exit. A regression in this path (e.g., someone adding an `Err` branch that forgets to handle the None case) would not be caught until integration testing.
 
 **Gap 2: MCP subprocess crashes are silently swallowed.**
-`McpClient<StdioTransport>` in `crates/roko-agent/src/mcp/client.rs` holds a `Child`
-process handle (`_child: Mutex<Child>`) with `kill_on_drop(true)`. When the spawned MCP
-server process crashes (exits unexpectedly), the next call to `roundtrip` will fail with a
-broken-pipe or EOF error from `stdin.write_all`. That error surfaces as
-`McpError::Transport(...)` inside `McpToolHandler::call` in `handler.rs`.
+`McpClient<StdioTransport>` in `crates/roko-agent/src/mcp/client.rs` holds a `_child: Mutex<Child>` with `kill_on_drop(true)` (line 202, 230). When the spawned MCP server process crashes, the next call to the client will fail with a broken-pipe or EOF error. That error is recorded in `McpErrorAccumulator` (via `McpHandlerResolver`) with `is_transport_error = true`. However, `crates/roko-acp/src/bridge_events.rs` never queries the `McpErrorAccumulator`. The IDE receives no notification that an MCP server has crashed — the session just silently stops responding to tools from that server.
 
-`McpErrorAccumulator` exists (`crates/roko-agent/src/mcp/error_accumulator.rs`) and is
-wired to `McpHandlerResolver`. Transport errors from crashed servers are recorded by the
-accumulator. However, the ACP session never queries the accumulator's crash-category errors
-and never emits a user-visible `session/update` with an error block. From the IDE's
-perspective the server silently stops responding — no visible indication.
+**Gap 3: Cross-provider tool dispatch matrix is incomplete.**
+`crates/roko-agent/tests/tool_loop_integration.rs` has one test (`tool_loop_glm_e2e`) that exercises the `read_file` tool through an OpenAI-compatible (GLM) backend. `crates/roko-agent/tests/mock_provider.rs` provides `mock_openai_with_tool_calls()` that sequences one `read_file` call. No test exercises `write_file`, `edit_file`, `bash`, or `glob` through any provider. No test exercises any tool through an Anthropic-format backend (Anthropic JSON fixtures exist in `crates/roko-agent/tests/fixtures/common/` but only cover error responses, not tool call/result sequences). If a translator change breaks tool call deserialization for one provider or one tool, no test catches it.
 
-**Gap 3: No cross-provider tool dispatch matrix.**
-The mock infrastructure in `crates/roko-agent/tests/mock_provider.rs` provides
-`mock_openai_compat()` (wiremock-backed mock server) and `mock_openai_with_tool_calls()`
-(a stateful responder that plays back a tool-call/result sequence). Anthropic mock responses
-exist as JSON fixtures in `tests/fixtures/`. Tests for individual adapters exist
-(`openai_parity.rs`, `cursor_parity.rs`, `codex_parity.rs`), but no test verifies that
-the five standard builtin tools (`read_file`, `write_file`, `edit_file`, `bash`, `glob`)
-work end-to-end through both the OpenAI-compat backend and the Anthropic API path using
-mock providers. If a translator change breaks tool call deserialization on one backend but
-not another, no test catches it.
+## Current State
 
----
+1. **`StdioTransport::read_message()` at `crates/roko-acp/src/transport.rs:117`**: returns `Ok(None)` when `bytes_read == 0` (line 124). The transport test at line 299 (`test_read_eof`) uses `empty()` as the reader and calls `read_message()`, asserting `Ok(None)` — so there IS an existing unit test for the transport's EOF behavior. However, there is no end-to-end test that runs the full `run_acp_server_with_transport` loop with an EOF input and verifies the loop exits cleanly with `Ok(())`.
 
-### What already exists
+2. **`McpHandlerResolver` at `crates/roko-agent/src/mcp/handler.rs:23`**: takes an optional `McpErrorAccumulator` via `with_error_accumulator`. When an MCP tool call fails with a transport error, `McpToolHandler::call` records it in the accumulator. The accumulator exposes `snapshot()` and `drain()` methods (`error_accumulator.rs:99`). `McpErrorRecord.is_transport_error` (line 30) is `true` for broken-pipe or EOF errors from a crashed subprocess.
 
-| Component | Location | Status |
-|---|---|---|
-| `StdioTransport` (ACP) | `crates/roko-acp/src/transport.rs` | EXISTS — `BufReader<Stdin>`, `read_line`-based loop; no EOF branch |
-| ACP handler main loop | `crates/roko-acp/src/handler.rs` | EXISTS — `run_acp_server_inner` main dispatch loop |
-| `McpErrorAccumulator` | `crates/roko-agent/src/mcp/error_accumulator.rs` | EXISTS — records errors, `snapshot()` / `drain()` API |
-| `McpHandlerResolver` with error accumulator | `crates/roko-agent/src/mcp/handler.rs:50` | EXISTS — `with_error_accumulator()` wired; accumulator polled is caller's responsibility |
-| `McpErrorRecord.is_transport_error` | `crates/roko-agent/src/mcp/error_accumulator.rs:31` | EXISTS — flag distinguishes transport vs server errors |
-| `mock_openai_compat()` | `crates/roko-agent/tests/mock_provider.rs:9` | EXISTS — wiremock server, single response |
-| `mock_openai_with_tool_calls()` | `crates/roko-agent/tests/mock_provider.rs:22` | EXISTS — stateful tool-call/result sequence responder |
-| Anthropic JSON fixtures | `crates/roko-agent/tests/fixtures/` | EXISTS — recorded response bodies |
-| `fixture_loading.rs` | `crates/roko-agent/tests/fixture_loading.rs` | EXISTS — loads fixture JSON, drives adapters |
-| ACP unit tests (180) | `crates/roko-acp/tests/` | PASS — `protocol_conformance.rs`, `telemetry_integration.rs` |
-| Shell integration suite | `crates/roko-acp/tests/` (shell scripts) | PARTIAL — 63 tests, 3 known failures |
+3. **`bridge_events.rs` never queries `McpErrorAccumulator`**: The ACP session does not hold or query an `McpErrorAccumulator`. The `handle_session_prompt_inner` function builds a `McpHandlerResolver` (when MCP servers are configured) but discards any accumulator reference after the tool loop completes.
 
----
+4. **`crates/roko-agent/tests/mock_provider.rs`**: `mock_openai_with_tool_calls()` at line 22 serves a `read_file` tool call on the first request and a plain text response on the second. The `OpenAiToolCallSequence` responder (line 54) is stateful but hardcoded to `read_file` only.
 
-### What is missing
+5. **`crates/roko-agent/tests/tool_loop_integration.rs`**: one test (`tool_loop_glm_e2e`) uses `spawn_chat_server` (a raw TCP server, not wiremock) and exercises only `read_file`. No Anthropic-format fixture exists for tool-call sequences.
 
-**Fix 1: Clean EOF handling in `handler.rs` / `transport.rs`**
+6. **`crates/roko-agent/tests/fixture_loading.rs`**: loads JSON from `tests/fixtures/` and drives adapters. The `common/` directory contains only error response fixtures (401, 429, 500). No tool-call or tool-result response fixtures exist for Anthropic format.
 
-`StdioTransport::receive_message` (or whatever the read method is called in the ACP
-transport) should detect the `Ok(0)` return from `read_line` (zero bytes = EOF) and return
-a distinct variant — either a new `TransportError::Eof` or `Ok(None)` from an
-`Option`-returning method. The handler loop in `run_acp_server_inner` must handle this
-variant by performing graceful shutdown: cancel in-flight sessions, flush any pending
-session updates, and return `Ok(())` rather than an error. This is the same pattern used
-by well-behaved language server processes.
+7. **`mock_openai_compat()` at line 9**: returns a single static chat completion. Does not support tool calls.
 
-**Fix 2: MCP crash detection and user-visible error surfacing**
+## Implementation Plan
 
-When `McpErrorAccumulator` collects a record with `is_transport_error = true` that
-corresponds to a broken-pipe or EOF error (indicating subprocess death), the ACP session
-should emit a `session/update` notification with an error content block to the editor.
-The right place is after each tool loop turn: query the accumulator for transport errors,
-and if any are present, include a structured error block in the next outbound update.
-Alternatively, a background task that watches `Child::wait()` (already held in
-`_child: Mutex<Child>`) can proactively detect subprocess exit and push a notification
-without waiting for the next tool call to fail.
+### Fix 1: Add end-to-end stdin-EOF test for the ACP handler loop
 
-**Fix 3: Cross-provider tool dispatch matrix**
+In `crates/roko-acp/tests/protocol_conformance.rs`, add a test that runs the full `run_acp_server_with_transport` loop with an `empty()` reader (immediately returns EOF on read):
 
-Create `crates/roko-agent/tests/tool_matrix/` (or a new test file in the existing
-`tests/` directory) with tests that:
+```rust
+#[tokio::test]
+async fn stdin_eof_causes_clean_server_exit() {
+    use tokio::io::empty;
+    let config = AcpConfig::default_for_testing(tmp_workdir());
+    let mut transport = StdioTransport::from_io(empty(), Vec::new());
+    let result = run_acp_server_with_transport(config, &mut transport).await;
+    assert!(result.is_ok(), "ACP server should exit cleanly on EOF, got: {result:?}");
+}
+```
 
-- Use `mock_openai_compat()` to back an OpenAI-compat provider adapter.
-- Drive the tool loop through `write_file`, `read_file`, `bash`, `edit_file`, and `glob`
-  tool calls in sequence, using `mock_openai_with_tool_calls()` to return the sequence.
-- Assert that each tool call is correctly deserialized, dispatched to the builtin handler,
-  and that the tool result is included in the next model turn as expected.
-- Repeat the same sequence using an Anthropic fixture (the mock HTTP server returns the
-  recorded fixture body for tool-call and tool-result turns).
+This test runs the full handler loop (not just the transport layer) and verifies that `Ok(())` is returned when the input is immediately exhausted. The transport test at `transport.rs:299` already tests `read_message()` in isolation; this test covers the integration path.
 
-The tests do not need live API keys. All network traffic is intercepted by wiremock or
-returned from in-process fixtures.
+Estimated: ~15 lines in `protocol_conformance.rs`.
 
----
+### Fix 2: MCP crash detection and user-visible error surfacing
 
-## Where to make changes
+When `McpErrorAccumulator` collects a transport error (indicating subprocess death), the ACP session should include an error notification in the next `session/update` to the IDE.
 
-| File | Change |
-|---|---|
-| `crates/roko-acp/src/transport.rs` | Add `Eof` variant to `TransportError`; distinguish `Ok(0)` from `read_line` |
-| `crates/roko-acp/src/handler.rs` | Handle `TransportError::Eof` in the main dispatch loop with graceful shutdown |
-| `crates/roko-acp/src/bridge_events.rs` | After each tool loop turn, query the `McpErrorAccumulator` for transport errors and emit a user-visible error block |
-| `crates/roko-agent/src/mcp/client.rs` | Optionally expose `child_exit_status()` or a watch channel so callers can proactively detect process death |
-| `crates/roko-agent/tests/tool_matrix.rs` (new) | Cross-provider tool dispatch matrix for OpenAI-compat and Anthropic backends |
+**Step 2a**: Pass an `McpErrorAccumulator` instance into `handle_session_prompt_inner` when MCP servers are configured. Currently the accumulator is created inside the tool loop setup and discarded.
 
----
+**Step 2b**: After the tool loop completes (or after each tool call turn), query the accumulator for transport errors:
 
-## Acceptance criteria
+```rust
+if let Some(ref acc) = mcp_error_acc {
+    let transport_errors: Vec<_> = acc.drain().into_iter()
+        .filter(|r| r.is_transport_error)
+        .collect();
+    if !transport_errors.is_empty() {
+        let error_text = transport_errors.iter()
+            .map(|r| format!("MCP server '{}': {}", r.server_name, r.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+        send_session_update(transport, session_id, SessionUpdate::error_block(error_text)).await?;
+    }
+}
+```
 
-1. Closing stdin on a running `roko acp` process (e.g. `echo "" | roko acp`) causes the
-   process to exit with status 0 rather than hanging or exiting with a non-zero error code.
-   The corresponding unit test in `crates/roko-acp/tests/protocol_conformance.rs` passes.
-2. When a mock MCP subprocess crashes (process killed mid-session), the next ACP
-   `session/update` notification includes an error block visible to the IDE client. A unit
-   test validates this using a process that immediately exits.
-3. `crates/roko-agent/tests/tool_matrix.rs` (or equivalent) defines at least one test per
-   builtin tool (`read_file`, `write_file`, `edit_file`, `bash`, `glob`) for both the
-   OpenAI-compat and Anthropic backends using mock providers. All tests pass under
-   `cargo test -p roko-agent`.
+**Step 2c**: Add a unit test using a mock MCP process that exits immediately. Verify that the next ACP session update after the tool call failure contains an error block visible to the IDE. Use `tokio::process::Command` with a short-lived subprocess (`echo` or a script that exits 1) as the MCP server.
+
+Estimated: ~80 lines across `bridge_events.rs` and a new test.
+
+### Fix 3: Cross-provider tool dispatch matrix
+
+Create `crates/roko-agent/tests/tool_matrix.rs` with tests that exercise each standard builtin tool through both provider backends.
+
+**For the OpenAI-compat backend**, extend `mock_openai_with_tool_calls()` in `mock_provider.rs` to accept a configurable tool name and arguments, or add new mock helpers per tool:
+
+```rust
+pub async fn mock_openai_with_tool_call(tool: &str, args: Value) -> (MockServer, String) {
+    // Returns a tool_calls response with the specified tool on request 0,
+    // then a plain stop response on request 1.
+}
+```
+
+Write tests for `write_file`, `read_file`, `edit_file`, `bash`, and `glob` that:
+1. Set up a wiremock server that returns the tool-call sequence
+2. Drive the `ToolLoop` through the call
+3. Assert the tool was dispatched to the correct handler
+4. Assert the tool result was included in the subsequent model request
+
+**For the Anthropic backend**, add fixture files in `crates/roko-agent/tests/fixtures/common/` with Anthropic-format tool call and tool result response bodies, then add tests in `fixture_loading.rs` (or a new `tool_matrix.rs`) that use those fixtures.
+
+Use `roko_std::tool::handlers::handler_for` (already imported in `tool_loop_integration.rs:16`) to get real handlers for each tool, with a tempdir as the worktree.
+
+No live API keys required; all network traffic is intercepted by wiremock or returned from in-process fixtures.
+
+Estimated: ~200 lines in new test file(s) plus fixture JSON files.
+
+## Acceptance Criteria
+
+1. A new test `stdin_eof_causes_clean_server_exit` in `crates/roko-acp/tests/protocol_conformance.rs` passes: running the full `run_acp_server_with_transport` loop with an `empty()` reader returns `Ok(())`.
+2. When a mock MCP subprocess crashes (process killed mid-session), the next ACP `session/update` notification includes an error block. A unit test validates this using a process that exits immediately.
+3. `crates/roko-agent/tests/tool_matrix.rs` (or equivalent) defines at least one test per builtin tool (`read_file`, `write_file`, `edit_file`, `bash`, `glob`) for the OpenAI-compat backend using a wiremock mock server. All tests pass under `cargo test -p roko-agent`.
 4. `cargo test -p roko-acp` and `cargo test -p roko-agent` pass with zero failures.
 5. `cargo clippy -p roko-acp -p roko-agent -- -D warnings` is clean.
 
----
+## Verification Checklist
 
-## References
+- [ ] `cargo test -p roko-acp -- stdin_eof` passes
+- [ ] MCP crash test: kill a mock subprocess mid-session; verify `session/update` contains error block
+- [ ] `cargo test -p roko-agent -- tool_matrix` passes for all 5 tools via OpenAI-compat backend
+- [ ] `cargo test -p roko-acp` passes (all 16 existing tests still pass, plus new tests)
+- [ ] `cargo test -p roko-agent` passes
+- [ ] `cargo clippy -p roko-acp -p roko-agent -- -D warnings` is clean
 
-- `crates/roko-acp/src/transport.rs` — `StdioTransport`, `TransportError`, `read_line` loop
-- `crates/roko-acp/src/handler.rs` — `run_acp_server_inner`, main message dispatch loop
-- `crates/roko-agent/src/mcp/client.rs:198` — `StdioTransport`, `_child: Mutex<Child>`, `kill_on_drop(true)`
-- `crates/roko-agent/src/mcp/error_accumulator.rs` — `McpErrorAccumulator`, `McpErrorRecord.is_transport_error`
-- `crates/roko-agent/src/mcp/handler.rs` — `McpHandlerResolver`, `with_error_accumulator`
-- `crates/roko-agent/tests/mock_provider.rs` — wiremock mock servers for OpenAI-compat
-- `crates/roko-agent/tests/fixture_loading.rs` — fixture-based adapter tests
-- `crates/roko-acp/tests/protocol_conformance.rs` — existing ACP unit tests (180 pass)
+## Files to Modify
+
+| File | Change |
+|---|---|
+| `crates/roko-acp/tests/protocol_conformance.rs` | Add `stdin_eof_causes_clean_server_exit` test that exercises the full handler loop with empty reader |
+| `crates/roko-acp/src/bridge_events.rs` | Propagate `McpErrorAccumulator` reference after tool loop; query for transport errors and emit error block in `session/update` |
+| `crates/roko-agent/tests/mock_provider.rs` | Add configurable mock helpers per tool (`mock_openai_with_tool_call(tool, args)`) |
+| `crates/roko-agent/tests/tool_matrix.rs` (new) | Cross-provider tool dispatch matrix for `read_file`, `write_file`, `edit_file`, `bash`, `glob` via OpenAI-compat backend |
+| `crates/roko-agent/tests/fixtures/common/` | Add Anthropic-format tool call and tool result fixture JSON files |

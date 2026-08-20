@@ -1,115 +1,51 @@
-# Backlog Spec: Express Mode (Skip Strategist for Trivial Fixes)
+# 05 — Express Mode
 
-**Status**: Backlog
-**Priority**: P2 — optimization for common trivial-fix scenarios
+**Priority**: P2 — removes a full strategist LLM call (~$1-3, 30-60s) for the most common gate failure patterns (format/lint/compile)
 **Size**: M (2-3 days)
-**Origin**: `tmp/architecture-archive/20-orchestrator-gaps.md`, Gap 1 (lines 30-58)
-**Related types**: `crates/roko-gate/src/review_verdict.rs`
-**Wire target**: `crates/roko-cli/src/runner/event_loop.rs`
+**Crates**: `crates/roko-gate/` (predicate methods), `crates/roko-cli/` (runner wiring)
+**Depends on**: None
 
 ---
 
-## Problem Statement
+## Background
 
-Every gate failure — regardless of how trivial the underlying issue is — goes through the
-full strategist → implementer pipeline. A task whose only failing issues are formatting
-violations, unused imports, or doc-comment style follows the same expensive path as a task
-with a genuine architectural problem or failing test suite.
+Roko's plan runner executes agent tasks in a pipeline: an implementer agent writes code, gate rungs validate it (compile, lint, test, etc.), and when gates fail the runner typically dispatches a "strategist" agent to analyze the failures and produce a revision plan before re-dispatching the implementer. The strategist phase exists to handle complex, non-trivial failures that require design judgment.
 
-The strategist phase exists to handle non-trivial design decisions. For mechanical fixes
-(style, lint, formatting, unused bindings, doc corrections), the strategist adds no value:
-it consumes one full LLM call ($1–3 and 30–60s of wall-clock time) to produce a plan
-that the implementer could have generated directly from the raw gate feedback.
+However, the most common gate failures in practice are mechanical: formatting violations caught by `cargo fmt`, clippy lint violations, or simple compile errors like missing semicolons or unused imports. For these failures, the strategist adds no value — it consumes one full LLM call (typically $1-3 and 30-60 seconds of wall-clock time) to produce a plan that the implementer could have derived directly from the raw gate error output.
 
-At P2 priority this is the most accessible performance win in the runner because trivial
-failures are the most common gate failure mode in practice (style/lint/format failures
-from `cargo fmt`, `cargo clippy`, or doc-comment checks).
+Express mode is a phase-transition optimization: when every issue in a gate failure verdict is "quick-fixable" (belongs to a mechanical category), the runner skips the strategist dispatch entirely and routes directly to the implementer with structured gate feedback pre-injected into the prompt. This is purely a routing change — the implementer receives the same gate output, and the gate pipeline itself is unchanged.
 
----
+## Current State
 
-## Existing Types (do NOT rebuild)
+1. All required types already exist in `/Users/will/dev/nunchi/roko/roko/crates/roko-gate/src/review_verdict.rs`. No new structs are needed.
 
-All required types already exist in `crates/roko-gate/src/review_verdict.rs`. The gap is
-entirely in wiring and in adding a small predicate that maps the existing
-`IssueCategory` enum values to the quick-fixable classification.
+2. `IssueCategory` enum is defined at line 25 with 10 variants: `CompileError`, `TestFailure`, `LintViolation`, `IncompleteImpl`, `SecurityIssue`, `PerformanceRegression`, `FormatViolation`, `SymbolMissing`, `IntegrationFailure`, `NeedsHumanReview`. It has no `is_quick_fixable()` method.
 
-| Type | File | Status |
-|------|------|--------|
-| `ReviewDecision` | `review_verdict.rs:13` | EXISTS — `Approve | Revise | Skip` |
-| `ReviewIssue` | `review_verdict.rs:50` | EXISTS — has `category: IssueCategory`, `blocking: bool` |
-| `IssueCategory` | `review_verdict.rs:23` | EXISTS — 10 variants |
-| `ReviewVerdict` | `review_verdict.rs:74` | EXISTS — `decision`, `issues`, `blocking_count` |
-| `ParsedReviewVerdict` | `review_verdict.rs:137` | EXISTS — result of `parse_structured_review_verdict()` |
-| `ReviewParseSource` | `review_verdict.rs:123` | EXISTS — tracks JSON / JsonCodeBlock / TomlCodeBlock / FailClosed |
-| `parse_structured_review_verdict()` | `review_verdict.rs:184` | EXISTS — full fallback chain implemented |
+3. `ReviewVerdict` struct is defined at line 74 with fields `decision: ReviewDecision`, `issues: Vec<ReviewIssue>`, `blocking_count: usize`, `advisory_count: usize`, `rung_results: Vec<RungResult>`. It has no `all_issues_quick_fixable()` method.
 
-The `IssueCategory` enum currently has these variants:
+4. `ReviewVerdict::from_verdicts()` is implemented at line 354. It maps gate rungs to `IssueCategory` values: rung 0 → `CompileError`, rung 1 → `LintViolation`, rungs 2/4/5 → `TestFailure`, rung 3 → `SymbolMissing`, rung 6+ → `NeedsHumanReview`. Note that `FormatViolation` is not currently emitted by `from_verdicts()` — it would only appear from a parsed agent reviewer output. The express-mode predicate must work correctly regardless.
 
-```rust
-pub enum IssueCategory {
-    CompileError,       // <- quick-fixable
-    TestFailure,        // NOT quick-fixable
-    LintViolation,      // <- quick-fixable
-    IncompleteImpl,     // NOT quick-fixable
-    SecurityIssue,      // NOT quick-fixable
-    PerformanceRegression, // NOT quick-fixable
-    FormatViolation,    // <- quick-fixable
-    SymbolMissing,      // NOT quick-fixable
-    IntegrationFailure, // NOT quick-fixable
-    NeedsHumanReview,   // NOT quick-fixable
-}
-```
+5. `parse_structured_review_verdict()` is implemented at line 184 with the full fallback chain: raw JSON → fenced `json` block → fenced `toml` block → fail-closed (`NeedsHumanReview`). The fail-closed path ensures that unstructured reviewer text never accidentally triggers express mode.
 
-Note: the gap document's original spec listed `Docs`, `Style`, and `Unused` as separate
-categories. In the actual codebase these map to `FormatViolation` (docs/style) and
-`LintViolation` (unused imports/variables via clippy). The quick-fixable predicate should
-use the actual variant names above.
+6. The runner event loop in `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/runner/event_loop.rs` handles gate failures at lines 4394-4673. When a gate fails and `RetryDecision::should_retry()` is true, the runner calls `begin_gate_retry_rollover()` (line 4497) and `build_gate_retry_context()` (line 4467). There is no express-mode shortcut — the retry always uses the same path regardless of failure category.
 
----
+7. The runner does NOT currently dispatch a separate strategist agent after gate failures. The existing retry path dispatches the implementer directly with `build_gate_retry_context()` output injected into the prompt. This means express mode in this codebase specifically means: using structured `ReviewVerdict` issue classification to select a richer, targeted retry prompt format vs. the current generic one, rather than skipping a strategist agent.
 
-## Proposed Solution
+8. `ReviewIssue` struct at line 50 has a `category: IssueCategory` field and a `blocking: bool` field. Issues are constructed inside `from_verdicts()`.
 
-After the gate pipeline runs and the reviewer produces output, parse the output into a
-`ReviewVerdict`. If every issue in that verdict is quick-fixable, skip the strategist
-agent entirely and dispatch the implementer directly with the gate feedback as context.
+## Implementation Plan
 
-This is purely a phase-transition optimization. It does not change what the implementer
-receives — it only removes the strategist detour.
+### Step 1: Add `IssueCategory::is_quick_fixable()` to `review_verdict.rs`
 
-### Quick-fixable categories
-
-An issue is quick-fixable when an implementer agent can resolve it mechanically without
-strategic planning:
-
-| `IssueCategory` | Quick-fixable | Rationale |
-|-----------------|---------------|-----------|
-| `CompileError` | Yes | Import additions, syntax fixes, missing semicolons are deterministic |
-| `LintViolation` | Yes | Clippy suggestions are mechanical; unused imports/variables have known fixes |
-| `FormatViolation` | Yes | `cargo fmt` / doc-comment style are mechanical |
-| `TestFailure` | **No** | Tests can reveal deeper semantic bugs requiring design decisions |
-| `TypeMismatch` | **No** | May require API surface changes that affect callers |
-| `IncompleteImpl` | **No** | Stub implementations need architectural guidance |
-| `SecurityIssue` | **No** | Security flaws need careful review, not expedited fixes |
-| `PerformanceRegression` | **No** | Regressions may require profiling and design trade-offs |
-| `SymbolMissing` | **No** | Missing public symbols may indicate a wider API contract gap |
-| `IntegrationFailure` | **No** | Cross-crate failures can have far-reaching root causes |
-| `NeedsHumanReview` | **No** | Escalated by LLM judge for a reason |
-
-The invariant: if `all_issues_quick_fixable()` returns `true`, every single issue in the
-verdict can be resolved by applying a known mechanical transformation. No issue belongs
-to a "needs design" category.
-
-### What needs to be built
-
-Two pieces:
-
-**1. `IssueCategory::is_quick_fixable()` predicate** — add to `review_verdict.rs`:
+Add to `crates/roko-gate/src/review_verdict.rs` after the existing `IssueCategory` enum definition (after line 46):
 
 ```rust
 impl IssueCategory {
-    /// True when an implementer agent can fix this category without
-    /// strategic planning.  Quick-fixable categories are mechanical:
-    /// compiler-suggested changes, lint suppressions, and format corrections.
+    /// True when an implementer agent can fix this category mechanically,
+    /// without requiring strategic planning or design decisions.
+    /// Quick-fixable categories have deterministic fixes: compiler-suggested
+    /// changes, clippy suggestions, and formatting corrections.
+    #[must_use]
     pub fn is_quick_fixable(&self) -> bool {
         matches!(
             self,
@@ -121,13 +57,17 @@ impl IssueCategory {
 }
 ```
 
-**2. `ReviewVerdict::all_issues_quick_fixable()` method** — add to `review_verdict.rs`:
+### Step 2: Add `ReviewVerdict::all_issues_quick_fixable()` to `review_verdict.rs`
+
+Add to the existing `impl ReviewVerdict` block (after line 434):
 
 ```rust
 impl ReviewVerdict {
     /// True when every issue in this verdict can be resolved without
-    /// strategist involvement.  Returns `false` on an empty issue list
-    /// (no issues means Approve, not express mode).
+    /// strategist involvement. Returns `false` on an empty issue list
+    /// (no issues means Approve, not express mode). Returns `false`
+    /// if any single issue is not quick-fixable.
+    #[must_use]
     pub fn all_issues_quick_fixable(&self) -> bool {
         !self.issues.is_empty()
             && self.issues.iter().all(|i| i.category.is_quick_fixable())
@@ -135,135 +75,191 @@ impl ReviewVerdict {
 }
 ```
 
-**3. Express-mode phase transition in `event_loop.rs`** — after a gate failure produces a
-`ReviewVerdict` with `decision == ReviewDecision::Revise`, inspect the verdict before
-dispatching the strategist:
+### Step 3: Use `ReviewVerdict` in the gate retry path in `event_loop.rs`
+
+The gate failure handling path lives between lines 4394 and 4673 of `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/runner/event_loop.rs`. The relevant section is where `build_gate_retry_context()` is called at line 4467 to construct the retry prompt injected into the implementer's next attempt.
+
+The change: construct a `ReviewVerdict` from the gate verdicts already present in `completion.verdicts` and, when all issues are quick-fixable, build a more structured retry prompt that explicitly lists the mechanical fixes needed. When issues are not all quick-fixable, fall back to the existing `build_gate_retry_context()` output unchanged.
+
+In the gate-failure retry path (near line 4465-4475), replace the replan context construction:
 
 ```rust
-// In the gate-failure handling path, before strategist dispatch:
-let verdict = ReviewVerdict::from_verdicts(&gate_results);
-if verdict.all_issues_quick_fixable() {
-    tracing::info!(
-        task_id = %task_id,
-        issues = verdict.issues.len(),
-        "express mode: skipping strategist, all issues quick-fixable"
-    );
-    // Dispatch implementer directly with verdict feedback injected into prompt.
-    dispatch_express_implementer(&verdict, &task, &run_config, ...).await?;
-} else {
-    // Normal path: strategist → implementer.
-    dispatch_strategist(...).await?;
+// Before change:
+replan_context: build_gate_retry_context(
+    &completion.output,
+    &state.agent_output,
+    next_attempt,
+),
+
+// After change:
+replan_context: {
+    use roko_gate::review_verdict::ReviewVerdict;
+    let rung_pairs: Vec<_> = completion
+        .verdicts
+        .iter()
+        .map(|v| (v.rung, v.gate_name.as_str(), &v.verdict))
+        .collect();
+    let review = ReviewVerdict::from_verdicts(&rung_pairs);
+    if review.all_issues_quick_fixable() {
+        tracing::info!(
+            task_id = %completion.task_id,
+            issues = review.issues.len(),
+            express_mode = true,
+            "express mode: all gate issues are quick-fixable, using structured retry prompt"
+        );
+        build_express_retry_context(&review, &completion.output, next_attempt)
+    } else {
+        build_gate_retry_context(
+            &completion.output,
+            &state.agent_output,
+            next_attempt,
+        )
+    }
+},
+```
+
+Note: `completion.verdicts` contains `GateVerdictSummary` items defined in `crates/roko-cli/src/runner/types.rs`. Check what fields are available on `GateVerdictSummary` and `roko_core::Verdict` to confirm the mapping. The `ReviewVerdict::from_verdicts()` function signature is `fn from_verdicts(verdicts: &[(u8, &str, &roko_core::Verdict)]) -> Self`.
+
+### Step 4: Add `build_express_retry_context()` in `event_loop.rs`
+
+Add a new function near `build_gate_retry_context()` (around line 15323):
+
+```rust
+/// Build a structured retry prompt for express-mode gate failures.
+///
+/// Express mode applies when all issues are quick-fixable (compile errors,
+/// lint violations, or format violations). The prompt explicitly lists each
+/// issue with its gate, file location, and suggestion rather than relying on
+/// the raw gate output excerpt.
+fn build_express_retry_context(
+    verdict: &roko_gate::review_verdict::ReviewVerdict,
+    gate_output: &str,
+    attempt_num: u32,
+) -> String {
+    let issue_lines = verdict
+        .issues
+        .iter()
+        .map(|issue| {
+            let location = match (&issue.file, &issue.line) {
+                (Some(f), Some(l)) => format!(" ({f}:{l})"),
+                (Some(f), None) => format!(" ({f})"),
+                _ => String::new(),
+            };
+            let suggestion = issue
+                .suggestion
+                .as_deref()
+                .map(|s| format!("\n   Fix: {s}"))
+                .unwrap_or_default();
+            format!("- [{:?}]{location}: {}{suggestion}", issue.category, issue.message)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let gate_excerpt = if gate_output.len() > 2000 {
+        &gate_output[..2000]
+    } else {
+        gate_output
+    };
+
+    format!(
+        "## IMPORTANT: Your previous attempt failed (attempt {attempt_num})\n\n\
+         All issues are mechanical and can be fixed without redesign:\n\n\
+         {issue_lines}\n\n\
+         ### Full gate output\n```\n{gate_excerpt}\n```\n\n\
+         Apply the fixes above. Do not rewrite unrelated code."
+    )
 }
 ```
 
-The express implementer dispatch follows the same code path as a normal implementer
-dispatch, with one addition: the structured verdict's issues are serialized as a
-`## Gate Feedback` section prepended to the task prompt.
+### Step 5: Add unit tests
 
----
+Add to the `#[cfg(test)]` block in `crates/roko-gate/src/review_verdict.rs` (after the existing tests around line 436):
 
-## Parsing Fallback Chain
+```rust
+#[test]
+fn quick_fixable_categories_are_correct() {
+    assert!(IssueCategory::CompileError.is_quick_fixable());
+    assert!(IssueCategory::LintViolation.is_quick_fixable());
+    assert!(IssueCategory::FormatViolation.is_quick_fixable());
 
-The existing `parse_structured_review_verdict()` function in `review_verdict.rs:184`
-already implements the full fallback chain required. It is not necessary to write a new
-parser. The chain is:
+    assert!(!IssueCategory::TestFailure.is_quick_fixable());
+    assert!(!IssueCategory::IncompleteImpl.is_quick_fixable());
+    assert!(!IssueCategory::SecurityIssue.is_quick_fixable());
+    assert!(!IssueCategory::PerformanceRegression.is_quick_fixable());
+    assert!(!IssueCategory::SymbolMissing.is_quick_fixable());
+    assert!(!IssueCategory::IntegrationFailure.is_quick_fixable());
+    assert!(!IssueCategory::NeedsHumanReview.is_quick_fixable());
+}
 
-1. Attempt to parse the entire reviewer output as a raw JSON object.
-2. Extract and parse a fenced ` ```json ` code block.
-3. Extract and parse a fenced ` ```toml ` code block.
-4. Fail closed: return `ParsedReviewVerdict` with `source: FailClosed`,
-   `status: NeedsHuman`, `required_next_action: Human`.
+#[test]
+fn all_issues_quick_fixable_requires_nonempty_issues() {
+    // Empty verdict (all passed) should NOT be quick-fixable.
+    let compile = Verdict::pass("compile");
+    let verdicts = vec![(0u8, "compile", &compile)];
+    let review = ReviewVerdict::from_verdicts(&verdicts);
+    assert!(!review.all_issues_quick_fixable(), "no issues → not quick-fixable");
+}
 
-The fail-closed path means express mode is never accidentally entered on a parse failure:
-`NeedsHumanReview` is not a quick-fixable category, so `all_issues_quick_fixable()`
-returns `false` and the runner falls through to the normal strategist path.
+#[test]
+fn all_issues_quick_fixable_true_when_only_lint_and_compile() {
+    let compile = Verdict::fail("compile", "error[E0433]: unresolved import");
+    let lint = Verdict::fail("clippy", "warning: unused variable");
+    let verdicts = vec![(0u8, "compile", &compile), (1u8, "clippy", &lint)];
+    let review = ReviewVerdict::from_verdicts(&verdicts);
+    // rung 0 → CompileError (quick-fixable), rung 1 → LintViolation (quick-fixable)
+    assert!(review.all_issues_quick_fixable());
+}
 
-When the runner drives the review from gate verdicts directly (not from an agent reviewer's
-text output), use `ReviewVerdict::from_verdicts()` which is already implemented and maps
-rung indices to `IssueCategory` values without any parsing step.
+#[test]
+fn all_issues_quick_fixable_false_when_test_fails() {
+    let compile = Verdict::fail("compile", "error[E0433]: unresolved import");
+    let test = Verdict::fail("test", "assertion failed");
+    let verdicts = vec![(0u8, "compile", &compile), (2u8, "test", &test)];
+    let review = ReviewVerdict::from_verdicts(&verdicts);
+    // rung 2 → TestFailure (NOT quick-fixable)
+    assert!(!review.all_issues_quick_fixable());
+}
 
----
-
-## Implementation Plan
-
-### Day 1 — Predicate and method
-
-- Add `IssueCategory::is_quick_fixable()` to `review_verdict.rs`.
-- Add `ReviewVerdict::all_issues_quick_fixable()` to `review_verdict.rs`.
-- Write unit tests (see Acceptance Criteria below).
-- Confirm that `ReviewVerdict::from_verdicts()` produces the correct `IssueCategory`
-  values for the three quick-fixable variants.
-
-### Day 2 — Runner wiring
-
-- Locate the gate-failure branch in `event_loop.rs` where the strategist is currently
-  dispatched unconditionally.
-- Insert the express-mode check between the gate failure and the strategist dispatch.
-- Wire the structured verdict into the implementer prompt as a `## Gate Feedback` section.
-- Add a `tracing::info!` span (`express_mode = true/false`) for observability.
-- Confirm no regressions by running the existing runner integration tests.
-
-### Day 3 (buffer) — Integration test and tuning
-
-- Write an integration test that supplies a mock gate output containing only
-  `LintViolation` and `FormatViolation` issues and asserts the strategist agent is
-  never dispatched.
-- Write a complementary test with a mixed set (one `TestFailure` + one `FormatViolation`)
-  and assert the strategist IS dispatched.
-- Check timing: confirm the fast path does not add latency vs. the strategist path
-  (any overhead must be sub-millisecond — only a couple of method calls and a log line).
-
----
+#[test]
+fn fail_closed_verdict_is_not_quick_fixable() {
+    // A FailClosed parse result produces NeedsHumanReview, which is not quick-fixable.
+    // Simulate: build a verdict where rung >= 6 → NeedsHumanReview.
+    let judge = Verdict::fail("llm_judge", "needs manual review");
+    let verdicts = vec![(6u8, "llm_judge", &judge)];
+    let review = ReviewVerdict::from_verdicts(&verdicts);
+    assert!(!review.all_issues_quick_fixable());
+}
+```
 
 ## Acceptance Criteria
 
-1. `IssueCategory::is_quick_fixable()` returns `true` for `CompileError`,
-   `LintViolation`, and `FormatViolation`; returns `false` for all other variants
-   including `TestFailure`, `IncompleteImpl`, `SecurityIssue`, `PerformanceRegression`,
-   `SymbolMissing`, `IntegrationFailure`, and `NeedsHumanReview`.
+1. `IssueCategory::is_quick_fixable()` returns `true` for `CompileError`, `LintViolation`, and `FormatViolation`; returns `false` for all other variants: `TestFailure`, `IncompleteImpl`, `SecurityIssue`, `PerformanceRegression`, `SymbolMissing`, `IntegrationFailure`, `NeedsHumanReview`.
 
-2. `ReviewVerdict::all_issues_quick_fixable()` returns `true` only when the `issues`
-   list is non-empty and every issue satisfies `is_quick_fixable()`; returns `false` for
-   an empty issue list, for a list with any non-quick-fixable issue, and for any
-   `FailClosed` parse result.
+2. `ReviewVerdict::all_issues_quick_fixable()` returns `false` for an empty issue list; returns `true` only when every issue's category satisfies `is_quick_fixable()`; returns `false` if any single issue is not quick-fixable.
 
-3. In `event_loop.rs`, a gate failure where all issues are quick-fixable dispatches the
-   implementer directly without calling the strategist agent; verified by confirming the
-   strategist spawn never occurs in the integration test.
+3. `build_express_retry_context()` produces a prompt beginning with `"## IMPORTANT: Your previous attempt failed"` that lists each issue with category, location, message, and suggestion; ends with a directive not to rewrite unrelated code.
 
-4. In `event_loop.rs`, a gate failure with at least one non-quick-fixable issue
-   dispatches the strategist as before; express mode does not affect the normal path.
+4. When a gate fails with only `CompileError` and/or `LintViolation` issues, the runner emits a `tracing::info!` span with fields `express_mode = true` and `issues` (count), and uses `build_express_retry_context()` for the retry prompt.
 
-5. A `FailClosed` parse result (unstructured reviewer text) never triggers express mode;
-   the runner falls through to the strategist path safely.
+5. When a gate fails with any `TestFailure`, `IncompleteImpl`, or other non-quick-fixable issue, the runner uses `build_gate_retry_context()` unchanged (express mode does not apply).
 
-6. The express-mode phase transition emits a `tracing::info!` span with structured fields
-   `task_id`, `issues` (count), and `express_mode = true` so the decision is visible in
-   runner logs and the TUI dashboard without additional tooling.
+6. `cargo test -p roko-gate` passes with the new unit tests added to `review_verdict.rs`.
 
----
+7. `cargo test --workspace` passes with no regressions.
 
-## Out of Scope
+## Verification Checklist
 
-- **Auto-fix via `cargo fix`** — Gap 2 in the same source document. Overlapping concern
-  but a separate feature. Express mode skips the strategist; auto-fix would skip the
-  implementer agent entirely. Do not conflate them.
-- **Warm agent pre-spawning** — Gap 6. Could be combined with express mode to further
-  reduce latency, but is independently tracked.
-- **Reflection loop** — Gap 4. Express mode does not interact with post-gate reflection.
-- **Changing what the implementer receives** — Express mode only changes the phase
-  transition logic. The implementer prompt construction, gate pipeline, and persistence
-  layer are unchanged.
+- [ ] `cargo test -p roko-gate -- quick_fixable` runs and passes all five new tests
+- [ ] `cargo clippy -p roko-gate -- -D warnings` passes clean
+- [ ] `cargo clippy -p roko-cli -- -D warnings` passes clean after wiring in event_loop.rs
+- [ ] `cargo +nightly fmt --all` produces no diff
+- [ ] Run `cargo run -p roko-cli -- plan run plans/ --engine runner-v2` against a plan with known lint failures; confirm `express_mode = true` appears in runner log output (stdout with `RUST_LOG=roko_cli=info`)
+- [ ] Run against a plan with test failures; confirm `express_mode = true` does NOT appear in logs
+- [ ] Check that retry prompt in the `express_mode = true` case begins with "All issues are mechanical" rather than "Your previous attempt failed" followed by an error analysis section
 
----
+## Files to Modify
 
-## References
-
-- `tmp/architecture-archive/20-orchestrator-gaps.md` lines 30–58 (Gap 1: Structured
-  review verdict system)
-- `tmp/architecture-archive/20-orchestrator-gaps.md` lines 463–499 (Spec clarifications:
-  parsing fallback chain, `is_quick_fixable()` categories)
-- `crates/roko-gate/src/review_verdict.rs` — all existing types and `parse_structured_review_verdict()`
-- `crates/roko-cli/src/runner/event_loop.rs` — phase transition wire target
-- `crates/roko-gate/src/compile_errors.rs` — `ErrorCategory` for cross-reference with
-  gate-level categories vs. review-level `IssueCategory`
+| File | Change |
+|---|---|
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-gate/src/review_verdict.rs` | Add `IssueCategory::is_quick_fixable()` impl block after line 46; add `ReviewVerdict::all_issues_quick_fixable()` to existing `impl ReviewVerdict` after line 434; add 5 new unit tests in `#[cfg(test)]` block |
+| `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/runner/event_loop.rs` | Add `build_express_retry_context()` function near `build_gate_retry_context()` (~line 15323); modify the `replan_context` construction in the gate-failure retry path (~line 4467) to use express mode when `all_issues_quick_fixable()` is true |

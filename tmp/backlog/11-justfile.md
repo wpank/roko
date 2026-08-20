@@ -1,32 +1,44 @@
-# Backlog: Justfile — Developer Convenience Commands
+# 11 — Justfile: Developer Convenience Command Runner
 
-**Status**: Backlog
-**Priority**: P3 (nice to have)
+**Priority**: P3 — nice-to-have DX improvement; not blocking any core functionality
 **Size**: XS (half day)
-**Origin**: `tmp/architecture-archive/21-tui-and-operations.md` (Section 4: Justfile)
+**Crates**: None — this is a plain text file at the workspace root
+**Depends on**: None
 
 ---
 
-## Problem Statement
+## Background
 
-The roko workspace has no top-level developer convenience wrapper. Common operations require typing long `cargo` invocations or consulting `CLAUDE.md` to recall the exact flags:
+Roko is a Rust workspace with 35 crates at `/Users/will/dev/nunchi/roko/roko/`. When working on it, developers need to run several cargo commands with specific flags that differ from the simpler defaults. For example, formatting requires `cargo +nightly fmt --all` (not the default `cargo fmt`), and clippy requires `cargo clippy --workspace --no-deps -- -D warnings`. These exact incantations are documented in `CLAUDE.md` but have no single entry point.
 
-- `cargo +nightly fmt --all` (not `cargo fmt`)
-- `cargo clippy --workspace --no-deps -- -D warnings` (not `cargo clippy`)
-- `cargo test --workspace`
-- `cargo run -p roko-cli -- serve`
-- `cargo run -p roko-cli -- dashboard`
-- `cargo llvm-cov --workspace --html` for coverage
+`just` is a command runner (similar conceptually to `make`, but with simpler syntax and no build system semantics) available at https://github.com/casey/just. It reads a `justfile` at the project root and exposes named recipes. Running `just ci` is easier than remembering 3 different cargo commands with non-obvious flags.
 
-The predecessor system (`bardo/justfile`, 136 lines) had a `just` task file at the repo root that encoded all of these. New contributors and automated tooling (CI scripts, editor integrations) benefit from a single canonical entry point.
+The predecessor system (`bardo`) had a `justfile` at the repo root. This item recreates that convenience layer for roko. The key insight is that this adds zero runtime overhead — `just` is purely a shortcut layer over commands that already work independently.
 
-`just` is a widely adopted command runner (https://github.com/casey/just) installable via `cargo install just` or Homebrew. Its syntax is Makefile-inspired but simpler, and it handles argument passing, environment defaults, and recipe dependencies cleanly. This is not a build system — it is a shortcut layer over commands that already work.
+There is currently no `justfile` at `/Users/will/dev/nunchi/roko/roko/`. Verified: running `ls /Users/will/dev/nunchi/roko/roko/` shows no justfile present.
 
----
+## Current State
 
-## Proposed Solution
+1. No `justfile` exists at the workspace root `/Users/will/dev/nunchi/roko/roko/`.
+2. The pre-commit requirements are documented in `/Users/will/dev/nunchi/roko/roko/CLAUDE.md` under "Pre-commit checks (MANDATORY before any commit)":
+   - `cargo +nightly fmt --all`
+   - `cargo clippy --workspace --no-deps -- -D warnings`
+   - `cargo test --workspace`
+3. The main binary crate is `roko-cli` at `crates/roko-cli/`. Run via `cargo run -p roko-cli -- <subcommand>`.
+4. The workspace Cargo.toml is at `/Users/will/dev/nunchi/roko/roko/Cargo.toml`.
 
-Create a `justfile` at the workspace root (`/Users/will/dev/nunchi/roko/roko/justfile`) with the following recipes:
+## Implementation Plan
+
+### Step 1: Install `just` (prerequisite for the developer, not for CI)
+
+```bash
+cargo install just
+# or: brew install just
+```
+
+### Step 2: Create the justfile
+
+Create `/Users/will/dev/nunchi/roko/roko/justfile` with this exact content:
 
 ```just
 # Default: list available recipes
@@ -35,7 +47,7 @@ default:
 
 # ── Build ──────────────────────────────────────────────────────────────────
 
-# Build all workspace members
+# Build all workspace members (debug)
 build:
     cargo build --workspace
 
@@ -43,7 +55,7 @@ build:
 build-release:
     cargo build --workspace --release
 
-# Type-check without codegen
+# Type-check without codegen (fast feedback)
 check:
     cargo check --workspace
 
@@ -53,7 +65,7 @@ check:
 test:
     cargo test --workspace
 
-# Run tests for a specific crate
+# Run tests for a specific crate: `just test-crate roko-learn`
 test-crate crate:
     cargo test -p {{crate}}
 
@@ -63,15 +75,15 @@ coverage:
 
 # ── Lint & Format ──────────────────────────────────────────────────────────
 
-# Format with nightly rustfmt (matches CI)
+# Format with nightly rustfmt (matches CI requirement)
 fmt:
     cargo +nightly fmt --all
 
-# Check formatting without modifying files
+# Check formatting without modifying files (used in CI)
 fmt-check:
     cargo +nightly fmt --all -- --check
 
-# Run clippy with workspace-wide deny-warnings
+# Run clippy with workspace-wide deny-warnings (matches CI requirement)
 lint:
     cargo clippy --workspace --no-deps -- -D warnings
 
@@ -81,7 +93,7 @@ deny:
 
 # ── CI ─────────────────────────────────────────────────────────────────────
 
-# Full CI gate: fmt-check + lint + test (mirrors pre-commit requirements)
+# Full CI gate: fmt-check + lint + test (mirrors pre-commit requirements from CLAUDE.md)
 ci: fmt-check lint test
 
 # ── Documentation ──────────────────────────────────────────────────────────
@@ -90,7 +102,7 @@ ci: fmt-check lint test
 doc:
     cargo doc --workspace --no-deps
 
-# Build and open docs in browser
+# Build and open workspace docs in browser
 doc-open:
     cargo doc --workspace --no-deps --open
 
@@ -104,7 +116,7 @@ serve:
 dashboard:
     cargo run -p roko-cli -- dashboard
 
-# Run a single roko CLI command: `just run status`
+# Run any roko CLI command: `just run status`, `just run plan list`
 run *args:
     cargo run -p roko-cli -- {{args}}
 
@@ -119,39 +131,43 @@ clean:
     cargo clean
 ```
 
-The recipe list is intentionally conservative: it wraps commands that already exist and are documented in `CLAUDE.md`. It does not introduce new logic.
+### Step 3: Verify it works
 
----
+```bash
+cd /Users/will/dev/nunchi/roko/roko
+just --list        # should print all recipe names
+just check         # should run cargo check --workspace
+just ci            # should run fmt-check, lint, test in sequence
+just run status    # should run roko status
+```
 
-## Implementation Location
+### Step 4: Add the justfile to git tracking
 
-| File | Path |
-|---|---|
-| Justfile | `/Users/will/dev/nunchi/roko/roko/justfile` (repo root, tracked in git) |
-
-No Rust code changes. No Cargo.toml changes. The file is plain text and adds no CI overhead.
-
-Optional follow-up: add `just ci` to the GitHub Actions CI matrix as a sanity check that the justfile recipes are not broken.
-
----
+The file is plain text and should be committed to the repository. It is not sensitive and adds no CI overhead.
 
 ## Acceptance Criteria
 
-1. `just --list` from the repo root prints all recipe names without error.
+1. `just --list` from `/Users/will/dev/nunchi/roko/roko/` prints all recipe names without error.
+2. `just ci` runs `cargo +nightly fmt --all -- --check`, then `cargo clippy --workspace --no-deps -- -D warnings`, then `cargo test --workspace`, in sequence, and exits non-zero if any step fails.
+3. `just serve` starts `roko serve` equivalently to running `cargo run -p roko-cli -- serve`.
+4. `just dashboard` starts the ratatui TUI equivalently to `cargo run -p roko-cli -- dashboard`.
+5. `just fmt` applies nightly formatting and the result matches what `cargo +nightly fmt --all` would produce directly.
+6. `just run status` executes `cargo run -p roko-cli -- status` and exits with the same code.
 
-2. `just ci` runs `cargo +nightly fmt --all -- --check`, `cargo clippy --workspace --no-deps -- -D warnings`, and `cargo test --workspace` in sequence; it exits non-zero if any step fails.
+## Verification Checklist
 
-3. `just serve` starts `roko serve` (equivalent to `cargo run -p roko-cli -- serve`).
+- [ ] Run `just --list` from the workspace root — should print a formatted recipe table
+- [ ] Run `just check` — should complete without error (same as `cargo check --workspace`)
+- [ ] Run `just fmt-check` — should report any formatting issues (or exit 0 if already formatted)
+- [ ] Run `just lint` — should pass clean with no warnings
+- [ ] Run `just test` — should run all 9,900+ tests and pass
+- [ ] Run `just ci` — should run all three CI steps sequentially; verify it exits non-zero if you introduce a deliberate formatting error
+- [ ] Run `just run status` — should output roko status information
+- [ ] Run `just serve` — should start the HTTP control plane on :6677 (Ctrl-C to stop)
+- [ ] Run `git status` to confirm `justfile` appears as an untracked file ready to add
 
-4. `just dashboard` starts the ratatui TUI.
+## Files to Modify
 
-5. `just fmt` applies nightly formatting and the working tree diff matches what `cargo +nightly fmt --all` would produce.
-
----
-
-## References
-
-- Source spec: `/Users/will/dev/nunchi/roko/roko/tmp/architecture-archive/21-tui-and-operations.md` (Section 4)
-- Predecessor reference: `bardo/justfile` (136 LOC, not in this repo)
-- Pre-commit requirements: `/Users/will/dev/nunchi/roko/roko/CLAUDE.md` (Pre-commit checks section)
-- `just` tool: https://github.com/casey/just
+| File | Change |
+|---|---|
+| `/Users/will/dev/nunchi/roko/roko/justfile` | Create this new file with the content above |

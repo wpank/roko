@@ -1,77 +1,45 @@
-# HuggingFace Provider Integration
+# 59 — HuggingFace Provider Integration
 
-**Priority**: P3
-**Size**: XS for Phase 1 (config only), L for Phase 2 (roko-hf crate)
-
----
-
-## Problem
-
-HuggingFace hosts thousands of open-source models (Llama, Mistral, Qwen, DeepSeek,
-Phi, Gemma, etc.) through an OpenAI-compatible Inference Providers API at
-`https://router.huggingface.co/v1`. Roko already has a fully functional
-`OpenAiCompat` provider backend that handles arbitrary `base_url` and `api_key_env`
-values. Adding HuggingFace as a provider requires zero code changes: it is a pure
-config entry pointing the existing backend at HF's router.
-
-No HuggingFace support exists anywhere in the codebase today. Search results for
-`huggingface`, `HF_TOKEN`, and `hf_token` return only `tmp/` documentation files —
-none in `crates/`.
+**Priority**: P3 — useful capability addition, no blockers on other work
+**Size**: XS for Phase 1 (config only, no code changes); L for Phase 2 (new crate)
+**Crates**: None for Phase 1; `crates/roko-hf/` (new) for Phase 2
+**Depends on**: None
 
 ---
 
-## What already exists
+## Background
 
-### Provider dispatch path (no changes needed)
+HuggingFace hosts thousands of open-source models (Llama, Mistral, Qwen, DeepSeek, Phi, Gemma, and others) through an OpenAI-compatible Inference Providers API at `https://router.huggingface.co/v1`. The router accepts standard OpenAI-format requests (`POST /chat/completions`) with a HuggingFace token (`HF_TOKEN`) as the bearer credential, and returns standard OpenAI-format responses.
 
-`ProviderConfig` in `crates/roko-core/src/config/provider.rs` has two fields that
-are all that's needed:
+Roko already has a fully functional `OpenAiCompat` provider backend (`ProviderKind::OpenAiCompat`) that handles arbitrary `base_url` and `api_key_env` values. The existing `create_openai_compat_backend` function in `crates/roko-agent/src/tool_loop/backends/mod.rs` reads both fields and constructs the HTTP client. Phase 1 of this item therefore requires zero Rust code changes — it is a pure configuration addition to `roko.toml`.
 
-```rust
-pub struct ProviderConfig {
-    pub kind: ProviderKind,
-    pub base_url: Option<String>,
-    pub api_key_env: Option<String>,
-    // ...
-}
-```
+Phase 2, deferred and optional, would add a `roko-hf` crate with a HuggingFace Hub API client for model discovery, a Dataset Viewer client for streaming benchmark datasets, a SWE-bench adapter for coding evaluation, and an Inference Endpoints lifecycle manager for dedicated GPU instances.
 
-`ProviderConfig::resolve_api_key()` reads `std::env::var(api_key_env)` at runtime.
+## Current State
 
-`create_openai_compat_backend` in
-`crates/roko-agent/src/tool_loop/backends/mod.rs` (line 48) constructs the full
-request path from those two fields for any `kind = "openai_compat"` provider:
+1. No HuggingFace support exists anywhere in `crates/`. A search for `huggingface`, `HF_TOKEN`, and `hf_token` in `crates/` returns zero results.
 
-```rust
-let api_key = resolve_api_key(provider)?;         // reads env var named by api_key_env
-let base_url = base_url_for_tool_loop(provider);  // provider.base_url or OpenAI default
-let backend = OpenAiCompatBackend::new(api_key, model.slug.clone())
-    .with_base_url(base_url)
-    // ...
-```
+2. `ProviderConfig` in `/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/config/provider.rs:275-295` has `kind: ProviderKind`, `base_url: Option<String>`, and `api_key_env: Option<String>`. Setting `kind = "openai_compat"`, `base_url = "https://router.huggingface.co/v1"`, and `api_key_env = "HF_TOKEN"` is all that is needed to route requests through the HF Inference API.
 
-`base_url_for_tool_loop` in `crates/roko-agent/src/provider/openai_compat.rs`
-(line 221) returns `provider.base_url.clone().unwrap_or("https://api.openai.com/v1")`.
+3. `resolve_api_key` in `/Users/will/dev/nunchi/roko/roko/crates/roko-agent/src/provider/openai_compat.rs:193-208` reads `std::env::var(api_key_env)` at dispatch time and returns `AgentCreationError::MissingApiKey` when the variable is absent. This surfaces a clear error to the user when `HF_TOKEN` is not set.
 
-### Existing OpenAI-compat provider examples in roko.toml
+4. `base_url_for_tool_loop` at `openai_compat.rs:221-226` returns `provider.base_url.clone().unwrap_or("https://api.openai.com/v1")`. Any non-`None` `base_url` overrides the default, so the HF router URL is used directly.
 
-`demo/demo-resources/provider-routing/roko.toml` shows the pattern in use:
+5. A working example of the same pattern exists in `/Users/will/dev/nunchi/roko/roko/demo/demo-resources/provider-routing/roko.toml:37-41`:
+   ```toml
+   [providers.moonshot]
+   kind = "openai_compat"
+   base_url = "https://api.moonshot.ai/v1"
+   api_key_env = "MOONSHOT_API_KEY"
+   timeout_ms = 180000
+   ```
+   HuggingFace is structurally identical.
 
-```toml
-[providers.moonshot]
-kind = "openai_compat"
-base_url = "https://api.moonshot.ai/v1"
-api_key_env = "MOONSHOT_API_KEY"
-timeout_ms = 180000
-```
+## Implementation Plan
 
-HuggingFace is structurally identical.
+### Phase 1: Config-only (zero code changes)
 
----
-
-## Phase 1: Config-only integration (zero code changes)
-
-Add the following stanza to `roko.toml` (or any per-project config):
+**Step 1.** Add a `[providers.huggingface]` entry to `/Users/will/dev/nunchi/roko/roko/roko.toml` (or any per-project config file):
 
 ```toml
 [providers.huggingface]
@@ -81,12 +49,10 @@ api_key_env = "HF_TOKEN"
 timeout_ms = 120000
 ```
 
-Then register models. HuggingFace's router passes slugs directly to backend
-providers, so the slug must match HuggingFace's naming convention
-(`owner/model-id` or provider-qualified `provider:owner/model-id`):
+**Step 2.** Register one or more models under `[models.*]`. HuggingFace's router passes the slug directly to the backend provider, so the slug must match HuggingFace's naming convention (`owner/model-id`, or with a backend prefix: `together:meta-llama/Llama-3.3-70B-Instruct`):
 
 ```toml
-# Llama 3.3 70B — routed to fastest available backend
+# Llama 3.3 70B — fastest available backend
 [models.llama-3-3-70b]
 provider = "huggingface"
 slug = "meta-llama/Llama-3.3-70B-Instruct"
@@ -94,9 +60,9 @@ context_window = 131072
 max_output = 4096
 supports_tools = true
 tool_format = "openai_json"
-cost_input_per_m = 0.00   # variable; set to HF pricing if known
+cost_input_per_m = 0.0
 
-# DeepSeek-R1 — open weights reasoning model
+# DeepSeek-R1 — open-weight reasoning model
 [models.deepseek-r1]
 provider = "huggingface"
 slug = "deepseek-ai/DeepSeek-R1"
@@ -106,7 +72,7 @@ supports_tools = false
 supports_thinking = true
 tool_format = "openai_json"
 
-# Qwen 2.5 72B Instruct — top open-weight coding model
+# Qwen 2.5 72B Instruct
 [models.qwen-2-5-72b]
 provider = "huggingface"
 slug = "Qwen/Qwen2.5-72B-Instruct"
@@ -114,28 +80,11 @@ context_window = 131072
 max_output = 8192
 supports_tools = true
 tool_format = "openai_json"
-
-# Mistral Small — compact, fast
-[models.mistral-small]
-provider = "huggingface"
-slug = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
-context_window = 131072
-max_output = 4096
-supports_tools = true
-tool_format = "openai_json"
 ```
 
-HuggingFace's router also accepts routing policy suffixes on the slug:
-- `:fastest` — lowest latency across all backends
-- `:cheapest` — lowest cost across all backends
-- Explicit backend prefix: `together:meta-llama/Llama-3.3-70B-Instruct`
+To pin a specific backend, prefix the slug with the backend name followed by a colon: `slug = "together:meta-llama/Llama-3.3-70B-Instruct"`. To request the cheapest available backend, append `:cheapest`. To request the fastest, append `:fastest`.
 
-These are appended to the `slug` field in `[models.*]`.
-
-### HuggingFace Inference Endpoints (custom deployments)
-
-For dedicated GPU instances (scale-to-zero, custom fine-tunes), override `base_url`
-per model using a separate provider entry:
+**Step 3 (optional).** For dedicated GPU instances (HuggingFace Inference Endpoints), add a separate provider entry with the endpoint-specific URL:
 
 ```toml
 [providers.hf-endpoint-my-model]
@@ -146,126 +95,95 @@ timeout_ms = 300000
 
 [models.my-finetune]
 provider = "hf-endpoint-my-model"
-slug = "tgi"   # endpoint slug is always "tgi" for TGI-backed endpoints
+slug = "tgi"
 context_window = 32768
 supports_tools = true
 tool_format = "openai_json"
 ```
 
-### Verification (Phase 1)
+**Step 4.** Verify:
 
 ```bash
-# 1. Set credentials
+# Set credentials
 export HF_TOKEN="hf_..."
 
-# 2. Add provider + model to roko.toml (as above)
-
-# 3. Verify provider is visible
+# Confirm provider is visible
 cargo run -p roko-cli -- config providers list
-# → should show huggingface with kind=openai_compat
+# Expected: huggingface listed with kind=openai_compat
 
-# 4. Smoke test with a single prompt
-cargo run -p roko-cli -- run "Say hello in one sentence." --model llama-3-3-70b
-
-# 5. Verify model routing
+# Confirm model routing resolves correctly
 cargo run -p roko-cli -- config models route llama-3-3-70b
-# → should show provider=huggingface, base_url=router.huggingface.co/v1
+# Expected: provider=huggingface, base_url contains router.huggingface.co
+
+# Smoke test a single prompt
+cargo run -p roko-cli -- run "Say hello in one sentence." --model llama-3-3-70b
+# Expected: a one-sentence response from the model
+
+# Confirm missing token surfaces a useful error
+unset HF_TOKEN
+cargo run -p roko-cli -- run "hello" --model llama-3-3-70b
+# Expected: AgentCreationError::MissingApiKey mentioning HF_TOKEN
 ```
 
----
+### Phase 2: `roko-hf` crate (optional, deferred)
 
-## Phase 2: `roko-hf` crate (optional, deferred)
+Phase 2 adds HuggingFace-specific capabilities that require new code. Create a new workspace member `crates/roko-hf/`.
 
-Phase 1 covers the primary use case (running HF-hosted models). Phase 2 would add
-HuggingFace-specific capabilities that require new code.
+**2a: Hub API client** (`crates/roko-hf/src/hub.rs`)
 
-### 2a: Hub API client (model discovery)
+Query `GET https://huggingface.co/api/models?search=<query>&library=transformers&sort=downloads` to auto-populate `[models.*]` entries in `roko.toml`. The Hub API returns context window size and model card metadata that map directly to `ModelProfile` fields.
 
-**File**: `crates/roko-hf/src/hub.rs`
+Integration: `roko config models list --discover-hf "qwen 72b"` prints a ready-to-paste TOML block.
 
-```
-GET https://huggingface.co/api/models?search=<query>&library=transformers&sort=downloads
-```
+**2b: Dataset Viewer client** (`crates/roko-hf/src/datasets.rs`)
 
-Use case: auto-populate `[models.*]` entries in roko.toml from search results,
-eliminating manual slug lookup. The Hub API returns context window size and model
-card metadata; these map directly to `ModelProfile` fields.
+Query `GET https://datasets-server.huggingface.co/rows?dataset=princeton-nlp/SWE-bench&split=test&offset=0&length=100` to stream benchmark instances (SWE-bench, HumanEval, MBPP) into the arena evaluation loop without a Python `datasets` dependency.
 
-Integration point: `roko config models list --discover-hf <query>` would call the
-Hub API and print a ready-to-paste TOML block.
+Integration: `roko arena eval --dataset hf://princeton-nlp/SWE-bench`
 
-### 2b: Dataset viewer client (benchmark streaming)
+**2c: SWE-bench adapter** (`crates/roko-hf/src/swe_bench.rs`)
 
-**File**: `crates/roko-hf/src/datasets.rs`
+1. Fetch SWE-bench instances from the Dataset Viewer.
+2. Format each instance as a roko task (apply patch, run tests, report pass/fail).
+3. Record outcome to the arena leaderboard.
+
+**2d: Inference Endpoints lifecycle** (`crates/roko-hf/src/endpoints.rs`)
 
 ```
-GET https://datasets-server.huggingface.co/rows?dataset=princeton-nlp/SWE-bench&split=test&offset=0&length=100
+POST   /endpoint                → create endpoint
+GET    /endpoint/{id}/status    → poll until "running"
+DELETE /endpoint/{id}           → tear down after batch
 ```
 
-Use case: stream benchmark instances (SWE-bench, HumanEval, MBPP) directly into
-the arena evaluation loop without a Python `datasets` dependency. The REST API
-returns Parquet rows as JSON.
+Use case: spin up a dedicated GPU for a benchmark run, tear it down after.
 
-Integration point: `roko arena eval --dataset hf://princeton-nlp/SWE-bench`
+Phase 2 acceptance criteria (separate work):
+1. `cargo add roko-hf` works as a workspace member.
+2. `roko config models list --discover-hf "qwen 72b"` returns a pasteable TOML block.
+3. `roko arena eval --dataset hf://princeton-nlp/SWE-bench --limit 10` runs 10 instances.
+4. `cargo test -p roko-hf` passes with zero network calls (mock HTTP in tests).
+5. `cargo clippy -p roko-hf -- -D warnings` is clean.
 
-### 2c: SWE-bench adapter
+## Acceptance Criteria
 
-**File**: `crates/roko-hf/src/swe_bench.rs`
+1. A `roko.toml` with `[providers.huggingface]` (kind=openai_compat, base_url=https://router.huggingface.co/v1, api_key_env=HF_TOKEN) causes `roko config providers list` to show the provider.
+2. `roko run "<prompt>" --model llama-3-3-70b` (or any HF-backed model alias) succeeds when `HF_TOKEN` is set.
+3. No code changes to any `crates/` file are required for Phase 1.
+4. When `HF_TOKEN` is missing, the error message names the variable (`AgentCreationError::MissingApiKey("HF_TOKEN")`), surfaced through the existing path in `resolve_api_key` at `crates/roko-agent/src/provider/openai_compat.rs:205-206`.
 
-An adapter that:
-1. Fetches SWE-bench instances from the dataset viewer
-2. Formats each instance as a roko task (apply patch, run tests, report pass/fail)
-3. Records outcome to the arena leaderboard
+## Verification Checklist
 
-This enables measuring roko's own coding performance against the standard benchmark
-using any HF-hosted model.
+- [ ] Add `[providers.huggingface]` to `roko.toml`
+- [ ] Add at least one `[models.*]` entry pointing to that provider
+- [ ] Run `cargo run -p roko-cli -- config providers list` and confirm `huggingface` appears
+- [ ] Run `cargo run -p roko-cli -- config models route <model-name>` and confirm correct routing
+- [ ] Set `HF_TOKEN` and run a single prompt through the model; confirm a valid response
+- [ ] Unset `HF_TOKEN` and confirm a clear error message naming the missing variable
+- [ ] Run `cargo test --workspace` to confirm no regressions
 
-### 2d: Inference Endpoints lifecycle management
+## Files to Modify
 
-**File**: `crates/roko-hf/src/endpoints.rs`
-
-Spin up and tear down managed GPU instances via the HuggingFace Endpoints API:
-
-```
-POST /endpoint → create endpoint (returns endpoint URL)
-GET  /endpoint/{id}/status → poll until "running"
-DELETE /endpoint/{id} → teardown after batch run
-```
-
-Use case: run a batch of benchmark tasks on a dedicated GPU (no cold-start latency),
-then tear down to avoid idle billing. Pairs with the SWE-bench adapter.
-
-### Phase 2 acceptance criteria
-
-1. `cargo add roko-hf` works as a library dependency (published crate or workspace member)
-2. `roko config models list --discover-hf "qwen 72b"` returns a pasteable TOML block
-3. `roko arena eval --dataset hf://princeton-nlp/SWE-bench --limit 10` runs 10 instances
-4. `cargo test -p roko-hf` passes with no network calls (mock HTTP in tests)
-5. `cargo clippy -p roko-hf -- -D warnings` is clean
-
----
-
-## Acceptance criteria (Phase 1)
-
-1. `roko.toml` with a `[providers.huggingface]` entry (kind=openai_compat, correct base_url,
-   api_key_env=HF_TOKEN) causes `roko config providers list` to show the provider.
-2. `roko run "<prompt>" --model llama-3-3-70b` (or any HF-backed model alias) succeeds
-   when `HF_TOKEN` is set.
-3. No code changes to any `crates/` file are required.
-4. Auth error is surfaced clearly when `HF_TOKEN` is missing (existing
-   `AgentCreationError::MissingApiKey` path in `resolve_api_key` already handles this).
-
----
-
-## References
-
-- `crates/roko-agent/src/provider/openai_compat.rs` — `resolve_api_key`,
-  `base_url_for_tool_loop`, `build_extra_body_params`
-- `crates/roko-agent/src/tool_loop/backends/mod.rs` — `create_openai_compat_backend`
-  (line 48), reads `provider.base_url` and `provider.api_key_env` directly
-- `crates/roko-core/src/config/provider.rs` — `ProviderConfig` struct with
-  `base_url`, `api_key_env`, `resolve_api_key()`
-- `demo/demo-resources/provider-routing/roko.toml` — working examples of
-  OpenAI-compat providers (moonshot, zai, ollama)
-- `tmp/subsystem-audits/gateway/PROVIDERS.md` — HuggingFace layer breakdown
-  (Layer 1 = Inference Providers, Layer 2 = Hub API, Layer 3 = Dataset Viewer, etc.)
+| File | Change |
+|---|---|
+| `/Users/will/dev/nunchi/roko/roko/roko.toml` | Add `[providers.huggingface]` stanza and model entries |
+| `demo/demo-resources/provider-routing/roko.toml` (optional) | Add HuggingFace to the demo config as a worked example |

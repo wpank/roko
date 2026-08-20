@@ -91,6 +91,9 @@ pub enum AgentCmd {
         /// Working directory (default: cwd).
         #[arg(long)]
         workdir: Option<PathBuf>,
+        /// Output as JSON for scripting.
+        #[arg(long)]
+        json: bool,
     },
     /// Start a previously created agent.
     Start {
@@ -745,7 +748,7 @@ pub async fn run(cmd: AgentCmd) -> Result<()> {
             force,
             workdir,
         } => run_agent_delete(&name, force, workdir.as_deref()).await,
-        AgentCmd::List { workdir } => run_agent_list(workdir.as_deref()),
+        AgentCmd::List { workdir, json } => run_agent_list(workdir.as_deref(), json),
         AgentCmd::Start {
             name,
             bind,
@@ -894,14 +897,24 @@ fn format_duration(dur: chrono::Duration) -> String {
 
 // ─── Agent list ─────────────────────────────────────────────────────────
 
-fn run_agent_list(workdir: Option<&Path>) -> Result<()> {
+fn run_agent_list(workdir: Option<&Path>, json: bool) -> Result<()> {
     let wd = workdir
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
 
     let agents_dir = wd.join(".roko").join("agents");
     if !agents_dir.exists() {
-        println!("No agents found.");
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "agents": [],
+                    "summary": { "total": 0, "running": 0, "idle": 0 }
+                })
+            );
+        } else {
+            println!("No agents found.");
+        }
         return Ok(());
     }
 
@@ -927,7 +940,17 @@ fn run_agent_list(workdir: Option<&Path>) -> Result<()> {
     }
 
     if agents.is_empty() {
-        println!("No agents found.");
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "agents": [],
+                    "summary": { "total": 0, "running": 0, "idle": 0 }
+                })
+            );
+        } else {
+            println!("No agents found.");
+        }
         return Ok(());
     }
 
@@ -946,6 +969,59 @@ fn run_agent_list(workdir: Option<&Path>) -> Result<()> {
         } else {
             idle += 1;
         }
+    }
+
+    if json {
+        let agent_list: Vec<serde_json::Value> = agents
+            .iter()
+            .map(|(name, domain)| {
+                let rt = runtime_entries.iter().find(|e| e.name == *name);
+                let (status, pid, bind, started_at) = match rt {
+                    Some(entry) if is_process_alive(entry.pid) => (
+                        "running",
+                        Some(entry.pid),
+                        Some(entry.bind.as_str()),
+                        Some(entry.started_at.as_str()),
+                    ),
+                    Some(_) => ("stopped", None, None, None),
+                    None => ("created", None, None, None),
+                };
+                let mut obj = serde_json::json!({
+                    "name": name,
+                    "domain": domain,
+                    "status": status,
+                });
+                if let Some(p) = pid {
+                    obj["pid"] = serde_json::json!(p);
+                }
+                if let Some(b) = bind {
+                    obj["bind"] = serde_json::json!(b);
+                }
+                if let Some(s) = started_at {
+                    obj["started_at"] = serde_json::json!(s);
+                }
+                obj
+            })
+            .collect();
+
+        let output = serde_json::json!({
+            "agents": agent_list,
+            "summary": {
+                "total": agents.len(),
+                "running": active,
+                "idle": idle,
+            }
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+
+        // Clean up stale entries.
+        let live: Vec<AgentEntry> = runtime_entries
+            .into_iter()
+            .filter(|e| is_process_alive(e.pid))
+            .collect();
+        let _ = save_agent_entries(&wd, &live);
+
+        return Ok(());
     }
 
     // Use inline primitives for formatted output when TTY.

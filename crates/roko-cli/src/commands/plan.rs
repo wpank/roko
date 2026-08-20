@@ -62,7 +62,24 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         })
                     })
                     .collect();
-                println!("{}", serde_json::to_string_pretty(&entries)?);
+                let total = summaries.len();
+                let complete = summaries.iter().filter(|s| s.completed).count();
+                let failed = summaries
+                    .iter()
+                    .filter(|s| s.tasks_failed > 0 && !s.completed)
+                    .count();
+                let running = total.saturating_sub(complete).saturating_sub(failed);
+                let payload = json!({
+                    "plans": entries,
+                    "summary": {
+                        "total": total,
+                        "complete": complete,
+                        "running": running,
+                        "failed": failed,
+                        "has_run_state": has_run_state,
+                    }
+                });
+                println!("{}", serde_json::to_string_pretty(&payload)?);
             } else {
                 if summaries.is_empty() {
                     if has_run_state {
@@ -111,14 +128,42 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             let stable_id = roko_cli::plan::stable_plan_id(&plan_info);
 
             if cli.json {
+                let task_entries: Vec<serde_json::Value> = tasks_path
+                    .as_deref()
+                    .filter(|p| p.is_file())
+                    .and_then(|p| roko_cli::task_parser::TasksFile::parse(p).ok())
+                    .map(|tf| {
+                        tf.tasks
+                            .iter()
+                            .map(|t| {
+                                json!({
+                                    "id": t.id,
+                                    "title": t.title,
+                                    "status": t.status,
+                                    "role": t.role,
+                                    "tier": t.tier,
+                                    "depends_on": t.depends_on,
+                                    "files": t.files,
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
                 let payload = json!({
                     "plan_id": stable_id,
                     "base": plan_info.base,
                     "title": summary.title,
+                    "status": summary.status,
+                    "status_label": summary.status_label(),
+                    "task_count": summary.task_count,
+                    "tasks_done": summary.tasks_done,
+                    "tasks_failed": summary.tasks_failed,
+                    "completed": summary.completed,
                     "plan_path": plan_info.path,
                     "tasks_path": tasks_path,
-                    "task_count": summary.task_count,
                     "frontmatter": plan_info.frontmatter,
+                    "tasks": task_entries,
                 });
                 println!("{}", serde_json::to_string_pretty(&payload)?);
             } else {
@@ -246,6 +291,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             budget_override,
             no_budget,
             force,
+            log_file,
         } => {
             let t_total = std::time::Instant::now();
             let t_setup = std::time::Instant::now();
@@ -653,6 +699,20 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     conductor: Some(std::sync::Arc::new(conductor)),
                     conductor_ring: Some(conductor_ring),
                     github_ops: None,
+                    structured_log: match log_file {
+                        Some(ref path) => {
+                            let resolved = if path.is_absolute() {
+                                path.clone()
+                            } else {
+                                wd.join(path)
+                            };
+                            roko_cli::runner::structured_log::StructuredLogger::open(&resolved)
+                                .map_err(|e| {
+                                    anyhow!("open --log-file {}: {e}", resolved.display())
+                                })?
+                        }
+                        None => roko_cli::runner::structured_log::StructuredLogger::noop(),
+                    },
                 };
 
                 // Optionally spawn the approval TUI.

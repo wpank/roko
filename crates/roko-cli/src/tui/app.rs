@@ -707,6 +707,39 @@ impl App {
         self
     }
 
+    /// Render every tab headlessly into a `Vec<(Tab, String)>`.
+    ///
+    /// Creates a [`TestBackend`] of the given dimensions, renders each tab
+    /// in sequence, and extracts the buffer contents as plain text.
+    pub fn render_all_tabs_to_text(&mut self, width: u16, height: u16) -> Vec<(Tab, String)> {
+        use ratatui::backend::TestBackend;
+
+        Tab::ALL
+            .iter()
+            .map(|&tab| {
+                self.tui_state.active_tab = tab;
+                let backend = TestBackend::new(width, height);
+                let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+                terminal.draw(|frame| self.draw(frame)).expect("draw tab");
+                let buffer = terminal.backend().buffer();
+                let w = buffer.area.width as usize;
+                let text = buffer
+                    .content
+                    .chunks(w)
+                    .map(|row| {
+                        row.iter()
+                            .map(|cell| cell.symbol())
+                            .collect::<String>()
+                            .trim_end()
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (tab, text)
+            })
+            .collect()
+    }
+
     /// Install a live process supervisor used for per-agent process metrics.
     pub fn set_process_supervisor(&mut self, supervisor: Arc<ProcessSupervisor>) {
         self.process_supervisor = Some(supervisor);

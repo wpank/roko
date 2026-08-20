@@ -723,7 +723,13 @@ impl TasksFile {
     /// Parse a `tasks.toml` payload returned inline by an agent.
     pub fn parse_agent_output(content: &str) -> Result<Self> {
         let payload = extract_toml_payload(content);
-        Self::parse_str(&payload).context("parse tasks.toml from agent output")
+        match Self::parse_str(&payload) {
+            Ok(parsed) => Ok(parsed),
+            Err(_) => {
+                let repaired = repair_toml(content);
+                Self::parse_str(&repaired).context("parse tasks.toml from agent output")
+            }
+        }
     }
 
     /// Get all tasks that are ready to execute (deps satisfied).
@@ -1143,6 +1149,15 @@ pub fn repair_toml(raw: &str) -> String {
         return s;
     }
 
+    // Strip embedded code blocks and obvious non-TOML lines (e.g. Rust code
+    // that the agent dumped inside a ```toml fence).
+    s = strip_embedded_code(&s);
+    if toml::from_str::<toml::Value>(&s).is_ok() {
+        let elapsed_us = t0.elapsed().as_micros();
+        tracing::info!(elapsed_us, "repair_toml: fixed by stripping embedded code");
+        return s;
+    }
+
     // Strip trailing prose after last ]]
     if let Some(pos) = s.rfind("]]") {
         let line_end = s[pos..].find('\n').map(|i| pos + i + 1).unwrap_or(pos + 2);
@@ -1205,6 +1220,112 @@ fn close_unclosed_strings(s: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Strip nested fenced code blocks and obvious non-TOML lines (Rust keywords,
+/// `//` comments) from content that should be pure TOML.  Lines inside TOML
+/// multi-line literal strings (`'''`) or multi-line basic strings (`"""`) are
+/// left intact so we do not corrupt real string values.
+fn strip_embedded_code(input: &str) -> String {
+    // Rust (and other language) keywords that never start a valid TOML line.
+    const CODE_PREFIXES: &[&str] = &[
+        "pub ", "fn ", "use ", "impl ", "struct ", "enum ", "mod ", "let ", "const ", "static ",
+        "trait ", "type ",
+    ];
+
+    let mut out = Vec::new();
+    let mut in_fenced_block = false;
+    let mut in_multiline_string = false;
+    let mut multiline_delim: &str = "";
+
+    for line in input.lines() {
+        let trimmed = line.trim();
+
+        // Track TOML multi-line strings (""" or ''').
+        if !in_fenced_block {
+            if in_multiline_string {
+                out.push(line);
+                if trimmed.ends_with(multiline_delim)
+                    || trimmed.contains(multiline_delim) && !trimmed.starts_with(multiline_delim)
+                {
+                    in_multiline_string = false;
+                }
+                continue;
+            }
+
+            // Detect multi-line string opening on an assignment line.
+            if (trimmed.contains("= \"\"\"") || trimmed.contains("= '''")) && !in_multiline_string {
+                out.push(line);
+                // Check whether the closing delimiter is on the same line
+                // (after the opening one).
+                let after_eq = if let Some(pos) = trimmed.find("= \"\"\"") {
+                    &trimmed[pos + 5..]
+                } else if let Some(pos) = trimmed.find("= '''") {
+                    &trimmed[pos + 5..]
+                } else {
+                    ""
+                };
+                let delim = if trimmed.contains("= \"\"\"") {
+                    "\"\"\""
+                } else {
+                    "'''"
+                };
+                if !after_eq.contains(delim) {
+                    in_multiline_string = true;
+                    multiline_delim = delim;
+                }
+                continue;
+            }
+        }
+
+        // Detect nested fenced code blocks (```rust, ```python, etc.).
+        if trimmed.starts_with("```") {
+            if in_fenced_block {
+                // Closing fence — drop it.
+                in_fenced_block = false;
+            } else {
+                // Opening fence — start dropping.
+                in_fenced_block = true;
+            }
+            continue;
+        }
+
+        if in_fenced_block {
+            // Inside a nested code block — drop the line.
+            continue;
+        }
+
+        // Drop Rust-style line comments that are not TOML comments.
+        if trimmed.starts_with("//") {
+            continue;
+        }
+
+        // Drop lines that start with a Rust keyword.
+        if CODE_PREFIXES.iter().any(|p| trimmed.starts_with(p)) {
+            continue;
+        }
+
+        // Drop standalone curly-brace lines (struct/impl bodies) that are not
+        // TOML inline tables. A bare `{` or `}` on its own line is never valid
+        // TOML outside of a multi-line string.
+        if trimmed == "{" || trimmed == "}" {
+            continue;
+        }
+
+        // Drop Rust field-like lines:  `field_name: Type,`
+        if trimmed.ends_with(',')
+            && trimmed.contains(": ")
+            && !trimmed.contains('=')
+            && !trimmed.starts_with('[')
+            && !trimmed.starts_with('#')
+        {
+            continue;
+        }
+
+        out.push(line);
+    }
+
+    out.join("\n")
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────
@@ -2214,5 +2335,109 @@ max_loc = 0
             max_loc_issues.is_empty(),
             "max_loc=0 should not produce validation errors"
         );
+    }
+
+    #[test]
+    fn strip_embedded_code_removes_rust() {
+        let input = r#"[meta]
+plan = "test"
+
+pub struct Foo {
+    bar: String,
+}
+
+[[task]]
+id = "T1"
+title = "do thing"
+"#;
+        let result = strip_embedded_code(input);
+        assert!(result.contains("[meta]"));
+        assert!(result.contains("[[task]]"));
+        assert!(!result.contains("pub struct"));
+        assert!(!result.contains("bar: String"));
+    }
+
+    #[test]
+    fn strip_embedded_code_removes_nested_fences() {
+        let input = r#"[meta]
+plan = "test"
+
+```rust
+fn main() {
+    println!("hello");
+}
+```
+
+[[task]]
+id = "T1"
+title = "do thing"
+"#;
+        let result = strip_embedded_code(input);
+        assert!(result.contains("[meta]"));
+        assert!(result.contains("[[task]]"));
+        assert!(!result.contains("fn main"));
+        assert!(!result.contains("println"));
+    }
+
+    #[test]
+    fn strip_embedded_code_preserves_multiline_strings() {
+        let input = r#"[meta]
+plan = "test"
+
+[[task]]
+id = "T1"
+title = "do thing"
+description = """
+pub struct Foo {
+    bar: String,
+}
+"""
+"#;
+        let result = strip_embedded_code(input);
+        assert!(result.contains("pub struct Foo"));
+        assert!(result.contains("bar: String"));
+    }
+
+    #[test]
+    fn strip_embedded_code_removes_rust_comments() {
+        let input =
+            "[meta]\nplan = \"test\"\n// This is a rust comment\n# This is a TOML comment\n";
+        let result = strip_embedded_code(input);
+        assert!(!result.contains("// This is a rust comment"));
+        assert!(result.contains("# This is a TOML comment"));
+    }
+
+    #[test]
+    fn strip_embedded_code_end_to_end_repair() {
+        let raw = r#"Here is the plan:
+```toml
+[meta]
+plan = "wire-prompt"
+total = 1
+
+pub struct SystemPromptBuilder {
+    layers: Vec<String>,
+}
+
+impl SystemPromptBuilder {
+    pub fn new() -> Self { Self { layers: vec![] } }
+}
+
+[[task]]
+id = "T1"
+title = "Wire the prompt builder"
+status = "ready"
+depends_on = []
+```
+And that's the plan.
+"#;
+        let parsed = TasksFile::parse_agent_output(raw);
+        assert!(
+            parsed.is_ok(),
+            "Should parse after stripping Rust code: {parsed:?}"
+        );
+        let tasks = parsed.unwrap();
+        assert_eq!(tasks.meta.plan, "wire-prompt");
+        assert_eq!(tasks.tasks[0].id, "T1");
     }
 }

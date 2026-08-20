@@ -18,6 +18,7 @@
 //! Every artifact is verified on disk so this is a real wiring proof,
 //! not a unit-test mock.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -118,7 +119,12 @@ async fn dispatch_feeds_feedback_facade_and_projection() {
     let knowledge_path = roko_dir.join("learn/knowledge-candidates.jsonl");
 
     // ── 1. Dispatch ────────────────────────────────────────────────────
-    let dispatcher = Dispatcher::new(None, PromptAssembler::minimal(), WarmPool::new(2));
+    let dispatcher = Dispatcher::new(
+        None,
+        PromptAssembler::minimal(),
+        WarmPool::new(2),
+        HashSet::new(),
+    );
     let task = task();
     let dctx = ctx(workdir.path().to_path_buf());
     let outcome = dispatcher
@@ -224,7 +230,12 @@ async fn dispatch_feeds_feedback_facade_and_projection() {
 #[tokio::test]
 async fn force_backend_routes_through_override_path_and_records_observation() {
     let workdir = tempdir().expect("tempdir");
-    let dispatcher = Dispatcher::new(None, PromptAssembler::minimal(), WarmPool::new(0));
+    let dispatcher = Dispatcher::new(
+        None,
+        PromptAssembler::minimal(),
+        WarmPool::new(0),
+        HashSet::new(),
+    );
     let task = task();
     let mut dctx = ctx(workdir.path().to_path_buf());
     dctx.force_backend = Some("gpt-5".into());
@@ -247,7 +258,12 @@ async fn retry_attempt_includes_gate_feedback_in_assembled_prompt() {
     use roko_cli::dispatch::GateFeedback;
 
     let workdir = tempdir().expect("tempdir");
-    let dispatcher = Dispatcher::new(None, PromptAssembler::minimal(), WarmPool::new(0));
+    let dispatcher = Dispatcher::new(
+        None,
+        PromptAssembler::minimal(),
+        WarmPool::new(0),
+        HashSet::new(),
+    );
     let task = task();
     let mut dctx = ctx(workdir.path().to_path_buf());
     dctx.attempt = 1;

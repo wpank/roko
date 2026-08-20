@@ -1,3 +1,0 @@
-crates/roko-agent/src/model_call_service.rs
-crates/roko-agent/src/provider/claude_cli/stream.rs
-crates/roko-agent/src/safety/mod.rs

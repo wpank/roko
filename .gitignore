@@ -61,7 +61,7 @@ demo/.runtime/
 # Logs + temp files ----------------------------------------------------------
 *.log
 *.tmp
-/tmp/ignore/
+/tmp/
 
 # Temporary / work-in-progress (will be refined later) ----------------------
 CLAUDE.md

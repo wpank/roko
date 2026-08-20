@@ -5,7 +5,7 @@
 //! `Dispatcher` / `PromptAssembler` / `WarmPool`.  `SharedAgentFactory`
 //! creates these once at run start and hands them to every dispatch call.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -124,7 +124,17 @@ impl SharedAgentFactory {
         // Default warm-pool capacity: 2 slots per role. Zero-capacity silently
         // discards every pre-spawned agent on insert; using 2 lets the reviewer
         // slot remain warm while the implementer is being cleaned up.
-        let dispatcher = Dispatcher::new(cascade_router, prompt_assembler, WarmPool::new(2));
+        let configured_models: HashSet<String> = config
+            .effective_models()
+            .values()
+            .map(|profile| profile.slug.clone())
+            .collect();
+        let dispatcher = Dispatcher::new(
+            cascade_router,
+            prompt_assembler,
+            WarmPool::new(2),
+            configured_models,
+        );
         let resolver = ProviderDispatchResolver::new(Arc::clone(&config));
 
         // Build one shared rate limiter from the provider limits declared in roko.toml.
@@ -212,10 +222,17 @@ impl SharedAgentFactory {
             .with_composition_strategy(self.config.prompt.composition_strategy)
             .with_vcg_warmup_observations(self.config.prompt.vcg_warmup_observations)
             .with_learning_bidders(learning_bidders);
+        let configured_models: HashSet<String> = self
+            .config
+            .effective_models()
+            .values()
+            .map(|profile| profile.slug.clone())
+            .collect();
         self.dispatcher = Dispatcher::new(
             self.dispatcher.cascade_router_arc(),
             assembler,
             WarmPool::new(2),
+            configured_models,
         );
     }
 

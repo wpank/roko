@@ -3066,6 +3066,8 @@ const KNOWN_CONFIG_KEYS: &[&str] = &[
     "validation",
     "cold_storage",
     "resources",
+    "isfr",
+    "profiles",
     // CLI-only ConfigLayer keys (not in core schema)
     "auto_plan",
     "dreams",

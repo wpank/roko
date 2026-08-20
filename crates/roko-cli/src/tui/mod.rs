@@ -29,6 +29,7 @@ pub mod postfx;
 pub mod postfx_pipeline;
 pub mod scroll;
 pub mod segment;
+pub mod snapshot;
 pub mod state;
 pub mod tabs;
 pub mod task_outputs;

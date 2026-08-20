@@ -6803,6 +6803,7 @@ fn emit_runner_event(
     config: &RunConfig,
     event: RunnerEvent,
 ) -> bool {
+    config.structured_log.log(&event);
     emit_runner_event_with_facades(
         paths,
         state,
@@ -13061,6 +13062,7 @@ async fn handle_global_timeout(
             expiry.kind
         ));
     }
+    config.structured_log.log(&timeout_event);
     emit_runner_event_with_facades(
         paths,
         state,
@@ -13972,7 +13974,10 @@ async fn run_advanced_learning_completion(config: &RunConfig, episodes_path: &Pa
 
 async fn run_dream_consolidation(config: &RunConfig, telemetry: &dyn TelemetryEventSink) {
     let workdir = config.workdir.clone();
-    let timeout = llm_call_timeout(config);
+    let timeout = config.roko_config.as_deref().map_or_else(
+        || roko_core::config::TimeoutConfig::default().dream_consolidation(),
+        |cfg| cfg.timeouts.dream_consolidation(),
+    );
     let dream_config = roko_dreams::DreamLoopConfig {
         auto_dream: true,
         idle_threshold_mins: 0,
@@ -14649,6 +14654,7 @@ fn persist_attempt_terminal_with_prompt_settlement(
             "prompt-experiment settlement degraded; startup reconciliation will retry"
         );
     }
+    config.structured_log.log(&event);
     let persisted = emit_runner_event_with_facades(
         paths,
         state,
@@ -14712,6 +14718,7 @@ fn persist_pending_terminal(
                 persist::append_runner_event(paths, &requested).map_err(|error| {
                     format!("failed to persist timeout cancellation request: {error}")
                 })?;
+                config.structured_log.log(&requested);
                 emit_runner_event_with_facades(
                     paths,
                     state,
@@ -14773,6 +14780,7 @@ fn persist_pending_terminal(
                     "prompt-experiment timeout settlement degraded; startup reconciliation will retry"
                 );
             }
+            config.structured_log.log(&event);
             let persisted = emit_runner_event_with_facades(
                 paths,
                 state,

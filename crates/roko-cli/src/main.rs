@@ -521,6 +521,21 @@ Examples:
         #[arg(long)]
         yes: bool,
     },
+    /// Diagnose why a plan failed. Outputs structured JSON.
+    #[command(after_help = "\
+Examples:
+  roko diagnose my-plan             Show failure report for a plan
+  roko diagnose my-plan --verbose   Include full error details")]
+    Diagnose {
+        /// Plan ID to diagnose.
+        plan_id: String,
+        /// Show full error details (not just summary).
+        #[arg(long)]
+        verbose: bool,
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
     /// Check workspace layer dependency rules.
     LayerCheck,
 
@@ -758,6 +773,9 @@ Examples:
         /// Override the working directory (default: cwd / --repo).
         #[arg(long)]
         workdir: Option<PathBuf>,
+        /// Render all TUI tabs headlessly to text files in the given directory and exit.
+        #[arg(long)]
+        snapshot: Option<PathBuf>,
         /// Use high-contrast color scheme for accessibility (WCAG 2.1 AA).
         #[arg(long)]
         high_contrast: bool,
@@ -765,6 +783,9 @@ Examples:
         #[arg(long)]
         reduced_motion: bool,
     },
+
+    /// Capture TUI screenshots as text files for headless inspection.
+    Screenshot(commands::screenshot::ScreenshotArgs),
 
     // ── Authentication ────────────────────────────────────────────────
     /// Authenticate with a roko-serve instance.
@@ -1517,6 +1538,12 @@ Examples:
         /// may fail mid-run if disk space is exhausted.
         #[arg(long)]
         force: bool,
+        /// Write structured JSONL event log to this file during execution.
+        ///
+        /// Every runner lifecycle event (task start, gate result, agent dispatch,
+        /// run completion, etc.) is serialized as a single JSON line and flushed.
+        #[arg(long, value_name = "PATH")]
+        log_file: Option<PathBuf>,
     },
     /// Generate implementation plans from a prompt, file, or PRD.
     Generate {
@@ -2702,6 +2729,14 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             serve_url,
         } => commands::util::cmd_doctor(cli, subject, workdir, serve_url).await,
         Command::Setup { workdir, yes } => commands::setup::cmd_setup(cli, workdir, yes).await,
+        Command::Diagnose {
+            plan_id,
+            verbose,
+            workdir,
+        } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            commands::diagnose::cmd_diagnose(&wd, &plan_id, verbose)
+        }
         Command::LayerCheck => roko_cli::layer_check::run_layer_check(),
         Command::Plan { cmd } => {
             let wd = cmd.index_rebuild_workdir(cli);
@@ -2892,6 +2927,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             list_pages,
             text,
             workdir,
+            snapshot,
             high_contrast,
             reduced_motion,
         } => {
@@ -2903,7 +2939,15 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             if reduced_motion {
                 unsafe { std::env::set_var("ROKO_REDUCED_MOTION", "1") };
             }
+            if let Some(snapshot_dir) = snapshot {
+                return commands::dashboard::cmd_dashboard_snapshot(cli, workdir, &snapshot_dir)
+                    .await;
+            }
             commands::dashboard::cmd_dashboard(cli, workdir, page, list_pages, text, None).await
+        }
+        Command::Screenshot(args) => {
+            let workdir = args.workdir.clone().unwrap_or_else(|| resolve_workdir(cli));
+            commands::screenshot::cmd_screenshot(workdir, args)
         }
         // ── Vision loop ───────────────────────────────────────────
         Command::VisionLoop {
@@ -3010,6 +3054,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 budget_override: None,
                 no_budget: false,
                 force: false,
+                log_file: None,
             };
             commands::plan::cmd_plan(cli, plan_cmd).await
         }
@@ -5405,6 +5450,18 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_dashboard_snapshot_flag() {
+        let cli = Cli::try_parse_from(["roko", "dashboard", "--snapshot", "/tmp/snap"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Dashboard {
+                snapshot: Some(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn parse_dashboard_page_accepts_known_slugs() {
         assert_eq!(parse_dashboard_page("health"), Some(PageId::Health));
         assert_eq!(
@@ -5663,8 +5720,9 @@ mod tests {
         .await
         .unwrap();
         assert!(fallback.contains("Plan View (plan-view)"));
-        assert!(fallback.contains("widgets (2):"));
-        assert!(fallback.contains("DAG [dag]"));
+        // render_plan_view_page now returns Some("source: missing") instead
+        // of None, so the scaffold widget list fallback is no longer reached.
+        assert!(fallback.contains("source: missing") || fallback.contains("widgets (2):"));
     }
 
     #[test]

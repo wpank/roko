@@ -1967,6 +1967,9 @@ pub struct RunConfig {
     /// Optional GitHub operations override. Tests inject a mock here; normal
     /// runs construct a live adapter from `[github]`, with a no-op fallback.
     pub github_ops: Option<Arc<dyn GitHubOps>>,
+    /// Structured JSONL logger for plan execution events.
+    /// When set, every `RunnerEvent` is serialized and flushed to the file.
+    pub structured_log: super::structured_log::StructuredLogger,
 }
 
 impl RunConfig {
@@ -2137,6 +2140,7 @@ impl RunConfig {
             conductor: Some(Arc::new(conductor)),
             conductor_ring: Some(conductor_ring),
             github_ops: None,
+            structured_log: super::structured_log::StructuredLogger::noop(),
         }
     }
 }
@@ -2188,6 +2192,7 @@ impl Default for RunConfig {
             conductor: None,
             conductor_ring: None,
             github_ops: None,
+            structured_log: super::structured_log::StructuredLogger::noop(),
         }
     }
 }

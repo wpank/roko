@@ -139,6 +139,23 @@ impl Tab {
         }
     }
 
+    /// Short key used in snapshot filenames, e.g. `"f01"`.
+    #[must_use]
+    pub const fn snapshot_key(self) -> &'static str {
+        match self {
+            Self::Dashboard => "f01",
+            Self::Plans => "f02",
+            Self::Agents => "f03",
+            Self::Git => "f04",
+            Self::Logs => "f05",
+            Self::Config => "f06",
+            Self::Inspect => "f07",
+            Self::Marketplace => "f08",
+            Self::Atelier => "f09",
+            Self::Learning => "f10",
+        }
+    }
+
     /// Zero-based index in the tab bar.
     #[must_use]
     pub const fn index(self) -> usize {

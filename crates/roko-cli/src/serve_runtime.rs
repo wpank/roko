@@ -817,6 +817,7 @@ fn build_runner_config(
         conductor: Some(Arc::new(conductor)),
         conductor_ring: Some(conductor_ring),
         github_ops: None,
+        structured_log: crate::runner::structured_log::StructuredLogger::noop(),
     }
 }
 

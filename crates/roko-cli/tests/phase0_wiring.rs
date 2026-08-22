@@ -253,43 +253,6 @@ async fn phase0_extension_chain_lifecycle() {
     );
 }
 
-/// Verify bandit policy can record rewards and produce update candidates.
-#[test]
-fn phase0_bandit_policy_records_rewards() {
-    use roko_learn::contextual_bandit::{
-        ActionSafetyBounds, BanditContextFeatures, BanditDecisionKind, BanditPolicyConfig,
-        BanditRewardObservation, ContextualBanditPolicy, RewardMetrics,
-    };
-
-    let mut policy = ContextualBanditPolicy::new(BanditPolicyConfig::default());
-
-    let context = BanditContextFeatures::new(
-        BanditDecisionKind::ProviderModelRouting,
-        "implementation",
-        "test-plan",
-        "implementer",
-    );
-
-    let observation = BanditRewardObservation {
-        action_id: "model:claude-sonnet-4-6".to_string(),
-        context_key: context.context_key(),
-        success: true,
-        quality: 1.0,
-        metrics: RewardMetrics {
-            latency_ms: Some(5000),
-            cost_usd: Some(0.05),
-            total_tokens: Some(1500),
-            retry_count: 0,
-        },
-    };
-    let bounds = ActionSafetyBounds::default();
-
-    // Should not panic and returns Option<PolicyUpdateCandidate>.
-    let _candidate = policy.record_reward(observation, bounds);
-    // The policy is in default mode which may or may not produce a candidate
-    // on the first observation — we just verify it doesn't panic.
-}
-
 /// Verify ConnectorRegistry and FeedRegistry basic operations.
 #[test]
 fn phase0_registries_basic_ops() {

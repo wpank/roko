@@ -6,10 +6,13 @@ pub use stream::{
 };
 
 use crate::Agent;
+use crate::ExecAgent;
 use crate::claude_cli_agent::{ClaudeCliAgent, build_settings_json};
 use crate::provider::{
     AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
 };
+use crate::provider::current_safety_layer;
+use crate::safety::SafetyLayer;
 use roko_core::agent::ProviderKind;
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
@@ -57,6 +60,16 @@ impl ProviderAdapter for ClaudeCliAdapter {
             .timeout_ms
             .or(provider.timeout_ms)
             .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
+
+        // Detect Codex CLI executable — use ExecAgent with codex-appropriate
+        // invocation flags instead of ClaudeCliAgent's Claude-specific protocol.
+        let exe_name = std::path::Path::new(command)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(command);
+        if exe_name.contains("codex") {
+            return Self::create_codex_agent(command, &current_dir, model, options, timeout_ms);
+        }
 
         let mut agent = ClaudeCliAgent::new(command, current_dir, model.slug.clone())
             .with_timeout_ms(timeout_ms)
@@ -154,6 +167,76 @@ impl ProviderAdapter for ClaudeCliAdapter {
                 }
             }
         }
+    }
+}
+
+impl ClaudeCliAdapter {
+    /// Create an `ExecAgent` configured for Codex CLI's `exec --json` protocol.
+    ///
+    /// Codex CLI uses `codex exec --json -` with the prompt on stdin, unlike
+    /// Claude CLI which uses `--print --output-format stream-json`. This
+    /// builder mirrors the invocation from `dispatch_v2::build_codex_invocation`.
+    fn create_codex_agent(
+        command: &str,
+        current_dir: &std::path::Path,
+        model: &ModelProfile,
+        options: &AgentOptions,
+        timeout_ms: u64,
+    ) -> Result<Box<dyn Agent>, AgentCreationError> {
+        let mut args = vec![
+            "exec".to_string(),
+            "--json".to_string(),
+            "--cd".to_string(),
+            current_dir.to_string_lossy().to_string(),
+            "--skip-git-repo-check".to_string(),
+            "--color".to_string(),
+            "never".to_string(),
+        ];
+
+        if options.dangerously_skip_permissions {
+            args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
+        } else {
+            args.push("--sandbox".to_string());
+            args.push("workspace-write".to_string());
+        }
+
+        // Only pass --model for non-Claude models (codex defaults to its own)
+        if !model.slug.is_empty() && !model.slug.starts_with("claude") {
+            args.push("--model".to_string());
+            args.push(model.slug.clone());
+        }
+
+        args.push("-".to_string()); // Read prompt from stdin
+
+        let safety =
+            current_safety_layer().unwrap_or_else(SafetyLayer::with_defaults);
+
+        let mut agent = ExecAgent::new(command, args, safety)
+            .with_timeout_ms(timeout_ms)
+            .with_current_dir(current_dir)
+            .with_extract_codex_jsonl(true);
+
+        // Codex lacks --system-prompt; fold it into stdin prefix.
+        if let Some(system_prompt) = &options.system_prompt {
+            agent = agent.with_stdin_prefix(system_prompt.clone());
+        }
+
+        if !options.name.is_empty() {
+            agent = agent.with_name(options.name.clone());
+        } else {
+            agent = agent.with_name(format!("codex-cli:{}", model.slug));
+        }
+        for (key, value) in &options.env {
+            agent = agent.with_env_var(key.clone(), value.clone());
+        }
+
+        tracing::info!(
+            command = command,
+            model = %model.slug,
+            "creating Codex CLI agent via ExecAgent"
+        );
+
+        Ok(Box::new(agent))
     }
 }
 

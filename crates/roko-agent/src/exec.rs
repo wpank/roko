@@ -48,6 +48,12 @@ pub struct ExecAgent {
     kill_grace_ms: u64,
     resource_limits: Option<ResourceLimits>,
     name: String,
+    /// Optional text prepended to stdin before the prompt, separated by
+    /// `\n\n---\n\n`. Used by Codex CLI to pass a system prompt on stdin.
+    stdin_prefix: Option<String>,
+    /// When true, parse stdout as Codex CLI JSONL and extract `agent_message`
+    /// text fields instead of returning raw JSONL.
+    extract_codex_jsonl: bool,
 }
 
 impl ExecAgent {
@@ -66,6 +72,8 @@ impl ExecAgent {
             kill_grace_ms: GRACE_SIGTERM_MS,
             resource_limits: None,
             name,
+            stdin_prefix: None,
+            extract_codex_jsonl: false,
         }
     }
 
@@ -131,6 +139,56 @@ impl ExecAgent {
         self.safety = safety;
         self
     }
+
+    /// Prepend text to stdin before the prompt, separated by `\n\n---\n\n`.
+    ///
+    /// Used by Codex CLI to pass a system prompt on stdin since it lacks a
+    /// dedicated `--system-prompt` flag.
+    #[must_use]
+    pub fn with_stdin_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.stdin_prefix = Some(prefix.into());
+        self
+    }
+
+    /// When enabled, parse stdout as Codex CLI JSONL (`--json` output) and
+    /// extract `agent_message` text from `item.completed` events.
+    #[must_use]
+    pub const fn with_extract_codex_jsonl(mut self, extract: bool) -> Self {
+        self.extract_codex_jsonl = extract;
+        self
+    }
+}
+
+/// Extract agent message text from Codex CLI `--json` JSONL output.
+///
+/// Parses each line as JSON, looks for `item.completed` events with
+/// `item.type == "agent_message"`, and concatenates the `item.text` fields.
+fn extract_codex_text(jsonl: &str) -> String {
+    use serde_json::Value;
+    let mut text = String::new();
+    for line in jsonl.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        // Extract text from: {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
+        if event.get("type").and_then(Value::as_str) == Some("item.completed") {
+            if let Some(item) = event.get("item") {
+                if item.get("type").and_then(Value::as_str) == Some("agent_message") {
+                    if let Some(msg_text) = item.get("text").and_then(Value::as_str) {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str(msg_text);
+                    }
+                }
+            }
+        }
+    }
+    text
 }
 
 #[async_trait]
@@ -203,8 +261,16 @@ impl Agent for ExecAgent {
         let stderr_pipe = child.stderr.take();
 
         // Write prompt to stdin, then close it.
+        // When a stdin_prefix is set (e.g. system prompt for Codex CLI),
+        // prepend it with a separator so the agent sees both pieces.
         if let Some(mut stdin) = child.stdin.take() {
-            if let Err(e) = stdin.write_all(prompt_text.as_bytes()).await {
+            let full_stdin = match &self.stdin_prefix {
+                Some(prefix) if !prefix.trim().is_empty() => {
+                    format!("{}\n\n---\n\n{}", prefix.trim(), prompt_text)
+                }
+                _ => prompt_text.clone(),
+            };
+            if let Err(e) = stdin.write_all(full_stdin.as_bytes()).await {
                 let _ = kill_tree(&mut child, Duration::from_millis(GRACE_STDIN_CLOSE_MS)).await;
                 if track_pids()
                     && let Some(pid) = pid
@@ -330,7 +396,13 @@ impl Agent for ExecAgent {
         heartbeat_handle.abort();
         let elapsed_secs = started.elapsed().as_secs();
 
-        let stdout = self.scrub_text(&stdout_handle.await.unwrap_or_default());
+        let raw_stdout = stdout_handle.await.unwrap_or_default();
+        let stdout = if self.extract_codex_jsonl {
+            let extracted = extract_codex_text(&raw_stdout);
+            self.scrub_text(&extracted)
+        } else {
+            self.scrub_text(&raw_stdout)
+        };
         let stderr = self.scrub_text(&stderr_handle.await.unwrap_or_default());
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 

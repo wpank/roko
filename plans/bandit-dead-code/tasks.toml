@@ -1,0 +1,43 @@
+[meta]
+plan = "bandit-dead-code"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 5
+
+[[task]]
+id = "T01"
+title = "Remove contextual_bandit.rs dead code"
+description = """Remove the unused contextual_bandit.rs file from roko-learn and all references to it.
+
+Perform these three changes:
+
+1. Delete the file `crates/roko-learn/src/contextual_bandit.rs` entirely.
+
+2. In `crates/roko-learn/src/lib.rs`, remove the two lines that declare this module:
+   ```
+   /// Contextual bandit policy for model-selection feedback and reward recording.
+   pub mod contextual_bandit;
+   ```
+
+3. In `crates/roko-cli/tests/phase0_wiring.rs`, remove the test function `phase0_bandit_policy_records_rewards` (roughly lines 256-291) and any `use` statements that import from `roko_learn::contextual_bandit`.
+
+After making changes, verify:
+- `cargo check -p roko-learn` passes
+- `cargo check -p roko-cli` passes
+- `grep -rn 'contextual_bandit' crates/` returns zero hits
+
+Do NOT modify any other files. Do NOT add new code. This is purely a deletion task."""
+status = "ready"
+tier = "mechanical"
+max_loc = 0
+files = ["crates/roko-learn/src/contextual_bandit.rs", "crates/roko-learn/src/lib.rs", "crates/roko-cli/tests/phase0_wiring.rs"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "test ! -f crates/roko-learn/src/contextual_bandit.rs && ! grep -rq 'contextual_bandit' crates/ --include='*.rs'"
+fail_msg = "contextual_bandit.rs still exists or references remain"

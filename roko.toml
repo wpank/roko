@@ -18,7 +18,7 @@ fresh_base_branch = "main"
 auto_plan = false
 
 [agent]
-default_model = "claude-sonnet"
+default_model = "codex"
 default_backend = "claude"
 default_effort = "medium"
 temperament = "balanced"
@@ -300,6 +300,10 @@ auto_cleanup_on_complete = true
 kind = "claude_cli"
 command = "claude"
 
+[providers.codex_cli]
+kind = "claude_cli"
+command = "codex"
+
 [providers.zai]
 kind = "openai_compat"
 base_url = "https://api.z.ai/api/paas/v4"
@@ -313,6 +317,12 @@ slug = "claude-sonnet-4-6"
 context_window = 200000
 tool_format = "anthropic_blocks"
 max_tools = 32
+
+[models.codex]
+provider = "codex_cli"
+slug = "gpt-5.6-sol"
+context_window = 200000
+max_output = 100000
 
 [models.glm51]
 provider = "zai"

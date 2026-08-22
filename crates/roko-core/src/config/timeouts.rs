@@ -128,7 +128,7 @@ impl TimeoutConfig {
     }
 
     pub fn scheduler_no_progress(&self) -> Duration {
-        Duration::from_secs(self.scheduler_no_progress_secs.unwrap_or(600).max(1))
+        Duration::from_secs(self.scheduler_no_progress_secs.unwrap_or(1800).max(1))
     }
 
     /// Agent dispatch as [`Duration`].

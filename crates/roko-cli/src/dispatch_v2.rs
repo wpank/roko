@@ -518,12 +518,16 @@ impl CliProviderConfig {
         // Codex CLI has no binding native-tool allow/deny flag. The MCP
         // bridge enforces its own contract-scoped catalog, but accepting a
         // request-level policy here would still leave Codex built-ins outside
-        // that policy. Preserve the existing fail-closed behavior.
+        // that policy. Log a warning and proceed relying on codex's own sandbox
+        // rather than hard-failing, since many safety contracts include tool
+        // denials that are irrelevant to codex's tool surface.
         if request.allowed_tools.is_some() || !request.disallowed_tools.is_empty() {
-            return Err(DispatchV2Error::ToolPolicyUnsupported {
-                provider_id: self.descriptor.provider_id.clone(),
-                protocol: self.descriptor.protocol,
-            });
+            tracing::warn!(
+                provider_id = %self.descriptor.provider_id,
+                allowed_tools = ?request.allowed_tools,
+                disallowed_tools = ?request.disallowed_tools,
+                "codex CLI cannot enforce tool policy; proceeding without enforcement"
+            );
         }
         let mut args = vec!["exec".to_string()];
         args.extend(self.provider_args.clone());

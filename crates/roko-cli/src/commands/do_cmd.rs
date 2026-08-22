@@ -695,6 +695,10 @@ pub(crate) async fn run_plan_execution(
     let v2_report =
         roko_cli::runner::event_loop::run(plans, &run_config, &state_hub, cancel).await?;
 
+    // The run-complete summary (task counts, cost, per-plan status, failure
+    // details) was already printed by the output sink BEFORE post-plan
+    // cleanup (backlog #159). JSON mode still prints here since NoopSink is
+    // active when --json / --quiet are set.
     if cli.json {
         println!(
             "{}",
@@ -709,68 +713,6 @@ pub(crate) async fn run_plan_execution(
             }))
             .unwrap_or_default()
         );
-    } else if !cli.quiet {
-        use roko_cli::inline::symbols;
-        roko_cli::output_format::intro("Plan complete");
-        roko_cli::output_format::branch(&format!(
-            "tasks    {}/{}",
-            v2_report.tasks_completed, v2_report.total_tasks
-        ));
-        roko_cli::output_format::branch(&format!(
-            "cost     {}",
-            roko_cli::output_format::cyan(&format!("${:.2}", v2_report.total_cost_usd))
-        ));
-        roko_cli::output_format::branch(&format!("duration {}s", v2_report.duration.as_secs()));
-        roko_cli::output_format::divider();
-        for p in &v2_report.plans {
-            let icon = if p.completed {
-                roko_cli::output_format::green(symbols::PASS)
-            } else {
-                roko_cli::output_format::red(symbols::FAIL)
-            };
-            roko_cli::output_format::branch(&format!(
-                "{icon} {} -- {}/{} tasks",
-                p.plan_id, p.tasks_completed, p.tasks_total
-            ));
-        }
-        // Per-task cost breakdown.
-        if !v2_report.task_costs.is_empty() {
-            roko_cli::output_format::divider();
-            roko_cli::output_format::step("Task costs", "");
-            roko_cli::output_format::bar(&roko_cli::output_format::dim(&format!(
-                "{:.<24} {:>8} {:>8} {:>9} {:>6} {:>6}",
-                "task", "tok_in", "tok_out", "cost", "calls", "result"
-            )));
-            for tc in &v2_report.task_costs {
-                roko_cli::output_format::bar(&format!(
-                    "{:.<24} {:>8} {:>8} {:>9} {:>6} {:>6}",
-                    tc.task_id,
-                    tc.tokens_in,
-                    tc.tokens_out,
-                    roko_cli::output_format::cyan(&format!("${:.4}", tc.cost_usd)),
-                    tc.agent_calls,
-                    tc.outcome,
-                ));
-            }
-        }
-        if v2_report.tasks_failed > 0 && !v2_report.failure_reasons.is_empty() {
-            roko_cli::output_format::divider();
-            roko_cli::output_format::step("Failures", "");
-            for (key, reason) in &v2_report.failure_reasons {
-                if reason.contains('\n') {
-                    roko_cli::output_format::branch(&roko_cli::output_format::red(key));
-                    for line in reason.lines() {
-                        roko_cli::output_format::bar(&roko_cli::output_format::dim(line));
-                    }
-                } else {
-                    roko_cli::output_format::branch(&format!(
-                        "{}: {}",
-                        roko_cli::output_format::red(key),
-                        roko_cli::output_format::dim(reason)
-                    ));
-                }
-            }
-        }
     }
 
     Ok(if v2_report.all_succeeded() {

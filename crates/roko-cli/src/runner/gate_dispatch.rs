@@ -264,6 +264,7 @@ pub fn spawn_gate(
     verdict_publisher: Option<VerdictPublisher>,
     task_context: Option<GateTaskContext>,
     telemetry_sink: Option<Arc<dyn TelemetryEventSink>>,
+    main_target_dir: Option<PathBuf>,
 ) -> (JoinHandle<()>, oneshot::Sender<()>) {
     let (start_tx, start_rx) = oneshot::channel();
     let handle = tokio::spawn(async move {
@@ -300,6 +301,7 @@ pub fn spawn_gate(
                     verdict_publisher,
                     task_context,
                     telemetry_sink,
+                    main_target_dir,
                 )
                 .await,
             )
@@ -472,9 +474,10 @@ pub async fn run_gate_once(
     verdict_publisher: Option<VerdictPublisher>,
     task_context: Option<GateTaskContext>,
     telemetry_sink: Option<Arc<dyn TelemetryEventSink>>,
+    main_target_dir: Option<PathBuf>,
 ) -> GateCompletion {
     let start = Instant::now();
-    let signal = gate_signal(&plan_id, &task_id, rung, &workdir, &target_crates);
+    let signal = gate_signal(&plan_id, &task_id, rung, &workdir, &target_crates, main_target_dir.as_deref());
     let ctx = roko_core::Context::now();
     let limit = Duration::from_secs(timeout_secs.max(1));
 
@@ -750,6 +753,7 @@ pub fn spawn_plan_verify(
     timeout_secs: u64,
     gate_tx: mpsc::Sender<GateCompletion>,
     gate_sem: Arc<Semaphore>,
+    main_target_dir: Option<PathBuf>,
 ) -> (JoinHandle<()>, oneshot::Sender<()>) {
     let (start_tx, start_rx) = oneshot::channel();
     let handle = tokio::spawn(async move {
@@ -792,6 +796,7 @@ pub fn spawn_plan_verify(
                         RUNG_PLAN_VERIFY,
                         &workdir_for_run,
                         &[], // plan-level verify runs workspace-wide
+                        main_target_dir.as_deref(),
                     );
                     all.extend(run_verify_steps(&signal, &ctx, &task_id, steps).await);
                 }
@@ -1032,6 +1037,7 @@ fn gate_signal(
     rung: u32,
     workdir: &std::path::Path,
     target_crates: &[String],
+    main_target_dir: Option<&Path>,
 ) -> Signal {
     let attempt_sentinel = RokoLayout::for_project(workdir)
         .gate_attempts_dir()
@@ -1040,7 +1046,7 @@ fn gate_signal(
             sanitize_gate_env_segment(plan_id),
             sanitize_gate_env_segment(task_id)
         ));
-    let payload = GatePayload::in_dir(workdir)
+    let mut payload = GatePayload::in_dir(workdir)
         .with_label(format!("{plan_id}:{task_id}:rung-{rung}"))
         .with_target_crates(target_crates.to_vec())
         .with_env("ROKO_GATE_PLAN_ID", plan_id)
@@ -1050,6 +1056,13 @@ fn gate_signal(
             "ROKO_GATE_ATTEMPT_SENTINEL",
             attempt_sentinel.to_string_lossy().to_string(),
         );
+    // Share the main workspace build cache with worktree gate commands so
+    // that `cargo check`/`cargo clippy`/`cargo test` inside a task worktree
+    // reuse incremental artifacts instead of rebuilding all crates from
+    // scratch.
+    if let Some(target_dir) = main_target_dir {
+        payload = payload.with_target_dir(target_dir);
+    }
 
     SignalBuilder::new(Kind::Task)
         .body(Body::from_json(&payload).unwrap_or_else(|_| Body::empty()))
@@ -1359,6 +1372,7 @@ mod tests {
             None,
             None,
             Some(telemetry_sink),
+            None,
         )
         .await;
         assert!(completion.passed, "preflight should pass: {completion:#?}");
@@ -1429,6 +1443,7 @@ mod tests {
             None,
             None,
             None,
+            None, // main_target_dir
         );
         (handle, start, rx)
     }
@@ -1484,6 +1499,7 @@ mod tests {
             1,
             tx,
             Arc::new(Semaphore::new(1)),
+            None, // main_target_dir
         );
         tokio::task::yield_now().await;
         assert!(matches!(
@@ -1519,6 +1535,7 @@ mod tests {
             1,
             tx,
             semaphore,
+            None, // main_target_dir
         );
         start.send(()).unwrap();
         let completion = rx.recv().await.unwrap();
@@ -1557,6 +1574,7 @@ mod tests {
             None,
             None,
             None,
+            None, // main_target_dir
         );
 
         start.send(()).expect("owner starts producer");
@@ -1624,7 +1642,7 @@ mod tests {
     #[tokio::test]
     async fn verify_steps_fail_when_a_piped_command_fails_before_tail() {
         let tempdir = tempfile::tempdir().expect("tempdir should be created");
-        let signal = gate_signal("plan", "task", 2, tempdir.path(), &[]);
+        let signal = gate_signal("plan", "task", 2, tempdir.path(), &[], None);
         let ctx = roko_core::Context::now();
         let step = VerifyStep {
             phase: "test".to_string(),
@@ -1641,7 +1659,7 @@ mod tests {
     #[tokio::test]
     async fn verify_steps_pass() {
         let tempdir = tempfile::tempdir().expect("tempdir should be created");
-        let signal = gate_signal("plan", "task", 2, tempdir.path(), &[]);
+        let signal = gate_signal("plan", "task", 2, tempdir.path(), &[], None);
         let ctx = roko_core::Context::now();
         let step = VerifyStep {
             phase: "structural".to_string(),
@@ -1679,6 +1697,7 @@ mod tests {
                 Some(Vec::new()),
                 10,
                 Vec::new(),
+                None,
                 None,
                 None,
                 None,
@@ -1732,6 +1751,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await;
 
@@ -1768,6 +1788,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await;
         let baseline_failures = baseline
@@ -1789,6 +1810,7 @@ mod tests {
             Some(baseline_failures),
             10,
             Vec::new(),
+            None,
             None,
             None,
             None,
@@ -1825,6 +1847,7 @@ mod tests {
             Some(Vec::new()),
             10,
             Vec::new(),
+            None,
             None,
             None,
             None,
@@ -1922,6 +1945,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             ),
         )
         .await
@@ -1958,6 +1982,7 @@ mod tests {
             Some(Vec::new()),
             1,
             Vec::new(),
+            None,
             None,
             None,
             None,
@@ -2026,6 +2051,7 @@ mod tests {
             10,
             Vec::new(),
             Some(publisher),
+            None,
             None,
             None,
         )

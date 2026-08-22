@@ -94,7 +94,9 @@ use super::deadlines::{
 use super::gate_dispatch;
 use super::github_workflow::{GitHubWorkflow, PlanGitHubSummary, TaskGitHubResult};
 use super::merge::{MergeDispatch, MergeLaunch, MergeResolution, PlanMerger, PlanMergerConfig};
-use super::output_sink::RunOutputSink;
+use super::output_sink::{
+    PlanCompleteSummary, RunCompleteSummary, RunOutputSink, TaskCostSummary,
+};
 use super::persist::{self, GateThresholds, PersistPaths};
 use super::plan_loader::Plan;
 use super::snapshot_writer::{
@@ -2620,6 +2622,12 @@ pub async fn run(
     loop {
         if state.durable_scheduler_milestones != observed_scheduler_milestones {
             observed_scheduler_milestones = state.durable_scheduler_milestones;
+            deadline_tracker.record_scheduler_progress(monotonic_now());
+        }
+        // Agent activity (tool calls, message output) also proves the plan is making
+        // progress — reset the no-progress timer so long-running agent commands
+        // (e.g. `cargo check` in a cold worktree) don't trigger a false timeout.
+        if state.agent_active {
             deadline_tracker.record_scheduler_progress(monotonic_now());
         }
         let deadline_now = monotonic_now();
@@ -5229,6 +5237,48 @@ pub async fn run(
     }
 
     let report = build_report(&executor, &plans, &state, &task_dag);
+
+    // ── Emit early run-complete summary (backlog #159) ──────────────────
+    //
+    // Print the human-readable summary BEFORE post-plan cleanup so the
+    // user sees results immediately rather than waiting 600s+ for dream
+    // consolidation, learning, episode compaction, and filesystem GC.
+    sink.run_complete(&RunCompleteSummary {
+        succeeded: report.all_succeeded(),
+        total_tasks: report.total_tasks,
+        tasks_completed: report.tasks_completed,
+        tasks_failed: report.tasks_failed,
+        total_cost_usd: report.total_cost_usd,
+        duration_secs: report.duration.as_secs(),
+        plans: report
+            .plans
+            .iter()
+            .map(|p| PlanCompleteSummary {
+                plan_id: p.plan_id.clone(),
+                completed: p.completed,
+                tasks_completed: p.tasks_completed,
+                tasks_total: p.tasks_total,
+                tasks_failed: p.tasks_failed,
+            })
+            .collect(),
+        task_costs: report
+            .task_costs
+            .iter()
+            .map(|tc| TaskCostSummary {
+                task_id: tc.task_id.clone(),
+                tokens_in: tc.tokens_in,
+                tokens_out: tc.tokens_out,
+                cost_usd: tc.cost_usd,
+                agent_calls: tc.agent_calls,
+                outcome: tc.outcome.clone(),
+            })
+            .collect(),
+        failure_reasons: report
+            .failure_reasons
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    });
 
     if !cancel.is_cancelled() && report.all_succeeded() {
         let workdir = config.workdir.clone();
@@ -9391,6 +9441,7 @@ async fn dispatch_action(
                         Some(ctx.verdict_publisher.clone()),
                         gate_dispatch::GateTaskContext::from_task_def(plan_id, Some(task_def)),
                         Some(Arc::clone(ctx.telemetry_sink)),
+                        Some(ctx.config.workdir.join("target")),
                     );
                     let AgentRuntimeResource::AwaitingGate { permit } = gate_claim
                         .replace_resource(AgentRuntimeResource::AwaitingGate { permit: None })
@@ -10279,6 +10330,12 @@ async fn dispatch_action(
                         agent_id.clone(),
                     );
                     spawn_config.workdir = plan_workdir.clone();
+                    // Share the main workspace build cache so agents working
+                    // in worktrees reuse compiled artifacts (backlog #163).
+                    spawn_config.extra_env.push((
+                        "CARGO_TARGET_DIR".to_string(),
+                        ctx.config.workdir.join("target").to_string_lossy().to_string(),
+                    ));
                     spawn_config.max_turns = dispatch_turn_limit;
                     spawn_config.effort = dispatch_effort.clone();
                     spawn_config.allowed_tools = contract_allowed_tools.clone();
@@ -10779,6 +10836,7 @@ async fn dispatch_action(
                     Some(ctx.verdict_publisher.clone()),
                     gate_dispatch::GateTaskContext::from_task_def(plan_id, task_def),
                     Some(Arc::clone(ctx.telemetry_sink)),
+                    Some(ctx.config.workdir.join("target")),
                 )
             };
             let AgentRuntimeResource::AwaitingGate { permit } =
@@ -11010,6 +11068,7 @@ async fn dispatch_action(
                 duration_secs(gate_timeout(ctx.config, plan_verify_rung)),
                 ctx.gate_tx.clone(),
                 ctx.gate_sem.clone(),
+                Some(ctx.config.workdir.join("target")),
             );
             gate_claim.replace_resource(AgentRuntimeResource::Gate {
                 effect: gate_effect.clone(),

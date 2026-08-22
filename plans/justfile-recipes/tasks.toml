@@ -1,0 +1,46 @@
+[meta]
+plan = "justfile-recipes"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 5
+
+[[task]]
+id = "T01"
+title = "Create justfile at workspace root"
+description = """Create a file called `justfile` at the workspace root with recipes for common developer tasks.
+
+The justfile must include these recipes:
+1. `default` - list available recipes via `just --list`
+2. `build` - `cargo build --workspace`
+3. `build-release` - `cargo build --workspace --release`
+4. `check` - `cargo check --workspace`
+5. `test` - `cargo test --workspace`
+6. `test-crate crate` - `cargo test -p {{crate}}`
+7. `fmt` - `cargo +nightly fmt --all`
+8. `fmt-check` - `cargo +nightly fmt --all -- --check`
+9. `lint` - `cargo clippy --workspace --no-deps -- -D warnings`
+10. `ci` - runs fmt-check, then lint, then test (in sequence)
+11. `doc` - `cargo doc --workspace --no-deps`
+12. `doc-open` - `cargo doc --workspace --no-deps --open`
+13. `serve` - `cargo run -p roko-cli -- serve`
+14. `dashboard` - `cargo run -p roko-cli -- dashboard`
+15. `run *args` - `cargo run -p roko-cli -- {{args}}`
+16. `watch` - `cargo watch -x 'check --workspace'`
+17. `clean` - `cargo clean`
+
+Group recipes with comment headers. Use TAB indentation for recipe bodies (required by just syntax).
+Do NOT create any other files. Just create the justfile."""
+status = "ready"
+tier = "mechanical"
+max_loc = 50
+files = ["justfile"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "test -f justfile && grep -q 'cargo test --workspace' justfile && grep -q 'cargo clippy' justfile"
+fail_msg = "justfile was not created or is missing expected recipes"

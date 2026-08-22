@@ -382,6 +382,69 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                             }
                         }
                     }
+
+                    // Prune orphaned worktrees left by crashed/killed runs.
+                    let prune_output = std::process::Command::new("git")
+                        .args(["worktree", "prune"])
+                        .current_dir(&wd)
+                        .output();
+                    match prune_output {
+                        Ok(out) if out.status.success() => {
+                            if !cli.quiet {
+                                eprintln!("▸ --fresh: pruned stale git worktrees");
+                            }
+                        }
+                        Ok(out) => {
+                            eprintln!(
+                                "warning: --fresh: git worktree prune failed: {}",
+                                String::from_utf8_lossy(&out.stderr).trim()
+                            );
+                        }
+                        Err(err) => {
+                            eprintln!("warning: --fresh: git worktree prune: {err}");
+                        }
+                    }
+
+                    // Delete roko/attempt/* branches left by previous runs.
+                    let branch_output = std::process::Command::new("git")
+                        .args(["branch", "--list", "roko/attempt/*"])
+                        .current_dir(&wd)
+                        .output();
+                    if let Ok(out) = branch_output {
+                        let branches: Vec<&str> = std::str::from_utf8(&out.stdout)
+                            .unwrap_or("")
+                            .lines()
+                            .map(|l| l.trim())
+                            .filter(|l| !l.is_empty())
+                            .collect();
+                        if !branches.is_empty() {
+                            let mut cmd = std::process::Command::new("git");
+                            cmd.arg("branch").arg("-D");
+                            for b in &branches {
+                                cmd.arg(b);
+                            }
+                            cmd.current_dir(&wd);
+                            match cmd.output() {
+                                Ok(del) if del.status.success() => {
+                                    if !cli.quiet {
+                                        eprintln!(
+                                            "▸ --fresh: deleted {} stale attempt branch(es)",
+                                            branches.len()
+                                        );
+                                    }
+                                }
+                                Ok(del) => {
+                                    eprintln!(
+                                        "warning: --fresh: branch cleanup: {}",
+                                        String::from_utf8_lossy(&del.stderr).trim()
+                                    );
+                                }
+                                Err(err) => {
+                                    eprintln!("warning: --fresh: branch cleanup: {err}");
+                                }
+                            }
+                        }
+                    }
                 }
 
                 prepare_runtime_hooks(&wd, cli.quiet);
@@ -819,6 +882,11 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         });
                 }
 
+                // The run-complete summary (task counts, cost, per-plan
+                // status, failure details) was already printed by the
+                // output sink BEFORE post-plan cleanup (backlog #159).
+                // JSON mode still prints here since NoopSink is active
+                // when --json / --quiet are set.
                 if cli.json {
                     println!(
                         "{}",
@@ -852,57 +920,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         }))
                         .unwrap_or_default()
                     );
-                } else if !cli.quiet {
-                    eprintln!(
-                        "\n▸ Plan complete: {}/{} tasks, ${:.2}, {}s",
-                        v2_report.tasks_completed,
-                        v2_report.total_tasks,
-                        v2_report.total_cost_usd,
-                        v2_report.duration.as_secs()
-                    );
-                    for p in &v2_report.plans {
-                        let status = if p.completed { "✓" } else { "✗" };
-                        eprintln!(
-                            "  {status} {} — {}/{} tasks",
-                            p.plan_id, p.tasks_completed, p.tasks_total,
-                        );
-                    }
-                    // Per-task cost breakdown.
-                    if !v2_report.task_costs.is_empty() {
-                        eprintln!("\n  Task costs:");
-                        eprintln!(
-                            "  {:.<24} {:>8} {:>8} {:>9} {:>6} {:>6}",
-                            "task", "tok_in", "tok_out", "cost", "calls", "result"
-                        );
-                        for tc in &v2_report.task_costs {
-                            eprintln!(
-                                "  {:.<24} {:>8} {:>8} ${:>7.4} {:>6} {:>6}",
-                                tc.task_id,
-                                tc.tokens_in,
-                                tc.tokens_out,
-                                tc.cost_usd,
-                                tc.agent_calls,
-                                tc.outcome,
-                            );
-                        }
-                    }
                 }
 
-                if v2_report.tasks_failed > 0 && !cli.quiet {
-                    if !v2_report.failure_reasons.is_empty() {
-                        eprintln!("\nFailure details:");
-                        for (key, reason) in &v2_report.failure_reasons {
-                            if reason.contains('\n') {
-                                eprintln!("  ✗ {key}:");
-                                for line in reason.lines() {
-                                    eprintln!("    {line}");
-                                }
-                            } else {
-                                eprintln!("  ✗ {key}: {reason}");
-                            }
-                        }
-                        eprintln!("\nhint: check .roko/roko.log for full failure output");
-                    }
+                if v2_report.tasks_failed > 0 && !cli.quiet && !cli.json {
                     let state_path = layout.executor_snapshot();
                     if state_path.exists() {
                         eprintln!(

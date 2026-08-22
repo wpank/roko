@@ -95,8 +95,6 @@ pub mod cfactor;
 /// Learned intervention policy for conductor retries and aborts.
 pub mod conductor;
 pub mod context_pack_cache;
-/// Contextual bandit policy for model-selection feedback and reward recording.
-pub mod contextual_bandit;
 /// Pre-dispatch cost projection for budget estimation.
 pub mod cost_projection;
 pub mod cost_table;

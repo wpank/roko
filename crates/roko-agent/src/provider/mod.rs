@@ -71,6 +71,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 pub mod anthropic_api;
 pub mod cerebras;
 pub mod claude_cli;
+pub mod codex_cli;
 pub mod cursor_acp;
 pub mod cursor_cli;
 pub mod gemini_cli;

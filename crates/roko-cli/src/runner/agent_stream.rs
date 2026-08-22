@@ -64,6 +64,9 @@ pub struct AgentSpawnConfig {
     pub allowed_tools: Option<Vec<String>>,
     /// Contract-scoped bridge for in-process declarative-plugin handlers.
     pub plugin_mcp: Option<CliPluginMcpConfig>,
+    /// Extra environment variables injected into agent subprocesses (e.g.
+    /// `CARGO_TARGET_DIR` for build-cache sharing with worktrees).
+    pub extra_env: Vec<(String, String)>,
 }
 
 impl AgentSpawnConfig {
@@ -91,6 +94,7 @@ impl AgentSpawnConfig {
             disallowed_tools: Vec::new(),
             allowed_tools: None,
             plugin_mcp: None,
+            extra_env: Vec::new(),
         }
     }
 
@@ -279,7 +283,10 @@ pub fn parse_stream_line(line: &str) -> Vec<AgentEvent> {
 /// Parse one line using the selected provider's stream protocol.
 pub fn parse_provider_stream_line(protocol: CliProtocol, line: &str) -> Vec<AgentEvent> {
     match protocol {
-        CliProtocol::ClaudeStreamJson | CliProtocol::CodexExecJson => parse_stream_line(line),
+        CliProtocol::ClaudeStreamJson => parse_stream_line(line),
+        CliProtocol::CodexExecJson => {
+            roko_agent::provider::codex_cli::stream::parse_stream_line(line)
+        }
         CliProtocol::GeminiStreamJson => {
             roko_agent::provider::gemini_cli::stream::parse_stream_line(line)
         }
@@ -305,7 +312,7 @@ pub async fn spawn_agent(
         dangerously_skip_permissions: config.dangerously_skip_permissions,
         mcp_config: config.mcp_config.clone(),
         resume_session: config.resume_session.clone(),
-        env: Vec::new(),
+        env: config.extra_env.clone(),
         agent_id: config.agent_id.clone(),
         allowed_tools: config.allowed_tools.clone(),
         disallowed_tools: config.disallowed_tools.clone(),
@@ -477,6 +484,7 @@ mod tests {
             disallowed_tools: Vec::new(),
             allowed_tools: None,
             plugin_mcp: None,
+            extra_env: Vec::new(),
         };
         (temp, config)
     }

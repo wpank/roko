@@ -46,6 +46,45 @@ pub struct TokenUsage {
     pub cache_write_tokens: u64,
 }
 
+/// Per-plan entry within [`RunCompleteSummary`].
+#[derive(Debug, Clone)]
+pub struct PlanCompleteSummary {
+    pub plan_id: String,
+    pub completed: bool,
+    pub tasks_completed: usize,
+    pub tasks_total: usize,
+    pub tasks_failed: usize,
+}
+
+/// Per-task cost entry within [`RunCompleteSummary`].
+#[derive(Debug, Clone)]
+pub struct TaskCostSummary {
+    pub task_id: String,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub cost_usd: f64,
+    pub agent_calls: u32,
+    pub outcome: String,
+}
+
+/// Aggregate summary of a completed run, emitted before post-plan cleanup.
+///
+/// This is a lightweight projection of `RunReport` that avoids the output
+/// sink depending on event-loop types.
+#[derive(Debug, Clone)]
+pub struct RunCompleteSummary {
+    pub succeeded: bool,
+    pub total_tasks: usize,
+    pub tasks_completed: usize,
+    pub tasks_failed: usize,
+    pub total_cost_usd: f64,
+    pub duration_secs: u64,
+    pub plans: Vec<PlanCompleteSummary>,
+    pub task_costs: Vec<TaskCostSummary>,
+    /// Per-task failure reasons keyed by "plan_id:task_id".
+    pub failure_reasons: Vec<(String, String)>,
+}
+
 /// Structured progress events emitted by the plan runner.
 ///
 /// Implementors receive callbacks as the runner progresses through tasks.
@@ -162,6 +201,16 @@ pub trait RunOutputSink: Send + Sync + fmt::Debug {
         _total_duration_ms: u64,
     ) {
     }
+
+    // ─── Run complete ────────────────────────────────────────────────────
+
+    /// The entire run finished — overall summary before cleanup begins.
+    ///
+    /// Called immediately after the main event loop exits but *before*
+    /// post-plan cleanup (dream consolidation, learning, episode compaction,
+    /// filesystem GC, worktree cleanup). This gives the user immediate
+    /// feedback on the run outcome while background maintenance proceeds.
+    fn run_complete(&self, _summary: &RunCompleteSummary) {}
 
     /// A line of output was received from the agent process.
     /// Legacy compatibility method — prefer `agent_text_delta`.
@@ -394,6 +443,10 @@ impl RunOutputSink for StderrSink {
         );
     }
 
+    fn run_complete(&self, summary: &RunCompleteSummary) {
+        print_run_complete_summary(summary);
+    }
+
     fn agent_line(&self, plan_id: &str, task_id: &str, line: &str) {
         eprintln!("[{plan_id}/{task_id}]   {line}");
     }
@@ -599,6 +652,12 @@ impl RunOutputSink for FanOutSink {
     ) {
         for sink in &self.sinks {
             sink.plan_summary(plan_id, tasks_passed, tasks_failed, total_duration_ms);
+        }
+    }
+
+    fn run_complete(&self, summary: &RunCompleteSummary) {
+        for sink in &self.sinks {
+            sink.run_complete(summary);
         }
     }
 
@@ -976,6 +1035,10 @@ impl RunOutputSink for FormattedStderrSink {
         }
     }
 
+    fn run_complete(&self, summary: &RunCompleteSummary) {
+        print_run_complete_summary(summary);
+    }
+
     fn agent_line(&self, plan_id: &str, task_id: &str, line: &str) {
         let pfx = Self::prefix(plan_id, task_id);
         if self.color {
@@ -1137,6 +1200,25 @@ impl RunOutputSink for AcpProgressSink {
             "tasks_passed": tasks_passed,
             "tasks_failed": tasks_failed,
             "total_duration_ms": total_duration_ms,
+        }));
+    }
+
+    fn run_complete(&self, summary: &RunCompleteSummary) {
+        self.emit(&serde_json::json!({
+            "type": "run_complete",
+            "succeeded": summary.succeeded,
+            "total_tasks": summary.total_tasks,
+            "tasks_completed": summary.tasks_completed,
+            "tasks_failed": summary.tasks_failed,
+            "total_cost_usd": summary.total_cost_usd,
+            "duration_secs": summary.duration_secs,
+            "plans": summary.plans.iter().map(|p| serde_json::json!({
+                "plan_id": p.plan_id,
+                "completed": p.completed,
+                "tasks_completed": p.tasks_completed,
+                "tasks_total": p.tasks_total,
+                "tasks_failed": p.tasks_failed,
+            })).collect::<Vec<_>>(),
         }));
     }
 }
@@ -1421,6 +1503,56 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
         out.push_str("...");
     }
     out
+}
+
+// ─── Shared summary printer ──────────────────────────────────────────────────
+
+/// Print a human-readable run-complete summary to stderr.
+///
+/// Used by both `StderrSink` and `FormattedStderrSink` so the format is
+/// consistent regardless of which sink is active. Matches the output
+/// previously produced by the `plan.rs` and `do_cmd.rs` CLI callers.
+fn print_run_complete_summary(summary: &RunCompleteSummary) {
+    eprintln!(
+        "\n\u{25b8} Plan complete: {}/{} tasks, ${:.2}, {}s",
+        summary.tasks_completed, summary.total_tasks, summary.total_cost_usd, summary.duration_secs,
+    );
+    for p in &summary.plans {
+        let status = if p.completed { "\u{2713}" } else { "\u{2717}" };
+        eprintln!(
+            "  {status} {} \u{2014} {}/{} tasks",
+            p.plan_id, p.tasks_completed, p.tasks_total,
+        );
+    }
+    // Per-task cost breakdown.
+    if !summary.task_costs.is_empty() {
+        eprintln!("\n  Task costs:");
+        eprintln!(
+            "  {:.<24} {:>8} {:>8} {:>9} {:>6} {:>6}",
+            "task", "tok_in", "tok_out", "cost", "calls", "result"
+        );
+        for tc in &summary.task_costs {
+            eprintln!(
+                "  {:.<24} {:>8} {:>8} ${:>7.4} {:>6} {:>6}",
+                tc.task_id, tc.tokens_in, tc.tokens_out, tc.cost_usd, tc.agent_calls, tc.outcome,
+            );
+        }
+    }
+    // Failure details.
+    if !summary.failure_reasons.is_empty() {
+        eprintln!("\nFailure details:");
+        for (key, reason) in &summary.failure_reasons {
+            if reason.contains('\n') {
+                eprintln!("  \u{2717} {key}:");
+                for line in reason.lines() {
+                    eprintln!("    {line}");
+                }
+            } else {
+                eprintln!("  \u{2717} {key}: {reason}");
+            }
+        }
+        eprintln!("\nhint: check .roko/roko.log for full failure output");
+    }
 }
 
 #[cfg(test)]

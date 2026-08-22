@@ -40,10 +40,11 @@
 | `architecture-production-residuals` | 4 | 4 | 0 | ✅ complete | 2 |
 | `doctor-network-v2` | 7 | 0 | 7 | 📋 ready | 1 |
 | `e2e-smoke` | 2 | 2 | 0 | ✅ complete | 1 |
+| `justfile-recipes` | 1 | 0 | 1 | 📋 ready | 1 |
 
-**Executable Total**: 31 plans, 131 tasks, 124 done (95%), 7 remaining
+**Executable Total**: 32 plans, 132 tasks, 124 done (94%), 8 remaining
 **Complete Plans**: 30
-**Ready/In-Progress Plans**: 1
+**Ready/In-Progress Plans**: 2
 
 ## Superseded / Archived
 

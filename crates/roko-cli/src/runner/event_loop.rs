@@ -94,9 +94,7 @@ use super::deadlines::{
 use super::gate_dispatch;
 use super::github_workflow::{GitHubWorkflow, PlanGitHubSummary, TaskGitHubResult};
 use super::merge::{MergeDispatch, MergeLaunch, MergeResolution, PlanMerger, PlanMergerConfig};
-use super::output_sink::{
-    PlanCompleteSummary, RunCompleteSummary, RunOutputSink, TaskCostSummary,
-};
+use super::output_sink::{PlanCompleteSummary, RunCompleteSummary, RunOutputSink, TaskCostSummary};
 use super::persist::{self, GateThresholds, PersistPaths};
 use super::plan_loader::Plan;
 use super::snapshot_writer::{
@@ -10334,7 +10332,11 @@ async fn dispatch_action(
                     // in worktrees reuse compiled artifacts (backlog #163).
                     spawn_config.extra_env.push((
                         "CARGO_TARGET_DIR".to_string(),
-                        ctx.config.workdir.join("target").to_string_lossy().to_string(),
+                        ctx.config
+                            .workdir
+                            .join("target")
+                            .to_string_lossy()
+                            .to_string(),
                     ));
                     spawn_config.max_turns = dispatch_turn_limit;
                     spawn_config.effort = dispatch_effort.clone();

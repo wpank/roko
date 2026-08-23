@@ -175,13 +175,14 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         let this = self.get_mut();
+        let Some(fut) = this.future.as_mut() else {
+            return std::task::Poll::Ready(ToolResult::err(ToolError::HandlerPanic(
+                "handler future polled after completion".to_string(),
+            )));
+        };
         let outcome = {
             let _guard = HandlerPanicPollGuard::enter();
-            this.future
-                .as_mut()
-                .expect("handler future is unavailable only after completion")
-                .as_mut()
-                .poll(cx)
+            fut.as_mut().poll(cx)
         };
         match outcome {
             std::task::Poll::Pending => std::task::Poll::Pending,

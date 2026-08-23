@@ -3118,13 +3118,8 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                     }
                     None => {
                         eprintln!("session not found: {id}");
-                        if matches!(
-                            id.to_ascii_lowercase().trim(),
-                            "list" | "ls" | "all"
-                        ) {
-                            eprintln!(
-                                "Hint: `roko history` (no argument) lists sessions."
-                            );
+                        if matches!(id.to_ascii_lowercase().trim(), "list" | "ls" | "all") {
+                            eprintln!("Hint: `roko history` (no argument) lists sessions.");
                         }
                         return Ok(EXIT_FAILURE);
                     }

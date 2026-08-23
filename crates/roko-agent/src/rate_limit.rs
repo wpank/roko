@@ -175,7 +175,10 @@ impl TpmTracker {
         let window_start = now.saturating_sub(60);
         let bucket_key = (now / 10) * 10; // align to 10-second buckets
 
-        let mut buckets = self.buckets.lock().expect("tpm tracker lock");
+        let mut buckets = self.buckets.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!("tpm tracker buckets mutex poisoned; recovering");
+            poisoned.into_inner()
+        });
         // Evict buckets older than the 60-second window.
         buckets.retain(|(start, _)| *start >= window_start);
         // Add tokens to the current bucket.
@@ -193,7 +196,10 @@ impl TpmTracker {
     fn current(&self) -> u64 {
         let now = Self::now_secs();
         let window_start = now.saturating_sub(60);
-        let buckets = self.buckets.lock().expect("tpm tracker lock");
+        let buckets = self.buckets.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!("tpm tracker buckets mutex poisoned; recovering");
+            poisoned.into_inner()
+        });
         buckets
             .iter()
             .filter(|(s, _)| *s >= window_start)
@@ -374,7 +380,10 @@ impl ProviderRateLimiter {
     pub async fn acquire(&self, provider_id: &str) {
         // Check for a dedicated per-provider governor first (no async inside lock).
         let dedicated = {
-            let providers = self.providers.lock().expect("rate limiter lock");
+            let providers = self.providers.lock().unwrap_or_else(|poisoned| {
+                tracing::warn!("rate limiter providers mutex poisoned; recovering");
+                poisoned.into_inner()
+            });
             providers.get(provider_id).map(|state| {
                 (
                     Arc::clone(&state.rpm_limiter),
@@ -447,7 +456,10 @@ impl ProviderRateLimiter {
     /// return an error because TPM exhaustion is transient and often brief.
     pub async fn record_tokens(&self, provider_id: &str, tokens: u64) -> u64 {
         let (tracker, tpm_limit) = {
-            let providers = self.providers.lock().expect("rate limiter lock");
+            let providers = self.providers.lock().unwrap_or_else(|poisoned| {
+                tracing::warn!("rate limiter providers mutex poisoned; recovering");
+                poisoned.into_inner()
+            });
             if let Some(state) = providers.get(provider_id) {
                 (Some(Arc::clone(&state.tpm_tracker)), state.tpm_limit)
             } else {
@@ -481,7 +493,10 @@ impl ProviderRateLimiter {
     /// Return the approximate current rolling TPM for a provider.
     #[must_use]
     pub fn current_tpm(&self, provider_id: &str) -> u64 {
-        let providers = self.providers.lock().expect("rate limiter lock");
+        let providers = self.providers.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!("rate limiter providers mutex poisoned; recovering");
+            poisoned.into_inner()
+        });
         providers
             .get(provider_id)
             .map(|s| s.tpm_tracker.current())
@@ -493,7 +508,10 @@ impl ProviderRateLimiter {
     /// budget and an unlimited (`0`) TPM budget.
     #[must_use]
     pub fn snapshot(&self) -> Vec<ProviderRateLimitSnapshot> {
-        let providers = self.providers.lock().expect("rate limiter lock");
+        let providers = self.providers.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!("rate limiter providers mutex poisoned; recovering");
+            poisoned.into_inner()
+        });
         let mut snapshots = providers
             .iter()
             .map(|(provider_id, state)| ProviderRateLimitSnapshot {

@@ -122,8 +122,7 @@ impl Verify for CompileGate {
                 self.build_system.program()
             );
             tracing::warn!(gate = %self.name, "{reason}");
-            return Verdict::pass(&self.name)
-                .with_detail(format!("skipped: {reason}"))
+            return Verdict::fail(&self.name, format!("build tool not available: {reason}"))
                 .with_duration(started.elapsed().as_millis() as u64);
         }
 
@@ -267,5 +266,41 @@ mod tests {
     fn cargo_shortcut_names() {
         let g = CompileGate::cargo();
         assert_eq!(g.name(), "compile:cargo");
+    }
+
+    #[tokio::test]
+    #[allow(unsafe_code)]
+    async fn compile_gate_fails_when_build_tool_not_on_path() {
+        // Temporarily set PATH to empty so no build tool is found.
+        let saved = std::env::var("PATH").unwrap_or_default();
+        // SAFETY: test-only, single-threaded tokio runtime.
+        unsafe { std::env::set_var("PATH", "") };
+
+        let gate = CompileGate::cargo();
+        let payload = crate::payload::GatePayload {
+            working_dir: std::path::PathBuf::from("."),
+            target_dir: None,
+            extra_env: vec![],
+            label: None,
+            target_crates: vec![],
+        };
+        let signal = roko_core::Signal::builder(roko_core::Kind::Task)
+            .body(roko_core::Body::from_json(&payload).unwrap())
+            .build();
+        let ctx = roko_core::Context::now();
+        let verdict = gate.verify(&signal, &ctx).await;
+
+        // Restore PATH before assertions so panics don't leave it broken.
+        unsafe { std::env::set_var("PATH", &saved) };
+
+        assert!(
+            !verdict.passed,
+            "compile gate should fail when build tool is unavailable"
+        );
+        assert!(
+            verdict.reason.contains("not available"),
+            "reason should mention tool unavailability: {}",
+            verdict.reason
+        );
     }
 }

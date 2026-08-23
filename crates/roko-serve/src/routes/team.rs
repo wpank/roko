@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use super::middleware::{AuthContext, AuthMethod};
+use super::middleware::{AuthContext, AuthMethod, constant_time_eq};
 use crate::auth_audit::{AuthAuditAction, AuthAuditEvent, AuthOutcome};
 use crate::error::ApiError;
 use crate::rbac::{Permission, Role, enforce_no_escalation, enforce_permission};
@@ -314,7 +314,11 @@ async fn accept_invitation(
     let _guard = team_store_guard();
     let mut invitations = load_and_purge_expired(&state, expiry_days, &caller)?;
     let Some(index) = invitations.iter().position(|invitation| {
-        !invitation.consumed && constant_time_eq(&invitation.invite_token_hash, &supplied_hash)
+        !invitation.consumed
+            && constant_time_eq(
+                invitation.invite_token_hash.as_bytes(),
+                supplied_hash.as_bytes(),
+            )
     }) else {
         audit_join_denied(&state, &caller);
         return Err(ApiError::unauthorized(
@@ -597,17 +601,6 @@ fn hash_invite_token(token: &str) -> String {
 fn validated_invite_token_hash(token: &str) -> Option<String> {
     let decoded = URL_SAFE_NO_PAD.decode(token.as_bytes()).ok()?;
     (decoded.len() == INVITE_TOKEN_BYTES).then(|| hash_invite_token(token))
-}
-
-fn constant_time_eq(left: &str, right: &str) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    left.as_bytes()
-        .iter()
-        .zip(right.as_bytes())
-        .fold(0_u8, |difference, (a, b)| difference | (*a ^ *b))
-        == 0
 }
 
 fn hash_prefix(hash: &str) -> String {

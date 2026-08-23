@@ -477,7 +477,14 @@ pub async fn run_gate_once(
     main_target_dir: Option<PathBuf>,
 ) -> GateCompletion {
     let start = Instant::now();
-    let signal = gate_signal(&plan_id, &task_id, rung, &workdir, &target_crates, main_target_dir.as_deref());
+    let signal = gate_signal(
+        &plan_id,
+        &task_id,
+        rung,
+        &workdir,
+        &target_crates,
+        main_target_dir.as_deref(),
+    );
     let ctx = roko_core::Context::now();
     let limit = Duration::from_secs(timeout_secs.max(1));
 

@@ -1,0 +1,70 @@
+[meta]
+plan = "api-key-timing-safe"
+total = 2
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 20
+
+[[task]]
+id = "T01"
+title = "Add canonical constant_time_eq and fix vulnerable comparison"
+role = "implementer"
+files = ["crates/roko-serve/src/routes/middleware.rs"]
+description = """In crates/roko-serve/src/routes/middleware.rs, the legacy API key comparison
+uses `token == auth.api_key` which is vulnerable to timing side-channel attacks.
+
+1. Add a `pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool` function that uses
+   XOR accumulation with `core::hint::black_box`:
+```rust
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (lhs, rhs) in a.iter().zip(b.iter()) {
+        diff |= lhs ^ rhs;
+    }
+    core::hint::black_box(diff) == 0
+}
+```
+
+2. Find the line `if !auth.api_key.is_empty() && token == auth.api_key {` and replace
+   `token == auth.api_key` with
+   `constant_time_eq(token.as_bytes(), auth.api_key.as_bytes())`.
+
+Verify: `cargo check -p roko-serve` passes."""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-serve"
+
+[[task]]
+id = "T02"
+title = "Replace duplicate constant_time_eq in team.rs and webhooks.rs"
+role = "implementer"
+files = ["crates/roko-serve/src/routes/team.rs", "crates/roko-serve/src/routes/webhooks.rs"]
+description = """In crates/roko-serve/src/routes/, there are duplicate `constant_time_eq`
+implementations in team.rs and webhooks.rs. Replace them with the canonical version from
+middleware.rs.
+
+1. In team.rs: delete the local `fn constant_time_eq(left: &str, right: &str) -> bool`
+   function. Add `use super::middleware::constant_time_eq;` (or adjust the import path).
+   Update the call site to use `.as_bytes()` on both arguments since the canonical
+   version takes `&[u8]`.
+
+2. In webhooks.rs: delete the local `fn constant_time_eq(a: &[u8], b: &[u8]) -> bool`
+   function. Add `use super::middleware::constant_time_eq;`. The call sites already
+   pass `&[u8]` so no argument changes needed.
+
+Verify: `cargo check -p roko-serve` passes."""
+status = "ready"
+tier = "mechanical"
+depends_on = ["T01"]
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-serve"

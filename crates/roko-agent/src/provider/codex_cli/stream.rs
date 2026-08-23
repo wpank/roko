@@ -142,9 +142,7 @@ pub fn parse_stream_line(line: &str) -> Vec<AgentRuntimeEvent> {
                 num_turns: None,
                 is_error: false,
             });
-            events.push(AgentRuntimeEvent::Exited {
-                exit_code: Some(0),
-            });
+            events.push(AgentRuntimeEvent::Exited { exit_code: Some(0) });
             events
         }
 
@@ -164,10 +162,10 @@ fn parse_item_completed(item: Option<CodexItem>) -> Vec<AgentRuntimeEvent> {
 
     match item.item_type.as_str() {
         "agent_message" => {
-            if let Some(text) = item.text {
-                if !text.is_empty() {
-                    return vec![AgentRuntimeEvent::MessageDelta { text }];
-                }
+            if let Some(text) = item.text
+                && !text.is_empty()
+            {
+                return vec![AgentRuntimeEvent::MessageDelta { text }];
             }
             Vec::new()
         }
@@ -213,11 +211,11 @@ mod tests {
 
     #[test]
     fn thread_started() {
-        let events = parse_stream_line(
-            r#"{"type":"thread.started","thread_id":"abc-123"}"#,
-        );
+        let events = parse_stream_line(r#"{"type":"thread.started","thread_id":"abc-123"}"#);
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], AgentRuntimeEvent::SystemInit { session_id, .. } if session_id == "abc-123"));
+        assert!(
+            matches!(&events[0], AgentRuntimeEvent::SystemInit { session_id, .. } if session_id == "abc-123")
+        );
     }
 
     #[test]
@@ -235,7 +233,9 @@ mod tests {
             r#"{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"ls","aggregated_output":"file.txt\n","exit_code":0,"status":"completed"}}"#,
         );
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], AgentRuntimeEvent::ToolOutput { id, output } if id == "item_2" && output == "file.txt\n"));
+        assert!(
+            matches!(&events[0], AgentRuntimeEvent::ToolOutput { id, output } if id == "item_2" && output == "file.txt\n")
+        );
     }
 
     #[test]
@@ -244,9 +244,25 @@ mod tests {
             r#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":50,"cache_write_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0}}"#,
         );
         assert_eq!(events.len(), 3);
-        assert!(matches!(&events[0], AgentRuntimeEvent::TokenUsage { input_tokens: 100, output_tokens: 10, .. }));
-        assert!(matches!(&events[1], AgentRuntimeEvent::TurnCompleted { is_error: false, .. }));
-        assert!(matches!(&events[2], AgentRuntimeEvent::Exited { exit_code: Some(0) }));
+        assert!(matches!(
+            &events[0],
+            AgentRuntimeEvent::TokenUsage {
+                input_tokens: 100,
+                output_tokens: 10,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &events[1],
+            AgentRuntimeEvent::TurnCompleted {
+                is_error: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &events[2],
+            AgentRuntimeEvent::Exited { exit_code: Some(0) }
+        ));
     }
 
     #[test]
@@ -255,7 +271,9 @@ mod tests {
             r#"{"type":"item.completed","item":{"id":"item_1","type":"file_change","changes":[{"path":"/tmp/test.txt","kind":"add"}],"status":"completed"}}"#,
         );
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], AgentRuntimeEvent::ToolOutput { output, .. } if output.contains("add: /tmp/test.txt")));
+        assert!(
+            matches!(&events[0], AgentRuntimeEvent::ToolOutput { output, .. } if output.contains("add: /tmp/test.txt"))
+        );
     }
 
     #[test]

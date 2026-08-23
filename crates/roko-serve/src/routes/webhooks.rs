@@ -26,6 +26,7 @@ use roko_core::{Body, Kind, Provenance, Signal};
 use serde_json::{Value, json};
 use sha2::Sha256;
 
+use super::middleware::constant_time_eq;
 use crate::error::ApiError;
 use crate::events::ServerEvent;
 use crate::state::AppState;
@@ -739,19 +740,6 @@ fn hex_value(byte: u8) -> Option<u8> {
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     }
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-
-    let mut diff = 0u8;
-    for (lhs, rhs) in a.iter().zip(b.iter()) {
-        diff |= lhs ^ rhs;
-    }
-
-    core::hint::black_box(diff) == 0
 }
 
 #[cfg(test)]

@@ -386,7 +386,7 @@ fn authenticate_api_key(
     }
 
     // 2. Fall back to legacy single api_key for backwards compatibility.
-    if !auth.api_key.is_empty() && token == auth.api_key {
+    if !auth.api_key.is_empty() && constant_time_eq(token.as_bytes(), auth.api_key.as_bytes()) {
         let method = if via_header {
             AuthMethod::ApiKey
         } else if is_structurally_valid_jwt(token) {
@@ -1531,6 +1531,21 @@ pub async fn scrub_secrets(
     }
 
     Response::from_parts(parts, Body::from(redacted))
+}
+
+/// Compares two byte slices in constant time to prevent timing side-channel attacks.
+///
+/// Returns `true` if the slices are equal. The comparison time is proportional to
+/// `a.len()` and does not short-circuit on the first differing byte.
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (lhs, rhs) in a.iter().zip(b.iter()) {
+        diff |= lhs ^ rhs;
+    }
+    core::hint::black_box(diff) == 0
 }
 
 #[cfg(test)]

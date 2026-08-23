@@ -1,0 +1,45 @@
+[meta]
+plan = "rate-limiter-poison-recovery"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 15
+
+[[task]]
+id = "T01"
+title = "Replace mutex .expect() with poison recovery in rate_limit.rs"
+role = "implementer"
+files = ["crates/roko-agent/src/rate_limit.rs"]
+description = """In crates/roko-agent/src/rate_limit.rs, replace all 6 `.expect()` calls on
+`Mutex::lock()` results with `.unwrap_or_else(|poisoned| poisoned.into_inner())` and a
+`tracing::warn!` log. This prevents a single tool handler panic from cascading into every
+subsequent LLM request panicking due to mutex poisoning.
+
+The 6 calls to replace are approximately at lines 178, 196, 377, 450, 484, 496. Each has
+a pattern like:
+  `self.buckets.lock().expect("tpm tracker lock")`
+or:
+  `self.providers.lock().expect("rate limiter lock")`
+
+Replace each with:
+```rust
+self.buckets.lock().unwrap_or_else(|poisoned| {
+    tracing::warn!("tpm tracker buckets mutex poisoned; recovering");
+    poisoned.into_inner()
+})
+```
+
+IMPORTANT: Do NOT change the `.expect()` calls on `NonZeroU32::new()` at lines ~263 and
+~279 — those are not mutex locks and are valid.
+
+Do NOT change `.unwrap()` calls inside `#[cfg(test)]` blocks.
+
+Verify: `cargo check -p roko-agent` passes."""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-agent"

@@ -8,10 +8,10 @@ pub use stream::{
 use crate::Agent;
 use crate::ExecAgent;
 use crate::claude_cli_agent::{ClaudeCliAgent, build_settings_json};
+use crate::provider::current_safety_layer;
 use crate::provider::{
     AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
 };
-use crate::provider::current_safety_layer;
 use crate::safety::SafetyLayer;
 use roko_core::agent::ProviderKind;
 #[cfg(test)]
@@ -208,8 +208,7 @@ impl ClaudeCliAdapter {
 
         args.push("-".to_string()); // Read prompt from stdin
 
-        let safety =
-            current_safety_layer().unwrap_or_else(SafetyLayer::with_defaults);
+        let safety = current_safety_layer().unwrap_or_else(SafetyLayer::with_defaults);
 
         let mut agent = ExecAgent::new(command, args, safety)
             .with_timeout_ms(timeout_ms)

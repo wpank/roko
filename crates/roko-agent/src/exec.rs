@@ -175,17 +175,15 @@ fn extract_codex_text(jsonl: &str) -> String {
             continue;
         };
         // Extract text from: {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
-        if event.get("type").and_then(Value::as_str) == Some("item.completed") {
-            if let Some(item) = event.get("item") {
-                if item.get("type").and_then(Value::as_str) == Some("agent_message") {
-                    if let Some(msg_text) = item.get("text").and_then(Value::as_str) {
-                        if !text.is_empty() {
-                            text.push('\n');
-                        }
-                        text.push_str(msg_text);
-                    }
-                }
+        if event.get("type").and_then(Value::as_str) == Some("item.completed")
+            && let Some(item) = event.get("item")
+            && item.get("type").and_then(Value::as_str) == Some("agent_message")
+            && let Some(msg_text) = item.get("text").and_then(Value::as_str)
+        {
+            if !text.is_empty() {
+                text.push('\n');
             }
+            text.push_str(msg_text);
         }
     }
     text

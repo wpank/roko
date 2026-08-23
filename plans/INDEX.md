@@ -44,13 +44,16 @@
 | `doctor-network-v2` | 7 | 0 | 7 | 📋 ready | 1 |
 | `e2e-smoke` | 2 | 2 | 0 | ✅ complete | 1 |
 | `gate-compile-fail-closed` | 2 | 0 | 2 | 📋 ready | 1 |
+| `graph-example-schema-drift` | 2 | 0 | 2 | 📋 ready | 1 |
 | `handler-future-double-poll` | 1 | 0 | 1 | 📋 ready | 1 |
 | `justfile-recipes` | 1 | 0 | 1 | 📋 ready | 1 |
 | `rate-limiter-poison-recovery` | 1 | 0 | 1 | 📋 ready | 1 |
+| `serve-auth-default` | 1 | 0 | 1 | 📋 ready | 1 |
+| `task-parser-duplicate-ids` | 1 | 0 | 1 | 📋 ready | 1 |
 
-**Executable Total**: 38 plans, 143 tasks, 124 done (87%), 19 remaining
+**Executable Total**: 41 plans, 147 tasks, 124 done (84%), 23 remaining
 **Complete Plans**: 30
-**Ready/In-Progress Plans**: 8
+**Ready/In-Progress Plans**: 11
 
 ## Superseded / Archived
 

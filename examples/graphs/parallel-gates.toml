@@ -5,6 +5,7 @@
 # - Fan-in: all gate results merge into a single aggregator
 # - Budget enforcement: 10K token limit, $0.50 cost cap, 5-minute deadline
 
+[graph]
 name = "parallel-gates"
 description = "Run multiple validation gates in parallel after prompt assembly"
 

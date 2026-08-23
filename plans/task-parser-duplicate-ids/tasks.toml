@@ -1,0 +1,66 @@
+[meta]
+plan = "task-parser-duplicate-ids"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 20
+
+[[task]]
+id = "T01"
+title = "Detect duplicate and invalid task IDs in validate_structure"
+role = "implementer"
+files = ["crates/roko-cli/src/task_parser.rs"]
+description = """In crates/roko-cli/src/task_parser.rs, the `validate_structure` function does
+not detect duplicate task IDs. Two `[[task]]` blocks with the same `id` silently lose one task.
+
+1. Add two new variants to the `TaskValidationIssue` enum (find the enum, it has variants like
+   `MissingRequiredField`, `UnknownDependency`, `CircularDependency`, `NoStartNode`):
+   - `DuplicateId(String)` — two tasks share the same ID
+   - `InvalidTaskId(String)` — a task ID contains whitespace or control characters
+
+2. Add `Display` arms for both new variants in the existing `Display` impl:
+   - DuplicateId: `"duplicate task id `{id}`: each [[task]] must have a unique id"`
+   - InvalidTaskId: `"invalid task id `{id}`: must be non-empty with no whitespace or control characters"`
+
+3. In `validate_structure`, after the line that builds `task_ids: HashSet<&str>`, add:
+   ```rust
+   if task_ids.len() != self.tasks.len() {
+       let mut seen: HashSet<&str> = HashSet::new();
+       for task in &self.tasks {
+           if !seen.insert(task.id.as_str()) {
+               issues.push(TaskValidationIssue::DuplicateId(task.id.clone()));
+           }
+       }
+   }
+   ```
+
+4. Also in `validate_structure`, add format validation for task IDs:
+   ```rust
+   for task in &self.tasks {
+       if !task.id.is_empty()
+           && task.id.chars().any(|c| c.is_control() || c.is_whitespace())
+       {
+           issues.push(TaskValidationIssue::InvalidTaskId(task.id.clone()));
+       }
+   }
+   ```
+
+5. Add a test in the existing `#[cfg(test)] mod tests` block:
+   ```rust
+   #[test]
+   fn duplicate_task_ids_produce_validation_error() {
+       // Create a minimal tasks.toml with two tasks sharing id "T1"
+       // Parse it, call validate_structure(), assert DuplicateId("T1") is in the issues
+   }
+   ```
+   Use the existing test patterns in the file for the TOML structure.
+
+Verify: `cargo check -p roko-cli` and `cargo test -p roko-cli -- duplicate_task_ids` pass."""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-cli"

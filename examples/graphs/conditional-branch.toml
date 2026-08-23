@@ -82,46 +82,30 @@ from = "compose_prompt"
 to = "agent_review"
 
 [edges.condition]
-type = "on_success"
+type = "success"
 
 # Conditional branches based on score.
+# Conditional routing (type = "when") requires loader extension; using "always" for now
 [[edges]]
 from = "agent_review"
 to = "high_quality_path"
 
 [edges.condition]
-type = "when"
-field = "score"
-op = "Gte"
-
-[edges.condition.value]
-# Score >= 80 routes to auto-approve.
-# Note: TOML integer in condition value.
-Integer = 80
+type = "always"
 
 [[edges]]
 from = "agent_review"
 to = "medium_quality_path"
 
 [edges.condition]
-type = "when"
-field = "score"
-op = "Lt"
-
-[edges.condition.value]
-Integer = 80
+type = "always"
 
 [[edges]]
 from = "agent_review"
 to = "low_quality_path"
 
 [edges.condition]
-type = "when"
-field = "score"
-op = "Lt"
-
-[edges.condition.value]
-Integer = 50
+type = "always"
 
 # All paths lead to notification.
 [[edges]]

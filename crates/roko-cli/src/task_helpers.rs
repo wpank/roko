@@ -190,6 +190,28 @@ pub(crate) fn log_tasks_validation_issue(
                 "tasks.toml validation failed"
             );
         }
+        TaskValidationIssue::DuplicateId(id) => {
+            tracing::error!(
+                target: "plan_validation",
+                plan_id = %plan_id,
+                plan_base = %plan_base,
+                tasks_path = %tasks_path.display(),
+                issue = "duplicate_id",
+                task_id = %id,
+                "tasks.toml validation failed"
+            );
+        }
+        TaskValidationIssue::InvalidTaskId(id) => {
+            tracing::error!(
+                target: "plan_validation",
+                plan_id = %plan_id,
+                plan_base = %plan_base,
+                tasks_path = %tasks_path.display(),
+                issue = "invalid_task_id",
+                task_id = %id,
+                "tasks.toml validation failed"
+            );
+        }
     }
 }
 

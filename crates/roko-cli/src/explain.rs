@@ -320,10 +320,25 @@ fn global_flag_is_bool(flag: &str) -> bool {
     )
 }
 
+/// Resolve user-facing aliases to canonical topic names.
+///
+/// Maps common aliases so that, for example, `roko explain signals` finds
+/// the topic stored under the canonical name `"engram"`.
+#[must_use]
+pub fn resolve_topic_alias(name: &str) -> &str {
+    match name {
+        "signal" | "signals" | "engrams" => "engram",
+        other => other,
+    }
+}
+
 /// Look up a topic by name (case-insensitive).
+///
+/// Aliases are resolved before searching; see [`resolve_topic_alias`].
 #[must_use]
 pub fn find_topic(name: &str) -> Option<&'static TopicEntry> {
     let lower = name.to_ascii_lowercase();
+    let lower = resolve_topic_alias(&lower);
     let topic = TOPICS.iter().find(|t| t.name == lower);
     if topic.is_none() {
         request_unknown_topic_exit_if_cli_explain();

@@ -38,13 +38,17 @@
 | `P34-verification-sweep` | 4 | 4 | 0 | ✅ complete | 1 |
 | `architecture-defi-critical-path` | 3 | 3 | 0 | ✅ complete | 1 |
 | `architecture-production-residuals` | 4 | 4 | 0 | ✅ complete | 2 |
+| `bandit-dead-code` | 1 | 0 | 1 | 📋 ready | 1 |
+| `cli-ux-consistency` | 4 | 0 | 4 | 📋 ready | 2 |
 | `doctor-network-v2` | 7 | 0 | 7 | 📋 ready | 1 |
 | `e2e-smoke` | 2 | 2 | 0 | ✅ complete | 1 |
+| `gate-compile-fail-closed` | 2 | 0 | 2 | 📋 ready | 1 |
+| `handler-future-double-poll` | 1 | 0 | 1 | 📋 ready | 1 |
 | `justfile-recipes` | 1 | 0 | 1 | 📋 ready | 1 |
 
-**Executable Total**: 32 plans, 132 tasks, 124 done (94%), 8 remaining
+**Executable Total**: 36 plans, 140 tasks, 124 done (89%), 16 remaining
 **Complete Plans**: 30
-**Ready/In-Progress Plans**: 2
+**Ready/In-Progress Plans**: 6
 
 ## Superseded / Archived
 

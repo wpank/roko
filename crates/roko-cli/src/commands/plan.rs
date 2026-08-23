@@ -118,8 +118,12 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
         }
         PlanCmd::Show { plan_id, workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let plan_id = plan_id
+                .strip_prefix("plans/")
+                .or_else(|| plan_id.strip_prefix("plans\\"))
+                .unwrap_or(&plan_id);
             let Some(plan_info) =
-                roko_cli::plan::discover_plan_by_id(&wd, &plan_id).map_err(|e| anyhow!("{e}"))?
+                roko_cli::plan::discover_plan_by_id(&wd, plan_id).map_err(|e| anyhow!("{e}"))?
             else {
                 anyhow::bail!("plan '{plan_id}' not found");
             };

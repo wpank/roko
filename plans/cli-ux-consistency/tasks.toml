@@ -1,0 +1,102 @@
+[meta]
+plan = "cli-ux-consistency"
+total = 4
+done = 0
+status = "ready"
+max_parallel = 2
+skip_enrichment = true
+estimated_total_minutes = 30
+
+[[task]]
+id = "T01"
+title = "Add router alias and list alias to clap commands"
+role = "implementer"
+files = ["crates/roko-cli/src/main.rs"]
+description = """Add `#[command(alias = "router")]` to `LearnCmd::Route` variant in main.rs so that both
+`roko learn route` and `roko learn router` work. Also add `#[command(alias = "list")]` to
+`MarketCmd::Browse` so `roko market list` works alongside `roko market browse`.
+
+File: crates/roko-cli/src/main.rs
+- Find `LearnCmd::Route` variant and add `#[command(alias = "router")]`
+- Find `MarketCmd::Browse` variant and add `#[command(alias = "list")]`
+
+Verify: `cargo check -p roko-cli` passes."""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-cli"
+
+[[task]]
+id = "T02"
+title = "Fix explain signals topic alias"
+role = "implementer"
+files = ["crates/roko-cli/src/explain.rs"]
+description = """In crates/roko-cli/src/explain.rs, the topic for signals has `name: "engram"` but users
+expect `roko explain signals` to work. Add a `resolve_topic_alias()` function that maps
+"signal", "signals", and "engrams" to "engram", and call it in `find_topic()` before searching
+the TOPICS array.
+
+File: crates/roko-cli/src/explain.rs
+- Add resolve_topic_alias function before find_topic
+- Update find_topic to resolve aliases before searching
+
+Verify: `cargo check -p roko-cli` passes."""
+status = "ready"
+tier = "mechanical"
+depends_on = ["T01"]
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-cli"
+
+[[task]]
+id = "T03"
+title = "Strip plans/ prefix in plan commands"
+role = "implementer"
+files = ["crates/roko-cli/src/commands/plan.rs"]
+description = """In crates/roko-cli/src/commands/plan.rs, strip the `plans/` prefix from user-provided plan IDs
+before passing them to `discover_plan_by_id()`. This way `roko plan show plans/demo-hello`
+works the same as `roko plan show demo-hello`.
+
+Search for all calls to `discover_plan_by_id` in the file and add prefix stripping:
+```rust
+let plan_id = plan_id
+    .strip_prefix("plans/")
+    .or_else(|| plan_id.strip_prefix("plans\\\\"))
+    .unwrap_or(&plan_id);
+```
+
+Verify: `cargo check -p roko-cli` passes."""
+status = "ready"
+tier = "mechanical"
+depends_on = ["T01"]
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-cli"
+
+[[task]]
+id = "T04"
+title = "Improve show and history error messages"
+role = "implementer"
+files = ["crates/roko-cli/src/commands/show.rs", "crates/roko-cli/src/main.rs"]
+description = """Fix two error message issues:
+
+1. In crates/roko-cli/src/commands/show.rs, when ShowTarget::WorkId lookup fails, print a
+   helpful error listing valid subjects (overview, costs, agents, knowledge, plans, learning,
+   history) instead of a misleading "session not found" message.
+
+2. In crates/roko-cli/src/main.rs, at the History command's `None =>` arm after
+   `load_session()` returns None, add a hint for common words like "list", "ls", "all" that
+   explains `roko history` (no argument) lists sessions.
+
+Verify: `cargo check -p roko-cli` and `cargo clippy -p roko-cli --no-deps -- -D warnings` pass."""
+status = "ready"
+tier = "mechanical"
+depends_on = ["T02", "T03"]
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-cli && cargo clippy -p roko-cli --no-deps -- -D warnings"

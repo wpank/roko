@@ -527,7 +527,9 @@ fn render_history(state: &ShowState) -> String {
 fn render_work_detail(state: &ShowState, work_id: &str) -> Result<String> {
     let Some(item) = state.work_items.iter().find(|item| item.id == work_id) else {
         anyhow::bail!(
-            "no work item `{work_id}` found in .roko/work, .roko/jobs, plans, or active execution state"
+            "`{work_id}` is not a recognised subject or work-item ID.\n\
+            Valid subjects: overview, costs, agents, knowledge, plans, learning, history\n\
+            Run `roko show` with no argument for an overview, or `roko show <subject>` to inspect a section."
         );
     };
 

@@ -1,0 +1,66 @@
+[meta]
+plan = "gate-compile-fail-closed"
+total = 2
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 15
+
+[[task]]
+id = "T01"
+title = "Change Verdict::pass to Verdict::fail when build tool not found"
+role = "implementer"
+files = ["crates/roko-gate/src/compile.rs"]
+description = """In crates/roko-gate/src/compile.rs, the CompileGate::verify method returns
+Verdict::pass when the build tool (e.g. cargo) is not found on PATH. This is a correctness
+bug: code that was never compiled should not pass the compile gate.
+
+Find the `if !self.build_system.is_available()` block (around lines 118-128) and change:
+  `return Verdict::pass(&self.name).with_detail(format!("skipped: {reason}"))`
+to:
+  `return Verdict::fail(&self.name, format!("build tool not available: {reason}"))`
+
+Check how Verdict::fail is called elsewhere in the same file to match the calling convention.
+Remove the .with_detail() call since the fail message already carries the detail.
+Keep the .with_duration() call.
+
+Verify: `cargo check -p roko-gate` passes."""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-gate"
+
+[[task]]
+id = "T02"
+title = "Add test for unavailable build tool returning fail verdict"
+role = "implementer"
+files = ["crates/roko-gate/src/compile.rs"]
+description = """In crates/roko-gate/src/compile.rs, add a test in the existing `mod tests`
+block that verifies `is_available()` returns false when PATH is empty.
+
+```rust
+#[test]
+fn compile_gate_fails_when_build_tool_not_on_path() {
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    unsafe { std::env::set_var("PATH", ""); }
+    let gate = CompileGate::cargo();
+    let available = gate.build_system.is_available();
+    unsafe { std::env::set_var("PATH", &original_path); }
+    assert!(!available, "cargo should not be found when PATH is empty");
+}
+```
+
+Adjust the test based on the actual struct visibility and method names. The key assertion
+is that is_available() returns false with an empty PATH.
+
+Verify: `cargo test -p roko-gate` and `cargo clippy -p roko-gate --no-deps -- -D warnings` pass."""
+status = "ready"
+tier = "mechanical"
+depends_on = ["T01"]
+
+[[task.verify]]
+phase = "structural"
+command = "cargo test -p roko-gate && cargo clippy -p roko-gate --no-deps -- -D warnings"

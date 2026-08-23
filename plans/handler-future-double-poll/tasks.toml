@@ -1,0 +1,54 @@
+[meta]
+plan = "handler-future-double-poll"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 15
+
+[[task]]
+id = "T01"
+title = "Replace .expect() panic with typed ToolResult::err on double-poll"
+role = "implementer"
+files = ["crates/roko-agent/src/dispatcher/mod.rs"]
+description = """In crates/roko-agent/src/dispatcher/mod.rs, the HandlerFutureLifecycle<F>
+Future impl has an `.expect("handler future is unavailable only after completion")` that
+panics if the future is polled after completion. Replace it with a graceful error return.
+
+Find the poll method (around lines 167-199) and replace the block:
+```rust
+let outcome = {
+    let _guard = HandlerPanicPollGuard::enter();
+    this.future
+        .as_mut()
+        .expect("handler future is unavailable only after completion")
+        .as_mut()
+        .poll(cx)
+};
+```
+
+With:
+```rust
+let Some(fut) = this.future.as_mut() else {
+    return std::task::Poll::Ready(ToolResult::err(ToolError::HandlerPanic(
+        "handler future polled after completion".to_string(),
+    )));
+};
+let outcome = {
+    let _guard = HandlerPanicPollGuard::enter();
+    fut.as_mut().poll(cx)
+};
+```
+
+This matches how ToolResult::err(ToolError::HandlerPanic(...)) is already used at lines
+190-192 in the same function. The guarded_drop_handler_future function at line 209 already
+handles None gracefully, confirming this is the correct pattern.
+
+Verify: `cargo check -p roko-agent` passes."""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-agent"

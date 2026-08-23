@@ -77,9 +77,16 @@ impl SandboxLevel {
     }
 
     /// Whether provider permission/sandbox bypass flags are acceptable.
+    ///
+    /// `None`, `Observe`, and `Restrict` all permit bypass when the runner
+    /// config explicitly enables `dangerously_skip_permissions`.  `Restrict`
+    /// still enforces its own path/network policy via [`SandboxPolicy`] — this
+    /// flag only controls whether the *child CLI process* gets its interactive
+    /// permission gate disabled so it can write files unattended.  `Isolate`
+    /// and `Quarantine` never allow bypass regardless of config.
     #[must_use]
     pub const fn allows_permission_bypass(self) -> bool {
-        matches!(self, Self::None | Self::Observe)
+        matches!(self, Self::None | Self::Observe | Self::Restrict)
     }
 }
 

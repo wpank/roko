@@ -1,0 +1,102 @@
+[meta]
+plan = "graph-example-schema-drift"
+total = 2
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 20
+
+[[task]]
+id = "T01"
+title = "Fix 3 broken graph example TOML files"
+role = "implementer"
+files = [
+    "examples/graphs/parallel-gates.toml",
+    "examples/graphs/task-execution.toml",
+    "examples/graphs/conditional-branch.toml",
+]
+description = """Three graph example TOML files fail to parse. Fix them:
+
+1. `examples/graphs/parallel-gates.toml`: The file has bare top-level `name` and
+   `description` fields. Wrap them in a `[graph]` table:
+   ```toml
+   [graph]
+   name = "parallel-gates"
+   description = "..."
+   ```
+
+2. `examples/graphs/task-execution.toml`: Replace all `type = "on_success"` with
+   `type = "success"` and `type = "on_failure"` with `type = "failure"` in edge
+   condition blocks. There should be ~4 occurrences.
+
+3. `examples/graphs/conditional-branch.toml`:
+   - Replace `type = "on_success"` with `type = "success"` (~1 occurrence)
+   - Replace all `type = "when"` edges with `type = "always"` (~3 occurrences).
+     Remove the `field`, `op`, and `[edges.condition.value]` sub-fields from those
+     edges since `always` doesn't use them. Add a comment:
+     `# Conditional routing (type = "when") requires loader extension; using "always" for now`
+
+Verify: `cargo check -p roko-graph` passes (no Rust changes, just TOML fixes)."""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-graph"
+
+[[task]]
+id = "T02"
+title = "Add regression test validating all example graphs parse"
+role = "implementer"
+files = ["crates/roko-graph/tests/example_graphs.rs"]
+depends_on = ["T01"]
+description = """Add a new integration test file at `crates/roko-graph/tests/example_graphs.rs`
+that validates all `examples/graphs/*.toml` files parse successfully via the graph loader.
+
+```rust
+#[test]
+fn all_example_graphs_parse_successfully() {
+    let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()  // crates/
+        .unwrap()
+        .parent()  // workspace root
+        .unwrap()
+        .join("examples")
+        .join("graphs");
+
+    let mut failed = Vec::new();
+    for entry in std::fs::read_dir(&examples_dir)
+        .expect("examples/graphs/ must exist")
+    {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+            let content = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+            if let Err(e) = roko_graph::loader::load_from_str(&content) {
+                failed.push(format!("{}: {}", path.display(), e));
+            }
+        }
+    }
+
+    if !failed.is_empty() {
+        panic!(
+            "{} example graph(s) failed to parse:\\n{}",
+            failed.len(),
+            failed.join("\\n")
+        );
+    }
+}
+```
+
+NOTE: Check that `roko_graph::loader::load_from_str` is public. If it isn't, look for
+the actual public API to parse a graph from a TOML string (e.g., `load_from_str`,
+`GraphLoader::load_str`, `RawGraphFile::from_str`, etc.) and use that instead.
+
+Verify: `cargo test -p roko-graph -- all_example_graphs` passes."""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-graph"

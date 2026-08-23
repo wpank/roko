@@ -1,0 +1,43 @@
+[meta]
+plan = "serve-auth-default"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 15
+
+[[task]]
+id = "T01"
+title = "Remove auth.enabled=false default from roko init and add startup warning"
+role = "implementer"
+files = ["crates/roko-cli/src/commands/init.rs", "crates/roko-serve/src/lib.rs"]
+description = """Two changes to improve the default security posture of `roko serve`:
+
+1. In `crates/roko-cli/src/commands/init.rs`, find where `serve.auth.enabled = false`
+   is written to the initial roko.toml. Remove that line so new workspaces don't
+   explicitly disable auth. Also find and remove the `annotate_auth_disabled()` function
+   call and its definition if it exists (it prepends a comment about auth being disabled).
+
+   Search for `auth` and `enabled` in the file to find the relevant lines.
+   The goal is that `roko init` no longer writes `enabled = false` to the auth section.
+
+2. In `crates/roko-serve/src/lib.rs`, find the `validate_bind_safety()` function or
+   the server startup path. Add a prominent warning when auth is disabled:
+   ```rust
+   if !auth_enabled {
+       tracing::warn!(
+           "roko serve is running WITHOUT authentication. \
+            Set [serve.auth] enabled = true in roko.toml to require API keys."
+       );
+   }
+   ```
+   Find where auth configuration is checked during server startup and add the warning there.
+
+Verify: `cargo check -p roko-cli && cargo check -p roko-serve` passes."""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-cli && cargo check -p roko-serve"

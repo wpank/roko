@@ -225,6 +225,10 @@ pub enum TaskValidationIssue {
     },
     /// No task starts without dependencies.
     NoStartNode,
+    /// Two tasks share the same ID.
+    DuplicateId(String),
+    /// A task ID contains whitespace or control characters.
+    InvalidTaskId(String),
 }
 
 /// Non-blocking quality warning detected in a `tasks.toml` file.
@@ -279,6 +283,14 @@ impl std::fmt::Display for TaskValidationIssue {
                 write!(f, "circular dependency detected: {}", cycle.join(" -> "))
             }
             Self::NoStartNode => write!(f, "no task without dependencies found"),
+            Self::DuplicateId(id) => write!(
+                f,
+                "duplicate task id `{id}`: each [[task]] must have a unique id"
+            ),
+            Self::InvalidTaskId(id) => write!(
+                f,
+                "invalid task id `{id}`: must be non-empty with no whitespace or control characters"
+            ),
         }
     }
 }
@@ -957,6 +969,22 @@ impl TasksFile {
     pub fn validate_structure(&self) -> Vec<TaskValidationIssue> {
         let mut issues = Vec::new();
         let task_ids: HashSet<&str> = self.tasks.iter().map(|task| task.id.as_str()).collect();
+
+        if task_ids.len() != self.tasks.len() {
+            let mut seen: HashSet<&str> = HashSet::new();
+            for task in &self.tasks {
+                if !seen.insert(task.id.as_str()) {
+                    issues.push(TaskValidationIssue::DuplicateId(task.id.clone()));
+                }
+            }
+        }
+
+        for task in &self.tasks {
+            if !task.id.is_empty() && task.id.chars().any(|c| c.is_control() || c.is_whitespace()) {
+                issues.push(TaskValidationIssue::InvalidTaskId(task.id.clone()));
+            }
+        }
+
         let current_plan = self.meta.plan.trim();
 
         for task in &self.tasks {
@@ -1850,6 +1878,37 @@ depends_on = []
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn duplicate_task_ids_produce_validation_error() {
+        let tasks: TasksFile = toml::from_str(
+            r#"
+[meta]
+plan = "test"
+total = 2
+
+[[task]]
+id = "T1"
+title = "first"
+description = "first task"
+depends_on = []
+
+[[task]]
+id = "T1"
+title = "duplicate"
+description = "also T1"
+depends_on = []
+"#,
+        )
+        .unwrap();
+
+        let issues = tasks.validate_structure();
+        assert!(
+            issues
+                .iter()
+                .any(|issue| matches!(issue, TaskValidationIssue::DuplicateId(id) if id == "T1"))
+        );
     }
 
     #[test]

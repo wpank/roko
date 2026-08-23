@@ -121,7 +121,7 @@ from = "agent_implement"
 to = "compile_gate"
 
 [edges.condition]
-type = "on_success"
+type = "success"
 
 # Gate success path: compile -> test -> success report.
 [[edges]]
@@ -129,14 +129,14 @@ from = "compile_gate"
 to = "test_gate"
 
 [edges.condition]
-type = "on_success"
+type = "success"
 
 [[edges]]
 from = "test_gate"
 to = "success_report"
 
 [edges.condition]
-type = "on_success"
+type = "success"
 
 # Gate failure path: compile fails -> retry compose -> retry agent.
 [[edges]]
@@ -144,7 +144,7 @@ from = "compile_gate"
 to = "retry_compose"
 
 [edges.condition]
-type = "on_failure"
+type = "failure"
 
 [[edges]]
 from = "retry_compose"

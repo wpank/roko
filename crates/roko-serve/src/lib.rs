@@ -867,6 +867,11 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
 
     let addr = format!("{bind}:{port}");
     validate_bind_safety(&addr, &roko_config.serve)?;
+    if !roko_config.serve.auth.enabled {
+        tracing::warn!(
+            "roko serve is running WITHOUT authentication. Set [serve.auth] enabled = true in roko.toml to require API keys."
+        );
+    }
     if let Err(err) = state.restore_snapshot().await {
         warn!(error = %err, "failed to restore server state snapshot; starting fresh");
     }

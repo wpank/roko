@@ -1,0 +1,64 @@
+[meta]
+plan = "per-turn-efficiency-events"
+total = 1
+done = 1
+status = "complete"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 20
+
+[[task]]
+id = "T01"
+title = "Add turn_number and is_final_turn to AgentEfficiencyEvent"
+role = "implementer"
+files = ["crates/roko-learn/src/efficiency.rs"]
+description = """In `crates/roko-learn/src/efficiency.rs`, the `AgentEfficiencyEvent` struct
+(lines 80-169) tracks per-task efficiency data. It currently has no concept of per-turn
+granularity.
+
+Add two fields to enable per-turn tracking:
+
+1. Add `turn_number: u32` field after `iteration` (line 149):
+```rust
+    /// Which turn within this task attempt (0 = first turn).
+    #[serde(default)]
+    pub turn_number: u32,
+```
+
+2. Add `is_final_turn: bool` field:
+```rust
+    /// Whether this is the final turn for the task (i.e., the summary event).
+    /// Earlier turns have `is_final_turn = false` and are lightweight cost records.
+    #[serde(default = "default_true")]
+    pub is_final_turn: bool,
+```
+
+3. Add the default helper:
+```rust
+fn default_true() -> bool {
+    true
+}
+```
+
+4. Update the `Default` impl (around line 210-247) to include:
+```rust
+    turn_number: 0,
+    is_final_turn: true,
+```
+
+The `is_final_turn` defaults to `true` for backward compatibility — existing single-event
+emitters produce final events. Per-turn events explicitly set `is_final_turn: false`.
+
+5. Update the `composite_score()` method if it references the struct fields — it should
+   still work since the new fields don't affect scoring.
+
+6. Update any existing tests in this file to include the new fields or verify that
+   `#[serde(default)]` makes the existing tests pass without changes.
+
+Verify: `cargo test -p roko-learn -- efficiency` passes."""
+status = "done"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo test -p roko-learn -- efficiency"

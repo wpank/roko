@@ -186,6 +186,8 @@ pub async fn run_learning_subscriber(
                     time_to_first_token_ms: 0,
                     was_warm_start: false,
                     iteration: turn,
+                    turn_number: turn,
+                    is_final_turn: false,
                     gate_passed: success,
                     outcome: if success {
                         "success".to_string()

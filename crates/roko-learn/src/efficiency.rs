@@ -147,6 +147,13 @@ pub struct AgentEfficiencyEvent {
     // ── Outcome ─────────────────────────────────────────────────────
     /// Iteration number.
     pub iteration: u32,
+    /// Which turn within this task attempt (0 = first turn).
+    #[serde(default)]
+    pub turn_number: u32,
+    /// Whether this is the final turn for the task (i.e., the summary event).
+    /// Earlier turns have `is_final_turn = false` and are lightweight cost records.
+    #[serde(default = "default_true")]
+    pub is_final_turn: bool,
     /// Whether the gate passed after this turn.
     pub gate_passed: bool,
     /// Outcome label for the observation.
@@ -207,6 +214,10 @@ fn default_operating_frequency() -> OperatingFrequency {
     OperatingFrequency::Theta
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Default for AgentEfficiencyEvent {
     fn default() -> Self {
         Self {
@@ -235,6 +246,8 @@ impl Default for AgentEfficiencyEvent {
             time_to_first_token_ms: 0,
             was_warm_start: false,
             iteration: 0,
+            turn_number: 0,
+            is_final_turn: true,
             gate_passed: false,
             outcome: String::new(),
             gate_errors: Vec::new(),
@@ -809,6 +822,8 @@ fn make_test_event(
         time_to_first_token_ms: 500,
         was_warm_start: warm,
         iteration: 1,
+        turn_number: 0,
+        is_final_turn: true,
         gate_passed: passed,
         outcome: if passed {
             "success".into()

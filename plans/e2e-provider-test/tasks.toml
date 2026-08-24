@@ -1,0 +1,46 @@
+[meta]
+plan = "e2e-provider-test"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 5
+
+[[task]]
+id = "T01"
+title = "Add a doc comment to the post_run_cleanup accessor"
+role = "implementer"
+files = ["crates/roko-core/src/config/timeouts.rs"]
+description = """In `crates/roko-core/src/config/timeouts.rs`, find the `post_run_cleanup` method
+on `TimeoutConfig` (it's the last accessor method before the closing `}` of the impl block).
+
+It currently looks like:
+```rust
+    /// Post-run cleanup as [`Duration`].
+    pub fn post_run_cleanup(&self) -> Duration {
+        Duration::from_secs(self.post_run_cleanup_secs)
+    }
+```
+
+Add a more detailed doc comment explaining what this timeout covers:
+```rust
+    /// Post-run cleanup timeout as [`Duration`].
+    ///
+    /// Covers all best-effort cleanup steps after the event loop exits:
+    /// knowledge maintenance, dream consolidation, learning completion,
+    /// episode compaction, filesystem GC, worktree cleanup, and branch cleanup.
+    /// When this timeout expires, remaining cleanup is skipped and the run
+    /// report is returned immediately.
+    pub fn post_run_cleanup(&self) -> Duration {
+        Duration::from_secs(self.post_run_cleanup_secs)
+    }
+```
+
+Verify: `cargo check -p roko-core` passes."""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-core"

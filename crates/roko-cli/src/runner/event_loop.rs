@@ -5278,6 +5278,39 @@ pub async fn run(
             .collect(),
     });
 
+    // ── Persist structured run metrics ─────────────────────────────────
+    {
+        let metrics = roko_learn::run_metrics::RunMetricsRecord {
+            run_id: state.run_id().to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            duration_ms: report.duration.as_millis() as u64,
+            total_tasks: report.total_tasks,
+            tasks_completed: report.tasks_completed,
+            tasks_failed: report.tasks_failed,
+            total_cost_usd: report.total_cost_usd,
+            total_tokens_in: report.total_tokens_in,
+            total_tokens_out: report.total_tokens_out,
+            total_agent_calls: report.total_agent_calls,
+            budget_exhausted: report.budget_exhausted,
+            plans: report
+                .plans
+                .iter()
+                .map(|p| roko_learn::run_metrics::PlanMetrics {
+                    plan_id: p.plan_id.clone(),
+                    completed: p.completed,
+                    tasks_completed: p.tasks_completed,
+                    tasks_failed: p.tasks_failed,
+                })
+                .collect(),
+        };
+        if let Err(e) = roko_learn::run_metrics::append_run_metrics(
+            &config.layout.learn_dir().join("run-metrics.jsonl"),
+            &metrics,
+        ) {
+            warn!(error = %e, "failed to persist run metrics");
+        }
+    }
+
     // ── Post-run cleanup with configurable timeout (backlog #165) ──────
     //
     // Wrap all best-effort cleanup steps in a single timeout so the process

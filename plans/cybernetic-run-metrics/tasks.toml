@@ -1,0 +1,97 @@
+[meta]
+plan = "cybernetic-run-metrics"
+total = 1
+done = 1
+status = "complete"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 20
+
+[[task]]
+id = "T01"
+title = "Persist structured run metrics to JSONL at end of plan run"
+role = "implementer"
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-learn/src/lib.rs"]
+description = """After a plan run completes, persist a structured run-metrics record to
+`.roko/learn/run-metrics.jsonl`. The report data is already computed in `build_report()`
+(line ~16264 of `crates/roko-cli/src/runner/event_loop.rs`).
+
+1. In `crates/roko-learn/src/`, create a new module `run_metrics.rs` with a
+   serializable struct `RunMetricsRecord`:
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunMetricsRecord {
+    pub run_id: String,
+    pub timestamp: String,
+    pub duration_ms: u64,
+    pub total_tasks: usize,
+    pub tasks_completed: usize,
+    pub tasks_failed: usize,
+    pub total_cost_usd: f64,
+    pub total_tokens_in: u64,
+    pub total_tokens_out: u64,
+    pub total_agent_calls: usize,
+    pub budget_exhausted: bool,
+    pub plans: Vec<PlanMetrics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanMetrics {
+    pub plan_id: String,
+    pub completed: bool,
+    pub tasks_completed: usize,
+    pub tasks_failed: usize,
+}
+```
+
+2. Add a function `append_run_metrics(path: &Path, record: &RunMetricsRecord) -> std::io::Result<()>`
+   that appends a single JSON line to the given path (create file if not exists).
+
+3. Register the module in `crates/roko-learn/src/lib.rs` with `pub mod run_metrics;`.
+
+4. In `crates/roko-cli/src/runner/event_loop.rs`, after `build_report()` is called and
+   the report is ready (around line 5244 where `sink.run_complete()` is called), construct
+   a `RunMetricsRecord` from the `RunReport` and `RunState` and call `append_run_metrics()`.
+   Use `config.layout.learn_dir().join("run-metrics.jsonl")` for the path.
+
+   The record should be constructed like:
+   ```rust
+   let metrics = roko_learn::run_metrics::RunMetricsRecord {
+       run_id: state.run_id().to_string(),
+       timestamp: chrono::Utc::now().to_rfc3339(),
+       duration_ms: report.duration.as_millis() as u64,
+       total_tasks: report.total_tasks,
+       tasks_completed: report.tasks_completed,
+       tasks_failed: report.tasks_failed,
+       total_cost_usd: report.total_cost_usd,
+       total_tokens_in: report.total_tokens_in,
+       total_tokens_out: report.total_tokens_out,
+       total_agent_calls: report.total_agent_calls,
+       budget_exhausted: report.budget_exhausted,
+       plans: report.plans.iter().map(|p| roko_learn::run_metrics::PlanMetrics {
+           plan_id: p.plan_id.clone(),
+           completed: p.completed,
+           tasks_completed: p.tasks_completed,
+           tasks_failed: p.tasks_failed,
+       }).collect(),
+   };
+   if let Err(e) = roko_learn::run_metrics::append_run_metrics(
+       &config.layout.learn_dir().join("run-metrics.jsonl"),
+       &metrics,
+   ) {
+       tracing::warn!(error = %e, "failed to persist run metrics");
+   }
+   ```
+
+5. Add a unit test in `run_metrics.rs` that verifies serialization roundtrips correctly.
+
+Verify: `cargo check -p roko-cli && cargo test -p roko-learn -- run_metrics` passes."""
+status = "done"
+tier = "focused"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-cli && cargo test -p roko-learn -- run_metrics"

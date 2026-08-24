@@ -816,6 +816,8 @@ mod tests {
             time_to_first_token_ms: 100,
             was_warm_start: true,
             iteration: 1,
+            turn_number: 0,
+            is_final_turn: true,
             gate_passed: true,
             outcome: "ok".to_string(),
             gate_errors: Vec::new(),

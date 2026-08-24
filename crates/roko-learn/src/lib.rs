@@ -150,6 +150,8 @@ pub mod regression;
 pub mod routing_extras;
 /// Append-only routing-decision audit log for explainability and dashboards.
 pub mod routing_log;
+/// Structured run-metrics persistence for plan runs.
+pub mod run_metrics;
 pub mod runtime_feedback;
 pub mod section_effect;
 /// Prompt/context section outcome telemetry for future adaptive policy.

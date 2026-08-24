@@ -415,10 +415,10 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         .current_dir(&wd)
                         .output();
                     if let Ok(out) = branch_output {
-                        let branches: Vec<&str> = std::str::from_utf8(&out.stdout)
+                        let branches: Vec<String> = std::str::from_utf8(&out.stdout)
                             .unwrap_or("")
                             .lines()
-                            .map(|l| l.trim())
+                            .map(|l| l.trim().trim_start_matches(['*', '+', ' ']).to_owned())
                             .filter(|l| !l.is_empty())
                             .collect();
                         if !branches.is_empty() {

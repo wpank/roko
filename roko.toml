@@ -262,7 +262,7 @@ enabled = false
 
 [runner]
 plan_timeout_secs = 3600
-dangerously_skip_permissions = true
+dangerously_skip_permissions = false
 sandbox_level = "restrict"
 dispatch_max_retries = 5
 warm_pool_size = 2

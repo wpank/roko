@@ -74,6 +74,25 @@ struct CodexUsage {
     reasoning_output_tokens: u64,
 }
 
+// ── Cost estimation ─────────────────────────────────────────────────────
+
+/// Estimate the USD cost of a Codex turn from its token usage.
+///
+/// Uses gpt-5.6-sol pricing (per million tokens):
+/// - Uncached input: $2.00
+/// - Cached input:   $0.50
+/// - Output:         $8.00
+fn estimate_codex_cost(usage: &CodexUsage) -> f64 {
+    let input_per_m = 2.0;
+    let cached_per_m = 0.50;
+    let output_per_m = 8.0;
+
+    let uncached = usage.input_tokens.saturating_sub(usage.cached_input_tokens);
+    uncached as f64 * input_per_m / 1_000_000.0
+        + usage.cached_input_tokens as f64 * cached_per_m / 1_000_000.0
+        + usage.output_tokens as f64 * output_per_m / 1_000_000.0
+}
+
 // ── Parser ──────────────────────────────────────────────────────────────
 
 /// Parse one Codex `exec --json` JSONL line into canonical runtime events.
@@ -126,6 +145,7 @@ pub fn parse_stream_line(line: &str) -> Vec<AgentRuntimeEvent> {
 
         "turn.completed" => {
             let mut events = Vec::new();
+            let total_cost_usd = event.usage.as_ref().map(estimate_codex_cost);
             if let Some(usage) = event.usage {
                 events.push(AgentRuntimeEvent::TokenUsage {
                     input_tokens: usage.input_tokens,
@@ -138,7 +158,7 @@ pub fn parse_stream_line(line: &str) -> Vec<AgentRuntimeEvent> {
             // TurnCompleted + Exited so the runner knows the agent finished.
             events.push(AgentRuntimeEvent::TurnCompleted {
                 session_id: None,
-                total_cost_usd: None,
+                total_cost_usd,
                 num_turns: None,
                 is_error: false,
             });
@@ -256,8 +276,9 @@ mod tests {
             &events[1],
             AgentRuntimeEvent::TurnCompleted {
                 is_error: false,
+                total_cost_usd: Some(cost),
                 ..
-            }
+            } if *cost > 0.0
         ));
         assert!(matches!(
             &events[2],

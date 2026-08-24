@@ -1061,6 +1061,8 @@ fn build_efficiency_event(
         time_to_first_token_ms: if primary { 420 } else { 260 },
         was_warm_start: !primary,
         iteration: if primary { 1 } else { 2 },
+        turn_number: 0,
+        is_final_turn: true,
         gate_passed: if primary { spec.success } else { true },
         outcome: if primary {
             if spec.success {

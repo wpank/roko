@@ -40,20 +40,27 @@
 | `architecture-defi-critical-path` | 3 | 3 | 0 | ✅ complete | 1 |
 | `architecture-production-residuals` | 4 | 4 | 0 | ✅ complete | 2 |
 | `bandit-dead-code` | 1 | 0 | 1 | 📋 ready | 1 |
+| `codex-cost-reporting` | 1 | 1 | 0 | ✅ complete | 1 |
 | `cli-ux-consistency` | 4 | 0 | 4 | 📋 ready | 2 |
+| `cybernetic-run-metrics` | 1 | 1 | 0 | ✅ complete | 1 |
 | `doctor-network-v2` | 7 | 0 | 7 | 📋 ready | 1 |
+| `e2e-provider-test` | 1 | 0 | 1 | 📋 ready | 1 |
 | `e2e-smoke` | 2 | 2 | 0 | ✅ complete | 1 |
+| `exit-code-report-separation` | 1 | 0 | 1 | 📋 ready | 1 |
+| `fresh-branch-cleanup-prefix` | 1 | 0 | 1 | 📋 ready | 1 |
 | `gate-compile-fail-closed` | 2 | 0 | 2 | 📋 ready | 1 |
 | `graph-example-schema-drift` | 2 | 0 | 2 | 📋 ready | 1 |
 | `handler-future-double-poll` | 1 | 0 | 1 | 📋 ready | 1 |
 | `justfile-recipes` | 1 | 0 | 1 | 📋 ready | 1 |
+| `per-turn-efficiency-events` | 1 | 1 | 0 | ✅ complete | 1 |
 | `rate-limiter-poison-recovery` | 1 | 0 | 1 | 📋 ready | 1 |
+| `report-phase-timeout` | 1 | 0 | 1 | 📋 ready | 1 |
 | `serve-auth-default` | 1 | 0 | 1 | 📋 ready | 1 |
 | `task-parser-duplicate-ids` | 1 | 0 | 1 | 📋 ready | 1 |
 
-**Executable Total**: 41 plans, 147 tasks, 124 done (84%), 23 remaining
-**Complete Plans**: 30
-**Ready/In-Progress Plans**: 11
+**Executable Total**: 48 plans, 154 tasks, 127 done (82%), 27 remaining
+**Complete Plans**: 33
+**Ready/In-Progress Plans**: 15
 
 ## Superseded / Archived
 

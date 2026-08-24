@@ -282,6 +282,8 @@ impl EfficiencyTracker {
             time_to_first_token_ms: 0,
             was_warm_start: false,
             iteration: turns.min(u64::from(u32::MAX)) as u32,
+            turn_number: 0,
+            is_final_turn: true,
             gate_passed: success,
             outcome: if success {
                 "success".to_string()

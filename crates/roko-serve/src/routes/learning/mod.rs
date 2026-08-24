@@ -618,6 +618,8 @@ mod tests {
             time_to_first_token_ms: 0,
             was_warm_start: false,
             iteration: 1,
+            turn_number: 0,
+            is_final_turn: true,
             gate_passed: true,
             outcome: "success".into(),
             gate_errors: Vec::new(),

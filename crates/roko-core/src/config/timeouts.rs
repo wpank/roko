@@ -73,6 +73,11 @@ pub struct TimeoutConfig {
     /// Total plan execution timeout (seconds).
     #[serde(default = "default_plan_total_secs")]
     pub plan_total_secs: u64,
+
+    /// Post-run cleanup timeout (seconds). Covers dream consolidation,
+    /// learning, episode compaction, GC, and branch cleanup.
+    #[serde(default = "default_post_run_cleanup_secs")]
+    pub post_run_cleanup_secs: u64,
 }
 
 // ── Default helpers (const fn for serde) ─────────────────────────────────
@@ -106,6 +111,9 @@ const fn default_health_check_secs() -> u64 {
 }
 const fn default_plan_total_secs() -> u64 {
     3_600
+}
+const fn default_post_run_cleanup_secs() -> u64 {
+    120
 }
 
 // ── Duration accessors ───────────────────────────────────────────────────
@@ -180,6 +188,11 @@ impl TimeoutConfig {
     pub fn plan_total(&self) -> Duration {
         Duration::from_secs(self.plan_total_secs)
     }
+
+    /// Post-run cleanup as [`Duration`].
+    pub fn post_run_cleanup(&self) -> Duration {
+        Duration::from_secs(self.post_run_cleanup_secs)
+    }
 }
 
 impl Default for TimeoutConfig {
@@ -200,6 +213,7 @@ impl Default for TimeoutConfig {
             workspace_lock_secs: default_workspace_lock_secs(),
             health_check_secs: default_health_check_secs(),
             plan_total_secs: default_plan_total_secs(),
+            post_run_cleanup_secs: default_post_run_cleanup_secs(),
         }
     }
 }
@@ -221,6 +235,7 @@ mod tests {
         assert_eq!(cfg.workspace_lock_secs, 5);
         assert_eq!(cfg.health_check_secs, 3);
         assert_eq!(cfg.plan_total_secs, 3_600);
+        assert_eq!(cfg.post_run_cleanup_secs, 120);
     }
 
     #[test]
@@ -230,7 +245,7 @@ mod tests {
         assert_eq!(cfg.task_attempt(), Duration::from_secs(600));
         assert_eq!(cfg.gate_effect(), Duration::from_secs(900));
         assert_eq!(cfg.agent_silence(), Duration::from_secs(180));
-        assert_eq!(cfg.scheduler_no_progress(), Duration::from_secs(600));
+        assert_eq!(cfg.scheduler_no_progress(), Duration::from_secs(1800));
         assert_eq!(cfg.agent_dispatch(), Duration::from_secs(600));
         assert_eq!(cfg.gate_compile(), Duration::from_secs(600));
         assert_eq!(cfg.gate_test(), Duration::from_secs(900));
@@ -241,6 +256,7 @@ mod tests {
         assert_eq!(cfg.workspace_lock(), Duration::from_secs(5));
         assert_eq!(cfg.health_check(), Duration::from_secs(3));
         assert_eq!(cfg.plan_total(), Duration::from_secs(3_600));
+        assert_eq!(cfg.post_run_cleanup(), Duration::from_secs(120));
     }
 
     #[test]
@@ -261,6 +277,7 @@ mod tests {
             workspace_lock_secs: 10,
             health_check_secs: 5,
             plan_total_secs: 7_200,
+            post_run_cleanup_secs: 60,
         };
         let toml_str = toml::to_string_pretty(&cfg).expect("serialize");
         let parsed: TimeoutConfig = toml::from_str(&toml_str).expect("deserialize");

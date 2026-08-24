@@ -5278,138 +5278,158 @@ pub async fn run(
             .collect(),
     });
 
-    if !cancel.is_cancelled() && report.all_succeeded() {
-        let workdir = config.workdir.clone();
-        match tokio::task::spawn_blocking(move || run_memory_maintenance(&workdir)).await {
-            Ok(Ok(Some((progression, demurraged)))) => info!(
-                promoted = progression.promoted.len(),
-                demoted = progression.demoted.len(),
-                gc_eligible = progression.gc_eligible.len(),
-                demurraged,
-                "plan-completion knowledge maintenance finished"
-            ),
-            Ok(Ok(None)) => debug!("knowledge store is not configured; maintenance skipped"),
-            Ok(Err(err)) => warn!(
-                error = %err,
-                "plan-completion knowledge maintenance failed (non-fatal)"
-            ),
-            Err(err) => warn!(error = %err, "knowledge maintenance worker aborted"),
+    // ── Post-run cleanup with configurable timeout (backlog #165) ──────
+    //
+    // Wrap all best-effort cleanup steps in a single timeout so the process
+    // exits promptly even when dream consolidation, learning, or GC stalls.
+    let cleanup_timeout = config
+        .roko_config
+        .as_deref()
+        .map(|c| c.timeouts.post_run_cleanup())
+        .unwrap_or(Duration::from_secs(120));
+
+    let cleanup_result = tokio::time::timeout(cleanup_timeout, async {
+        if !cancel.is_cancelled() && report.all_succeeded() {
+            let workdir = config.workdir.clone();
+            match tokio::task::spawn_blocking(move || run_memory_maintenance(&workdir)).await {
+                Ok(Ok(Some((progression, demurraged)))) => info!(
+                    promoted = progression.promoted.len(),
+                    demoted = progression.demoted.len(),
+                    gc_eligible = progression.gc_eligible.len(),
+                    demurraged,
+                    "plan-completion knowledge maintenance finished"
+                ),
+                Ok(Ok(None)) => debug!("knowledge store is not configured; maintenance skipped"),
+                Ok(Err(err)) => warn!(
+                    error = %err,
+                    "plan-completion knowledge maintenance failed (non-fatal)"
+                ),
+                Err(err) => warn!(error = %err, "knowledge maintenance worker aborted"),
+            }
         }
-    }
 
-    // Shut down the learning subscriber after the event bus is closed so
-    // pending turn events are flushed to `.roko/learn/efficiency.jsonl`.
-    drop(learning_event_bus);
-    if let Err(err) = learning_subscriber_handle.await {
-        warn!(error = %err, "learning subscriber task failed during shutdown");
-    }
+        // Shut down the learning subscriber after the event bus is closed so
+        // pending turn events are flushed to `.roko/learn/efficiency.jsonl`.
+        drop(learning_event_bus);
+        if let Err(err) = learning_subscriber_handle.await {
+            warn!(error = %err, "learning subscriber task failed during shutdown");
+        }
 
-    // Shutdown Phase 0 subsystems and persist learned state.
-    shutdown_subsystems(config, &tui).await;
+        // Shutdown Phase 0 subsystems and persist learned state.
+        shutdown_subsystems(config, &tui).await;
 
-    // Persist attention bidders learned during this run (E06-T06).
-    {
-        let bidders = factory.dispatcher().prompt_assembler().learning_bidders();
-        if attention_bidders_store_healthy
-            && !bidders.is_empty()
-            && let Err(error) = crate::dispatch::prompt_builder::save_attention_bidders(
-                &attention_bidders_dir,
-                &bidders,
-            )
+        // Persist attention bidders learned during this run (E06-T06).
         {
-            warn!(
-                path = %attention_bidders_dir.join(crate::dispatch::prompt_builder::ATTENTION_BIDDERS_FILENAME).display(),
-                %error,
-                "failed to persist learned attention bidders"
-            );
+            let bidders = factory.dispatcher().prompt_assembler().learning_bidders();
+            if attention_bidders_store_healthy
+                && !bidders.is_empty()
+                && let Err(error) = crate::dispatch::prompt_builder::save_attention_bidders(
+                    &attention_bidders_dir,
+                    &bidders,
+                )
+            {
+                warn!(
+                    path = %attention_bidders_dir.join(crate::dispatch::prompt_builder::ATTENTION_BIDDERS_FILENAME).display(),
+                    %error,
+                    "failed to persist learned attention bidders"
+                );
+            }
         }
-    }
 
-    if dream_completion_pending && !cancel.is_cancelled() {
-        run_dream_consolidation_if_enabled(config, telemetry_sink.as_ref()).await;
-    }
+        if dream_completion_pending && !cancel.is_cancelled() {
+            run_dream_consolidation_if_enabled(config, telemetry_sink.as_ref()).await;
+        }
 
-    if !cancel.is_cancelled() {
-        run_advanced_learning_completion(config, &paths.episodes_jsonl).await;
-    }
+        if !cancel.is_cancelled() {
+            run_advanced_learning_completion(config, &paths.episodes_jsonl).await;
+        }
 
-    // ── Post-run episode compaction ──────────────────────────────────
-    //
-    // Compact the episode log using the default retention policy.  This
-    // runs after the main loop so it does not contend with the episode
-    // sink appending new entries.
-    compact_episodes_if_needed(&paths.episodes_jsonl).await;
+        // ── Post-run episode compaction ──────────────────────────────────
+        //
+        // Compact the episode log using the default retention policy.  This
+        // runs after the main loop so it does not contend with the episode
+        // sink appending new entries.
+        compact_episodes_if_needed(&paths.episodes_jsonl).await;
 
-    // ── Post-run consolidated cleanup (E47-T11) ──────────────────────
-    //
-    // When resources.auto_cleanup_on_complete is true (the default), run a
-    // single consolidated cleanup pass that combines: JSONL log rotation,
-    // filesystem GC, stale target/ removal, and orphan worktree cleanup.
-    // Each sub-step respects its own config flag. When the master flag is
-    // false, the individual legacy cleanup steps still apply for backwards
-    // compatibility (gc_on_plan_end, worktree_cleanup_on_complete, etc.).
-    let auto_cleanup = config
-        .roko_config
-        .as_deref()
-        .map(|c| c.resources.auto_cleanup_on_complete)
-        .unwrap_or(true);
-
-    if auto_cleanup {
-        let resources_cfg = config.roko_config.as_deref().map(|c| &c.resources);
-        post_plan_cleanup(
-            &config.layout,
-            &config.workdir,
-            resources_cfg,
-            report.all_succeeded(),
-            &worktrees,
-        )
-        .await;
-    } else {
-        // Fallback: individual cleanup steps for when auto_cleanup_on_complete
-        // is disabled but the individual flags may still be on.
-        let gc_on_end = config
+        // ── Post-run consolidated cleanup (E47-T11) ──────────────────────
+        //
+        // When resources.auto_cleanup_on_complete is true (the default), run a
+        // single consolidated cleanup pass that combines: JSONL log rotation,
+        // filesystem GC, stale target/ removal, and orphan worktree cleanup.
+        // Each sub-step respects its own config flag. When the master flag is
+        // false, the individual legacy cleanup steps still apply for backwards
+        // compatibility (gc_on_plan_end, worktree_cleanup_on_complete, etc.).
+        let auto_cleanup = config
             .roko_config
             .as_deref()
-            .map(|c| c.resources.gc_on_plan_end)
+            .map(|c| c.resources.auto_cleanup_on_complete)
             .unwrap_or(true);
-        run_gc_if_needed(&config.layout, gc_on_end).await;
 
-        let should_cleanup_worktrees = config
+        if auto_cleanup {
+            let resources_cfg = config.roko_config.as_deref().map(|c| &c.resources);
+            post_plan_cleanup(
+                &config.layout,
+                &config.workdir,
+                resources_cfg,
+                report.all_succeeded(),
+                &worktrees,
+            )
+            .await;
+        } else {
+            // Fallback: individual cleanup steps for when auto_cleanup_on_complete
+            // is disabled but the individual flags may still be on.
+            let gc_on_end = config
+                .roko_config
+                .as_deref()
+                .map(|c| c.resources.gc_on_plan_end)
+                .unwrap_or(true);
+            run_gc_if_needed(&config.layout, gc_on_end).await;
+
+            let should_cleanup_worktrees = config
+                .roko_config
+                .as_deref()
+                .map(|c| worktree_cleanup_eligible(&c.resources, report.all_succeeded()))
+                .unwrap_or(true);
+            if should_cleanup_worktrees {
+                cleanup_orphan_worktrees(&config.workdir, &worktrees).await;
+            }
+        }
+        publish_worktree_count(config, &worktrees);
+
+        // ── Post-run merged branch cleanup (E46-T10) ─────────────────────
+        //
+        // When `github.cleanup_merged_branches = true`, scan for roko-managed
+        // branches (`roko/plan/*`, `roko/task/*`, `roko/attempt/*`) whose PRs
+        // have been merged, and delete both local and remote refs.
+        let should_cleanup_branches = config
             .roko_config
             .as_deref()
-            .map(|c| worktree_cleanup_eligible(&c.resources, report.all_succeeded()))
-            .unwrap_or(true);
-        if should_cleanup_worktrees {
-            cleanup_orphan_worktrees(&config.workdir, &worktrees).await;
-        }
-    }
-    publish_worktree_count(config, &worktrees);
-
-    // ── Post-run merged branch cleanup (E46-T10) ─────────────────────
-    //
-    // When `github.cleanup_merged_branches = true`, scan for roko-managed
-    // branches (`roko/plan/*`, `roko/task/*`, `roko/attempt/*`) whose PRs
-    // have been merged, and delete both local and remote refs.
-    let should_cleanup_branches = config
-        .roko_config
-        .as_deref()
-        .map(|c| c.github.cleanup_merged_branches)
-        .unwrap_or(false);
-    if should_cleanup_branches {
-        match super::branch_cleanup::cleanup_merged_branches(&config.workdir, "origin").await {
-            Ok(cleaned) => {
-                if !cleaned.is_empty() {
-                    info!(
-                        count = cleaned.len(),
-                        branches = ?cleaned,
-                        "post-run branch cleanup complete"
-                    );
+            .map(|c| c.github.cleanup_merged_branches)
+            .unwrap_or(false);
+        if should_cleanup_branches {
+            match super::branch_cleanup::cleanup_merged_branches(&config.workdir, "origin").await {
+                Ok(cleaned) => {
+                    if !cleaned.is_empty() {
+                        info!(
+                            count = cleaned.len(),
+                            branches = ?cleaned,
+                            "post-run branch cleanup complete"
+                        );
+                    }
+                }
+                Err(err) => {
+                    warn!(error = %err, "post-run branch cleanup failed (best-effort)");
                 }
             }
-            Err(err) => {
-                warn!(error = %err, "post-run branch cleanup failed (best-effort)");
-            }
         }
+    })
+    .await;
+
+    if cleanup_result.is_err() {
+        warn!(
+            timeout_secs = cleanup_timeout.as_secs(),
+            "post-run cleanup timed out — skipping remaining cleanup"
+        );
     }
 
     Ok(report)
@@ -16359,8 +16379,16 @@ fn build_plan_report(
     failed_plans: &[String],
 ) -> PlanReport {
     let orc_state = executor.plan_state(&plan.id);
-    let completed =
+    let phase_complete =
         orc_state.is_some_and(|state| matches!(state.current_phase, PlanPhase::Complete));
+    // Also treat the plan as completed when every task finished successfully,
+    // even if the plan state machine didn't reach PlanPhase::Complete (e.g.,
+    // post-task lifecycle error during report/cleanup).
+    let all_tasks_done = {
+        let done = state.plan_completed_tasks(&plan.id);
+        !plan.tasks.tasks.is_empty() && plan.tasks.tasks.iter().all(|t| done.contains(&t.id))
+    };
+    let completed = phase_complete || all_tasks_done;
     let terminal = orc_state.is_none_or(|state| state.is_terminal());
     let task_refs = plan.tasks.tasks.iter().collect::<Vec<_>>();
     let progress = task_dag.progress_summary(

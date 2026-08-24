@@ -51,7 +51,7 @@ async fn list_roko_branches(workdir: &Path) -> Result<Vec<String>> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let branches: Vec<String> = stdout
         .lines()
-        .map(|line| line.trim().trim_start_matches("* ").to_owned())
+        .map(|line| line.trim().trim_start_matches(['*', '+', ' ']).to_owned())
         .filter(|b| !b.is_empty() && is_roko_branch(b))
         .collect();
 
@@ -225,6 +225,23 @@ mod tests {
         assert!(!is_roko_branch("feature/roko-stuff"));
         assert!(!is_roko_branch("roko-legacy/plan/old"));
         assert!(!is_roko_branch(""));
+    }
+
+    // ── branch line parsing ────────────────────────────────────────────────
+
+    #[test]
+    fn branch_line_parsing_strips_all_prefixes() {
+        // Simulates the parsing logic in list_roko_branches for different
+        // git branch output formats.
+        let parse =
+            |line: &str| -> String { line.trim().trim_start_matches(['*', '+', ' ']).to_owned() };
+
+        // Normal branch
+        assert_eq!(parse("  roko/plan/foo"), "roko/plan/foo");
+        // Current branch (marked with *)
+        assert_eq!(parse("* roko/plan/bar"), "roko/plan/bar");
+        // Branch checked out in a worktree (marked with +)
+        assert_eq!(parse("+ roko/attempt/abc123"), "roko/attempt/abc123");
     }
 
     // ── list_roko_branches ────────────────────────────────────────────────

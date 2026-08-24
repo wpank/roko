@@ -1,0 +1,69 @@
+[meta]
+plan = "report-phase-timeout"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 20
+
+[[task]]
+id = "T01"
+title = "Add configurable timeout to post-run cleanup phases"
+role = "implementer"
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+description = """In `crates/roko-cli/src/runner/event_loop.rs`, after the event loop exits and the
+early run-complete summary prints (line 5244), the function runs several sequential post-run
+cleanup steps before returning at line 5415:
+
+1. `run_memory_maintenance` (line 5283) — knowledge tier progression
+2. `run_dream_consolidation_if_enabled` (line 5329) — dream consolidation
+3. `run_advanced_learning_completion` (line 5333) — learning completion
+4. `compact_episodes_if_needed` (line 5341) — episode log compaction
+5. `post_plan_cleanup` (line 5359) — filesystem GC, worktree cleanup
+6. `cleanup_merged_branches` (line 5399) — branch cleanup
+
+These run AFTER the summary prints but BEFORE `Ok(report)` returns. Each step can take
+10-60+ seconds. In dogfood runs, this "report phase" (the time between summary print and
+process exit) consistently takes 600-670 seconds.
+
+Add a configurable timeout that wraps ALL post-run cleanup steps. When the timeout fires,
+log a warning and return early with the report. The cleanup is best-effort — losing it
+doesn't affect the run results.
+
+Implementation:
+
+1. Find or add a `post_run_cleanup_timeout` field in `TimeoutConfig` (search for
+   `TimeoutConfig` in the runner config — it's likely in `roko-core` or `roko-cli`).
+   Default to 120 seconds.
+
+2. Wrap the post-run cleanup block (lines 5198-5413) in a `tokio::time::timeout()`:
+
+```rust
+let cleanup_timeout = config.roko_config.as_deref()
+    .map(|c| c.timeouts.post_run_cleanup())
+    .unwrap_or(Duration::from_secs(120));
+
+match tokio::time::timeout(cleanup_timeout, async {
+    // ... all the existing cleanup code ...
+}).await {
+    Ok(()) => {},
+    Err(_) => {
+        warn!(
+            timeout_secs = cleanup_timeout.as_secs(),
+            "post-run cleanup timed out — skipping remaining cleanup"
+        );
+    }
+}
+```
+
+3. If `TimeoutConfig` doesn't have a `post_run_cleanup` method, add one. Search for
+   `pub fn agent_dispatch` in the timeouts module to see the pattern.
+
+Verify: `cargo check -p roko-cli` passes."""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-cli"

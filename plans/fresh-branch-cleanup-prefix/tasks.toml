@@ -1,0 +1,45 @@
+[meta]
+plan = "fresh-branch-cleanup-prefix"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 10
+
+[[task]]
+id = "T01"
+title = "Strip + and * prefixes from git branch output before cleanup"
+role = "implementer"
+files = ["crates/roko-cli/src/runner/branch_cleanup.rs"]
+description = """In `crates/roko-cli/src/runner/branch_cleanup.rs`, the `list_roko_branches()`
+function at line 36 parses `git branch --list` output. Currently at line 54 it does:
+
+```rust
+.map(|line| line.trim().trim_start_matches("* ").to_owned())
+```
+
+This strips the `* ` prefix for the current branch but does NOT strip the `+ ` prefix
+that git uses for branches checked out in worktrees. This causes `git branch -D` to fail
+with `error: branch '+ roko/attempt/...' not found`.
+
+Fix: Change line 54 to also strip the `+` prefix. The simplest approach:
+
+```rust
+.map(|line| line.trim().trim_start_matches(['*', '+', ' ']).to_owned())
+```
+
+This strips any combination of `*`, `+`, and spaces from the start of each line.
+
+Also add a unit test that verifies the parsing handles all three cases:
+1. Normal branch: `  roko/plan/foo`
+2. Current branch: `* roko/plan/bar`
+3. Worktree branch: `+ roko/attempt/abc123`
+
+Verify: `cargo test -p roko-cli -- branch_cleanup` passes."""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo test -p roko-cli -- branch_cleanup"

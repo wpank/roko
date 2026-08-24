@@ -1,0 +1,62 @@
+[meta]
+plan = "exit-code-report-separation"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 15
+
+[[task]]
+id = "T01"
+title = "Base exit code on task completion, not plan phase state"
+role = "implementer"
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+description = """In `crates/roko-cli/src/runner/event_loop.rs`, the `RunReport::all_succeeded()`
+method (line 440) checks `self.plans.iter().all(|plan| plan.completed)`. The `completed` field
+is set at line 16362-16363:
+
+```rust
+let completed =
+    orc_state.is_some_and(|state| matches!(state.current_phase, PlanPhase::Complete));
+```
+
+When a plan finishes all its tasks but the plan state machine doesn't reach `PlanPhase::Complete`
+(e.g., due to a post-task lifecycle error), `completed` is false and the exit code is 1 despite
+all tasks succeeding. This was observed in the `graph-example-schema-drift` dogfood run.
+
+Fix `build_plan_report()` (line 16360) so that `completed` is true when:
+1. All tasks in the plan have `TaskRunCategory::Completed`, OR
+2. The plan phase is `PlanPhase::Complete`
+
+Change the `completed` assignment at line 16362-16363 to:
+
+```rust
+let completed = orc_state
+    .is_some_and(|state| matches!(state.current_phase, PlanPhase::Complete))
+    || {
+        // Fall back: if every task completed successfully, treat the plan as
+        // completed even when the plan phase state machine didn't reach Complete
+        // (e.g., post-run lifecycle error).
+        let all_tasks_done = plan.tasks.tasks.iter().all(|task| {
+            let key = format!("{}:{}", plan.id, task.id);
+            state.plan_completed_tasks(&plan.id).contains(&task.id)
+        });
+        all_tasks_done && !plan.tasks.tasks.is_empty()
+    };
+```
+
+Adapt this to the actual API — `state.plan_completed_tasks()` returns a `HashSet<String>` of
+task IDs that completed. Check that each task ID in the plan is in that set.
+
+Also add a test that verifies a plan with all tasks completed but non-Complete phase still
+reports `completed = true`.
+
+Verify: `cargo test -p roko-cli -- build_plan_report` passes, or if no such test exists,
+`cargo check -p roko-cli` passes."""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-cli"

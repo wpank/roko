@@ -2253,7 +2253,7 @@ impl RuntimeProjectionSet {
             let retry_like = event.iteration > 1
                 || !event.strategy_attempted.trim().is_empty()
                 || !event.gate_errors.is_empty()
-                || !event.gate_passed;
+                || event.gate_passed != Some(true);
             if !retry_like {
                 continue;
             }
@@ -2266,7 +2266,7 @@ impl RuntimeProjectionSet {
                 "model": first_non_empty_owned([Some(event.model.clone()), Some(event.model_used.clone())]).unwrap_or_default(),
                 "attempt": event.iteration.max(1),
                 "retry_count": event.iteration.saturating_sub(1),
-                "status": if event.gate_passed { "passed" } else { "failed" },
+                "status": match event.gate_passed { Some(true) => "passed", Some(false) => "failed", None => "unknown" },
                 "gate_passed": event.gate_passed,
                 "strategy_attempted": event.strategy_attempted,
                 "gate_errors": event.gate_errors,
@@ -3263,10 +3263,10 @@ fn efficiency_event_matches_filter(event: &AgentEfficiencyEvent, query: &Project
             .as_deref()
             .is_none_or(|expected| model == expected)
         && status_matches(
-            if event.gate_passed {
-                "passed"
-            } else {
-                "failed"
+            match event.gate_passed {
+                Some(true) => "passed",
+                Some(false) => "failed",
+                None => "unknown",
             },
             query.status.as_deref(),
         )
@@ -3278,7 +3278,7 @@ fn efficiency_event_matches_filter(event: &AgentEfficiencyEvent, query: &Project
             "provider" | "backend" => event.backend == value,
             "model" => model == value,
             "status" | "passed" => {
-                parse_bool(value).is_none_or(|passed| event.gate_passed == passed)
+                parse_bool(value).is_none_or(|passed| event.gate_passed == Some(passed))
             }
             _ => true,
         })

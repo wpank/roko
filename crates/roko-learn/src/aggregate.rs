@@ -818,7 +818,7 @@ mod tests {
             iteration: 1,
             turn_number: 0,
             is_final_turn: true,
-            gate_passed: true,
+            gate_passed: Some(true),
             outcome: "ok".to_string(),
             gate_errors: Vec::new(),
             model_used: "claude-opus-4-6".to_string(),

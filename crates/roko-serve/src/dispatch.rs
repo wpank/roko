@@ -284,7 +284,7 @@ impl EfficiencyTracker {
             iteration: turns.min(u64::from(u32::MAX)) as u32,
             turn_number: 0,
             is_final_turn: true,
-            gate_passed: success,
+            gate_passed: Some(success),
             outcome: if success {
                 "success".to_string()
             } else {

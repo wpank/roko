@@ -620,7 +620,7 @@ mod tests {
             iteration: 1,
             turn_number: 0,
             is_final_turn: true,
-            gate_passed: true,
+            gate_passed: Some(true),
             outcome: "success".into(),
             gate_errors: Vec::new(),
             model_used: "claude-sonnet-4-5".into(),

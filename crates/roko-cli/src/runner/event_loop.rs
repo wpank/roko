@@ -3842,6 +3842,7 @@ pub async fn run(
                         passed: completion.passed,
                         score: if completion.passed { 1.0 } else { 0.0 },
                         duration_ms: completion.duration_ms,
+                        task_id: completion.task_id.clone(),
                     },
                 );
 

@@ -42,6 +42,7 @@ fn agent_event_types_construct_all_variants() {
             passed: true,
             score: 0.98,
             duration_ms: 412,
+            task_id: "task-1".into(),
         },
         AgentEvent::ProviderError {
             provider_id: "zai".into(),

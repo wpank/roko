@@ -1072,9 +1072,9 @@ impl EfficiencySummaryRecord {
             tools_available: event.tools_available,
             tools_used: event.tools_used,
             tool_calls: event.tool_calls.len().min(u32::MAX as usize) as u32,
-            gate_passed: Some(event.gate_passed),
+            gate_passed: event.gate_passed,
             outcome: if event.outcome.trim().is_empty() {
-                if event.gate_passed {
+                if event.gate_passed == Some(true) {
                     "success".to_string()
                 } else {
                     "failure".to_string()
@@ -3081,7 +3081,7 @@ impl LearningRuntime {
                 section.name.clone(),
                 event.role.trim(),
                 !section.was_dropped,
-                event.gate_passed,
+                event.gate_passed.unwrap_or(false),
             );
         }
         registry.save(&self.paths.section_effects_json)?;
@@ -4645,7 +4645,7 @@ mod tests {
         let runtime = LearningRuntime::open_under(tmp.path()).await.unwrap();
         let event = AgentEfficiencyEvent {
             role: "Implementer".to_string(),
-            gate_passed: true,
+            gate_passed: Some(true),
             prompt_sections: vec![
                 crate::efficiency::PromptSectionMeta {
                     name: "workspace_map".to_string(),
@@ -4714,7 +4714,7 @@ mod tests {
             agent_id: "agent-1".to_string(),
             model: "claude-sonnet-4-5".to_string(),
             model_used: "claude-sonnet-4-5".to_string(),
-            gate_passed: true,
+            gate_passed: Some(true),
             cost_usd: 0.25,
             ..AgentEfficiencyEvent::default()
         };

@@ -1063,7 +1063,7 @@ fn build_efficiency_event(
         iteration: if primary { 1 } else { 2 },
         turn_number: 0,
         is_final_turn: true,
-        gate_passed: if primary { spec.success } else { true },
+        gate_passed: Some(if primary { spec.success } else { true }),
         outcome: if primary {
             if spec.success {
                 "pass".to_string()

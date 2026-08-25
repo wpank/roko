@@ -155,7 +155,11 @@ pub struct AgentEfficiencyEvent {
     #[serde(default = "default_true")]
     pub is_final_turn: bool,
     /// Whether the gate passed after this turn.
-    pub gate_passed: bool,
+    /// `None` while a buffered efficiency event is awaiting its `GateResult`
+    /// (runner-v2 async path). Filled in by the event subscriber when the
+    /// `GateResult` arrives. `Some(true)` = passed, `Some(false)` = failed.
+    #[serde(default)]
+    pub gate_passed: Option<bool>,
     /// Outcome label for the observation.
     #[serde(default)]
     pub outcome: String,
@@ -248,7 +252,7 @@ impl Default for AgentEfficiencyEvent {
             iteration: 0,
             turn_number: 0,
             is_final_turn: true,
-            gate_passed: false,
+            gate_passed: None,
             outcome: String::new(),
             gate_errors: Vec::new(),
             model_used: String::new(),
@@ -520,7 +524,7 @@ pub fn compute_role_profiles(events: &[AgentEfficiencyEvent]) -> Vec<RoleCostPro
             let warm_count = evts.iter().filter(|e| e.was_warm_start).count();
             let warm_pct = warm_count as f64 / n;
 
-            let pass_count = evts.iter().filter(|e| e.gate_passed).count();
+            let pass_count = evts.iter().filter(|e| e.gate_passed == Some(true)).count();
             let pass_rate = pass_count as f64 / n;
 
             let total_cost: f64 = evts.iter().map(|e| e.cost_usd).sum();
@@ -573,7 +577,7 @@ pub fn compute_frequency_profiles(events: &[AgentEfficiencyEvent]) -> Vec<Freque
             let n_u64 = evts.len() as u64;
             let total_cost = evts.iter().map(|e| e.cost_usd).sum::<f64>();
             let avg_cost_usd = if n == 0.0 { 0.0 } else { total_cost / n };
-            let pass_count = evts.iter().filter(|e| e.gate_passed).count();
+            let pass_count = evts.iter().filter(|e| e.gate_passed == Some(true)).count();
             let pass_rate = if n == 0.0 { 0.0 } else { pass_count as f64 / n };
             let cost_per_pass = if pass_count > 0 {
                 total_cost / pass_count as f64
@@ -739,7 +743,7 @@ impl FleetPlanAggregate {
     fn observe(&mut self, event: &AgentEfficiencyEvent) {
         self.cost_usd += event.cost_usd;
         self.duration_ms += event.wall_time_ms as f64;
-        self.passed_gate |= event.gate_passed;
+        self.passed_gate |= event.gate_passed == Some(true);
         self.distinct_agents.insert(event.agent_id.clone());
         *self
             .agent_turn_counts
@@ -824,7 +828,7 @@ fn make_test_event(
         iteration: 1,
         turn_number: 0,
         is_final_turn: true,
-        gate_passed: passed,
+        gate_passed: Some(passed),
         outcome: if passed {
             "success".into()
         } else {
@@ -1607,7 +1611,7 @@ mod tests {
         assert!(e.agent_id.is_empty());
         assert_eq!(e.input_tokens, 0);
         assert_eq!(e.output_tokens, 0);
-        assert!(!e.gate_passed);
+        assert_eq!(e.gate_passed, None);
         assert!(!e.was_warm_start);
         assert!(e.prompt_sections.is_empty());
         assert!(e.tool_calls.is_empty());

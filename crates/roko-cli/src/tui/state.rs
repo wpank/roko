@@ -3447,7 +3447,7 @@ fn latest_agent_events(
         let timestamp = parse_efficiency_timestamp(&event.timestamp);
         let candidate = LatestAgentEvent {
             role: event.role.clone(),
-            status: if event.gate_passed {
+            status: if event.gate_passed == Some(true) {
                 "done".to_string()
             } else {
                 "active".to_string()

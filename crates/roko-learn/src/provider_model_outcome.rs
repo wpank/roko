@@ -243,14 +243,14 @@ impl ProviderModelOutcomeRecord {
             task_id: event.task_id.clone(),
             task_type,
             role_id: non_empty(event.role.as_str()).map(ToString::to_string),
-            status: if event.gate_passed {
+            status: if event.gate_passed == Some(true) {
                 ProviderModelOutcomeStatus::Passed
             } else {
                 ProviderModelOutcomeStatus::Failed
             },
             gate_outcomes: vec![ProviderModelGateOutcome {
                 gate_name: "terminal".to_string(),
-                passed: event.gate_passed,
+                passed: event.gate_passed == Some(true),
                 score: None,
                 duration_ms: None,
             }],

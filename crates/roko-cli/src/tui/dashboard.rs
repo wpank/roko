@@ -3406,7 +3406,10 @@ fn load_efficiency_summary(path: &Path) -> EfficiencySummary {
     let total_cost_usd = events.iter().map(|event| event.cost_usd).sum();
     let total_input_tokens = events.iter().map(|event| event.input_tokens).sum();
     let total_output_tokens = events.iter().map(|event| event.output_tokens).sum();
-    let passed_count = events.iter().filter(|event| event.gate_passed).count();
+    let passed_count = events
+        .iter()
+        .filter(|event| event.gate_passed == Some(true))
+        .count();
     let average_wall_time_ms = events
         .iter()
         .map(|event| event.wall_time_ms as f64)
@@ -3432,7 +3435,10 @@ fn efficiency_summary_from_events(events: &[AgentEfficiencyEvent]) -> Efficiency
     let total_cost_usd = events.iter().map(|e| e.cost_usd).sum();
     let total_input_tokens = events.iter().map(|e| e.input_tokens).sum();
     let total_output_tokens = events.iter().map(|e| e.output_tokens).sum();
-    let passed_count = events.iter().filter(|e| e.gate_passed).count();
+    let passed_count = events
+        .iter()
+        .filter(|e| e.gate_passed == Some(true))
+        .count();
     let average_wall_time_ms =
         events.iter().map(|e| e.wall_time_ms as f64).sum::<f64>() / count_to_f64(event_count);
     EfficiencySummary {
@@ -4369,7 +4375,7 @@ impl TuiDashboardModel {
             let bucket = ev.total_prompt_tokens / 1000 * 1000; // round down to nearest 1k
             let entry = buckets.entry(bucket).or_default();
             entry.0 += 1;
-            if ev.gate_passed {
+            if ev.gate_passed == Some(true) {
                 entry.1 += 1;
             }
         }
@@ -4415,7 +4421,10 @@ impl TuiDashboardModel {
                 .filter(|e| e.cost_usd >= prev && e.cost_usd < *threshold)
                 .collect();
             let total = matching.len();
-            let passed = matching.iter().filter(|e| e.gate_passed).count();
+            let passed = matching
+                .iter()
+                .filter(|e| e.gate_passed == Some(true))
+                .count();
             if total > 0 {
                 let rate = count_to_f64(passed) / count_to_f64(total);
                 let _ = writeln!(
@@ -6107,7 +6116,7 @@ mod tests {
             iteration: 1,
             turn_number: 0,
             is_final_turn: true,
-            gate_passed: true,
+            gate_passed: Some(true),
             outcome: "success".to_string(),
             gate_errors: Vec::new(),
             model_used: model.to_string(),

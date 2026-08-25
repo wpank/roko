@@ -199,7 +199,7 @@ fn model_sparkline(
     let model_events: Vec<bool> = events
         .iter()
         .filter(|e| event_model_slug(e) == model_slug)
-        .map(|e| e.gate_passed)
+        .map(|e| e.gate_passed.unwrap_or(false))
         .collect();
 
     if model_events.is_empty() {
@@ -433,7 +433,7 @@ fn render_efficiency(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
         let model = event_model_slug(event).to_string();
         let entry = model_stats.entry(model).or_default();
         entry.count += 1;
-        if event.gate_passed {
+        if event.gate_passed == Some(true) {
             entry.passed += 1;
         }
         entry.total_cost += event.cost_usd;

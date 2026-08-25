@@ -712,7 +712,7 @@ async fn record_learning(
     event.system_prompt_tokens = 0;
     event.wall_time_ms = row.duration_ms;
     event.duration_ms = row.duration_ms;
-    event.gate_passed = row.resolved;
+    event.gate_passed = Some(row.resolved);
     event.outcome = if row.resolved { "resolved" } else { "failed" }.to_string();
     if let Some(reason) = &row.failure_reason {
         event.gate_errors.push(reason.clone());

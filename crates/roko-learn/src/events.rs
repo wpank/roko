@@ -37,6 +37,9 @@ pub enum AgentEvent {
         passed: bool,
         score: f32,
         duration_ms: u64,
+        /// Task that triggered this gate run; used to correlate with the
+        /// buffered efficiency event so `gate_passed` can be set correctly.
+        task_id: String,
     },
     ProviderError {
         provider_id: String,

@@ -1,0 +1,125 @@
+[meta]
+plan = "efficiency-gate-passed-fix"
+total = 1
+done = 1
+status = "complete"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 40
+
+[[task]]
+id = "T01"
+title = "Fix gate_passed always None in efficiency events by buffering until GateResult arrives"
+role = "implementer"
+files = [
+    "crates/roko-learn/src/events.rs",
+    "crates/roko-learn/src/efficiency.rs",
+    "crates/roko-learn/src/event_subscriber.rs",
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/commands/learn.rs",
+]
+description = """Fix the efficiency gate_passed bug: gate_passed is always false because the
+TurnCompleted event fires before the gate runs.
+
+## 1. Add `task_id` to `AgentEvent::GateResult`
+
+In `crates/roko-learn/src/events.rs`, find the `GateResult` variant (around lines 35-40):
+
+```rust
+GateResult {
+    gate_name: String,
+    passed: bool,
+    score: f32,
+    duration_ms: u64,
+},
+```
+
+Add a `task_id: String` field:
+
+```rust
+GateResult {
+    gate_name: String,
+    passed: bool,
+    score: f32,
+    duration_ms: u64,
+    task_id: String,  // NEW
+},
+```
+
+## 2. Update the GateResult publication site
+
+In `crates/roko-cli/src/runner/event_loop.rs`, find where `AgentEvent::GateResult` is published
+(around line 3840). Add `task_id: completion.task_id.clone()` to the struct literal.
+`completion.task_id` is already available — it comes from the `GateCompletion` struct.
+
+IMPORTANT: Search for ALL sites that construct `AgentEvent::GateResult` across the workspace.
+There may be more than one. Update all of them.
+
+## 3. Change `AgentEfficiencyEvent.gate_passed` to `Option<bool>`
+
+In `crates/roko-learn/src/efficiency.rs`:
+
+1. Find `pub gate_passed: bool` (around line 158). Change to `pub gate_passed: Option<bool>`.
+2. Add `#[serde(default)]` to the field for backward compatibility with existing JSONL files.
+3. Find the `Default` impl (around line 251). Change `gate_passed: false` to `gate_passed: None`.
+4. Find the composite score / grade calculation that uses `gate_passed` (around line 267-291).
+   Update from `if self.gate_passed` to `match self.gate_passed { Some(true) => ..., Some(false) => ..., None => ... }`.
+5. Search for ALL other uses of `.gate_passed` in efficiency.rs and update them.
+
+## 4. Buffer efficiency events in the subscriber
+
+In `crates/roko-learn/src/event_subscriber.rs`:
+
+Find the `TurnCompleted` handler (around line 106). Currently line 142 does:
+```rust
+let success = gate_passed.unwrap_or(false);
+```
+
+Change the logic:
+- When `gate_passed` is `None` (the normal case for runner-v2): build the partial efficiency
+  event but DO NOT write it yet. Store it in a `HashMap<String, PendingEfficiency>` keyed by
+  task_id. DO NOT call `router.record_confidence_outcome` yet.
+- When `gate_passed` is `Some(...)` (e.g., ACP inline path): emit immediately as before.
+
+Find the `GateResult` handler (around line 242). After the existing VerdictHistory code, add:
+```rust
+if let Some(mut pending) = pending_efficiency.remove(&task_id) {
+    pending.event.gate_passed = Some(passed);
+    // Update outcome string too
+    let _ = router.record_confidence_outcome(&pending.model, passed);
+    // Write the efficiency event now
+    if let Err(err) = append_efficiency_event(&efficiency_path, &pending.event).await {
+        tracing::warn!(...);
+    }
+}
+```
+
+At the end of the subscriber loop (shutdown/drop), flush remaining buffered events with
+`gate_passed: None` so data is never silently lost.
+
+IMPORTANT: Read the FULL event_subscriber.rs to understand the complete event loop structure.
+The subscriber may use channels, async streams, or a broadcast receiver. Adapt the buffering
+to the actual loop structure. The `PendingEfficiency` struct should hold whatever context is
+needed to complete the efficiency event (the partial event, the model name, task context).
+
+## 5. Update `learn.rs` command output
+
+In `crates/roko-cli/src/commands/learn.rs`, find any uses of `.gate_passed` on
+`AgentEfficiencyEvent`. Update from `bool` to `Option<bool>`:
+- `event.gate_passed` → `event.gate_passed == Some(true)` or match on it
+- Display formatting: `Some(true)` → "pass", `Some(false)` → "fail", `None` → "?"
+
+## What NOT to change
+
+- Do NOT change the gate dispatch logic in event_loop.rs (the gate still runs asynchronously)
+- Do NOT change VerdictHistory recording (it's correct and separate)
+- Do NOT change the GateCompletion struct in types.rs
+- Do NOT add new crate dependencies
+
+Verify: `cargo test -p roko-learn && cargo test -p roko-cli --lib -- learn && cargo clippy --workspace --no-deps -- -D warnings`"""
+status = "done"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo test -p roko-learn && cargo clippy -p roko-learn -p roko-cli --no-deps -- -D warnings"

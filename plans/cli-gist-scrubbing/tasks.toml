@@ -1,0 +1,107 @@
+[meta]
+plan = "cli-gist-scrubbing"
+total = 1
+done = 1
+status = "complete"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 25
+
+[[task]]
+id = "T01"
+title = "Wire secret scrubbing into write_shared_workflow_run and clean up dead share.rs code"
+role = "implementer"
+files = [
+    "crates/roko-cli/src/run.rs",
+    "crates/roko-cli/src/share.rs",
+]
+description = """Wire secret scrubbing into `write_shared_workflow_run` in `crates/roko-cli/src/run.rs`.
+
+## 1. Add scrubbing to `write_shared_workflow_run`
+
+In `crates/roko-cli/src/run.rs`, find `write_shared_workflow_run` (around line 87). It builds
+a `RunTranscript` from raw prompt/output without any scrubbing. This is the security bug.
+
+Add a `scrub_share_text` helper function (same pattern as `crates/roko-cli/src/share.rs` line 49):
+
+```rust
+fn scrub_share_text(text: &str) -> String {
+    use std::sync::OnceLock;
+    use roko_core::obs::LogScrubber;
+    static SCRUBBER: OnceLock<LogScrubber> = OnceLock::new();
+    let scrubber = SCRUBBER.get_or_init(LogScrubber::new);
+    let redacted = scrubber.scrub(text);
+    scrub_long_secret_like_strings(&redacted)
+}
+
+fn scrub_long_secret_like_strings(text: &str) -> String {
+    use regex::Regex;
+    use std::sync::OnceLock;
+    static HEX_RE: OnceLock<Regex> = OnceLock::new();
+    static B64_RE: OnceLock<Regex> = OnceLock::new();
+    let hex_re = HEX_RE.get_or_init(|| {
+        Regex::new(r"(^|[^0-9A-Fa-f])([0-9A-Fa-f]{32,})([^0-9A-Fa-f]|$)").unwrap()
+    });
+    let b64_re = B64_RE.get_or_init(|| {
+        Regex::new(r"(^|[^A-Za-z0-9+/=])([A-Za-z0-9+/=]{32,})([^A-Za-z0-9+/=]|$)").unwrap()
+    });
+    let redacted = hex_re.replace_all(text, "$1[REDACTED]$3");
+    b64_re.replace_all(redacted.as_ref(), "$1[REDACTED]$3").into_owned()
+}
+```
+
+IMPORTANT: Read `crates/roko-cli/src/share.rs` to see the existing helpers. Both
+`scrub_share_text` and `scrub_long_secret_like_strings` already exist there (lines 49-66).
+You can either:
+- (Preferred) Make the functions in `share.rs` `pub(crate)` and call them from `run.rs`
+- Or duplicate them in `run.rs`
+
+In `write_shared_workflow_run`, apply scrubbing BEFORE building the `RunTranscript`:
+- Scrub `prompt` with `scrub_share_text(prompt)`
+- Scrub the output text field: if the report has output text, scrub it
+- Also scrub any transcript event content fields that contain agent output
+
+Read the actual `RunTranscript` struct in `crates/roko-serve/src/routes/shared_runs.rs` to see
+what fields contain text that could have secrets. At minimum, scrub `prompt` and any `output`/
+`content` fields.
+
+## 2. Clean up `share.rs` dead code
+
+The `share_run` function in `crates/roko-cli/src/share.rs` (line 85) is dead code — it has
+zero callers in production. Two options:
+
+Option A (preferred): Make `scrub_share_text` and `scrub_long_secret_like_strings` `pub(crate)`,
+add a module-level doc comment noting `share_run` is unused infrastructure for future Gist
+upload, keep the file.
+
+Option B: Delete `share.rs` entirely and inline the scrubbing helpers into `run.rs`.
+
+## 3. Add a test
+
+Add a unit test to `run.rs` that verifies scrubbing works:
+
+```rust
+#[test]
+fn write_shared_workflow_run_scrubs_secrets() {
+    // Create a temp dir, build a WorkflowRunReport with a secret in the output,
+    // call write_shared_workflow_run, read the JSON file, assert the secret
+    // is NOT present and [REDACTED] IS present.
+}
+```
+
+Read the existing `WorkflowRunReport` struct to understand what fields are needed. The struct
+may require several fields to be populated. Use `Default::default()` where possible.
+
+## What NOT to change
+
+- Do NOT modify `crates/roko-serve/src/routes/shared_runs.rs` (server-side scrubbing is separate)
+- Do NOT change the scrubbing patterns (they're already correct)
+- Do NOT add dependencies (regex and roko_core::obs::LogScrubber are already available)
+
+Verify: `cargo test -p roko-cli --lib -- share && cargo test -p roko-cli --lib -- scrub && cargo clippy -p roko-cli --no-deps -- -D warnings`"""
+status = "done"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo test -p roko-cli --lib -- share && cargo clippy -p roko-cli --no-deps -- -D warnings"

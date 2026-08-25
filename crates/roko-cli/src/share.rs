@@ -15,6 +15,13 @@
 //!   GitHub/Slack tokens, Bearer headers, env-var leaks).
 //! - A secondary pass that redacts long hex (≥32 chars) and base64 (≥32 chars)
 //!   strings that are characteristic of raw secrets.
+//!
+//! # Dead-code note
+//!
+//! [`share_run`] has no callers in production today. It is retained as
+//! infrastructure for a future Gist-upload feature. The scrubbing helpers
+//! ([`scrub_share_text`]) are `pub(crate)` so that
+//! [`crate::run::write_shared_workflow_run`] can reuse them directly.
 
 use std::path::Path;
 use std::process::Command;
@@ -46,7 +53,10 @@ pub struct ShareResult {
 ///    (≥ 32 chars) strings that are likely raw secrets.
 ///
 /// This mirrors `scrub_share_text` in `roko-serve/src/routes/shared_runs.rs`.
-fn scrub_share_text(text: &str) -> String {
+///
+/// Exposed as `pub(crate)` so that [`crate::run::write_shared_workflow_run`] can
+/// apply the same scrubbing before persisting a [`RunTranscript`].
+pub(crate) fn scrub_share_text(text: &str) -> String {
     static SCRUBBER: OnceLock<LogScrubber> = OnceLock::new();
     let scrubber = SCRUBBER.get_or_init(LogScrubber::new);
     let redacted = scrubber.scrub(text);

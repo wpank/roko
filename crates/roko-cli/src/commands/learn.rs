@@ -412,7 +412,7 @@ async fn collect_efficiency_json(workdir: &std::path::Path) -> LearnJsonEfficien
             model,
             task_id: event.task_id.clone(),
             plan_id: event.plan_id.clone(),
-            gate_passed: event.gate_passed,
+            gate_passed: event.gate_passed.unwrap_or(false),
             cost_usd: event.cost_usd,
             input_tokens: event.input_tokens,
             output_tokens: event.output_tokens,
@@ -696,7 +696,11 @@ pub(crate) async fn print_learn_efficiency(workdir: &std::path::Path) {
         let model = efficiency_model_label(&event);
         let task_id = non_empty_or_unknown(&event.task_id);
         let plan_id = non_empty_or_unknown(&event.plan_id);
-        let status = if event.gate_passed { "pass" } else { "fail" };
+        let status = match event.gate_passed {
+            Some(true) => "pass",
+            Some(false) => "fail",
+            None => "?",
+        };
         latest = Some(format!(
             "{timestamp} model={model} task={task_id} plan={plan_id} {status} cost={}",
             display_cost_precise(event.cost_usd, event.input_tokens, event.output_tokens)
@@ -911,7 +915,7 @@ fn attempt_correlation_summary(
 
     let linked_gate_failures = events
         .iter()
-        .filter(|event| !event.task_id.is_empty() && !event.gate_passed)
+        .filter(|event| !event.task_id.is_empty() && event.gate_passed != Some(true))
         .count();
 
     Some(format!(
@@ -1035,14 +1039,14 @@ mod tests {
     fn attempt_correlation_summary_counts_only_attempted_events() {
         let mut success = roko_learn::efficiency::AgentEfficiencyEvent::default();
         success.task_id = "task-1".into();
-        success.gate_passed = true;
+        success.gate_passed = Some(true);
 
         let mut failure = roko_learn::efficiency::AgentEfficiencyEvent::default();
         failure.task_id = "task-2".into();
-        failure.gate_passed = false;
+        failure.gate_passed = Some(false);
 
         let mut unlabeled = roko_learn::efficiency::AgentEfficiencyEvent::default();
-        unlabeled.gate_passed = false;
+        unlabeled.gate_passed = None;
 
         let events = vec![success, failure, unlabeled];
         let summary = attempt_correlation_summary(&events);
@@ -1056,7 +1060,7 @@ mod tests {
     #[test]
     fn attempt_correlation_summary_skips_empty_attempt_ids() {
         let mut unlabeled = roko_learn::efficiency::AgentEfficiencyEvent::default();
-        unlabeled.gate_passed = false;
+        unlabeled.gate_passed = None;
 
         assert!(attempt_correlation_summary(&[unlabeled]).is_none());
     }

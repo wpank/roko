@@ -396,7 +396,7 @@ async fn build_metrics_summary(
     let agents_run = efficiency_events.len() as u64;
     let success_count = efficiency_events
         .iter()
-        .filter(|event| event.gate_passed)
+        .filter(|event| event.gate_passed == Some(true))
         .count() as u64;
     let success_rate = ratio(success_count, agents_run);
     let avg_cost_per_episode_cents = if agents_run == 0 {
@@ -539,7 +539,7 @@ fn build_model_efficiency_response(
         let aggregate = models.entry(event.model.clone()).or_default();
         aggregate.total_cost_usd += event.cost_usd;
         aggregate.total_episodes += 1;
-        if event.gate_passed {
+        if event.gate_passed == Some(true) {
             aggregate.successful_episodes += 1;
         }
     }
@@ -1092,7 +1092,7 @@ fn gate_pass_rate(episodes: &[Episode], efficiency_events: &[AgentEfficiencyEven
 
     let passed_events = efficiency_events
         .iter()
-        .filter(|event| event.gate_passed)
+        .filter(|event| event.gate_passed == Some(true))
         .count() as u64;
     ratio(passed_events, efficiency_events.len() as u64)
 }
@@ -1126,11 +1126,16 @@ fn self_improvement_velocity(events: &[AgentEfficiencyEvent]) -> f64 {
     let early = &ordered[..split];
     let late = &ordered[split..];
     let early_rate = ratio(
-        early.iter().filter(|event| event.gate_passed).count() as u64,
+        early
+            .iter()
+            .filter(|event| event.gate_passed == Some(true))
+            .count() as u64,
         early.len() as u64,
     );
     let late_rate = ratio(
-        late.iter().filter(|event| event.gate_passed).count() as u64,
+        late.iter()
+            .filter(|event| event.gate_passed == Some(true))
+            .count() as u64,
         late.len() as u64,
     );
 

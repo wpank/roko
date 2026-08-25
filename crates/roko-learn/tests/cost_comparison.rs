@@ -76,7 +76,7 @@ fn turn_event(model: &str, turn: usize, cost_usd: f64, gate_passed: bool) -> Age
         time_to_first_token_ms: 80,
         was_warm_start: turn > 0,
         iteration: (turn + 1) as u32,
-        gate_passed,
+        gate_passed: Some(gate_passed),
         outcome: if gate_passed {
             String::from("success")
         } else {

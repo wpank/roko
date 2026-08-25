@@ -64,6 +64,17 @@ impl ActiveTurn {
     }
 }
 
+/// Buffered efficiency event awaiting its corresponding `GateResult`.
+///
+/// Used in the runner-v2 async path where `TurnCompleted` fires before the
+/// gate pipeline produces a verdict. Keyed by `task_id` in the subscriber
+/// state and completed when the matching `GateResult` arrives.
+struct PendingEfficiency {
+    event: AgentEfficiencyEvent,
+    /// Model slug, needed to call `router.record_confidence_outcome`.
+    model: String,
+}
+
 /// Consume `AgentEvent`s and update the learning subsystems that depend on them.
 pub async fn run_learning_subscriber(
     mut rx: broadcast::Receiver<AgentEvent>,
@@ -81,6 +92,8 @@ pub async fn run_learning_subscriber(
     let mut active_turn: Option<ActiveTurn> = None;
     let mut calibration_policy = CalibrationPolicy::new();
     let mut verdict_history = VerdictHistory::new();
+    // Efficiency events waiting for their `GateResult` (runner-v2 async path).
+    let mut pending_efficiency: HashMap<String, PendingEfficiency> = HashMap::new();
 
     loop {
         let event = match rx.recv().await {
@@ -139,9 +152,9 @@ pub async fn run_learning_subscriber(
                     continue;
                 };
 
-                let success = gate_passed.unwrap_or(false);
-                let _ = router.record_confidence_outcome(&turn_ctx.model, success);
-
+                // Always record the cost — the token spend is real regardless of
+                // whether the gate result has arrived yet.
+                let success_for_cost = gate_passed.unwrap_or(false);
                 let cost_record = create_cost_record(
                     Utc::now().to_rfc3339(),
                     &turn_ctx.model,
@@ -153,13 +166,16 @@ pub async fn run_learning_subscriber(
                     &usage,
                     &cost_table,
                     usage.wall_ms,
-                    success,
+                    success_for_cost,
                     "",
                 );
                 costs.insert(cost_record);
 
                 let tools_used = tool_call_count.min(u32::MAX as usize) as u32;
                 let attempt_id = format!("{}:{turn}", turn_ctx.attempt_id_base);
+                // Clone before struct field moves consume these values.
+                let task_id_key = turn_ctx.task_id.clone();
+                let model_key = turn_ctx.model.clone();
                 let efficiency_event = AgentEfficiencyEvent {
                     agent_id: format!("{}:{turn}", turn_ctx.task_id),
                     role: String::new(),
@@ -188,11 +204,10 @@ pub async fn run_learning_subscriber(
                     iteration: turn,
                     turn_number: turn,
                     is_final_turn: false,
-                    gate_passed: success,
-                    outcome: if success {
-                        "success".to_string()
-                    } else {
-                        finish_reason_label(&finish_reason).to_string()
+                    gate_passed,
+                    outcome: match gate_passed {
+                        Some(true) => "success".to_string(),
+                        _ => finish_reason_label(&finish_reason).to_string(),
                     },
                     gate_errors: Vec::new(),
                     model_used: turn_ctx.model,
@@ -201,13 +216,31 @@ pub async fn run_learning_subscriber(
                     timestamp: Utc::now().to_rfc3339(),
                 };
 
-                if let Err(err) = append_efficiency_event(&efficiency_path, &efficiency_event).await
-                {
-                    tracing::warn!(
-                        path = %efficiency_path.display(),
-                        error = %err,
-                        "failed to append efficiency event"
-                    );
+                match gate_passed {
+                    Some(passed) => {
+                        // ACP inline path: gate result is known with TurnCompleted.
+                        let _ = router.record_confidence_outcome(&model_key, passed);
+                        if let Err(err) =
+                            append_efficiency_event(&efficiency_path, &efficiency_event).await
+                        {
+                            tracing::warn!(
+                                path = %efficiency_path.display(),
+                                error = %err,
+                                "failed to append efficiency event"
+                            );
+                        }
+                    }
+                    None => {
+                        // runner-v2 async path: gate runs after TurnCompleted.
+                        // Buffer the event until the matching GateResult arrives.
+                        pending_efficiency.insert(
+                            task_id_key,
+                            PendingEfficiency {
+                                event: efficiency_event,
+                                model: model_key,
+                            },
+                        );
+                    }
                 }
             }
             AgentEvent::ProviderError { .. } => {}
@@ -244,6 +277,7 @@ pub async fn run_learning_subscriber(
             AgentEvent::GateResult {
                 ref gate_name,
                 passed,
+                ref task_id,
                 ..
             } => {
                 // Feed verdict history for routing penalty computation (GATE-05).
@@ -257,6 +291,27 @@ pub async fn run_learning_subscriber(
                         timestamp_ms: Utc::now().timestamp_millis(),
                     });
                 }
+
+                // Flush the buffered efficiency event now that we know the gate outcome.
+                if let Some(mut pending) = pending_efficiency.remove(task_id) {
+                    pending.event.gate_passed = Some(passed);
+                    pending.event.outcome = if passed {
+                        "success".to_string()
+                    } else {
+                        "gate_failed".to_string()
+                    };
+                    let _ = router.record_confidence_outcome(&pending.model, passed);
+                    if let Err(err) =
+                        append_efficiency_event(&efficiency_path, &pending.event).await
+                    {
+                        tracing::warn!(
+                            path = %efficiency_path.display(),
+                            error = %err,
+                            task_id = %task_id,
+                            "failed to write deferred efficiency event"
+                        );
+                    }
+                }
             }
             AgentEvent::AnomalyDetected { .. }
             | AgentEvent::ExperimentAssigned { .. }
@@ -264,6 +319,20 @@ pub async fn run_learning_subscriber(
             | AgentEvent::ModelSelected { .. }
             | AgentEvent::SomaticMarkerFired { .. }
             | AgentEvent::StreamChunk { .. } => {}
+        }
+    }
+
+    // Flush remaining buffered events that never received a GateResult (e.g. task
+    // errored before gating, or subscriber shut down during a gate run).
+    for (task_id, pending) in pending_efficiency.drain() {
+        tracing::debug!(task_id = %task_id, "flushing ungated efficiency event on shutdown");
+        if let Err(err) = append_efficiency_event(&efficiency_path, &pending.event).await {
+            tracing::warn!(
+                path = %efficiency_path.display(),
+                error = %err,
+                task_id = %task_id,
+                "failed to flush ungated efficiency event"
+            );
         }
     }
 }
@@ -388,7 +457,7 @@ mod tests {
         assert_eq!(events[0].task_id, "task-2k22");
         assert_eq!(events[0].tools_used, 1);
         assert_eq!(events[0].tool_calls.len(), 1);
-        assert!(events[0].gate_passed);
+        assert_eq!(events[0].gate_passed, Some(true));
     }
 
     #[tokio::test]

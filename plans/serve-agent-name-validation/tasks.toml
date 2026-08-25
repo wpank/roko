@@ -1,0 +1,145 @@
+[meta]
+plan = "serve-agent-name-validation"
+total = 1
+done = 1
+status = "complete"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 20
+
+[[task]]
+id = "T01"
+title = "Add character-set allowlist, length cap, and tests to resolve_agent_dir()"
+role = "implementer"
+files = [
+    "crates/roko-serve/src/routes/agents.rs",
+]
+description = """Harden agent name validation in `crates/roko-serve/src/routes/agents.rs`.
+
+## 1. Add character-set validation to `resolve_agent_dir()`
+
+In `resolve_agent_dir()` (starts around line 773), after the existing structural checks
+(empty/whitespace, `/`, `\\`, `.`, `..`, single-component) and BEFORE the canonicalization
+block, add three new checks in this order:
+
+```rust
+// Check ASCII-only (covers Unicode homoglyphs, control chars)
+if !trimmed.is_ascii() {
+    return Err(ApiError::bad_request(
+        "agent name must contain only ASCII characters (no Unicode, accented letters, or special symbols)",
+    ));
+}
+
+// Check character allowlist: alphanumeric, hyphen, underscore only
+fn is_valid_agent_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '-' || c == '_'
+}
+if !trimmed.chars().all(is_valid_agent_name_char) {
+    return Err(ApiError::bad_request(
+        "agent name must contain only ASCII alphanumeric characters, hyphens, and underscores",
+    ));
+}
+
+// Must start with alphanumeric
+if !trimmed.starts_with(|c: char| c.is_ascii_alphanumeric()) {
+    return Err(ApiError::bad_request(
+        "agent name must start with an alphanumeric character",
+    ));
+}
+
+// Explicit length cap (defense-in-depth alongside CreateAgentRequest validation)
+if trimmed.len() > 64 {
+    return Err(ApiError::bad_request(
+        "agent name must not exceed 64 characters",
+    ));
+}
+```
+
+## 2. Update CreateAgentRequest validation
+
+Find `CreateAgentRequest` (around line 576-580). The `name` field has
+`#[validate(length(min = 1, max = 128))]`. Change `max = 128` to `max = 64`.
+
+## 3. Update existing test for dot-containing names
+
+Find `agent_manifest_resolve_agent_dir_accepts_simple_names` (around line 1958-1963).
+It asserts that `"research-bot.v2"` is accepted. Since dots are now rejected by the
+character-set check, change the test to use `"research-bot-v2"` instead.
+
+## 4. Add new test function
+
+Add a new test function `agent_name_rejects_invalid_chars` in the same `#[cfg(test)]`
+module. It should test:
+
+```rust
+#[tokio::test]
+async fn agent_name_rejects_invalid_chars() {
+    use super::*;
+    let base = std::env::temp_dir().join("roko-agent-name-test");
+    let _ = std::fs::create_dir_all(&base);
+
+    // Unicode characters
+    for name in &[
+        "\\u{200B}admin",  // zero-width space
+        "adm\\u{00EF}n",   // accented char
+        "très-bien",       // non-ASCII
+    ] {
+        assert!(
+            resolve_agent_dir(&base, name).is_err(),
+            "should reject Unicode name: {name}"
+        );
+    }
+
+    // Shell metacharacters
+    for name in &["$foo", "a;b", "a|b", "a(b)", "a&b", "a`b", "a{b}"] {
+        assert!(
+            resolve_agent_dir(&base, name).is_err(),
+            "should reject shell metachar name: {name}"
+        );
+    }
+
+    // Names starting with non-alphanumeric
+    for name in &["-leading-hyphen", "_leading-underscore"] {
+        assert!(
+            resolve_agent_dir(&base, name).is_err(),
+            "should reject name starting with: {name}"
+        );
+    }
+
+    // Too long (65 chars)
+    let long_name = "a".repeat(65);
+    assert!(
+        resolve_agent_dir(&base, &long_name).is_err(),
+        "should reject name longer than 64 chars"
+    );
+
+    // Valid names should pass
+    for name in &["my-agent-1", "test_agent", "abc", "Agent42"] {
+        assert!(
+            resolve_agent_dir(&base, name).is_ok(),
+            "should accept valid name: {name}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+```
+
+Note: `resolve_agent_dir` takes `(base_dir: &Path, name: &str)` — check the actual
+signature and adjust the test accordingly. The function may take additional parameters
+or return a different type. Read the function signature first.
+
+## What NOT to change
+
+- Do NOT change the `domain` allowlist validation (already restricted to 4 values)
+- Do NOT change the TOML serialization path (already safe)
+- Do NOT change the existing path-traversal tests (they should still pass as-is)
+- Do NOT add dependencies
+
+Verify: `cargo test -p roko-serve --lib -- agent_name && cargo test -p roko-serve --lib -- resolve_agent_dir && cargo clippy -p roko-serve --no-deps -- -D warnings`"""
+status = "done"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo test -p roko-serve --lib -- agent && cargo clippy -p roko-serve --no-deps -- -D warnings"

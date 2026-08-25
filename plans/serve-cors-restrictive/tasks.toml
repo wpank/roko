@@ -1,0 +1,149 @@
+[meta]
+plan = "serve-cors-restrictive"
+total = 1
+done = 1
+status = "complete"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 30
+
+[[task]]
+id = "T01"
+title = "Replace CorsLayer::permissive() with explicit policy, add missing headers, gate unsafe_public_cors on auth"
+role = "implementer"
+files = [
+    "crates/roko-serve/src/routes/middleware.rs",
+    "crates/roko-core/src/config/serve.rs",
+    "crates/roko-serve/src/lib.rs",
+]
+description = """Harden the CORS middleware in `crates/roko-serve/src/routes/middleware.rs`.
+The `cors_layer()` function at line 1418 has three branches: explicit origins (line 1419),
+`unsafe_public` wildcard (line 1428), and local-only default (line 1438). Changes required:
+
+### A. Add missing headers to `allowed_cors_headers()` (line 1407)
+
+The current list at lines 1408-1414 has 5 entries:
+  CONTENT_TYPE, AUTHORIZATION, x-api-key, x-user-id, x-user-email
+
+Add these three additional headers that the server consumes:
+  - `accept` (standard; needed for content-negotiation on SSE/JSON endpoints)
+  - `x-request-id` (used by request tracing middleware)
+  - `x-roko-session` (used by session-aware routes)
+
+Update the array size from `[HeaderName; 5]` to `[HeaderName; 8]` and add the entries.
+
+### B. Replace `CorsLayer::permissive()` with explicit wildcard-without-credentials
+
+At line 1435, `CorsLayer::permissive()` is used when `unsafe_public` is true. This is
+overly broad: `permissive()` sets `Access-Control-Allow-Credentials: true` and reflects
+every header/method, which is a security anti-pattern.
+
+Replace line 1435:
+```rust
+return CorsLayer::permissive();
+```
+with an explicit wildcard configuration that does NOT set allow-credentials:
+```rust
+return CorsLayer::new()
+    .allow_origin(tower_http::cors::Any)
+    .allow_methods(allowed_cors_methods())
+    .allow_headers(allowed_cors_headers());
+```
+
+This allows any origin but constrains methods and headers to the declared sets, and
+importantly does NOT send `Access-Control-Allow-Credentials: true`.
+
+### C. Create a `CorsPolicy` struct to group CORS parameters
+
+Currently `cors_layer()` takes `(cors_origins: &[String], unsafe_public: bool)` and every
+call site passes those two fields separately from `ServerConfig`. Introduce a small struct:
+
+```rust
+/// Groups CORS configuration for `cors_layer()`.
+#[derive(Clone, Debug, Default)]
+pub struct CorsPolicy {
+    pub origins: Vec<String>,
+    pub unsafe_public: bool,
+}
+```
+
+Add it in `middleware.rs` near the existing CORS helpers (around line 1385). Change the
+signature of `cors_layer` from:
+```rust
+pub fn cors_layer(cors_origins: &[String], unsafe_public: bool) -> CorsLayer
+```
+to:
+```rust
+pub fn cors_layer(policy: &CorsPolicy) -> CorsLayer
+```
+
+Update the `pub(crate) use` re-export at `routes/mod.rs` line 233 if needed.
+
+Update every call site. The call sites are:
+  1. `routes/mod.rs` line 249: `middleware::cors_layer(cors_origins, roko_config.server.unsafe_public_cors)`
+  2. `lib.rs` line 960: `routes::cors_layer(cors_origins, unsafe_public_cors)`
+  3. All test helpers in `middleware.rs`:
+     - `cors_test_app` (line 2715): `cors_layer(&[allowed_origin.to_string()], false)`
+     - `cors_default_local_app` (line 2830): `cors_layer(&[], false)`
+     - `cors_unsafe_public_app` (line 2838): `cors_layer(&[], true)`
+
+Also update `build_server_router` in `lib.rs` (line 947) and `build_router` in
+`routes/mod.rs` (line 238) to accept `&CorsPolicy` instead of `(&[String], bool)`.
+Propagate from the two call sites in `lib.rs`:
+  - line 431-436: `build_server_router(...)` in `start()`
+  - line 893-898: `build_server_router(...)` in the test/worker path
+
+At those call sites, construct `CorsPolicy` from `roko_config.server.cors_origins` and
+`roko_config.server.unsafe_public_cors`.
+
+### D. Gate `unsafe_public_cors` on auth being enabled
+
+When `unsafe_public_cors = true` but auth is disabled (`serve.auth.enabled = false`),
+the server becomes fully open with no credentials barrier. Add a startup-time check.
+
+In `cors_layer()`, the function currently does not know whether auth is enabled. Add an
+`auth_enabled: bool` field to `CorsPolicy`:
+
+```rust
+pub struct CorsPolicy {
+    pub origins: Vec<String>,
+    pub unsafe_public: bool,
+    pub auth_enabled: bool,
+}
+```
+
+In the `unsafe_public` branch of `cors_layer()` (around the existing warn! at line 1430),
+add a second warning when auth is also disabled:
+
+```rust
+if !policy.auth_enabled {
+    tracing::error!(
+        "CRITICAL: CORS is unrestricted AND authentication is disabled. \
+         The server is fully open to cross-origin requests with no credential barrier. \
+         Enable auth via [serve.auth] enabled = true, or restrict CORS via cors_origins."
+    );
+}
+```
+
+At the call sites that construct `CorsPolicy`, populate `auth_enabled` from
+`roko_config.serve.auth.enabled`.
+
+### E. Update tests
+
+The existing CORS tests in `middleware.rs` (lines 2682-2928) must be updated:
+  1. All `cors_layer(...)` calls in test helpers switch to `cors_layer(&CorsPolicy { ... })`.
+  2. `cors_preflight_allows_listed_method_and_header` (line 2742): add assertions for the
+     three new headers (`accept`, `x-request-id`, `x-roko-session`).
+  3. `cors_unsafe_public_allows_any_origin` (line 2895): assert that
+     `access-control-allow-credentials` is NOT `true` (verifying the permissive() removal).
+  4. Add a new test `cors_unsafe_public_without_auth_logs_error` that constructs
+     `CorsPolicy { unsafe_public: true, auth_enabled: false, .. }` and verifies the layer
+     still builds (the error is a log, not a panic).
+
+Verify: `cargo test -p roko-serve -- cors && cargo clippy -p roko-serve --no-deps -- -D warnings`"""
+status = "done"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo test -p roko-serve -- cors && cargo clippy -p roko-serve --no-deps -- -D warnings"

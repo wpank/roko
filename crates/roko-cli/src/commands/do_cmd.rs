@@ -605,7 +605,7 @@ pub(crate) async fn run_plan_execution(
         max_concurrent_tasks,
         gate_concurrency: max_concurrent_tasks,
         approval: false,
-        dangerously_skip_permissions: true,
+        dangerously_skip_permissions: roko_config.runner.dangerously_skip_permissions,
         force_resume: false,
         force_disk_check: false,
         mcp_config: {

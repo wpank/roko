@@ -2161,7 +2161,7 @@ impl Default for RunConfig {
             max_concurrent_tasks: DEFAULT_RUNNER_MAX_CONCURRENT_TASKS,
             gate_concurrency: DEFAULT_RUNNER_GATE_CONCURRENCY,
             approval: false,
-            dangerously_skip_permissions: true,
+            dangerously_skip_permissions: false,
             force_resume: false,
             force_disk_check: false,
             mcp_config: None,

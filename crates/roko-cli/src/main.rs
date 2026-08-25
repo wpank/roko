@@ -1539,6 +1539,11 @@ Examples:
         /// may fail mid-run if disk space is exhausted.
         #[arg(long)]
         force: bool,
+        /// Skip agent permission prompts for this run. UNSAFE: agents will execute
+        /// tools without approval. Prefer setting `runner.dangerously_skip_permissions = true`
+        /// in roko.toml for persistent use.
+        #[arg(long)]
+        dangerously_skip_permissions: bool,
         /// Write structured JSONL event log to this file during execution.
         ///
         /// Every runner lifecycle event (task start, gate result, agent dispatch,
@@ -3056,6 +3061,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 budget_override: None,
                 no_budget: false,
                 force: false,
+                dangerously_skip_permissions: false,
                 log_file: None,
             };
             commands::plan::cmd_plan(cli, plan_cmd).await

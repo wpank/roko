@@ -2194,8 +2194,8 @@ pub struct CoreRunnerConfig {
     #[serde(default = "CoreRunnerConfig::default_plan_timeout_secs")]
     pub plan_timeout_secs: u64,
     /// When `true`, agents run with `--dangerously-skip-permissions`.
-    /// Defaults to `true` for backwards compatibility. Set to `false` in
-    /// production to require explicit tool approval.
+    /// Defaults to `false`. Set to `true` or pass `--dangerously-skip-permissions`
+    /// on the CLI to skip agent permission prompts.
     #[serde(default = "CoreRunnerConfig::default_dangerously_skip_permissions")]
     pub dangerously_skip_permissions: bool,
     /// Sandbox policy applied to runner, provider, and structured-tool dispatch.
@@ -2233,7 +2233,7 @@ impl CoreRunnerConfig {
     }
 
     const fn default_dangerously_skip_permissions() -> bool {
-        true
+        false
     }
 
     const fn default_dispatch_max_retries() -> u32 {

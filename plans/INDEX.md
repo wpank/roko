@@ -40,8 +40,8 @@
 | `architecture-defi-critical-path` | 3 | 3 | 0 | ✅ complete | 1 |
 | `architecture-production-residuals` | 4 | 4 | 0 | ✅ complete | 2 |
 | `bandit-dead-code` | 1 | 0 | 1 | 📋 ready | 1 |
-| `codex-cost-reporting` | 1 | 1 | 0 | ✅ complete | 1 |
 | `cli-ux-consistency` | 4 | 0 | 4 | 📋 ready | 2 |
+| `codex-cost-reporting` | 1 | 1 | 0 | ✅ complete | 1 |
 | `cybernetic-run-metrics` | 1 | 1 | 0 | ✅ complete | 1 |
 | `doctor-network-v2` | 7 | 0 | 7 | 📋 ready | 1 |
 | `e2e-provider-test` | 1 | 0 | 1 | 📋 ready | 1 |
@@ -56,10 +56,12 @@
 | `rate-limiter-poison-recovery` | 1 | 0 | 1 | 📋 ready | 1 |
 | `report-phase-timeout` | 1 | 0 | 1 | 📋 ready | 1 |
 | `serve-auth-default` | 1 | 0 | 1 | 📋 ready | 1 |
+| `serve-cors-restrictive` | 1 | 1 | 0 | ✅ complete | 1 |
+| `skip-permissions-opt-in` | 1 | 1 | 0 | ✅ complete | 1 |
 | `task-parser-duplicate-ids` | 1 | 0 | 1 | 📋 ready | 1 |
 
-**Executable Total**: 48 plans, 154 tasks, 127 done (82%), 27 remaining
-**Complete Plans**: 33
+**Executable Total**: 50 plans, 156 tasks, 129 done (83%), 27 remaining
+**Complete Plans**: 35
 **Ready/In-Progress Plans**: 15
 
 ## Superseded / Archived

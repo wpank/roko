@@ -952,12 +952,17 @@ fn build_server_router(
 ) -> axum::Router {
     // `routes::build_router` currently installs only the top-level SPA fallback.
     // Reset it here so the final fallback can distinguish API/WS typos from browser routes.
+    let auth_enabled = api_auth.enabled;
     let api_router =
         routes::build_router(Arc::clone(&state), cors_origins, api_auth).reset_fallback();
     let fallback_router = axum::Router::new()
         .fallback(serve_api_or_spa_fallback)
         .layer(TraceLayer::new_for_http())
-        .layer(routes::cors_layer(cors_origins, unsafe_public_cors))
+        .layer(routes::cors_layer(&routes::CorsPolicy {
+            origins: cors_origins.to_vec(),
+            unsafe_public: unsafe_public_cors,
+            auth_enabled,
+        }))
         .with_state(state);
 
     api_router.merge(fallback_router)

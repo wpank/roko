@@ -295,6 +295,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             budget_override,
             no_budget,
             force,
+            dangerously_skip_permissions,
             log_file,
         } => {
             let t_total = std::time::Instant::now();
@@ -665,7 +666,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     max_concurrent_tasks,
                     gate_concurrency: max_concurrent_tasks,
                     approval,
-                    dangerously_skip_permissions: true,
+                    dangerously_skip_permissions: dangerously_skip_permissions
+                        || roko_config.runner.dangerously_skip_permissions,
                     force_resume,
                     force_disk_check: force,
                     mcp_config: {
@@ -781,6 +783,12 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         None => roko_cli::runner::structured_log::StructuredLogger::noop(),
                     },
                 };
+
+                if run_config.dangerously_skip_permissions {
+                    tracing::warn!(
+                        "running with --dangerously-skip-permissions: agents will execute tools without approval"
+                    );
+                }
 
                 // Optionally spawn the approval TUI.
                 let mut approval_tui_handle = None;

@@ -1404,35 +1404,66 @@ fn allowed_cors_methods() -> [Method; 6] {
 /// T3-28: replaces the previous `Any` allow-list. Webhook-only headers
 /// (`X-Hub-Signature-256`, `X-Slack-Signature`, …) are intentionally
 /// omitted because those endpoints are server-to-server, not browser.
-fn allowed_cors_headers() -> [HeaderName; 5] {
+fn allowed_cors_headers() -> [HeaderName; 8] {
     [
         CONTENT_TYPE,
         AUTHORIZATION,
         HeaderName::from_static("x-api-key"),
         HeaderName::from_static("x-user-id"),
         HeaderName::from_static("x-user-email"),
+        // Standard header required for content-negotiation on SSE/JSON endpoints.
+        HeaderName::from_static("accept"),
+        // Used by request tracing middleware.
+        HeaderName::from_static("x-request-id"),
+        // Used by session-aware routes.
+        HeaderName::from_static("x-roko-session"),
     ]
 }
 
-/// Build the CORS layer from configured origins.
-pub fn cors_layer(cors_origins: &[String], unsafe_public: bool) -> CorsLayer {
-    if !cors_origins.is_empty() {
-        let allowed: Vec<axum::http::HeaderValue> =
-            cors_origins.iter().filter_map(|o| o.parse().ok()).collect();
+/// Groups CORS configuration for `cors_layer()`.
+#[derive(Clone, Debug, Default)]
+pub struct CorsPolicy {
+    /// Explicit origin allow-list. When non-empty, only these origins are permitted.
+    pub origins: Vec<String>,
+    /// When `true`, any origin is allowed (wildcard). Requires no `origins` entries.
+    pub unsafe_public: bool,
+    /// Whether authentication is enabled on this server. Used to emit an extra
+    /// warning when `unsafe_public` is also `true`.
+    pub auth_enabled: bool,
+}
+
+/// Build the CORS layer from a [`CorsPolicy`].
+pub fn cors_layer(policy: &CorsPolicy) -> CorsLayer {
+    if !policy.origins.is_empty() {
+        let allowed: Vec<axum::http::HeaderValue> = policy
+            .origins
+            .iter()
+            .filter_map(|o| o.parse().ok())
+            .collect();
         return CorsLayer::new()
             .allow_origin(allowed)
             .allow_methods(allowed_cors_methods())
             .allow_headers(allowed_cors_headers());
     }
 
-    if unsafe_public {
+    if policy.unsafe_public {
         if UNSAFE_PUBLIC_CORS_WARNING.set(()).is_ok() {
             tracing::warn!(
                 "CORS is unrestricted (allow *) because server.unsafe_public_cors = true and no \
                  cors_origins are configured. Set cors_origins to limit access."
             );
         }
-        return CorsLayer::permissive();
+        if !policy.auth_enabled {
+            tracing::error!(
+                "CRITICAL: CORS is unrestricted AND authentication is disabled. The server is \
+                 fully open to cross-origin requests with no credential barrier. Enable auth via \
+                 [serve.auth] enabled = true, or restrict CORS via cors_origins."
+            );
+        }
+        return CorsLayer::new()
+            .allow_origin(tower_http::cors::Any)
+            .allow_methods(allowed_cors_methods())
+            .allow_headers(allowed_cors_headers());
     }
 
     CorsLayer::new()
@@ -2712,7 +2743,11 @@ mod tests {
     /// Build a tiny router protected by the production `cors_layer` so
     /// preflight OPTIONS requests exercise the real allow-lists.
     fn cors_test_app(allowed_origin: &str) -> axum::Router {
-        let cors = cors_layer(&[allowed_origin.to_string()], false);
+        let cors = cors_layer(&CorsPolicy {
+            origins: vec![allowed_origin.to_string()],
+            unsafe_public: false,
+            auth_enabled: true,
+        });
         axum::Router::new()
             .route("/api/ping", axum::routing::get(|| async { "pong" }))
             .layer(cors)
@@ -2769,7 +2804,14 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_ascii_lowercase();
-        for header in ["content-type", "authorization", "x-api-key"] {
+        for header in [
+            "content-type",
+            "authorization",
+            "x-api-key",
+            "accept",
+            "x-request-id",
+            "x-roko-session",
+        ] {
             assert!(
                 allow_headers.contains(header),
                 "{header} missing from {allow_headers:?}"
@@ -2827,7 +2869,11 @@ mod tests {
     /// Build a router using the default cors_layer (empty origins, not unsafe).
     /// This should only allow local origins.
     fn cors_default_local_app() -> axum::Router {
-        let cors = cors_layer(&[], false);
+        let cors = cors_layer(&CorsPolicy {
+            origins: vec![],
+            unsafe_public: false,
+            auth_enabled: true,
+        });
         axum::Router::new()
             .route("/api/ping", axum::routing::get(|| async { "pong" }))
             .layer(cors)
@@ -2835,7 +2881,11 @@ mod tests {
 
     /// Build a router using unsafe_public_cors = true (wildcard CORS).
     fn cors_unsafe_public_app() -> axum::Router {
-        let cors = cors_layer(&[], true);
+        let cors = cors_layer(&CorsPolicy {
+            origins: vec![],
+            unsafe_public: true,
+            auth_enabled: true,
+        });
         axum::Router::new()
             .route("/api/ping", axum::routing::get(|| async { "pong" }))
             .layer(cors)
@@ -2906,6 +2956,31 @@ mod tests {
             allow_origin == "*" || allow_origin == "https://anything.evil.com",
             "unsafe_public_cors should allow any origin, got: {allow_origin:?}"
         );
+
+        // Verify that the explicit wildcard config does NOT set allow-credentials.
+        // CorsLayer::permissive() was replaced because it sets credentials: true.
+        let allow_creds = resp
+            .headers()
+            .get("access-control-allow-credentials")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_ne!(
+            allow_creds, "true",
+            "unsafe_public_cors must not set access-control-allow-credentials: true"
+        );
+    }
+
+    #[test]
+    fn cors_unsafe_public_without_auth_logs_error() {
+        // Verify that building a layer with unsafe_public=true and auth_enabled=false
+        // does not panic — the error is emitted as a tracing::error!, not a panic.
+        let policy = CorsPolicy {
+            origins: vec![],
+            unsafe_public: true,
+            auth_enabled: false,
+        };
+        // Should not panic.
+        let _layer = cors_layer(&policy);
     }
 
     #[tokio::test]

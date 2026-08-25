@@ -1841,6 +1841,12 @@ pub async fn run(
         ..Default::default()
     };
     let paths = PersistPaths::from_workdir(&config.workdir)?;
+    let cleaned = persist::clean_stale_staging_files(
+        paths.state_snapshot_json.parent().unwrap_or(&config.workdir),
+    );
+    if cleaned > 0 {
+        info!(count = cleaned, "cleaned stale staging files from previous crash");
+    }
     let snapshot_writer = SnapshotWriter::new(4);
     persist::cleanup_orphaned_agents(&paths);
     let mut gate_thresholds = persist::load_gate_thresholds(&paths).unwrap_or_default();
@@ -1944,7 +1950,21 @@ pub async fn run(
             }
         }
         Err(err) => {
-            return Err(err).context("load authoritative unified state snapshot");
+            warn!(error = %err, "state snapshot corrupt; trying backup");
+            match persist::load_state_snapshot_backup(&paths) {
+                Ok(Some(backup)) => {
+                    warn!("loaded backup snapshot — most recent checkpoint may be lost");
+                    let run_state = serde_json::from_str(&backup.run_state_json)
+                        .context("parse validated backup run_state_json")?;
+                    let loaded_gt = serde_json::from_str(&backup.gate_thresholds_json)
+                        .context("parse validated backup gate_thresholds_json")?;
+                    (Some(run_state), Some(loaded_gt))
+                }
+                _ => {
+                    warn!("no valid backup; starting fresh");
+                    (None, None)
+                }
+            }
         }
     };
     let current_plan_ids = plans

@@ -54,6 +54,7 @@
 | `graph-example-schema-drift` | 2 | 0 | 2 | 📋 ready | 1 |
 | `handler-future-double-poll` | 1 | 0 | 1 | 📋 ready | 1 |
 | `justfile-recipes` | 1 | 0 | 1 | 📋 ready | 1 |
+| `layer-check-false-positives` | 1 | 1 | 0 | ✅ complete | 1 |
 | `per-turn-efficiency-events` | 1 | 1 | 0 | ✅ complete | 1 |
 | `rate-limiter-poison-recovery` | 1 | 0 | 1 | 📋 ready | 1 |
 | `report-phase-timeout` | 1 | 0 | 1 | 📋 ready | 1 |
@@ -62,10 +63,11 @@
 | `serve-cors-restrictive` | 1 | 1 | 0 | ✅ complete | 1 |
 | `serve-rate-body-limits` | 1 | 1 | 0 | ✅ complete | 1 |
 | `skip-permissions-opt-in` | 1 | 1 | 0 | ✅ complete | 1 |
+| `snapshot-backup-staging` | 1 | 1 | 0 | ✅ complete | 1 |
 | `task-parser-duplicate-ids` | 1 | 0 | 1 | 📋 ready | 1 |
 
-**Executable Total**: 54 plans, 160 tasks, 133 done (83%), 27 remaining
-**Complete Plans**: 39
+**Executable Total**: 56 plans, 162 tasks, 135 done (83%), 27 remaining
+**Complete Plans**: 41
 **Ready/In-Progress Plans**: 15
 
 ## Superseded / Archived

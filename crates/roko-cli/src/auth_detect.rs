@@ -185,6 +185,16 @@ pub fn detect_auth_from_env() -> AuthMethod {
     AuthMethod::NeedsSetup
 }
 
+/// Probe whether the `claude` CLI binary is available on PATH.
+/// Runs `claude --version` — does not perform any LLM inference.
+pub fn claude_cli_available() -> bool {
+    std::process::Command::new("claude")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Print setup instructions when no auth is detected.
 pub fn print_setup_instructions() {
     eprintln!("error: no LLM provider is configured or available.\n");

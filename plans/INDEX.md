@@ -56,12 +56,14 @@
 | `rate-limiter-poison-recovery` | 1 | 0 | 1 | 📋 ready | 1 |
 | `report-phase-timeout` | 1 | 0 | 1 | 📋 ready | 1 |
 | `serve-auth-default` | 1 | 0 | 1 | 📋 ready | 1 |
+| `serve-agent-name-validation` | 1 | 1 | 0 | ✅ complete | 1 |
 | `serve-cors-restrictive` | 1 | 1 | 0 | ✅ complete | 1 |
+| `serve-rate-body-limits` | 1 | 1 | 0 | ✅ complete | 1 |
 | `skip-permissions-opt-in` | 1 | 1 | 0 | ✅ complete | 1 |
 | `task-parser-duplicate-ids` | 1 | 0 | 1 | 📋 ready | 1 |
 
-**Executable Total**: 50 plans, 156 tasks, 129 done (83%), 27 remaining
-**Complete Plans**: 35
+**Executable Total**: 52 plans, 158 tasks, 131 done (83%), 27 remaining
+**Complete Plans**: 37
 **Ready/In-Progress Plans**: 15
 
 ## Superseded / Archived

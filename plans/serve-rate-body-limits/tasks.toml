@@ -1,0 +1,148 @@
+[meta]
+plan = "serve-rate-body-limits"
+total = 1
+done = 1
+status = "complete"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 30
+
+[[task]]
+id = "T01"
+title = "Add per-route rate limiters, Retry-After header, terminal body limit, and configurable global limits"
+role = "implementer"
+files = [
+    "crates/roko-serve/src/routes/mod.rs",
+    "crates/roko-serve/src/routes/middleware.rs",
+    "crates/roko-core/src/config/schema.rs",
+]
+description = """Add per-route rate limiting, Retry-After headers, and configurable global limits
+to `crates/roko-serve/src/routes/mod.rs` and related files.
+
+## 1. Add `Retry-After` header to existing 429 responses
+
+In `crates/roko-serve/src/routes/mod.rs`, find `rate_limit_middleware()` (around line 189)
+and `keyed_rate_limit_middleware()` (around line 212). Both return a 429 JSON response
+when the rate limit is exceeded, but neither includes a `Retry-After` header.
+
+The `governor` crate's `check()` returns `Err(NotUntil<...>)` where `not_until.wait_time_from(now)`
+gives the wait duration. Update both functions:
+
+For `rate_limit_middleware`:
+```rust
+if let Err(not_until) = limiter.check() {
+    let retry_secs = not_until
+        .wait_time_from(governor::clock::DefaultClock::default().now())
+        .as_secs()
+        .max(1);
+    // Add Retry-After to the response
+}
+```
+
+The 429 response is currently constructed as:
+```rust
+(StatusCode::TOO_MANY_REQUESTS, Json(json!({ "code": "rate_limited", ... })))
+```
+
+Change it to a 3-tuple that includes headers:
+```rust
+let mut headers = axum::http::HeaderMap::new();
+headers.insert("retry-after", retry_secs.to_string().parse().unwrap());
+(StatusCode::TOO_MANY_REQUESTS, headers, Json(json!({ "code": "rate_limited", ... })))
+```
+
+Do the same for `keyed_rate_limit_middleware`, using `check_key()` instead.
+
+IMPORTANT: Check the exact current code — the functions may use `governor::clock::QuantaClock`
+or another clock type. Read the actual implementation before modifying. The `governor` API
+may expose `wait_time_from` differently across versions. If `NotUntil::wait_time_from` is
+not available, use a fixed `Retry-After: 1` as a safe default.
+
+## 2. Make global rate limits configurable
+
+In `crates/roko-core/src/config/schema.rs`, find `ServerConfig` (the struct that holds
+server configuration). Add two new fields:
+
+```rust
+/// Global rate limit in requests per second. Defaults to 100.
+#[serde(default = "default_rate_limit_per_sec")]
+pub rate_limit_per_sec: u32,
+
+/// Per-key rate limit in requests per second per API key or IP. Defaults to 30.
+#[serde(default = "default_rate_limit_per_key_per_sec")]
+pub rate_limit_per_key_per_sec: u32,
+```
+
+Add the default functions:
+```rust
+const fn default_rate_limit_per_sec() -> u32 { 100 }
+const fn default_rate_limit_per_key_per_sec() -> u32 { 30 }
+```
+
+In `crates/roko-serve/src/routes/mod.rs`, find `build_router()` where the global and
+per-key rate limiters are constructed from `DEFAULT_GLOBAL_RATE_PER_SEC` and
+`DEFAULT_PER_KEY_RATE_PER_SEC`. Replace the hardcoded constants with values from the
+`ServerConfig` passed through the `AppState`. The `AppState` already contains
+`roko_config: Arc<ArcSwap<RokoConfig>>` — load the config and read the server fields.
+
+## 3. Add per-route rate limiters for expensive endpoints
+
+Create a helper that builds a keyed governor rate limiter with per-minute quotas:
+
+```rust
+fn build_per_route_keyed_limiter(
+    per_minute: u32,
+    burst: u32,
+) -> Arc<governor::RateLimiter<String, governor::state::keyed::DefaultKeyedStateStore<String>, governor::clock::DefaultClock>> {
+    use governor::Quota;
+    use std::num::NonZeroU32;
+    let quota = Quota::per_minute(NonZeroU32::new(per_minute.max(1)).unwrap())
+        .allow_burst(NonZeroU32::new(burst.max(1)).unwrap());
+    Arc::new(governor::RateLimiter::keyed(quota))
+}
+```
+
+Then, in `build_router()`, apply per-route rate limiters on the most expensive route
+groups. Find where terminal, gateway/run, and agent routes are assembled and wrap them
+with per-route middleware BEFORE they're merged into the main router.
+
+The suggested limits:
+- Terminal creation: 2/min burst 3
+- Inference dispatch (gateway/infer, run): 30/min burst 10
+- Agent registration (register, create): 5/min burst 5
+
+IMPORTANT: The exact route assembly structure varies. Read `build_router()` carefully.
+Routes may be nested under API groups. Apply the limiter middleware at the correct
+nesting level. If you cannot isolate a specific route group, apply the limiter to the
+sub-router before merging.
+
+## 4. Add terminal input body limit
+
+Find the terminal input endpoint (`POST /api/terminal/sessions/{id}/input`) in
+`crates/roko-serve/src/routes/terminal.rs` or in `build_router()`. Apply a 256 KiB
+body limit override using `DefaultBodyLimit::max(256 * 1024)`. Follow the pattern
+used for `WEBHOOK_BODY_LIMIT_BYTES` in `webhooks.rs`.
+
+## 5. Add tests
+
+Add at least one test that verifies:
+- The 429 response includes a `retry-after` header
+- The header value parses to a positive integer
+
+The test can reuse the existing rate-limit test pattern in `routes/mod.rs` (around
+line 1900). Just add an assertion for the header.
+
+## What NOT to change
+
+- Do NOT change the existing WS message/frame size limits in `terminal.rs`
+- Do NOT modify the webhook body limit
+- Do NOT add new crate dependencies (governor is already a dependency)
+- Do NOT change the rate-limiter key extraction logic
+
+Verify: `cargo test -p roko-serve --lib -- rate && cargo clippy -p roko-serve --no-deps -- -D warnings`"""
+status = "done"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo test -p roko-serve --lib -- rate && cargo clippy -p roko-serve --no-deps -- -D warnings"

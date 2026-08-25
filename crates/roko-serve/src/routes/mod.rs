@@ -67,7 +67,6 @@ use std::sync::Arc;
 
 use super::state::AppState;
 use crate::adapters::SseAdapter;
-use crate::error::ApiError;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::StatusCode;
@@ -77,7 +76,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use futures::stream::{self, Stream};
-use governor::clock::DefaultClock;
+use governor::clock::{Clock as _, DefaultClock};
 use governor::middleware::NoOpMiddleware;
 use governor::state::keyed::DefaultKeyedStateStore;
 use governor::state::{InMemoryState, NotKeyed};
@@ -126,6 +125,20 @@ pub(crate) fn build_keyed_rate_limiter(per_second: u32) -> Arc<KeyedRateLimiter>
     let per_second =
         NonZeroU32::new(per_second.max(1)).expect("rate-limit must be non-zero (max(1) above)");
     Arc::new(RateLimiter::keyed(Quota::per_second(per_second)))
+}
+
+/// Build a keyed governor rate limiter with a per-minute quota and explicit burst.
+///
+/// Used for expensive per-route limits (terminal creation, inference dispatch,
+/// agent registration) where a higher burst is acceptable but sustained
+/// throughput must be bounded per caller.
+fn build_per_route_keyed_limiter(per_minute: u32, burst: u32) -> Arc<KeyedRateLimiter> {
+    let per_minute =
+        NonZeroU32::new(per_minute.max(1)).expect("rate-limit must be non-zero (max(1) above)");
+    let burst = NonZeroU32::new(burst.max(1)).expect("burst must be non-zero (max(1) above)");
+    Arc::new(RateLimiter::keyed(
+        Quota::per_minute(per_minute).allow_burst(burst),
+    ))
 }
 
 /// Extract a stable rate-limit key from a request.
@@ -184,48 +197,69 @@ fn rate_limit_key(req: &Request<Body>) -> String {
 
 /// Middleware: reject requests once the shared global bucket has been exhausted.
 ///
-/// Returns 429 with a stable `code = "rate_limited"` body so clients can
-/// distinguish throttling from auth/validation errors.
+/// Returns 429 with a stable `code = "rate_limited"` body and a `Retry-After`
+/// header so clients know when to retry. The header value is in seconds,
+/// clamped to at least 1.
 pub(crate) async fn rate_limit_middleware(
     State(limiter): State<Arc<GlobalRateLimiter>>,
     req: Request<Body>,
     next: Next,
-) -> Result<Response, ApiError> {
-    if limiter.check().is_err() {
-        return Err(ApiError {
-            status: StatusCode::TOO_MANY_REQUESTS,
-            code: "rate_limited".into(),
-            message: format!(
-                "global rate limit exceeded ({DEFAULT_GLOBAL_RATE_PER_SEC} requests/sec)"
-            ),
-            details: None,
-        });
+) -> Response {
+    match limiter.check() {
+        Ok(()) => next.run(req).await,
+        Err(not_until) => {
+            let retry_secs = not_until
+                .wait_time_from(DefaultClock::default().now())
+                .as_secs()
+                .max(1);
+            let mut headers = axum::http::HeaderMap::new();
+            if let Ok(val) = retry_secs.to_string().parse::<axum::http::HeaderValue>() {
+                headers.insert("retry-after", val);
+            }
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                headers,
+                Json(json!({ "code": "rate_limited", "message": "global rate limit exceeded" })),
+            )
+                .into_response()
+        }
     }
-    Ok(next.run(req).await)
 }
 
 /// Middleware: per-caller rate limit keyed by API-key hash or client IP.
 ///
 /// Runs before the global backstop so a single noisy caller is throttled
 /// before the shared budget is affected. Returns 429 with
-/// `code = "rate_limited"` and a message that does **not** expose the raw key.
+/// `code = "rate_limited"`, a `Retry-After` header, and a message that does
+/// **not** expose the raw key.
 pub(crate) async fn keyed_rate_limit_middleware(
     State(limiter): State<Arc<KeyedRateLimiter>>,
     req: Request<Body>,
     next: Next,
-) -> Result<Response, ApiError> {
+) -> Response {
     let key = rate_limit_key(&req);
-    if limiter.check_key(&key).is_err() {
-        return Err(ApiError {
-            status: StatusCode::TOO_MANY_REQUESTS,
-            code: "rate_limited".into(),
-            message: format!(
-                "per-caller rate limit exceeded ({DEFAULT_PER_KEY_RATE_PER_SEC} requests/sec)"
-            ),
-            details: None,
-        });
+    match limiter.check_key(&key) {
+        Ok(()) => next.run(req).await,
+        Err(not_until) => {
+            let retry_secs = not_until
+                .wait_time_from(DefaultClock::default().now())
+                .as_secs()
+                .max(1);
+            let mut headers = axum::http::HeaderMap::new();
+            if let Ok(val) = retry_secs.to_string().parse::<axum::http::HeaderValue>() {
+                headers.insert("retry-after", val);
+            }
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                headers,
+                Json(json!({
+                    "code": "rate_limited",
+                    "message": "per-caller rate limit exceeded",
+                })),
+            )
+                .into_response()
+        }
     }
-    Ok(next.run(req).await)
 }
 
 pub use self::config::reload_config_from_disk;
@@ -253,6 +287,13 @@ pub fn build_router(
     });
     let terminal_enabled = roko_config.serve.terminal_enabled;
 
+    // Per-route keyed rate limiters for expensive endpoint groups.
+    // These are checked per-caller (key = API key hash or client IP) and bound
+    // specific route groups independently of the global backstop.
+    let terminal_create_limiter = build_per_route_keyed_limiter(2, 3);
+    let infer_limiter = build_per_route_keyed_limiter(30, 10);
+    let agent_reg_limiter = build_per_route_keyed_limiter(5, 5);
+
     // Replay the durable arena event outbox before accepting new mutations.
     // Publication is at-least-once: a crash after publish but before cursor
     // persistence may duplicate an event, but can never silently lose it.
@@ -276,7 +317,10 @@ pub fn build_router(
         .merge(heartbeats::routes())
         .merge(plans::routes())
         .merge(prds::routes())
-        .merge(run::routes())
+        .merge(run::routes().layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&infer_limiter),
+            keyed_rate_limit_middleware,
+        )))
         .merge(runs::routes())
         .merge(research::routes())
         .merge(subscriptions::routes())
@@ -284,7 +328,10 @@ pub fn build_router(
         .merge(aggregator::routes())
         .merge(arenas::routes())
         .merge(meta::routes())
-        .merge(agents::routes())
+        .merge(agents::routes().layer(axum::middleware::from_fn_with_state(
+            agent_reg_limiter,
+            keyed_rate_limit_middleware,
+        )))
         .merge(learning::routes())
         .merge(marketplace::routes())
         .merge(defi::routes())
@@ -298,7 +345,12 @@ pub fn build_router(
         .merge(dream::routes())
         .merge(event_ingest::routes())
         .merge(extensions::routes())
-        .merge(gateway::routes())
+        .merge(
+            gateway::routes().layer(axum::middleware::from_fn_with_state(
+                infer_limiter,
+                keyed_rate_limit_middleware,
+            )),
+        )
         .merge(chain::routes())
         .merge(connectors::routes())
         .merge(feeds::routes())
@@ -366,6 +418,11 @@ pub fn build_router(
                 Arc::clone(&state),
                 middleware::require_api_key,
             ))
+            // Per-route rate limiter applied outermost so it runs before auth.
+            .layer(axum::middleware::from_fn_with_state(
+                terminal_create_limiter,
+                keyed_rate_limit_middleware,
+            ))
     } else {
         crate::terminal::disabled_routes()
     };
@@ -417,8 +474,8 @@ pub fn build_router(
         // API/WS typos are JSON 404s; browser routes retain the SPA fallback.
         .fallback(crate::serve_api_or_spa_fallback);
 
-    let rate_limiter = build_global_rate_limiter(DEFAULT_GLOBAL_RATE_PER_SEC);
-    let keyed_limiter = build_keyed_rate_limiter(DEFAULT_PER_KEY_RATE_PER_SEC);
+    let rate_limiter = build_global_rate_limiter(roko_config.server.rate_limit_per_sec);
+    let keyed_limiter = build_keyed_rate_limiter(roko_config.server.rate_limit_per_key_per_sec);
 
     router
         .layer(DefaultBodyLimit::max(DEFAULT_REQUEST_BODY_LIMIT_BYTES))
@@ -1942,6 +1999,50 @@ mod tests {
             .to_bytes();
         let json: Value = serde_json::from_slice(&body).expect("json body");
         assert_eq!(json["code"], "rate_limited");
+    }
+
+    /// The 429 response from the rate-limit middleware must include a
+    /// `Retry-After` header whose value is a positive integer (seconds to wait).
+    #[tokio::test]
+    async fn rate_limit_429_includes_retry_after_header() {
+        let limiter = build_global_rate_limiter(2);
+        let app = axum::Router::new()
+            .route("/ping", axum::routing::get(|| async { "pong" }))
+            .layer(axum::middleware::from_fn_with_state(
+                limiter,
+                rate_limit_middleware,
+            ));
+
+        // Drain the budget.
+        for _ in 0..2 {
+            let req = Request::builder()
+                .uri("/ping")
+                .body(Body::empty())
+                .expect("build request");
+            let _ = app.clone().oneshot(req).await.expect("oneshot");
+        }
+
+        // The next request must be throttled and carry `Retry-After`.
+        let req = Request::builder()
+            .uri("/ping")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let header_val = resp
+            .headers()
+            .get("retry-after")
+            .expect("Retry-After header must be present on 429");
+        let secs: u64 = header_val
+            .to_str()
+            .expect("Retry-After must be ASCII")
+            .parse()
+            .expect("Retry-After must be a non-negative integer");
+        assert!(
+            secs >= 1,
+            "Retry-After must be at least 1 second, got {secs}"
+        );
     }
 
     /// With `auth.enabled = true`, unauthenticated requests to `/relay/*`

@@ -498,6 +498,12 @@ pub struct ServerConfig {
     /// Workspace GC interval in seconds. Defaults to 300 (5 minutes).
     #[serde(default = "default_workspace_gc_interval_secs")]
     pub workspace_gc_interval_secs: u64,
+    /// Global rate limit in requests per second. Defaults to 100.
+    #[serde(default = "default_rate_limit_per_sec")]
+    pub rate_limit_per_sec: u32,
+    /// Per-key rate limit in requests per second per API key or IP. Defaults to 30.
+    #[serde(default = "default_rate_limit_per_key_per_sec")]
+    pub rate_limit_per_key_per_sec: u32,
 }
 
 fn default_bind() -> String {
@@ -512,6 +518,14 @@ const fn default_port() -> u16 {
     6677
 }
 
+const fn default_rate_limit_per_sec() -> u32 {
+    100
+}
+
+const fn default_rate_limit_per_key_per_sec() -> u32 {
+    30
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -521,6 +535,8 @@ impl Default for ServerConfig {
             auth_token: None,
             unsafe_public_cors: false,
             workspace_gc_interval_secs: default_workspace_gc_interval_secs(),
+            rate_limit_per_sec: default_rate_limit_per_sec(),
+            rate_limit_per_key_per_sec: default_rate_limit_per_key_per_sec(),
         }
     }
 }

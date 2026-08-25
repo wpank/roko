@@ -19,7 +19,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use axum::{
     Json,
     extract::{
-        Path, State,
+        DefaultBodyLimit, Path, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     response::IntoResponse,
@@ -45,6 +45,13 @@ const TERMINAL_GRACE_PERIOD: Duration = Duration::from_secs(60);
 
 /// Maximum number of output chunks kept in the per-session scrollback ring.
 const SCROLLBACK_CHUNKS: usize = 512;
+
+/// Body size cap for the terminal session input endpoint.
+///
+/// 256 KiB is generous for paste operations while preventing runaway clients
+/// from flooding PTY write buffers. Websocket frames have their own limits
+/// defined in `ws.rs` and are unaffected by this cap.
+const TERMINAL_INPUT_BODY_LIMIT_BYTES: usize = 256 * 1024;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1107,6 +1114,15 @@ async fn handle_ws(
 }
 
 pub fn routes() -> axum::Router<Arc<AppState>> {
+    // The input endpoint gets a tighter body cap than the global 4 MiB default
+    // so that large paste operations are bounded without restricting other routes.
+    let input_route = axum::Router::new()
+        .route(
+            "/api/terminal/sessions/{id}/input",
+            axum::routing::post(send_input),
+        )
+        .layer(DefaultBodyLimit::max(TERMINAL_INPUT_BODY_LIMIT_BYTES));
+
     axum::Router::new()
         .route(
             "/api/terminal/sessions",
@@ -1117,11 +1133,8 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
             "/api/terminal/sessions/{id}",
             axum::routing::delete(destroy_session),
         )
-        .route(
-            "/api/terminal/sessions/{id}/input",
-            axum::routing::post(send_input),
-        )
         .route("/ws/terminal/{id}", axum::routing::get(ws_terminal))
+        .merge(input_route)
 }
 
 /// Return placeholder terminal routes that reject every request with 403.

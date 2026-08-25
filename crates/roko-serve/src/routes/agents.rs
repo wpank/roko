@@ -576,9 +576,9 @@ async fn chain_register_agent(
 /// Request payload for `POST /api/agents/create`.
 #[derive(Debug, Deserialize, Validate)]
 struct CreateAgentRequest {
-    /// Agent name / identifier (required, 1–128 chars).
+    /// Agent name / identifier (required, 1–64 chars).
     #[validate(
-        length(min = 1, max = 128),
+        length(min = 1, max = 64),
         custom(function = "crate::extract::validate_non_blank")
     )]
     name: String,
@@ -792,6 +792,37 @@ fn resolve_agent_dir(agents_root: &StdPath, name: &str) -> Result<PathBuf, ApiEr
                 "agent name must be a single non-empty path segment",
             ));
         }
+    }
+
+    // Check ASCII-only (covers Unicode homoglyphs, control chars)
+    if !trimmed.is_ascii() {
+        return Err(ApiError::bad_request(
+            "agent name must contain only ASCII characters (no Unicode, accented letters, or special symbols)",
+        ));
+    }
+
+    // Check character allowlist: alphanumeric, hyphen, underscore only
+    fn is_valid_agent_name_char(c: char) -> bool {
+        c.is_ascii_alphanumeric() || c == '-' || c == '_'
+    }
+    if !trimmed.chars().all(is_valid_agent_name_char) {
+        return Err(ApiError::bad_request(
+            "agent name must contain only ASCII alphanumeric characters, hyphens, and underscores",
+        ));
+    }
+
+    // Must start with alphanumeric
+    if !trimmed.starts_with(|c: char| c.is_ascii_alphanumeric()) {
+        return Err(ApiError::bad_request(
+            "agent name must start with an alphanumeric character",
+        ));
+    }
+
+    // Explicit length cap (defense-in-depth alongside CreateAgentRequest validation)
+    if trimmed.len() > 64 {
+        return Err(ApiError::bad_request(
+            "agent name must not exceed 64 characters",
+        ));
     }
 
     // Defence-in-depth: ensure the resolved path actually lives under the
@@ -1958,9 +1989,61 @@ mod tests {
     fn agent_manifest_resolve_agent_dir_accepts_simple_names() {
         let tempdir = tempdir().expect("tempdir");
         let agents_root = tempdir.path().join(".roko").join("agents");
-        let resolved = resolve_agent_dir(&agents_root, "research-bot.v2").expect("resolve");
+        let resolved = resolve_agent_dir(&agents_root, "research-bot-v2").expect("resolve");
         let canonical_root = agents_root.canonicalize().expect("canonicalize root");
-        assert_eq!(resolved, canonical_root.join("research-bot.v2"));
+        assert_eq!(resolved, canonical_root.join("research-bot-v2"));
+    }
+
+    #[tokio::test]
+    async fn agent_name_rejects_invalid_chars() {
+        use super::*;
+        let base = std::env::temp_dir().join("roko-agent-name-test");
+        let _ = std::fs::create_dir_all(&base);
+
+        // Unicode characters
+        for name in &[
+            "\u{200B}admin", // zero-width space
+            "adm\u{00EF}n",  // accented char
+            "très-bien",     // non-ASCII
+        ] {
+            assert!(
+                resolve_agent_dir(&base, name).is_err(),
+                "should reject Unicode name: {name}"
+            );
+        }
+
+        // Shell metacharacters
+        for name in &["$foo", "a;b", "a|b", "a(b)", "a&b", "a`b", "a{b}"] {
+            assert!(
+                resolve_agent_dir(&base, name).is_err(),
+                "should reject shell metachar name: {name}"
+            );
+        }
+
+        // Names starting with non-alphanumeric
+        for name in &["-leading-hyphen", "_leading-underscore"] {
+            assert!(
+                resolve_agent_dir(&base, name).is_err(),
+                "should reject name starting with: {name}"
+            );
+        }
+
+        // Too long (65 chars)
+        let long_name = "a".repeat(65);
+        assert!(
+            resolve_agent_dir(&base, &long_name).is_err(),
+            "should reject name longer than 64 chars"
+        );
+
+        // Valid names should pass
+        for name in &["my-agent-1", "test_agent", "abc", "Agent42"] {
+            assert!(
+                resolve_agent_dir(&base, name).is_ok(),
+                "should accept valid name: {name}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[tokio::test]

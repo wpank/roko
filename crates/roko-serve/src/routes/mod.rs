@@ -230,7 +230,7 @@ pub(crate) async fn keyed_rate_limit_middleware(
 
 pub use self::config::reload_config_from_disk;
 pub use self::deployments::load_persisted_deployments;
-pub(crate) use self::middleware::cors_layer;
+pub(crate) use self::middleware::{CorsPolicy, cors_layer};
 pub(crate) use self::prds::start_prd_publish_subscriber;
 pub(crate) use self::ws::apply_ws_size_limits as ws_size_limits;
 
@@ -246,7 +246,11 @@ pub fn build_router(
     state.sse_adapter.start_runtime_event_subscription();
 
     let roko_config = state.load_roko_config();
-    let cors = middleware::cors_layer(cors_origins, roko_config.server.unsafe_public_cors);
+    let cors = middleware::cors_layer(&middleware::CorsPolicy {
+        origins: cors_origins.to_vec(),
+        unsafe_public: roko_config.server.unsafe_public_cors,
+        auth_enabled: api_auth.enabled,
+    });
     let terminal_enabled = roko_config.serve.terminal_enabled;
 
     // Replay the durable arena event outbox before accepting new mutations.

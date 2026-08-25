@@ -1,0 +1,129 @@
+[meta]
+plan = "skip-permissions-opt-in"
+total = 1
+done = 1
+status = "complete"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 15
+
+[[task]]
+id = "T01"
+title = "Change dangerously_skip_permissions default to false and add --dangerously-skip-permissions CLI flag"
+role = "implementer"
+files = [
+    "crates/roko-core/src/config/schema.rs",
+    "crates/roko-cli/src/main.rs",
+    "crates/roko-cli/src/commands/plan.rs",
+    "crates/roko-cli/src/commands/do_cmd.rs",
+    "crates/roko-cli/src/runner/types.rs",
+    "roko.toml",
+]
+description = """Flip the default for `dangerously_skip_permissions` from `true` to `false` and add
+an explicit `--dangerously-skip-permissions` CLI flag to `plan run` so users must opt in.
+
+## 1. Config default (crates/roko-core/src/config/schema.rs)
+
+At line 2235, change `default_dangerously_skip_permissions()` to return `false`:
+```rust
+const fn default_dangerously_skip_permissions() -> bool {
+    false
+}
+```
+Also update the doc comment on the field at line 2196-2198 to reflect the new default:
+```rust
+/// When `true`, agents run with `--dangerously-skip-permissions`.
+/// Defaults to `false`. Set to `true` or pass `--dangerously-skip-permissions`
+/// on the CLI to skip agent permission prompts.
+```
+
+## 2. RunConfig Default impl (crates/roko-cli/src/runner/types.rs)
+
+At line 2164, change the hardcoded `true` to `false` in `impl Default for RunConfig`:
+```rust
+dangerously_skip_permissions: false,
+```
+
+## 3. CLI flag (crates/roko-cli/src/main.rs)
+
+In the `PlanCmd::Run` variant (around line 1492-1548), add a new `#[arg]` field
+after `force` (line 1541) and before `log_file`:
+```rust
+/// Skip agent permission prompts for this run. UNSAFE: agents will execute
+/// tools without approval. Prefer setting `runner.dangerously_skip_permissions = true`
+/// in roko.toml for persistent use.
+#[arg(long)]
+dangerously_skip_permissions: bool,
+```
+
+## 4. Wire CLI flag into plan.rs (crates/roko-cli/src/commands/plan.rs)
+
+At the destructuring around line 284-298, add `dangerously_skip_permissions` to the
+`PlanCmd::Run { ... }` pattern.
+
+Then at line 668, replace the hardcoded `true`:
+```rust
+dangerously_skip_permissions: true,
+```
+with the config-aware value OR'd with the CLI flag:
+```rust
+dangerously_skip_permissions: dangerously_skip_permissions
+    || roko_config.runner.dangerously_skip_permissions,
+```
+
+## 5. Wire CLI flag into do_cmd.rs (crates/roko-cli/src/commands/do_cmd.rs)
+
+At line 608, replace the hardcoded `true`:
+```rust
+dangerously_skip_permissions: true,
+```
+with the config-aware value:
+```rust
+dangerously_skip_permissions: roko_config.runner.dangerously_skip_permissions,
+```
+(The `do` command does not have its own CLI flag; it reads from config only.)
+
+## 6. Warning on use (crates/roko-cli/src/commands/plan.rs)
+
+After building `run_config` (around line 730), add a warning when the flag is active:
+```rust
+if run_config.dangerously_skip_permissions {
+    tracing::warn!(
+        "running with --dangerously-skip-permissions: agents will execute tools without approval"
+    );
+}
+```
+
+## 7. Project roko.toml (roko.toml)
+
+At line 265, change:
+```toml
+dangerously_skip_permissions = true
+```
+to:
+```toml
+dangerously_skip_permissions = false
+```
+
+## What NOT to change
+
+- `crates/roko-cli/src/runner/types.rs` line 2098 (`from_config`) already reads
+  `roko_config.runner.dangerously_skip_permissions` -- leave it alone.
+- `crates/roko-cli/src/dispatch_v2.rs` -- the dispatch layer reads the value from
+  `AgentDispatchRequest`, which is built from RunConfig. No changes needed.
+- `crates/roko-agent/src/provider/mod.rs` line 785 doc comment already says
+  "Default MUST be `false`" -- leave it alone.
+- `crates/roko-agent/src/claude_cli_agent.rs` line 123 -- this is the standalone
+  agent exec path (not plan runner). Leave it for now.
+- `crates/roko-serve/src/dispatch.rs` line 1981 -- server dispatch. Leave it for now.
+- `crates/roko-agent/src/provider/mod.rs` line 786 (ProviderOptions field) -- no default to change.
+- `crates/roko-cli/src/agent_exec.rs` line 151 -- standalone `roko run` path. Leave it for now.
+- Test files in dispatch_v2.rs that use `false` -- already correct, leave them.
+
+Verify: `cargo check -p roko-cli` passes."""
+status = "done"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-cli"

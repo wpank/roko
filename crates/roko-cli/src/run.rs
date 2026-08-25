@@ -91,6 +91,10 @@ pub fn write_shared_workflow_run(
     role: &str,
     report: &WorkflowRunReport,
 ) -> anyhow::Result<String> {
+    // Scrub secrets from user-visible text fields before persisting the transcript.
+    let scrubbed_prompt = crate::share::scrub_share_text(prompt);
+    let scrubbed_output = crate::share::scrub_share_text(&report.output);
+
     let token = roko_core::generate_share_token();
     let (report_agent, report_role) = workflow_report_agent_role(report);
     let transcript = roko_serve::routes::shared_runs::RunTranscript {
@@ -103,14 +107,14 @@ pub fn write_shared_workflow_run(
             .map(ToOwned::to_owned)
             .or(report_role)
             .unwrap_or_else(|| "workflow".to_string()),
-        prompt: prompt.to_string(),
+        prompt: scrubbed_prompt,
         success: report.success,
         gates: report
             .gates
             .iter()
             .map(|gate| (gate.name.clone(), gate.passed))
             .collect(),
-        output: non_empty(&report.output).map(ToOwned::to_owned),
+        output: non_empty(&scrubbed_output).map(ToOwned::to_owned),
         cost_usd: report.cost,
         // GAP: WorkflowRunReport exposes only a combined `token_usage: u64` total; the
         // workflow engine does not track input vs. output token counts separately. To
@@ -1838,6 +1842,54 @@ mod tests {
             Some(roko_core::WorkflowOutcome::Halted { ref reason })
                 if reason == "missing API key"
         ));
+    }
+
+    #[test]
+    fn write_shared_workflow_run_scrubs_secrets() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+
+        // A secret that must never appear in the on-disk JSON.
+        let secret = "sk-ant-secret0123456789abcdef0123456789";
+        let report = WorkflowRunReport {
+            run_id: "scrub-test-run".to_string(),
+            success: true,
+            model: "test-model".to_string(),
+            provider: None,
+            prompt_summary: "summary".to_string(),
+            output: format!("Agent found token={secret} in env"),
+            agent_turns: 1,
+            token_usage: 100,
+            cost: None,
+            duration_secs: 1.0,
+            gates: Vec::new(),
+            events: Vec::new(),
+            checkpoint_path: None,
+        };
+
+        let _token = write_shared_workflow_run(
+            workdir,
+            &format!("Run with ANTHROPIC_API_KEY={secret}"),
+            "implementer",
+            "coder",
+            &report,
+        )
+        .expect("write_shared_workflow_run");
+
+        // Find the written JSON file in .roko/shared/
+        let shared_dir = workdir.join(".roko").join("shared");
+        let entry = std::fs::read_dir(&shared_dir)
+            .expect("read shared dir")
+            .next()
+            .expect("at least one entry")
+            .expect("valid entry");
+        let json = std::fs::read_to_string(entry.path()).expect("read json");
+
+        assert!(
+            !json.contains(secret),
+            "secret leaked into shared transcript"
+        );
+        assert!(json.contains("[REDACTED]"), "no [REDACTED] marker found");
     }
 
     fn init_git_workdir(workdir: &std::path::Path) {

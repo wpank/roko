@@ -1,8 +1,8 @@
 [meta]
 plan = "justfile-recipes"
 total = 1
-done = 0
-status = "ready"
+done = 1
+status = "complete"
 max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 5
@@ -33,7 +33,7 @@ The justfile must include these recipes:
 
 Group recipes with comment headers. Use TAB indentation for recipe bodies (required by just syntax).
 Do NOT create any other files. Just create the justfile."""
-status = "ready"
+status = "done"
 tier = "mechanical"
 max_loc = 50
 files = ["justfile"]

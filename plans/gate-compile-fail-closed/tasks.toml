@@ -1,8 +1,8 @@
 [meta]
 plan = "gate-compile-fail-closed"
 total = 2
-done = 0
-status = "ready"
+done = 2
+status = "complete"
 max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 15
@@ -26,7 +26,7 @@ Remove the .with_detail() call since the fail message already carries the detail
 Keep the .with_duration() call.
 
 Verify: `cargo check -p roko-gate` passes."""
-status = "ready"
+status = "done"
 tier = "mechanical"
 
 [[task.verify]]
@@ -57,7 +57,7 @@ Adjust the test based on the actual struct visibility and method names. The key 
 is that is_available() returns false with an empty PATH.
 
 Verify: `cargo test -p roko-gate` and `cargo clippy -p roko-gate --no-deps -- -D warnings` pass."""
-status = "ready"
+status = "done"
 tier = "mechanical"
 depends_on = ["T01"]
 

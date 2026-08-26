@@ -36,10 +36,10 @@
 | `P32-cli-polish` | 2 | 2 | 0 | ✅ complete | 2 |
 | `P33-model-ux` | 1 | 1 | 0 | ✅ complete | 1 |
 | `P34-verification-sweep` | 4 | 4 | 0 | ✅ complete | 1 |
-| `api-key-timing-safe` | 2 | 0 | 2 | 📋 ready | 1 |
+| `api-key-timing-safe` | 2 | 2 | 0 | ✅ complete | 1 |
 | `architecture-defi-critical-path` | 3 | 3 | 0 | ✅ complete | 1 |
 | `architecture-production-residuals` | 4 | 4 | 0 | ✅ complete | 2 |
-| `bandit-dead-code` | 1 | 0 | 1 | 📋 ready | 1 |
+| `bandit-dead-code` | 1 | 1 | 0 | ✅ complete | 1 |
 | `cli-gist-scrubbing` | 1 | 1 | 0 | ✅ complete | 1 |
 | `cli-ux-consistency` | 4 | 0 | 4 | 📋 ready | 2 |
 | `codex-cost-reporting` | 1 | 1 | 0 | ✅ complete | 1 |
@@ -48,27 +48,29 @@
 | `e2e-provider-test` | 1 | 0 | 1 | 📋 ready | 1 |
 | `e2e-smoke` | 2 | 2 | 0 | ✅ complete | 1 |
 | `efficiency-gate-passed-fix` | 1 | 1 | 0 | ✅ complete | 1 |
-| `exit-code-report-separation` | 1 | 0 | 1 | 📋 ready | 1 |
-| `fresh-branch-cleanup-prefix` | 1 | 0 | 1 | 📋 ready | 1 |
-| `gate-compile-fail-closed` | 2 | 0 | 2 | 📋 ready | 1 |
-| `graph-example-schema-drift` | 2 | 0 | 2 | 📋 ready | 1 |
-| `handler-future-double-poll` | 1 | 0 | 1 | 📋 ready | 1 |
-| `justfile-recipes` | 1 | 0 | 1 | 📋 ready | 1 |
+| `exit-code-report-separation` | 1 | 1 | 0 | ✅ complete | 1 |
+| `fresh-branch-cleanup-prefix` | 1 | 1 | 0 | ✅ complete | 1 |
+| `gate-compile-fail-closed` | 2 | 2 | 0 | ✅ complete | 1 |
+| `graph-example-schema-drift` | 2 | 2 | 0 | ✅ complete | 1 |
+| `handler-future-double-poll` | 1 | 1 | 0 | ✅ complete | 1 |
+| `hdc-math-dead-code` | 1 | 1 | 0 | ✅ complete | 1 |
+| `justfile-recipes` | 1 | 1 | 0 | ✅ complete | 1 |
 | `layer-check-false-positives` | 1 | 1 | 0 | ✅ complete | 1 |
 | `per-turn-efficiency-events` | 1 | 1 | 0 | ✅ complete | 1 |
-| `rate-limiter-poison-recovery` | 1 | 0 | 1 | 📋 ready | 1 |
-| `report-phase-timeout` | 1 | 0 | 1 | 📋 ready | 1 |
-| `serve-auth-default` | 1 | 0 | 1 | 📋 ready | 1 |
+| `rate-limiter-poison-recovery` | 1 | 1 | 0 | ✅ complete | 1 |
+| `report-phase-timeout` | 1 | 1 | 0 | ✅ complete | 1 |
+| `safety-denial-audit-events` | 1 | 0 | 1 | 📋 ready | 1 |
 | `serve-agent-name-validation` | 1 | 1 | 0 | ✅ complete | 1 |
+| `serve-auth-default` | 1 | 1 | 0 | ✅ complete | 1 |
 | `serve-cors-restrictive` | 1 | 1 | 0 | ✅ complete | 1 |
 | `serve-rate-body-limits` | 1 | 1 | 0 | ✅ complete | 1 |
 | `skip-permissions-opt-in` | 1 | 1 | 0 | ✅ complete | 1 |
 | `snapshot-backup-staging` | 1 | 1 | 0 | ✅ complete | 1 |
-| `task-parser-duplicate-ids` | 1 | 0 | 1 | 📋 ready | 1 |
+| `task-parser-duplicate-ids` | 1 | 1 | 0 | ✅ complete | 1 |
 
-**Executable Total**: 56 plans, 162 tasks, 135 done (83%), 27 remaining
-**Complete Plans**: 41
-**Ready/In-Progress Plans**: 15
+**Executable Total**: 58 plans, 164 tasks, 149 done (91%), 15 remaining
+**Complete Plans**: 52
+**Ready/In-Progress Plans**: 6
 
 ## Superseded / Archived
 

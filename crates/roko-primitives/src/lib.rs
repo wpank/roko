@@ -53,19 +53,24 @@ pub mod codebook;
 pub mod hdc;
 /// Riemannian geometry: metric tensors, Christoffel symbols, geodesics,
 /// Ricci curvature, and Frechet means for execution cost manifolds (TA-06).
+#[cfg(feature = "hdc-advanced-math")]
 pub mod manifold;
 pub mod pad;
 /// Robust statistics: trimmed mean, MAD, Hodges-Lehmann estimator (TA-10).
+#[cfg(feature = "hdc-advanced-math")]
 pub mod robust_stats;
 /// Cellular sheaves for oracle consistency checking: coboundary operators,
 /// sheaf Laplacian, inconsistency scores, and outlier identification (TA-13).
+#[cfg(feature = "hdc-advanced-math")]
 pub mod sheaf;
 /// Topological Data Analysis: persistence diagrams, Takens embedding,
 /// persistence landscapes (TA-09).
+#[cfg(feature = "hdc-advanced-math")]
 pub mod tda;
 pub mod tier;
 /// Tropical (max-plus) algebra: `TropicalF64`, polynomials, tropical attention,
 /// and adversarial distance computation (TA-14).
+#[cfg(feature = "hdc-advanced-math")]
 pub mod tropical;
 
 pub use codebook::{

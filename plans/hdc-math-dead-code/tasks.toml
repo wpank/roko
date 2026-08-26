@@ -1,0 +1,95 @@
+[meta]
+plan = "hdc-math-dead-code"
+total = 1
+done = 1
+status = "complete"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 20
+
+[[task]]
+id = "T01"
+title = "Feature-gate unused HDC advanced math modules behind hdc-advanced-math"
+description = """Feature-gate ~3,055 lines of unused HDC advanced math modules in roko-primitives behind an `hdc-advanced-math` feature flag so they are excluded from default compilation.
+
+There are zero production callers of these modules outside roko-primitives (verified by workspace-wide grep). All references are internal unit tests.
+
+Perform these changes:
+
+1. In `crates/roko-primitives/Cargo.toml`, add the feature flag to the existing `[features]` section:
+   ```toml
+   hdc-advanced-math = []
+   ```
+
+2. In `crates/roko-primitives/src/lib.rs`, add `#[cfg(feature = "hdc-advanced-math")]` to each of the five module declarations. The exact lines to modify are:
+
+   Change:
+   ```rust
+   pub mod manifold;
+   ```
+   To:
+   ```rust
+   #[cfg(feature = "hdc-advanced-math")]
+   pub mod manifold;
+   ```
+
+   Change:
+   ```rust
+   pub mod robust_stats;
+   ```
+   To:
+   ```rust
+   #[cfg(feature = "hdc-advanced-math")]
+   pub mod robust_stats;
+   ```
+
+   Change:
+   ```rust
+   pub mod sheaf;
+   ```
+   To:
+   ```rust
+   #[cfg(feature = "hdc-advanced-math")]
+   pub mod sheaf;
+   ```
+
+   Change:
+   ```rust
+   pub mod tda;
+   ```
+   To:
+   ```rust
+   #[cfg(feature = "hdc-advanced-math")]
+   pub mod tda;
+   ```
+
+   Change:
+   ```rust
+   pub mod tropical;
+   ```
+   To:
+   ```rust
+   #[cfg(feature = "hdc-advanced-math")]
+   pub mod tropical;
+   ```
+
+   Keep the existing doc comments on each module declaration; place the `#[cfg(...)]` attribute on the line immediately before `pub mod`.
+
+3. Do NOT modify the module source files themselves (`tda.rs`, `tropical.rs`, `sheaf.rs`, `manifold.rs`, `robust_stats.rs`). Do NOT modify any other crate. Do NOT remove any code. This is purely an additive gating task.
+
+After making changes, verify:
+- `cargo build --workspace` succeeds (no production callers break)
+- `cargo test -p roko-primitives` passes (gated module tests are excluded but remaining tests pass)
+- `cargo test -p roko-primitives --features hdc-advanced-math` passes (gated module tests still work)
+- `cargo clippy -p roko-primitives --no-deps -- -D warnings` passes"""
+status = "done"
+tier = "mechanical"
+max_loc = 0
+files = ["crates/roko-primitives/Cargo.toml", "crates/roko-primitives/src/lib.rs"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "cargo build --workspace && cargo test -p roko-primitives && cargo clippy -p roko-primitives --no-deps -- -D warnings"
+fail_msg = "Workspace build, roko-primitives tests, or clippy failed after feature-gating"

@@ -1,8 +1,8 @@
 [meta]
 plan = "api-key-timing-safe"
 total = 2
-done = 0
-status = "ready"
+done = 2
+status = "complete"
 max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 20
@@ -35,7 +35,7 @@ pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
    `constant_time_eq(token.as_bytes(), auth.api_key.as_bytes())`.
 
 Verify: `cargo check -p roko-serve` passes."""
-status = "ready"
+status = "done"
 tier = "mechanical"
 
 [[task.verify]]
@@ -61,7 +61,7 @@ middleware.rs.
    pass `&[u8]` so no argument changes needed.
 
 Verify: `cargo check -p roko-serve` passes."""
-status = "ready"
+status = "done"
 tier = "mechanical"
 depends_on = ["T01"]
 

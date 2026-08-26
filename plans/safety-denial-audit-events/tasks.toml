@@ -1,0 +1,182 @@
+[meta]
+plan = "safety-denial-audit-events"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 30
+
+[[task]]
+id = "T01"
+title = "Add SafetyDenial variant to AgentEvent, emit from dispatcher, log in subscriber"
+role = "implementer"
+files = [
+    "crates/roko-learn/src/events.rs",
+    "crates/roko-agent/src/dispatcher/mod.rs",
+    "crates/roko-learn/src/event_subscriber.rs",
+]
+description = """Wire durable safety denial audit events: add a SafetyDenial variant to
+roko_learn::events::AgentEvent, emit it from the dispatcher when the safety layer denies a
+tool call, and handle it in the event subscriber to log it to .roko/learn/safety-denials.jsonl.
+
+## 1. Add `SafetyDenial` variant to `AgentEvent` in `crates/roko-learn/src/events.rs`
+
+Find the `AgentEvent` enum (line 15). After the last variant (`StreamChunk`, line 79), add:
+
+```rust
+    SafetyDenial {
+        tool_name: String,
+        denial_reason: String,
+        task_id: String,
+        timestamp: i64,
+    },
+```
+
+The `timestamp` is epoch millis (i64), matching the convention used by `TurnStarted.timestamp_ms`.
+The `denial_reason` must contain only the policy reason (e.g. "tool `write_file` is not allowed
+for role `reviewer`"), never agent output or user data.
+
+## 2. Emit `SafetyDenial` from the dispatcher in `crates/roko-agent/src/dispatcher/mod.rs`
+
+The dispatcher already has a `learning_event_bus: Option<roko_learn::events::EventBus>` field
+(or the safety check site needs access to one). First, check whether the `ToolDispatcher` struct
+already holds a reference to the learning event bus.
+
+If it does NOT have one, add:
+```rust
+pub learning_event_bus: Option<roko_learn::events::EventBus>,
+```
+to the `ToolDispatcher` struct, initialize it to `None` in all constructors, and add a builder
+method `with_learning_event_bus`. Then update the runner's dispatcher construction site in
+`crates/roko-cli/src/runner/event_loop.rs` to pass the bus through.
+
+If it already has a bus or a channel, use the existing one.
+
+The emission site is at line 602 in `crates/roko-agent/src/dispatcher/mod.rs`, inside the
+`dispatch_tool` method. The existing code is:
+
+```rust
+        if let Err(e) = self.safety.check_pre_execution_with_def(def, call, ctx) {
+            tracing::warn!(
+                tool = %self.sanitize_audit_label(&call.name),
+                error = %self.sanitize_audit_label(&e.to_string()),
+                "FAILED at safety pre-execution"
+            );
+            self.emit_audit(
+                ctx,
+                call,
+                "safety",
+                "blocked",
+                &json!({
+                    "error": self.sanitize_audit_label(&e.to_string()),
+                    "error_kind": tool_error_kind(&e),
+                }),
+            );
+            return ToolResult::err(e);
+        }
+```
+
+After the `tracing::warn!` and before the `self.emit_audit(...)` call, insert:
+
+```rust
+            if let Some(ref bus) = self.learning_event_bus {
+                bus.publish(roko_learn::events::AgentEvent::SafetyDenial {
+                    tool_name: call.name.clone(),
+                    denial_reason: self.sanitize_audit_label(&e.to_string()),
+                    task_id: ctx.task_id.clone().unwrap_or_default(),
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                });
+            }
+```
+
+If `ctx.task_id` does not exist on `ToolContext`, use an empty string or derive it from
+`ctx.worktree_path` or `ctx.session_id`. Check the `ToolContext` struct in
+`crates/roko-core/src/tool.rs` to see what fields are available.
+
+IMPORTANT: Also check for any other `check_pre_execution` call sites in the dispatcher (e.g.
+the `authorize_call` path in safety/mod.rs at line 770). Those return `AuthzDecision::Deny`
+but are not in the hot dispatch path -- skip them for this task since they are query-only
+authorization checks, not actual tool dispatch denials.
+
+## 3. Handle `SafetyDenial` in `crates/roko-learn/src/event_subscriber.rs`
+
+In the event subscriber's match block (line 108-322), find the catch-all arm at line 316:
+
+```rust
+            AgentEvent::AnomalyDetected { .. }
+            | AgentEvent::ExperimentAssigned { .. }
+            | AgentEvent::SessionEstablished { .. }
+            | AgentEvent::ModelSelected { .. }
+            | AgentEvent::SomaticMarkerFired { .. }
+            | AgentEvent::StreamChunk { .. } => {}
+```
+
+Replace it with an explicit `SafetyDenial` handler and keep the other variants in the
+catch-all:
+
+```rust
+            AgentEvent::SafetyDenial {
+                ref tool_name,
+                ref denial_reason,
+                ref task_id,
+                timestamp,
+            } => {
+                let record = serde_json::json!({
+                    "tool_name": tool_name,
+                    "denial_reason": denial_reason,
+                    "task_id": task_id,
+                    "timestamp_ms": timestamp,
+                });
+                if let Ok(line) = serde_json::to_string(&record) {
+                    let denial_path = efficiency_path
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join("safety-denials.jsonl");
+                    if let Some(parent) = denial_path.parent() {
+                        let _ = tokio::fs::create_dir_all(parent).await;
+                    }
+                    let dp = denial_path.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        roko_fs::log_rotation::append_jsonl_line_sync(
+                            &dp,
+                            line.as_bytes(),
+                            roko_core::config::ResourcesConfig::default().log_rotation_max_mb,
+                        )
+                    })
+                    .await;
+                }
+                tracing::info!(
+                    tool = %tool_name,
+                    reason = %denial_reason,
+                    task = %task_id,
+                    "safety denial recorded"
+                );
+            }
+            AgentEvent::AnomalyDetected { .. }
+            | AgentEvent::ExperimentAssigned { .. }
+            | AgentEvent::SessionEstablished { .. }
+            | AgentEvent::ModelSelected { .. }
+            | AgentEvent::SomaticMarkerFired { .. }
+            | AgentEvent::StreamChunk { .. } => {}
+```
+
+This writes each denial as a one-line JSON record to `.roko/learn/safety-denials.jsonl`,
+using the same `append_jsonl_line_sync` rotation helper that efficiency events use. The path
+is derived from the existing `efficiency_path` parent directory (which is `.roko/learn/`).
+
+## What NOT to change
+
+- Do NOT add HTTP query endpoints (that is separate scope for the serve crate).
+- Do NOT add TUI denial count display (that is backlog #127 scope).
+- Do NOT change any safety enforcement behavior -- denials must still be enforced identically.
+- Do NOT include agent output or user data in `denial_reason`.
+- Do NOT add new crate dependencies.
+
+Verify: `cargo test -p roko-learn -p roko-agent && cargo clippy -p roko-learn -p roko-agent --no-deps -- -D warnings`"""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo test -p roko-learn -p roko-agent && cargo clippy -p roko-learn -p roko-agent --no-deps -- -D warnings"

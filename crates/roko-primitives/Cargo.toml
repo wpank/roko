@@ -16,6 +16,7 @@ workspace = true
 default = []
 # Dormant: guarded in hdc.rs but never enabled by any workspace member.
 rkyv = ["dep:rkyv"]
+hdc-advanced-math = []
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }

@@ -1,8 +1,8 @@
 [meta]
 plan = "graph-example-schema-drift"
 total = 2
-done = 0
-status = "ready"
+done = 2
+status = "complete"
 max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 20
@@ -38,7 +38,7 @@ description = """Three graph example TOML files fail to parse. Fix them:
      `# Conditional routing (type = "when") requires loader extension; using "always" for now`
 
 Verify: `cargo check -p roko-graph` passes (no Rust changes, just TOML fixes)."""
-status = "ready"
+status = "done"
 tier = "mechanical"
 
 [[task.verify]]
@@ -94,7 +94,7 @@ the actual public API to parse a graph from a TOML string (e.g., `load_from_str`
 `GraphLoader::load_str`, `RawGraphFile::from_str`, etc.) and use that instead.
 
 Verify: `cargo test -p roko-graph -- all_example_graphs` passes."""
-status = "ready"
+status = "done"
 tier = "mechanical"
 
 [[task.verify]]

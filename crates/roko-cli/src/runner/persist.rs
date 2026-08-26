@@ -510,6 +510,9 @@ pub(crate) fn read_bounded_string(path: &Path) -> std::io::Result<String> {
 }
 
 /// Serialize and atomically write a [`StateSnapshot`] to disk.
+///
+/// Before overwriting, the existing snapshot is renamed to a `.bak` sibling
+/// so a subsequent corrupt-load can fall back to the previous checkpoint.
 pub fn save_state_snapshot(paths: &PersistPaths, snapshot: &StateSnapshot) -> Result<()> {
     let json = serde_json::to_vec_pretty(snapshot).context("serializing state snapshot")?;
     if json.len() as u64 > roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES {
@@ -519,7 +522,52 @@ pub fn save_state_snapshot(paths: &PersistPaths, snapshot: &StateSnapshot) -> Re
             roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES
         );
     }
+    // Best-effort backup: rename existing snapshot before overwriting.
+    let backup_path = paths.state_snapshot_json.with_extension("json.bak");
+    if paths.state_snapshot_json.exists() {
+        let _ = std::fs::rename(&paths.state_snapshot_json, &backup_path);
+    }
     atomic_write(&paths.state_snapshot_json, &json)
+}
+
+/// Load the previous [`StateSnapshot`] from the `.bak` sibling, if present.
+///
+/// Returns `Ok(None)` when no backup exists. Used as a fallback when the
+/// primary snapshot is corrupt.
+pub fn load_state_snapshot_backup(paths: &PersistPaths) -> Result<Option<StateSnapshot>> {
+    let backup = paths.state_snapshot_json.with_extension("json.bak");
+    if !backup.exists() {
+        return Ok(None);
+    }
+    let file =
+        fs::File::open(&backup).with_context(|| format!("opening {}", backup.display()))?;
+    let metadata_len = file
+        .metadata()
+        .with_context(|| format!("stat {}", backup.display()))?
+        .len();
+    if metadata_len > roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES {
+        anyhow::bail!(
+            "backup snapshot {} is {metadata_len} bytes; maximum is {}",
+            backup.display(),
+            roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES
+        );
+    }
+    let mut json = Vec::with_capacity(metadata_len as usize);
+    file.take(roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES + 1)
+        .read_to_end(&mut json)
+        .with_context(|| format!("reading {}", backup.display()))?;
+    if json.len() as u64 > roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES {
+        anyhow::bail!(
+            "backup snapshot {} exceeded maximum {} while reading",
+            backup.display(),
+            roko_runtime::MAX_DURABLE_RUNNER_PROJECTION_BYTES
+        );
+    }
+    let snapshot: StateSnapshot =
+        serde_json::from_slice(&json).with_context(|| format!("parsing {}", backup.display()))?;
+    roko_runtime::validate_state_snapshot(&backup, snapshot.clone())
+        .with_context(|| format!("validate backup snapshot {}", backup.display()))?;
+    Ok(Some(snapshot))
 }
 
 /// Load a [`StateSnapshot`] from disk and validate its checksum.
@@ -1070,5 +1118,39 @@ mod tests {
             reloaded.rungs.contains_key(&2),
             "rung 2 must be present after second flush"
         );
+    }
+
+    #[test]
+    fn save_creates_backup_of_previous_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(tmp.path()).unwrap();
+
+        // Write a first snapshot (raw JSON, no validation needed for this test).
+        let first_content = b"first-snapshot-content";
+        atomic_write(&paths.state_snapshot_json, first_content).unwrap();
+
+        // save_state_snapshot renames the existing file to .bak before atomic_write.
+        // Construct a minimal valid StateSnapshot for the save call.
+        let snap = roko_runtime::StateSnapshot::new(
+            1,
+            "{}".to_string(),
+            "{}".to_string(),
+            "{}".to_string(),
+            "{}".to_string(),
+        );
+        save_state_snapshot(&paths, &snap).unwrap();
+
+        let backup_path = paths.state_snapshot_json.with_extension("json.bak");
+        assert!(backup_path.exists(), ".bak file must exist after second save");
+        let backup_content = fs::read(&backup_path).unwrap();
+        assert_eq!(backup_content, first_content, ".bak must contain the first snapshot");
+    }
+
+    #[test]
+    fn load_backup_returns_none_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(tmp.path()).unwrap();
+        let result = load_state_snapshot_backup(&paths).unwrap();
+        assert!(result.is_none(), "no backup file means None");
     }
 }

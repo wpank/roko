@@ -290,22 +290,29 @@ fn check_direct_model_subprocess(
         let contents =
             fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         let gated = legacy_gated_lines(&contents);
-        for (idx, line) in contents.lines().enumerate() {
+        let lines: Vec<&str> = contents.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
             let line_no = idx + 1;
             if gated.contains(&line_no) {
                 continue;
             }
             for needle in needles {
-                if line.contains(needle) {
-                    push_finding(
-                        findings,
-                        &path,
-                        Some(line_no),
-                        format!(
-                            "direct model subprocess dispatch `{needle}` found in un-gated code; use ModelCallService or gate legacy CLI subprocess code behind `legacy-orchestrate`"
-                        ),
-                    );
+                if !line.contains(needle) {
+                    continue;
                 }
+                // Skip --version probes: binary presence checks, not LLM dispatch.
+                let context_window = &lines[idx..usize::min(idx + 3, lines.len())];
+                if context_window.iter().any(|l| l.contains("--version")) {
+                    continue;
+                }
+                push_finding(
+                    findings,
+                    &path,
+                    Some(line_no),
+                    format!(
+                        "direct model subprocess dispatch `{needle}` found in un-gated code; use ModelCallService or gate legacy CLI subprocess code behind `legacy-orchestrate`"
+                    ),
+                );
             }
         }
     }

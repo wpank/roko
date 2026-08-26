@@ -804,11 +804,7 @@ async fn check_serve_health(
 }
 
 fn check_claude_cli() -> DoctorCheck {
-    let available = std::process::Command::new("claude")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+    let available = crate::auth_detect::claude_cli_available();
 
     if available {
         DoctorCheck {
@@ -975,12 +971,7 @@ fn check_available_providers(loaded_config: &LoadedConfig) -> DoctorCheck {
     let mut available: Vec<String> = Vec::new();
 
     // Check for claude CLI on PATH.
-    if std::process::Command::new("claude")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
+    if crate::auth_detect::claude_cli_available() {
         available.push("claude-cli".to_string());
     }
 

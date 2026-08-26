@@ -1,0 +1,114 @@
+[meta]
+plan = "layer-check-false-positives"
+total = 1
+done = 1
+status = "complete"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 25
+
+[[task]]
+id = "T01"
+title = "Add --version probe exclusion to layer-check and consolidate claude CLI probe into shared helper"
+role = "implementer"
+files = [
+    "scripts/layer_check.rs",
+    "crates/roko-cli/src/auth_detect.rs",
+    "crates/roko-cli/src/bootstrap.rs",
+    "crates/roko-cli/src/doctor.rs",
+]
+description = """Fix layer-check false positives for `Command::new("claude")` probes and
+consolidate duplicated CLI presence detection into a shared helper.
+
+## 1. Add `--version` probe exclusion to `check_direct_model_subprocess()`
+
+In `scripts/layer_check.rs`, find `check_direct_model_subprocess()` (around line 284-312).
+After finding a line containing `Command::new("claude")` or `Command::new("codex")`, check
+whether any of the surrounding 3 lines contain `--version`. If so, skip the violation.
+
+Current code pattern:
+```rust
+for needle in needles {
+    if !line.contains(needle) {
+        continue;
+    }
+    push_finding(findings, &path, Some(line_no), ...);
+}
+```
+
+Change to:
+```rust
+for needle in needles {
+    if !line.contains(needle) {
+        continue;
+    }
+    // Skip --version probes: binary presence checks, not LLM dispatch.
+    let context_window = &lines[idx..usize::min(idx + 3, lines.len())];
+    if context_window.iter().any(|l| l.contains("--version")) {
+        continue;
+    }
+    push_finding(findings, &path, Some(line_no), ...);
+}
+```
+
+Read the actual function first to get the exact code structure.
+
+## 2. Add `pub fn claude_cli_available() -> bool` helper
+
+In `crates/roko-cli/src/auth_detect.rs`, add a public helper function:
+
+```rust
+/// Probe whether the `claude` CLI binary is available on PATH.
+/// Runs `claude --version` — does not perform any LLM inference.
+pub fn claude_cli_available() -> bool {
+    std::process::Command::new("claude")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+```
+
+## 3. Replace duplicated probes in bootstrap.rs and doctor.rs
+
+In `crates/roko-cli/src/bootstrap.rs` (around line 120), find the inline
+`Command::new("claude").arg("--version")` probe and replace with
+`crate::auth_detect::claude_cli_available()`.
+
+In `crates/roko-cli/src/doctor.rs`, find TWO inline probes:
+- In `check_claude_cli()` (around line 807)
+- In `check_available_providers()` (around line 978)
+
+Replace both with `crate::auth_detect::claude_cli_available()`.
+
+IMPORTANT: Read each file to find the exact inline probe code before replacing.
+The pattern may be:
+```rust
+std::process::Command::new("claude")
+    .arg("--version")
+    .output()
+    .map(|o| o.status.success())
+    .unwrap_or(false)
+```
+or a similar variant. Replace the entire expression with the helper call.
+
+## 4. Verify
+
+After all changes, the existing `roko layer-check` functionality should work:
+- `Command::new("claude")` + `--version` probes should NOT be flagged
+- Any `Command::new("claude")` without `--version` should still be flagged
+
+## What NOT to change
+
+- Do NOT change `check_empty_event_fields()` scan path (out of scope)
+- Do NOT change `model: String` to `Option<String>` (out of scope, too many downstream callers)
+- Do NOT add dependencies
+- Do NOT change the existing auth_detect logic beyond adding the new helper
+
+Verify: `cargo test -p roko-cli --lib -- auth_detect && cargo test -p roko-cli --lib -- doctor && cargo clippy -p roko-cli --no-deps -- -D warnings`"""
+status = "done"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo test -p roko-cli --lib -- auth_detect && cargo clippy -p roko-cli --no-deps -- -D warnings"

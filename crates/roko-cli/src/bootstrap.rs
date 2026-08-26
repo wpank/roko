@@ -117,12 +117,7 @@ fn validate_provider_available(config: &RokoConfig, _workdir: &Path) -> Result<(
     }
 
     // 4. `claude` CLI available (default provider when nothing else is configured).
-    let claude_ok = std::process::Command::new("claude")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if claude_ok {
+    if crate::auth_detect::claude_cli_available() {
         return Ok(());
     }
 

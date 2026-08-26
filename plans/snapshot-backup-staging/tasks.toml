@@ -1,0 +1,132 @@
+[meta]
+plan = "snapshot-backup-staging"
+total = 1
+done = 1
+status = "complete"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 30
+
+[[task]]
+id = "T01"
+title = "Add snapshot backup-before-overwrite, wire stale staging cleanup, and add backup fallback on corrupt load"
+role = "implementer"
+files = [
+    "crates/roko-cli/src/runner/persist.rs",
+    "crates/roko-cli/src/runner/event_loop.rs",
+]
+description = """Add snapshot backup, stale staging cleanup, and corrupt-snapshot fallback to the runner.
+
+## 1. Add backup before overwrite in `save_state_snapshot`
+
+In `crates/roko-cli/src/runner/persist.rs`, find `save_state_snapshot` (the function that
+writes `state-snapshot.json`). Before the atomic_write call, rename the existing snapshot
+to a `.bak` sibling:
+
+```rust
+// Best-effort backup: rename existing snapshot before overwriting.
+let backup_path = paths.state_snapshot_json.with_extension("json.bak");
+if paths.state_snapshot_json.exists() {
+    let _ = std::fs::rename(&paths.state_snapshot_json, &backup_path);
+}
+```
+
+Add this BEFORE the `atomic_write` call, not after.
+
+## 2. Add `load_state_snapshot_backup` function
+
+In `crates/roko-cli/src/runner/persist.rs`, add a function that loads the backup:
+
+```rust
+pub fn load_state_snapshot_backup(paths: &PersistPaths) -> Result<Option<StateSnapshot>> {
+    let backup = paths.state_snapshot_json.with_extension("json.bak");
+    if !backup.exists() {
+        return Ok(None);
+    }
+    // Reuse the same loading logic as load_state_snapshot
+    let bytes = std::fs::read(&backup)?;
+    // Parse with the same format as load_state_snapshot
+    serde_json::from_slice(&bytes).map(Some).map_err(Into::into)
+}
+```
+
+IMPORTANT: Read `load_state_snapshot` first to understand the exact format. The snapshot
+may have a checksum wrapper, a version field, or other metadata. The backup loader must
+use the same deserialization path. If `load_state_snapshot` calls a helper, reuse it.
+
+## 3. Wire `clean_stale_staging_files` at runner startup
+
+In `crates/roko-cli/src/runner/persist.rs`, find `clean_stale_staging_files` (around line 341).
+It already exists but has zero callers.
+
+In `crates/roko-cli/src/runner/event_loop.rs`, find the `run()` function (starts around
+line 1718). Find where `PersistPaths::from_workdir` is called. After that call, add:
+
+```rust
+let cleaned = persist::clean_stale_staging_files(
+    paths.state_snapshot_json.parent().unwrap_or(&config.workdir)
+);
+if cleaned > 0 {
+    tracing::info!(count = cleaned, "cleaned stale staging files from previous crash");
+}
+```
+
+IMPORTANT: Check the actual return type and signature of `clean_stale_staging_files`. It
+may return `usize` or `Result<usize>`. Adapt the call accordingly.
+
+## 4. Add backup fallback on corrupt snapshot
+
+In `crates/roko-cli/src/runner/event_loop.rs`, find the `load_state_snapshot` match
+(around line 1915-1948). Find the `Err(err)` arm (around line 1946). Replace the hard
+error return with a fallback to backup:
+
+```rust
+Err(err) => {
+    tracing::warn!(error = %err, "state snapshot corrupt; trying backup");
+    match persist::load_state_snapshot_backup(&paths) {
+        Ok(Some(backup)) => {
+            tracing::warn!("loaded backup snapshot — most recent checkpoint may be lost");
+            // Parse the same way the Ok(Some(...)) arm does
+            // ... (read the Ok arm and mirror the parsing)
+        }
+        _ => {
+            tracing::warn!("no valid backup; starting fresh");
+            (None, None)
+        }
+    }
+}
+```
+
+IMPORTANT: Read the full Ok(Some(...)) arm above to understand what fields are extracted
+from the snapshot. The backup fallback must produce the same tuple/struct.
+
+## 5. Add tests
+
+In `persist.rs` tests, add:
+
+```rust
+#[test]
+fn save_creates_backup_of_previous_snapshot() {
+    // Write snapshot once, write again, verify .bak exists with first content
+}
+
+#[test]
+fn load_backup_returns_previous_when_exists() {
+    // Write valid .bak file, verify loader returns it
+}
+```
+
+## What NOT to change
+
+- Do NOT change `atomic_write` in `roko-fs`
+- Do NOT change `PersistPaths` struct fields
+- Do NOT add the doctor disk reporting (out of scope for this plan)
+- Do NOT add dependencies
+
+Verify: `cargo test -p roko-cli --lib -- persist && cargo clippy -p roko-cli --no-deps -- -D warnings`"""
+status = "done"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo test -p roko-cli --lib -- persist && cargo clippy -p roko-cli --no-deps -- -D warnings"

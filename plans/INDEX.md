@@ -68,9 +68,9 @@
 | `snapshot-backup-staging` | 1 | 1 | 0 | ✅ complete | 1 |
 | `task-parser-duplicate-ids` | 1 | 1 | 0 | ✅ complete | 1 |
 
-**Executable Total**: 58 plans, 164 tasks, 149 done (91%), 15 remaining
-**Complete Plans**: 52
-**Ready/In-Progress Plans**: 6
+**Executable Total**: 58 plans, 164 tasks, 150 done (91%), 14 remaining
+**Complete Plans**: 53
+**Ready/In-Progress Plans**: 5
 
 ## Superseded / Archived
 

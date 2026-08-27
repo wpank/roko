@@ -297,6 +297,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             force,
             dangerously_skip_permissions,
             log_file,
+            skip_preflight,
         } => {
             let t_total = std::time::Instant::now();
             let t_setup = std::time::Instant::now();
@@ -485,6 +486,19 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         missing_gate_tools.join(", ")
                     );
                 }
+
+                // ── Preflight environment checks ─────────────────────────
+                if !skip_preflight {
+                    let preflight_checks = roko_cli::runner::preflight::run_preflight_checks(
+                        Some(&early_roko_config),
+                        &resolved_plans_dir,
+                        &wd,
+                    );
+                    if roko_cli::runner::preflight::print_preflight_results(&preflight_checks) {
+                        return Ok(EXIT_FAILURE);
+                    }
+                }
+
                 let max_concurrent_tasks = if max_tasks > 0 {
                     max_tasks
                 } else {

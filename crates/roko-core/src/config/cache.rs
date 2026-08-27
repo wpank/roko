@@ -44,10 +44,7 @@ impl ConfigCache {
 
         // Identify which files to watch.
         let project_path = discover_project_config(workdir);
-        let global_path = {
-            let p = global_config_path();
-            if p.exists() { Some(p) } else { None }
-        };
+        let global_path = global_config_path().filter(|p| p.exists());
 
         let swap_clone = Arc::clone(&swap);
         let workdir_owned = workdir.to_path_buf();

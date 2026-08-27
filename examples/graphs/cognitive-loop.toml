@@ -9,6 +9,12 @@
 # It is a Hot Graph: it loops indefinitely until cancelled.
 # Each tick = one agent turn.
 #
+# Stub cells: the cell types used here (signal-reader, relevance-scorer,
+# system-prompt-builder, claude-agent, gate-pipeline, store-writer,
+# event-publisher) resolve to PassthroughCell stubs in the default registry.
+# They pass input signals through unchanged and log a trace message.
+# Use `roko graph show` to see which nodes are stubs.
+#
 # Usage:
 #   roko graph validate examples/graphs/cognitive-loop.toml
 #   roko graph show examples/graphs/cognitive-loop.toml

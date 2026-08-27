@@ -526,7 +526,9 @@ fn resolve_runtime_layers_with_context(
 
     if opts.merge_global {
         let before = config.clone();
-        merge_global_into(&mut config);
+        if let Err(e) = merge_global_into(&mut config) {
+            tracing::warn!(error = %e, "global config merge failed; continuing with project config only");
+        }
         if let Some(fields) = explicit_fields {
             reapply_explicit_fields(&mut config, &before, fields);
         }
@@ -1385,13 +1387,21 @@ pub fn discover_project_config(start: &Path) -> Option<PathBuf> {
 
 /// Canonical global config path: `~/.roko/config.toml`, with legacy
 /// `$XDG_CONFIG_HOME/roko/config.toml` fallback.
+///
+/// Returns `None` when the user's home directory cannot be determined
+/// (`HOME` and `USERPROFILE` are both unset). Callers should treat
+/// `None` as "no global config available" rather than silently falling
+/// back to the working directory.
 #[must_use]
-pub fn global_config_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+pub fn global_config_path() -> Option<PathBuf> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()?;
+
     let canonical = PathBuf::from(&home).join(".roko").join("config.toml");
 
     if canonical.exists() {
-        return canonical;
+        return Some(canonical);
     }
 
     // Legacy: $XDG_CONFIG_HOME/roko/config.toml or ~/.config/roko/config.toml
@@ -1412,11 +1422,11 @@ pub fn global_config_path() -> PathBuf {
     };
 
     if legacy.exists() {
-        return legacy;
+        return Some(legacy);
     }
 
     // Neither exists — return canonical for new installs.
-    canonical
+    Some(canonical)
 }
 
 // ─── Internal helpers ───────────────────────────────────────────────────
@@ -1428,10 +1438,12 @@ pub fn global_config_path() -> PathBuf {
 /// slug shadows a differently-keyed global model with the same slug. This
 /// keeps the merged registry consistent with dispatch validation, where a slug
 /// may have only one owner.
-pub fn merge_global_into(config: &mut RokoConfig) {
-    let global_path = global_config_path();
+pub fn merge_global_into(config: &mut RokoConfig) -> Result<(), String> {
+    let Some(global_path) = global_config_path() else {
+        return Ok(());
+    };
     if !global_path.exists() {
-        return;
+        return Ok(());
     }
 
     let text = match std::fs::read_to_string(&global_path) {
@@ -1442,23 +1454,27 @@ pub fn merge_global_into(config: &mut RokoConfig) {
                 error = %e,
                 "failed to read global config"
             );
-            return;
+            return Ok(());
         }
     };
 
     let global = match deserialize_migrated_toml(&text) {
         Ok(g) => g,
         Err(e) => {
-            tracing::warn!(
+            tracing::error!(
                 path = %global_path.display(),
                 error = %e,
                 "failed to parse global config"
             );
-            return;
+            return Err(format!(
+                "failed to parse global config {}: {e}",
+                global_path.display()
+            ));
         }
     };
 
     merge_global_config_into(config, global);
+    Ok(())
 }
 
 fn deserialize_migrated_toml(text: &str) -> Result<RokoConfig, String> {
@@ -2674,5 +2690,91 @@ strict_validation = true
             "empty models should not trigger validation: {:?}",
             result.err()
         );
+    }
+
+    #[test]
+    fn global_config_path_returns_none_when_home_unset() {
+        let _lock = TEST_ENV_LOCK.lock();
+
+        // Save current values.
+        let saved_home = std::env::var("HOME").ok();
+        let saved_userprofile = std::env::var("USERPROFILE").ok();
+
+        // SAFETY: single-threaded under TEST_ENV_LOCK.
+        unsafe {
+            std::env::remove_var("HOME");
+            std::env::remove_var("USERPROFILE");
+        }
+
+        let result = global_config_path();
+        assert!(
+            result.is_none(),
+            "expected None when HOME and USERPROFILE are both unset, got: {result:?}"
+        );
+
+        // Restore.
+        unsafe {
+            if let Some(h) = saved_home {
+                std::env::set_var("HOME", h);
+            }
+            if let Some(u) = saved_userprofile {
+                std::env::set_var("USERPROFILE", u);
+            }
+        }
+    }
+
+    #[test]
+    fn global_config_path_returns_some_when_home_set() {
+        let _lock = TEST_ENV_LOCK.lock();
+
+        // HOME is normally set in CI and dev environments.
+        if std::env::var("HOME").is_ok() || std::env::var("USERPROFILE").is_ok() {
+            let result = global_config_path();
+            assert!(
+                result.is_some(),
+                "expected Some when HOME or USERPROFILE is set"
+            );
+            let path = result.unwrap();
+            assert!(
+                path.ends_with("config.toml"),
+                "expected path ending in config.toml, got: {path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_global_into_returns_err_on_invalid_toml() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _lock = TEST_ENV_LOCK.lock();
+
+        // Point HOME at the temp dir so global_config_path finds our file.
+        let saved_home = std::env::var("HOME").ok();
+        unsafe {
+            std::env::set_var("HOME", dir.path().as_os_str());
+        }
+
+        let global_dir = dir.path().join(".roko");
+        std::fs::create_dir_all(&global_dir).expect("create .roko dir");
+        std::fs::write(
+            global_dir.join("config.toml"),
+            "this is not valid toml {{{{",
+        )
+        .expect("write invalid global config");
+
+        let mut config = RokoConfig::default();
+        let result = merge_global_into(&mut config);
+        assert!(result.is_err(), "expected Err on invalid TOML, got Ok");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("failed to parse"),
+            "error should mention parse failure: {err}"
+        );
+
+        // Restore HOME.
+        unsafe {
+            if let Some(h) = saved_home {
+                std::env::set_var("HOME", h);
+            }
+        }
     }
 }

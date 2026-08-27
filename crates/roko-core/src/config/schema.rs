@@ -994,14 +994,26 @@ impl RokoConfig {
 
     /// Resolve `*_file` secret references in provider configs.
     pub fn resolve_file_secrets(&mut self) {
-        for provider in self.providers.values_mut() {
+        for (provider_name, provider) in &mut self.providers {
             if let Some(ref headers) = provider.extra_headers {
                 let mut resolved = HashMap::with_capacity(headers.len());
                 for (key, value) in headers {
                     if key.ends_with("_file") {
                         let base_key = key.trim_end_matches("_file").to_string();
-                        if let Ok(content) = std::fs::read_to_string(value.trim()) {
-                            resolved.insert(base_key, content.trim().to_string());
+                        let path = value.trim();
+                        match std::fs::read_to_string(path) {
+                            Ok(content) => {
+                                resolved.insert(base_key, content.trim().to_string());
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    provider = %provider_name,
+                                    key = %key,
+                                    path = %path,
+                                    error = %e,
+                                    "failed to read file secret; header will be omitted"
+                                );
+                            }
                         }
                     } else {
                         resolved.insert(key.clone(), value.clone());
@@ -1805,7 +1817,17 @@ fn interpolate_vars(value: &str, env_fn: &dyn Fn(&str) -> Option<String>) -> Str
     }
     let re = Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").expect("valid regex");
     re.replace_all(value, |caps: &regex::Captures| {
-        env_fn(&caps[1]).unwrap_or_default()
+        let var_name = &caps[1];
+        match env_fn(var_name) {
+            Some(val) => val,
+            None => {
+                tracing::warn!(
+                    var = var_name,
+                    "config interpolation: env var ${{{var_name}}} is not set; substituting empty string"
+                );
+                String::new()
+            }
+        }
     })
     .into_owned()
 }
@@ -3207,5 +3229,54 @@ max_output = 16384
         // Whether this passes depends on whether hermes is installed;
         // just verify it doesn't panic.
         let _ = cfg.is_provider_available(&provider);
+    }
+
+    #[test]
+    fn resolve_file_secrets_handles_missing_file_gracefully() {
+        let mut config = RokoConfig::default();
+        let mut headers = HashMap::new();
+        headers.insert(
+            "authorization_file".to_string(),
+            "/nonexistent/path/to/secret.txt".to_string(),
+        );
+        headers.insert("x-custom".to_string(), "keep-me".to_string());
+        config.providers.insert(
+            "test".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: None,
+                api_key_env: None,
+                command: None,
+                args: None,
+                timeout_ms: None,
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: Some(headers),
+                max_concurrent: None,
+                limits: None,
+            },
+        );
+
+        // Should not panic; the missing _file entry is dropped with a warning.
+        config.resolve_file_secrets();
+
+        let resolved = config.providers["test"]
+            .extra_headers
+            .as_ref()
+            .expect("headers");
+        // The _file key whose file was missing should be absent (not resolved).
+        assert!(
+            !resolved.contains_key("authorization"),
+            "missing file secret should not produce a resolved key"
+        );
+        assert!(
+            !resolved.contains_key("authorization_file"),
+            "_file key should be consumed even on failure"
+        );
+        // Non-_file keys should be preserved.
+        assert_eq!(
+            resolved.get("x-custom").map(String::as_str),
+            Some("keep-me")
+        );
     }
 }

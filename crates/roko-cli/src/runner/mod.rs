@@ -45,6 +45,7 @@ pub mod merge;
 pub mod output_sink;
 pub mod persist;
 pub mod plan_loader;
+pub mod preflight;
 pub mod projection;
 pub mod prompt_experiments;
 pub mod resume;

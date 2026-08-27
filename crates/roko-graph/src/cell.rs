@@ -161,6 +161,14 @@ pub trait Cell: Send + Sync + 'static {
         self.protocols().contains(&id)
     }
 
+    /// Returns `true` when this cell is a stub/placeholder rather than a real
+    /// implementation.  The graph engine uses this to tag [`NodeResult`]s and
+    /// emit a warning in [`GraphOutput::summary`] so operators know which nodes
+    /// still need real implementations.
+    fn is_stub(&self) -> bool {
+        false
+    }
+
     /// Estimated USD cost per invocation, when known.
     fn estimated_cost(&self) -> Option<f64> {
         None

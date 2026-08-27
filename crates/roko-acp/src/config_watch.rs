@@ -143,8 +143,9 @@ fn watched_paths(config: &AcpConfig) -> Vec<PathBuf> {
     match config.global_config_path.as_ref() {
         Some(path) => paths.push(path.clone()),
         None => {
-            let implicit = roko_core::config::loader::global_config_path();
-            paths.push(implicit);
+            if let Some(implicit) = roko_core::config::loader::global_config_path() {
+                paths.push(implicit);
+            }
         }
     }
 

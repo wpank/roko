@@ -101,11 +101,11 @@ impl AcpConfig {
 
         // 4. Implicit canonical global config (~/.roko/config.toml) when the
         //    core loader would merge it (no explicit --global-config provided).
-        if self.global_config_path.is_none() {
-            let implicit = roko_core::config::loader::global_config_path();
-            if implicit.is_file() {
-                sources.push(format!("default:{}", display_path(&implicit)));
-            }
+        if self.global_config_path.is_none()
+            && let Some(implicit) = roko_core::config::loader::global_config_path()
+            && implicit.is_file()
+        {
+            sources.push(format!("default:{}", display_path(&implicit)));
         }
 
         sources
@@ -173,8 +173,7 @@ impl AcpConfig {
             } else {
                 None
             }
-        } else {
-            let implicit = roko_core::config::loader::global_config_path();
+        } else if let Some(implicit) = roko_core::config::loader::global_config_path() {
             if implicit.is_file() {
                 let mut check_opts = opts;
                 check_opts.merge_global = false;
@@ -188,6 +187,8 @@ impl AcpConfig {
             } else {
                 None
             }
+        } else {
+            None
         };
 
         // Combine warnings from project and global config.

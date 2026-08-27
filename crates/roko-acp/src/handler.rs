@@ -98,12 +98,12 @@ where
                     path.display()
                 )
             }
-            None => {
-                let implicit = roko_core::config::loader::global_config_path();
-                if implicit.is_file() {
+            None => match roko_core::config::loader::global_config_path() {
+                Some(implicit) if implicit.is_file() => {
                     format!("using implicit global config from {}", implicit.display())
-                } else {
-                    "no global config found either; using built-in defaults only. \
+                }
+                _ => {
+                    "no global config found; using built-in defaults only. \
                      Run `roko init` in this directory or pass --global-config ~/.roko/config.toml"
                         .to_owned()
                 }

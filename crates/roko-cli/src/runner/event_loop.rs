@@ -2067,6 +2067,28 @@ pub async fn run(
         }
     }
 
+    // Fallback: when the unified snapshot was absent (legacy run-state.json
+    // path), `loaded_gate_thresholds` stays `None` and the override above is
+    // a no-op. In that case the embedded gate_thresholds_json from the
+    // RunStateSnapshot provides the most recent in-run threshold state.
+    if let Some(gt_json) = resume_report.gate_thresholds_json.as_deref() {
+        if gate_thresholds == GateThresholds::default() {
+            match serde_json::from_str::<GateThresholds>(gt_json) {
+                Ok(gt) => {
+                    info!("restored gate thresholds from embedded run-state snapshot");
+                    gate_thresholds = gt;
+                }
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        "failed to restore gate thresholds from embedded run-state snapshot; \
+                         using file-based or default state"
+                    );
+                }
+            }
+        }
+    }
+
     // Prefer the embedded router snapshot over the file-backed router on resume.
     if let Some(router_json) = resume_report.cascade_router_json.as_deref() {
         if let Some(existing_router) = config.cascade_router.as_ref() {
@@ -8174,6 +8196,7 @@ fn save_snapshot(
             .cascade_router
             .as_ref()
             .map(|router| router.snapshot_json()),
+        gate_thresholds_json: serde_json::to_string(gate_thresholds).ok(),
         conductor_circuit_breaker_state: config
             .conductor
             .as_ref()
@@ -16918,6 +16941,7 @@ tier = "mechanical"
             replan_ledger: persist::ReplanLedgerSnapshot::default(),
             revised_tasks: Vec::new(),
             cascade_router_json: None,
+            gate_thresholds_json: None,
             conductor_circuit_breaker_state: None,
         };
 
@@ -16991,6 +17015,7 @@ status = "ready"
             replan_ledger: persist::ReplanLedgerSnapshot::default(),
             revised_tasks: Vec::new(),
             cascade_router_json: None,
+            gate_thresholds_json: None,
             conductor_circuit_breaker_state: None,
         };
         let snapshot: persist::RunStateSnapshot =
@@ -19949,6 +19974,7 @@ depends_on = []
             replan_ledger: persist::ReplanLedgerSnapshot::default(),
             revised_tasks: Vec::new(),
             cascade_router_json: None,
+            gate_thresholds_json: None,
             conductor_circuit_breaker_state: None,
         };
         let encoded = serde_json::to_string(&snapshot).unwrap();
@@ -21042,6 +21068,7 @@ depends_on = ["T1"]
             replan_ledger: persist::ReplanLedgerSnapshot::default(),
             revised_tasks: Vec::new(),
             cascade_router_json: None,
+            gate_thresholds_json: None,
             conductor_circuit_breaker_state: None,
         };
         let mut resumed = RunState::new(2);
@@ -21150,6 +21177,7 @@ depends_on = ["root"]
             replan_ledger: persist::ReplanLedgerSnapshot::default(),
             revised_tasks: Vec::new(),
             cascade_router_json: None,
+            gate_thresholds_json: None,
             conductor_circuit_breaker_state: None,
         };
         let mut resumed = RunState::new(2);

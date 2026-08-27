@@ -1,0 +1,79 @@
+[meta]
+plan = "gate-threshold-crash-recovery"
+total = 1
+done = 1
+status = "complete"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 30
+
+[[task]]
+id = "T01"
+title = "Embed cascade router and adaptive gate threshold state in crash snapshot"
+role = "implementer"
+files = [
+    "crates/roko-cli/src/runner/types.rs",
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/runner/resume.rs",
+]
+description = """Add CascadeRouter and AdaptiveThresholds state to RunStateSnapshot so that
+crash-resume preserves in-run routing observations and threshold updates.
+
+## 1. Add fields to RunStateSnapshot
+
+In `crates/roko-cli/src/runner/types.rs`, add two optional fields to `RunStateSnapshot`:
+
+```rust
+pub cascade_router_state: Option<serde_json::Value>,
+pub adaptive_thresholds: Option<serde_json::Value>,
+```
+
+Use `serde_json::Value` as the serialized form so the snapshot schema does not depend on
+the internal types of `CascadeRouter` or `AdaptiveThresholds`. Both already derive
+`Serialize`/`Deserialize`, so `serde_json::to_value(...)` works directly.
+
+## 2. Populate on snapshot write
+
+In `crates/roko-cli/src/runner/event_loop.rs`, where `RunStateSnapshot` is constructed and
+written to disk on each tick, populate the new fields:
+
+```rust
+snapshot.cascade_router_state = serde_json::to_value(&cascade_router).ok();
+snapshot.adaptive_thresholds = serde_json::to_value(&adaptive_thresholds).ok();
+```
+
+Use `.ok()` so serialization failure does not block the snapshot write.
+
+## 3. Restore on resume
+
+In `crates/roko-cli/src/runner/resume.rs`, after loading `RunStateSnapshot`, restore:
+
+```rust
+if let Some(router_val) = &snapshot.cascade_router_state {
+    if let Ok(restored) = serde_json::from_value(router_val.clone()) {
+        cascade_router = restored;
+    }
+}
+if let Some(thresh_val) = &snapshot.adaptive_thresholds {
+    if let Ok(restored) = serde_json::from_value(thresh_val.clone()) {
+        adaptive_thresholds = restored;
+    }
+}
+```
+
+Missing fields in older snapshots deserialize as `None` via `#[serde(default)]`, preserving
+backward compatibility.
+
+## 4. Add roundtrip test
+
+Add a unit test that constructs a `RunStateSnapshot` with both fields populated, serializes
+to JSON, deserializes back, and asserts the values match.
+
+Verify: `cargo test -p roko-cli --lib -- runner && cargo clippy -p roko-cli --no-deps -- -D warnings`"""
+status = "done"
+tier = "mechanical"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "cargo test -p roko-cli --lib -- runner && cargo clippy -p roko-cli --no-deps -- -D warnings"

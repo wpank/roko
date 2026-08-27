@@ -1,0 +1,59 @@
+[meta]
+plan = "tui-adaptive-framerate"
+total = 1
+done = 1
+status = "complete"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 20
+
+[[task]]
+id = "T01"
+title = "Replace fixed TUI tick rate with adaptive framerate based on input idle time"
+role = "implementer"
+files = [
+    "crates/roko-cli/src/tui/mod.rs",
+    "crates/roko-cli/src/tui/app.rs",
+]
+description = """Add adaptive tick rate to the TUI event loop: 60 fps during active input,
+dropping to 20 fps after 5 seconds of idle.
+
+## 1. Track last input time
+
+In `crates/roko-cli/src/tui/app.rs`, add a `last_input_at: Instant` field to the TUI app
+state struct, initialized to `Instant::now()`. Update it on every key event and mouse event
+in the input handling path.
+
+## 2. Adaptive tick interval
+
+In `crates/roko-cli/src/tui/mod.rs`, at the start of each event loop iteration, compute
+the tick interval based on idle time:
+
+```rust
+let tick_interval = if self.last_input_at.elapsed() > Duration::from_secs(5) {
+    Duration::from_millis(50)   // 20 fps idle
+} else {
+    Duration::from_millis(16)   // ~60 fps active
+};
+```
+
+Pass this interval to the event poll timeout (crossterm or tokio sleep).
+
+## 3. Immediate resume on input
+
+The `last_input_at = Instant::now()` update on each key/mouse event ensures the very next
+tick uses the 16ms interval, providing instant responsiveness when the user returns.
+
+## 4. No config needed
+
+Use hardcoded constants (5s threshold, 16ms active, 50ms idle). Config can be added later
+if needed.
+
+Verify: `cargo check -p roko-cli && cargo clippy -p roko-cli --no-deps -- -D warnings`"""
+status = "done"
+tier = "mechanical"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-cli && cargo clippy -p roko-cli --no-deps -- -D warnings"

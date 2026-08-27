@@ -44,6 +44,7 @@
 | `cli-ux-consistency` | 4 | 0 | 4 | 📋 ready | 2 |
 | `codex-cost-reporting` | 1 | 1 | 0 | ✅ complete | 1 |
 | `cybernetic-run-metrics` | 1 | 1 | 0 | ✅ complete | 1 |
+| `diagnose-enrichment` | 1 | 1 | 0 | ✅ complete | 1 |
 | `doctor-network-v2` | 7 | 0 | 7 | 📋 ready | 1 |
 | `e2e-provider-test` | 1 | 0 | 1 | 📋 ready | 1 |
 | `e2e-smoke` | 2 | 2 | 0 | ✅ complete | 1 |
@@ -51,6 +52,7 @@
 | `exit-code-report-separation` | 1 | 1 | 0 | ✅ complete | 1 |
 | `fresh-branch-cleanup-prefix` | 1 | 1 | 0 | ✅ complete | 1 |
 | `gate-compile-fail-closed` | 2 | 2 | 0 | ✅ complete | 1 |
+| `gate-threshold-crash-recovery` | 1 | 1 | 0 | ✅ complete | 1 |
 | `graph-example-schema-drift` | 2 | 2 | 0 | ✅ complete | 1 |
 | `handler-future-double-poll` | 1 | 1 | 0 | ✅ complete | 1 |
 | `hdc-math-dead-code` | 1 | 1 | 0 | ✅ complete | 1 |
@@ -67,9 +69,11 @@
 | `skip-permissions-opt-in` | 1 | 1 | 0 | ✅ complete | 1 |
 | `snapshot-backup-staging` | 1 | 1 | 0 | ✅ complete | 1 |
 | `task-parser-duplicate-ids` | 1 | 1 | 0 | ✅ complete | 1 |
+| `tui-adaptive-framerate` | 1 | 1 | 0 | ✅ complete | 1 |
+| `tui-metric-smoothing` | 1 | 1 | 0 | ✅ complete | 1 |
 
-**Executable Total**: 58 plans, 164 tasks, 150 done (91%), 14 remaining
-**Complete Plans**: 53
+**Executable Total**: 62 plans, 168 tasks, 154 done (92%), 14 remaining
+**Complete Plans**: 57
 **Ready/In-Progress Plans**: 5
 
 ## Superseded / Archived

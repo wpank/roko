@@ -138,8 +138,6 @@ pub struct App {
     agent_stream_server_url: String,
     /// Optional bearer token for authenticated websocket handshakes.
     agent_stream_auth_token: Option<String>,
-    /// Frame counter for adaptive frame rate.
-    frame_counter: u64,
     /// Last user input time for adaptive frame rate.
     last_input: Instant,
     /// Last known terminal size used for hit-testing.
@@ -377,7 +375,6 @@ impl std::fmt::Debug for App {
             .field("workdir", &self.workdir)
             .field("running", &self.running)
             .field("current_page", &self.current_page)
-            .field("frame_counter", &self.frame_counter)
             .finish_non_exhaustive()
     }
 }
@@ -622,7 +619,6 @@ impl App {
             agent_stream_clients: HashMap::new(),
             agent_stream_server_url: resolve_agent_stream_server_url(),
             agent_stream_auth_token: resolve_agent_stream_auth_token(),
-            frame_counter: 0,
             last_input: Instant::now(),
             terminal_size,
             pending_refresh: false,
@@ -909,21 +905,23 @@ impl App {
                 }
             }
 
-            // Adaptive frame rate: skip frames when idle with no agents
-            let user_idle = self.last_input.elapsed() > Duration::from_secs(3);
-            let has_agents = self.tui_state.active_agent_count() > 0;
-            let should_draw = if user_idle && !has_agents {
-                self.frame_counter % 3 == 0 // ~20fps when idle
+            // Adaptive frame rate: slow the poll interval when idle so the
+            // process sleeps longer between ticks, saving CPU.  20 fps is
+            // still fast enough for data-driven updates while agents run.
+            let idle_tick = Duration::from_millis(50); // 20 fps
+            let active_tick = Duration::from_millis(16); // ~60 fps
+            let desired = if self.last_input.elapsed() > Duration::from_secs(5) {
+                idle_tick
             } else {
-                true // ~60fps when active
+                active_tick
             };
-
-            if should_draw {
-                terminal
-                    .draw(|frame| self.draw(frame))
-                    .context("TUI redraw")?;
+            if events.tick_rate() != desired {
+                events.set_tick_rate(desired);
             }
-            self.frame_counter = self.frame_counter.wrapping_add(1);
+
+            terminal
+                .draw(|frame| self.draw(frame))
+                .context("TUI redraw")?;
         }
 
         Ok(())

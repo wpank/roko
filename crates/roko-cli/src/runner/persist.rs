@@ -165,6 +165,16 @@ pub struct RunStateSnapshot {
     /// `None` for old snapshots or when no router is configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cascade_router_json: Option<String>,
+    /// Adaptive gate-threshold EMA state captured at save time.
+    ///
+    /// Embedding inside `RunStateSnapshot` (in addition to the top-level
+    /// `StateSnapshot.gate_thresholds_json`) provides redundancy for the
+    /// legacy `run-state.json` fallback path where the outer checksummed
+    /// snapshot is not available.
+    ///
+    /// `None` for old snapshots or when thresholds are at their defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_thresholds_json: Option<String>,
     /// Conductor circuit-breaker state captured at save time.
     ///
     /// On `--resume`, this is restored via
@@ -1152,5 +1162,95 @@ mod tests {
         let paths = PersistPaths::from_workdir(tmp.path()).unwrap();
         let result = load_state_snapshot_backup(&paths).unwrap();
         assert!(result.is_none(), "no backup file means None");
+    }
+
+    #[test]
+    fn run_state_snapshot_gate_thresholds_json_roundtrip() {
+        let mut thresholds = GateThresholds::default();
+        thresholds.observe(1, true);
+        thresholds.observe(1, false);
+        thresholds.observe(2, true);
+
+        let gt_json = serde_json::to_string(&thresholds).unwrap();
+        let snapshot = RunStateSnapshot {
+            schema_version: RUN_STATE_SCHEMA_VERSION,
+            run_id: "roundtrip-test".into(),
+            started_at_ms: 0,
+            timestamp_ms: 100,
+            tasks_total: 3,
+            tasks_completed: 1,
+            tasks_failed: 0,
+            total_tokens_in: 50,
+            total_tokens_out: 25,
+            total_cost_usd: 0.01,
+            total_agent_calls: 1,
+            plan_costs: HashMap::new(),
+            task_usage: HashMap::new(),
+            accounted_usage_attempts: Vec::new(),
+            completed_tasks: HashMap::new(),
+            failed_tasks: HashMap::new(),
+            skipped_tasks: HashMap::new(),
+            lifecycle: None,
+            snapshot_fail_streak: 0,
+            fingerprints: Vec::new(),
+            replan_ledger: ReplanLedgerSnapshot::default(),
+            revised_tasks: Vec::new(),
+            cascade_router_json: None,
+            gate_thresholds_json: Some(gt_json.clone()),
+            conductor_circuit_breaker_state: None,
+        };
+
+        let serialized = serde_json::to_string(&snapshot).unwrap();
+        let deserialized: RunStateSnapshot = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.gate_thresholds_json.as_deref(), Some(gt_json.as_str()));
+
+        // Verify the embedded JSON actually round-trips back to GateThresholds.
+        let restored: GateThresholds =
+            serde_json::from_str(deserialized.gate_thresholds_json.as_ref().unwrap()).unwrap();
+        assert_eq!(restored, thresholds);
+    }
+
+    #[test]
+    fn run_state_snapshot_with_both_router_and_thresholds_roundtrips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(tmp.path()).unwrap();
+
+        let mut thresholds = GateThresholds::default();
+        thresholds.observe(3, true);
+        thresholds.observe(3, false);
+
+        let snapshot = RunStateSnapshot {
+            schema_version: RUN_STATE_SCHEMA_VERSION,
+            run_id: "full-roundtrip".into(),
+            started_at_ms: 0,
+            timestamp_ms: 200,
+            tasks_total: 5,
+            tasks_completed: 3,
+            tasks_failed: 0,
+            total_tokens_in: 100,
+            total_tokens_out: 50,
+            total_cost_usd: 0.05,
+            total_agent_calls: 3,
+            plan_costs: HashMap::new(),
+            task_usage: HashMap::new(),
+            accounted_usage_attempts: Vec::new(),
+            completed_tasks: HashMap::new(),
+            failed_tasks: HashMap::new(),
+            skipped_tasks: HashMap::new(),
+            lifecycle: None,
+            snapshot_fail_streak: 0,
+            fingerprints: Vec::new(),
+            replan_ledger: ReplanLedgerSnapshot::default(),
+            revised_tasks: Vec::new(),
+            cascade_router_json: Some(r#"{"model_slugs":["a","b"]}"#.to_string()),
+            gate_thresholds_json: Some(serde_json::to_string(&thresholds).unwrap()),
+            conductor_circuit_breaker_state: None,
+        };
+
+        save_run_state(&paths, &snapshot).unwrap();
+        let loaded = load_run_state(&paths).unwrap().expect("must load");
+        assert_eq!(loaded, snapshot);
+        assert!(loaded.cascade_router_json.is_some());
+        assert!(loaded.gate_thresholds_json.is_some());
     }
 }

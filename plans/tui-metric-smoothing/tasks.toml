@@ -1,0 +1,73 @@
+[meta]
+plan = "tui-metric-smoothing"
+total = 1
+done = 1
+status = "complete"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 20
+
+[[task]]
+id = "T01"
+title = "Add SmoothedValue EMA utility and apply to TUI metric rendering"
+role = "implementer"
+files = [
+    "crates/roko-cli/src/tui/smoothing.rs",
+    "crates/roko-cli/src/tui/mod.rs",
+    "crates/roko-cli/src/tui/app.rs",
+]
+description = """Add exponential moving average smoothing to TUI numeric metrics to prevent
+jarring visual jumps on task completion or system metric spikes.
+
+## 1. Create SmoothedValue utility
+
+Create `crates/roko-cli/src/tui/smoothing.rs` with a `SmoothedValue` type:
+
+```rust
+pub struct SmoothedValue {
+    alpha: f64,
+    display: f64,
+}
+
+impl SmoothedValue {
+    pub fn new(alpha: f64) -> Self {
+        Self { alpha, display: 0.0 }
+    }
+
+    pub fn update(&mut self, raw: f64) {
+        self.display = self.alpha * raw + (1.0 - self.alpha) * self.display;
+    }
+
+    pub fn get(&self) -> f64 {
+        self.display
+    }
+}
+```
+
+Default alpha is 0.12 — each frame moves 12% toward the raw value.
+
+## 2. Wire into TUI module
+
+In `crates/roko-cli/src/tui/mod.rs`, add `pub mod smoothing;` to export the module.
+
+## 3. Apply to TUI model metrics
+
+In `crates/roko-cli/src/tui/app.rs`, add `SmoothedValue` fields alongside raw metrics in
+the TUI model for continuous numeric values (progress fraction, CPU%, memory). Call
+`smoothed.update(raw)` on each render tick. Use `smoothed.get()` at render sites.
+
+Do NOT smooth discrete state fields (plan status, error counts, episode counts).
+
+## 4. Add convergence test
+
+Add a unit test verifying that after 50 updates with raw=100.0 and start=0.0, the smoothed
+value is >= 99.0, confirming convergence behaviour.
+
+Verify: `cargo check -p roko-cli && cargo clippy -p roko-cli --no-deps -- -D warnings`"""
+status = "done"
+tier = "mechanical"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-cli && cargo clippy -p roko-cli --no-deps -- -D warnings"

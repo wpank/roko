@@ -1,0 +1,71 @@
+[meta]
+plan = "diagnose-enrichment"
+total = 1
+done = 1
+status = "complete"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 30
+
+[[task]]
+id = "T01"
+title = "Add classified errors, episode IDs, and cost to diagnose command output"
+role = "implementer"
+files = [
+    "crates/roko-cli/src/commands/diagnose.rs",
+]
+description = """Enrich the `roko diagnose` command with three missing fields: per-error
+classification, episode IDs for failed tasks, and plan-level cost.
+
+## 1. Add ClassifiedError to GateResultInfo
+
+Add a `ClassifiedError` struct and an `ErrorClass` enum:
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ErrorClass {
+    CompileError,
+    TestFailure,
+    LintWarning,
+    LinkError,
+    RuntimePanic,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClassifiedError {
+    pub error_class: ErrorClass,
+    pub file: Option<String>,
+    pub line: Option<u32>,
+    pub error_summary: String,
+    pub suggestion: Option<String>,
+}
+```
+
+Add `classified_errors: Vec<ClassifiedError>` to `GateResultInfo`. Parse gate output
+(cargo stderr) to classify errors by matching patterns:
+- `error[E` → CompileError
+- `test ... FAILED` → TestFailure
+- `warning:` from clippy → LintWarning
+- `thread '...' panicked` → RuntimePanic
+
+## 2. Add episode_ids to FailedTaskInfo
+
+Add `episode_ids: Vec<String>` to `FailedTaskInfo`. When building the report, read
+`.roko/episodes.jsonl` and filter entries whose `task_id` matches the failed task. Return
+the last 5 episode IDs for context.
+
+## 3. Add total_cost_usd to DiagnoseReport
+
+Add `total_cost_usd: Option<f64>` as a top-level field on `DiagnoseReport`. Sum cost from
+`.roko/learn/efficiency.jsonl` filtered by plan ID, or from the run state summary if
+available.
+
+Verify: `cargo check -p roko-cli && cargo clippy -p roko-cli --no-deps -- -D warnings`"""
+status = "done"
+tier = "mechanical"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "cargo check -p roko-cli && cargo clippy -p roko-cli --no-deps -- -D warnings"

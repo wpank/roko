@@ -57,6 +57,11 @@ pub struct ResumeReport {
     /// Embedded CascadeRouter snapshot JSON from the prior run-state snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cascade_router_json: Option<String>,
+    /// Embedded adaptive gate-threshold EMA state from the prior run-state
+    /// snapshot. Used as a fallback when the outer checksummed
+    /// `StateSnapshot.gate_thresholds_json` is not available (legacy path).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_thresholds_json: Option<String>,
     /// Conductor circuit-breaker state from the prior run-state snapshot.
     ///
     /// When `Some`, the event loop restores the conductor via
@@ -210,6 +215,9 @@ pub(crate) fn prepare_resume_with_force(
         cascade_router_json: snapshot
             .as_ref()
             .and_then(|s| s.cascade_router_json.clone()),
+        gate_thresholds_json: snapshot
+            .as_ref()
+            .and_then(|s| s.gate_thresholds_json.clone()),
         conductor_circuit_breaker_state: snapshot
             .as_ref()
             .and_then(|s| s.conductor_circuit_breaker_state.clone()),
@@ -382,6 +390,7 @@ mod tests {
             replan_ledger: ReplanLedgerSnapshot::default(),
             revised_tasks: Vec::new(),
             cascade_router_json: None,
+            gate_thresholds_json: None,
             conductor_circuit_breaker_state: None,
         }
     }
@@ -398,6 +407,45 @@ mod tests {
         assert_eq!(
             report.cascade_router_json.as_deref(),
             Some("{\"model_slugs\":[\"x\"]}")
+        );
+    }
+
+    #[test]
+    fn resume_report_propagates_embedded_gate_thresholds_json() {
+        let dir = tempdir().unwrap();
+        let paths = paths_for(dir.path());
+        let mut snap = snapshot_with_run_id("prior-gt");
+        let gt_payload = r#"{"rungs":{"1":{"ema":0.75,"observations":5}}}"#;
+        snap.gate_thresholds_json = Some(gt_payload.to_string());
+        super::super::persist::save_run_state(&paths, &snap).unwrap();
+
+        let report = prepare_resume(&paths, &HashMap::new(), &[]).unwrap();
+        assert_eq!(report.gate_thresholds_json.as_deref(), Some(gt_payload));
+    }
+
+    #[test]
+    fn old_snapshot_without_gate_thresholds_json_deserializes_as_none() {
+        // Simulate an older snapshot that predates the gate_thresholds_json
+        // field by writing JSON without it.
+        let dir = tempdir().unwrap();
+        let paths = paths_for(dir.path());
+        let snap = snapshot_with_run_id("old-snap");
+        let mut json_value: serde_json::Value =
+            serde_json::to_value(&snap).expect("serialize snapshot");
+        // Remove the field entirely to simulate an old snapshot.
+        json_value
+            .as_object_mut()
+            .unwrap()
+            .remove("gate_thresholds_json");
+        let raw_json = serde_json::to_string_pretty(&json_value).unwrap();
+        std::fs::write(&paths.run_state_json, &raw_json).unwrap();
+
+        let loaded = super::super::persist::load_run_state(&paths)
+            .unwrap()
+            .expect("should load");
+        assert!(
+            loaded.gate_thresholds_json.is_none(),
+            "missing field must default to None for backward compatibility"
         );
     }
 

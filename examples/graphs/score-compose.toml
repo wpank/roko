@@ -1,11 +1,11 @@
 # Score -> Compose -> Act pipeline
 #
 # Demonstrates the universal loop pattern: score a signal, compose a prompt,
-# then act on it. Each step passes its output engrams to the next.
+# then act on it. Each step passes its output signals to the next.
 #
-# These cells are currently backed by no-op implementations that pass
-# input through unchanged. Replace with real Scorer/Composer/Actor cells
-# once those are registered in the default registry.
+# All three cell types resolve to real cognitive cell implementations
+# registered in the default registry (score is an alias for AssessCell,
+# compose maps to CognitiveComposeCell, act maps to ActCell).
 #
 # Usage:
 #   roko graph run examples/graphs/score-compose.toml

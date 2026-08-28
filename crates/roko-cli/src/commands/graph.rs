@@ -195,6 +195,7 @@ fn cmd_graph_validate(path: &Path) -> Result<i32> {
 fn cmd_graph_show(path: &Path) -> Result<i32> {
     let graph = loader::load_from_file(path)
         .map_err(|e| anyhow!("failed to load graph '{}': {}", path.display(), e))?;
+    let registry = default_registry();
 
     println!("Graph: {}", graph.metadata.name);
     if let Some(desc) = &graph.metadata.description {
@@ -205,17 +206,35 @@ fn cmd_graph_show(path: &Path) -> Result<i32> {
     }
     println!();
 
-    // Print nodes
+    // Print nodes, annotating with resolved cell status from the registry.
+    let mut stub_count: usize = 0;
     println!("Nodes ({}):", graph.node_count());
     for (node_id, idx) in &graph.node_map {
         let node = &graph.inner[*idx];
-        println!("  {node_id}  [cell_type: {}]", node.cell_type);
+        let resolution = match registry.create(
+            &node.cell_type,
+            node.config.clone(),
+        ) {
+            Ok(cell) if cell.is_stub() => {
+                stub_count += 1;
+                " (STUB)"
+            }
+            Ok(_) => "",
+            Err(_) => " (UNRESOLVED)",
+        };
+        println!("  {node_id}  [cell_type: {}]{resolution}", node.cell_type);
         if !node.inputs.is_empty() {
             println!("    inputs: {}", node.inputs.join(", "));
         }
         if !node.outputs.is_empty() {
             println!("    outputs: {}", node.outputs.join(", "));
         }
+    }
+    if stub_count > 0 {
+        println!(
+            "\n  WARNING: {stub_count} node(s) resolve to stub cells. \
+             These need real implementations before production use."
+        );
     }
     println!();
 

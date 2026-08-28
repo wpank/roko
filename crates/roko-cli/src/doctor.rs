@@ -375,18 +375,20 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
         let mut merged = ConfigLayer::default();
         let mut active_path = None;
 
-        match std::fs::read_to_string(&paths.global) {
-            Ok(text) => {
-                let layer = ConfigLayer::parse_toml(&text)
-                    .with_context(|| format!("parse config {}", paths.global.display()))?;
-                explicit_serve |= layer.serve.is_some();
-                merged = merged.merge(layer);
-                active_path = Some(paths.global.clone());
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                return Err(anyhow::Error::new(e)
-                    .context(format!("read config {}", paths.global.display())));
+        if let Some(ref global_path) = paths.global {
+            match std::fs::read_to_string(global_path) {
+                Ok(text) => {
+                    let layer = ConfigLayer::parse_toml(&text)
+                        .with_context(|| format!("parse config {}", global_path.display()))?;
+                    explicit_serve |= layer.serve.is_some();
+                    merged = merged.merge(layer);
+                    active_path = Some(global_path.clone());
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(anyhow::Error::new(e)
+                        .context(format!("read config {}", global_path.display())));
+                }
             }
         }
         if let Some(project_path) = &paths.project {
@@ -403,7 +405,7 @@ fn load_active_config(workdir: &Path, config_override: Option<&Path>) -> Result<
         .env_override
         .as_ref()
         .is_some_and(|path| path.is_file())
-        || paths.global.is_file()
+        || paths.global.as_deref().is_some_and(|p| p.is_file())
         || paths.project.is_some()
     {
         Some(load_resolved_config(workdir)?.config)
@@ -522,7 +524,7 @@ fn check_config_presence(
             "expected {} or an ancestor config; global config alone is not enough for workspace bootstrap",
             workdir.join("roko.toml").display()
         )),
-        path: Some(loaded_config.paths.global.display().to_string()),
+        path: loaded_config.paths.global.as_ref().map(|p| p.display().to_string()),
         url: None,
         fix: Some("roko init".to_string()),
     }

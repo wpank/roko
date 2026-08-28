@@ -49,7 +49,9 @@ pub struct WizardInputs {
 /// `target` overrides the global path (for tests). `inputs` pre-fills
 /// answers; any field left `None` triggers an interactive prompt.
 pub fn run_init_wizard(target: Option<PathBuf>, inputs: &WizardInputs) -> Result<PathBuf> {
-    let path = target.unwrap_or_else(global_config_path);
+    let path = target
+        .or_else(global_config_path)
+        .ok_or_else(|| anyhow!("cannot determine global config path: HOME is not set"))?;
     println!("\nRoko config wizard");
     println!("==================");
     println!("Writing global config to: {}\n", path.display());
@@ -235,15 +237,12 @@ pub fn cmd_show_effective(workdir: &Path) -> Result<()> {
 /// Print the resolved config paths (global + project + env override).
 pub fn cmd_path(workdir: &Path) -> Result<()> {
     let resolved = load_resolved_config(workdir)?;
-    let global_exists = if resolved.paths.global.is_file() {
-        "exists"
-    } else {
-        "missing"
+    let (global_display, global_exists) = match resolved.paths.global.as_deref() {
+        Some(p) if p.is_file() => (p.display().to_string(), "exists"),
+        Some(p) => (p.display().to_string(), "missing"),
+        None => ("(unavailable)".to_string(), "missing"),
     };
-    println!(
-        "global : {} ({global_exists})",
-        resolved.paths.global.display()
-    );
+    println!("global : {global_display} ({global_exists})");
     match &resolved.paths.project {
         Some(p) => println!("project: {}", p.display()),
         None => println!("project: (none)"),
@@ -296,8 +295,10 @@ fn doctor_config_path(paths: &ConfigPaths, workdir: &Path) -> Option<PathBuf> {
         return Some(direct);
     }
 
-    if paths.global.is_file() {
-        return Some(paths.global.clone());
+    if let Some(ref global) = paths.global {
+        if global.is_file() {
+            return Some(global.clone());
+        }
     }
 
     None
@@ -614,12 +615,19 @@ fn write_atomic_restricted(path: &Path, text: &str) -> Result<()> {
 pub fn cmd_edit(workdir: &Path, which: EditTarget) -> Result<()> {
     let resolved = load_resolved_config(workdir)?;
     let path = match which {
-        EditTarget::Global => resolved.paths.global,
+        EditTarget::Global => resolved
+            .paths
+            .global
+            .ok_or_else(|| anyhow!("cannot determine global config path: HOME is not set"))?,
         EditTarget::Project => resolved
             .paths
             .project
             .unwrap_or_else(|| workdir.join("roko.toml")),
-        EditTarget::Auto => resolved.paths.project.unwrap_or(resolved.paths.global),
+        EditTarget::Auto => resolved
+            .paths
+            .project
+            .or(resolved.paths.global)
+            .unwrap_or_else(|| workdir.join("roko.toml")),
     };
 
     if let Some(parent) = path.parent() {
@@ -646,7 +654,10 @@ pub fn cmd_edit(workdir: &Path, which: EditTarget) -> Result<()> {
 pub fn cmd_set(workdir: &Path, target: EditTarget, key: &str, value: &str) -> Result<()> {
     let resolved = load_resolved_config(workdir)?;
     let path = match target {
-        EditTarget::Global | EditTarget::Auto => resolved.paths.global,
+        EditTarget::Global | EditTarget::Auto => resolved
+            .paths
+            .global
+            .ok_or_else(|| anyhow!("cannot determine global config path: HOME is not set"))?,
         EditTarget::Project => resolved
             .paths
             .project
@@ -823,7 +834,10 @@ fn print_resolved(r: &ResolvedConfig) {
     );
     println!();
     println!("sources:");
-    println!("  global : {}", r.paths.global.display());
+    match r.paths.global.as_deref() {
+        Some(p) => println!("  global : {}", p.display()),
+        None => println!("  global : (unavailable)"),
+    }
     match &r.paths.project {
         Some(p) => println!("  project: {}", p.display()),
         None => println!("  project: (none)"),
@@ -1428,8 +1442,10 @@ fn secret_check_config_path(paths: &ConfigPaths) -> Result<PathBuf> {
     if let Some(path) = &paths.project {
         return Ok(path.clone());
     }
-    if paths.global.is_file() {
-        return Ok(paths.global.clone());
+    if let Some(ref global) = paths.global {
+        if global.is_file() {
+            return Ok(global.clone());
+        }
     }
     Err(anyhow!("no config file found to check"))
 }

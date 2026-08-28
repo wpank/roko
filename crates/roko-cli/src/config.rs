@@ -2911,7 +2911,7 @@ impl PromptLayer {
 #[derive(Clone, Debug)]
 pub struct ConfigPaths {
     /// Global config path (always set — even if file missing).
-    pub global: PathBuf,
+    pub global: Option<PathBuf>,
     /// Project config path, if discovered. None means no `roko.toml` in
     /// `workdir` or any ancestor.
     pub project: Option<PathBuf>,
@@ -2927,7 +2927,7 @@ pub struct ConfigPaths {
 /// does, return the legacy path. If neither exists, return the canonical
 /// path so that `init` writes to the right place.
 #[must_use]
-pub fn global_config_path() -> PathBuf {
+pub fn global_config_path() -> Option<PathBuf> {
     roko_core::config::loader::global_config_path()
 }
 
@@ -2937,7 +2937,9 @@ pub fn global_config_path() -> PathBuf {
 /// gets inserted. This lets project `roko.toml` files override specific
 /// entries while inheriting the rest from `~/.roko/config.toml`.
 pub fn merge_global_providers(config: &mut roko_core::config::schema::RokoConfig) {
-    roko_core::config::loader::merge_global_into(config);
+    if let Err(e) = roko_core::config::loader::merge_global_into(config) {
+        tracing::warn!(error = %e, "global config merge failed during provider merge");
+    }
 }
 
 /// Walk up from `start` looking for `roko.toml`. Returns the first hit.
@@ -3242,18 +3244,22 @@ pub fn load_resolved_config(workdir: &Path) -> Result<ResolvedConfig> {
         });
     }
 
-    let global_layer = match std::fs::read_to_string(&paths.global) {
-        Ok(text) => {
-            warn_dropped_toml_keys(&text, &paths.global.display().to_string());
-            ConfigLayer::parse_toml(&text)
-                .with_context(|| format!("parse config {}", paths.global.display()))?
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => ConfigLayer::default(),
-        Err(e) => {
-            return Err(
-                anyhow::Error::new(e).context(format!("read config {}", paths.global.display()))
-            );
-        }
+    let global_layer = match paths.global.as_deref() {
+        Some(global_path) => match std::fs::read_to_string(global_path) {
+            Ok(text) => {
+                warn_dropped_toml_keys(&text, &global_path.display().to_string());
+                ConfigLayer::parse_toml(&text)
+                    .with_context(|| format!("parse config {}", global_path.display()))?
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => ConfigLayer::default(),
+            Err(e) => {
+                return Err(
+                    anyhow::Error::new(e)
+                        .context(format!("read config {}", global_path.display())),
+                );
+            }
+        },
+        None => ConfigLayer::default(),
     };
     let project_layer = match &paths.project {
         Some(p) => {
@@ -4479,11 +4485,13 @@ program = "echo"
 
     #[test]
     fn global_path_ends_in_roko_config_toml() {
-        let path = global_config_path();
-        assert!(
-            path.ends_with(".roko/config.toml") || path.ends_with("roko/config.toml"),
-            "expected path ending in .roko/config.toml or roko/config.toml, got: {path:?}"
-        );
+        if let Some(path) = global_config_path() {
+            assert!(
+                path.ends_with(".roko/config.toml") || path.ends_with("roko/config.toml"),
+                "expected path ending in .roko/config.toml or roko/config.toml, got: {path:?}"
+            );
+        }
+        // When HOME is unset, global_config_path() returns None.
     }
 
     #[test]
@@ -4655,8 +4663,10 @@ model = "opus-4"
         std::fs::write(dir.path().join("roko.toml"), "[agent]\ncommand = \"cat\"\n").unwrap();
 
         let resolved = load_resolved_config(dir.path()).unwrap();
-        // Global path is always set (even if file doesn't exist).
-        assert!(!resolved.paths.global.as_os_str().is_empty());
+        // Global path is set when HOME is available.
+        if let Some(ref global) = resolved.paths.global {
+            assert!(!global.as_os_str().is_empty());
+        }
         // Project path should point to the roko.toml we wrote.
         assert!(resolved.paths.project.is_some());
     }

@@ -194,6 +194,8 @@ pub struct NodeResult {
     pub error: Option<String>,
     /// Number of output signals produced.
     pub output_count: usize,
+    /// Whether the cell backing this node is a stub/placeholder.
+    pub is_stub: bool,
 }
 
 /// Output of a full graph execution.
@@ -226,6 +228,7 @@ impl GraphOutput {
         let _ = writeln!(s, "Nodes: {}", self.node_results.len());
         s.push('\n');
         for result in &self.node_results {
+            let stub_marker = if result.is_stub { " [STUB]" } else { "" };
             let dur = if result.duration > Duration::ZERO {
                 format!(" ({:?})", result.duration)
             } else {
@@ -233,13 +236,23 @@ impl GraphOutput {
             };
             let _ = writeln!(
                 s,
-                "  [{:>8}] {} ({}){}",
+                "  [{:>8}] {} ({}){}{stub_marker}",
                 result.status, result.node_id, result.cell_type, dur
             );
             if let Some(err) = &result.error {
                 let _ = writeln!(s, "             error: {err}");
             }
         }
+
+        let stub_count = self.node_results.iter().filter(|r| r.is_stub).count();
+        if stub_count > 0 {
+            let _ = writeln!(
+                s,
+                "\nWARNING: {stub_count} node(s) used stub/passthrough cells. \
+                 These need real implementations before production use."
+            );
+        }
+
         s
     }
 }
@@ -521,6 +534,7 @@ impl GraphEngine {
                     duration: Duration::ZERO,
                     error: Some("aborted after graph failure".to_string()),
                     output_count: 0,
+                    is_stub: false,
                 };
                 statuses.insert(node_id.clone(), result.status);
                 results.push(result);
@@ -538,6 +552,7 @@ impl GraphEngine {
                         duration: Duration::ZERO,
                         error: Some(reason),
                         output_count: 0,
+                        is_stub: false,
                     };
                     statuses.insert(node_id.clone(), result.status);
                     results.push(result);
@@ -551,6 +566,7 @@ impl GraphEngine {
                         duration: Duration::ZERO,
                         error: Some(reason),
                         output_count: 0,
+                        is_stub: false,
                     };
                     statuses.insert(node_id.clone(), result.status);
                     results.push(result);
@@ -594,6 +610,7 @@ impl GraphEngine {
                     duration: Duration::ZERO,
                     error: None,
                     output_count: count,
+                    is_stub: false,
                 });
                 continue;
             }
@@ -602,6 +619,7 @@ impl GraphEngine {
             let cell: Box<dyn Cell> = self.registry.create(&node.cell_type, node.config.clone())?;
 
             let input_hash = input_signal_hash(&input);
+            let cell_is_stub = cell.is_stub();
             let estimated_cost_usd = cell.estimated_cost().unwrap_or_default();
             let cell_ancestry = [
                 LensScope::Cell(node_id.clone()),
@@ -692,6 +710,7 @@ impl GraphEngine {
                         duration,
                         error: None,
                         output_count: count,
+                        is_stub: cell_is_stub,
                     });
                 }
                 Err(e) => {
@@ -725,6 +744,7 @@ impl GraphEngine {
                         duration,
                         error: Some(msg),
                         output_count: 0,
+                        is_stub: cell_is_stub,
                     });
                 }
             }
@@ -876,6 +896,7 @@ impl GraphEngine {
                             duration: Duration::ZERO,
                             error: Some(reason),
                             output_count: 0,
+                            is_stub: false,
                         };
                         statuses.lock().insert(node_id.clone(), result.status);
                         results.push(result);
@@ -889,6 +910,7 @@ impl GraphEngine {
                             duration: Duration::ZERO,
                             error: Some(reason),
                             output_count: 0,
+                            is_stub: false,
                         };
                         statuses.lock().insert(node_id.clone(), result.status);
                         results.push(result);
@@ -927,6 +949,7 @@ impl GraphEngine {
                         duration: Duration::ZERO,
                         error: None,
                         output_count: count,
+                        is_stub: false,
                     });
                     continue;
                 }
@@ -940,6 +963,7 @@ impl GraphEngine {
                 let sem = semaphore.clone();
                 let node_id = node_id.clone();
                 let cell_type = node.cell_type.clone();
+                let cell_is_stub = cell.is_stub();
                 let ctx = ctx.clone();
                 let graph_name = graph_name.clone();
                 let run_id = run_id.clone();
@@ -958,6 +982,7 @@ impl GraphEngine {
                                 duration: Duration::ZERO,
                                 error: Some("semaphore closed".into()),
                                 output_count: 0,
+                                is_stub: cell_is_stub,
                             },
                             0.0,
                             Vec::new(),
@@ -1028,6 +1053,7 @@ impl GraphEngine {
                                     duration,
                                     error: None,
                                     output_count: count,
+                                    is_stub: cell_is_stub,
                                 },
                                 output_signals,
                             )
@@ -1053,6 +1079,7 @@ impl GraphEngine {
                                     duration,
                                     error: Some(error),
                                     output_count: 0,
+                                    is_stub: cell_is_stub,
                                 },
                                 Vec::new(),
                             )
@@ -1119,6 +1146,7 @@ impl GraphEngine {
                                 duration: Duration::ZERO,
                                 error: Some("aborted: upstream wave had failure".to_string()),
                                 output_count: 0,
+                                is_stub: false,
                             };
                             statuses.lock().insert(node_id.clone(), result.status);
                             results.push(result);
@@ -1286,6 +1314,7 @@ impl GraphEngine {
                         duration: Duration::ZERO,
                         error: None,
                         output_count,
+                        is_stub: false,
                     });
                     continue;
                 }
@@ -1298,6 +1327,7 @@ impl GraphEngine {
                         duration: Duration::ZERO,
                         error: Some("conditional route was not selected in snapshot".to_string()),
                         output_count: 0,
+                        is_stub: false,
                     });
                     continue;
                 }
@@ -1310,6 +1340,7 @@ impl GraphEngine {
                         duration: Duration::ZERO,
                         error: Some("skipped in snapshot".to_string()),
                         output_count: 0,
+                        is_stub: false,
                     });
                     continue;
                 }
@@ -1322,6 +1353,7 @@ impl GraphEngine {
                         duration: Duration::ZERO,
                         error: Some("failed in snapshot".to_string()),
                         output_count: 0,
+                        is_stub: false,
                     });
                     continue;
                 }
@@ -1339,6 +1371,7 @@ impl GraphEngine {
                         duration: Duration::ZERO,
                         error: Some(reason),
                         output_count: 0,
+                        is_stub: false,
                     });
                     continue;
                 }
@@ -1351,6 +1384,7 @@ impl GraphEngine {
                         duration: Duration::ZERO,
                         error: Some(reason),
                         output_count: 0,
+                        is_stub: false,
                     });
                     continue;
                 }
@@ -1358,6 +1392,7 @@ impl GraphEngine {
 
             // Re-execute pending nodes and all Workflow nodes.
             let cell: Box<dyn Cell> = registry.create(&node.cell_type, node.config.clone())?;
+            let cell_is_stub = cell.is_stub();
 
             info!(node_id = %node_id, cell_type = %node.cell_type, "resume: executing node");
             let node_start = Instant::now();
@@ -1377,6 +1412,7 @@ impl GraphEngine {
                         duration,
                         error: None,
                         output_count: count,
+                        is_stub: cell_is_stub,
                     });
                 }
                 Err(e) => {
@@ -1390,6 +1426,7 @@ impl GraphEngine {
                         duration,
                         error: Some(msg),
                         output_count: 0,
+                        is_stub: cell_is_stub,
                     });
                 }
             }
@@ -1590,6 +1627,7 @@ impl GraphEngine {
                     duration: Duration::ZERO,
                     error: Some("aborted after graph failure".to_string()),
                     output_count: 0,
+                    is_stub: false,
                 });
                 continue;
             }
@@ -1611,6 +1649,7 @@ impl GraphEngine {
                             duration: Duration::ZERO,
                             error: Some(reason),
                             output_count: 0,
+                            is_stub: false,
                         });
                         continue;
                     }
@@ -1626,6 +1665,7 @@ impl GraphEngine {
                             duration: Duration::ZERO,
                             error: Some(reason),
                             output_count: 0,
+                            is_stub: false,
                         });
                         continue;
                     }
@@ -1637,6 +1677,7 @@ impl GraphEngine {
                 .insert(node_id.clone(), NodeStatus::Running);
 
             let cell: Box<dyn Cell> = self.registry.create(&node.cell_type, node.config.clone())?;
+            let cell_is_stub = cell.is_stub();
             let estimated_cost_usd = cell.estimated_cost().unwrap_or_default();
             let ancestry = [
                 LensScope::Cell(node_id.clone()),
@@ -1703,6 +1744,7 @@ impl GraphEngine {
                         duration,
                         error: None,
                         output_count: count,
+                        is_stub: cell_is_stub,
                     });
                 }
                 Err(e) => {
@@ -1733,6 +1775,7 @@ impl GraphEngine {
                         duration,
                         error: Some(msg),
                         output_count: 0,
+                        is_stub: cell_is_stub,
                     });
                 }
             }
@@ -2247,6 +2290,9 @@ impl Cell for NoopCell {
     }
     fn cell_version(&self) -> crate::cell::CellVersion {
         (0, 1, 0)
+    }
+    fn is_stub(&self) -> bool {
+        true
     }
     fn protocols(&self) -> Vec<roko_core::ProtocolId> {
         Vec::new()

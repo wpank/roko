@@ -1550,6 +1550,10 @@ Examples:
         /// run completion, etc.) is serialized as a single JSON line and flushed.
         #[arg(long, value_name = "PATH")]
         log_file: Option<PathBuf>,
+        /// Skip the preflight environment checks (config, credentials, toolchain,
+        /// plans, stale lock) and proceed directly to plan execution.
+        #[arg(long)]
+        skip_preflight: bool,
     },
     /// Generate implementation plans from a prompt, file, or PRD.
     Generate {
@@ -3063,6 +3067,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 force: false,
                 dangerously_skip_permissions: false,
                 log_file: None,
+                skip_preflight: false,
             };
             commands::plan::cmd_plan(cli, plan_cmd).await
         }

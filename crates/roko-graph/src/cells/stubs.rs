@@ -41,6 +41,10 @@ impl Cell for PassthroughCell {
         (0, 1, 0)
     }
 
+    fn is_stub(&self) -> bool {
+        true
+    }
+
     fn protocols(&self) -> Vec<ProtocolId> {
         Vec::new()
     }

@@ -1,0 +1,57 @@
+[meta]
+plan = "prd-cascade-learning"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 30
+
+[[task]]
+id = "T01"
+title = "Fix cascade router learning for research commands"
+role = "implementer"
+files = [
+    "crates/roko-cli/src/commands/util.rs",
+]
+description = """Fix the cascade router so it learns from `roko research` operations.
+
+## Problem
+
+`crates/roko-cli/src/commands/util.rs` contains `persist_capture_episode` (or a similarly
+named helper) that initializes the CascadeRouter with hardcoded model defaults instead of
+actual runtime models. This means research command executions never update the router's
+learned weights.
+
+## Fix
+
+1. Read `crates/roko-cli/src/commands/util.rs` and find the episode persistence helper
+   function used by research commands.
+
+2. Read how PRD commands do it correctly — look at `crates/roko-cli/src/commands/prd.rs`
+   for a reference that loads config with `load_config_unified` and calls
+   `capture_runtime_model_slugs` to get actual models.
+
+3. Update the research command helper to:
+   - Load config with `load_config_unified` (or reuse the config already available in the
+     command context)
+   - Call `capture_runtime_model_slugs` to get actual runtime models
+   - Use `open_for_project_with_models` when models are available, instead of the default
+     initialization
+
+4. Verify the research commands still work — the change should be internal to the episode
+   persistence path, not the command's public interface.
+
+## What NOT to change
+
+- Do NOT modify the CascadeRouter struct itself
+- Do NOT change how episodes are structured
+- Do NOT add new CLI flags
+
+Verify: `cargo clippy -p roko-cli --no-deps -- -D warnings && cargo test -p roko-cli --lib -- util`"""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo clippy -p roko-cli --no-deps -- -D warnings && cargo test -p roko-cli --lib -- util"

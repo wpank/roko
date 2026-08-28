@@ -33,7 +33,7 @@ use roko_learn::model_router::RoutingContext;
 use roko_learn::provider_health::ProviderHealthRegistry;
 
 use super::DispatchContext;
-use super::outcome::DispatchError;
+use super::outcome::RunnerDispatchError;
 use crate::task_parser::TaskDef;
 
 // ─── Inputs ────────────────────────────────────────────────────────────
@@ -272,7 +272,7 @@ impl ModelRouter {
     /// [`CascadeRouter::route_with_health_scored`] which filters `Open`-circuit
     /// providers and demotes `HalfOpen` / high-latency ones, ensuring the
     /// selected model has a healthy provider.
-    pub fn route(&self, inputs: &RoutingInputs) -> Result<ModelChoice, DispatchError> {
+    pub fn route(&self, inputs: &RoutingInputs) -> Result<ModelChoice, RunnerDispatchError> {
         if let Some(slug) = inputs.force_backend.as_ref() {
             return Ok(ModelChoice {
                 model: ModelSpec::from_slug(slug),

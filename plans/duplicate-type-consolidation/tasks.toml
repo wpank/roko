@@ -1,8 +1,8 @@
 [meta]
 plan = "duplicate-type-consolidation"
 total = 2
-done = 0
-status = "ready"
+done = 2
+status = "complete"
 max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 90

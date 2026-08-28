@@ -1,0 +1,90 @@
+[meta]
+plan = "dream-trigger-on-plan-complete"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 60
+
+[[task]]
+id = "T01"
+title = "Wire automatic dream consolidation trigger on plan completion"
+role = "implementer"
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-dreams/src/",
+    "crates/roko-core/src/config/schema.rs",
+]
+description = """Wire dream consolidation to trigger automatically after plan completion.
+
+## Problem
+
+DreamRunner and PlanCompletionTriggerPolicy exist but dreams only run via manual
+`roko knowledge dream run`. Episodes accumulate without becoming knowledge or playbook
+rules, breaking the self-improvement loop.
+
+## Steps
+
+1. Read `crates/roko-core/src/config/schema.rs` and find the learning config section.
+   Add a dreams subsection:
+   ```rust
+   #[serde(default)]
+   pub dreams: DreamsConfig,
+   ```
+   With:
+   ```rust
+   #[derive(Debug, Clone, Serialize, Deserialize)]
+   pub struct DreamsConfig {
+       #[serde(default = "default_true")]
+       pub trigger_on_plan_complete: bool,
+       #[serde(default = "default_max_concurrent")]
+       pub max_concurrent: usize,
+   }
+   fn default_true() -> bool { true }
+   fn default_max_concurrent() -> usize { 1 }
+   ```
+
+2. Read `crates/roko-dreams/src/` to find `DreamRunner` and its `run_cycle` method.
+   Understand what parameters it needs (workdir, config, etc).
+
+3. Read `crates/roko-cli/src/runner/event_loop.rs` and find where plan completion is
+   handled (search for "PlanCompleted" or "plan_complete" or the plan state transition).
+
+4. At plan completion, when `trigger_on_plan_complete = true`:
+   ```rust
+   if config.learning.dreams.trigger_on_plan_complete {
+       let workdir = workdir.clone();
+       tokio::spawn(async move {
+           tracing::info!("triggering dream consolidation after plan completion");
+           match DreamRunner::run_cycle(&workdir).await {
+               Ok(report) => tracing::info!(entries = report.entries_created, "dream consolidation complete"),
+               Err(e) => tracing::warn!(error = %e, "dream consolidation failed"),
+           }
+       });
+   }
+   ```
+   Adapt to match the actual DreamRunner API.
+
+5. Use an AtomicBool or similar to prevent concurrent dream runs:
+   ```rust
+   static DREAM_RUNNING: AtomicBool = AtomicBool::new(false);
+   if DREAM_RUNNING.compare_exchange(false, true, ...).is_ok() {
+       // spawn dream
+       // set DREAM_RUNNING = false on completion
+   }
+   ```
+
+## What NOT to change
+
+- Do NOT change DreamRunner internals
+- Do NOT add idle trigger or episode count trigger (separate scope)
+- Do NOT block the runner on dream completion
+
+Verify: `cargo clippy -p roko-cli -p roko-dreams -p roko-core --no-deps -- -D warnings`"""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo clippy -p roko-cli -p roko-dreams -p roko-core --no-deps -- -D warnings"

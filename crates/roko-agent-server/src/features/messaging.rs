@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::state::{AgentState, DispatchError, MessageContext};
+use crate::state::{AgentState, SidecarDispatchError, MessageContext};
 
 /// Messaging routes.
 pub fn router() -> Router<Arc<AgentState>> {
@@ -90,10 +90,10 @@ fn missing_dispatcher() -> (StatusCode, Json<Value>) {
     )
 }
 
-fn dispatch_failed(error: &DispatchError) -> (StatusCode, Json<Value>) {
+fn dispatch_failed(error: &SidecarDispatchError) -> (StatusCode, Json<Value>) {
     match error {
-        DispatchError::NotConfigured => missing_dispatcher(),
-        DispatchError::DispatchFailed(_) => (
+        SidecarDispatchError::NotConfigured => missing_dispatcher(),
+        SidecarDispatchError::DispatchFailed(_) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({
                 "error": error.to_string(),
@@ -232,11 +232,11 @@ async fn stream_prompt(
         }
         Ok(Err(error)) => {
             let payload = match error {
-                DispatchError::NotConfigured => json!({
+                SidecarDispatchError::NotConfigured => json!({
                     "error": "agent has no configured dispatcher",
                     "done": true,
                 }),
-                DispatchError::DispatchFailed(_) => json!({
+                SidecarDispatchError::DispatchFailed(_) => json!({
                     "error": error.to_string(),
                     "done": true,
                 }),
@@ -277,18 +277,18 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use crate::state::{DispatchError, DispatchLike};
+    use crate::state::{SidecarDispatchError, DispatchLike};
 
     #[derive(Clone)]
     struct MockDispatcher {
         response: ChatResponse,
         stream_chunks: Vec<String>,
-        error: Option<DispatchError>,
+        error: Option<SidecarDispatchError>,
     }
 
     #[async_trait]
     impl DispatchLike for MockDispatcher {
-        async fn dispatch(&self, _request: ChatRequest) -> Result<ChatResponse, DispatchError> {
+        async fn dispatch(&self, _request: ChatRequest) -> Result<ChatResponse, SidecarDispatchError> {
             match &self.error {
                 Some(error) => Err(error.clone()),
                 None => Ok(self.response.clone()),
@@ -299,7 +299,7 @@ mod tests {
             &self,
             _request: ChatRequest,
             event_tx: mpsc::UnboundedSender<StreamChunk>,
-        ) -> Result<ChatResponse, DispatchError> {
+        ) -> Result<ChatResponse, SidecarDispatchError> {
             if let Some(error) = &self.error {
                 return Err(error.clone());
             }
@@ -437,7 +437,7 @@ mod tests {
             Some(Arc::new(MockDispatcher {
                 response: ChatResponse::default(),
                 stream_chunks: Vec::new(),
-                error: Some(DispatchError::DispatchFailed("boom".to_string())),
+                error: Some(SidecarDispatchError::DispatchFailed("boom".to_string())),
             })),
         );
         let response = router()

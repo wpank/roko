@@ -269,7 +269,7 @@ pub enum DispatchAttemptKind {
 /// Typed dispatch resolution or execution error.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DispatchError {
+pub enum ProviderDispatchError {
     MissingAuth {
         provider_id: String,
         auth_method: String,
@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn dispatch_error_harness_crash() {
-        let err = DispatchError::HarnessCrash {
+        let err = ProviderDispatchError::HarnessCrash {
             harness_id: "openclaw".to_string(),
             transport: "acp_stdio".to_string(),
             mid_turn: true,
@@ -557,7 +557,7 @@ mod tests {
         assert_eq!(value["error"], "SIGKILL");
 
         let json = serde_json::to_string(&err).expect("serialize");
-        let back: DispatchError = serde_json::from_str(&json).expect("deserialize");
+        let back: ProviderDispatchError = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(err, back);
 
         // Verify Debug output contains key fields.

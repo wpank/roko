@@ -1,0 +1,65 @@
+[meta]
+plan = "daimon-affect-persistence"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 60
+
+[[task]]
+id = "T01"
+title = "Wire daimon affect deltas and persistence after task/gate outcomes"
+role = "implementer"
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-daimon/src/",
+]
+description = """Wire daimon affect state updates and persistence so affect feedback loop is closed.
+
+## Problem
+
+DaimonState is loaded at runner startup and passed to the cascade router for the first
+task dispatch. But affect deltas from task/gate outcomes are never applied back, so
+subsequent dispatches use stale initial state. The affect feedback loop is open.
+
+## Steps
+
+1. Read `crates/roko-daimon/src/` to understand the DaimonState struct. Find methods like
+   `apply_success_delta`, `apply_failure_delta`, `apply_relief_delta`, `save`, `snapshot`.
+   If these methods don't exist yet, you'll need to add them.
+
+2. Read `crates/roko-cli/src/runner/event_loop.rs` and find where DaimonState is loaded
+   (search for "daimon" or "DaimonState"). Then find the task completion and gate
+   completion handlers.
+
+3. In the task completion handler (or gate result handler):
+   - On gate pass: call `daimon_state.apply_success_delta()` (or equivalent)
+   - On gate fail: call `daimon_state.apply_failure_delta()` (or equivalent)
+
+4. After each affect update, persist the state:
+   ```rust
+   if let Err(e) = daimon_state.save(&affect_path) {
+       tracing::warn!(error = %e, "failed to persist daimon affect state");
+   }
+   ```
+
+5. Ensure the cascade router receives the UPDATED daimon state on each dispatch, not
+   just the initial loaded state. If DaimonState is passed by value (cloned), change to
+   a shared reference (Arc<Mutex<DaimonState>> or similar) so updates are visible.
+
+6. Verify by checking that `.roko/daimon/affect.json` changes after a gate pass/fail.
+
+## What NOT to change
+
+- Do NOT change the DaimonState struct fields or affect model
+- Do NOT add episode metadata fields (separate scope #144)
+- Do NOT modify the cascade router logic
+
+Verify: `cargo clippy -p roko-cli -p roko-daimon --no-deps -- -D warnings`"""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo clippy -p roko-cli -p roko-daimon --no-deps -- -D warnings"

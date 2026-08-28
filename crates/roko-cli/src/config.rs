@@ -3254,8 +3254,7 @@ pub fn load_resolved_config(workdir: &Path) -> Result<ResolvedConfig> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => ConfigLayer::default(),
             Err(e) => {
                 return Err(
-                    anyhow::Error::new(e)
-                        .context(format!("read config {}", global_path.display())),
+                    anyhow::Error::new(e).context(format!("read config {}", global_path.display()))
                 );
             }
         },

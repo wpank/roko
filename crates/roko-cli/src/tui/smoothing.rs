@@ -17,12 +17,18 @@ pub struct SmoothedValue {
 impl SmoothedValue {
     /// Create a new smoother starting at zero.
     pub fn new(alpha: f64) -> Self {
-        Self { value: 0.0, alpha: alpha.clamp(0.0, 1.0) }
+        Self {
+            value: 0.0,
+            alpha: alpha.clamp(0.0, 1.0),
+        }
     }
 
     /// Create a new smoother starting at `initial`.
     pub fn with_initial(alpha: f64, initial: f64) -> Self {
-        Self { value: initial, alpha: alpha.clamp(0.0, 1.0) }
+        Self {
+            value: initial,
+            alpha: alpha.clamp(0.0, 1.0),
+        }
     }
 
     /// Push a new raw value. The internal display value moves toward it.
@@ -46,7 +52,11 @@ mod tests {
         for _ in 0..50 {
             s.update(100.0);
         }
-        assert!((s.get() - 100.0).abs() < 0.5, "should converge to 100, got {}", s.get());
+        assert!(
+            (s.get() - 100.0).abs() < 0.5,
+            "should converge to 100, got {}",
+            s.get()
+        );
     }
 
     #[test]

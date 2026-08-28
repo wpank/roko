@@ -1,0 +1,93 @@
+[meta]
+plan = "duplicate-type-consolidation"
+total = 2
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 90
+
+[[task]]
+id = "T01"
+title = "Consolidate GitOps types from roko-runtime and roko-agent into roko-core"
+role = "implementer"
+files = [
+    "crates/roko-core/src/",
+    "crates/roko-runtime/src/",
+    "crates/roko-agent/src/",
+]
+description = """Move duplicated GitOps types to roko-core as the shared home.
+
+## Problem
+
+GitOpsConfig, GitOpsRetryPolicy, and ConfigDrift are defined identically in both
+roko-runtime and roko-agent. This causes confusion about which to import.
+
+## Steps
+
+1. Search for all definitions of GitOpsConfig, GitOpsRetryPolicy, ConfigDrift:
+   ```
+   grep -rn "struct GitOpsConfig" crates/ --include="*.rs"
+   grep -rn "struct GitOpsRetryPolicy" crates/ --include="*.rs"
+   grep -rn "struct ConfigDrift" crates/ --include="*.rs"
+   ```
+
+2. Pick the most complete definition and move it to `crates/roko-core/src/gitops.rs`
+   (create the file if needed).
+
+3. Add `pub mod gitops;` to `crates/roko-core/src/lib.rs`.
+
+4. Update all imports in roko-runtime and roko-agent to use `roko_core::gitops::*`.
+
+5. Delete the duplicate definitions from roko-runtime and roko-agent.
+
+6. Verify all downstream crates compile.
+
+## What NOT to change
+
+- Do NOT change the struct fields or behavior
+- Do NOT rename the types
+
+Verify: `cargo clippy --workspace --no-deps -- -D warnings`"""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo clippy -p roko-core -p roko-runtime -p roko-agent --no-deps -- -D warnings"
+
+[[task]]
+id = "T02"
+title = "Rename ambiguous DispatchError enums to layer-specific names"
+role = "implementer"
+depends_on = ["T01"]
+files = [
+    "crates/roko-core/src/",
+    "crates/roko-cli/src/",
+    "crates/roko-agent-server/src/",
+]
+description = """Rename three unrelated DispatchError enums to reflect their layer.
+
+## Problem
+
+Three crates each define a `DispatchError` enum with different meanings:
+- roko-core: provider dispatch errors
+- roko-cli: runner dispatch errors
+- roko-agent-server: sidecar dispatch errors
+
+## Steps
+
+1. In roko-core, rename `DispatchError` to `ProviderDispatchError`.
+2. In roko-cli, rename `DispatchError` to `RunnerDispatchError`.
+3. In roko-agent-server, rename `DispatchError` to `SidecarDispatchError`.
+4. Update all references in each crate.
+
+Use find-and-replace carefully. Check for re-exports and trait impls.
+
+Verify: `cargo clippy -p roko-core -p roko-cli -p roko-agent-server --no-deps -- -D warnings`"""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo clippy -p roko-core -p roko-cli -p roko-agent-server --no-deps -- -D warnings"

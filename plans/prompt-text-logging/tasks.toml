@@ -1,0 +1,89 @@
+[meta]
+plan = "prompt-text-logging"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 45
+
+[[task]]
+id = "T01"
+title = "Add opt-in full prompt text logging with bounded retention"
+role = "implementer"
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-core/src/config/schema.rs",
+    ".gitignore",
+]
+description = """Add configurable full prompt text logging so agent prompts can be inspected for debugging.
+
+## Problem
+
+AgentEfficiencyEvent tracks section metadata (which sections, token counts) but not the
+actual prompt text. Debugging agent errors requires knowing exactly what the agent saw.
+
+## Steps
+
+1. Read `crates/roko-core/src/config/schema.rs` and find the `RunnerConfig` struct.
+   Add two fields:
+   ```rust
+   #[serde(default)]
+   pub log_prompts: bool,
+   #[serde(default = "default_prompt_log_retention")]
+   pub prompt_log_retention: usize,
+   ```
+   Add `fn default_prompt_log_retention() -> usize { 100 }`.
+
+2. Read `crates/roko-cli/src/runner/event_loop.rs` and find the agent dispatch site
+   where the system prompt is assembled and passed to the agent. After the prompt is
+   assembled but before dispatch, add:
+   ```rust
+   if config.runner.log_prompts {
+       let log_dir = workdir.join(".roko/prompt-logs");
+       let _ = std::fs::create_dir_all(&log_dir);
+       let log_entry = serde_json::json!({
+           "episode_id": episode_id,
+           "task_id": task_id,
+           "plan_id": plan_id,
+           "role": role,
+           "assembled_at": chrono::Utc::now().to_rfc3339(),
+           "full_text": system_prompt_text,
+       });
+       let filename = format!("{}-{}.json", episode_id, attempt);
+       let path = log_dir.join(&filename);
+       if let Ok(json) = serde_json::to_string_pretty(&log_entry) {
+           let _ = std::fs::write(&path, json);
+       }
+       // GC: keep only the most recent N logs
+       if let Ok(entries) = std::fs::read_dir(&log_dir) {
+           let mut files: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+           if files.len() > config.runner.prompt_log_retention {
+               files.sort_by_key(|f| std::cmp::Reverse(f.metadata().ok().and_then(|m| m.modified().ok())));
+               for f in files.iter().skip(config.runner.prompt_log_retention) {
+                   let _ = std::fs::remove_file(f.path());
+               }
+           }
+       }
+   }
+   ```
+   Adapt variable names to match the actual code. The key is to find where the prompt
+   text is available and write it to disk before dispatching.
+
+3. Add `.roko/prompt-logs/` to `.gitignore` if not already present.
+
+4. Verify the config field is picked up by running `cargo clippy -p roko-cli -p roko-core --no-deps -- -D warnings`.
+
+## What NOT to change
+
+- Do NOT change how prompts are assembled
+- Do NOT add new crate dependencies
+- Do NOT wire into `roko diagnose` (separate scope)
+
+Verify: `cargo clippy -p roko-cli -p roko-core --no-deps -- -D warnings`"""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo clippy -p roko-cli -p roko-core --no-deps -- -D warnings"

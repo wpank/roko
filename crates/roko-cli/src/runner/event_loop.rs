@@ -1842,10 +1842,16 @@ pub async fn run(
     };
     let paths = PersistPaths::from_workdir(&config.workdir)?;
     let cleaned = persist::clean_stale_staging_files(
-        paths.state_snapshot_json.parent().unwrap_or(&config.workdir),
+        paths
+            .state_snapshot_json
+            .parent()
+            .unwrap_or(&config.workdir),
     );
     if cleaned > 0 {
-        info!(count = cleaned, "cleaned stale staging files from previous crash");
+        info!(
+            count = cleaned,
+            "cleaned stale staging files from previous crash"
+        );
     }
     let snapshot_writer = SnapshotWriter::new(4);
     persist::cleanup_orphaned_agents(&paths);

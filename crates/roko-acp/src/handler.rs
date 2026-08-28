@@ -102,12 +102,10 @@ where
                 Some(implicit) if implicit.is_file() => {
                     format!("using implicit global config from {}", implicit.display())
                 }
-                _ => {
-                    "no global config found; using built-in defaults only. \
+                _ => "no global config found; using built-in defaults only. \
                      Run `roko init` in this directory or pass --global-config ~/.roko/config.toml"
-                        .to_owned()
-                }
-            }
+                    .to_owned(),
+            },
         };
         warn!(
             workdir = %config.workdir.display(),

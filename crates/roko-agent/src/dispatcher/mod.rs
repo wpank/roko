@@ -251,6 +251,16 @@ where
     }
 }
 
+/// Type-erased callback for safety denial audit events.
+///
+/// Arguments: `(tool_name, denial_reason, task_id, timestamp_ms)`.
+///
+/// Kept as a closure rather than a typed bus reference to avoid a circular
+/// crate dependency: `roko-learn` already depends on `roko-agent`, so
+/// `roko-agent` cannot depend on `roko-learn`. Callers in `roko-cli` close
+/// over an `EventBus` and publish an `AgentEvent::SafetyDenial`.
+pub type SafetyDenialCallback = Arc<dyn Fn(String, String, String, i64) + Send + Sync>;
+
 /// Dispatches [`ToolCall`]s through validation → safety → authorization → handler.
 pub struct ToolDispatcher {
     registry: Arc<dyn ToolRegistry>,
@@ -272,6 +282,12 @@ pub struct ToolDispatcher {
     /// When set, tool calls are filtered against the selector before dispatch.
     /// Tools not allowed by the selector are rejected with `PermissionDenied`.
     tool_selector: Option<tool_selector::ToolSelector>,
+    /// Optional callback invoked when the safety layer denies a tool call.
+    ///
+    /// See [`SafetyDenialCallback`] for the argument signature. Wire this up
+    /// from `roko-cli` via [`ToolDispatcher::with_safety_denial_callback`] to
+    /// record denials durably in `.roko/learn/safety-denials.jsonl`.
+    safety_denial_callback: Option<SafetyDenialCallback>,
 }
 
 impl ToolDispatcher {
@@ -289,6 +305,7 @@ impl ToolDispatcher {
             hook_chain: None,
             production_hook_chain,
             tool_selector: None,
+            safety_denial_callback: None,
         }
     }
 
@@ -312,6 +329,7 @@ impl ToolDispatcher {
             hook_chain: None,
             production_hook_chain: None,
             tool_selector: None,
+            safety_denial_callback: None,
         }
     }
 
@@ -364,6 +382,20 @@ impl ToolDispatcher {
     #[must_use]
     pub const fn tool_selector(&self) -> Option<&tool_selector::ToolSelector> {
         self.tool_selector.as_ref()
+    }
+
+    /// Attach a callback for safety denial audit events.
+    ///
+    /// The callback receives `(tool_name, denial_reason, task_id, timestamp_ms)`
+    /// each time the safety layer blocks a tool call at the pre-execution check.
+    ///
+    /// Intended to be wired from `roko-cli` to publish
+    /// `roko_learn::events::AgentEvent::SafetyDenial` events onto the learning
+    /// bus, which the subscriber writes to `.roko/learn/safety-denials.jsonl`.
+    #[must_use]
+    pub fn with_safety_denial_callback(mut self, cb: SafetyDenialCallback) -> Self {
+        self.safety_denial_callback = Some(cb);
+        self
     }
 
     /// Returns the hook chain, if one is attached.
@@ -605,6 +637,16 @@ impl ToolDispatcher {
                 error = %self.sanitize_audit_label(&e.to_string()),
                 "FAILED at safety pre-execution"
             );
+            if let Some(ref cb) = self.safety_denial_callback {
+                // task_id is not available on ToolContext; callers in roko-cli
+                // may derive it from outer task state before wiring the callback.
+                cb(
+                    call.name.clone(),
+                    self.sanitize_audit_label(&e.to_string()),
+                    String::new(),
+                    chrono::Utc::now().timestamp_millis(),
+                );
+            }
             self.emit_audit(
                 ctx,
                 call,

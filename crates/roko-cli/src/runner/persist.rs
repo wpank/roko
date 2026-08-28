@@ -549,8 +549,7 @@ pub fn load_state_snapshot_backup(paths: &PersistPaths) -> Result<Option<StateSn
     if !backup.exists() {
         return Ok(None);
     }
-    let file =
-        fs::File::open(&backup).with_context(|| format!("opening {}", backup.display()))?;
+    let file = fs::File::open(&backup).with_context(|| format!("opening {}", backup.display()))?;
     let metadata_len = file
         .metadata()
         .with_context(|| format!("stat {}", backup.display()))?
@@ -1151,9 +1150,15 @@ mod tests {
         save_state_snapshot(&paths, &snap).unwrap();
 
         let backup_path = paths.state_snapshot_json.with_extension("json.bak");
-        assert!(backup_path.exists(), ".bak file must exist after second save");
+        assert!(
+            backup_path.exists(),
+            ".bak file must exist after second save"
+        );
         let backup_content = fs::read(&backup_path).unwrap();
-        assert_eq!(backup_content, first_content, ".bak must contain the first snapshot");
+        assert_eq!(
+            backup_content, first_content,
+            ".bak must contain the first snapshot"
+        );
     }
 
     #[test]
@@ -1202,7 +1207,10 @@ mod tests {
 
         let serialized = serde_json::to_string(&snapshot).unwrap();
         let deserialized: RunStateSnapshot = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(deserialized.gate_thresholds_json.as_deref(), Some(gt_json.as_str()));
+        assert_eq!(
+            deserialized.gate_thresholds_json.as_deref(),
+            Some(gt_json.as_str())
+        );
 
         // Verify the embedded JSON actually round-trips back to GateThresholds.
         let restored: GateThresholds =

@@ -1,0 +1,75 @@
+[meta]
+plan = "experiment-assignment-stability"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 60
+
+[[task]]
+id = "T01"
+title = "Add hash-based tiebreaker to experiment variant assignment for resume stability"
+role = "implementer"
+files = [
+    "crates/roko-learn/src/model_experiment.rs",
+]
+description = """Fix experiment variant assignment instability across plan resume.
+
+## Problem
+
+When a plan resumes, the same task can get a different model variant because UCB1 bandit
+scores change after each outcome. This corrupts A/B experiment data since the "same task"
+gets different treatments across attempts.
+
+## Steps
+
+1. Read `crates/roko-learn/src/model_experiment.rs` and find the `assign_variant`,
+   `assign_model`, and `assign_model_with_experiment` methods.
+
+2. Add a `task_id: &str` parameter to each of these methods. The task_id provides a
+   stable identity for hash-based tiebreaking.
+
+3. Add a helper function for deterministic tiebreaking:
+   ```rust
+   fn tiebreak_index(task_id: &str, count: usize) -> usize {
+       use std::hash::{Hash, Hasher};
+       let mut hasher = std::collections::hash_map::DefaultHasher::new();
+       task_id.hash(&mut hasher);
+       (hasher.finish() as usize) % count
+   }
+   ```
+
+4. In the selection logic (where UCB1 scores are compared), collect all variants with
+   the maximum score into a `tied` vec. Then use `tiebreak_index(task_id, tied.len())`
+   to pick among them deterministically.
+
+5. Update all callers of `assign_variant`, `assign_model`, and
+   `assign_model_with_experiment` across the workspace to pass a task_id. Search with:
+   ```
+   grep -rn "assign_variant" crates/ --include="*.rs"
+   grep -rn "assign_model" crates/ --include="*.rs"
+   ```
+   For callers that don't have a task_id available, pass an empty string (which
+   preserves current behavior since the hash of "" is deterministic).
+
+6. Add two tests:
+   - `unsampled_assignment_varies_by_task_id`: create an experiment with 2 variants,
+     both unsampled (UCB1 = infinity). Call assign_variant with different task_ids and
+     verify at least two different variants are returned across 10 different task_ids.
+   - `assignment_stable_across_outcome_recording`: assign variant for task "T01",
+     record an outcome, then re-assign for "T01" — should return the same variant.
+
+## What NOT to change
+
+- Do NOT change the UCB1 scoring formula
+- Do NOT change experiment persistence format
+- Do NOT change the EventBus integration
+
+Verify: `cargo clippy -p roko-learn --no-deps -- -D warnings && cargo test -p roko-learn --lib -- model_experiment`"""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo clippy -p roko-learn --no-deps -- -D warnings && cargo test -p roko-learn --lib -- model_experiment"

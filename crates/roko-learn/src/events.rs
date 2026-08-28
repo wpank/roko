@@ -77,6 +77,22 @@ pub enum AgentEvent {
     StreamChunk {
         chunk: StreamChunk,
     },
+    /// Safety layer denied a tool call before execution.
+    ///
+    /// The `denial_reason` must contain only the policy reason (e.g. "tool
+    /// `write_file` is not allowed for role `reviewer`"); it must never
+    /// include agent output or user data.
+    SafetyDenial {
+        /// Name of the tool that was denied.
+        tool_name: String,
+        /// Policy reason for the denial (sanitized).
+        denial_reason: String,
+        /// Task identifier at the time of denial.
+        task_id: String,
+        /// Epoch milliseconds at the time of denial, matching the convention
+        /// used by [`AgentEvent::TurnStarted::timestamp_ms`].
+        timestamp: i64,
+    },
 }
 
 /// Pub/sub bus for broadcasting learning events to multiple subscribers.

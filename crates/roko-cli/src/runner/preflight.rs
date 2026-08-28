@@ -267,6 +267,16 @@ fn check_stale_lock(workdir: &Path) -> PreflightCheck {
         }
     };
 
+    // If the lock PID matches our own process, the lock was written by this
+    // runner instance before calling preflight — not a conflict.
+    if pid == std::process::id() {
+        return PreflightCheck {
+            name: "lock",
+            status: PreflightStatus::Pass,
+            message: "workspace lock held by current process".to_string(),
+        };
+    }
+
     if is_pid_alive(pid) {
         PreflightCheck {
             name: "lock",
@@ -419,15 +429,16 @@ mod tests {
     }
 
     #[test]
-    fn check_stale_lock_fail_when_current_pid() {
+    fn check_stale_lock_pass_when_current_pid() {
         let workdir = tempdir().expect("tempdir");
         let lock_dir = workdir.path().join(".roko").join("runtime");
         std::fs::create_dir_all(&lock_dir).expect("create dir");
         let pid = std::process::id();
         std::fs::write(lock_dir.join("roko.lock"), format!("{pid}\n")).expect("write lock");
         let result = check_stale_lock(workdir.path());
-        assert_eq!(result.status, PreflightStatus::Fail);
-        assert!(result.message.contains("another roko process"), "message: {}", result.message);
+        // Current process PID should be recognized as our own lock, not a conflict.
+        assert_eq!(result.status, PreflightStatus::Pass);
+        assert!(result.message.contains("current process"), "message: {}", result.message);
     }
 
     #[test]

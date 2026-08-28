@@ -1,0 +1,60 @@
+[meta]
+plan = "legacy-page-removal"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 45
+
+[[task]]
+id = "T01"
+title = "Remove unused PageId/PageScaffold legacy page system from TUI"
+role = "implementer"
+files = [
+    "crates/roko-cli/src/tui/",
+]
+description = """Remove the unused legacy page system from the TUI module.
+
+## Problem
+
+The TUI has two navigation systems:
+1. The current ratatui `Tab`/`SubView` system (active, renders content)
+2. An unused `PageId`/`PageScaffold` text-mode system (never wired to rendering)
+
+The legacy system creates confusion about which system is authoritative.
+
+## Steps
+
+1. Search for `PageId` and `PageScaffold` across the entire `crates/roko-cli/src/tui/`
+   directory:
+   ```
+   grep -rn "PageId" crates/roko-cli/src/tui/
+   grep -rn "PageScaffold" crates/roko-cli/src/tui/
+   ```
+
+2. Audit every usage:
+   - If `PageId` or `PageScaffold` is used in active rendering code, do NOT remove it.
+   - If it's only referenced by other dead code or conversion functions, mark for removal.
+
+3. Delete the enum and struct definitions for `PageId` and `PageScaffold`.
+
+4. Delete any associated conversion functions (e.g., `impl From<PageId> for Tab`).
+
+5. Delete any fields in `TuiModel` or `App` that use `PageId` or `PageScaffold`.
+
+6. If removal causes compile errors, trace the dependency and remove the upstream dead code too.
+
+## What NOT to change
+
+- Do NOT change the active Tab/SubView rendering system
+- Do NOT remove any code that is currently used for rendering
+- Do NOT restructure the TUI module organization
+
+Verify: `cargo clippy -p roko-cli --no-deps -- -D warnings && cargo test -p roko-cli --lib -- tui`"""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo clippy -p roko-cli --no-deps -- -D warnings && cargo test -p roko-cli --lib -- tui"

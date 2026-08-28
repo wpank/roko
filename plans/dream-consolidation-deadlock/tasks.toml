@@ -1,0 +1,63 @@
+[meta]
+plan = "dream-consolidation-deadlock"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 30
+
+[[task]]
+id = "T01"
+title = "Fix dream consolidation deadlock: replace spawn_blocking with tokio::spawn"
+role = "implementer"
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-dreams/src/runner.rs",
+]
+description = """Fix the dream consolidation deadlock caused by calling block_on inside spawn_blocking.
+
+## Problem
+
+The dream consolidation call site in the runner event loop uses `spawn_blocking` to run
+`DreamRunner::consolidate_async()`. But `consolidate_async()` is async and internally
+spawns child tasks. Calling `block_on` inside `spawn_blocking` when child tasks need the
+tokio runtime causes a deadlock.
+
+## Fix
+
+1. In `crates/roko-dreams/src/runner.rs`, find `consolidate_async()`. Ensure it is `pub`
+   (it may be `pub(crate)` or private). Make it `pub async fn consolidate_async(...)`.
+
+2. In `crates/roko-cli/src/runner/event_loop.rs`, find the dream consolidation call site.
+   It will look something like:
+   ```rust
+   tokio::task::spawn_blocking(move || {
+       let rt = tokio::runtime::Handle::current();
+       rt.block_on(dream_runner.consolidate_async(...))
+   })
+   ```
+   Replace it with:
+   ```rust
+   tokio::spawn(async move {
+       dream_runner.consolidate_async(...).await
+   })
+   ```
+
+3. Verify the return type handling — `spawn_blocking` returns `JoinHandle<Result<T>>` and
+   `tokio::spawn` also returns `JoinHandle<T>`, but the inner type may differ. Adjust the
+   `.await` and error handling at the call site accordingly.
+
+## What NOT to change
+
+- Do NOT change the DreamRunner struct or its public API beyond visibility
+- Do NOT add new dependencies
+- Do NOT modify the dream cycle logic itself
+
+Verify: `cargo clippy -p roko-cli -p roko-dreams --no-deps -- -D warnings && cargo test -p roko-dreams`"""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo clippy -p roko-cli -p roko-dreams --no-deps -- -D warnings && cargo test -p roko-dreams"

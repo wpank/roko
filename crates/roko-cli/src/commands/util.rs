@@ -1851,10 +1851,23 @@ pub(crate) async fn persist_capture_episode(
         resume_session,
     );
 
+    // Load config and build the cascade model universe so the router learns from
+    // this episode. Mirrors capture_runtime_model_slugs from learning_helpers.
+    let config = roko_core::config::loader::load_config_unified(workdir).unwrap_or_default();
+    let mut model_slugs = config.model_slugs_for_cascade();
+    let episode_model = episode.model.as_str();
+    if !episode_model.trim().is_empty() && !model_slugs.iter().any(|slug| slug == episode_model) {
+        model_slugs.push(episode_model.to_string());
+    }
+    model_slugs.sort();
+    model_slugs.dedup();
     tracing::debug!(workdir = %workdir.display(), "opening project learning runtime");
-    let mut runtime = LearningRuntime::open_for_project(workdir)
-        .await
-        .map_err(|e| anyhow!("open learning runtime: {e}"))?;
+    let mut runtime = if model_slugs.is_empty() {
+        LearningRuntime::open_for_project(workdir).await
+    } else {
+        LearningRuntime::open_for_project_with_models(workdir, model_slugs).await
+    }
+    .map_err(|e| anyhow!("open learning runtime: {e}"))?;
     let distillation_workdir = workdir.to_path_buf();
     let distillation_caller = roko_cli::learning_helpers::distillation_model_caller(workdir);
     runtime.set_episode_completion_hook(move |episode| {

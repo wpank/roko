@@ -524,7 +524,11 @@ fn check_config_presence(
             "expected {} or an ancestor config; global config alone is not enough for workspace bootstrap",
             workdir.join("roko.toml").display()
         )),
-        path: loaded_config.paths.global.as_ref().map(|p| p.display().to_string()),
+        path: loaded_config
+            .paths
+            .global
+            .as_ref()
+            .map(|p| p.display().to_string()),
         url: None,
         fix: Some("roko init".to_string()),
     }

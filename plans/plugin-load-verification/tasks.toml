@@ -1,0 +1,115 @@
+[meta]
+plan = "plugin-load-verification"
+total = 2
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 60
+
+[[task]]
+id = "T01"
+title = "Add SHA-256 checksum verification on plugin load"
+role = "implementer"
+files = [
+    "crates/roko-plugin/src/manifest.rs",
+    "crates/roko-plugin/src/discovery.rs",
+]
+description = """Add optional SHA-256 re-verification when loading installed plugins from disk.
+
+## Problem
+
+Installed plugins are verified during installation but not when loaded from disk at startup.
+A modified plugin binary would execute without detection.
+
+## Fix
+
+1. Read `crates/roko-plugin/src/manifest.rs` and find the `PluginManifest` struct.
+   Add an optional field:
+   ```rust
+   #[serde(default, skip_serializing_if = "Option::is_none")]
+   pub wasm_sha256: Option<String>,
+   ```
+
+2. In the plugin installation path, after the WASM binary is written to disk, compute its
+   SHA-256 and store it in the manifest:
+   ```rust
+   use sha2::{Sha256, Digest};
+   let hash = Sha256::digest(&wasm_bytes);
+   manifest.wasm_sha256 = Some(hex::encode(hash));
+   ```
+
+3. In `crates/roko-plugin/src/discovery.rs` (or wherever `discover_plugins` loads plugins
+   from disk), add a verification step:
+   ```rust
+   if let Some(expected) = &manifest.wasm_sha256 {
+       let actual = hex::encode(Sha256::digest(&wasm_bytes));
+       if actual != *expected {
+           tracing::error!(plugin = %manifest.name, "WASM checksum mismatch");
+           continue; // skip loading this plugin
+       }
+   }
+   ```
+
+4. Add a test that writes a plugin with a checksum, modifies the bytes, and verifies
+   loading fails.
+
+## What NOT to change
+
+- Do NOT change the plugin installation flow beyond adding the checksum
+- Do NOT add new crate dependencies (sha2 and hex should already be in the workspace)
+
+Verify: `cargo clippy -p roko-plugin --no-deps -- -D warnings && cargo test -p roko-plugin`"""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo clippy -p roko-plugin --no-deps -- -D warnings && cargo test -p roko-plugin"
+
+[[task]]
+id = "T02"
+title = "Prevent WASM panic from poisoning plugin mutex"
+role = "implementer"
+depends_on = ["T01"]
+files = [
+    "crates/roko-plugin/src/",
+]
+description = """Wrap WASM hook invocations in catch_unwind to prevent mutex poisoning.
+
+## Problem
+
+If wasmtime panics during hook invocation, the Arc<Mutex<WasmRuntime>> is poisoned and
+all subsequent hook invocations fail for the lifetime of the process.
+
+## Fix
+
+1. Find the WASM hook invocation site (likely in `invoke_json` or similar).
+
+2. Wrap the call in `std::panic::catch_unwind(AssertUnwindSafe(...))`:
+   ```rust
+   use std::panic::{catch_unwind, AssertUnwindSafe};
+
+   let result = catch_unwind(AssertUnwindSafe(|| {
+       // existing invoke logic
+   }));
+   match result {
+       Ok(inner) => inner,
+       Err(panic_payload) => {
+           tracing::error!(hook = %hook_name, "WASM hook panicked");
+           Err(PluginError::WasmPanic(format!("{:?}", panic_payload)))
+       }
+   }
+   ```
+
+3. Add `WasmPanic(String)` variant to the plugin error type if needed.
+
+4. Add a test that verifies a panic in a hook doesn't prevent subsequent hook calls.
+
+Verify: `cargo clippy -p roko-plugin --no-deps -- -D warnings && cargo test -p roko-plugin`"""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo clippy -p roko-plugin --no-deps -- -D warnings && cargo test -p roko-plugin"

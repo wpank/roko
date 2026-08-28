@@ -211,10 +211,7 @@ fn cmd_graph_show(path: &Path) -> Result<i32> {
     println!("Nodes ({}):", graph.node_count());
     for (node_id, idx) in &graph.node_map {
         let node = &graph.inner[*idx];
-        let resolution = match registry.create(
-            &node.cell_type,
-            node.config.clone(),
-        ) {
+        let resolution = match registry.create(&node.cell_type, node.config.clone()) {
             Ok(cell) if cell.is_stub() => {
                 stub_count += 1;
                 " (STUB)"

@@ -875,8 +875,7 @@ warning: unused variable: `x`";
     #[test]
     fn classify_passed_gate_produces_nothing() {
         // classify_output_lines returns nothing for benign output.
-        let errors =
-            classify_output_lines("Compiling roko-cli v0.1.0\nFinished dev [unoptimized]");
+        let errors = classify_output_lines("Compiling roko-cli v0.1.0\nFinished dev [unoptimized]");
         assert!(errors.is_empty());
     }
 
@@ -1044,10 +1043,7 @@ warning: unused variable: `x`";
             .as_array()
             .expect("classified_errors array");
         assert_eq!(classified.len(), 1);
-        assert_eq!(
-            classified[0]["error_class"].as_str(),
-            Some("compile_error")
-        );
+        assert_eq!(classified[0]["error_class"].as_str(), Some("compile_error"));
         assert_eq!(classified[0]["file"].as_str(), Some("src/main.rs"));
         assert_eq!(classified[0]["line"].as_u64(), Some(42));
     }

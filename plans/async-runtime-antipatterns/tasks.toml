@@ -1,0 +1,123 @@
+[meta]
+plan = "async-runtime-antipatterns"
+total = 2
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 90
+
+[[task]]
+id = "T01"
+title = "Guard tokio::spawn in Drop impls with Handle::try_current"
+role = "implementer"
+files = [
+    "crates/roko-agent/src/",
+    "crates/roko-runtime/src/",
+]
+description = """Fix Drop+Spawn anti-pattern that panics when no tokio reactor is running.
+
+## Problem
+
+Several types use `tokio::spawn` inside their `Drop` impl. If the value is dropped
+outside a tokio runtime (e.g. during process shutdown or in a sync context), this panics
+with "no reactor running".
+
+## Steps
+
+1. Search for all `tokio::spawn` calls inside `Drop` impls:
+   ```
+   grep -rn "impl Drop" crates/roko-agent/src/ crates/roko-runtime/src/ --include="*.rs" -A 20
+   ```
+
+2. For each Drop impl that calls `tokio::spawn`, wrap the spawn in a
+   `Handle::try_current()` guard:
+   ```rust
+   fn drop(&mut self) {
+       if let Ok(handle) = tokio::runtime::Handle::try_current() {
+           let resource = self.resource.take();
+           handle.spawn(async move {
+               // cleanup logic
+               drop(resource);
+           });
+       } else {
+           tracing::warn!("dropping without async runtime; skipping async cleanup");
+       }
+   }
+   ```
+
+3. Known sites to check:
+   - CursorCliAgent (crates/roko-agent/src/)
+   - PreparedEntry (crates/roko-runtime/src/)
+   - RestartRecovery (crates/roko-runtime/src/)
+   Search broadly — there may be others.
+
+4. Verify no panics by checking that `cargo test` passes (tests may drop values outside runtime).
+
+## What NOT to change
+
+- Do NOT add async shutdown methods (separate scope)
+- Do NOT change the cleanup logic itself, just guard the spawn
+
+Verify: `cargo clippy -p roko-agent -p roko-runtime --no-deps -- -D warnings && cargo test -p roko-agent -p roko-runtime`"""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo clippy -p roko-agent -p roko-runtime --no-deps -- -D warnings && cargo test -p roko-agent -p roko-runtime"
+
+[[task]]
+id = "T02"
+title = "Replace unbounded channels with bounded alternatives"
+role = "implementer"
+depends_on = ["T01"]
+files = [
+    "crates/roko-agent/src/",
+    "crates/roko-agent-server/src/",
+]
+description = """Replace unbounded mpsc channels with bounded alternatives to prevent memory exhaustion.
+
+## Problem
+
+Several response queues and event streams use `mpsc::unbounded_channel()`. If a consumer
+falls behind or stalls, messages accumulate without limit, leading to OOM.
+
+## Steps
+
+1. Search for all unbounded channel creation:
+   ```
+   grep -rn "unbounded_channel" crates/roko-agent/src/ crates/roko-agent-server/src/ --include="*.rs"
+   grep -rn "UnboundedSender" crates/roko-agent/src/ crates/roko-agent-server/src/ --include="*.rs"
+   ```
+
+2. For each unbounded channel, replace with a bounded channel with an appropriate capacity:
+   - Response queues (agent responses): `mpsc::channel(64)`
+   - Event streams (learning events): `mpsc::channel(512)`
+   - Streaming chunks: `mpsc::channel(256)`
+
+   When replacing:
+   - Change `mpsc::unbounded_channel()` to `mpsc::channel(N)`
+   - Change `UnboundedSender` to `Sender`
+   - Change `UnboundedReceiver` to `Receiver`
+   - Change `.send(msg)` to `.send(msg).await` (or use `try_send` if in sync context)
+   - If the sender was used in a non-async context, use `try_send` instead and log on failure
+
+3. Do NOT change channels in test code or channels that are used for one-shot responses
+   (those are effectively bounded at 1).
+
+4. Verify no deadlocks by running tests.
+
+## What NOT to change
+
+- Do NOT change the message types being sent
+- Do NOT add backpressure strategies (just use bounded channels)
+- Do NOT change channels in roko-runtime (separate scope)
+
+Verify: `cargo clippy -p roko-agent -p roko-agent-server --no-deps -- -D warnings && cargo test -p roko-agent -p roko-agent-server`"""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo clippy -p roko-agent -p roko-agent-server --no-deps -- -D warnings && cargo test -p roko-agent -p roko-agent-server"

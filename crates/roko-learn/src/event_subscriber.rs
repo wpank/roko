@@ -313,6 +313,43 @@ pub async fn run_learning_subscriber(
                     }
                 }
             }
+            AgentEvent::SafetyDenial {
+                ref tool_name,
+                ref denial_reason,
+                ref task_id,
+                timestamp,
+            } => {
+                let record = serde_json::json!({
+                    "tool_name": tool_name,
+                    "denial_reason": denial_reason,
+                    "task_id": task_id,
+                    "timestamp_ms": timestamp,
+                });
+                if let Ok(line) = serde_json::to_string(&record) {
+                    let denial_path = efficiency_path
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join("safety-denials.jsonl");
+                    if let Some(parent) = denial_path.parent() {
+                        let _ = tokio::fs::create_dir_all(parent).await;
+                    }
+                    let dp = denial_path.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        roko_fs::log_rotation::append_jsonl_line_sync(
+                            &dp,
+                            line.as_bytes(),
+                            roko_core::config::ResourcesConfig::default().log_rotation_max_mb,
+                        )
+                    })
+                    .await;
+                }
+                tracing::info!(
+                    tool = %tool_name,
+                    reason = %denial_reason,
+                    task = %task_id,
+                    "safety denial recorded"
+                );
+            }
             AgentEvent::AnomalyDetected { .. }
             | AgentEvent::ExperimentAssigned { .. }
             | AgentEvent::SessionEstablished { .. }

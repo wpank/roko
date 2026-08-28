@@ -1,8 +1,8 @@
 [meta]
 plan = "safety-denial-audit-events"
 total = 1
-done = 0
-status = "ready"
+done = 1
+status = "complete"
 max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 30
@@ -174,7 +174,7 @@ is derived from the existing `efficiency_path` parent directory (which is `.roko
 - Do NOT add new crate dependencies.
 
 Verify: `cargo test -p roko-learn -p roko-agent && cargo clippy -p roko-learn -p roko-agent --no-deps -- -D warnings`"""
-status = "ready"
+status = "done"
 tier = "mechanical"
 
 [[task.verify]]

@@ -66,12 +66,26 @@ pub fn print_preflight_results(checks: &[PreflightCheck]) -> bool {
         if check.status == PreflightStatus::Fail {
             any_fail = true;
         }
-        eprintln!("[{}] {}: {}", check.status.label(), check.name, check.message);
+        eprintln!(
+            "[{}] {}: {}",
+            check.status.label(),
+            check.name,
+            check.message
+        );
     }
 
-    let pass = checks.iter().filter(|c| c.status == PreflightStatus::Pass).count();
-    let warn = checks.iter().filter(|c| c.status == PreflightStatus::Warn).count();
-    let fail = checks.iter().filter(|c| c.status == PreflightStatus::Fail).count();
+    let pass = checks
+        .iter()
+        .filter(|c| c.status == PreflightStatus::Pass)
+        .count();
+    let warn = checks
+        .iter()
+        .filter(|c| c.status == PreflightStatus::Warn)
+        .count();
+    let fail = checks
+        .iter()
+        .filter(|c| c.status == PreflightStatus::Fail)
+        .count();
     eprintln!("preflight: {pass} passed, {warn} warnings, {fail} failed");
     any_fail
 }
@@ -202,9 +216,7 @@ fn check_rust_toolchain() -> PreflightCheck {
         .output()
     {
         Ok(output) if output.status.success() => {
-            let version = String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .to_string();
+            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
             PreflightCheck {
                 name: "rust",
                 status: PreflightStatus::Pass,
@@ -329,7 +341,11 @@ mod tests {
         let workdir = tempdir().expect("tempdir");
         let result = check_config(None, workdir.path());
         assert_eq!(result.status, PreflightStatus::Fail);
-        assert!(result.message.contains("not found"), "message: {}", result.message);
+        assert!(
+            result.message.contains("not found"),
+            "message: {}",
+            result.message
+        );
     }
 
     #[test]
@@ -352,7 +368,11 @@ mod tests {
         let plans_dir = workdir.path().join("nonexistent");
         let result = check_plans_dir(&plans_dir);
         assert_eq!(result.status, PreflightStatus::Fail);
-        assert!(result.message.contains("does not exist"), "message: {}", result.message);
+        assert!(
+            result.message.contains("does not exist"),
+            "message: {}",
+            result.message
+        );
     }
 
     #[test]
@@ -362,7 +382,11 @@ mod tests {
         std::fs::create_dir_all(&plans_dir).expect("create dir");
         let result = check_plans_dir(&plans_dir);
         assert_eq!(result.status, PreflightStatus::Fail);
-        assert!(result.message.contains("no tasks.toml"), "message: {}", result.message);
+        assert!(
+            result.message.contains("no tasks.toml"),
+            "message: {}",
+            result.message
+        );
     }
 
     #[test]
@@ -386,7 +410,11 @@ mod tests {
             .expect("write tasks.toml");
         let result = check_plans_dir(&plans_dir);
         assert_eq!(result.status, PreflightStatus::Pass);
-        assert!(result.message.contains("1 plan(s)"), "message: {}", result.message);
+        assert!(
+            result.message.contains("1 plan(s)"),
+            "message: {}",
+            result.message
+        );
     }
 
     #[test]
@@ -394,7 +422,11 @@ mod tests {
         // This test assumes the dev machine has rustc installed.
         let result = check_rust_toolchain();
         assert_eq!(result.status, PreflightStatus::Pass);
-        assert!(result.message.contains("rustc"), "message: {}", result.message);
+        assert!(
+            result.message.contains("rustc"),
+            "message: {}",
+            result.message
+        );
     }
 
     #[test]
@@ -402,7 +434,11 @@ mod tests {
         let workdir = tempdir().expect("tempdir");
         let result = check_stale_lock(workdir.path());
         assert_eq!(result.status, PreflightStatus::Pass);
-        assert!(result.message.contains("no existing"), "message: {}", result.message);
+        assert!(
+            result.message.contains("no existing"),
+            "message: {}",
+            result.message
+        );
     }
 
     #[test]
@@ -413,7 +449,11 @@ mod tests {
         std::fs::write(lock_dir.join("roko.lock"), "").expect("write empty lock");
         let result = check_stale_lock(workdir.path());
         assert_eq!(result.status, PreflightStatus::Pass);
-        assert!(result.message.contains("empty"), "message: {}", result.message);
+        assert!(
+            result.message.contains("empty"),
+            "message: {}",
+            result.message
+        );
     }
 
     #[test]
@@ -425,7 +465,11 @@ mod tests {
         std::fs::write(lock_dir.join("roko.lock"), "999999999\n").expect("write lock");
         let result = check_stale_lock(workdir.path());
         assert_eq!(result.status, PreflightStatus::Warn);
-        assert!(result.message.contains("stale"), "message: {}", result.message);
+        assert!(
+            result.message.contains("stale"),
+            "message: {}",
+            result.message
+        );
     }
 
     #[test]
@@ -438,7 +482,11 @@ mod tests {
         let result = check_stale_lock(workdir.path());
         // Current process PID should be recognized as our own lock, not a conflict.
         assert_eq!(result.status, PreflightStatus::Pass);
-        assert!(result.message.contains("current process"), "message: {}", result.message);
+        assert!(
+            result.message.contains("current process"),
+            "message: {}",
+            result.message
+        );
     }
 
     #[test]
@@ -449,7 +497,11 @@ mod tests {
         std::fs::write(lock_dir.join("roko.lock"), "not-a-pid\n").expect("write lock");
         let result = check_stale_lock(workdir.path());
         assert_eq!(result.status, PreflightStatus::Warn);
-        assert!(result.message.contains("non-numeric"), "message: {}", result.message);
+        assert!(
+            result.message.contains("non-numeric"),
+            "message: {}",
+            result.message
+        );
     }
 
     #[test]

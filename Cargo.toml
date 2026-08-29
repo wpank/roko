@@ -215,6 +215,7 @@ unused_async = "allow"
 needless_pass_by_value = "allow"
 return_self_not_must_use = "allow"
 # Nursery lints allowed (false positives or impractical to fix):
+chunks_exact_as_const_generic = "allow"
 future_not_send = "allow"
 large_futures = "allow"
 redundant_clone = "allow"

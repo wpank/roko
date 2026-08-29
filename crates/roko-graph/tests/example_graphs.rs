@@ -1,3 +1,5 @@
+//! Integration tests for example graph parsing.
+
 #[test]
 fn all_example_graphs_parse_successfully() {
     let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -1122,6 +1122,33 @@ impl StateHub {
         count
     }
 
+    /// Replay events from an arbitrary `BufRead` reader.
+    ///
+    /// Used by the TUI's incremental refresh path (RC-6) to replay only
+    /// new lines from `events.jsonl` past a tracked byte offset, avoiding
+    /// an O(n) full re-read on every filesystem event.
+    pub fn replay_events_from_reader<R: std::io::BufRead>(&self, reader: &mut R) -> usize {
+        let _publish = self
+            .publish_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut count = 0usize;
+        self.snapshot_tx.send_modify(|snap| {
+            let mut line_buf = String::new();
+            while reader.read_line(&mut line_buf).unwrap_or(0) > 0 {
+                let trimmed = line_buf.trim();
+                if !trimmed.is_empty()
+                    && let Ok(event) = serde_json::from_str::<DashboardEvent>(trimmed)
+                {
+                    snap.apply(&event);
+                    count += 1;
+                }
+                line_buf.clear();
+            }
+        });
+        count
+    }
+
     /// Replay events from the ring buffer starting at `after_seq`.
     pub fn replay_from(&self, after_seq: u64) -> Vec<event_bus::Envelope<DashboardEvent>> {
         self.event_bus.replay_from(after_seq)

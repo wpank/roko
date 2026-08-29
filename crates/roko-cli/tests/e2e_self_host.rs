@@ -50,6 +50,8 @@ fn td(id: &str, deps: &[&str]) -> TaskDef {
         acceptance: vec![],
         acceptance_contract: None,
         domain: None,
+        estimated_minutes: None,
+        crates_touched: None,
         sequence: 0,
     }
 }
@@ -124,6 +126,7 @@ fn snap(
         revised_tasks: Vec::new(),
         cascade_router_json: None,
         conductor_circuit_breaker_state: None,
+        gate_thresholds_json: None,
     }
 }
 
@@ -550,6 +553,7 @@ fn resume_from_mid_run_replays_remaining() {
         revised_tasks: Vec::new(),
         cascade_router_json: None,
         conductor_circuit_breaker_state: None,
+        gate_thresholds_json: None,
     };
     save_run_state(&paths, &mid).unwrap();
 
@@ -674,6 +678,7 @@ fn failed_task_blocks_dependent_terminal_counts() {
         revised_tasks: Vec::new(),
         cascade_router_json: None,
         conductor_circuit_breaker_state: None,
+        gate_thresholds_json: None,
     };
     save_run_state(&paths, &s).unwrap();
     let ld = load_run_state(&paths).unwrap().unwrap();

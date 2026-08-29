@@ -57,7 +57,7 @@ fn sample_efficiency_event(plan_id: &str, task_id: &str, timestamp: &str) -> Age
     event.time_to_first_token_ms = 200;
     event.was_warm_start = false;
     event.iteration = 1;
-    event.gate_passed = true;
+    event.gate_passed = Some(true);
     event.outcome = "success".to_string();
     event.model_used = "claude-sonnet-4-6".to_string();
     event.frequency = OperatingFrequency::Theta;

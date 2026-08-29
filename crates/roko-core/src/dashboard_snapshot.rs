@@ -319,6 +319,51 @@ pub enum DashboardEvent {
     },
     /// A human dismissed a pending notification.
     InboxDismiss { item_id: String },
+    /// Periodic heartbeat from a running agent (item 108).
+    ///
+    /// Emitted every ~15 seconds while an agent API call is in progress so the
+    /// TUI can show elapsed time even when no streaming tokens arrive.
+    AgentHeartbeat {
+        agent_id: String,
+        plan_id: String,
+        task_id: String,
+        /// Milliseconds since the agent was spawned.
+        elapsed_ms: u64,
+    },
+    /// A gate rung started execution (item 108).
+    ///
+    /// Published before each rung in the gate pipeline so the TUI can show
+    /// which rung is running and for how long.
+    GateRungStarted {
+        plan_id: String,
+        task_id: String,
+        /// Human-readable rung label (e.g. "compile", "clippy", "test").
+        rung_name: String,
+    },
+    /// Daimon affect state updated after a task turn.
+    AffectUpdated {
+        /// PAD pleasure dimension [-1.0, 1.0].
+        pleasure: f64,
+        /// PAD arousal dimension [-1.0, 1.0].
+        arousal: f64,
+        /// PAD dominance dimension [-1.0, 1.0].
+        dominance: f64,
+        /// Behavioral state name.
+        behavioral_state: String,
+        /// Motivational confidence [0.0, 1.0].
+        confidence: f64,
+        /// Recent somatic marker valences: (label, valence).
+        #[serde(default)]
+        recent_markers: Vec<(String, f64)>,
+        /// Active behavioral bias names.
+        #[serde(default)]
+        active_biases: Vec<String>,
+    },
+    /// Agent topology updated (item 41).
+    ///
+    /// Published after `AgentSpawned` or `AgentCompleted` events so the TUI
+    /// can display the current agent relationship graph.
+    AgentTopologyUpdated { topology: crate::AgentTopology },
     /// An error occurred.
     Error { message: String },
 }
@@ -326,6 +371,28 @@ pub enum DashboardEvent {
 // ---------------------------------------------------------------------------
 // Snapshot types
 // ---------------------------------------------------------------------------
+
+/// Point-in-time snapshot of the Daimon affect state.
+/// Populated by `DashboardEvent::AffectUpdated`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AffectSnapshot {
+    /// PAD pleasure dimension [-1.0, 1.0].
+    pub pleasure: f64,
+    /// PAD arousal dimension [-1.0, 1.0].
+    pub arousal: f64,
+    /// PAD dominance dimension [-1.0, 1.0].
+    pub dominance: f64,
+    /// Behavioral state label (e.g. "Engaged", "Struggling").
+    pub behavioral_state: String,
+    /// Motivational confidence [0.0, 1.0].
+    pub confidence: f64,
+    /// Recent somatic marker valences: (label, valence) pairs, newest first.
+    pub recent_markers: Vec<(String, f64)>,
+    /// Active behavioral bias names (e.g. "Struggling", "Resting").
+    pub active_biases: Vec<String>,
+    /// Timestamp when this snapshot was recorded (unix ms).
+    pub ts: u64,
+}
 
 /// A single plan's live state.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -404,6 +471,9 @@ pub struct AgentState {
     /// Timestamp (epoch ms) of the last event received from this agent.
     #[serde(default)]
     pub last_event_at_ms: u64,
+    /// Elapsed milliseconds since the agent was spawned (updated by heartbeat).
+    #[serde(default)]
+    pub elapsed_ms: u64,
 }
 
 /// A single gate verdict projected for dashboard ring-view display.
@@ -992,6 +1062,9 @@ pub struct DashboardSnapshot {
     /// Number of unresolved Inbox items.
     #[serde(default)]
     pub inbox_pending_count: usize,
+    /// Latest Daimon affect state from the runner.
+    #[serde(default)]
+    pub affect: Option<AffectSnapshot>,
     /// Overall counts.
     pub stats: SnapshotStats,
 }
@@ -1232,6 +1305,7 @@ impl DashboardSnapshot {
                             attempt: *attempt,
                             spawned_at_ms: ts,
                             last_event_at_ms: ts,
+                            elapsed_ms: 0,
                         });
                     }
                 }
@@ -1502,6 +1576,52 @@ impl DashboardSnapshot {
                 self.inbox_items.remove(item_id);
                 self.inbox_resolved_ids.insert(item_id.clone());
                 self.inbox_pending_count = self.inbox_items.len();
+            }
+            DashboardEvent::AgentHeartbeat {
+                agent_id,
+                elapsed_ms,
+                ..
+            } => {
+                if let Some(agent) = self.agents.get_mut(agent_id) {
+                    agent.last_event_at_ms = ts;
+                    agent.elapsed_ms = *elapsed_ms;
+                }
+            }
+            DashboardEvent::GateRungStarted {
+                plan_id,
+                task_id,
+                rung_name,
+            } => {
+                self.push_event_log(
+                    ts,
+                    "gate_rung_started".to_string(),
+                    plan_id.clone(),
+                    task_id.clone(),
+                    format!("rung={rung_name}"),
+                );
+            }
+            DashboardEvent::AffectUpdated {
+                pleasure,
+                arousal,
+                dominance,
+                behavioral_state,
+                confidence,
+                recent_markers,
+                active_biases,
+            } => {
+                self.affect = Some(AffectSnapshot {
+                    pleasure: *pleasure,
+                    arousal: *arousal,
+                    dominance: *dominance,
+                    behavioral_state: behavioral_state.clone(),
+                    confidence: *confidence,
+                    recent_markers: recent_markers.clone(),
+                    active_biases: active_biases.clone(),
+                    ts,
+                });
+            }
+            DashboardEvent::AgentTopologyUpdated { topology } => {
+                self.agent_topology = topology.clone();
             }
         }
     }
@@ -2218,6 +2338,7 @@ fn bootstrap_plan_state(
                     attempt: 0,
                     spawned_at_ms: 0,
                     last_event_at_ms: 0,
+                    elapsed_ms: 0,
                 });
             if entry.role == "unknown" && role != "unknown" {
                 entry.role = role;
@@ -2579,6 +2700,7 @@ fn apply_runner_lifecycle_projection(
                     .get("completed_at_ms")
                     .and_then(serde_json::Value::as_u64)
                     .unwrap_or_default(),
+                elapsed_ms: 0,
             },
         );
         if active {

@@ -1,4 +1,5 @@
 //! Explicit cleanup for retained runner attempt worktrees and branches.
+#![allow(dead_code)]
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -241,10 +242,10 @@ fn linked_attempt_worktrees(workdir: &Path) -> Result<BTreeMap<String, PathBuf>>
         if let Some(value) = line.strip_prefix("worktree ") {
             path = Some(PathBuf::from(value));
         } else if let Some(value) = line.strip_prefix("branch refs/heads/") {
-            if value.starts_with(ATTEMPT_BRANCH_PREFIX) {
-                if let Some(path) = path.take() {
-                    linked.insert(value.to_string(), path);
-                }
+            if value.starts_with(ATTEMPT_BRANCH_PREFIX)
+                && let Some(path) = path.take()
+            {
+                linked.insert(value.to_string(), path);
             }
         } else if line.is_empty() {
             path = None;

@@ -844,27 +844,31 @@ fn check_configured_provider_keys(loaded_config: &LoadedConfig) -> Vec<DoctorChe
     use roko_core::agent::ProviderKind;
 
     let Some(config) = &loaded_config.resolved else {
-        // No config file — fall back to checking the single most common key.
+        // No config file — fall back to checking the single most common key
+        // or the CLI binary on PATH.
         let has_key = std::env::var("ANTHROPIC_API_KEY")
             .ok()
             .filter(|k| !k.is_empty())
             .is_some();
+        let has_cli = crate::auth_detect::claude_cli_available();
         return vec![DoctorCheck {
             id: "provider_api_keys".to_string(),
-            status: if has_key {
+            status: if has_key || has_cli {
                 DoctorStatus::Ok
             } else {
                 DoctorStatus::Warn
             },
             message: if has_key {
                 "ANTHROPIC_API_KEY is set (no roko.toml)".to_string()
+            } else if has_cli {
+                "claude CLI detected — no API key required".to_string()
             } else {
                 "no API keys found and no roko.toml present".to_string()
             },
             detail: None,
             path: None,
             url: None,
-            fix: if has_key {
+            fix: if has_key || has_cli {
                 None
             } else {
                 Some("run `roko config init` or set a provider API key (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.)".to_string())
@@ -872,8 +876,11 @@ fn check_configured_provider_keys(loaded_config: &LoadedConfig) -> Vec<DoctorChe
         }];
     };
 
-    // Collect only HTTP API providers. Several non-Anthropic providers also
-    // use CLI/ACP transports and intentionally have no `api_key_env`.
+    // Collect only HTTP API providers that need an environment-variable key.
+    // CLI-based providers (ClaudeCli, GeminiCli, CursorCli, Hermes, OpenClaw)
+    // authenticate through their own binary/session mechanism.
+    // CursorAcp authenticates via the Cursor IDE's own session, not via an
+    // roko-managed API key.
     let api_providers: Vec<(&String, &roko_core::config::schema::ProviderConfig)> = config
         .providers
         .iter()
@@ -1864,7 +1871,7 @@ pub struct DiskTargetFinding {
 }
 
 /// `target/` directories larger than this trigger a warning, in MB.
-const WARN_TARGET_MB: u64 = 10_240; // 10 GB
+const WARN_TARGET_MB: u64 = 51_200; // 50 GB — a 35-crate Rust workspace commonly reaches 10-15 GB
 
 /// Recursively compute the total size of a directory tree in bytes.
 ///
@@ -2126,22 +2133,39 @@ fn check_plans_dir_conflict(workdir: &Path) -> DoctorCheck {
     let dot_roko = workdir.join(".roko").join("plans");
 
     if top_level.is_dir() && dot_roko.is_dir() {
-        let top_count = std::fs::read_dir(&top_level)
+        let top_names: std::collections::HashSet<String> = std::fs::read_dir(&top_level)
             .map(|entries| {
                 entries
                     .filter_map(Result::ok)
                     .filter(|e| e.path().is_dir())
-                    .count()
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .collect()
             })
-            .unwrap_or(0);
-        let dot_count = std::fs::read_dir(&dot_roko)
+            .unwrap_or_default();
+        let dot_names: std::collections::HashSet<String> = std::fs::read_dir(&dot_roko)
             .map(|entries| {
                 entries
                     .filter_map(Result::ok)
                     .filter(|e| e.path().is_dir())
-                    .count()
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .collect()
             })
-            .unwrap_or(0);
+            .unwrap_or_default();
+
+        let top_count = top_names.len();
+        let dot_count = dot_names.len();
+        let conflicts: Vec<&String> = top_names.intersection(&dot_names).collect();
+
+        let fix = if conflicts.is_empty() {
+            Some("mv .roko/plans/* plans/ && rmdir .roko/plans".to_string())
+        } else {
+            let mut names: Vec<&str> = conflicts.iter().map(|s| s.as_str()).collect();
+            names.sort();
+            Some(format!(
+                "manual merge required — conflicting plan directories: {}",
+                names.join(", ")
+            ))
+        };
 
         DoctorCheck {
             id: "plans_dir_conflict".to_string(),
@@ -2155,7 +2179,7 @@ fn check_plans_dir_conflict(workdir: &Path) -> DoctorCheck {
             )),
             path: Some(top_level.display().to_string()),
             url: None,
-            fix: Some("mv .roko/plans/* plans/ && rmdir .roko/plans".to_string()),
+            fix,
         }
     } else {
         DoctorCheck {

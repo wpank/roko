@@ -1,7 +1,10 @@
 //! plan command handlers.
 #![allow(unused_imports)]
 
+use std::io::IsTerminal as _;
+
 use crate::*;
+use anyhow::Context as _;
 use roko_fs::RokoLayout;
 
 fn join_approval_tui_thread(handle: Option<std::thread::JoinHandle<anyhow::Result<()>>>) {
@@ -22,7 +25,7 @@ fn join_approval_tui_thread(handle: Option<std::thread::JoinHandle<anyhow::Resul
 
 pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
     match cmd {
-        PlanCmd::List { workdir } => {
+        PlanCmd::List { workdir, waves } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             let summaries =
                 roko_cli::plan::summarize_discovered_plans(&wd).map_err(|e| anyhow!("{e}"))?;
@@ -42,6 +45,69 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     summary.task_count = tasks_total;
                     summary.completed = tasks_total > 0 && tasks_done == tasks_total;
                 }
+            }
+
+            if waves {
+                // Load plans via runner plan_loader for cross-plan DAG analysis.
+                let plans_dir = wd.join("plans");
+                match roko_cli::runner::plan_loader::load_plans(&plans_dir) {
+                    Ok(loaded_plans) => {
+                        match roko_cli::runner::plan_dag::CrossPlanDag::compute(&loaded_plans) {
+                            Ok(dag) => {
+                                if cli.json {
+                                    let dag_summary = dag.summary();
+                                    println!("{}", serde_json::to_string_pretty(&dag_summary)?);
+                                } else {
+                                    for (wave_idx, wave_plans) in dag.waves.iter().enumerate() {
+                                        let plan_count = wave_plans.len();
+                                        println!(
+                                            "\nWave {wave_idx} ({plan_count} plan{}):",
+                                            if plan_count == 1 { "" } else { "s" }
+                                        );
+                                        for plan_id in wave_plans {
+                                            let summary_info =
+                                                summaries.iter().find(|s| s.id == *plan_id);
+                                            let progress = summary_info.map_or_else(
+                                                || "?/?".to_string(),
+                                                |s| format!("{}/{}", s.tasks_done, s.task_count),
+                                            );
+                                            let status = summary_info.map_or_else(
+                                                || "unknown".to_string(),
+                                                |s| s.status_label().to_string(),
+                                            );
+                                            println!(
+                                                "  {:<16} {:<12} {}",
+                                                plan_id, progress, status
+                                            );
+                                        }
+                                    }
+                                    if !dag.critical_path.is_empty() {
+                                        println!(
+                                            "\nCritical path: {} (est. {} min)",
+                                            dag.critical_path.join(" -> "),
+                                            dag.critical_path_minutes,
+                                        );
+                                    }
+                                    for overlap in &dag.crate_overlaps {
+                                        println!("warning: {overlap}");
+                                    }
+                                    for dangling in &dag.dangling_refs {
+                                        println!("warning: {dangling}");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("DAG error: {e}");
+                                return Ok(EXIT_FAILURE);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("failed to load plans for wave analysis: {e}");
+                        return Ok(EXIT_FAILURE);
+                    }
+                }
+                return Ok(EXIT_SUCCESS);
             }
 
             if cli.json {
@@ -210,6 +276,11 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             workdir,
         } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let plan_id = plan_id
+                .strip_prefix("plans/")
+                .or_else(|| plan_id.strip_prefix("plans\\"))
+                .unwrap_or(&plan_id)
+                .to_string();
             let _workspace_lock =
                 roko_cli::workspace_lock::acquire_workspace_lock(&wd.join(".roko"))?;
             let plan = Plan::new(plan_id.clone(), title, description);
@@ -259,14 +330,88 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             }
             Ok(EXIT_SUCCESS)
         }
-        PlanCmd::Validate { dir, strict, json } => {
+        PlanCmd::Validate {
+            dir,
+            strict,
+            json,
+            dag,
+        } => {
             let workdir = resolve_workdir(cli);
             let plans_dir = if dir.is_absolute() {
-                dir
+                dir.clone()
             } else {
-                workdir.join(dir)
+                workdir.join(&dir)
             };
-            cmd_plan_validate(&plans_dir, &workdir, strict, json || cli.json)
+            let exit = cmd_plan_validate(&plans_dir, &workdir, strict, json || cli.json)?;
+
+            if dag {
+                // Run DAG analysis on top of the lint output.
+                let dag_dir = if dir.is_absolute() {
+                    dir
+                } else {
+                    workdir.join(dir)
+                };
+                match roko_cli::runner::plan_loader::load_plans(&dag_dir) {
+                    Ok(loaded_plans) => {
+                        match roko_cli::runner::plan_dag::CrossPlanDag::compute(&loaded_plans) {
+                            Ok(plan_dag) => {
+                                let dag_summary = plan_dag.summary();
+                                if json || cli.json {
+                                    println!("{}", serde_json::to_string_pretty(&dag_summary)?);
+                                } else {
+                                    println!("\nDAG Analysis");
+                                    println!("============");
+                                    println!(
+                                        "Plans: {}   Tasks: {}   Edges: {}",
+                                        dag_summary.total_plans,
+                                        dag_summary.total_tasks,
+                                        dag_summary.total_edges,
+                                    );
+                                    println!();
+                                    for wave in &dag_summary.waves {
+                                        println!(
+                                            "Wave {} ({} plan{}, {} task{}):  {}",
+                                            wave.index,
+                                            wave.parallelism_width,
+                                            if wave.parallelism_width == 1 { "" } else { "s" },
+                                            wave.total_tasks,
+                                            if wave.total_tasks == 1 { "" } else { "s" },
+                                            wave.plan_ids.join(", "),
+                                        );
+                                    }
+                                    if !dag_summary.critical_path.is_empty() {
+                                        println!(
+                                            "\nCritical path: {} (est. {} min)",
+                                            dag_summary.critical_path.join(" -> "),
+                                            dag_summary.critical_path_minutes,
+                                        );
+                                    }
+                                    if !dag_summary.dangling_refs.is_empty()
+                                        || !dag_summary.crate_overlaps.is_empty()
+                                    {
+                                        println!("\nWarnings:");
+                                        for dangling in &dag_summary.dangling_refs {
+                                            println!("  - {dangling}");
+                                        }
+                                        for overlap in &dag_summary.crate_overlaps {
+                                            println!("  - {overlap}");
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("DAG error: {e}");
+                                return Ok(EXIT_FAILURE);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("failed to load plans for DAG analysis: {e}");
+                        return Ok(EXIT_FAILURE);
+                    }
+                }
+            }
+            Ok(exit)
         }
         PlanCmd::Index { check, workdir } => {
             let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
@@ -287,6 +432,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             workdir,
             resume_plan,
             approval,
+            no_tui,
             max_retries,
             max_tasks,
             dry_run,
@@ -298,9 +444,21 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             dangerously_skip_permissions,
             log_file,
             skip_preflight,
+            force_backend,
+            screenshots,
+            batch_size,
         } => {
             let t_total = std::time::Instant::now();
             let t_setup = std::time::Instant::now();
+
+            // Merge local --model/--force-backend with the global --model.
+            // Local flag takes priority over the global flag.
+            let effective_model_override = force_backend.as_ref().or(cli.model.as_ref()).cloned();
+
+            // Auto-enable inline TUI when stdout is an interactive terminal,
+            // unless the user explicitly opted out with --no-tui (item 108).
+            let approval =
+                approval || (!no_tui && !cli.quiet && !cli.json && std::io::stdout().is_terminal());
 
             // Resolve workdir FIRST (before using plans_dir)
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
@@ -312,6 +470,25 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             } else {
                 wd.join(&plans_dir)
             };
+
+            // ── Wrong cwd detection ────────────────────────────────────────
+            // If plans dir doesn't exist but cwd looks like a plan directory,
+            // give the user a clear hint to run from the workspace root.
+            if !resolved_plans_dir.exists()
+                && (wd.join("tasks.toml").exists() || wd.join("plan.md").exists())
+            {
+                let workspace_root = wd
+                    .ancestors()
+                    .find(|p| p.join("Cargo.toml").exists() || p.join(".roko").exists())
+                    .unwrap_or(&wd);
+                anyhow::bail!(
+                    "plans directory not found at {}.\n\
+                     It looks like you're inside a plan directory. \
+                     Run from the workspace root instead:\n  cd {}",
+                    resolved_plans_dir.display(),
+                    workspace_root.display()
+                );
+            }
 
             // ── Mandatory validation: reject malformed plans before execution ──
             // Runs in both normal and `--dry-run` mode.
@@ -672,7 +849,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     workdir: wd.clone(),
                     plan_dir: resolved_plans_dir.clone(),
                     model: roko_config.agent.default_model.clone(),
-                    cli_model_override: cli.model.clone(),
+                    cli_model_override: effective_model_override.clone(),
                     timeout_secs: roko_config.timeouts.agent_dispatch_secs,
                     plan_timeout_secs: roko_config.timeouts.plan_total_secs,
                     max_retries: max_retries.unwrap_or(2),
@@ -776,6 +953,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                             ),
                         )
                     },
+                    batch_size,
                     warm_cache: true,
                     metrics: Some(metrics.clone()),
                     obs_sinks: None,
@@ -796,6 +974,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         }
                         None => roko_cli::runner::structured_log::StructuredLogger::noop(),
                     },
+                    screenshots,
                 };
 
                 if run_config.dangerously_skip_permissions {
@@ -989,14 +1168,135 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             context,
             from_notes,
             tag,
+            from_backlog,
         } => {
             use roko_cli::agent_config::load_gateway_env;
             use roko_cli::agent_exec::{AgentExecEpisode, AgentExecOpts, run_agent_logged};
 
             let workdir = std::env::current_dir().context("resolve cwd")?;
-            let _workspace_lock =
-                roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
+            // Plan generation is read-only on workspace state: it reads source
+            // code and writes to .roko/plans/ (per-slug, non-overlapping).
+            // No workspace lock needed (#226) — allows generating plans while
+            // other plans are running.
             let gw = load_gateway_env(&workdir);
+
+            // --from-backlog: resolve backlog specs by numeric ID and generate
+            // plans with deterministic slugs written to plans/ (#227).
+            if let Some(ref backlog_ids_str) = from_backlog {
+                use roko_cli::plan_generate::{
+                    DEFAULT_BACKLOG_DIR, build_backlog_generation_prompt,
+                    build_backlog_task_prompt, parse_backlog_ids, resolve_backlog_spec,
+                    slug_from_backlog_stem,
+                };
+
+                let ids = parse_backlog_ids(backlog_ids_str)?;
+                let backlog_dir = workdir.join(DEFAULT_BACKLOG_DIR);
+                let model_key = roko_cli::model_selection::resolve_effective_model_key(
+                    &workdir,
+                    cli.model.clone(),
+                    Some("strategist"),
+                    "plan generate --from-backlog",
+                )?;
+
+                let mut results: Vec<(u32, String, &str)> = Vec::new();
+
+                for id in &ids {
+                    let spec = match resolve_backlog_spec(&backlog_dir, *id) {
+                        Ok(spec) => spec,
+                        Err(err) => {
+                            eprintln!("#{id}  error: {err:#}");
+                            results.push((*id, format!("backlog-{id}"), "error"));
+                            continue;
+                        }
+                    };
+                    let slug = slug_from_backlog_stem(&spec.file_stem);
+                    let plan_dir = workdir.join("plans").join(&slug);
+
+                    // Check if plan already exists.
+                    if plan_dir.exists() {
+                        eprintln!("#{id}  {slug}  skipped (plan already exists)");
+                        results.push((*id, slug, "skipped"));
+                        continue;
+                    }
+
+                    eprintln!("#{id}  {slug}  generating...");
+
+                    let system = build_backlog_generation_prompt(&workdir, &spec, &slug);
+                    let task_prompt = build_backlog_task_prompt(&spec, &slug);
+                    let task_id = format!("plan:generate:backlog:{id}");
+
+                    let exit_code = run_agent_logged(
+                        AgentExecOpts {
+                            prompt: &task_prompt,
+                            workdir: &workdir,
+                            model: Some(model_key.as_str()),
+                            effort: Some("high"),
+                            system_prompt: Some(&system),
+                            resume_session: None,
+                            env_vars: &gw.vars,
+                            role: Some("strategist"),
+                            allowed_tools: None,
+                        },
+                        AgentExecEpisode {
+                            task_kind: "plan-generate",
+                            task_id: &task_id,
+                        },
+                    )
+                    .await;
+
+                    match exit_code {
+                        Ok(code) if code == EXIT_SUCCESS => {
+                            // Validate the generated tasks.toml.
+                            let tasks_path = plan_dir.join("tasks.toml");
+                            if tasks_path.is_file() {
+                                match roko_cli::task_parser::TasksFile::parse(&tasks_path) {
+                                    Ok(tf) => {
+                                        eprintln!(
+                                            "#{id}  {slug}  generated ({} tasks)",
+                                            tf.tasks.len()
+                                        );
+                                        results.push((*id, slug, "generated"));
+                                    }
+                                    Err(err) => {
+                                        eprintln!(
+                                            "#{id}  {slug}  generated but validation failed: {err:#}"
+                                        );
+                                        results.push((*id, slug, "validation-failed"));
+                                    }
+                                }
+                            } else {
+                                eprintln!(
+                                    "#{id}  {slug}  agent succeeded but no tasks.toml written"
+                                );
+                                results.push((*id, slug, "no-output"));
+                            }
+                        }
+                        Ok(code) => {
+                            eprintln!("#{id}  {slug}  agent exited with code {code}");
+                            results.push((*id, slug, "failed"));
+                        }
+                        Err(err) => {
+                            eprintln!("#{id}  {slug}  agent failed: {err:#}");
+                            results.push((*id, slug, "error"));
+                        }
+                    }
+                }
+
+                // Print summary table for batch mode.
+                if ids.len() > 1 {
+                    eprintln!("\n--- Summary ---");
+                    for (id, slug, status) in &results {
+                        let icon = match *status {
+                            "generated" => "+",
+                            "skipped" => "~",
+                            _ => "!",
+                        };
+                        eprintln!("  [{icon}] #{id}  {slug:<40}  {status}");
+                    }
+                }
+
+                return Ok(EXIT_SUCCESS);
+            }
 
             // --from-notes: read .roko/notes/, cluster, generate one plan per cluster.
             if from_notes {
@@ -1172,6 +1472,13 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             )
             .await?;
 
+            if exit_code != EXIT_SUCCESS {
+                eprintln!(
+                    "plan generate: agent exited with code {exit_code}. \
+                     Check the latest episode in .roko/episodes.jsonl for details."
+                );
+            }
+
             // Validate all tasks.toml files written by the agent under .roko/plans/.
             // Check all files and collect all errors before reporting.
             if exit_code == EXIT_SUCCESS {
@@ -1209,8 +1516,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             use roko_cli::agent_exec::{AgentExecEpisode, AgentExecOpts, run_agent_logged};
 
             let workdir = std::env::current_dir().context("resolve cwd")?;
-            let _workspace_lock =
-                roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
+            // Plan regeneration writes only to the target plan directory,
+            // which is per-slug and non-overlapping with active plan runs.
+            // No workspace lock needed (#226).
             let tasks_path = plan_dir.join("tasks.toml");
             if !tasks_path.exists() {
                 anyhow::bail!("No tasks.toml found in {}", plan_dir.display());
@@ -1365,6 +1673,153 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
             Ok(EXIT_SUCCESS)
         }
+        PlanCmd::Queue { cmd } => cmd_plan_queue(cli, cmd).await,
+
+        // ── Plan control commands (#146) ────────────────────────────
+        PlanCmd::Pause { workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let state_dir = wd.join(".roko").join("state");
+            let cmd = roko_cli::runner::types::ControlCommand {
+                command: roko_cli::runner::types::ControlAction::Pause,
+                plan_id: None,
+                task_id: None,
+            };
+            cmd.write(&state_dir)
+                .map_err(|e| anyhow!("failed to write control command: {e}"))?;
+            if !cli.quiet {
+                eprintln!(
+                    "Pause signal written to {}",
+                    state_dir.join("control.json").display()
+                );
+            }
+            Ok(EXIT_SUCCESS)
+        }
+        PlanCmd::Resume { workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let state_dir = wd.join(".roko").join("state");
+            let cmd = roko_cli::runner::types::ControlCommand {
+                command: roko_cli::runner::types::ControlAction::Resume,
+                plan_id: None,
+                task_id: None,
+            };
+            cmd.write(&state_dir)
+                .map_err(|e| anyhow!("failed to write control command: {e}"))?;
+            if !cli.quiet {
+                eprintln!(
+                    "Resume signal written to {}",
+                    state_dir.join("control.json").display()
+                );
+            }
+            Ok(EXIT_SUCCESS)
+        }
+        PlanCmd::Cancel { plan_id, workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let state_dir = wd.join(".roko").join("state");
+            let cmd = roko_cli::runner::types::ControlCommand {
+                command: roko_cli::runner::types::ControlAction::Cancel,
+                plan_id,
+                task_id: None,
+            };
+            cmd.write(&state_dir)
+                .map_err(|e| anyhow!("failed to write control command: {e}"))?;
+            if !cli.quiet {
+                eprintln!(
+                    "Cancel signal written to {}",
+                    state_dir.join("control.json").display()
+                );
+            }
+            Ok(EXIT_SUCCESS)
+        }
+        PlanCmd::Retry {
+            task_id,
+            plan_id,
+            workdir,
+        } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let state_dir = wd.join(".roko").join("state");
+            let cmd = roko_cli::runner::types::ControlCommand {
+                command: roko_cli::runner::types::ControlAction::Retry,
+                plan_id,
+                task_id,
+            };
+            cmd.write(&state_dir)
+                .map_err(|e| anyhow!("failed to write control command: {e}"))?;
+            if !cli.quiet {
+                eprintln!(
+                    "Retry signal written to {}",
+                    state_dir.join("control.json").display()
+                );
+            }
+            Ok(EXIT_SUCCESS)
+        }
+
+        PlanCmd::Status { workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let status_path = wd.join(".roko").join("state").join("status.json");
+            if !status_path.is_file() {
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"error": "no status file found — is a plan running?"})
+                    );
+                } else {
+                    eprintln!("no status file found at {}", status_path.display());
+                    eprintln!("  -> Start a plan run: roko plan run plans/");
+                }
+                return Ok(EXIT_FAILURE);
+            }
+            let raw = std::fs::read_to_string(&status_path)
+                .with_context(|| format!("read {}", status_path.display()))?;
+            if cli.json {
+                // Pass through as-is; the file is already JSON.
+                println!("{raw}");
+            } else {
+                let value: serde_json::Value = serde_json::from_str(&raw)
+                    .with_context(|| format!("parse {}", status_path.display()))?;
+                println!(
+                    "run_id:          {}",
+                    value.get("run_id").and_then(|v| v.as_str()).unwrap_or("?")
+                );
+                println!(
+                    "phase:           {}",
+                    value.get("phase").and_then(|v| v.as_str()).unwrap_or("?")
+                );
+                println!(
+                    "plans:           {}/{} completed",
+                    value
+                        .get("completed_plans")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0),
+                    value
+                        .get("total_plans")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                );
+                println!(
+                    "active agents:   {}",
+                    value
+                        .get("active_agents")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                );
+                println!(
+                    "elapsed:         {}s",
+                    value
+                        .get("elapsed_secs")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                );
+                println!(
+                    "last event:      {}",
+                    value
+                        .get("last_event")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("none")
+                );
+            }
+            Ok(EXIT_SUCCESS)
+        }
+
         PlanCmd::Shorthand(words) => {
             // `roko plan "add cursor support"` → delegate to plan generate
             Box::pin(cmd_plan(
@@ -1375,9 +1830,145 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     context: vec![],
                     from_notes: false,
                     tag: None,
+                    from_backlog: None,
                 },
             ))
             .await
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Queue manifest subcommands
+// ---------------------------------------------------------------------------
+
+async fn cmd_plan_queue(cli: &Cli, cmd: QueueCmd) -> Result<i32> {
+    match cmd {
+        QueueCmd::Show { file, workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let manifest_path = if file.is_absolute() {
+                file
+            } else {
+                wd.join(file)
+            };
+            let manifest =
+                roko_cli::runner::queue_manifest::QueueManifest::from_file(&manifest_path)?;
+
+            // Collect completed plan IDs from executor state.
+            let completed: std::collections::HashSet<String> = read_executor_state(&wd)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(_, done, total)| *total > 0 && done == total)
+                .map(|(id, _, _)| id)
+                .collect();
+
+            if cli.json {
+                let milestones: Vec<serde_json::Value> = manifest
+                    .milestone_order()
+                    .iter()
+                    .filter_map(|&name| manifest.milestones.iter().find(|m| m.name == name))
+                    .map(|ms| {
+                        let done = ms.plans.iter().filter(|p| completed.contains(*p)).count();
+                        json!({
+                            "name": ms.name,
+                            "description": ms.description,
+                            "plans": ms.plans,
+                            "depends_on": ms.depends_on,
+                            "completed": done,
+                            "total": ms.plans.len(),
+                            "all_done": done == ms.plans.len() && !ms.plans.is_empty(),
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({ "milestones": milestones }))?
+                );
+            } else {
+                print!("{}", manifest.render_show(&completed));
+            }
+            Ok(EXIT_SUCCESS)
+        }
+        QueueCmd::Validate { file, workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let manifest_path = if file.is_absolute() {
+                file
+            } else {
+                wd.join(file)
+            };
+            let manifest =
+                roko_cli::runner::queue_manifest::QueueManifest::from_file(&manifest_path)?;
+
+            // Collect available plan IDs from disk.
+            let available: std::collections::HashSet<String> =
+                roko_cli::plan::summarize_discovered_plans(&wd)
+                    .map_err(|e| anyhow!("{e}"))?
+                    .into_iter()
+                    .map(|s| s.id)
+                    .collect();
+
+            let issues = manifest.validate(Some(&available));
+            if issues.is_empty() {
+                if !cli.quiet {
+                    println!(
+                        "queue manifest valid: {} milestone(s), {} plan(s)",
+                        manifest.milestones.len(),
+                        manifest
+                            .milestones
+                            .iter()
+                            .map(|m| m.plans.len())
+                            .sum::<usize>()
+                    );
+                }
+                Ok(EXIT_SUCCESS)
+            } else {
+                for issue in &issues {
+                    eprintln!("error: {issue}");
+                }
+                Ok(EXIT_FAILURE)
+            }
+        }
+        QueueCmd::Init { output, workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            let output_path = if output.is_absolute() {
+                output
+            } else {
+                wd.join(output)
+            };
+
+            if output_path.exists() {
+                bail!("queue manifest already exists at {}", output_path.display());
+            }
+
+            let plan_ids: Vec<String> = roko_cli::plan::summarize_discovered_plans(&wd)
+                .map_err(|e| anyhow!("{e}"))?
+                .into_iter()
+                .map(|s| s.id)
+                .collect();
+
+            if plan_ids.is_empty() {
+                bail!("no plans found in workspace");
+            }
+
+            let manifest =
+                roko_cli::runner::queue_manifest::QueueManifest::generate_starter(&plan_ids);
+            let toml_content = manifest.to_toml()?;
+
+            if let Some(parent) = output_path.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("create directory {}", parent.display()))?;
+            }
+            std::fs::write(&output_path, &toml_content)
+                .with_context(|| format!("write {}", output_path.display()))?;
+
+            if !cli.quiet {
+                println!(
+                    "created queue manifest at {} with {} plan(s)",
+                    output_path.display(),
+                    plan_ids.len()
+                );
+            }
+            Ok(EXIT_SUCCESS)
         }
     }
 }
@@ -1646,10 +2237,33 @@ pub(crate) fn cmd_plan_validate(
 
     let report =
         plan_validate::validate_plans_dir_with_workdir(dir, models.as_ref(), Some(workdir))?;
+
+    // Cross-plan crate overlap analysis (#195).
+    let overlaps = match roko_cli::runner::plan_loader::load_plans(dir) {
+        Ok(plans) => {
+            let overlaps = roko_cli::runner::plan_loader::compute_crate_overlaps(&plans);
+            roko_cli::runner::plan_loader::warn_crate_overlaps(&overlaps);
+            overlaps
+        }
+        Err(_) => Vec::new(),
+    };
+
     if json_output {
         println!("{}", plan_validate::render_json(&report)?);
     } else {
-        println!("{}", plan_validate::render_text(&report));
+        let mut text = plan_validate::render_text(&report);
+        if !overlaps.is_empty() {
+            text.push_str("\n\ncrate overlaps detected:\n");
+            for overlap in &overlaps {
+                text.push_str(&format!(
+                    "  warning: plans {} and {} both touch: {}\n",
+                    overlap.plan_a,
+                    overlap.plan_b,
+                    overlap.crates.join(", "),
+                ));
+            }
+        }
+        println!("{text}");
     }
     Ok(report.exit_code(strict))
 }

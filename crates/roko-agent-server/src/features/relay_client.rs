@@ -1113,7 +1113,8 @@ mod tests {
         async fn dispatch(
             &self,
             _request: roko_agent::chat_types::ChatRequest,
-        ) -> std::result::Result<roko_agent::chat_types::ChatResponse, SidecarDispatchError> {
+        ) -> std::result::Result<roko_agent::chat_types::ChatResponse, SidecarDispatchError>
+        {
             let _signal = DispatchDropSignal(Arc::clone(&self.dropped));
             let _ = self.started_tx.send(());
             std::future::pending().await

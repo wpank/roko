@@ -2219,7 +2219,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_invocation_rejects_unenforceable_tool_policy() {
+    fn codex_invocation_warns_but_proceeds_with_unenforceable_tool_policy() {
         let provider = CliProviderConfig::codex("codex_cli", "codex");
         let request = CliDispatchRequest {
             prompt: "restricted work".to_string(),
@@ -2238,10 +2238,14 @@ mod tests {
             plugin_mcp: None,
         };
 
-        assert!(matches!(
-            provider.build_invocation(&request),
-            Err(DispatchV2Error::ToolPolicyUnsupported { .. })
-        ));
+        // Codex CLI cannot enforce tool policy natively, but the dispatch now
+        // warns and proceeds (relying on codex's own sandbox) rather than
+        // hard-failing, since many safety contracts include tool denials that
+        // are irrelevant to codex's tool surface.
+        assert!(
+            provider.build_invocation(&request).is_ok(),
+            "codex should warn but proceed when tool policy is present"
+        );
     }
 
     fn plugin_mcp_config() -> CliPluginMcpConfig {
@@ -2338,11 +2342,13 @@ mod tests {
                 .any(|(key, value)| { key == "ROKO_PLUGIN_MCP_TOKEN" && value == "signed-secret" })
         );
 
+        // Setting allowed_tools now warns but still succeeds (codex relies on
+        // its own sandbox rather than hard-failing on unenforceable policy).
         request.allowed_tools = Some(vec!["demo.echo".to_string()]);
-        assert!(matches!(
-            provider.build_invocation(&request),
-            Err(DispatchV2Error::ToolPolicyUnsupported { .. })
-        ));
+        assert!(
+            provider.build_invocation(&request).is_ok(),
+            "codex should warn but proceed when native tool policy is present alongside MCP"
+        );
     }
 
     #[test]

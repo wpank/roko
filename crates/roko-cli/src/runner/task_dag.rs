@@ -657,6 +657,140 @@ impl TaskDag {
     }
 }
 
+// ─── Critical path computation ───────────────────────────────────────
+
+/// Default estimated minutes when a task does not specify one.
+pub const DEFAULT_ESTIMATED_MINUTES: u32 = 5;
+
+/// Result of a critical-path computation over a task DAG.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CriticalPathResult {
+    /// Task IDs on the critical path, in dependency order.
+    pub path: Vec<TaskId>,
+    /// Total estimated minutes along the critical path.
+    pub total_minutes: u32,
+}
+
+/// Compute the critical path through a set of tasks using topological sort
+/// plus forward-pass earliest-finish computation.
+///
+/// The critical path is the longest weighted dependency chain. Each task's
+/// weight is its `estimated_minutes` or [`DEFAULT_ESTIMATED_MINUTES`].
+///
+/// Returns `None` if there are no tasks, or if all tasks are terminal.
+#[must_use]
+pub fn critical_path(tasks: &[&TaskDef]) -> Option<CriticalPathResult> {
+    if tasks.is_empty() {
+        return None;
+    }
+
+    let task_map: HashMap<&str, &TaskDef> = tasks.iter().map(|t| (t.id.as_str(), *t)).collect();
+
+    // Build adjacency and in-degree maps for Kahn's algorithm.
+    let mut in_degree: HashMap<&str, usize> = HashMap::new();
+    let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
+
+    for task in tasks {
+        in_degree.entry(task.id.as_str()).or_insert(0);
+        for dep in &task.depends_on {
+            if task_map.contains_key(dep.as_str()) {
+                *in_degree.entry(task.id.as_str()).or_insert(0) += 1;
+                dependents
+                    .entry(dep.as_str())
+                    .or_default()
+                    .push(task.id.as_str());
+            }
+        }
+    }
+
+    // Kahn's topological sort.
+    let mut queue: Vec<&str> = in_degree
+        .iter()
+        .filter(|&(_, &deg)| deg == 0)
+        .map(|(id, _)| *id)
+        .collect();
+    queue.sort(); // deterministic order
+    let mut topo_order: Vec<&str> = Vec::with_capacity(tasks.len());
+
+    while let Some(node) = queue.pop() {
+        topo_order.push(node);
+        if let Some(children) = dependents.get(node) {
+            for &child in children {
+                if let Some(deg) = in_degree.get_mut(child) {
+                    *deg = deg.saturating_sub(1);
+                    if *deg == 0 {
+                        queue.push(child);
+                        queue.sort(); // keep deterministic
+                    }
+                }
+            }
+        }
+    }
+
+    // Forward pass: compute earliest finish time for each task.
+    let mut earliest_finish: HashMap<&str, u32> = HashMap::new();
+    let mut predecessor: HashMap<&str, &str> = HashMap::new();
+
+    for &node in &topo_order {
+        let task = task_map[node];
+        let weight = task.estimated_minutes.unwrap_or(DEFAULT_ESTIMATED_MINUTES);
+
+        let mut max_dep_finish = 0u32;
+        let mut best_pred: Option<&str> = None;
+
+        for dep in &task.depends_on {
+            if let Some(&dep_finish) = earliest_finish.get(dep.as_str()) {
+                if dep_finish > max_dep_finish {
+                    max_dep_finish = dep_finish;
+                    best_pred = Some(dep.as_str());
+                }
+            }
+        }
+
+        let finish = max_dep_finish + weight;
+        earliest_finish.insert(node, finish);
+        if let Some(pred) = best_pred {
+            predecessor.insert(node, pred);
+        }
+    }
+
+    // Find the task with the maximum earliest finish (end of critical path).
+    let (&end_task, &total_minutes) = earliest_finish.iter().max_by_key(|&(_, &v)| v)?;
+
+    // Trace back the critical path.
+    let mut path = vec![end_task.to_string()];
+    let mut current = end_task;
+    while let Some(&pred) = predecessor.get(current) {
+        path.push(pred.to_string());
+        current = pred;
+    }
+    path.reverse();
+
+    Some(CriticalPathResult {
+        path,
+        total_minutes,
+    })
+}
+
+/// Compute the remaining ETA from the critical path, accounting for
+/// completed and in-progress tasks.
+///
+/// - Completed tasks contribute zero remaining time.
+/// - In-progress tasks contribute their full estimate (conservative).
+/// - Pending tasks on the critical path contribute their full estimate.
+#[must_use]
+pub fn remaining_eta_minutes(tasks: &[&TaskDef], completed: &HashSet<TaskId>) -> Option<u32> {
+    // Recompute critical path considering only non-completed tasks.
+    let remaining_tasks: Vec<&TaskDef> = tasks
+        .iter()
+        .filter(|t| !completed.contains(&t.id))
+        .copied()
+        .collect();
+    let remaining_refs: Vec<&TaskDef> = remaining_tasks.iter().copied().collect();
+    let result = critical_path(&remaining_refs)?;
+    Some(result.total_minutes)
+}
+
 fn ordered_tasks<'a>(tasks: &[&'a TaskDef]) -> Vec<&'a TaskDef> {
     let mut ordered: Vec<&'a TaskDef> = tasks.to_vec();
     ordered.sort_by(|a, b| a.sequence.cmp(&b.sequence).then_with(|| a.id.cmp(&b.id)));
@@ -669,6 +803,10 @@ mod tests {
     use crate::task_parser::TaskDef;
 
     fn task(id: &str, deps: &[&str]) -> TaskDef {
+        task_with_minutes(id, deps, None)
+    }
+
+    fn task_with_minutes(id: &str, deps: &[&str], minutes: Option<u32>) -> TaskDef {
         TaskDef {
             id: id.to_string(),
             title: id.to_string(),
@@ -694,6 +832,8 @@ mod tests {
             acceptance: vec![],
             acceptance_contract: None,
             domain: None,
+            estimated_minutes: minutes,
+            crates_touched: None,
             sequence: 0,
         }
     }

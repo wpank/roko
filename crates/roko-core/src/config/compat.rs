@@ -235,6 +235,11 @@ fn convert_conductor(m: &MoriConfig) -> ConductorConfig {
         auto_fix_model: m.auto_fix_model.clone().unwrap_or(d.auto_fix_model),
         watchers: d.watchers,
         context_pressure_enabled: d.context_pressure_enabled,
+        silence_timeout_secs: d.silence_timeout_secs,
+        compile_fail_threshold: d.compile_fail_threshold,
+        task_stall_secs: d.task_stall_secs,
+        context_pressure_pct: d.context_pressure_pct,
+        phase_timeout_secs: d.phase_timeout_secs,
     }
 }
 

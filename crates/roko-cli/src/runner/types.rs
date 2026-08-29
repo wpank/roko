@@ -24,6 +24,58 @@ const fn default_true() -> bool {
     true
 }
 
+// ---------------------------------------------------------------------------
+// ControlCommand — file-based IPC for CLI control of a running plan
+// ---------------------------------------------------------------------------
+
+/// A command written to `.roko/state/control.json` by CLI subcommands and
+/// consumed (then deleted) by the runner event loop every 250 ms.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlCommand {
+    /// The control action to perform.
+    pub command: ControlAction,
+    /// Optional plan identifier for plan-scoped commands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_id: Option<String>,
+    /// Optional task identifier for task-scoped retry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+}
+
+/// Control actions that can be sent to a running plan executor.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlAction {
+    /// Pause the runner: finish the current agent turn, then stop dispatching.
+    Pause,
+    /// Resume dispatching after a pause.
+    Resume,
+    /// Cancel a specific plan (requires `plan_id`).
+    Cancel,
+    /// Retry failed tasks in a plan (optionally a specific task).
+    Retry,
+}
+
+impl ControlCommand {
+    /// Read and remove the control file atomically. Returns `None` if the file
+    /// does not exist or cannot be parsed.
+    pub fn poll(state_dir: &Path) -> Option<Self> {
+        let path = state_dir.join("control.json");
+        let content = std::fs::read_to_string(&path).ok()?;
+        let _ = std::fs::remove_file(&path);
+        serde_json::from_str(&content).ok()
+    }
+
+    /// Write this command to the control file for the runner to pick up.
+    pub fn write(&self, state_dir: &Path) -> std::io::Result<()> {
+        let path = state_dir.join("control.json");
+        std::fs::create_dir_all(state_dir)?;
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(&path, json)
+    }
+}
+
 /// Effective plan wall-clock timeout in seconds.
 ///
 /// `[timeouts].plan_total_secs` is the canonical setting. If that field is
@@ -347,6 +399,10 @@ impl EventCategory {
             RunnerEvent::MergeBackendCompleted { .. } => Self::Merge,
             RunnerEvent::RetryDecision { .. } => Self::Retry,
             RunnerEvent::BudgetExceeded { .. } => Self::Plan,
+            RunnerEvent::RunPaused { .. } | RunnerEvent::RunResumed { .. } => Self::Run,
+            RunnerEvent::BatchPause { .. } | RunnerEvent::BatchResume { .. } => Self::Run,
+            RunnerEvent::PlanCancelled { .. } => Self::Plan,
+            RunnerEvent::ConductorIntervention { .. } => Self::Run,
         }
     }
 
@@ -655,6 +711,127 @@ pub enum RetryAction {
     RetryAfterBackoff,
     Exhausted,
     NotRetryable,
+    /// Escalate to structural self-correction after N retries fail with the
+    /// same approach. The runner picks a [`StructuralReplanStrategy`] based on
+    /// the failure pattern and mutates the DAG.
+    Replan,
+}
+
+/// Maximum number of replan attempts per task before falling through to
+/// [`RetryAction::Exhausted`].
+pub const MAX_REPLANS_PER_TASK: u32 = 3;
+
+/// Structural self-correction strategies applied when retries are exhausted
+/// and the failure suggests the task decomposition is wrong, not just the
+/// implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StructuralReplanStrategy {
+    /// Combine the current task with the next task in the DAG.
+    MergeWithNext,
+    /// Break the failing task into smaller subtasks.
+    SplitTask,
+    /// Insert a new prerequisite task before the failing task.
+    InsertPrecondition,
+    /// Modify the implementation strategy (model/approach change).
+    ChangeApproach,
+}
+
+impl StructuralReplanStrategy {
+    /// Human-readable label for logs and metrics.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::MergeWithNext => "merge_with_next",
+            Self::SplitTask => "split_task",
+            Self::InsertPrecondition => "insert_precondition",
+            Self::ChangeApproach => "change_approach",
+        }
+    }
+}
+
+impl std::fmt::Display for StructuralReplanStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// A single replan ledger entry tracking one structural replan attempt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplanLedgerEntry {
+    pub task_id: String,
+    pub plan_id: String,
+    pub strategy: StructuralReplanStrategy,
+    pub attempt: u32,
+    pub gate_failure_summary: String,
+    pub timestamp: String,
+}
+
+/// Persistent ledger tracking replan attempts per task.
+///
+/// Persisted to `.roko/state/replan-ledger.json` and restored on
+/// crash/resume so replans are not repeated.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReplanLedger {
+    pub entries: Vec<ReplanLedgerEntry>,
+}
+
+impl ReplanLedger {
+    /// Count replan attempts for a specific task.
+    pub fn attempts_for_task(&self, plan_id: &str, task_id: &str) -> u32 {
+        self.entries
+            .iter()
+            .filter(|e| e.plan_id == plan_id && e.task_id == task_id)
+            .count() as u32
+    }
+
+    /// Check if a specific strategy was already tried for a task.
+    pub fn strategy_tried(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        strategy: StructuralReplanStrategy,
+    ) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.plan_id == plan_id && e.task_id == task_id && e.strategy == strategy)
+    }
+
+    /// Select the next untried strategy for a task, returning `None` if all
+    /// have been tried or the replan cap is reached.
+    pub fn next_strategy(&self, plan_id: &str, task_id: &str) -> Option<StructuralReplanStrategy> {
+        if self.attempts_for_task(plan_id, task_id) >= MAX_REPLANS_PER_TASK {
+            return None;
+        }
+        let candidates = [
+            StructuralReplanStrategy::ChangeApproach,
+            StructuralReplanStrategy::SplitTask,
+            StructuralReplanStrategy::InsertPrecondition,
+            StructuralReplanStrategy::MergeWithNext,
+        ];
+        candidates
+            .into_iter()
+            .find(|&s| !self.strategy_tried(plan_id, task_id, s))
+    }
+
+    /// Record a replan attempt.
+    pub fn record(
+        &mut self,
+        plan_id: &str,
+        task_id: &str,
+        strategy: StructuralReplanStrategy,
+        gate_failure_summary: &str,
+    ) {
+        let stamp = EventStamp::now();
+        self.entries.push(ReplanLedgerEntry {
+            task_id: task_id.to_string(),
+            plan_id: plan_id.to_string(),
+            strategy,
+            attempt: self.attempts_for_task(plan_id, task_id) + 1,
+            gate_failure_summary: gate_failure_summary.to_string(),
+            timestamp: stamp.timestamp,
+        });
+    }
 }
 
 /// Single retry policy result for a failed task attempt.
@@ -707,12 +884,15 @@ impl RetryDecision {
     }
 
     pub const fn should_retry(&self) -> bool {
-        matches!(self.action, RetryAction::RetryAfterBackoff)
+        matches!(
+            self.action,
+            RetryAction::RetryAfterBackoff | RetryAction::Replan
+        )
     }
 
     pub const fn terminal_outcome(&self) -> Option<TaskAttemptOutcome> {
         match self.action {
-            RetryAction::RetryAfterBackoff => None,
+            RetryAction::RetryAfterBackoff | RetryAction::Replan => None,
             RetryAction::Exhausted => Some(TaskAttemptOutcome::Exhausted),
             RetryAction::NotRetryable => Some(TaskAttemptOutcome::Failed),
         }
@@ -720,7 +900,7 @@ impl RetryDecision {
 
     pub const fn attempt_status(&self) -> TaskAttemptStatus {
         match self.action {
-            RetryAction::RetryAfterBackoff => TaskAttemptStatus::Retrying,
+            RetryAction::RetryAfterBackoff | RetryAction::Replan => TaskAttemptStatus::Retrying,
             RetryAction::Exhausted => TaskAttemptStatus::Exhausted,
             RetryAction::NotRetryable => TaskAttemptStatus::Failed,
         }
@@ -1203,6 +1383,65 @@ pub enum RunnerEvent {
         /// The configured ceiling that was exceeded.
         limit_usd: f64,
     },
+    /// Emitted when the runner pauses execution via control command or batch
+    /// controller.
+    #[serde(rename = "run.paused")]
+    RunPaused {
+        timestamp: String,
+        timestamp_ms: u64,
+        run_id: String,
+        reason: String,
+    },
+    /// Emitted when the runner resumes after a pause.
+    #[serde(rename = "run.resumed")]
+    RunResumed {
+        timestamp: String,
+        timestamp_ms: u64,
+        run_id: String,
+    },
+    /// Emitted when the runner enters a batch pause checkpoint.
+    #[serde(rename = "batch.pause")]
+    BatchPause {
+        timestamp: String,
+        timestamp_ms: u64,
+        run_id: String,
+        completed: usize,
+        total: usize,
+        batch_size: usize,
+    },
+    /// Emitted when the runner resumes from a batch pause.
+    #[serde(rename = "batch.resume")]
+    BatchResume {
+        timestamp: String,
+        timestamp_ms: u64,
+        run_id: String,
+    },
+    /// Emitted when a plan is cancelled via control command.
+    #[serde(rename = "plan.cancelled")]
+    PlanCancelled {
+        timestamp: String,
+        timestamp_ms: u64,
+        run_id: String,
+        plan_id: String,
+        reason: String,
+    },
+    /// Emitted when the conductor supervisor fires an intervention (nudge,
+    /// force-advance, restart, or fail) in response to watcher signals.
+    #[serde(rename = "conductor.intervention")]
+    ConductorIntervention {
+        timestamp: String,
+        timestamp_ms: u64,
+        run_id: String,
+        /// The conductor decision label ("nudge", "force_advance", "restart", "fail").
+        decision: String,
+        /// Which watcher triggered the intervention.
+        watcher: String,
+        /// Human-readable reason or message.
+        reason: String,
+        /// The targeted task ID, if applicable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<String>,
+    },
 }
 
 impl RunnerEvent {
@@ -1580,6 +1819,46 @@ impl RunnerEvent {
         }
     }
 
+    pub fn conductor_intervention(run_id: &str, decision: &roko_core::ConductorDecision) -> Self {
+        let stamp = EventStamp::now();
+        let (dec_label, watcher, reason, task_id) = match decision {
+            roko_core::ConductorDecision::Nudge {
+                watcher,
+                message,
+                task_id,
+            } => ("nudge", watcher.clone(), message.clone(), task_id.clone()),
+            roko_core::ConductorDecision::ForceAdvance {
+                watcher,
+                reason,
+                task_id,
+            } => (
+                "force_advance",
+                watcher.clone(),
+                reason.clone(),
+                Some(task_id.clone()),
+            ),
+            roko_core::ConductorDecision::Restart { watcher, reason } => {
+                ("restart", watcher.clone(), reason.clone(), None)
+            }
+            roko_core::ConductorDecision::Fail { watcher, reason } => {
+                ("fail", watcher.clone(), format!("{reason:?}"), None)
+            }
+            roko_core::ConductorDecision::Continue => {
+                ("continue", String::new(), String::new(), None)
+            }
+            _ => ("unknown", String::new(), String::new(), None),
+        };
+        Self::ConductorIntervention {
+            timestamp: stamp.timestamp,
+            timestamp_ms: stamp.timestamp_ms,
+            run_id: run_id.to_string(),
+            decision: dec_label.to_string(),
+            watcher,
+            reason,
+            task_id,
+        }
+    }
+
     pub fn retry_decision(run_id: &str, attempt: TaskAttemptRef, decision: RetryDecision) -> Self {
         let stamp = EventStamp::now();
         Self::RetryDecision {
@@ -1619,6 +1898,12 @@ impl RunnerEvent {
             Self::MergeBackendCompleted { .. } => "merge.backend.completed",
             Self::RetryDecision { .. } => "retry.decision",
             Self::BudgetExceeded { .. } => "budget.exceeded",
+            Self::RunPaused { .. } => "run.paused",
+            Self::RunResumed { .. } => "run.resumed",
+            Self::BatchPause { .. } => "batch.pause",
+            Self::BatchResume { .. } => "batch.resume",
+            Self::PlanCancelled { .. } => "plan.cancelled",
+            Self::ConductorIntervention { .. } => "conductor.intervention",
         }
     }
 
@@ -1642,7 +1927,13 @@ impl RunnerEvent {
             | Self::PromptAssembled { timestamp_ms, .. }
             | Self::MergeBackendCompleted { timestamp_ms, .. }
             | Self::RetryDecision { timestamp_ms, .. }
-            | Self::BudgetExceeded { timestamp_ms, .. } => *timestamp_ms,
+            | Self::BudgetExceeded { timestamp_ms, .. }
+            | Self::RunPaused { timestamp_ms, .. }
+            | Self::RunResumed { timestamp_ms, .. }
+            | Self::BatchPause { timestamp_ms, .. }
+            | Self::BatchResume { timestamp_ms, .. }
+            | Self::PlanCancelled { timestamp_ms, .. }
+            | Self::ConductorIntervention { timestamp_ms, .. } => *timestamp_ms,
         }
     }
 
@@ -1667,8 +1958,17 @@ impl RunnerEvent {
                 .attempt
                 .as_ref()
                 .map(|attempt| attempt.plan_id.as_str()),
-            Self::BudgetExceeded { plan_id, .. } => Some(plan_id),
-            Self::ResumeMarker { .. } | Self::RunStarted { .. } | Self::RunCompleted { .. } => None,
+            Self::BudgetExceeded { plan_id, .. } | Self::PlanCancelled { plan_id, .. } => {
+                Some(plan_id)
+            }
+            Self::ConductorIntervention { task_id, .. } => task_id.as_deref(),
+            Self::ResumeMarker { .. }
+            | Self::RunStarted { .. }
+            | Self::RunCompleted { .. }
+            | Self::RunPaused { .. }
+            | Self::RunResumed { .. }
+            | Self::BatchPause { .. }
+            | Self::BatchResume { .. } => None,
         }
     }
 
@@ -1777,6 +2077,21 @@ impl RunnerEvent {
                 limit_usd,
                 ..
             } => format!("budget exceeded for plan {plan_id}: ${spent_usd:.2} >= ${limit_usd:.2}"),
+            Self::RunPaused { reason, .. } => format!("run paused: {reason}"),
+            Self::RunResumed { .. } => "run resumed".to_string(),
+            Self::BatchPause {
+                completed, total, ..
+            } => format!("batch pause: {completed}/{total} plans completed"),
+            Self::BatchResume { .. } => "batch resumed".to_string(),
+            Self::PlanCancelled {
+                plan_id, reason, ..
+            } => format!("plan cancelled: {plan_id}: {reason}"),
+            Self::ConductorIntervention {
+                decision,
+                watcher,
+                reason,
+                ..
+            } => format!("conductor intervention: {decision} (watcher={watcher}): {reason}"),
         }
     }
 }
@@ -1822,13 +2137,13 @@ pub struct AgentCompletionSummary {
     pub message: Option<String>,
 }
 
-struct EventStamp {
-    timestamp: String,
-    timestamp_ms: u64,
+pub(super) struct EventStamp {
+    pub(super) timestamp: String,
+    pub(super) timestamp_ms: u64,
 }
 
 impl EventStamp {
-    fn now() -> Self {
+    pub(super) fn now() -> Self {
         let now = chrono::Utc::now();
         Self {
             timestamp: now.to_rfc3339(),
@@ -1940,6 +2255,9 @@ pub struct RunConfig {
     /// Output sink for streaming progress events. `StderrSink` renders
     /// rich inline output; `NoopSink` discards everything (quiet/json/serve).
     pub output_sink: Arc<dyn super::output_sink::RunOutputSink>,
+    /// When `Some(n)`, pause execution after every `n` plan completions for
+    /// operator review. `None` means run all plans without pausing.
+    pub batch_size: Option<usize>,
     /// When true, run `cargo check --workspace` before the main event loop
     /// to warm the incremental cache. Makes subsequent compile gates fast.
     /// Default: true.
@@ -1970,6 +2288,10 @@ pub struct RunConfig {
     /// Structured JSONL logger for plan execution events.
     /// When set, every `RunnerEvent` is serialized and flushed to the file.
     pub structured_log: super::structured_log::StructuredLogger,
+    /// When true, capture event-driven screenshots during execution.
+    /// Screenshots are saved to `.roko/screenshots/run-<timestamp>/`.
+    #[allow(dead_code)]
+    pub screenshots: bool,
 }
 
 impl RunConfig {
@@ -2125,6 +2447,7 @@ impl RunConfig {
             connector_registry: Some(connector_registry),
             feed_registry: Some(feed_registry),
             output_sink: Arc::new(super::output_sink::NoopSink),
+            batch_size: None,
             warm_cache: true,
             // The runner constructs feedback / projection facades at run
             // start (`event_loop::run`) so they share their lifetime
@@ -2141,6 +2464,7 @@ impl RunConfig {
             conductor_ring: Some(conductor_ring),
             github_ops: None,
             structured_log: super::structured_log::StructuredLogger::noop(),
+            screenshots: false,
         }
     }
 }
@@ -2185,6 +2509,7 @@ impl Default for RunConfig {
             projection: None,
             http_event_sink: None,
             output_sink: Arc::new(super::output_sink::NoopSink),
+            batch_size: None,
             warm_cache: true,
             metrics: None,
             safety_layer: None,
@@ -2193,6 +2518,7 @@ impl Default for RunConfig {
             conductor_ring: None,
             github_ops: None,
             structured_log: super::structured_log::StructuredLogger::noop(),
+            screenshots: false,
         }
     }
 }

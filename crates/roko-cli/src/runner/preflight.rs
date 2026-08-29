@@ -48,9 +48,11 @@ pub fn run_preflight_checks(
     plans_dir: &Path,
     workdir: &Path,
 ) -> Vec<PreflightCheck> {
-    let mut checks = Vec::with_capacity(5);
+    let mut checks = Vec::with_capacity(7);
     checks.push(check_config(config, workdir));
     checks.push(check_credentials(config, workdir));
+    checks.push(check_disk_space(workdir));
+    checks.push(check_git_state(workdir));
     checks.push(check_plans_dir(plans_dir));
     checks.push(check_rust_toolchain());
     checks.push(check_stale_lock(workdir));
@@ -59,19 +61,29 @@ pub fn run_preflight_checks(
 
 /// Print the preflight results in doctor-style format.
 ///
+/// When all checks pass, no output is printed. When any check produces a
+/// warning or failure, only non-passing checks are printed along with a
+/// summary line.
+///
 /// Returns `true` if any check has [`PreflightStatus::Fail`].
 pub fn print_preflight_results(checks: &[PreflightCheck]) -> bool {
-    let mut any_fail = false;
+    let any_fail = checks.iter().any(|c| c.status == PreflightStatus::Fail);
+    let any_non_pass = checks.iter().any(|c| c.status != PreflightStatus::Pass);
+
+    // Silent when all checks pass.
+    if !any_non_pass {
+        return false;
+    }
+
     for check in checks {
-        if check.status == PreflightStatus::Fail {
-            any_fail = true;
+        if check.status != PreflightStatus::Pass {
+            eprintln!(
+                "[{}] {}: {}",
+                check.status.label(),
+                check.name,
+                check.message
+            );
         }
-        eprintln!(
-            "[{}] {}: {}",
-            check.status.label(),
-            check.name,
-            check.message
-        );
     }
 
     let pass = checks
@@ -153,6 +165,118 @@ fn check_credentials(config: Option<&RokoConfig>, workdir: &Path) -> PreflightCh
             name: "credentials",
             status: PreflightStatus::Pass,
             message: format!("provider available: {}", other.label()),
+        },
+    }
+}
+
+/// Minimum free disk space required (2 GB).
+const MIN_FREE_DISK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Check that there is at least 2 GB of free disk space on the workspace partition.
+fn check_disk_space(workdir: &Path) -> PreflightCheck {
+    match get_available_disk_bytes(workdir) {
+        Some(avail) if avail >= MIN_FREE_DISK_BYTES => PreflightCheck {
+            name: "disk",
+            status: PreflightStatus::Pass,
+            message: format!("{:.1} GB free", avail as f64 / (1024.0 * 1024.0 * 1024.0)),
+        },
+        Some(avail) => PreflightCheck {
+            name: "disk",
+            status: PreflightStatus::Fail,
+            message: format!(
+                "only {:.1} GB free (need >= 2 GB). Free up space or use --force to skip this check.",
+                avail as f64 / (1024.0 * 1024.0 * 1024.0)
+            ),
+        },
+        None => PreflightCheck {
+            name: "disk",
+            status: PreflightStatus::Warn,
+            message: "could not determine free disk space".to_string(),
+        },
+    }
+}
+
+/// Query available disk bytes on the partition containing `path`.
+///
+/// Shells out to `df` on Unix; returns `None` on non-Unix or when the
+/// command fails.
+fn get_available_disk_bytes(path: &Path) -> Option<u64> {
+    // `df -Pk <path>` outputs POSIX-portable 1024-byte blocks.
+    // The "Available" column is the 4th field on the data line.
+    let output = std::process::Command::new("df")
+        .args(["-Pk"])
+        .arg(path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let data_line = stdout.lines().nth(1)?;
+    let avail_kb: u64 = data_line.split_whitespace().nth(3)?.parse().ok()?;
+    Some(avail_kb * 1024)
+}
+
+/// Check git working directory state.
+///
+/// Warns (does not fail) if the tree has uncommitted changes. This catches the
+/// common case where an operator forgot to commit before a plan run, which can
+/// cause merge conflicts in worktrees.
+fn check_git_state(workdir: &Path) -> PreflightCheck {
+    // Check if we are in a git repo.
+    let status_output = std::process::Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(workdir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    match status_output {
+        Ok(out) if out.status.success() => {}
+        _ => {
+            return PreflightCheck {
+                name: "git",
+                status: PreflightStatus::Warn,
+                message: "not inside a git repository".to_string(),
+            };
+        }
+    }
+
+    // Check for uncommitted changes.
+    let dirty = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(workdir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    match dirty {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            if stdout.trim().is_empty() {
+                PreflightCheck {
+                    name: "git",
+                    status: PreflightStatus::Pass,
+                    message: "working tree is clean".to_string(),
+                }
+            } else {
+                let changed = stdout.lines().count();
+                PreflightCheck {
+                    name: "git",
+                    status: PreflightStatus::Warn,
+                    message: format!(
+                        "working tree has {changed} uncommitted change(s) \u{2014} \
+                         consider committing before plan run to avoid worktree merge conflicts"
+                    ),
+                }
+            }
+        }
+        _ => PreflightCheck {
+            name: "git",
+            status: PreflightStatus::Warn,
+            message: "could not determine git status".to_string(),
         },
     }
 }
@@ -546,15 +670,52 @@ mod tests {
     }
 
     #[test]
-    fn run_preflight_checks_returns_all_five_checks() {
+    fn run_preflight_checks_returns_all_seven_checks() {
         let workdir = tempdir().expect("tempdir");
         let plans_dir = workdir.path().join("plans");
         std::fs::create_dir_all(&plans_dir).expect("create plans dir");
         let config = RokoConfig::default();
         let checks = run_preflight_checks(Some(&config), &plans_dir, workdir.path());
-        assert_eq!(checks.len(), 5);
+        assert_eq!(checks.len(), 7);
         let names: Vec<&str> = checks.iter().map(|c| c.name).collect();
-        assert_eq!(names, &["config", "credentials", "plans", "rust", "lock"]);
+        assert_eq!(
+            names,
+            &[
+                "config",
+                "credentials",
+                "disk",
+                "git",
+                "plans",
+                "rust",
+                "lock"
+            ]
+        );
+    }
+
+    #[test]
+    fn check_disk_space_pass_on_dev_machine() {
+        // Dev machines should have > 2 GB free.
+        let workdir = tempdir().expect("tempdir");
+        let result = check_disk_space(workdir.path());
+        assert_eq!(result.status, PreflightStatus::Pass);
+        assert!(
+            result.message.contains("GB free"),
+            "message: {}",
+            result.message
+        );
+    }
+
+    #[test]
+    fn check_git_state_in_non_repo() {
+        // A tempdir won't be a git repo.
+        let workdir = tempdir().expect("tempdir");
+        let result = check_git_state(workdir.path());
+        assert_eq!(result.status, PreflightStatus::Warn);
+        assert!(
+            result.message.contains("not inside"),
+            "message: {}",
+            result.message
+        );
     }
 
     #[test]

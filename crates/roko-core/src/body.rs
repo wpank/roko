@@ -148,6 +148,7 @@ mod base64_bytes {
         const CHARS: &[u8; 64] =
             b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+
         let chunks = bytes.chunks_exact(3);
         let remainder = chunks.remainder();
         for chunk in chunks {
@@ -193,6 +194,7 @@ mod base64_bytes {
             return Err("base64 length not multiple of 4".into());
         }
         let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+
         for chunk in bytes.chunks_exact(4) {
             let mut vals = [0u8; 4];
             let mut pad = 0;

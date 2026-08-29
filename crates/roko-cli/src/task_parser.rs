@@ -102,6 +102,14 @@ pub struct TaskDef {
     pub acceptance_contract: Option<AcceptanceContract>,
     /// Work domain — controls gate selection and git policy.
     pub domain: Option<TaskDomain>,
+    /// Estimated wall-clock minutes for this task. Used by the critical-path
+    /// ETA computation. Falls back to a configurable default (5 min) when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_minutes: Option<u32>,
+    /// Crate directory names this task modifies. Used for cross-plan overlap
+    /// analysis to detect merge conflicts before execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crates_touched: Option<Vec<String>>,
     /// Definition order index (0-based) from the TOML array. Used for
     /// tie-breaking in DAG resolution so tasks without dependency constraints
     /// execute in the order they were authored, not alphabetically.
@@ -165,6 +173,10 @@ struct TaskDefSerde {
     pub acceptance_contract: Option<AcceptanceContract>,
     #[serde(default)]
     pub domain: Option<TaskDomain>,
+    #[serde(default)]
+    pub estimated_minutes: Option<u32>,
+    #[serde(default)]
+    pub crates_touched: Option<Vec<String>>,
 }
 
 impl From<TaskDefSerde> for TaskDef {
@@ -194,6 +206,8 @@ impl From<TaskDefSerde> for TaskDef {
             acceptance: raw.acceptance,
             acceptance_contract: raw.acceptance_contract,
             domain: raw.domain,
+            estimated_minutes: raw.estimated_minutes,
+            crates_touched: raw.crates_touched,
             sequence: 0, // stamped by TasksFile::parse_str after deserialization
         };
         task.apply_role_tool_defaults();
@@ -1511,6 +1525,8 @@ command = "cargo check -p roko-cli"
             acceptance: vec![],
             acceptance_contract: None,
             domain: None,
+            estimated_minutes: None,
+            crates_touched: None,
             sequence: 0,
         };
         assert_eq!(task.effective_model("fallback", None), "claude-haiku-4-5");
@@ -1557,6 +1573,8 @@ command = "cargo check -p roko-cli"
             acceptance: vec![],
             acceptance_contract: None,
             domain: None,
+            estimated_minutes: None,
+            crates_touched: None,
             sequence: 0,
         };
         assert_eq!(task.operating_frequency(), OperatingFrequency::Gamma);
@@ -1589,6 +1607,8 @@ command = "cargo check -p roko-cli"
             acceptance: vec![],
             acceptance_contract: None,
             domain: None,
+            estimated_minutes: None,
+            crates_touched: None,
             sequence: 0,
         };
         assert_eq!(reactive.operating_frequency(), OperatingFrequency::Gamma);
@@ -1618,6 +1638,8 @@ command = "cargo check -p roko-cli"
             acceptance: vec![],
             acceptance_contract: None,
             domain: None,
+            estimated_minutes: None,
+            crates_touched: None,
             sequence: 0,
         };
         assert_eq!(reflective.operating_frequency(), OperatingFrequency::Delta);
@@ -1647,6 +1669,8 @@ command = "cargo check -p roko-cli"
             acceptance: vec![],
             acceptance_contract: None,
             domain: None,
+            estimated_minutes: None,
+            crates_touched: None,
             sequence: 0,
         };
         assert_eq!(
@@ -2006,6 +2030,8 @@ depends_on = []
                 acceptance: vec![],
                 acceptance_contract: None,
                 domain: None,
+                estimated_minutes: None,
+                crates_touched: None,
                 sequence: 0,
             });
         }
@@ -2075,6 +2101,8 @@ depends_on = ["other-plan:T3"]
             acceptance: vec![],
             acceptance_contract: None,
             domain: None,
+            estimated_minutes: None,
+            crates_touched: None,
             sequence: 0,
         };
         let original = "Original task prompt";
@@ -2114,6 +2142,8 @@ depends_on = ["other-plan:T3"]
             acceptance: vec![],
             acceptance_contract: None,
             domain: None,
+            estimated_minutes: None,
+            crates_touched: None,
             sequence: 0,
         };
         let original = "Original prompt";

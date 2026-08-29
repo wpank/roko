@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::state::{AgentState, SidecarDispatchError, MessageContext};
+use crate::state::{AgentState, MessageContext, SidecarDispatchError};
 
 /// Messaging routes.
 pub fn router() -> Router<Arc<AgentState>> {
@@ -277,7 +277,7 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use crate::state::{SidecarDispatchError, DispatchLike};
+    use crate::state::{DispatchLike, SidecarDispatchError};
 
     #[derive(Clone)]
     struct MockDispatcher {
@@ -288,7 +288,10 @@ mod tests {
 
     #[async_trait]
     impl DispatchLike for MockDispatcher {
-        async fn dispatch(&self, _request: ChatRequest) -> Result<ChatResponse, SidecarDispatchError> {
+        async fn dispatch(
+            &self,
+            _request: ChatRequest,
+        ) -> Result<ChatResponse, SidecarDispatchError> {
             match &self.error {
                 Some(error) => Err(error.clone()),
                 None => Ok(self.response.clone()),

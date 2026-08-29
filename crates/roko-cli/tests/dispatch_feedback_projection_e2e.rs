@@ -63,6 +63,8 @@ fn task() -> TaskDef {
         acceptance: vec!["compiles".into()],
         acceptance_contract: None,
         domain: Some(roko_core::task::TaskDomain::Code),
+        estimated_minutes: None,
+        crates_touched: None,
         sequence: 0,
     }
 }

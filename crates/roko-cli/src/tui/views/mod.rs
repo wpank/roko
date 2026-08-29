@@ -24,6 +24,7 @@
 //! | F9 Atelier | Workshop | PRD Workshop, Plan Explorer |
 //! | F10 Learning | Learning | Route, History, Efficiency |
 
+pub mod affect_view;
 pub mod agents_view;
 pub mod atelier_view;
 pub mod config_view;
@@ -56,6 +57,8 @@ pub enum SubView {
     MeshStatus,
     /// Cost and budget overview.
     CostOverview,
+    /// Daimon affect state panel.
+    AffectView,
 
     // ── Region 2: Plans (F2) ──
     /// Plan DAG visualization.
@@ -86,6 +89,8 @@ pub enum SubView {
     FilteredLog,
     /// Signal stream viewer.
     SignalStream,
+    /// Error aggregation digest.
+    ErrorDigest,
 
     // ── Region 6: Config / System (F6) ──
     /// Effective configuration view.
@@ -104,6 +109,8 @@ pub enum SubView {
     EpisodeReplay,
     /// Knowledge browser (Neuro store).
     KnowledgeBrowse,
+    /// Per-model cost statistics table.
+    CostByModel,
 
     // ── Region 8: Marketplace (F8) ──
     /// Job list browser.
@@ -137,6 +144,7 @@ impl SubView {
                 SubView::DashboardHealth,
                 SubView::MeshStatus,
                 SubView::CostOverview,
+                SubView::AffectView,
             ],
             Tab::Plans => &[
                 SubView::PlanDagView,
@@ -153,7 +161,11 @@ impl SubView {
                 SubView::CommitGraph,
                 SubView::WorktreeList,
             ],
-            Tab::Logs => &[SubView::FilteredLog, SubView::SignalStream],
+            Tab::Logs => &[
+                SubView::FilteredLog,
+                SubView::SignalStream,
+                SubView::ErrorDigest,
+            ],
             Tab::Config => &[
                 SubView::ConfigEditor,
                 SubView::ProviderHealth,
@@ -164,6 +176,7 @@ impl SubView {
                 SubView::SignalDag,
                 SubView::EpisodeReplay,
                 SubView::KnowledgeBrowse,
+                SubView::CostByModel,
             ],
             Tab::Marketplace => &[SubView::JobList, SubView::JobDetail, SubView::CreateJob],
             Tab::Atelier => &[SubView::PrdWorkshop, SubView::PlanExplorer],
@@ -182,6 +195,7 @@ impl SubView {
             Self::DashboardHealth => "Health",
             Self::MeshStatus => "Mesh",
             Self::CostOverview => "Cost",
+            Self::AffectView => "Affect",
             Self::PlanDagView => "DAG",
             Self::TaskDetail => "Task",
             Self::WaveProgress => "Waves",
@@ -193,6 +207,7 @@ impl SubView {
             Self::WorktreeList => "Worktrees",
             Self::FilteredLog => "Log",
             Self::SignalStream => "Signals",
+            Self::ErrorDigest => "Errors",
             Self::ConfigEditor => "Config",
             Self::ProviderHealth => "Providers",
             Self::ModelComparison => "Models",
@@ -200,6 +215,7 @@ impl SubView {
             Self::SignalDag => "Signals",
             Self::EpisodeReplay => "Episodes",
             Self::KnowledgeBrowse => "Knowledge",
+            Self::CostByModel => "Cost/Model",
             Self::JobList => "Jobs",
             Self::JobDetail => "Detail",
             Self::CreateJob => "New Job",

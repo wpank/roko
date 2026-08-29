@@ -1169,10 +1169,9 @@ fn agent_stream_url(agent: &DiscoveredAgent) -> Option<String> {
     let rest = agent.endpoints.rest.as_ref()?;
     let websocket_base = if let Some(rest) = rest.strip_prefix("http://") {
         format!("ws://{rest}")
-    } else if let Some(rest) = rest.strip_prefix("https://") {
-        format!("wss://{rest}")
     } else {
-        return None;
+        let rest = rest.strip_prefix("https://")?;
+        format!("wss://{rest}")
     };
     Some(format!("{}/stream", websocket_base.trim_end_matches('/')))
 }

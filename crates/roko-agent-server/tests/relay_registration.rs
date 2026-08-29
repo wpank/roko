@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use roko_agent::chat_types::{ChatRequest, ChatResponse, FinishReason};
 use roko_agent_server::{
-    AgentRegistration, AgentServer, DispatchError, DispatchLike, RelayClientConfig,
+    AgentRegistration, AgentServer, DispatchLike, RelayClientConfig, SidecarDispatchError,
 };
 use roko_chain::{ChainWallet, MockChainWallet};
 use serde_json::{Value, json};
@@ -94,7 +94,7 @@ struct MockDispatcher {
 
 #[async_trait]
 impl DispatchLike for MockDispatcher {
-    async fn dispatch(&self, _request: ChatRequest) -> Result<ChatResponse, DispatchError> {
+    async fn dispatch(&self, _request: ChatRequest) -> Result<ChatResponse, SidecarDispatchError> {
         Ok(ChatResponse {
             content: self.response.clone(),
             finish_reason: FinishReason::Stop,

@@ -1,7 +1,9 @@
 //! Command group helpers for `roko`.
 
 pub mod agent;
+pub mod attempts;
 pub mod auth;
+pub mod backlog;
 pub mod bench;
 pub mod config_cmd;
 pub mod dashboard;

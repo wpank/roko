@@ -1449,7 +1449,11 @@ pub fn format_dashboard_event(
         | DashboardEvent::InboxDismiss { .. }
         | DashboardEvent::ChainBlock { .. }
         | DashboardEvent::ChainTx { .. }
-        | DashboardEvent::ChainContractEvent { .. } => return None,
+        | DashboardEvent::ChainContractEvent { .. }
+        | DashboardEvent::AgentHeartbeat { .. }
+        | DashboardEvent::GateRungStarted { .. }
+        | DashboardEvent::AffectUpdated { .. }
+        | DashboardEvent::AgentTopologyUpdated { .. } => return None,
     };
 
     let line = if pfx.is_empty() {
@@ -1532,10 +1536,28 @@ fn print_run_complete_summary(summary: &RunCompleteSummary) {
             "task", "tok_in", "tok_out", "cost", "calls", "result"
         );
         for tc in &summary.task_costs {
-            eprintln!(
-                "  {:.<24} {:>8} {:>8} ${:>7.4} {:>6} {:>6}",
-                tc.task_id, tc.tokens_in, tc.tokens_out, tc.cost_usd, tc.agent_calls, tc.outcome,
-            );
+            // Flag zero-token failed tasks as orphaned so the user knows
+            // dispatch never occurred (e.g. worktree or provider error).
+            if tc.tokens_in == 0
+                && tc.tokens_out == 0
+                && tc.agent_calls == 0
+                && (tc.outcome == "orphaned" || tc.outcome == "failed" || tc.outcome == "error")
+            {
+                eprintln!(
+                    "  {:.<24} {:>8} {:>8} {:>9} {:>6} FAILED (orphaned \u{2014} no dispatch occurred)",
+                    tc.task_id, "-", "-", "-", "-",
+                );
+            } else {
+                eprintln!(
+                    "  {:.<24} {:>8} {:>8} ${:>7.4} {:>6} {:>6}",
+                    tc.task_id,
+                    tc.tokens_in,
+                    tc.tokens_out,
+                    tc.cost_usd,
+                    tc.agent_calls,
+                    tc.outcome,
+                );
+            }
         }
     }
     // Failure details.

@@ -193,6 +193,12 @@ pub enum ReplanStrategy {
     Skip,
     /// Rebuild the plan from scratch and restart execution.
     RegeneratePlan,
+    /// Combine the current task with the next task in the DAG.
+    MergeWithNext,
+    /// Insert a new prerequisite task before the failing task.
+    InsertPrecondition,
+    /// Modify the implementation strategy (model/approach/constraints change).
+    ChangeApproach,
 }
 
 impl ReplanStrategy {
@@ -205,6 +211,9 @@ impl ReplanStrategy {
             Self::Decompose => "decompose",
             Self::Skip => "skip",
             Self::RegeneratePlan => "regenerate_plan",
+            Self::MergeWithNext => "merge_with_next",
+            Self::InsertPrecondition => "insert_precondition",
+            Self::ChangeApproach => "change_approach",
         }
     }
 }
@@ -260,6 +269,33 @@ pub enum ReplanResult {
         /// The failed task that was skipped.
         task_id: String,
     },
+    /// Combine the current task with the next task in the DAG.
+    MergeWithNext {
+        /// The plan that was re-planned.
+        plan_id: String,
+        /// The failed task that triggered the merge.
+        task_id: String,
+        /// The next task that was merged into the failing task.
+        merged_task_id: String,
+    },
+    /// Insert a prerequisite task before the failing task.
+    InsertPrecondition {
+        /// The plan that was re-planned.
+        plan_id: String,
+        /// The failed task that triggered the insertion.
+        task_id: String,
+        /// The new prerequisite task ID.
+        precondition_task_id: String,
+    },
+    /// Modify the implementation strategy without changing task structure.
+    ChangeApproach {
+        /// The plan that was re-planned.
+        plan_id: String,
+        /// The failed task whose approach was changed.
+        task_id: String,
+        /// Description of the new approach.
+        approach: String,
+    },
 }
 
 impl ReplanResult {
@@ -272,6 +308,9 @@ impl ReplanResult {
             Self::Decompose { .. } => ReplanStrategy::Decompose,
             Self::RegeneratePlan { .. } => ReplanStrategy::RegeneratePlan,
             Self::Skip { .. } => ReplanStrategy::Skip,
+            Self::MergeWithNext { .. } => ReplanStrategy::MergeWithNext,
+            Self::InsertPrecondition { .. } => ReplanStrategy::InsertPrecondition,
+            Self::ChangeApproach { .. } => ReplanStrategy::ChangeApproach,
         }
     }
 
@@ -283,7 +322,10 @@ impl ReplanResult {
             | Self::RetryWithEscalation { plan_id, .. }
             | Self::Decompose { plan_id, .. }
             | Self::RegeneratePlan { plan_id, .. }
-            | Self::Skip { plan_id, .. } => plan_id,
+            | Self::Skip { plan_id, .. }
+            | Self::MergeWithNext { plan_id, .. }
+            | Self::InsertPrecondition { plan_id, .. }
+            | Self::ChangeApproach { plan_id, .. } => plan_id,
         }
     }
 
@@ -295,14 +337,23 @@ impl ReplanResult {
             | Self::RetryWithEscalation { task_id, .. }
             | Self::Decompose { task_id, .. }
             | Self::RegeneratePlan { task_id, .. }
-            | Self::Skip { task_id, .. } => task_id,
+            | Self::Skip { task_id, .. }
+            | Self::MergeWithNext { task_id, .. }
+            | Self::InsertPrecondition { task_id, .. }
+            | Self::ChangeApproach { task_id, .. } => task_id,
         }
     }
 
     /// Whether the executor should restart the plan queue entry.
     #[must_use]
     pub const fn requires_restart(&self) -> bool {
-        matches!(self, Self::Decompose { .. } | Self::RegeneratePlan { .. })
+        matches!(
+            self,
+            Self::Decompose { .. }
+                | Self::RegeneratePlan { .. }
+                | Self::MergeWithNext { .. }
+                | Self::InsertPrecondition { .. }
+        )
     }
 
     /// Any task IDs introduced by the re-plan.
@@ -342,6 +393,24 @@ impl std::fmt::Display for ReplanResult {
                 new_task_ids,
             } => write!(f, "regenerate_plan({plan_id}, {task_id}, {new_task_ids:?})"),
             Self::Skip { plan_id, task_id } => write!(f, "skip({plan_id}, {task_id})"),
+            Self::MergeWithNext {
+                plan_id,
+                task_id,
+                merged_task_id,
+            } => write!(f, "merge_with_next({plan_id}, {task_id}, {merged_task_id})"),
+            Self::InsertPrecondition {
+                plan_id,
+                task_id,
+                precondition_task_id,
+            } => write!(
+                f,
+                "insert_precondition({plan_id}, {task_id}, {precondition_task_id})"
+            ),
+            Self::ChangeApproach {
+                plan_id,
+                task_id,
+                approach,
+            } => write!(f, "change_approach({plan_id}, {task_id}, {approach})"),
         }
     }
 }

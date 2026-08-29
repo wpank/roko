@@ -151,7 +151,57 @@ impl TaskTier {
 /// This prompt produces tasks with surgical context, executable verification,
 /// and model-adaptive tier hints. It's designed to produce tasks that even
 /// the smallest models can execute successfully.
-pub const PLAN_GENERATOR_SYSTEM_PROMPT: &str = r#"You are a task decomposition engine for software projects. Your job is to take a feature description and produce a set of tasks that are so precisely scoped that even the smallest, cheapest LLM can execute them correctly.
+pub const PLAN_GENERATOR_SYSTEM_PROMPT: &str = r#"## CRITICAL: Output format
+
+Your entire response MUST be a single ```toml fenced code block containing ONLY valid TOML.
+Do not include prose, explanations, Rust code, or markdown outside the TOML block.
+
+MINIMUM VALID STRUCTURE (use this as your template):
+```toml
+[meta]
+plan = "slug-matches-prd"
+total = 2
+done = 0
+status = "ready"
+max_parallel = 1
+
+[[task]]
+id = "T1"
+title = "First task"
+description = "What this task accomplishes."
+status = "ready"
+tier = "focused"
+max_loc = 50
+files = ["crates/roko-core/src/lib.rs"]
+allowed_tools = ["read_file", "grep"]
+denied_tools = []
+depends_on = []
+role = "implementer"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/lib.rs", lines = "1-50", why = "Read existing types." },
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core"
+```
+
+INVALID — do NOT produce output like this (Rust code inside TOML):
+```toml
+[[task]]
+id = "T1"
+title = "Add struct"
+prompt = "Implement the following:\n\npub struct Foo {\n    bar: String,\n}\n"
+```
+The above is INVALID because it embeds Rust code inside the TOML value.
+
+IMPORTANT: The meta section field is `plan`, NOT `name`.
+
+---
+
+You are a task decomposition engine for software projects. Your job is to take a feature description and produce a set of tasks that are so precisely scoped that even the smallest, cheapest LLM can execute them correctly.
 
 ## Core principles
 
@@ -607,6 +657,366 @@ fn append_claude_md_prompt(prompt: &mut String, workdir: &Path) {
     );
 }
 
+// ── Backlog spec resolution (#227) ─────────────────────────────────────────
+
+/// Default backlog directory relative to workspace root.
+pub const DEFAULT_BACKLOG_DIR: &str = "tmp/backlog";
+
+/// Parsed metadata from a backlog spec file.
+#[derive(Debug, Clone)]
+pub struct BacklogSpec {
+    /// Numeric backlog ID (e.g. 206).
+    pub id: u32,
+    /// Original filename stem (e.g. "206-cargo-build-jobs-limit").
+    pub file_stem: String,
+    /// Full path to the spec file.
+    pub path: std::path::PathBuf,
+    /// Title extracted from the first `# <id> — <title>` heading.
+    pub title: String,
+    /// Priority (e.g. "P1").
+    pub priority: Option<String>,
+    /// Size (e.g. "XS", "S", "M").
+    pub size: Option<String>,
+    /// Crates mentioned in the spec.
+    pub crates: Vec<String>,
+    /// Files listed in the "Files to Modify" section.
+    pub files_to_modify: Vec<String>,
+    /// Full source text of the spec.
+    pub source_text: String,
+}
+
+/// Derive a deterministic plan slug from a backlog filename stem.
+///
+/// Strips the leading numeric ID prefix and normalises to lowercase
+/// alphanumeric + hyphens, truncated to 50 characters.
+///
+/// `"206-cargo-build-jobs-limit"` -> `"cargo-build-jobs-limit"`
+#[must_use]
+pub fn slug_from_backlog_stem(stem: &str) -> String {
+    // Strip leading digits and the first hyphen.
+    let without_id = stem.find('-').map(|i| &stem[i + 1..]).unwrap_or(stem);
+
+    let slug: String = without_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+
+    // Collapse consecutive hyphens and trim leading/trailing hyphens.
+    let mut collapsed = String::with_capacity(slug.len());
+    let mut prev_hyphen = true; // start true to skip leading hyphen
+    for c in slug.chars() {
+        if c == '-' {
+            if !prev_hyphen {
+                collapsed.push('-');
+            }
+            prev_hyphen = true;
+        } else {
+            collapsed.push(c);
+            prev_hyphen = false;
+        }
+    }
+    // Trim trailing hyphen.
+    if collapsed.ends_with('-') {
+        collapsed.pop();
+    }
+
+    // Truncate to 50 chars on a word boundary.
+    if collapsed.len() > 50 {
+        if let Some(pos) = collapsed[..50].rfind('-') {
+            collapsed.truncate(pos);
+        } else {
+            collapsed.truncate(50);
+        }
+    }
+
+    collapsed
+}
+
+/// Parse comma-separated backlog IDs from the `--from-backlog` argument.
+///
+/// Accepts: `"206"`, `"206,120,119"`, `" 206 , 120 "`.
+pub fn parse_backlog_ids(input: &str) -> anyhow::Result<Vec<u32>> {
+    let mut ids = Vec::new();
+    for part in input.split(',') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let id: u32 = trimmed
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid backlog ID: {trimmed:?}"))?;
+        ids.push(id);
+    }
+    if ids.is_empty() {
+        anyhow::bail!("--from-backlog requires at least one numeric ID");
+    }
+    Ok(ids)
+}
+
+/// Resolve a backlog spec file by numeric ID.
+///
+/// Scans `backlog_dir` for files matching `<id>-*.md` and returns the parsed
+/// spec, or an error if no match or multiple matches are found.
+pub fn resolve_backlog_spec(backlog_dir: &Path, id: u32) -> anyhow::Result<BacklogSpec> {
+    let prefix = format!("{id}-");
+    let entries: Vec<_> = std::fs::read_dir(backlog_dir)
+        .map_err(|e| anyhow::anyhow!("read backlog dir {}: {e}", backlog_dir.display()))?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            name_str.starts_with(&prefix) && name_str.ends_with(".md")
+        })
+        .collect();
+
+    if entries.is_empty() {
+        anyhow::bail!(
+            "no backlog spec found for ID {id} in {}",
+            backlog_dir.display()
+        );
+    }
+    if entries.len() > 1 {
+        let names: Vec<_> = entries
+            .iter()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        anyhow::bail!(
+            "multiple backlog specs found for ID {id}: {}",
+            names.join(", ")
+        );
+    }
+
+    let entry = &entries[0];
+    let path = entry.path();
+    let source_text = std::fs::read_to_string(&path)
+        .map_err(|e| anyhow::anyhow!("read {}: {e}", path.display()))?;
+    let file_stem = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    let title = extract_backlog_title(&source_text, id);
+    let priority = extract_backlog_field(&source_text, "Priority");
+    let size = extract_backlog_field(&source_text, "Size");
+    let crates_field = extract_backlog_field(&source_text, "Crates");
+    let crates = crates_field
+        .map(|c| {
+            c.split(',')
+                .map(|s| s.trim().trim_matches('`').to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let files_to_modify = extract_files_to_modify(&source_text);
+
+    Ok(BacklogSpec {
+        id,
+        file_stem,
+        path,
+        title,
+        priority,
+        size,
+        crates,
+        files_to_modify,
+        source_text,
+    })
+}
+
+/// Build an enhanced generation prompt for a backlog spec.
+///
+/// Adds structured metadata (priority, size, crates, files to modify) and
+/// instructs the generator to write to `plans/<slug>/tasks.toml` with
+/// backlog metadata preserved in `[meta]`.
+pub fn build_backlog_generation_prompt(workdir: &Path, spec: &BacklogSpec, slug: &str) -> String {
+    let mut prompt = build_generator_system_prompt(workdir);
+    let _ = writeln!(prompt, "\n---\n");
+    let _ = writeln!(prompt, "## Workspace: {}\n", workdir.display());
+    let _ = writeln!(prompt, "## Source type: backlog-spec\n");
+
+    // Inject structured metadata.
+    let _ = writeln!(prompt, "## Backlog metadata");
+    let _ = writeln!(prompt, "- backlog_id: {}", spec.id);
+    if let Some(ref p) = spec.priority {
+        let _ = writeln!(prompt, "- priority: {p}");
+    }
+    if let Some(ref s) = spec.size {
+        let _ = writeln!(prompt, "- size: {s}");
+    }
+    if !spec.crates.is_empty() {
+        let _ = writeln!(prompt, "- crates: {}", spec.crates.join(", "));
+    }
+    let _ = writeln!(prompt);
+
+    // Instruct the generator to use the deterministic slug.
+    let _ = writeln!(prompt, "## IMPORTANT generation instructions");
+    let _ = writeln!(prompt, "- Set `meta.plan` to exactly: `\"{slug}\"`");
+    let _ = writeln!(
+        prompt,
+        "- Write the plan to `plans/{slug}/tasks.toml` (NOT `.roko/plans/`)"
+    );
+    let _ = writeln!(
+        prompt,
+        "- Include these backlog metadata fields in `[meta]`:"
+    );
+    let _ = writeln!(prompt, "  ```toml");
+    let _ = writeln!(prompt, "  backlog_id = {}", spec.id);
+    if let Some(ref p) = spec.priority {
+        let _ = writeln!(prompt, "  backlog_priority = \"{p}\"");
+    }
+    if let Some(ref s) = spec.size {
+        let _ = writeln!(prompt, "  backlog_size = \"{s}\"");
+    }
+    let _ = writeln!(prompt, "  source_file = \"{}\"", spec.path.display());
+    let _ = writeln!(prompt, "  ```");
+
+    // Auto-generate context.read_files guidance from files to modify.
+    if !spec.files_to_modify.is_empty() {
+        let _ = writeln!(prompt, "\n## Files to modify (from backlog spec)");
+        let _ = writeln!(
+            prompt,
+            "Generate `context.read_files` entries for each of these files. \
+             Each task that modifies one of these files MUST include it in \
+             `context.read_files` and `files`:"
+        );
+        for f in &spec.files_to_modify {
+            let _ = writeln!(prompt, "- `{f}`");
+        }
+    }
+
+    let _ = writeln!(prompt, "\n## Source content:\n\n{}", spec.source_text);
+    prompt
+}
+
+/// Build the task prompt for `--from-backlog` generation.
+#[must_use]
+pub fn build_backlog_task_prompt(spec: &BacklogSpec, slug: &str) -> String {
+    let mut prompt = format!(
+        "Read the backlog spec below and generate an implementation plan. \
+         Search the codebase first to understand what exists. \
+         Write the plan to plans/{slug}/tasks.toml (create the directory). \
+         Create plan.md and tasks.toml files with tier, context (read_files with line ranges), \
+         mcp_servers (per-task MCP server names), and verify steps (executable shell commands). \
+         Use the cheapest model tier for each task.\n\n"
+    );
+
+    // Add context files inline if small enough.
+    if !spec.files_to_modify.is_empty() {
+        prompt.push_str("Files referenced by the spec that tasks should operate on:\n");
+        for f in &spec.files_to_modify {
+            let _ = writeln!(prompt, "- {f}");
+        }
+        prompt.push('\n');
+    }
+
+    prompt.push_str(&spec.source_text);
+    prompt
+}
+
+// ── Internal helpers ──────────────────────────────────────────────────────
+
+/// Extract the title from the first heading: `# <id> — <title>`.
+fn extract_backlog_title(source: &str, id: u32) -> String {
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if let Some(heading) = trimmed.strip_prefix("# ") {
+            // Try to strip the leading ID and em-dash.
+            let after_id = heading
+                .strip_prefix(&id.to_string())
+                .and_then(|s| {
+                    // Skip whitespace and em-dash / regular dash.
+                    let s = s.trim_start();
+                    s.strip_prefix("—")
+                        .or_else(|| s.strip_prefix('-'))
+                        .map(|s| s.trim_start())
+                })
+                .unwrap_or(heading);
+            return after_id.to_string();
+        }
+    }
+    format!("backlog-{id}")
+}
+
+/// Extract a `**Field**: value` metadata field from the spec header.
+fn extract_backlog_field(source: &str, field: &str) -> Option<String> {
+    let prefix = format!("**{field}**:");
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix(&prefix) {
+            let value = rest.trim();
+            // Strip inline qualifiers like "P1 — stability; ..."
+            let value = value
+                .split("—")
+                .next()
+                .unwrap_or(value)
+                .split(';')
+                .next()
+                .unwrap_or(value)
+                .trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Extract file paths from the "Files to Modify" markdown table.
+fn extract_files_to_modify(source: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    let mut in_table = false;
+    let mut past_header_separator = false;
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.contains("Files to Modify") || trimmed.contains("Files to modify") {
+            in_table = true;
+            past_header_separator = false;
+            continue;
+        }
+
+        if !in_table {
+            continue;
+        }
+
+        // Table rows start with |.
+        if !trimmed.starts_with('|') {
+            // End of table.
+            if past_header_separator {
+                break;
+            }
+            continue;
+        }
+
+        // Skip the header row and separator.
+        if trimmed.contains("---") {
+            past_header_separator = true;
+            continue;
+        }
+        if !past_header_separator {
+            continue;
+        }
+
+        // Parse table row: | `path` | description |
+        let cols: Vec<&str> = trimmed.split('|').collect();
+        if cols.len() >= 2 {
+            let file_col = cols[1].trim().trim_matches('`');
+            if !file_col.is_empty() && !file_col.contains("File") {
+                files.push(file_col.to_string());
+            }
+        }
+    }
+
+    files
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -651,5 +1061,174 @@ mod tests {
         assert!(!prompt.contains("claude-opus-4-6"));
         // Tier table is still present.
         assert!(prompt.contains("| 0 | Mechanical | 20 |"));
+    }
+
+    // ── Backlog resolution tests (#227) ───────────────────────────────────
+
+    #[test]
+    fn slug_from_backlog_stem_strips_id_prefix() {
+        assert_eq!(
+            slug_from_backlog_stem("206-cargo-build-jobs-limit"),
+            "cargo-build-jobs-limit"
+        );
+    }
+
+    #[test]
+    fn slug_from_backlog_stem_handles_no_prefix() {
+        // "some-feature" has a hyphen, so the leading "some" is treated as
+        // the numeric-ID prefix and stripped, leaving "feature".
+        assert_eq!(slug_from_backlog_stem("some-feature"), "feature");
+    }
+
+    #[test]
+    fn slug_from_backlog_stem_lowercases_and_normalises() {
+        assert_eq!(
+            slug_from_backlog_stem("42-My_Cool_Feature"),
+            "my-cool-feature"
+        );
+    }
+
+    #[test]
+    fn slug_from_backlog_stem_truncates_to_50_chars() {
+        let long = format!("99-{}", "a-".repeat(40));
+        let slug = slug_from_backlog_stem(&long);
+        assert!(slug.len() <= 50, "slug len {} > 50", slug.len());
+    }
+
+    #[test]
+    fn parse_backlog_ids_single() {
+        let ids = parse_backlog_ids("206").unwrap();
+        assert_eq!(ids, vec![206]);
+    }
+
+    #[test]
+    fn parse_backlog_ids_multiple() {
+        let ids = parse_backlog_ids("206,120,119").unwrap();
+        assert_eq!(ids, vec![206, 120, 119]);
+    }
+
+    #[test]
+    fn parse_backlog_ids_with_spaces() {
+        let ids = parse_backlog_ids(" 206 , 120 ").unwrap();
+        assert_eq!(ids, vec![206, 120]);
+    }
+
+    #[test]
+    fn parse_backlog_ids_rejects_non_numeric() {
+        assert!(parse_backlog_ids("abc").is_err());
+    }
+
+    #[test]
+    fn parse_backlog_ids_rejects_empty() {
+        assert!(parse_backlog_ids("").is_err());
+    }
+
+    #[test]
+    fn resolve_backlog_spec_finds_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec_content = "# 42 \u{2014} Test Feature\n\
+            \n\
+            **Priority**: P2\n\
+            **Size**: S\n\
+            **Crates**: `roko-core`, `roko-cli`\n\
+            \n\
+            ## Files to Modify\n\
+            \n\
+            | File | Change |\n\
+            |---|---|\n\
+            | `crates/roko-core/src/lib.rs` | Add type |\n\
+            | `crates/roko-cli/src/main.rs` | Wire it |\n";
+        std::fs::write(dir.path().join("42-test-feature.md"), spec_content).unwrap();
+
+        let spec = resolve_backlog_spec(dir.path(), 42).unwrap();
+        assert_eq!(spec.id, 42);
+        assert_eq!(spec.title, "Test Feature");
+        assert_eq!(spec.priority.as_deref(), Some("P2"));
+        assert_eq!(spec.size.as_deref(), Some("S"));
+        assert_eq!(spec.crates, vec!["roko-core", "roko-cli"]);
+        assert_eq!(
+            spec.files_to_modify,
+            vec!["crates/roko-core/src/lib.rs", "crates/roko-cli/src/main.rs"]
+        );
+    }
+
+    #[test]
+    fn resolve_backlog_spec_errors_on_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(resolve_backlog_spec(dir.path(), 999).is_err());
+    }
+
+    #[test]
+    fn extract_backlog_title_from_heading() {
+        let source =
+            "# 206 \u{2014} Limit CARGO_BUILD_JOBS in Agent Subprocess Spawns\n\nMore text.";
+        assert_eq!(
+            extract_backlog_title(source, 206),
+            "Limit CARGO_BUILD_JOBS in Agent Subprocess Spawns"
+        );
+    }
+
+    #[test]
+    fn extract_backlog_title_fallback() {
+        let source = "No heading here.";
+        assert_eq!(extract_backlog_title(source, 99), "backlog-99");
+    }
+
+    #[test]
+    fn extract_backlog_field_priority() {
+        let source =
+            "**Priority**: P1 \u{2014} stability; concurrent agents\n**Size**: XS (half day)";
+        assert_eq!(
+            extract_backlog_field(source, "Priority"),
+            Some("P1".to_string())
+        );
+        assert_eq!(
+            extract_backlog_field(source, "Size"),
+            Some("XS (half day)".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_files_to_modify_from_table() {
+        let source = "## Files to Modify\n\
+            \n\
+            | File | Change |\n\
+            |---|---|\n\
+            | `crates/roko-agent/src/provider/claude_cli.rs` | Add env vars |\n\
+            | `crates/roko-core/src/config/mod.rs` | Add config field |\n";
+        let files = extract_files_to_modify(source);
+        assert_eq!(
+            files,
+            vec![
+                "crates/roko-agent/src/provider/claude_cli.rs",
+                "crates/roko-core/src/config/mod.rs",
+            ]
+        );
+    }
+
+    #[test]
+    fn backlog_generation_prompt_includes_metadata() {
+        let spec = BacklogSpec {
+            id: 206,
+            file_stem: "206-cargo-build-jobs-limit".to_string(),
+            path: std::path::PathBuf::from("tmp/backlog/206-cargo-build-jobs-limit.md"),
+            title: "Limit CARGO_BUILD_JOBS".to_string(),
+            priority: Some("P1".to_string()),
+            size: Some("XS".to_string()),
+            crates: vec!["roko-agent".to_string()],
+            files_to_modify: vec!["crates/roko-agent/src/provider/claude_cli.rs".to_string()],
+            source_text: "# Spec content here".to_string(),
+        };
+        let prompt = build_backlog_generation_prompt(
+            std::path::Path::new("/test"),
+            &spec,
+            "cargo-build-jobs-limit",
+        );
+        assert!(prompt.contains("backlog_id = 206"));
+        assert!(prompt.contains("backlog_priority = \"P1\""));
+        assert!(prompt.contains("backlog_size = \"XS\""));
+        assert!(prompt.contains("meta.plan"));
+        assert!(prompt.contains("cargo-build-jobs-limit"));
+        assert!(prompt.contains("crates/roko-agent/src/provider/claude_cli.rs"));
     }
 }

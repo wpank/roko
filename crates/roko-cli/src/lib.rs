@@ -71,6 +71,7 @@ pub mod doctor;
 pub mod dry_run;
 pub mod episode;
 pub mod event_sources;
+pub mod exit_codes;
 pub mod explain;
 pub(crate) mod gate_runner;
 pub mod github_ops;

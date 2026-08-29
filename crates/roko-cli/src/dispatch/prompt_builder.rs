@@ -2359,6 +2359,8 @@ mod tests {
             acceptance: vec!["compiles".into()],
             acceptance_contract: None,
             domain: None,
+            estimated_minutes: None,
+            crates_touched: None,
             sequence: 0,
         }
     }

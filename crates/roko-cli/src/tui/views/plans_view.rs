@@ -287,24 +287,56 @@ fn render_wave_tree(
         ]));
     }
 
-    // Build wave groups from the ordered plan list
-    // Each group of plans gets a synthetic wave header if we have > 3 plans
+    // Build wave groups from the ordered plan list.
+    //
+    // Use real wave data from PlanEntry::wave when any plan has a wave
+    // assignment. Fall back to synthetic wave groups of ~4 plans each
+    // when wave data is absent (wave computation not yet done).
+    let has_real_waves = tui_state.plans.iter().any(|p| p.wave.is_some());
     let use_waves = tui_state.plan_summaries.len() > 3;
 
     if use_waves {
-        // Group into waves of ~3-5 plans each
-        let wave_size = 4usize;
-        let num_waves = (tui_state.plan_summaries.len() + wave_size - 1) / wave_size;
+        // Build wave groups: real data or synthetic fallback.
+        let wave_groups: Vec<(usize, Vec<usize>)> = if has_real_waves {
+            // Group plan indices by their wave assignment.
+            let mut groups: std::collections::BTreeMap<usize, Vec<usize>> =
+                std::collections::BTreeMap::new();
+            for (i, plan) in tui_state.plans.iter().enumerate() {
+                let wave_idx = plan.wave.unwrap_or(0);
+                groups.entry(wave_idx).or_default().push(i);
+            }
+            // Plans without a PlanEntry (summary-only) go to wave 0.
+            for i in tui_state.plans.len()..tui_state.plan_summaries.len() {
+                groups.entry(0).or_default().push(i);
+            }
+            groups.into_iter().collect()
+        } else {
+            // Synthetic groups of ~4 plans each.
+            let wave_size = 4usize;
+            let num_waves = (tui_state.plan_summaries.len() + wave_size - 1) / wave_size;
+            (0..num_waves)
+                .map(|w| {
+                    let start = w * wave_size;
+                    let end = (start + wave_size).min(tui_state.plan_summaries.len());
+                    (w, (start..end).collect())
+                })
+                .collect()
+        };
 
-        for wave_idx in 0..num_waves {
-            let start = wave_idx * wave_size;
-            let end = (start + wave_size).min(tui_state.plan_summaries.len());
-            let wave_plans = &tui_state.plan_summaries[start..end];
-
-            let wave_done = wave_plans.iter().filter(|p| p.completed).count();
-            let wave_total = wave_plans.len();
+        for (wave_idx, plan_indices) in &wave_groups {
+            let wave_done = plan_indices
+                .iter()
+                .filter(|&&i| {
+                    tui_state
+                        .plan_summaries
+                        .get(i)
+                        .map(|p| p.completed)
+                        .unwrap_or(false)
+                })
+                .count();
+            let wave_total = plan_indices.len();
             let all_done = wave_done == wave_total;
-            let any_active = (start..end).any(|i| {
+            let any_active = plan_indices.iter().any(|&i| {
                 tui_state
                     .plans
                     .get(i)
@@ -313,9 +345,11 @@ fn render_wave_tree(
             });
 
             // Is this wave selected (contains selected plan)?
-            let wave_selected = view_state.selected >= start && view_state.selected < end;
-            // Default: expand selected wave and completed waves, collapse others
-            let expanded = wave_selected || all_done || any_active;
+            let wave_selected = plan_indices.iter().any(|&i| i == view_state.selected);
+            // Default: expand selected wave and completed waves, collapse others.
+            // Respect the user's explicit collapse toggle.
+            let explicitly_collapsed = tui_state.collapsed_waves.contains(wave_idx);
+            let expanded = !explicitly_collapsed && (wave_selected || all_done || any_active);
 
             // Wave header
             let (wave_icon, wave_style) = if all_done {
@@ -348,8 +382,9 @@ fn render_wave_tree(
             let wave_bar = build_mini_bar(8, wave_fill, all_done, any_active, theme);
 
             // Count failed in wave
-            let wave_failed = (start..end)
-                .filter(|&i| {
+            let wave_failed = plan_indices
+                .iter()
+                .filter(|&&i| {
                     tui_state
                         .plans
                         .get(i)
@@ -409,7 +444,7 @@ fn render_wave_tree(
             }
 
             // Plans within wave
-            for i in start..end {
+            for &i in plan_indices {
                 if let Some(plan) = tui_state.plan_summaries.get(i) {
                     render_plan_line(
                         &mut lines,

@@ -581,7 +581,10 @@ impl AgentState {
     ///
     /// Returns an error when no dispatcher is configured or when the selected
     /// backend fails to complete the turn.
-    pub async fn dispatch_prompt(&self, prompt: &str) -> Result<ChatResponse, SidecarDispatchError> {
+    pub async fn dispatch_prompt(
+        &self,
+        prompt: &str,
+    ) -> Result<ChatResponse, SidecarDispatchError> {
         self.metrics.record_message();
         let dispatcher = self
             .message_dispatcher()

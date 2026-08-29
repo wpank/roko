@@ -61,6 +61,44 @@ pub(crate) async fn cmd_setup(cli: &Cli, workdir: Option<PathBuf>, yes: bool) ->
         println!("  Created .roko/ and roko.toml");
     }
 
+    // ── Step 3b: Offer to write provider entries for detected API keys ──
+    let toml_path = workdir.join("roko.toml");
+    if toml_path.is_file() {
+        let detected_providers = detect_provider_keys();
+        if !detected_providers.is_empty() {
+            let toml_contents = std::fs::read_to_string(&toml_path).unwrap_or_default();
+            for (env_var, name, kind) in &detected_providers {
+                let section_header = format!("[providers.{name}]");
+                if toml_contents.contains(&section_header) {
+                    continue;
+                }
+                if yes {
+                    // Auto-add in non-interactive mode.
+                    let entry = format!(
+                        "\n{section_header}\nkind = \"{kind}\"\napi_key_env = \"{env_var}\"\n"
+                    );
+                    let mut file = std::fs::OpenOptions::new().append(true).open(&toml_path)?;
+                    file.write_all(entry.as_bytes())?;
+                    println!("  Added [providers.{name}] to roko.toml (detected {env_var})");
+                } else {
+                    print!("  Detected {env_var}. Add [providers.{name}] to roko.toml? [Y/n] ");
+                    io::stdout().flush()?;
+                    let stdin = io::stdin();
+                    let line = stdin.lock().lines().next().unwrap_or(Ok(String::new()))?;
+                    let answer = line.trim().to_lowercase();
+                    if answer.is_empty() || answer == "y" || answer == "yes" {
+                        let entry = format!(
+                            "\n{section_header}\nkind = \"{kind}\"\napi_key_env = \"{env_var}\"\n"
+                        );
+                        let mut file = std::fs::OpenOptions::new().append(true).open(&toml_path)?;
+                        file.write_all(entry.as_bytes())?;
+                        println!("  Added [providers.{name}] to roko.toml");
+                    }
+                }
+            }
+        }
+    }
+
     // ── Step 4: Doctor ──────────────────────────────────────────────────
     println!("\n[4/5] Running diagnostics...");
     let report = run_doctor(&DoctorOptions {
@@ -143,4 +181,28 @@ fn default_model_for_auth(auth: &AuthMethod) -> &'static str {
         AuthMethod::OpenAiCompat { .. } => "gpt-5.4-mini",
         AuthMethod::NeedsSetup => "claude-sonnet-4-6",
     }
+}
+
+/// Return `(env_var, provider_name, kind)` tuples for every known API key
+/// found in the environment that could be added to `roko.toml`.
+///
+/// Uses the built-in provider catalog to scan all known providers, not just
+/// a hardcoded subset.
+fn detect_provider_keys() -> Vec<(&'static str, &'static str, &'static str)> {
+    use roko_core::provider_catalog::{ProviderAvailability, catalog, check_provider_availability};
+
+    catalog()
+        .iter()
+        .filter_map(|entry| {
+            if entry.api_key_env.is_empty() {
+                return None; // Skip local providers (ollama, lmstudio)
+            }
+            let status = check_provider_availability(entry);
+            if status == ProviderAvailability::KeyFound {
+                Some((entry.api_key_env, entry.id, entry.kind.label()))
+            } else {
+                None
+            }
+        })
+        .collect()
 }

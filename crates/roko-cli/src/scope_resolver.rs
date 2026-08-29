@@ -1,7 +1,23 @@
 //! Prompt scope classification for `roko do`.
+//!
+//! Two layers of classification:
+//! 1. **Intent**: is this a research question, a plan generation request,
+//!    or a direct coding task?
+//! 2. **Complexity**: for coding tasks, how complex is the work?
 
 use roko_core::config::schema::RokoConfig;
 use roko_gate::PlanComplexity;
+
+/// High-level intent detected from a prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptIntent {
+    /// A research/analysis question -- route to `roko research topic`.
+    Research,
+    /// A plan generation request -- route to `roko plan generate`.
+    PlanGenerate,
+    /// A coding task -- classify complexity and route through `roko do`.
+    Task,
+}
 
 /// Resolves a user prompt into the existing gate pipeline complexity type.
 pub struct ScopeResolver;
@@ -11,6 +27,86 @@ impl ScopeResolver {
     pub async fn resolve(prompt: &str, config: &RokoConfig) -> PlanComplexity {
         let _ = config;
         Self::classify_prompt_complexity(prompt)
+    }
+
+    /// Classify the high-level intent of a prompt.
+    ///
+    /// Returns `Research` for investigation/analysis questions,
+    /// `PlanGenerate` for explicit plan requests, and `Task` for everything else.
+    #[must_use]
+    pub fn classify_intent(prompt: &str) -> PromptIntent {
+        let lower = prompt.to_ascii_lowercase();
+
+        // Research markers: questions about architecture, analysis, investigation
+        let research_markers = [
+            "how does",
+            "how do",
+            "what is",
+            "what are",
+            "why does",
+            "why do",
+            "explain",
+            "analyze",
+            "analyse",
+            "compare",
+            "research",
+            "investigate",
+            "deep dive",
+            "survey",
+            "evaluate options",
+            "what do we know",
+            "pros and cons",
+            "trade-offs",
+            "tradeoffs",
+        ];
+
+        // Plan generation markers
+        let plan_markers = [
+            "create a plan",
+            "generate a plan",
+            "write a plan",
+            "plan for",
+            "make a plan",
+            "break down into tasks",
+            "decompose into",
+            "task breakdown",
+        ];
+
+        // Question mark at the end is a strong research signal when combined
+        // with analysis keywords
+        let is_question = lower.trim_end().ends_with('?');
+
+        if plan_markers.iter().any(|m| lower.contains(m)) {
+            return PromptIntent::PlanGenerate;
+        }
+
+        if research_markers.iter().any(|m| lower.contains(m)) {
+            return PromptIntent::Research;
+        }
+
+        // Pure questions without action verbs are likely research
+        if is_question {
+            let action_verbs = [
+                "fix",
+                "add",
+                "implement",
+                "create",
+                "build",
+                "write",
+                "update",
+                "remove",
+                "delete",
+                "change",
+                "modify",
+                "refactor",
+            ];
+            let has_action = action_verbs.iter().any(|v| lower.contains(v));
+            if !has_action {
+                return PromptIntent::Research;
+            }
+        }
+
+        PromptIntent::Task
     }
 
     /// Classify a prompt into the existing gate-pipeline complexity type.
@@ -337,5 +433,77 @@ mod tests {
         let config = RokoConfig::default();
         let result = ScopeResolver::resolve("Fix typo in lib.rs", &config).await;
         assert_eq!(result, PlanComplexity::Trivial);
+    }
+
+    // ── Intent classification ─────────────────────────────────────
+
+    fn intent(prompt: &str) -> PromptIntent {
+        ScopeResolver::classify_intent(prompt)
+    }
+
+    #[test]
+    fn intent_research_how_does() {
+        assert_eq!(
+            intent("how does auth work in this codebase?"),
+            PromptIntent::Research
+        );
+    }
+
+    #[test]
+    fn intent_research_explain() {
+        assert_eq!(intent("explain the gate pipeline"), PromptIntent::Research);
+    }
+
+    #[test]
+    fn intent_research_analyze() {
+        assert_eq!(intent("analyze the error patterns"), PromptIntent::Research);
+    }
+
+    #[test]
+    fn intent_research_what_is() {
+        assert_eq!(
+            intent("what is the cascade router?"),
+            PromptIntent::Research
+        );
+    }
+
+    #[test]
+    fn intent_research_pure_question() {
+        assert_eq!(
+            intent("which model is best for code gen?"),
+            PromptIntent::Research
+        );
+    }
+
+    #[test]
+    fn intent_plan_create_plan() {
+        assert_eq!(
+            intent("create a plan for adding auth"),
+            PromptIntent::PlanGenerate
+        );
+    }
+
+    #[test]
+    fn intent_plan_break_down() {
+        assert_eq!(
+            intent("break down into tasks: add user profiles"),
+            PromptIntent::PlanGenerate
+        );
+    }
+
+    #[test]
+    fn intent_task_fix_bug() {
+        assert_eq!(intent("fix the login bug"), PromptIntent::Task);
+    }
+
+    #[test]
+    fn intent_task_add_feature() {
+        assert_eq!(intent("add rate limiting"), PromptIntent::Task);
+    }
+
+    #[test]
+    fn intent_task_question_with_action_verb() {
+        // "can you fix this?" has an action verb, so it's a task not research
+        assert_eq!(intent("can you fix this bug?"), PromptIntent::Task);
     }
 }

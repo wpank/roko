@@ -410,6 +410,17 @@ pub fn format_attempt_worktree_id(plan_id: &str, task_id: &str, attempt: u32) ->
     let digest = blake3::hash(format!("{plan_id}\0{task_id}\0{attempt}").as_bytes());
     format!("attempt-{}", &digest.to_hex()[..20])
 }
+/// Format a worktree ID scoped to a namespace prefix.
+pub fn format_scoped_attempt_worktree_id(
+    namespace: &str,
+    plan_id: &str,
+    task_id: &str,
+    attempt: u32,
+) -> String {
+    let digest = blake3::hash(format!("{namespace}\0{plan_id}\0{task_id}\0{attempt}").as_bytes());
+    format!("attempt-{}", &digest.to_hex()[..20])
+}
+
 /// Branch owned by an exact task attempt.
 pub fn format_attempt_branch_name(plan_id: &str, task_id: &str, attempt: u32) -> String {
     let id = format_attempt_worktree_id(plan_id, task_id, attempt);

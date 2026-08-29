@@ -292,7 +292,13 @@ impl Projection {
             | RunnerEvent::PromptAssembled { run_id, .. }
             | RunnerEvent::MergeBackendCompleted { run_id, .. }
             | RunnerEvent::RetryDecision { run_id, .. }
-            | RunnerEvent::BudgetExceeded { run_id, .. } => run_id.clone(),
+            | RunnerEvent::BudgetExceeded { run_id, .. }
+            | RunnerEvent::RunPaused { run_id, .. }
+            | RunnerEvent::RunResumed { run_id, .. }
+            | RunnerEvent::BatchPause { run_id, .. }
+            | RunnerEvent::BatchResume { run_id, .. }
+            | RunnerEvent::PlanCancelled { run_id, .. }
+            | RunnerEvent::ConductorIntervention { run_id, .. } => run_id.clone(),
         };
         let attempt = match &event {
             RunnerEvent::TaskAttemptStarted { attempt, .. }

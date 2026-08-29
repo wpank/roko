@@ -171,6 +171,7 @@ pub mod polyglot;
 pub mod prediction;
 pub mod project;
 pub mod provenance;
+pub mod provider_catalog;
 pub mod pulse;
 pub mod query;
 /// Pure-data DAGs of score operations.
@@ -246,7 +247,7 @@ pub use decay::Decay;
 pub use demurrage::{Demurrage, DemurrageConfig, demurrage_tick};
 pub use dispatch_plan::{
     ConfigBag, DispatchAttempt, DispatchAttemptKind, DispatchAuthStatus, DispatchCaller,
-    ProviderDispatchError, DispatchPlan, DispatchRequest, DispatchRequirement, FallbackPolicy,
+    DispatchPlan, DispatchRequest, DispatchRequirement, FallbackPolicy, ProviderDispatchError,
     TransportAuth, TransportPlan,
 };
 pub use domain_profile::{DomainProfile, TypedContext};
@@ -352,9 +353,9 @@ pub use usage::{UsageObservation, UsageSource};
 // collision with phase::FailureKind (for PlanPhase failures); reach it via
 // `roko_core::tool::FailureKind`.
 pub use dashboard_snapshot::{
-    AgentState as DashboardAgentState, AgentTopology, AgentTopologyEdge, AgentTopologyNode,
-    CFactorBucket, DashboardEvent, DashboardEventLogEntry, DashboardSnapshot, DiagnosisSeverity,
-    DiagnosisSummary, EfficiencyBucket, ExperimentWinnerSummary, FailureEntry,
+    AffectSnapshot, AgentState as DashboardAgentState, AgentTopology, AgentTopologyEdge,
+    AgentTopologyNode, CFactorBucket, DashboardEvent, DashboardEventLogEntry, DashboardSnapshot,
+    DiagnosisSeverity, DiagnosisSummary, EfficiencyBucket, ExperimentWinnerSummary, FailureEntry,
     KnowledgeBrowseEntry as DashboardKnowledgeBrowseEntry, SnapshotStats, TrendBucket,
     TrendBuckets,
 };

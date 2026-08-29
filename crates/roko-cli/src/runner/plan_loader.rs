@@ -149,6 +149,98 @@ pub fn load_plans(dir: &Path) -> Result<Vec<Plan>> {
     Ok(plans)
 }
 
+// ---------------------------------------------------------------------------
+// Cross-plan crate overlap analysis (#195)
+// ---------------------------------------------------------------------------
+
+/// A pair of plans that share one or more crate directories.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrateOverlap {
+    /// First plan ID in the overlap pair.
+    pub plan_a: String,
+    /// Second plan ID in the overlap pair.
+    pub plan_b: String,
+    /// Crate directories that both plans touch.
+    pub crates: Vec<String>,
+}
+
+/// Compute crate overlaps between all pairs of plans.
+///
+/// For each plan, collects the union of `crates_touched` from its tasks plus
+/// any crate names inferred from `files` entries (patterns like `crates/<name>/...`).
+/// Pairs of plans that share at least one crate produce an [`CrateOverlap`] entry.
+///
+/// Plans without any `crates_touched` metadata are silently skipped (no false
+/// positives).
+pub fn compute_crate_overlaps(plans: &[Plan]) -> Vec<CrateOverlap> {
+    use std::collections::{BTreeSet, HashMap};
+
+    // Build per-plan crate set.
+    let mut plan_crates: HashMap<&str, BTreeSet<String>> = HashMap::new();
+
+    for plan in plans {
+        let mut crates: BTreeSet<String> = BTreeSet::new();
+        for task in &plan.tasks.tasks {
+            // Explicit crates_touched field.
+            if let Some(ref touched) = task.crates_touched {
+                for c in touched {
+                    crates.insert(c.clone());
+                }
+            }
+            // Infer from files entries: `crates/<name>/...` -> <name>.
+            for file_ref in &task.files {
+                let parts: Vec<&str> = file_ref.splitn(3, '/').collect();
+                if parts.len() >= 2 && parts[0] == "crates" && !parts[1].is_empty() {
+                    crates.insert(parts[1].to_string());
+                }
+            }
+        }
+        if !crates.is_empty() {
+            plan_crates.insert(&plan.id, crates);
+        }
+    }
+
+    // Pairwise comparison.
+    let plan_ids: Vec<&str> = plan_crates.keys().copied().collect();
+    let mut overlaps = Vec::new();
+
+    for i in 0..plan_ids.len() {
+        for j in (i + 1)..plan_ids.len() {
+            let a = plan_ids[i];
+            let b = plan_ids[j];
+            let crates_a = &plan_crates[a];
+            let crates_b = &plan_crates[b];
+            let shared: Vec<String> = crates_a.intersection(crates_b).cloned().collect();
+            if !shared.is_empty() {
+                overlaps.push(CrateOverlap {
+                    plan_a: a.to_string(),
+                    plan_b: b.to_string(),
+                    crates: shared,
+                });
+            }
+        }
+    }
+
+    overlaps
+}
+
+/// Log warnings for any crate overlaps detected between plans.
+///
+/// Called after `load_plans` to alert operators about potential merge conflicts.
+pub fn warn_crate_overlaps(overlaps: &[CrateOverlap]) {
+    for overlap in overlaps {
+        tracing::warn!(
+            plan_a = %overlap.plan_a,
+            plan_b = %overlap.plan_b,
+            crates = %overlap.crates.join(", "),
+            "plans {} and {} both touch crate(s) {}; parallel execution may cause merge conflicts",
+            overlap.plan_a,
+            overlap.plan_b,
+            overlap.crates.join(", "),
+        );
+    }
+}
+
 /// Walk up from `start` looking for the workspace root (a directory that
 /// contains `.roko/`).  Returns `None` when no such ancestor is found.
 fn find_workspace_root(start: &Path) -> Option<PathBuf> {

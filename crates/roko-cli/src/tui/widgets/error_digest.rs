@@ -1,13 +1,83 @@
 //! Error digest widget showing gate failures and recent errors.
+//!
+//! Provides two rendering modes:
+//! - `render_error_digest`: compact inline panel for embedding in other views
+//! - `render_error_aggregation_panel`: full scrollable panel for the F5:Errors tab
+//!   with categorized errors, red border when active, and scroll support
+
+use std::collections::BTreeMap;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
 use roko_core::dashboard_snapshot::{ErrorEntry, GateVerdictView, SnapshotStats};
 
 use super::super::dashboard::Theme;
+use crate::tui::state::TuiState;
+
+// ---------------------------------------------------------------------------
+// Error categories
+// ---------------------------------------------------------------------------
+
+/// Error source category for aggregation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ErrorCategory {
+    Gate,
+    Compile,
+    Agent,
+    Preflight,
+    Runtime,
+}
+
+impl ErrorCategory {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Gate => "gate",
+            Self::Compile => "compile",
+            Self::Agent => "agent",
+            Self::Preflight => "preflight",
+            Self::Runtime => "runtime",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Gate => "\u{2718}",      // ✘
+            Self::Compile => "\u{2692}",   // ⚒
+            Self::Agent => "\u{26a0}",     // ⚠
+            Self::Preflight => "\u{2691}", // ⚑
+            Self::Runtime => "\u{26a1}",   // ⚡
+        }
+    }
+
+    fn from_message(msg: &str) -> Self {
+        let lower = msg.to_ascii_lowercase();
+        if lower.contains("gate") || lower.contains("verify") || lower.contains("rung") {
+            Self::Gate
+        } else if lower.contains("compil") || lower.contains("cargo") || lower.contains("rustc") {
+            Self::Compile
+        } else if lower.contains("agent") || lower.contains("stall") || lower.contains("timeout") {
+            Self::Agent
+        } else if lower.contains("preflight") || lower.contains("pre-flight") {
+            Self::Preflight
+        } else {
+            Self::Runtime
+        }
+    }
+}
+
+/// A categorized, timestamped error for the aggregation panel.
+#[derive(Debug, Clone)]
+struct CategorizedError {
+    category: ErrorCategory,
+    message: String,
+    ts_millis: u64,
+    /// Optional source context (e.g. plan/task id).
+    source: String,
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -23,10 +93,10 @@ fn fmt_ts(ts_millis: u64) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Public render entry-point
+// Public render entry-point (compact, existing API preserved)
 // ---------------------------------------------------------------------------
 
-/// Render the error digest panel.
+/// Render the error digest panel (compact inline version).
 ///
 /// Top half: gate pass/fail summary.
 /// Bottom half: recent errors list.
@@ -59,6 +129,287 @@ pub fn render_error_digest(
 
     // --- Error list ---
     render_error_list(frame, sections[1], errors, theme);
+}
+
+// ---------------------------------------------------------------------------
+// Full aggregation panel (for F5:Errors tab)
+// ---------------------------------------------------------------------------
+
+/// Render the full error aggregation panel.
+///
+/// Collects errors from all sources (gate failures, efficiency gate errors,
+/// snapshot errors, gate recent failures) into categorized sections.
+/// Panel border turns red when errors are active.
+pub fn render_error_aggregation_panel(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    tui_state: &TuiState,
+    scroll: u16,
+    theme: &Theme,
+) {
+    let all_errors = collect_all_errors(tui_state);
+    let has_active_errors = !all_errors.is_empty();
+
+    let error_count = all_errors.len();
+    let title = if error_count == 0 {
+        " Error Digest ".to_string()
+    } else {
+        format!(" Error Digest ({error_count} errors) ")
+    };
+
+    let border_style = if has_active_errors {
+        theme.danger()
+    } else {
+        theme.muted()
+    };
+    let title_style = if has_active_errors {
+        Style::default()
+            .fg(theme.danger)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        theme.accent()
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(title, title_style))
+        .border_style(border_style);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.width == 0 || inner.height < 3 {
+        return;
+    }
+
+    if all_errors.is_empty() {
+        let v_pad = inner.height / 2;
+        let mut empty_lines: Vec<Line<'_>> = Vec::new();
+        for _ in 0..v_pad.saturating_sub(1) {
+            empty_lines.push(Line::from(""));
+        }
+        empty_lines.push(Line::from(Span::styled(
+            "no errors recorded",
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::ITALIC),
+        )));
+        empty_lines.push(Line::from(""));
+        empty_lines.push(Line::from(Span::styled(
+            "errors from gates, agents, and runtime",
+            Style::default().fg(theme.muted),
+        )));
+        empty_lines.push(Line::from(Span::styled(
+            "will appear here when they occur",
+            Style::default().fg(theme.muted),
+        )));
+        let empty = Paragraph::new(empty_lines)
+            .alignment(ratatui::layout::Alignment::Center)
+            .wrap(Wrap { trim: false });
+        frame.render_widget(empty, inner);
+        return;
+    }
+
+    // Layout: top 3 lines = category summary, rest = scrollable error list.
+    let sections = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(inner);
+
+    // Category summary counts.
+    render_category_summary(frame, sections[0], &all_errors, theme);
+
+    // Scrollable error list (most recent first).
+    render_categorized_error_list(frame, sections[1], &all_errors, scroll, theme);
+}
+
+/// Render category summary bar showing counts per error type.
+fn render_category_summary(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    errors: &[CategorizedError],
+    theme: &Theme,
+) {
+    let mut counts: BTreeMap<ErrorCategory, usize> = BTreeMap::new();
+    for err in errors {
+        *counts.entry(err.category).or_default() += 1;
+    }
+
+    let mut spans: Vec<Span<'_>> = vec![Span::styled("  ", Style::default())];
+    for (cat, count) in &counts {
+        let cat_color = category_color(*cat, theme);
+        spans.push(Span::styled(
+            format!("{} ", cat.icon()),
+            Style::default().fg(cat_color),
+        ));
+        spans.push(Span::styled(
+            format!("{}: {count}  ", cat.label()),
+            Style::default().fg(cat_color),
+        ));
+    }
+
+    let line1 = Line::from(spans);
+
+    // Total + newest timestamp.
+    let newest_ts = errors.iter().map(|e| e.ts_millis).max().unwrap_or(0);
+    let line2 = Line::from(vec![
+        Span::styled(
+            format!("  total: {}  ", errors.len()),
+            Style::default()
+                .fg(theme.danger)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("latest: {}", fmt_ts(newest_ts)), theme.muted()),
+    ]);
+
+    let sep = "\u{2500}".repeat(area.width.saturating_sub(2) as usize);
+    let line3 = Line::from(Span::styled(
+        format!(" {sep}"),
+        Style::default().fg(theme.muted),
+    ));
+
+    frame.render_widget(Paragraph::new(vec![line1, line2, line3]), area);
+}
+
+/// Render the scrollable categorized error list.
+fn render_categorized_error_list(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    errors: &[CategorizedError],
+    scroll: u16,
+    theme: &Theme,
+) {
+    let mut lines: Vec<Line<'_>> = Vec::new();
+
+    // Show most recent first.
+    let mut sorted: Vec<&CategorizedError> = errors.iter().collect();
+    sorted.sort_by(|a, b| b.ts_millis.cmp(&a.ts_millis));
+
+    for err in &sorted {
+        let cat_color = category_color(err.category, theme);
+        let ts = fmt_ts(err.ts_millis);
+        let max_msg_len = (area.width as usize).saturating_sub(26);
+        let msg = if err.message.len() > max_msg_len {
+            format!("{}...", &err.message[..max_msg_len.saturating_sub(3)])
+        } else {
+            err.message.clone()
+        };
+
+        let mut spans = vec![
+            Span::styled(format!(" [{ts}] "), theme.muted()),
+            Span::styled(
+                format!("{} ", err.category.icon()),
+                Style::default().fg(cat_color),
+            ),
+        ];
+
+        if !err.source.is_empty() {
+            spans.push(Span::styled(
+                format!("{}: ", err.source),
+                Style::default().fg(theme.info),
+            ));
+        }
+
+        spans.push(Span::styled(msg, Style::default().fg(cat_color)));
+        lines.push(Line::from(spans));
+    }
+
+    let para = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+    frame.render_widget(para, area);
+}
+
+/// Collect errors from all TUI sources into a unified list.
+fn collect_all_errors(tui_state: &TuiState) -> Vec<CategorizedError> {
+    let mut errors = Vec::new();
+
+    // 1. Gate recent failures (from runner state).
+    for failure in &tui_state.gate_recent_failures {
+        errors.push(CategorizedError {
+            category: ErrorCategory::Gate,
+            message: failure.summary.clone(),
+            ts_millis: failure.ts.timestamp_millis() as u64,
+            source: format!("{}/{}", failure.plan_id, failure.task_id),
+        });
+    }
+
+    // 2. Efficiency events with gate failures.
+    for event in &tui_state.efficiency_events {
+        if event.gate_passed == Some(false) {
+            let ts = chrono::DateTime::parse_from_rfc3339(&event.timestamp)
+                .map(|dt| dt.timestamp_millis() as u64)
+                .unwrap_or(0);
+            for gate_error in &event.gate_errors {
+                errors.push(CategorizedError {
+                    category: ErrorCategory::from_message(gate_error),
+                    message: gate_error.clone(),
+                    ts_millis: ts,
+                    source: format!("{}/{}", event.plan_id, event.task_id),
+                });
+            }
+            // If no specific gate errors, create a generic one.
+            if event.gate_errors.is_empty() {
+                errors.push(CategorizedError {
+                    category: ErrorCategory::Gate,
+                    message: format!("gate failed for {} (model: {})", event.task_id, event.model),
+                    ts_millis: ts,
+                    source: format!("{}/{}", event.plan_id, event.task_id),
+                });
+            }
+        }
+    }
+
+    // 3. Gate results page failure rows.
+    for failure_row in &tui_state.gate_results_page.failure_rows {
+        errors.push(CategorizedError {
+            category: ErrorCategory::Gate,
+            message: failure_row.error_excerpt.clone(),
+            ts_millis: failure_row.created_at_ms.max(0) as u64,
+            source: failure_row.task_id.clone(),
+        });
+    }
+
+    // 4. Failed agents.
+    for agent in &tui_state.agent_summaries {
+        let status = crate::tui::state::AgentStatus::from(agent.status.as_str());
+        if status.is_failed() {
+            let ts = tui_state
+                .agents
+                .iter()
+                .find(|r| r.id == agent.id)
+                .map(|r| r.last_event_at_ms)
+                .unwrap_or(0);
+            errors.push(CategorizedError {
+                category: ErrorCategory::Agent,
+                message: format!("agent {} failed", agent.id),
+                ts_millis: ts,
+                source: agent.plan_id.clone().unwrap_or_default(),
+            });
+        }
+    }
+
+    // Deduplicate by (category, message, source) keeping the latest timestamp.
+    errors.sort_by(|a, b| {
+        a.category
+            .cmp(&b.category)
+            .then_with(|| a.message.cmp(&b.message))
+            .then_with(|| a.source.cmp(&b.source))
+    });
+    errors.dedup_by(|a, b| {
+        a.category == b.category && a.message == b.message && a.source == b.source
+    });
+
+    // Sort by timestamp descending (most recent first).
+    errors.sort_by(|a, b| b.ts_millis.cmp(&a.ts_millis));
+
+    errors
+}
+
+fn category_color(cat: ErrorCategory, theme: &Theme) -> ratatui::style::Color {
+    match cat {
+        ErrorCategory::Gate => theme.danger,
+        ErrorCategory::Compile => theme.warning,
+        ErrorCategory::Agent => theme.info,
+        ErrorCategory::Preflight => theme.warning,
+        ErrorCategory::Runtime => theme.danger,
+    }
 }
 
 /// Render the gate pass/fail ratio header.
@@ -200,5 +551,83 @@ mod tests {
                 render_error_digest(frame, area, &[], &[], &SnapshotStats::default(), &theme);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn error_aggregation_panel_renders_without_panic() {
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::dark();
+        let state = TuiState::new();
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_error_aggregation_panel(frame, area, &state, 0, &theme);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn error_aggregation_panel_with_failures() {
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::dark();
+        let mut state = TuiState::new();
+
+        // Add some gate failures.
+        state.gate_recent_failures.push(roko_core::FailureEntry {
+            plan_id: "test-plan".into(),
+            task_id: "t1".into(),
+            summary: "compile gate failed: missing semicolon".into(),
+            ..Default::default()
+        });
+        state.gate_recent_failures.push(roko_core::FailureEntry {
+            plan_id: "test-plan".into(),
+            task_id: "t2".into(),
+            summary: "test gate failed: 3 tests failed".into(),
+            ..Default::default()
+        });
+
+        // Add a failed agent.
+        state
+            .agent_summaries
+            .push(crate::tui::dashboard::AgentSummary {
+                id: "agent-1".into(),
+                label: "implementer".into(),
+                plan_id: Some("test-plan".into()),
+                status: "failed".into(),
+            });
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_error_aggregation_panel(frame, area, &state, 0, &theme);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn category_detection() {
+        assert_eq!(
+            ErrorCategory::from_message("gate verification failed"),
+            ErrorCategory::Gate
+        );
+        assert_eq!(
+            ErrorCategory::from_message("cargo compilation error"),
+            ErrorCategory::Compile
+        );
+        assert_eq!(
+            ErrorCategory::from_message("agent timeout after 5min"),
+            ErrorCategory::Agent
+        );
+        assert_eq!(
+            ErrorCategory::from_message("preflight check denied"),
+            ErrorCategory::Preflight
+        );
+        assert_eq!(
+            ErrorCategory::from_message("unexpected error"),
+            ErrorCategory::Runtime
+        );
     }
 }

@@ -92,7 +92,7 @@ fn write_learn_fixture(workdir: &Path) {
     efficiency_a.time_to_first_token_ms = 175;
     efficiency_a.was_warm_start = true;
     efficiency_a.iteration = 1;
-    efficiency_a.gate_passed = true;
+    efficiency_a.gate_passed = Some(true);
     efficiency_a.model_used = "claude-sonnet-4-6".into();
     efficiency_a.timestamp = efficiency_first.to_rfc3339();
 
@@ -117,7 +117,7 @@ fn write_learn_fixture(workdir: &Path) {
     efficiency_b.time_to_first_token_ms = 200;
     efficiency_b.was_warm_start = false;
     efficiency_b.iteration = 2;
-    efficiency_b.gate_passed = false;
+    efficiency_b.gate_passed = Some(false);
     efficiency_b.model_used = String::new();
     efficiency_b.timestamp = efficiency_last.to_rfc3339();
 

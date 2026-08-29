@@ -358,12 +358,22 @@ pub(crate) async fn cmd_run(
                 match roko_cli::run::workflow_report_outcome(&report) {
                     Some(roko_core::WorkflowOutcome::Halted { reason }) => {
                         eprintln!("error: workflow halted: {reason}");
+                        eprintln!("  -> Check logs: .roko/roko.log");
+                        eprintln!(
+                            "  -> Resume:     roko plan run <dir> --engine runner-v2 --resume-plan"
+                        );
+                        eprintln!("  -> Diagnose:   roko doctor");
                     }
                     Some(roko_core::WorkflowOutcome::Cancelled) => {
                         eprintln!("error: workflow cancelled");
+                        eprintln!(
+                            "  -> Resume:     roko plan run <dir> --engine runner-v2 --resume-plan"
+                        );
                     }
                     Some(roko_core::WorkflowOutcome::Success { .. }) | None => {
                         eprintln!("error: workflow failed");
+                        eprintln!("  -> Check logs: .roko/roko.log");
+                        eprintln!("  -> Diagnose:   roko doctor");
                     }
                 }
             }

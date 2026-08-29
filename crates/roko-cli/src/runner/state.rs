@@ -608,6 +608,16 @@ impl RunState {
             RunnerEvent::BudgetExceeded { .. } => {
                 self.budget_exhausted = true;
             }
+            RunnerEvent::RunPaused { .. }
+            | RunnerEvent::RunResumed { .. }
+            | RunnerEvent::BatchPause { .. }
+            | RunnerEvent::BatchResume { .. }
+            | RunnerEvent::PlanCancelled { .. }
+            | RunnerEvent::ConductorIntervention { .. } => {
+                // These events are informational for the lifecycle projection.
+                // They don't change task-level state — the event loop handles
+                // pause/resume/cancel semantics directly.
+            }
         }
     }
 
@@ -736,7 +746,7 @@ impl RunState {
         if let Some(task) = self.lifecycle.tasks.get_mut(&attempt.task_key()) {
             task.latest_failure_kind = Some(decision.failure_kind);
             match decision.action {
-                RetryAction::RetryAfterBackoff => {
+                RetryAction::RetryAfterBackoff | RetryAction::Replan => {
                     task.status = TaskLifecycleStatus::Retrying;
                     task.completed_at_ms = None;
                     task.current_attempt = task.current_attempt.max(decision.current_attempt);

@@ -30,30 +30,47 @@ pub struct Theme {
 }
 
 impl Theme {
-    // -- Primaries --
-    pub(crate) const VOID: Color = Color::Rgb(0, 0, 0);
-    pub(crate) const ROSE: Color = Color::Rgb(185, 120, 148);
-    pub(crate) const ROSE_BRIGHT: Color = Color::Rgb(220, 155, 180);
-    pub(crate) const ROSE_DIM: Color = Color::Rgb(140, 96, 112);
-    pub(crate) const BONE: Color = Color::Rgb(215, 198, 158);
-    pub(crate) const BONE_DIM: Color = Color::Rgb(160, 142, 108);
+    // -- Primaries (ROSEDUST v2 canonical) --
+    pub(crate) const VOID: Color = Color::Rgb(6, 6, 8); // --bg-void #060608
+    pub(crate) const ROSE: Color = Color::Rgb(170, 112, 136); // --rose #aa7088
+    pub(crate) const ROSE_BRIGHT: Color = Color::Rgb(204, 144, 168); // --rose-bright #cc90a8
+    pub(crate) const ROSE_GLOW: Color = Color::Rgb(220, 165, 189); // --rose-glow #dca5bd
+    pub(crate) const ROSE_DIM: Color = Color::Rgb(122, 80, 96); // --rose-dim #7a5060
+    pub(crate) const ROSE_DEEP: Color = Color::Rgb(58, 32, 48); // --rose-deep #3a2030
+    pub(crate) const BONE: Color = Color::Rgb(200, 184, 144); // --bone #c8b890
+    pub(crate) const BONE_BRIGHT: Color = Color::Rgb(216, 200, 160); // --bone-bright #d8c8a0
+    pub(crate) const BONE_DIM: Color = Color::Rgb(138, 122, 90); // --bone-dim #8a7a5a
 
-    // -- Text --
-    pub(crate) const TEXT: Color = Color::Rgb(165, 142, 158);
-    pub const TEXT_DIM: Color = Color::Rgb(145, 120, 138);
-    pub(crate) const TEXT_GHOST: Color = Color::Rgb(110, 85, 105);
-    pub(crate) const TEXT_PHANTOM: Color = Color::Rgb(55, 42, 55);
+    // -- Text (ROSEDUST v2 canonical) --
+    pub(crate) const TEXT: Color = Color::Rgb(200, 184, 192); // --text-primary #c8b8c0
+    pub(crate) const TEXT_STRONG: Color = Color::Rgb(216, 200, 208); // --text-strong #d8c8d0
+    pub const TEXT_DIM: Color = Color::Rgb(152, 128, 144); // --text-soft #988090
+    pub(crate) const TEXT_GHOST: Color = Color::Rgb(106, 90, 104); // --text-dim #6a5a68
+    pub(crate) const TEXT_PHANTOM: Color = Color::Rgb(58, 48, 58); // --text-ghost #3a303a
 
-    // -- Accents --
-    pub const DREAM: Color = Color::Rgb(120, 115, 165);
-    pub(crate) const SAGE: Color = Color::Rgb(125, 158, 140);
-    pub(crate) const EMBER: Color = Color::Rgb(195, 110, 85);
-    pub(crate) const WARNING: Color = Color::Rgb(195, 155, 95);
+    // -- Accents (ROSEDUST v2 canonical) --
+    pub const DREAM: Color = Color::Rgb(122, 122, 152); // --dream #7a7a98
+    pub(crate) const DREAM_BRIGHT: Color = Color::Rgb(148, 148, 180); // --dream-bright #9494b4
+    pub(crate) const SAGE: Color = Color::Rgb(122, 138, 120); // --success #7a8a78
+    pub(crate) const EMBER: Color = Color::Rgb(204, 85, 85); // --danger #cc5555
+    pub(crate) const WARNING: Color = Color::Rgb(200, 154, 104); // --warning #c89a68
+    pub(crate) const ROSE_EMBER: Color = Color::Rgb(72, 40, 56); // --rose-ember #482838
+    /// REM imagination / creative purple accent.
+    pub(crate) const DREAM_REM: Color = Color::Rgb(180, 100, 200);
+    /// Deep accent for backgrounds.
+    pub(crate) const DREAM_DEEP: Color = Color::Rgb(40, 40, 72);
+    /// Secondary text.
+    pub(crate) const TEXT_SOFT: Color = Color::Rgb(200, 184, 196);
 
-    // -- Backgrounds --
-    pub(crate) const BG: Color = Color::Rgb(0, 0, 0);
-    pub(crate) const BG_SECONDARY: Color = Color::Rgb(14, 12, 16);
-    pub(crate) const BG_HIGHLIGHT: Color = Color::Rgb(34, 28, 36);
+    // -- Backgrounds (ROSEDUST v2 canonical) --
+    pub(crate) const BG: Color = Color::Rgb(6, 6, 8); // --bg-void #060608
+    pub(crate) const BG_SECONDARY: Color = Color::Rgb(10, 8, 16); // --bg-raised #0a0810
+    pub(crate) const BG_HIGHLIGHT: Color = Color::Rgb(58, 32, 48); // --rose-deep (selection bg)
+
+    // -- Structural --
+    pub(crate) const SEPARATOR: Color = Color::Rgb(40, 35, 42);
+    pub(crate) const SHADOW: Color = Color::Rgb(30, 30, 30);
+    pub(crate) const SHADOW_FG: Color = Color::Rgb(50, 50, 50);
 
     // -- Foreground aliases --
     pub(crate) const FG: Color = Self::TEXT;
@@ -76,8 +93,8 @@ impl Theme {
             warning: Self::WARNING,
             danger: Self::EMBER,
             info: Self::DREAM,
-            selection_background: Self::BG_HIGHLIGHT,
-            selection_foreground: Self::BONE,
+            selection_background: Self::ROSE_DEEP,
+            selection_foreground: Self::ROSE_GLOW,
         }
     }
 
@@ -299,6 +316,14 @@ impl Theme {
         } else {
             Self::EMBER
         }
+    }
+
+    /// Gradient progress color on a 0..1 scale using the fire gradient.
+    ///
+    /// Used by the header bar for the gradient progress bar fill color.
+    #[must_use]
+    pub(crate) fn progress_color(fraction: f64) -> Color {
+        gradient_fire().sample(fraction)
     }
 }
 

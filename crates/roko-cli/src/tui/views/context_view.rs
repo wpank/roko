@@ -68,6 +68,12 @@ pub(crate) fn render(
         1 => render_signal_dag(frame, area, tui_state, view_state, theme),
         2 => render_episode_replay(frame, area, tui_state, view_state, theme),
         3 => render_knowledge_browse(frame, area, tui_state, view_state, theme),
+        4 => {
+            crate::tui::widgets::cost_by_model::render_cost_by_model_table(
+                frame, area, tui_state, theme,
+            );
+        }
+        5 => render_three_panel_inspect(frame, area, tui_state, theme),
         _ => {
             let ctx_data = build_context_data(tui_state);
             render_with_context_data(
@@ -1056,6 +1062,308 @@ fn format_count(n: u64) -> String {
 }
 
 use crate::tui::display_utils::{display_model, shorten_model, truncate};
+
+// ---------------------------------------------------------------------------
+// Three-panel inspect view (item 127)
+// ---------------------------------------------------------------------------
+
+/// Render the three-panel MCP / Learning / Prompt Stats layout.
+fn render_three_panel_inspect(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    tui_state: &TuiState,
+    theme: &Theme,
+) {
+    let columns = Layout::horizontal([
+        Constraint::Percentage(33),
+        Constraint::Percentage(34),
+        Constraint::Percentage(33),
+    ])
+    .split(area);
+
+    render_mcp_panel(frame, columns[0], tui_state, theme);
+    render_learning_panel(frame, columns[1], tui_state, theme);
+    render_prompt_stats_panel(frame, columns[2], tui_state, theme);
+}
+
+/// Column 1: MCP runtime status panel.
+fn render_mcp_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
+    let block = Block::bordered()
+        .title(Span::styled(" MCP Runtime ", theme.accent()))
+        .border_style(theme.accent());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Read MCP stats from the workdir if possible.
+    let mcp_stats_path = tui_state
+        .workdir
+        .join(".roko")
+        .join("state")
+        .join("mcp-stats.json");
+    let (tool_count, servers) = std::fs::read_to_string(&mcp_stats_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .map(|v| {
+            let count = v.get("tool_count").and_then(|c| c.as_u64()).unwrap_or(0);
+            let srvs: Vec<String> = v
+                .get("servers")
+                .and_then(|a| a.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|s| s.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (count as usize, srvs)
+        })
+        .unwrap_or((0, Vec::new()));
+
+    // AST index stats
+    let index_stats_path = tui_state
+        .workdir
+        .join(".roko")
+        .join("index")
+        .join("stats.json");
+    let (file_count, symbol_count) = std::fs::read_to_string(&index_stats_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .map(|v| {
+            let files = v.get("file_count").and_then(|c| c.as_u64()).unwrap_or(0);
+            let syms = v.get("symbol_count").and_then(|c| c.as_u64()).unwrap_or(0);
+            (files as usize, syms as usize)
+        })
+        .unwrap_or((0, 0));
+
+    let config_path = tui_state.workdir.join("roko.toml");
+    let config_exists = config_path.exists();
+
+    let mut lines: Vec<Line<'_>> = vec![
+        Line::from(vec![
+            Span::styled("config:    ", theme.muted()),
+            if config_exists {
+                Span::styled("roko.toml", theme.success())
+            } else {
+                Span::styled("not found", theme.danger())
+            },
+        ]),
+        Line::from(vec![
+            Span::styled("tools:     ", theme.muted()),
+            Span::styled(tool_count.to_string(), theme.info()),
+        ]),
+        Line::from(vec![
+            Span::styled("servers:   ", theme.muted()),
+            Span::styled(servers.len().to_string(), theme.info()),
+        ]),
+    ];
+    for name in servers.iter().take(5) {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(name.as_str(), theme.muted()),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled("AST index: ", theme.muted()),
+        Span::styled(format!("{file_count} files"), theme.info()),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("symbols:   ", theme.muted()),
+        Span::styled(symbol_count.to_string(), theme.info()),
+    ]));
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+/// Column 2: Learning state metrics panel.
+fn render_learning_panel(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
+    let block = Block::bordered()
+        .title(Span::styled(" Learning ", theme.accent()))
+        .border_style(theme.accent());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let ep_total = tui_state.episodes_cache.len();
+    let ep_passed = tui_state
+        .episodes_cache
+        .iter()
+        .filter(|e| e.success)
+        .count();
+    let ep_failed = ep_total.saturating_sub(ep_passed);
+    let accuracy = if ep_total > 0 {
+        ep_passed as f64 / ep_total as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    let playbook_count = {
+        let path = tui_state
+            .workdir
+            .join(".roko")
+            .join("learn")
+            .join("playbook.json");
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| {
+                v.as_array()
+                    .map(|a| a.len())
+                    .or_else(|| v.get("rules").and_then(|r| r.as_array()).map(|a| a.len()))
+            })
+            .unwrap_or(0)
+    };
+
+    let router_models = tui_state.cascade_router.model_slugs.len();
+    let routing_coverage = if router_models > 0 {
+        let with_data = tui_state
+            .cascade_router
+            .confidence_stats
+            .values()
+            .filter(|s| s.trials > 0)
+            .count();
+        with_data as f64 / router_models as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    let accuracy_style = if accuracy >= 80.0 {
+        theme.success()
+    } else if accuracy >= 50.0 {
+        theme.warning()
+    } else {
+        theme.danger()
+    };
+
+    let mut lines: Vec<Line<'_>> = vec![
+        Line::from(vec![
+            Span::styled("episodes:  ", theme.muted()),
+            Span::styled(ep_total.to_string(), theme.info()),
+            Span::styled(
+                format!("  ({ep_passed} pass / {ep_failed} fail)"),
+                theme.muted(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("accuracy:  ", theme.muted()),
+            Span::styled(format!("{accuracy:.1}%"), accuracy_style),
+        ]),
+        Line::from(vec![
+            Span::styled("playbooks: ", theme.muted()),
+            Span::styled(playbook_count.to_string(), theme.info()),
+        ]),
+        Line::from(vec![
+            Span::styled("routing:   ", theme.muted()),
+            Span::styled(
+                format!("{routing_coverage:.0}% coverage ({router_models} models)"),
+                theme.info(),
+            ),
+        ]),
+    ];
+
+    // Gate thresholds
+    let threshold_path = tui_state
+        .workdir
+        .join(".roko")
+        .join("learn")
+        .join("gate-thresholds.json");
+    if let Ok(content) = std::fs::read_to_string(&threshold_path) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(obj) = val.as_object() {
+                lines.push(Line::raw(""));
+                lines.push(Line::from(Span::styled("Gate Thresholds:", theme.accent())));
+                for (rung, threshold) in obj.iter().take(8) {
+                    if let Some(t) = threshold.as_f64() {
+                        lines.push(Line::from(vec![
+                            Span::styled(format!("  {rung}: "), theme.muted()),
+                            Span::styled(format!("{t:.3}"), theme.info()),
+                        ]));
+                    }
+                }
+            }
+        }
+    }
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+/// Column 3: Prompt statistics panel.
+fn render_prompt_stats_panel(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    tui_state: &TuiState,
+    theme: &Theme,
+) {
+    let block = Block::bordered()
+        .title(Span::styled(" Prompt Stats ", theme.accent()))
+        .border_style(theme.accent());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Aggregate tokens per role from efficiency events.
+    let mut role_tokens: BTreeMap<String, (u64, u64)> = BTreeMap::new(); // (total, count)
+    for ev in &tui_state.efficiency_events {
+        let entry = role_tokens.entry(ev.role.clone()).or_default();
+        entry.0 += ev.input_tokens + ev.output_tokens;
+        entry.1 += 1;
+    }
+
+    let context_window: u64 = 200_000; // default assumption
+
+    let mut lines: Vec<Line<'_>> = vec![Line::from(Span::styled(
+        "Avg Tokens per Role:",
+        theme.accent(),
+    ))];
+
+    if role_tokens.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (no efficiency data)",
+            theme.muted(),
+        )));
+    } else {
+        for (role, (total, count)) in &role_tokens {
+            let avg = if *count > 0 { total / count } else { 0 };
+            let utilization = avg as f64 / context_window as f64 * 100.0;
+            let util_style = if utilization > 80.0 {
+                theme.danger()
+            } else if utilization > 50.0 {
+                theme.warning()
+            } else {
+                theme.success()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {role}: "), theme.muted()),
+                Span::styled(format_count(avg), theme.info()),
+                Span::raw("  "),
+                Span::styled(format!("({utilization:.1}% ctx)"), util_style),
+            ]));
+        }
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Context Utilization:",
+        theme.accent(),
+    )));
+
+    let total_tokens: u64 = role_tokens.values().map(|(t, _)| *t).sum();
+    let total_events: u64 = role_tokens.values().map(|(_, c)| *c).sum();
+    let avg_overall = if total_events > 0 {
+        total_tokens / total_events
+    } else {
+        0
+    };
+    let overall_util = avg_overall as f64 / context_window as f64 * 100.0;
+
+    lines.push(Line::from(vec![
+        Span::styled("  overall: ", theme.muted()),
+        Span::styled(format!("{overall_util:.1}%"), theme.info()),
+        Span::styled(
+            format!("  ({} avg tokens)", format_count(avg_overall)),
+            theme.muted(),
+        ),
+    ]));
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
 
 #[cfg(test)]
 mod tests {

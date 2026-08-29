@@ -126,7 +126,7 @@ async fn single_task_plan_emits_one_efficiency_event_per_attempt() {
             event.cost_usd,
             event.attempt_id
         );
-        if !event.gate_passed {
+        if event.gate_passed != Some(true) {
             saw_failure_event = true;
         }
 

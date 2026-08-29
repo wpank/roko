@@ -58,6 +58,46 @@ pub(crate) async fn cmd_do(
         }
     }
 
+    // ── Intent classification: route research and plan-generate intents ──
+    // This implements progressive formality: `roko do "how does auth work?"`
+    // routes to research, while `roko do "create a plan for auth"` routes to
+    // plan generation. Only explicit --complexity or --plan overrides skip this.
+    if complexity_override.is_none() && !plan {
+        use roko_cli::scope_resolver::{PromptIntent, ScopeResolver};
+        let intent = ScopeResolver::classify_intent(&prompt);
+        match intent {
+            PromptIntent::Research => {
+                let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
+                out.step("Intent", "research (auto-detected from prompt)");
+                out.step("Routing", "roko research topic ...");
+                let topic_words: Vec<String> =
+                    prompt.split_whitespace().map(String::from).collect();
+                let research_cmd = crate::ResearchCmd::Topic {
+                    topic: topic_words,
+                    deep: false,
+                };
+                return crate::commands::research::cmd_research(cli, research_cmd).await;
+            }
+            PromptIntent::PlanGenerate => {
+                let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
+                out.step("Intent", "plan generation (auto-detected from prompt)");
+                out.step("Routing", "roko plan generate ...");
+                let plan_cmd = crate::PlanCmd::Generate {
+                    source: prompt.split_whitespace().map(String::from).collect(),
+                    from_file: None,
+                    context: context.clone(),
+                    from_notes: false,
+                    tag: None,
+                    from_backlog: None,
+                };
+                return crate::commands::plan::cmd_plan(cli, plan_cmd).await;
+            }
+            PromptIntent::Task => {
+                // Fall through to complexity classification below
+            }
+        }
+    }
+
     let preview_config = load_resolved_config(&workdir)
         .map(|resolved| resolved.config)
         .unwrap_or_default();
@@ -673,6 +713,8 @@ pub(crate) async fn run_plan_execution(
             )
         },
         warm_cache: true,
+        batch_size: None,
+        screenshots: false,
         metrics: {
             let m = std::sync::Arc::new(roko_core::obs::metrics::MetricRegistry::new());
             roko_core::obs::metrics::register_standard_metrics(&m);

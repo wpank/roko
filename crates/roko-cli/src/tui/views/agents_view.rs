@@ -47,8 +47,34 @@ pub(crate) fn render(
     view_state: &ViewState,
     theme: &Theme,
 ) {
-    let panels =
-        Layout::horizontal([Constraint::Percentage(32), Constraint::Percentage(68)]).split(area);
+    // Allocate top section for the agent status grid when agents exist.
+    let has_agents = !tui_state.agent_summaries.is_empty();
+    let grid_height = if has_agents {
+        // Header + min(agents, 8) + 2 for border
+        let agent_rows = tui_state.agent_summaries.len().min(8);
+        (agent_rows as u16 + 3).min(area.height / 3)
+    } else {
+        0
+    };
+
+    let sections = if grid_height > 0 {
+        Layout::vertical([Constraint::Length(grid_height), Constraint::Min(6)]).split(area)
+    } else {
+        Layout::vertical([Constraint::Length(0), Constraint::Min(6)]).split(area)
+    };
+
+    if grid_height > 0 {
+        crate::tui::widgets::agent_status_grid::render_agent_status_grid(
+            frame,
+            sections[0],
+            tui_state,
+            theme,
+        );
+    }
+
+    let main_area = sections[1];
+    let panels = Layout::horizontal([Constraint::Percentage(32), Constraint::Percentage(68)])
+        .split(main_area);
 
     render_left_panel(frame, panels[0], data, tui_state, view_state, theme);
     render_right_panel(frame, panels[1], tui_state, view_state, theme);
@@ -968,19 +994,29 @@ fn render_live_stream_panel(
 pub(crate) fn collect_agent_output_lines(tui_state: &TuiState, selected: usize) -> Vec<String> {
     let selected_agent = tui_state.agent_summaries.get(selected);
 
-    // Priority:
-    //   1. current_plan_execution.agent_output_tail
-    //   2. selected agent's live row data from tui_state.agents
-    //   3. task_output_tails for the agent's current task
-    //   4. episode output text
-    let collected: Vec<String> = tui_state
-        .current_plan_execution
-        .as_ref()
-        .map(|exec| exec.agent_output_tail.clone())
-        .unwrap_or_default();
+    // Priority (item 41 fix):
+    //   0. Live push-mode task_output_tails for the agent's current task
+    //   1. Selected agent's live row data from tui_state.agents
+    //   2. current_plan_execution.agent_output_tail (pull-mode fallback)
+    //   3. episode output text
 
-    if !collected.is_empty() {
-        return collected;
+    // 0. Live push-mode tail for the agent's current task (item 41).
+    if let Some(agent_summary) = selected_agent {
+        if let Some(agent_row) = tui_state
+            .agents
+            .iter()
+            .find(|row| row.id == agent_summary.id)
+        {
+            if !agent_row.current_task.is_empty() {
+                if let Some(live) = tui_state
+                    .task_output_tails
+                    .get(&agent_row.current_task)
+                    .filter(|lines| !lines.is_empty())
+                {
+                    return live.clone();
+                }
+            }
+        }
     }
 
     if let Some(agent_summary) = selected_agent {

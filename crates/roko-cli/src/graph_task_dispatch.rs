@@ -727,6 +727,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
             acceptance: Vec::new(),
             acceptance_contract: None,
             domain: None,
+            estimated_minutes: None,
+            crates_touched: None,
             sequence: 0,
         };
         let config = toml::Value::Table(toml::map::Map::from_iter([

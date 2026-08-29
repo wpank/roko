@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use ratatui::text::Line;
@@ -630,6 +630,205 @@ impl LogEntry {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Log search / filter state (#217)
+// ---------------------------------------------------------------------------
+
+/// Search mode within a log panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchMode {
+    /// Matching lines are highlighted but all lines remain visible.
+    #[default]
+    Highlight,
+    /// Only matching lines are shown.
+    Filter,
+}
+
+/// State for the log search/filter feature (#217).
+#[derive(Debug, Clone, Default)]
+pub struct LogSearchState {
+    /// Whether search mode is active (input bar visible).
+    pub active: bool,
+    /// Current search pattern text.
+    pub pattern: String,
+    /// Compiled regex from the pattern (None if pattern is empty or invalid).
+    pub compiled: Option<regex::Regex>,
+    /// Whether the pattern failed to compile.
+    pub pattern_error: bool,
+    /// Current search/filter display mode.
+    pub mode: SearchMode,
+    /// Total matches found in the log buffer.
+    pub match_count: usize,
+    /// Index of the currently highlighted match (0-based).
+    pub current_match: usize,
+    /// Line indices that match the current pattern (for navigation).
+    pub match_indices: Vec<usize>,
+}
+
+impl LogSearchState {
+    /// Update the compiled regex from the current pattern.
+    pub fn recompile(&mut self) {
+        if self.pattern.is_empty() {
+            self.compiled = None;
+            self.pattern_error = false;
+            self.match_count = 0;
+            self.current_match = 0;
+            self.match_indices.clear();
+        } else {
+            match regex::RegexBuilder::new(&self.pattern)
+                .case_insensitive(true)
+                .build()
+            {
+                Ok(re) => {
+                    self.compiled = Some(re);
+                    self.pattern_error = false;
+                }
+                Err(_) => {
+                    self.compiled = None;
+                    self.pattern_error = true;
+                    self.match_count = 0;
+                    self.current_match = 0;
+                    self.match_indices.clear();
+                }
+            }
+        }
+    }
+
+    /// Update match indices based on the given log lines.
+    pub fn update_matches(&mut self, lines: &[LogEntry]) {
+        self.match_indices.clear();
+        if let Some(ref re) = self.compiled {
+            for (i, entry) in lines.iter().enumerate() {
+                if re.is_match(&entry.message) || re.is_match(&entry.source) {
+                    self.match_indices.push(i);
+                }
+            }
+        }
+        self.match_count = self.match_indices.len();
+        if self.current_match >= self.match_count && self.match_count > 0 {
+            self.current_match = self.match_count - 1;
+        }
+    }
+
+    /// Navigate to the next match, wrapping around.
+    pub fn next_match(&mut self) {
+        if self.match_count > 0 {
+            self.current_match = (self.current_match + 1) % self.match_count;
+        }
+    }
+
+    /// Navigate to the previous match, wrapping around.
+    pub fn prev_match(&mut self) {
+        if self.match_count > 0 {
+            self.current_match = if self.current_match == 0 {
+                self.match_count - 1
+            } else {
+                self.current_match - 1
+            };
+        }
+    }
+
+    /// Clear all search state.
+    pub fn clear(&mut self) {
+        self.active = false;
+        self.pattern.clear();
+        self.compiled = None;
+        self.pattern_error = false;
+        self.mode = SearchMode::Highlight;
+        self.match_count = 0;
+        self.current_match = 0;
+        self.match_indices.clear();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Plan tree filter state (#219)
+// ---------------------------------------------------------------------------
+
+/// Filter state for the F2:Plans tab tree (#219).
+#[derive(Debug, Clone, Default)]
+pub struct PlanTreeFilter {
+    /// Whether filter input mode is active.
+    pub active: bool,
+    /// Current filter text input.
+    pub pattern: String,
+    /// Pre-parsed status filter prefix, if present.
+    pub status_filter: Option<PlanPhase>,
+    /// Substring to match after stripping status prefix.
+    pub text_filter: String,
+}
+
+impl PlanTreeFilter {
+    /// Update parsed fields from the current pattern text.
+    pub fn reparse(&mut self) {
+        let lower = self.pattern.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("status:failed") {
+            self.status_filter = Some(PlanPhase::Failed);
+            self.text_filter = rest.trim().to_string();
+        } else if let Some(rest) = lower.strip_prefix("status:active") {
+            self.status_filter = Some(PlanPhase::Active);
+            self.text_filter = rest.trim().to_string();
+        } else if let Some(rest) = lower.strip_prefix("status:done") {
+            self.status_filter = Some(PlanPhase::Done);
+            self.text_filter = rest.trim().to_string();
+        } else if let Some(rest) = lower.strip_prefix("status:pending") {
+            self.status_filter = Some(PlanPhase::Pending);
+            self.text_filter = rest.trim().to_string();
+        } else {
+            self.status_filter = None;
+            self.text_filter = lower;
+        }
+    }
+
+    /// Whether a plan entry matches the current filter.
+    pub fn matches_plan(&self, entry: &PlanEntry) -> bool {
+        if self.pattern.is_empty() {
+            return true;
+        }
+        // Status filter
+        if let Some(ref status) = self.status_filter {
+            if entry.status != *status {
+                return false;
+            }
+        }
+        // Text filter (case-insensitive substring match)
+        if !self.text_filter.is_empty() {
+            let id_lower = entry.id.to_ascii_lowercase();
+            let name_lower = entry.name.to_ascii_lowercase();
+            if !id_lower.contains(&self.text_filter) && !name_lower.contains(&self.text_filter) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Whether a plan matches because it or any of its tasks match.
+    pub fn matches_plan_or_tasks(&self, entry: &PlanEntry) -> bool {
+        if self.matches_plan(entry) {
+            return true;
+        }
+        // Check if any child task matches (maintain tree structure)
+        if !self.text_filter.is_empty() {
+            for task in &entry.tasks {
+                let task_lower = task.name.to_ascii_lowercase();
+                let id_lower = task.id.to_ascii_lowercase();
+                if task_lower.contains(&self.text_filter) || id_lower.contains(&self.text_filter) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Clear filter state.
+    pub fn clear(&mut self) {
+        self.active = false;
+        self.pattern.clear();
+        self.status_filter = None;
+        self.text_filter.clear();
+    }
+}
+
 /// Build a unified, time-sorted log from all available data sources.
 fn build_unified_log_cache(tui_state: &TuiState) -> Vec<LogEntry> {
     let mut entries: BTreeMap<(i64, usize), LogEntry> = BTreeMap::new();
@@ -1025,6 +1224,11 @@ pub struct TuiState {
     /// Execution waves grouping plans for parallel execution.
     pub execution_waves: Vec<Wave>,
 
+    // -- critical path ETA --
+    /// Remaining ETA minutes computed from the critical path of the task DAG.
+    /// Updated when a critical-path task completes. `None` when not yet computed.
+    pub critical_path_eta_minutes: Option<u32>,
+
     // -- task checklist --
     /// Task rows for the task_progress widget.
     pub current_task_checklist: Vec<TaskRow>,
@@ -1040,6 +1244,10 @@ pub struct TuiState {
     pub gate_trends: HashMap<String, roko_core::TrendBuckets>,
     /// Recent failing verdicts surfaced beside the trend grid.
     pub gate_recent_failures: Vec<roko_core::FailureEntry>,
+
+    // -- affect state --
+    /// Latest Daimon affect state from the runner.
+    pub affect: Option<roko_core::AffectSnapshot>,
 
     // -- agents (Vec-based roster for widgets) --
     /// Ordered agent roster for widgets (agent_pool, agent_output, header_bar).
@@ -1089,6 +1297,12 @@ pub struct TuiState {
     pub filter_active: bool,
     /// Filter alias (mirrors filter_text for widget compatibility).
     pub filter: String,
+
+    // -- wave tree collapse state --
+    /// Set of wave indices that the user has manually collapsed in the F2
+    /// plan tree. Expanded is the default state; toggling adds/removes from
+    /// this set.
+    pub collapsed_waves: HashSet<usize>,
 
     // -- scroll positions --
     /// Agent output scroll. `None` means auto-tail (follow latest output).
@@ -1256,6 +1470,14 @@ pub struct TuiState {
     /// Cached unified log for the logs tab.
     pub cached_unified_log: Vec<LogEntry>,
 
+    // -- log search (#217) --
+    /// Log search/filter state for regex highlighting and filtering.
+    pub log_search: LogSearchState,
+
+    // -- plan tree filter (#219) --
+    /// Plan tree filter state for F2:Plans tab.
+    pub plan_tree_filter: PlanTreeFilter,
+
     // -- network stats (header bar) --
     /// Number of agents currently online/discovered.
     pub agents_online: usize,
@@ -1319,12 +1541,16 @@ impl Default for TuiState {
 
             phase_pipeline: Vec::new(),
             execution_waves: Vec::new(),
+            collapsed_waves: HashSet::new(),
+            critical_path_eta_minutes: None,
             current_task_checklist: Vec::new(),
             gate_results: Vec::new(),
             diagnoses: Vec::new(),
             experiment_winners: Vec::new(),
             gate_trends: HashMap::new(),
             gate_recent_failures: Vec::new(),
+
+            affect: None,
 
             agents: Vec::new(),
             agent_topology: roko_core::AgentTopology::default(),
@@ -1433,6 +1659,9 @@ impl Default for TuiState {
             episodes_cache: Vec::new(),
             cached_unified_log: Vec::new(),
 
+            log_search: LogSearchState::default(),
+            plan_tree_filter: PlanTreeFilter::default(),
+
             agents_online: 0,
             gate_pass_rate: None,
 
@@ -1526,6 +1755,340 @@ fn count_online_from_files(root: &Path) -> usize {
             is_online_agent_status(status).then_some(())
         })
         .count()
+}
+
+/// Derive a minimal agent topology from the snapshot's agent map (item 41).
+///
+/// Each agent becomes one node.  Agents sharing a `current_plan` get a
+/// bidirectional edge between them so the topology overlay shows which
+/// agents are collaborating on the same plan.
+fn derive_topology_from_agents(
+    agents: &HashMap<String, roko_core::dashboard_snapshot::AgentState>,
+) -> roko_core::AgentTopology {
+    use roko_core::dashboard_snapshot::{AgentTopologyEdge, AgentTopologyNode};
+    let nodes: Vec<AgentTopologyNode> = agents
+        .values()
+        .map(|a| AgentTopologyNode {
+            id: a.agent_id.clone(),
+            address: String::new(),
+            insights_posted: 0,
+            confirmations_given: 0,
+            challenges_given: 0,
+            total_weight: 0.0,
+        })
+        .collect();
+
+    // Group agents by plan and create edges between co-plan agents.
+    let mut plan_groups: HashMap<String, Vec<String>> = HashMap::new();
+    for a in agents.values() {
+        if !a.current_plan.is_empty() {
+            plan_groups
+                .entry(a.current_plan.clone())
+                .or_default()
+                .push(a.agent_id.clone());
+        }
+    }
+    let mut edges = Vec::new();
+    for group in plan_groups.values() {
+        for (i, from) in group.iter().enumerate() {
+            for to in &group[i + 1..] {
+                edges.push(AgentTopologyEdge {
+                    from: from.clone(),
+                    to: to.clone(),
+                    weight: 1,
+                    edge_type: "co-plan".into(),
+                });
+            }
+        }
+    }
+
+    roko_core::AgentTopology {
+        nodes,
+        edges,
+        timestamp: chrono::Utc::now().timestamp() as u64,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TuiModel — unified data model (item 121)
+// ---------------------------------------------------------------------------
+
+/// Unified TUI data model that replaces the dual `DashboardData` + `TuiState`
+/// pipeline.  Phase A: introduced alongside existing types so new tabs can
+/// adopt `TuiModel` while existing tabs continue to read `TuiState` fields
+/// directly.
+///
+/// The migration path is:
+///   Phase A  — `TuiModel` wraps `TuiState` and adds unified fields.
+///   Phase B  — each tab switches from `TuiState` to `TuiModel`.
+///   Phase C  — `TuiState` merges into `TuiModel` and the bridge is deleted.
+#[derive(Debug)]
+pub struct TuiModel {
+    /// Inner TuiState — kept during migration so existing tabs work unchanged.
+    pub state: TuiState,
+
+    /// Cached inspect data for the F7:Inspect three-panel layout.
+    pub inspect_data: InspectData,
+
+    /// Timestamp of the last inspect data refresh.
+    pub inspect_last_refresh: Option<Instant>,
+}
+
+impl Default for TuiModel {
+    fn default() -> Self {
+        Self {
+            state: TuiState::default(),
+            inspect_data: InspectData::default(),
+            inspect_last_refresh: None,
+        }
+    }
+}
+
+impl TuiModel {
+    /// Create a new default model.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Apply a live `DashboardSnapshot` to the unified model.
+    pub fn apply_snapshot(&mut self, snap: &roko_core::DashboardSnapshot) {
+        self.state.update_from_dashboard_snapshot(snap);
+    }
+
+    /// Apply a pull-mode `DashboardData` to the unified model.
+    pub fn apply_dashboard_data(&mut self, data: &DashboardData) {
+        self.state.update_from_snapshot(data);
+    }
+
+    /// Whether the inspect data cache should be refreshed (5-second cadence).
+    #[must_use]
+    pub fn inspect_needs_refresh(&self) -> bool {
+        const INSPECT_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+        self.inspect_last_refresh
+            .map_or(true, |t| t.elapsed() >= INSPECT_REFRESH_INTERVAL)
+    }
+
+    /// Refresh the inspect data from disk files.
+    pub fn refresh_inspect_data(&mut self, workdir: &Path) {
+        self.inspect_data = InspectData::load_from_workdir(workdir, &self.state);
+        self.inspect_last_refresh = Some(Instant::now());
+    }
+}
+
+/// Cached data for the F7:Inspect three-panel layout (item 127).
+#[derive(Debug, Clone, Default)]
+pub struct InspectData {
+    /// Column 1: MCP runtime status.
+    pub mcp: McpRuntimeData,
+    /// Column 2: Learning state metrics.
+    pub learning: LearningData,
+    /// Column 3: Prompt stats aggregates.
+    pub prompt_stats: PromptStatsData,
+}
+
+/// MCP runtime status for the F7 inspect panel.
+#[derive(Debug, Clone, Default)]
+pub struct McpRuntimeData {
+    /// Path to the active MCP config file.
+    pub config_path: String,
+    /// Whether the config file exists on disk.
+    pub config_exists: bool,
+    /// Total registered tool count.
+    pub tool_count: usize,
+    /// Connected MCP server names.
+    pub servers: Vec<String>,
+    /// AST index: number of files indexed.
+    pub index_file_count: usize,
+    /// AST index: number of symbols indexed.
+    pub index_symbol_count: usize,
+}
+
+/// Learning state metrics for the F7 inspect panel.
+#[derive(Debug, Clone, Default)]
+pub struct LearningData {
+    /// Total episode count.
+    pub episode_count: usize,
+    /// Number of passing episodes.
+    pub episodes_passed: usize,
+    /// Number of failing episodes.
+    pub episodes_failed: usize,
+    /// Number of learned playbook rules.
+    pub playbook_rule_count: usize,
+    /// Routing coverage: fraction of models with non-default weights.
+    pub routing_coverage_pct: f64,
+    /// Gate threshold values per rung name.
+    pub gate_thresholds: Vec<(String, f64)>,
+}
+
+/// Prompt statistics aggregates for the F7 inspect panel.
+#[derive(Debug, Clone, Default)]
+pub struct PromptStatsData {
+    /// Average prompt tokens per role.
+    pub tokens_per_role: Vec<(String, u64)>,
+    /// Average context utilization per role (0.0 - 1.0).
+    pub context_utilization: Vec<(String, f64)>,
+    /// Top sections by token cost (section name, avg tokens).
+    pub top_sections_by_cost: Vec<(String, u64)>,
+}
+
+impl InspectData {
+    /// Load inspect data from on-disk files and current TuiState.
+    pub fn load_from_workdir(workdir: &Path, tui_state: &TuiState) -> Self {
+        let roko_dir = workdir.join(".roko");
+        let learn_dir = roko_dir.join("learn");
+
+        // Column 1: MCP runtime
+        let mcp_config_path = workdir.join("roko.toml");
+        let mcp = McpRuntimeData {
+            config_path: mcp_config_path.display().to_string(),
+            config_exists: mcp_config_path.exists(),
+            tool_count: load_mcp_tool_count(&roko_dir),
+            servers: load_mcp_servers(&roko_dir),
+            index_file_count: load_index_stat(&roko_dir, "file_count"),
+            index_symbol_count: load_index_stat(&roko_dir, "symbol_count"),
+        };
+
+        // Column 2: Learning state
+        let (ep_total, ep_passed, ep_failed) = count_episodes(&tui_state.episodes_cache);
+        let playbook_rule_count = load_playbook_rule_count(&learn_dir);
+        let routing_coverage_pct = compute_routing_coverage(&tui_state.cascade_router);
+        let gate_thresholds = load_gate_thresholds_summary(&learn_dir);
+        let learning = LearningData {
+            episode_count: ep_total,
+            episodes_passed: ep_passed,
+            episodes_failed: ep_failed,
+            playbook_rule_count,
+            routing_coverage_pct,
+            gate_thresholds,
+        };
+
+        // Column 3: Prompt stats
+        let (tokens_per_role, context_utilization) =
+            aggregate_prompt_stats(&tui_state.efficiency_events);
+        let prompt_stats = PromptStatsData {
+            tokens_per_role,
+            context_utilization,
+            top_sections_by_cost: Vec::new(), // requires section effectiveness data
+        };
+
+        Self {
+            mcp,
+            learning,
+            prompt_stats,
+        }
+    }
+}
+
+// -- InspectData helpers --
+
+fn load_mcp_tool_count(roko_dir: &Path) -> usize {
+    let stats_path = roko_dir.join("state").join("mcp-stats.json");
+    std::fs::read_to_string(stats_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("tool_count")?.as_u64())
+        .unwrap_or(0) as usize
+}
+
+fn load_mcp_servers(roko_dir: &Path) -> Vec<String> {
+    let stats_path = roko_dir.join("state").join("mcp-stats.json");
+    std::fs::read_to_string(stats_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| {
+            v.get("servers")?
+                .as_array()?
+                .iter()
+                .map(|s| s.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn load_index_stat(roko_dir: &Path, key: &str) -> usize {
+    let stats_path = roko_dir.join("index").join("stats.json");
+    std::fs::read_to_string(stats_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get(key)?.as_u64())
+        .unwrap_or(0) as usize
+}
+
+fn count_episodes(episodes: &[roko_learn::episode_logger::Episode]) -> (usize, usize, usize) {
+    let total = episodes.len();
+    let passed = episodes.iter().filter(|e| e.success).count();
+    let failed = total - passed;
+    (total, passed, failed)
+}
+
+fn load_playbook_rule_count(learn_dir: &Path) -> usize {
+    let path = learn_dir.join("playbook.json");
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| {
+            // Try both array and object-with-rules-key formats.
+            if let Some(arr) = v.as_array() {
+                return Some(arr.len());
+            }
+            v.get("rules")?.as_array().map(|a| a.len())
+        })
+        .unwrap_or(0)
+}
+
+fn compute_routing_coverage(router: &CascadeRouterState) -> f64 {
+    if router.model_slugs.is_empty() {
+        return 0.0;
+    }
+    let with_data = router
+        .confidence_stats
+        .values()
+        .filter(|s| s.trials > 0)
+        .count();
+    with_data as f64 / router.model_slugs.len() as f64 * 100.0
+}
+
+fn load_gate_thresholds_summary(learn_dir: &Path) -> Vec<(String, f64)> {
+    let path = learn_dir.join("gate-thresholds.json");
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| {
+            let obj = v.as_object()?;
+            Some(
+                obj.iter()
+                    .filter_map(|(k, val)| val.as_f64().map(|f| (k.clone(), f)))
+                    .collect(),
+            )
+        })
+        .unwrap_or_default()
+}
+
+fn aggregate_prompt_stats(
+    events: &[roko_learn::efficiency::AgentEfficiencyEvent],
+) -> (Vec<(String, u64)>, Vec<(String, f64)>) {
+    use std::collections::BTreeMap;
+    let mut role_tokens: BTreeMap<String, (u64, u64)> = BTreeMap::new(); // (total, count)
+    for ev in events {
+        let entry = role_tokens.entry(ev.role.clone()).or_default();
+        entry.0 += ev.input_tokens + ev.output_tokens;
+        entry.1 += 1;
+    }
+    let tokens_per_role: Vec<(String, u64)> = role_tokens
+        .iter()
+        .map(|(role, (total, count))| {
+            let avg = if *count > 0 { total / count } else { 0 };
+            (role.clone(), avg)
+        })
+        .collect();
+    // Context utilization: assume 200K context window for now.
+    const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
+    let utilization: Vec<(String, f64)> = tokens_per_role
+        .iter()
+        .map(|(role, avg)| (role.clone(), *avg as f64 / DEFAULT_CONTEXT_WINDOW as f64))
+        .collect();
+    (tokens_per_role, utilization)
 }
 
 impl TuiState {
@@ -1626,6 +2189,26 @@ impl TuiState {
         self.agents.iter().filter(|a| a.active).count()
     }
 
+    /// Badge count for a tab. Returns `0` when the tab has nothing noteworthy,
+    /// or a positive count representing the number of items the operator should
+    /// be aware of on that tab.
+    #[must_use]
+    pub fn tab_badge(&self, tab: Tab) -> usize {
+        match tab {
+            // F3 Agents: number of currently running agents.
+            Tab::Agents => self.active_agent_count(),
+            // F2 Plans: number of failed tasks across all plans.
+            Tab::Plans => self.plans.iter().map(|p| p.tasks_failed).sum(),
+            // F4 Git: pending approvals (approval modal count).
+            Tab::Git => usize::from(self.pending_approval.is_some()),
+            // F5 Logs: recent gate failures.
+            Tab::Logs => self.gate_results.iter().filter(|g| !g.passed).count(),
+            // F10 Learning: number of concluded experiment winners.
+            Tab::Learning => self.experiment_winners.len(),
+            _ => 0,
+        }
+    }
+
     /// Read the active sub-view index for a tab.
     #[must_use]
     pub fn sub_tab_for(&self, tab: Tab) -> usize {
@@ -1666,6 +2249,8 @@ impl TuiState {
             InputMode::Normal => "",
             InputMode::Inject => "INJECT",
             InputMode::Filter => "FILTER",
+            InputMode::LogSearch => "SEARCH",
+            InputMode::PlanFilter => "PLAN FILTER",
             InputMode::Confirm | InputMode::ConfigEdit => "",
         }
     }
@@ -2356,9 +2941,19 @@ impl TuiState {
         self.experiment_winners = snap.experiment_winners.clone();
         self.gate_trends = snap.gate_trends.clone();
         self.gate_recent_failures = snap.gate_recent_failures.clone();
+        self.affect = snap.affect.clone();
         if !snap.agent_topology.is_empty() {
             self.agent_topology = snap.agent_topology.clone();
             self.agent_topology_status = AgentTopologyStatus::Ready;
+        } else if !snap.agents.is_empty() {
+            // Derive a minimal topology from active agents when the
+            // explicit topology is empty (item 41).  Each agent becomes a
+            // node; agents sharing a plan_id get edges between them.
+            let derived = derive_topology_from_agents(&snap.agents);
+            if !derived.is_empty() {
+                self.agent_topology = derived;
+                self.agent_topology_status = AgentTopologyStatus::Ready;
+            }
         } else if !matches!(self.agent_topology_status, AgentTopologyStatus::Ready) {
             self.agent_topology = snap.agent_topology.clone();
         }
@@ -2678,7 +3273,10 @@ impl TuiState {
     /// Whether the state is in a text-input mode (inject or filter).
     #[must_use]
     pub const fn is_text_input(&self) -> bool {
-        matches!(self.input_mode, InputMode::Inject | InputMode::Filter)
+        matches!(
+            self.input_mode,
+            InputMode::Inject | InputMode::Filter | InputMode::LogSearch | InputMode::PlanFilter
+        )
     }
 
     /// Reset all scroll positions to zero.
@@ -4087,6 +4685,56 @@ depends_on = ["plan-b:T1"]
     }
 
     #[test]
+    fn tab_badge_returns_agent_count_for_agents_tab() {
+        let mut state = TuiState::default();
+        // No agents => badge is 0.
+        assert_eq!(state.tab_badge(Tab::Agents), 0);
+        // Two active agents => badge is 2.
+        state.agents = vec![
+            AgentRow {
+                active: true,
+                ..AgentRow::default()
+            },
+            AgentRow {
+                active: false,
+                ..AgentRow::default()
+            },
+            AgentRow {
+                active: true,
+                ..AgentRow::default()
+            },
+        ];
+        assert_eq!(state.tab_badge(Tab::Agents), 2);
+    }
+
+    #[test]
+    fn tab_badge_returns_failed_task_count_for_plans_tab() {
+        let mut state = TuiState::default();
+        assert_eq!(state.tab_badge(Tab::Plans), 0);
+        state.plans = vec![
+            PlanEntry {
+                tasks_failed: 1,
+                ..PlanEntry::default()
+            },
+            PlanEntry {
+                tasks_failed: 2,
+                ..PlanEntry::default()
+            },
+        ];
+        assert_eq!(state.tab_badge(Tab::Plans), 3);
+    }
+
+    #[test]
+    fn tab_badge_returns_zero_for_tabs_without_badges() {
+        let state = TuiState::default();
+        assert_eq!(state.tab_badge(Tab::Dashboard), 0);
+        assert_eq!(state.tab_badge(Tab::Config), 0);
+        assert_eq!(state.tab_badge(Tab::Inspect), 0);
+        assert_eq!(state.tab_badge(Tab::Marketplace), 0);
+        assert_eq!(state.tab_badge(Tab::Atelier), 0);
+    }
+
+    #[test]
     fn from_dashboard_data_creates_valid_state() {
         let data = DashboardData::default();
         let state = TuiState::from_dashboard_data(&data);
@@ -4601,6 +5249,7 @@ tier = "focused"
                         attempt: 0,
                         spawned_at_ms: 0,
                         last_event_at_ms: 0,
+                        elapsed_ms: 0,
                     },
                 ),
                 (
@@ -4621,6 +5270,7 @@ tier = "focused"
                         attempt: 0,
                         spawned_at_ms: 0,
                         last_event_at_ms: 0,
+                        elapsed_ms: 0,
                     },
                 ),
             ]
@@ -4675,6 +5325,7 @@ tier = "focused"
             inbox_items: HashMap::new(),
             inbox_resolved_ids: HashSet::new(),
             inbox_pending_count: 0,
+            affect: None,
             stats: Default::default(),
         };
 
@@ -4940,6 +5591,7 @@ tier = "focused"
                 attempt: 0,
                 spawned_at_ms: 0,
                 last_event_at_ms: 0,
+                elapsed_ms: 0,
             },
         );
         snap.gates
@@ -5120,6 +5772,7 @@ tier = "focused"
                 attempt: 0,
                 spawned_at_ms: 0,
                 last_event_at_ms: 0,
+                elapsed_ms: 0,
             },
         );
         snap.agents.insert(
@@ -5140,6 +5793,7 @@ tier = "focused"
                 attempt: 0,
                 spawned_at_ms: 0,
                 last_event_at_ms: 0,
+                elapsed_ms: 0,
             },
         );
         snap.stats.plans_active = 1;
@@ -5188,6 +5842,7 @@ tier = "focused"
                 attempt: 0,
                 spawned_at_ms: 0,
                 last_event_at_ms: 0,
+                elapsed_ms: 0,
             },
         );
         snap.task_outputs.insert(
@@ -5224,6 +5879,7 @@ tier = "focused"
                 attempt: 0,
                 spawned_at_ms: 0,
                 last_event_at_ms: 0,
+                elapsed_ms: 0,
             },
         );
         snap.task_outputs.insert(
@@ -5270,6 +5926,7 @@ tier = "focused"
                 attempt: 0,
                 spawned_at_ms: 0,
                 last_event_at_ms: 0,
+                elapsed_ms: 0,
             },
         );
         snap.task_outputs.insert("task-2".into(), VecDeque::new());

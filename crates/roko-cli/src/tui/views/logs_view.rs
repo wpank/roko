@@ -29,6 +29,18 @@ pub(crate) fn render(
     view_state: &ViewState,
     theme: &Theme,
 ) {
+    // Sub-tab 2 = Error Digest aggregation panel.
+    if view_state.sub_tab == 2 {
+        crate::tui::widgets::error_digest::render_error_aggregation_panel(
+            frame,
+            area,
+            tui_state,
+            view_state.scroll,
+            theme,
+        );
+        return;
+    }
+
     render_with_entries(
         frame,
         area,

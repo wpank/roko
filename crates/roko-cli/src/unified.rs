@@ -151,7 +151,8 @@ pub async fn cmd_oneshot_inline(prompt: &str, quiet: bool) -> Result<i32> {
         Ok(session) => session,
         Err(e) => {
             tracing::warn!("ChatAgentSession init failed: {e:#}");
-            eprintln!("error: {e:#}");
+            eprintln!("error: failed to initialize agent session: {e:#}");
+            eprintln!("  -> Run `roko doctor` to diagnose provider configuration.");
             return Ok(1);
         }
     };
@@ -160,7 +161,8 @@ pub async fn cmd_oneshot_inline(prompt: &str, quiet: bool) -> Result<i32> {
     let result = match session.send_turn_oneshot(prompt).await {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("error: {e:#}");
+            eprintln!("error: agent dispatch failed: {e:#}");
+            eprintln!("  -> Check .roko/roko.log for details.");
             return Ok(1);
         }
     };

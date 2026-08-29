@@ -27,6 +27,10 @@ pub enum InputMode {
     Confirm,
     /// Config text-edit mode: typing a value for a config field.
     ConfigEdit,
+    /// Log search mode: typing a regex pattern for log search/filter (#217).
+    LogSearch,
+    /// Plan tree filter mode: typing a filter string for plan tree (#219).
+    PlanFilter,
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +332,38 @@ pub enum TuiAction {
     AcceptFilter,
     CancelFilter,
 
+    // -- log search (#217) --
+    /// Enter log search mode (displays search input bar).
+    StartLogSearch,
+    /// Accept current search pattern and stay in highlight/filter mode.
+    AcceptLogSearch,
+    /// Cancel search and clear pattern.
+    CancelLogSearch,
+    /// Jump to the next search match.
+    NextLogMatch,
+    /// Jump to the previous search match.
+    PrevLogMatch,
+    /// Toggle between highlight and filter mode for log search.
+    ToggleLogFilterMode,
+
+    // -- plan tree filter (#219) --
+    /// Enter plan tree filter mode on F2:Plans tab.
+    StartPlanFilter,
+    /// Accept plan tree filter and stay filtered.
+    AcceptPlanFilter,
+    /// Cancel plan tree filter and clear.
+    CancelPlanFilter,
+
+    // -- recovery (#119) --
+    /// Soft retry: re-dispatch only failed tasks.
+    SoftRetry,
+    /// Open diagnose modal showing error details.
+    DiagnoseSelected,
+    /// Repair with error context: re-dispatch with error info injected.
+    RepairWithContext,
+    /// Reverify gates only: skip agent, run gate pipeline.
+    ReverifyGatesOnly,
+
     // -- task detail modal --
     ShowTaskDetail,
     CloseTaskDetail,
@@ -419,6 +455,12 @@ pub fn handle_key(
     }
     if mode == InputMode::Filter {
         return handle_filter_key(key);
+    }
+    if mode == InputMode::LogSearch {
+        return handle_log_search_key(key);
+    }
+    if mode == InputMode::PlanFilter {
+        return handle_plan_filter_key(key);
     }
 
     // Global keys that work in any tab
@@ -555,6 +597,28 @@ fn handle_filter_key(key: KeyEvent) -> TuiAction {
     match key.code {
         KeyCode::Enter => TuiAction::AcceptFilter,
         KeyCode::Esc => TuiAction::CancelFilter,
+        KeyCode::Backspace => TuiAction::InputBackspace,
+        KeyCode::Char(c) => TuiAction::InputChar(c),
+        _ => TuiAction::None,
+    }
+}
+
+/// Key handler for log search mode (#217).
+fn handle_log_search_key(key: KeyEvent) -> TuiAction {
+    match key.code {
+        KeyCode::Enter => TuiAction::AcceptLogSearch,
+        KeyCode::Esc => TuiAction::CancelLogSearch,
+        KeyCode::Backspace => TuiAction::InputBackspace,
+        KeyCode::Char(c) => TuiAction::InputChar(c),
+        _ => TuiAction::None,
+    }
+}
+
+/// Key handler for plan tree filter mode (#219).
+fn handle_plan_filter_key(key: KeyEvent) -> TuiAction {
+    match key.code {
+        KeyCode::Enter => TuiAction::AcceptPlanFilter,
+        KeyCode::Esc => TuiAction::CancelPlanFilter,
         KeyCode::Backspace => TuiAction::InputBackspace,
         KeyCode::Char(c) => TuiAction::InputChar(c),
         _ => TuiAction::None,
@@ -727,8 +791,8 @@ fn handle_plans_key(key: KeyEvent, focus: FocusZone) -> TuiAction {
         KeyCode::Home => TuiAction::ScrollFocusedHome,
         KeyCode::End => TuiAction::ScrollFocusedEnd,
 
-        // Filter mode
-        KeyCode::Char('/') => TuiAction::StartFilter,
+        // Plan tree filter (#219)
+        KeyCode::Char('/') => TuiAction::StartPlanFilter,
 
         // Plan operations (Mori parity)
         KeyCode::Char('d') => TuiAction::RequestConfirm(ConfirmAction::DiagnosePlan(String::new())),
@@ -739,11 +803,15 @@ fn handle_plans_key(key: KeyEvent, focus: FocusZone) -> TuiAction {
         KeyCode::Char('M') => TuiAction::RequestConfirm(ConfirmAction::MergeAllDone {
             branches: Vec::new(),
         }),
-        KeyCode::Char('s') => TuiAction::RestartPlan, // soft retry
-        KeyCode::Char('z') => TuiAction::ReverifyPlan, // diagnose
-        KeyCode::Char('S') => TuiAction::ResetPlanState, // repair preserve
-        KeyCode::Char('R') => TuiAction::RestartPhase, // repair clean
-        KeyCode::Char('c') => TuiAction::ReverifyPlan, // reverify
+
+        // Recovery keybindings (#119)
+        KeyCode::Char('s') => TuiAction::SoftRetry, // soft retry failed tasks
+        KeyCode::Char('z') => TuiAction::DiagnoseSelected, // diagnose modal
+        KeyCode::Char('S') => TuiAction::RepairWithContext, // repair with error context
+        KeyCode::Char('R') => {
+            TuiAction::RequestConfirm(ConfirmAction::ResetSelectedPlan(String::new()))
+        } // reset plan (confirm)
+        KeyCode::Char('c') => TuiAction::ReverifyGatesOnly, // reverify gates only
         KeyCode::Char('F') => TuiAction::ForceAdvance,
         KeyCode::Char('V') => TuiAction::ReverifyPlan,
         _ => TuiAction::None,
@@ -819,7 +887,11 @@ fn handle_logs_key(key: KeyEvent, _focus: FocusZone) -> TuiAction {
         KeyCode::Char('3') => TuiAction::ToggleLogFilter(LogFilterLevel::Error),
         KeyCode::Char('4') => TuiAction::ToggleLogFilter(LogFilterLevel::Debug),
         KeyCode::Char('a') => TuiAction::ShowAllLogFilters,
-        KeyCode::Char('/') => TuiAction::StartFilter,
+        // Log search (#217): / enters search, n/N navigate, f toggles filter
+        KeyCode::Char('/') => TuiAction::StartLogSearch,
+        KeyCode::Char('n') => TuiAction::NextLogMatch,
+        KeyCode::Char('N') => TuiAction::PrevLogMatch,
+        KeyCode::Char('f') => TuiAction::ToggleLogFilterMode,
         _ => TuiAction::None,
     }
 }

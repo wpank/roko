@@ -871,14 +871,14 @@ pub fn amber_color_grade(area: Rect, buf: &mut Buffer, intensity: f64) {
 
 /// Drop shadow: paint 1-cell right and bottom edges of `area` with a dark style.
 pub fn drop_shadow(buf: &mut Buffer, area: Rect) {
-    let shadow = Color::Rgb(30, 30, 30);
+    let shadow = Theme::SHADOW;
 
     // Right edge (1 cell wide, from area.top+1 to area.bottom+1)
     let right_x = area.right();
     for y in (area.top() + 1)..=area.bottom() {
         if let Some(cell) = buf.cell_mut((right_x, y)) {
             cell.set_bg(shadow);
-            cell.set_fg(Color::Rgb(50, 50, 50));
+            cell.set_fg(Theme::SHADOW_FG);
         }
     }
 
@@ -887,7 +887,7 @@ pub fn drop_shadow(buf: &mut Buffer, area: Rect) {
     for x in (area.left() + 1)..=area.right() {
         if let Some(cell) = buf.cell_mut((x, bottom_y)) {
             cell.set_bg(shadow);
-            cell.set_fg(Color::Rgb(50, 50, 50));
+            cell.set_fg(Theme::SHADOW_FG);
         }
     }
 }

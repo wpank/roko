@@ -294,6 +294,10 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::InboxReject { .. } => "inbox_reject",
         DashboardEvent::InboxDefer { .. } => "inbox_defer",
         DashboardEvent::InboxDismiss { .. } => "inbox_dismiss",
+        DashboardEvent::AgentHeartbeat { .. } => "agent_heartbeat",
+        DashboardEvent::GateRungStarted { .. } => "gate_rung_started",
+        DashboardEvent::AffectUpdated { .. } => "affect_updated",
+        DashboardEvent::AgentTopologyUpdated { .. } => "agent_topology_updated",
     }
 }
 

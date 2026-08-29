@@ -153,11 +153,10 @@ pub fn cmd_custody_show(workdir: &Path, index: usize) -> Result<()> {
         .map_err(|e| anyhow!("failed to read custody log: {e}"))?;
 
     if records.is_empty() {
-        eprintln!(
+        anyhow::bail!(
             "No custody records found at {}",
             layout.custody_log().display()
         );
-        std::process::exit(1);
     }
 
     let record = records
@@ -251,8 +250,7 @@ pub fn cmd_custody_verify(workdir: &Path) -> Result<()> {
     let log_path = layout.custody_log();
 
     if !log_path.exists() {
-        eprintln!("No custody log found at {}", log_path.display());
-        std::process::exit(1);
+        anyhow::bail!("No custody log found at {}", log_path.display());
     }
 
     let content = std::fs::read_to_string(&log_path)
@@ -260,8 +258,7 @@ pub fn cmd_custody_verify(workdir: &Path) -> Result<()> {
 
     let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
     if lines.is_empty() {
-        eprintln!("Custody log is empty.");
-        std::process::exit(1);
+        anyhow::bail!("Custody log is empty.");
     }
 
     let mut violations = Vec::new();

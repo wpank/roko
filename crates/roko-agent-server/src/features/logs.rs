@@ -109,7 +109,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::features::messaging;
-    use crate::state::{SidecarDispatchError, DispatchLike};
+    use crate::state::{DispatchLike, SidecarDispatchError};
 
     fn scaled_test_timeout_ms(ms: u64) -> u64 {
         if std::env::var("CI").is_ok_and(|value| value == "true") {
@@ -148,7 +148,10 @@ mod tests {
 
     #[async_trait]
     impl DispatchLike for MockDispatcher {
-        async fn dispatch(&self, _request: ChatRequest) -> Result<ChatResponse, SidecarDispatchError> {
+        async fn dispatch(
+            &self,
+            _request: ChatRequest,
+        ) -> Result<ChatResponse, SidecarDispatchError> {
             Ok(ChatResponse {
                 content: "logged response".to_string(),
                 finish_reason: FinishReason::Stop,

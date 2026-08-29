@@ -21,7 +21,7 @@ use roko_agent::{
     process::registry::{register_spawned_pid, unregister_pid},
 };
 use roko_agent_server::{
-    AgentRegistration, AgentServer, SidecarDispatchError, DispatchLike, RelayClientConfig,
+    AgentRegistration, AgentServer, DispatchLike, RelayClientConfig, SidecarDispatchError,
 };
 use roko_cli::agent_spawn::{SpawnAgentSpec, spawn_agent_scoped};
 use roko_core::{Body, Context, Kind, MessageContent, Signal};

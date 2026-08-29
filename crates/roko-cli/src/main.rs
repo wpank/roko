@@ -76,13 +76,7 @@ use tracing_subscriber::registry::LookupSpan;
 // Exit codes
 // -----------------------------------------------------------------------
 
-/// Successful execution.
-const EXIT_SUCCESS: i32 = 0;
-const EXIT_FAILURE: i32 = 1;
-/// Agent or gate failure (logical error in the build).
-const EXIT_AGENT_FAILURE: i32 = 1;
-/// System error (I/O, config, infrastructure).
-const EXIT_SYSTEM_ERROR: i32 = 2;
+use roko_cli::exit_codes::{EXIT_AGENT_FAILURE, EXIT_FAILURE, EXIT_SUCCESS, EXIT_SYSTEM_ERROR};
 
 // -----------------------------------------------------------------------
 // Effort level
@@ -225,7 +219,7 @@ fn long_version() -> &'static str {
     name = "roko",
     version,
     long_version = long_version(),
-    about = "Minimal CLI for the Roko universal loop",
+    about = "Roko --- agent toolkit\n\nQuick start: roko setup, roko do <task>, roko status\nRun roko help <command> for details.",
     after_long_help = "\
 COMMAND GROUPS:
   Core workflow:     init, do, develop, run, status, doctor
@@ -345,11 +339,14 @@ Examples:
         demo: bool,
     },
     /// Do a task from a natural-language prompt.
-    #[command(after_help = "\
+    #[command(
+        visible_alias = "d",
+        after_help = "\
 Examples:
   roko do \"Fix the login bug\"                         Classify scope and execute
   roko do \"Add auth flow\" --complexity medium         Force planned workflow
-  roko do \"Refactor API\" --dry-run                    Preview scope and workflow only")]
+  roko do \"Refactor API\" --dry-run                    Preview scope and workflow only"
+    )]
     Do {
         /// Force a planned workflow instead of the lightest classified scope.
         #[arg(long)]
@@ -441,11 +438,14 @@ Examples:
         max_retries: Option<u32>,
     },
     /// Print signal counts, most recent episode, and gate pass/fail.
-    #[command(after_help = "\
+    #[command(
+        visible_alias = "s",
+        after_help = "\
 Examples:
   roko status                       Show workspace health summary
   roko status --json                Output status as JSON for scripting
-  roko status --cfactor             Compute and show C-Factor metrics")]
+  roko status --cfactor             Compute and show C-Factor metrics"
+    )]
     Status {
         /// Directory containing `.roko/` (default: cwd).
         #[arg(long)]
@@ -536,11 +536,13 @@ Examples:
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// Check workspace layer dependency rules.
+    /// (deprecated: use `roko doctor`) Check workspace layer dependency rules.
+    #[command(hide = true)]
     LayerCheck,
 
     // ── Planning & PRDs ─────────────────────────────────────────────
     /// Manage plans (list, show, create, validate, run, generate).
+    #[command(visible_alias = "p")]
     Plan {
         #[command(subcommand)]
         cmd: PlanCmd,
@@ -549,6 +551,12 @@ Examples:
     Prd {
         #[command(subcommand)]
         cmd: PrdCmd,
+    },
+
+    /// Import backlog specs as PRD ideas.
+    Backlog {
+        #[command(subcommand)]
+        cmd: BacklogCmd,
     },
 
     // ── Agents ──────────────────────────────────────────────────────
@@ -592,8 +600,9 @@ Examples:
         /// Note text.
         text: Vec<String>,
     },
-    /// Adjust behavior by writing roko.toml.
+    /// (deprecated: use `roko learn tune`) Adjust behavior by writing roko.toml.
     #[command(
+        hide = true,
         subcommand,
         after_help = "\
 Examples:
@@ -683,21 +692,27 @@ Examples:
     },
 
     // ── Server & deployment ─────────────────────────────────────────
-    /// Start the dev environment (serve + optional demo frontend).
-    #[command(after_help = "\
+    /// (deprecated: use `roko serve`) Start the dev environment.
+    #[command(
+        hide = true,
+        after_help = "\
 Examples:
   roko dev                          Start serve + demo frontend
-  roko dev --no-frontend            Start serve only (skip npm dev server)")]
+  roko dev --no-frontend            Start serve only (skip npm dev server)"
+    )]
     Dev {
         /// Skip the demo frontend dev server.
         #[arg(long)]
         no_frontend: bool,
     },
-    /// Start roko serve + all configured [[agents]] in one command.
-    #[command(after_help = "\
+    /// (deprecated: use `roko serve`) Start roko serve + all agents.
+    #[command(
+        hide = true,
+        after_help = "\
 Examples:
   roko up                           Start serve + all agents from roko.toml
-  roko up --workdir /path/to/proj   Start from a specific project directory")]
+  roko up --workdir /path/to/proj   Start from a specific project directory"
+    )]
     Up {
         /// Working directory (default: cwd).
         #[arg(long)]
@@ -1289,6 +1304,37 @@ Examples:
 }
 
 // -----------------------------------------------------------------------
+// Backlog import
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Subcommand)]
+enum BacklogCmd {
+    /// Import backlog spec(s) as PRD ideas.
+    Import {
+        /// Path to a single backlog .md file or a directory containing them.
+        path: PathBuf,
+        /// After creating the idea, also generate a PRD draft.
+        #[arg(long)]
+        draft: bool,
+        /// After drafting, also generate an implementation plan.
+        #[arg(long)]
+        plan: bool,
+        /// Full pipeline: idea -> draft -> plan -> run.
+        #[arg(long)]
+        execute: bool,
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// List backlog items and their import status.
+    List {
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+}
+
+// -----------------------------------------------------------------------
 // Plugins (now nested under config)
 // -----------------------------------------------------------------------
 
@@ -1435,6 +1481,9 @@ enum PlanCmd {
         /// Working directory.
         #[arg(long)]
         workdir: Option<PathBuf>,
+        /// Group plans by execution wave (cross-plan dependency analysis).
+        #[arg(long)]
+        waves: bool,
     },
     /// Show details of a specific plan.
     Show {
@@ -1469,6 +1518,10 @@ enum PlanCmd {
         /// Output machine-readable JSON instead of text.
         #[arg(long)]
         json: bool,
+        /// Show DAG analysis: plan/task/edge counts, wave breakdown,
+        /// critical path, and dangling dependency references.
+        #[arg(long)]
+        dag: bool,
     },
     /// Rebuild or verify the deterministic plans index.
     Index {
@@ -1501,10 +1554,17 @@ Examples:
         /// Resume from engine state (Runner executor snapshot or Graph checkpoint directory/file).
         #[arg(long = "resume-plan", visible_alias = "resume-state", num_args = 0..=1, default_missing_value = ".roko/state/state-snapshot.json")]
         resume_plan: Option<PathBuf>,
-        /// Launch the connected approval TUI while Runner-v2 runs. Graph
-        /// rejects this option until it has an equivalent approval channel.
-        #[arg(long)]
+        /// Launch the connected inline TUI while Runner-v2 runs.
+        /// Use this to monitor agent output, tokens, and gate progress in real time.
+        /// Without this flag, plan run outputs plain text logs.
+        #[arg(long, visible_alias = "tui")]
         approval: bool,
+        /// Disable the inline TUI even in interactive terminals.
+        ///
+        /// By default, the TUI is auto-enabled when stdout is a TTY.
+        /// Pass `--no-tui` to suppress it and use plain log output instead.
+        #[arg(long)]
+        no_tui: bool,
         /// Maximum retry attempts per task (overrides per-task and config values).
         #[arg(long)]
         max_retries: Option<u32>,
@@ -1554,6 +1614,25 @@ Examples:
         /// plans, stale lock) and proceed directly to plan execution.
         #[arg(long)]
         skip_preflight: bool,
+        /// Override the model for this plan run, bypassing adaptive routing.
+        /// Equivalent to the global `--model` flag but placed after the subcommand
+        /// for convenience.
+        ///
+        /// Example: `roko plan run plans/ --force-backend claude-sonnet-4-5`
+        #[arg(long, value_name = "MODEL_SLUG")]
+        force_backend: Option<String>,
+        /// Capture event-driven screenshots during execution.
+        ///
+        /// Screenshots are saved to `.roko/screenshots/run-<timestamp>/` with
+        /// a manifest.json linking each screenshot to its trigger event.
+        /// Triggered at: plan startup, task completion, gate completion, wave
+        /// completion, agent spawn/exit, and errors.
+        #[arg(long)]
+        screenshots: bool,
+        /// Pause execution for review after every N plan completions.
+        /// Natural checkpoints for overnight or batch runs.
+        #[arg(long, value_name = "N")]
+        batch_size: Option<usize>,
     },
     /// Generate implementation plans from a prompt, file, or PRD.
     Generate {
@@ -1571,6 +1650,44 @@ Examples:
         /// Filter notes by tag when using --from-notes.
         #[arg(long)]
         tag: Option<String>,
+        /// Generate plan(s) from backlog spec(s). Accepts a single ID or
+        /// comma-separated IDs: `--from-backlog 206` or `--from-backlog 206,120,119`.
+        /// Reads the spec from `tmp/backlog/<id>-*.md`, generates a deterministic
+        /// slug, and writes the plan to `plans/<slug>/tasks.toml`.
+        #[arg(long, value_name = "IDS")]
+        from_backlog: Option<String>,
+    },
+    /// Pause a running plan executor. Writes a pause signal to `.roko/state/control.json`.
+    Pause {
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Resume a paused plan executor. Clears the pause signal.
+    Resume {
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Cancel a running plan. Writes a cancel signal to `.roko/state/control.json`.
+    Cancel {
+        /// Plan ID to cancel. If omitted, cancels the current run.
+        #[arg(long)]
+        plan_id: Option<String>,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Retry failed tasks in a plan. Writes a retry signal to `.roko/state/control.json`.
+    Retry {
+        /// Specific task ID to retry. If omitted, retries all failed tasks.
+        task_id: Option<String>,
+        /// Plan ID containing the task. If omitted, targets the active plan.
+        #[arg(long)]
+        plan_id: Option<String>,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
     },
     /// Regenerate an existing plan from its source PRD / plan extract.
     Regenerate {
@@ -1580,9 +1697,55 @@ Examples:
         #[arg(long)]
         dry_run: bool,
     },
+    /// Queue manifest operations: show, validate, and init milestone definitions.
+    Queue {
+        #[command(subcommand)]
+        cmd: QueueCmd,
+    },
+    /// Show the lightweight runner status from `.roko/state/status.json`.
+    ///
+    /// Reads the < 500 byte status file written by the runner on every tick
+    /// (debounced 1/sec). This is fast because it does not require
+    /// deserializing the full executor snapshot.
+    Status {
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
     /// Shorthand: `roko plan "add cursor support"` routes to plan generate.
     #[command(external_subcommand)]
     Shorthand(Vec<String>),
+}
+
+#[derive(Debug, Subcommand)]
+enum QueueCmd {
+    /// Display milestone status and plan assignments.
+    Show {
+        /// Path to queue manifest file.
+        #[arg(long, default_value = ".roko/queue.toml")]
+        file: PathBuf,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Validate queue manifest structure and plan references.
+    Validate {
+        /// Path to queue manifest file.
+        #[arg(long, default_value = ".roko/queue.toml")]
+        file: PathBuf,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Generate a starter queue.toml from discovered plans.
+    Init {
+        /// Output path for the generated manifest.
+        #[arg(long, default_value = ".roko/queue.toml")]
+        output: PathBuf,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
 }
 
 impl PlanCmd {
@@ -1592,9 +1755,16 @@ impl PlanCmd {
     /// makes commands such as `plan validate` unexpectedly dirty the caller's workspace.
     fn should_rebuild_indexes(&self) -> bool {
         match self {
-            Self::List { .. } | Self::Show { .. } | Self::Validate { .. } | Self::Index { .. } => {
-                false
-            }
+            Self::List { .. }
+            | Self::Show { .. }
+            | Self::Validate { .. }
+            | Self::Index { .. }
+            | Self::Queue { .. }
+            | Self::Pause { .. }
+            | Self::Resume { .. }
+            | Self::Cancel { .. }
+            | Self::Retry { .. }
+            | Self::Status { .. } => false,
             Self::Run { dry_run, .. } | Self::Regenerate { dry_run, .. } => !dry_run,
             Self::Create { .. } | Self::Generate { .. } | Self::Shorthand(_) => true,
         }
@@ -2207,6 +2377,29 @@ enum ConfigProviderCmd {
     },
     /// List all supported provider kinds with required credentials and setup instructions.
     Available,
+    /// Scan environment for API keys and report available providers.
+    Discover {
+        /// Directory containing `roko.toml` (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Interactive provider setup with pre-filled defaults from the catalog.
+    Add {
+        /// Provider catalog ID (e.g. deepseek, openai, anthropic).
+        name: String,
+        /// Print the generated TOML without writing to config.
+        #[arg(long)]
+        dry_run: bool,
+        /// Directory containing `roko.toml` (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Show all known providers from the built-in catalog with availability status.
+    Catalog {
+        /// Directory containing `roko.toml` (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -2748,7 +2941,10 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             commands::diagnose::cmd_diagnose(&wd, &plan_id, verbose)
         }
-        Command::LayerCheck => roko_cli::layer_check::run_layer_check(),
+        Command::LayerCheck => {
+            eprintln!("warning: 'roko layer-check' is deprecated, use 'roko doctor'");
+            roko_cli::layer_check::run_layer_check()
+        }
         Command::Plan { cmd } => {
             let wd = cmd.index_rebuild_workdir(cli);
             let command_can_mutate = cmd.should_rebuild_indexes();
@@ -2779,11 +2975,15 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             commands::note::cmd_note(&wd, text, tags, cli.json)
         }
-        Command::Tune(cmd) => commands::tune::cmd_tune(cli, cmd).await,
+        Command::Tune(cmd) => {
+            eprintln!("warning: 'roko tune' is deprecated, use 'roko learn tune'");
+            commands::tune::cmd_tune(cli, cmd).await
+        }
         Command::Knowledge { cmd } => commands::knowledge::dispatch_knowledge(cli, cmd).await,
         Command::Learn { cmd } => commands::learn::dispatch_learn(cli, cmd).await,
         Command::Job { cmd } => commands::job::cmd_job(cli, cmd).await,
         Command::Market { cmd } => cmd_market(cmd),
+        Command::Backlog { cmd } => commands::backlog::cmd_backlog(cli, cmd).await,
         Command::Bench { cmd } => commands::bench::cmd_bench(cli, cmd).await,
         Command::Demo(cmd) => {
             let workdir = match &cmd {
@@ -2831,8 +3031,12 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         Command::Feed { cmd } => commands::feed::cmd_feed(cli, cmd).await,
         Command::Recipe { cmd } => commands::recipe::cmd_recipe(cli, cmd),
         Command::Trigger { cmd } => commands::trigger::cmd_trigger(cli, cmd).await,
-        Command::Dev { no_frontend } => commands::dev::cmd_dev(cli, no_frontend).await,
+        Command::Dev { no_frontend } => {
+            eprintln!("warning: 'roko dev' is deprecated, use 'roko serve'");
+            commands::dev::cmd_dev(cli, no_frontend).await
+        }
         Command::Up { workdir } => {
+            eprintln!("warning: 'roko up' is deprecated, use 'roko serve'");
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
             commands::server::cmd_up(cli, wd).await
         }
@@ -3057,6 +3261,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 resume_plan: Some(snapshot),
                 workdir: Some(workdir),
                 approval: false,
+                no_tui: false,
                 max_retries: None,
                 max_tasks: 0,
                 dry_run: false,
@@ -3068,6 +3273,9 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 dangerously_skip_permissions: false,
                 log_file: None,
                 skip_preflight: false,
+                force_backend: None,
+                screenshots: false,
+                batch_size: None,
             };
             commands::plan::cmd_plan(cli, plan_cmd).await
         }
@@ -3362,7 +3570,7 @@ fn resolve_config_for_workdir(cli: &Cli, workdir: &Path) -> Result<Config> {
             eprintln!("  2. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or ZAI_API_KEY");
             eprintln!("  3. Edit roko.toml to configure a provider");
             eprintln!("\n  hint: run `roko doctor` to diagnose your setup");
-            std::process::exit(1);
+            std::process::exit(EXIT_FAILURE);
         }
         (resolved.config, workdir)
     };

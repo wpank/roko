@@ -6185,11 +6185,11 @@ mod tests {
     #[test]
     fn theme_defaults_to_rosedust_palette() {
         let theme = Theme::from_no_color(false);
-        assert_eq!(theme.foreground, Color::Rgb(165, 142, 158)); // rose-tinted text
-        assert_eq!(theme.background, Color::Rgb(0, 0, 0)); // void
-        assert_eq!(theme.accent, Color::Rgb(185, 120, 148)); // primary rose
+        assert_eq!(theme.foreground, Color::Rgb(232, 220, 232)); // CSS --text-primary
+        assert_eq!(theme.background, Color::Rgb(8, 8, 12)); // CSS --bg-void
+        assert_eq!(theme.accent, Color::Rgb(184, 122, 148)); // CSS --rose
         assert_eq!(theme.selection_background, Color::Rgb(34, 28, 36)); // highlight
-        assert_eq!(theme.selection_foreground, Color::Rgb(215, 198, 158)); // bone
+        assert_eq!(theme.selection_foreground, Color::Rgb(212, 200, 156)); // CSS --bone
     }
 
     #[test]

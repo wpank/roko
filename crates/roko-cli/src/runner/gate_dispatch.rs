@@ -42,6 +42,28 @@ pub const RUNG_PLAN_VERIFY: u32 = 1000;
 /// Sentinel rung value for post-merge regression gates.
 pub const RUNG_MERGE: u32 = 1001;
 
+/// Compute the `CARGO_BUILD_JOBS` limit: half the available logical CPUs,
+/// floored to at least 1. This prevents CPU exhaustion when multiple agents
+/// run gate checks in parallel.
+fn cargo_build_jobs() -> String {
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2);
+    (cpus / 2).max(1).to_string()
+}
+
+/// Detect whether `sccache` is available on `PATH`. The result is cached
+/// after the first call to avoid repeated filesystem lookups.
+fn sccache_available() -> bool {
+    use std::sync::OnceLock;
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        std::env::split_paths(&path_var)
+            .any(|dir| dir.join("sccache").is_file() || dir.join("sccache.exe").is_file())
+    })
+}
+
 /// Task-definition-derived context used by [`build_rung_execution_inputs`] and
 /// [`build_rung_execution_config`] to build real `RungExecutionInputs` for
 /// advanced gate rungs (Symbol, FactCheck, LlmJudge, GeneratedTest).
@@ -417,9 +439,15 @@ pub async fn attempt_auto_fix(
         "attempting cargo auto-fix before agent retry"
     );
 
-    let fix_status = tokio::process::Command::new(program)
+    let mut fix_cmd = tokio::process::Command::new(program);
+    fix_cmd
         .args(args)
         .current_dir(workdir)
+        .env("CARGO_BUILD_JOBS", cargo_build_jobs());
+    if sccache_available() {
+        fix_cmd.env("RUSTC_WRAPPER", "sccache");
+    }
+    let fix_status = fix_cmd
         .output()
         .await
         .map_err(|e| format!("failed to spawn {program}: {e}"))?;
@@ -442,6 +470,7 @@ pub async fn attempt_auto_fix(
     // For compile fixes, also run cargo fmt to keep formatting clean.
     if raw.starts_with("compile") {
         let _ = tokio::process::Command::new("cargo")
+            .env("CARGO_BUILD_JOBS", cargo_build_jobs())
             .args(["fmt"])
             .current_dir(workdir)
             .output()
@@ -1062,7 +1091,17 @@ fn gate_signal(
         .with_env(
             "ROKO_GATE_ATTEMPT_SENTINEL",
             attempt_sentinel.to_string_lossy().to_string(),
-        );
+        )
+        // Limit build parallelism to nproc/2 to prevent CPU exhaustion
+        // when multiple agents run gate checks concurrently (#206).
+        .with_env("CARGO_BUILD_JOBS", cargo_build_jobs());
+
+    // If sccache is available, set RUSTC_WRAPPER to avoid redundant
+    // compilation across agents working on the same workspace.
+    if sccache_available() {
+        payload = payload.with_env("RUSTC_WRAPPER", "sccache");
+    }
+
     // Share the main workspace build cache with worktree gate commands so
     // that `cargo check`/`cargo clippy`/`cargo test` inside a task worktree
     // reuse incremental artifacts instead of rebuilding all crates from

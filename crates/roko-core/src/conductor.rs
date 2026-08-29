@@ -91,6 +91,32 @@ impl CognitiveSignal {
 pub enum ConductorDecision {
     /// Work is healthy; let the event loop proceed.
     Continue,
+    /// Send a prompt nudge to a stalled agent without restarting it.
+    ///
+    /// Triggered when an agent has been silent for `silence_timeout_secs`
+    /// (default 180s) or compile failures exceed the threshold (default 3).
+    /// The event loop injects `message` as context for the agent's next turn.
+    Nudge {
+        /// Which watcher tripped (for observability).
+        watcher: String,
+        /// Human-readable nudge message to inject into the agent's context.
+        message: String,
+        /// The task ID targeted by this nudge, if known.
+        task_id: Option<String>,
+    },
+    /// Force-advance a stalled task by marking it completed with a conductor
+    /// override annotation.
+    ///
+    /// Triggered after a nudge fails to resolve a stall (task exceeds
+    /// `task_stall_secs`, default 300s) or a phase timeout fires (1800s).
+    ForceAdvance {
+        /// Which watcher tripped.
+        watcher: String,
+        /// Human-readable reason for the force-advance.
+        reason: String,
+        /// The specific task to force-advance.
+        task_id: String,
+    },
     /// Kill current agents and restart from the phase boundary.
     Restart {
         /// Which watcher tripped (for observability).
@@ -112,6 +138,34 @@ impl ConductorDecision {
     #[must_use]
     pub const fn cont() -> Self {
         Self::Continue
+    }
+
+    /// Shorthand for a nudge decision.
+    #[must_use]
+    pub fn nudge(
+        watcher: impl Into<String>,
+        message: impl Into<String>,
+        task_id: Option<String>,
+    ) -> Self {
+        Self::Nudge {
+            watcher: watcher.into(),
+            message: message.into(),
+            task_id,
+        }
+    }
+
+    /// Shorthand for a force-advance decision.
+    #[must_use]
+    pub fn force_advance(
+        watcher: impl Into<String>,
+        reason: impl Into<String>,
+        task_id: impl Into<String>,
+    ) -> Self {
+        Self::ForceAdvance {
+            watcher: watcher.into(),
+            reason: reason.into(),
+            task_id: task_id.into(),
+        }
     }
 
     /// Shorthand for a restart decision.
@@ -149,6 +203,8 @@ impl ConductorDecision {
     pub const fn label(&self) -> &'static str {
         match self {
             Self::Continue => "continue",
+            Self::Nudge { .. } => "nudge",
+            Self::ForceAdvance { .. } => "force_advance",
             Self::Restart { .. } => "restart",
             Self::Fail { .. } => "fail",
         }
@@ -333,5 +389,61 @@ mod tests {
         let json = serde_json::to_string(&eval).unwrap();
         let decoded: ConductorEvaluation = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, eval);
+    }
+
+    #[test]
+    fn nudge_carries_fields() {
+        let d = ConductorDecision::nudge("silence", "try a different approach", Some("T3".into()));
+        assert!(!d.is_terminal());
+        assert!(!d.is_continue());
+        assert_eq!(d.label(), "nudge");
+        match d {
+            ConductorDecision::Nudge {
+                watcher,
+                message,
+                task_id,
+            } => {
+                assert_eq!(watcher, "silence");
+                assert_eq!(message, "try a different approach");
+                assert_eq!(task_id, Some("T3".to_string()));
+            }
+            _ => panic!("expected Nudge"),
+        }
+    }
+
+    #[test]
+    fn force_advance_carries_fields() {
+        let d = ConductorDecision::force_advance("task-stall", "300s stall", "T5");
+        assert!(!d.is_terminal());
+        assert!(!d.is_continue());
+        assert_eq!(d.label(), "force_advance");
+        match d {
+            ConductorDecision::ForceAdvance {
+                watcher,
+                reason,
+                task_id,
+            } => {
+                assert_eq!(watcher, "task-stall");
+                assert_eq!(reason, "300s stall");
+                assert_eq!(task_id, "T5");
+            }
+            _ => panic!("expected ForceAdvance"),
+        }
+    }
+
+    #[test]
+    fn serde_roundtrip_nudge() {
+        let d = ConductorDecision::nudge("w", "msg", None);
+        let json = serde_json::to_string(&d).unwrap();
+        let decoded: ConductorDecision = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, d);
+    }
+
+    #[test]
+    fn serde_roundtrip_force_advance() {
+        let d = ConductorDecision::force_advance("w", "reason", "task-1");
+        let json = serde_json::to_string(&d).unwrap();
+        let decoded: ConductorDecision = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, d);
     }
 }

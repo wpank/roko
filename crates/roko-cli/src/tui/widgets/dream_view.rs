@@ -83,11 +83,11 @@ impl DreamPhaseLabel {
     #[must_use]
     pub const fn color(self) -> Color {
         match self {
-            Self::Idle => Color::Rgb(120, 120, 140),
-            Self::NremReplay { .. } => Color::Rgb(100, 140, 200),
-            Self::RemImagination { .. } => Color::Rgb(180, 100, 200),
-            Self::Integration { .. } => Color::Rgb(100, 200, 140),
-            Self::ThreatRehearsal => Color::Rgb(200, 100, 100),
+            Self::Idle => Theme::TEXT_GHOST,
+            Self::NremReplay { .. } => Theme::DREAM_BRIGHT,
+            Self::RemImagination { .. } => Theme::DREAM_REM,
+            Self::Integration { .. } => Theme::SAGE,
+            Self::ThreatRehearsal => Theme::EMBER,
         }
     }
 }
@@ -191,7 +191,7 @@ fn render_phase_header(frame: &mut Frame<'_>, area: Rect, snap: &DreamSnapshot) 
         | DreamPhaseLabel::Integration { done, total } => {
             spans.push(Span::styled(
                 format!("  {done}/{total}"),
-                Style::default().fg(Color::Rgb(180, 180, 190)),
+                Style::default().fg(Theme::TEXT_SOFT),
             ));
         }
         _ => {}
@@ -202,13 +202,13 @@ fn render_phase_header(frame: &mut Frame<'_>, area: Rect, snap: &DreamSnapshot) 
     // Line 2: cycles + waking improvement
     let mut stats_spans = vec![Span::styled(
         format!("Cycles: {}", snap.cycles_completed),
-        Style::default().fg(Color::Rgb(160, 160, 175)),
+        Style::default().fg(Theme::TEXT_DIM),
     )];
 
     if let Some(imp) = snap.mean_waking_improvement {
         stats_spans.push(Span::styled(
             format!("  Waking +{imp:.1}%"),
-            Style::default().fg(Color::Rgb(100, 200, 140)),
+            Style::default().fg(Theme::SAGE),
         ));
     }
 
@@ -218,19 +218,19 @@ fn render_phase_header(frame: &mut Frame<'_>, area: Rect, snap: &DreamSnapshot) 
     if let Some((occupied, total)) = snap.archive_coverage {
         let mut arch_spans = vec![Span::styled(
             format!("Archive: {occupied}/{total} cells"),
-            Style::default().fg(Color::Rgb(160, 160, 175)),
+            Style::default().fg(Theme::TEXT_DIM),
         )];
         if let Some(best) = snap.archive_best_quality {
             arch_spans.push(Span::styled(
                 format!("  Best: {best:.3}"),
-                Style::default().fg(Color::Rgb(180, 100, 200)),
+                Style::default().fg(Theme::DREAM_REM),
             ));
         }
         lines.push(Line::from(arch_spans));
     } else {
         lines.push(Line::from(Span::styled(
             "Archive: --",
-            Style::default().fg(Color::Rgb(120, 120, 140)),
+            Style::default().fg(Theme::TEXT_GHOST),
         )));
     }
 
@@ -245,7 +245,7 @@ fn render_replay_candidates(frame: &mut Frame<'_>, area: Rect, snap: &DreamSnaps
     let block = Block::default()
         .borders(Borders::TOP)
         .title("Replay Candidates")
-        .title_style(Style::default().fg(Color::Rgb(100, 140, 200)));
+        .title_style(Style::default().fg(Theme::DREAM_BRIGHT));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -253,7 +253,7 @@ fn render_replay_candidates(frame: &mut Frame<'_>, area: Rect, snap: &DreamSnaps
     if snap.replay_candidates.is_empty() {
         let msg = Paragraph::new(Line::from(Span::styled(
             "No replay candidates",
-            Style::default().fg(Color::Rgb(120, 120, 140)),
+            Style::default().fg(Theme::TEXT_GHOST),
         )));
         frame.render_widget(msg, inner);
         return;
@@ -271,17 +271,17 @@ fn render_replay_candidates(frame: &mut Frame<'_>, area: Rect, snap: &DreamSnaps
             Line::from(vec![
                 Span::styled(
                     format!("{bar}{empty}"),
-                    Style::default().fg(Color::Rgb(100, 140, 200)),
+                    Style::default().fg(Theme::DREAM_BRIGHT),
                 ),
                 Span::styled(
                     format!(" {:.2} ", c.utility),
                     Style::default()
-                        .fg(Color::Rgb(180, 180, 190))
+                        .fg(Theme::TEXT_SOFT)
                         .add_modifier(Modifier::DIM),
                 ),
                 Span::styled(
                     truncate(&c.episode_id, 20),
-                    Style::default().fg(Color::Rgb(200, 200, 210)),
+                    Style::default().fg(Theme::TEXT_STRONG),
                 ),
             ])
         })
@@ -298,7 +298,7 @@ fn render_hypotheses(frame: &mut Frame<'_>, area: Rect, snap: &DreamSnapshot) {
     let block = Block::default()
         .borders(Borders::TOP)
         .title("Hypotheses")
-        .title_style(Style::default().fg(Color::Rgb(180, 100, 200)));
+        .title_style(Style::default().fg(Theme::DREAM_REM));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -306,7 +306,7 @@ fn render_hypotheses(frame: &mut Frame<'_>, area: Rect, snap: &DreamSnapshot) {
     if snap.hypotheses.is_empty() {
         let msg = Paragraph::new(Line::from(Span::styled(
             "No active hypotheses",
-            Style::default().fg(Color::Rgb(120, 120, 140)),
+            Style::default().fg(Theme::TEXT_GHOST),
         )));
         frame.render_widget(msg, inner);
         return;
@@ -319,11 +319,11 @@ fn render_hypotheses(frame: &mut Frame<'_>, area: Rect, snap: &DreamSnapshot) {
         .take(max_lines)
         .map(|h| {
             let conf_color = if h.confidence > 0.7 {
-                Color::Rgb(100, 200, 140)
+                Theme::SAGE
             } else if h.confidence > 0.4 {
-                Color::Rgb(200, 180, 100)
+                Theme::WARNING
             } else {
-                Color::Rgb(200, 100, 100)
+                Theme::EMBER
             };
             Line::from(vec![
                 Span::styled(
@@ -332,7 +332,7 @@ fn render_hypotheses(frame: &mut Frame<'_>, area: Rect, snap: &DreamSnapshot) {
                 ),
                 Span::styled(
                     truncate(&h.summary, (inner.width as usize).saturating_sub(8)),
-                    Style::default().fg(Color::Rgb(200, 200, 210)),
+                    Style::default().fg(Theme::TEXT_STRONG),
                 ),
             ])
         })

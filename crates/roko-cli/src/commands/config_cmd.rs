@@ -158,6 +158,25 @@ pub(crate) async fn dispatch_config(cli: &Cli, cmd: ConfigCmd) -> Result<()> {
                 cmd_provider_available();
                 Ok(())
             }
+            ConfigProviderCmd::Discover { workdir } => {
+                let _wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+                cmd_provider_discover();
+                Ok(())
+            }
+            ConfigProviderCmd::Add {
+                name,
+                dry_run,
+                workdir,
+            } => {
+                let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+                cmd_provider_add(&wd, &name, dry_run)?;
+                Ok(())
+            }
+            ConfigProviderCmd::Catalog { workdir } => {
+                let _wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+                cmd_provider_catalog();
+                Ok(())
+            }
         },
         // ── Models ──────────────────────────────────────────────────
         ConfigCmd::Models { cmd } => match cmd {
@@ -377,6 +396,193 @@ pub(crate) fn cmd_provider_available() {
     );
     println!();
     println!("Run `roko config providers list` to see what is currently configured.");
+    println!("Run `roko config providers catalog` to see all known providers with status.");
+}
+
+/// Scan environment for API keys and report which providers are available.
+pub(crate) fn cmd_provider_discover() {
+    use roko_core::provider_catalog::{ProviderAvailability, discover};
+
+    println!("Scanning environment for LLM provider credentials...\n");
+
+    let results = discover();
+    let mut found = 0;
+    let mut missing = 0;
+
+    println!(
+        "{:<20} {:<20} {:<15} {}",
+        "Provider", "Kind", "Status", "Env Var"
+    );
+    println!("{}", "-".repeat(75));
+
+    for (entry, status) in &results {
+        let status_str = match status {
+            ProviderAvailability::KeyFound => {
+                found += 1;
+                "available"
+            }
+            ProviderAvailability::KeyMissing => {
+                missing += 1;
+                "not set"
+            }
+            ProviderAvailability::Local => {
+                found += 1;
+                "local"
+            }
+            ProviderAvailability::Configured => {
+                found += 1;
+                "configured"
+            }
+        };
+
+        let env_var = if entry.api_key_env.is_empty() {
+            "(none)"
+        } else {
+            entry.api_key_env
+        };
+
+        println!(
+            "{:<20} {:<20} {:<15} {}",
+            entry.display_name,
+            entry.kind.label(),
+            status_str,
+            env_var
+        );
+    }
+
+    println!("\nFound: {found}, Missing: {missing}");
+
+    if found > 0 {
+        println!("\nTo add a provider: roko config providers add <name>");
+    } else {
+        println!("\nNo API keys found. Set an env var or run: roko setup");
+    }
+}
+
+/// Show all known providers from the built-in catalog.
+pub(crate) fn cmd_provider_catalog() {
+    use roko_core::provider_catalog::{ProviderAvailability, catalog, check_provider_availability};
+
+    println!("Built-in provider catalog ({} entries):\n", catalog().len());
+
+    println!(
+        "{:<15} {:<20} {:<15} {:<15} {}",
+        "ID", "Display Name", "Kind", "Status", "Models"
+    );
+    println!("{}", "-".repeat(85));
+
+    for entry in catalog() {
+        let status = check_provider_availability(entry);
+        let status_str = match status {
+            ProviderAvailability::KeyFound => "available",
+            ProviderAvailability::KeyMissing => "not set",
+            ProviderAvailability::Local => "local",
+            ProviderAvailability::Configured => "configured",
+        };
+
+        let model_names: Vec<&str> = entry.models.iter().map(|m| m.slug).collect();
+        let models_str = model_names.join(", ");
+        let models_display = if models_str.len() > 30 {
+            format!("{}...", &models_str[..27])
+        } else {
+            models_str
+        };
+
+        println!(
+            "{:<15} {:<20} {:<15} {:<15} {}",
+            entry.id,
+            entry.display_name,
+            entry.kind.label(),
+            status_str,
+            models_display
+        );
+    }
+
+    println!("\nTo add a provider: roko config providers add <id>");
+    println!("To scan env vars:  roko config providers discover");
+}
+
+/// Interactive provider setup with pre-filled defaults from the catalog.
+pub(crate) fn cmd_provider_add(workdir: &Path, name: &str, dry_run: bool) -> Result<()> {
+    use roko_core::provider_catalog::lookup;
+
+    let entry = match lookup(name) {
+        Some(e) => e,
+        None => {
+            eprintln!(
+                "Unknown provider '{}'. Run `roko config providers catalog` to see available providers.",
+                name
+            );
+            return Ok(());
+        }
+    };
+
+    // Generate TOML snippet
+    let kind = entry.kind.label();
+    let env_var = if entry.api_key_env.is_empty() {
+        String::new()
+    } else {
+        format!("api_key = \"${{{}}}\"", entry.api_key_env)
+    };
+
+    let models_toml: Vec<String> = entry
+        .models
+        .iter()
+        .map(|m| {
+            format!(
+                "[models.{slug}]\nprovider = \"{name}\"\nmodel = \"{slug}\"\ncontext_window = {ctx}\nmax_output = {max_out}\nsupports_tools = {tools}\ncost_input_per_m = {ci}\ncost_output_per_m = {co}",
+                slug = m.slug.replace('/', "_"),
+                name = name,
+                ctx = m.context_window,
+                max_out = m.max_output,
+                tools = m.supports_tools,
+                ci = m.cost_input_per_m,
+                co = m.cost_output_per_m,
+            )
+        })
+        .collect();
+
+    let toml_snippet = format!(
+        "[providers.{name}]\nkind = \"{kind}\"\nbase_url = \"{base_url}\"\n{env_var}\n\n{models}",
+        name = name,
+        kind = kind,
+        base_url = entry.base_url,
+        env_var = env_var,
+        models = models_toml.join("\n\n"),
+    );
+
+    if dry_run {
+        println!("# Add this to your roko.toml:\n");
+        println!("{toml_snippet}");
+        return Ok(());
+    }
+
+    // Append to roko.toml
+    let config_path = workdir.join("roko.toml");
+    if !config_path.exists() {
+        eprintln!("No roko.toml found. Run `roko init` first.");
+        return Ok(());
+    }
+
+    let existing = std::fs::read_to_string(&config_path)?;
+    let provider_key = format!("[providers.{}]", name);
+    if existing.contains(&provider_key) {
+        println!("Provider '{}' is already configured in roko.toml", name);
+        return Ok(());
+    }
+
+    let updated = format!("{}\n\n{}\n", existing.trim_end(), toml_snippet);
+    std::fs::write(&config_path, updated)?;
+    println!("Added provider '{}' to {}", name, config_path.display());
+
+    if !entry.api_key_env.is_empty() {
+        println!(
+            "\nMake sure to set: export {}=<your-key>",
+            entry.api_key_env
+        );
+    }
+
+    Ok(())
 }
 
 pub(crate) async fn cmd_provider_list(workdir: &Path) -> Result<()> {
@@ -789,17 +995,38 @@ pub(crate) fn cmd_model_list(workdir: &Path, names_only: bool) -> Result<()> {
         println!();
 
         let mut rows: Vec<ModelsListRow> = Vec::new();
+        // Cache CLI binary probe results so we don't fork per model.
+        let claude_cli_ok = roko_cli::auth_detect::claude_cli_available();
         for b in &builtins {
-            let key_ok = !b.api_key_env.is_empty()
-                && std::env::var(b.api_key_env)
-                    .ok()
-                    .map_or(false, |v| !v.trim().is_empty());
+            let key_ok = {
+                // Check API key first.
+                if !b.api_key_env.is_empty()
+                    && std::env::var(b.api_key_env)
+                        .ok()
+                        .map_or(false, |v| !v.trim().is_empty())
+                {
+                    true
+                } else if matches!(
+                    b.provider_kind,
+                    roko_core::agent::ProviderKind::AnthropicApi
+                        | roko_core::agent::ProviderKind::ClaudeCli
+                ) && claude_cli_ok
+                {
+                    // Anthropic/ClaudeCli models are reachable via the CLI binary
+                    // without an API key.
+                    true
+                } else {
+                    false
+                }
+            };
             rows.push(ModelsListRow {
                 model: b.slug.to_string(),
                 provider: format!("{:?}", b.provider_kind),
                 slug: b.slug.to_string(),
                 key_status: if key_ok {
                     "ok".to_string()
+                } else if b.api_key_env.is_empty() {
+                    "ok (no key required)".to_string()
                 } else {
                     format!("missing ({})", b.api_key_env)
                 },
@@ -1659,16 +1886,31 @@ pub(crate) fn inspect_cli_provider(
     }
 }
 
+/// Return the hardcoded default base URL for provider kinds that have one.
+fn default_base_url_for_kind(kind: ProviderKind) -> Option<&'static str> {
+    match kind {
+        ProviderKind::AnthropicApi => Some("https://api.anthropic.com/v1"),
+        ProviderKind::PerplexityApi => Some("https://api.perplexity.ai"),
+        ProviderKind::CerebrasApi => Some("https://api.cerebras.ai/v1"),
+        ProviderKind::GeminiApi => Some("https://generativelanguage.googleapis.com/v1beta"),
+        _ => None,
+    }
+}
+
 pub(crate) async fn inspect_http_provider(
     client: &reqwest::Client,
     provider_name: &str,
     provider: &ProviderConfig,
 ) -> ProviderListRow {
+    // Fall back to the hardcoded default URL for the provider kind so that
+    // users who configure `[providers.perplexity]` without an explicit
+    // `base_url` do not see a spurious "base URL missing" warning.
     let base_url = provider
         .base_url
         .as_deref()
         .map(str::trim)
-        .filter(|base_url| !base_url.is_empty());
+        .filter(|base_url| !base_url.is_empty())
+        .or_else(|| default_base_url_for_kind(provider.kind));
     let mut issues = Vec::new();
 
     if let Some(env_name) = provider

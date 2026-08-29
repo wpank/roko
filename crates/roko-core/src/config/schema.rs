@@ -1245,8 +1245,29 @@ impl RokoConfig {
         let _ = writeln!(out, "express_mode = {}", c.conductor.express_mode);
         let _ = writeln!(
             out,
-            "max_auto_fix_attempts = {}\n",
+            "max_auto_fix_attempts = {}",
             c.conductor.max_auto_fix_attempts
+        );
+        let _ = writeln!(
+            out,
+            "silence_timeout_secs = {}",
+            c.conductor.silence_timeout_secs
+        );
+        let _ = writeln!(
+            out,
+            "compile_fail_threshold = {}",
+            c.conductor.compile_fail_threshold
+        );
+        let _ = writeln!(out, "task_stall_secs = {}", c.conductor.task_stall_secs);
+        let _ = writeln!(
+            out,
+            "context_pressure_pct = {}",
+            c.conductor.context_pressure_pct
+        );
+        let _ = writeln!(
+            out,
+            "phase_timeout_secs = {}\n",
+            c.conductor.phase_timeout_secs
         );
     }
     fn write_example_learning(out: &mut String, c: &Self) {
@@ -1556,6 +1577,26 @@ pub struct ConductorConfig {
     /// supervision. These are consumed by `Conductor::from_config`.
     #[serde(default)]
     pub watchers: WatcherThresholds,
+
+    // ── Live supervisor intervention thresholds ─────────────────────────
+    //
+    // These govern the conductor supervision loop (Branch 4c in event_loop).
+    // Each threshold maps a signal condition to an intervention type.
+    /// Seconds of agent silence before a Nudge is emitted (default 180).
+    #[serde(default = "default_silence_timeout_secs")]
+    pub silence_timeout_secs: u64,
+    /// Consecutive compile failures before a ForceAdvance (default 3).
+    #[serde(default = "default_compile_fail_threshold")]
+    pub compile_fail_threshold: u32,
+    /// Seconds of task stall (no progress after nudge) before cancel+retry (default 300).
+    #[serde(default = "default_task_stall_secs")]
+    pub task_stall_secs: u64,
+    /// Context window usage percentage that triggers a warning (default 80).
+    #[serde(default = "default_context_pressure_pct")]
+    pub context_pressure_pct: u8,
+    /// Seconds before a phase timeout escalation (default 1800).
+    #[serde(default = "default_phase_timeout_secs")]
+    pub phase_timeout_secs: u64,
 }
 const fn default_max_agents() -> usize {
     8
@@ -1569,6 +1610,21 @@ const fn default_max_auto_fix() -> u32 {
 fn default_auto_fix_model() -> String {
     "claude-haiku-4-5".into()
 }
+const fn default_silence_timeout_secs() -> u64 {
+    180
+}
+const fn default_compile_fail_threshold() -> u32 {
+    3
+}
+const fn default_task_stall_secs() -> u64 {
+    300
+}
+const fn default_context_pressure_pct() -> u8 {
+    80
+}
+const fn default_phase_timeout_secs() -> u64 {
+    1800
+}
 
 impl Default for ConductorConfig {
     fn default() -> Self {
@@ -1581,6 +1637,11 @@ impl Default for ConductorConfig {
             auto_fix_model: default_auto_fix_model(),
             context_pressure_enabled: false,
             watchers: WatcherThresholds::default(),
+            silence_timeout_secs: default_silence_timeout_secs(),
+            compile_fail_threshold: default_compile_fail_threshold(),
+            task_stall_secs: default_task_stall_secs(),
+            context_pressure_pct: default_context_pressure_pct(),
+            phase_timeout_secs: default_phase_timeout_secs(),
         }
     }
 }

@@ -249,6 +249,28 @@ impl TuiBridge {
         self.sender.publish(DashboardEvent::Diagnosis { summary });
     }
 
+    /// Daimon affect state was updated after a task turn.
+    pub fn affect_updated(
+        &self,
+        pleasure: f64,
+        arousal: f64,
+        dominance: f64,
+        behavioral_state: &str,
+        confidence: f64,
+        recent_markers: Vec<(String, f64)>,
+        active_biases: Vec<String>,
+    ) {
+        self.sender.publish(DashboardEvent::AffectUpdated {
+            pleasure,
+            arousal,
+            dominance,
+            behavioral_state: behavioral_state.to_string(),
+            confidence,
+            recent_markers,
+            active_biases,
+        });
+    }
+
     /// Extension hook fired.
     pub fn extension_hook(&self, plan_id: &str, task_id: &str, hook: &str, success: bool) {
         self.sender.publish(DashboardEvent::EventLogEntry {
@@ -257,6 +279,31 @@ impl TuiBridge {
             plan_id: plan_id.to_string(),
             task_id: task_id.to_string(),
             message: format!("hook={hook} success={success}"),
+        });
+    }
+
+    /// Periodic heartbeat from a running agent (item 108).
+    ///
+    /// Published every ~15 seconds while an agent API call is in progress so
+    /// the TUI can show elapsed time even when no streaming tokens arrive.
+    pub fn agent_heartbeat(&self, agent_id: &str, plan_id: &str, task_id: &str, elapsed_ms: u64) {
+        self.sender.publish(DashboardEvent::AgentHeartbeat {
+            agent_id: agent_id.to_string(),
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            elapsed_ms,
+        });
+    }
+
+    /// A gate rung started execution (item 108).
+    ///
+    /// Published before each rung in the gate pipeline so the TUI can show
+    /// which rung is running and for how long.
+    pub fn gate_rung_started(&self, plan_id: &str, task_id: &str, rung_name: &str) {
+        self.sender.publish(DashboardEvent::GateRungStarted {
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            rung_name: rung_name.to_string(),
         });
     }
 }

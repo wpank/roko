@@ -22,6 +22,7 @@ use roko_core::dashboard_snapshot::{
 
 use super::ViewState;
 use crate::config::Config;
+use crate::tui::Tab;
 use crate::tui::ansi::parse_ansi_line;
 use crate::tui::dashboard::{DashboardData, GateFailureRow, GateSummaryRow, Theme};
 use crate::tui::input::FocusZone;
@@ -56,6 +57,12 @@ pub(crate) fn render(
     view_state: &ViewState,
     theme: &Theme,
 ) {
+    // Sub-view 4: Affect panel (full-area, replaces the default dashboard layout).
+    if view_state.active_sub_view(Tab::Dashboard) == super::SubView::AffectView {
+        super::affect_view::render(frame, area, data, tui_state, view_state, theme);
+        return;
+    }
+
     let outer = Layout::vertical([Constraint::Min(0), Constraint::Length(6)]).split(area);
 
     // Only show the left panel when plans are actively running.
@@ -302,25 +309,32 @@ fn render_output_panel(
 
     // Collect output lines from the best available source.
     //
-    // Priority:
-    //   1. current_plan_execution.agent_output_tail
-    //   2. selected agent's live row data from tui_state.agents
+    // Priority (item 41 fix):
+    //   0. Live push-mode task_output_tails for the active task (preferred
+    //      during an active plan run — avoids stale pull-mode data winning)
+    //   1. Selected agent's live row data from tui_state.agents
+    //   2. current_plan_execution.agent_output_tail (pull-mode fallback)
     //   3. most recent task output from tui_state.task_output_tails
     let collected: Vec<String> = {
-        // 1. Plan execution output tail.
-        let exec_lines: Vec<String> = tui_state
-            .current_plan_execution
-            .as_ref()
-            .map(|exec| exec.agent_output_tail.clone())
-            .unwrap_or_default();
-        if !exec_lines.is_empty() {
-            exec_lines
+        // 0. Live push-mode tail for the active task (item 41).
+        let active_task_id = tui_state.current_plan_execution.as_ref().and_then(|exec| {
+            exec.current_task
+                .as_ref()
+                .map(|t| t.task_id.as_str())
+                .filter(|id| !id.is_empty())
+        });
+        let live_tail = active_task_id
+            .and_then(|tid| tui_state.task_output_tails.get(tid))
+            .filter(|lines| !lines.is_empty());
+
+        if let Some(lines) = live_tail {
+            lines.clone()
         } else if let Some(agent) = tui_state.agents.get(
             tui_state
                 .selected_agent
                 .min(tui_state.agents.len().saturating_sub(1)),
         ) {
-            // 2. Selected agent output from live row data.
+            // 1. Selected agent output from live row data.
             if !agent.output_lines.is_empty() {
                 agent.output_lines.clone()
             } else if !agent.last_output_line.is_empty() {
@@ -335,7 +349,12 @@ fn render_output_panel(
                 Vec::new()
             }
         } else {
-            Vec::new()
+            // 2. Pull-mode fallback.
+            tui_state
+                .current_plan_execution
+                .as_ref()
+                .map(|exec| exec.agent_output_tail.clone())
+                .unwrap_or_default()
         }
     };
 
@@ -1062,7 +1081,11 @@ fn render_diagnosis_panel(
     let rows = diagnosis_rows(diagnoses, inner.width, theme);
     if rows.is_empty() {
         frame.render_widget(
-            Paragraph::new("no conductor diagnoses yet").style(theme.muted()),
+            Paragraph::new(
+                "No diagnoses \u{2014} the conductor circuit breaker fires only when \
+                 a sustained gate-failure pattern is detected across multiple tasks.",
+            )
+            .style(theme.muted()),
             inner,
         );
         return;

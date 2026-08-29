@@ -145,7 +145,7 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     ));
 
     // ── 4. Context-sensitive keybind hints ────────────────────────────
-    let keys = key_hints_for_tab(state.active_tab, has_failures);
+    let keys = context_key_hints(state, has_failures);
 
     spans.push(Span::styled(
         format!(" {keys}"),
@@ -157,25 +157,131 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     frame.render_widget(p, area);
 }
 
-fn key_hints_for_tab(tab: Tab, has_failures: bool) -> &'static str {
-    match tab {
+/// Build context-sensitive keybind hints based on the current tab, selection
+/// state, and item status. Returns at most 5 hint tokens to avoid visual
+/// clutter, each formatted as `key:action` and separated by two spaces.
+fn context_key_hints(state: &TuiState, has_failures: bool) -> String {
+    use super::super::state::{AgentStatus, TaskStatus};
+
+    let mut hints: Vec<&str> = Vec::with_capacity(6);
+
+    match state.active_tab {
         Tab::Dashboard => {
+            hints.push("\u{2191}\u{2193}:nav");
+            hints.push("a/o/d/e/g:sub-tab");
             if has_failures {
-                "\u{2191}\u{2193}:nav  a/o/d/e/g:sub-tab  R:retry  D:diag  Tab:panel  ?:help"
-            } else {
-                "\u{2191}\u{2193}:nav  a/o/d/e/g:sub-tab  Tab:panel  ?:help"
+                hints.push("R:retry");
+                hints.push("D:diag");
+            }
+            hints.push("Tab:panel");
+        }
+        Tab::Plans => {
+            hints.push("\u{2191}\u{2193}:nav");
+            // Check if we have a selected plan with tasks to show item-specific hints.
+            let selected_task_status = state.plans.get(state.selected_plan_idx).and_then(|plan| {
+                plan.tasks
+                    .iter()
+                    .find(|t| t.status == TaskStatus::Failed || t.status == TaskStatus::Active)
+                    .map(|t| t.status)
+            });
+            match selected_task_status {
+                Some(TaskStatus::Failed) => {
+                    hints.push("Enter:expand");
+                    hints.push("r:retry");
+                    hints.push("s:skip");
+                    hints.push("d:details");
+                }
+                Some(TaskStatus::Active) => {
+                    hints.push("Enter:expand");
+                    hints.push("d:details");
+                }
+                _ => {
+                    hints.push("Enter:expand");
+                    hints.push("h/l:drill");
+                    hints.push("/:filter");
+                }
             }
         }
-        Tab::Plans => "\u{2191}\u{2193}:nav  Enter:detail  h/l:drill  /:filter  ?:help",
-        Tab::Agents => "\u{2191}\u{2193}:nav  `:cycle  Ctrl+T:topology  i:inject  ?:help",
-        Tab::Git => "\u{2191}\u{2193}:nav  h/l:drill  Enter:expand  ?:help",
-        Tab::Logs => "\u{2191}\u{2193}/PgUp/PgDn:scroll  1-4:levels  a:all  ?:help",
-        Tab::Config => "j/k:nav  Enter:toggle  ?:help",
-        Tab::Inspect => "\u{2191}\u{2193}:nav  ?:help",
-        Tab::Marketplace => "j/k:nav  Enter:detail  n:new  r:refresh  ?:help",
-        Tab::Atelier => "j/k:nav  Enter:detail  p:publish  g:gen plan  ?:help",
-        Tab::Learning => "\u{2191}\u{2193}:nav  ?:help",
+        Tab::Agents => {
+            hints.push("\u{2191}\u{2193}:nav");
+            let agent_status = state.agents.get(state.selected_agent).map(|a| a.status);
+            match agent_status {
+                Some(AgentStatus::Active) => {
+                    hints.push("x:stop");
+                    hints.push("c:chat");
+                    hints.push("d:details");
+                }
+                Some(AgentStatus::Failed) => {
+                    hints.push("S:start");
+                    hints.push("d:details");
+                }
+                Some(AgentStatus::Idle) => {
+                    hints.push("S:start");
+                    hints.push("d:details");
+                }
+                _ => {
+                    hints.push("`:cycle");
+                    hints.push("Ctrl+T:topology");
+                    hints.push("i:inject");
+                }
+            }
+        }
+        Tab::Git => {
+            hints.push("\u{2191}\u{2193}:nav");
+            hints.push("h/l:drill");
+            hints.push("Enter:expand");
+        }
+        Tab::Logs => {
+            hints.push("\u{2191}\u{2193}/PgUp/PgDn:scroll");
+            hints.push("1-4:levels");
+            hints.push("a:all");
+            hints.push("/:search");
+        }
+        Tab::Config => {
+            hints.push("j/k:nav");
+            hints.push("Enter:toggle");
+            hints.push("r:reload");
+        }
+        Tab::Inspect => {
+            hints.push("\u{2191}\u{2193}:nav");
+            hints.push("Tab:panel");
+            hints.push("Enter:details");
+        }
+        Tab::Marketplace => {
+            hints.push("j/k:nav");
+            hints.push("Enter:detail");
+            hints.push("n:new");
+            hints.push("r:refresh");
+        }
+        Tab::Atelier => {
+            hints.push("j/k:nav");
+            hints.push("Enter:detail");
+            hints.push("p:publish");
+            hints.push("g:gen plan");
+        }
+        Tab::Learning => {
+            hints.push("\u{2191}\u{2193}:nav");
+            hints.push("Enter:details");
+        }
     }
+
+    // Always append help hint if there's room.
+    if hints.len() < 5 {
+        hints.push("?:help");
+    }
+
+    // Cap at 5 hints.
+    hints.truncate(5);
+    hints.join("  ")
+}
+
+/// Backwards-compatible wrapper for tests that use the old API.
+#[cfg(test)]
+fn key_hints_for_tab(tab: Tab, has_failures: bool) -> String {
+    let data = super::super::dashboard::DashboardData::default();
+    let mut state = TuiState::from_dashboard_data(&data);
+    state.active_tab = tab;
+    context_key_hints(&state, has_failures)
 }
 
 // ---------------------------------------------------------------------------
@@ -218,12 +324,59 @@ mod tests {
     #[test]
     fn dashboard_key_hints_surface_failure_actions_only_when_needed() {
         let failed = key_hints_for_tab(Tab::Dashboard, true);
-        assert!(failed.contains("R:retry"));
-        assert!(failed.contains("D:diag"));
+        assert!(
+            failed.contains("R:retry"),
+            "Expected R:retry, got: {failed}"
+        );
+        assert!(failed.contains("D:diag"), "Expected D:diag, got: {failed}");
 
         let healthy = key_hints_for_tab(Tab::Dashboard, false);
-        assert!(!healthy.contains("R:retry"));
-        assert!(!healthy.contains("D:diag"));
+        assert!(
+            !healthy.contains("R:retry"),
+            "Unexpected R:retry in: {healthy}"
+        );
+        assert!(
+            !healthy.contains("D:diag"),
+            "Unexpected D:diag in: {healthy}"
+        );
+    }
+
+    #[test]
+    fn plans_tab_shows_drill_hints_by_default() {
+        let hints = key_hints_for_tab(Tab::Plans, false);
+        assert!(
+            hints.contains("Enter:expand"),
+            "Expected Enter:expand in: {hints}"
+        );
+        assert!(
+            hints.contains("h/l:drill"),
+            "Expected h/l:drill in: {hints}"
+        );
+    }
+
+    #[test]
+    fn agents_tab_shows_general_hints_with_no_agents() {
+        let hints = key_hints_for_tab(Tab::Agents, false);
+        assert!(
+            hints.contains("`:cycle") || hints.contains(":nav"),
+            "Expected navigation hints in: {hints}"
+        );
+    }
+
+    #[test]
+    fn config_tab_shows_reload_hint() {
+        let hints = key_hints_for_tab(Tab::Config, false);
+        assert!(hints.contains("r:reload"), "Expected r:reload in: {hints}");
+    }
+
+    #[test]
+    fn hints_capped_at_five() {
+        let hints = key_hints_for_tab(Tab::Dashboard, true);
+        let count = hints.split("  ").count();
+        assert!(
+            count <= 5,
+            "Expected at most 5 hints, got {count} in: {hints}"
+        );
     }
 
     #[test]

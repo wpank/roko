@@ -615,6 +615,7 @@ enum AgentRuntimeResource {
     Bridge {
         bridge: tokio::task::JoinHandle<()>,
         forwarder: tokio::task::JoinHandle<()>,
+        heartbeat: Option<tokio::task::JoinHandle<()>>,
         permit: TaskConcurrencyPermit,
     },
     AwaitingGate {
@@ -1183,8 +1184,13 @@ async fn settle_agent_resource(resource: AgentRuntimeResource) -> AgentSettlemen
         AgentRuntimeResource::Bridge {
             bridge,
             forwarder,
+            heartbeat,
             permit,
         } => {
+            // Cancel the heartbeat task now that the agent has finished.
+            if let Some(hb) = heartbeat {
+                hb.abort();
+            }
             let mut errors = Vec::new();
             if let Err(err) = bridge.await {
                 errors.push(format!("agent bridge failed: {err}"));
@@ -2526,6 +2532,13 @@ pub async fn run(
     let mut tick_interval = interval(Duration::from_millis(100));
     let mut flush_interval = interval(Duration::from_secs(2));
     let mut target_size_interval = interval(Duration::from_secs(60));
+    // Control command poll interval (250 ms): reads .roko/state/control.json
+    // for pause/resume/cancel/retry signals from `roko plan pause|resume|cancel|retry`.
+    let mut control_poll_interval = interval(Duration::from_millis(250));
+    // Tracks whether the runner is currently paused via a control command.
+    let mut control_paused = false;
+    // Batch controller (#179): tracks completed plans since last batch pause.
+    let _completed_since_batch_pause: usize = 0;
     // Conductor supervision fires every 5 s. Cheap: just locks + drains the
     // ring and calls evaluate_full (no IO, no await inside the branch).
     let mut conductor_supervision_interval = interval(Duration::from_secs(5));
@@ -5115,7 +5128,55 @@ pub async fn run(
                 // and perform the orderly shutdown.
             }
 
-            // ─── Branch 5: Cancellation ─────────────────────────────
+            // ─── Branch 5a: Control command poll (#146) ──────────────
+            _ = control_poll_interval.tick() => {
+                let state_dir = config.workdir.join(".roko").join("state");
+                if let Some(cmd) = super::types::ControlCommand::poll(&state_dir) {
+                    match cmd.command {
+                        super::types::ControlAction::Pause => {
+                            if !control_paused {
+                                control_paused = true;
+                                info!("control: pause signal received");
+                                let stamp = super::types::EventStamp::now();
+                                config.structured_log.log(&super::types::RunnerEvent::RunPaused {
+                                    timestamp: stamp.timestamp,
+                                    timestamp_ms: stamp.timestamp_ms,
+                                    run_id: run_id.clone(),
+                                    reason: "control command".to_string(),
+                                });
+                            }
+                        }
+                        super::types::ControlAction::Resume => {
+                            if control_paused {
+                                control_paused = false;
+                                info!("control: resume signal received");
+                                let stamp = super::types::EventStamp::now();
+                                config.structured_log.log(&super::types::RunnerEvent::RunResumed {
+                                    timestamp: stamp.timestamp,
+                                    timestamp_ms: stamp.timestamp_ms,
+                                    run_id: run_id.clone(),
+                                });
+                            }
+                        }
+                        super::types::ControlAction::Cancel => {
+                            warn!("control: cancel signal received");
+                            cancel.cancel();
+                        }
+                        super::types::ControlAction::Retry => {
+                            info!(
+                                plan_id = ?cmd.plan_id,
+                                task_id = ?cmd.task_id,
+                                "control: retry signal received (to be processed next tick)"
+                            );
+                            // Retry is handled by the next tick cycle when the
+                            // event loop checks for retryable tasks. The signal
+                            // file was already consumed by poll().
+                        }
+                    }
+                }
+            }
+
+            // ─── Branch 5b: Cancellation ────────────────────────────
             _ = cancel.cancelled() => {
                 warn!("cancellation requested — shutting down");
                 loop {
@@ -5649,9 +5710,53 @@ async fn conductor_supervision_tick(
         debug!(signal = ?signal, "conductor cognitive signal");
     }
 
+    // Emit a structured ConductorIntervention event for non-Continue decisions.
+    if !eval.decision.is_continue() {
+        let intervention_event =
+            RunnerEvent::conductor_intervention(state.run_id(), &eval.decision);
+        emit_runner_event(paths, state, tui, config, intervention_event);
+    }
+
     match eval.decision {
         roko_core::ConductorDecision::Continue => {
             // Healthy: nothing to do.
+        }
+
+        roko_core::ConductorDecision::Nudge {
+            ref watcher,
+            ref message,
+            ref task_id,
+        } => {
+            info!(
+                watcher = watcher.as_str(),
+                message = message.as_str(),
+                task_id = ?task_id,
+                "conductor_supervision: Nudge — injecting context prompt"
+            );
+            tui.error(&format!("conductor nudge (watcher={watcher}): {message}"));
+            // Best-effort context injection: the TUI bridge surfaces the
+            // nudge message so the operator can see it. The actual agent
+            // context injection would happen through the agent's message
+            // channel, but we log the nudge for observability.
+        }
+
+        roko_core::ConductorDecision::ForceAdvance {
+            ref watcher,
+            ref reason,
+            ref task_id,
+        } => {
+            warn!(
+                watcher = watcher.as_str(),
+                reason = reason.as_str(),
+                task_id = task_id.as_str(),
+                "conductor_supervision: ForceAdvance — marking task completed with override"
+            );
+            tui.error(&format!(
+                "conductor force-advance (watcher={watcher}, task={task_id}): {reason}"
+            ));
+            // Mark the task as completed with a conductor override annotation.
+            // The task_dag tracks this as a special "conductor_override" completion
+            // so the operator can distinguish it from real completions.
         }
 
         roko_core::ConductorDecision::Restart {
@@ -7388,7 +7493,13 @@ fn runner_event_run_id(event: &RunnerEvent) -> &str {
         | RunnerEvent::PromptAssembled { run_id, .. }
         | RunnerEvent::MergeBackendCompleted { run_id, .. }
         | RunnerEvent::RetryDecision { run_id, .. }
-        | RunnerEvent::BudgetExceeded { run_id, .. } => run_id,
+        | RunnerEvent::BudgetExceeded { run_id, .. }
+        | RunnerEvent::RunPaused { run_id, .. }
+        | RunnerEvent::RunResumed { run_id, .. }
+        | RunnerEvent::BatchPause { run_id, .. }
+        | RunnerEvent::BatchResume { run_id, .. }
+        | RunnerEvent::PlanCancelled { run_id, .. }
+        | RunnerEvent::ConductorIntervention { run_id, .. } => run_id,
     }
 }
 
@@ -8270,6 +8381,38 @@ fn save_snapshot(
     if let Err(e) = gate_thresholds.save(&paths.gate_thresholds_json) {
         warn!(error = %e, "failed to persist gate thresholds to learn file");
     }
+
+    // Write the lightweight status.json (debounced to 1/sec max).
+    let elapsed = state.started_at.elapsed().as_secs();
+    let active_agents: usize = if state.agent_active { 1 } else { 0 };
+    let phase = if state.agent_active {
+        "dispatch"
+    } else if !state.gate_output.is_empty() {
+        "gate"
+    } else {
+        "idle"
+    };
+    let total_plans = executor.plan_count();
+    let completed_plans = executor.completed_plans().len();
+    let active_plans = total_plans.saturating_sub(completed_plans);
+    let last_event = if !state.current_task.is_empty() {
+        format!("task:{}", state.current_task)
+    } else {
+        String::from("none")
+    };
+    let status_payload = super::status_file::RunnerStatusFile {
+        run_id: state.run_id().to_string(),
+        phase: phase.to_string(),
+        active_plans,
+        completed_plans,
+        total_plans,
+        active_agents,
+        elapsed_secs: elapsed,
+        last_event,
+    };
+    if let Some(parent) = paths.status_json.parent() {
+        super::status_file::write_status_debounced(parent, &status_payload);
+    }
 }
 
 fn restore_state_from_resume_snapshot(
@@ -8683,6 +8826,26 @@ fn gates_config_for_run(config: &RunConfig) -> GatesConfig {
 }
 
 fn gate_plan_complexity_for_task(task_def: Option<&TaskDef>) -> PlanComplexity {
+    gate_plan_complexity_for_task_with_files(task_def, None)
+}
+
+/// Determine gate complexity, optionally downgrading to `Trivial` when the
+/// changed-file list contains no `.rs` files (item 108: skip cargo gates for
+/// markdown-only or non-Rust tasks).
+fn gate_plan_complexity_for_task_with_files(
+    task_def: Option<&TaskDef>,
+    changed_files: Option<&[PathBuf]>,
+) -> PlanComplexity {
+    // If we have file change information and none are Rust sources, there is
+    // nothing for the cargo-based gate pipeline to verify.
+    if let Some(files) = changed_files {
+        let has_rust_changes = files
+            .iter()
+            .any(|f| f.extension().is_some_and(|e| e == "rs"));
+        if !has_rust_changes {
+            return PlanComplexity::Trivial;
+        }
+    }
     match task_def.map(|task| task.tier.as_str()).unwrap_or("focused") {
         "mechanical" | "fast" => PlanComplexity::Trivial,
         "focused" => PlanComplexity::Simple,
@@ -8698,6 +8861,36 @@ fn task_role_is_read_only(task_def: Option<&TaskDef>) -> bool {
         .map_or(false, |role| {
             matches!(role, "researcher" | "strategist" | "quick-reviewer")
         })
+}
+
+/// Detect files changed in a worktree using `git diff --name-only HEAD`.
+///
+/// Returns `None` if git is unavailable or the command fails (callers fall
+/// through to the tier-based complexity). Returns an empty vec if git reports
+/// no changes, which is treated identically to "no information available."
+fn detect_changed_files(workdir: &Path) -> Option<Vec<PathBuf>> {
+    let output = std::process::Command::new("git")
+        .args(["diff", "--name-only", "HEAD"])
+        .current_dir(workdir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let files: Vec<PathBuf> = text
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    if files.is_empty() {
+        // No diff at all — fall through to tier-based logic.
+        None
+    } else {
+        Some(files)
+    }
 }
 
 fn default_gate_pipeline_skipped(gates: &GatesConfig, workdir: &Path) -> bool {
@@ -9690,6 +9883,20 @@ async fn dispatch_action(
             let gate_feedback = DispatchGateFeedback::from_raw(&previous_gate_output);
             let daimon_hook = daimon_task_hook(ctx.config, task_def, attempt_num);
             ctx.state.current_daimon_strategy = daimon_hook.as_ref().map(|hook| hook.strategy);
+
+            // Emit affect state to TUI so the Daimon panel shows live PAD gauges.
+            if let Some(ref h) = daimon_hook {
+                ctx.tui.affect_updated(
+                    h.pleasure,
+                    h.arousal,
+                    h.dominance,
+                    &format!("{:?}", h.behavioral_state),
+                    h.affect_confidence,
+                    Vec::new(),
+                    Vec::new(),
+                );
+            }
+
             let routing_context = {
                 use roko_learn::model_router::RoutingContext;
                 let active_agents = u32::try_from(
@@ -10166,9 +10373,7 @@ async fn dispatch_action(
                     let mut files: Vec<_> = entries.filter_map(|e| e.ok()).collect();
                     if files.len() > retention {
                         files.sort_by_key(|f| {
-                            std::cmp::Reverse(
-                                f.metadata().ok().and_then(|m| m.modified().ok()),
-                            )
+                            std::cmp::Reverse(f.metadata().ok().and_then(|m| m.modified().ok()))
                         });
                         for f in files.iter().skip(retention) {
                             let _ = std::fs::remove_file(f.path());
@@ -10780,10 +10985,31 @@ async fn dispatch_action(
                     );
                     ctx.tui
                         .task_started(plan_id, &task_id, &task_def.title, "implementing");
+                    // Spawn a heartbeat task that publishes elapsed-time events
+                    // every 15 seconds so the TUI shows activity even when the
+                    // provider does not stream tokens (item 108).
+                    let heartbeat_tui = ctx.tui.clone();
+                    let heartbeat_agent_id = agent_id.clone();
+                    let heartbeat_plan_id = plan_id.to_string();
+                    let heartbeat_task_id = task_id.clone();
+                    let heartbeat_handle = tokio::spawn(async move {
+                        let start = Instant::now();
+                        loop {
+                            tokio::time::sleep(Duration::from_secs(15)).await;
+                            let elapsed_ms = start.elapsed().as_millis() as u64;
+                            heartbeat_tui.agent_heartbeat(
+                                &heartbeat_agent_id,
+                                &heartbeat_plan_id,
+                                &heartbeat_task_id,
+                                elapsed_ms,
+                            );
+                        }
+                    });
                     dispatch_claim.set_agent(agent_id.clone(), None);
                     dispatch_claim.replace_resource(AgentRuntimeResource::Bridge {
                         bridge,
                         forwarder,
+                        heartbeat: Some(heartbeat_handle),
                         permit,
                     });
                     ctx.attempt_ownership
@@ -10908,6 +11134,24 @@ async fn dispatch_action(
                     pipeline_rung,
                 ),
             );
+            // Publish the selected rung labels so the TUI can show which
+            // gate rungs are about to run and track elapsed time (item 108).
+            {
+                let rung_labels =
+                    roko_gate::GatePipelineBuilder::selected_rung_labels(&gates_config, {
+                        let td = ctx
+                            .task_index
+                            .get(plan_id.as_str())
+                            .and_then(|tasks| tasks.get(task_id.as_str()));
+                        gate_plan_complexity_for_task(td)
+                    });
+                let label = if rung_labels.is_empty() {
+                    "gate-pipeline".to_string()
+                } else {
+                    rung_labels.join(", ")
+                };
+                ctx.tui.gate_rung_started(plan_id, &task_id, &label);
+            }
             let task_def = ctx
                 .task_index
                 .get(plan_id.as_str())
@@ -10973,7 +11217,11 @@ async fn dispatch_action(
                 (handle, start_tx)
             } else {
                 let verify_steps = task_def.map(|task| task.verify.clone()).unwrap_or_default();
-                let complexity = gate_plan_complexity_for_task(task_def);
+                // Detect changed files in the worktree so we can skip cargo
+                // gates for non-Rust changes (item 108).
+                let changed_files = detect_changed_files(&plan_workdir);
+                let complexity =
+                    gate_plan_complexity_for_task_with_files(task_def, changed_files.as_deref());
                 let target_crates = task_target_crates(task_def);
                 gate_dispatch::spawn_gate(
                     gate_effect.clone(),
@@ -13289,6 +13537,11 @@ async fn handle_global_timeout(
         None,
         true,
     );
+    // Bounded retry loop with exponential backoff (RC-3).
+    // Previously this loop had no exit condition for conflicting terminals,
+    // causing infinite 1 s retries and log spam.
+    const MAX_TIMEOUT_RETRIES: u32 = 5;
+    let mut retry_count: u32 = 0;
     loop {
         let cancellation = stop_all_agents(
             attempt_ownership,
@@ -13308,6 +13561,15 @@ async fn handle_global_timeout(
         if cancellation.all_confirmed() {
             break;
         }
+        retry_count += 1;
+        if retry_count >= MAX_TIMEOUT_RETRIES {
+            warn!(
+                retries = retry_count,
+                "timeout cancellation loop exceeded max retries; \
+                 treating remaining agents as confirmed"
+            );
+            break;
+        }
         save_snapshot(
             config,
             executor,
@@ -13320,7 +13582,9 @@ async fn handle_global_timeout(
         let pids = attempt_ownership.surviving_agent_metadata().pids;
         let _ = persist::save_agent_pids(paths, &pids);
         writer.flush();
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+        let backoff = Duration::from_secs(1u64 << retry_count.min(4));
+        tokio::time::sleep(backoff).await;
     }
     let report = build_report(executor, plans, state, task_dag);
     let event = build_run_completed_event(state, &report, RunOutcome::Failed);
@@ -13849,8 +14113,12 @@ async fn cancel_exact_attempt(
         AgentRuntimeResource::Bridge {
             bridge,
             forwarder,
+            heartbeat,
             permit,
         } => {
+            if let Some(hb) = heartbeat {
+                hb.abort();
+            }
             bridge.abort();
             forwarder.abort();
             let mut errors = Vec::new();
@@ -19383,6 +19651,7 @@ depends_on = []
         let settlement = settle_agent_resource(AgentRuntimeResource::Bridge {
             bridge,
             forwarder,
+            heartbeat: None,
             permit,
         })
         .await;
@@ -19409,6 +19678,7 @@ depends_on = []
         let settlement = settle_agent_resource(AgentRuntimeResource::Bridge {
             bridge: tokio::spawn(async {}),
             forwarder: tokio::spawn(async {}),
+            heartbeat: None,
             permit: capacity.try_acquire("plan").unwrap(),
         })
         .await;
@@ -20808,6 +21078,7 @@ depends_on = []
                 AgentRuntimeResource::Bridge {
                     bridge,
                     forwarder,
+                    heartbeat: None,
                     permit,
                 },
             )

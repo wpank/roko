@@ -42,6 +42,8 @@ fn td(id: &str, deps: &[&str]) -> TaskDef {
         acceptance: vec![],
         acceptance_contract: None,
         domain: None,
+        estimated_minutes: None,
+        crates_touched: None,
         sequence: 0,
     }
 }

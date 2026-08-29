@@ -58,6 +58,8 @@ fn task(id: &str, title: &str) -> TaskDef {
         acceptance: vec!["compiles".into()],
         acceptance_contract: None,
         domain: None,
+        estimated_minutes: None,
+        crates_touched: None,
         sequence: 0,
     }
 }
@@ -88,6 +90,7 @@ fn baseline_snapshot(run_id: &str, fingerprints: Vec<TaskDefFingerprint>) -> Run
         revised_tasks: Vec::new(),
         cascade_router_json: None,
         conductor_circuit_breaker_state: None,
+        gate_thresholds_json: None,
     }
 }
 
@@ -271,6 +274,7 @@ fn snapshot_with(
         revised_tasks: Vec::new(),
         cascade_router_json: None,
         conductor_circuit_breaker_state: None,
+        gate_thresholds_json: None,
     }
 }
 

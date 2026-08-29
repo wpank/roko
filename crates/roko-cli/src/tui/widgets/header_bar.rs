@@ -1,8 +1,9 @@
 //! Top header bar — ported from Mori.
 //!
-//! 8 sections: heartbeat + name, wave indicator, progress bar with fire
-//! gradient, plan count with semantic coloring, ETA/elapsed/cost/tokens,
-//! system metrics (CPU/MEM), active agent spinner with role label, F-key strip.
+//! 9 sections: health-aware pulsing dot + name, queue/plan name, wave
+//! indicator, gradient progress bar, plan count with semantic coloring,
+//! ETA/elapsed/cost/tokens, system metrics (CPU/MEM/agents/gates), active
+//! agent spinner with role label, F-key strip.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -14,7 +15,49 @@ use super::super::state::TuiState;
 use super::rosedust::gradient_fire;
 use crate::tui::Theme;
 
-const HEARTBEAT_FRAMES: [&str; 4] = ["\u{00b7}", "\u{00b0}", "\u{2219}", "\u{25cf}"];
+const HEARTBEAT_FRAMES: [&str; 2] = ["\u{25cf}", "\u{25cb}"];
+
+// ---------------------------------------------------------------------------
+// Health status
+// ---------------------------------------------------------------------------
+
+/// Derive the overall health status from TUI state for the pulsing dot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HealthStatus {
+    Healthy,
+    Gating,
+    Error,
+    Idle,
+}
+
+impl HealthStatus {
+    fn from_state(state: &TuiState) -> Self {
+        let has_failures = state.plans.iter().any(|p| p.tasks_failed > 0);
+        if has_failures {
+            return Self::Error;
+        }
+        let is_gating = state.current_phase.to_ascii_lowercase().contains("gat")
+            || state.current_phase.to_ascii_lowercase().contains("verif");
+        if is_gating {
+            return Self::Gating;
+        }
+        let has_active = state.plans.iter().any(|p| p.active);
+        if has_active {
+            Self::Healthy
+        } else {
+            Self::Idle
+        }
+    }
+
+    fn color(self) -> Color {
+        match self {
+            Self::Healthy => Theme::SAGE,
+            Self::Gating => Theme::WARNING,
+            Self::Error => Theme::EMBER,
+            Self::Idle => Theme::TEXT_GHOST,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -74,7 +117,42 @@ fn format_elapsed(secs: u64) -> String {
     }
 }
 
+/// Derive a short queue/plan label from the TUI state.
+fn queue_label(state: &TuiState) -> Option<String> {
+    // Prefer active plan names; fall back to first plan.
+    if let Some(active) = state.plans.iter().find(|p| p.active) {
+        return Some(truncate_label(&active.id, 24));
+    }
+    if let Some(first) = state.plans.first() {
+        return Some(truncate_label(&first.id, 24));
+    }
+    None
+}
+
+fn truncate_label(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}..", &s[..max.saturating_sub(2)])
+    }
+}
+
 use crate::tui::display_utils::shorten_model;
+
+/// Badge color for tab content counts.
+///
+/// Returns a semantic color per tab: SAGE for agents, EMBER for errors/failures,
+/// WARNING for pending items, DREAM for informational counts.
+fn tab_badge_color(tab: super::super::tabs::Tab) -> Color {
+    use super::super::tabs::Tab;
+    match tab {
+        Tab::Agents => Theme::SAGE,
+        Tab::Plans | Tab::Logs => Theme::EMBER,
+        Tab::Git => Theme::WARNING,
+        Tab::Learning => Theme::DREAM,
+        _ => Theme::FG_DIM,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Public render entry-point
@@ -91,17 +169,22 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
 
     let mut spans: Vec<Span<'static>> = vec![Span::styled(" ", bg)];
 
-    // ── 1. Heartbeat dot ──────────────────────────────────────────────
-    let hb_idx = (state.atmosphere.frame() / 8) as usize % HEARTBEAT_FRAMES.len();
-    let hb_brightness = state.atmosphere.heartbeat();
-    let hb_r = (170.0 * hb_brightness).min(255.0) as u8;
-    let hb_g = (112.0 * hb_brightness * 0.8).min(255.0) as u8;
-    let hb_b = (136.0 * hb_brightness).min(255.0) as u8;
+    // ── 1. Health-aware pulsing status dot ──────────────────────────
+    let health = HealthStatus::from_state(state);
+    let hb_idx = (state.atmosphere.frame() / 15) as usize % HEARTBEAT_FRAMES.len();
+    let base_color = health.color();
+    let brightness = state.atmosphere.heartbeat();
+    let dot_color = match base_color {
+        Color::Rgb(r, g, b) => Color::Rgb(
+            ((r as f64) * brightness).clamp(0.0, 255.0) as u8,
+            ((g as f64) * brightness).clamp(0.0, 255.0) as u8,
+            ((b as f64) * brightness).clamp(0.0, 255.0) as u8,
+        ),
+        other => other,
+    };
     spans.push(Span::styled(
         HEARTBEAT_FRAMES[hb_idx],
-        Style::default()
-            .fg(Color::Rgb(hb_r, hb_g, hb_b))
-            .bg(Theme::BG_SECONDARY),
+        Style::default().fg(dot_color).bg(Theme::BG_SECONDARY),
     ));
 
     // App name
@@ -112,6 +195,14 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
             .bg(Theme::BG_SECONDARY)
             .add_modifier(Modifier::BOLD),
     ));
+
+    // ── 1b. Queue/plan name ──────────────────────────────────────────
+    if let Some(label) = queue_label(state) {
+        spans.push(Span::styled(
+            format!("  {label}"),
+            Style::default().fg(Theme::BONE_DIM).bg(Theme::BG_SECONDARY),
+        ));
+    }
 
     // ── 2. Wave indicator ─────────────────────────────────────────────
     if !state.execution_waves.is_empty() {
@@ -205,15 +296,24 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     spans.push(sep());
 
     // ── 5. ETA / elapsed / cost / tokens ──────────────────────────────
-    // ETA estimate (simple: remaining proportional to elapsed)
-    if total > 0 && done < total && done > 0 {
-        let rate = elapsed_secs as f64 / done as f64;
-        let remaining = ((total - done) as f64 * rate) as u64;
-        let eta_str = format_elapsed(remaining.max(1));
-        spans.push(Span::styled(
-            format!("  ETA:{eta_str}"),
-            Style::default().fg(Theme::DREAM).bg(Theme::BG_SECONDARY),
-        ));
+    // ETA estimate: prefer critical-path ETA, fall back to proportional.
+    if total > 0 && done < total {
+        let eta_display = if let Some(cp_minutes) = state.critical_path_eta_minutes {
+            let cp_secs = cp_minutes as u64 * 60;
+            Some((format_elapsed(cp_secs.max(1)), "CP-ETA"))
+        } else if done > 0 {
+            let rate = elapsed_secs as f64 / done as f64;
+            let remaining = ((total - done) as f64 * rate) as u64;
+            Some((format_elapsed(remaining.max(1)), "ETA"))
+        } else {
+            None
+        };
+        if let Some((eta_str, label)) = eta_display {
+            spans.push(Span::styled(
+                format!("  {label}:{eta_str}"),
+                Style::default().fg(Theme::DREAM).bg(Theme::BG_SECONDARY),
+            ));
+        }
     }
 
     // Elapsed
@@ -343,9 +443,31 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         (" F9", Theme::DREAM, "atelier", Tab::Atelier),
     ];
 
+    // Compute badge counts for each tab (only shown on inactive tabs).
+    let current_tab = state.active_tab;
+    let badges: Vec<usize> = fkey_items
+        .iter()
+        .map(|(_, _, _, tab)| {
+            if *tab == current_tab {
+                0
+            } else {
+                state.tab_badge(*tab)
+            }
+        })
+        .collect();
+
     let fkey_width: u16 = fkey_items
         .iter()
-        .map(|(k, _, l, _)| k.len() + 1 + l.len())
+        .zip(badges.iter())
+        .map(|((k, _, l, _), &badge)| {
+            let base = k.len() + 1 + l.len();
+            if badge > 0 {
+                // e.g. "(3)" adds the formatted count length
+                base + format!("({badge})").len()
+            } else {
+                base
+            }
+        })
         .sum::<usize>() as u16
         + 1; // trailing space
 
@@ -358,10 +480,9 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     let left_line = Line::from(spans);
     frame.render_widget(Paragraph::new(left_line).style(bg), chunks[0]);
 
-    // Render F-key indicators with active tab highlighting
-    let current_tab = state.active_tab;
+    // Render F-key indicators with active tab highlighting and badges
     let mut fkey_spans: Vec<Span<'static>> = Vec::new();
-    for (key, color, label, tab) in &fkey_items {
+    for ((key, color, label, tab), &badge) in fkey_items.iter().zip(badges.iter()) {
         let is_active = *tab == current_tab;
         if is_active {
             fkey_spans.push(Span::styled(
@@ -383,6 +504,14 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
                 format!(":{label}"),
                 Style::default().fg(Theme::FG_DIM).bg(Theme::BG_SECONDARY),
             ));
+            // Append badge count when > 0
+            if badge > 0 {
+                let badge_color = tab_badge_color(*tab);
+                fkey_spans.push(Span::styled(
+                    format!("({badge})"),
+                    Style::default().fg(badge_color).bg(Theme::BG_SECONDARY),
+                ));
+            }
         }
     }
     fkey_spans.push(Span::styled(" ", bg));
@@ -495,5 +624,67 @@ mod tests {
 
         let text = rendered_text(&terminal);
         assert!(text.contains("$2.50/$10.00 (25%)"));
+    }
+
+    #[test]
+    fn health_status_idle_when_no_plans() {
+        let state = TuiState::from_dashboard_data(&DashboardData::default());
+        assert_eq!(HealthStatus::from_state(&state), HealthStatus::Idle);
+    }
+
+    #[test]
+    fn health_status_healthy_with_active_plan() {
+        let mut state = TuiState::from_dashboard_data(&DashboardData::default());
+        state.plans.push(super::super::super::state::PlanEntry {
+            active: true,
+            ..Default::default()
+        });
+        assert_eq!(HealthStatus::from_state(&state), HealthStatus::Healthy);
+    }
+
+    #[test]
+    fn health_status_error_with_failures() {
+        let mut state = TuiState::from_dashboard_data(&DashboardData::default());
+        state.plans.push(super::super::super::state::PlanEntry {
+            active: true,
+            tasks_failed: 1,
+            ..Default::default()
+        });
+        assert_eq!(HealthStatus::from_state(&state), HealthStatus::Error);
+    }
+
+    #[test]
+    fn health_status_gating_when_in_gate_phase() {
+        let mut state = TuiState::from_dashboard_data(&DashboardData::default());
+        state.plans.push(super::super::super::state::PlanEntry {
+            active: true,
+            ..Default::default()
+        });
+        state.current_phase = "gating".to_string();
+        assert_eq!(HealthStatus::from_state(&state), HealthStatus::Gating);
+    }
+
+    #[test]
+    fn queue_label_shows_active_plan() {
+        let mut state = TuiState::from_dashboard_data(&DashboardData::default());
+        state.plans.push(super::super::super::state::PlanEntry {
+            id: "my-cool-plan".to_string(),
+            active: true,
+            ..Default::default()
+        });
+        assert_eq!(queue_label(&state), Some("my-cool-plan".to_string()));
+    }
+
+    #[test]
+    fn queue_label_truncates_long_names() {
+        let mut state = TuiState::from_dashboard_data(&DashboardData::default());
+        state.plans.push(super::super::super::state::PlanEntry {
+            id: "very-long-plan-name-that-exceeds-24-chars".to_string(),
+            active: true,
+            ..Default::default()
+        });
+        let label = queue_label(&state).unwrap();
+        assert!(label.len() <= 24);
+        assert!(label.ends_with(".."));
     }
 }

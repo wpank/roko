@@ -132,6 +132,10 @@ pub struct App {
     pub snapshot_rx: Option<tokio::sync::watch::Receiver<roko_core::DashboardSnapshot>>,
     /// Last error entry surfaced from the live snapshot stream.
     last_snapshot_error_marker: Option<(String, u64)>,
+    /// Number of gate verdicts already processed for toast generation.
+    last_seen_gate_count: usize,
+    /// Plan phase states already seen (plan_id -> phase) for completion toasts.
+    last_seen_plan_phases: HashMap<String, String>,
     /// Live websocket consumers for the Agents tab.
     agent_stream_clients: HashMap<String, AgentStreamClient>,
     /// Base URL for the `roko-serve` websocket event bus.
@@ -146,6 +150,13 @@ pub struct App {
     /// iteration (verdicts open/tick are async and cannot be called from sync
     /// dispatch_action).
     pending_refresh: bool,
+    /// Hash of the last applied snapshot file for incremental change detection (RC-6).
+    /// When the standalone dashboard detects a filesystem change, it reads only the
+    /// snapshot hash first and skips the full re-bootstrap when unchanged.
+    last_snapshot_hash: Option<u64>,
+    /// Byte offset into `events.jsonl` for incremental event replay (RC-6).
+    /// Only new events after this offset are replayed, avoiding O(n) re-reads.
+    last_events_offset: u64,
     /// Receiver for background git data collection results.
     git_bg_rx: Option<std::sync::mpsc::Receiver<(u64, GitBgData)>>,
     /// Monotonically increasing generation counter for spawned git jobs.
@@ -616,12 +627,16 @@ impl App {
             connected_plan_observed: false,
             snapshot_rx: None,
             last_snapshot_error_marker: None,
+            last_seen_gate_count: 0,
+            last_seen_plan_phases: HashMap::new(),
             agent_stream_clients: HashMap::new(),
             agent_stream_server_url: resolve_agent_stream_server_url(),
             agent_stream_auth_token: resolve_agent_stream_auth_token(),
             last_input: Instant::now(),
             terminal_size,
             pending_refresh: false,
+            last_snapshot_hash: None,
+            last_events_offset: 0,
             git_bg_rx: None,
             git_bg_generation: 0,
             git_applied_generation: 0,
@@ -671,6 +686,8 @@ impl App {
                 &mut app.tui_state,
                 &mut app.notifications,
                 &mut app.last_snapshot_error_marker,
+                &mut app.last_seen_gate_count,
+                &mut app.last_seen_plan_phases,
                 &snapshot,
             );
         }
@@ -1015,6 +1032,14 @@ impl App {
                 &self.fx_config,
                 &self.tui_state,
             );
+        }
+
+        // Ambient breathing brightness — lightweight always-on effect that
+        // subtly modulates high-luminance cells. Respects reduced-motion.
+        if !super::EffectsConfig::is_reduced_motion() {
+            self.tui_state
+                .atmosphere
+                .apply(content_area, frame.buffer_mut());
         }
     }
 
@@ -1531,6 +1556,15 @@ impl App {
                     self.tui_state.filter_text.push(c);
                     self.tui_state.filter = self.tui_state.filter_text.clone();
                     self.tui_state.filter_active = !self.tui_state.filter.is_empty();
+                } else if self.tui_state.input_mode == InputMode::LogSearch {
+                    self.tui_state.log_search.pattern.push(c);
+                    self.tui_state.log_search.recompile();
+                    self.tui_state
+                        .log_search
+                        .update_matches(&self.tui_state.cached_unified_log);
+                } else if self.tui_state.input_mode == InputMode::PlanFilter {
+                    self.tui_state.plan_tree_filter.pattern.push(c);
+                    self.tui_state.plan_tree_filter.reparse();
                 }
             }
             TuiAction::InputBackspace => {
@@ -1542,6 +1576,15 @@ impl App {
                     self.tui_state.filter_text.pop();
                     self.tui_state.filter = self.tui_state.filter_text.clone();
                     self.tui_state.filter_active = !self.tui_state.filter.is_empty();
+                } else if self.tui_state.input_mode == InputMode::LogSearch {
+                    self.tui_state.log_search.pattern.pop();
+                    self.tui_state.log_search.recompile();
+                    self.tui_state
+                        .log_search
+                        .update_matches(&self.tui_state.cached_unified_log);
+                } else if self.tui_state.input_mode == InputMode::PlanFilter {
+                    self.tui_state.plan_tree_filter.pattern.pop();
+                    self.tui_state.plan_tree_filter.reparse();
                 }
             }
             TuiAction::StartFilter => {
@@ -1919,6 +1962,119 @@ impl App {
             TuiAction::SubmitJob => {
                 self.submit_marketplace_job();
             }
+
+            // -- Log search (#217) --
+            TuiAction::StartLogSearch => {
+                self.tui_state.input_mode = InputMode::LogSearch;
+                self.tui_state.log_search.active = true;
+                self.tui_state.log_search.pattern.clear();
+                self.tui_state.log_search.recompile();
+            }
+            TuiAction::AcceptLogSearch => {
+                self.tui_state.input_mode = InputMode::Normal;
+                // Keep search active with the current pattern for n/N navigation
+            }
+            TuiAction::CancelLogSearch => {
+                self.tui_state.input_mode = InputMode::Normal;
+                self.tui_state.log_search.clear();
+            }
+            TuiAction::NextLogMatch => {
+                self.tui_state.log_search.next_match();
+                // Scroll to current match
+                if let Some(&line_idx) = self
+                    .tui_state
+                    .log_search
+                    .match_indices
+                    .get(self.tui_state.log_search.current_match)
+                {
+                    self.tui_state.log_scroll = line_idx;
+                    self.tui_state.log_auto_tail = false;
+                }
+            }
+            TuiAction::PrevLogMatch => {
+                self.tui_state.log_search.prev_match();
+                if let Some(&line_idx) = self
+                    .tui_state
+                    .log_search
+                    .match_indices
+                    .get(self.tui_state.log_search.current_match)
+                {
+                    self.tui_state.log_scroll = line_idx;
+                    self.tui_state.log_auto_tail = false;
+                }
+            }
+            TuiAction::ToggleLogFilterMode => {
+                use super::state::SearchMode;
+                self.tui_state.log_search.mode = match self.tui_state.log_search.mode {
+                    SearchMode::Highlight => SearchMode::Filter,
+                    SearchMode::Filter => SearchMode::Highlight,
+                };
+            }
+
+            // -- Plan tree filter (#219) --
+            TuiAction::StartPlanFilter => {
+                self.tui_state.input_mode = InputMode::PlanFilter;
+                self.tui_state.plan_tree_filter.active = true;
+                self.tui_state.plan_tree_filter.pattern.clear();
+                self.tui_state.plan_tree_filter.reparse();
+            }
+            TuiAction::AcceptPlanFilter => {
+                self.tui_state.input_mode = InputMode::Normal;
+                // Keep filter active
+            }
+            TuiAction::CancelPlanFilter => {
+                self.tui_state.input_mode = InputMode::Normal;
+                self.tui_state.plan_tree_filter.clear();
+            }
+
+            // -- Recovery keybindings (#119) --
+            TuiAction::SoftRetry => {
+                if let Some(plan) = self.tui_state.plans.get(self.tui_state.selected_plan_idx) {
+                    if plan.status.is_failed() || plan.tasks_failed > 0 {
+                        let plan_id = plan.id.clone();
+                        self.open_confirm_modal(ConfirmAction::SoftRetryPlan(plan_id));
+                    } else {
+                        self.notifications.push(super::modals::Notification::info(
+                            "No failed tasks to retry",
+                        ));
+                    }
+                }
+            }
+            TuiAction::DiagnoseSelected => {
+                if let Some(plan) = self.tui_state.plans.get(self.tui_state.selected_plan_idx) {
+                    let plan_id = plan.id.clone();
+                    // Show a diagnose detail modal with plan error context
+                    let diag_lines: Vec<String> = plan
+                        .tasks
+                        .iter()
+                        .filter(|t| t.status.is_failed())
+                        .map(|t| format!("FAILED: {} ({})", t.name, t.id))
+                        .collect();
+                    let message = if diag_lines.is_empty() {
+                        format!("Plan '{plan_id}' -- no failed tasks found.")
+                    } else {
+                        format!("Plan '{plan_id}' diagnostics:\n{}", diag_lines.join("\n"))
+                    };
+                    self.tui_state.active_modal = Some(ModalState::PlanDetail { plan_id });
+                    self.notifications
+                        .push(super::modals::Notification::info(truncate_str(
+                            &message, 80,
+                        )));
+                }
+            }
+            TuiAction::RepairWithContext => {
+                if let Some(plan) = self.tui_state.plans.get(self.tui_state.selected_plan_idx) {
+                    let plan_id = plan.id.clone();
+                    self.open_confirm_modal(ConfirmAction::RepairPlanPreserve(plan_id));
+                }
+            }
+            TuiAction::ReverifyGatesOnly => {
+                if let Some(plan) = self.tui_state.plans.get(self.tui_state.selected_plan_idx) {
+                    let plan_id = plan.id.clone();
+                    self.open_confirm_modal(ConfirmAction::ReverifyPlan(plan_id));
+                }
+            }
+
             TuiAction::None => {}
         }
 
@@ -2026,6 +2182,9 @@ impl App {
                 ConfirmAction::MergeAllDone {
                     branches: self.completed_plan_branches(),
                 }
+            }
+            ConfirmAction::ResetSelectedPlan(plan_id) if plan_id.is_empty() => {
+                ConfirmAction::ResetSelectedPlan(self.selected_plan_id().unwrap_or_default())
             }
             other => other,
         }
@@ -2480,20 +2639,48 @@ impl App {
         let buffer = match self.tui_state.input_mode {
             InputMode::Inject => self.tui_state.message_input.as_str(),
             InputMode::Filter => self.tui_state.filter_text.as_str(),
+            InputMode::LogSearch => self.tui_state.log_search.pattern.as_str(),
+            InputMode::PlanFilter => self.tui_state.plan_tree_filter.pattern.as_str(),
             _ => return,
         };
 
+        // Build suffix for search mode (match count + filter mode indicator)
+        let suffix = match self.tui_state.input_mode {
+            InputMode::LogSearch if !self.tui_state.log_search.pattern.is_empty() => {
+                let mode_label = match self.tui_state.log_search.mode {
+                    super::state::SearchMode::Highlight => "highlight",
+                    super::state::SearchMode::Filter => "filter",
+                };
+                if self.tui_state.log_search.pattern_error {
+                    " [invalid regex]".to_string()
+                } else {
+                    format!(
+                        " [{}/{} {}]",
+                        self.tui_state.log_search.current_match + 1,
+                        self.tui_state.log_search.match_count,
+                        mode_label,
+                    )
+                }
+            }
+            _ => String::new(),
+        };
+
         let prefix = format!("[{label}]");
-        let horizontal_scroll = (prefix.chars().count() + 3 + buffer.chars().count() + 1)
-            .saturating_sub(area.width as usize) as u16;
-        let input = Paragraph::new(Line::from(vec![
+        let horizontal_scroll =
+            (prefix.chars().count() + 3 + buffer.chars().count() + suffix.chars().count() + 1)
+                .saturating_sub(area.width as usize) as u16;
+        let mut spans = vec![
             Span::styled(prefix, theme.accent_bold()),
             Span::styled(" > ", theme.muted()),
             Span::styled(buffer, theme.text()),
             Span::styled("│", theme.selection()),
-        ]))
-        .style(theme.text().bg(Theme::BG_SECONDARY))
-        .scroll((0, horizontal_scroll));
+        ];
+        if !suffix.is_empty() {
+            spans.push(Span::styled(suffix, theme.muted()));
+        }
+        let input = Paragraph::new(Line::from(spans))
+            .style(theme.text().bg(Theme::BG_SECONDARY))
+            .scroll((0, horizontal_scroll));
 
         frame.render_widget(Clear, area);
         frame.render_widget(input, area);
@@ -2533,8 +2720,12 @@ impl App {
     }
 
     fn expire_notifications(&mut self) {
-        self.notifications
-            .retain(|notification| notification.created.elapsed() < Duration::from_secs(5));
+        self.notifications.retain(|n| !n.is_expired());
+        // Hard cap at 20 entries to prevent unbounded memory growth.
+        const MAX_NOTIFICATIONS: usize = 20;
+        while self.notifications.len() > MAX_NOTIFICATIONS {
+            self.notifications.remove(0);
+        }
     }
 
     fn has_modal(&self) -> bool {
@@ -2991,19 +3182,43 @@ impl App {
                 }
             }
             if got_refresh {
-                // Re-bootstrap the in-process StateHub from disk files so
-                // `drain_snapshot_channel()` picks up the changes via the
-                // unified push path.  This replaces the old file-polling
-                // `tick_snapshot()` call and eliminates the dual data
-                // pipeline.
+                // Incremental refresh (RC-6): avoid full re-bootstrap by
+                // checking whether the snapshot file actually changed.  We
+                // use the file size as a cheap proxy for content changes
+                // (avoids hashing on every filesystem event).  Only new
+                // events.jsonl lines past `last_events_offset` are replayed.
                 if let Some(state_hub) = &self._state_hub {
                     if self.replay_disk_snapshots {
-                        let _ = state_hub.bootstrap_from_workdir(&self.workdir);
-                        // Replay events.jsonl for any events not covered by
-                        // the bootstrap snapshot (e.g. orchestrator events
-                        // written since last bootstrap).
+                        let snap_path = self
+                            .workdir
+                            .join(".roko")
+                            .join("state")
+                            .join("state-snapshot.json");
+                        let snap_size = std::fs::metadata(&snap_path).ok().map(|m| m.len());
+                        let snap_changed = snap_size != self.last_snapshot_hash;
+                        if snap_changed {
+                            let _ = state_hub.bootstrap_from_workdir(&self.workdir);
+                            self.last_snapshot_hash = snap_size;
+                        }
+                        // Incremental event replay: only read bytes past the
+                        // last offset instead of replaying the entire log.
                         let events_path = self.workdir.join(".roko").join("events.jsonl");
-                        state_hub.replay_log_into_snapshot(&events_path);
+                        if let Ok(meta) = std::fs::metadata(&events_path) {
+                            let file_len = meta.len();
+                            if file_len > self.last_events_offset {
+                                if let Ok(file) = std::fs::File::open(&events_path) {
+                                    use std::io::{BufRead, Seek, SeekFrom};
+                                    let mut reader = std::io::BufReader::new(file);
+                                    if reader
+                                        .seek(SeekFrom::Start(self.last_events_offset))
+                                        .is_ok()
+                                    {
+                                        state_hub.replay_events_from_reader(&mut reader);
+                                    }
+                                }
+                                self.last_events_offset = file_len;
+                            }
+                        }
                     }
                 } else if self.snapshot_rx.is_none() {
                     // Legacy fallback: no StateHub and no snapshot_rx.
@@ -3078,6 +3293,8 @@ impl App {
             &mut self.tui_state,
             &mut self.notifications,
             &mut self.last_snapshot_error_marker,
+            &mut self.last_seen_gate_count,
+            &mut self.last_seen_plan_phases,
             &snapshot,
         );
         self.update_plan_completion_exit(&snapshot);
@@ -3537,10 +3754,75 @@ fn apply_dashboard_snapshot(
     tui_state: &mut TuiState,
     notifications: &mut Vec<super::modals::Notification>,
     last_snapshot_error_marker: &mut Option<(String, u64)>,
+    last_seen_gate_count: &mut usize,
+    last_seen_plan_phases: &mut HashMap<String, String>,
     snapshot: &roko_core::DashboardSnapshot,
 ) {
     tui_state.update_from_dashboard_snapshot(snapshot);
 
+    // -- Gate verdict toasts (new verdicts since last snapshot) ---------
+    if snapshot.gates.len() > *last_seen_gate_count {
+        for gate in snapshot.gates.iter().skip(*last_seen_gate_count) {
+            let notif = if gate.passed {
+                super::modals::Notification::info(format!(
+                    "{}/{}: {} PASS",
+                    gate.plan_id, gate.task_id, gate.gate
+                ))
+            } else {
+                super::modals::Notification::new(
+                    format!("{}/{}: {} FAIL", gate.plan_id, gate.task_id, gate.gate),
+                    super::modals::NotificationLevel::Error,
+                    10,
+                )
+            };
+            push_deduped_notification(notifications, notif);
+        }
+    }
+    *last_seen_gate_count = snapshot.gates.len();
+
+    // -- Plan completion toasts ----------------------------------------
+    for (plan_id, plan_state) in &snapshot.plans {
+        let prev_phase = last_seen_plan_phases.get(plan_id).map(String::as_str);
+        let cur_phase = plan_state.phase.as_str();
+
+        // Only fire a toast when phase transitions to completed/failed.
+        if prev_phase != Some(cur_phase) {
+            match cur_phase {
+                "completed" => {
+                    push_deduped_notification(
+                        notifications,
+                        super::modals::Notification::new(
+                            format!("Plan {plan_id} completed successfully"),
+                            super::modals::NotificationLevel::Info,
+                            8,
+                        ),
+                    );
+                }
+                "failed" => {
+                    push_deduped_notification(
+                        notifications,
+                        super::modals::Notification::new(
+                            format!("Plan {plan_id} failed"),
+                            super::modals::NotificationLevel::Error,
+                            10,
+                        ),
+                    );
+                }
+                p if p.contains("stall") => {
+                    push_deduped_notification(
+                        notifications,
+                        super::modals::Notification::warn(format!(
+                            "Plan {plan_id}: agent stall detected"
+                        )),
+                    );
+                }
+                _ => {}
+            }
+        }
+        last_seen_plan_phases.insert(plan_id.clone(), cur_phase.to_string());
+    }
+
+    // -- Error toasts (existing behavior) ------------------------------
     if !snapshot.errors.is_empty() {
         let start_idx = last_snapshot_error_marker
             .as_ref()
@@ -3554,12 +3836,29 @@ fn apply_dashboard_snapshot(
             .unwrap_or(0);
 
         for error in snapshot.errors.iter().skip(start_idx) {
-            notifications.push(super::modals::Notification::error(error.message.clone()));
+            push_deduped_notification(
+                notifications,
+                super::modals::Notification::error(error.message.clone()),
+            );
         }
 
         if let Some(last_error) = snapshot.errors.last() {
             *last_snapshot_error_marker = Some((last_error.message.clone(), last_error.ts_millis));
         }
+    }
+}
+
+/// Push a notification unless a duplicate (same message within 2 seconds)
+/// already exists in the stack.
+fn push_deduped_notification(
+    notifications: &mut Vec<super::modals::Notification>,
+    notification: super::modals::Notification,
+) {
+    let dominated = notifications.iter().any(|existing| {
+        existing.message == notification.message && existing.created.elapsed().as_secs() < 2
+    });
+    if !dominated {
+        notifications.push(notification);
     }
 }
 
@@ -3896,6 +4195,7 @@ mod tests {
                         attempt: 0,
                         spawned_at_ms: 0,
                         last_event_at_ms: 0,
+                        elapsed_ms: 0,
                     },
                 ),
                 (
@@ -3916,6 +4216,7 @@ mod tests {
                         attempt: 0,
                         spawned_at_ms: 0,
                         last_event_at_ms: 0,
+                        elapsed_ms: 0,
                     },
                 ),
             ]
@@ -3939,6 +4240,8 @@ mod tests {
             &mut app.tui_state,
             &mut app.notifications,
             &mut app.last_snapshot_error_marker,
+            &mut app.last_seen_gate_count,
+            &mut app.last_seen_plan_phases,
             &snapshot,
         );
 
@@ -3964,6 +4267,130 @@ mod tests {
                 .iter()
                 .any(|notification| notification.message == "boom")
         );
+    }
+
+    #[test]
+    fn gate_verdict_generates_toast() {
+        let dir = tempdir().unwrap();
+        let mut app = App::new(dir.path());
+        let snapshot = roko_core::DashboardSnapshot {
+            gates: vec![roko_core::dashboard_snapshot::GateVerdictView {
+                plan_id: "plan-a".into(),
+                task_id: "task-1".into(),
+                gate: "compile".into(),
+                passed: true,
+                ts_millis: 100,
+            }],
+            ..Default::default()
+        };
+        apply_dashboard_snapshot(
+            &mut app.tui_state,
+            &mut app.notifications,
+            &mut app.last_snapshot_error_marker,
+            &mut app.last_seen_gate_count,
+            &mut app.last_seen_plan_phases,
+            &snapshot,
+        );
+        assert!(
+            app.notifications
+                .iter()
+                .any(|n| n.message.contains("compile PASS"))
+        );
+        assert_eq!(app.last_seen_gate_count, 1);
+    }
+
+    #[test]
+    fn gate_verdict_fail_generates_error_toast() {
+        let dir = tempdir().unwrap();
+        let mut app = App::new(dir.path());
+        let snapshot = roko_core::DashboardSnapshot {
+            gates: vec![roko_core::dashboard_snapshot::GateVerdictView {
+                plan_id: "plan-a".into(),
+                task_id: "task-1".into(),
+                gate: "test".into(),
+                passed: false,
+                ts_millis: 100,
+            }],
+            ..Default::default()
+        };
+        apply_dashboard_snapshot(
+            &mut app.tui_state,
+            &mut app.notifications,
+            &mut app.last_snapshot_error_marker,
+            &mut app.last_seen_gate_count,
+            &mut app.last_seen_plan_phases,
+            &snapshot,
+        );
+        let fail_toast = app
+            .notifications
+            .iter()
+            .find(|n| n.message.contains("test FAIL"));
+        assert!(fail_toast.is_some());
+        assert_eq!(
+            fail_toast.unwrap().level,
+            super::modals::NotificationLevel::Error
+        );
+    }
+
+    #[test]
+    fn plan_completion_generates_toast() {
+        use roko_core::dashboard_snapshot::PlanState;
+
+        let dir = tempdir().unwrap();
+        let mut app = App::new(dir.path());
+        let mut plans = std::collections::HashMap::new();
+        plans.insert(
+            "plan-x".to_string(),
+            PlanState {
+                plan_id: "plan-x".into(),
+                phase: "completed".into(),
+                active: false,
+                ..Default::default()
+            },
+        );
+        let snapshot = roko_core::DashboardSnapshot {
+            plans,
+            ..Default::default()
+        };
+        apply_dashboard_snapshot(
+            &mut app.tui_state,
+            &mut app.notifications,
+            &mut app.last_snapshot_error_marker,
+            &mut app.last_seen_gate_count,
+            &mut app.last_seen_plan_phases,
+            &snapshot,
+        );
+        assert!(
+            app.notifications
+                .iter()
+                .any(|n| n.message.contains("Plan plan-x completed"))
+        );
+    }
+
+    #[test]
+    fn dedup_suppresses_duplicate_within_2s() {
+        let mut notifications = Vec::new();
+        push_deduped_notification(
+            &mut notifications,
+            super::modals::Notification::info("same message"),
+        );
+        push_deduped_notification(
+            &mut notifications,
+            super::modals::Notification::info("same message"),
+        );
+        assert_eq!(notifications.len(), 1);
+    }
+
+    #[test]
+    fn notification_cap_at_20() {
+        let dir = tempdir().unwrap();
+        let mut app = App::new(dir.path());
+        for i in 0..25 {
+            app.notifications
+                .push(super::modals::Notification::info(format!("msg {i}")));
+        }
+        app.expire_notifications();
+        assert!(app.notifications.len() <= 20);
     }
 
     #[test]

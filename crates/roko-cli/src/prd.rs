@@ -25,8 +25,8 @@ use std::time::Instant;
 
 use crate::agent_config::command_from_config;
 use crate::agent_exec::{
-    AgentExecEpisode, AgentExecOpts, persist_capture_episode, run_agent_capture_logged,
-    run_agent_capture_silent, run_agent_logged,
+    AgentCrashClass, AgentExecEpisode, AgentExecOpts, classify_agent_crash,
+    persist_capture_episode, run_agent_capture_logged, run_agent_capture_silent, run_agent_logged,
 };
 use crate::task_parser::TasksFile;
 use crate::workspace_paths::{
@@ -960,7 +960,7 @@ pub async fn cmd_promote(workdir: &Path, slug: &str, auto_execute: bool) -> Resu
     if let Err(err) =
         append_prd_published_episode(workdir, slug, &dst, published_at, PublishOrigin::Cli).await
     {
-        eprintln!("warning: failed to append PRD publish audit event: {err:#}");
+        tracing::warn!(error = %err, "failed to append PRD publish audit event");
     }
     global_event_bus().emit(RokoEvent::PrdPublished {
         slug: slug.to_string(),
@@ -1340,7 +1340,9 @@ async fn generate_plan_from_prd_with_outcome(
             output_trimmed_len = output.trim().len(),
             "prd plan: agent returned"
         );
-        if exit_code != 0 {
+        // ── Crash classification and retry for non-zero exit codes ──────
+        let (exit_code, output) = if exit_code != 0 {
+            let crash_class = classify_agent_crash(&output);
             let _ = persist_capture_episode(
                 workdir_ref,
                 &plan_agent_command,
@@ -1354,12 +1356,73 @@ async fn generate_plan_from_prd_with_outcome(
                 None,
             )
             .await;
-            return Err(anyhow!(
-                "plan generation agent failed with exit code {exit_code} \
-                 ({} bytes of output)",
-                output.len()
-            ));
-        }
+
+            // Auth errors: fail fast with actionable message.
+            if matches!(crash_class, AgentCrashClass::AuthenticationError) {
+                return Err(anyhow!(
+                    "plan generation agent auth failure (exit code {exit_code}): {}\n\
+                     Hint: Check ANTHROPIC_API_KEY or your provider config in roko.toml",
+                    crash_class.recovery_hint()
+                ));
+            }
+
+            // Non-retriable errors: fail with classified message.
+            if !crash_class.is_retriable() {
+                let preview = &output[..output.len().min(500)];
+                return Err(anyhow!(
+                    "plan generation agent failed (exit code {exit_code}, {crash_class:?}): \
+                     {preview}\nHint: {}",
+                    crash_class.recovery_hint()
+                ));
+            }
+
+            // Retriable errors (rate limit, network): retry up to 3 times.
+            let max_crash_retries = 3u32;
+            let mut last_exit_code = exit_code;
+            let mut last_output = output;
+
+            for attempt in 1..=max_crash_retries {
+                let retry_class = classify_agent_crash(&last_output);
+                eprintln!(
+                    "  plan generation agent {} (attempt {}/{}) \u{2014} retrying\u{2026}",
+                    retry_class.recovery_hint(),
+                    attempt,
+                    max_crash_retries + 1,
+                );
+                let retry_result = run_agent_capture_silent(AgentExecOpts {
+                    prompt: &task_prompt,
+                    workdir: workdir_ref,
+                    model: effective_model,
+                    effort: Some(resolved.config.agent.effort.as_str()),
+                    system_prompt: Some(&system),
+                    resume_session: None,
+                    env_vars: &resolved.config.agent.env,
+                    role: Some("strategist"),
+                    allowed_tools: Some("Read,Grep,Glob"),
+                })
+                .await?;
+                last_exit_code = retry_result.0;
+                last_output = retry_result.1;
+                if last_exit_code == 0 {
+                    eprintln!("  \u{2713} Retry {attempt} succeeded");
+                    break;
+                }
+            }
+
+            if last_exit_code != 0 {
+                let final_class = classify_agent_crash(&last_output);
+                return Err(anyhow!(
+                    "plan generation agent failed after {} attempts \
+                     (last exit code {last_exit_code}): {}",
+                    max_crash_retries + 1,
+                    final_class.recovery_hint()
+                ));
+            }
+
+            (last_exit_code, last_output)
+        } else {
+            (exit_code, output)
+        };
         if output.trim().is_empty() {
             let _ = persist_capture_episode(
                 workdir_ref,
@@ -1397,6 +1460,20 @@ async fn generate_plan_from_prd_with_outcome(
                 );
                 let toml_content = toml_content
                     .ok_or_else(|| "no TOML block found in agent output".to_string())?;
+
+                // Fast structural pre-check: verify required sections are present
+                // before attempting a full TOML parse.
+                if !toml_content.contains("[meta]") {
+                    return Err(
+                        "TOML block is missing the required [meta] section".to_string(),
+                    );
+                }
+                if !toml_content.contains("[[task]]") {
+                    return Err(
+                        "TOML block is missing required [[task]] entries".to_string(),
+                    );
+                }
+
                 validate_and_fix_generated_plan(
                     toml_content,
                     slug,
@@ -1475,11 +1552,32 @@ async fn generate_plan_from_prd_with_outcome(
                 };
                 let retry_prompt = format!(
                     "Previous attempt produced invalid TOML. Error: {error}\n\n\
-                     Invalid output:\n```\n{truncated_output}\n```\n\n\
-                     Please fix and regenerate a valid tasks.toml.\n\n\
-                     Output ONLY the ```toml fenced block with no other text.\n\n\
-                     The plan must start with a [meta] section followed by [[task]] entries.\n\n\
-                     PRD slug: {slug}"
+                     Invalid output (truncated):\n```\n{truncated_output}\n```\n\n\
+                     Please regenerate a valid tasks.toml. Your ENTIRE response must be \
+                     a single ```toml fenced block with no other text.\n\n\
+                     MINIMUM REQUIRED STRUCTURE:\n\
+                     ```toml\n\
+                     [meta]\n\
+                     plan = \"{slug}\"\n\
+                     total = 1\n\
+                     done = 0\n\
+                     status = \"ready\"\n\
+                     max_parallel = 1\n\n\
+                     [[task]]\n\
+                     id = \"T1\"\n\
+                     title = \"Task title\"\n\
+                     description = \"What this task does.\"\n\
+                     status = \"ready\"\n\
+                     tier = \"focused\"\n\
+                     max_loc = 50\n\
+                     files = [\"crates/roko-core/src/lib.rs\"]\n\
+                     allowed_tools = [\"read_file\", \"grep\"]\n\
+                     denied_tools = []\n\
+                     depends_on = []\n\
+                     role = \"implementer\"\n\
+                     ```\n\n\
+                     Do NOT include Rust code, markdown prose, or explanations outside the TOML block.\n\
+                     Note: the meta field is `plan`, not `name`."
                 );
                 let retry_result = run_agent_capture_silent(AgentExecOpts {
                     prompt: &retry_prompt,
@@ -1579,7 +1677,6 @@ async fn generate_plan_from_prd_with_outcome(
 
             // Update PRD frontmatter: record the generated plan slug.
             if let Err(err) = update_prd_plans_generated(prd_path, slug) {
-                eprintln!("warning: failed to update PRD plans_generated: {err}");
                 tracing::warn!(
                     slug = %slug,
                     error = %err,

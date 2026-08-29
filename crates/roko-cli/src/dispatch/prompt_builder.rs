@@ -50,7 +50,7 @@ use roko_core::config::schema::ConfigCompositionStrategy;
 use roko_core::{AgentRole, Group, GroupId, GroupPheromone};
 use serde::{Deserialize, Serialize};
 
-use super::outcome::DispatchError;
+use super::outcome::RunnerDispatchError;
 use super::prompt_cache::PromptCache;
 use super::{DispatchContext, PromptExperimentContext};
 use crate::task_parser::TaskDef;
@@ -727,7 +727,7 @@ fn apply_prompt_experiment_assignments(
     assignments: &[roko_learn::prompt_experiment::PromptExperimentAssignment],
     expected_attempt: &roko_learn::prompt_experiment::PromptAttemptKey,
     expected_role: &str,
-) -> Result<(), DispatchError> {
+) -> Result<(), RunnerDispatchError> {
     let expected_role = expected_role.trim();
     let mut section_indices = HashMap::new();
     for (index, section) in sections.iter().enumerate() {
@@ -735,7 +735,7 @@ fn apply_prompt_experiment_assignments(
             .insert(section.name.clone(), index)
             .is_some()
         {
-            return Err(DispatchError::PromptAssembly(format!(
+            return Err(RunnerDispatchError::PromptAssembly(format!(
                 "canonical prompt contains duplicate section name {:?}",
                 section.name
             )));
@@ -745,7 +745,7 @@ fn apply_prompt_experiment_assignments(
     let mut replaced_sections = HashSet::new();
     for assignment in assignments {
         if assignment.attempt_key != *expected_attempt {
-            return Err(DispatchError::PromptAssembly(format!(
+            return Err(RunnerDispatchError::PromptAssembly(format!(
                 "prompt experiment assignment {} belongs to a different attempt",
                 assignment.assignment_id
             )));
@@ -755,32 +755,32 @@ fn apply_prompt_experiment_assignments(
             .as_deref()
             .is_some_and(|role| role != expected_role)
         {
-            return Err(DispatchError::PromptAssembly(format!(
+            return Err(RunnerDispatchError::PromptAssembly(format!(
                 "prompt experiment assignment {} targets role {:?}, not {:?}",
                 assignment.assignment_id, assignment.role, expected_role
             )));
         }
         if !replaced_sections.insert(assignment.section_name.clone()) {
-            return Err(DispatchError::PromptAssembly(format!(
+            return Err(RunnerDispatchError::PromptAssembly(format!(
                 "multiple prompt experiment assignments target canonical section {:?}",
                 assignment.section_name
             )));
         }
         let Some(index) = section_indices.get(&assignment.section_name).copied() else {
-            return Err(DispatchError::PromptAssembly(format!(
+            return Err(RunnerDispatchError::PromptAssembly(format!(
                 "prompt experiment assignment {} targets unknown canonical section {:?}",
                 assignment.assignment_id, assignment.section_name
             )));
         };
         let content = assignment.content_snapshot.as_ref().ok_or_else(|| {
-            DispatchError::PromptAssembly(format!(
+            RunnerDispatchError::PromptAssembly(format!(
                 "prompt experiment assignment {} has no content snapshot",
                 assignment.assignment_id
             ))
         })?;
         let actual_content_hash = roko_core::ContentHash::of(content.as_bytes()).to_hex();
         if actual_content_hash != assignment.content_hash {
-            return Err(DispatchError::PromptAssembly(format!(
+            return Err(RunnerDispatchError::PromptAssembly(format!(
                 "prompt experiment assignment {} content hash does not match its snapshot",
                 assignment.assignment_id
             )));
@@ -1263,7 +1263,7 @@ impl PromptAssembler {
         &self,
         task: &TaskDef,
         ctx: &PromptContext,
-    ) -> Result<AssembledPrompt, DispatchError> {
+    ) -> Result<AssembledPrompt, RunnerDispatchError> {
         // ── Collect source sections (knowledge, playbooks, effectiveness) ──
         // Run all registered sources so playbook / knowledge ids are available
         // for diagnostics.
@@ -1365,7 +1365,7 @@ impl PromptAssembler {
                     Some(ctx.role.as_str()),
                     &eligible_sections,
                 )
-                .map_err(|error| DispatchError::PromptAssembly(error.to_string()))?;
+                .map_err(|error| RunnerDispatchError::PromptAssembly(error.to_string()))?;
             if let Err(error) = apply_prompt_experiment_assignments(
                 &mut canonical_sections,
                 &assignments,
@@ -1397,7 +1397,7 @@ impl PromptAssembler {
                         "canonical_composition",
                     );
                 }
-                return Err(DispatchError::PromptAssembly(error.to_string()));
+                return Err(RunnerDispatchError::PromptAssembly(error.to_string()));
             }
         };
         let experiment_assignment_diagnostics = experiment_assignments
@@ -2872,7 +2872,7 @@ mod tests {
             .assemble(&t, &pctx)
             .expect_err("critical prompt sections exceed the budget");
         assert!(
-            matches!(error, DispatchError::PromptAssembly(message) if message.contains("budget exceeded")),
+            matches!(error, RunnerDispatchError::PromptAssembly(message) if message.contains("budget exceeded")),
             "the canonical composer must surface its budget failure"
         );
     }

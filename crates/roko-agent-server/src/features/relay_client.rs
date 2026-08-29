@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use roko_core::wire_protocol::{RelayEnvelope, SnapshotMessage, SubscribeMessage};
 
 use crate::registration::AgentCard;
-use crate::state::{AgentState, DispatchError};
+use crate::state::{AgentState, SidecarDispatchError};
 
 type RelaySocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -950,10 +950,10 @@ async fn dispatch_relay_message(state: &AgentState, message: Value) -> Result<Va
     }))
 }
 
-fn dispatch_error(error: DispatchError) -> String {
+fn dispatch_error(error: SidecarDispatchError) -> String {
     match error {
-        DispatchError::NotConfigured => "agent has no configured dispatcher".to_string(),
-        DispatchError::DispatchFailed(reason) => format!("dispatch failed: {reason}"),
+        SidecarDispatchError::NotConfigured => "agent has no configured dispatcher".to_string(),
+        SidecarDispatchError::DispatchFailed(reason) => format!("dispatch failed: {reason}"),
     }
 }
 
@@ -1113,7 +1113,7 @@ mod tests {
         async fn dispatch(
             &self,
             _request: roko_agent::chat_types::ChatRequest,
-        ) -> std::result::Result<roko_agent::chat_types::ChatResponse, DispatchError> {
+        ) -> std::result::Result<roko_agent::chat_types::ChatResponse, SidecarDispatchError> {
             let _signal = DispatchDropSignal(Arc::clone(&self.dropped));
             let _ = self.started_tx.send(());
             std::future::pending().await

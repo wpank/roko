@@ -21,7 +21,7 @@ use roko_agent::{
     process::registry::{register_spawned_pid, unregister_pid},
 };
 use roko_agent_server::{
-    AgentRegistration, AgentServer, DispatchError, DispatchLike, RelayClientConfig,
+    AgentRegistration, AgentServer, SidecarDispatchError, DispatchLike, RelayClientConfig,
 };
 use roko_cli::agent_spawn::{SpawnAgentSpec, spawn_agent_scoped};
 use roko_core::{Body, Context, Kind, MessageContent, Signal};
@@ -613,8 +613,8 @@ struct ServingAgentDispatcher {
 
 #[async_trait]
 impl DispatchLike for ServingAgentDispatcher {
-    async fn dispatch(&self, request: ChatRequest) -> Result<ChatResponse, DispatchError> {
-        let prompt = extract_prompt(&request).ok_or(DispatchError::NotConfigured)?;
+    async fn dispatch(&self, request: ChatRequest) -> Result<ChatResponse, SidecarDispatchError> {
+        let prompt = extract_prompt(&request).ok_or(SidecarDispatchError::NotConfigured)?;
         let input = Signal::builder(Kind::Prompt)
             .body(Body::text(prompt.clone()))
             .build();

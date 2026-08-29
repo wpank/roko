@@ -74,7 +74,7 @@ impl AgentOutcome {
 /// Failures captured *during* agent execution still produce an outcome
 /// (with `is_error = true`); this type covers pre-spawn rejection only.
 #[derive(Debug, Error, Clone, PartialEq)]
-pub enum DispatchError {
+pub enum RunnerDispatchError {
     /// Plan budget was already exhausted; dispatcher refused to spawn.
     #[error("budget exceeded: spent ${spent:.4} of ${limit:.4}")]
     BudgetExceeded {
@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn dispatch_error_display_carries_actionable_detail() {
-        let err = DispatchError::BudgetExceeded {
+        let err = RunnerDispatchError::BudgetExceeded {
             spent: 25.5,
             limit: 20.0,
         };

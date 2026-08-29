@@ -50,7 +50,7 @@ use tokio::sync::mpsc;
 
 pub use factory::SharedAgentFactory;
 pub use model_routing::{ModelChoice, ModelChoiceSource, ModelRouter, RoutingInputs};
-pub use outcome::{AgentOutcome, DispatchError};
+pub use outcome::{AgentOutcome, RunnerDispatchError};
 pub use prompt_builder::{
     AssembledPrompt, GateFeedback, PromptAssembler, PromptContext, PromptDiagnostics,
     PromptExperimentAssignmentDiagnostic, ScoredSignalDiagnostic,
@@ -189,7 +189,7 @@ impl Dispatcher {
         &self,
         task: &TaskDef,
         ctx: &DispatchContext,
-    ) -> Result<RunnerDispatchPlan, DispatchError> {
+    ) -> Result<RunnerDispatchPlan, RunnerDispatchError> {
         let inputs = RoutingInputs::from_task(task, ctx);
         let choice = self.router.route(&inputs)?;
         let prompt_ctx = PromptContext::from_task(task, ctx);
@@ -211,12 +211,12 @@ impl Dispatcher {
         task: &TaskDef,
         ctx: &DispatchContext,
         bridge: &B,
-    ) -> Result<AgentOutcome, DispatchError> {
+    ) -> Result<AgentOutcome, RunnerDispatchError> {
         let plan = self.plan(task, ctx)?;
         let result = bridge
             .run_agent(&plan, ctx)
             .await
-            .map_err(|err| DispatchError::SpawnFailed(err.to_string()))?;
+            .map_err(|err| RunnerDispatchError::SpawnFailed(err.to_string()))?;
         Ok(result)
     }
 

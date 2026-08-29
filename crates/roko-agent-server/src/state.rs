@@ -37,14 +37,14 @@ pub struct MessageContext(serde_json::Value);
 
 /// Errors returned by the message dispatch seam.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DispatchError {
+pub enum SidecarDispatchError {
     /// No dispatcher was configured for this request.
     NotConfigured,
     /// Dispatch failed after reaching a configured backend.
     DispatchFailed(String),
 }
 
-impl std::fmt::Display for DispatchError {
+impl std::fmt::Display for SidecarDispatchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotConfigured => f.write_str("no configured dispatcher"),
@@ -53,20 +53,20 @@ impl std::fmt::Display for DispatchError {
     }
 }
 
-impl std::error::Error for DispatchError {}
+impl std::error::Error for SidecarDispatchError {}
 
 /// Message dispatch abstraction used by messaging routes.
 #[async_trait]
 pub trait DispatchLike: Send + Sync {
     /// Dispatch a non-streaming message turn.
-    async fn dispatch(&self, request: ChatRequest) -> Result<ChatResponse, DispatchError>;
+    async fn dispatch(&self, request: ChatRequest) -> Result<ChatResponse, SidecarDispatchError>;
 
     /// Dispatch a streaming message turn.
     async fn dispatch_streaming(
         &self,
         request: ChatRequest,
         event_tx: mpsc::UnboundedSender<StreamChunk>,
-    ) -> Result<ChatResponse, DispatchError> {
+    ) -> Result<ChatResponse, SidecarDispatchError> {
         let _ = event_tx;
         self.dispatch(request).await
     }
@@ -84,13 +84,13 @@ impl BackendMessageDispatcher {
 
 #[async_trait]
 impl DispatchLike for BackendMessageDispatcher {
-    async fn dispatch(&self, request: ChatRequest) -> Result<ChatResponse, DispatchError> {
+    async fn dispatch(&self, request: ChatRequest) -> Result<ChatResponse, SidecarDispatchError> {
         let messages = request
             .messages
             .iter()
             .map(serde_json::to_value)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| DispatchError::DispatchFailed(error.to_string()))?;
+            .map_err(|error| SidecarDispatchError::DispatchFailed(error.to_string()))?;
         let response = self
             .backend
             .send_turn(
@@ -99,7 +99,7 @@ impl DispatchLike for BackendMessageDispatcher {
                 &SessionState::default(),
             )
             .await
-            .map_err(|error| DispatchError::DispatchFailed(error.to_string()))?;
+            .map_err(|error| SidecarDispatchError::DispatchFailed(error.to_string()))?;
         Ok(chat_response_from_backend(&*self.backend, &response))
     }
 
@@ -107,13 +107,13 @@ impl DispatchLike for BackendMessageDispatcher {
         &self,
         request: ChatRequest,
         event_tx: mpsc::UnboundedSender<StreamChunk>,
-    ) -> Result<ChatResponse, DispatchError> {
+    ) -> Result<ChatResponse, SidecarDispatchError> {
         let messages = request
             .messages
             .iter()
             .map(serde_json::to_value)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| DispatchError::DispatchFailed(error.to_string()))?;
+            .map_err(|error| SidecarDispatchError::DispatchFailed(error.to_string()))?;
 
         // Bridge: create a bounded channel for the LlmBackend, forward chunks
         // to the public unbounded sender so the DispatchLike trait signature
@@ -137,7 +137,7 @@ impl DispatchLike for BackendMessageDispatcher {
                 bounded_tx,
             )
             .await
-            .map_err(|error| DispatchError::DispatchFailed(error.to_string()))?;
+            .map_err(|error| SidecarDispatchError::DispatchFailed(error.to_string()))?;
 
         // Ensure all remaining chunks are forwarded before returning.
         let _ = forwarder.await;
@@ -581,11 +581,11 @@ impl AgentState {
     ///
     /// Returns an error when no dispatcher is configured or when the selected
     /// backend fails to complete the turn.
-    pub async fn dispatch_prompt(&self, prompt: &str) -> Result<ChatResponse, DispatchError> {
+    pub async fn dispatch_prompt(&self, prompt: &str) -> Result<ChatResponse, SidecarDispatchError> {
         self.metrics.record_message();
         let dispatcher = self
             .message_dispatcher()
-            .ok_or(DispatchError::NotConfigured)?;
+            .ok_or(SidecarDispatchError::NotConfigured)?;
         let response = dispatcher.dispatch(chat_request(prompt, false)).await;
         let status = if response.is_ok() { "ok" } else { "error" };
         self.append_log_line(format!("message prompt={prompt:?} status={status}"))

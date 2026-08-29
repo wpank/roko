@@ -111,6 +111,8 @@ pub mod feeds;
 /// Forensic replay engine for causal decision reconstruction (SAFE-12).
 pub mod forensic;
 pub mod foundation;
+/// Shared GitOps types: `GitOpsConfig`, `GitOpsRetryPolicy`, `ConfigDrift`.
+pub mod gitops;
 pub mod groups;
 pub mod hash;
 /// Heartbeat protocol types for health monitoring.
@@ -244,7 +246,7 @@ pub use decay::Decay;
 pub use demurrage::{Demurrage, DemurrageConfig, demurrage_tick};
 pub use dispatch_plan::{
     ConfigBag, DispatchAttempt, DispatchAttemptKind, DispatchAuthStatus, DispatchCaller,
-    DispatchError, DispatchPlan, DispatchRequest, DispatchRequirement, FallbackPolicy,
+    ProviderDispatchError, DispatchPlan, DispatchRequest, DispatchRequirement, FallbackPolicy,
     TransportAuth, TransportPlan,
 };
 pub use domain_profile::{DomainProfile, TypedContext};

@@ -32,7 +32,7 @@ pub use registration::{
 };
 pub use state::{
     AgentMetrics, AgentPrediction, AgentPredictionResidual, AgentRuntimeStats, AgentState,
-    DispatchError, DispatchLike, MessageContext, PredictionCreateRequest,
+    SidecarDispatchError, DispatchLike, MessageContext, PredictionCreateRequest,
 };
 
 type BoxFutureResult = Pin<Box<dyn Future<Output = Result<()>> + Send>>;

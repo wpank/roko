@@ -10126,6 +10126,52 @@ async fn dispatch_action(
             }
             ctx.state.current_prompt_text = format!("{system_prompt}\n\n{final_prompt}");
 
+            // Opt-in prompt text logging: write the assembled system prompt to
+            // `.roko/prompt-logs/` for post-hoc inspection. Enabled via
+            // `[runner] log_prompts = true` in `roko.toml`. The directory is
+            // gitignored and bounded by `prompt_log_retention`.
+            if ctx
+                .config
+                .roko_config
+                .as_ref()
+                .is_some_and(|c| c.runner.log_prompts)
+            {
+                let retention = ctx
+                    .config
+                    .roko_config
+                    .as_ref()
+                    .map_or(100, |c| c.runner.prompt_log_retention);
+                let log_dir = ctx.config.workdir.join(".roko/prompt-logs");
+                let _ = std::fs::create_dir_all(&log_dir);
+                let log_entry = serde_json::json!({
+                    "episode_id": format!("{plan_id}/{task_id}"),
+                    "task_id": task_id,
+                    "plan_id": plan_id,
+                    "role": role,
+                    "assembled_at": chrono::Utc::now().to_rfc3339(),
+                    "full_text": system_prompt,
+                });
+                let filename = format!("{task_id}-{attempt_num}.json");
+                let path = log_dir.join(&filename);
+                if let Ok(json) = serde_json::to_string_pretty(&log_entry) {
+                    let _ = std::fs::write(&path, json);
+                }
+                // GC: keep only the most recent N logs.
+                if let Ok(entries) = std::fs::read_dir(&log_dir) {
+                    let mut files: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+                    if files.len() > retention {
+                        files.sort_by_key(|f| {
+                            std::cmp::Reverse(
+                                f.metadata().ok().and_then(|m| m.modified().ok()),
+                            )
+                        });
+                        for f in files.iter().skip(retention) {
+                            let _ = std::fs::remove_file(f.path());
+                        }
+                    }
+                }
+            }
+
             // Extension: pre-inference hook.
             let task_role = task_def.role.as_deref().unwrap_or("implementer");
             fire_pre_inference_hook(

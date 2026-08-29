@@ -2242,6 +2242,18 @@ pub struct CoreRunnerConfig {
     /// between long inter-task gaps. Defaults to 300 s (5 minutes).
     #[serde(default = "CoreRunnerConfig::default_warm_pool_idle_timeout_secs")]
     pub warm_pool_idle_timeout_secs: u64,
+    /// When `true`, the runner writes the full assembled system prompt to
+    /// `.roko/prompt-logs/` before each agent dispatch. Disabled by default.
+    /// Useful for debugging unexpected agent behaviour. The log directory is
+    /// gitignored and bounded by [`Self::prompt_log_retention`].
+    #[serde(default)]
+    pub log_prompts: bool,
+    /// Maximum number of prompt log files to retain in `.roko/prompt-logs/`.
+    ///
+    /// When the count of existing log files exceeds this value, the oldest
+    /// files (by mtime) are removed. Defaults to 100.
+    #[serde(default = "CoreRunnerConfig::default_prompt_log_retention")]
+    pub prompt_log_retention: usize,
 }
 
 impl CoreRunnerConfig {
@@ -2271,6 +2283,11 @@ impl CoreRunnerConfig {
     pub const fn default_warm_pool_idle_timeout_secs() -> u64 {
         300
     }
+
+    /// Default prompt log retention: 100 files.
+    pub const fn default_prompt_log_retention() -> usize {
+        100
+    }
 }
 
 impl Default for CoreRunnerConfig {
@@ -2284,6 +2301,8 @@ impl Default for CoreRunnerConfig {
             dispatch_max_retries: Self::default_dispatch_max_retries(),
             warm_pool_size: Self::default_warm_pool_size(),
             warm_pool_idle_timeout_secs: Self::default_warm_pool_idle_timeout_secs(),
+            log_prompts: false,
+            prompt_log_retention: Self::default_prompt_log_retention(),
         }
     }
 }

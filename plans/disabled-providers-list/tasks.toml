@@ -1,0 +1,71 @@
+[meta]
+plan = "disabled-providers-list"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 45
+
+[[task]]
+id = "T01"
+title = "Add static disabled_providers config list to exclude providers from routing"
+role = "implementer"
+files = [
+    "crates/roko-core/src/config/agent.rs",
+    "crates/roko-learn/src/cascade_router.rs",
+    "crates/roko-learn/src/provider_health.rs",
+]
+description = """Add a disabled_providers config field so operators can exclude providers without removing API keys.
+
+## Problem
+
+The only way to exclude a misbehaving provider is to remove its API key, which is destructive.
+Operators need a way to temporarily disable providers while preserving credentials.
+
+## Steps
+
+1. Read `crates/roko-core/src/config/agent.rs` and find the `AgentConfig` struct. Add:
+   ```rust
+   #[serde(default, skip_serializing_if = "Vec::is_empty")]
+   pub disabled_providers: Vec<String>,
+   ```
+
+2. Read `crates/roko-learn/src/cascade_router.rs` and find where providers are selected for
+   routing. Before health-based filtering, filter out any provider whose ID appears in
+   `disabled_providers`:
+   ```rust
+   let candidates: Vec<_> = candidates
+       .into_iter()
+       .filter(|p| !config.agent.disabled_providers.contains(&p.id))
+       .collect();
+   if candidates.len() < original_len {
+       tracing::info!(
+           disabled = ?config.agent.disabled_providers,
+           "filtered disabled providers from routing candidates"
+       );
+   }
+   ```
+   Adapt variable names to match the actual code. The key is that disabled providers are
+   never considered for routing.
+
+3. Read `crates/roko-learn/src/provider_health.rs` and find `ProviderHealthRegistry`.
+   Consider adding a convenience method but this is optional — the cascade router filtering
+   in step 2 is sufficient.
+
+4. Verify the config field deserializes correctly by running clippy.
+
+## What NOT to change
+
+- Do NOT change health-based provider filtering logic
+- Do NOT change the cascade router's scoring/ranking algorithm
+- Do NOT add hot reload support (separate scope)
+- Do NOT add fallback_order (separate scope)
+
+Verify: `cargo clippy -p roko-core -p roko-learn --no-deps -- -D warnings`"""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo clippy -p roko-core -p roko-learn --no-deps -- -D warnings"

@@ -1,0 +1,70 @@
+[meta]
+plan = "gate-failures-jsonl"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 45
+
+[[task]]
+id = "T01"
+title = "Add dedicated gate-failures.jsonl with structured classification records"
+role = "implementer"
+files = [
+    "crates/roko-cli/src/runner/gate_dispatch.rs",
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-fs/src/lib.rs",
+]
+description = """Add a dedicated .roko/learn/gate-failures.jsonl that writes one record per gate failure.
+
+## Problem
+
+Gate failure details are scattered across events.jsonl and episodes.jsonl. There is no single
+file an operator can tail or jq to see only gate failures with structured metadata.
+
+## Steps
+
+1. Read `crates/roko-fs/src/lib.rs` and find `RokoLayout`. Add a path helper:
+   ```rust
+   pub fn gate_failures_path(&self) -> PathBuf {
+       self.learn_dir().join("gate-failures.jsonl")
+   }
+   ```
+
+2. Read `crates/roko-cli/src/runner/gate_dispatch.rs` and find the call sites where
+   `classify_gate_failure` is called (~line 398 and ~line 1206). After each classification,
+   append a structured JSON record to gate-failures.jsonl:
+   ```rust
+   let record = serde_json::json!({
+       "plan_id": plan_id,
+       "task_id": task_id,
+       "gate_name": gate_name,
+       "error_class": format!("{:?}", classification.primary),
+       "failure_kind": format!("{:?}", classification.failure_kind),
+       "retry_policy": format!("{:?}", classification.retry_policy),
+       "error_summary": classification.summary,
+       "timestamp": chrono::Utc::now().to_rfc3339(),
+   });
+   ```
+   Use the existing `append_jsonl_line_sync` or similar atomic append pattern from roko-fs.
+
+3. Also check `crates/roko-cli/src/runner/event_loop.rs` for any other classify_gate_failure
+   call sites (search for "classify_gate_failure"). Add the same append logic there.
+
+4. Make sure the plan_id and task_id are available at the call sites. If they are not in
+   scope, thread them from the enclosing function's parameters.
+
+## What NOT to change
+
+- Do NOT change the GateFailureClassification struct
+- Do NOT change gate dispatch behavior or retry logic
+- Do NOT add bounded rotation (keep simple for now)
+
+Verify: `cargo clippy -p roko-cli -p roko-fs --no-deps -- -D warnings`"""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo clippy -p roko-cli -p roko-fs --no-deps -- -D warnings"

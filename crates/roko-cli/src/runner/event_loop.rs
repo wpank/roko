@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::state_hub::{StateHub, StateHubSender};
@@ -524,6 +524,11 @@ pub(crate) fn health_check_timeout(config: &RunConfig) -> Duration {
 
 const RUNNER_WORKTREE_IDLE_TTL_SECS: u64 = 30 * 60;
 static NEXT_GATE_EFFECT: AtomicU64 = AtomicU64::new(1);
+/// Guards against concurrent dream consolidation runs.
+///
+/// Only one dream consolidation may run at a time per process. Additional
+/// triggers while a run is in progress are silently dropped.
+static DREAM_RUNNING: AtomicBool = AtomicBool::new(false);
 
 fn new_gate_effect(attempt: TaskAttemptRef, kind: GateCompletionKind, rung: u32) -> GateEffectRef {
     GateEffectRef {
@@ -14123,13 +14128,30 @@ async fn run_dream_consolidation_if_enabled(
         return;
     };
 
-    if !roko_config.learning.dream_on_completion {
+    // Both the legacy `dream_on_completion` flag and the new structured
+    // `dreams.trigger_on_plan_complete` must be enabled for the trigger to
+    // fire. This preserves backward compatibility with existing configs that
+    // set `dream_on_completion = false`.
+    if !roko_config.learning.dream_on_completion
+        || !roko_config.learning.dreams.trigger_on_plan_complete
+    {
         debug!("dream consolidation after plan completion disabled");
+        return;
+    }
+
+    // Guard against concurrent runs. Additional plan-completion triggers
+    // while a consolidation is already in progress are silently dropped.
+    if DREAM_RUNNING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        debug!("dream consolidation already in progress — skipping concurrent trigger");
         return;
     }
 
     debug!("running dream consolidation after plan completion");
     run_dream_consolidation(config, telemetry).await;
+    DREAM_RUNNING.store(false, Ordering::Release);
 }
 
 /// Close the advanced learning loop after the event subscriber has flushed.

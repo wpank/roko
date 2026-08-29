@@ -1,8 +1,8 @@
 [meta]
 plan = "dream-trigger-on-plan-complete"
 total = 1
-done = 0
-status = "ready"
+done = 1
+status = "complete"
 max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 60

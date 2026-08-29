@@ -1,0 +1,69 @@
+[meta]
+plan = "hardcoded-backend-strings"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 60
+
+[[task]]
+id = "T01"
+title = "Replace hardcoded backend=claude in episode/efficiency logging with actual provider"
+role = "implementer"
+files = [
+    "crates/roko-learn/src/task_metric.rs",
+    "crates/roko-learn/src/runtime_feedback.rs",
+    "crates/roko-cli/src/runner/event_loop.rs",
+]
+description = """Replace hardcoded backend="claude" in logging paths with the actual provider name.
+
+## Problem
+
+Episode and efficiency logging hardcode backend="claude" in several places. When a plan runs
+using OpenAI, Gemini, or any non-Claude provider, records still show backend: "claude",
+polluting the cascade router's learning data.
+
+## Steps
+
+1. Search for all non-test `backend.*=.*"claude"` in crates/roko-learn and crates/roko-cli:
+   ```
+   grep -rn 'backend.*=.*"claude"' crates/roko-learn/src/ --include='*.rs'
+   grep -rn 'backend.*=.*"claude"' crates/roko-cli/src/ --include='*.rs'
+   ```
+
+2. Known hardcoded sites to fix:
+   - `crates/roko-learn/src/task_metric.rs:295` — `m.backend = "claude".to_string()`
+   - `crates/roko-learn/src/task_metric.rs:427` — `m.backend = "claude".into()`
+   - `crates/roko-learn/src/runtime_feedback.rs:4417` — `m.backend = "claude".to_string()`
+
+3. For each hardcoded site in task_metric.rs and runtime_feedback.rs:
+   - Check if the function already receives a backend/provider parameter
+   - If yes, use it instead of "claude"
+   - If no, add a `backend: &str` parameter and update callers
+   - If a caller truly cannot provide a backend, pass "unknown" and add a tracing::warn!
+
+4. In `crates/roko-cli/src/runner/event_loop.rs`, find where these functions are called.
+   The dispatch result should have the resolved provider kind. Thread it through.
+
+5. KEEP `default_backend = "claude"` in config init paths:
+   - `crates/roko-cli/src/agent_config.rs:149` — config default, NOT a logging label
+   - `crates/roko-cli/src/commands/init.rs:19` — config default, NOT a logging label
+   - `crates/roko-dreams/src/runner.rs:119` — synthesized config, acceptable
+
+6. Do NOT change test fixtures (learn_paths.rs, agent_config.rs tests).
+
+## What NOT to change
+
+- Do NOT change the cascade router logic
+- Do NOT change the TaskMetric struct definition
+- Do NOT change config defaults (init.rs, agent_config.rs)
+- Do NOT modify test files
+
+Verify: `cargo clippy -p roko-learn -p roko-cli --no-deps -- -D warnings && cargo test -p roko-learn --lib`"""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo clippy -p roko-learn -p roko-cli --no-deps -- -D warnings && cargo test -p roko-learn --lib"

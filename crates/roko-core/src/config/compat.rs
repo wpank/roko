@@ -257,6 +257,7 @@ fn convert_learning(m: &MoriConfig) -> LearningConfig {
         replan_max_per_plan: d.replan_max_per_plan,
         replan_gate_attempts: d.replan_gate_attempts,
         dream_on_completion: d.dream_on_completion,
+        dreams: d.dreams.clone(),
         use_lookahead_router: d.use_lookahead_router,
         lookahead_threshold: d.lookahead_threshold,
         override_learning_dampening: d.override_learning_dampening,

@@ -1,0 +1,83 @@
+[meta]
+plan = "override-learning-isolation"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 90
+
+[[task]]
+id = "T01"
+title = "Stop cascade router from learning on force_backend overrides"
+role = "implementer"
+files = [
+    "crates/roko-cli/src/runner/types.rs",
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/dispatch/model_routing.rs",
+    "crates/roko-cli/src/runtime_feedback/routing.rs",
+]
+description = """Fix the cascade router learning corruption from force_backend overrides.
+
+## Problem
+
+When force_backend overrides the cascade router's model selection, the task outcome is still
+recorded as a bandit observation. This teaches the router false information because it did
+not make the model choice. Over time, this poisons the routing statistics.
+
+## Steps
+
+1. Read `crates/roko-cli/src/dispatch/model_routing.rs` and find `ModelChoiceSource`. Add
+   `#[derive(Default)]` with `Default` returning `ModelChoiceSource::Default`.
+
+2. Read `crates/roko-cli/src/runner/types.rs` and find `TaskAttemptCompleted`. Add a new field:
+   ```rust
+   #[serde(default)]
+   model_source: crate::dispatch::ModelChoiceSource,
+   ```
+   Update the `task_attempt_completed` and `task_attempt_completed_with_timing` constructor
+   functions to accept and store this field.
+
+3. Read `crates/roko-cli/src/runner/event_loop.rs`. Find where `dispatch_plan` is resolved
+   (search for "dispatch_plan.forced"). Compute model_source:
+   ```rust
+   let model_source = if dispatch_plan.forced {
+       ModelChoiceSource::Override
+   } else {
+       ModelChoiceSource::Router
+   };
+   ```
+   Store it on the run state (look for where `task_model_hint` is stored — add a
+   `task_model_source` field nearby).
+
+4. Find all call sites of `task_attempt_completed` (search for the function name). Pass the
+   stored model_source. For call sites where no model_source is available, pass
+   `ModelChoiceSource::Default`.
+
+5. In the `runner_event_to_feedback` function (search for "runner_event_to_feedback"), find
+   where `model_source: ModelChoiceSource::Default` is hardcoded. Replace with the actual
+   field from the event.
+
+6. Read `crates/roko-cli/src/runtime_feedback/routing.rs` and find `let _ = model_source`.
+   Replace with:
+   ```rust
+   if matches!(model_source, ModelChoiceSource::Override) {
+       tracing::debug!(model = %outcome.model, "skipping cascade router update for override");
+       return Ok(());
+   }
+   ```
+   Remove any `#[cfg(test)]` guard on the ModelChoiceSource import.
+
+## What NOT to change
+
+- Do NOT change the cascade router scoring algorithm
+- Do NOT change ModelChoiceSource variants
+- Do NOT change how force_backend is applied to dispatch
+
+Verify: `cargo clippy -p roko-cli --no-deps -- -D warnings && cargo test -p roko-cli --lib`"""
+status = "ready"
+tier = "mechanical"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo clippy -p roko-cli --no-deps -- -D warnings"

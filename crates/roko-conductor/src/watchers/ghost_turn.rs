@@ -71,13 +71,7 @@ fn extract_ghost_turn_event(signal: &Signal) -> Option<GhostTurnEvent> {
         .body
         .as_json::<GhostTurnEvent>()
         .ok()
-        .and_then(|event| {
-            if event.output_meaningful || event.net_new_changes != 0 {
-                None
-            } else {
-                Some(event)
-            }
-        })
+        .filter(|event| !event.output_meaningful && event.net_new_changes == 0)
 }
 
 impl roko_core::Cell for GhostTurnWatcher {

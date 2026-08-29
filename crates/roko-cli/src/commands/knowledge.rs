@@ -292,7 +292,7 @@ pub(crate) async fn cmd_archive(
     if dry_run {
         for e in &candidates {
             let age_days = (chrono::Utc::now().timestamp_millis() - e.created_at_ms) / 86_400_000;
-            println!("  {:?} | {} | {}d old", e.kind, &e.id, age_days);
+            println!("  {:?} | {} | {}d old", e.kind, e.id, age_days);
         }
         return Ok(EXIT_SUCCESS);
     }

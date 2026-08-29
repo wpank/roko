@@ -222,6 +222,7 @@ large_futures = "allow"
 redundant_clone = "allow"
 significant_drop_tightening = "allow"
 or_fun_call = "allow"
+result_large_err = "allow"
 # Additional pedantic allows:
 unnecessary_wraps = "allow"
 match_wildcard_for_single_variants = "allow"

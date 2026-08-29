@@ -4607,13 +4607,11 @@ default_model = "claude-sonnet"
             rendered.contains("[serve.auth]"),
             "[serve.auth] table missing"
         );
+        // The v2 template uses RokoConfig::default() which has auth enabled
+        // (secure-by-default). Local users opt out in their roko.toml.
         assert!(
-            rendered.contains("Disable auth for local development only"),
-            "expected local-development comment near [serve.auth].enabled"
-        );
-        assert!(
-            rendered.contains("enabled = false"),
-            "expected the rendered template to set serve.auth.enabled = false"
+            rendered.contains("enabled = true"),
+            "expected the rendered template to set serve.auth.enabled = true (secure-by-default)"
         );
     }
 

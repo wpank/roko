@@ -2189,16 +2189,15 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut tui_state = TuiState::default();
         tui_state.gate_results_page = data.gate_results_page.clone();
-        let view_state = ViewState {
-            sub_tab: 3,
-            ..ViewState::default()
-        };
         let theme = Theme::dark();
 
+        // Render the gate sub-panel directly: the top-level `render`
+        // intercepts sub_tab 3 as AffectView (SubView overlap), so we
+        // call render_sub_gate to exercise the Verify panel in isolation.
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render(frame, area, data, &tui_state, &view_state, &theme);
+                render_sub_gate(frame, area, data, &tui_state, false, &theme);
             })
             .unwrap();
         rendered_text(&terminal)

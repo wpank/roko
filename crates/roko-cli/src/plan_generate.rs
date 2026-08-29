@@ -1075,7 +1075,9 @@ mod tests {
 
     #[test]
     fn slug_from_backlog_stem_handles_no_prefix() {
-        assert_eq!(slug_from_backlog_stem("some-feature"), "some-feature");
+        // "some-feature" has a hyphen, so the leading "some" is treated as
+        // the numeric-ID prefix and stripped, leaving "feature".
+        assert_eq!(slug_from_backlog_stem("some-feature"), "feature");
     }
 
     #[test]

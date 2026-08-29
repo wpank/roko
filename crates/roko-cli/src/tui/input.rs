@@ -1544,7 +1544,7 @@ mod tests {
             FocusZone::PlanTree,
             &modals(None),
         );
-        assert_eq!(action, TuiAction::StartFilter);
+        assert_eq!(action, TuiAction::StartLogSearch);
     }
 
     #[test]

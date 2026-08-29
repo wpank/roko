@@ -1035,7 +1035,12 @@ impl DreamRunner {
         )
     }
 
-    async fn consolidate_async(&mut self) -> Result<DreamReport> {
+    /// Run a full dream consolidation cycle asynchronously.
+    ///
+    /// This is the async entry point used by the CLI runner to avoid deadlocking
+    /// when called from within a tokio runtime (i.e. via `tokio::spawn` rather than
+    /// `spawn_blocking` + `block_on`).
+    pub async fn consolidate_async(&mut self) -> Result<DreamReport> {
         let episodes_path = self.workdir.join(".roko").join("episodes.jsonl");
         let episodes = Arc::new(EpisodeLogger::new(episodes_path.clone()));
         let knowledge = Arc::new(KnowledgeStore::for_workdir(&self.workdir));

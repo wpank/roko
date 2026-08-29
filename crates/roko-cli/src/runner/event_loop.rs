@@ -14204,9 +14204,12 @@ async fn run_dream_consolidation(config: &RunConfig, telemetry: &dyn TelemetryEv
             env: Vec::new(),
         },
     };
-    let join = tokio::task::spawn_blocking(move || {
+    // Use tokio::spawn instead of spawn_blocking to avoid a deadlock: consolidate_async
+    // internally spawns child tasks that need the tokio runtime.  Calling block_on
+    // inside spawn_blocking exhausts the blocking thread pool and starves those tasks.
+    let join = tokio::spawn(async move {
         let mut dream_runner = roko_dreams::DreamRunner::new(workdir.clone(), dream_config);
-        dream_runner.consolidate_now()
+        dream_runner.consolidate_async().await
     });
     match tokio::time::timeout(timeout, join).await {
         Ok(Ok(Ok(report))) => {

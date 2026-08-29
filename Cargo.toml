@@ -212,6 +212,7 @@ missing_panics_doc = "allow"
 clone_on_copy = "allow"
 items_after_statements = "allow"
 unused_async = "allow"
+unused_async_trait_impl = "allow"
 needless_pass_by_value = "allow"
 return_self_not_must_use = "allow"
 # Nursery lints allowed (false positives or impractical to fix):

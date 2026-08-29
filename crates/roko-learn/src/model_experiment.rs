@@ -107,6 +107,18 @@ impl ModelVariantStats {
     }
 }
 
+/// Deterministic tiebreaker: maps a task_id to a stable index within `count` candidates.
+///
+/// Uses the standard library's `DefaultHasher` so no additional dependencies are
+/// needed. The hash of an empty string is a fixed value, which preserves existing
+/// behaviour for callers that have no task_id available.
+fn tiebreak_index(task_id: &str, count: usize) -> usize {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    task_id.hash(&mut hasher);
+    (hasher.finish() as usize) % count
+}
+
 impl ModelExperiment {
     /// Total trials across all variants for this experiment.
     pub fn total_trials(&self) -> u64 {
@@ -117,7 +129,10 @@ impl ModelExperiment {
     ///
     /// Concluded experiments always return the winner. Running experiments
     /// use UCB1, with unsampled variants selected before sampled ones.
-    pub fn assign_variant(&self) -> Option<&ModelVariant> {
+    /// When multiple variants share the maximum UCB1 score (e.g. all unsampled),
+    /// `task_id` is hashed to pick among them deterministically so that the same
+    /// task always receives the same variant across plan resumes.
+    pub fn assign_variant(&self, task_id: &str) -> Option<&ModelVariant> {
         if self.status == ExperimentStatus::Concluded {
             return self
                 .variants
@@ -126,8 +141,8 @@ impl ModelExperiment {
         }
 
         let total: u64 = self.stats.values().map(|stats| stats.trials).sum();
-        let mut best = None;
         let mut best_score = f64::NEG_INFINITY;
+        let mut tied: Vec<&ModelVariant> = Vec::new();
 
         for variant in &self.variants {
             let score = self
@@ -135,13 +150,21 @@ impl ModelExperiment {
                 .get(&variant.id)
                 .map(|stats| stats.ucb_score(total))
                 .unwrap_or(f64::MAX);
+            #[allow(clippy::float_cmp)]
             if score > best_score {
                 best_score = score;
-                best = Some(variant);
+                tied.clear();
+                tied.push(variant);
+            } else if score == best_score {
+                tied.push(variant);
             }
         }
 
-        best
+        if tied.is_empty() {
+            return None;
+        }
+
+        Some(tied[tiebreak_index(task_id, tied.len())])
     }
 
     /// Record an outcome for a model variant and update experiment state.
@@ -294,19 +317,25 @@ impl ModelExperimentStore {
 
     /// Assign a model variant for the current role/category, if an active
     /// experiment applies.
-    pub fn assign_model(&self, role: &str, category: &str) -> Option<ModelVariant> {
-        self.assign_model_with_experiment(role, category)
+    ///
+    /// `task_id` is passed through to `assign_variant` for deterministic
+    /// tiebreaking when multiple variants share the same UCB1 score.
+    pub fn assign_model(&self, role: &str, category: &str, task_id: &str) -> Option<ModelVariant> {
+        self.assign_model_with_experiment(role, category, task_id)
             .map(|(_, variant)| variant)
     }
 
     /// Assign a model variant and return the owning experiment id.
+    ///
+    /// `task_id` is used for deterministic tiebreaking via `assign_variant`.
     pub fn assign_model_with_experiment(
         &self,
         role: &str,
         category: &str,
+        task_id: &str,
     ) -> Option<(String, ModelVariant)> {
         let experiment = self.applicable_experiment(role, category)?;
-        let variant = experiment.assign_variant()?.clone();
+        let variant = experiment.assign_variant(task_id)?.clone();
         Some((experiment.experiment_id.clone(), variant))
     }
 
@@ -606,14 +635,15 @@ mod tests {
             created_at: "2026-04-11T00:00:00Z".into(),
         };
 
+        // hash("") % 2 = 1 → second variant "kimi" is selected when both are unsampled.
         assert_eq!(
-            experiment.assign_variant().map(|v| v.id.as_str()),
-            Some("glm")
+            experiment.assign_variant("").map(|v| v.id.as_str()),
+            Some("kimi")
         );
 
         experiment.record_outcome("glm", true, 1.0, 100, 1_000);
         assert_eq!(
-            experiment.assign_variant().map(|v| v.id.as_str()),
+            experiment.assign_variant("").map(|v| v.id.as_str()),
             Some("kimi")
         );
 
@@ -622,7 +652,7 @@ mod tests {
         assert_eq!(experiment.status, ExperimentStatus::Concluded);
         assert_eq!(experiment.winner_id.as_deref(), Some("glm"));
         assert_eq!(
-            experiment.assign_variant().map(|v| v.id.as_str()),
+            experiment.assign_variant("").map(|v| v.id.as_str()),
             Some("glm")
         );
         assert_eq!(experiment.stats["glm"].pass_rate, 1.0);
@@ -660,11 +690,12 @@ mod tests {
                 .map(|exp| exp.experiment_id.as_str()),
             None
         );
+        // hash("") % 2 = 1 → second variant "b" is selected when both are unsampled.
         assert_eq!(
             loaded
-                .assign_model("implementer", "implementation")
+                .assign_model("implementer", "implementation", "")
                 .map(|variant| variant.id),
-            Some("a".into())
+            Some("b".into())
         );
     }
 
@@ -678,10 +709,11 @@ mod tests {
             Some("implementation"),
         ));
 
-        let assigned = store.assign_model("implementer", "implementation");
+        // hash("") % 2 = 1 → second variant "b" is selected when both are unsampled.
+        let assigned = store.assign_model("implementer", "implementation", "");
         assert_eq!(
             assigned.as_ref().map(|variant| variant.id.as_str()),
-            Some("a")
+            Some("b")
         );
         assert_eq!(
             store
@@ -777,5 +809,52 @@ mod tests {
 
         assert_eq!(routed.stage, CascadeStage::Static);
         assert_eq!(routed.primary.slug, "model-a");
+    }
+
+    #[test]
+    fn unsampled_assignment_varies_by_task_id() {
+        // All variants start unsampled → UCB1 = f64::MAX for every variant, so the
+        // selection falls through to the hash-based tiebreaker. Different task_ids
+        // must produce at least two distinct selections across 10 calls.
+        let experiment = make_experiment("exp", Some("implementer"), Some("implementation"));
+        let ids: Vec<String> = (0..10).map(|i| format!("task-{i}")).collect();
+        let selected: std::collections::HashSet<&str> = ids
+            .iter()
+            .filter_map(|task_id| experiment.assign_variant(task_id).map(|v| v.id.as_str()))
+            .collect();
+        assert!(
+            selected.len() >= 2,
+            "expected at least 2 distinct variants across 10 task_ids, got {selected:?}"
+        );
+    }
+
+    #[test]
+    fn assignment_stable_across_outcome_recording() {
+        // After recording an outcome for the OTHER variant (not the one assigned to
+        // this task_id), the assigned variant remains unsampled and keeps its maximum
+        // UCB1 score. The same task_id must therefore return the same variant across
+        // plan resumes.
+        let mut experiment = make_experiment("exp", Some("implementer"), Some("implementation"));
+        let task_id = "T01";
+
+        let first = experiment
+            .assign_variant(task_id)
+            .map(|v| v.id.clone())
+            .expect("initial assignment");
+
+        // Record an outcome for the variant that was NOT selected for T01. The
+        // assigned variant stays unsampled (UCB1 = f64::MAX) and wins next time.
+        let other_id = if first == "a" { "b" } else { "a" };
+        experiment.record_outcome(other_id, true, 1.0, 100, 1_000);
+
+        let second = experiment
+            .assign_variant(task_id)
+            .map(|v| v.id.clone())
+            .expect("post-outcome assignment");
+
+        assert_eq!(
+            first, second,
+            "variant for task {task_id} changed after recording an outcome for the other variant"
+        );
     }
 }

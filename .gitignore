@@ -33,6 +33,7 @@ demo/.runtime/
 !/.roko/
 /.roko/*
 !/.roko/GAPS.md
+/.roko/prompt-logs/
 
 # Root plans are canonical repository control-plane inputs and stay tracked.
 

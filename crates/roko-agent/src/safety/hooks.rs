@@ -111,9 +111,7 @@ impl fmt::Debug for TaintedString {
 
 impl Drop for TaintedString {
     fn drop(&mut self) {
-        for byte in &mut self.value {
-            *byte = 0;
-        }
+        self.value.fill(0);
     }
 }
 

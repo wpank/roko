@@ -1582,6 +1582,31 @@ pub async fn run_gate_once(
         );
     }
 
+    if gate_mode == GateMode::None {
+        let duration_ms = start.elapsed().as_millis() as u64;
+        info!(
+            plan_id = %plan_id,
+            task_id = %task_id,
+            rung,
+            duration_ms,
+            "gate disabled; completed without filesystem snapshots"
+        );
+        return GateCompletion {
+            kind: effect.kind,
+            attempt: Some(effect.attempt.clone()),
+            effect: Some(effect),
+            plan_id,
+            task_id,
+            rung,
+            passed: true,
+            failure_kind: None,
+            verdicts: Vec::new(),
+            output: String::new(),
+            duration_ms,
+            selected_rungs: Vec::new(),
+        };
+    }
+
     // A focused-analysis failure must not retain a producer-only payload from
     // the optimistic lane. Empty Cargo scope restores the historical
     // workspace-wide canonical gates and makes the fallback genuinely full.

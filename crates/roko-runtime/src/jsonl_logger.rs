@@ -547,6 +547,10 @@ impl EventConsumer for JsonlLogger {
     fn consume(&self, event: &RuntimeEvent) {
         let _ = self.write_event(event, false);
     }
+
+    fn consume_with_cursor(&self, event: &RuntimeEvent) -> Option<u64> {
+        self.consume_with_run_cursor(event)
+    }
 }
 
 #[cfg(test)]

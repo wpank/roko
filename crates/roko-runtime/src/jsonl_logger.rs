@@ -64,7 +64,8 @@ fn shared_writer(path: &Path) -> Arc<SharedWriterState> {
 impl JsonlLogger {
     /// Create a new JsonlLogger writing to the given path.
     pub fn new(path: PathBuf) -> Self {
-        let shared = shared_writer(&absolute_path(path.clone()));
+        let path = absolute_path(path);
+        let shared = shared_writer(&path);
         Self { path, shared }
     }
 
@@ -117,7 +118,10 @@ impl JsonlLogger {
             }
             let lease_path = lock_path(&self.shared.path)?;
             let lease = open_secure_lock_file(&lease_path)?;
-            fs2::FileExt::try_lock_shared(&lease).map_err(|error| {
+            // All in-process instances for this path share `WriterState`.
+            // Across processes, one exclusive lifetime lease prevents
+            // independent buffers and sequence counters from interleaving.
+            fs2::FileExt::try_lock_exclusive(&lease).map_err(|error| {
                 std::io::Error::new(
                     error.kind(),
                     format!(
@@ -279,13 +283,28 @@ fn run_index_path(global_path: &Path, run_id: &str) -> Result<PathBuf, &'static 
 }
 
 fn absolute_path(path: PathBuf) -> PathBuf {
-    if path.is_absolute() {
+    let absolute = if path.is_absolute() {
         path
     } else if let Ok(current) = std::env::current_dir() {
         current.join(path)
     } else {
-        path
+        return path;
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                // The input is absolute whenever cwd was available, so an
+                // excess parent stays clamped at its filesystem root.
+                let _ = normalized.pop();
+            }
+            std::path::Component::Prefix(_)
+            | std::path::Component::RootDir
+            | std::path::Component::Normal(_) => normalized.push(component.as_os_str()),
+        }
     }
+    normalized
 }
 
 fn lock_path(path: &Path) -> std::io::Result<PathBuf> {
@@ -639,6 +658,20 @@ mod tests {
         assert_eq!(envelopes.len(), 2);
         assert_eq!(envelopes[0].seq, 0);
         assert_eq!(envelopes[1].seq, 1);
+    }
+
+    #[test]
+    fn lexical_path_aliases_share_the_same_writer_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let canonical = dir.path().join("events.jsonl");
+        let aliased = dir.path().join("unused").join("..").join("events.jsonl");
+
+        let first = JsonlLogger::new(canonical.clone());
+        let second = JsonlLogger::new(aliased);
+
+        assert_eq!(first.path(), canonical);
+        assert_eq!(second.path(), canonical);
+        assert!(Arc::ptr_eq(&first.shared, &second.shared));
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

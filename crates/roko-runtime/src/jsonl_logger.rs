@@ -261,6 +261,7 @@ fn run_index_path(global_path: &Path, run_id: &str) -> Result<PathBuf, &'static 
     if !run_id
         .bytes()
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+        || run_id == "."
         || run_id.contains("..")
     {
         return Err("run id contains unsupported characters");
@@ -593,6 +594,7 @@ mod tests {
     #[test]
     fn run_path_rejects_traversal() {
         let logger = JsonlLogger::new(PathBuf::from("/tmp/events.jsonl"));
+        assert!(logger.run_path(".").is_err());
         assert!(logger.run_path("../../outside").is_err());
         assert!(logger.run_path("with/slash").is_err());
     }

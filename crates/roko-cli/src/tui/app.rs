@@ -407,6 +407,12 @@ struct PanicHookRestoreGuard(Arc<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send +
 
 impl Drop for PanicHookRestoreGuard {
     fn drop(&mut self) {
+        // Restoring a panic hook from a panicking thread itself panics. Keep
+        // the cleanup hook installed while unwinding so the original TUI
+        // diagnostic is preserved instead of becoming a double-panic abort.
+        if std::thread::panicking() {
+            return;
+        }
         let hook = Arc::clone(&self.0);
         std::panic::set_hook(Box::new(move |panic_info| hook(panic_info)));
     }

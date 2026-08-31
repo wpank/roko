@@ -1298,8 +1298,11 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
     let mut gates_failed = 0u64;
     let mut input_tokens = 0u64;
     let mut output_tokens = 0u64;
+    let mut cache_read_tokens = 0u64;
+    let mut cache_write_tokens = 0u64;
     let mut total_tokens = 0u64;
     let mut cost_usd = 0.0f64;
+    let mut runner_attempt_costs = BTreeMap::<(String, String, u64), f64>::new();
     let mut duration_ms = None;
     let mut started_at = None;
     let mut finished_at = None;
@@ -1351,7 +1354,26 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
             input_tokens = input_tokens.saturating_add(numeric(value, "input_tokens").unwrap_or(0));
             output_tokens = output_tokens.saturating_add(numeric(value, "output_tokens").unwrap_or(0));
             cost_usd += decimal(value, "cost_usd").unwrap_or(0.0);
-        } else if !saw_inference_usage && kind == "agent_completed" {
+        } else if kind == "agent.token_usage" {
+            input_tokens = input_tokens.saturating_add(numeric(value, "input_tokens").unwrap_or(0));
+            output_tokens = output_tokens.saturating_add(numeric(value, "output_tokens").unwrap_or(0));
+            cache_read_tokens = cache_read_tokens
+                .saturating_add(numeric(value, "cache_read_tokens").unwrap_or(0));
+            cache_write_tokens = cache_write_tokens
+                .saturating_add(numeric(value, "cache_write_tokens").unwrap_or(0));
+        } else if kind == "agent.turn_completed" {
+            if let (Some(plan_id), Some(task_id), Some(attempt), Some(cost)) = (
+                event_plan_id(value),
+                event_task_id(value),
+                event_attempt(value),
+                decimal(value, "total_cost_usd"),
+            ) {
+                runner_attempt_costs
+                    .entry((plan_id.to_string(), task_id.to_string(), attempt))
+                    .and_modify(|current| *current = current.max(cost))
+                    .or_insert(cost);
+            }
+        } else if !saw_inference_usage && matches!(kind, "agent_completed" | "agent.completed") {
             total_tokens = total_tokens.saturating_add(numeric(value, "tokens_used").unwrap_or(0));
             cost_usd += decimal(value, "cost_usd").unwrap_or(0.0);
         }
@@ -1361,6 +1383,13 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
     }
     if saw_inference_usage {
         total_tokens = input_tokens.saturating_add(output_tokens);
+    } else {
+        if input_tokens != 0 || output_tokens != 0 {
+            total_tokens = input_tokens.saturating_add(output_tokens);
+        }
+        if final_cost.is_none() && !runner_attempt_costs.is_empty() {
+            cost_usd = runner_attempt_costs.values().sum();
+        }
     }
     json!({
         "status": status,
@@ -1384,6 +1413,8 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
             "gates_failed": gates_failed,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_write_tokens": cache_write_tokens,
             "total_tokens": total_tokens,
             "cost_usd": cost_usd,
             "duration_ms": duration_ms,

@@ -6959,7 +6959,12 @@ async fn conductor_supervision_tick(
             // Cancel all active agents and requeue the work through the
             // normal retry path.  We do NOT break the event loop here — the
             // executor will re-dispatch from the cleared state.
+            let settlement_deadline = tokio::time::Instant::now() + terminal_cleanup_budget();
+            let mut cleanup_confirmed = false;
             loop {
+                if tokio::time::Instant::now() >= settlement_deadline {
+                    break;
+                }
                 let cancellation = stop_all_agents(
                     attempt_ownership,
                     task_runtime_states,
@@ -6973,10 +6978,11 @@ async fn conductor_supervision_tick(
                     tui,
                     config,
                     Duration::from_secs(3),
-                    None,
+                    Some(settlement_deadline),
                 )
                 .await;
                 if cancellation.all_confirmed() {
+                    cleanup_confirmed = true;
                     break;
                 }
                 save_snapshot(
@@ -6991,7 +6997,39 @@ async fn conductor_supervision_tick(
                 let pids = attempt_ownership.surviving_agent_metadata().pids;
                 let _ = persist::save_agent_pids(paths, &pids);
                 snapshot_writer.flush();
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                let retry_at = (tokio::time::Instant::now() + Duration::from_millis(100))
+                    .min(settlement_deadline);
+                tokio::time::sleep_until(retry_at).await;
+            }
+            if !cleanup_confirmed {
+                let survivors = attempt_ownership.surviving_agent_metadata();
+                warn!(
+                    surviving_agents = ?survivors.agent_ids,
+                    surviving_pids = ?survivors.pids,
+                    "conductor restart could not confirm cleanup; failing closed"
+                );
+                let report = build_report(executor, plans, state, task_dag);
+                let mut event =
+                    build_run_completed_event(state, &report, RunOutcome::Failed);
+                annotate_degraded_cleanup(
+                    &mut event,
+                    survivors.agent_ids.clone(),
+                    survivors.pids.clone(),
+                );
+                emit_runner_event(paths, state, tui, config, event);
+                save_snapshot(
+                    config,
+                    executor,
+                    paths,
+                    state,
+                    merge_queue,
+                    gate_thresholds,
+                    snapshot_writer,
+                );
+                let _ = persist::save_agent_pids(paths, &survivors.pids);
+                snapshot_writer.flush();
+                cancel.cancel();
+                return;
             }
             // Requeue retryable terminals so the executor can re-dispatch them.
             for plan in plans {
@@ -7030,8 +7068,14 @@ async fn conductor_supervision_tick(
             tui.error(&format!(
                 "conductor supervision terminated run (watcher={watcher}): {reason_str}"
             ));
-            // Stop all agents before emitting the terminal event.
+            // Stop all agents before emitting the terminal event, but never
+            // let a supervision decision suspend the runner's hard deadline.
+            let settlement_deadline = tokio::time::Instant::now() + terminal_cleanup_budget();
+            let mut cleanup_confirmed = false;
             loop {
+                if tokio::time::Instant::now() >= settlement_deadline {
+                    break;
+                }
                 let cancellation = stop_all_agents(
                     attempt_ownership,
                     task_runtime_states,
@@ -7045,10 +7089,11 @@ async fn conductor_supervision_tick(
                     tui,
                     config,
                     Duration::from_secs(3),
-                    None,
+                    Some(settlement_deadline),
                 )
                 .await;
                 if cancellation.all_confirmed() {
+                    cleanup_confirmed = true;
                     break;
                 }
                 save_snapshot(
@@ -7063,10 +7108,24 @@ async fn conductor_supervision_tick(
                 let pids = attempt_ownership.surviving_agent_metadata().pids;
                 let _ = persist::save_agent_pids(paths, &pids);
                 snapshot_writer.flush();
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                let retry_at = (tokio::time::Instant::now() + Duration::from_millis(100))
+                    .min(settlement_deadline);
+                tokio::time::sleep_until(retry_at).await;
             }
+            let survivors = attempt_ownership.surviving_agent_metadata();
+            let cleanup_degraded = !cleanup_confirmed
+                || survivors.active
+                || attempt_ownership.unrecovered_claim_count() > 0;
             let report = build_report(executor, plans, state, task_dag);
-            let completed_event = build_run_completed_event(state, &report, RunOutcome::Failed);
+            let mut completed_event =
+                build_run_completed_event(state, &report, RunOutcome::Failed);
+            if cleanup_degraded {
+                annotate_degraded_cleanup(
+                    &mut completed_event,
+                    survivors.agent_ids.clone(),
+                    survivors.pids.clone(),
+                );
+            }
             emit_runner_event(paths, state, tui, config, completed_event);
             save_snapshot(
                 config,
@@ -7077,7 +7136,11 @@ async fn conductor_supervision_tick(
                 gate_thresholds,
                 snapshot_writer,
             );
-            let _ = persist::save_agent_pids(paths, &[]);
+            let _ = if cleanup_degraded {
+                persist::save_agent_pids(paths, &survivors.pids)
+            } else {
+                persist::save_agent_pids(paths, &[])
+            };
             snapshot_writer.flush();
             // Signal the outer select! loop to enter Branch 6 (cancellation
             // shutdown) on the next iteration.  This avoids blocking here
@@ -16414,15 +16477,21 @@ fn timeout_salvage_has_correctness_gate(
     if task_role_is_read_only(Some(task)) {
         return false;
     }
-    if env_flag_enabled("ROKO_FAST_TASK_VERIFY_ONLY") {
+    if env_flag_enabled("ROKO_TASK_VERIFY_ONLY") {
         return !task.verify.is_empty();
     }
     let gates = gates_config_for_run(config);
-    !task.verify.is_empty()
-        || gates.has_custom_rungs()
-        || timeout_salvage_worktree(config, attempt)
-            .join("Cargo.toml")
-            .is_file()
+    let cargo_input = timeout_salvage_worktree(config, attempt)
+        .join("Cargo.toml")
+        .is_file();
+    match gates.mode {
+        roko_core::config::GateMode::None => false,
+        roko_core::config::GateMode::Structural => !task.verify.is_empty(),
+        roko_core::config::GateMode::Focused => !task.verify.is_empty() || cargo_input,
+        roko_core::config::GateMode::Full => {
+            !task.verify.is_empty() || gates.has_custom_rungs() || cargo_input
+        }
+    }
 }
 
 fn timeout_salvage_paths(status: &[u8]) -> Option<Vec<String>> {
@@ -16502,7 +16571,9 @@ fn timeout_salvage_safety_block(
     attempt: &TaskAttemptRef,
     diff: &TimeoutSalvageDiff,
 ) -> Option<String> {
-    let safety = config.safety_layer.as_ref()?;
+    let Some(safety) = config.safety_layer.as_ref() else {
+        return Some("post-dispatch safety policy is unavailable".to_string());
+    };
     let task_role = task.role.as_deref().unwrap_or("implementer");
     let effective_safety = safety
         .clone()

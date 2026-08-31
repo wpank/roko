@@ -233,7 +233,9 @@ fn guide_lines(area: Rect, buf: &mut Buffer, elapsed: f64, intensity: f64, seed:
     let pulse = (elapsed * (1.1 + intensity)).sin() * 0.5 + 0.5;
 
     for idx in 0..line_count {
-        let line_seed = seed ^ (idx as u64 * 0x9E37_79B9_7F4A_7C15);
+        // Seed mixing is intentionally modulo 2^64. Plain multiplication
+        // panics in debug builds once an active view renders enough guides.
+        let line_seed = seed ^ (idx as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
         let from_y = area.top()
             + (unit_from_hash(line_seed ^ 0x11) * area.height.saturating_sub(1) as f64).round()
                 as u16;
@@ -916,5 +918,15 @@ mod tests {
         particle_overlay(area, &mut buf, 1.0, 1.0, 64, 7);
 
         assert_eq!(buf[(1, 1)].symbol(), "A");
+    }
+
+    #[test]
+    fn guide_lines_uses_wrapping_seed_arithmetic() {
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+
+        guide_lines(area, &mut buf, 1.0, 1.0, 7);
+
+        assert!(buf.content.iter().any(|cell| !is_blank(cell)));
     }
 }

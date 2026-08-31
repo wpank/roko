@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 #[derive(rust_embed::Embed)]
-#[folder = "../../demo/demo-app/dist/"]
+#[cfg_attr(roko_frontend_fallback, folder = "assets/frontend-fallback/")]
+#[cfg_attr(not(roko_frontend_fallback), folder = "../../demo/demo-app/dist/")]
 struct EmbeddedAssets;
 
 /// Resolved once at startup: the on-disk dist/ directory, if it exists.

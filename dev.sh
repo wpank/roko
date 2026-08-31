@@ -82,6 +82,181 @@ jq_or_raw() {
   fi
 }
 
+# ── cmd: run-evidence / fast ────────────────────────────────
+# These commands intentionally use an existing binary. They never invoke Cargo.
+cmd_run_evidence() {
+  command -v python3 >/dev/null 2>&1 || die "python3 is required for run-evidence"
+  python3 scripts/run_evidence.py "$@"
+}
+
+cmd_fast() {
+  local deadline="${ROKO_FAST_DEADLINE:-300}"
+  local bundle_root="${ROKO_EVIDENCE_ROOT:-.roko/runs}"
+  local label="roko-fast"
+  local max_retries=0
+  # Serialize tasks until the runner has a dedicated Cargo/verification
+  # semaphore. This prevents concurrent attempts from turning one warm cache
+  # into several lock-contending compiler owners.
+  local max_tasks=1
+  local plans_dir=""
+  local show_fast_help=false
+  local extra_args=()
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --deadline)
+        [ $# -ge 2 ] || die "--deadline requires seconds"
+        deadline="$2"
+        shift
+        ;;
+      --deadline=*) deadline="${1#--deadline=}" ;;
+      --bundle-root)
+        [ $# -ge 2 ] || die "--bundle-root requires a directory"
+        bundle_root="$2"
+        shift
+        ;;
+      --bundle-root=*) bundle_root="${1#--bundle-root=}" ;;
+      --label)
+        [ $# -ge 2 ] || die "--label requires a value"
+        label="$2"
+        shift
+        ;;
+      --label=*) label="${1#--label=}" ;;
+      --max-retries)
+        [ $# -ge 2 ] || die "--max-retries requires a number"
+        max_retries="$2"
+        shift
+        ;;
+      --max-retries=*) max_retries="${1#--max-retries=}" ;;
+      --max-tasks)
+        [ $# -ge 2 ] || die "--max-tasks requires a number"
+        max_tasks="$2"
+        shift
+        ;;
+      --max-tasks=*) max_tasks="${1#--max-tasks=}" ;;
+      --help|-h) show_fast_help=true ;;
+      --)
+        shift
+        extra_args=("$@")
+        break
+        ;;
+      -*) die "Unknown fast option: $1 (put native plan-run flags after --)" ;;
+      *)
+        if [ -n "$plans_dir" ]; then
+          die "fast accepts one plan directory; put native plan-run flags after --"
+        fi
+        plans_dir="$1"
+        ;;
+    esac
+    shift
+  done
+
+  if $show_fast_help; then
+    cat <<'HELP'
+Usage:
+  ./dev.sh fast [wrapper options] <plans-dir> [-- <native plan-run options>]
+
+Runs an existing target/debug/roko in opt-in FAST mode. It never invokes Cargo.
+The runner receives --no-tui, --skip-preflight, --max-retries 0, a structured
+event log, and these truthy environment variables:
+
+  ROKO_FAST_MODE=1
+  ROKO_FAST_PLAN_DEADLINE_SECS=<deadline minus settlement headroom>
+  ROKO_TASK_VERIFY_ONLY=1
+  ROKO_SKIP_PREFLIGHT=1
+  SKIP_FRONTEND_BUILD=1
+
+Wrapper options:
+  --deadline <seconds>    Hard command deadline including settlement (default: 300)
+  --bundle-root <dir>     Evidence parent (default: .roko/runs)
+  --label <name>          Run-ID label (default: roko-fast)
+  --max-retries <n>       Runner retries (default: 0)
+  --max-tasks <n>         Concurrent tasks (default: 1; explicit override)
+
+Native options after -- are appended to `roko plan run`. FAST does not add
+--fresh, --force, --dangerously-skip-permissions, endpoint probes, screenshots,
+or mutating operations. Command output remains live and is also captured.
+
+FAST intentionally gives verification ownership to authored task `verify`
+steps. Each task should contain exactly one target-aware compile/test command;
+the canonical pipeline is skipped in this experimental lane.
+
+Examples:
+  ./dev.sh fast plans/my-plan
+  ./dev.sh fast --deadline 420 plans/my-plan -- --resume-plan
+  ./dev.sh fast --max-tasks 2 plans/my-plan -- --force-backend gpt-5.6-terra
+HELP
+    return 0
+  fi
+
+  [ -n "$plans_dir" ] || die "Usage: ./dev.sh fast [options] <plans-dir> [-- <plan-run options>]"
+  [ -d "$plans_dir" ] || die "Plan directory not found: $plans_dir"
+  case "$deadline" in
+    ''|*[!0-9]*) die "--deadline must be a positive integer" ;;
+  esac
+  [ "$deadline" -gt 0 ] || die "--deadline must be greater than zero"
+  [ "$deadline" -ge 10 ] || die "--deadline must be at least 10 seconds in FAST mode"
+  case "$max_retries" in
+    ''|*[!0-9]*) die "--max-retries must be a non-negative integer" ;;
+  esac
+  case "$max_tasks" in
+    ''|*[!0-9]*) die "--max-tasks must be a positive integer" ;;
+  esac
+  [ "$max_tasks" -gt 0 ] || die "--max-tasks must be greater than zero in FAST mode"
+
+  local settlement_headroom=30
+  if [ "$deadline" -lt 120 ]; then
+    settlement_headroom=$((deadline / 4))
+  fi
+  [ "$settlement_headroom" -gt 0 ] || settlement_headroom=1
+  local runner_deadline=$((deadline - settlement_headroom))
+
+  if [ "${#extra_args[@]}" -gt 0 ]; then
+    local native_arg
+    for native_arg in "${extra_args[@]}"; do
+      case "$native_arg" in
+        --approval|--approval=*|--tui)
+          die "$native_arg conflicts with FAST mode's required --no-tui automation"
+          ;;
+      esac
+    done
+  fi
+
+  local roko_bin="${ROKO_FAST_BIN:-$ROKO_BIN}"
+  [ -x "$roko_bin" ] || die "Prebuilt Roko binary not found at $roko_bin. FAST mode never builds it."
+
+  local command_args=(
+    "$roko_bin" plan run "$plans_dir"
+    --engine runner-v2
+    --no-tui
+    --skip-preflight
+    --max-retries "$max_retries"
+    --log-file "{bundle}/events.jsonl"
+  )
+  command_args+=(--max-tasks "$max_tasks")
+  # Bash 3.2 + `set -u` treats expansion of an empty array as unbound.
+  if [ "${#extra_args[@]}" -gt 0 ]; then
+    command_args+=("${extra_args[@]}")
+  fi
+
+  # The native flag and environment variable are both intentional: the flag
+  # works on current binaries, while the environment variable also reaches the
+  # runner internals and is recorded in the allowlisted evidence metadata.
+  export ROKO_FAST_MODE=1
+  export ROKO_FAST_PLAN_DEADLINE_SECS="$runner_deadline"
+  export ROKO_TASK_VERIFY_ONLY=1
+  export ROKO_SKIP_PREFLIGHT=1
+  export SKIP_FRONTEND_BUILD=1
+
+  info "FAST mode is opt-in: prebuilt binary, patch-only agent, bounded run, evidence capture"
+  info "Plan: $plans_dir (run budget=${runner_deadline}s + settlement headroom=${settlement_headroom}s, retries=$max_retries)"
+  cmd_run_evidence \
+    --deadline "$deadline" \
+    --label "$label" \
+    --bundle-root "$bundle_root" \
+    -- "${command_args[@]}"
+}
+
 # ── cmd: up ──────────────────────────────────────────────────
 cmd_up() {
   local watch=false no_vite=false release=false chain=true
@@ -1889,6 +2064,8 @@ COMMANDS
   nuke-ports                               SIGKILL everything on :6677 and :5173
   metrics (m)                              Build sizes, sccache stats, cost summary
   reset-state --confirm                    Clear .roko/ data (preserves structure)
+  fast [options] <plans-dir> [-- <args>]   Opt-in bounded plan run using prebuilt debug Roko
+  run-evidence [options] -- <command...>   Run any command with deadline + evidence bundle
   pipeline <name> [options] (p)             Run demo pipeline end-to-end in ephemeral workspace
   clean-workspaces [--confirm]             List/remove pipeline workspaces
   mirage                                   Start mirage-rs in mainnet fork mode (:8545)
@@ -1913,6 +2090,8 @@ EXAMPLES
   ./dev.sh up                                          Start serve + vite
   ./dev.sh dump | pbcopy                               Diagnostics for Claude
   ./dev.sh check --fix                                 Format, then lint + test
+  ./dev.sh fast plans/my-plan                          Five-minute FAST plan run + evidence
+  ./dev.sh run-evidence --deadline 30 -- git status    Capture a bounded read-only command
   ./dev.sh pipeline prd                                Run PRD pipeline (default model)
   ./dev.sh pipeline prd --model gpt-4o                 Run with GPT-4o
   ./dev.sh pipeline gate --provider anthropic --keep   Gate retry via Anthropic
@@ -1942,6 +2121,8 @@ case "$cmd" in
   nuke-ports)              cmd_nuke_ports ;;
   metrics|m)               cmd_metrics ;;
   reset-state)             cmd_reset_state "$@" ;;
+  fast)                    cmd_fast "$@" ;;
+  run-evidence|evidence)   cmd_run_evidence "$@" ;;
   pipeline|p)              cmd_pipeline "$@" ;;
   clean-workspaces)        cmd_clean_workspaces "$@" ;;
   mirage)                  cmd_mirage ;;

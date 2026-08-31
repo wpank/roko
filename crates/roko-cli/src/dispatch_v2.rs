@@ -546,6 +546,14 @@ impl CliProviderConfig {
         } else {
             args.push("--sandbox".to_string());
             args.push("workspace-write".to_string());
+            // Shared Cargo output is a separate, explicit trust decision. The
+            // normal runner never grants it: runner-owned gates compile outside
+            // the agent sandbox. When a trusted caller opts in, fail-closed
+            // validation below limits Codex to the canonical target subtree.
+            if let Some(target_dir) = codex_shared_target_dir(request) {
+                args.push("--add-dir".to_string());
+                args.push(target_dir.to_string_lossy().to_string());
+            }
         }
 
         if !request.model.trim().is_empty() && !request.model.starts_with("claude") {
@@ -632,6 +640,119 @@ impl CliProviderConfig {
         });
         Ok(invocation)
     }
+}
+
+/// Resolve an explicitly supplied Cargo target directory for Codex's
+/// additional writable-root flag.
+///
+/// A target already contained by the task worktree needs no extra authority.
+/// Existing paths are canonicalized so a symlink cannot accidentally grant a
+/// wider lexical path than the directory Cargo actually writes to. Missing
+/// directories and requests without `ROKO_AGENT_SHARED_TARGET=1` fail closed.
+fn codex_shared_target_dir(request: &CliDispatchRequest) -> Option<PathBuf> {
+    let explicitly_enabled = request.env.iter().rev().find_map(|(key, value)| {
+        (key == "ROKO_AGENT_SHARED_TARGET").then(|| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+    });
+    if explicitly_enabled != Some(true) {
+        return None;
+    }
+    let raw = request
+        .env
+        .iter()
+        .rev()
+        .find(|(key, _)| key == "CARGO_TARGET_DIR")
+        .map(|(_, value)| value.trim())
+        .filter(|value| !value.is_empty())?;
+    let configured = PathBuf::from(raw);
+    let absolute = if configured.is_absolute() {
+        configured
+    } else {
+        request.workdir.join(configured)
+    };
+    let target_dir = normalize_absolute_path(&absolute)?;
+    let workdir = std::fs::canonicalize(&request.workdir)
+        .ok()
+        .or_else(|| normalize_absolute_path(&request.workdir))?;
+    if target_dir.starts_with(&workdir) {
+        return None;
+    }
+
+    // A generic dispatch request can carry arbitrary environment values. Do
+    // not turn CARGO_TARGET_DIR into an arbitrary Codex writable-root grant:
+    // linked worktrees may only share the canonical repository's own `target`
+    // subtree, derived from Git's common directory.
+    let git = std::process::Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .current_dir(&request.workdir)
+        .output()
+        .ok()?;
+    if !git.status.success() {
+        return None;
+    }
+    let common_dir = PathBuf::from(String::from_utf8(git.stdout).ok()?.trim());
+    let common_dir = std::fs::canonicalize(common_dir).ok()?;
+    if common_dir.file_name().and_then(|name| name.to_str()) != Some(".git") {
+        return None;
+    }
+    let repo_root = common_dir.parent()?.to_path_buf();
+    if repo_root.parent().is_none()
+        || std::env::var_os("HOME")
+            .and_then(|home| std::fs::canonicalize(home).ok())
+            .is_some_and(|home| home == repo_root)
+    {
+        return None;
+    }
+    let allowed_target = normalize_absolute_path(&repo_root.join("target"))?;
+    if !allowed_target.starts_with(&repo_root) || !target_dir.starts_with(&allowed_target) {
+        return None;
+    }
+
+    // Resolve every path component before granting it. Requiring an existing
+    // directory prevents a missing leaf below a symlink from escaping the
+    // lexical `<repo>/target` prefix.
+    if !target_dir.is_dir()
+        || !allowed_target.is_dir()
+        || std::fs::symlink_metadata(&allowed_target)
+            .ok()?
+            .file_type()
+            .is_symlink()
+    {
+        return None;
+    }
+    let resolved_target = std::fs::canonicalize(&target_dir).ok()?;
+    let resolved_allowed = std::fs::canonicalize(&allowed_target).ok()?;
+    if resolved_allowed != allowed_target || !resolved_target.starts_with(&resolved_allowed) {
+        return None;
+    }
+    Some(resolved_target)
+}
+
+fn normalize_absolute_path(path: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(Path::new(std::path::MAIN_SEPARATOR_STR)),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return None;
+                }
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    Some(normalized)
 }
 
 /// Provider-neutral request to launch a CLI-backed agent turn.
@@ -954,7 +1075,12 @@ impl CliInvocation {
         stdin: String,
     ) -> Self {
         let mut env = request.env.clone();
-        upsert_env(&mut env, "CARGO_INCREMENTAL", "0");
+        let fast_shared_target = codex_shared_target_dir(request).is_some();
+        upsert_env(
+            &mut env,
+            "CARGO_INCREMENTAL",
+            if fast_shared_target { "1" } else { "0" },
+        );
         upsert_env(&mut env, "CARGO_BUILD_JOBS", "2");
         let mut secret_env = CliSecretEnv::default();
         if let Some(plugin_mcp) = &request.plugin_mcp {
@@ -2074,6 +2200,130 @@ mod tests {
             std::fs::set_permissions(&script, perms).expect("chmod");
         }
         script
+    }
+
+    fn run_git(workdir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(workdir)
+            .output()
+            .expect("git starts");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn codex_request(workdir: PathBuf, target_dir: PathBuf) -> CliDispatchRequest {
+        CliDispatchRequest {
+            prompt: "implement it".to_string(),
+            system_prompt: String::new(),
+            model: "gpt-5".to_string(),
+            workdir,
+            max_turns: 10,
+            effort: None,
+            dangerously_skip_permissions: false,
+            mcp_config: None,
+            resume_session: None,
+            env: vec![
+                (
+                    "CARGO_TARGET_DIR".to_string(),
+                    target_dir.to_string_lossy().to_string(),
+                ),
+                ("ROKO_AGENT_SHARED_TARGET".to_string(), "1".to_string()),
+            ],
+            agent_id: "p/codex-target".to_string(),
+            allowed_tools: None,
+            disallowed_tools: Vec::new(),
+            plugin_mcp: None,
+        }
+    }
+
+    #[test]
+    fn codex_add_dir_is_limited_to_canonical_repo_target() {
+        let fixture = tempdir().expect("fixture tempdir");
+        let repo = fixture.path().join("repo");
+        let attempt = fixture.path().join("attempt");
+        let outside = fixture.path().join("outside");
+        std::fs::create_dir(&repo).expect("repo dir");
+        std::fs::create_dir(&outside).expect("outside dir");
+        run_git(&repo, &["init", "-b", "main"]);
+        run_git(&repo, &["config", "user.name", "Roko Test"]);
+        run_git(&repo, &["config", "user.email", "roko@example.invalid"]);
+        run_git(&repo, &["config", "commit.gpgsign", "false"]);
+        run_git(&repo, &["commit", "--allow-empty", "-m", "base"]);
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "codex-target-test",
+                attempt.to_str().expect("attempt path"),
+            ],
+        );
+        let shared_target = repo.join("target");
+        std::fs::create_dir(&shared_target).expect("shared target");
+
+        let request = codex_request(attempt.clone(), shared_target.clone());
+        let canonical_shared_target =
+            std::fs::canonicalize(&shared_target).expect("canonical target");
+        assert_eq!(
+            codex_shared_target_dir(&request),
+            Some(canonical_shared_target.clone())
+        );
+        let invocation = CliProviderConfig::codex("codex_cli", "codex")
+            .build_invocation(&request)
+            .expect("Codex invocation");
+        assert!(invocation.args.windows(2).any(|pair| {
+            pair[0] == "--add-dir" && pair[1] == canonical_shared_target.to_string_lossy().as_ref()
+        }));
+        let mut default_request = request.clone();
+        default_request
+            .env
+            .retain(|(key, _)| key != "ROKO_AGENT_SHARED_TARGET");
+        let default_invocation = CliProviderConfig::codex("codex_cli", "codex")
+            .build_invocation(&default_request)
+            .expect("default Codex invocation");
+        assert!(
+            !default_invocation
+                .args
+                .iter()
+                .any(|argument| argument == "--add-dir"),
+            "default mode must not widen the agent sandbox"
+        );
+
+        for forbidden in [PathBuf::from("/"), outside.clone()] {
+            assert_eq!(
+                codex_shared_target_dir(&codex_request(attempt.clone(), forbidden)),
+                None
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, shared_target.join("escape"))
+                .expect("escape symlink");
+            assert_eq!(
+                codex_shared_target_dir(&codex_request(
+                    attempt.clone(),
+                    shared_target.join("escape"),
+                )),
+                None,
+                "a symlink below target must not widen the writable root"
+            );
+
+            std::fs::remove_file(shared_target.join("escape")).expect("remove nested symlink");
+            std::fs::remove_dir(&shared_target).expect("remove target directory");
+            std::os::unix::fs::symlink(&repo, &shared_target).expect("target-root symlink");
+            assert_eq!(
+                codex_shared_target_dir(&codex_request(attempt, shared_target)),
+                None,
+                "the target root itself must never widen authority through a symlink"
+            );
+        }
     }
 
     #[test]

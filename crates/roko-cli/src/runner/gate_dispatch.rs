@@ -1,6 +1,7 @@
 //! Verify dispatch — runs gate rungs as background tokio tasks and sends
 //! results through a channel.
 
+use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::panic::AssertUnwindSafe;
@@ -9,7 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use futures::FutureExt;
-use roko_core::config::GatesConfig;
+use roko_core::config::{GateRungConfig, GatesConfig};
 use roko_core::{
     Body, Kind, LensScope, ObservableEvent, Provenance, Signal, SignalBuilder, TelemetryEventSink,
     Verdict, Verify,
@@ -106,6 +107,559 @@ impl GateTaskContext {
             task_title: td.title.clone(),
         })
     }
+}
+
+fn fast_mode_enabled() -> bool {
+    std::env::var("ROKO_FAST_MODE").is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+fn task_verify_only_enabled() -> bool {
+    std::env::var("ROKO_TASK_VERIFY_ONLY").is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+fn fast_task_verify_contract_error(
+    fast_mode: bool,
+    task_verify_only: bool,
+    authored_verify_count: usize,
+) -> Option<String> {
+    (fast_mode && task_verify_only && authored_verify_count != 1).then(|| {
+        format!(
+            "FAST task-owned verification requires exactly one authored verify step; found {authored_verify_count}"
+        )
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum CargoTargetSelector {
+    Lib,
+    Bin(String),
+    Test(String),
+}
+
+impl CargoTargetSelector {
+    fn command_args(&self) -> (&'static str, Option<&str>) {
+        match self {
+            Self::Lib => ("--lib", None),
+            Self::Bin(name) => ("--bin", Some(name)),
+            Self::Test(name) => ("--test", Some(name)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TargetedCargoCheck {
+    package: String,
+    target: CargoTargetSelector,
+    command: String,
+}
+
+fn safe_cargo_name(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with('-')
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn git_changed_files(workdir: &Path) -> Option<Vec<String>> {
+    fn collect_git_paths(workdir: &Path, args: &[&str], paths: &mut BTreeSet<String>) -> bool {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(workdir)
+            .output();
+        let Ok(output) = output else {
+            return false;
+        };
+        if !output.status.success() {
+            return false;
+        }
+        paths.extend(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(ToOwned::to_owned),
+        );
+        true
+    }
+
+    // Deletions, renames/copies, type changes, conflicts, and unknown status
+    // cannot be represented by one positive Cargo target. Fail closed to the
+    // original broad gate whenever any such change is present.
+    let mut unsafe_paths = BTreeSet::new();
+    if !collect_git_paths(
+        workdir,
+        &["diff", "--name-only", "--diff-filter=CDRTUXB", "HEAD", "--"],
+        &mut unsafe_paths,
+    ) || !unsafe_paths.is_empty()
+    {
+        return None;
+    }
+
+    let mut paths = BTreeSet::new();
+    if !collect_git_paths(
+        workdir,
+        &["diff", "--name-only", "--diff-filter=AM", "HEAD", "--"],
+        &mut paths,
+    ) || !collect_git_paths(
+        workdir,
+        &["ls-files", "--others", "--exclude-standard"],
+        &mut paths,
+    ) {
+        return None;
+    }
+    Some(paths.into_iter().collect())
+}
+
+fn cargo_manifest_for_file(workdir: &Path, file: &str) -> Option<(PathBuf, String)> {
+    let relative = Path::new(file);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let absolute_file = workdir.join(relative);
+    let mut cursor = absolute_file.parent()?.to_path_buf();
+    loop {
+        if cursor.join("Cargo.toml").is_file() {
+            let within_package = absolute_file.strip_prefix(&cursor).ok()?;
+            return within_package
+                .to_str()
+                .map(|path| (cursor, path.to_string()));
+        }
+        if cursor == workdir || !cursor.pop() || !cursor.starts_with(workdir) {
+            return None;
+        }
+    }
+}
+
+fn manifest_target_for_path(
+    manifest: &toml::Value,
+    package: &str,
+    path: &str,
+) -> Option<CargoTargetSelector> {
+    let normalize = |value: &str| {
+        value
+            .replace('\\', "/")
+            .trim_start_matches("./")
+            .to_string()
+    };
+    let path = normalize(path);
+    let package_config = manifest.get("package").and_then(toml::Value::as_table);
+    let auto_lib = package_config
+        .and_then(|table| table.get("autolib"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(true);
+    let auto_bins = package_config
+        .and_then(|table| table.get("autobins"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(true);
+    let auto_tests = package_config
+        .and_then(|table| table.get("autotests"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(true);
+    let mut matches = BTreeSet::new();
+
+    if let Some(lib) = manifest.get("lib").and_then(toml::Value::as_table) {
+        let lib_path = lib
+            .get("path")
+            .and_then(toml::Value::as_str)
+            .map_or_else(|| "src/lib.rs".to_string(), normalize);
+        if path == lib_path {
+            matches.insert(CargoTargetSelector::Lib);
+        }
+    } else if auto_lib && path == "src/lib.rs" {
+        matches.insert(CargoTargetSelector::Lib);
+    }
+
+    if let Some(bins) = manifest.get("bin").and_then(toml::Value::as_array) {
+        for bin in bins.iter().filter_map(toml::Value::as_table) {
+            let Some(name) = bin.get("name").and_then(toml::Value::as_str) else {
+                continue;
+            };
+            let bin_path = bin
+                .get("path")
+                .and_then(toml::Value::as_str)
+                .map_or_else(|| format!("src/bin/{name}.rs"), normalize);
+            if path == bin_path {
+                if !safe_cargo_name(name) {
+                    return None;
+                }
+                matches.insert(CargoTargetSelector::Bin(name.to_string()));
+            }
+        }
+    }
+    if auto_bins && path == "src/main.rs" && safe_cargo_name(package) {
+        matches.insert(CargoTargetSelector::Bin(package.to_string()));
+    }
+    if auto_bins && let Some(rest) = path.strip_prefix("src/bin/") {
+        if let Some(name) = rest
+            .strip_suffix("/main.rs")
+            .or_else(|| rest.strip_suffix(".rs"))
+            && !name.contains('/')
+            && safe_cargo_name(name)
+        {
+            matches.insert(CargoTargetSelector::Bin(name.to_string()));
+        }
+    }
+
+    if let Some(tests) = manifest.get("test").and_then(toml::Value::as_array) {
+        for test in tests.iter().filter_map(toml::Value::as_table) {
+            let Some(name) = test.get("name").and_then(toml::Value::as_str) else {
+                continue;
+            };
+            let test_path = test
+                .get("path")
+                .and_then(toml::Value::as_str)
+                .map_or_else(|| format!("tests/{name}.rs"), normalize);
+            if path == test_path {
+                if !safe_cargo_name(name) {
+                    return None;
+                }
+                matches.insert(CargoTargetSelector::Test(name.to_string()));
+            }
+        }
+    }
+    if auto_tests && let Some(rest) = path.strip_prefix("tests/") {
+        if let Some(name) = rest
+            .strip_suffix("/main.rs")
+            .or_else(|| rest.strip_suffix(".rs"))
+            && !name.contains('/')
+            && safe_cargo_name(name)
+        {
+            matches.insert(CargoTargetSelector::Test(name.to_string()));
+        }
+    }
+    if matches.len() != 1 {
+        return None;
+    }
+    matches.into_iter().next()
+}
+
+/// Select a single Cargo target only when FAST mode can prove every changed
+/// Rust file belongs to that exact target.  Module files are intentionally
+/// ambiguous because Cargo metadata does not reveal which roots include them.
+fn targeted_cargo_check(workdir: &Path, target_crates: &[String]) -> Option<TargetedCargoCheck> {
+    if !fast_mode_enabled() {
+        return None;
+    }
+    let packages = target_crates
+        .iter()
+        .filter(|package| package.as_str() != "workspace")
+        .collect::<BTreeSet<_>>();
+    let package = packages.iter().next()?.as_str().to_string();
+    if packages.len() != 1 || !safe_cargo_name(&package) {
+        return None;
+    }
+
+    let files = git_changed_files(workdir)?;
+    // A non-Rust input may affect build scripts, generated source, features,
+    // or `include_*` data. Without dependency metadata that is ambiguous, so
+    // target narrowing fails closed even for apparently harmless side files.
+    if files.is_empty() || files.iter().any(|file| !file.ends_with(".rs")) {
+        return None;
+    }
+
+    let mut selected: Option<(PathBuf, CargoTargetSelector)> = None;
+    let mut saw_rust = false;
+    for file in files.iter().filter(|file| file.ends_with(".rs")) {
+        saw_rust = true;
+        let (package_root, package_path) = cargo_manifest_for_file(workdir, file)?;
+        let manifest_text = std::fs::read_to_string(package_root.join("Cargo.toml")).ok()?;
+        let manifest = toml::from_str::<toml::Value>(&manifest_text).ok()?;
+        let manifest_package = manifest
+            .get("package")
+            .and_then(toml::Value::as_table)
+            .and_then(|package| package.get("name"))
+            .and_then(toml::Value::as_str)?;
+        if manifest_package != package {
+            return None;
+        }
+        let target = manifest_target_for_path(&manifest, manifest_package, &package_path)?;
+        match &selected {
+            Some((root, prior)) if root != &package_root || prior != &target => return None,
+            None => selected = Some((package_root, target)),
+            _ => {}
+        }
+    }
+    if !saw_rust {
+        return None;
+    }
+    let (_, target) = selected?;
+    let (target_flag, target_name) = target.command_args();
+    let mut command = format!("cargo check -p {package} {target_flag}");
+    if let Some(target_name) = target_name {
+        command.push(' ');
+        command.push_str(target_name);
+    }
+    command.push_str(" --message-format=json");
+    Some(TargetedCargoCheck {
+        package,
+        target,
+        command,
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct CargoCommandFingerprint {
+    action: String,
+    arguments: Vec<String>,
+    tool_arguments: Vec<String>,
+}
+
+fn simple_command_tokens(command: &str) -> Option<Vec<&str>> {
+    if command.trim().is_empty()
+        || command.chars().any(|ch| {
+            matches!(
+                ch,
+                '\n' | '\r' | '\'' | '"' | '`' | '$' | '|' | ';' | '&' | '<' | '>'
+            )
+        })
+    {
+        return None;
+    }
+    Some(command.split_ascii_whitespace().collect())
+}
+
+/// Normalize simple Cargo verification commands while deliberately rejecting
+/// shell composition.  Only presentation/cache flags are ignored; flags that
+/// can change what is compiled remain part of the fingerprint.
+fn cargo_command_fingerprint(command: &str) -> Option<CargoCommandFingerprint> {
+    let tokens = simple_command_tokens(command)?;
+    if tokens.first().copied()? != "cargo" {
+        return None;
+    }
+    let action = tokens.get(1).copied()?;
+    if !matches!(action, "check" | "clippy" | "test") {
+        return None;
+    }
+
+    let mut arguments = Vec::new();
+    let mut tool_arguments = Vec::new();
+    let mut index = 2;
+    let mut after_separator = false;
+    while index < tokens.len() {
+        let token = tokens[index];
+        if after_separator {
+            tool_arguments.push(token.to_string());
+            index += 1;
+            continue;
+        }
+        if token == "--" {
+            after_separator = true;
+            index += 1;
+            continue;
+        }
+        if matches!(token, "-q" | "--quiet" | "-v" | "--verbose") {
+            index += 1;
+            continue;
+        }
+        if matches!(
+            token,
+            "--color" | "--message-format" | "-j" | "--jobs" | "--target-dir"
+        ) {
+            index += 2;
+            if index > tokens.len() {
+                return None;
+            }
+            continue;
+        }
+        if ["--color=", "--message-format=", "--jobs=", "--target-dir="]
+            .iter()
+            .any(|prefix| token.starts_with(prefix))
+        {
+            index += 1;
+            continue;
+        }
+
+        let canonical_value_flag = match token {
+            "-p" | "--package" => Some("--package"),
+            "--bin" => Some("--bin"),
+            "--test" => Some("--test"),
+            "--example" => Some("--example"),
+            "--bench" => Some("--bench"),
+            "--features" => Some("--features"),
+            "--profile" => Some("--profile"),
+            "--target" => Some("--target"),
+            "--manifest-path" => Some("--manifest-path"),
+            _ => None,
+        };
+        if let Some(flag) = canonical_value_flag {
+            let value = *tokens.get(index + 1)?;
+            let value = if flag == "--features" {
+                let mut features = value.split(',').collect::<Vec<_>>();
+                features.sort_unstable();
+                features.join(",")
+            } else {
+                value.to_string()
+            };
+            arguments.push(format!("{flag}={value}"));
+            index += 2;
+            continue;
+        }
+        if let Some((flag, value)) = token.split_once('=') {
+            let flag = match flag {
+                "-p" | "--package" => "--package",
+                "--bin" => "--bin",
+                "--test" => "--test",
+                "--example" => "--example",
+                "--bench" => "--bench",
+                "--features" => "--features",
+                "--profile" => "--profile",
+                "--target" => "--target",
+                "--manifest-path" => "--manifest-path",
+                _ => flag,
+            };
+            let value = if flag == "--features" {
+                let mut features = value.split(',').collect::<Vec<_>>();
+                features.sort_unstable();
+                features.join(",")
+            } else {
+                value.to_string()
+            };
+            arguments.push(format!("{flag}={value}"));
+        } else {
+            arguments.push(token.to_string());
+        }
+        index += 1;
+    }
+    arguments.sort();
+    Some(CargoCommandFingerprint {
+        action: action.to_string(),
+        arguments,
+        tool_arguments,
+    })
+}
+
+fn default_cargo_scope(target_crates: &[String]) -> String {
+    let packages = target_crates
+        .iter()
+        .filter(|package| !package.is_empty() && package.as_str() != "workspace")
+        .collect::<BTreeSet<_>>();
+    if packages.is_empty() {
+        "--workspace".to_string()
+    } else {
+        packages
+            .into_iter()
+            .map(|package| format!("-p {package}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+fn canonical_verify_commands(
+    gates_config: &GatesConfig,
+    complexity: PlanComplexity,
+    target_crates: &[String],
+    targeted_check: Option<&TargetedCargoCheck>,
+) -> Vec<String> {
+    if gates_config.has_custom_rungs() {
+        return gates_config
+            .effective_rungs()
+            .into_iter()
+            .filter(|rung| rung.required)
+            .map(|rung| rung.command)
+            .filter(|command| !command.trim().is_empty())
+            .collect();
+    }
+
+    let selected = GatePipelineBuilder::selected_rung_labels(gates_config, complexity);
+    let scope = default_cargo_scope(target_crates);
+    selected
+        .iter()
+        .filter_map(|rung| match rung.as_str() {
+            "compile" => Some(targeted_check.map_or_else(
+                || format!("cargo check {scope} --lib --message-format=json"),
+                |targeted| targeted.command.clone(),
+            )),
+            "lint" => Some(format!(
+                "cargo clippy {scope} --lib --no-deps -- -D warnings"
+            )),
+            "test" => Some(format!("cargo test {scope}")),
+            _ => None,
+        })
+        .collect()
+}
+
+fn deduplicate_verify_steps(
+    task_id: &str,
+    verify_steps: Vec<VerifyStep>,
+    canonical_commands: &[String],
+) -> Vec<VerifyStep> {
+    let covered = canonical_commands
+        .iter()
+        .filter_map(|command| cargo_command_fingerprint(command))
+        .collect::<BTreeSet<_>>();
+    let total = verify_steps.len();
+    let mut retained = Vec::with_capacity(total);
+    for step in verify_steps {
+        let fingerprint = cargo_command_fingerprint(&step.command);
+        let exact_duplicate = fingerprint
+            .as_ref()
+            .is_some_and(|fingerprint| covered.contains(fingerprint));
+        if exact_duplicate {
+            info!(
+                task_id = %task_id,
+                phase = %step.phase,
+                command = %step.command,
+                reason = "semantic-duplicate",
+                "skipping redundant authored verify command"
+            );
+            continue;
+        }
+        retained.push(step);
+    }
+    if retained.len() != total {
+        info!(
+            task_id = %task_id,
+            original_steps = total,
+            retained_steps = retained.len(),
+            "verify command deduplication complete"
+        );
+    }
+    retained
+}
+
+fn with_targeted_compile_rung(
+    gates_config: &GatesConfig,
+    complexity: PlanComplexity,
+    targeted: Option<&TargetedCargoCheck>,
+    timeout_secs: u64,
+) -> GatesConfig {
+    let Some(targeted) = targeted else {
+        return gates_config.clone();
+    };
+    if gates_config.has_custom_rungs() {
+        return gates_config.clone();
+    }
+    let mut optimized = gates_config.clone();
+    optimized.custom_rungs = GatePipelineBuilder::selected_rung_labels(gates_config, complexity)
+        .into_iter()
+        .map(|name| GateRungConfig {
+            command: if name == "compile" {
+                targeted.command.clone()
+            } else {
+                String::new()
+            },
+            name,
+            timeout_secs: timeout_secs.max(1),
+            required: true,
+            parallel_with: Vec::new(),
+        })
+        .collect();
+    optimized
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -555,12 +1109,59 @@ pub async fn run_gate_once(
     // through the GateCompletion for callers.
     let selected_rungs = GatePipelineBuilder::selected_rung_labels(&gates_config, complexity);
 
+    let fast_mode = fast_mode_enabled();
+    let task_verify_only = task_verify_only_enabled();
+    let task_verify_contract_error =
+        fast_task_verify_contract_error(fast_mode, task_verify_only, verify_steps.len());
+    let targeted_check = (!task_verify_only && !gates_config.has_custom_rungs())
+        .then(|| targeted_cargo_check(&workdir, &target_crates))
+        .flatten();
+    if let Some(targeted) = targeted_check.as_ref() {
+        info!(
+            plan_id = %plan_id,
+            task_id = %task_id,
+            package = %targeted.package,
+            target = ?targeted.target,
+            command = %targeted.command,
+            "FAST mode selected target-aware canonical compile"
+        );
+    }
+    let canonical_commands = if task_verify_only {
+        Vec::new()
+    } else {
+        canonical_verify_commands(
+            &gates_config,
+            complexity,
+            &target_crates,
+            targeted_check.as_ref(),
+        )
+    };
+    let verify_steps = if fast_mode {
+        deduplicate_verify_steps(&task_id, verify_steps, &canonical_commands)
+    } else {
+        verify_steps
+    };
+    let gates_config = with_targeted_compile_rung(
+        &gates_config,
+        complexity,
+        targeted_check.as_ref(),
+        timeout_secs,
+    );
+
     // E45-T02: Clone verify_steps so we can use them for the auto-fix retry
     // pass if the first run fails and cargo fix is applicable.
     let verify_steps_for_retry = verify_steps.clone();
 
     let workdir_for_run = workdir.clone();
     let run = async {
+        if let Some(reason) = task_verify_contract_error.as_deref() {
+            return vec![proof_failure!(
+                "task-verify:contract",
+                reason.to_string(),
+                "invalid FAST task-owned verification contract",
+            )];
+        }
+
         let inputs = build_rung_execution_inputs(&target_crates, task_context.as_ref());
         let config = build_rung_execution_config(
             &workdir_for_run,
@@ -568,7 +1169,7 @@ pub async fn run_gate_once(
             &verify_steps,
             verdict_publisher.clone(),
         );
-        let pipeline = if gates_config.has_custom_rungs() {
+        let pipeline = if gates_config.has_custom_rungs() && targeted_check.is_none() {
             GatePipelineBuilder::from_config(&gates_config, complexity)
         } else {
             GatePipelineBuilder::from_config_with_execution(
@@ -579,12 +1180,6 @@ pub async fn run_gate_once(
             )
         };
 
-        let task_verify_only = std::env::var("ROKO_TASK_VERIFY_ONLY").is_ok_and(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes"
-            )
-        });
         let mut verdicts = if task_verify_only {
             Vec::new()
         } else {
@@ -624,17 +1219,22 @@ pub async fn run_gate_once(
                         &verify_steps_for_retry,
                         verdict_publisher.clone(),
                     );
-                    let pipeline_retry = if gates_config.has_custom_rungs() {
-                        GatePipelineBuilder::from_config(&gates_config, complexity)
+                    let pipeline_retry =
+                        if gates_config.has_custom_rungs() && targeted_check.is_none() {
+                            GatePipelineBuilder::from_config(&gates_config, complexity)
+                        } else {
+                            GatePipelineBuilder::from_config_with_execution(
+                                &gates_config,
+                                complexity,
+                                inputs_retry,
+                                config_retry,
+                            )
+                        };
+                    let mut retry_verdicts = if task_verify_only {
+                        Vec::new()
                     } else {
-                        GatePipelineBuilder::from_config_with_execution(
-                            &gates_config,
-                            complexity,
-                            inputs_retry,
-                            config_retry,
-                        )
+                        vec![pipeline_retry.verify(&signal, &ctx).await]
                     };
-                    let mut retry_verdicts = vec![pipeline_retry.verify(&signal, &ctx).await];
                     retry_verdicts.extend(
                         run_verify_steps(&signal, &ctx, &task_id, verify_steps_for_retry).await,
                     );
@@ -1120,9 +1720,11 @@ fn gate_signal(
         // when multiple agents run gate checks concurrently (#206).
         .with_env("CARGO_BUILD_JOBS", cargo_build_jobs());
 
-    // If sccache is available, set RUSTC_WRAPPER to avoid redundant
-    // compilation across agents working on the same workspace.
-    if sccache_available() {
+    // Shared FAST-mode targets rely on Cargo's incremental artifacts. Rust
+    // incremental crates are not sccache-cacheable, and combining the two was
+    // producing wrapper overhead with zero hits. Keep the existing sccache
+    // behavior for isolated/normal runs.
+    if sccache_available() && !(fast_mode_enabled() && main_target_dir.is_some()) {
         payload = payload.with_env("RUSTC_WRAPPER", "sccache");
     }
 
@@ -1294,6 +1896,193 @@ mod tests {
 
     use std::collections::BTreeMap;
     use std::sync::Mutex;
+
+    #[test]
+    fn cargo_verify_fingerprint_ignores_only_non_semantic_flags_and_order() {
+        let canonical =
+            cargo_command_fingerprint("cargo check -p roko-cli --bin roko --message-format=json");
+        let authored =
+            cargo_command_fingerprint("cargo check --quiet --bin=roko --package roko-cli");
+        assert_eq!(canonical, authored);
+        assert!(cargo_command_fingerprint("cargo check -p roko-cli && echo pass").is_none());
+        assert_ne!(
+            canonical,
+            cargo_command_fingerprint("cargo check -p roko-cli --lib")
+        );
+    }
+
+    fn verify_step(command: &str) -> VerifyStep {
+        VerifyStep {
+            phase: "compile".to_string(),
+            command: command.to_string(),
+            fail_msg: None,
+            timeout_ms: 1_000,
+        }
+    }
+
+    #[test]
+    fn fast_dedupe_removes_only_required_exact_canonical_commands() {
+        let exact = "cargo check -p roko-cli --bin roko";
+        let broad = "cargo check -p roko-cli";
+        let retained = deduplicate_verify_steps(
+            "task",
+            vec![verify_step(exact), verify_step(broad)],
+            &["cargo check --package roko-cli --bin=roko".to_string()],
+        );
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].command, broad);
+
+        let repeated =
+            deduplicate_verify_steps("task", vec![verify_step(exact), verify_step(exact)], &[]);
+        assert_eq!(repeated.len(), 2, "authored repetitions remain intentional");
+
+        let mut gates = GatesConfig::default();
+        gates.custom_rungs = vec![GateRungConfig {
+            name: "compile".to_string(),
+            command: exact.to_string(),
+            timeout_secs: 30,
+            required: false,
+            parallel_with: Vec::new(),
+        }];
+        assert!(
+            canonical_verify_commands(&gates, PlanComplexity::Trivial, &[], None).is_empty(),
+            "optional canonical work cannot cover required authored verification"
+        );
+    }
+
+    #[test]
+    fn fast_task_verify_only_requires_exactly_one_authored_step() {
+        assert!(fast_task_verify_contract_error(true, true, 0).is_some());
+        assert!(fast_task_verify_contract_error(true, true, 2).is_some());
+        assert!(fast_task_verify_contract_error(true, true, 1).is_none());
+
+        assert!(
+            fast_task_verify_contract_error(false, true, 0).is_none(),
+            "default mode preserves the existing verify-only behavior"
+        );
+        assert!(
+            fast_task_verify_contract_error(true, false, 0).is_none(),
+            "FAST canonical verification is unaffected"
+        );
+    }
+
+    #[test]
+    fn manifest_root_paths_map_to_exact_cargo_targets() {
+        let manifest = toml::from_str::<toml::Value>(
+            r#"
+[package]
+name = "roko-cli"
+autobins = false
+
+[[bin]]
+name = "roko"
+path = "src/main.rs"
+
+[[test]]
+name = "runner_smoke"
+path = "tests/runner_smoke.rs"
+"#,
+        )
+        .expect("manifest parses");
+        assert_eq!(
+            manifest_target_for_path(&manifest, "roko-cli", "src/main.rs"),
+            Some(CargoTargetSelector::Bin("roko".to_string()))
+        );
+        assert_eq!(
+            manifest_target_for_path(&manifest, "roko-cli", "src/lib.rs"),
+            Some(CargoTargetSelector::Lib)
+        );
+        assert_eq!(
+            manifest_target_for_path(&manifest, "roko-cli", "tests/runner_smoke.rs"),
+            Some(CargoTargetSelector::Test("runner_smoke".to_string()))
+        );
+        assert_eq!(
+            manifest_target_for_path(&manifest, "roko-cli", "src/runner/mod.rs"),
+            None,
+            "module ownership is ambiguous and must fall back"
+        );
+
+        let auto_disabled = toml::from_str::<toml::Value>(
+            r#"
+[package]
+name = "manual-targets"
+autolib = false
+autobins = false
+autotests = false
+"#,
+        )
+        .expect("manifest parses");
+        for path in ["src/lib.rs", "src/main.rs", "tests/implicit.rs"] {
+            assert_eq!(
+                manifest_target_for_path(&auto_disabled, "manual-targets", path),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_target_paths_are_ambiguous() {
+        let manifest = toml::from_str::<toml::Value>(
+            r#"
+[package]
+name = "ambiguous-targets"
+autolib = false
+autobins = false
+autotests = false
+
+[lib]
+path = "src/shared.rs"
+
+[[bin]]
+name = "shared-bin"
+path = "src/shared.rs"
+
+[[test]]
+name = "shared-test"
+path = "src/shared.rs"
+"#,
+        )
+        .expect("manifest parses");
+
+        assert_eq!(
+            manifest_target_for_path(&manifest, "ambiguous-targets", "src/shared.rs"),
+            None,
+            "one source path owned by multiple Cargo targets must fall back"
+        );
+    }
+
+    #[test]
+    fn deletion_or_rename_disables_fast_target_narrowing() {
+        let dir = git_repo();
+        std::fs::create_dir(dir.path().join("src")).expect("src directory");
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname='fixture'\nversion='0.1.0'\n",
+        )
+        .expect("manifest");
+        std::fs::write(dir.path().join("src/lib.rs"), "pub fn value() {}\n").expect("lib");
+        std::fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").expect("main");
+        let commit = std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir.path())
+            .status()
+            .expect("git add");
+        assert!(commit.success());
+        let commit = std::process::Command::new("git")
+            .args(["commit", "-m", "fixture"])
+            .current_dir(dir.path())
+            .status()
+            .expect("git commit");
+        assert!(commit.success());
+
+        std::fs::remove_file(dir.path().join("src/lib.rs")).expect("delete lib");
+        std::fs::write(
+            dir.path().join("src/main.rs"),
+            "fn main() { println!(\"x\"); }\n",
+        )
+        .expect("modify main");
+        assert_eq!(git_changed_files(dir.path()), None);
+    }
 
     struct StateHubTelemetryTestSink(roko_runtime::StateHubSender);
 

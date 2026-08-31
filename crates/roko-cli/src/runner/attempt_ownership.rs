@@ -152,6 +152,15 @@ impl<R> AttemptClaim<R> {
     pub fn clear_agent(&mut self) {
         self.owner.agent = None;
     }
+
+    /// Start the paid/active attempt budget after scheduler preparation.
+    ///
+    /// Dispatch admission can intentionally reserve this claim before prompt
+    /// assembly and provider startup. Resetting here prevents that preparation
+    /// time from consuming the provider and downstream gate budget.
+    pub(crate) fn reset_attempt_timing(&mut self, now: MonotonicTime) {
+        self.owner.timing = OwnershipTiming::new(now);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -5,18 +5,31 @@ use std::path::Path;
 use std::process::Command;
 
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(roko_frontend_fallback)");
+    println!("cargo:rerun-if-env-changed=SKIP_FRONTEND_BUILD");
+    println!("cargo:rerun-if-changed=../../demo/demo-app/src");
+    println!("cargo:rerun-if-changed=../../demo/demo-app/index.html");
+    println!("cargo:rerun-if-changed=../../demo/demo-app/package.json");
+    println!("cargo:rerun-if-changed=../../demo/demo-app/vite.config.ts");
+    println!("cargo:rerun-if-changed=../../demo/demo-app/tsconfig.json");
+    println!("cargo:rerun-if-changed=assets/frontend-fallback/index.html");
+
     let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") else {
         return;
     };
     let demo_app = Path::new(&manifest_dir).join("../../demo/demo-app");
 
-    // Skip frontend build if no package.json (allows building without Node.js)
+    // The real dist/ is intentionally ignored. Use a tracked placeholder when
+    // the frontend source is unavailable so rust-embed still has a directory.
     if !demo_app.join("package.json").exists() {
+        println!("cargo:rustc-cfg=roko_frontend_fallback");
         return;
     }
 
-    // Allow opt-out via environment variable
+    // Explicitly skipping Node is primarily for quick Rust-only checks in a
+    // fresh worktree, where the ignored dist/ directory does not exist yet.
     if env::var("SKIP_FRONTEND_BUILD").is_ok() {
+        println!("cargo:rustc-cfg=roko_frontend_fallback");
         return;
     }
 
@@ -48,11 +61,4 @@ fn main() {
             println!("cargo:warning=npm run build failed: {e}");
         }
     }
-
-    // Rerun if frontend source changes
-    println!("cargo:rerun-if-changed=../../demo/demo-app/src");
-    println!("cargo:rerun-if-changed=../../demo/demo-app/index.html");
-    println!("cargo:rerun-if-changed=../../demo/demo-app/package.json");
-    println!("cargo:rerun-if-changed=../../demo/demo-app/vite.config.ts");
-    println!("cargo:rerun-if-changed=../../demo/demo-app/tsconfig.json");
 }

@@ -48,6 +48,7 @@ use roko_runtime::run_ledger::{
     TimeoutTerminalKind, TimeoutTerminalReplay,
 };
 use roko_runtime::{CommitOutcome, HttpEventSink, RunLedger, TaskTerminalOutcome, WorkflowConfig};
+use tokio::io::AsyncReadExt as _;
 use tokio::sync::mpsc;
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
@@ -467,19 +468,51 @@ fn duration_millis(duration: Duration) -> u64 {
 /// Resolve agent dispatch wall-clock timeout from `TimeoutConfig` (preferred)
 /// or the legacy `RunConfig.timeout_secs` scalar.
 pub(crate) fn agent_dispatch_timeout(config: &RunConfig) -> Duration {
-    config.roko_config.as_deref().map_or_else(
+    let configured = config.roko_config.as_deref().map_or_else(
         || Duration::from_secs(config.timeout_secs),
         |cfg| cfg.timeouts.agent_dispatch(),
-    )
+    );
+    if env_flag_enabled("ROKO_FAST_MODE") {
+        configured.min(Duration::from_secs(90))
+    } else {
+        configured
+    }
 }
 
 /// Resolve plan-level wall-clock timeout from `TimeoutConfig` (preferred)
 /// or the legacy `RunConfig.plan_timeout_secs` scalar.
 pub(crate) fn plan_total_timeout(config: &RunConfig) -> Duration {
-    config.roko_config.as_deref().map_or_else(
+    let configured = config.roko_config.as_deref().map_or_else(
         || Duration::from_secs(config.plan_timeout_secs),
         |cfg| Duration::from_secs(effective_plan_timeout_secs(cfg)),
-    )
+    );
+    if env_flag_enabled("ROKO_FAST_MODE") {
+        configured.min(fast_mode_plan_limit())
+    } else {
+        configured
+    }
+}
+
+fn fast_mode_plan_limit() -> Duration {
+    std::env::var("ROKO_FAST_PLAN_DEADLINE_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(300))
+}
+
+fn fast_mode_deadline_policy(mut policy: DeadlinePolicy) -> DeadlinePolicy {
+    if env_flag_enabled("ROKO_FAST_MODE") {
+        let plan_limit = fast_mode_plan_limit();
+        policy.hard_run = policy.hard_run.min(plan_limit);
+        policy.task_attempt = policy.task_attempt.min(Duration::from_secs(90));
+        policy.agent_silence = policy.agent_silence.min(Duration::from_secs(90));
+        policy.scheduler_no_progress = policy.scheduler_no_progress.min(plan_limit);
+    }
+    // Gate effects deliberately retain their configured deadline: FAST mode
+    // never weakens correctness-required verification or cleanup settlement.
+    policy
 }
 
 /// Resolve LLM call timeout from `TimeoutConfig`.
@@ -2112,13 +2145,6 @@ impl PreparedPromptExperimentGuard {
     fn disarm(&mut self) {
         self.context = None;
     }
-
-    fn keep_prepared(&mut self) {
-        // Capacity admission is a scheduler deferral, not a terminal attempt.
-        // Preserve the same durable treatment so the retried action composes
-        // byte-identically instead of abandoning and reassigning it.
-        self.context = None;
-    }
 }
 
 impl Drop for PreparedPromptExperimentGuard {
@@ -2330,7 +2356,11 @@ pub async fn run_with_tui_commands(
     // `.roko/` data. The disk pre-check below observes the space recovered by
     // all three best-effort steps.
     let resources_cfg = config.roko_config.as_deref().map(|c| &c.resources);
-    run_pre_plan_resource_maintenance(&config.layout, &config.workdir, resources_cfg).await;
+    if env_flag_enabled("ROKO_FAST_MODE") {
+        info!("ROKO_FAST_MODE enabled — deferring pre-plan log/target/GC maintenance");
+    } else {
+        run_pre_plan_resource_maintenance(&config.layout, &config.workdir, resources_cfg).await;
+    }
     cleanup_stale_reflex_replay_branches(&config.workdir);
 
     // ── Pre-run GC ───────────────────────────────────────────────────────
@@ -2712,7 +2742,7 @@ pub async fn run_with_tui_commands(
     // -- Warm cargo cache -------------------------------------------------------
     // Run `cargo check --workspace` once before the main loop so that
     // subsequent per-task compile gates are incremental (2-5s vs 30-120s).
-    if config.warm_cache {
+    if config.warm_cache && !env_flag_enabled("ROKO_FAST_MODE") {
         sink.warm_cache_started();
         let warm_start = std::time::Instant::now();
         let warm_result = tokio::process::Command::new("cargo")
@@ -2739,6 +2769,8 @@ pub async fn run_with_tui_commands(
                 warn!(warm_ms, error = %e, "cargo cache warm failed (non-fatal)");
             }
         }
+    } else if config.warm_cache {
+        info!("ROKO_FAST_MODE enabled — skipping startup Cargo cache warmup");
     }
 
     // Seed playbooks if the store is empty (bootstrap chicken-and-egg).
@@ -3025,7 +3057,10 @@ pub async fn run_with_tui_commands(
         .as_ref()
         .map(|config| config.timeouts.clone())
         .unwrap_or_default();
-    let deadline_policy = DeadlinePolicy::from_config(&timeout_config, plan_timeout_duration);
+    let deadline_policy = fast_mode_deadline_policy(DeadlinePolicy::from_config(
+        &timeout_config,
+        plan_timeout_duration,
+    ));
     let mut deadline_tracker = DeadlineTracker::new(monotonic_now());
     let mut observed_scheduler_milestones = state.durable_scheduler_milestones;
 
@@ -9715,17 +9750,21 @@ fn default_gate_pipeline_skipped(gates: &GatesConfig, workdir: &Path) -> bool {
     !gates.has_custom_rungs() && std::fs::metadata(workdir.join("Cargo.toml")).is_err()
 }
 
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 fn task_should_preflight_verify(
     task_def: &TaskDef,
     attempt_num: u32,
     preflight_timeout: Duration,
 ) -> bool {
-    let preflight_disabled = std::env::var("ROKO_SKIP_PREFLIGHT").is_ok_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes"
-        )
-    });
+    let preflight_disabled = env_flag_enabled("ROKO_SKIP_PREFLIGHT");
     !preflight_disabled
         && attempt_num == 1
         && !task_def.verify.is_empty()
@@ -9756,6 +9795,33 @@ fn begin_task_capacity(
     Some(permit)
 }
 
+fn release_prepared_task_dispatch(
+    ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    task_dag: &mut TaskDag,
+    attempt: &TaskAttemptRef,
+    is_dag_task: bool,
+) {
+    match ownership.remove_unclaimed(attempt, AttemptPhase::Dispatching, EffectRef(0)) {
+        Ok(resource) => {
+            drop(resource);
+            if is_dag_task {
+                task_dag.clear_running(&attempt.plan_id, &attempt.task_id);
+            }
+        }
+        Err(error) => warn!(
+            attempt = %attempt.key(),
+            ?error,
+            "failed to release prepared task dispatch ownership"
+        ),
+    }
+}
+
+fn record_admitted_agent_launch(state: &mut RunState) {
+    state.total_agent_calls += 1;
+    state.task_agent_calls += 1;
+}
+
+#[cfg(test)]
 fn retain_preflight_after_capacity<T>(
     attempted: &mut HashSet<TaskAttemptRef>,
     attempt: &TaskAttemptRef,
@@ -10339,39 +10405,6 @@ async fn dispatch_action(
                 return ActionDispatchOutcome::Noop;
             }
 
-            if max_disk_mb > 0 {
-                match check_plan_disk_budget(&ctx.config.workdir, max_disk_mb).await {
-                    Ok(true) => { /* within budget */ }
-                    Ok(false) => {
-                        ctx.state.disk_budget_paused = true;
-                        let message = format!(
-                            "per-plan disk budget exceeded: .roko/ + target/ > {} MB limit\n\
-                             Free up space or raise `resources.max_plan_disk_mb` in roko.toml.",
-                            max_disk_mb,
-                        );
-                        warn!(plan_id = %plan_id, "{}", message);
-                        ctx.tui.error(&message);
-                        if let Err(e) = ctx
-                            .executor
-                            .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
-                        {
-                            error!(plan_id = %plan_id, error = %e,
-                                "failed to apply Fatal event -- forcing plan terminal");
-                            ctx.state.force_plan_terminal(plan_id);
-                        }
-                        return ActionDispatchOutcome::Noop;
-                    }
-                    Err(e) => {
-                        // Measurement failure: log and continue (do not block).
-                        warn!(
-                            plan_id = %plan_id,
-                            error = %e,
-                            "disk budget check failed — continuing without enforcement"
-                        );
-                    }
-                }
-            }
-
             let task_def = match ctx
                 .task_index
                 .get(plan_id.as_str())
@@ -10391,8 +10424,6 @@ async fn dispatch_action(
                     return ActionDispatchOutcome::Noop;
                 }
             };
-
-            let mut task_permit = None;
 
             if is_dag_task_spawn && !continuing_preflight {
                 let completed = ctx.state.plan_completed_tasks(plan_id);
@@ -10414,6 +10445,72 @@ async fn dispatch_action(
                 }
             }
 
+            // Reserve both capacity and the exact attempt before disk scans,
+            // worktree I/O, routing, prompt assembly, hooks, or counters. The
+            // executor may offer the same runnable task on every 100 ms tick;
+            // this owner is the single admission boundary that makes those
+            // later ticks cheap no-ops while preparation is in progress.
+            if !continuing_preflight {
+                let Some(permit) = begin_task_capacity(ctx, plan_id, &task_id, is_dag_task_spawn)
+                else {
+                    return ActionDispatchOutcome::Noop;
+                };
+                if let Err(error) = ctx.attempt_ownership.insert(
+                    attempt_ref.clone(),
+                    AttemptOwner::new(AttemptPhase::Dispatching, EffectRef(0)),
+                    AgentRuntimeResource::Dispatching(permit),
+                ) {
+                    if is_dag_task_spawn {
+                        ctx.task_dag.clear_running(plan_id, &task_id);
+                    }
+                    warn!(
+                        attempt = %attempt_ref.key(),
+                        ?error,
+                        "task dispatch admission raced with an existing owner"
+                    );
+                    return ActionDispatchOutcome::Noop;
+                }
+            }
+
+            if max_disk_mb > 0 {
+                match check_plan_disk_budget(&ctx.config.workdir, max_disk_mb).await {
+                    Ok(true) => { /* within budget */ }
+                    Ok(false) => {
+                        ctx.state.disk_budget_paused = true;
+                        let message = format!(
+                            "per-plan disk budget exceeded: .roko/ + target/ > {} MB limit\n\
+                             Free up space or raise `resources.max_plan_disk_mb` in roko.toml.",
+                            max_disk_mb,
+                        );
+                        warn!(plan_id = %plan_id, "{}", message);
+                        ctx.tui.error(&message);
+                        if let Err(e) = ctx
+                            .executor
+                            .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
+                        {
+                            error!(plan_id = %plan_id, error = %e,
+                                "failed to apply Fatal event -- forcing plan terminal");
+                            ctx.state.force_plan_terminal(plan_id);
+                        }
+                        release_prepared_task_dispatch(
+                            ctx.attempt_ownership,
+                            ctx.task_dag,
+                            &attempt_ref,
+                            is_dag_task_spawn,
+                        );
+                        return ActionDispatchOutcome::Noop;
+                    }
+                    Err(e) => {
+                        // Measurement failure: log and continue (do not block).
+                        warn!(
+                            plan_id = %plan_id,
+                            error = %e,
+                            "disk budget check failed — continuing without enforcement"
+                        );
+                    }
+                }
+            }
+
             // Publish the canonical live count before every parallel admission.
             // Under disk pressure, executor ticks keep retrying but only one
             // exact attempt is admitted at a time; normal configured parallelism
@@ -10424,6 +10521,7 @@ async fn dispatch_action(
                     .attempt_ownership
                     .attempts()
                     .into_iter()
+                    .filter(|attempt| attempt != &attempt_ref)
                     .map(|attempt| attempt.key())
                     .collect::<HashSet<_>>();
                 ctx.disk_budget.refresh(ctx.worktrees, &in_flight).await;
@@ -10447,6 +10545,12 @@ async fn dispatch_action(
                                 in_flight = in_flight.len(),
                                 "disk pressure temporarily serializes task admission"
                             );
+                            release_prepared_task_dispatch(
+                                ctx.attempt_ownership,
+                                ctx.task_dag,
+                                &attempt_ref,
+                                is_dag_task_spawn,
+                            );
                             return ActionDispatchOutcome::Noop;
                         }
                         if admission.pressure {
@@ -10467,7 +10571,13 @@ async fn dispatch_action(
                 }
             }
 
-            info!(plan_id = %plan_id, task = %task_id, "spawning agent");
+            info!(
+                plan_id = %plan_id,
+                task = %task_id,
+                attempt = attempt_num,
+                continuation = continuing_preflight,
+                "task dispatch admitted"
+            );
 
             let plan_workdir = match ensure_attempt_workdir(ctx.worktrees, &attempt_ref).await {
                 Ok(path) => path,
@@ -10486,6 +10596,12 @@ async fn dispatch_action(
                             "failed to apply Fatal event -- forcing plan terminal");
                         ctx.state.force_plan_terminal(plan_id);
                     }
+                    release_prepared_task_dispatch(
+                        ctx.attempt_ownership,
+                        ctx.task_dag,
+                        &attempt_ref,
+                        is_dag_task_spawn,
+                    );
                     ctx.tui.error(&message);
                     return ActionDispatchOutcome::Noop;
                 }
@@ -10541,30 +10657,37 @@ async fn dispatch_action(
                         GateCompletionKind::Preflight,
                     );
                     if !ctx.state.mark_gate_active(effect_key.clone()) {
+                        release_prepared_task_dispatch(
+                            ctx.attempt_ownership,
+                            ctx.task_dag,
+                            &attempt_ref,
+                            is_dag_task_spawn,
+                        );
                         return ActionDispatchOutcome::Noop;
                     }
-                    let capacity = begin_task_capacity(ctx, plan_id, &task_id, is_dag_task_spawn);
-                    let Some(permit) = retain_preflight_after_capacity(
-                        ctx.preflight_attempted,
+                    ctx.preflight_attempted.insert(attempt_ref.clone());
+                    let Ok(mut gate_claim) = ctx.attempt_ownership.claim_phase(
                         &attempt_ref,
-                        capacity,
+                        AttemptPhase::Dispatching,
+                        EffectRef(0),
                     ) else {
                         ctx.state.clear_gate_active(&effect_key);
+                        release_prepared_task_dispatch(
+                            ctx.attempt_ownership,
+                            ctx.task_dag,
+                            &attempt_ref,
+                            is_dag_task_spawn,
+                        );
                         return ActionDispatchOutcome::Noop;
                     };
-                    ctx.attempt_ownership
-                        .insert(
-                            attempt_ref.clone(),
-                            AttemptOwner::new(AttemptPhase::AwaitingGate, EffectRef(0)),
-                            AgentRuntimeResource::AwaitingGate {
-                                permit: Some(permit),
-                            },
-                        )
-                        .expect("preflight owner must be unique");
-                    let mut gate_claim = ctx
-                        .attempt_ownership
-                        .claim_phase(&attempt_ref, AttemptPhase::AwaitingGate, EffectRef(0))
-                        .expect("preflight owner must be claimable");
+                    let AgentRuntimeResource::Dispatching(permit) = gate_claim
+                        .replace_resource(AgentRuntimeResource::AwaitingGate { permit: None })
+                    else {
+                        unreachable!("preflight admission must retain task capacity")
+                    };
+                    gate_claim.replace_resource(AgentRuntimeResource::AwaitingGate {
+                        permit: Some(permit),
+                    });
                     let run_id = ctx.state.run_id().to_string();
                     emit_runner_event(
                         ctx.paths,
@@ -10701,22 +10824,6 @@ async fn dispatch_action(
             let task_observation = reflex::observation_for_task(task_def, &previous_gate_output);
             let reflex_may_match = !ctx.reflex_attempted.contains(&attempt_ref)
                 && ctx.reflex_store.has_match(&task_observation);
-            // Reserve the global/plan slot before mutating match counters, but
-            // defer the DAG running transition until the action has passed
-            // authorization. Failed/malformed rules therefore fall through to
-            // the original late provider admission path without leaving DAG
-            // state running across provider-resolution early returns.
-            let mut reflex_capacity = None;
-            if reflex_may_match && !continuing_preflight {
-                let Some(permit) = ctx.task_capacity.try_acquire(plan_id) else {
-                    debug!(
-                        plan_id,
-                        task_id, "capacity unavailable for matching T0 reflex — delaying dispatch"
-                    );
-                    return ActionDispatchOutcome::Noop;
-                };
-                reflex_capacity = Some(permit);
-            }
             if reflex_may_match {
                 if let Some(matched) = ctx
                     .reflex_store
@@ -10747,16 +10854,6 @@ async fn dispatch_action(
                     });
                     ctx.reflex_attempted.insert(attempt_ref.clone());
                     if condition.is_some() && authorized.is_some() {
-                        if !continuing_preflight {
-                            if is_dag_task_spawn && !ctx.task_dag.mark_running(plan_id, &task_id) {
-                                debug!(
-                                    plan_id,
-                                    task_id, "matching T0 task is already running in DAG"
-                                );
-                                return ActionDispatchOutcome::Noop;
-                            }
-                            task_permit = reflex_capacity.take();
-                        }
                         let condition = condition
                             .clone()
                             .expect("checked T0 rule condition must be present");
@@ -10764,26 +10861,10 @@ async fn dispatch_action(
                             authorized.expect("checked T0 authorization must be present");
                         let agent_id = format!("{plan_id}/{task_id}");
                         let agent_effect = EffectRef((u64::from(attempt_num) << 32) | 0x00ff_ff00);
-                        let mut dispatch_claim = if continuing_preflight {
-                            ctx.attempt_ownership
-                                .claim_phase(&attempt_ref, AttemptPhase::Dispatching, EffectRef(0))
-                                .expect("failed preflight continuation must remain claimable")
-                        } else {
-                            ctx.attempt_ownership
-                                .insert(
-                                    attempt_ref.clone(),
-                                    AttemptOwner::new(AttemptPhase::Dispatching, agent_effect),
-                                    AgentRuntimeResource::Dispatching(
-                                        task_permit
-                                            .take()
-                                            .expect("T0 dispatch must own task capacity"),
-                                    ),
-                                )
-                                .expect("checked T0 dispatch owner must be unique");
-                            ctx.attempt_ownership
-                                .claim_phase(&attempt_ref, AttemptPhase::Dispatching, agent_effect)
-                                .expect("new T0 dispatch ownership must be claimable")
-                        };
+                        let mut dispatch_claim = ctx
+                            .attempt_ownership
+                            .claim_phase(&attempt_ref, AttemptPhase::Dispatching, EffectRef(0))
+                            .expect("admitted T0 dispatch must remain claimable");
                         let run_id = ctx.state.run_id().to_string();
                         ctx.sink.task_started(
                             plan_id,
@@ -10878,6 +10959,9 @@ async fn dispatch_action(
                         dispatch_claim.set_agent(agent_id.clone(), None);
                         dispatch_claim
                             .replace_resource(AgentRuntimeResource::Reflex { handle, permit });
+                        if !continuing_preflight || env_flag_enabled("ROKO_FAST_MODE") {
+                            dispatch_claim.reset_attempt_timing(monotonic_now());
+                        }
                         ctx.attempt_ownership
                             .transition_claim(dispatch_claim, AttemptPhase::Agent, agent_effect)
                             .expect("T0 dispatch must retain exact ownership");
@@ -10949,10 +11033,6 @@ async fn dispatch_action(
                     );
                 }
             }
-            drop(reflex_capacity);
-
-            ctx.state.total_agent_calls += 1;
-            ctx.state.task_agent_calls += 1;
 
             let role_enum = parse_dispatch_role(role);
             let task_category = neuro_prompt_task_category(role_enum);
@@ -11104,9 +11184,12 @@ async fn dispatch_action(
                 Err(err) => {
                     let message = format!("dispatch planning failed: {err}");
                     error!(plan_id = %plan_id, task = %task_id, error = %message);
-                    if is_dag_task_spawn {
-                        ctx.task_dag.clear_running(plan_id, &task_id);
-                    }
+                    release_prepared_task_dispatch(
+                        ctx.attempt_ownership,
+                        ctx.task_dag,
+                        &attempt_ref,
+                        is_dag_task_spawn,
+                    );
                     ctx.task_runtime_states.remove(&attempt_ref.key());
                     if let Err(e) = ctx
                         .executor
@@ -11264,9 +11347,12 @@ async fn dispatch_action(
                         "cognitive-autonomy tier cap {max_tier:?} has no configured eligible model"
                     );
                     warn!(plan_id = %plan_id, task = %task_id, %message);
-                    if is_dag_task_spawn {
-                        ctx.task_dag.clear_running(plan_id, &task_id);
-                    }
+                    release_prepared_task_dispatch(
+                        ctx.attempt_ownership,
+                        ctx.task_dag,
+                        &attempt_ref,
+                        is_dag_task_spawn,
+                    );
                     ctx.task_runtime_states.remove(&attempt_ref.key());
                     if let Err(error) = ctx
                         .executor
@@ -11421,6 +11507,15 @@ async fn dispatch_action(
                 }
             }
             let mut final_prompt = dispatch_plan.prompt.user_prompt;
+            if env_flag_enabled("ROKO_FAST_MODE") {
+                system_prompt.push_str(
+                    "\n\n## FAST implementation mode\n\
+                     Produce the smallest correct patch and hand off quickly. Do not run cargo, \
+                     tests, clippy, npm, builds, or servers; the runner owns verification. Avoid \
+                     broad refactors and unrelated edits. End with a structured summary of files \
+                     changed, behavior implemented, and verification the runner should perform.",
+                );
+            }
             info!(
                 plan_id = %plan_id,
                 task = %task_id,
@@ -11515,9 +11610,12 @@ async fn dispatch_action(
                             requested_model, hint_err
                         );
                         error!(plan_id = %plan_id, task = %task_id, error = %message);
-                        if is_dag_task_spawn {
-                            ctx.task_dag.clear_running(plan_id, &task_id);
-                        }
+                        release_prepared_task_dispatch(
+                            ctx.attempt_ownership,
+                            ctx.task_dag,
+                            &attempt_ref,
+                            is_dag_task_spawn,
+                        );
                         ctx.task_runtime_states.remove(&attempt_ref.key());
                         if let Err(e) = ctx
                             .executor
@@ -11548,9 +11646,12 @@ async fn dispatch_action(
                                 requested_model, hint_err, default_model, default_err
                             );
                             error!(plan_id = %plan_id, task = %task_id, error = %message);
-                            if is_dag_task_spawn {
-                                ctx.task_dag.clear_running(plan_id, &task_id);
-                            }
+                            release_prepared_task_dispatch(
+                                ctx.attempt_ownership,
+                                ctx.task_dag,
+                                &attempt_ref,
+                                is_dag_task_spawn,
+                            );
                             ctx.task_runtime_states.remove(&attempt_ref.key());
                             if let Err(e) = ctx
                                 .executor
@@ -11604,37 +11705,14 @@ async fn dispatch_action(
                 }
             }
 
-            if !continuing_preflight && task_permit.is_none() {
-                let Some(permit) = begin_task_capacity(ctx, plan_id, &task_id, is_dag_task_spawn)
-                else {
-                    prompt_experiment_guard.keep_prepared();
-                    return ActionDispatchOutcome::Noop;
-                };
-                task_permit = Some(permit);
-            }
-
             let agent_id = format!("{plan_id}/{task_id}");
             let agent_effect = EffectRef(
                 (u64::from(attempt_num) << 32) | u64::from(ctx.state.task_agent_calls + 1),
             );
-            let mut dispatch_claim = if continuing_preflight {
-                ctx.attempt_ownership
-                    .claim_phase(&attempt_ref, AttemptPhase::Dispatching, EffectRef(0))
-                    .expect("failed preflight continuation must remain claimable")
-            } else {
-                ctx.attempt_ownership
-                    .insert(
-                        attempt_ref.clone(),
-                        AttemptOwner::new(AttemptPhase::Dispatching, agent_effect),
-                        AgentRuntimeResource::Dispatching(
-                            task_permit.take().expect("new dispatch must own capacity"),
-                        ),
-                    )
-                    .expect("checked new dispatch owner must be unique");
-                ctx.attempt_ownership
-                    .claim_phase(&attempt_ref, AttemptPhase::Dispatching, agent_effect)
-                    .expect("new dispatch ownership must be claimable")
-            };
+            let mut dispatch_claim = ctx
+                .attempt_ownership
+                .claim_phase(&attempt_ref, AttemptPhase::Dispatching, EffectRef(0))
+                .expect("admitted provider dispatch must remain claimable");
             let run_id = ctx.state.run_id().to_string();
             emit_runner_event(
                 ctx.paths,
@@ -11821,6 +11899,12 @@ async fn dispatch_action(
                     &requested_model,
                 ),
             );
+            info!(
+                plan_id = %plan_id,
+                task = %task_id,
+                model = %requested_model,
+                "launching admitted agent runtime"
+            );
 
             match dispatch {
                 ResolvedAgentRuntime::Cli {
@@ -11846,6 +11930,11 @@ async fn dispatch_action(
                             .to_string_lossy()
                             .to_string(),
                     ));
+                    if env_flag_enabled("ROKO_AGENT_SHARED_TARGET") {
+                        spawn_config
+                            .extra_env
+                            .push(("ROKO_AGENT_SHARED_TARGET".to_string(), "1".to_string()));
+                    }
                     spawn_config.max_turns = dispatch_turn_limit;
                     spawn_config.effort = dispatch_effort.clone();
                     spawn_config.allowed_tools = contract_allowed_tools.clone();
@@ -11883,6 +11972,7 @@ async fn dispatch_action(
                         .await
                     {
                         Ok(handle) => {
+                            record_admitted_agent_launch(ctx.state);
                             ctx.state.agent_active = true;
                             ctx.state.agent_pid = Some(handle.pid);
                             emit_runner_event(
@@ -11920,6 +12010,9 @@ async fn dispatch_action(
                                 forwarder,
                                 permit,
                             });
+                            if !continuing_preflight || env_flag_enabled("ROKO_FAST_MODE") {
+                                dispatch_claim.reset_attempt_timing(monotonic_now());
+                            }
                             ctx.attempt_ownership
                                 .transition_claim(dispatch_claim, AttemptPhase::Agent, agent_effect)
                                 .expect("CLI dispatch must transition ownership");
@@ -12109,6 +12202,7 @@ async fn dispatch_action(
                         ctx.agent_tx.clone(),
                     ));
                     let bridge = ctx.factory.spawn_shared_agent_bridge(request, raw_agent_tx);
+                    record_admitted_agent_launch(ctx.state);
                     emit_runner_event(
                         ctx.paths,
                         ctx.state,
@@ -12161,6 +12255,9 @@ async fn dispatch_action(
                         heartbeat: Some(heartbeat_handle),
                         permit,
                     });
+                    if !continuing_preflight || env_flag_enabled("ROKO_FAST_MODE") {
+                        dispatch_claim.reset_attempt_timing(monotonic_now());
+                    }
                     ctx.attempt_ownership
                         .transition_claim(dispatch_claim, AttemptPhase::Agent, agent_effect)
                         .expect("bridge dispatch must transition ownership");
@@ -14019,6 +14116,10 @@ async fn clean_task_target_after_gate(
     resources: Option<&roko_core::config::ResourcesConfig>,
     task_workdir: Option<&Path>,
 ) {
+    if env_flag_enabled("ROKO_FAST_MODE") {
+        debug!("ROKO_FAST_MODE enabled — preserving task build artifacts for reuse");
+        return;
+    }
     let enabled = resources
         .map(|resources| resources.target_cleanup_enabled)
         .unwrap_or(true);
@@ -14282,6 +14383,14 @@ async fn post_plan_cleanup(
     let res = resources.unwrap_or(&defaults);
 
     let mut summary = CleanupSummary::default();
+
+    if env_flag_enabled("ROKO_FAST_MODE") {
+        info!("ROKO_FAST_MODE enabled — deferring post-plan log/target/GC maintenance");
+        if worktree_cleanup_eligible(res, all_succeeded) {
+            cleanup_orphan_worktrees(workdir, worktrees).await;
+        }
+        return summary;
+    }
 
     // ── 1. JSONL log rotation ────────────────────────────────────────────
     {
@@ -14854,17 +14963,31 @@ async fn enforce_owned_deadlines_at(
         .as_ref()
         .map(|config| config.timeouts.clone())
         .unwrap_or_default();
-    let policy = DeadlinePolicy::from_config(&timeout_config, plan_total_timeout(config));
+    let policy = fast_mode_deadline_policy(DeadlinePolicy::from_config(
+        &timeout_config,
+        plan_total_timeout(config),
+    ));
     let mut candidates = Vec::new();
     for candidate in ownership.deadline_candidates() {
         if !candidate.eligible {
             continue;
         }
+        let gate_phase = matches!(
+            candidate.phase,
+            AttemptPhase::AwaitingGate | AttemptPhase::Gate
+        );
         let authored = task_index
             .get(&candidate.attempt.plan_id)
             .and_then(|tasks| tasks.get(&candidate.attempt.task_id))
             .map(|task| task.timeout_secs)
-            .filter(|seconds| *seconds > 0);
+            .filter(|seconds| *seconds > 0)
+            .map(|seconds| {
+                if env_flag_enabled("ROKO_FAST_MODE") && !gate_phase {
+                    seconds.min(90)
+                } else {
+                    seconds
+                }
+            });
         let resource = ownership.resource_mut(&candidate.attempt);
         let gate_effect = resource.as_deref().and_then(|resource| match resource {
             AgentRuntimeResource::Gate { effect, .. }
@@ -14878,11 +15001,21 @@ async fn enforce_owned_deadlines_at(
             agent: None,
             timing: candidate.timing,
         };
+        let mut owner_policy = policy;
+        let authored = if env_flag_enabled("ROKO_FAST_MODE") && gate_phase {
+            // Once runner-owned verification begins, its own configured gate
+            // deadline is authoritative; the FAST agent budget must not cut
+            // correctness or cleanup settlement short.
+            owner_policy.task_attempt = Duration::MAX;
+            None
+        } else {
+            authored
+        };
         let Some(mut expiry) = owner_expiry(
             now,
             &candidate.attempt,
             &owner,
-            policy,
+            owner_policy,
             authored,
             gate_effect,
         ) else {
@@ -15105,6 +15238,219 @@ fn record_cancellation_failure(
         RunnerEvent::task_attempt_cancellation_failed(&run_id, attempt.clone(), errors.join("; ")),
     );
     CancelAttemptOutcome::Unconfirmed(errors)
+}
+
+async fn terminate_evidence_git(child: &mut tokio::process::Child) {
+    const REAP_TIMEOUT: Duration = Duration::from_secs(1);
+
+    let _ = child.start_kill();
+    let _ = tokio::time::timeout(REAP_TIMEOUT, child.wait()).await;
+}
+
+async fn bounded_evidence_git_stdout(
+    worktree: &Path,
+    args: &[&str],
+    max_stdout_bytes: usize,
+) -> Result<Vec<u8>> {
+    const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+
+    let mut command = tokio::process::Command::new("git");
+    command
+        .args(args)
+        .current_dir(worktree)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("could not spawn git {}", args.join(" ")))?;
+    let Some(stdout) = child.stdout.take() else {
+        terminate_evidence_git(&mut child).await;
+        return Err(anyhow::anyhow!(
+            "git evidence process did not expose stdout"
+        ));
+    };
+    let deadline = tokio::time::Instant::now() + COMMAND_TIMEOUT;
+    let read_limit = u64::try_from(max_stdout_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let read_result = tokio::time::timeout_at(deadline, async move {
+        let mut bytes = Vec::new();
+        stdout.take(read_limit).read_to_end(&mut bytes).await?;
+        Ok::<_, std::io::Error>(bytes)
+    })
+    .await;
+    let bytes = match read_result {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(error)) => {
+            terminate_evidence_git(&mut child).await;
+            return Err(anyhow::anyhow!(
+                "git {} stdout read failed: {error}",
+                args.join(" ")
+            ));
+        }
+        Err(_) => {
+            terminate_evidence_git(&mut child).await;
+            return Err(anyhow::anyhow!(
+                "git {} timed out after {}s",
+                args.join(" "),
+                COMMAND_TIMEOUT.as_secs()
+            ));
+        }
+    };
+    if bytes.len() > max_stdout_bytes {
+        terminate_evidence_git(&mut child).await;
+        return Err(anyhow::anyhow!(
+            "git {} stdout exceeded {max_stdout_bytes} bytes",
+            args.join(" ")
+        ));
+    }
+    let status = match tokio::time::timeout_at(deadline, child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => {
+            terminate_evidence_git(&mut child).await;
+            return Err(anyhow::anyhow!(
+                "git {} wait failed: {error}",
+                args.join(" ")
+            ));
+        }
+        Err(_) => {
+            terminate_evidence_git(&mut child).await;
+            return Err(anyhow::anyhow!(
+                "git {} timed out after {}s",
+                args.join(" "),
+                COMMAND_TIMEOUT.as_secs()
+            ));
+        }
+    };
+    if !status.success() {
+        return Err(anyhow::anyhow!(
+            "git {} exited with {status}",
+            args.join(" ")
+        ));
+    }
+    Ok(bytes)
+}
+
+async fn export_fast_attempt_evidence(
+    config: &RunConfig,
+    attempt: &TaskAttemptRef,
+    terminal_kind: &str,
+) {
+    const MAX_PATCH_BYTES: usize = 16 * 1024 * 1024;
+    const MAX_STATUS_BYTES: usize = 1024 * 1024;
+    const MAX_HEAD_BYTES: usize = 4 * 1024;
+
+    if !env_flag_enabled("ROKO_FAST_MODE") {
+        return;
+    }
+    let Some(bundle) = std::env::var_os("ROKO_EVIDENCE_BUNDLE").map(PathBuf::from) else {
+        return;
+    };
+    let worktree_id = crate::orchestrator::worktree::format_attempt_worktree_id(
+        &attempt.plan_id,
+        &attempt.task_id,
+        attempt.attempt,
+    );
+    let worktree = config
+        .workdir
+        .join(".roko")
+        .join("worktrees")
+        .join(&worktree_id);
+    if !worktree.join(".git").exists() {
+        return;
+    }
+    let status = bounded_evidence_git_stdout(
+        &worktree,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        MAX_STATUS_BYTES,
+    )
+    .await;
+    if status.as_ref().is_ok_and(Vec::is_empty) {
+        return;
+    }
+    let evidence_dir = bundle.join("attempt-evidence");
+    if let Err(error) = std::fs::create_dir_all(&evidence_dir) {
+        warn!(attempt = %attempt.key(), %error, "could not create FAST attempt evidence directory");
+        return;
+    }
+
+    let (status_entries, status_omitted_reason) = match status {
+        Ok(bytes) => (
+            bytes
+                .split(|byte| *byte == 0)
+                .filter(|entry| !entry.is_empty())
+                .map(|entry| String::from_utf8_lossy(entry).to_string())
+                .collect::<Vec<_>>(),
+            None,
+        ),
+        Err(error) => (Vec::new(), Some(error.to_string())),
+    };
+    let (head, head_omitted_reason) = match bounded_evidence_git_stdout(
+        &worktree,
+        &["rev-parse", "HEAD"],
+        MAX_HEAD_BYTES,
+    )
+    .await
+    {
+        Ok(bytes) => {
+            let head = String::from_utf8_lossy(&bytes).trim().to_string();
+            if head.is_empty() {
+                (
+                    None,
+                    Some("git rev-parse returned empty output".to_string()),
+                )
+            } else {
+                (Some(head), None)
+            }
+        }
+        Err(error) => (None, Some(error.to_string())),
+    };
+    let patch = bounded_evidence_git_stdout(
+        &worktree,
+        &["diff", "--binary", "HEAD", "--"],
+        MAX_PATCH_BYTES,
+    )
+    .await;
+    let patch_name = format!("{worktree_id}.patch");
+    let (patch_written, patch_omitted_reason) = match patch {
+        Ok(bytes) => match persist::atomic_write(&evidence_dir.join(&patch_name), &bytes) {
+            Ok(()) => (true, None),
+            Err(error) => (false, Some(format!("patch write failed: {error}"))),
+        },
+        Err(error) => (false, Some(error.to_string())),
+    };
+    let metadata = serde_json::json!({
+        "schema_version": 1,
+        "attempt": {
+            "plan_id": &attempt.plan_id,
+            "task_id": &attempt.task_id,
+            "attempt": attempt.attempt,
+        },
+        "terminal": terminal_kind,
+        "worktree_id": &worktree_id,
+        "worktree": &worktree,
+        "head": head,
+        "head_omitted_reason": head_omitted_reason,
+        "status": status_entries,
+        "status_truncated": false,
+        "status_omitted_reason": status_omitted_reason,
+        "tracked_patch": patch_written.then_some(&patch_name),
+        "tracked_patch_omitted_reason": patch_omitted_reason,
+        "note": "Untracked files remain recoverable at the preserved worktree path and are listed by status; their contents are not copied.",
+    });
+    match serde_json::to_vec_pretty(&metadata)
+        .map_err(anyhow::Error::from)
+        .and_then(|bytes| {
+            persist::atomic_write(&evidence_dir.join(format!("{worktree_id}.json")), &bytes)
+        }) {
+        Ok(()) => info!(attempt = %attempt.key(), "preserved FAST attempt evidence"),
+        Err(error) => {
+            warn!(attempt = %attempt.key(), %error, "could not persist FAST attempt evidence")
+        }
+    }
 }
 
 async fn cancel_exact_attempt(
@@ -15453,6 +15799,10 @@ async fn cancel_exact_attempt(
             retained_permit = permit;
         }
     }
+    let evidence_terminal: &'static str = match &terminal {
+        AttemptCleanupTerminal::Cancelled => "cancelled",
+        AttemptCleanupTerminal::TimedOut(_) => "timed_out",
+    };
     let phase_durations =
         runtime_task_phase_durations(task_runtime_states, attempt, Instant::now());
     let pending_terminal = match terminal {
@@ -15512,6 +15862,7 @@ async fn cancel_exact_attempt(
         config,
     );
     drop(retained_permit);
+    export_fast_attempt_evidence(config, attempt, evidence_terminal).await;
     CancelAttemptOutcome::Confirmed(outcome)
 }
 

@@ -585,6 +585,10 @@ safety, persistence, payment, or other high-risk changes, and still run the cont
 below before merging. See [Fast development](docs/v2/29-FAST-DEVELOPMENT.md) for the contract,
 security boundaries, and deferred work, and [run evidence bundles](docs/v2/30-EVIDENCE-BUNDLES.md)
 for optional safe GET, CLI, text, and browser proof collection.
+The measured before-state and implementation-vs-verification ledger live in the tracked
+[development-speed audit](tmp/dev-audit/README.md). TUI claims are reconciled separately in the
+[TUI parity index](tmp/tui-parity/00-INDEX.md); source-complete items there are not considered live
+verified until the named interactive run succeeds.
 
 ## CLI quick reference
 

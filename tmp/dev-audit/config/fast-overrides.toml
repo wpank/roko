@@ -1,0 +1,47 @@
+# DESIGN FRAGMENT ONLY.
+#
+# This is not a standalone roko.toml and was not applied. Merge these reviewed values into a copy
+# of the repository config for benchmarking. Some command-level behavior still needs first-class
+# flags, as documented in 07-rollout.md.
+
+[agent]
+default_effort = "low"
+
+[gates]
+mode = "focused"
+compile_concurrency = 1
+clippy_enabled = false
+skip_tests = true
+max_iterations = 1
+cargo_fix_enabled = false
+
+[conductor]
+express_mode = true
+max_auto_fix_attempts = 1
+context_pressure_enabled = false
+
+[learning]
+auto_playbook_refresh = false
+knowledge_file_intel = false
+knowledge_warnings = false
+knowledge_wave_context = false
+knowledge_error_patterns = false
+replan_on_gate_failure = false
+dream_on_completion = false
+
+[timeouts]
+agent_dispatch_secs = 90
+gate_compile_secs = 90
+gate_test_secs = 90
+gate_clippy_secs = 90
+plan_total_secs = 300
+
+[runner]
+dispatch_max_retries = 0
+warm_pool_size = 1
+
+[resources]
+gc_on_plan_start = false
+gc_on_plan_end = false
+gc_on_failure = false
+target_cleanup_enabled = false

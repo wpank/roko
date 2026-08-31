@@ -62,7 +62,30 @@ demo/.runtime/
 # Logs + temp files ----------------------------------------------------------
 *.log
 *.tmp
-/tmp/
+
+# Temporary work stays local by default. The development-speed audit, its
+# reconciled backlog ledgers, and the three current TUI status ledgers are
+# intentionally versioned.
+/tmp/*
+!/tmp/dev-audit/
+!/tmp/dev-audit/**
+!/tmp/backlog/
+/tmp/backlog/*
+!/tmp/backlog/00-INDEX.md
+!/tmp/backlog/58-perf-hot-path-fixes.md
+!/tmp/backlog/212-run-id-snapshot-events.md
+!/tmp/backlog/215-http-run-scoped-event-query.md
+!/tmp/backlog/228-dogfood-session-evidence-bundle.md
+!/tmp/backlog/230-chain-alloy-default-build-feature-gating.md
+!/tmp/backlog/231-cross-crate-change-impact-scoping.md
+!/tmp/backlog/286-fast-hard-deadline-interposition.md
+!/tmp/tui-parity/
+/tmp/tui-parity/*
+!/tmp/tui-parity/00-INDEX.md
+!/tmp/tui-parity/01-IMPLEMENTATION-PLAN.md
+!/tmp/tui-parity/audits/
+/tmp/tui-parity/audits/*
+!/tmp/tui-parity/audits/post-merge-live-audit-2026-08-31.md
 
 # Temporary / work-in-progress (will be refined later) ----------------------
 CLAUDE.md

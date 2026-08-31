@@ -7,6 +7,10 @@
 > **Purpose**: Shorten Roko self-development feedback loops while retaining one explicit,
 > bounded, impact-aware verification and a private evidence record.
 
+The measured baseline and expanded source-vs-final-verification ledger are tracked in
+[`tmp/dev-audit`](../../tmp/dev-audit/README.md). Representative cold/warm promotion benchmarks
+remain open even when an implementation checkbox is complete.
+
 FAST is an operator lane for small, well-scoped implementation tasks. It is not the release lane
 and does not establish that the workspace is globally green.
 

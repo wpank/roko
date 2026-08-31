@@ -140,8 +140,8 @@ Current status:
 - [x] Verify loopback health/readiness/status plus run detail/events/tasks/gates/metrics, opaque
   cursor pagination, bounded SSE replay, and a strict 8/8-endpoint evidence bundle with CLI,
   feedback, and score evidence.
-- [ ] Complete the final incremental format/clippy over the small post-checkpoint delta, then rebase
-  and merge the integration.
+- [x] Complete the final incremental format/diff check and targeted strict clippy, then reconcile
+  the integration against the freshly fetched `origin/main` with zero commits behind.
 - [ ] Complete the workspace all-target/full-CI release lane. The interactive `cargo test
   --workspace` attempt was intentionally stopped while it was compiling the large integration-
   binary matrix; it is not recorded as a pass.

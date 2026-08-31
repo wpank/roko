@@ -203,11 +203,13 @@ That delta subsequently passed the production-path check and targeted strict lin
 
 ## Final evidence still required
 
-- [ ] Rebase the complete integration on the latest `origin/main` and resolve other active-agent
-  changes without dropping work.
+- [x] Refresh and reconcile against `origin/main` at `c28b2d618a142332022e1670764d8e5073053177`;
+  it is an ancestor of the integrated branch (32 commits ahead, zero behind), so no conflictful
+  replay was required and no active-agent work was dropped.
 - [x] Run the final incremental formatting/diff check and targeted strict clippy over the small
   post-checkpoint delta.
-- [ ] Publish the exact final-batch commands, results, and any allowed residual failures.
+- [x] Publish the exact final-batch commands, results, and allowed residuals in this document and
+  the operator-facing FAST/evidence guides.
 - [ ] Run real representative benchmark repetitions: at least five cold and five warm samples per
   selected fixture/lane, retain failures/timeouts, and publish p50/p95 plus bundle links.
 - [x] Exercise `roko run-index repair` in a bounded disposable dry-run/apply fixture with valid,

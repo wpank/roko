@@ -179,8 +179,17 @@ fn declared_impact_context(task: &TaskDef, bounded_context_only: bool) -> String
     )
     .to_ascii_lowercase();
     let high_impact_terms = [
-        "public", "signature", "struct field", "enum", "trait", "serialize", "serde",
-        "schema", "re-export", "reexport", "api contract",
+        "public",
+        "signature",
+        "struct field",
+        "enum",
+        "trait",
+        "serialize",
+        "serde",
+        "schema",
+        "re-export",
+        "reexport",
+        "api contract",
     ];
     let high_impact = !task
         .context
@@ -981,7 +990,7 @@ fn build_runner_context(
         &ctx.workdir,
         crate::plan_policy::PlanExecutionPolicy::for_environment(),
     )
-    .map_err(RunnerDispatchError::PreValidationFailed)?;
+    .map_err(|reason| RunnerDispatchError::PreValidationFailed { reason })?;
     if !declared_context.is_empty() {
         parts.push(declared_context);
     }

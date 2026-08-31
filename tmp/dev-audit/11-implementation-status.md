@@ -156,10 +156,10 @@ workspace/writer/cache/repair leases.
 ## Final verification checkpoint
 
 The following results were produced from the integrated branch before the final rebase/merge. A
-small delta after the strict clippy checkpoint adds a backward-compatible default for the legacy
-`[agent].command` field, replaces empty test-model placeholders, adds explicit-only evidence
-endpoint selection, and closes a final lifecycle ownership edge. The incremental format/clippy
-rerun remains listed below instead of being implied.
+small delta after the first strict clippy checkpoint adds a backward-compatible default for the
+legacy `[agent].command` field, replaces empty test-model placeholders, adds explicit-only evidence
+endpoint selection, and makes the listener-authorization boundary immutable across config reloads.
+That delta subsequently passed the production-path check and targeted strict lint listed below.
 
 - [x] Shell/Python/JSON syntax and command-help checks completed for the development wrappers,
   evidence tooling, benchmark tooling, and checked-in manifests.
@@ -174,6 +174,12 @@ rerun remains listed below instead of being implied.
 - [x] `cargo clippy --locked --workspace --no-deps -j1 -- -D warnings` passed before the small
   post-checkpoint delta above; only the repository's two existing allowed unknown-lint warnings
   were emitted.
+- [x] `cargo check -p roko-cli --bin roko --locked -j1` passed after the final config and listener
+  security changes. With the check-profile cache cold, it took 7m34s; this was intentionally the
+  only final production-path compile.
+- [x] Nightly format plus `git diff --check` passed, followed by
+  `cargo clippy -p roko-cli -p roko-serve -p roko-runtime --no-deps --locked -j1 -- -D warnings`
+  in 48s. It emitted only the same two pre-existing unknown-lint warnings.
 - [x] `roko layer-check` passed after replacing four empty test-only model placeholders with an
   explicit `test-model` value.
 - [x] A disposable cache fixture planned four stale incremental deletions, reclaimed the same four
@@ -199,7 +205,8 @@ rerun remains listed below instead of being implied.
 
 - [ ] Rebase the complete integration on the latest `origin/main` and resolve other active-agent
   changes without dropping work.
-- [ ] Run the final incremental formatting/clippy check over the small post-checkpoint delta.
+- [x] Run the final incremental formatting/diff check and targeted strict clippy over the small
+  post-checkpoint delta.
 - [ ] Publish the exact final-batch commands, results, and any allowed residual failures.
 - [ ] Run real representative benchmark repetitions: at least five cold and five warm samples per
   selected fixture/lane, retain failures/timeouts, and publish p50/p95 plus bundle links.

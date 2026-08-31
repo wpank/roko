@@ -130,11 +130,7 @@ fn render_status_label(status: AgentStatus, theme: &Theme) -> Line<'static> {
     )])
 }
 
-fn render_cumulative_usage(
-    input_tokens: u64,
-    output_tokens: u64,
-    theme: &Theme,
-) -> Line<'static> {
+fn render_cumulative_usage(input_tokens: u64, output_tokens: u64, theme: &Theme) -> Line<'static> {
     Line::from(vec![
         Span::styled("in ", Style::default().fg(theme.muted)),
         Span::styled(

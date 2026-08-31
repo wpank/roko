@@ -38,9 +38,12 @@ fn main() {
     // frontend toolchain. Production release builds retain the embedded SPA,
     // and developers can explicitly request the same work with
     // ROKO_BUILD_FRONTEND=1.
-    let force_build = env::var("ROKO_BUILD_FRONTEND")
-        .ok()
-        .is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"));
+    let force_build = env::var("ROKO_BUILD_FRONTEND").ok().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    });
     let release_build = env::var("PROFILE").is_ok_and(|profile| profile == "release");
     if env::var("SKIP_FRONTEND_BUILD").is_ok() || (!release_build && !force_build) {
         println!("cargo:rustc-cfg=roko_frontend_fallback");

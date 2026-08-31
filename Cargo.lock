@@ -6598,8 +6598,10 @@ dependencies = [
  "parking_lot",
  "roko-core",
  "roko-primitives",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sysinfo",
  "tempfile",
  "tokio",
@@ -6881,6 +6883,7 @@ dependencies = [
  "roko-gate",
  "roko-learn",
  "roko-primitives",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -6895,6 +6898,8 @@ name = "roko-serve"
 version = "0.1.0"
 dependencies = [
  "alloy",
+ "alloy-dyn-abi",
+ "alloy-json-abi",
  "alloy-primitives",
  "anyhow",
  "arc-swap",

@@ -695,10 +695,7 @@ impl TaskAttemptStatus {
             Self::CancellationFailed => matches!(next, Self::Cancelling),
             Self::Cancelling => matches!(
                 next,
-                Self::Cancelled
-                    | Self::TimedOut
-                    | Self::SalvagedToGate
-                    | Self::CancellationFailed
+                Self::Cancelled | Self::TimedOut | Self::SalvagedToGate | Self::CancellationFailed
             ),
             Self::SalvagedToGate => matches!(next, Self::Gating | Self::Failed | Self::Cancelling),
             Self::Failed => matches!(next, Self::Retrying | Self::Exhausted | Self::Cancelling),
@@ -1566,6 +1563,7 @@ impl RunnerEvent {
             | Self::TaskAttemptCancellationRequested { run_id, .. }
             | Self::TaskAttemptCancellationFailed { run_id, .. }
             | Self::TimeoutRecorded { run_id, .. }
+            | Self::TimeoutSalvagedToGate { run_id, .. }
             | Self::AgentDispatchStarted { run_id, .. }
             | Self::AgentDispatchCompleted { run_id, .. }
             | Self::AgentCompleted { run_id, .. }

@@ -12,8 +12,8 @@ use anyhow::{Context, Result, bail};
 use roko_fs::RokoLayout;
 use tracing::info;
 
-use crate::task_parser::TasksFile;
 use crate::plan_policy::{PlanExecutionPolicy, validate_plan_context};
+use crate::task_parser::TasksFile;
 
 /// A loaded plan ready for execution.
 #[derive(Debug, Clone)]

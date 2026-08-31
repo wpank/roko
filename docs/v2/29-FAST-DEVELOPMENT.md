@@ -305,12 +305,13 @@ promotion.
 The final integration checkpoint verified that the default CLI dependency tree excludes the Alloy
 provider/network/RPC-client graph, the no-default serve graph checks, the explicit Alloy/ACP CLI
 graph checks, the current CLI binary builds, and the `roko-cli` library harness completes with
-2,301 passed, zero failed, and one ignored test. Strict workspace no-dependency clippy also passed
-before the final small compatibility/evidence/lifecycle delta. Loopback run
+2,301 passed, zero failed, and one ignored test. Strict workspace no-dependency clippy passed for
+the integrated implementation, and the final CLI/server/runtime delta passed a second strict,
+targeted no-dependency clippy run. Loopback run
 detail/events/tasks/gates/metrics,
 opaque cursor pagination, bounded SSE replay, and a strict eight-endpoint/CLI evidence bundle were
-then exercised successfully. The incremental lint rerun is tracked in the authoritative
-[`tmp/dev-audit/11-implementation-status.md`](../../tmp/dev-audit/11-implementation-status.md).
+then exercised successfully. The final production-path CLI check also passed after the immutable
+listener-authorization boundary was added.
 
 The workspace all-target test command is deliberately not marked green: the interactive attempt
 was stopped while compiling its large integration-binary matrix after many earlier suites passed.
@@ -375,7 +376,8 @@ Completed for P0:
   build, complete CLI library harness, and strict no-dependency clippy checkpoint.
 - [x] Verify the loopback run API, cursor/SSE behavior, and a strict explicit-endpoint evidence
   bundle with passing CLI hook, validation, feedback, and score.
-- [ ] Complete the final incremental format/clippy over the small post-checkpoint delta.
+- [x] Complete the final incremental format/diff check and strict CLI/server/runtime clippy over
+  the small post-checkpoint delta.
 - [ ] Complete the workspace all-target/full-CI release lane; the stopped interactive compilation
   is not a passing test result.
 - [ ] Five cold and five warm representative samples, manual baselines, escaped regressions, and
@@ -390,7 +392,8 @@ Verification completed for the landed P0 change:
   and oversized-diff smoke checks.
 - [ ] Full `roko-cli` unit-test target: deliberately stopped after workspace-scale compilation took
   several minutes without reaching a test.
-- [ ] Workspace tests and strict workspace clippy: deferred to release/CI; do not infer a pass.
+- [ ] Workspace all-target tests: deferred to release/CI; do not infer a pass from the green
+  library harness or targeted final lint.
 
 Deferred improvements:
 

@@ -1271,6 +1271,28 @@ pub fn format_dashboard_event(
             let icon = if *success { "+" } else { "x" };
             (format!("[{plan_id}]"), icon, format!("Plan {outcome}"))
         }
+        DashboardEvent::RunCompleted {
+            outcome,
+            duration_ms,
+            cleanup_degraded,
+            ..
+        } => {
+            let icon = if outcome == "succeeded" || outcome == "completed" {
+                "+"
+            } else {
+                "x"
+            };
+            let cleanup = if *cleanup_degraded {
+                "; cleanup degraded"
+            } else {
+                ""
+            };
+            (
+                "[run]".to_string(),
+                icon,
+                format!("Run {outcome} in {duration_ms}ms{cleanup}"),
+            )
+        }
         DashboardEvent::TaskStarted {
             plan_id,
             task_id,

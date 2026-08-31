@@ -208,10 +208,7 @@ pub async fn create_share(
                     {
                         Ok(transcript) => transcript,
                         Err(e) => {
-                            return (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                Json(json!({"error": e})),
-                            )
+                            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e})))
                                 .into_response();
                         }
                     }
@@ -1197,7 +1194,11 @@ mod tests {
         let state = make_state_in_dir(&dir);
 
         assert!(
-            !state.runtime_event_logger.run_path("run-1").unwrap().exists(),
+            !state
+                .runtime_event_logger
+                .run_path("run-1")
+                .unwrap()
+                .exists(),
             "run index must be absent before test"
         );
 

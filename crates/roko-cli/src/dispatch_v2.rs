@@ -737,7 +737,12 @@ fn codex_shared_target_dir(request: &CliDispatchRequest) -> Option<PathBuf> {
     } else {
         request.workdir.join(configured)
     };
-    let target_dir = normalize_absolute_path(&absolute)?;
+    // Compare resolved filesystem identities throughout. On macOS, temporary
+    // paths are commonly spelled through `/var` while `canonicalize` returns
+    // the equivalent `/private/var` path; mixing those forms would reject the
+    // repository's legitimate shared target. Canonicalizing here also makes a
+    // nested symlink escape fail the later repository-target containment check.
+    let target_dir = std::fs::canonicalize(&absolute).ok()?;
     let workdir = std::fs::canonicalize(&request.workdir)
         .ok()
         .or_else(|| normalize_absolute_path(&request.workdir))?;
@@ -787,12 +792,11 @@ fn codex_shared_target_dir(request: &CliDispatchRequest) -> Option<PathBuf> {
     {
         return None;
     }
-    let resolved_target = std::fs::canonicalize(&target_dir).ok()?;
     let resolved_allowed = std::fs::canonicalize(&allowed_target).ok()?;
-    if resolved_allowed != allowed_target || !resolved_target.starts_with(&resolved_allowed) {
+    if resolved_allowed != allowed_target || !target_dir.starts_with(&resolved_allowed) {
         return None;
     }
-    Some(resolved_target)
+    Some(target_dir)
 }
 
 fn normalize_absolute_path(path: &Path) -> Option<PathBuf> {

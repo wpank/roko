@@ -620,9 +620,7 @@ impl ModelCallService {
         with_event_persist_publish_order(|| {
             let cursor = self.emit_with_cursor(&event);
             if let Some(observer) = &self.inference_observer {
-                observer.on_error_with_cursor(
-                    run_id, request_id, model, agent_id, error, cursor,
-                );
+                observer.on_error_with_cursor(run_id, request_id, model, agent_id, error, cursor);
             }
         });
     }
@@ -2173,9 +2171,9 @@ fn canonical_run_id(run_id: &str) -> bool {
         && run_id.len() <= 128
         && run_id != "."
         && !run_id.contains("..")
-        && run_id.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
-        })
+        && run_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
 #[async_trait]
@@ -3655,7 +3653,7 @@ mod tests {
         );
 
         let cell = ProviderCallCell {
-            config,
+            config: Arc::new(config),
             cost_table: CostTable::default(),
             rate_limiter: Some(Arc::new(ProviderRateLimiter::new(60))),
             provider_outcome_recorder: None,

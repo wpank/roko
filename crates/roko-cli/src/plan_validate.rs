@@ -153,6 +153,13 @@ fn validate_plans_dir_impl(
                     plan_dir,
                     roko_cli::plan_policy::PlanExecutionPolicy::for_environment(),
                 ) {
+                    // The file-reference pass already classifies missing read
+                    // prerequisites as PLAN_030/PLAN_031 warnings, including
+                    // declared cross-plan outputs. Do not duplicate and promote
+                    // the same finding to a fail-fast runner-policy error here.
+                    if issue.code == "PLAN_CONTEXT_MISSING" {
+                        continue;
+                    }
                     plan.diagnostics.push(Diagnostic {
                         severity: Severity::Error,
                         rule_id: issue.code.to_string(),

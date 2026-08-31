@@ -1680,12 +1680,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             let policy = roko_cli::plan_policy::PlanExecutionPolicy::generated_for_environment(
                 roko_cli::plan_policy::DEFAULT_GENERATED_TASK_LIMIT,
             );
-            let policy_issues = roko_cli::plan_policy::validate_plan_context(
-                &merged,
-                &workdir,
-                &plan_dir,
-                policy,
-            );
+            let policy_issues =
+                roko_cli::plan_policy::validate_plan_context(&merged, &workdir, &plan_dir, policy);
             if !policy_issues.is_empty() {
                 std::fs::write(&tasks_path, &existing)
                     .with_context(|| format!("restore {}", tasks_path.display()))?;

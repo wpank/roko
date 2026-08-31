@@ -2353,6 +2353,7 @@ mod tests {
         tokio::fs::write(target.join("artifact"), b"data")
             .await
             .unwrap();
+        let canonical_target = std::fs::canonicalize(&target).unwrap();
 
         let resources = roko_core::config::ResourcesConfig {
             log_rotation_max_mb: 0,
@@ -2373,7 +2374,7 @@ mod tests {
             report
                 .stale_target_dirs
                 .iter()
-                .any(|finding| finding.path == target.display().to_string())
+                .any(|finding| finding.path == canonical_target.display().to_string())
         );
     }
 

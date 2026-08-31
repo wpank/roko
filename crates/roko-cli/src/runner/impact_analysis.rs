@@ -140,22 +140,26 @@ pub async fn analyze(
         .map(|path| normalize_relative(path))
         .filter(|path| !path.is_empty())
         .collect::<BTreeSet<_>>();
-    let actual = report.changed_files.iter().cloned().collect::<BTreeSet<_>>();
+    let actual = report
+        .changed_files
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
     report.planned_but_unchanged = planned
         .iter()
         .filter(|declared| {
-            !actual.iter().any(|path| {
-                path == *declared || path.starts_with(&format!("{declared}/"))
-            })
+            !actual
+                .iter()
+                .any(|path| path == *declared || path.starts_with(&format!("{declared}/")))
         })
         .cloned()
         .collect();
     report.unplanned_changes = actual
         .iter()
         .filter(|path| {
-            !planned.iter().any(|declared| {
-                *path == declared || path.starts_with(&format!("{declared}/"))
-            })
+            !planned
+                .iter()
+                .any(|declared| *path == declared || path.starts_with(&format!("{declared}/")))
         })
         .cloned()
         .collect();
@@ -169,9 +173,8 @@ pub async fn analyze(
         .iter()
         .any(|path| workspace_build_input(path))
     {
-        report.fallback_reason = Some(
-            "workspace Cargo/build input changed; focused target selection is unsafe".into(),
-        );
+        report.fallback_reason =
+            Some("workspace Cargo/build input changed; focused target selection is unsafe".into());
         report.analysis_ms = elapsed_ms(started);
         return report;
     }
@@ -283,11 +286,10 @@ pub async fn analyze(
         // integration tests, and benches in the same package without an edge
         // in Cargo's package graph. Include those exact targets (and their
         // required features) before traversing cross-package dependents.
-        for package in packages.iter().filter(|package| {
-            report
-                .producer_packages
-                .contains(&package.name.to_string())
-        }) {
+        for package in packages
+            .iter()
+            .filter(|package| report.producer_packages.contains(&package.name.to_string()))
+        {
             for target in &package.targets {
                 if let Some(selector) = target_selector(target) {
                     targets.insert(ImpactedTarget {
@@ -356,9 +358,7 @@ fn structural_only_path(path: &str) -> bool {
     let documentation_name = ["readme", "changelog", "contributing", "license"]
         .iter()
         .any(|prefix| basename.starts_with(prefix))
-        && (!basename.contains('.')
-            || basename.ends_with(".md")
-            || basename.ends_with(".txt"));
+        && (!basename.contains('.') || basename.ends_with(".md") || basename.ends_with(".txt"));
     lower.starts_with("docs/")
         || lower.starts_with("tmp/")
         || lower == ".roko/gaps.md"
@@ -540,10 +540,7 @@ async fn changed_files(workdir: &Path, limit: Duration) -> Result<BTreeSet<Strin
     )
     .await?;
     let mut files = parse_git_paths(&tracked, "git diff --name-only -z")?;
-    files.extend(parse_git_paths(
-        &untracked,
-        "git ls-files --others -z",
-    )?);
+    files.extend(parse_git_paths(&untracked, "git ls-files --others -z")?);
     if files.len() > MAX_CHANGED_FILES {
         return Err(format!(
             "combined changed path count exceeded {MAX_CHANGED_FILES}"
@@ -592,9 +589,10 @@ fn package_for_path<'a>(
     });
     let owner = owners.first().copied()?;
     let root = owner.manifest_path.as_std_path().parent()?;
-    (!owners.iter().skip(1).any(|candidate| {
-        candidate.manifest_path.as_std_path().parent() == Some(root)
-    }))
+    (!owners
+        .iter()
+        .skip(1)
+        .any(|candidate| candidate.manifest_path.as_std_path().parent() == Some(root)))
     .then_some(owner)
 }
 
@@ -675,8 +673,10 @@ fn targets_for_path(workdir: &Path, changed: &str, package: &Package) -> Vec<Imp
         };
         let matches_family = matches!(
             (&selector, family),
-            (CargoTargetSelector::Lib | CargoTargetSelector::Bin(_), "lib")
-                | (CargoTargetSelector::Bin(_), "bin")
+            (
+                CargoTargetSelector::Lib | CargoTargetSelector::Bin(_),
+                "lib"
+            ) | (CargoTargetSelector::Bin(_), "bin")
                 | (CargoTargetSelector::Test(_), "test")
                 | (CargoTargetSelector::Example(_), "example")
                 | (CargoTargetSelector::Bench(_), "bench")
@@ -736,10 +736,14 @@ async fn public_surface_reasons(
             .await
             .map_err(|error| format!("open untracked Rust input `{path}`: {error}"))?;
         let mut encoded = Vec::with_capacity(remaining.min(64 * 1024));
-        file.take(u64::try_from(remaining).unwrap_or(u64::MAX).saturating_add(1))
-            .read_to_end(&mut encoded)
-            .await
-            .map_err(|error| format!("read untracked Rust input `{path}`: {error}"))?;
+        file.take(
+            u64::try_from(remaining)
+                .unwrap_or(u64::MAX)
+                .saturating_add(1),
+        )
+        .read_to_end(&mut encoded)
+        .await
+        .map_err(|error| format!("read untracked Rust input `{path}`: {error}"))?;
         if encoded.len() > remaining {
             return Err(format!(
                 "untracked Rust inputs exceeded {MAX_UNTRACKED_RUST_INPUT} bytes"

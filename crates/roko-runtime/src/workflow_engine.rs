@@ -1330,8 +1330,7 @@ mod tests {
         let roko_dir = workdir.join(".roko");
         let event_log = roko_dir.join("runtime-events.jsonl");
         let feedback_log = roko_dir.join("learn").join("efficiency.jsonl");
-        let event_start_seq =
-            crate::event_bus::runtime_event_bus::<RuntimeEvent>().total_emitted();
+        let event_start_seq = crate::event_bus::runtime_event_bus::<RuntimeEvent>().total_emitted();
 
         let services = EffectServices {
             default_model: "mock".to_string(),

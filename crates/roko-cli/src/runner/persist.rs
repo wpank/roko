@@ -531,8 +531,8 @@ fn append_buffered_run_index(
     line: &[u8],
     flush: bool,
 ) -> Result<()> {
-    let run_path = roko_fs::run_index::run_index_path(global_path, run_id)
-        .map_err(anyhow::Error::msg)?;
+    let run_path =
+        roko_fs::run_index::run_index_path(global_path, run_id).map_err(anyhow::Error::msg)?;
     let mut cache = run_index_writers()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);

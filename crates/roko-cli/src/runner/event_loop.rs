@@ -3054,9 +3054,7 @@ pub async fn run_with_tui_commands(
     // retried on the next startup.
     let prompt_experiment_store = config.layout.learn_dir().join("experiments.json");
     let prompt_reconciliation = if env_flag_enabled("ROKO_FAST_MODE") {
-        info!(
-            "ROKO_FAST_MODE enabled — deferring historical prompt-experiment reconciliation"
-        );
+        info!("ROKO_FAST_MODE enabled — deferring historical prompt-experiment reconciliation");
         None
     } else {
         Some(
@@ -3172,11 +3170,7 @@ pub async fn run_with_tui_commands(
             runtime.phase_clock.attempt_started_at = Instant::now();
         }
         task_dag.mark_running(&attempt.plan_id, &attempt.task_id);
-        queue_pending_gate_task(
-            &mut pending_gate_tasks,
-            &attempt.plan_id,
-            &attempt.task_id,
-        );
+        queue_pending_gate_task(&mut pending_gate_tasks, &attempt.plan_id, &attempt.task_id);
         attempt_ownership
             .insert(
                 attempt.clone(),
@@ -6442,8 +6436,8 @@ pub async fn run_with_tui_commands(
                 RunOutcome::Failed
             };
             let survivors = attempt_ownership.surviving_agent_metadata();
-            let cleanup_degraded = survivors.active
-                || attempt_ownership.unrecovered_claim_count() > 0;
+            let cleanup_degraded =
+                survivors.active || attempt_ownership.unrecovered_claim_count() > 0;
             let mut event = build_run_completed_event(&state, &final_report, outcome);
             if cleanup_degraded {
                 annotate_degraded_cleanup(
@@ -7013,8 +7007,7 @@ async fn conductor_supervision_tick(
                     "conductor restart could not confirm cleanup; failing closed"
                 );
                 let report = build_report(executor, plans, state, task_dag);
-                let mut event =
-                    build_run_completed_event(state, &report, RunOutcome::Failed);
+                let mut event = build_run_completed_event(state, &report, RunOutcome::Failed);
                 annotate_degraded_cleanup(
                     &mut event,
                     survivors.agent_ids.clone(),
@@ -7121,8 +7114,7 @@ async fn conductor_supervision_tick(
                 || survivors.active
                 || attempt_ownership.unrecovered_claim_count() > 0;
             let report = build_report(executor, plans, state, task_dag);
-            let mut completed_event =
-                build_run_completed_event(state, &report, RunOutcome::Failed);
+            let mut completed_event = build_run_completed_event(state, &report, RunOutcome::Failed);
             if cleanup_degraded {
                 annotate_degraded_cleanup(
                     &mut completed_event,
@@ -8188,7 +8180,10 @@ fn append_agent_event(paths: &PersistPaths, event: &AgentEvent, state: &RunState
         "event": agent_event_json(event),
     });
 
-    let relaxed = matches!(event, AgentEvent::MessageDelta { .. } | AgentEvent::ToolOutput { .. });
+    let relaxed = matches!(
+        event,
+        AgentEvent::MessageDelta { .. } | AgentEvent::ToolOutput { .. }
+    );
     let flush_index = matches!(
         event,
         AgentEvent::TurnCompleted { .. } | AgentEvent::Error { .. } | AgentEvent::Exited { .. }
@@ -10362,9 +10357,7 @@ fn fast_startup_limit() -> Duration {
         .unwrap_or(Duration::from_secs(15))
 }
 
-fn startup_control(
-    ctx: &RunContext<'_>,
-) -> Option<(AgentStartupControl, DispatchInterruption)> {
+fn startup_control(ctx: &RunContext<'_>) -> Option<(AgentStartupControl, DispatchInterruption)> {
     let remaining = ctx.dispatch_deadline?.remaining(monotonic_now())?;
     let startup_limit = fast_startup_limit();
     let interruption = if remaining <= startup_limit {
@@ -10390,9 +10383,7 @@ fn dispatch_timeout_event(
 ) -> TimeoutEvent {
     let (kind, limit) = match interruption {
         DispatchInterruption::Deadline => (TimeoutKind::HardRun, plan_total_timeout(ctx.config)),
-        DispatchInterruption::StartupDeadline => {
-            (TimeoutKind::TaskAttempt, fast_startup_limit())
-        }
+        DispatchInterruption::StartupDeadline => (TimeoutKind::TaskAttempt, fast_startup_limit()),
         DispatchInterruption::Cancelled => unreachable!("cancellation is not a timeout"),
     };
     TimeoutEvent {
@@ -11091,13 +11082,8 @@ async fn dispatch_action(
                 let disk_check = match disk_check {
                     Ok(result) => result,
                     Err(interruption) => {
-                        settle_dispatch_interruption(
-                            ctx,
-                            &attempt_ref,
-                            EffectRef(0),
-                            interruption,
-                        )
-                        .await;
+                        settle_dispatch_interruption(ctx, &attempt_ref, EffectRef(0), interruption)
+                            .await;
                         return ActionDispatchOutcome::Noop;
                     }
                 };
@@ -11159,13 +11145,8 @@ async fn dispatch_action(
                 )
                 .await
                 {
-                    settle_dispatch_interruption(
-                        ctx,
-                        &attempt_ref,
-                        EffectRef(0),
-                        interruption,
-                    )
-                    .await;
+                    settle_dispatch_interruption(ctx, &attempt_ref, EffectRef(0), interruption)
+                        .await;
                     return ActionDispatchOutcome::Noop;
                 }
                 match roko_fs::available_disk_mb(&ctx.config.workdir) {
@@ -11231,13 +11212,8 @@ async fn dispatch_action(
             .await;
             let plan_workdir = match workdir_result {
                 Err(interruption) => {
-                    settle_dispatch_interruption(
-                        ctx,
-                        &attempt_ref,
-                        EffectRef(0),
-                        interruption,
-                    )
-                    .await;
+                    settle_dispatch_interruption(ctx, &attempt_ref, EffectRef(0), interruption)
+                        .await;
                     return ActionDispatchOutcome::Noop;
                 }
                 Ok(Ok(path)) => path,
@@ -12052,13 +12028,8 @@ async fn dispatch_action(
                     Vec::new()
                 }
                 Err(interruption) => {
-                    settle_dispatch_interruption(
-                        ctx,
-                        &attempt_ref,
-                        EffectRef(0),
-                        interruption,
-                    )
-                    .await;
+                    settle_dispatch_interruption(ctx, &attempt_ref, EffectRef(0), interruption)
+                        .await;
                     return ActionDispatchOutcome::Noop;
                 }
             };
@@ -12860,9 +12831,8 @@ async fn dispatch_action(
                                 let _ = persist::save_agent_pids(ctx.paths, &[pid]);
                                 return ActionDispatchOutcome::Noop;
                             }
-                            dispatch_claim.replace_resource(
-                                AgentRuntimeResource::Dispatching(permit),
-                            );
+                            dispatch_claim
+                                .replace_resource(AgentRuntimeResource::Dispatching(permit));
                             ctx.attempt_ownership
                                 .transition_claim(
                                     dispatch_claim,
@@ -12871,9 +12841,7 @@ async fn dispatch_action(
                                 )
                                 .expect("confirmed CLI startup interruption must restore owner");
                             let interruption = match interruption {
-                                AgentStartupInterruption::Deadline => {
-                                    startup_deadline_interruption
-                                }
+                                AgentStartupInterruption::Deadline => startup_deadline_interruption,
                                 AgentStartupInterruption::Cancelled => {
                                     DispatchInterruption::Cancelled
                                 }
@@ -13389,7 +13357,9 @@ async fn dispatch_action(
                             Err(error) => {
                                 completion.passed = false;
                                 completion.failure_kind = Some(RunnerFailureKind::Resource);
-                                completion.output = format!("timeout salvage input identity unavailable before ordinary gate start: {error}");
+                                completion.output = format!(
+                                    "timeout salvage input identity unavailable before ordinary gate start: {error}"
+                                );
                             }
                         }
                     }
@@ -15891,14 +15861,13 @@ async fn handle_global_timeout(
         let pids = attempt_ownership.surviving_agent_metadata().pids;
         let _ = persist::save_agent_pids(paths, &pids);
         writer.flush();
-        let retry_at = (tokio::time::Instant::now() + Duration::from_millis(100))
-            .min(settlement_deadline);
+        let retry_at =
+            (tokio::time::Instant::now() + Duration::from_millis(100)).min(settlement_deadline);
         tokio::time::sleep_until(retry_at).await;
     }
     let survivors = attempt_ownership.surviving_agent_metadata();
-    let cleanup_degraded = !cleanup_confirmed
-        || survivors.active
-        || attempt_ownership.unrecovered_claim_count() > 0;
+    let cleanup_degraded =
+        !cleanup_confirmed || survivors.active || attempt_ownership.unrecovered_claim_count() > 0;
     if cleanup_degraded {
         warn!(
             surviving_agents = ?survivors.agent_ids,
@@ -16273,15 +16242,12 @@ struct CancelAllSummary {
 impl CancelAllSummary {
     fn all_confirmed(&self) -> bool {
         self.quarantined.is_empty()
-            && self
-                .attempts
-                .iter()
-                .all(|entry| {
-                    matches!(
-                        entry.outcome,
-                        CancelAttemptOutcome::Confirmed(_) | CancelAttemptOutcome::SalvagedToGate
-                    )
-                })
+            && self.attempts.iter().all(|entry| {
+                matches!(
+                    entry.outcome,
+                    CancelAttemptOutcome::Confirmed(_) | CancelAttemptOutcome::SalvagedToGate
+                )
+            })
     }
 }
 
@@ -16549,8 +16515,7 @@ async fn timeout_salvage_diff(
         .collect::<Vec<_>>();
     // Unmerged paths are not a safe handoff. The ordinary gate owns all
     // other validation, including exact input hashing and safety contracts.
-    const UNMERGED_CODES: [&[u8]; 7] =
-        [b"DD", b"AU", b"UD", b"UA", b"DU", b"AA", b"UU"];
+    const UNMERGED_CODES: [&[u8]; 7] = [b"DD", b"AU", b"UD", b"UA", b"DU", b"AA", b"UU"];
     if entries.iter().any(|entry| {
         entry.get(2) == Some(&b' ')
             && UNMERGED_CODES
@@ -16598,10 +16563,7 @@ fn timeout_salvage_safety_block(
     (!blocks.is_empty()).then(|| blocks.join("; "))
 }
 
-fn timeout_salvage_event_exists(
-    path: &Path,
-    attempt: &TaskAttemptRef,
-) -> std::io::Result<bool> {
+fn timeout_salvage_event_exists(path: &Path, attempt: &TaskAttemptRef) -> std::io::Result<bool> {
     let Some(contents) = read_bounded_jsonl_tail(path)? else {
         return Ok(false);
     };
@@ -16647,13 +16609,9 @@ fn persist_timeout_salvage(
             .map_err(|error| format!("failed to persist timeout salvage event: {error}"))?;
     }
     let ledger_kind = "timeout_salvaged_to_gate";
-    let ledger_exists = terminal_ledger_entry_exists(
-        &paths.run_ledger_jsonl,
-        ledger_kind,
-        &run_id,
-        attempt,
-    )
-    .map_err(|error| format!("failed to inspect timeout salvage ledger: {error}"))?;
+    let ledger_exists =
+        terminal_ledger_entry_exists(&paths.run_ledger_jsonl, ledger_kind, &run_id, attempt)
+            .map_err(|error| format!("failed to inspect timeout salvage ledger: {error}"))?;
     if !ledger_exists {
         let data = serde_json::json!({
             "run_id": run_id,
@@ -17236,41 +17194,41 @@ async fn cancel_exact_attempt(
                     // now moves to a no-provider AwaitingGate resource.  The
                     // fingerprint persisted above therefore binds the handoff;
                     // only runner-owned gate effects may run before merge.
-                claim.replace_resource(AgentRuntimeResource::AwaitingGate {
-                    permit: retained_permit.take(),
-                });
-                ownership
-                    .transition_claim(claim, AttemptPhase::AwaitingGate, EffectRef(0))
-                    .expect("durable timeout salvage must transfer exact gate ownership");
-                transition_task_runtime(
-                    task_runtime_states,
-                    attempt,
-                    TaskTimingPhase::Gate,
-                    Instant::now(),
-                );
-                queue_pending_gate_task(pending_gate_tasks, &attempt.plan_id, &attempt.task_id);
-                apply_agent_completion(executor, &attempt.plan_id, tui);
-                let survivors = ownership.surviving_agent_metadata();
-                state.agent_active = survivors.active;
-                state.agent_pid = survivors.pids.first().copied();
-                state.agent_turn_completed = false;
-                let _ = persist::save_agent_pids(paths, &survivors.pids);
-                if let Some(agent) = cancelled_agent.as_ref() {
-                    tui.agent_completed(
-                        &agent.agent_id,
+                    claim.replace_resource(AgentRuntimeResource::AwaitingGate {
+                        permit: retained_permit.take(),
+                    });
+                    ownership
+                        .transition_claim(claim, AttemptPhase::AwaitingGate, EffectRef(0))
+                        .expect("durable timeout salvage must transfer exact gate ownership");
+                    transition_task_runtime(
+                        task_runtime_states,
+                        attempt,
+                        TaskTimingPhase::Gate,
+                        Instant::now(),
+                    );
+                    queue_pending_gate_task(pending_gate_tasks, &attempt.plan_id, &attempt.task_id);
+                    apply_agent_completion(executor, &attempt.plan_id, tui);
+                    let survivors = ownership.surviving_agent_metadata();
+                    state.agent_active = survivors.active;
+                    state.agent_pid = survivors.pids.first().copied();
+                    state.agent_turn_completed = false;
+                    let _ = persist::save_agent_pids(paths, &survivors.pids);
+                    if let Some(agent) = cancelled_agent.as_ref() {
+                        tui.agent_completed(
+                            &agent.agent_id,
+                            &attempt.plan_id,
+                            &attempt.task_id,
+                            attempt.attempt,
+                        );
+                    }
+                    tui.task_phase_changed(
                         &attempt.plan_id,
                         &attempt.task_id,
-                        attempt.attempt,
+                        "implementing",
+                        "gating-salvaged-diff",
                     );
-                }
-                tui.task_phase_changed(
-                    &attempt.plan_id,
-                    &attempt.task_id,
-                    "implementing",
-                    "gating-salvaged-diff",
-                );
-                info!(attempt = %attempt.key(), "timed-out diff transferred to ordinary gate ownership");
-                return CancelAttemptOutcome::SalvagedToGate;
+                    info!(attempt = %attempt.key(), "timed-out diff transferred to ordinary gate ownership");
+                    return CancelAttemptOutcome::SalvagedToGate;
                 }
                 Err(error) => {
                     warn!(attempt = %attempt.key(), %error,
@@ -18047,9 +18005,8 @@ fn read_bounded_jsonl_tail(path: &Path) -> std::io::Result<Option<String>> {
     let len = file.metadata()?.len();
     let start = len.saturating_sub(MAX_TAIL_BYTES);
     file.seek(SeekFrom::Start(start))?;
-    let mut bytes = Vec::with_capacity(
-        usize::try_from(len.saturating_sub(start)).unwrap_or(4 * 1024 * 1024),
-    );
+    let mut bytes =
+        Vec::with_capacity(usize::try_from(len.saturating_sub(start)).unwrap_or(4 * 1024 * 1024));
     file.read_to_end(&mut bytes)?;
     if start > 0 {
         if let Some(first_newline) = bytes.iter().position(|byte| *byte == b'\n') {
@@ -20156,6 +20113,20 @@ mod tests {
             .expect("run replay fixture git command")
     }
 
+    fn replay_fixture_cargo(workdir: &Path) -> std::process::Command {
+        let mut command = std::process::Command::new("cargo");
+        command
+            .current_dir(workdir)
+            // The workspace test runner may itself use a shared target or a
+            // compiler wrapper. Neither is part of this isolated replay
+            // fixture, and inheriting either can make the second worktree
+            // spuriously fresh or fail before rustc starts.
+            .env("CARGO_TARGET_DIR", workdir.join("target"))
+            .env("RUSTC_WRAPPER", "")
+            .env("RUSTC_WORKSPACE_WRAPPER", "");
+        command
+    }
+
     struct ReplayFixture {
         _repo: TempDir,
         repo_root: PathBuf,
@@ -20198,9 +20169,8 @@ mod tests {
         )
         .expect("write deterministic replay build script");
         std::fs::write(repo_root.join(".gitignore"), "/target\n").expect("write replay gitignore");
-        let lock = std::process::Command::new("cargo")
+        let lock = replay_fixture_cargo(&repo_root)
             .args(["generate-lockfile", "--offline"])
-            .current_dir(&repo_root)
             .output()
             .expect("generate replay lockfile");
         assert!(
@@ -20227,9 +20197,8 @@ mod tests {
             .create("source", "roko/test/reflex-source")
             .await
             .expect("create Premium source fixture");
-        let source_test = std::process::Command::new("cargo")
+        let source_test = replay_fixture_cargo(&source.path)
             .args(["test", "--offline"])
-            .current_dir(&source.path)
             .output()
             .expect("materialize Premium source delta");
         assert!(
@@ -21513,9 +21482,13 @@ slug = "fixture-model"
             .expect("attempt-2 spawn terminal");
         assert!(!prompt_experiment_observation_eligible);
         assert!(timing.dispatch_ms > 0);
+        assert!(timing.startup_ms > 0);
         assert_eq!(timing.agent_ms, 0);
         assert_eq!(timing.gate_ms, 0);
-        assert_eq!(timing.total_ms(), timing.dispatch_ms + timing.cleanup_ms);
+        assert_eq!(
+            timing.total_ms(),
+            timing.dispatch_ms + timing.startup_ms + timing.cleanup_ms
+        );
         assert!(!runtimes.contains_key(&TaskAttemptRef::new("plan", "task", 2).key()));
     }
 

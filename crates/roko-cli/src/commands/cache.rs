@@ -31,9 +31,7 @@ pub(crate) async fn cmd_cache(cli: &Cli, cmd: CacheCmd) -> Result<i32> {
                 evidence_budget_bytes: evidence_budget_mb.saturating_mul(MIB),
                 context_cache_budget_bytes: context_budget_mb.saturating_mul(MIB),
                 min_incremental_age: Duration::from_secs(min_age_hours.saturating_mul(3600)),
-                max_evidence_age: Duration::from_secs(
-                    max_evidence_age_days.saturating_mul(86_400),
-                ),
+                max_evidence_age: Duration::from_secs(max_evidence_age_days.saturating_mul(86_400)),
                 preserve_evidence_runs: keep_runs,
                 ..CacheCleanupPolicy::default()
             };
@@ -64,8 +62,14 @@ fn print_report(workdir: &Path, report: &CacheCleanupReport) {
     println!("cache lifecycle: {}", workdir.display());
     println!("  target artifacts: {}", human_bytes(report.target_bytes));
     println!("  run evidence:     {}", human_bytes(report.evidence_bytes));
-    println!("  context cache:    {}", human_bytes(report.context_cache_bytes));
-    println!("  log archives:     {}", human_bytes(report.log_archive_bytes));
+    println!(
+        "  context cache:    {}",
+        human_bytes(report.context_cache_bytes)
+    );
+    println!(
+        "  log archives:     {}",
+        human_bytes(report.log_archive_bytes)
+    );
     println!("  eligible:         {}", human_bytes(report.eligible_bytes));
     if report.candidates.is_empty() {
         println!("  candidates:       none");

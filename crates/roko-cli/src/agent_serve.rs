@@ -373,14 +373,13 @@ impl AgentServeRuntimeConfig {
                         }
                     }
                     #[cfg(not(feature = "alloy-backend"))]
-                    if startup
-                        .chain
-                        .as_ref()
-                        .and_then(|chain| chain.rpc_url.as_ref())
-                        .is_some()
+                    if let Some(chain) = startup.chain.as_ref()
+                        && chain.rpc_url.is_some()
                     {
+                        let has_wallet = chain.wallet_key.is_some();
                         warn!(
                             agent_id = %startup.agent_id,
+                            has_wallet,
                             "chain RPC requested, but this roko build omits `alloy-backend`; \
                              rebuild with `--features alloy-backend`"
                         );

@@ -152,8 +152,8 @@ The `.git` existence check is synchronous but is a single `stat` syscall and is 
 - [ ] `cargo test --workspace` passes with zero failures — the interactive all-target run was
       intentionally stopped during the large integration-binary compile matrix and remains open.
 - [x] `cargo clippy --locked --workspace --no-deps -j1 -- -D warnings` passed for the integrated
-      hot-path code before the final unrelated small delta; final incremental lint is tracked in
-      `tmp/dev-audit/11-implementation-status.md`.
+      hot-path code, and the final CLI/server/runtime delta passed a second targeted strict clippy
+      run; details are tracked in `tmp/dev-audit/11-implementation-status.md`.
 
 ## Verification Checklist
 

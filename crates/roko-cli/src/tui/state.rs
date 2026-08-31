@@ -5439,6 +5439,10 @@ tier = "focused"
         ];
 
         let snap = DashboardSnapshot {
+            run_duration_ms: None,
+            run_outcome: None,
+            run_cleanup_degraded: false,
+            surviving_agent_pids: Vec::new(),
             plans: [
                 (
                     "plan-a".to_string(),

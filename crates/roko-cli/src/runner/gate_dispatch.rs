@@ -25,8 +25,8 @@ use roko_gate::symbol_gate::{SymbolExpectation, SymbolKind, SymbolManifest, Visi
 use roko_gate::verdict_publisher::VerdictPublisher;
 use roko_gate::{GatePayload, PlanComplexity, ShellGate};
 use sha2::{Digest, Sha256};
-use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio::process::Command;
+use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
 use tracing::{error, info, warn};
@@ -175,7 +175,9 @@ async fn compile_coordinator(workdir: &Path, permits: usize) -> Arc<Semaphore> {
         COORDINATORS.get_or_init(|| Mutex::new(CompileCoordinatorRegistry::default()));
     let workdir_key = workdir.to_path_buf();
     {
-        let coordinators = coordinators.lock().unwrap_or_else(|poison| poison.into_inner());
+        let coordinators = coordinators
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         if let Some(repository) = coordinators.workdir_keys.get(&workdir_key)
             && let Some(existing) = coordinators
                 .repositories
@@ -215,7 +217,9 @@ async fn compile_coordinator(workdir: &Path, permits: usize) -> Arc<Semaphore> {
         .await
         .unwrap_or(common_dir);
 
-    let mut coordinators = coordinators.lock().unwrap_or_else(|poison| poison.into_inner());
+    let mut coordinators = coordinators
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     coordinators
         .workdir_keys
         .insert(workdir_key, repository.clone());
@@ -272,8 +276,9 @@ fn cargo_cache_counts(verdict: &Verdict) -> (u64, u64) {
         .unwrap_or_default()
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter(|message| message.get("reason").and_then(serde_json::Value::as_str)
-            == Some("compiler-artifact"))
+        .filter(|message| {
+            message.get("reason").and_then(serde_json::Value::as_str) == Some("compiler-artifact")
+        })
         .fold((0_u64, 0_u64), |(hits, misses), message| {
             if message
                 .get("fresh")
@@ -594,9 +599,10 @@ fn cargo_command_with_profile(command: &str, profile: &str) -> Option<String> {
     {
         return None;
     }
-    if tokens.iter().any(|token| {
-        *token == "--profile" || token.strip_prefix("--profile=").is_some()
-    }) {
+    if tokens
+        .iter()
+        .any(|token| *token == "--profile" || token.strip_prefix("--profile=").is_some())
+    {
         return Some(command.trim().to_string());
     }
 
@@ -820,11 +826,7 @@ fn deduplicate_verify_steps(
     retained
 }
 
-fn scoped_test_command(
-    workdir: &Path,
-    command: &str,
-    report: &ImpactReport,
-) -> Option<String> {
+fn scoped_test_command(workdir: &Path, command: &str, report: &ImpactReport) -> Option<String> {
     let target = report.one_target()?;
     let tokens = simple_command_tokens(command)?;
     if tokens.get(1).copied() != Some("test")
@@ -841,9 +843,9 @@ fn scoped_test_command(
     {
         return None;
     }
-    let selected_package = tokens.windows(2).find_map(|pair| {
-        matches!(pair[0], "-p" | "--package").then_some(pair[1])
-    });
+    let selected_package = tokens
+        .windows(2)
+        .find_map(|pair| matches!(pair[0], "-p" | "--package").then_some(pair[1]));
     if selected_package != Some(target.package.as_str()) {
         return None;
     }
@@ -1625,11 +1627,10 @@ pub async fn run_gate_once(
     );
 
     let execute_pipeline = gate_mode == GateMode::Full && (!task_verify_only || focused_fallback);
-    let targeted_check = (execute_pipeline
-        && !focused_fallback
-        && !gates_config.has_custom_rungs())
-        .then(|| targeted_cargo_check(&workdir, &gate_target_crates))
-        .flatten();
+    let targeted_check =
+        (execute_pipeline && !focused_fallback && !gates_config.has_custom_rungs())
+            .then(|| targeted_cargo_check(&workdir, &gate_target_crates))
+            .flatten();
     if let Some(targeted) = targeted_check.as_ref() {
         info!(
             plan_id = %plan_id,
@@ -1655,9 +1656,7 @@ pub async fn run_gate_once(
     {
         canonical_commands = canonical_commands
             .into_iter()
-            .map(|command| {
-                cargo_command_with_profile(&command, profile).unwrap_or(command)
-            })
+            .map(|command| cargo_command_with_profile(&command, profile).unwrap_or(command))
             .collect();
     }
     let verify_steps = if let Some(profile) = cargo_profile {
@@ -1693,12 +1692,8 @@ pub async fn run_gate_once(
             let report = impact_report
                 .as_ref()
                 .expect("focused gate mode must have an impact report");
-            let authored = scope_authored_verify_steps(
-                &workdir,
-                &task_id,
-                authored_verify_steps,
-                report,
-            );
+            let authored =
+                scope_authored_verify_steps(&workdir, &task_id, authored_verify_steps, report);
             focused_verify_steps(report, &task_id, authored, timeout_secs, cargo_profile)
         }
         GateMode::Full => authored_verify_steps,
@@ -1725,10 +1720,16 @@ pub async fn run_gate_once(
         GateMode::Structural => vec!["structural".to_string()],
         GateMode::Focused => {
             let mut labels = Vec::new();
-            if verify_steps.iter().any(|step| step.phase == "impact-compile") {
+            if verify_steps
+                .iter()
+                .any(|step| step.phase == "impact-compile")
+            {
                 labels.push("impact-compile".to_string());
             }
-            if verify_steps.iter().any(|step| step.phase != "impact-compile") {
+            if verify_steps
+                .iter()
+                .any(|step| step.phase != "impact-compile")
+            {
                 labels.push("task-verify".to_string());
             }
             labels
@@ -1869,8 +1870,7 @@ pub async fn run_gate_once(
                 !verdict.passed
                     && !verdict.skipped
                     && verdict.gate.starts_with(&format!("task-verify:{task_id}:"))
-            })
-        {
+            }) {
             run_focused_baseline_verify(
                 &workdir,
                 &plan_id,
@@ -1892,11 +1892,7 @@ pub async fn run_gate_once(
         // once and replace the verdicts so the caller sees a pass instead.
         // Gated on `gates_config.cargo_fix_enabled` (default: true).
         let first_run_failed = verdicts.iter().any(|v| !v.passed && !v.skipped);
-        if first_run_failed
-            && before == after
-            && gates_config.cargo_fix_enabled
-            && !fast_mode
-        {
+        if first_run_failed && before == after && gates_config.cargo_fix_enabled && !fast_mode {
             let first_output = render_output(&verdicts);
             // Find the first failing gate name to drive the fix heuristic.
             let failing_gate = verdicts
@@ -2028,22 +2024,13 @@ pub async fn run_gate_once(
     let baseline_evidence = baseline_failed_gates
         .as_deref()
         .or(lazy_baseline.as_deref());
-    filter_preexisting_failures(
-        &task_id,
-        &mut verdicts,
-        baseline_evidence,
-    );
+    filter_preexisting_failures(&task_id, &mut verdicts, baseline_evidence);
     if let Some(before) = input_before.as_ref() {
         for verdict in verdicts
             .iter_mut()
             .filter(|verdict| !verdict.passed && !verdict.gate.starts_with("unattributed:"))
         {
-            let input = gate_failure_input(
-                effect.kind,
-                before,
-                baseline_evidence,
-                &verdict.gate,
-            );
+            let input = gate_failure_input(effect.kind, before, baseline_evidence, &verdict.gate);
             verdict.gate = format!("{input}:{}", verdict.gate);
             verdict.reason = format!("{input} failure: {}", verdict.reason);
         }
@@ -2653,15 +2640,8 @@ async fn run_focused_baseline_verify(
         main_target_dir,
     );
     let ctx = roko_core::Context::now();
-    let verdicts = run_verify_steps(
-        &signal,
-        &ctx,
-        plan_id,
-        task_id,
-        steps,
-        compile_concurrency,
-    )
-    .await;
+    let verdicts =
+        run_verify_steps(&signal, &ctx, plan_id, task_id, steps, compile_concurrency).await;
     let removal = timeout(
         Duration::from_secs(10),
         Command::new("git")
@@ -2887,19 +2867,13 @@ mod tests {
     #[test]
     fn fast_profile_is_inserted_before_tool_arguments() {
         assert_eq!(
-            cargo_command_with_profile(
-                "cargo clippy -p roko-cli -- -D warnings",
-                "dev-fast"
-            )
-            .as_deref(),
+            cargo_command_with_profile("cargo clippy -p roko-cli -- -D warnings", "dev-fast")
+                .as_deref(),
             Some("cargo clippy -p roko-cli --profile dev-fast -- -D warnings")
         );
         assert_eq!(
-            cargo_command_with_profile(
-                "cargo test -p roko-cli --profile custom",
-                "dev-fast"
-            )
-            .as_deref(),
+            cargo_command_with_profile("cargo test -p roko-cli --profile custom", "dev-fast")
+                .as_deref(),
             Some("cargo test -p roko-cli --profile custom")
         );
         assert!(cargo_command_with_profile("cargo test && echo done", "dev-fast").is_none());
@@ -3622,6 +3596,17 @@ path = "src/shared.rs"
     #[tokio::test]
     async fn unchanged_preexisting_failure_is_filtered() {
         let dir = git_repo();
+        let gates = GatesConfig {
+            cargo_fix_enabled: false,
+            custom_rungs: vec![roko_core::config::GateRungConfig {
+                name: "fixture-pass".into(),
+                command: "true".into(),
+                timeout_secs: 10,
+                required: true,
+                parallel_with: Vec::new(),
+            }],
+            ..GatesConfig::default()
+        };
         let step = VerifyStep {
             phase: "test".into(),
             command: "false".into(),
@@ -3634,7 +3619,7 @@ path = "src/shared.rs"
             "task".into(),
             1,
             dir.path().to_path_buf(),
-            GatesConfig::default(),
+            gates.clone(),
             PlanComplexity::Trivial,
             vec![step.clone()],
             None,
@@ -3659,7 +3644,7 @@ path = "src/shared.rs"
             "task".into(),
             1,
             dir.path().to_path_buf(),
-            GatesConfig::default(),
+            gates,
             PlanComplexity::Trivial,
             vec![step],
             Some(baseline_failures),

@@ -253,7 +253,7 @@ impl AgentHandle {
 
     /// Kill the agent and all descendants. Sends SIGTERM to the process group,
     /// waits for `grace`, then SIGKILL.
-    pub async fn kill(mut self, grace: Duration) -> AgentTermination {
+    pub async fn kill(self, grace: Duration) -> AgentTermination {
         self.kill_with_deadline(grace, None).await
     }
 
@@ -261,7 +261,7 @@ impl AgentHandle {
     /// outer automation deadline.  Timing out preserves this owned handle so
     /// the caller can durably retain the still-unconfirmed PID.
     pub async fn kill_until(
-        mut self,
+        self,
         grace: Duration,
         deadline: tokio::time::Instant,
     ) -> AgentTermination {
@@ -450,23 +450,24 @@ pub async fn spawn_agent_controlled(
         .clone()
         .unwrap_or_else(|| CliProviderConfig::from_legacy_runner_program(config.program.clone()));
     let max_turns = effective_agent_turn_limit(config.max_turns);
-    let invocation = provider.build_invocation(&CliDispatchRequest {
-        prompt: config.prompt.clone(),
-        system_prompt: config.system_prompt.clone(),
-        model: config.model.clone(),
-        workdir: config.workdir.clone(),
-        max_turns,
-        effort: config.effort.clone(),
-        dangerously_skip_permissions: config.dangerously_skip_permissions,
-        mcp_config: config.mcp_config.clone(),
-        resume_session: config.resume_session.clone(),
-        env: config.extra_env.clone(),
-        agent_id: config.agent_id.clone(),
-        allowed_tools: config.allowed_tools.clone(),
-        disallowed_tools: config.disallowed_tools.clone(),
-        plugin_mcp: config.plugin_mcp.clone(),
-    })
-    .map_err(AgentStartupError::Failed)?;
+    let invocation = provider
+        .build_invocation(&CliDispatchRequest {
+            prompt: config.prompt.clone(),
+            system_prompt: config.system_prompt.clone(),
+            model: config.model.clone(),
+            workdir: config.workdir.clone(),
+            max_turns,
+            effort: config.effort.clone(),
+            dangerously_skip_permissions: config.dangerously_skip_permissions,
+            mcp_config: config.mcp_config.clone(),
+            resume_session: config.resume_session.clone(),
+            env: config.extra_env.clone(),
+            agent_id: config.agent_id.clone(),
+            allowed_tools: config.allowed_tools.clone(),
+            disallowed_tools: config.disallowed_tools.clone(),
+            plugin_mcp: config.plugin_mcp.clone(),
+        })
+        .map_err(|error| AgentStartupError::Failed(error.into()))?;
     if invocation.turn_limit.effective_max_turns.is_some() {
         debug!(
             provider = %invocation.event_provider,
@@ -489,18 +490,15 @@ pub async fn spawn_agent_controlled(
             .context("creating temporary provider config directory")
             .map_err(AgentStartupError::Failed)?;
         let path = directory.path().join(&config.file_name);
-        await_startup_step(
-            control,
-            tokio::fs::write(&path, config.contents.as_bytes()),
-        )
-        .await
-        .map_err(|interruption| AgentStartupError::Interrupted {
-            interruption,
-            cleanup_error: None,
-            unconfirmed: None,
-        })?
-        .with_context(|| format!("writing temporary provider config {}", path.display()))
-        .map_err(AgentStartupError::Failed)?;
+        await_startup_step(control, tokio::fs::write(&path, config.contents.as_bytes()))
+            .await
+            .map_err(|interruption| AgentStartupError::Interrupted {
+                interruption,
+                cleanup_error: None,
+                unconfirmed: None,
+            })?
+            .with_context(|| format!("writing temporary provider config {}", path.display()))
+            .map_err(AgentStartupError::Failed)?;
         let env = Some((config.env_key.clone(), path));
         ephemeral_config_dir = Some(directory);
         env
@@ -554,11 +552,11 @@ pub async fn spawn_agent_controlled(
     roko_agent::process::register_spawned_pid(pid);
 
     let started_send = event_tx.send(AgentEvent::Started {
-            agent_id: config.agent_id.clone(),
-            provider: invocation.event_provider.clone(),
-            model: invocation.model.clone(),
-            pid: Some(pid),
-        });
+        agent_id: config.agent_id.clone(),
+        provider: invocation.event_provider.clone(),
+        model: invocation.model.clone(),
+        pid: Some(pid),
+    });
     if let Err(interruption) = await_startup_step(control, started_send).await {
         let cleanup_error = match control {
             Some(control) => interrupt_startup_child(&mut child, pid, control).await,
@@ -614,12 +612,8 @@ pub async fn spawn_agent_controlled(
                 cancel: CancellationToken::new(),
                 cleanup_grace: Duration::from_secs(1),
             };
-            let cleanup_error = interrupt_startup_child(
-                &mut child,
-                pid,
-                control.unwrap_or(&fallback),
-            )
-            .await;
+            let cleanup_error =
+                interrupt_startup_child(&mut child, pid, control.unwrap_or(&fallback)).await;
             if let Some(cleanup_error) = cleanup_error {
                 return Err(AgentStartupError::Interrupted {
                     // No provider protocol was established.  The meaningful
@@ -628,9 +622,7 @@ pub async fn spawn_agent_controlled(
                     // cancellation retry.  The caller does not terminalize an
                     // unconfirmed interruption based on this discriminator.
                     interruption: AgentStartupInterruption::Cancelled,
-                    cleanup_error: Some(format!(
-                        "agent stdout not captured; {cleanup_error}"
-                    )),
+                    cleanup_error: Some(format!("agent stdout not captured; {cleanup_error}")),
                     unconfirmed: Some(AgentHandle {
                         pid,
                         child,

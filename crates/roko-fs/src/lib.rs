@@ -39,10 +39,10 @@ pub mod file_substrate;
 pub mod gc;
 pub mod layout;
 pub mod log_rotation;
-pub mod run_index;
 pub mod metrics;
 pub mod observability;
 pub mod pointer;
+pub mod run_index;
 pub mod target_cleanup;
 pub mod tool_audit;
 pub mod tool_metrics_sink;
@@ -68,8 +68,8 @@ pub use observability::FsObservabilitySinks;
 pub use pointer::PointerStore;
 pub use target_cleanup::{
     CacheCandidateKind, CacheCleanupCandidate, CacheCleanupPolicy, CacheCleanupReport,
-    CleanupReport, ColdBuildRisk, ProtectedCachePath, TargetDir, cargo_clean,
-    clean_stale_targets, cleanup_workspace_caches, scan_target_dirs,
+    CleanupReport, ColdBuildRisk, ProtectedCachePath, TargetDir, cargo_clean, clean_stale_targets,
+    cleanup_workspace_caches, scan_target_dirs,
 };
 pub use tool_audit::ToolAuditLog;
 pub use tool_metrics_sink::{JsonlMetricsSink, ToolMetricsRecord};

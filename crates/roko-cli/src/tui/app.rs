@@ -935,10 +935,7 @@ impl App {
                 .sys_rx
                 .as_ref()
                 .is_some_and(|rx| rx.has_changed().unwrap_or(false));
-            let approval_pending = self
-                .approval_rx
-                .as_ref()
-                .is_some_and(|rx| !rx.is_empty());
+            let approval_pending = self.approval_rx.as_ref().is_some_and(|rx| !rx.is_empty());
             self.drain_snapshot_channel();
             let mut redraw = snapshot_changed || sys_changed || approval_pending;
             match events.next().context("poll TUI event")? {
@@ -4931,9 +4928,8 @@ mod tests {
     }
 
     #[test]
-    fn v_cycles_effects_presets_and_persists_without_touching_screen_postfx() {
+    fn cycle_effects_action_persists_without_touching_screen_postfx() {
         use super::super::effects_config::EffectsPreset;
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let dir = tempdir().unwrap();
         std::fs::write(
@@ -4943,28 +4939,29 @@ mod tests {
         .unwrap();
 
         let mut app = App::new(dir.path());
+        assert_eq!(app.fx_config.preset, EffectsPreset::Minimal);
         app.fx_config.screen_postfx = true;
 
-        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
-        assert_eq!(app.fx_config.preset, EffectsPreset::Minimal);
-        assert!(app.fx_config.screen_postfx);
-        assert!(!app.fx_config.nerv_viz);
-        assert!(app.fx_config.particles);
-
-        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        app.dispatch_action(TuiAction::CycleEffectsPreset);
         assert_eq!(app.fx_config.preset, EffectsPreset::Full);
         assert!(app.fx_config.screen_postfx);
         assert!(app.fx_config.nerv_viz);
         assert!(app.fx_config.particles);
 
-        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        app.dispatch_action(TuiAction::CycleEffectsPreset);
         assert_eq!(app.fx_config.preset, EffectsPreset::Off);
         assert!(app.fx_config.screen_postfx);
         assert!(!app.fx_config.nerv_viz);
         assert!(!app.fx_config.particles);
 
+        app.dispatch_action(TuiAction::CycleEffectsPreset);
+        assert_eq!(app.fx_config.preset, EffectsPreset::Minimal);
+        assert!(app.fx_config.screen_postfx);
+        assert!(!app.fx_config.nerv_viz);
+        assert!(app.fx_config.particles);
+
         let saved = std::fs::read_to_string(dir.path().join("roko.toml")).unwrap();
-        assert!(saved.contains("preset = \"off\""));
+        assert!(saved.contains("preset = \"minimal\""));
     }
 
     #[test]

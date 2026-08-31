@@ -21,13 +21,8 @@ const FALLBACK_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const CHANNEL_BOUND: usize = 4;
 const RECURSIVE_WATCH_DIRS: &[&str] = &["state", "plans", "gates"];
 const SHALLOW_WATCH_DIRS: &[&str] = &["learn"];
-const EXCLUDED_TREE_NAMES: &[&str] = &[
-    "worktrees",
-    "reflex-replays",
-    "target",
-    "cache",
-    "archives",
-];
+const EXCLUDED_TREE_NAMES: &[&str] =
+    &["worktrees", "reflex-replays", "target", "cache", "archives"];
 
 type NotifyDebouncer = Debouncer<notify::RecommendedWatcher, FileIdMap>;
 
@@ -139,7 +134,9 @@ pub fn watch_roko_dir(workdir: &Path) -> Result<FsWatchHandle> {
             .watcher()
             .watch(&path, RecursiveMode::NonRecursive)
             .with_context(|| format!("failed to watch {}", path.display()))?;
-        debouncer.cache().add_root(&path, RecursiveMode::NonRecursive);
+        debouncer
+            .cache()
+            .add_root(&path, RecursiveMode::NonRecursive);
     }
 
     Ok(FsWatchHandle {

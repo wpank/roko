@@ -170,12 +170,8 @@ impl JsonlLogger {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.ensure_writer(&mut state)?;
 
-        let envelope = RuntimeEventEnvelope::new(
-            event.run_id(),
-            state.seq,
-            "jsonl_logger",
-            event.clone(),
-        );
+        let envelope =
+            RuntimeEventEnvelope::new(event.run_id(), state.seq, "jsonl_logger", event.clone());
         state.seq = state.seq.saturating_add(1);
 
         let mut json = serde_json::to_string(&envelope)
@@ -197,22 +193,18 @@ impl JsonlLogger {
         // closes and flushes old writers; it never deletes an index. The global
         // log remains the durable compatibility source if this secondary write
         // encounters an error.
-        let run_cursor = match self.write_run_index(
-            &mut state,
-            event,
-            json.as_bytes(),
-            require_run_cursor,
-        ) {
-            Ok(cursor) => cursor,
-            Err(error) => {
-                tracing::warn!(
-                    run_id = event.run_id(),
-                    %error,
-                    "failed to append derived per-run runtime event index",
-                );
-                None
-            }
-        };
+        let run_cursor =
+            match self.write_run_index(&mut state, event, json.as_bytes(), require_run_cursor) {
+                Ok(cursor) => cursor,
+                Err(error) => {
+                    tracing::warn!(
+                        run_id = event.run_id(),
+                        %error,
+                        "failed to append derived per-run runtime event index",
+                    );
+                    None
+                }
+            };
 
         Ok(run_cursor)
     }
@@ -381,7 +373,10 @@ fn open_secure_run_index_file(path: &Path) -> std::io::Result<std::fs::File> {
         )
     })?;
     let file_name = path.file_name().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "run index has no filename")
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "run index has no filename",
+        )
     })?;
     let root_fd = rustix::fs::open(
         root,
@@ -428,10 +423,7 @@ fn open_secure_run_index_file(path: &Path) -> std::io::Result<std::fs::File> {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn validate_secure_directory(
-    fd: &std::os::fd::OwnedFd,
-    label: &str,
-) -> std::io::Result<()> {
+fn validate_secure_directory(fd: &std::os::fd::OwnedFd, label: &str) -> std::io::Result<()> {
     let stat = rustix::fs::fstat(fd).map_err(std::io::Error::from)?;
     let mode = stat.st_mode as u32;
     if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::Directory
@@ -447,10 +439,7 @@ fn validate_secure_directory(
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn validate_secure_regular_file(
-    fd: &std::os::fd::OwnedFd,
-    label: &str,
-) -> std::io::Result<()> {
+fn validate_secure_regular_file(fd: &std::os::fd::OwnedFd, label: &str) -> std::io::Result<()> {
     let stat = rustix::fs::fstat(fd).map_err(std::io::Error::from)?;
     if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile
         || stat.st_uid as u32 != rustix::process::geteuid().as_raw()
@@ -588,7 +577,13 @@ mod tests {
 
         let run_content = std::fs::read_to_string(logger.run_path("r1").unwrap()).unwrap();
         assert_eq!(run_content.lines().count(), 2);
-        assert!(!logger.run_path("r1").unwrap().to_string_lossy().contains("r1"));
+        assert!(
+            !logger
+                .run_path("r1")
+                .unwrap()
+                .to_string_lossy()
+                .contains("r1")
+        );
     }
 
     #[test]

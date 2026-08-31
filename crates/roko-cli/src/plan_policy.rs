@@ -246,7 +246,9 @@ pub fn validate_plan_budgets(
             task,
             "PLAN_BUDGET_READ_FILES",
             "context.read_files",
-            task.context.as_ref().map_or(0, |context| context.read_files.len()),
+            task.context
+                .as_ref()
+                .map_or(0, |context| context.read_files.len()),
             policy.max_read_files_per_task,
         );
         check_count(
@@ -296,7 +298,9 @@ pub fn validate_plan_budgets(
             let context_bytes = context
                 .read_files
                 .iter()
-                .map(|file| file.path.len() + file.why.len() + file.lines.as_deref().map_or(0, str::len))
+                .map(|file| {
+                    file.path.len() + file.why.len() + file.lines.as_deref().map_or(0, str::len)
+                })
                 .chain(context.symbols.iter().map(String::len))
                 .chain(context.anti_patterns.iter().map(String::len))
                 .chain(context.prior_failures.iter().map(String::len))
@@ -651,9 +655,7 @@ pub fn render_declared_context(
             if let Some(line) = find_anchor_line(&content, anchor) {
                 anchor_found[index] = true;
                 let start = line.saturating_sub(ANCHOR_CONTEXT_RADIUS).max(1);
-                let end = line
-                    .saturating_add(ANCHOR_CONTEXT_RADIUS)
-                    .min(lines.len());
+                let end = line.saturating_add(ANCHOR_CONTEXT_RADIUS).min(lines.len());
                 ranges.push((start, end));
             }
         }
@@ -679,8 +681,7 @@ pub fn render_declared_context(
         if output.len() > policy.max_declared_context_bytes {
             return Err(format!(
                 "declared snippets for task {} exceed the {} byte prompt budget; narrow read_files ranges",
-                task.id,
-                policy.max_declared_context_bytes
+                task.id, policy.max_declared_context_bytes
             ));
         }
     }
@@ -776,7 +777,11 @@ fn transitive_dependency_outputs(
     task_by_id: &HashMap<&str, &TaskDef>,
 ) -> HashSet<String> {
     let mut outputs = HashSet::new();
-    let mut pending = task.depends_on.iter().map(String::as_str).collect::<Vec<_>>();
+    let mut pending = task
+        .depends_on
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
     let mut visited = HashSet::new();
     while let Some(task_id) = pending.pop() {
         if !visited.insert(task_id) {
@@ -870,14 +875,11 @@ fn explicit_symbol_anchor(symbol: &str) -> Option<String> {
     if candidate.is_empty()
         || candidate.split("::").any(|segment| {
             segment.is_empty()
-                || !segment
-                    .chars()
-                    .enumerate()
-                    .all(|(index, character)| {
-                        character == '_'
-                            || character.is_ascii_alphanumeric()
-                                && (index > 0 || !character.is_ascii_digit())
-                    })
+                || !segment.chars().enumerate().all(|(index, character)| {
+                    character == '_'
+                        || character.is_ascii_alphanumeric()
+                            && (index > 0 || !character.is_ascii_digit())
+                })
         })
     {
         None
@@ -1005,14 +1007,18 @@ mod tests {
     fn context_contract_rejects_escape_and_missing_exact_anchor() {
         let root = tempdir().expect("root");
         std::fs::create_dir(root.path().join("src")).expect("src");
-        std::fs::write(root.path().join("src/lib.rs"), "pub struct Other;\n")
-            .expect("source");
+        std::fs::write(root.path().join("src/lib.rs"), "pub struct Other;\n").expect("source");
         let mut plan_task = task();
-        plan_task.context.as_mut().unwrap().read_files.push(ReadFile {
-            path: "../secret".into(),
-            lines: None,
-            why: "unsafe".into(),
-        });
+        plan_task
+            .context
+            .as_mut()
+            .unwrap()
+            .read_files
+            .push(ReadFile {
+                path: "../secret".into(),
+                lines: None,
+                why: "unsafe".into(),
+            });
         let plan_dir = root.path().join("plans/p1");
         std::fs::create_dir_all(&plan_dir).expect("plan dir");
         std::fs::write(plan_dir.join("tasks.toml"), "[meta]").expect("manifest");

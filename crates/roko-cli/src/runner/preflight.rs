@@ -86,8 +86,16 @@ fn check_declared_change_impact(plans_dir: &Path) -> PreflightCheck {
             )
             .to_ascii_lowercase();
             let likely_contract = [
-                "public", "signature", "struct field", "enum", "trait", "serde", "schema",
-                "re-export", "reexport", "api contract",
+                "public",
+                "signature",
+                "struct field",
+                "enum",
+                "trait",
+                "serde",
+                "schema",
+                "re-export",
+                "reexport",
+                "api contract",
             ]
             .iter()
             .any(|term| text.contains(term));
@@ -131,7 +139,11 @@ fn check_declared_change_impact(plans_dir: &Path) -> PreflightCheck {
         }
     } else {
         let omitted = diagnostics.len().saturating_sub(3);
-        let mut message = diagnostics.into_iter().take(3).collect::<Vec<_>>().join("; ");
+        let mut message = diagnostics
+            .into_iter()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join("; ");
         if omitted > 0 {
             message.push_str(&format!("; and {omitted} more"));
         }
@@ -754,13 +766,13 @@ mod tests {
     }
 
     #[test]
-    fn run_preflight_checks_returns_all_seven_checks() {
+    fn run_preflight_checks_returns_all_eight_checks() {
         let workdir = tempdir().expect("tempdir");
         let plans_dir = workdir.path().join("plans");
         std::fs::create_dir_all(&plans_dir).expect("create plans dir");
         let config = RokoConfig::default();
         let checks = run_preflight_checks(Some(&config), &plans_dir, workdir.path());
-        assert_eq!(checks.len(), 7);
+        assert_eq!(checks.len(), 8);
         let names: Vec<&str> = checks.iter().map(|c| c.name).collect();
         assert_eq!(
             names,
@@ -770,6 +782,7 @@ mod tests {
                 "disk",
                 "git",
                 "plans",
+                "impact",
                 "rust",
                 "lock"
             ]

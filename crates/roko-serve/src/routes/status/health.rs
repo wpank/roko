@@ -256,6 +256,7 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
     match event {
         DashboardEvent::PlanStarted { .. } => "plan_started",
         DashboardEvent::PlanCompleted { .. } => "plan_completed",
+        DashboardEvent::RunCompleted { .. } => "run_completed",
         DashboardEvent::TaskStarted { .. } => "task_started",
         DashboardEvent::TaskCompleted { .. } => "task_completed",
         DashboardEvent::TaskPhaseChanged { .. } => "task_phase_changed",

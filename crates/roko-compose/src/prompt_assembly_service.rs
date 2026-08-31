@@ -371,19 +371,18 @@ impl PromptAssembler for PromptAssemblyService {
         // Source discovery is synchronous and can traverse hundreds of files.
         // Do it once per assembly on the blocking pool, then reuse the result
         // for both conventions and the workspace map.
-        let workdir_prompt_context = if self.should_include("conventions")
-            || self.should_include("context")
-        {
-            if let Some(workdir) = spec.workdir.clone() {
-                tokio::task::spawn_blocking(move || collect_workdir_prompt_context(&workdir))
-                    .await
-                    .ok()
+        let workdir_prompt_context =
+            if self.should_include("conventions") || self.should_include("context") {
+                if let Some(workdir) = spec.workdir.clone() {
+                    tokio::task::spawn_blocking(move || collect_workdir_prompt_context(&workdir))
+                        .await
+                        .ok()
+                } else {
+                    None
+                }
             } else {
                 None
-            }
-        } else {
-            None
-        };
+            };
 
         if self.should_include("conventions") {
             let conventions = workdir_prompt_context
@@ -391,8 +390,8 @@ impl PromptAssembler for PromptAssemblyService {
                 .and_then(|context| context.conventions.clone())
                 .or_else(|| self.default_conventions.clone());
             if let Some(conventions) = conventions {
-            builder = builder.with_conventions(conventions);
-            self.record_prompt_section_id("conventions");
+                builder = builder.with_conventions(conventions);
+                self.record_prompt_section_id("conventions");
             }
         }
 
@@ -590,17 +589,19 @@ struct WorkdirPromptContext {
 fn collect_workdir_prompt_context(workdir: &Path) -> WorkdirPromptContext {
     let cargo_toml = read_to_string_if_exists(&workdir.join("Cargo.toml")).unwrap_or_default();
     let (source_samples, file_listing) = collect_source_context(workdir);
-    let conventions = if cargo_toml.is_empty()
-        && source_samples.is_empty()
-        && file_listing.is_empty()
-    {
-        None
-    } else {
-        let source_refs = source_samples.iter().map(String::as_str).collect::<Vec<_>>();
-        let file_refs = file_listing.iter().map(String::as_str).collect::<Vec<_>>();
-        let fragment = detect_conventions(&cargo_toml, &source_refs, &file_refs).to_prompt_fragment();
-        (!fragment.trim().is_empty()).then_some(fragment)
-    };
+    let conventions =
+        if cargo_toml.is_empty() && source_samples.is_empty() && file_listing.is_empty() {
+            None
+        } else {
+            let source_refs = source_samples
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let file_refs = file_listing.iter().map(String::as_str).collect::<Vec<_>>();
+            let fragment =
+                detect_conventions(&cargo_toml, &source_refs, &file_refs).to_prompt_fragment();
+            (!fragment.trim().is_empty()).then_some(fragment)
+        };
     let workspace_map = workspace_map_from_file_listing(&file_listing);
     WorkdirPromptContext {
         conventions,

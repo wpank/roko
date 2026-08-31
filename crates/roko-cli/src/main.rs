@@ -3224,15 +3224,15 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         } => {
             #[cfg(feature = "acp")]
             {
-            let acp_config = roko_acp::AcpConfig {
-                workdir,
-                profile,
-                config_path: config,
-                global_config_path: global_config,
-                log_file,
-            };
-            roko_acp::run_acp_server(acp_config).await?;
-            Ok(EXIT_SUCCESS)
+                let acp_config = roko_acp::AcpConfig {
+                    workdir,
+                    profile,
+                    config_path: config,
+                    global_config_path: global_config,
+                    log_file,
+                };
+                roko_acp::run_acp_server(acp_config).await?;
+                Ok(EXIT_SUCCESS)
             }
             #[cfg(not(feature = "acp"))]
             {

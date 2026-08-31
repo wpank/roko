@@ -1207,7 +1207,11 @@ impl RokoConfig {
             c.gates.impact_max_reverse_dependents
         );
         let _ = writeln!(out, "impact_max_targets = {}", c.gates.impact_max_targets);
-        let _ = writeln!(out, "compile_concurrency = {}\n", c.gates.compile_concurrency);
+        let _ = writeln!(
+            out,
+            "compile_concurrency = {}\n",
+            c.gates.compile_concurrency
+        );
     }
     fn write_example_routing(out: &mut String, c: &Self) {
         let _ = writeln!(out, "# -- Model routing --");

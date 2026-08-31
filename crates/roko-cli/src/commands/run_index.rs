@@ -60,6 +60,7 @@ struct RepairLimits {
     deadline: Instant,
 }
 
+#[derive(Default)]
 struct ScanState {
     bytes_scanned: u64,
     records_seen: u64,
@@ -73,25 +74,6 @@ struct ScanState {
     truncated: bool,
     truncation_reason: Option<&'static str>,
     sources: Vec<SourceReport>,
-}
-
-impl Default for ScanState {
-    fn default() -> Self {
-        Self {
-            bytes_scanned: 0,
-            records_seen: 0,
-            records_indexed: 0,
-            malformed_records: 0,
-            partial_records: 0,
-            oversized_records: 0,
-            missing_run_ids: 0,
-            invalid_run_ids: 0,
-            cross_run_records: 0,
-            truncated: false,
-            truncation_reason: None,
-            sources: Vec::new(),
-        }
-    }
 }
 
 pub(crate) async fn cmd_run_index(cli: &Cli, cmd: RunIndexCmd) -> Result<i32> {
@@ -641,7 +623,10 @@ impl StagingSet {
                 self.close_writer(&close_path)?;
             }
         }
-        let staged = self.files.get_mut(final_path).context("missing staging file")?;
+        let staged = self
+            .files
+            .get_mut(final_path)
+            .context("missing staging file")?;
         let file = OpenOptions::new()
             .append(true)
             .open(&staged.temp_path)
@@ -652,7 +637,10 @@ impl StagingSet {
     }
 
     fn close_writer(&mut self, final_path: &Path) -> Result<()> {
-        let staged = self.files.get_mut(final_path).context("missing staging file")?;
+        let staged = self
+            .files
+            .get_mut(final_path)
+            .context("missing staging file")?;
         if let Some(mut writer) = staged.writer.take() {
             writer.flush()?;
             self.open_writers = self.open_writers.saturating_sub(1);
@@ -694,12 +682,13 @@ impl StagingSet {
                 )
             })?;
         }
-        for parent in self
-            .files
-            .values()
-            .filter_map(|staged| staged.final_path.parent())
-            .collect::<BTreeSet<_>>()
-        {
+        let mut parents = BTreeSet::new();
+        for staged in self.files.values() {
+            if let Some(parent) = staged.final_path.parent() {
+                parents.insert(parent);
+            }
+        }
+        for parent in parents {
             // The file replacement itself is already atomic. Directory fsync
             // is best effort because some supported filesystems reject fsync
             // on directory descriptors even after a successful rename.
@@ -781,7 +770,10 @@ impl Drop for RepairLocks {
 fn ensure_index_path(path: &Path, roko_dir: &Path) -> Result<()> {
     let parent = path.parent().context("run index has no parent")?;
     if !parent.starts_with(roko_dir) {
-        bail!("derived run index escapes workspace state: {}", path.display());
+        bail!(
+            "derived run index escapes workspace state: {}",
+            path.display()
+        );
     }
     reject_symlink_if_present(parent, "run index directory")?;
     reject_symlink_if_present(path, "run index file")?;
@@ -842,8 +834,14 @@ fn reject_absent(path: &Path, label: &str) -> Result<()> {
 fn print_report(report: &RepairReport) {
     println!("run-index repair: {}", report.workdir.display());
     println!("  status:             {}", report.status);
-    println!("  bytes scanned:      {} / {}", report.bytes_scanned, report.max_bytes);
-    println!("  records inspected:  {} / {}", report.records_seen, report.max_records);
+    println!(
+        "  bytes scanned:      {} / {}",
+        report.bytes_scanned, report.max_bytes
+    );
+    println!(
+        "  records inspected:  {} / {}",
+        report.records_seen, report.max_records
+    );
     println!("  accepted records:   {}", report.records_indexed);
     println!(
         "  distinct indexes:   {} / {}",
@@ -866,7 +864,10 @@ fn print_report(report: &RepairReport) {
     } else if report.dry_run {
         println!("dry run: nothing changed; rerun with `--apply` to replace these indexes");
     } else {
-        println!("repaired: {} index files atomically replaced", report.files_replaced);
+        println!(
+            "repaired: {} index files atomically replaced",
+            report.files_replaced
+        );
     }
 }
 
@@ -904,11 +905,8 @@ mod tests {
         let report = repair_indexes(workspace.path(), true, 8, 100, 100, 10).unwrap();
         assert!(report.truncated);
         assert!(!report.applied);
-        let index = roko_fs::run_index::run_index_path(
-            &roko.join("events.jsonl"),
-            "old-run",
-        )
-        .unwrap();
+        let index =
+            roko_fs::run_index::run_index_path(&roko.join("events.jsonl"), "old-run").unwrap();
         assert!(!index.exists());
     }
 
@@ -926,17 +924,13 @@ mod tests {
             ),
         )
         .unwrap();
-        let report =
-            repair_indexes(workspace.path(), true, 1_000_000, 100, 100, 10).unwrap();
+        let report = repair_indexes(workspace.path(), true, 1_000_000, 100, 100, 10).unwrap();
         assert!(report.applied);
         assert_eq!(report.records_indexed, 1);
         assert_eq!(report.malformed_records, 1);
         assert_eq!(report.invalid_run_ids, 1);
-        let index = roko_fs::run_index::run_index_path(
-            &roko.join("events.jsonl"),
-            "run-1",
-        )
-        .unwrap();
+        let index =
+            roko_fs::run_index::run_index_path(&roko.join("events.jsonl"), "run-1").unwrap();
         assert!(index.exists());
         assert!(!index.to_string_lossy().contains("run-1"));
     }

@@ -316,7 +316,10 @@ async fn run_events_sse(
                             cursor = persisted_cursor;
                             frame = frame.id(cursor.to_string());
                         }
-                        return Some((Ok::<_, Infallible>(frame), (rx, state, run_id, cursor, types)));
+                        return Some((
+                            Ok::<_, Infallible>(frame),
+                            (rx, state, run_id, cursor, types),
+                        ));
                     }
                     Ok(_) => continue,
                     Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -329,7 +332,10 @@ async fn run_events_sse(
                             .event("gap")
                             .id(cursor.to_string())
                             .data(data.to_string());
-                        return Some((Ok::<_, Infallible>(frame), (rx, state, run_id, cursor, types)));
+                        return Some((
+                            Ok::<_, Infallible>(frame),
+                            (rx, state, run_id, cursor, types),
+                        ));
                     }
                     Err(broadcast::error::RecvError::Closed) => return None,
                 }
@@ -370,10 +376,7 @@ async fn get_run_tasks(
         });
         entry["event_count"] = json!(entry["event_count"].as_u64().unwrap_or(0) + 1);
         if let Some(attempt) = event_attempt(&item.value) {
-            let mut attempts = entry["attempts"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
+            let mut attempts = entry["attempts"].as_array().cloned().unwrap_or_default();
             if !attempts.iter().any(|value| value.as_u64() == Some(attempt)) {
                 attempts.push(json!(attempt));
                 attempts.sort_by_key(Value::as_u64);
@@ -502,7 +505,9 @@ async fn get_run_logs(
                     return false;
                 }
                 let level = event_level(value);
-                !wanted_level.as_deref().is_some_and(|wanted| wanted != level)
+                !wanted_level
+                    .as_deref()
+                    .is_some_and(|wanted| wanted != level)
             },
         )
     })
@@ -512,7 +517,10 @@ async fn get_run_logs(
     for item in &page.events {
         let level = event_level(&item.value);
         let serialized = serde_json::to_string(&item.value).unwrap_or_default();
-        let message = serialized.chars().take(MAX_LOG_PREVIEW_CHARS).collect::<String>();
+        let message = serialized
+            .chars()
+            .take(MAX_LOG_PREVIEW_CHARS)
+            .collect::<String>();
         logs.push(json!({
             "cursor": item.cursor,
             "timestamp_ms": event_timestamp_ms(&item.value),
@@ -590,7 +598,9 @@ async fn get_run_artifacts(
     .await?;
     artifacts.truncate(MAX_BUNDLE_ENTRIES);
     if artifacts.is_empty() && !bundle_available {
-        return Err(ApiError::not_found(format!("run '{run_id}' has no artifacts")));
+        return Err(ApiError::not_found(format!(
+            "run '{run_id}' has no artifacts"
+        )));
     }
     Ok(Json(json!({
         "run_id": run_id,
@@ -682,8 +692,7 @@ where
 }
 
 fn ensure_observability_allowed(state: &AppState) -> Result<(), ApiError> {
-    let config = state.load_roko_config();
-    if config.serve.auth.enabled || super::bind_is_loopback(&config.server.bind) {
+    if state.run_observability_allowed() {
         return Ok(());
     }
     Err(ApiError::forbidden(
@@ -711,7 +720,11 @@ fn parse_types(raw: Option<&str>) -> Result<BTreeSet<String>, ApiError> {
         return Ok(BTreeSet::new());
     };
     let mut types = BTreeSet::new();
-    for item in raw.split(',').map(str::trim).filter(|item| !item.is_empty()) {
+    for item in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    {
         if item.len() > 64
             || !item
                 .bytes()
@@ -742,11 +755,9 @@ fn parse_source(raw: Option<&str>) -> Result<Option<EventSource>, ApiError> {
 
 fn source_path(state: &AppState, run_id: &str, source: EventSource) -> Option<PathBuf> {
     match source {
-        EventSource::Runner => roko_fs::run_index::run_index_path(
-            &state.layout.events_jsonl_path(),
-            run_id,
-        )
-        .ok(),
+        EventSource::Runner => {
+            roko_fs::run_index::run_index_path(&state.layout.events_jsonl_path(), run_id).ok()
+        }
         EventSource::Runtime => {
             // Materialize this run's bounded buffer on demand. This does not
             // flush or scan the global compatibility log.
@@ -801,9 +812,8 @@ fn discover_indexed_runs(state: &AppState) -> (Vec<Value>, bool, u64) {
             {
                 continue;
             }
-            let budget = MAX_DASHBOARD_SCAN_BYTES_PER_RUN.min(
-                MAX_DASHBOARD_TOTAL_SCAN_BYTES.saturating_sub(scanned_bytes),
-            );
+            let budget = MAX_DASHBOARD_SCAN_BYTES_PER_RUN
+                .min(MAX_DASHBOARD_TOTAL_SCAN_BYTES.saturating_sub(scanned_bytes));
             let (run_id, discovery_bytes) = discover_run_id(&path, budget);
             scanned_bytes = scanned_bytes.saturating_add(discovery_bytes);
             let Some(run_id) = run_id else {
@@ -845,9 +855,12 @@ fn discover_indexed_runs(state: &AppState) -> (Vec<Value>, bool, u64) {
                     .flatten()
             });
             let prompt = page.events.iter().find_map(|item| {
-                matches!(event_type(&item.value), Some("workflow_started" | "run_started"))
-                    .then(|| event_data(&item.value).get("prompt").cloned())
-                    .flatten()
+                matches!(
+                    event_type(&item.value),
+                    Some("workflow_started" | "run_started")
+                )
+                .then(|| event_data(&item.value).get("prompt").cloned())
+                .flatten()
             });
             let status = aggregate["status"].clone();
             summaries.insert(
@@ -883,7 +896,11 @@ fn discover_run_id(path: &FsPath, max_bytes: u64) -> (Option<String>, u64) {
         line.clear();
         let bytes = match reader
             .by_ref()
-            .take(max_bytes.saturating_sub(scanned).min((MAX_LINE_BYTES + 1) as u64))
+            .take(
+                max_bytes
+                    .saturating_sub(scanned)
+                    .min((MAX_LINE_BYTES + 1) as u64),
+            )
             .read_line(&mut line)
         {
             Ok(bytes) => bytes,
@@ -1120,9 +1137,7 @@ fn read_index_page_filtered(
             }
             continue;
         }
-        if !types.is_empty()
-            && !event_type(&value).is_some_and(|kind| types.contains(kind))
-        {
+        if !types.is_empty() && !event_type(&value).is_some_and(|kind| types.contains(kind)) {
             continue;
         }
         if !include(&value) {
@@ -1200,7 +1215,11 @@ fn accepts_sse(headers: &HeaderMap) -> bool {
     headers
         .get(header::ACCEPT)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.split(',').any(|part| part.trim() == "text/event-stream"))
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|part| part.trim() == "text/event-stream")
+        })
 }
 
 fn run_is_known_on_disk(state: &AppState, run_id: &str) -> bool {
@@ -1308,7 +1327,10 @@ fn is_gate_event(kind: &str) -> bool {
 }
 
 fn is_task_terminal(kind: &str) -> bool {
-    matches!(kind, "task.attempt.completed" | "task_completed" | "task_failed")
+    matches!(
+        kind,
+        "task.attempt.completed" | "task_completed" | "task_failed"
+    )
 }
 
 fn terminal_status(value: &Value) -> Value {
@@ -1368,19 +1390,24 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
             .or_else(|| value.get("ts").and_then(Value::as_str));
         if kind == "run.started" || kind == "workflow_started" || kind == "run_started" {
             status = "running";
-            started_at = timestamp.map(str::to_string).or_else(|| {
-                event_timestamp_ms(value).map(|value| value.to_string())
-            });
+            started_at = timestamp
+                .map(str::to_string)
+                .or_else(|| event_timestamp_ms(value).map(|value| value.to_string()));
         }
-        if matches!(kind, "run.completed" | "workflow_completed" | "run_completed") {
+        if matches!(
+            kind,
+            "run.completed" | "workflow_completed" | "run_completed"
+        ) {
             status = completion_status(value);
-            finished_at = timestamp.map(str::to_string).or_else(|| {
-                event_timestamp_ms(value).map(|value| value.to_string())
-            });
+            finished_at = timestamp
+                .map(str::to_string)
+                .or_else(|| event_timestamp_ms(value).map(|value| value.to_string()));
             duration_ms = numeric(value, "duration_ms");
             final_cost = decimal(value, "total_cost_usd").or_else(|| decimal(value, "cost_usd"));
         }
-        if is_gate_event(kind) && (kind.contains("completed") || kind.contains("passed") || kind.contains("failed")) {
+        if is_gate_event(kind)
+            && (kind.contains("completed") || kind.contains("passed") || kind.contains("failed"))
+        {
             gates_total = gates_total.saturating_add(1);
             let passed = bool_field(value, "passed").unwrap_or_else(|| kind.contains("passed"));
             if passed {
@@ -1392,13 +1419,15 @@ fn summarize_events(events: &[IndexedEvent]) -> Value {
         if kind == "inference_completed" {
             saw_inference_usage = true;
             input_tokens = input_tokens.saturating_add(numeric(value, "input_tokens").unwrap_or(0));
-            output_tokens = output_tokens.saturating_add(numeric(value, "output_tokens").unwrap_or(0));
+            output_tokens =
+                output_tokens.saturating_add(numeric(value, "output_tokens").unwrap_or(0));
             cost_usd += decimal(value, "cost_usd").unwrap_or(0.0);
         } else if kind == "agent.token_usage" {
             input_tokens = input_tokens.saturating_add(numeric(value, "input_tokens").unwrap_or(0));
-            output_tokens = output_tokens.saturating_add(numeric(value, "output_tokens").unwrap_or(0));
-            cache_read_tokens = cache_read_tokens
-                .saturating_add(numeric(value, "cache_read_tokens").unwrap_or(0));
+            output_tokens =
+                output_tokens.saturating_add(numeric(value, "output_tokens").unwrap_or(0));
+            cache_read_tokens =
+                cache_read_tokens.saturating_add(numeric(value, "cache_read_tokens").unwrap_or(0));
             cache_write_tokens = cache_write_tokens
                 .saturating_add(numeric(value, "cache_write_tokens").unwrap_or(0));
         } else if kind == "agent.turn_completed" {
@@ -1466,7 +1495,9 @@ fn completion_status(value: &Value) -> &'static str {
     if bool_field(value, "success") == Some(true) {
         return "completed";
     }
-    let serialized = serde_json::to_string(event_data(value)).unwrap_or_default().to_ascii_lowercase();
+    let serialized = serde_json::to_string(event_data(value))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     if serialized.contains("cancel") {
         "cancelled"
     } else if serialized.contains("success") || serialized.contains("succeeded") {
@@ -1549,7 +1580,10 @@ fn manifest_matches_run(dir: &FsPath, run_id: &str) -> bool {
     let Ok(metadata) = std::fs::symlink_metadata(&path) else {
         return dir.file_name().and_then(|name| name.to_str()) == Some(run_id);
     };
-    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > MAX_BUNDLE_MANIFEST_BYTES {
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > MAX_BUNDLE_MANIFEST_BYTES
+    {
         return false;
     }
     let Ok(data) = std::fs::read_to_string(path) else {
@@ -1580,10 +1614,23 @@ fn safe_child_dir(root: &FsPath, candidate: &FsPath) -> bool {
 
 fn bundle_files(bundle: &FsPath) -> Vec<Value> {
     const ALLOWED: &[&str] = &[
-        "manifest.json", "command.txt", "stdout.log", "stderr.log", "events.jsonl",
-        "status.jsonl", "commands.jsonl", "usage.jsonl", "endpoints.json", "gates.json",
-        "processes.json", "timings.json", "diff.patch", "diff-stat.json", "summary.json",
-        "score.json", "DEBRIEF.md",
+        "manifest.json",
+        "command.txt",
+        "stdout.log",
+        "stderr.log",
+        "events.jsonl",
+        "status.jsonl",
+        "commands.jsonl",
+        "usage.jsonl",
+        "endpoints.json",
+        "gates.json",
+        "processes.json",
+        "timings.json",
+        "diff.patch",
+        "diff-stat.json",
+        "summary.json",
+        "score.json",
+        "DEBRIEF.md",
     ];
     let mut files = ALLOWED
         .iter()
@@ -1591,14 +1638,18 @@ fn bundle_files(bundle: &FsPath) -> Vec<Value> {
         .collect::<Vec<_>>();
     let screenshots = bundle.join("screenshots");
     if safe_child_dir(bundle, &screenshots) {
-        files.extend(list_screenshot_files(&screenshots).into_iter().map(|mut value| {
-            if let Some(path) = value.get_mut("path")
-                && let Some(name) = path.as_str()
-            {
-                *path = json!(format!("screenshots/{name}"));
-            }
-            value
-        }));
+        files.extend(
+            list_screenshot_files(&screenshots)
+                .into_iter()
+                .map(|mut value| {
+                    if let Some(path) = value.get_mut("path")
+                        && let Some(name) = path.as_str()
+                    {
+                        *path = json!(format!("screenshots/{name}"));
+                    }
+                    value
+                }),
+        );
     }
     files.truncate(MAX_BUNDLE_ENTRIES);
     files
@@ -1615,13 +1666,15 @@ fn list_screenshot_files(dir: &FsPath) -> Vec<Value> {
             let name = entry.file_name();
             let name = name.to_str()?;
             if name.len() > 128
-                || !name.bytes().all(|byte| {
-                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
-                })
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
             {
                 return None;
             }
-            let extension = FsPath::new(name).extension().and_then(|value| value.to_str());
+            let extension = FsPath::new(name)
+                .extension()
+                .and_then(|value| value.to_str());
             if !matches!(extension, Some("png" | "txt" | "json")) {
                 return None;
             }
@@ -1638,7 +1691,10 @@ fn file_metadata(root: &FsPath, path: &FsPath, relative: &str) -> Option<Value> 
         return None;
     }
     let canonical_root = std::fs::canonicalize(root).ok()?;
-    if !std::fs::canonicalize(path).ok()?.starts_with(canonical_root) {
+    if !std::fs::canonicalize(path)
+        .ok()?
+        .starts_with(canonical_root)
+    {
         return None;
     }
     let modified_ms = metadata
@@ -1732,17 +1788,19 @@ mod tests {
         .unwrap();
         assert_eq!(second.events.len(), 2);
         assert!(!second.has_more);
-        assert!(read_index_page(
-            &path,
-            "r1",
-            EventSource::Runner,
-            1,
-            2,
-            MAX_PAGE_SCAN_BYTES,
-            &BTreeSet::new(),
-            &LogScrubber::new(),
-        )
-        .is_err());
+        assert!(
+            read_index_page(
+                &path,
+                "r1",
+                EventSource::Runner,
+                1,
+                2,
+                MAX_PAGE_SCAN_BYTES,
+                &BTreeSet::new(),
+                &LogScrubber::new(),
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1774,11 +1832,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("run.jsonl");
         let complete = "{\"type\":\"run.started\",\"run_id\":\"r1\"}\n";
-        std::fs::write(
-            &path,
-            format!("{complete}{{\"type\":\"run.completed\""),
-        )
-        .unwrap();
+        std::fs::write(&path, format!("{complete}{{\"type\":\"run.completed\"")).unwrap();
         let page = read_index_page(
             &path,
             "r1",

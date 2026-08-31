@@ -207,11 +207,7 @@ impl DispatchDeadline {
 
     pub fn remaining(self, now: MonotonicTime) -> Option<Duration> {
         (now < self.deadline_at).then(|| {
-            Duration::from_millis(
-                self.deadline_at
-                    .as_millis()
-                    .saturating_sub(now.as_millis()),
-            )
+            Duration::from_millis(self.deadline_at.as_millis().saturating_sub(now.as_millis()))
         })
     }
 }

@@ -142,6 +142,7 @@ impl Config {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AgentConfig {
     /// Program name, e.g. `"cat"`, `"ollama"`, `"claude"`.
+    #[serde(default = "AgentConfig::default_command")]
     pub command: String,
     /// Extra args passed to the program.
     #[serde(default)]
@@ -319,6 +320,10 @@ impl Default for DaimonConfig {
 }
 
 impl AgentConfig {
+    fn default_command() -> String {
+        "cat".to_string()
+    }
+
     const fn default_timeout() -> u64 {
         DEFAULT_REQUEST_TIMEOUT_MS
     }
@@ -339,7 +344,7 @@ impl AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            command: "cat".into(),
+            command: Self::default_command(),
             args: Vec::new(),
             model: None,
             effort: Self::default_effort(),
@@ -3538,7 +3543,6 @@ mod tests {
     fn parses_minimal_config() {
         let toml = r#"
 [agent]
-command = "cat"
 "#;
         let cfg = Config::parse_toml(toml).unwrap();
         assert_eq!(cfg.agent.command, "cat");

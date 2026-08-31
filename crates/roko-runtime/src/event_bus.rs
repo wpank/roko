@@ -394,10 +394,7 @@ where
 }
 
 /// Emit a RuntimeEvent after its durable consumer returns a per-run cursor.
-pub fn emit_runtime_event_with_cursor<RuntimeEvent>(
-    event: RuntimeEvent,
-    cursor: Option<u64>,
-) -> u64
+pub fn emit_runtime_event_with_cursor<RuntimeEvent>(event: RuntimeEvent, cursor: Option<u64>) -> u64
 where
     RuntimeEvent: Clone + Send + Sync + 'static,
 {

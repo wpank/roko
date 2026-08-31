@@ -583,7 +583,7 @@ fn workflow_sse_from_adapter(
     )
 }
 
-fn bind_is_loopback(bind: &str) -> bool {
+pub(crate) fn bind_is_loopback(bind: &str) -> bool {
     let host = bind
         .strip_prefix('[')
         .and_then(|value| value.strip_suffix(']'))

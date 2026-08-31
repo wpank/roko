@@ -1207,10 +1207,13 @@ impl DashboardSnapshot {
                 self.run_outcome = None;
                 self.run_cleanup_degraded = false;
                 self.surviving_agent_pids.clear();
-                let plan = self.plans.entry(plan_id.clone()).or_insert_with(|| PlanState {
-                    plan_id: plan_id.clone(),
-                    ..Default::default()
-                });
+                let plan = self
+                    .plans
+                    .entry(plan_id.clone())
+                    .or_insert_with(|| PlanState {
+                        plan_id: plan_id.clone(),
+                        ..Default::default()
+                    });
                 if !plan.active {
                     self.stats.plans_active += 1;
                 }
@@ -1264,8 +1267,8 @@ impl DashboardSnapshot {
                     .into();
                 }
                 for agent in self.agents.values_mut() {
-                    agent.active = *cleanup_degraded
-                        && surviving_agent_ids.contains(&agent.agent_id);
+                    agent.active =
+                        *cleanup_degraded && surviving_agent_ids.contains(&agent.agent_id);
                     agent.last_event_at_ms = ts;
                 }
                 self.stats.plans_active = 0;
@@ -1283,13 +1286,16 @@ impl DashboardSnapshot {
                     .tasks
                     .get(&key)
                     .is_none_or(|task| task.outcome.is_some());
-                self.tasks.insert(key, TaskState {
-                    task_id: task_id.clone(),
-                    title: title.clone(),
-                    plan_id: plan_id.clone(),
-                    phase: phase.clone(),
-                    outcome: None,
-                });
+                self.tasks.insert(
+                    key,
+                    TaskState {
+                        task_id: task_id.clone(),
+                        title: title.clone(),
+                        plan_id: plan_id.clone(),
+                        phase: phase.clone(),
+                        outcome: None,
+                    },
+                );
                 if newly_active {
                     self.stats.tasks_active += 1;
                 }
@@ -1609,8 +1615,7 @@ impl DashboardSnapshot {
             DashboardEvent::AgentCompleted { agent_id, .. } => {
                 if let Some(agent) = self.agents.get_mut(agent_id) {
                     if agent.active {
-                        self.stats.agents_active =
-                            self.stats.agents_active.saturating_sub(1);
+                        self.stats.agents_active = self.stats.agents_active.saturating_sub(1);
                     }
                     agent.active = false;
                     agent.last_event_at_ms = ts;

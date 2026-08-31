@@ -1360,7 +1360,7 @@ mod tests {
     }
 
     #[test]
-    fn modal_open_keys_do_not_fall_through_to_background_navigation() {
+    fn help_modal_intercepts_background_navigation_and_scrolls_locally() {
         let modal = ModalState::Help;
         let vis = modals(Some(&modal));
 
@@ -1380,7 +1380,7 @@ mod tests {
             FocusZone::PlanTree,
             &vis,
         );
-        assert_eq!(action, TuiAction::None);
+        assert_eq!(action, TuiAction::ScrollFocusedDown);
     }
 
     #[test]

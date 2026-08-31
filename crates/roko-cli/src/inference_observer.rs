@@ -39,13 +39,16 @@ impl InferenceObserver for RuntimeEventInferenceObserver {
         auto_routed: bool,
         cursor: Option<u64>,
     ) {
-        roko_runtime::event_bus::emit_runtime_event_with_cursor(RuntimeEvent::InferenceStarted {
-            run_id: run_id.to_string(),
-            request_id: request_id.to_string(),
-            model: model.to_string(),
-            agent_id: agent_id.to_string(),
-            auto_routed,
-        }, cursor);
+        roko_runtime::event_bus::emit_runtime_event_with_cursor(
+            RuntimeEvent::InferenceStarted {
+                run_id: run_id.to_string(),
+                request_id: request_id.to_string(),
+                model: model.to_string(),
+                agent_id: agent_id.to_string(),
+                auto_routed,
+            },
+            cursor,
+        );
     }
 
     fn on_complete(
@@ -84,16 +87,19 @@ impl InferenceObserver for RuntimeEventInferenceObserver {
         duration_ms: u64,
         cursor: Option<u64>,
     ) {
-        roko_runtime::event_bus::emit_runtime_event_with_cursor(RuntimeEvent::InferenceCompleted {
-            run_id: run_id.to_string(),
-            request_id: request_id.to_string(),
-            model: model.to_string(),
-            agent_id: agent_id.to_string(),
-            input_tokens,
-            output_tokens,
-            cost_usd,
-            duration_ms,
-        }, cursor);
+        roko_runtime::event_bus::emit_runtime_event_with_cursor(
+            RuntimeEvent::InferenceCompleted {
+                run_id: run_id.to_string(),
+                request_id: request_id.to_string(),
+                model: model.to_string(),
+                agent_id: agent_id.to_string(),
+                input_tokens,
+                output_tokens,
+                cost_usd,
+                duration_ms,
+            },
+            cursor,
+        );
     }
 
     fn on_error(&self, run_id: &str, request_id: &str, model: &str, agent_id: &str, error: &str) {
@@ -109,13 +115,16 @@ impl InferenceObserver for RuntimeEventInferenceObserver {
         error: &str,
         cursor: Option<u64>,
     ) {
-        roko_runtime::event_bus::emit_runtime_event_with_cursor(RuntimeEvent::InferenceFailed {
-            run_id: run_id.to_string(),
-            request_id: request_id.to_string(),
-            model: model.to_string(),
-            agent_id: agent_id.to_string(),
-            error: error.to_string(),
-        }, cursor);
+        roko_runtime::event_bus::emit_runtime_event_with_cursor(
+            RuntimeEvent::InferenceFailed {
+                run_id: run_id.to_string(),
+                request_id: request_id.to_string(),
+                model: model.to_string(),
+                agent_id: agent_id.to_string(),
+                error: error.to_string(),
+            },
+            cursor,
+        );
     }
 }
 

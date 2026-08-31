@@ -139,9 +139,7 @@ fn open_index_file(global_log: &Path, path: &Path, create: bool) -> io::Result<F
             | rustix::fs::OFlags::NOFOLLOW
             | rustix::fs::OFlags::CLOEXEC
     } else {
-        rustix::fs::OFlags::RDONLY
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::CLOEXEC
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC
     };
     let fd = rustix::fs::openat(
         &index_fd,
@@ -201,7 +199,9 @@ fn open_index_file(_global_log: &Path, path: &Path, create: bool) -> io::Result<
     }
     let metadata = std::fs::symlink_metadata(parent)?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(io::Error::other("run index parent must be a real directory"));
+        return Err(io::Error::other(
+            "run index parent must be a real directory",
+        ));
     }
     if let Ok(metadata) = std::fs::symlink_metadata(path)
         && (metadata.file_type().is_symlink() || !metadata.is_file())
@@ -223,11 +223,17 @@ mod tests {
 
     #[test]
     fn path_uses_digest_not_identifier() {
-        let path = run_index_path(Path::new("/tmp/.roko/events.jsonl"), "run-123")
-            .expect("valid path");
-        assert_eq!(path.parent().and_then(Path::file_name), Some("events-by-run".as_ref()));
+        let path =
+            run_index_path(Path::new("/tmp/.roko/events.jsonl"), "run-123").expect("valid path");
+        assert_eq!(
+            path.parent().and_then(Path::file_name),
+            Some("events-by-run".as_ref())
+        );
         assert!(!path.to_string_lossy().contains("run-123"));
-        assert_eq!(path.extension().and_then(|value| value.to_str()), Some("jsonl"));
+        assert_eq!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("jsonl")
+        );
     }
 
     #[test]

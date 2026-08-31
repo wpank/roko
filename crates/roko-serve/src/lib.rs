@@ -221,6 +221,16 @@ impl ServerBuildConfig {
     pub fn effective_addr(&self) -> String {
         format!("{}:{}", self.effective_bind(), self.effective_port())
     }
+
+    /// Persist the resolved listener bind into the configuration shared with
+    /// request handlers. CLI overrides must be visible to authorization checks;
+    /// retaining the file value here can otherwise misclassify a public listener
+    /// as loopback (or reject a loopback override of a public config).
+    fn synchronize_effective_bind(&mut self) -> String {
+        let bind = self.effective_bind().to_string();
+        self.roko_config.server.bind.clone_from(&bind);
+        bind
+    }
 }
 
 /// Resolve the bind socket when the `PORT` environment variable is in play.
@@ -293,6 +303,11 @@ impl ServerBuilder {
     pub async fn start_background(mut self) -> Result<(Arc<AppState>, JoinHandle<Result<()>>)> {
         normalize_serve_dispatch_config(&mut self.config.roko_config)?;
 
+        // AppState is the authorization source of truth after startup, so it
+        // must carry the actual listener bind rather than the pre-override file
+        // value. `PORT` may replace the port below, but never the resolved bind.
+        let effective_bind = self.config.synchronize_effective_bind();
+
         // -- PORT env var override (Railway / cloud platforms) -------------
         // The `PORT` env var lets the platform pick a port; it does NOT imply
         // the operator wants a public bind. Per T3-25 we override only the
@@ -301,7 +316,7 @@ impl ServerBuilder {
         let port_env = std::env::var("PORT").ok();
         let addr = if let Some(value) = port_env.as_deref() {
             let (bind, port) = resolve_bind_with_port_env(
-                &self.config.roko_config.server.bind,
+                &effective_bind,
                 self.config.bind.as_deref(),
                 self.config.roko_config.server.port,
                 self.config.port,
@@ -337,6 +352,7 @@ impl ServerBuilder {
         );
         let roko_config = state.load_roko_config();
         validate_bind_safety(&addr, &roko_config.serve)?;
+        state.configure_listener_security(&effective_bind, roko_config.serve.auth.enabled);
 
         // Conditionally initialize OTLP tracing export when the feature is
         // enabled and an endpoint is configured.
@@ -866,10 +882,12 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
     // must not restore snapshots, start workers/watchers, or touch a listener.
     let mut roko_config = state.load_roko_config().as_ref().clone();
     normalize_serve_dispatch_config(&mut roko_config)?;
+    roko_config.server.bind = bind.to_string();
     state.store_roko_config(roko_config.clone());
 
     let addr = format!("{bind}:{port}");
     validate_bind_safety(&addr, &roko_config.serve)?;
+    state.configure_listener_security(bind, roko_config.serve.auth.enabled);
     if !roko_config.serve.auth.enabled {
         tracing::warn!(
             "roko serve is running WITHOUT authentication. Set [serve.auth] enabled = true in roko.toml to require API keys."
@@ -4047,6 +4065,40 @@ mod tests {
                 .expect("resolve overrides");
         assert_eq!(bind, "0.0.0.0");
         assert_eq!(port, 9999);
+    }
+
+    #[test]
+    fn public_cli_bind_override_is_synchronized_into_shared_config() {
+        let dir = tempdir().expect("tempdir");
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        config.server.bind = "127.0.0.1".to_string();
+        let mut build = ServerBuildConfig::new(
+            dir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            config,
+            Some("0.0.0.0".to_string()),
+            None,
+        );
+
+        assert_eq!(build.synchronize_effective_bind(), "0.0.0.0");
+        assert_eq!(build.roko_config.server.bind, "0.0.0.0");
+    }
+
+    #[test]
+    fn loopback_cli_bind_override_is_synchronized_into_shared_config() {
+        let dir = tempdir().expect("tempdir");
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        config.server.bind = "0.0.0.0".to_string();
+        let mut build = ServerBuildConfig::new(
+            dir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            config,
+            Some("127.0.0.1".to_string()),
+            None,
+        );
+
+        assert_eq!(build.synchronize_effective_bind(), "127.0.0.1");
+        assert_eq!(build.roko_config.server.bind, "127.0.0.1");
     }
 
     #[test]

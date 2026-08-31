@@ -132,7 +132,7 @@ impl Default for CacheCleanupPolicy {
             target_budget_bytes: 96 * GIB,
             evidence_budget_bytes: 2 * GIB,
             context_cache_budget_bytes: GIB,
-            min_incremental_age: Duration::from_secs(6 * 3600),
+            min_incremental_age: Duration::from_hours(6),
             max_evidence_age: Duration::from_secs(14 * DAY_SECS),
             preserve_evidence_runs: 10,
             preserve_incremental_entries: 8,
@@ -234,7 +234,7 @@ pub async fn clean_stale_targets(root: &Path, max_age_days: u32) -> std::io::Res
             let Some(_locks) = try_lock_target_profiles(&entry.target)? else {
                 continue;
             };
-            validate_removal_path(&entry.target, &[entry.checkout.clone()])?;
+            validate_removal_path(&entry.target, std::slice::from_ref(&entry.checkout))?;
             let size = dir_size_bytes(&entry.target);
             match std::fs::remove_dir_all(&entry.target) {
                 Ok(()) => {
@@ -361,7 +361,9 @@ pub async fn cargo_clean(workdir: &Path) -> std::io::Result<()> {
         Err(error) => return Err(error),
     };
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(std::io::Error::other("refusing cargo clean for non-directory target"));
+        return Err(std::io::Error::other(
+            "refusing cargo clean for non-directory target",
+        ));
     }
     if age_secs(metadata.modified().unwrap_or(UNIX_EPOCH)) < DAY_SECS {
         tracing::debug!(path = %target.display(), "preserving fresh target cache");
@@ -609,7 +611,9 @@ fn scan_log_archives(
 ) -> std::io::Result<()> {
     let layout = crate::RokoLayout::for_project(root);
     for live in crate::log_rotation::rotatable_jsonl_paths(&layout) {
-        let Some(parent) = live.parent() else { continue };
+        let Some(parent) = live.parent() else {
+            continue;
+        };
         let Some(stem) = live.file_stem().and_then(|stem| stem.to_str()) else {
             continue;
         };
@@ -619,14 +623,20 @@ fn scan_log_archives(
                 continue;
             };
             if !name.starts_with(&format!("{stem}."))
-                || !name.ends_with(".jsonl")
+                || !Path::new(name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
                 || !archive_name_has_timestamp(stem, name)
             {
                 continue;
             }
             let metadata = std::fs::symlink_metadata(&path)?;
             report.log_archive_bytes = report.log_archive_bytes.saturating_add(metadata.len());
-            archives.push((metadata.modified().unwrap_or(UNIX_EPOCH), path, metadata.len()));
+            archives.push((
+                metadata.modified().unwrap_or(UNIX_EPOCH),
+                path,
+                metadata.len(),
+            ));
         }
         archives.sort_by_key(|(modified, _, _)| std::cmp::Reverse(*modified));
         for (index, (modified, path, size)) in archives.into_iter().enumerate() {
@@ -697,18 +707,17 @@ fn insert_worktree_target(
     let Ok(checkout) = canonical_real_dir(&checkout) else {
         return;
     };
-    targets.entry(checkout.clone()).or_insert_with(|| WorktreeTarget {
-        target: checkout.join("target"),
-        checkout,
-        head,
-        git_authoritative,
-    });
+    targets
+        .entry(checkout.clone())
+        .or_insert_with(|| WorktreeTarget {
+            target: checkout.join("target"),
+            checkout,
+            head,
+            git_authoritative,
+        });
 }
 
-fn allowed_cleanup_roots(
-    root: &Path,
-    roko_dir: Option<&Path>,
-) -> std::io::Result<Vec<PathBuf>> {
+fn allowed_cleanup_roots(root: &Path, roko_dir: Option<&Path>) -> std::io::Result<Vec<PathBuf>> {
     let mut allowed = discover_worktree_targets(root)?
         .into_iter()
         .map(|entry| entry.checkout)
@@ -901,11 +910,11 @@ fn try_lock_existing(path: &Path) -> std::io::Result<Option<File>> {
     let file = match OpenOptions::new().read(true).write(true).open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .read(true)
-                .write(true)
-                .open(path)?,
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?,
         Err(error) => return Err(error),
     };
     match file.try_lock_exclusive() {
@@ -946,11 +955,12 @@ fn acquire_gc_lock(roko_dir: &Path) -> std::io::Result<File> {
     }
     let canonical_runtime = canonical_real_dir(&runtime)?;
     if !canonical_runtime.starts_with(roko_dir) || canonical_runtime == roko_dir {
-        return Err(std::io::Error::other("runtime state escapes workspace state"));
+        return Err(std::io::Error::other(
+            "runtime state escapes workspace state",
+        ));
     }
-    try_lock_existing(&canonical_runtime.join("cache-gc.lock"))?.ok_or_else(|| {
-        std::io::Error::other("another cache cleanup pass is already active")
-    })
+    try_lock_existing(&canonical_runtime.join("cache-gc.lock"))?
+        .ok_or_else(|| std::io::Error::other("another cache cleanup pass is already active"))
 }
 
 fn try_lock_target_profiles(target: &Path) -> std::io::Result<Option<Vec<File>>> {
@@ -1085,7 +1095,12 @@ mod tests {
 
         assert!(incremental.exists());
         assert!(report.dry_run);
-        assert!(report.candidates.iter().any(|candidate| candidate.path == incremental));
+        assert!(
+            report
+                .candidates
+                .iter()
+                .any(|candidate| candidate.path == incremental)
+        );
     }
 
     #[tokio::test]
@@ -1140,7 +1155,11 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("workspace state must be a real directory"));
+        assert!(
+            error
+                .to_string()
+                .contains("workspace state must be a real directory")
+        );
         assert!(outside.path().join("important").exists());
     }
 
@@ -1192,7 +1211,12 @@ mod tests {
             .unwrap();
 
         assert!(incremental.exists());
-        assert!(report.protected.iter().any(|entry| entry.path == root.path().join("target")));
+        assert!(
+            report
+                .protected
+                .iter()
+                .any(|entry| entry.path == root.path().join("target"))
+        );
     }
 
     #[test]

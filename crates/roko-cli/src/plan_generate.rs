@@ -980,8 +980,9 @@ mod tests {
             "prompt",
         );
         assert!(prompt.contains("Add a logging system"));
-        assert!(prompt.contains("Surgical scope"));
-        assert!(prompt.contains("/test"));
+        assert!(prompt.contains("## Source type: prompt"));
+        assert!(prompt.contains("## Source content:"));
+        assert!(prompt.contains("## Workspace: /test"));
     }
 
     #[test]

@@ -1111,6 +1111,24 @@ pub(super) async fn reflex_input_fingerprint(
     let GateInputSnapshot(base, digest, has_owned_diff) = gate_input_snapshot(workdir).await?;
     Ok((base, digest, has_owned_diff))
 }
+
+fn gate_input_fingerprint_id(snapshot: &GateInputSnapshot) -> String {
+    let mut identity = Sha256::new();
+    hash_part(&mut identity, snapshot.0.as_bytes());
+    identity.update(snapshot.1);
+    identity.update([u8::from(snapshot.2)]);
+    format!("{:x}", identity.finalize())
+}
+
+/// Combined identity of the immutable base plus every tracked/untracked byte
+/// and mode in a task checkout.
+pub(super) async fn owned_input_fingerprint_id(workdir: PathBuf) -> Result<String, String> {
+    let snapshot = gate_input_snapshot(workdir).await?;
+    snapshot
+        .2
+        .then(|| gate_input_fingerprint_id(&snapshot))
+        .ok_or_else(|| "worktree has no owned diff to fingerprint".to_string())
+}
 async fn accepted_input_snapshot(
     workdir: PathBuf,
     expected_oid: &str,
@@ -1234,6 +1252,7 @@ pub fn spawn_gate(
     task_context: Option<GateTaskContext>,
     telemetry_sink: Option<Arc<dyn TelemetryEventSink>>,
     main_target_dir: Option<PathBuf>,
+    expected_input_fingerprint: Option<String>,
 ) -> (JoinHandle<()>, oneshot::Sender<()>) {
     let (start_tx, start_rx) = oneshot::channel();
     let handle = tokio::spawn(async move {
@@ -1253,6 +1272,15 @@ pub fn spawn_gate(
             if wait_ms > 10 {
                 info!(plan_id = %plan_id, task_id = %task_id, rung, wait_ms,
                     "gate semaphore acquired");
+            }
+            if let Some(expected) = expected_input_fingerprint.as_deref() {
+                let observed = owned_input_fingerprint_id(workdir.clone()).await?;
+                if observed != expected {
+                    return Err(
+                        "timeout salvage input changed before ordinary gate start; refusing attribution"
+                            .to_string(),
+                    );
+                }
             }
             Ok::<_, String>(
                 run_gate_once(
@@ -3244,6 +3272,7 @@ path = "src/shared.rs"
             None,
             None,
             None, // main_target_dir
+            None, // expected_input_fingerprint
         );
         (handle, start, rx)
     }
@@ -3375,6 +3404,7 @@ path = "src/shared.rs"
             None,
             None,
             None, // main_target_dir
+            None, // expected_input_fingerprint
         );
 
         start.send(()).expect("owner starts producer");

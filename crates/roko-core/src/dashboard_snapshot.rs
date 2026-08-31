@@ -84,6 +84,19 @@ pub enum DashboardEvent {
     },
     /// A plan execution completed.
     PlanCompleted { plan_id: String, success: bool },
+    /// The owning runner reached a terminal outcome.  This is separate from
+    /// per-plan completion so cancellation and hard deadlines can converge all
+    /// live dashboard projections in one idempotent event.
+    RunCompleted {
+        outcome: String,
+        duration_ms: u64,
+        #[serde(default)]
+        cleanup_degraded: bool,
+        #[serde(default)]
+        surviving_agent_ids: Vec<String>,
+        #[serde(default)]
+        surviving_agent_pids: Vec<u32>,
+    },
     /// A task started executing.
     TaskStarted {
         plan_id: String,
@@ -998,6 +1011,19 @@ pub struct InboxItemState {
 /// through a `watch::Receiver` for zero-copy reads.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DashboardSnapshot {
+    /// Immutable wall-clock duration once the latest runner invocation is
+    /// terminal. `None` means the run is idle or still active.
+    #[serde(default)]
+    pub run_duration_ms: Option<u64>,
+    /// Terminal outcome for the latest runner invocation.
+    #[serde(default)]
+    pub run_outcome: Option<String>,
+    /// Whether terminal cleanup left exact runtime ownership for recovery.
+    #[serde(default)]
+    pub run_cleanup_degraded: bool,
+    /// PIDs retained by terminal settlement for startup orphan cleanup.
+    #[serde(default)]
+    pub surviving_agent_pids: Vec<u32>,
     /// Active and recently completed plans.
     pub plans: HashMap<String, PlanState>,
     /// Active tasks keyed by `"{plan_id}/{task_id}"`.
@@ -1177,20 +1203,25 @@ impl DashboardSnapshot {
                 plan_id,
                 tasks_total,
             } => {
-                self.stats.plans_active += 1;
-                self.plans.insert(
-                    plan_id.clone(),
-                    PlanState {
-                        plan_id: plan_id.clone(),
-                        phase: "started".into(),
-                        tasks_total: *tasks_total,
-                        active: true,
-                        ..Default::default()
-                    },
-                );
+                self.run_duration_ms = None;
+                self.run_outcome = None;
+                self.run_cleanup_degraded = false;
+                self.surviving_agent_pids.clear();
+                let plan = self.plans.entry(plan_id.clone()).or_insert_with(|| PlanState {
+                    plan_id: plan_id.clone(),
+                    ..Default::default()
+                });
+                if !plan.active {
+                    self.stats.plans_active += 1;
+                }
+                plan.phase = "started".into();
+                plan.tasks_total = plan.tasks_total.max(*tasks_total);
+                plan.active = true;
             }
             DashboardEvent::PlanCompleted { plan_id, success } => {
+                let mut newly_terminal = false;
                 if let Some(plan) = self.plans.get_mut(plan_id) {
+                    newly_terminal = plan.active;
                     plan.active = false;
                     plan.phase = if *success {
                         "completed".into()
@@ -1198,12 +1229,48 @@ impl DashboardSnapshot {
                         "failed".into()
                     };
                 }
-                self.stats.plans_active = self.stats.plans_active.saturating_sub(1);
-                if *success {
-                    self.stats.plans_completed += 1;
-                } else {
-                    self.stats.plans_failed += 1;
+                if newly_terminal {
+                    self.stats.plans_active = self.stats.plans_active.saturating_sub(1);
+                    if *success {
+                        self.stats.plans_completed += 1;
+                    } else {
+                        self.stats.plans_failed += 1;
+                    }
                 }
+            }
+            DashboardEvent::RunCompleted {
+                outcome,
+                duration_ms,
+                cleanup_degraded,
+                surviving_agent_ids,
+                surviving_agent_pids,
+            } => {
+                // Preserve the first terminal duration for this invocation.
+                // Duplicate terminal publications and event-log replay must
+                // never make elapsed time move again.
+                if self.run_duration_ms.is_none() {
+                    self.run_duration_ms = Some(*duration_ms);
+                    self.run_outcome = Some(outcome.clone());
+                }
+                self.run_cleanup_degraded = *cleanup_degraded;
+                self.surviving_agent_pids.clone_from(surviving_agent_pids);
+                for plan in self.plans.values_mut().filter(|plan| plan.active) {
+                    plan.active = false;
+                    plan.phase = match outcome.as_str() {
+                        "succeeded" => "completed",
+                        "cancelled" => "cancelled",
+                        _ => "failed",
+                    }
+                    .into();
+                }
+                for agent in self.agents.values_mut() {
+                    agent.active = *cleanup_degraded
+                        && surviving_agent_ids.contains(&agent.agent_id);
+                    agent.last_event_at_ms = ts;
+                }
+                self.stats.plans_active = 0;
+                self.stats.agents_active =
+                    self.agents.values().filter(|agent| agent.active).count();
             }
             DashboardEvent::TaskStarted {
                 plan_id,
@@ -1211,20 +1278,30 @@ impl DashboardSnapshot {
                 title,
                 phase,
             } => {
-                self.stats.tasks_active += 1;
                 let key = format!("{plan_id}/{task_id}");
-                self.tasks.insert(
-                    key,
-                    TaskState {
-                        task_id: task_id.clone(),
-                        title: title.clone(),
-                        plan_id: plan_id.clone(),
-                        phase: phase.clone(),
-                        outcome: None,
-                    },
-                );
+                let newly_active = self
+                    .tasks
+                    .get(&key)
+                    .is_none_or(|task| task.outcome.is_some());
+                self.tasks.insert(key, TaskState {
+                    task_id: task_id.clone(),
+                    title: title.clone(),
+                    plan_id: plan_id.clone(),
+                    phase: phase.clone(),
+                    outcome: None,
+                });
+                if newly_active {
+                    self.stats.tasks_active += 1;
+                }
+                let observed_tasks = self
+                    .tasks
+                    .values()
+                    .filter(|task| task.plan_id == *plan_id)
+                    .count();
                 if let Some(plan) = self.plans.get_mut(plan_id) {
-                    plan.tasks_total += 1;
+                    if plan.tasks_total == 0 {
+                        plan.tasks_total = observed_tasks;
+                    }
                 }
                 // Note: current_task / current_plan are now set directly from
                 // the structured fields in AgentSpawned, so we don't need the
@@ -1237,20 +1314,24 @@ impl DashboardSnapshot {
             } => {
                 let key = format!("{plan_id}/{task_id}");
                 let failed = outcome.contains("fail") || outcome.contains("error");
+                let mut newly_terminal = false;
                 if let Some(task) = self.tasks.get_mut(&key) {
+                    newly_terminal = task.outcome.is_none();
                     task.phase = "completed".into();
                     task.outcome = Some(outcome.clone());
                 }
-                self.stats.tasks_active = self.stats.tasks_active.saturating_sub(1);
-                if failed {
-                    self.stats.tasks_failed += 1;
-                    if let Some(plan) = self.plans.get_mut(plan_id) {
-                        plan.tasks_failed += 1;
-                    }
-                } else {
-                    self.stats.tasks_completed += 1;
-                    if let Some(plan) = self.plans.get_mut(plan_id) {
-                        plan.tasks_done += 1;
+                if newly_terminal {
+                    self.stats.tasks_active = self.stats.tasks_active.saturating_sub(1);
+                    if failed {
+                        self.stats.tasks_failed += 1;
+                        if let Some(plan) = self.plans.get_mut(plan_id) {
+                            plan.tasks_failed += 1;
+                        }
+                    } else {
+                        self.stats.tasks_completed += 1;
+                        if let Some(plan) = self.plans.get_mut(plan_id) {
+                            plan.tasks_done += 1;
+                        }
                     }
                 }
             }
@@ -1525,10 +1606,13 @@ impl DashboardSnapshot {
             }
             DashboardEvent::AgentCompleted { agent_id, .. } => {
                 if let Some(agent) = self.agents.get_mut(agent_id) {
+                    if agent.active {
+                        self.stats.agents_active =
+                            self.stats.agents_active.saturating_sub(1);
+                    }
                     agent.active = false;
                     agent.last_event_at_ms = ts;
                 }
-                self.stats.agents_active = self.stats.agents_active.saturating_sub(1);
             }
             DashboardEvent::Error { message } => {
                 self.stats.errors_total += 1;

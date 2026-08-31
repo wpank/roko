@@ -1435,6 +1435,8 @@ pub struct TuiState {
     // -- timing --
     /// When the current run started, for elapsed time calculation.
     pub run_started: Option<Instant>,
+    /// Immutable elapsed time published by a terminal runner snapshot.
+    pub run_duration_secs: Option<f64>,
 
     // -- wave navigation --
     /// Selected wave index for wave prev/next navigation.
@@ -1686,6 +1688,7 @@ impl Default for TuiState {
             sys: SysMetrics::default(),
 
             run_started: None,
+            run_duration_secs: None,
 
             selected_wave_idx: 0,
 
@@ -2242,9 +2245,11 @@ impl TuiState {
     /// Elapsed seconds since `run_started`, or 0.0 if not set.
     #[must_use]
     pub fn elapsed_secs(&self) -> f64 {
-        self.run_started
-            .map(|s| s.elapsed().as_secs_f64())
-            .unwrap_or(0.0)
+        self.run_duration_secs.unwrap_or_else(|| {
+            self.run_started
+                .map(|s| s.elapsed().as_secs_f64())
+                .unwrap_or(0.0)
+        })
     }
 
     /// Return the selected plan's spend, ceiling, and simple historical projection.
@@ -2797,6 +2802,18 @@ impl TuiState {
     /// This mirrors the live state published by `StateHub` without touching
     /// navigation or scroll state.
     pub fn update_from_dashboard_snapshot(&mut self, snap: &roko_core::DashboardSnapshot) {
+        if let Some(duration_ms) = snap.run_duration_ms {
+            self.run_duration_secs = Some(duration_ms as f64 / 1_000.0);
+            self.run_started = None;
+        } else if snap.stats.plans_active > 0 {
+            self.run_duration_secs = None;
+            if self.run_started.is_none() {
+                self.run_started = Some(Instant::now());
+            }
+        } else {
+            self.run_duration_secs = None;
+            self.run_started = None;
+        }
         let prev_selected_plan_id = self
             .plans
             .get(self.selected_plan_idx)

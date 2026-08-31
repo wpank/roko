@@ -198,6 +198,7 @@ event log, and these truthy environment variables:
   ROKO_FAST_PLAN_DEADLINE_SECS=<deadline minus settlement headroom>
   ROKO_GATE_MODE=focused
   ROKO_COMPILE_CONCURRENCY=1
+  ROKO_FAST_SETTLEMENT_HEADROOM_SECS=<reserved settlement seconds>
   ROKO_TASK_VERIFY_ONLY=1
   ROKO_SKIP_PREFLIGHT=1
   SKIP_FRONTEND_BUILD=1
@@ -305,6 +306,7 @@ HELP
   export ROKO_FAST_PLAN_DEADLINE_SECS="$runner_deadline"
   export ROKO_GATE_MODE=focused
   export ROKO_COMPILE_CONCURRENCY=1
+  export ROKO_FAST_SETTLEMENT_HEADROOM_SECS="$settlement_headroom"
   export ROKO_TASK_VERIFY_ONLY=1
   export ROKO_SKIP_PREFLIGHT=1
   export SKIP_FRONTEND_BUILD=1

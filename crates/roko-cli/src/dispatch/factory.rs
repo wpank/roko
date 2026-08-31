@@ -18,6 +18,7 @@ use roko_core::config::schema::RokoConfig;
 use roko_core::tool::ToolDef;
 use roko_learn::provider_health::ProviderHealthRegistry;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::dispatch_v2::CliPluginMcpConfig;
 use crate::dispatch_v2::{
@@ -66,6 +67,18 @@ pub struct SharedAgentFactory {
     /// directly at those call sites; the learning event subscriber deliberately
     /// does not mirror them through the event bus.
     pub health_registry: Arc<ProviderHealthRegistry>,
+}
+
+/// Bridge task returned only after its worker reaches the provider boundary.
+pub struct StartedSharedAgentBridge {
+    pub handle: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedBridgeStartupError {
+    Deadline,
+    Cancelled,
+    WorkerExited,
 }
 
 impl SharedAgentFactory {
@@ -368,6 +381,83 @@ impl SharedAgentFactory {
                 }
             }
         })
+    }
+
+    /// Spawn a bridge and wait for a typed startup checkpoint. A deadline or
+    /// cancellation aborts and joins the worker before returning, proving that
+    /// no unowned provider future survives dispatch startup.
+    pub async fn spawn_shared_agent_bridge_controlled(
+        &self,
+        request: AgentDispatchRequest,
+        event_tx: mpsc::Sender<AgentRuntimeEvent>,
+        deadline: tokio::time::Instant,
+        cancel: CancellationToken,
+    ) -> Result<StartedSharedAgentBridge, SharedBridgeStartupError> {
+        let local_tool_mcp = request.agent_contract.as_ref().and_then(|contract| {
+            self.cli_plugin_mcp_config(
+                &request.workdir,
+                request.immune_root.as_deref().unwrap_or(&request.workdir),
+                contract,
+            )
+        });
+        let local_tool_mcp_bridge_ready =
+            self.cli_plugin_mcp_bridge.is_some() && request.agent_contract.is_some();
+        let config = Arc::clone(&self.config);
+        let semaphores = Arc::clone(&self.semaphores);
+        let mcp_runtime = self.mcp_runtime.clone();
+        let local_tool_runtime = self.local_tool_runtime.clone();
+        let rate_limiter = Arc::clone(&self.rate_limiter);
+        let health_registry = Arc::clone(&self.health_registry);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+
+        let mut handle = tokio::spawn(async move {
+            let dispatcher = AgentDispatcherV2::with_shared(config, semaphores)
+                .with_rate_limiter(rate_limiter)
+                .with_health_registry(health_registry);
+            if started_tx.send(()).is_err() {
+                return;
+            }
+            match dispatcher
+                .run_agent_result_bridge_with_tools_and_cli_mcp(
+                    request,
+                    mcp_runtime,
+                    local_tool_runtime,
+                    local_tool_mcp,
+                    local_tool_mcp_bridge_ready,
+                )
+                .await
+            {
+                Ok(dispatch) => {
+                    for event in dispatch.events {
+                        if event_tx.send(event).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(err) => {
+                    let _ = event_tx
+                        .send(AgentRuntimeEvent::Error {
+                            message: err.to_string(),
+                        })
+                        .await;
+                    let _ = event_tx
+                        .send(AgentRuntimeEvent::Exited { exit_code: Some(1) })
+                        .await;
+                }
+            }
+        });
+        let startup = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(SharedBridgeStartupError::Cancelled),
+            _ = tokio::time::sleep_until(deadline) => Err(SharedBridgeStartupError::Deadline),
+            result = started_rx => result.map_err(|_| SharedBridgeStartupError::WorkerExited),
+        };
+        if let Err(error) = startup {
+            handle.abort();
+            let _ = (&mut handle).await;
+            return Err(error);
+        }
+        Ok(StartedSharedAgentBridge { handle })
     }
 
     /// Pre-discovered MCP tools, if available.

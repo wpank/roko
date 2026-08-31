@@ -284,6 +284,7 @@ impl Projection {
             | RunnerEvent::TaskAttemptCancellationRequested { run_id, .. }
             | RunnerEvent::TaskAttemptCancellationFailed { run_id, .. }
             | RunnerEvent::TimeoutRecorded { run_id, .. }
+            | RunnerEvent::TimeoutSalvagedToGate { run_id, .. }
             | RunnerEvent::AgentDispatchStarted { run_id, .. }
             | RunnerEvent::AgentDispatchCompleted { run_id, .. }
             | RunnerEvent::AgentCompleted { run_id, .. }
@@ -314,6 +315,9 @@ impl Projection {
             | RunnerEvent::MergeBackendCompleted { attempt, .. }
             | RunnerEvent::RetryDecision { attempt, .. } => Some(attempt.attempt),
             RunnerEvent::TimeoutRecorded { timeout, .. } => {
+                timeout.attempt.as_ref().map(|attempt| attempt.attempt)
+            }
+            RunnerEvent::TimeoutSalvagedToGate { timeout, .. } => {
                 timeout.attempt.as_ref().map(|attempt| attempt.attempt)
             }
             _ => None,

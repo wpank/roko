@@ -756,6 +756,14 @@ See `crates/roko-graph/src/` for details.
 
 ## Recently Resolved
 
+### Batch 2026-08-31 (FAST scheduler/lifecycle)
+
+- Backlog 286 closed: FAST uses wake-driven admission with exact preparation ownership; its
+  non-resetting deadline interposes awaited preparation and CLI/bridge startup; confirmed safe
+  timeout diffs pass post-dispatch safety and enter the ordinary gate lifecycle with durable
+  fingerprinted restart recovery; terminal event/snapshot/PID/ledger projections preserve
+  unconfirmed cleanup truth and freeze operator elapsed time.
+
 ### Batch 2026-08-14
 
 - P19 ACP cascade integration completed: real selected-key dispatch, explicit session
@@ -892,7 +900,6 @@ See `crates/roko-graph/src/` for details.
 | 83 | Dream consolidation deadlock (tokio spawn_blocking + nested block_on) | S |
 | 84 | Cascade router task category awareness (stages 2-3 ignore task_category) | M |
 | 85 | Plan generation TOML reliability (~50% first-attempt success rate) | S |
-| 286 | FAST hard-deadline interposition during awaited dispatch preparation/startup | M |
 
 ### P3 — Low / Phase 2+
 

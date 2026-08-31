@@ -7,12 +7,14 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
+use std::{fmt, future::Future};
 
 use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 use roko_agent::process::{confined_command, kill_tree, set_process_group};
@@ -26,6 +28,97 @@ use crate::dispatch_v2::{
 use super::types::{AgentEvent, RunConfig};
 
 const FAST_AGENT_TURN_LIMIT: u32 = 6;
+
+/// Cancellation and absolute deadline applied while a CLI runtime is being
+/// materialized. Once [`AgentHandle`] is returned, ordinary attempt ownership
+/// takes over.
+#[derive(Clone)]
+pub struct AgentStartupControl {
+    pub deadline: tokio::time::Instant,
+    pub cancel: CancellationToken,
+    pub cleanup_grace: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentStartupInterruption {
+    Deadline,
+    Cancelled,
+}
+
+pub enum AgentStartupError {
+    Failed(anyhow::Error),
+    Interrupted {
+        interruption: AgentStartupInterruption,
+        cleanup_error: Option<String>,
+        unconfirmed: Option<AgentHandle>,
+    },
+}
+
+impl fmt::Debug for AgentStartupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AgentStartupError")
+            .field("message", &self.to_string())
+            .finish()
+    }
+}
+
+impl fmt::Display for AgentStartupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Failed(error) => write!(f, "{error}"),
+            Self::Interrupted {
+                interruption,
+                cleanup_error,
+                ..
+            } => {
+                write!(f, "CLI startup {interruption:?}")?;
+                if let Some(error) = cleanup_error {
+                    write!(f, "; cleanup failed: {error}")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl std::error::Error for AgentStartupError {}
+
+async fn await_startup_step<T>(
+    control: Option<&AgentStartupControl>,
+    future: impl Future<Output = T>,
+) -> std::result::Result<T, AgentStartupInterruption> {
+    let Some(control) = control else {
+        return Ok(future.await);
+    };
+    tokio::pin!(future);
+    tokio::select! {
+        biased;
+        _ = control.cancel.cancelled() => Err(AgentStartupInterruption::Cancelled),
+        _ = tokio::time::sleep_until(control.deadline) => Err(AgentStartupInterruption::Deadline),
+        value = &mut future => Ok(value),
+    }
+}
+
+async fn interrupt_startup_child(
+    child: &mut Child,
+    pid: u32,
+    control: &AgentStartupControl,
+) -> Option<String> {
+    let result = kill_tree(child, control.cleanup_grace)
+        .await
+        .map_err(|error| error.to_string());
+    let confirmed = child
+        .try_wait()
+        .map(|status| status.is_some())
+        .map_err(|error| error.to_string());
+    if confirmed == Ok(true) {
+        roko_agent::process::unregister_pid(pid);
+    }
+    match (result, confirmed) {
+        (Ok(()), Ok(true)) => None,
+        (left, right) => Some(format!("kill_tree={left:?}, process_absent={right:?}")),
+    }
+}
 
 /// Configuration for spawning a single agent.
 #[derive(Debug, Clone)]
@@ -161,18 +254,59 @@ impl AgentHandle {
     /// Kill the agent and all descendants. Sends SIGTERM to the process group,
     /// waits for `grace`, then SIGKILL.
     pub async fn kill(mut self, grace: Duration) -> AgentTermination {
+        self.kill_with_deadline(grace, None).await
+    }
+
+    /// Kill the agent without allowing process-tree settlement to outlive an
+    /// outer automation deadline.  Timing out preserves this owned handle so
+    /// the caller can durably retain the still-unconfirmed PID.
+    pub async fn kill_until(
+        mut self,
+        grace: Duration,
+        deadline: tokio::time::Instant,
+    ) -> AgentTermination {
+        self.kill_with_deadline(grace, Some(deadline)).await
+    }
+
+    async fn kill_with_deadline(
+        mut self,
+        grace: Duration,
+        deadline: Option<tokio::time::Instant>,
+    ) -> AgentTermination {
         let mut process_errors = Vec::new();
 
         let already_absent = matches!(self.child.try_wait(), Ok(Some(_)));
+        let mut tree_cleanup_confirmed = already_absent;
         if !already_absent {
             // Use roko-agent's kill_tree which handles process groups properly.
-            if let Err(e) = kill_tree(&mut self.child, grace).await {
+            let result = if let Some(deadline) = deadline {
+                match tokio::time::timeout_at(deadline, kill_tree(&mut self.child, grace)).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        process_errors.push(
+                            "process tree termination exceeded settlement deadline".to_string(),
+                        );
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "process tree settlement deadline exceeded",
+                        ))
+                    }
+                }
+            } else {
+                kill_tree(&mut self.child, grace).await
+            };
+            tree_cleanup_confirmed = result.is_ok();
+            if let Err(e) = result {
                 warn!(pid = self.pid, err = %e, "error killing agent");
-                process_errors.push(format!("process tree termination failed: {e}"));
+                if process_errors.is_empty() {
+                    process_errors.push(format!("process tree termination failed: {e}"));
+                }
             }
         }
         let process_confirmed = if already_absent {
             true
+        } else if !tree_cleanup_confirmed {
+            false
         } else {
             match self.child.try_wait() {
                 Ok(Some(_)) => true,
@@ -300,6 +434,17 @@ pub async fn spawn_agent(
     config: &AgentSpawnConfig,
     event_tx: mpsc::Sender<AgentEvent>,
 ) -> Result<AgentHandle> {
+    spawn_agent_controlled(config, event_tx, None)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
+}
+
+/// Spawn a CLI agent with an interruptible, process-tree-safe startup phase.
+pub async fn spawn_agent_controlled(
+    config: &AgentSpawnConfig,
+    event_tx: mpsc::Sender<AgentEvent>,
+    control: Option<&AgentStartupControl>,
+) -> std::result::Result<AgentHandle, AgentStartupError> {
     let provider = config
         .cli_provider
         .clone()
@@ -320,7 +465,8 @@ pub async fn spawn_agent(
         allowed_tools: config.allowed_tools.clone(),
         disallowed_tools: config.disallowed_tools.clone(),
         plugin_mcp: config.plugin_mcp.clone(),
-    })?;
+    })
+    .map_err(AgentStartupError::Failed)?;
     if invocation.turn_limit.effective_max_turns.is_some() {
         debug!(
             provider = %invocation.event_provider,
@@ -340,11 +486,21 @@ pub async fn spawn_agent(
         let directory = tempfile::Builder::new()
             .prefix("roko-cli-provider-")
             .tempdir()
-            .context("creating temporary provider config directory")?;
+            .context("creating temporary provider config directory")
+            .map_err(AgentStartupError::Failed)?;
         let path = directory.path().join(&config.file_name);
-        tokio::fs::write(&path, config.contents.as_bytes())
-            .await
-            .with_context(|| format!("writing temporary provider config {}", path.display()))?;
+        await_startup_step(
+            control,
+            tokio::fs::write(&path, config.contents.as_bytes()),
+        )
+        .await
+        .map_err(|interruption| AgentStartupError::Interrupted {
+            interruption,
+            cleanup_error: None,
+            unconfirmed: None,
+        })?
+        .with_context(|| format!("writing temporary provider config {}", path.display()))
+        .map_err(AgentStartupError::Failed)?;
         let env = Some((config.env_key.clone(), path));
         ephemeral_config_dir = Some(directory);
         env
@@ -353,7 +509,8 @@ pub async fn spawn_agent(
     };
 
     let mut cmd = confined_command(&invocation.program, invocation.resource_limits.as_ref())
-        .context("configuring provider process confinement")?;
+        .context("configuring provider process confinement")
+        .map_err(AgentStartupError::Failed)?;
     cmd.current_dir(&invocation.workdir);
     cmd.args(&invocation.args);
     cmd.stdin(Stdio::piped());
@@ -384,36 +541,110 @@ pub async fn spawn_agent(
     set_process_group(&mut cmd);
     let mut child = cmd
         .spawn()
-        .with_context(|| format!("spawning {} CLI", invocation.event_provider))?;
+        .with_context(|| format!("spawning {} CLI", invocation.event_provider))
+        .map_err(AgentStartupError::Failed)?;
     let pid = child
         .id()
-        .context("agent process exited before PID could be read")?;
+        .context("agent process exited before PID could be read")
+        .map_err(AgentStartupError::Failed)?;
 
     // Register PID for orphan cleanup immediately, before spawning reader
     // tasks. If a panic occurs between here and the end of this function,
     // the cleanup handler will still find the PID.
     roko_agent::process::register_spawned_pid(pid);
 
-    let _ = event_tx
-        .send(AgentEvent::Started {
+    let started_send = event_tx.send(AgentEvent::Started {
             agent_id: config.agent_id.clone(),
             provider: invocation.event_provider.clone(),
             model: invocation.model.clone(),
             pid: Some(pid),
-        })
-        .await;
+        });
+    if let Err(interruption) = await_startup_step(control, started_send).await {
+        let cleanup_error = match control {
+            Some(control) => interrupt_startup_child(&mut child, pid, control).await,
+            None => None,
+        };
+        return Err(AgentStartupError::Interrupted {
+            interruption,
+            unconfirmed: cleanup_error.as_ref().map(|_| AgentHandle {
+                pid,
+                child,
+                reader_task: None,
+                stderr_reader_task: None,
+                _ephemeral_config_dir: ephemeral_config_dir,
+            }),
+            cleanup_error,
+        });
+    }
 
     // Write prompt to stdin synchronously, then close it (matching mori's pattern).
     // Must complete BEFORE spawning reader tasks to avoid race conditions.
     if let Some(mut stdin) = child.stdin.take() {
-        if let Err(e) = stdin.write_all(invocation.stdin.as_bytes()).await {
-            error!(err = %e, "writing prompt to agent stdin");
+        match await_startup_step(control, stdin.write_all(invocation.stdin.as_bytes())).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => error!(err = %e, "writing prompt to agent stdin"),
+            Err(interruption) => {
+                drop(stdin);
+                let cleanup_error = match control {
+                    Some(control) => interrupt_startup_child(&mut child, pid, control).await,
+                    None => None,
+                };
+                return Err(AgentStartupError::Interrupted {
+                    interruption,
+                    unconfirmed: cleanup_error.as_ref().map(|_| AgentHandle {
+                        pid,
+                        child,
+                        reader_task: None,
+                        stderr_reader_task: None,
+                        _ephemeral_config_dir: ephemeral_config_dir,
+                    }),
+                    cleanup_error,
+                });
+            }
         }
         drop(stdin); // EOF signals end of input to Claude CLI
     }
 
     // Spawn reader task for stdout.
-    let stdout = child.stdout.take().context("agent stdout not captured")?;
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            let fallback = AgentStartupControl {
+                deadline: tokio::time::Instant::now() + Duration::from_secs(3),
+                cancel: CancellationToken::new(),
+                cleanup_grace: Duration::from_secs(1),
+            };
+            let cleanup_error = interrupt_startup_child(
+                &mut child,
+                pid,
+                control.unwrap_or(&fallback),
+            )
+            .await;
+            if let Some(cleanup_error) = cleanup_error {
+                return Err(AgentStartupError::Interrupted {
+                    // No provider protocol was established.  The meaningful
+                    // fact here is that cleanup could not prove process-tree
+                    // death, so ownership must retain the child for a later
+                    // cancellation retry.  The caller does not terminalize an
+                    // unconfirmed interruption based on this discriminator.
+                    interruption: AgentStartupInterruption::Cancelled,
+                    cleanup_error: Some(format!(
+                        "agent stdout not captured; {cleanup_error}"
+                    )),
+                    unconfirmed: Some(AgentHandle {
+                        pid,
+                        child,
+                        reader_task: None,
+                        stderr_reader_task: None,
+                        _ephemeral_config_dir: ephemeral_config_dir,
+                    }),
+                });
+            }
+            return Err(AgentStartupError::Failed(anyhow::anyhow!(
+                "agent stdout not captured"
+            )));
+        }
+    };
 
     let agent_id = config.agent_id.clone();
     let stdout_tx = event_tx.clone();

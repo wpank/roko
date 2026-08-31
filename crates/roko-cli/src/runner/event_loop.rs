@@ -23,7 +23,7 @@ use crate::orchestrator::{
     ExecutorAction, ExecutorConfig, ExecutorEvent, ExecutorSnapshot, GateResult, MergeQueue,
     MergeRequest, OrchestratorSnapshot, ParallelExecutor, PlanRevisionEvidence,
     PlanRevisionRequest, PlanState as OrcPlanState, RecoveryEngine, ReplanStrategy,
-    TransitionError, WorktreeConfig, WorktreeManager, format_branch_name,
+    TransitionError, WorktreeConfig, WorktreeManager, WorktreeOperationError, format_branch_name,
 };
 use roko_core::runtime_event::WorkflowOutcome as RuntimeWorkflowOutcome;
 use roko_core::tool::MetricsSink as _;
@@ -90,12 +90,16 @@ use roko_neuro::{
 };
 
 use super::agent_events::handle_agent_event;
-use super::agent_stream::{AgentHandle, AgentSpawnConfig, AgentTermination, AgentWait};
+use super::agent_stream::{
+    AgentHandle, AgentSpawnConfig, AgentStartupControl, AgentStartupError,
+    AgentStartupInterruption, AgentTermination, AgentWait,
+};
 use super::attempt_ownership::{
     AttemptClaim, AttemptOwner, AttemptOwnership, AttemptPhase, EffectRef,
 };
 use super::deadlines::{
-    DeadlinePolicy, DeadlineTracker, OwnershipTiming, monotonic_now, owner_expiry,
+    DeadlinePolicy, DeadlineTracker, DispatchDeadline, DispatchStage, OwnershipTiming,
+    monotonic_now, owner_expiry,
 };
 use super::gate_dispatch;
 use super::github_workflow::{GitHubWorkflow, PlanGitHubSummary, TaskGitHubResult};
@@ -116,9 +120,9 @@ use super::types::{
     AgentCompletionSummary, AgentDispatchOutcome, AgentEvent, GateCompletion, GateCompletionKind,
     GateEffectRef, GateVerdictSummary, OwnerEffectRef, PlanOutcome, PlanRunSummary,
     PromptAssemblyDiagnostics, ResumeMarker, ResumeOutcome, RetryDecision, RunConfig, RunOutcome,
-    RunTotals, RunnerEvent, RunnerFailureKind, TaskAttemptOutcome, TaskAttemptRef,
+    RunTotals, RunnerEvent, RunnerFailureKind, RunnerRunStatus, TaskAttemptOutcome, TaskAttemptRef,
     TaskAttemptStatus, TaskLifecycleStatus, TaskPhaseDurations, TaskRunCategory, TaskRunSummary,
-    TimeoutEvent, TimeoutKind, TuiCommand, effective_plan_timeout_secs,
+    TimeoutAgentSnapshot, TimeoutEvent, TimeoutKind, TuiCommand, effective_plan_timeout_secs,
 };
 
 /// Bridges passive observable telemetry into the runner's shared StateHub.
@@ -502,6 +506,18 @@ fn fast_mode_plan_limit() -> Duration {
         .unwrap_or(Duration::from_secs(300))
 }
 
+fn terminal_cleanup_budget() -> Duration {
+    let headroom_secs = std::env::var("ROKO_FAST_SETTLEMENT_HEADROOM_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .unwrap_or(30);
+    // Leave a deterministic tail for snapshot/ledger flush and extension
+    // shutdown. Short FAST invocations reserve proportionally less.
+    let finalization_reserve = (headroom_secs / 4).clamp(1, 5);
+    Duration::from_secs(headroom_secs.saturating_sub(finalization_reserve).max(1))
+}
+
 fn fast_mode_deadline_policy(mut policy: DeadlinePolicy) -> DeadlinePolicy {
     if env_flag_enabled("ROKO_FAST_MODE") {
         let plan_limit = fast_mode_plan_limit();
@@ -780,13 +796,33 @@ impl PendingTerminal {
 }
 
 struct TaskConcurrencyPermit {
-    _global: tokio::sync::OwnedSemaphorePermit,
-    _plan: tokio::sync::OwnedSemaphorePermit,
+    global: Option<tokio::sync::OwnedSemaphorePermit>,
+    plan: Option<tokio::sync::OwnedSemaphorePermit>,
+    scheduler_wake: Option<mpsc::Sender<()>>,
+}
+
+impl TaskConcurrencyPermit {
+    fn suppress_scheduler_wake(&mut self) {
+        self.scheduler_wake = None;
+    }
+}
+
+impl Drop for TaskConcurrencyPermit {
+    fn drop(&mut self) {
+        // Release both permits before waking admission so the awakened
+        // scheduler can acquire immediately instead of observing stale use.
+        drop((self.global.take(), self.plan.take()));
+        if let Some(wake) = &self.scheduler_wake {
+            let _ = wake.try_send(());
+        }
+    }
 }
 
 struct TaskCapacity {
     global: Arc<tokio::sync::Semaphore>,
     plans: HashMap<String, Arc<tokio::sync::Semaphore>>,
+    scheduler_wake: mpsc::Sender<()>,
+    scheduler_wake_rx: Option<mpsc::Receiver<()>>,
 }
 
 impl TaskCapacity {
@@ -796,6 +832,7 @@ impl TaskCapacity {
         S: Into<String>,
     {
         let global_capacity = global_capacity.max(1);
+        let (scheduler_wake, scheduler_wake_rx) = mpsc::channel(1);
         Self {
             global: Arc::new(tokio::sync::Semaphore::new(global_capacity)),
             plans: plans
@@ -810,16 +847,49 @@ impl TaskCapacity {
                     )
                 })
                 .collect(),
+            scheduler_wake,
+            scheduler_wake_rx: Some(scheduler_wake_rx),
         }
+    }
+
+    fn take_wake_receiver(&mut self) -> mpsc::Receiver<()> {
+        self.scheduler_wake_rx
+            .take()
+            .expect("scheduler wake receiver may only be taken once")
+    }
+
+    fn wake(&self) {
+        let _ = self.scheduler_wake.try_send(());
+    }
+
+    fn wake_after(&self, delay: Duration) {
+        let wake = self.scheduler_wake.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let _ = wake.try_send(());
+        });
     }
 
     fn try_acquire(&self, plan_id: &str) -> Option<TaskConcurrencyPermit> {
         let plan = self.plans.get(plan_id)?.clone().try_acquire_owned().ok()?;
         let global = self.global.clone().try_acquire_owned().ok()?;
         Some(TaskConcurrencyPermit {
-            _global: global,
-            _plan: plan,
+            global: Some(global),
+            plan: Some(plan),
+            scheduler_wake: Some(self.scheduler_wake.clone()),
         })
+    }
+}
+
+async fn wait_for_scheduler_wake(
+    fast_mode: bool,
+    tick_interval: &mut tokio::time::Interval,
+    scheduler_wake_rx: &mut mpsc::Receiver<()>,
+) {
+    if fast_mode {
+        let _ = scheduler_wake_rx.recv().await;
+    } else {
+        tick_interval.tick().await;
     }
 }
 
@@ -1362,6 +1432,7 @@ struct TaskRuntimeState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TaskTimingPhase {
     Dispatch,
+    Startup,
     Agent,
     Gate,
     Cleanup,
@@ -1416,6 +1487,7 @@ impl TaskPhaseClock {
     fn add_to_active(&mut self, elapsed_ms: u64) {
         let destination = match self.phase {
             TaskTimingPhase::Dispatch => &mut self.accumulated.dispatch_ms,
+            TaskTimingPhase::Startup => &mut self.accumulated.startup_ms,
             TaskTimingPhase::Agent => &mut self.accumulated.agent_ms,
             TaskTimingPhase::Gate => &mut self.accumulated.gate_ms,
             TaskTimingPhase::Cleanup => &mut self.accumulated.cleanup_ms,
@@ -1587,7 +1659,7 @@ fn restore_task_runtime(
 struct RunContext<'a> {
     executor: &'a mut ParallelExecutor,
     task_dag: &'a mut TaskDag,
-    task_index: &'a HashMap<String, HashMap<String, TaskDef>>,
+    task_index: &'a mut HashMap<String, HashMap<String, TaskDef>>,
     skip_enrichment: &'a HashMap<String, bool>,
     config: &'a RunConfig,
     sink: &'a dyn RunOutputSink,
@@ -1645,6 +1717,8 @@ struct RunContext<'a> {
     github_ops: &'a Arc<dyn GitHubOps>,
     /// Ordered background worker that keeps GitHub I/O outside the select loop.
     github_workflow: &'a GitHubWorkflow,
+    /// FAST-only absolute hard-run deadline carried into awaited dispatch work.
+    dispatch_deadline: Option<DispatchDeadline>,
 }
 
 #[derive(Debug, Clone)]
@@ -2056,15 +2130,50 @@ async fn ensure_attempt_workdir(
     worktrees: &WorktreeManager,
     attempt: &TaskAttemptRef,
 ) -> std::result::Result<PathBuf, String> {
-    let handle = match worktrees.get_attempt(&attempt.plan_id, &attempt.task_id, attempt.attempt) {
-        Some(handle) => handle,
-        None => worktrees
-            .create_for_attempt(&attempt.plan_id, &attempt.task_id, attempt.attempt)
-            .await
-            .map_err(|err| format!("worktree unavailable for attempt {}: {err}", attempt.key()))?,
-    };
+    let handle = worktrees
+        .ensure_for_attempt(&attempt.plan_id, &attempt.task_id, attempt.attempt)
+        .await
+        .map_err(|err| format!("worktree unavailable for attempt {}: {err}", attempt.key()))?;
     worktrees.touch(&handle.id);
     Ok(handle.path)
+}
+
+async fn ensure_attempt_workdir_controlled(
+    worktrees: &WorktreeManager,
+    attempt: &TaskAttemptRef,
+    cancel: &CancellationToken,
+    deadline: Option<DispatchDeadline>,
+) -> std::result::Result<std::result::Result<PathBuf, String>, DispatchInterruption> {
+    let deadline = match deadline {
+        Some(deadline) => {
+            let Some(remaining) = deadline.remaining(monotonic_now()) else {
+                return Err(DispatchInterruption::Deadline);
+            };
+            Some(tokio::time::Instant::now() + remaining)
+        }
+        None => None,
+    };
+    match worktrees
+        .ensure_for_attempt_controlled(
+            &attempt.plan_id,
+            &attempt.task_id,
+            attempt.attempt,
+            cancel,
+            deadline,
+        )
+        .await
+    {
+        Ok(handle) => {
+            worktrees.touch(&handle.id);
+            Ok(Ok(handle.path))
+        }
+        Err(WorktreeOperationError::Cancelled) => Err(DispatchInterruption::Cancelled),
+        Err(WorktreeOperationError::Deadline) => Err(DispatchInterruption::Deadline),
+        Err(WorktreeOperationError::Worktree(error)) => Ok(Err(format!(
+            "worktree unavailable for attempt {}: {error}",
+            attempt.key()
+        ))),
+    }
 }
 
 fn tracked_attempt_workdir(
@@ -2624,12 +2733,15 @@ pub async fn run_with_tui_commands(
     // Exact-attempt capacity is the intersection of the run-wide limit and
     // each plan's declared limit. The paired lease stays owned until the
     // attempt's Git and durable terminal settlement completes.
-    let task_capacity = TaskCapacity::new(
+    let mut task_capacity = TaskCapacity::new(
         config.max_concurrent_tasks,
         plans
             .iter()
             .map(|plan| (plan.id.clone(), plan.tasks.meta.max_parallel)),
     );
+    let mut scheduler_wake_rx = task_capacity.take_wake_receiver();
+    let wake_driven_scheduler = env_flag_enabled("ROKO_FAST_MODE");
+    task_capacity.wake();
     let default_resources = roko_core::config::ResourcesConfig::default();
     let resources = config
         .roko_config
@@ -2889,7 +3001,7 @@ pub async fn run_with_tui_commands(
         })
         .collect();
 
-    if matches!(resume.marker.outcome, ResumeOutcome::Resumed) {
+    let replayed_timeout_salvages = if matches!(resume.marker.outcome, ResumeOutcome::Resumed) {
         if let Some(snapshot) = prior_snapshot.as_ref() {
             restore_state_from_resume_snapshot(
                 &mut state,
@@ -2906,10 +3018,20 @@ pub async fn run_with_tui_commands(
                 "reconciled timeout terminals recorded after the last snapshot"
             );
         }
+        let salvages = replay_timeout_salvages(&paths.events_jsonl, &mut state)
+            .context("replay durable timeout salvage handoffs during resume")?;
+        if !salvages.is_empty() {
+            info!(
+                replayed_timeout_salvages = salvages.len(),
+                "reconciled timeout diffs awaiting runner-owned gates"
+            );
+        }
+        salvages
     } else {
         seed_completed_tasks_from_plan_status(&mut state, &plans);
         initialize_terminal_plan_phases(&mut executor, &state, &plans);
-    }
+        Vec::new()
+    };
     if !state.revised_tasks.is_empty() {
         for revision in state.revised_tasks.values() {
             apply_task_revision_to_index(&mut task_index, revision);
@@ -2977,6 +3099,94 @@ pub async fn run_with_tui_commands(
     let mut attempt_ownership = AttemptOwnership::<AgentRuntimeResource>::default();
     let mut pending_gate_tasks: HashMap<String, Vec<String>> = HashMap::new();
     let mut task_runtime_states: HashMap<String, TaskRuntimeState> = HashMap::new();
+    for salvage in replayed_timeout_salvages {
+        let attempt = salvage.attempt;
+        anyhow::ensure!(
+            task_index
+                .get(&attempt.plan_id)
+                .is_some_and(|tasks| tasks.contains_key(&attempt.task_id)),
+            "durable timeout salvage references missing task {}",
+            attempt.key()
+        );
+        let worktree_id = crate::orchestrator::worktree::format_attempt_worktree_id(
+            &attempt.plan_id,
+            &attempt.task_id,
+            attempt.attempt,
+        );
+        anyhow::ensure!(
+            config
+                .workdir
+                .join(".roko")
+                .join("worktrees")
+                .join(&worktree_id)
+                .exists(),
+            "durable timeout salvage worktree is missing for {}",
+            attempt.key()
+        );
+        ensure_attempt_workdir(&worktrees, &attempt)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let salvage_diff = timeout_salvage_diff(config, &attempt)
+            .await
+            .with_context(|| {
+                format!(
+                    "durable timeout salvage no longer has a safe diff for {}",
+                    attempt.key()
+                )
+            })?;
+        anyhow::ensure!(
+            salvage_diff.input_fingerprint == salvage.input_fingerprint,
+            "durable timeout salvage diff changed after handoff for {}",
+            attempt.key()
+        );
+        let task = &task_index[&attempt.plan_id][&attempt.task_id];
+        anyhow::ensure!(
+            timeout_salvage_safety_block(config, task, "", &attempt, &salvage_diff).is_none(),
+            "durable timeout salvage violates the current post-dispatch safety contract for {}",
+            attempt.key()
+        );
+
+        state.reset_for_task(&attempt.plan_id, &attempt.task_id);
+        state.set_iteration(&attempt.plan_id, &attempt.task_id, attempt.attempt);
+        state.agent_model = salvage.agent_snapshot.model;
+        state.agent_provider = salvage.agent_snapshot.provider;
+        state.tokens_in = salvage.agent_snapshot.tokens_in;
+        state.tokens_out = salvage.agent_snapshot.tokens_out;
+        state.cache_read_tokens = salvage.agent_snapshot.cache_read_tokens;
+        state.cache_write_tokens = salvage.agent_snapshot.cache_write_tokens;
+        state.cost_usd = salvage.agent_snapshot.cost_usd;
+        capture_task_runtime(
+            &mut task_runtime_states,
+            &state,
+            &attempt.plan_id,
+            &attempt.task_id,
+        );
+        if let Some(runtime) = task_runtime_states.get_mut(&attempt.key()) {
+            runtime.phase_clock.accumulated = salvage.phase_durations;
+            runtime.phase_clock.phase = TaskTimingPhase::Gate;
+            runtime.phase_clock.phase_started_at = Instant::now();
+            runtime.phase_clock.attempt_started_at = Instant::now();
+        }
+        task_dag.mark_running(&attempt.plan_id, &attempt.task_id);
+        queue_pending_gate_task(
+            &mut pending_gate_tasks,
+            &attempt.plan_id,
+            &attempt.task_id,
+        );
+        attempt_ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new(AttemptPhase::AwaitingGate, EffectRef(0)),
+                AgentRuntimeResource::AwaitingGate { permit: None },
+            )
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "could not restore timeout salvage ownership for {}: {error:?}",
+                    attempt.key()
+                )
+            })?;
+        apply_agent_completion(&mut executor, &attempt.plan_id, &tui);
+    }
     let mut legacy_gate_attempts: HashMap<String, TaskAttemptRef> = HashMap::new();
     let mut preflight_attempted: HashSet<TaskAttemptRef> = HashSet::new();
     let mut baseline_gate_failures: HashMap<TaskAttemptRef, Vec<GateVerdictSummary>> =
@@ -3324,6 +3534,9 @@ pub async fn run_with_tui_commands(
                 let is_turn_done = matches!(&event, AgentEvent::TurnCompleted { .. });
                 let is_exited = matches!(&event, AgentEvent::Exited { .. });
                 let is_terminal = is_turn_done || is_exited;
+                if is_terminal && wake_driven_scheduler {
+                    task_capacity.wake();
+                }
                 if !refresh_eligible_agent_activity(
                     &mut attempt_ownership,
                     &event_attempt,
@@ -3990,6 +4203,9 @@ pub async fn run_with_tui_commands(
 
             // ─── Branch 1b: isolated Premium reflex replay ─────────
             Some(replay) = candidate_replay_rx.recv() => {
+                if wake_driven_scheduler {
+                    task_capacity.wake();
+                }
                 if !attempt_ownership.event_is_eligible(
                     &replay.attempt,
                     AttemptPhase::AwaitingGate,
@@ -4045,6 +4261,9 @@ pub async fn run_with_tui_commands(
 
             // ─── Branch 2: Verify completions ─────────────────────────
             Some(mut completion) = gate_rx.recv() => {
+                if wake_driven_scheduler {
+                    task_capacity.wake();
+                }
                 if completion.kind == GateCompletionKind::Merge {
                     let Some(attempt) = completion.attempt.as_ref() else {
                         warn!(plan_id = %completion.plan_id, "dropping merge completion without exact attempt");
@@ -5708,7 +5927,11 @@ pub async fn run_with_tui_commands(
             }
 
             // ─── Branch 3: Executor tick ────────────────────────────
-            _ = tick_interval.tick() => {
+            _ = wait_for_scheduler_wake(
+                wake_driven_scheduler,
+                &mut tick_interval,
+                &mut scheduler_wake_rx,
+            ) => {
                 let recovered = retry_pending_terminals(
                     &mut attempt_ownership,
                     &mut task_runtime_states,
@@ -5755,7 +5978,7 @@ pub async fn run_with_tui_commands(
                     let mut ctx = RunContext {
                         executor: &mut executor,
                         task_dag: &mut task_dag,
-                        task_index: &task_index,
+                        task_index: &mut task_index,
                         skip_enrichment: &skip_enrichment,
                         config,
                         sink,
@@ -5795,8 +6018,18 @@ pub async fn run_with_tui_commands(
                         telemetry_sink: &telemetry_sink,
                         github_ops: &github_ops,
                         github_workflow: &github_workflow,
+                        dispatch_deadline: wake_driven_scheduler.then(|| {
+                            DispatchDeadline::new(
+                                deadline_tracker.hard_run_deadline(deadline_policy),
+                            )
+                        }),
                     };
                     let dispatch_outcome = dispatch_action(&action, &mut ctx).await;
+                    if wake_driven_scheduler
+                        && !matches!(dispatch_outcome, ActionDispatchOutcome::Noop)
+                    {
+                        ctx.task_capacity.wake();
+                    }
                     let dispatch_ms = t_dispatch.elapsed().as_millis() as u64;
                     if let ActionDispatchOutcome::AgentStarted { plan_id, task_id } = &dispatch_outcome {
                         ctx.state.last_dispatch_ms = dispatch_ms;
@@ -5854,7 +6087,7 @@ pub async fn run_with_tui_commands(
 
             // ─── Branch 4: Periodic flush ───────────────────────────
             _ = flush_interval.tick() => {
-                enforce_owned_deadlines(
+                let expired = enforce_owned_deadlines(
                     &mut attempt_ownership,
                     &mut task_runtime_states,
                     &mut state,
@@ -5867,6 +6100,9 @@ pub async fn run_with_tui_commands(
                     &tui,
                     config,
                 ).await;
+                if wake_driven_scheduler && expired > 0 {
+                    task_capacity.wake();
+                }
                 save_snapshot(config, &executor, &paths, &mut state, &merge_queue, &gate_thresholds, &snapshot_writer);
                 {
                     let pids = attempt_ownership.surviving_agent_metadata().pids;
@@ -6043,7 +6279,13 @@ pub async fn run_with_tui_commands(
             // ─── Branch 5c: Cancellation ────────────────────────────
             _ = cancel.cancelled() => {
                 warn!("cancellation requested — shutting down");
+                let settlement_deadline =
+                    tokio::time::Instant::now() + terminal_cleanup_budget();
+                let mut cleanup_confirmed = false;
                 loop {
+                    if tokio::time::Instant::now() >= settlement_deadline {
+                        break;
+                    }
                     let cancellation = stop_all_agents(
                         &mut attempt_ownership,
                         &mut task_runtime_states,
@@ -6057,21 +6299,73 @@ pub async fn run_with_tui_commands(
                         &tui,
                         config,
                         Duration::from_secs(3),
+                        Some(settlement_deadline),
                     ).await;
                     if cancellation.all_confirmed() {
+                        cleanup_confirmed = true;
                         break;
                     }
                     save_snapshot(config, &executor, &paths, &mut state, &merge_queue, &gate_thresholds, &snapshot_writer);
                     let pids = attempt_ownership.surviving_agent_metadata().pids;
-                    let _ = persist::save_agent_pids(&paths, &pids);
+                    if !pids.is_empty() {
+                        let _ = persist::save_agent_pids(&paths, &pids);
+                    }
                     snapshot_writer.flush();
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    let retry_at = (tokio::time::Instant::now() + Duration::from_millis(100))
+                        .min(settlement_deadline);
+                    tokio::time::sleep_until(retry_at).await;
+                }
+                let survivors = attempt_ownership.surviving_agent_metadata();
+                let cleanup_degraded = !cleanup_confirmed
+                    || survivors.active
+                    || attempt_ownership.unrecovered_claim_count() > 0;
+                if cleanup_degraded {
+                    warn!(
+                        surviving_agents = ?survivors.agent_ids,
+                        surviving_pids = ?survivors.pids,
+                        "cancellation reached terminal state with unconfirmed cleanup"
+                    );
+                    let _ = append_ledger_entry(
+                        &paths.run_ledger_jsonl,
+                        "run_cleanup_degraded",
+                        &serde_json::json!({
+                            "run_id": state.run_id(),
+                            "termination": "cancelled",
+                            "surviving_agent_ids": &survivors.agent_ids,
+                            "surviving_agent_pids": &survivors.pids,
+                            "timestamp_ms": chrono::Utc::now().timestamp_millis().max(0) as u64,
+                        }),
+                    );
                 }
                 let report = build_report(&executor, &plans, &state, &task_dag);
-                let event = build_run_completed_event(&state, &report, RunOutcome::Cancelled);
+                // A conductor failure reaches this branch by cancelling the
+                // loop after already publishing Failed. Preserve that
+                // authoritative terminal outcome on the idempotent convergence
+                // event instead of rewriting it as an operator cancellation.
+                let outcome = match state.lifecycle.status {
+                    RunnerRunStatus::Completed => RunOutcome::Succeeded,
+                    RunnerRunStatus::Failed => RunOutcome::Failed,
+                    RunnerRunStatus::Cancelled
+                    | RunnerRunStatus::Initialized
+                    | RunnerRunStatus::Running => RunOutcome::Cancelled,
+                };
+                let mut event = build_run_completed_event(&state, &report, outcome);
+                if cleanup_degraded {
+                    annotate_degraded_cleanup(
+                        &mut event,
+                        survivors.agent_ids.clone(),
+                        survivors.pids.clone(),
+                    );
+                }
                 emit_runner_event(&paths, &mut state, &tui, config, event);
                 save_snapshot(config, &executor, &paths, &mut state, &merge_queue, &gate_thresholds, &snapshot_writer);
-                let _ = persist::save_agent_pids(&paths, &[]);
+                if cleanup_degraded {
+                    if !survivors.pids.is_empty() {
+                        let _ = persist::save_agent_pids(&paths, &survivors.pids);
+                    }
+                } else {
+                    let _ = persist::save_agent_pids(&paths, &[]);
+                }
                 snapshot_writer.flush();
                 // Flush observability sinks on cancellation (E09-T08).
                 if let Some(ref sinks) = obs_sinks {
@@ -6143,8 +6437,35 @@ pub async fn run_with_tui_commands(
             } else {
                 RunOutcome::Failed
             };
-            let event = build_run_completed_event(&state, &final_report, outcome);
+            let survivors = attempt_ownership.surviving_agent_metadata();
+            let cleanup_degraded = survivors.active
+                || attempt_ownership.unrecovered_claim_count() > 0;
+            let mut event = build_run_completed_event(&state, &final_report, outcome);
+            if cleanup_degraded {
+                annotate_degraded_cleanup(
+                    &mut event,
+                    survivors.agent_ids.clone(),
+                    survivors.pids.clone(),
+                );
+            }
             emit_runner_event(&paths, &mut state, &tui, config, event);
+            save_snapshot(
+                config,
+                &executor,
+                &paths,
+                &mut state,
+                &merge_queue,
+                &gate_thresholds,
+                &snapshot_writer,
+            );
+            if cleanup_degraded {
+                if !survivors.pids.is_empty() {
+                    let _ = persist::save_agent_pids(&paths, &survivors.pids);
+                }
+            } else {
+                let _ = persist::save_agent_pids(&paths, &[]);
+            }
+            snapshot_writer.flush();
             let cost_display = format!("{:.4}", final_report.total_cost_usd);
             info!(
                 outcome = ?outcome,
@@ -6652,6 +6973,7 @@ async fn conductor_supervision_tick(
                     tui,
                     config,
                     Duration::from_secs(3),
+                    None,
                 )
                 .await;
                 if cancellation.all_confirmed() {
@@ -6723,6 +7045,7 @@ async fn conductor_supervision_tick(
                     tui,
                     config,
                     Duration::from_secs(3),
+                    None,
                 )
                 .await;
                 if cancellation.all_confirmed() {
@@ -8365,6 +8688,7 @@ fn runner_event_run_id(event: &RunnerEvent) -> &str {
         | RunnerEvent::TaskAttemptCancellationRequested { run_id, .. }
         | RunnerEvent::TaskAttemptCancellationFailed { run_id, .. }
         | RunnerEvent::TimeoutRecorded { run_id, .. }
+        | RunnerEvent::TimeoutSalvagedToGate { run_id, .. }
         | RunnerEvent::AgentDispatchStarted { run_id, .. }
         | RunnerEvent::AgentDispatchCompleted { run_id, .. }
         | RunnerEvent::AgentCompleted { run_id, .. }
@@ -9062,6 +9386,24 @@ fn build_run_completed_event(
             })
             .collect(),
     )
+}
+
+fn annotate_degraded_cleanup(
+    event: &mut RunnerEvent,
+    surviving_agent_ids: Vec<String>,
+    surviving_agent_pids: Vec<u32>,
+) {
+    if let RunnerEvent::RunCompleted {
+        cleanup_degraded,
+        surviving_agent_ids: event_agent_ids,
+        surviving_agent_pids: event_agent_pids,
+        ..
+    } = event
+    {
+        *cleanup_degraded = true;
+        *event_agent_ids = surviving_agent_ids;
+        *event_agent_pids = surviving_agent_pids;
+    }
 }
 
 // ─── Snapshot Helper ────────────────────────────────────────────────────
@@ -9843,6 +10185,38 @@ fn release_prepared_task_dispatch(
     }
 }
 
+fn defer_prepared_task_dispatch(
+    ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    task_dag: &mut TaskDag,
+    attempt: &TaskAttemptRef,
+    is_dag_task: bool,
+) {
+    match ownership.remove_unclaimed(attempt, AttemptPhase::Dispatching, EffectRef(0)) {
+        Ok(AgentRuntimeResource::Dispatching(mut permit)) => {
+            // An existing in-flight owner is the next meaningful wake source.
+            // Re-waking for the deliberately deferred permit would busy-loop
+            // through disk admission and repeat preparation without progress.
+            permit.suppress_scheduler_wake();
+            drop(permit);
+            if is_dag_task {
+                task_dag.clear_running(&attempt.plan_id, &attempt.task_id);
+            }
+        }
+        Ok(resource) => {
+            drop(resource);
+            if is_dag_task {
+                task_dag.clear_running(&attempt.plan_id, &attempt.task_id);
+            }
+            warn!(attempt = %attempt.key(), "deferred dispatch owned an unexpected resource");
+        }
+        Err(error) => warn!(
+            attempt = %attempt.key(),
+            ?error,
+            "failed to defer prepared task dispatch ownership"
+        ),
+    }
+}
+
 fn record_admitted_agent_launch(state: &mut RunState) {
     state.total_agent_calls += 1;
     state.task_agent_calls += 1;
@@ -9879,6 +10253,144 @@ fn resolved_attempt_ref(
         .filter(|attempt| attempt.plan_id == plan_id && attempt.task_id == task_id)
         .cloned()
         .unwrap_or_else(|| TaskAttemptRef::new(plan_id, task_id, plan_iteration))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DispatchInterruption {
+    Deadline,
+    StartupDeadline,
+    Cancelled,
+}
+
+async fn await_dispatch_step<T>(
+    deadline: Option<DispatchDeadline>,
+    cancel: &CancellationToken,
+    future: impl std::future::Future<Output = T>,
+) -> std::result::Result<T, DispatchInterruption> {
+    let Some(deadline) = deadline else {
+        return tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(DispatchInterruption::Cancelled),
+            value = future => Ok(value),
+        };
+    };
+    let Some(remaining) = deadline.remaining(monotonic_now()) else {
+        return Err(DispatchInterruption::Deadline);
+    };
+    tokio::pin!(future);
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(DispatchInterruption::Cancelled),
+        _ = tokio::time::sleep(remaining) => Err(DispatchInterruption::Deadline),
+        value = &mut future => Ok(value),
+    }
+}
+
+fn fast_startup_limit() -> Duration {
+    std::env::var("ROKO_FAST_STARTUP_DEADLINE_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(15))
+}
+
+fn startup_control(
+    ctx: &RunContext<'_>,
+) -> Option<(AgentStartupControl, DispatchInterruption)> {
+    let remaining = ctx.dispatch_deadline?.remaining(monotonic_now())?;
+    let startup_limit = fast_startup_limit();
+    let interruption = if remaining <= startup_limit {
+        DispatchInterruption::Deadline
+    } else {
+        DispatchInterruption::StartupDeadline
+    };
+    Some((
+        AgentStartupControl {
+            deadline: tokio::time::Instant::now() + remaining.min(startup_limit),
+            cancel: ctx.cancel.clone(),
+            cleanup_grace: Duration::from_secs(3),
+        },
+        interruption,
+    ))
+}
+
+fn dispatch_timeout_event(
+    ctx: &RunContext<'_>,
+    attempt: &TaskAttemptRef,
+    owner_effect: EffectRef,
+    interruption: DispatchInterruption,
+) -> TimeoutEvent {
+    let (kind, limit) = match interruption {
+        DispatchInterruption::Deadline => (TimeoutKind::HardRun, plan_total_timeout(ctx.config)),
+        DispatchInterruption::StartupDeadline => {
+            (TimeoutKind::TaskAttempt, fast_startup_limit())
+        }
+        DispatchInterruption::Cancelled => unreachable!("cancellation is not a timeout"),
+    };
+    TimeoutEvent {
+        kind,
+        attempt: Some(attempt.clone()),
+        effect: None,
+        owner_effect: Some(OwnerEffectRef(owner_effect.0)),
+        limit_ms: u64::try_from(limit.as_millis()).unwrap_or(u64::MAX),
+        monotonic_elapsed_ms: u64::try_from(limit.as_millis()).unwrap_or(u64::MAX),
+        observed_at_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
+    }
+}
+
+async fn settle_dispatch_interruption(
+    ctx: &mut RunContext<'_>,
+    attempt: &TaskAttemptRef,
+    owner_effect: EffectRef,
+    interruption: DispatchInterruption,
+) {
+    let terminal = match interruption {
+        DispatchInterruption::Deadline | DispatchInterruption::StartupDeadline => {
+            AttemptCleanupTerminal::TimedOut(dispatch_timeout_event(
+                ctx,
+                attempt,
+                owner_effect,
+                interruption,
+            ))
+        }
+        DispatchInterruption::Cancelled => AttemptCleanupTerminal::Cancelled,
+    };
+    let outcome = cancel_exact_attempt(
+        attempt,
+        Some((AttemptPhase::Dispatching, owner_effect)),
+        terminal,
+        ctx.attempt_ownership,
+        ctx.task_runtime_states,
+        ctx.task_dag,
+        ctx.task_index,
+        ctx.pending_gate_tasks,
+        ctx.executor,
+        ctx.state,
+        ctx.merge_queue,
+        ctx.paths,
+        ctx.tui,
+        ctx.config,
+        Duration::from_secs(3),
+        None,
+    )
+    .await;
+    if matches!(outcome, CancelAttemptOutcome::Unconfirmed(_)) {
+        error!(attempt = %attempt.key(), ?interruption,
+            "dispatch interruption could not settle exact ownership");
+    }
+    ctx.task_capacity.wake();
+}
+
+fn checkpoint_dispatch_stage(
+    ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    mut claim: AttemptClaim<AgentRuntimeResource>,
+    stage: DispatchStage,
+) -> std::result::Result<(), String> {
+    claim.set_dispatch_stage(stage);
+    ownership
+        .transition_claim(claim, AttemptPhase::Dispatching, EffectRef(0))
+        .map_err(|failure| format!("could not checkpoint dispatch stage: {:?}", failure.error))
 }
 
 async fn dispatch_action(
@@ -10209,6 +10721,9 @@ async fn dispatch_action(
                     cooldown_ms = remaining.as_millis(),
                     "retry backoff active — delaying spawn"
                 );
+                if env_flag_enabled("ROKO_FAST_MODE") {
+                    ctx.task_capacity.wake_after(remaining);
+                }
                 return ActionDispatchOutcome::Noop;
             }
 
@@ -10437,7 +10952,7 @@ async fn dispatch_action(
                 .get(plan_id.as_str())
                 .and_then(|m| m.get(task_id.as_str()))
             {
-                Some(t) => t,
+                Some(t) => t.clone(),
                 None => {
                     error!(plan_id = %plan_id, task = %task_id, "task not found in index");
                     if let Err(e) = ctx.executor.apply_event(
@@ -10500,7 +11015,26 @@ async fn dispatch_action(
             }
 
             if max_disk_mb > 0 {
-                match check_plan_disk_budget(&ctx.config.workdir, max_disk_mb).await {
+                let disk_check = await_dispatch_step(
+                    ctx.dispatch_deadline,
+                    ctx.cancel,
+                    check_plan_disk_budget(&ctx.config.workdir, max_disk_mb),
+                )
+                .await;
+                let disk_check = match disk_check {
+                    Ok(result) => result,
+                    Err(interruption) => {
+                        settle_dispatch_interruption(
+                            ctx,
+                            &attempt_ref,
+                            EffectRef(0),
+                            interruption,
+                        )
+                        .await;
+                        return ActionDispatchOutcome::Noop;
+                    }
+                };
+                match disk_check {
                     Ok(true) => { /* within budget */ }
                     Ok(false) => {
                         ctx.state.disk_budget_paused = true;
@@ -10551,7 +11085,22 @@ async fn dispatch_action(
                     .filter(|attempt| attempt != &attempt_ref)
                     .map(|attempt| attempt.key())
                     .collect::<HashSet<_>>();
-                ctx.disk_budget.refresh(ctx.worktrees, &in_flight).await;
+                if let Err(interruption) = await_dispatch_step(
+                    ctx.dispatch_deadline,
+                    ctx.cancel,
+                    ctx.disk_budget.refresh(ctx.worktrees, &in_flight),
+                )
+                .await
+                {
+                    settle_dispatch_interruption(
+                        ctx,
+                        &attempt_ref,
+                        EffectRef(0),
+                        interruption,
+                    )
+                    .await;
+                    return ActionDispatchOutcome::Noop;
+                }
                 match roko_fs::available_disk_mb(&ctx.config.workdir) {
                     Ok(available_mb) => {
                         let admission =
@@ -10572,7 +11121,7 @@ async fn dispatch_action(
                                 in_flight = in_flight.len(),
                                 "disk pressure temporarily serializes task admission"
                             );
-                            release_prepared_task_dispatch(
+                            defer_prepared_task_dispatch(
                                 ctx.attempt_ownership,
                                 ctx.task_dag,
                                 &attempt_ref,
@@ -10606,9 +11155,26 @@ async fn dispatch_action(
                 "task dispatch admitted"
             );
 
-            let plan_workdir = match ensure_attempt_workdir(ctx.worktrees, &attempt_ref).await {
-                Ok(path) => path,
-                Err(message) => {
+            let workdir_result = ensure_attempt_workdir_controlled(
+                ctx.worktrees,
+                &attempt_ref,
+                ctx.cancel,
+                ctx.dispatch_deadline,
+            )
+            .await;
+            let plan_workdir = match workdir_result {
+                Err(interruption) => {
+                    settle_dispatch_interruption(
+                        ctx,
+                        &attempt_ref,
+                        EffectRef(0),
+                        interruption,
+                    )
+                    .await;
+                    return ActionDispatchOutcome::Noop;
+                }
+                Ok(Ok(path)) => path,
+                Ok(Err(message)) => {
                     error!(
                         plan_id = %plan_id,
                         task = %task_id,
@@ -10633,9 +11199,16 @@ async fn dispatch_action(
                     return ActionDispatchOutcome::Noop;
                 }
             };
-            ctx.disk_budget
-                .track_attempt(&attempt_ref, ctx.worktrees)
-                .await;
+            if let Err(interruption) = await_dispatch_step(
+                ctx.dispatch_deadline,
+                ctx.cancel,
+                ctx.disk_budget.track_attempt(&attempt_ref, ctx.worktrees),
+            )
+            .await
+            {
+                settle_dispatch_interruption(ctx, &attempt_ref, EffectRef(0), interruption).await;
+                return ActionDispatchOutcome::Noop;
+            }
             publish_worktree_count(ctx.config, ctx.worktrees);
 
             let previous_gate_output = ctx.state.gate_output.clone();
@@ -10656,7 +11229,7 @@ async fn dispatch_action(
 
             if !continuing_preflight
                 && task_should_preflight_verify(
-                    task_def,
+                    &task_def,
                     attempt_num,
                     gate_timeout(ctx.config, ctx.config.max_gate_rung),
                 )
@@ -10735,17 +11308,18 @@ async fn dispatch_action(
                         pipeline_rung,
                         plan_workdir.clone(),
                         gates_config,
-                        gate_plan_complexity_for_task(Some(task_def)),
+                        gate_plan_complexity_for_task(Some(&task_def)),
                         task_def.verify.clone(),
                         None,
                         duration_secs(gate_timeout(ctx.config, pipeline_rung)),
                         ctx.gate_tx.clone(),
                         ctx.gate_sem.clone(),
-                        task_target_crates(Some(task_def)),
+                        task_target_crates(Some(&task_def)),
                         Some(ctx.verdict_publisher.clone()),
-                        gate_dispatch::GateTaskContext::from_task_def(plan_id, Some(task_def)),
+                        gate_dispatch::GateTaskContext::from_task_def(plan_id, Some(&task_def)),
                         Some(Arc::clone(ctx.telemetry_sink)),
                         Some(ctx.config.workdir.join("target")),
+                        None,
                     );
                     let AgentRuntimeResource::AwaitingGate { permit } = gate_claim
                         .replace_resource(AgentRuntimeResource::AwaitingGate { permit: None })
@@ -10848,7 +11422,7 @@ async fn dispatch_action(
                 }
             }
 
-            let task_observation = reflex::observation_for_task(task_def, &previous_gate_output);
+            let task_observation = reflex::observation_for_task(&task_def, &previous_gate_output);
             let reflex_may_match = !ctx.reflex_attempted.contains(&attempt_ref)
                 && ctx.reflex_store.has_match(&task_observation);
             if reflex_may_match {
@@ -10857,13 +11431,13 @@ async fn dispatch_action(
                     .match_observation_with_id(&task_observation)
                 {
                     let condition = Some(matched.condition.clone());
-                    let effective_contract = effective_agent_contract(role, task_def);
+                    let effective_contract = effective_agent_contract(role, &task_def);
                     let authorized = condition.as_ref().and_then(|_| {
                         reflex::authorize_action(
                             &matched.action,
                             ctx.config.safety_layer.as_ref(),
                             effective_contract,
-                            task_def,
+                            &task_def,
                             &plan_workdir,
                             &ctx.config.workdir,
                             agent_dispatch_timeout(ctx.config),
@@ -11096,7 +11670,7 @@ async fn dispatch_action(
                 "knowledge store consulted for routing"
             );
             let gate_feedback = DispatchGateFeedback::from_raw(&previous_gate_output);
-            let daimon_hook = daimon_task_hook(ctx.config, task_def, attempt_num);
+            let daimon_hook = daimon_task_hook(ctx.config, &task_def, attempt_num);
             ctx.state.current_daimon_strategy = daimon_hook.as_ref().map(|hook| hook.strategy);
 
             // Emit affect state to TUI so the Daimon panel shows live PAD gauges.
@@ -11206,7 +11780,7 @@ async fn dispatch_action(
                 .clone()
                 .unwrap_or_else(|| "implementer".to_string());
             let dispatcher = ctx.factory.dispatcher();
-            let mut dispatch_plan = match dispatcher.plan(task_def, &dispatch_ctx) {
+            let mut dispatch_plan = match dispatcher.plan(&task_def, &dispatch_ctx) {
                 Ok(plan) => plan,
                 Err(err) => {
                     let message = format!("dispatch planning failed: {err}");
@@ -11310,7 +11884,7 @@ async fn dispatch_action(
                     };
                 }
             }
-            let efe_tier = efe_dispatch_tier(task_def, attempt_num, cognitive_policy);
+            let efe_tier = efe_dispatch_tier(&task_def, attempt_num, cognitive_policy);
             if allow_learned_model_modulation
                 && let Some(efe_model) = model_for_exact_tier(
                     ctx.config,
@@ -11398,15 +11972,27 @@ async fn dispatch_action(
                 || task_def.title.clone(),
                 |description| format!("{} {description}", task_def.title),
             );
-            let matched_playbooks = match ctx
-                .playbook_store
-                .match_playbooks(&task_description, 3)
-                .await
-            {
-                Ok(matches) => matches,
-                Err(error) => {
+            let playbook_result = await_dispatch_step(
+                ctx.dispatch_deadline,
+                ctx.cancel,
+                ctx.playbook_store.match_playbooks(&task_description, 3),
+            )
+            .await;
+            let matched_playbooks = match playbook_result {
+                Ok(Ok(matches)) => matches,
+                Ok(Err(error)) => {
                     debug!(plan_id = %plan_id, task = %task_id, %error, "when/then playbook matching failed");
                     Vec::new()
+                }
+                Err(interruption) => {
+                    settle_dispatch_interruption(
+                        ctx,
+                        &attempt_ref,
+                        EffectRef(0),
+                        interruption,
+                    )
+                    .await;
+                    return ActionDispatchOutcome::Noop;
                 }
             };
             for playbook in &matched_playbooks {
@@ -11414,13 +12000,21 @@ async fn dispatch_action(
                     prompt_diagnostics.playbook_ids.push(playbook.id.clone());
                 }
             }
-            emit_signal_scores(
-                ctx.telemetry_sink.as_ref(),
-                plan_id,
-                &task_id,
-                &prompt_diagnostics.scored_signals,
+            if let Err(interruption) = await_dispatch_step(
+                ctx.dispatch_deadline,
+                ctx.cancel,
+                emit_signal_scores(
+                    ctx.telemetry_sink.as_ref(),
+                    plan_id,
+                    &task_id,
+                    &prompt_diagnostics.scored_signals,
+                ),
             )
-            .await;
+            .await
+            {
+                settle_dispatch_interruption(ctx, &attempt_ref, EffectRef(0), interruption).await;
+                return ActionDispatchOutcome::Noop;
+            }
             // Stash section diagnostics keyed by attempt for SectionOutcome
             // recording when the gate completes (pass or fail).
             {
@@ -11470,14 +12064,18 @@ async fn dispatch_action(
                 if context_scope.max_similar_episodes > 0 {
                     let task_fp =
                         roko_learn::hdc_fingerprint::fingerprint_episode(&task_def.title, "");
-                    match EpisodeLogger::query_similar_episodes(
-                        &ctx.paths.episodes_jsonl,
-                        &task_fp,
-                        context_scope.max_similar_episodes,
+                    let episodes = await_dispatch_step(
+                        ctx.dispatch_deadline,
+                        ctx.cancel,
+                        EpisodeLogger::query_similar_episodes(
+                            &ctx.paths.episodes_jsonl,
+                            &task_fp,
+                            context_scope.max_similar_episodes,
+                        ),
                     )
-                    .await
-                    {
-                        Ok(similar) => {
+                    .await;
+                    match episodes {
+                        Ok(Ok(similar)) => {
                             if let Some(section) = format_similar_episodes_section(&similar) {
                                 system_prompt.push_str("\n\n");
                                 system_prompt.push_str(&section);
@@ -11491,13 +12089,23 @@ async fn dispatch_action(
                                 );
                             }
                         }
-                        Err(err) => {
+                        Ok(Err(err)) => {
                             debug!(
                                 plan_id = %plan_id,
                                 task = %task_id,
                                 error = %err,
                                 "similar-episode query failed (non-fatal)"
                             );
+                        }
+                        Err(interruption) => {
+                            settle_dispatch_interruption(
+                                ctx,
+                                &attempt_ref,
+                                EffectRef(0),
+                                interruption,
+                            )
+                            .await;
+                            return ActionDispatchOutcome::Noop;
                         }
                     }
                 } else {
@@ -11618,15 +12226,23 @@ async fn dispatch_action(
 
             // Extension: pre-inference hook.
             let task_role = task_def.role.as_deref().unwrap_or("implementer");
-            fire_pre_inference_hook(
-                ctx.config,
-                plan_id,
-                &task_id,
-                &requested_model,
-                task_role,
-                ctx.tui,
+            if let Err(interruption) = await_dispatch_step(
+                ctx.dispatch_deadline,
+                ctx.cancel,
+                fire_pre_inference_hook(
+                    ctx.config,
+                    plan_id,
+                    &task_id,
+                    &requested_model,
+                    task_role,
+                    ctx.tui,
+                ),
             )
-            .await;
+            .await
+            {
+                settle_dispatch_interruption(ctx, &attempt_ref, EffectRef(0), interruption).await;
+                return ActionDispatchOutcome::Noop;
+            }
 
             let dispatch = match ctx.factory.resolve_runtime(&requested_model) {
                 Ok(selection) => selection,
@@ -11913,6 +12529,30 @@ async fn dispatch_action(
                 return ActionDispatchOutcome::Noop;
             }
 
+            // Re-check the non-resetting run deadline immediately before the
+            // paid provider boundary. Preparation may have completed at the
+            // exact deadline without its awaited future winning the race.
+            let prelaunch_interruption = if ctx.cancel.is_cancelled() {
+                Some(DispatchInterruption::Cancelled)
+            } else if ctx
+                .dispatch_deadline
+                .is_some_and(|deadline| deadline.remaining(monotonic_now()).is_none())
+            {
+                Some(DispatchInterruption::Deadline)
+            } else {
+                None
+            };
+            if let Some(interruption) = prelaunch_interruption {
+                checkpoint_dispatch_stage(
+                    ctx.attempt_ownership,
+                    dispatch_claim,
+                    DispatchStage::Preparation,
+                )
+                .expect("prelaunch deadline checkpoint must retain exact ownership");
+                settle_dispatch_interruption(ctx, &attempt_ref, EffectRef(0), interruption).await;
+                return ActionDispatchOutcome::Noop;
+            }
+
             emit_runner_event(
                 ctx.paths,
                 ctx.state,
@@ -11978,11 +12618,18 @@ async fn dispatch_action(
                         spawn_config = spawn_config.with_cli_provider(provider);
                     }
 
-                    let AgentRuntimeResource::Dispatching(permit) = dispatch_claim
-                        .replace_resource(AgentRuntimeResource::AwaitingGate { permit: None })
-                    else {
-                        unreachable!("dispatch claim must own permit")
-                    };
+                    checkpoint_dispatch_stage(
+                        ctx.attempt_ownership,
+                        dispatch_claim,
+                        DispatchStage::CliStartup,
+                    )
+                    .expect("CLI startup checkpoint must retain exact ownership");
+                    transition_task_runtime(
+                        ctx.task_runtime_states,
+                        &attempt_ref,
+                        TaskTimingPhase::Startup,
+                        Instant::now(),
+                    );
                     let (raw_agent_tx, raw_agent_rx) = mpsc::channel::<AgentEvent>(64);
                     let forwarder = tokio::spawn(forward_agent_events(
                         attempt_ref.clone(),
@@ -11991,13 +12638,51 @@ async fn dispatch_action(
                         raw_agent_rx,
                         ctx.agent_tx.clone(),
                     ));
+                    let startup_control = startup_control(ctx);
+                    let startup_deadline_interruption = startup_control
+                        .as_ref()
+                        .map_or(DispatchInterruption::Deadline, |(_, interruption)| {
+                            *interruption
+                        });
+                    if ctx.dispatch_deadline.is_some() && startup_control.is_none() {
+                        forwarder.abort();
+                        let _ = forwarder.await;
+                        settle_dispatch_interruption(
+                            ctx,
+                            &attempt_ref,
+                            EffectRef(0),
+                            DispatchInterruption::Deadline,
+                        )
+                        .await;
+                        return ActionDispatchOutcome::Noop;
+                    }
+                    let spawn_result = if let Some((control, _)) = startup_control.as_ref() {
+                        ctx.factory
+                            .dispatcher()
+                            .spawn_streaming_cli_agent_controlled(
+                                &spawn_config,
+                                raw_agent_tx,
+                                control,
+                            )
+                            .await
+                    } else {
+                        ctx.factory
+                            .dispatcher()
+                            .spawn_streaming_cli_agent(&spawn_config, raw_agent_tx)
+                            .await
+                            .map_err(AgentStartupError::Failed)
+                    };
+                    let mut dispatch_claim = ctx
+                        .attempt_ownership
+                        .claim_phase(&attempt_ref, AttemptPhase::Dispatching, EffectRef(0))
+                        .expect("CLI startup must return exact dispatch ownership");
+                    let AgentRuntimeResource::Dispatching(permit) = dispatch_claim
+                        .replace_resource(AgentRuntimeResource::AwaitingGate { permit: None })
+                    else {
+                        unreachable!("dispatch claim must own permit")
+                    };
 
-                    match ctx
-                        .factory
-                        .dispatcher()
-                        .spawn_streaming_cli_agent(&spawn_config, raw_agent_tx)
-                        .await
-                    {
+                    match spawn_result {
                         Ok(handle) => {
                             record_admitted_agent_launch(ctx.state);
                             ctx.state.agent_active = true;
@@ -12062,7 +12747,80 @@ async fn dispatch_action(
                                 task_id,
                             };
                         }
-                        Err(e) => {
+                        Err(AgentStartupError::Interrupted {
+                            interruption,
+                            cleanup_error,
+                            unconfirmed,
+                        }) => {
+                            forwarder.abort();
+                            let forwarder_error = match forwarder.await {
+                                Err(error) if !error.is_cancelled() => Some(format!(
+                                    "CLI startup forwarder did not stop cleanly: {error}"
+                                )),
+                                _ => None,
+                            };
+                            if let Some(handle) = unconfirmed {
+                                let mut errors = Vec::new();
+                                if let Some(error) = cleanup_error {
+                                    errors.push(error);
+                                }
+                                if let Some(error) = forwarder_error {
+                                    errors.push(error);
+                                }
+                                let pid = handle.pid;
+                                dispatch_claim.set_agent(agent_id.clone(), Some(pid));
+                                dispatch_claim.replace_resource(AgentRuntimeResource::Cli {
+                                    handle,
+                                    forwarder: tokio::spawn(async {}),
+                                    permit,
+                                });
+                                ctx.attempt_ownership
+                                    .restore_cancellation_failure(dispatch_claim)
+                                    .expect("unconfirmed CLI startup must retain exact ownership");
+                                ctx.state.agent_active = true;
+                                ctx.state.agent_pid = Some(pid);
+                                emit_runner_event(
+                                    ctx.paths,
+                                    ctx.state,
+                                    ctx.tui,
+                                    ctx.config,
+                                    RunnerEvent::task_attempt_cancellation_failed(
+                                        &run_id,
+                                        attempt_ref.clone(),
+                                        errors.join("; "),
+                                    ),
+                                );
+                                let _ = persist::save_agent_pids(ctx.paths, &[pid]);
+                                return ActionDispatchOutcome::Noop;
+                            }
+                            dispatch_claim.replace_resource(
+                                AgentRuntimeResource::Dispatching(permit),
+                            );
+                            ctx.attempt_ownership
+                                .transition_claim(
+                                    dispatch_claim,
+                                    AttemptPhase::Dispatching,
+                                    EffectRef(0),
+                                )
+                                .expect("confirmed CLI startup interruption must restore owner");
+                            let interruption = match interruption {
+                                AgentStartupInterruption::Deadline => {
+                                    startup_deadline_interruption
+                                }
+                                AgentStartupInterruption::Cancelled => {
+                                    DispatchInterruption::Cancelled
+                                }
+                            };
+                            settle_dispatch_interruption(
+                                ctx,
+                                &attempt_ref,
+                                EffectRef(0),
+                                interruption,
+                            )
+                            .await;
+                            return ActionDispatchOutcome::Noop;
+                        }
+                        Err(AgentStartupError::Failed(e)) => {
                             transition_task_runtime(
                                 ctx.task_runtime_states,
                                 &attempt_ref,
@@ -12191,8 +12949,6 @@ async fn dispatch_action(
                             "safety contract: bridge dispatch will enforce effective policy"
                         );
                     }
-                    ctx.state.agent_active = true;
-                    ctx.state.agent_pid = None;
                     let request = AgentDispatchRequest {
                         model_key: requested_model.clone(),
                         prompt: final_prompt,
@@ -12215,11 +12971,18 @@ async fn dispatch_action(
                         dangerously_skip_permissions: ctx.config.dangerously_skip_permissions
                             && permission_bypass_allowed,
                     };
-                    let AgentRuntimeResource::Dispatching(permit) = dispatch_claim
-                        .replace_resource(AgentRuntimeResource::AwaitingGate { permit: None })
-                    else {
-                        unreachable!("dispatch claim must own permit")
-                    };
+                    checkpoint_dispatch_stage(
+                        ctx.attempt_ownership,
+                        dispatch_claim,
+                        DispatchStage::BridgeStartup,
+                    )
+                    .expect("bridge startup checkpoint must retain exact ownership");
+                    transition_task_runtime(
+                        ctx.task_runtime_states,
+                        &attempt_ref,
+                        TaskTimingPhase::Startup,
+                        Instant::now(),
+                    );
                     let (raw_agent_tx, raw_agent_rx) = mpsc::channel::<AgentEvent>(64);
                     let forwarder = tokio::spawn(forward_agent_events(
                         attempt_ref.clone(),
@@ -12228,7 +12991,73 @@ async fn dispatch_action(
                         raw_agent_rx,
                         ctx.agent_tx.clone(),
                     ));
-                    let bridge = ctx.factory.spawn_shared_agent_bridge(request, raw_agent_tx);
+                    let startup_control = startup_control(ctx);
+                    let startup_deadline_interruption = startup_control
+                        .as_ref()
+                        .map_or(DispatchInterruption::Deadline, |(_, interruption)| {
+                            *interruption
+                        });
+                    if ctx.dispatch_deadline.is_some() && startup_control.is_none() {
+                        forwarder.abort();
+                        let _ = forwarder.await;
+                        settle_dispatch_interruption(
+                            ctx,
+                            &attempt_ref,
+                            EffectRef(0),
+                            DispatchInterruption::Deadline,
+                        )
+                        .await;
+                        return ActionDispatchOutcome::Noop;
+                    }
+                    let bridge_start = if let Some((control, _)) = startup_control.as_ref() {
+                        ctx.factory
+                            .spawn_shared_agent_bridge_controlled(
+                                request,
+                                raw_agent_tx,
+                                control.deadline,
+                                control.cancel.clone(),
+                            )
+                            .await
+                    } else {
+                        Ok(crate::dispatch::factory::StartedSharedAgentBridge {
+                            handle: ctx.factory.spawn_shared_agent_bridge(request, raw_agent_tx),
+                        })
+                    };
+                    let bridge = match bridge_start {
+                        Ok(started) => started.handle,
+                        Err(error) => {
+                            forwarder.abort();
+                            let _ = forwarder.await;
+                            let interruption = match error {
+                                crate::dispatch::factory::SharedBridgeStartupError::Cancelled => {
+                                    DispatchInterruption::Cancelled
+                                }
+                                crate::dispatch::factory::SharedBridgeStartupError::Deadline
+                                | crate::dispatch::factory::SharedBridgeStartupError::WorkerExited => {
+                                    startup_deadline_interruption
+                                }
+                            };
+                            settle_dispatch_interruption(
+                                ctx,
+                                &attempt_ref,
+                                EffectRef(0),
+                                interruption,
+                            )
+                            .await;
+                            return ActionDispatchOutcome::Noop;
+                        }
+                    };
+                    let mut dispatch_claim = ctx
+                        .attempt_ownership
+                        .claim_phase(&attempt_ref, AttemptPhase::Dispatching, EffectRef(0))
+                        .expect("bridge startup must return exact dispatch ownership");
+                    let AgentRuntimeResource::Dispatching(permit) = dispatch_claim
+                        .replace_resource(AgentRuntimeResource::AwaitingGate { permit: None })
+                    else {
+                        unreachable!("dispatch claim must own permit")
+                    };
+                    ctx.state.agent_active = true;
+                    ctx.state.agent_pid = None;
                     record_admitted_agent_launch(ctx.state);
                     emit_runner_event(
                         ctx.paths,
@@ -12430,6 +13259,11 @@ async fn dispatch_action(
                 .get(plan_id.as_str())
                 .and_then(|tasks| tasks.get(task_id.as_str()));
             let is_read_only_role = task_role_is_read_only(task_def);
+            let expected_salvage_input = ctx
+                .state
+                .timeout_salvage_input_fingerprints
+                .get(&attempt_ref.key())
+                .cloned();
 
             let (gate_handle, start_tx) = if is_read_only_role || skip_default_gate {
                 // Read-only tasks don't produce artifacts — auto-pass the gate.
@@ -12451,7 +13285,7 @@ async fn dispatch_action(
                 } else {
                     "skipped: read-only role"
                 };
-                let completion = GateCompletion {
+                let mut completion = GateCompletion {
                     plan_id: plan_id.clone(),
                     task_id: task_id.clone(),
                     attempt: Some(attempt_ref.clone()),
@@ -12470,10 +13304,27 @@ async fn dispatch_action(
                 let plan_id_fatal = plan_id.clone();
                 let fatal_attempt = attempt_ref.clone();
                 let fatal_effect = EffectRef(gate_effect.generation);
+                let expected_input = expected_salvage_input.clone();
+                let validation_workdir = plan_workdir.clone();
                 let (start_tx, start_rx) = tokio::sync::oneshot::channel();
                 let handle = tokio::spawn(async move {
                     if start_rx.await.is_err() {
                         return;
+                    }
+                    if let Some(expected) = expected_input.as_deref() {
+                        match gate_dispatch::owned_input_fingerprint_id(validation_workdir).await {
+                            Ok(observed) if observed == expected => {}
+                            Ok(_) => {
+                                completion.passed = false;
+                                completion.failure_kind = Some(RunnerFailureKind::Resource);
+                                completion.output = "timeout salvage input changed before ordinary gate start; refusing attribution".to_string();
+                            }
+                            Err(error) => {
+                                completion.passed = false;
+                                completion.failure_kind = Some(RunnerFailureKind::Resource);
+                                completion.output = format!("timeout salvage input identity unavailable before ordinary gate start: {error}");
+                            }
+                        }
                     }
                     if let Err(e) = gate_tx.send(completion).await {
                         error!(plan_id = %plan_id_fatal, err = %e,
@@ -12514,6 +13365,7 @@ async fn dispatch_action(
                     gate_dispatch::GateTaskContext::from_task_def(plan_id, task_def),
                     Some(Arc::clone(ctx.telemetry_sink)),
                     Some(ctx.config.workdir.join("target")),
+                    expected_salvage_input,
                 )
             };
             let AgentRuntimeResource::AwaitingGate { permit } =
@@ -14645,7 +15497,20 @@ fn timeout_runner_event(entry: &TimeoutLedgerEntry) -> Result<RunnerEvent> {
         timeout,
         duration_ms: 0,
         phase_durations: TaskPhaseDurations::default(),
+        agent_snapshot: TimeoutAgentSnapshot::default(),
     })
+}
+
+fn timeout_agent_snapshot(state: &RunState) -> TimeoutAgentSnapshot {
+    TimeoutAgentSnapshot {
+        model: state.agent_model.clone(),
+        provider: state.agent_provider.clone(),
+        tokens_in: state.tokens_in,
+        tokens_out: state.tokens_out,
+        cache_read_tokens: state.cache_read_tokens,
+        cache_write_tokens: state.cache_write_tokens,
+        cost_usd: state.cost_usd,
+    }
 }
 
 fn load_timeout_terminal_replay(
@@ -14770,6 +15635,94 @@ fn replay_timeout_terminals(path: &std::path::Path, state: &mut RunState) -> Res
     Ok(applied)
 }
 
+#[derive(Clone)]
+struct ReplayedTimeoutSalvage {
+    attempt: TaskAttemptRef,
+    phase_durations: TaskPhaseDurations,
+    agent_snapshot: TimeoutAgentSnapshot,
+    input_fingerprint: String,
+    event: RunnerEvent,
+}
+
+/// Recover durable salvage handoffs that do not yet have a later exact
+/// terminal. The lifecycle event is written before ownership transfer, so it
+/// is the restart authority for the narrow crash window before the snapshot.
+fn replay_timeout_salvages(
+    path: &Path,
+    state: &mut RunState,
+) -> Result<Vec<ReplayedTimeoutSalvage>> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+    let run_id = state.run_id().to_string();
+    let mut outstanding = HashMap::<TaskAttemptRef, ReplayedTimeoutSalvage>::new();
+    for line in contents.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(event) = serde_json::from_str::<RunnerEvent>(line) else {
+            // The shared stream also contains normalized raw agent envelopes.
+            continue;
+        };
+        if runner_event_run_id(&event) != run_id.as_str() {
+            continue;
+        }
+        match &event {
+            RunnerEvent::TimeoutSalvagedToGate {
+                timeout,
+                phase_durations,
+                agent_snapshot,
+                input_fingerprint,
+                ..
+            } => {
+                if let Some(attempt) = timeout.attempt.as_ref() {
+                    outstanding.insert(
+                        attempt.clone(),
+                        ReplayedTimeoutSalvage {
+                            attempt: attempt.clone(),
+                            phase_durations: *phase_durations,
+                            agent_snapshot: agent_snapshot.clone(),
+                            input_fingerprint: input_fingerprint.clone(),
+                            event: event.clone(),
+                        },
+                    );
+                }
+            }
+            RunnerEvent::TaskAttemptCompleted { attempt, .. } => {
+                outstanding.remove(attempt);
+            }
+            RunnerEvent::TimeoutRecorded { timeout, .. } => {
+                if let Some(attempt) = timeout.attempt.as_ref() {
+                    outstanding.remove(attempt);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut recovered = outstanding.into_values().collect::<Vec<_>>();
+    recovered.retain(|salvage| {
+        !state
+            .lifecycle
+            .task_attempts
+            .get(&salvage.attempt.key())
+            .is_some_and(|attempt| attempt.status.is_terminal())
+    });
+    recovered.sort_by_key(|salvage| salvage.attempt.key());
+    for salvage in &recovered {
+        let current = state
+            .lifecycle
+            .task_attempts
+            .get(&salvage.attempt.key())
+            .map(|attempt| attempt.status);
+        if !matches!(
+            current,
+            Some(TaskAttemptStatus::SalvagedToGate | TaskAttemptStatus::Gating)
+        ) {
+            state.apply_runner_event(&salvage.event);
+        }
+    }
+    Ok(recovered)
+}
+
 async fn handle_global_timeout(
     expiry: crate::runner::deadlines::DeadlineExpiry,
     now: crate::runner::deadlines::MonotonicTime,
@@ -14832,12 +15785,12 @@ async fn handle_global_timeout(
         None,
         true,
     );
-    // Bounded retry loop with exponential backoff (RC-3).
-    // Previously this loop had no exit condition for conflicting terminals,
-    // causing infinite 1 s retries and log spam.
-    const MAX_TIMEOUT_RETRIES: u32 = 5;
-    let mut retry_count: u32 = 0;
+    let settlement_deadline = tokio::time::Instant::now() + terminal_cleanup_budget();
+    let mut cleanup_confirmed = false;
     loop {
+        if tokio::time::Instant::now() >= settlement_deadline {
+            break;
+        }
         let cancellation = stop_all_agents(
             attempt_ownership,
             task_runtime_states,
@@ -14851,18 +15804,11 @@ async fn handle_global_timeout(
             tui,
             config,
             Duration::from_secs(3),
+            Some(settlement_deadline),
         )
         .await;
         if cancellation.all_confirmed() {
-            break;
-        }
-        retry_count += 1;
-        if retry_count >= MAX_TIMEOUT_RETRIES {
-            warn!(
-                retries = retry_count,
-                "timeout cancellation loop exceeded max retries; \
-                 treating remaining agents as confirmed"
-            );
+            cleanup_confirmed = true;
             break;
         }
         save_snapshot(
@@ -14877,12 +15823,41 @@ async fn handle_global_timeout(
         let pids = attempt_ownership.surviving_agent_metadata().pids;
         let _ = persist::save_agent_pids(paths, &pids);
         writer.flush();
-        // Exponential backoff: 1s, 2s, 4s, 8s, 16s
-        let backoff = Duration::from_secs(1u64 << retry_count.min(4));
-        tokio::time::sleep(backoff).await;
+        let retry_at = (tokio::time::Instant::now() + Duration::from_millis(100))
+            .min(settlement_deadline);
+        tokio::time::sleep_until(retry_at).await;
+    }
+    let survivors = attempt_ownership.surviving_agent_metadata();
+    let cleanup_degraded = !cleanup_confirmed
+        || survivors.active
+        || attempt_ownership.unrecovered_claim_count() > 0;
+    if cleanup_degraded {
+        warn!(
+            surviving_agents = ?survivors.agent_ids,
+            surviving_pids = ?survivors.pids,
+            "global timeout reached terminal state with unconfirmed cleanup"
+        );
+        let _ = append_ledger_entry(
+            &paths.run_ledger_jsonl,
+            "run_cleanup_degraded",
+            &serde_json::json!({
+                "run_id": run_id,
+                "timeout_kind": format!("{:?}", expiry.kind),
+                "surviving_agent_ids": &survivors.agent_ids,
+                "surviving_agent_pids": &survivors.pids,
+                "timestamp_ms": chrono::Utc::now().timestamp_millis().max(0) as u64,
+            }),
+        );
     }
     let report = build_report(executor, plans, state, task_dag);
-    let event = build_run_completed_event(state, &report, RunOutcome::Failed);
+    let mut event = build_run_completed_event(state, &report, RunOutcome::Failed);
+    if cleanup_degraded {
+        annotate_degraded_cleanup(
+            &mut event,
+            survivors.agent_ids.clone(),
+            survivors.pids.clone(),
+        );
+    }
     emit_runner_event(paths, state, tui, config, event);
     save_snapshot(
         config,
@@ -14894,12 +15869,21 @@ async fn handle_global_timeout(
         writer,
     );
     writer.flush();
-    let _ = persist::save_agent_pids(paths, &[]);
+    if cleanup_confirmed {
+        let _ = persist::save_agent_pids(paths, &[]);
+    } else if !survivors.pids.is_empty() {
+        let _ = persist::save_agent_pids(paths, &survivors.pids);
+    }
     shutdown_subsystems(config, tui).await;
     Err(anyhow::anyhow!(
-        "runner {:?} deadline exceeded after {} seconds",
+        "runner {:?} deadline exceeded after {} seconds{}",
         expiry.kind,
         timeout_secs,
+        if cleanup_degraded {
+            "; cleanup remains unconfirmed"
+        } else {
+            ""
+        },
     ))
 }
 
@@ -15027,6 +16011,7 @@ async fn enforce_owned_deadlines_at(
             cancellation: candidate.cancellation,
             agent: None,
             timing: candidate.timing,
+            dispatch_stage: candidate.dispatch_stage,
         };
         let mut owner_policy = policy;
         let authored = if env_flag_enabled("ROKO_FAST_MODE") && gate_phase {
@@ -15093,12 +16078,14 @@ async fn enforce_owned_deadlines_at(
             tui,
             config,
             Duration::from_secs(3),
+            None,
         )
         .await;
-        if let CancelAttemptOutcome::Confirmed(outcome) = settled {
-            if outcome != TaskAttemptOutcome::TimedOut {
-                continue;
-            }
+        if matches!(&settled, CancelAttemptOutcome::SalvagedToGate) {
+            expired += 1;
+            continue;
+        }
+        if let CancelAttemptOutcome::Confirmed(TaskAttemptOutcome::TimedOut) = settled {
             expired += 1;
             let plan_id = &candidate.attempt.plan_id;
             let task_id = &candidate.attempt.task_id;
@@ -15132,6 +16119,7 @@ async fn enforce_owned_deadlines_at(
                             tui,
                             config,
                             Duration::from_secs(3),
+                            None,
                         )
                         .await,
                         CancelAttemptOutcome::Confirmed(_)
@@ -15193,6 +16181,7 @@ fn producer_is_gone_at_deadline(
 #[derive(Debug)]
 enum CancelAttemptOutcome {
     Confirmed(TaskAttemptOutcome),
+    SalvagedToGate,
     Unconfirmed(Vec<String>),
 }
 
@@ -15219,7 +16208,12 @@ impl CancelAllSummary {
             && self
                 .attempts
                 .iter()
-                .all(|entry| matches!(entry.outcome, CancelAttemptOutcome::Confirmed(_)))
+                .all(|entry| {
+                    matches!(
+                        entry.outcome,
+                        CancelAttemptOutcome::Confirmed(_) | CancelAttemptOutcome::SalvagedToGate
+                    )
+                })
     }
 }
 
@@ -15265,6 +16259,38 @@ fn record_cancellation_failure(
         RunnerEvent::task_attempt_cancellation_failed(&run_id, attempt.clone(), errors.join("; ")),
     );
     CancelAttemptOutcome::Unconfirmed(errors)
+}
+
+fn converge_cancelled_attempt_projections(
+    ownership: &AttemptOwnership<AgentRuntimeResource>,
+    state: &mut RunState,
+    paths: &PersistPaths,
+    tui: &TuiBridge,
+    attempt: &TaskAttemptRef,
+    agent: Option<&super::attempt_ownership::AgentOwnership>,
+    outcome: TaskAttemptOutcome,
+) {
+    let survivors = ownership.surviving_agent_metadata();
+    state.agent_active = survivors.active;
+    state.agent_pid = survivors.pids.first().copied();
+    state.agent_turn_completed = false;
+    let _ = persist::save_agent_pids(paths, &survivors.pids);
+    if let Some(agent) = agent {
+        tui.agent_completed(
+            &agent.agent_id,
+            &attempt.plan_id,
+            &attempt.task_id,
+            attempt.attempt,
+        );
+    }
+    let label = match outcome {
+        TaskAttemptOutcome::Cancelled => "cancelled",
+        TaskAttemptOutcome::TimedOut => "timed_out",
+        TaskAttemptOutcome::Failed => "failed",
+        TaskAttemptOutcome::Exhausted => "exhausted",
+        TaskAttemptOutcome::Passed => "passed",
+    };
+    tui.task_completed(&attempt.plan_id, &attempt.task_id, label);
 }
 
 async fn terminate_evidence_git(child: &mut tokio::process::Child) {
@@ -15359,6 +16385,228 @@ async fn bounded_evidence_git_stdout(
         ));
     }
     Ok(bytes)
+}
+
+#[derive(Debug)]
+struct TimeoutSalvageDiff {
+    input_fingerprint: String,
+    changed_paths: Vec<String>,
+}
+
+fn timeout_salvage_worktree(config: &RunConfig, attempt: &TaskAttemptRef) -> PathBuf {
+    let worktree_id = crate::orchestrator::worktree::format_attempt_worktree_id(
+        &attempt.plan_id,
+        &attempt.task_id,
+        attempt.attempt,
+    );
+    config
+        .workdir
+        .join(".roko")
+        .join("worktrees")
+        .join(worktree_id)
+}
+
+fn timeout_salvage_has_correctness_gate(
+    config: &RunConfig,
+    attempt: &TaskAttemptRef,
+    task: &TaskDef,
+) -> bool {
+    if task_role_is_read_only(Some(task)) {
+        return false;
+    }
+    if env_flag_enabled("ROKO_FAST_TASK_VERIFY_ONLY") {
+        return !task.verify.is_empty();
+    }
+    let gates = gates_config_for_run(config);
+    !task.verify.is_empty()
+        || gates.has_custom_rungs()
+        || timeout_salvage_worktree(config, attempt)
+            .join("Cargo.toml")
+            .is_file()
+}
+
+fn timeout_salvage_paths(status: &[u8]) -> Option<Vec<String>> {
+    let records = status
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .collect::<Vec<_>>();
+    let mut paths = Vec::new();
+    let mut index = 0;
+    while index < records.len() {
+        let record = records[index];
+        if record.len() < 4 || record.get(2) != Some(&b' ') {
+            return None;
+        }
+        let code = &record[..2];
+        paths.push(String::from_utf8(record[3..].to_vec()).ok()?);
+        if code.contains(&b'R') || code.contains(&b'C') {
+            index += 1;
+            let renamed_path = records.get(index)?;
+            paths.push(String::from_utf8(renamed_path.to_vec()).ok()?);
+        }
+        index += 1;
+    }
+    paths.sort();
+    paths.dedup();
+    (!paths.is_empty()).then_some(paths)
+}
+
+async fn timeout_salvage_diff(
+    config: &RunConfig,
+    attempt: &TaskAttemptRef,
+) -> Option<TimeoutSalvageDiff> {
+    const MAX_STATUS_BYTES: usize = 1024 * 1024;
+    let worktree = timeout_salvage_worktree(config, attempt);
+    let status = bounded_evidence_git_stdout(
+        &worktree,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        MAX_STATUS_BYTES,
+    )
+    .await
+    .ok()?;
+    if status.is_empty()
+        || crate::orchestrator::worktree::validate_workspace_file_kinds(&worktree, &status).is_err()
+    {
+        return None;
+    }
+    let entries = status
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .collect::<Vec<_>>();
+    // Unmerged paths are not a safe handoff. The ordinary gate owns all
+    // other validation, including exact input hashing and safety contracts.
+    const UNMERGED_CODES: [&[u8]; 7] =
+        [b"DD", b"AU", b"UD", b"UA", b"DU", b"AA", b"UU"];
+    if entries.iter().any(|entry| {
+        entry.get(2) == Some(&b' ')
+            && UNMERGED_CODES
+                .iter()
+                .any(|code| entry.get(..2) == Some(*code))
+    }) {
+        return None;
+    }
+    let changed_paths = timeout_salvage_paths(&status)?;
+    let input_fingerprint = gate_dispatch::owned_input_fingerprint_id(worktree)
+        .await
+        .ok()?;
+    Some(TimeoutSalvageDiff {
+        input_fingerprint,
+        changed_paths,
+    })
+}
+
+fn timeout_salvage_safety_block(
+    config: &RunConfig,
+    task: &TaskDef,
+    agent_output: &str,
+    attempt: &TaskAttemptRef,
+    diff: &TimeoutSalvageDiff,
+) -> Option<String> {
+    let safety = config.safety_layer.as_ref()?;
+    let task_role = task.role.as_deref().unwrap_or("implementer");
+    let effective_safety = safety
+        .clone()
+        .with_contract(effective_agent_contract(task_role, task));
+    let violations = effective_safety.post_dispatch_check(
+        &attempt.plan_id,
+        &attempt.task_id,
+        task_role,
+        agent_output,
+        &diff.changed_paths,
+    );
+    let blocks = violations
+        .iter()
+        .filter(|violation| violation.severity == ViolationSeverity::Block)
+        .map(|violation| format!("{}: {}", violation.violation_type, violation.message))
+        .collect::<Vec<_>>();
+    (!blocks.is_empty()).then(|| blocks.join("; "))
+}
+
+fn timeout_salvage_event_exists(
+    path: &Path,
+    attempt: &TaskAttemptRef,
+) -> std::io::Result<bool> {
+    let Some(contents) = read_bounded_jsonl_tail(path)? else {
+        return Ok(false);
+    };
+    Ok(contents.lines().any(|line| {
+        serde_json::from_str::<RunnerEvent>(line).is_ok_and(|event| {
+            matches!(
+                event,
+                RunnerEvent::TimeoutSalvagedToGate { timeout, .. }
+                    if timeout.attempt.as_ref() == Some(attempt)
+            )
+        })
+    }))
+}
+
+fn persist_timeout_salvage(
+    paths: &PersistPaths,
+    state: &mut RunState,
+    tui: &TuiBridge,
+    config: &RunConfig,
+    attempt: &TaskAttemptRef,
+    timeout: TimeoutEvent,
+    phase_durations: TaskPhaseDurations,
+    diff: TimeoutSalvageDiff,
+) -> std::result::Result<(), String> {
+    let run_id = state.run_id().to_string();
+    let TimeoutSalvageDiff {
+        input_fingerprint,
+        changed_paths,
+    } = diff;
+    let changed_path_count = changed_paths.len();
+    let event = RunnerEvent::timeout_salvaged_to_gate(
+        &run_id,
+        timeout.clone(),
+        phase_durations,
+        timeout_agent_snapshot(state),
+        input_fingerprint,
+        changed_path_count,
+    );
+    if !timeout_salvage_event_exists(&paths.events_jsonl, attempt)
+        .map_err(|error| format!("failed to inspect timeout salvage events: {error}"))?
+    {
+        persist::append_runner_event(paths, &event)
+            .map_err(|error| format!("failed to persist timeout salvage event: {error}"))?;
+    }
+    let ledger_kind = "timeout_salvaged_to_gate";
+    let ledger_exists = terminal_ledger_entry_exists(
+        &paths.run_ledger_jsonl,
+        ledger_kind,
+        &run_id,
+        attempt,
+    )
+    .map_err(|error| format!("failed to inspect timeout salvage ledger: {error}"))?;
+    if !ledger_exists {
+        let data = serde_json::json!({
+            "run_id": run_id,
+            "plan_id": attempt.plan_id,
+            "task_id": attempt.task_id,
+            "attempt": attempt.attempt,
+            "timeout": timeout,
+            "phase_durations": phase_durations,
+            "timestamp_ms": chrono::Utc::now().timestamp_millis().max(0) as u64,
+        });
+        if let Err(error) = append_ledger_entry(&paths.run_ledger_jsonl, ledger_kind, &data) {
+            // The typed runner event is the lifecycle source of truth. The
+            // ledger is an independently replayable projection.
+            warn!(attempt = %attempt.key(), %error, "timeout salvage ledger projection degraded");
+        }
+    }
+    config.structured_log.log(&event);
+    emit_runner_event_with_facades(
+        paths,
+        state,
+        tui,
+        config.projection.as_ref(),
+        config.feedback_facade.as_ref(),
+        config.http_event_sink.as_ref(),
+        event,
+        None,
+        true,
+    );
+    Ok(())
 }
 
 async fn export_fast_attempt_evidence(
@@ -15496,10 +16744,14 @@ async fn cancel_exact_attempt(
     tui: &TuiBridge,
     config: &RunConfig,
     grace: Duration,
+    settlement_deadline: Option<tokio::time::Instant>,
 ) -> CancelAttemptOutcome {
     let Ok(mut claim) = ownership.claim_cancellation_exact(attempt, expected_owner) else {
         return CancelAttemptOutcome::Unconfirmed(vec!["exact owner unavailable".to_string()]);
     };
+    restore_task_runtime(state, task_runtime_states, attempt);
+    let cancelled_agent = claim.owner().agent.clone();
+    let cancelled_phase = claim.owner().phase;
     let resource = claim.replace_resource(AgentRuntimeResource::AwaitingGate { permit: None });
     let resource = match resource {
         AgentRuntimeResource::CleanupFailed {
@@ -15560,6 +16812,15 @@ async fn cancel_exact_attempt(
                 return record_cancellation_failure(attempt, errors, state, paths, tui, config);
             }
             drop(permit);
+            converge_cancelled_attempt_projections(
+                ownership,
+                state,
+                paths,
+                tui,
+                attempt,
+                cancelled_agent.as_ref(),
+                outcome,
+            );
             return CancelAttemptOutcome::Confirmed(outcome);
         }
         resource => resource,
@@ -15603,7 +16864,11 @@ async fn cancel_exact_attempt(
             handle,
             forwarder,
             permit,
-        } => match handle.kill(grace).await {
+        } => match if let Some(deadline) = settlement_deadline {
+            handle.kill_until(grace, deadline).await
+        } else {
+            handle.kill(grace).await
+        } {
             AgentTermination::Confirmed { .. } => {
                 forwarder.abort();
                 let mut errors = Vec::new();
@@ -15821,9 +17086,121 @@ async fn cancel_exact_attempt(
                     tui,
                     config,
                 );
+                converge_cancelled_attempt_projections(
+                    ownership,
+                    state,
+                    paths,
+                    tui,
+                    attempt,
+                    cancelled_agent.as_ref(),
+                    outcome,
+                );
                 return CancelAttemptOutcome::Confirmed(outcome);
             }
             retained_permit = permit;
+        }
+    }
+    if env_flag_enabled("ROKO_FAST_MODE")
+        && cancelled_phase == AttemptPhase::Agent
+        && retained_permit.is_some()
+        && task_index
+            .get(&attempt.plan_id)
+            .is_some_and(|tasks| tasks.contains_key(&attempt.task_id))
+        && matches!(
+            &terminal,
+            AttemptCleanupTerminal::TimedOut(TimeoutEvent {
+                kind: TimeoutKind::TaskAttempt | TimeoutKind::AgentSilence,
+                ..
+            })
+        )
+        && let Some(task) = task_index
+            .get(&attempt.plan_id)
+            .and_then(|tasks| tasks.get(&attempt.task_id))
+        && timeout_salvage_has_correctness_gate(config, attempt, task)
+        && let Some(diff) = timeout_salvage_diff(config, attempt).await
+    {
+        let AttemptCleanupTerminal::TimedOut(timeout) = &terminal else {
+            unreachable!("salvage eligibility requires a timeout")
+        };
+        if let Some(block) =
+            timeout_salvage_safety_block(config, task, &state.agent_output, attempt, &diff)
+        {
+            warn!(attempt = %attempt.key(), reason = %block,
+                "timeout diff failed post-dispatch safety and will terminalize");
+            tui.error(&format!("timeout salvage blocked by safety: {block}"));
+            let _ = append_ledger_entry(
+                &paths.run_ledger_jsonl,
+                "timeout_salvage_blocked",
+                &serde_json::json!({
+                    "run_id": state.run_id(),
+                    "plan_id": attempt.plan_id,
+                    "task_id": attempt.task_id,
+                    "attempt": attempt.attempt,
+                    "reason": block,
+                    "input_fingerprint": diff.input_fingerprint,
+                    "changed_paths": diff.changed_paths,
+                    "timestamp_ms": chrono::Utc::now().timestamp_millis().max(0) as u64,
+                }),
+            );
+        } else {
+            let phase_durations =
+                runtime_task_phase_durations(task_runtime_states, attempt, Instant::now());
+            match persist_timeout_salvage(
+                paths,
+                state,
+                tui,
+                config,
+                attempt,
+                timeout.clone(),
+                phase_durations,
+                diff,
+            ) {
+                Ok(()) => {
+                    // The provider process has been reaped and exact ownership
+                    // now moves to a no-provider AwaitingGate resource.  The
+                    // fingerprint persisted above therefore binds the handoff;
+                    // only runner-owned gate effects may run before merge.
+                claim.replace_resource(AgentRuntimeResource::AwaitingGate {
+                    permit: retained_permit.take(),
+                });
+                ownership
+                    .transition_claim(claim, AttemptPhase::AwaitingGate, EffectRef(0))
+                    .expect("durable timeout salvage must transfer exact gate ownership");
+                transition_task_runtime(
+                    task_runtime_states,
+                    attempt,
+                    TaskTimingPhase::Gate,
+                    Instant::now(),
+                );
+                queue_pending_gate_task(pending_gate_tasks, &attempt.plan_id, &attempt.task_id);
+                apply_agent_completion(executor, &attempt.plan_id, tui);
+                let survivors = ownership.surviving_agent_metadata();
+                state.agent_active = survivors.active;
+                state.agent_pid = survivors.pids.first().copied();
+                state.agent_turn_completed = false;
+                let _ = persist::save_agent_pids(paths, &survivors.pids);
+                if let Some(agent) = cancelled_agent.as_ref() {
+                    tui.agent_completed(
+                        &agent.agent_id,
+                        &attempt.plan_id,
+                        &attempt.task_id,
+                        attempt.attempt,
+                    );
+                }
+                tui.task_phase_changed(
+                    &attempt.plan_id,
+                    &attempt.task_id,
+                    "implementing",
+                    "gating-salvaged-diff",
+                );
+                info!(attempt = %attempt.key(), "timed-out diff transferred to ordinary gate ownership");
+                return CancelAttemptOutcome::SalvagedToGate;
+                }
+                Err(error) => {
+                    warn!(attempt = %attempt.key(), %error,
+                        "timeout diff salvage could not become durable; settling timeout terminal");
+                }
+            }
         }
     }
     let evidence_terminal: &'static str = match &terminal {
@@ -15889,6 +17266,15 @@ async fn cancel_exact_attempt(
         config,
     );
     drop(retained_permit);
+    converge_cancelled_attempt_projections(
+        ownership,
+        state,
+        paths,
+        tui,
+        attempt,
+        cancelled_agent.as_ref(),
+        outcome,
+    );
     export_fast_attempt_evidence(config, attempt, evidence_terminal).await;
     CancelAttemptOutcome::Confirmed(outcome)
 }
@@ -15906,10 +17292,26 @@ async fn stop_all_agents(
     tui: &TuiBridge,
     config: &RunConfig,
     grace: Duration,
+    settlement_deadline: Option<tokio::time::Instant>,
 ) -> CancelAllSummary {
     ownership.retry_unrecovered_claims();
     let mut summaries = Vec::new();
     for attempt in ownership.attempts() {
+        let attempt_grace = if let Some(deadline) = settlement_deadline {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                summaries.push(CancelAttemptSummary {
+                    attempt,
+                    outcome: CancelAttemptOutcome::Unconfirmed(vec![
+                        "global settlement budget exhausted before cleanup".to_string(),
+                    ]),
+                });
+                continue;
+            }
+            grace.min(remaining)
+        } else {
+            grace
+        };
         let outcome = cancel_exact_attempt(
             &attempt,
             None,
@@ -15925,7 +17327,8 @@ async fn stop_all_agents(
             paths,
             tui,
             config,
-            grace,
+            attempt_grace,
+            settlement_deadline,
         )
         .await;
         if let CancelAttemptOutcome::Unconfirmed(errors) = &outcome {
@@ -16549,16 +17952,47 @@ fn append_ledger_entry(
     })()
 }
 
+/// Read only the recent complete JSONL records needed for immediate
+/// persistence-idempotency checks.
+///
+/// Terminal persistence retries happen synchronously before ownership is
+/// released, so the matching record is necessarily at the append tail. A
+/// bounded tail avoids repeatedly reading historical event/ledger files that
+/// may be hundreds of megabytes while still excluding a partial first line.
+fn read_bounded_jsonl_tail(path: &Path) -> std::io::Result<Option<String>> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    const MAX_TAIL_BYTES: u64 = 4 * 1024 * 1024;
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(MAX_TAIL_BYTES);
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(len.saturating_sub(start)).unwrap_or(4 * 1024 * 1024),
+    );
+    file.read_to_end(&mut bytes)?;
+    if start > 0 {
+        if let Some(first_newline) = bytes.iter().position(|byte| *byte == b'\n') {
+            bytes.drain(..=first_newline);
+        } else {
+            bytes.clear();
+        }
+    }
+    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+}
+
 fn terminal_ledger_entry_exists(
     path: &Path,
     kind: &str,
     run_id: &str,
     attempt: &TaskAttemptRef,
 ) -> std::io::Result<bool> {
-    let contents = match std::fs::read_to_string(path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error),
+    let Some(contents) = read_bounded_jsonl_tail(path)? else {
+        return Ok(false);
     };
     Ok(contents.lines().any(|line| {
         let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -16589,10 +18023,8 @@ fn attempt_terminal_event_exists(
     attempt: &TaskAttemptRef,
     outcome: TaskAttemptOutcome,
 ) -> std::io::Result<bool> {
-    let contents = match std::fs::read_to_string(path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error),
+    let Some(contents) = read_bounded_jsonl_tail(path)? else {
+        return Ok(false);
     };
     Ok(contents.lines().any(|line| {
         serde_json::from_str::<RunnerEvent>(line).is_ok_and(|event| {
@@ -16799,11 +18231,13 @@ fn persist_pending_terminal(
             if let RunnerEvent::TimeoutRecorded {
                 duration_ms,
                 phase_durations: recorded_phases,
+                agent_snapshot,
                 ..
             } = &mut event
             {
                 *duration_ms = phase_durations.total_ms();
                 *recorded_phases = *phase_durations;
+                *agent_snapshot = timeout_agent_snapshot(state);
             }
             let exists = std::fs::read_to_string(&paths.events_jsonl)
                 .map(|contents| {
@@ -19795,7 +21229,7 @@ verify = []
 "#,
         )
         .unwrap();
-        let task_index = HashMap::from([(
+        let mut task_index = HashMap::from([(
             "plan".to_string(),
             HashMap::from([("task".to_string(), parsed.tasks[0].clone())]),
         )]);
@@ -19922,7 +21356,7 @@ slug = "fixture-model"
         let mut ctx = RunContext {
             executor: &mut executor,
             task_dag: &mut task_dag,
-            task_index: &task_index,
+            task_index: &mut task_index,
             skip_enrichment: &HashMap::new(),
             config: &config,
             sink: &sink,
@@ -19962,6 +21396,7 @@ slug = "fixture-model"
             telemetry_sink: &telemetry_sink,
             github_ops: &github_ops,
             github_workflow: &github_workflow,
+            dispatch_deadline: None,
         };
         let action = ExecutorAction::SpawnAgent {
             plan_id: "plan".to_string(),
@@ -20052,7 +21487,7 @@ allowed_tools = ["bash"]
         )
         .expect("parse T0 task");
         let task = parsed.tasks[0].clone();
-        let task_index = HashMap::from([(
+        let mut task_index = HashMap::from([(
             "plan".to_string(),
             HashMap::from([("task".to_string(), task.clone())]),
         )]);
@@ -20160,7 +21595,7 @@ slug = "fixture-model"
             let mut ctx = RunContext {
                 executor: &mut executor,
                 task_dag: &mut task_dag,
-                task_index: &task_index,
+                task_index: &mut task_index,
                 skip_enrichment: &HashMap::new(),
                 config: &config,
                 sink: &sink,
@@ -20200,6 +21635,7 @@ slug = "fixture-model"
                 telemetry_sink: &telemetry_sink,
                 github_ops: &github_ops,
                 github_workflow: &github_workflow,
+                dispatch_deadline: None,
             };
             dispatch_action(
                 &ExecutorAction::SpawnAgent {
@@ -23746,6 +25182,7 @@ depends_on = ["root"]
             &tui,
             &config,
             Duration::from_millis(1),
+            None,
         )
         .await;
 
@@ -23826,6 +25263,7 @@ depends_on = ["root"]
                 &tui,
                 &config,
                 Duration::from_millis(1),
+                None,
             )
             .await,
             CancelAttemptOutcome::Confirmed(TaskAttemptOutcome::Cancelled)
@@ -23915,6 +25353,7 @@ depends_on = ["root"]
                 &tui,
                 &config,
                 Duration::from_millis(1),
+                None,
             )
             .await,
             CancelAttemptOutcome::Confirmed(TaskAttemptOutcome::Cancelled)
@@ -24017,6 +25456,7 @@ depends_on = ["root"]
                 &tui,
                 &config,
                 Duration::from_millis(1),
+                None,
             )
             .await,
             CancelAttemptOutcome::Confirmed(TaskAttemptOutcome::TimedOut)
@@ -24198,6 +25638,7 @@ depends_on = ["root"]
             &tui,
             &config,
             Duration::from_millis(1),
+            None,
         )
         .await;
 
@@ -24274,6 +25715,7 @@ depends_on = ["root"]
                 &tui,
                 &config,
                 Duration::from_millis(1),
+                None,
             )
             .await,
             CancelAttemptOutcome::Unconfirmed(_)

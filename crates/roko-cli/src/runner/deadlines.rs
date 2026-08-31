@@ -143,6 +143,18 @@ impl DeadlineTracker {
         self.scheduler_progress_at = self.scheduler_progress_at.max(now);
     }
 
+    /// Absolute monotonic instant at which the non-resetting run budget ends.
+    ///
+    /// Dispatch preparation uses this value directly so a long awaited hook or
+    /// provider startup cannot hide the expiry from the outer event loop.
+    pub fn hard_run_deadline(self, policy: DeadlinePolicy) -> MonotonicTime {
+        MonotonicTime::from_millis(
+            self.hard_run_started_at
+                .as_millis()
+                .saturating_add(duration_millis_u64(policy.hard_run)),
+        )
+    }
+
     // NB: check order encodes priority — HardRun is checked before
     // SchedulerNoProgress so that a hard-run breach always wins when both
     // deadlines expire in the same tick.
@@ -166,6 +178,41 @@ impl DeadlineTracker {
             ));
         }
         None
+    }
+}
+
+/// Exact phase of an admitted dispatch while it has not yet become an agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchStage {
+    Preparation,
+    CliStartup,
+    BridgeStartup,
+}
+
+/// A FAST-only absolute dispatch deadline.
+///
+/// Normal runs use `None` and retain their existing timeout behavior. FAST
+/// runs carry the hard-run instant into each awaited preparation/startup
+/// operation so those operations are interruptible even while the main select
+/// loop is borrowed by `dispatch_action`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DispatchDeadline {
+    pub deadline_at: MonotonicTime,
+}
+
+impl DispatchDeadline {
+    pub const fn new(deadline_at: MonotonicTime) -> Self {
+        Self { deadline_at }
+    }
+
+    pub fn remaining(self, now: MonotonicTime) -> Option<Duration> {
+        (now < self.deadline_at).then(|| {
+            Duration::from_millis(
+                self.deadline_at
+                    .as_millis()
+                    .saturating_sub(now.as_millis()),
+            )
+        })
     }
 }
 

@@ -158,6 +158,9 @@ pub struct RunState {
     /// Files created or modified by each completed task.
     /// Key: `"{plan_id}:{task_id}"`, value: list of file paths.
     pub task_outputs: HashMap<String, Vec<String>>,
+    /// Durable timeout-salvage input identities awaiting ordinary gates,
+    /// keyed by exact attempt.
+    pub timeout_salvage_input_fingerprints: HashMap<String, String>,
 
     // ─── Health ──────────────────────────────────────────────────────
     /// Consecutive snapshot-save failures. After 3, `snapshot_degraded` is set.
@@ -296,6 +299,7 @@ impl RunState {
             failed_tasks: HashMap::new(),
             skipped_tasks: HashMap::new(),
             task_outputs: HashMap::new(),
+            timeout_salvage_input_fingerprints: HashMap::new(),
             snapshot_fail_streak: 0,
             snapshot_degraded: false,
             started_at: Instant::now(),
@@ -464,6 +468,8 @@ impl RunState {
                 ..
             } => {
                 if let Some(attempt) = &timeout.attempt {
+                    self.timeout_salvage_input_fingerprints
+                        .remove(&attempt.key());
                     self.upsert_attempt(
                         attempt,
                         TaskAttemptStatus::TimedOut,
@@ -473,6 +479,24 @@ impl RunState {
                     );
                 } else {
                     self.lifecycle.global_timeout = Some(timeout.clone());
+                }
+            }
+            RunnerEvent::TimeoutSalvagedToGate {
+                timeout,
+                timestamp_ms,
+                input_fingerprint,
+                ..
+            } => {
+                if let Some(attempt) = &timeout.attempt {
+                    self.timeout_salvage_input_fingerprints
+                        .insert(attempt.key(), input_fingerprint.clone());
+                    self.upsert_attempt(
+                        attempt,
+                        TaskAttemptStatus::SalvagedToGate,
+                        *timestamp_ms,
+                        None,
+                        None,
+                    );
                 }
             }
             RunnerEvent::AgentDispatchStarted {
@@ -591,6 +615,8 @@ impl RunState {
                 timestamp_ms,
                 ..
             } => {
+                self.timeout_salvage_input_fingerprints
+                    .remove(&attempt.key());
                 let status = match outcome {
                     TaskAttemptOutcome::Passed => TaskAttemptStatus::Passed,
                     TaskAttemptOutcome::Failed => TaskAttemptStatus::Failed,

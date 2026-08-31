@@ -432,6 +432,7 @@ impl EventCategory {
                     Self::Run
                 }
             }
+            RunnerEvent::TimeoutSalvagedToGate { .. } => Self::Task,
             RunnerEvent::AgentDispatchStarted { .. }
             | RunnerEvent::AgentDispatchCompleted { .. }
             | RunnerEvent::AgentCompleted { .. } => Self::AgentLifecycle,
@@ -617,6 +618,9 @@ pub enum TaskAttemptStatus {
     Retrying,
     Cancelling,
     CancellationFailed,
+    /// Agent timed out after producing a diff; runner-owned safety/gates now
+    /// own the exact attempt and no provider retry is allowed.
+    SalvagedToGate,
     Passed,
     Failed,
     Exhausted,
@@ -649,6 +653,7 @@ impl TaskAttemptStatus {
                 Self::DispatchingAgent
                     | Self::AgentRunning
                     | Self::AgentCompleted
+                    | Self::SalvagedToGate
                     | Self::Gating
                     | Self::Passed
                     | Self::Failed
@@ -658,13 +663,18 @@ impl TaskAttemptStatus {
                 next,
                 Self::AgentRunning
                     | Self::AgentCompleted
+                    | Self::SalvagedToGate
                     | Self::Gating
                     | Self::Failed
                     | Self::Cancelling
             ),
             Self::AgentRunning => matches!(
                 next,
-                Self::AgentCompleted | Self::Gating | Self::Failed | Self::Cancelling
+                Self::AgentCompleted
+                    | Self::SalvagedToGate
+                    | Self::Gating
+                    | Self::Failed
+                    | Self::Cancelling
             ),
             Self::AgentCompleted => matches!(
                 next,
@@ -685,8 +695,12 @@ impl TaskAttemptStatus {
             Self::CancellationFailed => matches!(next, Self::Cancelling),
             Self::Cancelling => matches!(
                 next,
-                Self::Cancelled | Self::TimedOut | Self::CancellationFailed
+                Self::Cancelled
+                    | Self::TimedOut
+                    | Self::SalvagedToGate
+                    | Self::CancellationFailed
             ),
+            Self::SalvagedToGate => matches!(next, Self::Gating | Self::Failed | Self::Cancelling),
             Self::Failed => matches!(next, Self::Retrying | Self::Exhausted | Self::Cancelling),
             Self::Passed
             | Self::Exhausted
@@ -734,6 +748,26 @@ pub struct TimeoutEvent {
     pub limit_ms: u64,
     pub monotonic_elapsed_ms: u64,
     pub observed_at_ms: u64,
+}
+
+/// Latest exact-attempt provider and usage projection captured before timeout
+/// settlement clears live process state.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TimeoutAgentSnapshot {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub provider: String,
+    #[serde(default)]
+    pub tokens_in: u64,
+    #[serde(default)]
+    pub tokens_out: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub cache_write_tokens: u64,
+    #[serde(default)]
+    pub cost_usd: f64,
 }
 
 /// Result of an agent dispatch lifecycle step.
@@ -1054,6 +1088,9 @@ pub struct TaskRunSummary {
 pub struct TaskPhaseDurations {
     /// Time spent setting up the dispatch (model routing, prompt assembly).
     pub dispatch_ms: u64,
+    /// Time spent starting the selected CLI or provider bridge runtime.
+    #[serde(default)]
+    pub startup_ms: u64,
     /// Time spent in the agent (LLM calls + tool execution).
     pub agent_ms: u64,
     /// Time spent running gate checks.
@@ -1066,6 +1103,7 @@ impl TaskPhaseDurations {
     /// Total wall-clock time across all phases.
     pub fn total_ms(&self) -> u64 {
         self.dispatch_ms
+            .saturating_add(self.startup_ms)
             .saturating_add(self.agent_ms)
             .saturating_add(self.gate_ms)
             .saturating_add(self.cleanup_ms)
@@ -1192,6 +1230,16 @@ pub enum RunnerEvent {
         total_agent_calls: usize,
         total_cost_usd: f64,
         duration_ms: u64,
+        /// True when terminalization could not prove every owned effect was
+        /// absent before the settlement budget expired.
+        #[serde(default)]
+        cleanup_degraded: bool,
+        /// Agent identities whose exact runtime ownership remains durable.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        surviving_agent_ids: Vec<String>,
+        /// Process IDs retained for startup orphan cleanup.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        surviving_agent_pids: Vec<u32>,
         plans: Vec<PlanRunSummary>,
     },
     #[serde(rename = "plan.started")]
@@ -1279,6 +1327,23 @@ pub enum RunnerEvent {
         duration_ms: u64,
         #[serde(default)]
         phase_durations: TaskPhaseDurations,
+        #[serde(default)]
+        agent_snapshot: TimeoutAgentSnapshot,
+    },
+    /// A timed-out provider was fully stopped, an owned diff was found, and
+    /// the exact attempt was durably transferred to ordinary gate ownership.
+    #[serde(rename = "timeout.salvaged_to_gate")]
+    TimeoutSalvagedToGate {
+        timestamp: String,
+        timestamp_ms: u64,
+        run_id: String,
+        timeout: TimeoutEvent,
+        phase_durations: TaskPhaseDurations,
+        agent_snapshot: TimeoutAgentSnapshot,
+        /// Combined immutable-base plus tracked/untracked content identity,
+        /// revalidated inside the ordinary gate producer before it starts.
+        input_fingerprint: String,
+        changed_paths: usize,
     },
     #[serde(rename = "agent.dispatch.started")]
     AgentDispatchStarted {
@@ -1528,6 +1593,7 @@ impl RunnerEvent {
                 | Self::PlanCompleted { .. }
                 | Self::TaskAttemptStarted { .. }
                 | Self::TaskAttemptCompleted { .. }
+                | Self::TimeoutSalvagedToGate { .. }
                 | Self::GateDispatchStarted { .. }
                 | Self::GateCompleted { .. }
                 | Self::MergeBackendCompleted { .. }
@@ -1590,6 +1656,9 @@ impl RunnerEvent {
             total_agent_calls: totals.total_agent_calls,
             total_cost_usd: totals.total_cost_usd,
             duration_ms: totals.duration_ms,
+            cleanup_degraded: false,
+            surviving_agent_ids: Vec::new(),
+            surviving_agent_pids: Vec::new(),
             plans,
         }
     }
@@ -1735,6 +1804,28 @@ impl RunnerEvent {
             timeout,
             duration_ms: 0,
             phase_durations: TaskPhaseDurations::default(),
+            agent_snapshot: TimeoutAgentSnapshot::default(),
+        }
+    }
+
+    pub fn timeout_salvaged_to_gate(
+        run_id: &str,
+        timeout: TimeoutEvent,
+        phase_durations: TaskPhaseDurations,
+        agent_snapshot: TimeoutAgentSnapshot,
+        input_fingerprint: String,
+        changed_paths: usize,
+    ) -> Self {
+        let stamp = EventStamp::now();
+        Self::TimeoutSalvagedToGate {
+            timestamp: stamp.timestamp,
+            timestamp_ms: stamp.timestamp_ms,
+            run_id: run_id.to_string(),
+            timeout,
+            phase_durations,
+            agent_snapshot,
+            input_fingerprint,
+            changed_paths,
         }
     }
 
@@ -1963,6 +2054,7 @@ impl RunnerEvent {
             Self::TaskAttemptCancellationRequested { .. } => "task.attempt.cancellation_requested",
             Self::TaskAttemptCancellationFailed { .. } => "task.attempt.cancellation_failed",
             Self::TimeoutRecorded { .. } => "timeout.recorded",
+            Self::TimeoutSalvagedToGate { .. } => "timeout.salvaged_to_gate",
             Self::AgentDispatchStarted { .. } => "agent.dispatch.started",
             Self::AgentDispatchCompleted { .. } => "agent.dispatch.completed",
             Self::AgentCompleted { .. } => "agent.completed",
@@ -1993,6 +2085,7 @@ impl RunnerEvent {
             | Self::TaskAttemptCancellationRequested { timestamp_ms, .. }
             | Self::TaskAttemptCancellationFailed { timestamp_ms, .. }
             | Self::TimeoutRecorded { timestamp_ms, .. }
+            | Self::TimeoutSalvagedToGate { timestamp_ms, .. }
             | Self::AgentDispatchStarted { timestamp_ms, .. }
             | Self::AgentDispatchCompleted { timestamp_ms, .. }
             | Self::AgentCompleted { timestamp_ms, .. }
@@ -2028,6 +2121,10 @@ impl RunnerEvent {
             | Self::PromptAssembled { attempt, .. }
             | Self::MergeBackendCompleted { attempt, .. }
             | Self::RetryDecision { attempt, .. } => Some(&attempt.plan_id),
+            Self::TimeoutSalvagedToGate { timeout, .. } => timeout
+                .attempt
+                .as_ref()
+                .map(|attempt| attempt.plan_id.as_str()),
             Self::TimeoutRecorded { timeout, .. } => timeout
                 .attempt
                 .as_ref()
@@ -2060,6 +2157,10 @@ impl RunnerEvent {
             | Self::PromptAssembled { attempt, .. }
             | Self::MergeBackendCompleted { attempt, .. }
             | Self::RetryDecision { attempt, .. } => Some(&attempt.task_id),
+            Self::TimeoutSalvagedToGate { timeout, .. } => timeout
+                .attempt
+                .as_ref()
+                .map(|attempt| attempt.task_id.as_str()),
             Self::TimeoutRecorded { timeout, .. } => timeout
                 .attempt
                 .as_ref()
@@ -2097,6 +2198,14 @@ impl RunnerEvent {
             Self::TimeoutRecorded { timeout, .. } => {
                 format!("timeout recorded: {:?}", timeout.kind)
             }
+            Self::TimeoutSalvagedToGate {
+                timeout,
+                changed_paths,
+                ..
+            } => format!(
+                "timeout salvaged to gate: {:?}, changed_paths={changed_paths}",
+                timeout.kind
+            ),
             Self::AgentDispatchStarted {
                 agent_id,
                 requested_model,

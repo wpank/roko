@@ -96,6 +96,13 @@ The wrapper separates execution from durable terminal settlement:
 - For shorter deadlines, one quarter of the requested time is reserved, using integer seconds.
 - FAST rejects a total deadline below 10 seconds.
 - `ROKO_FAST_PLAN_DEADLINE_SECS` receives the requested deadline minus that headroom.
+- `ROKO_FAST_SETTLEMENT_HEADROOM_SECS` carries the reserved headroom into the runner; process
+  cleanup consumes only a bounded portion and leaves a deterministic tail for durable flushes.
+- FAST scheduling is wake-driven. Capacity release, gate/agent completion, retry readiness, and
+  deadline settlement wake admission directly instead of polling and repeating preparation.
+- The non-resetting run deadline interposes every awaited dispatch-preparation step and both CLI
+  and in-process bridge startup. Startup has its own 15-second default cap, configurable through
+  `ROKO_FAST_STARTUP_DEADLINE_SECS`.
 - Gate effects retain their configured gate deadline; FAST does not silently weaken a required
   verification or cleanup deadline.
 - The outer evidence wrapper terminates the complete process group at its deadline, waits a
@@ -180,8 +187,17 @@ environment values are redacted from metadata, and the full environment is not r
 and diffs are captured verbatim, however, so they can still contain sensitive data. Treat the whole
 bundle as sensitive and do not publish it without inspection.
 
-Timed-out FAST attempts persist their terminal state before best-effort worktree evidence export,
-so a slow or oversized Git operation cannot prevent durable settlement.
+After confirmed provider cleanup, a timed-out FAST attempt with a non-empty, structurally safe diff
+runs the ordinary post-dispatch safety contract. A passing diff is durably fingerprinted from its
+immutable base plus exact tracked/untracked bytes and modes, then handed to the normal gate
+lifecycle under exact no-provider ownership. Restart restores that handoff and the gate producer
+revalidates the content identity immediately before starting; empty, conflicted, unsafe, changed,
+or unconfirmed diffs terminalize normally. Evidence export remains best effort after durable
+settlement, so a slow or oversized Git operation cannot prevent the terminal fact.
+
+If the settlement budget expires before process absence can be proved, Roko retains exact ownership
+and PID metadata. The terminal event, dashboard snapshot, and ledger report degraded cleanup instead
+of clearing the orphan-cleanup source of truth.
 
 ---
 
@@ -247,6 +263,11 @@ Completed for P0:
 - [x] Planned-vs-actual file misses and impact decisions are emitted as structured logs.
 - [x] Nextest `fast`, `slow`, and `live` profiles are defined; credentialed provider tests remain
   behind the existing `roko-agent/integration` feature.
+- [x] FAST admission is wake-driven and exact ownership suppresses duplicate preparation.
+- [x] Hard deadlines interpose awaited preparation plus CLI/bridge startup.
+- [x] Preparation, startup, agent, gate, and cleanup durations remain separately attributable.
+- [x] Safe timeout diffs enter the ordinary safety/gate lifecycle and resume by durable fingerprint.
+- [x] Terminal dashboard/status/PID projections converge without losing unconfirmed cleanup truth.
 
 Verification completed for the landed P0 change:
 
@@ -263,7 +284,7 @@ Deferred improvements:
 
 - [ ] Benchmark representative FAST plans and track escaped-regression rates.
 - [x] Select changed Cargo targets plus bounded reverse dependencies.
-- [ ] Add typed timeout-diff salvage to the normal gate lifecycle.
+- [x] Add typed timeout-diff salvage to the normal gate lifecycle.
 - [ ] Deduplicate semantically equivalent verification hidden behind arbitrary shell wrappers.
 - [x] Discover safe GET endpoints and collect optional browser/TUI evidence without making probes
   part of the default FAST path.

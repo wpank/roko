@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use super::deadlines::{MonotonicTime, OwnershipTiming, monotonic_now};
+use super::deadlines::{DispatchStage, MonotonicTime, OwnershipTiming, monotonic_now};
 use super::types::TaskAttemptRef;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +48,8 @@ pub struct AttemptOwner {
     pub cancellation: CancellationState,
     pub agent: Option<AgentOwnership>,
     pub timing: OwnershipTiming,
+    /// Typed checkpoint within the pre-agent dispatch phase.
+    pub dispatch_stage: Option<DispatchStage>,
 }
 
 impl AttemptOwner {
@@ -62,6 +64,8 @@ impl AttemptOwner {
             cancellation: CancellationState::None,
             agent: None,
             timing: OwnershipTiming::new(now),
+            dispatch_stage: (phase == AttemptPhase::Dispatching)
+                .then_some(DispatchStage::Preparation),
         }
     }
 
@@ -85,6 +89,9 @@ impl AttemptOwner {
         self.cancellation = CancellationState::None;
         if matches!(phase, AttemptPhase::AwaitingGate | AttemptPhase::Gate) {
             self.agent = None;
+        }
+        if phase != AttemptPhase::Dispatching {
+            self.dispatch_stage = None;
         }
     }
 }
@@ -153,6 +160,12 @@ impl<R> AttemptClaim<R> {
         self.owner.agent = None;
     }
 
+    /// Record an exact pre-agent checkpoint before yielding to an awaited
+    /// startup operation. The caller restores the claim to publish it.
+    pub fn set_dispatch_stage(&mut self, stage: DispatchStage) {
+        self.owner.dispatch_stage = Some(stage);
+    }
+
     /// Start the paid/active attempt budget after scheduler preparation.
     ///
     /// Dispatch admission can intentionally reserve this claim before prompt
@@ -186,6 +199,7 @@ pub struct DeadlineCandidate {
     pub claimed: bool,
     pub eligible: bool,
     pub timing: OwnershipTiming,
+    pub dispatch_stage: Option<DispatchStage>,
 }
 
 #[derive(Debug)]
@@ -270,6 +284,7 @@ impl<R> AttemptOwnership<R> {
                 claimed: slot.claimed,
                 eligible: !slot.claimed && slot.owner.cancellation == CancellationState::None,
                 timing: slot.owner.timing,
+                dispatch_stage: slot.owner.dispatch_stage,
             })
             .collect::<Vec<_>>();
         candidates.sort_by_key(|candidate| candidate.attempt.key());

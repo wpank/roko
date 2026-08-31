@@ -232,6 +232,19 @@ impl Dispatcher {
     ) -> anyhow::Result<crate::runner::agent_stream::AgentHandle> {
         crate::runner::agent_stream::spawn_agent(config, event_tx).await
     }
+
+    /// Launch a streaming CLI agent with runner-owned startup cancellation.
+    pub async fn spawn_streaming_cli_agent_controlled(
+        &self,
+        config: &crate::runner::agent_stream::AgentSpawnConfig,
+        event_tx: mpsc::Sender<AgentRuntimeEvent>,
+        control: &crate::runner::agent_stream::AgentStartupControl,
+    ) -> std::result::Result<
+        crate::runner::agent_stream::AgentHandle,
+        crate::runner::agent_stream::AgentStartupError,
+    > {
+        crate::runner::agent_stream::spawn_agent_controlled(config, event_tx, Some(control)).await
+    }
 }
 
 /// Materialized runner dispatch plan — what `Dispatcher::plan` resolves to.

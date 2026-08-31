@@ -111,6 +111,8 @@ pub enum SubView {
     KnowledgeBrowse,
     /// Per-model cost statistics table.
     CostByModel,
+    /// Three-panel MCP / Learning / Prompt Stats inspect view.
+    ThreePanelInspect,
 
     // ── Region 8: Marketplace (F8) ──
     /// Job list browser.
@@ -177,6 +179,7 @@ impl SubView {
                 SubView::EpisodeReplay,
                 SubView::KnowledgeBrowse,
                 SubView::CostByModel,
+                SubView::ThreePanelInspect,
             ],
             Tab::Marketplace => &[SubView::JobList, SubView::JobDetail, SubView::CreateJob],
             Tab::Atelier => &[SubView::PrdWorkshop, SubView::PlanExplorer],
@@ -216,6 +219,7 @@ impl SubView {
             Self::EpisodeReplay => "Episodes",
             Self::KnowledgeBrowse => "Knowledge",
             Self::CostByModel => "Cost/Model",
+            Self::ThreePanelInspect => "Inspect",
             Self::JobList => "Jobs",
             Self::JobDetail => "Detail",
             Self::CreateJob => "New Job",

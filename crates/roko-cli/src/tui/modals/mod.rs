@@ -124,7 +124,7 @@ pub fn render_modal(
 ) {
     match modal {
         ModalState::Help => {
-            render_help_modal(frame, area, theme);
+            render_help_modal(frame, area, tui_state.help_scroll as u16, theme);
         }
         ModalState::PlanDetail { plan_id } => {
             let plan = tui_state.plans.iter().find(|plan| &plan.id == plan_id);

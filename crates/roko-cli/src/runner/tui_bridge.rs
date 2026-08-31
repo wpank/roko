@@ -21,9 +21,10 @@ impl TuiBridge {
     }
 
     /// A plan has started execution.
-    pub fn plan_started(&self, plan_id: &str) {
+    pub fn plan_started(&self, plan_id: &str, tasks_total: usize) {
         self.sender.publish(DashboardEvent::PlanStarted {
             plan_id: plan_id.to_string(),
+            tasks_total,
         });
     }
 
@@ -118,6 +119,16 @@ impl TuiBridge {
         });
     }
 
+    /// A single line of gate output (streamed).
+    pub fn gate_output_line(&self, plan_id: &str, task_id: &str, gate: &str, line: &str) {
+        self.sender.publish(DashboardEvent::GateOutputLine {
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            gate: gate.to_string(),
+            line: line.to_string(),
+        });
+    }
+
     /// A gate verdict.
     pub fn gate_result(&self, plan_id: &str, task_id: &str, gate: &str, passed: bool) {
         self.sender.publish(DashboardEvent::GateResult {
@@ -125,6 +136,7 @@ impl TuiBridge {
             task_id: task_id.to_string(),
             gate: gate.to_string(),
             passed,
+            output_text: None,
         });
     }
 

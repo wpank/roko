@@ -985,6 +985,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
                 // Optionally spawn the approval TUI.
                 let mut approval_tui_handle = None;
+                let mut tui_cmd_rx: Option<
+                    tokio::sync::mpsc::Receiver<roko_cli::runner::TuiCommand>,
+                > = None;
                 if approval {
                     if !std::io::stdout().is_terminal() {
                         anyhow::bail!("approval mode requires an interactive terminal");
@@ -1005,6 +1008,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
                     let state_hub_for_tui = state_hub.clone();
                     let workdir_for_tui = wd.clone();
+                    // Create in-process TUI→runner command channel.
+                    let (tui_cmd_tx, tui_cmd_rx_slot) = tokio::sync::mpsc::channel(32);
+                    tui_cmd_rx = Some(tui_cmd_rx_slot);
                     let handle = std::thread::Builder::new()
                         .name("roko-plan-approval-tui".to_string())
                         .spawn(move || {
@@ -1013,7 +1019,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                                 None,
                                 &state_hub_for_tui,
                             )
-                            .without_mouse_capture();
+                            .without_mouse_capture()
+                            .with_tui_command_tx(tui_cmd_tx);
                             app.run()
                         })
                         .context("spawn approval TUI thread")?;
@@ -1059,8 +1066,14 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     plans_dir = %resolved_plans_dir.display(),
                     "plan run: setup complete, entering event loop"
                 );
-                let v2_result =
-                    roko_cli::runner::event_loop::run(plans, &run_config, &state_hub, cancel).await;
+                let v2_result = roko_cli::runner::event_loop::run_with_tui_commands(
+                    plans,
+                    &run_config,
+                    &state_hub,
+                    cancel,
+                    tui_cmd_rx,
+                )
+                .await;
                 if let Err(error) = &v2_result {
                     state_hub
                         .sender()

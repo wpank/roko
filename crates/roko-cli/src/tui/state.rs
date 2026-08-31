@@ -519,6 +519,24 @@ pub struct PlanEntry {
     pub expanded: bool,
     /// Nested task entries (for plan detail view).
     pub tasks: Vec<TaskEntry>,
+
+    // -- git/change context (P5.3 + P5.4) --
+    /// Branch name associated with this plan execution.
+    pub branch: Option<String>,
+    /// Worktree path used by this plan execution.
+    pub worktree_path: Option<String>,
+    /// Last commit hash produced by this plan execution.
+    pub last_commit: Option<String>,
+    /// Number of files modified by this plan execution.
+    pub files_modified: Option<usize>,
+    /// Total lines inserted by this plan execution.
+    pub insertions: Option<usize>,
+    /// Total lines deleted by this plan execution.
+    pub deletions: Option<usize>,
+
+    // -- per-plan elapsed timer (P5.5) --
+    /// When this plan started executing (for live elapsed display).
+    pub started_at: Option<Instant>,
 }
 
 /// A task within a plan entry.
@@ -1146,12 +1164,20 @@ pub struct SysMetrics {
     pub net_down_bytes_sec: u64,
     /// Network bytes sent (cumulative total from OS).
     pub net_out_bytes_total: u64,
+    /// Network upload bytes/sec (computed rate).
+    pub net_up_bytes_sec: u64,
     /// Disk bytes read (cumulative total from OS).
     pub disk_read_bytes_sec: u64,
     /// Disk bytes written (cumulative total from OS).
     pub disk_write_bytes_total: u64,
+    /// Disk free space in bytes.
+    pub disk_free_bytes: u64,
+    /// Total disk space in bytes.
+    pub disk_total_bytes: u64,
     /// Previous network in total (for rate calculation).
     pub prev_net_in: u64,
+    /// Previous network out total (for rate calculation).
+    pub prev_net_out: u64,
     /// Previous disk read total (for rate calculation).
     pub prev_disk_read: u64,
 }
@@ -1309,12 +1335,16 @@ pub struct TuiState {
     pub agent_scroll: Option<usize>,
     /// Diff panel scroll offset.
     pub diff_scroll: usize,
+    /// Procs sub-tab scroll offset (independent from diff_scroll).
+    pub procs_scroll: usize,
     /// Task list scroll offset.
     pub task_scroll: usize,
     /// Command output panel scroll offset.
     pub command_output_scroll: usize,
     /// Plan detail overlay scroll offset.
     pub plan_detail_scroll: usize,
+    /// Help modal scroll offset.
+    pub help_scroll: usize,
     /// Plan list scroll offset (for long plan lists).
     pub plan_scroll_offset: usize,
     /// Log viewer scroll offset.
@@ -1483,6 +1513,12 @@ pub struct TuiState {
     pub agents_online: usize,
     /// Recent gate pass rate displayed in the network-status header.
     pub gate_pass_rate: Option<f64>,
+    /// Number of active MCP connections.
+    pub mcp_connection_count: usize,
+    /// Current TUI frames-per-second.
+    pub tui_fps: f32,
+    /// Whether the warning bar has been dismissed by the user (`n` key).
+    pub warnings_dismissed: bool,
 
     // -- knowledge browse --
     /// Knowledge entries for the Inspect tab's KnowledgeBrowse sub-view.
@@ -1519,6 +1555,20 @@ pub struct TuiState {
     pub job_progress: HashMap<String, roko_core::JobProgressEntry>,
     /// Results of TUI-initiated commands (e.g. job creation feedback).
     pub command_results: Vec<CommandResult>,
+
+    // -- config items cache (P3.2) --
+    /// Cached flat config item list to avoid re-parsing `roko.toml` per frame.
+    pub config_items_cache: Vec<super::config_meta::ConfigItem>,
+    /// When the config items cache was last rebuilt.
+    pub config_items_refreshed_at: Option<Instant>,
+    /// Snapshot of `config_pending.len()` when cache was built, used to detect edits.
+    config_items_pending_len: usize,
+
+    // -- inspect data cache (P3.3) --
+    /// Cached data for the F7:Inspect three-panel layout, refreshed on a 5-second cadence.
+    pub inspect_data: InspectData,
+    /// Timestamp of the last inspect data refresh.
+    pub inspect_last_refresh: Option<Instant>,
 
     cpu_pct_smoothed: SmoothedValue,
     token_rate_smoothed: SmoothedValue,
@@ -1578,9 +1628,11 @@ impl Default for TuiState {
 
             agent_scroll: None,
             diff_scroll: 0,
+            procs_scroll: 0,
             task_scroll: 0,
             command_output_scroll: 0,
             plan_detail_scroll: 0,
+            help_scroll: 0,
             plan_scroll_offset: 0,
             log_scroll: 0,
             agent_topology_visible: false,
@@ -1632,6 +1684,13 @@ impl Default for TuiState {
             config_edit_buffer: String::new(),
             config_edit_key: None,
 
+            config_items_cache: Vec::new(),
+            config_items_refreshed_at: None,
+            config_items_pending_len: 0,
+
+            inspect_data: InspectData::default(),
+            inspect_last_refresh: None,
+
             agent_pane_group: 0,
 
             event_log: Vec::new(),
@@ -1664,6 +1723,9 @@ impl Default for TuiState {
 
             agents_online: 0,
             gate_pass_rate: None,
+            mcp_connection_count: 0,
+            tui_fps: 0.0,
+            warnings_dismissed: false,
 
             knowledge_entries: Vec::new(),
 
@@ -1826,20 +1888,12 @@ fn derive_topology_from_agents(
 pub struct TuiModel {
     /// Inner TuiState — kept during migration so existing tabs work unchanged.
     pub state: TuiState,
-
-    /// Cached inspect data for the F7:Inspect three-panel layout.
-    pub inspect_data: InspectData,
-
-    /// Timestamp of the last inspect data refresh.
-    pub inspect_last_refresh: Option<Instant>,
 }
 
 impl Default for TuiModel {
     fn default() -> Self {
         Self {
             state: TuiState::default(),
-            inspect_data: InspectData::default(),
-            inspect_last_refresh: None,
         }
     }
 }
@@ -1864,15 +1918,14 @@ impl TuiModel {
     /// Whether the inspect data cache should be refreshed (5-second cadence).
     #[must_use]
     pub fn inspect_needs_refresh(&self) -> bool {
-        const INSPECT_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-        self.inspect_last_refresh
-            .map_or(true, |t| t.elapsed() >= INSPECT_REFRESH_INTERVAL)
+        self.state.inspect_needs_refresh()
     }
 
     /// Refresh the inspect data from disk files.
     pub fn refresh_inspect_data(&mut self, workdir: &Path) {
-        self.inspect_data = InspectData::load_from_workdir(workdir, &self.state);
-        self.inspect_last_refresh = Some(Instant::now());
+        let prev = std::mem::replace(&mut self.state.workdir, workdir.to_path_buf());
+        self.state.refresh_inspect_data();
+        self.state.workdir = prev;
     }
 }
 
@@ -2109,6 +2162,61 @@ impl TuiState {
         state
     }
 
+    // -- config items cache (P3.2) ------------------------------------------
+
+    /// How often to re-parse `roko.toml` for the config view.
+    const CONFIG_CACHE_TTL: Duration = Duration::from_secs(5);
+
+    /// Return the cached config item list, rebuilding only when stale (>5 s),
+    /// when `config_pending` has changed size, or on first access.
+    pub fn config_items(&mut self) -> &[super::config_meta::ConfigItem] {
+        let stale = self
+            .config_items_refreshed_at
+            .map_or(true, |t| t.elapsed() >= Self::CONFIG_CACHE_TTL);
+        let pending_changed = self.config_pending.len() != self.config_items_pending_len;
+
+        if stale || pending_changed {
+            self.rebuild_config_items_cache();
+        }
+        &self.config_items_cache
+    }
+
+    /// Whether the config items cache should be refreshed (5-second cadence).
+    #[must_use]
+    pub fn config_needs_refresh(&self) -> bool {
+        self.config_items_refreshed_at
+            .map_or(true, |t| t.elapsed() >= Self::CONFIG_CACHE_TTL)
+            || self.config_pending.len() != self.config_items_pending_len
+    }
+
+    /// Force-rebuild the config items cache (call after save or explicit invalidation).
+    pub fn invalidate_config_cache(&mut self) {
+        self.rebuild_config_items_cache();
+    }
+
+    fn rebuild_config_items_cache(&mut self) {
+        self.config_items_cache =
+            super::config_meta::build_flat_items(&self.workdir, &self.config_pending);
+        self.config_items_refreshed_at = Some(Instant::now());
+        self.config_items_pending_len = self.config_pending.len();
+    }
+
+    // -- inspect data cache (P3.3) -------------------------------------------
+
+    /// Whether the inspect data cache should be refreshed (5-second cadence).
+    #[must_use]
+    pub fn inspect_needs_refresh(&self) -> bool {
+        const INSPECT_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+        self.inspect_last_refresh
+            .map_or(true, |t| t.elapsed() >= INSPECT_REFRESH_INTERVAL)
+    }
+
+    /// Refresh the inspect data cache from disk files and current state.
+    pub fn refresh_inspect_data(&mut self) {
+        self.inspect_data = InspectData::load_from_workdir(&self.workdir, self);
+        self.inspect_last_refresh = Some(Instant::now());
+    }
+
     // -- aggregate queries (used by header_bar, status_bar, etc.) -----------
 
     /// Return (done, total) task counts summed across all plans.
@@ -2187,6 +2295,37 @@ impl TuiState {
     #[must_use]
     pub fn active_agent_count(&self) -> usize {
         self.agents.iter().filter(|a| a.active).count()
+    }
+
+    /// Collect active warnings for the persistent warning bar.
+    ///
+    /// Returns an empty vec when the user has dismissed warnings (`n` key).
+    #[must_use]
+    pub fn active_warnings(&self) -> Vec<String> {
+        if self.warnings_dismissed {
+            return Vec::new();
+        }
+        let mut warnings = Vec::new();
+        // Disk low: warn when less than 1 GiB free and we have data.
+        const LOW_DISK_THRESHOLD: u64 = 1 << 30; // 1 GiB
+        if self.sys.disk_free_bytes > 0 && self.sys.disk_free_bytes < LOW_DISK_THRESHOLD {
+            let free = crate::tui::widgets::header_bar::fmt_bytes_short(self.sys.disk_free_bytes);
+            warnings.push(format!("DSK LOW: {free} free"));
+        }
+        // Provider unhealthy: any agent marked as failed.
+        let unhealthy_count = self
+            .agents
+            .iter()
+            .filter(|a| matches!(a.status, AgentStatus::Failed))
+            .count();
+        if unhealthy_count > 0 {
+            warnings.push(format!("{unhealthy_count} provider(s) unhealthy"));
+        }
+        // Stale snapshot: if no run is active but there are plans with active flag.
+        if self.run_started.is_none() && self.plans.iter().any(|p| p.active) {
+            warnings.push("Stale snapshot: plans active but no run".to_string());
+        }
+        warnings
     }
 
     /// Badge count for a tab. Returns `0` when the tab has nothing noteworthy,
@@ -2386,6 +2525,17 @@ impl TuiState {
                                 .collect()
                         })
                         .unwrap_or_default(),
+                    branch: None,
+                    worktree_path: None,
+                    last_commit: None,
+                    files_modified: None,
+                    insertions: None,
+                    deletions: None,
+                    started_at: if snapshot.map(|plan| plan.active).unwrap_or(!completed) {
+                        Some(Instant::now())
+                    } else {
+                        None
+                    },
                 }
             })
             .collect();
@@ -2754,6 +2904,17 @@ impl TuiState {
                     wave: prev_plan_wave.get(plan_id).copied().flatten(),
                     expanded: prev_plan_expanded.get(plan_id).copied().unwrap_or(false),
                     tasks,
+                    branch: None,
+                    worktree_path: None,
+                    last_commit: None,
+                    files_modified: None,
+                    insertions: None,
+                    deletions: None,
+                    started_at: if plan.active {
+                        Some(Instant::now())
+                    } else {
+                        None
+                    },
                 }
             })
             .collect();
@@ -2795,6 +2956,13 @@ impl TuiState {
                 wave: prev_plan_wave.get(&plan_id).copied().flatten(),
                 expanded: prev_plan_expanded.get(&plan_id).copied().unwrap_or(false),
                 tasks,
+                branch: None,
+                worktree_path: None,
+                last_commit: None,
+                files_modified: None,
+                insertions: None,
+                deletions: None,
+                started_at: if active { Some(Instant::now()) } else { None },
             });
         }
 
@@ -3283,6 +3451,7 @@ impl TuiState {
     pub fn reset_scrolls(&mut self) {
         self.agent_scroll = None;
         self.diff_scroll = 0;
+        self.procs_scroll = 0;
         self.task_scroll = 0;
         self.command_output_scroll = 0;
         self.plan_detail_scroll = 0;
@@ -5326,6 +5495,8 @@ tier = "focused"
             inbox_resolved_ids: HashSet::new(),
             inbox_pending_count: 0,
             affect: None,
+            gate_output_lines: Default::default(),
+            token_event_ring: Default::default(),
             stats: Default::default(),
         };
 

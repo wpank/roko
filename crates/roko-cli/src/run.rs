@@ -208,6 +208,7 @@ impl WorkflowEventConsumer for StateHubBridge {
             } => {
                 self.sender.publish(DashboardEvent::PlanStarted {
                     plan_id: run_id.clone(),
+                    tasks_total: 0,
                 });
                 self.sender.publish(DashboardEvent::TaskStarted {
                     plan_id: run_id.clone(),

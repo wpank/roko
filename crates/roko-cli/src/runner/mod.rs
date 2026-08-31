@@ -64,7 +64,7 @@ pub mod types;
 mod wasm_extension;
 
 // Re-export the primary entry points.
-pub use event_loop::{PlanReport, RunReport, run};
+pub use event_loop::{PlanReport, RunReport, run, run_with_tui_commands};
 pub use plan_loader::{Plan, load_plan, load_plan_lenient, load_plans, scaffold_missing_crates};
 pub use sse_stream::SseStreamClient;
-pub use types::RunConfig;
+pub use types::{RunConfig, TuiCommand};

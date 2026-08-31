@@ -1022,7 +1022,7 @@ fn render_sub_processes(
         .collect();
     let visible_rows = inner.height.saturating_sub(2) as usize;
     let max_scroll = rows.len().saturating_sub(visible_rows.max(1));
-    let scroll = tui_state.diff_scroll.min(max_scroll);
+    let scroll = tui_state.procs_scroll.min(max_scroll);
     let rows = rows
         .into_iter()
         .skip(scroll)

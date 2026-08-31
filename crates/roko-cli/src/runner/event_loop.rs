@@ -117,7 +117,7 @@ use super::types::{
     PromptAssemblyDiagnostics, ResumeMarker, ResumeOutcome, RetryDecision, RunConfig, RunOutcome,
     RunTotals, RunnerEvent, RunnerFailureKind, TaskAttemptOutcome, TaskAttemptRef,
     TaskAttemptStatus, TaskLifecycleStatus, TaskPhaseDurations, TaskRunCategory, TaskRunSummary,
-    TimeoutEvent, TimeoutKind, effective_plan_timeout_secs,
+    TimeoutEvent, TimeoutKind, TuiCommand, effective_plan_timeout_secs,
 };
 
 /// Bridges passive observable telemetry into the runner's shared StateHub.
@@ -2158,6 +2158,18 @@ pub async fn run(
     state_hub: &StateHub,
     cancel: CancellationToken,
 ) -> Result<RunReport> {
+    run_with_tui_commands(plans, config, state_hub, cancel, None).await
+}
+
+/// Run all plans to completion (or cancellation), optionally accepting
+/// in-process commands from the interactive TUI via `tui_cmd_rx`.
+pub async fn run_with_tui_commands(
+    plans: Vec<Plan>,
+    config: &RunConfig,
+    state_hub: &StateHub,
+    cancel: CancellationToken,
+    tui_cmd_rx: Option<mpsc::Receiver<TuiCommand>>,
+) -> Result<RunReport> {
     // ── Ensure effective RokoConfig is available ─────────────────────────
     //
     // The CLI bootstrap path (`commands/plan.rs`) already loads config via
@@ -2977,6 +2989,8 @@ pub async fn run(
     let mut control_poll_interval = interval(Duration::from_millis(250));
     // Tracks whether the runner is currently paused via a control command.
     let mut control_paused = false;
+    // In-process TUI command receiver (when running with an attached TUI).
+    let mut tui_cmd_rx = tui_cmd_rx;
     // Batch controller (#179): tracks completed plans since last batch pause.
     let _completed_since_batch_pause: usize = 0;
     // Conductor supervision fires every 5 s. Cheap: just locks + drains the
@@ -5920,7 +5934,67 @@ pub async fn run(
                 }
             }
 
-            // ─── Branch 5b: Cancellation ────────────────────────────
+            // ─── Branch 5b: In-process TUI commands ────────────────
+            Some(tui_cmd) = async {
+                match tui_cmd_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match tui_cmd {
+                    TuiCommand::Pause => {
+                        if !control_paused {
+                            control_paused = true;
+                            info!("tui command: pause");
+                            let stamp = super::types::EventStamp::now();
+                            config.structured_log.log(&super::types::RunnerEvent::RunPaused {
+                                timestamp: stamp.timestamp,
+                                timestamp_ms: stamp.timestamp_ms,
+                                run_id: run_id.clone(),
+                                reason: "TUI command".to_string(),
+                            });
+                        }
+                    }
+                    TuiCommand::Resume => {
+                        if control_paused {
+                            control_paused = false;
+                            info!("tui command: resume");
+                            let stamp = super::types::EventStamp::now();
+                            config.structured_log.log(&super::types::RunnerEvent::RunResumed {
+                                timestamp: stamp.timestamp,
+                                timestamp_ms: stamp.timestamp_ms,
+                                run_id: run_id.clone(),
+                            });
+                        }
+                    }
+                    TuiCommand::Cancel { plan_id } => {
+                        warn!(plan_id = %plan_id, "tui command: cancel plan");
+                        cancel.cancel();
+                    }
+                    TuiCommand::SoftRetry { plan_id } => {
+                        info!(plan_id = %plan_id, "tui command: soft retry (next tick)");
+                    }
+                    TuiCommand::Repair { plan_id, preserve_completed } => {
+                        info!(
+                            plan_id = %plan_id,
+                            preserve_completed,
+                            "tui command: repair (next tick)"
+                        );
+                    }
+                    TuiCommand::ReverifyGates { plan_id } => {
+                        info!(plan_id = %plan_id, "tui command: reverify gates (next tick)");
+                    }
+                    TuiCommand::Skip { plan_id, task_id } => {
+                        info!(
+                            plan_id = %plan_id,
+                            task_id = %task_id,
+                            "tui command: skip task"
+                        );
+                    }
+                }
+            }
+
+            // ─── Branch 5c: Cancellation ────────────────────────────
             _ = cancel.cancelled() => {
                 warn!("cancellation requested — shutting down");
                 loop {
@@ -9721,7 +9795,8 @@ async fn dispatch_action(
     match action {
         ExecutorAction::DispatchPlan { plan_id } => {
             info!(plan_id = %plan_id, "dispatching plan");
-            ctx.tui.plan_started(plan_id);
+            let tasks_total = ctx.task_index.get(plan_id.as_str()).map_or(0, |m| m.len());
+            ctx.tui.plan_started(plan_id, tasks_total);
 
             if let Err(e) = ctx.executor.apply_event(plan_id, &ExecutorEvent::Start) {
                 error!(plan_id = %plan_id, err = %e, "failed to start plan");

@@ -68,8 +68,8 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         spans.push(Span::styled(
             " PAUSED ",
             Style::default()
-                .fg(Theme::WARNING)
-                .bg(Theme::BG_SECONDARY)
+                .fg(Theme::VOID)
+                .bg(Theme::WARNING)
                 .add_modifier(Modifier::BOLD),
         ));
     }

@@ -1263,7 +1263,7 @@ pub fn format_dashboard_event(
     use roko_core::dashboard_snapshot::DashboardEvent;
 
     let (pfx, icon, msg) = match event {
-        DashboardEvent::PlanStarted { plan_id } => {
+        DashboardEvent::PlanStarted { plan_id, .. } => {
             (format!("[{plan_id}]"), ">", format!("Plan started"))
         }
         DashboardEvent::PlanCompleted { plan_id, success } => {
@@ -1342,6 +1342,7 @@ pub fn format_dashboard_event(
             task_id,
             gate,
             passed,
+            ..
         } => {
             let (icon, word) = if *passed {
                 ("+", "passed")
@@ -1452,6 +1453,7 @@ pub fn format_dashboard_event(
         | DashboardEvent::ChainContractEvent { .. }
         | DashboardEvent::AgentHeartbeat { .. }
         | DashboardEvent::GateRungStarted { .. }
+        | DashboardEvent::GateOutputLine { .. }
         | DashboardEvent::AffectUpdated { .. }
         | DashboardEvent::AgentTopologyUpdated { .. } => return None,
     };
@@ -1901,6 +1903,7 @@ mod tests {
         use roko_core::dashboard_snapshot::DashboardEvent;
         let event = DashboardEvent::PlanStarted {
             plan_id: "my-plan".to_string(),
+            tasks_total: 0,
         };
         let line = format_dashboard_event(&event, false).unwrap();
         assert!(line.contains("[my-plan]"));
@@ -1915,6 +1918,7 @@ mod tests {
             task_id: "t".to_string(),
             gate: "compile".to_string(),
             passed: true,
+            output_text: None,
         };
         let line = format_dashboard_event(&event, false).unwrap();
         assert!(line.contains("[p/t]"));
@@ -1929,6 +1933,7 @@ mod tests {
             task_id: "t".to_string(),
             gate: "test".to_string(),
             passed: false,
+            output_text: None,
         };
         let line = format_dashboard_event(&event, false).unwrap();
         assert!(line.contains("Gate failed: test"));

@@ -1365,7 +1365,7 @@ fn dashboard_event_matches_workflow(event: &DashboardEvent, workflow_id: Option<
         return true;
     };
     match event {
-        DashboardEvent::PlanStarted { plan_id }
+        DashboardEvent::PlanStarted { plan_id, .. }
         | DashboardEvent::PlanCompleted { plan_id, .. }
         | DashboardEvent::TaskStarted { plan_id, .. }
         | DashboardEvent::TaskCompleted { plan_id, .. }

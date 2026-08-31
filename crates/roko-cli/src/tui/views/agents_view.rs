@@ -24,7 +24,7 @@ use crate::tui::util::truncate_middle;
 // Role tab labels (fixed order, matching Mori)
 // ---------------------------------------------------------------------------
 
-const ROLE_TABS: &[(&str, &str)] = &[
+pub(crate) const ROLE_TABS: &[(&str, &str)] = &[
     ("implementer", "1:impl"),
     ("strategist", "2:strat"),
     ("architect", "3:arch"),
@@ -627,12 +627,18 @@ fn render_output_body(
         FocusZone::AgentOutput | FocusZone::RightPanel
     );
 
+    // P7.4: Append attempt info to the title when available.
+    let attempt_suffix = selected_row
+        .filter(|row| row.attempt > 0)
+        .map(|row| format!(" (attempt {})", row.attempt))
+        .unwrap_or_default();
+
     let title_label = if selected_id.is_empty() {
         "Agent Output".to_string()
     } else {
         format!(
-            "Output \u{00b7} {} \u{00b7} {}",
-            selected_id, selected_status
+            "Output \u{00b7} {} \u{00b7} {}{}",
+            selected_id, selected_status, attempt_suffix
         )
     };
 

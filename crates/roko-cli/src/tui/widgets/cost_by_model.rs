@@ -109,6 +109,53 @@ pub fn render_cost_by_model_table(
         entry.total_cost_usd += event.cost_usd;
     }
 
+    // When efficiency events are empty (live/connected mode), fall back to
+    // the per-agent data in TuiState which is populated from the snapshot
+    // push path.
+    if models.is_empty() {
+        for agent in &tui_state.agents {
+            let total_tokens = agent.input_tokens + agent.output_tokens;
+            if total_tokens == 0 {
+                continue;
+            }
+            let model_key = if agent.model.is_empty() {
+                "(unknown)".to_string()
+            } else {
+                agent.model.clone()
+            };
+            let entry = models.entry(model_key).or_default();
+            entry.tasks += 1;
+            // No per-agent cost breakdown available; distribute the global
+            // cost proportionally by token share later. For now count tokens
+            // as a duration proxy (1 token ≈ 1ms for display purposes).
+            entry.total_duration_ms += total_tokens;
+        }
+        // Distribute global cost proportionally across models by token count.
+        let total_cost = tui_state.cost_dollars;
+        let total_tokens: u64 = tui_state
+            .agents
+            .iter()
+            .map(|a| a.input_tokens + a.output_tokens)
+            .sum();
+        if total_cost > 0.0 && total_tokens > 0 {
+            for agent in &tui_state.agents {
+                let agent_tokens = agent.input_tokens + agent.output_tokens;
+                if agent_tokens == 0 {
+                    continue;
+                }
+                let model_key = if agent.model.is_empty() {
+                    "(unknown)".to_string()
+                } else {
+                    agent.model.clone()
+                };
+                if let Some(entry) = models.get_mut(&model_key) {
+                    entry.total_cost_usd +=
+                        total_cost * (agent_tokens as f64 / total_tokens as f64);
+                }
+            }
+        }
+    }
+
     if models.is_empty() {
         let empty = Paragraph::new(Span::styled("  no efficiency data", theme.muted()));
         frame.render_widget(empty, inner);

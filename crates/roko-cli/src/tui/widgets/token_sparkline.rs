@@ -3,6 +3,8 @@
 //! Shows an efficiency summary, a token-usage sparkline, and a compact model
 //! tier distribution using the live dashboard snapshot.
 
+use std::collections::BTreeMap;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
@@ -13,7 +15,7 @@ use super::braille;
 use super::rosedust::brighten;
 use crate::tui::Theme;
 use crate::tui::dashboard::DashboardData;
-use crate::tui::pages::efficiency::build_efficiency_snapshot;
+use crate::tui::pages::efficiency::{EfficiencySnapshot, build_efficiency_snapshot};
 use crate::tui::state::TuiState;
 
 fn fmt_tokens(n: u64) -> String {
@@ -84,7 +86,18 @@ pub fn render_token_sparkline(
         return;
     }
 
-    let snapshot = build_efficiency_snapshot(data);
+    // Prefer the file-backed efficiency snapshot; when efficiency events are
+    // empty (live/connected mode where DashboardData isn't loaded from disk),
+    // fall back to the cumulative token/cost fields on TuiState which are
+    // populated from the DashboardSnapshot push path.
+    let snapshot = {
+        let file_snap = build_efficiency_snapshot(data);
+        if file_snap.event_count > 0 || file_snap.total_tokens > 0 {
+            file_snap
+        } else {
+            build_snapshot_from_tui_state(state)
+        }
+    };
     let window = sparkline_window(inner_width, snapshot.token_series.len());
     let display: Vec<u64> = snapshot
         .token_series
@@ -213,4 +226,89 @@ pub fn render_token_sparkline(
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
+}
+
+/// Build an [`EfficiencySnapshot`] from live [`TuiState`] fields when the
+/// file-backed efficiency events are unavailable (connected/live mode).
+fn build_snapshot_from_tui_state(state: &TuiState) -> EfficiencySnapshot {
+    let total_input_tokens = state.cumulative_input_tokens;
+    let total_output_tokens = state.cumulative_output_tokens;
+    let total_tokens = total_input_tokens + total_output_tokens;
+    let total_cost_usd = state.cost_dollars;
+    let task_count = state.agents.len().max(1);
+    let average_tokens_per_task = if task_count == 0 {
+        0.0
+    } else {
+        total_tokens as f64 / task_count as f64
+    };
+    let average_cost_per_task = if task_count == 0 {
+        0.0
+    } else {
+        total_cost_usd / task_count as f64
+    };
+
+    // Derive success rate from gate_pass_rate if available.
+    let success_rate = state.gate_pass_rate.unwrap_or(0.0);
+
+    // Build tier counts from agent models.
+    let mut tier_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+    for tier in ["T0", "T1", "T2"] {
+        tier_counts.insert(tier, 0);
+    }
+    for agent in &state.agents {
+        let tier = model_tier(&agent.model);
+        *tier_counts.entry(tier).or_default() += 1;
+    }
+
+    // Build token series from per-agent token history; each sample is the
+    // sum of all agents' cumulative totals at that point.
+    let token_series = if state.token_history.is_empty() {
+        // No history — emit a single sample so the sparkline has something.
+        if total_tokens > 0 {
+            vec![total_tokens]
+        } else {
+            Vec::new()
+        }
+    } else {
+        let max_len = state
+            .token_history
+            .values()
+            .map(|v| v.len())
+            .max()
+            .unwrap_or(0);
+        (0..max_len)
+            .map(|i| {
+                state
+                    .token_history
+                    .values()
+                    .map(|v| v.get(i).copied().unwrap_or(0))
+                    .sum()
+            })
+            .collect()
+    };
+
+    EfficiencySnapshot {
+        event_count: state.agents.len(),
+        task_count,
+        total_tokens,
+        total_input_tokens,
+        total_output_tokens,
+        total_cost_usd,
+        average_tokens_per_task,
+        average_cost_per_task,
+        success_rate,
+        tier_counts,
+        token_series,
+    }
+}
+
+fn model_tier(model: &str) -> &'static str {
+    let lower = model.to_ascii_lowercase();
+    if lower.contains("haiku") {
+        "T0"
+    } else if lower.contains("opus") {
+        "T2"
+    } else {
+        "T1"
+    }
 }

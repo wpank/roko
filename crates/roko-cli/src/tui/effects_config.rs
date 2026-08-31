@@ -6,9 +6,9 @@ use std::path::Path;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EffectsPreset {
     /// Disable the new visual effects stack.
-    #[default]
     Off,
     /// Enable floating particles only.
+    #[default]
     Minimal,
     /// Enable NervViz and floating particles.
     Full,
@@ -83,7 +83,7 @@ pub struct EffectsConfig {
 
 impl Default for EffectsConfig {
     fn default() -> Self {
-        Self::from_preset(EffectsPreset::Off)
+        Self::from_preset(EffectsPreset::Minimal)
     }
 }
 
@@ -91,7 +91,7 @@ impl EffectsConfig {
     /// All effects disabled.
     #[must_use]
     pub fn none() -> Self {
-        Self::default()
+        Self::from_preset(EffectsPreset::Off)
     }
 
     /// Build a config from a preset.
@@ -136,7 +136,7 @@ impl EffectsConfig {
     pub fn load_from_root(root: &Path) -> Self {
         // Respect reduced-motion: disable all effects.
         if std::env::var_os("ROKO_REDUCED_MOTION").is_some() {
-            return Self::default();
+            return Self::none();
         }
 
         let mut config = Self::default();
@@ -255,12 +255,7 @@ mod tests {
     #[test]
     fn preset_cycles_and_derives_flags() {
         let mut config = EffectsConfig::default();
-        assert_eq!(config.preset, EffectsPreset::Off);
-        assert!(!config.screen_postfx);
-        assert!(!config.nerv_viz);
-        assert!(!config.particles);
-
-        assert_eq!(config.cycle_preset(), EffectsPreset::Minimal);
+        assert_eq!(config.preset, EffectsPreset::Minimal);
         assert!(!config.screen_postfx);
         assert!(!config.nerv_viz);
         assert!(config.particles);
@@ -269,6 +264,11 @@ mod tests {
         assert!(!config.screen_postfx);
         assert!(config.nerv_viz);
         assert!(config.particles);
+
+        assert_eq!(config.cycle_preset(), EffectsPreset::Off);
+        assert!(!config.screen_postfx);
+        assert!(!config.nerv_viz);
+        assert!(!config.particles);
     }
 
     #[test]

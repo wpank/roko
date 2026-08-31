@@ -51,6 +51,35 @@ pub enum FocusZone {
     CommandOutput,
     /// Right detail panel.
     RightPanel,
+    // -- per-tab zones for remaining tabs --
+    /// Git tab: branch/commit list (left).
+    GitBranches,
+    /// Git tab: diff/detail pane (right).
+    GitDetail,
+    /// Logs tab: log list (main).
+    LogList,
+    /// Logs tab: log detail pane.
+    LogDetail,
+    /// Config tab: key list (left).
+    ConfigKeys,
+    /// Config tab: value editor (right).
+    ConfigValues,
+    /// Inspect tab: signal tree (left).
+    InspectTree,
+    /// Inspect tab: detail pane (right).
+    InspectDetail,
+    /// Marketplace tab: job list.
+    MarketList,
+    /// Marketplace tab: job detail.
+    MarketDetail,
+    /// Atelier tab: artifact list.
+    AtelierList,
+    /// Atelier tab: artifact detail.
+    AtelierDetail,
+    /// Learning tab: metric list.
+    LearningMetrics,
+    /// Learning tab: chart/detail pane.
+    LearningDetail,
 }
 
 impl FocusZone {
@@ -63,27 +92,44 @@ impl FocusZone {
                 Self::TaskProgress => Self::AgentOutput,
                 Self::AgentOutput => Self::CommandOutput,
                 Self::CommandOutput => Self::RightPanel,
-                Self::RightPanel => Self::PlanTree,
+                _ => Self::PlanTree,
             },
             Tab::Plans => match self {
-                Self::PlanTree | Self::TaskProgress | Self::AgentOutput | Self::CommandOutput => {
-                    Self::RightPanel
-                }
                 Self::RightPanel => Self::PlanTree,
+                _ => Self::RightPanel,
             },
             Tab::Agents => match self {
-                Self::PlanTree | Self::TaskProgress | Self::CommandOutput | Self::RightPanel => {
-                    Self::AgentOutput
-                }
                 Self::AgentOutput => Self::RightPanel,
+                _ => Self::AgentOutput,
             },
-            Tab::Git
-            | Tab::Logs
-            | Tab::Config
-            | Tab::Inspect
-            | Tab::Marketplace
-            | Tab::Atelier
-            | Tab::Learning => self,
+            Tab::Git => match self {
+                Self::GitBranches => Self::GitDetail,
+                _ => Self::GitBranches,
+            },
+            Tab::Logs => match self {
+                Self::LogList => Self::LogDetail,
+                _ => Self::LogList,
+            },
+            Tab::Config => match self {
+                Self::ConfigKeys => Self::ConfigValues,
+                _ => Self::ConfigKeys,
+            },
+            Tab::Inspect => match self {
+                Self::InspectTree => Self::InspectDetail,
+                _ => Self::InspectTree,
+            },
+            Tab::Marketplace => match self {
+                Self::MarketList => Self::MarketDetail,
+                _ => Self::MarketList,
+            },
+            Tab::Atelier => match self {
+                Self::AtelierList => Self::AtelierDetail,
+                _ => Self::AtelierList,
+            },
+            Tab::Learning => match self {
+                Self::LearningMetrics => Self::LearningDetail,
+                _ => Self::LearningMetrics,
+            },
         }
     }
 
@@ -96,27 +142,44 @@ impl FocusZone {
                 Self::TaskProgress => Self::PlanTree,
                 Self::AgentOutput => Self::TaskProgress,
                 Self::CommandOutput => Self::AgentOutput,
-                Self::RightPanel => Self::CommandOutput,
+                _ => Self::CommandOutput,
             },
             Tab::Plans => match self {
-                Self::PlanTree | Self::TaskProgress | Self::AgentOutput | Self::CommandOutput => {
-                    Self::RightPanel
-                }
                 Self::RightPanel => Self::PlanTree,
+                _ => Self::RightPanel,
             },
             Tab::Agents => match self {
-                Self::PlanTree | Self::TaskProgress | Self::CommandOutput | Self::RightPanel => {
-                    Self::AgentOutput
-                }
                 Self::AgentOutput => Self::RightPanel,
+                _ => Self::AgentOutput,
             },
-            Tab::Git
-            | Tab::Logs
-            | Tab::Config
-            | Tab::Inspect
-            | Tab::Marketplace
-            | Tab::Atelier
-            | Tab::Learning => self,
+            Tab::Git => match self {
+                Self::GitDetail => Self::GitBranches,
+                _ => Self::GitDetail,
+            },
+            Tab::Logs => match self {
+                Self::LogDetail => Self::LogList,
+                _ => Self::LogDetail,
+            },
+            Tab::Config => match self {
+                Self::ConfigValues => Self::ConfigKeys,
+                _ => Self::ConfigValues,
+            },
+            Tab::Inspect => match self {
+                Self::InspectDetail => Self::InspectTree,
+                _ => Self::InspectDetail,
+            },
+            Tab::Marketplace => match self {
+                Self::MarketDetail => Self::MarketList,
+                _ => Self::MarketList,
+            },
+            Tab::Atelier => match self {
+                Self::AtelierDetail => Self::AtelierList,
+                _ => Self::AtelierList,
+            },
+            Tab::Learning => match self {
+                Self::LearningDetail => Self::LearningMetrics,
+                _ => Self::LearningMetrics,
+            },
         }
     }
 }
@@ -464,7 +527,7 @@ pub fn handle_key(
     }
 
     // Global keys that work in any tab
-    if let Some(action) = handle_global_key(key) {
+    if let Some(action) = handle_global_key(key, active_tab) {
         return action;
     }
 
@@ -503,6 +566,12 @@ impl<'a> ModalVisibility<'a> {
 fn handle_help_key(key: KeyEvent) -> TuiAction {
     match key.code {
         KeyCode::Esc | KeyCode::Char('?' | 'q') => TuiAction::ShowHelp,
+        KeyCode::Up | KeyCode::Char('k') => TuiAction::ScrollFocusedUp,
+        KeyCode::Down | KeyCode::Char('j') => TuiAction::ScrollFocusedDown,
+        KeyCode::PageUp => TuiAction::ScrollPageUp,
+        KeyCode::PageDown => TuiAction::ScrollPageDown,
+        KeyCode::Home => TuiAction::ScrollFocusedHome,
+        KeyCode::End => TuiAction::ScrollFocusedEnd,
         _ => TuiAction::None,
     }
 }
@@ -629,15 +698,18 @@ fn handle_plan_filter_key(key: KeyEvent) -> TuiAction {
 // Global keys
 // ---------------------------------------------------------------------------
 
-fn handle_global_key(key: KeyEvent) -> Option<TuiAction> {
+fn handle_global_key(key: KeyEvent, active_tab: Tab) -> Option<TuiAction> {
     // F-keys switch tabs
     if let Some(tab) = Tab::from_key(key.code) {
         return Some(TuiAction::SwitchTab(tab));
     }
 
-    // Number keys 1-9 switch top-level tabs (same as F1-F9).
+    // Number keys 1-9 switch top-level tabs (same as F1-F9), but only when
+    // the active tab does NOT use number keys for its own purpose (e.g.
+    // Agents uses 1-7 for agent sub-tabs, Logs uses 1-4 for filter levels).
     // 0 switches to F10 (Learning). Plain digit press, no modifiers.
-    if key.modifiers.is_empty() {
+    let tab_uses_numbers = matches!(active_tab, Tab::Agents | Tab::Logs);
+    if key.modifiers.is_empty() && !tab_uses_numbers {
         let tab = match key.code {
             KeyCode::Char('1') => Some(Tab::Dashboard),
             KeyCode::Char('2') => Some(Tab::Plans),
@@ -689,7 +761,8 @@ fn handle_global_key(key: KeyEvent) -> Option<TuiAction> {
         KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Some(TuiAction::ToggleScreenPostFx)
         }
-        KeyCode::Char('v') => Some(TuiAction::CycleEffectsPreset),
+        // v: verify/reverify (mori parity); effects cycling via Ctrl-E only
+        KeyCode::Char('v') => Some(TuiAction::ReverifyPlan),
         // Ctrl-g: reconcile git state (confirm)
         KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Some(TuiAction::RequestConfirm(ConfirmAction::GitReconcile))
@@ -1077,16 +1150,44 @@ mod tests {
     }
 
     #[test]
-    fn number_keys_switch_tabs() {
+    fn number_keys_switch_tabs_from_non_number_tab() {
+        // Number keys switch tabs when current tab doesn't use them.
         let action = handle_key(
             key(KeyCode::Char('3')),
+            InputMode::Normal,
+            Tab::Dashboard,
+            FocusZone::PlanTree,
+            &modals(None),
+        );
+        assert_eq!(action, TuiAction::SwitchTab(Tab::Agents));
+    }
+
+    #[test]
+    fn number_keys_do_not_shadow_agents_tab() {
+        // On Agents tab, 1-7 should go to per-tab handler (SwitchAgentTab),
+        // not global tab switching.
+        let action = handle_key(
+            key(KeyCode::Char('3')),
+            InputMode::Normal,
+            Tab::Agents,
+            FocusZone::AgentOutput,
+            &modals(None),
+        );
+        assert_eq!(action, TuiAction::SwitchAgentTab(2));
+    }
+
+    #[test]
+    fn number_keys_do_not_shadow_logs_tab() {
+        // On Logs tab, 1-4 should go to per-tab handler (ToggleLogFilter),
+        // not global tab switching.
+        let action = handle_key(
+            key(KeyCode::Char('1')),
             InputMode::Normal,
             Tab::Logs,
             FocusZone::PlanTree,
             &modals(None),
         );
-        // Plain number keys now switch top-level tabs.
-        assert_eq!(action, TuiAction::SwitchTab(Tab::Agents));
+        assert_eq!(action, TuiAction::ToggleLogFilter(LogFilterLevel::Info));
     }
 
     #[test]
@@ -1138,7 +1239,7 @@ mod tests {
     }
 
     #[test]
-    fn v_cycles_effects_presets_outside_plans_tab() {
+    fn v_triggers_reverify_globally() {
         let action = handle_key(
             key(KeyCode::Char('v')),
             InputMode::Normal,
@@ -1146,11 +1247,11 @@ mod tests {
             FocusZone::PlanTree,
             &modals(None),
         );
-        assert_eq!(action, TuiAction::CycleEffectsPreset);
+        assert_eq!(action, TuiAction::ReverifyPlan);
     }
 
     #[test]
-    fn v_cycles_effects_presets_on_plans_tab() {
+    fn v_triggers_reverify_on_plans_tab() {
         let action = handle_key(
             key(KeyCode::Char('v')),
             InputMode::Normal,
@@ -1158,7 +1259,9 @@ mod tests {
             FocusZone::PlanTree,
             &modals(None),
         );
-        assert_eq!(action, TuiAction::CycleEffectsPreset);
+        // Plans tab has its own 'V' (uppercase) for ReverifyPlan; lowercase
+        // 'v' is intercepted by the global handler first.
+        assert_eq!(action, TuiAction::ReverifyPlan);
     }
 
     #[test]

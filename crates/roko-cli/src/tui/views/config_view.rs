@@ -13,7 +13,7 @@ use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, Wrap};
 
 use super::ViewState;
 use crate::tui::config_meta::{
-    self, ConfigFieldKind, ConfigItem, ConfigSource, build_flat_items, format_count, truncate,
+    self, ConfigFieldKind, ConfigItem, ConfigSource, format_count, truncate,
 };
 use crate::tui::dashboard::{DashboardData, Theme};
 use crate::tui::input::FocusZone;
@@ -61,10 +61,9 @@ pub fn render(
         return;
     }
 
-    // Build the flat item list (editable fields + runtime sections)
-    let mut items = build_flat_items(tui_state.workdir.as_path(), &tui_state.config_pending);
-
-    // Append runtime data sections
+    // Use cached config items (avoids re-parsing roko.toml per frame).
+    // Runtime sections are still appended per-frame since they reference live state.
+    let mut items = tui_state.config_items_cache.clone();
     append_runtime_sections(&mut items, tui_state);
 
     // Clamp cursor

@@ -29,7 +29,7 @@ use ratatui::widgets::{Clear, Paragraph};
 use ratatui::{Frame, Terminal};
 
 use roko_runtime::process::ProcessSupervisor;
-use sysinfo::{Pid, ProcessStatus, ProcessesToUpdate, System};
+use sysinfo::{Disks, Networks, Pid, ProcessStatus, ProcessesToUpdate, System};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use super::approval_ipc::ApprovalRequest;
@@ -157,6 +157,8 @@ pub struct App {
     /// Byte offset into `events.jsonl` for incremental event replay (RC-6).
     /// Only new events after this offset are replayed, avoiding O(n) re-reads.
     last_events_offset: u64,
+    /// Sender for in-process TUI commands to the runner event loop.
+    tui_command_tx: Option<tokio::sync::mpsc::Sender<crate::runner::TuiCommand>>,
     /// Receiver for background git data collection results.
     git_bg_rx: Option<std::sync::mpsc::Receiver<(u64, GitBgData)>>,
     /// Monotonically increasing generation counter for spawned git jobs.
@@ -637,6 +639,7 @@ impl App {
             pending_refresh: false,
             last_snapshot_hash: None,
             last_events_offset: 0,
+            tui_command_tx: None,
             git_bg_rx: None,
             git_bg_generation: 0,
             git_applied_generation: 0,
@@ -706,6 +709,16 @@ impl App {
     #[must_use]
     pub const fn with_exit_on_plan_completion(mut self) -> Self {
         self.exit_on_plan_completion = true;
+        self
+    }
+
+    /// Attach a sender for in-process TUI commands to the runner event loop.
+    #[must_use]
+    pub fn with_tui_command_tx(
+        mut self,
+        tx: tokio::sync::mpsc::Sender<crate::runner::TuiCommand>,
+    ) -> Self {
+        self.tui_command_tx = Some(tx);
         self
     }
 
@@ -951,13 +964,15 @@ impl App {
         // Responsive outer margin on large terminals
         let content_area = super::layout::responsive_outer_margin(full_area);
 
-        // Main layout: header (1 line) + wave row (1 line) + content + footer (1 line)
+        // Main layout: header (1) + warning (0-1) + wave (0-1) + content + footer (1)
         let has_waves = !self.tui_state.execution_waves.is_empty();
         let wave_row_height = if has_waves { 1 } else { 0 };
+        let warning_height = super::widgets::header_bar::warning_bar_height(&self.tui_state);
         let main_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1),               // Mori-style header bar
+                Constraint::Length(warning_height),  // Warning bar (0 when no warnings)
                 Constraint::Length(wave_row_height), // Wave indicator row (hidden when idle)
                 Constraint::Min(0),                  // Content area
                 Constraint::Length(1),               // Status footer
@@ -967,20 +982,24 @@ impl App {
         // Header: Mori header bar
         self.render_tab_header(frame, main_layout[0], &theme);
 
+        // Warning bar (only when warnings are active)
+        if warning_height > 0 {
+            super::widgets::header_bar::render_warning_bar(frame, main_layout[1], &self.tui_state);
+        }
+
         // Wave indicator row (only when waves exist)
         if has_waves {
             super::widgets::wave_progress::render_wave_progress(
                 frame,
-                main_layout[1],
+                main_layout[2],
                 &self.tui_state,
             );
         }
 
         // Content: dispatch to active tab view
-        // Layout always has 4 slots: [0]=header [1]=wave [2]=content [3]=footer
-        // The wave slot is 0-height when idle, but indices don't change.
-        let content_idx = 2;
-        let footer_idx = 3;
+        // Layout: [0]=header [1]=warning [2]=wave [3]=content [4]=footer
+        let content_idx = 3;
+        let footer_idx = 4;
         let (content_area, input_area) = self.split_content_area(main_layout[content_idx]);
 
         self.clamp_scroll_state_to_view();
@@ -1084,13 +1103,13 @@ impl App {
                 self.tui_state.focus = match tab {
                     Tab::Dashboard | Tab::Plans => FocusZone::PlanTree,
                     Tab::Agents => FocusZone::AgentOutput,
-                    Tab::Git
-                    | Tab::Logs
-                    | Tab::Config
-                    | Tab::Inspect
-                    | Tab::Marketplace
-                    | Tab::Atelier
-                    | Tab::Learning => FocusZone::RightPanel,
+                    Tab::Git => FocusZone::GitBranches,
+                    Tab::Logs => FocusZone::LogList,
+                    Tab::Config => FocusZone::ConfigKeys,
+                    Tab::Inspect => FocusZone::InspectTree,
+                    Tab::Marketplace => FocusZone::MarketList,
+                    Tab::Atelier => FocusZone::AtelierList,
+                    Tab::Learning => FocusZone::LearningMetrics,
                 };
                 // Sync legacy page
                 if let Some(page_id) = tab_to_page(tab) {
@@ -1162,6 +1181,37 @@ impl App {
                     *selected_index = selected_index.saturating_add(1).min(max);
                     *scroll_offset = (*selected_index).min(u16::MAX as usize) as u16;
                 }
+            }
+            TuiAction::ScrollFocusedUp
+                if matches!(self.tui_state.active_modal, Some(ModalState::Help)) =>
+            {
+                self.tui_state.help_scroll = self.tui_state.help_scroll.saturating_sub(1);
+            }
+            TuiAction::ScrollFocusedDown
+                if matches!(self.tui_state.active_modal, Some(ModalState::Help)) =>
+            {
+                self.tui_state.help_scroll = self.tui_state.help_scroll.saturating_add(1);
+            }
+            TuiAction::ScrollPageUp
+                if matches!(self.tui_state.active_modal, Some(ModalState::Help)) =>
+            {
+                self.tui_state.help_scroll = self.tui_state.help_scroll.saturating_sub(10);
+            }
+            TuiAction::ScrollPageDown
+                if matches!(self.tui_state.active_modal, Some(ModalState::Help)) =>
+            {
+                self.tui_state.help_scroll = self.tui_state.help_scroll.saturating_add(10);
+            }
+            TuiAction::ScrollFocusedHome
+                if matches!(self.tui_state.active_modal, Some(ModalState::Help)) =>
+            {
+                self.tui_state.help_scroll = 0;
+            }
+            TuiAction::ScrollFocusedEnd
+                if matches!(self.tui_state.active_modal, Some(ModalState::Help)) =>
+            {
+                // Sentinel; render will clamp.
+                self.tui_state.help_scroll = usize::MAX;
             }
             TuiAction::ScrollFocusedUp => {
                 let delta = i32::from(self.scroll_accel.tick(-1));
@@ -1306,6 +1356,7 @@ impl App {
                     if matches!(self.tui_state.active_modal, Some(ModalState::Help)) {
                         None
                     } else {
+                        self.tui_state.help_scroll = 0;
                         Some(ModalState::Help)
                     };
             }
@@ -1471,6 +1522,22 @@ impl App {
                 } else {
                     let max_idx = self.tui_state.agents.len().saturating_sub(1).max(6);
                     self.tui_state.selected_agent_tab = idx.min(max_idx);
+                }
+
+                // P1.4: Switch selected agent to the first one matching the
+                // newly selected role tab so the output panel updates.
+                use crate::tui::views::agents_view::ROLE_TABS;
+                if let Some(&(role, _)) = ROLE_TABS.get(self.tui_state.selected_agent_tab) {
+                    // Check agent_summaries first (dashboard data), then agents (snapshot data).
+                    let matching_idx = self
+                        .tui_state
+                        .agent_summaries
+                        .iter()
+                        .position(|a| a.label == role)
+                        .or_else(|| self.tui_state.agents.iter().position(|a| a.role == role));
+                    if let Some(agent_idx) = matching_idx {
+                        self.tui_state.selected_agent = agent_idx;
+                    }
                 }
             }
             TuiAction::SwitchDetailTab(idx) => {
@@ -1660,6 +1727,8 @@ impl App {
                             "Confirmed: {}",
                             truncate_str(&action_str, 40)
                         )));
+                    // Also send the corresponding TuiCommand to the runner.
+                    self.send_tui_command_for_confirm(action);
                 }
                 self.tui_state.pending_confirm = None;
                 self.tui_state.active_modal = None;
@@ -1672,6 +1741,10 @@ impl App {
             TuiAction::DismissNotification => {
                 if !self.notifications.is_empty() {
                     self.notifications.remove(0);
+                }
+                // Also dismiss the persistent warning bar.
+                if !self.tui_state.warnings_dismissed {
+                    self.tui_state.warnings_dismissed = true;
                 }
             }
             TuiAction::ToggleAgentPaneGroup => {
@@ -1793,10 +1866,7 @@ impl App {
             TuiAction::ConfigUp => {
                 self.tui_state.config_cursor = self.tui_state.config_cursor.saturating_sub(1);
                 // Skip headers when navigating up
-                let items = super::config_meta::build_flat_items(
-                    &self.workdir,
-                    &self.tui_state.config_pending,
-                );
+                let items = self.tui_state.config_items().to_vec();
                 while self.tui_state.config_cursor > 0 {
                     if let Some(super::config_meta::ConfigItem::Header(_)) =
                         items.get(self.tui_state.config_cursor)
@@ -1809,10 +1879,7 @@ impl App {
                 }
             }
             TuiAction::ConfigDown => {
-                let items = super::config_meta::build_flat_items(
-                    &self.workdir,
-                    &self.tui_state.config_pending,
-                );
+                let items = self.tui_state.config_items().to_vec();
                 let max_idx = items.len().saturating_sub(1);
                 self.tui_state.config_cursor = (self.tui_state.config_cursor + 1).min(max_idx);
                 // Skip headers when navigating down
@@ -1827,10 +1894,7 @@ impl App {
                 }
             }
             TuiAction::ConfigToggle => {
-                let items = super::config_meta::build_flat_items(
-                    &self.workdir,
-                    &self.tui_state.config_pending,
-                );
+                let items = self.tui_state.config_items().to_vec();
                 if let Some(item) = items.get(self.tui_state.config_cursor) {
                     match item {
                         super::config_meta::ConfigItem::Field {
@@ -1877,10 +1941,7 @@ impl App {
                 }
             }
             TuiAction::ConfigCycleLeft | TuiAction::ConfigCycleRight => {
-                let items = super::config_meta::build_flat_items(
-                    &self.workdir,
-                    &self.tui_state.config_pending,
-                );
+                let items = self.tui_state.config_items().to_vec();
                 if let Some(super::config_meta::ConfigItem::Field {
                     meta,
                     value,
@@ -2190,6 +2251,50 @@ impl App {
         }
     }
 
+    /// Map a confirmed `ConfirmAction` to the corresponding `TuiCommand` and
+    /// send it through the in-process channel (if connected to a runner).
+    fn send_tui_command_for_confirm(&self, action: &ConfirmAction) {
+        use crate::runner::TuiCommand;
+        let cmd = match action {
+            ConfirmAction::SoftRetryPlan(plan_id) => TuiCommand::SoftRetry {
+                plan_id: plan_id.clone(),
+            },
+            ConfirmAction::RepairPlanPreserve(plan_id) => TuiCommand::Repair {
+                plan_id: plan_id.clone(),
+                preserve_completed: true,
+            },
+            ConfirmAction::RepairPlanClean(plan_id) => TuiCommand::Repair {
+                plan_id: plan_id.clone(),
+                preserve_completed: false,
+            },
+            ConfirmAction::ReverifyPlan(plan_id) => TuiCommand::ReverifyGates {
+                plan_id: plan_id.clone(),
+            },
+            ConfirmAction::ForceAdvance(plan_id) => TuiCommand::Skip {
+                plan_id: plan_id.clone(),
+                task_id: self
+                    .tui_state
+                    .plans
+                    .get(self.tui_state.selected_plan_idx)
+                    .and_then(|p| {
+                        p.tasks
+                            .iter()
+                            .find(|t| t.status == TaskRowStatus::Failed)
+                            .map(|t| t.id.clone())
+                    })
+                    .unwrap_or_default(),
+            },
+            ConfirmAction::ResetSelectedPlan(plan_id) => TuiCommand::Cancel {
+                plan_id: plan_id.clone(),
+            },
+            // Other confirm actions don't map to runner TuiCommands.
+            _ => return,
+        };
+        if let Some(tx) = &self.tui_command_tx {
+            let _ = tx.try_send(cmd);
+        }
+    }
+
     fn selected_plan_id(&self) -> Option<String> {
         self.tui_state
             .plans
@@ -2258,6 +2363,12 @@ impl App {
                 self.tui_state.command_output_scroll = (current + delta).max(0) as usize;
             }
             (_, FocusZone::RightPanel) => {
+                let current = self.tui_state.diff_scroll as i32;
+                self.tui_state.diff_scroll = (current + delta).max(0) as usize;
+            }
+            // Per-tab zones (Git, Logs, Config, Inspect, Marketplace, Atelier,
+            // Learning) fall through to the generic diff_scroll for now.
+            _ => {
                 let current = self.tui_state.diff_scroll as i32;
                 self.tui_state.diff_scroll = (current + delta).max(0) as usize;
             }
@@ -2341,6 +2452,10 @@ impl App {
                 self.tui_state.command_output_scroll = offset;
             }
             (_, FocusZone::RightPanel) => {
+                self.tui_state.diff_scroll = offset;
+            }
+            // Per-tab zones fall through to diff_scroll for now.
+            _ => {
                 self.tui_state.diff_scroll = offset;
             }
         }
@@ -2502,16 +2617,18 @@ impl App {
         let content_area = super::layout::responsive_outer_margin(full_area);
         let has_waves = !self.tui_state.execution_waves.is_empty();
         let wave_row_height = if has_waves { 1 } else { 0 };
+        let warning_height = super::widgets::header_bar::warning_bar_height(&self.tui_state);
         let main_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1),
+                Constraint::Length(warning_height),
                 Constraint::Length(wave_row_height),
                 Constraint::Min(0),
                 Constraint::Length(1),
             ])
             .split(content_area);
-        self.split_content_area(main_layout[2]).0
+        self.split_content_area(main_layout[3]).0
     }
 
     fn clamp_scroll_state_to_view(&mut self) {
@@ -2775,6 +2892,14 @@ impl App {
         self.reseed_verdicts_aggregator().await;
         self.refresh_verdicts_from_aggregator().await;
         self.fx_config = EffectsConfig::load_from_root(&self.workdir);
+        // Refresh cached inspect data on the 5-second cadence (P3.3).
+        if self.tui_state.inspect_needs_refresh() {
+            self.tui_state.refresh_inspect_data();
+        }
+        // Refresh cached config items on the 5-second cadence (P3.2).
+        if self.tui_state.config_needs_refresh() {
+            self.tui_state.invalidate_config_cache();
+        }
         self.last_refresh = Instant::now();
         self.clamp_signal_selection();
         self.clamp_gate_failure_selection();
@@ -2799,6 +2924,14 @@ impl App {
         self.reseed_verdicts_aggregator_blocking();
         self.refresh_verdicts_from_aggregator_blocking();
         self.fx_config = EffectsConfig::load_from_root(&self.workdir);
+        // Refresh cached inspect data on the 5-second cadence (P3.3).
+        if self.tui_state.inspect_needs_refresh() {
+            self.tui_state.refresh_inspect_data();
+        }
+        // Refresh cached config items on the 5-second cadence (P3.2).
+        if self.tui_state.config_needs_refresh() {
+            self.tui_state.invalidate_config_cache();
+        }
         self.last_refresh = Instant::now();
         self.clamp_signal_selection();
         self.clamp_gate_failure_selection();
@@ -2902,6 +3035,7 @@ impl App {
         {
             Ok(()) => {
                 self.tui_state.config_pending.clear();
+                self.tui_state.invalidate_config_cache();
                 self.fx_config = EffectsConfig::load_from_root(&self.workdir);
                 self.pending_refresh = true;
                 self.notifications.push(super::modals::Notification::info(
@@ -3158,6 +3292,10 @@ impl App {
                     sys.net_down_bytes_sec = snap.sys.net_down_bytes_sec - sys.prev_net_in;
                 }
                 sys.prev_net_in = snap.sys.net_down_bytes_sec;
+                if sys.prev_net_out > 0 && snap.sys.net_out_bytes_total > sys.prev_net_out {
+                    sys.net_up_bytes_sec = snap.sys.net_out_bytes_total - sys.prev_net_out;
+                }
+                sys.prev_net_out = snap.sys.net_out_bytes_total;
                 sys.net_out_bytes_total = snap.sys.net_out_bytes_total;
 
                 // Disk: compute rate from delta of cumulative totals
@@ -3166,6 +3304,8 @@ impl App {
                 }
                 sys.prev_disk_read = snap.sys.disk_read_bytes_sec;
                 sys.disk_write_bytes_total = snap.sys.disk_write_bytes_total;
+                sys.disk_free_bytes = snap.sys.disk_free_bytes;
+                sys.disk_total_bytes = snap.sys.disk_total_bytes;
                 self.merge_process_metrics(snap.process_metrics);
             }
         }
@@ -3630,16 +3770,34 @@ fn collect_sys_metrics_bg(
     process_supervisor: Option<Arc<ProcessSupervisor>>,
 ) {
     let mut sys = System::new_all();
+    let mut networks = Networks::new_with_refreshed_list();
+    let mut disks = Disks::new_with_refreshed_list();
 
     loop {
         sys.refresh_cpu_usage();
         sys.refresh_memory();
+        networks.refresh(true);
+        disks.refresh(false);
+
+        // Network: sum cumulative bytes across all interfaces.
+        let (net_rx_total, net_tx_total) = networks.iter().fold((0u64, 0u64), |(rx, tx), nic| {
+            (rx + nic.1.total_received(), tx + nic.1.total_transmitted())
+        });
+
+        // Disk: sum free/total across all mount points.
+        let (disk_free, disk_total) = disks.iter().fold((0u64, 0u64), |(free, total), d| {
+            (free + d.available_space(), total + d.total_space())
+        });
 
         let snapshot = SysSnapshot {
             sys: super::state::SysMetrics {
                 cpu_pct: sys.global_cpu_usage(),
                 mem_used_bytes: sys.used_memory(),
                 mem_total_bytes: sys.total_memory(),
+                net_down_bytes_sec: net_rx_total,
+                net_out_bytes_total: net_tx_total,
+                disk_free_bytes: disk_free,
+                disk_total_bytes: disk_total,
                 ..Default::default()
             },
             process_metrics: collect_process_metrics(&mut sys, process_supervisor.as_deref()),
@@ -3993,6 +4151,7 @@ mod tests {
 
         hub.publish(roko_core::DashboardEvent::PlanStarted {
             plan_id: "live-plan".to_string(),
+            tasks_total: 0,
         });
         app.drain_snapshot_channel();
         assert!(app.running);
@@ -4013,6 +4172,7 @@ mod tests {
 
         hub.publish(roko_core::DashboardEvent::PlanStarted {
             plan_id: "live-plan".to_string(),
+            tasks_total: 0,
         });
         app.drain_snapshot_channel();
         hub.publish(roko_core::DashboardEvent::PlanCompleted {
@@ -4031,6 +4191,7 @@ mod tests {
         std::fs::create_dir_all(&roko_dir).expect("roko dir");
         let stale_event = serde_json::to_string(&roko_core::DashboardEvent::PlanStarted {
             plan_id: "old-plan".to_string(),
+            tasks_total: 0,
         })
         .expect("event json");
         std::fs::write(roko_dir.join("events.jsonl"), format!("{stale_event}\n"))
@@ -4048,6 +4209,7 @@ mod tests {
 
         hub.publish(roko_core::DashboardEvent::PlanStarted {
             plan_id: "live-plan".to_string(),
+            tasks_total: 0,
         });
         app.drain_snapshot_channel();
         assert!(
@@ -4067,6 +4229,7 @@ mod tests {
 
         hub.publish(roko_core::DashboardEvent::PlanStarted {
             plan_id: "live-plan".to_string(),
+            tasks_total: 0,
         });
         app.apply_state_hub_agent_topology(roko_core::AgentTopology::default());
 

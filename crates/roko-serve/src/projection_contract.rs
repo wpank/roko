@@ -2600,7 +2600,7 @@ pub fn projection_accepts_event(
             _ => false,
         },
         "plan_state" => match event {
-            DashboardEvent::PlanStarted { plan_id }
+            DashboardEvent::PlanStarted { plan_id, .. }
             | DashboardEvent::PlanCompleted { plan_id, .. }
             | DashboardEvent::PhaseTransition { plan_id, .. }
             | DashboardEvent::TaskStarted { plan_id, .. }

@@ -345,6 +345,7 @@ fn phase_transitions() {
     s.apply_with_ts(
         &DashboardEvent::PlanStarted {
             plan_id: "ph".into(),
+            tasks_total: 0,
         },
         100,
     );
@@ -537,6 +538,7 @@ fn full_lifecycle_replay() {
     s.apply_with_ts(
         &DashboardEvent::PlanStarted {
             plan_id: "lc".into(),
+            tasks_total: 0,
         },
         100,
     );
@@ -575,6 +577,7 @@ fn full_lifecycle_replay() {
             task_id: "ta".into(),
             gate: "compile".into(),
             passed: true,
+            output_text: None,
         },
         700,
     );

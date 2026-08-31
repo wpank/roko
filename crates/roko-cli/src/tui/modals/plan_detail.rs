@@ -30,10 +30,24 @@ pub fn render_plan_detail_modal(
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
+    let header_height = match plan {
+        Some(p) => {
+            let mut h: u16 = 8; // base 6 lines + padding
+            if p.branch.is_some() || p.worktree_path.is_some() || p.last_commit.is_some() {
+                h += 1;
+            }
+            if p.files_modified.is_some() {
+                h += 1;
+            }
+            h
+        }
+        None => 8,
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8),
+            Constraint::Length(header_height),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
@@ -109,7 +123,7 @@ fn render_plan(
         }
     };
 
-    let header_lines = vec![
+    let mut header_lines = vec![
         Line::from(vec![
             Span::styled("Title:  ", theme.muted()),
             Span::styled(
@@ -155,6 +169,45 @@ fn render_plan(
             Span::styled(failure_summary, theme.text()),
         ]),
     ];
+
+    // Branch / worktree / commit line (P5.4).
+    if plan.branch.is_some() || plan.worktree_path.is_some() || plan.last_commit.is_some() {
+        let mut spans = Vec::new();
+        if let Some(branch) = &plan.branch {
+            spans.push(Span::styled("Branch: ", theme.muted()));
+            spans.push(Span::styled(branch.as_str(), theme.info()));
+        }
+        if let Some(wt) = &plan.worktree_path {
+            if !spans.is_empty() {
+                spans.push(Span::styled("  ", theme.text()));
+            }
+            spans.push(Span::styled("Worktree: ", theme.muted()));
+            spans.push(Span::styled(wt.as_str(), theme.text()));
+        }
+        if let Some(commit) = &plan.last_commit {
+            if !spans.is_empty() {
+                spans.push(Span::styled("  ", theme.text()));
+            }
+            spans.push(Span::styled("Commit: ", theme.muted()));
+            spans.push(Span::styled(commit.as_str(), theme.text()));
+        }
+        header_lines.push(Line::from(spans));
+    }
+
+    // Changes stats line (P5.3).
+    if let Some(files) = plan.files_modified {
+        let mut spans = vec![
+            Span::styled("Changes:", theme.muted()),
+            Span::styled(format!(" {} file(s)", files), theme.text()),
+        ];
+        if let Some(ins) = plan.insertions {
+            spans.push(Span::styled(format!("  +{ins}"), theme.success()));
+        }
+        if let Some(del) = plan.deletions {
+            spans.push(Span::styled(format!("  -{del}"), theme.danger()));
+        }
+        header_lines.push(Line::from(spans));
+    }
 
     frame.render_widget(
         Paragraph::new(header_lines)

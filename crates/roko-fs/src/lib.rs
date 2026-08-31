@@ -67,7 +67,9 @@ pub use metrics::MetricsLog;
 pub use observability::FsObservabilitySinks;
 pub use pointer::PointerStore;
 pub use target_cleanup::{
-    CleanupReport, TargetDir, cargo_clean, clean_stale_targets, scan_target_dirs,
+    CacheCandidateKind, CacheCleanupCandidate, CacheCleanupPolicy, CacheCleanupReport,
+    CleanupReport, ColdBuildRisk, ProtectedCachePath, TargetDir, cargo_clean,
+    clean_stale_targets, cleanup_workspace_caches, scan_target_dirs,
 };
 pub use tool_audit::ToolAuditLog;
 pub use tool_metrics_sink::{JsonlMetricsSink, ToolMetricsRecord};

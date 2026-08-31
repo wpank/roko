@@ -5,6 +5,7 @@ pub mod attempts;
 pub mod auth;
 pub mod backlog;
 pub mod bench;
+pub mod cache;
 pub mod config_cmd;
 pub mod dashboard;
 pub mod dev;

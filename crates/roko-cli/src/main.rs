@@ -125,6 +125,44 @@ pub enum DoctorSubject {
     Disk,
 }
 
+/// Workspace-local build and evidence cache lifecycle.
+#[derive(Debug, Subcommand)]
+pub(crate) enum CacheCmd {
+    /// Report cache pressure and protected/eligible entries without deleting.
+    Status {
+        /// Workspace root (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// Plan a safe prune; pass --apply to perform it.
+    Prune {
+        /// Perform deletion. Without this flag the command is read-only.
+        #[arg(long)]
+        apply: bool,
+        /// Workspace root (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Combined target budget across linked worktrees.
+        #[arg(long, default_value_t = 96)]
+        target_budget_gb: u64,
+        /// Terminal run-evidence budget.
+        #[arg(long, default_value_t = 2048)]
+        evidence_budget_mb: u64,
+        /// Context-pack cache budget.
+        #[arg(long, default_value_t = 1024)]
+        context_budget_mb: u64,
+        /// Minimum age of incremental partitions selected under pressure.
+        #[arg(long, default_value_t = 6)]
+        min_age_hours: u64,
+        /// Maximum age of terminal evidence and immutable log generations.
+        #[arg(long, default_value_t = 14)]
+        max_evidence_age_days: u64,
+        /// Number of newest terminal evidence runs always retained.
+        #[arg(long, default_value_t = 10)]
+        keep_runs: usize,
+    },
+}
+
 /// Log output format for tracing subscriber initialization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum LogFormat {
@@ -234,7 +272,7 @@ COMMAND GROUPS:
   Code intelligence: index
   Server:            up, serve, acp, daemon, deploy, worker
   Interactive:       dashboard
-  Utilities:         replay, history, inject, completions, new, explain"
+  Utilities:         cache, replay, history, inject, completions, new, explain"
 )]
 struct Cli {
     /// Override the config file (default: `./roko.toml`).
@@ -506,6 +544,16 @@ Examples:
         /// roko-serve base URL or explicit health endpoint to probe.
         #[arg(long)]
         serve_url: Option<String>,
+    },
+    /// Inspect and safely prune workspace-local build/evidence caches.
+    #[command(after_help = "\
+Examples:
+  roko cache status
+  roko cache prune
+  roko cache prune --apply --target-budget-gb 64 --min-age-hours 1")]
+    Cache {
+        #[command(subcommand)]
+        cmd: CacheCmd,
     },
     /// Interactive setup wizard: detect providers, init workspace, verify.
     #[command(after_help = "\
@@ -2947,6 +2995,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             workdir,
             serve_url,
         } => commands::util::cmd_doctor(cli, subject, workdir, serve_url).await,
+        Command::Cache { cmd } => commands::cache::cmd_cache(cli, cmd).await,
         Command::Setup { workdir, yes } => commands::setup::cmd_setup(cli, workdir, yes).await,
         Command::Diagnose {
             plan_id,
@@ -4449,6 +4498,40 @@ mod tests {
                 subject: Some(DoctorSubject::Disk),
                 workdir: Some(_),
                 ..
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_cache_prune_is_dry_run_by_default() {
+        let cli = Cli::try_parse_from(["roko", "cache", "prune"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Cache {
+                cmd: CacheCmd::Prune { apply: false, .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_cache_prune_requires_explicit_apply_flag_for_mutation() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "cache",
+            "prune",
+            "--apply",
+            "--target-budget-gb",
+            "64",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Cache {
+                cmd: CacheCmd::Prune {
+                    apply: true,
+                    target_budget_gb: 64,
+                    ..
+                }
             })
         ));
     }

@@ -104,6 +104,18 @@ cmd_score() {
   python3 scripts/run_evidence.py score "$@"
 }
 
+# Read-only by default. This delegates to the prebuilt CLI and never invokes
+# Cargo itself, so cache inspection cannot trigger a build.
+cmd_cache() {
+  local roko_bin
+  if [ -x "$ROKO_BIN" ]; then
+    roko_bin="$ROKO_BIN"
+  else
+    roko_bin=$(resolve_roko)
+  fi
+  "$roko_bin" cache "$@"
+}
+
 cmd_fast() {
   local deadline="${ROKO_FAST_DEADLINE:-300}"
   local bundle_root="${ROKO_EVIDENCE_ROOT:-.roko/runs}"
@@ -2123,6 +2135,7 @@ COMMANDS
   test [crate] (t)                         Run tests (nextest if available)
   build [--release] [crate] (b)            Build with timing + binary size
   clean [mode]                             Clean artifacts (-i|--incremental|--target|--all|--sccache)
+  cache status|prune [--apply]             Safe target/evidence cleanup (dry-run first)
   doctor (doc)                             Toolchain + disk + ports + swap diagnostics
   dump                                     Full diagnostic snapshot (pipe to Claude)
   nuke-ports                               SIGKILL everything on :6677 and :5173
@@ -2162,6 +2175,8 @@ EXAMPLES
   ./dev.sh evidence-validate .roko/runs/<run-id>       Validate one portable bundle
   ./dev.sh feedback --run-id <run-id>                  Read facts and next action for one run
   ./dev.sh score --bundle-root .roko/runs              Aggregate all captured runs
+  ./dev.sh cache prune                                  Preview safe cache reclamation
+  ./dev.sh cache prune --apply --target-budget-gb 64    Apply a reviewed plan
   ./dev.sh pipeline prd                                Run PRD pipeline (default model)
   ./dev.sh pipeline prd --model gpt-4o                 Run with GPT-4o
   ./dev.sh pipeline gate --provider anthropic --keep   Gate retry via Anthropic
@@ -2186,6 +2201,7 @@ case "$cmd" in
   test|t)                  cmd_test "$@" ;;
   build|b)                 cmd_build "$@" ;;
   clean)                   cmd_clean "$@" ;;
+  cache)                   cmd_cache "$@" ;;
   doctor|doc)              cmd_doctor ;;
   dump)                    cmd_dump ;;
   nuke-ports)              cmd_nuke_ports ;;

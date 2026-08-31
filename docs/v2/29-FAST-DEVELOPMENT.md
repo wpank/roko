@@ -201,6 +201,38 @@ of clearing the orphan-cleanup source of truth.
 
 ---
 
+## Cache and Disk Lifecycle
+
+Build cleanup is an operator-visible background lane, not part of task dispatch. `roko cache
+status` reports target, evidence, context-pack, and immutable log-archive sizes without mutating
+anything. `roko cache prune` produces the same deletion plan; only `--apply` permits mutation. The
+dev wrapper exposes the same surface:
+
+```bash
+./dev.sh cache status
+./dev.sh cache prune
+./dev.sh cache prune --apply --target-budget-gb 64 --min-age-hours 1
+```
+
+Target pressure selects old Cargo incremental partitions first and preserves compiled dependencies,
+the newest incremental partitions, every Git-authoritative checkout, and current-revision evidence.
+The report labels cold-build risk and projected/reclaimed bytes. Nonterminal evidence and the newest
+terminal evidence runs are never selected. JSONL cleanup only targets immutable rotated generations;
+live logs are never deletion candidates.
+
+Mutation fails closed for symlinks and canonical-path escapes. It uses nonblocking advisory leases:
+one global cache-GC lease, each affected workspace lock, each Cargo profile lock, and the live-log
+writer lock. An active owner causes the entry to be skipped instead of making cleanup wait behind a
+build or run. This keeps cleanup off the five-minute task critical path.
+
+The compatibility `cargo_clean` hook preserves warm task targets unless the operator explicitly sets
+`ROKO_EXPLICIT_CARGO_CLEAN=1`. Age-based automatic cleanup is limited to stale targets under
+Git-unregistered runner worktrees; it does not evict the current or another linked worktree's cache.
+Automatic post-terminal scheduling is intentionally deferred until it can share the runner's final
+settlement ownership; the explicit command is the safe post-terminal/background integration point.
+
+---
+
 ## Advanced Shared-Target Opt-In
 
 By default, a Codex task agent cannot write the repository's shared Cargo target outside its task
@@ -268,6 +300,8 @@ Completed for P0:
 - [x] Preparation, startup, agent, gate, and cleanup durations remain separately attributable.
 - [x] Safe timeout diffs enter the ordinary safety/gate lifecycle and resume by durable fingerprint.
 - [x] Terminal dashboard/status/PID projections converge without losing unconfirmed cleanup truth.
+- [x] Cache status/pruning is size-, age-, and revision-aware, dry-run first, and protected by
+  nonblocking workspace/Cargo/log leases; target pressure retains compiled dependencies.
 
 Verification completed for the landed P0 change:
 

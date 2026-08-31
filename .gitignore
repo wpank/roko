@@ -71,7 +71,8 @@ demo/.runtime/
 !/tmp/dev-audit/**
 !/tmp/backlog/
 /tmp/backlog/*
-!/tmp/backlog/00-INDEX.md
+# Keep the local master backlog index ignored: it links to local-only files. The tracked
+# tmp/dev-audit/README.md maps the narrow clone-safe reconciliation subset below.
 !/tmp/backlog/58-perf-hot-path-fixes.md
 !/tmp/backlog/212-run-id-snapshot-events.md
 !/tmp/backlog/215-http-run-scoped-event-query.md

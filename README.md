@@ -578,7 +578,14 @@ and rejects severe disk pressure before launch unless the operator records an ex
 ./dev.sh feedback --run-id <run-id>             # deterministic factual debrief
 ./dev.sh evidence-validate .roko/runs/<run-id>  # strict terminal/JSONL/secret/size checks
 ./dev.sh score --bundle-root .roko/runs         # p50/p95 across captured runs
+./dev.sh cache status                           # inspect caches without mutation
+roko run-index repair                           # bounded historical-index dry run
+python3 scripts/dev_benchmark.py list           # inspect fixed-SHA benchmark lanes
 ```
+
+Cache pruning and historical index repair are dry-run by default; mutation requires their explicit
+`--apply` flag. Benchmark automation is implemented, but FAST promotion still requires real
+cold/warm repetitions, manual-lane evidence, escaped-regression review, and a full-CI baseline.
 
 FAST is an interactive feedback lane, not release proof. Do not use it for migrations, auth,
 safety, persistence, payment, or other high-risk changes, and still run the contribution checks

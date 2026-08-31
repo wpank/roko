@@ -4,8 +4,9 @@
 > `run-evidence`, `evidence-validate`, `feedback`, and `score` provide a private schema-v2 bundle
 > with fresh run-scoped status/log slicing, safe GET/OpenAPI collection, opt-in CLI/text/PNG proof,
 > process/resource/Git evidence, metrics, scoring, deterministic debrief, and strict validation.
-> Final success/failure/timeout/cancellation/live-screenshot fixtures and representative benchmark
-> repetitions remain evidence work, not missing harness code.
+> The fixed-SHA scorecard runner (`d1b94b139`) now composes these bundles across isolated cold/warm
+> lanes. Final success/failure/timeout/cancellation/live-screenshot fixtures and representative
+> benchmark repetitions remain evidence work, not missing harness or benchmark-orchestration code.
 
 **Priority**: P1 — self-hosting failures are expensive to reproduce, and today's evidence is assembled manually across terminal logs, runner state, HTTP responses, screenshots, and Git worktrees
 **Size**: M (2–3 days)
@@ -70,6 +71,9 @@ Stage 0 subset now present:
 - [x] Add a redaction pass and a bundle validator. Validation fails if expected files are absent,
    JSONL is malformed, a claimed successful run lacks a terminal event, or common secret formats
    are detected.
+- [x] Add deterministic fixed-SHA benchmark orchestration that retains raw rows, failures,
+   timeouts, bundle links, admission decisions, and p50/p95 scorecards without cleaning shared
+   caches.
 
 ## Acceptance Criteria
 
@@ -96,6 +100,8 @@ Stage 0 subset now present:
       `run_id`.
 - [ ] Put fake API-key-shaped values in test config; verify the bundle validator rejects leaks.
 - [ ] Confirm live output remains visible and the capture path does not materially delay execution.
+- [ ] Run five cold and five warm repetitions for each selected fixture/lane and import real manual
+      Claude/Codex samples before treating the scorecard as promotion evidence.
 
 ## Files to Modify
 
@@ -106,3 +112,4 @@ Stage 0 subset now present:
 | `docs/v2/30-EVIDENCE-BUNDLES.md` | Schema-v2 operator contract and security boundaries |
 | `docs/v2/29-FAST-DEVELOPMENT.md` | FAST evidence policy and required-event integration |
 | `crates/roko-serve/src/routes/runs.rs` | Read-only run/bundle/artifact/screenshot metadata queries |
+| `scripts/dev_benchmark.py` and `benchmarks/dev-audit/` | Fixed-SHA cold/warm scorecard orchestration and manifest |

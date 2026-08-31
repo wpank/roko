@@ -1,11 +1,12 @@
 # 286 — FAST Hard-Deadline Interposition During Dispatch Startup
 
 > **Status: SOURCE-IMPLEMENTED / FINAL KILL-POINT MATRIX PENDING** (2026-08-31,
-> `52d5f4df4` plus the bounded conductor-settlement handoff). FAST scheduling is wake-driven; its
+> `52d5f4df4` + `43a48ee26`). FAST scheduling is wake-driven; its
 > non-resetting deadline interposes awaited preparation and CLI/bridge startup; Restart/Fail
 > pre-cancel settlement is bounded and fail-closed; safe timeout diffs enter ordinary safety/gate
 > ownership under a durable content fingerprint; terminal projections preserve degraded cleanup
-> truth. Final hung-hook/startup/restart fixtures remain pending.
+> truth. Fixed-SHA benchmark automation is source-complete in `d1b94b139`; final
+> hung-hook/startup/restart fixtures and representative repetitions remain pending.
 
 **Priority**: P1 — a slow awaited dispatch-preparation or provider-startup path can outlive the
 FAST execution budget before the event loop gets another chance to settle the run

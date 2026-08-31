@@ -145,8 +145,10 @@ The integration implements run-scoped APIs:
 - SSE /api/runs/:run_id/events/stream
 
 They use opaque byte cursors and bounded responses and do not scan the entire global JSONL on
-every query. New records have hashed, grammar-checked per-run indexes; an explicit offline repair
-command for pre-index history remains open.
+every query. New records have hashed, grammar-checked per-run indexes. The explicit
+`roko run-index repair` command now handles pre-index history offline under aggregate
+byte/record/deadline budgets; it is dry-run by default, replaces nothing after a truncated scan,
+and is never invoked by HTTP or startup.
 
 The safe GET seed list is [endpoints/core-get.txt](endpoints/core-get.txt). Discover additional GET
 routes from OpenAPI when available. Never automatically call POST, PUT, PATCH, or DELETE.

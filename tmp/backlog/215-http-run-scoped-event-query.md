@@ -1,11 +1,13 @@
 # 215 — HTTP Run-Scoped Event and Gate Query Endpoints
 
-> **Status: DONE FOR NEW RUNS / HISTORICAL REPAIR OPEN** (2026-08-31, `5f689d66e`). The
+> **Status: SOURCE-DONE FOR NEW RUNS AND EXPLICIT HISTORICAL REPAIR** (2026-08-31,
+> `5f689d66e` + `85c052fc9`). The
 > implementation uses the safer run-resource surface under `/api/runs/{run_id}` rather than the
 > draft global `/api/events?run_id=` shape. It provides bounded detail, cursor events, SSE,
 > tasks/attempts, gates, scrubbed logs, metrics, artifact/screenshot inventories, and bundle
-> metadata. Requests/startup deliberately do not rebuild pre-index history; a bounded offline
-> repair command remains open.
+> metadata. Requests/startup deliberately do not rebuild pre-index history. The separate
+> dry-run-first `roko run-index repair` command scans recognized live/rotated sources under one
+> aggregate budget and replaces indexes atomically only after a complete scan.
 
 **Priority**: P2 — events are only accessible by reading JSONL files directly; no HTTP query capability for run-scoped or filtered event access
 **Size**: M (2-3 days)
@@ -63,8 +65,8 @@ Once #212 lands (run_id in all persisted events), run-scoped queries become poss
 - [x] `GET /api/runs/{run_id}/gates` returns bounded gate lifecycle/results.
 - [x] Pagination uses an opaque byte `cursor` plus a capped `limit`; offset scans are superseded.
 - [x] Unknown/malformed run resources fail safely instead of implying an empty successful run.
-- [ ] Pre-index events require an explicit bounded offline repair; they are never assigned to a
-      shared `unknown` run by a live request.
+- [x] Pre-index events use explicit bounded offline repair and are never assigned to a shared
+      `unknown` run by a live request; malformed/cross-run data and truncated scans fail closed.
 
 ## Verification Checklist
 
@@ -74,6 +76,7 @@ Once #212 lands (run_id in all persisted events), run-scoped queries become poss
 - [ ] Manual: query `/api/runs/{run_id}/gates` and the run-filtered SSE route.
 - [ ] Manual: query filtered event types/sources and attempt grouping.
 - [ ] Response matches JSONL file contents when cross-checked
+- [ ] Manual: exercise `run-index repair` dry-run/apply and prove HTTP/startup never invokes it.
 
 ## Files to Modify
 
@@ -85,3 +88,4 @@ Once #212 lands (run_id in all persisted events), run-scoped queries become poss
 | `crates/roko-fs/src/run_index.rs` | Validate/hash IDs and derive per-run index paths |
 | `crates/roko-cli/src/runner/persist.rs` | Project runner records into buffered per-run indexes |
 | `crates/roko-runtime/src/jsonl_logger.rs` | Project canonical runtime records with cursor-safe buffering |
+| `crates/roko-cli/src/commands/run_index.rs` | Bounded dry-run-first historical index repair |

@@ -13,10 +13,11 @@ For an eligible XS/local task:
 The deadline is a control mechanism, not an instruction to pretend unfinished work is done.
 
 Current status: the original opt-in patch/deadline/verification-owner subset is on `main` at
-`a58bdbacb`. Expanded integration snapshot `52d5f4df4` adds bounded/cohesive plan policy,
-impact-selected reverse dependents, safe endpoint and opt-in CLI/text/PNG evidence, wake-driven
-hard-deadline scheduling, and first-class timeout-diff gate salvage. Final batched verification and
-representative cold/warm benchmarks remain open; see
+`a58bdbacb`. The expanded integration adds bounded/cohesive plan policy, impact-selected reverse
+dependents, safe endpoint and opt-in CLI/text/PNG evidence, wake-driven hard-deadline scheduling,
+first-class timeout-diff gate salvage, protected cache maintenance, explicit offline index repair,
+and fixed-SHA benchmark orchestration. Final batched verification and representative cold/warm
+benchmark repetitions remain open; see
 [11-implementation-status.md](11-implementation-status.md).
 
 ## Eligibility

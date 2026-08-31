@@ -1,9 +1,11 @@
 # 58 — Performance Hot-Path Fixes
 
 > **Status: SOURCE-IMPLEMENTED / FINAL VERIFICATION PENDING** (2026-08-31,
-> `88c724744`). All four hot-path changes are present in the dev-audit integration. This docs lane
-> did not compile or test them; the coordinator's single final batch remains the verification
-> authority.
+> `88c724744`). All four hot-path changes are present in the dev-audit integration. The later
+> cache lane (`97f897200` + `8c82c5b1b`) keeps cleanup off dispatch and retains warm targets unless
+> explicitly pruned; the fixed-SHA runner (`d1b94b139`) can measure the result. This docs lane did
+> not compile, test, or run the scorecard; the coordinator's final batch and real repetitions remain
+> the verification authority.
 
 **Priority**: P2 — four concrete latency regressions, each verified in production code
 **Size**: M (2-3 days)

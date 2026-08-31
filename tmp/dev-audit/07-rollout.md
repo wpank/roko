@@ -1,9 +1,10 @@
 # Rollout
 
-Status through integration snapshot `52d5f4df4` plus the active bounded-settlement handoff: Stage 0,
-Stage 1, and most source work in Stages 2–3 are implemented as an opt-in FAST lane. Unchecked items
-are intentionally deferred or require final runtime/benchmark evidence; source completion must not
-be inferred to mean the rebased tree has passed its final batch.
+Status through the post-integration cache, offline-index, and benchmark-tooling commits listed in
+[11-implementation-status.md](11-implementation-status.md): Stage 0, Stage 1, and most source work
+in Stages 2–3 are implemented as an opt-in FAST lane. Unchecked items are intentionally deferred or
+require final runtime/benchmark evidence; source completion must not be inferred to mean the
+rebased tree has passed its final batch.
 
 ## Stage 0: reversible experiment
 
@@ -63,6 +64,7 @@ Acceptance still to measure:
 - [x] Terminal/event validation when an events stream is present.
 - [x] Safe GET/OpenAPI collection plus opt-in CLI, text, Roko screenshot, and PNG adapter hooks.
 - [x] Machine/cache snapshot.
+- [x] Bounded dry-run-first repair for pre-index historical events, separate from HTTP/startup.
 
 Acceptance:
 
@@ -79,6 +81,8 @@ Acceptance:
 - [x] Move npm install/build out of normal Cargo checks.
 - [x] Lean `dev-fast` profile and pinned toolchain.
 - [ ] Select the long-term worktree/cache strategy from real cold/warm benchmarks.
+- [x] Deterministic fixed-SHA benchmark automation with isolated cold targets, bounded warm targets,
+  evidence bundles, and raw/p50/p95 scorecards.
 - [x] Plan policy resolves exact files/ranges/symbol anchors and rejects missing/broad context.
 - [x] Cohesive task generation, a four-task FAST ceiling emitted to the generator, and rejection of
   same-file fragmentation/duplicate verification.
@@ -94,9 +98,10 @@ Acceptance:
 - [x] Buffered nonterminal per-run logs with lifecycle-boundary flush.
 - [x] Bounded prompt/source context off the Tokio hot path.
 - [x] In-memory global learning/router updates.
-- [ ] Size/revision-aware background GC (separate integration lane; not in this snapshot).
+- [x] Size/age/revision-aware cache status and dry-run-first pruning, protected by active leases and
+  kept outside dispatch; warm targets remain available outside explicit cleanup.
 - [ ] Historical benchmark dashboard with regression alerts.
-- [ ] Explicit offline repair for global events created before per-run indexes.
+- [x] Explicit bounded offline repair for global events created before per-run indexes.
 
 ## Existing backlog mapping
 

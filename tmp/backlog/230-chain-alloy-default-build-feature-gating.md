@@ -3,8 +3,10 @@
 > **Status: SOURCE-IMPLEMENTED / FINAL COMPILE AND BENCHMARK EVIDENCE OPEN** (2026-08-31,
 > `88c724744` + `6af235c0f`). The default development graph is lean; full provider/chain/ACP/
 > embedded-frontend behavior is selected explicitly by release, Docker, CI, and dedicated targets.
-> Final lean/full compile commands and representative cold/warm before/after measurements have not
-> yet run on the rebased integration.
+> Fixed-SHA cold/warm automation is source-complete in `d1b94b139`, and the protected cache lane
+> (`97f897200` + `8c82c5b1b`) avoids erasing warm dependencies outside explicit cleanup. Final
+> lean/full compile commands and representative before/after repetitions have not yet run on the
+> rebased integration.
 
 **Priority**: P2 — repeated dogfood cold builds took 10–14 minutes and the default CLI still enables Alloy's full dependency graph
 **Size**: M (2–3 days)
@@ -40,6 +42,8 @@ the full chain stack.
    is unchanged.
 - [x] Add CI/release jobs for both the lean default build and explicit full features; ensure feature combinations do
    not bit-rot.
+- [x] Add a deterministic runner that can compare the same immutable commit with isolated cold
+   targets and bounded warm targets while retaining raw samples and failures.
 - [ ] Publish before/after measurements and set a regression threshold for default dependency count
    or build time where CI infrastructure permits stable measurement.
 

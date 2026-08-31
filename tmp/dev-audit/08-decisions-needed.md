@@ -80,7 +80,8 @@ It is merged on `main` at `a58bdbacb`:
 - [ ] Run the representative cold/warm benchmark scorecard.
 - [ ] Run the final rebased integration verification/RELEASE batch.
 - [ ] Decide whether asynchronous RELEASE verification should become a mandatory merge policy.
-- [ ] Add an operation-level Codex broker and optional offline repair for pre-index historical runs.
+- [x] Add bounded, dry-run-first offline repair for pre-index historical runs.
+- [ ] Add an operation-level Codex broker for restrictive built-in operation policy.
 
 The next implementation batch should be chosen from those unchecked items after the scorecard
 identifies the largest remaining measured bottleneck.

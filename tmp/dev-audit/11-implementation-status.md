@@ -2,9 +2,11 @@
 
 Date: 2026-08-31
 
-Base integration snapshot: `52d5f4df411c3faa7b2e97208b11f76960e5c35d`
+Initial integration snapshot: `52d5f4df411c3faa7b2e97208b11f76960e5c35d`
 
-Additional active handoff: bounded conductor Restart/Fail settlement and TUI follow-up fixes
+Post-integration source reconciliation: lifecycle/TUI seams `43a48ee26`, bounded plan/event work
+`6da6ae504`, cache lifecycle `97f897200` + `8c82c5b1b`, offline index repair `85c052fc9`, and
+benchmark automation `d1b94b139`
 
 Branch at reconciliation: `feat/dev-audit-complete`
 
@@ -92,9 +94,12 @@ a broker remains an explicit residual, not a hidden prompt-only policy.
   unsafe remote unauthenticated reads, and oversized records fail safe.
 - [x] OpenAPI and the HTTP reference describe the run surface.
 
-Historical global records created before the index are not rebuilt during an HTTP request or
-server startup. A bounded, explicit offline repair command remains open if old runs must be
-queryable.
+Historical global records created before the index are never rebuilt during an HTTP request or
+server startup. Commit `85c052fc9` adds an explicit `roko run-index repair` command: it is dry-run
+by default, scans recognized live and immutable rotated logs under aggregate byte/record/deadline
+budgets, rejects malformed or cross-run records, and atomically replaces per-run indexes only
+after a complete scan. `--apply` fails closed around symlinks, path escapes, and active
+workspace/writer/cache/repair leases.
 
 ### FAST deadline, scheduling, salvage, and convergence — `52d5f4df4`
 
@@ -114,6 +119,31 @@ queryable.
 - [x] Terminal event, dashboard/status, task totals, elapsed/ETA, ledger, and PID projections
   converge while retaining degraded cleanup truth.
 
+### Safe cache lifecycle — `97f897200` + `8c82c5b1b`
+
+- [x] `roko cache status` reports target/evidence/context/log pressure without mutation.
+- [x] `roko cache prune` is dry-run by default and requires `--apply` before deleting an eligible
+  entry.
+- [x] Size-, age-, and revision-aware selection protects live logs, active/nonterminal evidence,
+  current Git-authoritative revisions, recent evidence, workspaces, Cargo users, and active leases;
+  unsafe links/path escapes fail closed.
+- [x] Target pressure prefers stale incremental partitions and preserves compiled dependencies;
+  warm targets remain available unless the operator explicitly enters the cleanup lane.
+- [x] Cache cleanup stays outside plan dispatch and reports projected/reclaimed bytes plus cold-build
+  risk.
+
+### Deterministic benchmark automation — `d1b94b139`
+
+- [x] `scripts/dev_benchmark.py` runs stock/FAST/manual lanes from fixed-SHA detached worktrees and
+  delegates capture to the evidence harness.
+- [x] Cold samples use uniquely owned targets, warm samples use bounded lane-local seeded targets,
+  shared caches are never cleaned, and paid/network execution requires explicit admission and a
+  cost ceiling.
+- [x] Raw rows, bundles, admission decisions, p50/p95 scorecards, failures, timeouts, and missing
+  measurements are retained instead of being silently discarded.
+- [ ] Execute the representative matrix and import real manual Claude/Codex samples; tooling
+  presence is not benchmark evidence.
+
 ## Final evidence still required
 
 - [ ] Rebase the complete integration on the latest `origin/main` and resolve other active-agent
@@ -123,11 +153,14 @@ queryable.
 - [ ] Publish the exact final-batch commands, results, and any allowed residual failures.
 - [ ] Run real representative benchmark repetitions: at least five cold and five warm samples per
   selected fixture/lane, retain failures/timeouts, and publish p50/p95 plus bundle links.
+- [ ] Exercise `roko run-index repair` in bounded dry-run/apply fixtures, including truncation,
+  malformed/cross-run records, and active-lock refusal.
+- [ ] Exercise cache status/prune against protected active data and disposable stale fixtures,
+  confirming the dry-run/apply plans and reclaimed-byte accounting agree.
 - [ ] Measure escaped regressions and full-CI baseline before promoting FAST or auto-merge.
 
 ## Explicit residuals
 
-- [ ] Bounded offline repair for historical events that predate per-run indexes.
 - [ ] A Roko-owned operation-level broker for restrictive Codex tool/read/network policies.
 - [ ] Semantic equivalence deduplication hidden behind arbitrary shell wrappers.
 - [ ] Complete symbol-level, macro-aware, non-Rust consumer analysis beyond conservative

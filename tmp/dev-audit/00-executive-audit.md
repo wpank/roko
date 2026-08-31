@@ -73,8 +73,11 @@ verification and merge still pending):
 - [x] Replace poll-driven FAST admission with wake-driven scheduling, interpose hard deadlines
   through provider startup, salvage safe timeout diffs through the ordinary gate path, and make
   terminal projections converge.
-- [ ] Finish the broader machine loop. Disk admission is implemented; the background high-water
-  cache/GC lane and a benchmark-selected long-term cache strategy are not claimed by this snapshot.
+- [x] Add a safe machine/cache lane. Cache status and size/age/revision-aware pruning are
+  dry-run-first, lease-protected, and outside dispatch; warm targets are retained outside explicit
+  cleanup.
+- [ ] Select the long-term cache strategy from real cold/warm benchmark repetitions; the fixed-SHA
+  scorecard runner is implemented, but it has not produced promotion evidence yet.
 
 See [11-implementation-status.md](11-implementation-status.md) for exact commits, the distinction
 between implemented and verified, and the deliberately open architecture residuals.

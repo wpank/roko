@@ -5,7 +5,9 @@
 > modules, identify likely public/re-export/trait/serde contracts, compile bounded transitive
 > reverse dependents, emit scope diagnostics, and record planned-vs-actual misses. A complete
 > symbol-level `roko-index` consumer oracle for macro-generated APIs and non-Rust schemas remains
-> open; ambiguity safely widens/escalates. Final fixtures are pending.
+> open; ambiguity safely widens/escalates. The fixed-SHA scorecard runner (`d1b94b139`) can now
+> measure scoped versus full lanes, but the real latency and escaped-regression fixtures are still
+> pending.
 
 **Priority**: P1 — incomplete file scope caused expensive retry loops and manual repair after public type changes
 **Size**: M (2–3 days)
@@ -65,6 +67,8 @@ call sites must also change and which reverse dependents must compile?”
 - [ ] Generate a plan from a backlog spec containing a public API change; verify `context.read_files`
       includes representative consumers.
 - [ ] Confirm analysis latency remains bounded and is reported separately from agent time.
+- [ ] Run fixed-SHA cold/warm repetitions and compare escaped regressions against the full-CI
+      baseline; benchmark tooling alone is not proof.
 
 ## Files to Modify
 

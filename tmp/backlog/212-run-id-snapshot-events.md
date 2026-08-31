@@ -1,7 +1,8 @@
 # 212 — Stamp run_id into Snapshots and All Persisted Events
 
-> **Status: DONE FOR THE AUTHORITATIVE RUNNER-V2 PATH** (2026-08-31; PR #73, expanded by
-> `5f689d66e`). The implementation chose a stronger direct field contract: every `RunnerEvent`
+> **Status: SOURCE-DONE FOR THE AUTHORITATIVE RUNNER-V2 PATH AND OFFLINE REPAIR** (2026-08-31;
+> PR #73, expanded by `5f689d66e` + `85c052fc9`). The implementation chose a stronger direct field
+> contract: every `RunnerEvent`
 > variant owns `run_id` and exposes `RunnerEvent::run_id()`, while `RunStateSnapshot` owns the same
 > identity. New records are additionally projected into hashed per-run indexes. The original plan
 > below to add a second JSON wrapper and mutate the legacy `ExecutorSnapshot` was superseded; it
@@ -53,8 +54,9 @@ This is a prerequisite for #215 (HTTP run-scoped event queries).
       runtime context. Adding it to the retired/legacy executor snapshot is superseded.
 - [x] Every current `RunnerEvent` owns a direct top-level `run_id`; no redundant wrapper is needed.
 - [x] Persistence and readers expose `RunnerEvent::run_id()` for filtering and per-run indexing.
-- [ ] Historical pre-index records are not relabeled as `unknown` or scanned on an HTTP request.
-      A bounded explicit offline repair command remains open if old history must be queryable.
+- [x] Historical pre-index records are not relabeled as `unknown` or scanned on an HTTP request;
+      bounded, dry-run-first `roko run-index repair` rebuilds them explicitly and atomically only
+      after a complete scan.
 - [ ] A final live run proves every emitted line and per-run index record has the same `run_id`;
       source construction is complete, but the coordinator's final fixture is pending.
 
@@ -65,6 +67,8 @@ This is a prerequisite for #215 (HTTP run-scoped event queries).
 - [ ] Manual: run a plan, inspect `.roko/events.jsonl` and its per-run index — every line has the
       expected direct `run_id` field.
 - [ ] Manual: run a second plan, inspect events — the two runs have different `run_id` values
+- [ ] Manual: exercise offline repair dry-run/apply, truncation, malformed/cross-run records, and
+      active-lock refusal against disposable historical fixtures.
 - [x] No envelope migration is required because the implementation kept the direct event schema;
       pre-index historical repair is tracked separately.
 
@@ -76,3 +80,4 @@ This is a prerequisite for #215 (HTTP run-scoped event queries).
 | `crates/roko-cli/src/runner/persist.rs` | `RunStateSnapshot.run_id` and per-run index projection |
 | `crates/roko-cli/src/runner/structured_log.rs` | Persist the direct event schema without a redundant wrapper |
 | `crates/roko-fs/src/run_index.rs` | Safe hashed per-run index paths for new records |
+| `crates/roko-cli/src/commands/run_index.rs` | Bounded explicit repair of pre-index historical records |

@@ -2,8 +2,8 @@
 
 ## P0: fix before tuning models or deleting tests
 
-Implementation status in expanded integration snapshot `52d5f4df4` (final batched verification
-pending):
+Implementation status through the post-integration commits reconciled in
+[11-implementation-status.md](11-implementation-status.md) (final batched verification pending):
 
 - [x] Reserve capacity and exact-attempt ownership before dispatch preparation; count only actual
   launches.
@@ -207,8 +207,9 @@ Do not apply profile changes globally without cold/warm benchmarks and debugging
 - [x] Avoid unconditional Git subprocesses for non-Git paths.
 - [x] Buffer per-run nonterminal JSONL records and flush at lifecycle boundaries.
 - [x] Index new event storage by run ID and opaque cursor; do not scan global logs on each query.
-- [ ] Run size/revision-aware target and log GC off the plan critical path. This separate lane is
-  not part of snapshot `52d5f4df4` and is not claimed complete here.
+- [x] Run size/age/revision-aware target, evidence, context, and immutable-log pruning outside the
+  plan critical path. The operator-visible lane is dry-run-first, lease-protected, and retains
+  warm targets outside explicit cleanup (`97f897200` + `8c82c5b1b`).
 - [x] Add resource admission: refuse a cold self-host run under severe disk pressure unless the
   operator explicitly records an override; swap/memory and target sizing remain evidence.
 
@@ -221,8 +222,10 @@ runs cargo clean in the attempt worktree without explicitly carrying the shared 
 It therefore may erase a local fallback cache or do little in shared-target mode; it should not be
 treated as reliable shared-cache reclamation.
 
-FAST now skips this cleanup on its critical path. The normal lane and long-term background-GC
-design remain unchanged.
+FAST skips this cleanup on its critical path. The replacement operator lane reports cache status
+and a protected deletion plan; only explicit `roko cache prune --apply` mutates eligible entries.
+The long-term choice between shared incremental and per-revision/sccache strategies still depends
+on real benchmark repetitions.
 
 Replace it with:
 

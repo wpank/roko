@@ -130,8 +130,8 @@ left open for postmortem navigation should settle close to zero redraw CPU.
 
 ## Final persistence contradicts the terminal event
 
-> **Integration status:** source-implemented in `52d5f4df4` plus the bounded conductor-settlement
-> handoff. Terminal report/event/snapshot/status/ledger/task/agent/PID projections are idempotent,
+> **Integration status:** source-implemented in `52d5f4df4` + `43a48ee26`. Terminal
+> report/event/snapshot/status/ledger/task/agent/PID projections are idempotent,
 > elapsed time freezes, and unconfirmed process ownership remains explicitly degraded rather than
 > being cleared. The final success/failure/timeout/cancellation/restart matrix is still verification
 > work.
@@ -167,8 +167,9 @@ agree after success, failure, timeout, cancellation, provider crash, and resume.
 
 > **Integration status:** closed for new records in `5f689d66e`. New runner/canonical records have
 > bounded hashed per-run indexes, cursor queries, lifecycle-boundary flushes, and run-filtered SSE.
-> Historical global segments are intentionally not scanned by requests or startup; an explicit
-> bounded offline repair command remains open.
+> Historical global segments are intentionally not scanned by requests or startup. Commit
+> `85c052fc9` adds the explicit bounded, dry-run-first `roko run-index repair` command; final
+> malformed/truncation/active-lock fixtures remain pending.
 
 The active event log was 89MB and 282,580 lines; the archive was another 100MB. Prompt-experiment
 reconciliation warned four times on startup that it could not parse archive line 1. The connected

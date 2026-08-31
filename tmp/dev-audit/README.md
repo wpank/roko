@@ -7,8 +7,9 @@ self-development loops dramatically faster. Documents 00–09 preserve the audit
 design contract, with current status annotations distinguishing later source implementation from
 runtime proof; no production settings, gates, or tests were changed while the baseline evidence
 was collected. The approved P0 implementation was merged to `main` in `a58bdbacb`.
-The expanded implementation is code-complete through integration snapshot `52d5f4df4`, but its
-single final verification/rebase/merge batch is still pending. Document 11 is the authoritative
+The expanded implementation is source-complete through the post-integration cache, offline-index,
+and benchmark-tooling commits listed in document 11, but its single final verification/rebase/merge
+batch and real benchmark repetitions are still pending. Document 11 is the authoritative
 implemented-versus-verified ledger for that expanded work.
 
 ## Bottom line
@@ -68,6 +69,24 @@ be an explicit fast lane for eligible work, not a blanket promise for every rele
 - [schemas/session.schema.json](schemas/session.schema.json): proposed run-bundle summary schema.
 - [endpoints/core-get.txt](endpoints/core-get.txt): safe GET discovery/query seed list.
 
+## Tracked reconciliation set
+
+The repository intentionally tracks this audit package and only the seven backlog specifications
+that it reconciles. The local `tmp/backlog/00-INDEX.md` remains ignored because it links to hundreds
+of local-only backlog files; tracking that index alone would create broken links in a fresh clone.
+This table is the complete clone-safe mapping:
+
+| Audit area | Authoritative tracked record |
+|---|---|
+| Overall implemented versus verified state | [11-implementation-status.md](11-implementation-status.md) |
+| Runtime hot paths | [Backlog #58](../backlog/58-perf-hot-path-fixes.md) |
+| Run identity | [Backlog #212](../backlog/212-run-id-snapshot-events.md) |
+| Run-scoped HTTP and offline indexes | [Backlog #215](../backlog/215-http-run-scoped-event-query.md) |
+| Evidence bundles | [Backlog #228](../backlog/228-dogfood-session-evidence-bundle.md) |
+| Lean Chain/Alloy build graph | [Backlog #230](../backlog/230-chain-alloy-default-build-feature-gating.md) |
+| Conservative change-impact scoping | [Backlog #231](../backlog/231-cross-crate-change-impact-scoping.md) |
+| FAST hard deadlines and containment | [Backlog #286](../backlog/286-fast-hard-deadline-interposition.md) |
+
 ## Assumptions used
 
 1. Five minutes means patch-to-evidence for normal XS/local work.
@@ -104,8 +123,12 @@ Current status:
 - [x] Run-scoped event/task/gate/log/metrics/artifact APIs with cursor pagination and SSE.
 - [x] Wake-driven scheduling, hard startup interposition, typed timeout-diff gate salvage, and
   convergent terminal projections.
+- [x] Dry-run-first, lease-protected, size/age/revision-aware cache status and pruning outside the
+  dispatch critical path.
+- [x] Bounded explicit offline repair for pre-index history without HTTP/startup global scans.
+- [x] Fixed-SHA cold/warm benchmark automation with bounded targets, evidence bundles, and p50/p95
+  scorecards.
 - [ ] Run the coordinator's final compile/test/clippy/smoke batch on the rebased integration.
 - [ ] Run the representative cold/warm scorecard and evaluate promotion criteria.
-- [ ] Add an offline repair command for historical runs created before per-run indexes.
 - [ ] Add a Codex operation-level broker for restrictive built-in operation policy.
 - [ ] Promote FAST or enable auto-merge; both remain explicitly deferred policy decisions.

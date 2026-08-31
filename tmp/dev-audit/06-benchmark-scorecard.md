@@ -7,16 +7,20 @@ regressions. “Feels faster” and a single warm run are insufficient.
 
 ## Execution status
 
-The P0 implementation is merged at `a58bdbacb`, and the expanded code is integrated through
-`52d5f4df4`, but this representative scorecard has not yet been run. The score command aggregates
-real bundles and retains failures/timeouts; it does not manufacture cold/warm evidence. Historical
-P0 smokes and the coordinator's pending final batch are mechanics/release evidence, not promotion
-data.
+The P0 implementation is merged at `a58bdbacb`. Commit `d1b94b139` adds deterministic fixed-SHA
+scorecard orchestration in `scripts/dev_benchmark.py`, but the representative matrix has not yet
+been run. The runner uses detached worktrees, isolated cold targets, bounded lane-local warm
+targets, evidence bundles, and raw/p50/p95 output. It retains failures/timeouts and never
+manufactures missing cold/warm or manual evidence. Historical P0 smokes and the coordinator's
+pending final batch are mechanics/release evidence, not promotion data.
 
 - [x] Create an opt-in FAST command and bounded evidence wrapper.
 - [x] Preserve the pictured-run baseline and define fixtures/fields/targets.
 - [x] Implement deterministic bundle scoring with failure/timeout retention and p50/p95 output.
+- [x] Implement fixed-SHA stock/FAST/manual orchestration, cold/warm cache isolation, resource/cost
+  admission, and safe cleanup that never deletes shared targets.
 - [ ] Run five cold and five warm repetitions for each selected fixture and comparison lane.
+- [ ] Import real manual Codex/Claude samples; do not substitute placeholders for absent runs.
 - [ ] Publish raw bundle links and p50/p95 results.
 - [ ] Measure escaped regressions and full-CI baseline before promoting FAST.
 
@@ -53,6 +57,11 @@ Compare:
 - Roko FAST.
 
 Run cold and warm five times each. Preserve every bundle.
+
+The executable manifest and full operator contract are tracked under `benchmarks/dev-audit/`.
+Start with `python3 scripts/dev_benchmark.py list` or a no-execution
+`python3 scripts/dev_benchmark.py run --dry-run --base <commit>`, then admit paid/network lanes
+only with the explicit network flag and worst-case cost ceiling documented there.
 
 ## Scorecard fields
 

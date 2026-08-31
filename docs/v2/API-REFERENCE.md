@@ -835,9 +835,17 @@ The old public transcript alias at `/api/runs/{id}` is replaced by this authenti
 observability route. Public shared transcripts remain available through the opaque-token endpoint
 `GET /api/shared/{token}` and the self-contained page `GET /runs/{token}`.
 
-Existing global-log records created before per-run indexing are not rebuilt during an HTTP
+Existing global-log records created before per-run indexing are never rebuilt during an HTTP
 request or server startup, because doing so would reintroduce the multi-hundred-megabyte latency
-spike. They remain in the compatibility log for a future explicit offline repair command.
+spike. Operators can inspect the historical repair plan with
+`roko run-index repair --max-bytes <bytes> --max-records <records> --deadline-secs <seconds>` and
+apply it explicitly with `--apply`. Dry-run is the default. The offline command scans the live
+runner/runtime logs and recognized immutable rotation generations under one aggregate budget,
+validates top-level and canonical nested run ownership, and atomically replaces only hashed
+per-run files after a complete scan. A byte, record, or deadline truncation replaces nothing.
+Malformed, oversized, missing-ID, invalid-ID, and cross-run records are rejected and counted.
+Apply also refuses symlink/escape targets and any active workspace, JSONL-writer, cache-GC, or
+repair lock. The command is not called by HTTP handlers or process startup.
 
 ---
 

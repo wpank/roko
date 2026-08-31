@@ -163,6 +163,29 @@ pub(crate) enum CacheCmd {
     },
 }
 
+/// Offline maintenance for derived per-run observability indexes.
+#[derive(Debug, Subcommand)]
+pub(crate) enum RunIndexCmd {
+    /// Boundedly inspect or rebuild historical per-run indexes.
+    Repair {
+        /// Perform atomic replacements. Without this flag the command is read-only.
+        #[arg(long)]
+        apply: bool,
+        /// Workspace root (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Maximum aggregate bytes read across runner/runtime generations.
+        #[arg(long, default_value_t = 512 * 1024 * 1024)]
+        max_bytes: u64,
+        /// Maximum aggregate complete JSONL records inspected.
+        #[arg(long, default_value_t = 1_000_000)]
+        max_records: u64,
+        /// Hard wall-clock budget for discovery, validation, and staging.
+        #[arg(long, default_value_t = 120)]
+        deadline_secs: u64,
+    },
+}
+
 /// Log output format for tracing subscriber initialization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum LogFormat {
@@ -554,6 +577,16 @@ Examples:
     Cache {
         #[command(subcommand)]
         cmd: CacheCmd,
+    },
+    /// Inspect or rebuild derived per-run event indexes offline.
+    #[command(after_help = "\
+Examples:
+  roko run-index repair
+  roko run-index repair --max-bytes 268435456 --deadline-secs 30
+  roko run-index repair --apply")]
+    RunIndex {
+        #[command(subcommand)]
+        cmd: RunIndexCmd,
     },
     /// Interactive setup wizard: detect providers, init workspace, verify.
     #[command(after_help = "\
@@ -2996,6 +3029,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             serve_url,
         } => commands::util::cmd_doctor(cli, subject, workdir, serve_url).await,
         Command::Cache { cmd } => commands::cache::cmd_cache(cli, cmd).await,
+        Command::RunIndex { cmd } => commands::run_index::cmd_run_index(cli, cmd).await,
         Command::Setup { workdir, yes } => commands::setup::cmd_setup(cli, workdir, yes).await,
         Command::Diagnose {
             plan_id,

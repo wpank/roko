@@ -25,6 +25,7 @@ pub mod plan;
 pub mod prd;
 pub mod recipe;
 pub mod research;
+pub mod run_index;
 pub mod screenshot;
 pub mod server;
 pub mod setup;

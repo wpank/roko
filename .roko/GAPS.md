@@ -207,7 +207,7 @@ rerun once in a bounded detached baseline worktree. Environment-dependent, non-C
 or non-reproducible failures are not waived. This prevents a broad gate name or exit code from
 hiding a genuine regression. Subsystem: gate attribution and retry policy.
 
-### Run-scoped observability and evidence queries -- IMPLEMENTED FOR NEW RUNS
+### Run-scoped observability and evidence queries -- IMPLEMENTED
 
 Runner lifecycle events and canonical workflow events now project into hashed per-run JSONL indexes
 without adding a second durable fsync to the runner hot path. The authenticated/loopback-only API
@@ -221,9 +221,13 @@ unauthenticated access are rejected. OpenAPI and the API reference enumerate the
 The indexes are derived best-effort state: runner lifecycle and streamed agent-output records share
 a bounded buffered writer and flush at task/gate/terminal boundaries; runtime records buffer until
 the same boundaries or a selected-run read. Failures do not invalidate the global authoritative
-lifecycle terminal. Pre-index historical global records are deliberately not scanned
-or repaired by HTTP requests or server startup. An explicit bounded offline index-repair command is
-still a residual if historical runs must become queryable.
+lifecycle terminal. Pre-index historical global records are deliberately not scanned or repaired
+by HTTP requests or server startup. `roko run-index repair` now provides the explicit bounded
+offline lane: dry-run by default, aggregate byte/record/deadline limits, strict embedded ownership
+validation, symlink and escape refusal, active writer/GC lock exclusion, and temp-file plus atomic
+replacement on `--apply`. Truncated scans replace nothing. The repair intentionally preserves
+unrelated stale hashed files because there is no reversible proof that every older global
+generation is still retained; cache lifecycle policy may retire those independently.
 
 ### event_loop.rs is a ~23.1K-line god object -- OPEN
 

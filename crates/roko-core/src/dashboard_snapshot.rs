@@ -3529,6 +3529,7 @@ mod tests {
 
         snap.apply(&DashboardEvent::PlanStarted {
             plan_id: "p1".into(),
+            tasks_total: 0,
         });
         assert_eq!(snap.stats.plans_active, 1);
         assert!(snap.plans["p1"].active);
@@ -3547,6 +3548,7 @@ mod tests {
             task_id: "t1".into(),
             gate: "compile".into(),
             passed: true,
+            output_text: None,
         });
         assert_eq!(snap.stats.gates_passed, 1);
 
@@ -3683,6 +3685,7 @@ mod tests {
                 task_id: format!("t{i}"),
                 gate: "compile".into(),
                 passed: true,
+                output_text: None,
             });
         }
         assert_eq!(snap.gates.len(), MAX_GATES);
@@ -3698,12 +3701,14 @@ mod tests {
             task_id: "task-1".into(),
             gate: "compile".into(),
             passed: true,
+            output_text: None,
         });
         snap.apply(&DashboardEvent::GateResult {
             plan_id: "plan-a".into(),
             task_id: "task-2".into(),
             gate: "compile".into(),
             passed: false,
+            output_text: None,
         });
 
         let trend = snap.gate_trends.get("compile").expect("compile trend");

@@ -125,6 +125,18 @@ fn metadata_unchanged(before: &std::fs::Metadata, after: &std::fs::Metadata) -> 
         && before.modified().ok() == after.modified().ok()
         && before.dev() == after.dev()
         && before.ino() == after.ino()
+        && before.mode() == after.mode()
+}
+
+#[cfg(unix)]
+fn metadata_mode(metadata: &std::fs::Metadata) -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    metadata.mode()
+}
+
+#[cfg(not(unix))]
+fn metadata_mode(_metadata: &std::fs::Metadata) -> u32 {
+    0
 }
 fn gate_input_snapshot_blocking(workdir: &Path) -> Result<GateInputSnapshot, String> {
     #[cfg(not(unix))]
@@ -175,6 +187,7 @@ fn gate_input_snapshot_blocking(workdir: &Path) -> Result<GateInputSnapshot, Str
         let path = workdir.join(relative);
         let before = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
         hash_part(&mut hasher, raw_path);
+        hasher.update(metadata_mode(&before).to_le_bytes());
         if before.file_type().is_symlink() {
             let target_path = std::fs::read_link(&path).map_err(|error| error.to_string())?;
             let target = target_path.as_os_str().as_encoded_bytes();
@@ -227,6 +240,17 @@ async fn gate_input_snapshot(workdir: PathBuf) -> Result<GateInputSnapshot, Stri
     tokio::task::spawn_blocking(move || gate_input_snapshot_blocking(&workdir))
         .await
         .map_err(|error| error.to_string())?
+}
+
+/// Stable identity of a task worktree's base commit plus all tracked and
+/// untracked owned bytes. Reflex promotion reuses the same attribution proof
+/// as the gate so an isolated replay can be compared with the Premium source
+/// attempt without inventing a weaker diff format.
+pub(super) async fn reflex_input_fingerprint(
+    workdir: PathBuf,
+) -> Result<(String, [u8; 32], bool), String> {
+    let GateInputSnapshot(base, digest, has_owned_diff) = gate_input_snapshot(workdir).await?;
+    Ok((base, digest, has_owned_diff))
 }
 async fn accepted_input_snapshot(
     workdir: PathBuf,
@@ -1944,6 +1968,28 @@ mod tests {
         assert_eq!(before.dev(), after.dev());
         assert_ne!(before.ino(), after.ino());
         assert!(!metadata_unchanged(&before, &after));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn untracked_executable_mode_changes_gate_and_replay_fingerprint() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = git_repo();
+        let input = dir.path().join("script.sh");
+        std::fs::write(&input, b"#!/bin/sh\nexit 0\n").expect("write untracked script");
+        std::fs::set_permissions(&input, std::fs::Permissions::from_mode(0o644))
+            .expect("set non-executable mode");
+        let before = gate_input_snapshot_blocking(dir.path()).expect("initial fingerprint");
+        let metadata_before = std::fs::symlink_metadata(&input).expect("initial metadata");
+
+        std::fs::set_permissions(&input, std::fs::Permissions::from_mode(0o755))
+            .expect("set executable mode");
+        let after = gate_input_snapshot_blocking(dir.path()).expect("updated fingerprint");
+        let metadata_after = std::fs::symlink_metadata(&input).expect("updated metadata");
+
+        assert_ne!(before.1, after.1);
+        assert!(!metadata_unchanged(&metadata_before, &metadata_after));
     }
 
     #[cfg(unix)]

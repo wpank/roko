@@ -50,6 +50,7 @@ pub mod preflight;
 pub mod projection;
 pub mod prompt_experiments;
 pub mod queue_manifest;
+pub(crate) mod reflex;
 pub mod resume;
 pub mod screenshot_collector;
 pub mod snapshot_writer;

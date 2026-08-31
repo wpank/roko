@@ -70,6 +70,14 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
                 cmd_learn(&wd, "episodes").await
             }
         }
+        LearnCmd::Reflexes { workdir } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            if json {
+                cmd_learn_json(&wd, "reflexes").await
+            } else {
+                cmd_learn_reflexes(&wd).await
+            }
+        }
         LearnCmd::Tune {
             subsystem,
             dry_run,
@@ -150,14 +158,27 @@ pub(crate) async fn cmd_learn(workdir: &std::path::Path, what: &str) -> Result<i
         print_learn_episodes(workdir).await;
     }
 
+    if show_all || what == "reflexes" {
+        print_learn_reflexes(workdir);
+    }
+
     if show_all {
         print_learn_gate_thresholds(workdir);
         print_learn_knowledge(workdir).await;
     }
 
-    if !show_all && !["router", "experiments", "efficiency", "episodes"].contains(&what) {
+    if !show_all
+        && ![
+            "router",
+            "experiments",
+            "efficiency",
+            "episodes",
+            "reflexes",
+        ]
+        .contains(&what)
+    {
         anyhow::bail!(
-            "unknown learning area '{what}'. Available: router, experiments, efficiency, episodes, all"
+            "unknown learning area '{what}'. Available: router, experiments, efficiency, episodes, reflexes, all"
         );
     }
 
@@ -176,6 +197,8 @@ struct LearnJsonOutput {
     efficiency: Option<LearnJsonEfficiency>,
     #[serde(skip_serializing_if = "Option::is_none")]
     episodes: Option<LearnJsonEpisodes>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reflexes: Option<LearnJsonReflexes>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gate_thresholds: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -255,6 +278,14 @@ struct LearnJsonEpisodeEntry {
 }
 
 #[derive(serde::Serialize)]
+struct LearnJsonReflexes {
+    total_rules: usize,
+    max_rules: usize,
+    top_rules: Vec<roko_learn::reflex_store::ReflexRule>,
+    recent_demotions: Vec<roko_learn::efficiency::AgentEfficiencyEvent>,
+}
+
+#[derive(serde::Serialize)]
 struct LearnJsonKnowledge {
     total_entries: usize,
 }
@@ -291,6 +322,12 @@ async fn cmd_learn_json(workdir: &std::path::Path, what: &str) -> Result<i32> {
         None
     };
 
+    let reflexes = if show_all || what == "reflexes" {
+        Some(collect_reflexes_json(workdir))
+    } else {
+        None
+    };
+
     let gate_thresholds = if show_all {
         collect_gate_thresholds_json(workdir)
     } else {
@@ -303,9 +340,18 @@ async fn cmd_learn_json(workdir: &std::path::Path, what: &str) -> Result<i32> {
         None
     };
 
-    if !show_all && !["router", "experiments", "efficiency", "episodes"].contains(&what) {
+    if !show_all
+        && ![
+            "router",
+            "experiments",
+            "efficiency",
+            "episodes",
+            "reflexes",
+        ]
+        .contains(&what)
+    {
         anyhow::bail!(
-            "unknown learning area '{what}'. Available: router, experiments, efficiency, episodes, all"
+            "unknown learning area '{what}'. Available: router, experiments, efficiency, episodes, reflexes, all"
         );
     }
 
@@ -314,6 +360,7 @@ async fn cmd_learn_json(workdir: &std::path::Path, what: &str) -> Result<i32> {
         experiments,
         efficiency,
         episodes,
+        reflexes,
         gate_thresholds,
         knowledge,
     };
@@ -483,6 +530,18 @@ async fn collect_episodes_json(workdir: &std::path::Path) -> LearnJsonEpisodes {
         first_seen: first_seen.map(|ts| ts.to_rfc3339()),
         last_seen: last_seen.map(|ts| ts.to_rfc3339()),
         latest: tail,
+    }
+}
+
+fn collect_reflexes_json(workdir: &std::path::Path) -> LearnJsonReflexes {
+    let mut rules = reflex_store_snapshot(workdir);
+    let total_rules = rules.len();
+    rules.truncate(REFLEX_DISPLAY_LIMIT);
+    LearnJsonReflexes {
+        total_rules,
+        max_rules: roko_learn::reflex_store::MAX_RULES,
+        top_rules: rules,
+        recent_demotions: recent_reflex_demotions(workdir),
     }
 }
 
@@ -821,6 +880,93 @@ pub(crate) async fn print_learn_knowledge(workdir: &std::path::Path) {
     } else {
         println!("Knowledge: {} durable entries at {}", count, path.display());
     }
+}
+
+async fn cmd_learn_reflexes(workdir: &std::path::Path) -> Result<i32> {
+    print_learn_reflexes(workdir);
+    Ok(EXIT_SUCCESS)
+}
+
+const REFLEX_DISPLAY_LIMIT: usize = 5;
+
+fn print_learn_reflexes(workdir: &std::path::Path) {
+    let rules = reflex_store_snapshot(workdir);
+    let demotions = recent_reflex_demotions(workdir);
+    print!("{}", format_reflexes_human(&rules, &demotions));
+}
+
+fn reflex_store_snapshot(workdir: &std::path::Path) -> Vec<roko_learn::reflex_store::ReflexRule> {
+    let path = learn_root(workdir).join("reflexes.jsonl");
+    roko_learn::reflex_store::ReflexStore::open(path).snapshot()
+}
+
+fn recent_reflex_demotions(
+    workdir: &std::path::Path,
+) -> Vec<roko_learn::efficiency::AgentEfficiencyEvent> {
+    let Ok(text) = std::fs::read_to_string(learn_efficiency_path(workdir)) else {
+        return Vec::new();
+    };
+    text.lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str(line.trim()).ok())
+        .filter(|event: &roko_learn::efficiency::AgentEfficiencyEvent| {
+            event.outcome == "reflex_demoted"
+        })
+        .take(REFLEX_DISPLAY_LIMIT)
+        .collect()
+}
+
+fn format_reflexes_human(
+    rules: &[roko_learn::reflex_store::ReflexRule],
+    demotions: &[roko_learn::efficiency::AgentEfficiencyEvent],
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::new();
+    let _ = writeln!(
+        output,
+        "T0 Reflex Store — {} rules (max {})",
+        rules.len(),
+        roko_learn::reflex_store::MAX_RULES,
+    );
+
+    if rules.is_empty() {
+        let _ = writeln!(
+            output,
+            "  (no rules yet; run tasks to build reflex history)"
+        );
+    } else {
+        let _ = writeln!(output, "\nTop rules by hit count:");
+        for (index, rule) in rules.iter().take(REFLEX_DISPLAY_LIMIT).enumerate() {
+            let _ = writeln!(
+                output,
+                "  {}. [{:.0}% conf, {} hits] {:?} → {} {}",
+                index + 1,
+                rule.confidence * 100.0,
+                rule.hit_count,
+                rule.condition.tool.as_deref().unwrap_or("*"),
+                rule.action.tool,
+                rule.action.args,
+            );
+        }
+    }
+
+    let _ = writeln!(output, "\nRecent demotions:");
+    if demotions.is_empty() {
+        let _ = writeln!(output, "  (none)");
+    } else {
+        for event in demotions {
+            let _ = writeln!(
+                output,
+                "  {} plan={} task={} attempt={}",
+                event.timestamp,
+                non_empty_or_unknown(&event.plan_id),
+                non_empty_or_unknown(&event.task_id),
+                non_empty_or_unknown(&event.attempt_id),
+            );
+        }
+    }
+    output
 }
 
 fn learn_root(workdir: &std::path::Path) -> std::path::PathBuf {

@@ -2200,7 +2200,11 @@ fn accepted_plan_worktree(
 // advances; the runner ledger only records an agent start when a runtime was
 // actually launched for a concrete task.
 enum ActionDispatchOutcome {
+    // No executor progress needs an immediate follow-up tick. FAST mode waits
+    // for the capacity, cooldown, or runtime event that made this a no-op.
     Noop,
+    // The action advanced or terminalized executor-visible state. FAST mode
+    // must immediately tick again so the next phase/action is observed.
     Handled,
     AgentStarted { plan_id: String, task_id: String },
     Skipped(SkippedOutcome),
@@ -10579,7 +10583,7 @@ async fn dispatch_action(
                     ctx.tui.error(&format!(
                         "failed to resolve runner-v2 enrichment for {plan_id}: {e}"
                     ));
-                    return ActionDispatchOutcome::Noop;
+                    return ActionDispatchOutcome::Handled;
                 }
             }
             ActionDispatchOutcome::Handled
@@ -10709,7 +10713,7 @@ async fn dispatch_action(
                             ctx.state.force_plan_terminal(plan_id);
                         }
                         ctx.tui.error(&reason);
-                        return ActionDispatchOutcome::Noop;
+                        return ActionDispatchOutcome::Handled;
                     }
 
                     let Some(event) = no_ready_spawn_event(phase_kind, &task) else {
@@ -10746,7 +10750,7 @@ async fn dispatch_action(
                     if let ExecutorEvent::Fatal(reason) = event {
                         ctx.tui.error(&reason);
                     }
-                    return ActionDispatchOutcome::Noop;
+                    return ActionDispatchOutcome::Handled;
                 }
             };
 
@@ -10877,7 +10881,7 @@ async fn dispatch_action(
                         ctx.state.force_plan_terminal(plan_id);
                     }
                     ctx.tui.error(&message);
-                    return ActionDispatchOutcome::Noop;
+                    return ActionDispatchOutcome::Handled;
                 }
             }
 
@@ -10952,7 +10956,7 @@ async fn dispatch_action(
                                     "failed to apply Fatal event -- forcing plan terminal");
                                 ctx.state.force_plan_terminal(plan_id);
                             }
-                            return ActionDispatchOutcome::Noop;
+                            return ActionDispatchOutcome::Handled;
                         }
                     }
                     roko_learn::budget::BudgetAction::BlockNewSessions => {
@@ -11026,7 +11030,7 @@ async fn dispatch_action(
                             "failed to apply Fatal event -- forcing plan terminal");
                         ctx.state.force_plan_terminal(plan_id);
                     }
-                    return ActionDispatchOutcome::Noop;
+                    return ActionDispatchOutcome::Handled;
                 }
             };
 
@@ -11122,7 +11126,7 @@ async fn dispatch_action(
                             &attempt_ref,
                             is_dag_task_spawn,
                         );
-                        return ActionDispatchOutcome::Noop;
+                        return ActionDispatchOutcome::Handled;
                     }
                     Err(e) => {
                         // Measurement failure: log and continue (do not block).
@@ -11259,7 +11263,7 @@ async fn dispatch_action(
                         is_dag_task_spawn,
                     );
                     ctx.tui.error(&message);
-                    return ActionDispatchOutcome::Noop;
+                    return ActionDispatchOutcome::Handled;
                 }
             };
             if let Err(interruption) = await_dispatch_step(
@@ -11864,7 +11868,7 @@ async fn dispatch_action(
                         ctx.state.force_plan_terminal(plan_id);
                     }
                     ctx.tui.error(&message);
-                    return ActionDispatchOutcome::Noop;
+                    return ActionDispatchOutcome::Handled;
                 }
             };
             let mut prompt_experiment_guard = PreparedPromptExperimentGuard::new(
@@ -12026,7 +12030,7 @@ async fn dispatch_action(
                         ctx.state.force_plan_terminal(plan_id);
                     }
                     ctx.tui.error(&message);
-                    return ActionDispatchOutcome::Noop;
+                    return ActionDispatchOutcome::Handled;
                 }
             }
             let requested_model = dispatch_plan.model.slug.clone();
@@ -12332,7 +12336,7 @@ async fn dispatch_action(
                             ctx.state.force_plan_terminal(plan_id);
                         }
                         ctx.tui.error(&message);
-                        return ActionDispatchOutcome::Noop;
+                        return ActionDispatchOutcome::Handled;
                     }
 
                     // Only non-forced task hints may fall back to the default model.
@@ -12368,7 +12372,7 @@ async fn dispatch_action(
                                 ctx.state.force_plan_terminal(plan_id);
                             }
                             ctx.tui.error(&message);
-                            return ActionDispatchOutcome::Noop;
+                            return ActionDispatchOutcome::Handled;
                         }
                     }
                 }
@@ -12495,7 +12499,7 @@ async fn dispatch_action(
                     ctx.attempt_ownership
                         .complete_claim(dispatch_claim)
                         .expect("safety rejection must release ownership");
-                    return ActionDispatchOutcome::Noop;
+                    return ActionDispatchOutcome::Handled;
                 }
             }
 
@@ -12589,7 +12593,7 @@ async fn dispatch_action(
                     ctx.state.force_plan_terminal(plan_id);
                 }
                 ctx.tui.error(&message);
-                return ActionDispatchOutcome::Noop;
+                return ActionDispatchOutcome::Handled;
             }
 
             // Re-check the non-resetting run deadline immediately before the
@@ -12995,7 +12999,7 @@ async fn dispatch_action(
                                     "failed to apply Fatal event -- forcing plan terminal");
                                 ctx.state.force_plan_terminal(plan_id);
                             }
-                            return ActionDispatchOutcome::Noop;
+                            return ActionDispatchOutcome::Handled;
                         }
                     }
                 }
@@ -13234,7 +13238,7 @@ async fn dispatch_action(
                         ctx.state.force_plan_terminal(plan_id);
                     }
                     ctx.tui.error(&message);
-                    return ActionDispatchOutcome::Noop;
+                    return ActionDispatchOutcome::Handled;
                 }
             };
             let gates_config = gates_config_for_run(ctx.config);
@@ -13584,7 +13588,7 @@ async fn dispatch_action(
                     ctx.state.force_plan_terminal(plan_id);
                 }
                 ctx.tui.error(&message);
-                return ActionDispatchOutcome::Noop;
+                return ActionDispatchOutcome::Handled;
             };
             let plan_workdir = accepted.handle.path;
 
@@ -13835,7 +13839,7 @@ async fn dispatch_action(
                     ctx.state.force_plan_terminal(plan_id);
                 }
                 ctx.tui.error(&message);
-                return ActionDispatchOutcome::Noop;
+                return ActionDispatchOutcome::Handled;
             };
             let files_changed = ctx
                 .executor
@@ -21477,7 +21481,7 @@ slug = "fixture-model"
         };
         assert!(matches!(
             dispatch_action(&action, &mut ctx).await,
-            ActionDispatchOutcome::Noop
+            ActionDispatchOutcome::Handled
         ));
 
         let events = std::fs::read_to_string(&paths.events_jsonl).unwrap();

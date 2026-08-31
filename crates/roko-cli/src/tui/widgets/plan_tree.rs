@@ -95,15 +95,15 @@ pub fn render_plan_tree(frame: &mut Frame<'_>, area: Rect, state: &TuiState, foc
         }
     };
 
-    let active_filter = active_filter_text(state);
-    let filtered_plan_indices = filtered_plan_indices(state, active_filter.as_deref());
+    let filter_active = is_filter_active(state);
+    let filtered_plan_indices = filtered_plan_indices(state);
     let filtered_total = filtered_plan_indices.len();
     let selected_plan_idx = clamped_selected_plan_idx(state.selected_plan_idx, filtered_total);
     let selected_plan_id = filtered_plan_indices
         .get(selected_plan_idx)
         .and_then(|&idx| state.plans.get(idx))
         .map(|plan| plan.id.as_str());
-    let filtered_suffix = if active_filter.is_some() {
+    let filtered_suffix = if filter_active {
         format!(", {filtered_total}/{total} filtered")
     } else {
         String::new()
@@ -120,10 +120,13 @@ pub fn render_plan_tree(frame: &mut Frame<'_>, area: Rect, state: &TuiState, foc
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     // Filter indicator
-    if active_filter.is_some() {
+    if filter_active {
         lines.push(Line::from(vec![
             Span::styled(" /", Style::default().fg(Theme::DREAM)),
-            Span::styled(state.filter.clone(), Style::default().fg(Theme::BONE)),
+            Span::styled(
+                state.plan_tree_filter.pattern.clone(),
+                Style::default().fg(Theme::BONE),
+            ),
             Span::styled("/ ", Style::default().fg(Theme::DREAM)),
         ]));
     }
@@ -134,23 +137,9 @@ pub fn render_plan_tree(frame: &mut Frame<'_>, area: Rect, state: &TuiState, foc
     }
 
     if state.execution_waves.is_empty() {
-        render_flat_plans(
-            &mut lines,
-            state,
-            focused,
-            area,
-            selected_plan_id,
-            active_filter.as_deref(),
-        );
+        render_flat_plans(&mut lines, state, focused, area, selected_plan_id);
     } else {
-        render_wave_tree(
-            &mut lines,
-            state,
-            focused,
-            area,
-            selected_plan_id,
-            active_filter.as_deref(),
-        );
+        render_wave_tree(&mut lines, state, focused, area, selected_plan_id);
     }
 
     // Border styling
@@ -242,7 +231,6 @@ fn render_wave_tree(
     focused: bool,
     area: Rect,
     selected_plan_id: Option<&str>,
-    filter_lower: Option<&str>,
 ) {
     let selected_wave = state
         .execution_waves
@@ -254,7 +242,7 @@ fn render_wave_tree(
             .plans
             .iter()
             .filter_map(|plan_id| state.plans.iter().find(|p| p.id == *plan_id))
-            .filter(|plan| matches_filter(plan, filter_lower))
+            .filter(|plan| matches_filter(plan, state))
             .collect();
         if wave_plans.is_empty() {
             continue;
@@ -388,10 +376,9 @@ fn render_flat_plans(
     focused: bool,
     area: Rect,
     selected_plan_id: Option<&str>,
-    filter_lower: Option<&str>,
 ) {
     for plan in &state.plans {
-        if matches_filter(plan, filter_lower) {
+        if matches_filter(plan, state) {
             render_plan_line(
                 lines,
                 plan,
@@ -546,15 +533,24 @@ fn render_plan_line(
     // Verify cell (3 chars): gate verdict summary for this plan
     let verify_cell = plan_verify_cell(&plan.id, state);
 
-    // Age cell (6 chars): elapsed time
-    let age_cell = if plan.elapsed_secs > 0.0 {
+    // Age cell (6 chars): elapsed time — use live `started_at` for active plans (P5.5)
+    let live_elapsed = plan
+        .started_at
+        .map(|t| t.elapsed().as_secs_f64())
+        .filter(|&s| s > 0.0);
+    let display_elapsed = live_elapsed.unwrap_or(plan.elapsed_secs);
+    let age_cell = if display_elapsed > 0.0 {
         (
             format!(
                 "{:>width$}",
-                truncate_middle(&format_duration(plan.elapsed_secs), COL_AGE),
+                truncate_middle(&format_duration(display_elapsed), COL_AGE),
                 width = COL_AGE
             ),
-            Theme::TEXT_DIM,
+            if plan.active && live_elapsed.is_some() {
+                Theme::WARNING
+            } else {
+                Theme::TEXT_DIM
+            },
         )
     } else {
         (
@@ -643,9 +639,9 @@ fn render_plan_line(
         if plan.tasks_failed > 0 {
             detail_parts.push((format!("{} failed", plan.tasks_failed), Theme::EMBER));
         }
-        if plan.elapsed_secs > 0.0 {
+        if display_elapsed > 0.0 {
             detail_parts.push((
-                format!("elapsed {}", format_duration(plan.elapsed_secs)),
+                format!("elapsed {}", format_duration(display_elapsed)),
                 Theme::TEXT_GHOST,
             ));
         }
@@ -791,21 +787,16 @@ fn render_scrollbar(
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn active_filter_text(state: &TuiState) -> Option<String> {
-    let filter = state.filter.trim();
-    if state.filter_active && !filter.is_empty() {
-        Some(filter.to_lowercase())
-    } else {
-        None
-    }
+fn is_filter_active(state: &TuiState) -> bool {
+    state.plan_tree_filter.active && !state.plan_tree_filter.pattern.is_empty()
 }
 
-fn filtered_plan_indices(state: &TuiState, filter_lower: Option<&str>) -> Vec<usize> {
+fn filtered_plan_indices(state: &TuiState) -> Vec<usize> {
     state
         .plans
         .iter()
         .enumerate()
-        .filter_map(|(idx, plan)| matches_filter(plan, filter_lower).then_some(idx))
+        .filter_map(|(idx, plan)| matches_filter(plan, state).then_some(idx))
         .collect()
 }
 
@@ -817,11 +808,11 @@ fn clamped_selected_plan_idx(selected_plan_idx: usize, filtered_total: usize) ->
     }
 }
 
-fn matches_filter(plan: &PlanEntry, filter_lower: Option<&str>) -> bool {
-    let Some(filter_lower) = filter_lower else {
+fn matches_filter(plan: &PlanEntry, state: &TuiState) -> bool {
+    if !is_filter_active(state) {
         return true;
-    };
-    plan.name.to_lowercase().contains(filter_lower)
+    }
+    state.plan_tree_filter.matches_plan(plan)
 }
 
 fn compact_progress_glyphs(width: usize, fill_pct: f64) -> String {
@@ -1005,8 +996,9 @@ mod tests {
         let backend = TestBackend::new(100, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut state = sample_state();
-        state.filter_active = true;
-        state.filter = "BETA".into();
+        state.plan_tree_filter.active = true;
+        state.plan_tree_filter.pattern = "BETA".into();
+        state.plan_tree_filter.reparse();
         state.selected_plan_idx = 2;
 
         terminal

@@ -9,6 +9,7 @@ pub mod cost_by_model;
 pub mod diff_panel;
 pub mod dream_view;
 pub mod error_digest;
+pub mod gate_output;
 pub mod header_bar;
 pub mod parallel_pool;
 pub mod phase_compact;

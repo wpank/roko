@@ -1631,6 +1631,7 @@ mod tests {
             RecoveryInstallToken::from(&hub.current_snapshot_with_provenance().provenance);
         hub.publish(DashboardEvent::PlanStarted {
             plan_id: "live".to_string(),
+            tasks_total: 0,
         });
         let mut stale = DashboardSnapshot::default();
         stale.plans.insert(
@@ -1670,6 +1671,7 @@ mod tests {
         let hub = SharedStateHub::new_in_process();
         hub.publish(DashboardEvent::PlanStarted {
             plan_id: "live".to_string(),
+            tasks_total: 0,
         });
         hub.bootstrap_from_workdir(tmpdir.path()).unwrap();
         let captured = hub.cursor_snapshot();
@@ -1941,6 +1943,7 @@ mod tests {
 
         hub.publish(DashboardEvent::PlanStarted {
             plan_id: "p1".into(),
+            tasks_total: 0,
         });
 
         // Snapshot is updated synchronously.
@@ -1990,6 +1993,7 @@ mod tests {
         assert_eq!(
             hub.publish(DashboardEvent::PlanStarted {
                 plan_id: "committed".into(),
+                tasks_total: 0,
             }),
             0
         );
@@ -2005,6 +2009,7 @@ mod tests {
         for plan_id in ["before-0", "before-1"] {
             hub.publish(DashboardEvent::PlanStarted {
                 plan_id: plan_id.into(),
+                tasks_total: 0,
             });
         }
 
@@ -2023,6 +2028,7 @@ mod tests {
         let mut live = subscription.live;
         hub.publish(DashboardEvent::PlanStarted {
             plan_id: "live-2".into(),
+            tasks_total: 0,
         });
         let live_event = live.recv().await.unwrap();
         assert_eq!(live_event.seq, 2);
@@ -2034,6 +2040,7 @@ mod tests {
         let hub = StateHub::default_capacity();
         hub.publish(DashboardEvent::PlanStarted {
             plan_id: "p1".into(),
+            tasks_total: 0,
         });
 
         hub.update_snapshot(|snapshot| {
@@ -2059,6 +2066,7 @@ mod tests {
                 publish_barrier.wait();
                 publish_hub.publish(DashboardEvent::PlanStarted {
                     plan_id: format!("plan-{index}"),
+                    tasks_total: 0,
                 });
             }));
 
@@ -2106,9 +2114,11 @@ mod tests {
         let hub = StateHub::new(16);
         hub.publish(DashboardEvent::PlanStarted {
             plan_id: "p1".into(),
+            tasks_total: 0,
         });
         hub.publish(DashboardEvent::PlanStarted {
             plan_id: "p2".into(),
+            tasks_total: 0,
         });
 
         let events = hub.replay_from(0);
@@ -2126,6 +2136,7 @@ mod tests {
         hub.publish_batch(vec![
             DashboardEvent::PlanStarted {
                 plan_id: "p1".into(),
+                tasks_total: 0,
             },
             DashboardEvent::TaskStarted {
                 plan_id: "p1".into(),
@@ -2244,6 +2255,7 @@ mod tests {
                 "{}\n",
                 serde_json::to_string(&DashboardEvent::PlanStarted {
                     plan_id: "canonical".to_string(),
+                    tasks_total: 0,
                 })
                 .unwrap()
             ),
@@ -2277,6 +2289,7 @@ mod tests {
         });
         hub.publish(DashboardEvent::PlanStarted {
             plan_id: "p1".into(),
+            tasks_total: 0,
         });
 
         // Verify file was written.
@@ -2396,6 +2409,7 @@ mod tests {
         // Publish a mix of noisy and resume-critical events.
         hub.publish(DashboardEvent::PlanStarted {
             plan_id: "p1".into(),
+            tasks_total: 0,
         });
         hub.publish(DashboardEvent::FeedTick {
             agent_id: "feed-1".into(),
@@ -2457,6 +2471,7 @@ mod tests {
         });
         sender.publish(DashboardEvent::PlanStarted {
             plan_id: "p2".into(),
+            tasks_total: 0,
         });
 
         let content = std::fs::read_to_string(&log_path).expect("read event log");
@@ -2479,6 +2494,7 @@ mod tests {
         hub.publish_batch(vec![
             DashboardEvent::PlanStarted {
                 plan_id: "p1".into(),
+                tasks_total: 0,
             },
             DashboardEvent::FeedTick {
                 agent_id: "feed-1".into(),
@@ -2533,6 +2549,7 @@ mod tests {
             for i in 0..EVENT_LOG_MAX_LINES {
                 let line = serde_json::to_string(&DashboardEvent::PlanStarted {
                     plan_id: format!("pre-{i}"),
+                    tasks_total: 0,
                 })
                 .unwrap();
                 content.push_str(&line);
@@ -2546,6 +2563,7 @@ mod tests {
         let hub = StateHub::with_event_log(16, &log_path);
         hub.publish(DashboardEvent::PlanStarted {
             plan_id: "trigger".into(),
+            tasks_total: 0,
         });
 
         // After compaction the file should contain EVENT_LOG_MAX_LINES / 2
@@ -2570,7 +2588,7 @@ mod tests {
         // The most recent event ("trigger") must be the last line.
         let last: DashboardEvent = serde_json::from_str(lines.last().unwrap()).unwrap();
         assert!(
-            matches!(last, DashboardEvent::PlanStarted { ref plan_id } if plan_id == "trigger"),
+            matches!(last, DashboardEvent::PlanStarted { ref plan_id, .. } if plan_id == "trigger"),
             "last line should be the triggering event"
         );
     }
@@ -2586,6 +2604,7 @@ mod tests {
             for i in 0..EVENT_LOG_MAX_LINES {
                 let line = serde_json::to_string(&DashboardEvent::PlanStarted {
                     plan_id: format!("old-{i}"),
+                    tasks_total: 0,
                 })
                 .unwrap();
                 content.push_str(&line);
@@ -2624,6 +2643,7 @@ mod tests {
         for i in 0..=EVENT_LOG_MAX_LINES + 4 {
             hub.publish(DashboardEvent::PlanStarted {
                 plan_id: format!("p-{i}"),
+                tasks_total: 0,
             });
         }
 
@@ -2662,6 +2682,7 @@ mod tests {
         for i in 0..25usize {
             hub.publish(DashboardEvent::PlanStarted {
                 plan_id: format!("plan-{i}"),
+                tasks_total: 0,
             });
         }
 
@@ -2697,7 +2718,7 @@ mod tests {
                 serde_json::from_str::<DashboardEvent>(l)
                     .ok()
                     .and_then(|e| {
-                        if let DashboardEvent::PlanStarted { plan_id } = e {
+                        if let DashboardEvent::PlanStarted { plan_id, .. } = e {
                             Some(plan_id)
                         } else {
                             None
@@ -2729,6 +2750,7 @@ mod tests {
         for i in 0..20usize {
             hub.publish(DashboardEvent::PlanStarted {
                 plan_id: format!("p{i}"),
+                tasks_total: 0,
             });
         }
 

@@ -656,6 +656,7 @@ impl EventConsumer for DashboardEventBridge {
                 vec![
                     DashboardEvent::PlanStarted {
                         plan_id: plan_id.clone(),
+                        tasks_total: 0,
                     },
                     DashboardEvent::TaskStarted {
                         plan_id,
@@ -712,6 +713,7 @@ impl EventConsumer for DashboardEventBridge {
                     task_id: workflow_task_id(run_id),
                     gate: gate_name.clone(),
                     passed: true,
+                    output_text: None,
                 },
                 workflow_gate_log_entry(run_id, gate_name, *duration_ms, true),
             ],
@@ -726,6 +728,7 @@ impl EventConsumer for DashboardEventBridge {
                     task_id: workflow_task_id(run_id),
                     gate: gate_name.clone(),
                     passed: false,
+                    output_text: None,
                 },
                 workflow_gate_log_entry(run_id, gate_name, *duration_ms, false),
             ],
@@ -1561,6 +1564,7 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
     match event {
         ServerEvent::PlanStarted { plan_id } => Some(DashboardEvent::PlanStarted {
             plan_id: plan_id.clone(),
+            tasks_total: 0,
         }),
         ServerEvent::PlanCompleted { plan_id, success } => Some(DashboardEvent::PlanCompleted {
             plan_id: plan_id.clone(),
@@ -1598,6 +1602,7 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
             task_id: task_id.clone(),
             gate: gate.clone(),
             passed: *passed,
+            output_text: None,
         }),
         ServerEvent::Execution { plan_id, event } => match event {
             ExecutionEvent::TaskStarted {
@@ -1637,6 +1642,7 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
                 task_id: task_id.clone(),
                 gate: gate.clone(),
                 passed: *passed,
+                output_text: None,
             }),
             _ => None,
         },
@@ -1682,6 +1688,7 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
         // Map one-shot runs as ephemeral plans so the TUI's plan/task views show them.
         ServerEvent::RunStarted { run_id, .. } => Some(DashboardEvent::PlanStarted {
             plan_id: format!("run-{run_id}"),
+            tasks_total: 0,
         }),
         ServerEvent::RunCompleted { run_id, success } => Some(DashboardEvent::PlanCompleted {
             plan_id: format!("run-{run_id}"),
@@ -1705,6 +1712,7 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
         // Bridge bench events so the dashboard TUI / SSE clients see bench activity.
         ServerEvent::BenchRunStarted { bench_id, .. } => Some(DashboardEvent::PlanStarted {
             plan_id: format!("bench-{bench_id}"),
+            tasks_total: 0,
         }),
         ServerEvent::BenchTaskStarted {
             bench_id,
@@ -1888,7 +1896,7 @@ fn start_orchestrator_event_bridge_dedup(
 fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<ServerEvent> {
     use roko_core::DashboardEvent;
     match event {
-        DashboardEvent::PlanStarted { plan_id } => Some(ServerEvent::PlanStarted {
+        DashboardEvent::PlanStarted { plan_id, .. } => Some(ServerEvent::PlanStarted {
             plan_id: plan_id.clone(),
         }),
         DashboardEvent::PlanCompleted { plan_id, success } => Some(ServerEvent::PlanCompleted {
@@ -1956,6 +1964,7 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
             task_id,
             gate,
             passed,
+            ..
         } => Some(ServerEvent::GateResult {
             plan_id: plan_id.clone(),
             task_id: task_id.clone(),

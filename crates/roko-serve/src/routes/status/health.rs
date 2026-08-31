@@ -262,6 +262,7 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
         DashboardEvent::AgentSpawned { .. } => "agent_spawned",
         DashboardEvent::AgentOutput { .. } => "agent_output",
         DashboardEvent::GateResult { .. } => "gate_result",
+        DashboardEvent::GateOutputLine { .. } => "gate_output_line",
         DashboardEvent::PhaseTransition { .. } => "phase_transition",
         DashboardEvent::EfficiencyEvent { .. } => "efficiency_event",
         DashboardEvent::Diagnosis { .. } => "diagnosis",
@@ -304,7 +305,7 @@ fn dashboard_event_type(event: &roko_core::dashboard_snapshot::DashboardEvent) -
 fn dashboard_event_plan_id(event: &roko_core::dashboard_snapshot::DashboardEvent) -> Option<&str> {
     use roko_core::dashboard_snapshot::DashboardEvent;
     match event {
-        DashboardEvent::PlanStarted { plan_id }
+        DashboardEvent::PlanStarted { plan_id, .. }
         | DashboardEvent::PlanCompleted { plan_id, .. }
         | DashboardEvent::TaskStarted { plan_id, .. }
         | DashboardEvent::TaskCompleted { plan_id, .. }

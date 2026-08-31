@@ -175,22 +175,36 @@ pub fn render_sys_metrics(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
 
     // NET
     if inner.height >= 3 {
-        let down = state.sys.net_down_bytes_sec;
-        let val = format!("\u{2193}{:>4}", fmt_rate(down as f64));
+        let down = fmt_rate(state.sys.net_down_bytes_sec as f64);
+        let up = fmt_rate(state.sys.net_up_bytes_sec as f64);
         let spans = vec![
             Span::styled("NET ", Style::default().fg(Theme::TEXT_DIM)),
-            Span::styled(val, Style::default().fg(Theme::DREAM)),
+            Span::styled(
+                format!("\u{2193}{down:>4}"),
+                Style::default().fg(Theme::DREAM),
+            ),
+            Span::styled(" ", Style::default()),
+            Span::styled(
+                format!("\u{2191}{up:>4}"),
+                Style::default().fg(Theme::BONE_DIM),
+            ),
         ];
         lines.push(Line::from(spans));
     }
 
     // DSK
     if inner.height >= 4 {
-        let read = state.sys.disk_read_bytes_sec;
-        let val = format!("R{:>4}", fmt_rate(read as f64));
+        let free = fmt_bytes(state.sys.disk_free_bytes);
+        let total = fmt_bytes(state.sys.disk_total_bytes);
+        let disk_frac = if state.sys.disk_total_bytes > 0 {
+            1.0 - (state.sys.disk_free_bytes as f64 / state.sys.disk_total_bytes as f64)
+        } else {
+            0.0
+        };
+        let color = pct_color(disk_frac);
         let spans = vec![
             Span::styled("DSK ", Style::default().fg(Theme::TEXT_DIM)),
-            Span::styled(val, Style::default().fg(Theme::BONE_DIM)),
+            Span::styled(format!("{free:>5}/{total}"), Style::default().fg(color)),
         ];
         lines.push(Line::from(spans));
     }

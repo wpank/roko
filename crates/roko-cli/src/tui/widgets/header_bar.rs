@@ -93,6 +93,13 @@ fn hdr_success_color(pct: f64) -> Color {
 }
 
 fn hdr_fmt_bytes(b: u64) -> String {
+    fmt_bytes_short(b)
+}
+
+/// Format a byte count as a short human-readable string (e.g. "12G", "384M").
+///
+/// Public so that other modules (e.g. warning bar in `state.rs`) can reuse it.
+pub fn fmt_bytes_short(b: u64) -> String {
     const GIB: u64 = 1 << 30;
     const MIB: u64 = 1 << 20;
     if b >= GIB {
@@ -416,6 +423,45 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         }
     }
 
+    // ── 6c. MCP connections, NET rate, DSK free, FPS ──────────────────
+    if !compact {
+        if state.mcp_connection_count > 0 {
+            spans.push(Span::styled(
+                format!(" MCP:{}", state.mcp_connection_count),
+                Style::default().fg(Theme::DREAM).bg(Theme::BG_SECONDARY),
+            ));
+        }
+
+        let net_rate = state.sys.net_down_bytes_sec + state.sys.net_up_bytes_sec;
+        if net_rate > 0 {
+            spans.push(Span::styled(
+                format!(" NET:{}/s", hdr_fmt_bytes(net_rate)),
+                Style::default().fg(Theme::BONE_DIM).bg(Theme::BG_SECONDARY),
+            ));
+        }
+
+        if state.sys.disk_free_bytes > 0 {
+            let dsk_color = if state.sys.disk_free_bytes < (1 << 30) {
+                Theme::EMBER
+            } else {
+                Theme::BONE_DIM
+            };
+            spans.push(Span::styled(
+                format!(" DSK:{}", hdr_fmt_bytes(state.sys.disk_free_bytes)),
+                Style::default().fg(dsk_color).bg(Theme::BG_SECONDARY),
+            ));
+        }
+
+        if state.tui_fps > 0.0 {
+            spans.push(Span::styled(
+                format!(" {:.0}fps", state.tui_fps),
+                Style::default()
+                    .fg(Theme::TEXT_GHOST)
+                    .bg(Theme::BG_SECONDARY),
+            ));
+        }
+    }
+
     spans.push(sep());
 
     // ── 7. Active agent spinner with role label ───────────────────────
@@ -518,6 +564,48 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
 
     let fkey_line = Line::from(fkey_spans);
     frame.render_widget(Paragraph::new(fkey_line).style(bg), chunks[1]);
+}
+
+// ---------------------------------------------------------------------------
+// Warning bar (P4.6) — 1-line bar below header for active warnings
+// ---------------------------------------------------------------------------
+
+/// Returns the height needed for the warning bar (0 or 1).
+#[must_use]
+pub fn warning_bar_height(state: &TuiState) -> u16 {
+    if state.active_warnings().is_empty() {
+        0
+    } else {
+        1
+    }
+}
+
+/// Render a 1-line warning bar. Only call when `warning_bar_height > 0`.
+pub fn render_warning_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
+    let warnings = state.active_warnings();
+    if warnings.is_empty() || area.height == 0 {
+        return;
+    }
+
+    let bg = Style::default().bg(Theme::ROSE_EMBER);
+    let text = warnings.join("  |  ");
+    let spans = vec![
+        Span::styled(
+            " \u{26a0} ",
+            Style::default()
+                .fg(Theme::WARNING)
+                .bg(Theme::ROSE_EMBER)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(text, Style::default().fg(Theme::BONE).bg(Theme::ROSE_EMBER)),
+        Span::styled(
+            "  [n] dismiss",
+            Style::default().fg(Theme::TEXT_GHOST).bg(Theme::ROSE_EMBER),
+        ),
+    ];
+
+    let line = Line::from(spans);
+    frame.render_widget(Paragraph::new(line).style(bg), area);
 }
 
 // ---------------------------------------------------------------------------

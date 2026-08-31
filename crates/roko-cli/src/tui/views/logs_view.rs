@@ -18,7 +18,7 @@ use super::ViewState;
 use crate::tui::dashboard::{DashboardData, Theme};
 use crate::tui::input::FocusZone;
 use crate::tui::input::LogFilterLevel;
-use crate::tui::state::{LogEntry, LogEntryLevel, TuiState};
+use crate::tui::state::{LogEntry, LogEntryLevel, SearchMode, TuiState};
 
 /// Render the full logs view.
 pub(crate) fn render(
@@ -41,15 +41,28 @@ pub(crate) fn render(
         return;
     }
 
-    render_with_entries(
-        frame,
-        area,
-        tui_state.unified_log_entries(),
-        _data,
-        tui_state,
-        view_state,
-        theme,
-    );
+    let all_entries = tui_state.unified_log_entries();
+
+    // Sub-tab 1 ("Signals") shows only signal: and episode: sources.
+    // Sub-tab 0 ("Log") shows all entries.
+    if view_state.sub_tab == 1 {
+        let filtered: Vec<LogEntry> = all_entries
+            .iter()
+            .filter(|e| e.source.starts_with("signal:") || e.source.starts_with("episode:"))
+            .cloned()
+            .collect();
+        render_with_entries(frame, area, &filtered, _data, tui_state, view_state, theme);
+    } else {
+        render_with_entries(
+            frame,
+            area,
+            all_entries,
+            _data,
+            tui_state,
+            view_state,
+            theme,
+        );
+    }
 }
 
 /// Count visible log entries after applying the active level filter.
@@ -72,10 +85,25 @@ fn render_with_entries(
     theme: &Theme,
 ) {
     let sections = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(area);
-    let filtered_entries: Vec<&LogEntry> = entries
+
+    // Level filter first.
+    let level_filtered: Vec<&LogEntry> = entries
         .iter()
         .filter(|entry| tui_state.log_level_visible(entry.level.filter_level()))
         .collect();
+
+    // Apply search filter (Filter mode excludes non-matches).
+    let search = &tui_state.log_search;
+    let filtered_entries: Vec<&LogEntry> =
+        if search.active && search.mode == SearchMode::Filter && search.compiled.is_some() {
+            let re = search.compiled.as_ref().unwrap();
+            level_filtered
+                .into_iter()
+                .filter(|e| re.is_match(&e.message) || re.is_match(&e.source))
+                .collect()
+        } else {
+            level_filtered
+        };
 
     // Status bar with source counts
     let signal_count = tui_state.recent_signals.len();
@@ -158,12 +186,26 @@ fn render_with_entries(
         (view_state.scroll as usize).min(filtered_entries.len().saturating_sub(1))
     };
 
+    // Build a highlight style for search matches (DREAM bg, TEXT_STRONG fg).
+    let highlight_style = ratatui::style::Style::default()
+        .fg(Theme::TEXT_STRONG)
+        .bg(Theme::DREAM);
+
+    // Current match index for extra emphasis (selection highlight on n/N target).
+    let current_match_filtered_idx: Option<usize> =
+        if search.active && !search.match_indices.is_empty() {
+            search.match_indices.get(search.current_match).copied()
+        } else {
+            None
+        };
+
     let lines: Vec<Line<'_>> = filtered_entries
         .iter()
         .enumerate()
         .map(|(idx, entry)| {
             let selected = idx == row_focus_idx;
-            let row_bg = if selected {
+            let is_current_match = current_match_filtered_idx == Some(idx);
+            let row_bg = if selected || is_current_match {
                 Some(theme.selection_background)
             } else {
                 None
@@ -174,24 +216,36 @@ fn render_with_entries(
                 theme.muted()
             };
             let entry_level_style = style_with_bg(level_style(entry.level, theme), row_bg);
-            let source_style = style_with_bg(source_style(&entry.source, theme), row_bg);
+            let src_style = style_with_bg(source_style(&entry.source, theme), row_bg);
             let message_style = style_with_bg(
                 level_style(entry.level, theme).remove_modifier(Modifier::BOLD),
                 row_bg,
             );
             let ts_style = style_with_bg(theme.muted(), row_bg);
 
-            Line::from(vec![
+            // In Highlight mode, split the message into matching/non-matching spans.
+            let message_spans: Vec<Span<'_>> = if search.active
+                && search.mode == SearchMode::Highlight
+                && search.compiled.is_some()
+            {
+                let re = search.compiled.as_ref().unwrap();
+                highlight_spans(&entry.message, re, message_style, highlight_style)
+            } else {
+                vec![Span::styled(entry.message.clone(), message_style)]
+            };
+
+            let mut spans = vec![
                 Span::styled(if selected { "▶" } else { " " }, prefix_style),
                 Span::raw(" "),
-                Span::styled(&entry.timestamp, ts_style),
+                Span::styled(entry.timestamp.clone(), ts_style),
                 Span::raw(" "),
                 Span::styled(format!("[{}]", entry.level.label()), entry_level_style),
                 Span::raw(" "),
-                Span::styled(&entry.source, source_style),
+                Span::styled(entry.source.clone(), src_style),
                 Span::raw(": "),
-                Span::styled(&entry.message, message_style),
-            ])
+            ];
+            spans.extend(message_spans);
+            Line::from(spans)
         })
         .collect();
 
@@ -254,4 +308,32 @@ fn style_with_bg(
     } else {
         style
     }
+}
+
+/// Split `text` into spans, highlighting regex matches with `hl_style`.
+fn highlight_spans<'a>(
+    text: &str,
+    re: &regex::Regex,
+    normal_style: ratatui::style::Style,
+    hl_style: ratatui::style::Style,
+) -> Vec<Span<'a>> {
+    let mut spans = Vec::new();
+    let mut last_end = 0;
+    for m in re.find_iter(text) {
+        if m.start() > last_end {
+            spans.push(Span::styled(
+                text[last_end..m.start()].to_owned(),
+                normal_style,
+            ));
+        }
+        spans.push(Span::styled(text[m.start()..m.end()].to_owned(), hl_style));
+        last_end = m.end();
+    }
+    if last_end < text.len() {
+        spans.push(Span::styled(text[last_end..].to_owned(), normal_style));
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled(text.to_owned(), normal_style));
+    }
+    spans
 }

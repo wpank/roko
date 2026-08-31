@@ -290,6 +290,14 @@ fn render_output_panel(
     focused: bool,
     theme: &Theme,
 ) {
+    // When a gate is running or has recent output, show the gate output widget
+    // instead of normal agent output.
+    if widgets::gate_output::should_show(&tui_state.current_gate_rung, &tui_state.gate_output_lines)
+    {
+        widgets::gate_output::render_gate_output(frame, area, tui_state, theme);
+        return;
+    }
+
     let border = if focused {
         Theme::focused_border_style()
     } else {
@@ -1022,7 +1030,7 @@ fn render_sub_processes(
         .collect();
     let visible_rows = inner.height.saturating_sub(2) as usize;
     let max_scroll = rows.len().saturating_sub(visible_rows.max(1));
-    let scroll = tui_state.diff_scroll.min(max_scroll);
+    let scroll = tui_state.procs_scroll.min(max_scroll);
     let rows = rows
         .into_iter()
         .skip(scroll)

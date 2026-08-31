@@ -76,7 +76,12 @@ pub const fn inbox_routing(category: InboxCategory) -> InboxRouting {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DashboardEvent {
     /// A plan execution started.
-    PlanStarted { plan_id: String },
+    PlanStarted {
+        plan_id: String,
+        /// Total number of tasks in the plan (0 if unknown at start).
+        #[serde(default)]
+        tasks_total: usize,
+    },
     /// A plan execution completed.
     PlanCompleted { plan_id: String, success: bool },
     /// A task started executing.
@@ -136,6 +141,16 @@ pub enum DashboardEvent {
         task_id: String,
         gate: String,
         passed: bool,
+        /// Optional gate output text forwarded from the rung.
+        #[serde(default)]
+        output_text: Option<String>,
+    },
+    /// A single line of gate output for live streaming.
+    GateOutputLine {
+        plan_id: String,
+        task_id: String,
+        gate: String,
+        line: String,
     },
     /// The plan transitioned between phases.
     PhaseTransition {
@@ -1065,6 +1080,12 @@ pub struct DashboardSnapshot {
     /// Latest Daimon affect state from the runner.
     #[serde(default)]
     pub affect: Option<AffectSnapshot>,
+    /// Gate output lines from rung executions (bounded to 500).
+    #[serde(default)]
+    pub gate_output_lines: VecDeque<String>,
+    /// Rolling ring of recent token counts from efficiency events (bounded to 120).
+    #[serde(default)]
+    pub token_event_ring: VecDeque<u64>,
     /// Overall counts.
     pub stats: SnapshotStats,
 }
@@ -1111,6 +1132,8 @@ const MAX_GATE_FAILURES: usize = 50;
 const MAX_EPISODES: usize = 128;
 const MAX_EVENT_LOG: usize = 200;
 const MAX_TASK_OUTPUT_LINES: usize = 50;
+const MAX_GATE_OUTPUT_LINES: usize = 500;
+const MAX_TOKEN_EVENT_RING: usize = 120;
 const GATE_TREND_BUCKET_SIZE_SECS: u64 = 60 * 60;
 const GATE_TREND_BUCKET_COUNT: usize = 24;
 
@@ -1150,13 +1173,17 @@ impl DashboardSnapshot {
     /// Apply with an explicit timestamp (for testing).
     pub fn apply_with_ts(&mut self, event: &DashboardEvent, ts: u64) {
         match event {
-            DashboardEvent::PlanStarted { plan_id } => {
+            DashboardEvent::PlanStarted {
+                plan_id,
+                tasks_total,
+            } => {
                 self.stats.plans_active += 1;
                 self.plans.insert(
                     plan_id.clone(),
                     PlanState {
                         plan_id: plan_id.clone(),
                         phase: "started".into(),
+                        tasks_total: *tasks_total,
                         active: true,
                         ..Default::default()
                     },
@@ -1333,6 +1360,7 @@ impl DashboardSnapshot {
                 task_id,
                 gate,
                 passed,
+                ..
             } => {
                 if *passed {
                     self.stats.gates_passed += 1;
@@ -1364,6 +1392,12 @@ impl DashboardSnapshot {
                     );
                 }
             }
+            DashboardEvent::GateOutputLine { line, .. } => {
+                if self.gate_output_lines.len() >= MAX_GATE_OUTPUT_LINES {
+                    self.gate_output_lines.pop_front();
+                }
+                self.gate_output_lines.push_back(line.clone());
+            }
             DashboardEvent::PhaseTransition { plan_id, to, .. } => {
                 if let Some(plan) = self.plans.get_mut(plan_id) {
                     plan.phase = to.clone();
@@ -1377,7 +1411,7 @@ impl DashboardSnapshot {
             } => {
                 // Update per-agent token/cost stats when the metric carries them.
                 // The metric field encodes the metric name; we match known names.
-                let agent_key = self.find_agent_key_for_task(plan_id, task_id);
+                let agent_key = self.find_agent_key_for_task_at(plan_id, task_id, ts);
                 match metric.as_str() {
                     "input_tokens" => {
                         if let Some(agent) =
@@ -1386,6 +1420,10 @@ impl DashboardSnapshot {
                             agent.input_tokens += *value as u64;
                             agent.last_event_at_ms = ts;
                         }
+                        if self.token_event_ring.len() >= MAX_TOKEN_EVENT_RING {
+                            self.token_event_ring.pop_front();
+                        }
+                        self.token_event_ring.push_back(*value as u64);
                     }
                     "output_tokens" => {
                         if let Some(agent) =
@@ -1394,6 +1432,10 @@ impl DashboardSnapshot {
                             agent.output_tokens += *value as u64;
                             agent.last_event_at_ms = ts;
                         }
+                        if self.token_event_ring.len() >= MAX_TOKEN_EVENT_RING {
+                            self.token_event_ring.pop_front();
+                        }
+                        self.token_event_ring.push_back(*value as u64);
                     }
                     "cache_read_tokens" => {
                         if let Some(agent) =
@@ -1631,14 +1673,31 @@ impl DashboardSnapshot {
     /// This seeds the live hub from persisted `.roko/` state when it is
     /// available. Missing files are treated as an empty snapshot.
     /// Find the agent currently assigned to a task (by matching `current_plan`/`current_task`
-    /// or by iterating active agents). Returns the agent_id key, or `None`.
-    fn find_agent_key_for_task(&self, plan_id: &str, task_id: &str) -> Option<String> {
-        // First try exact match on current assignment.
+    /// or by iterating active agents). Also searches recently-inactive agents
+    /// (within 5 seconds) to handle cost events that fire after `AgentCompleted`.
+    fn find_agent_key_for_task_at(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        now_ms: u64,
+    ) -> Option<String> {
+        // First try exact match on active agents.
         if let Some((key, _)) = self
             .agents
             .iter()
             .find(|(_, a)| a.active && a.current_plan == plan_id && a.current_task == task_id)
         {
+            return Some(key.clone());
+        }
+        // Search recently-inactive agents (completed within the last 5 seconds)
+        // to handle cost events that fire after AgentCompleted.
+        const RECENT_WINDOW_MS: u64 = 5_000;
+        if let Some((key, _)) = self.agents.iter().find(|(_, a)| {
+            !a.active
+                && a.current_plan == plan_id
+                && a.current_task == task_id
+                && now_ms.saturating_sub(a.last_event_at_ms) <= RECENT_WINDOW_MS
+        }) {
             return Some(key.clone());
         }
         // Fall back: if there's only one active agent, use it.
@@ -3470,6 +3529,7 @@ mod tests {
 
         snap.apply(&DashboardEvent::PlanStarted {
             plan_id: "p1".into(),
+            tasks_total: 0,
         });
         assert_eq!(snap.stats.plans_active, 1);
         assert!(snap.plans["p1"].active);
@@ -3488,6 +3548,7 @@ mod tests {
             task_id: "t1".into(),
             gate: "compile".into(),
             passed: true,
+            output_text: None,
         });
         assert_eq!(snap.stats.gates_passed, 1);
 
@@ -3624,6 +3685,7 @@ mod tests {
                 task_id: format!("t{i}"),
                 gate: "compile".into(),
                 passed: true,
+                output_text: None,
             });
         }
         assert_eq!(snap.gates.len(), MAX_GATES);
@@ -3639,12 +3701,14 @@ mod tests {
             task_id: "task-1".into(),
             gate: "compile".into(),
             passed: true,
+            output_text: None,
         });
         snap.apply(&DashboardEvent::GateResult {
             plan_id: "plan-a".into(),
             task_id: "task-2".into(),
             gate: "compile".into(),
             passed: false,
+            output_text: None,
         });
 
         let trend = snap.gate_trends.get("compile").expect("compile trend");

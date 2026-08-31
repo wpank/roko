@@ -578,6 +578,7 @@ async fn create_job(
         state.state_hub.publish_batch(vec![
             DashboardEvent::PlanStarted {
                 plan_id: plan_id.clone(),
+                tasks_total: 0,
             },
             DashboardEvent::TaskStarted {
                 plan_id: plan_id.clone(),
@@ -863,6 +864,7 @@ fn publish_job_dashboard_events(state: &AppState, job: &JobRecord, prev_status: 
         "assigned" if prev == "open" => {
             events.push(DashboardEvent::PlanStarted {
                 plan_id: plan_id.clone(),
+                tasks_total: 0,
             });
             events.push(DashboardEvent::TaskStarted {
                 plan_id: plan_id.clone(),
@@ -949,6 +951,7 @@ fn publish_job_dashboard_events(state: &AppState, job: &JobRecord, prev_status: 
                         task_id: task_id.clone(),
                         gate: name.to_string(),
                         passed,
+                        output_text: None,
                     });
                 }
                 let gate_lines: Vec<String> = gates

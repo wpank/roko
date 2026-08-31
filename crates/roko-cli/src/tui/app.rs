@@ -4006,6 +4006,25 @@ mod tests {
     }
 
     #[test]
+    fn connected_app_stays_open_after_plan_completion_by_default() {
+        let dir = tempdir().unwrap();
+        let hub = crate::state_hub::shared_state_hub();
+        let mut app = App::new_connected(dir.path(), &hub);
+
+        hub.publish(roko_core::DashboardEvent::PlanStarted {
+            plan_id: "live-plan".to_string(),
+        });
+        app.drain_snapshot_channel();
+        hub.publish(roko_core::DashboardEvent::PlanCompleted {
+            plan_id: "live-plan".to_string(),
+            success: true,
+        });
+        app.drain_snapshot_channel();
+
+        assert!(app.running);
+    }
+
+    #[test]
     fn connected_app_refresh_does_not_replay_disk_state() {
         let dir = tempdir().unwrap();
         let roko_dir = dir.path().join(".roko");

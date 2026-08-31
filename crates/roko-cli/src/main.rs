@@ -1562,6 +1562,7 @@ Examples:
         resume_plan: Option<PathBuf>,
         /// Launch the connected inline TUI while Runner-v2 runs.
         /// Use this to monitor agent output, tokens, and gate progress in real time.
+        /// The TUI remains open after completion or failure until you quit it.
         /// Without this flag, plan run outputs plain text logs.
         #[arg(long, visible_alias = "tui")]
         approval: bool,

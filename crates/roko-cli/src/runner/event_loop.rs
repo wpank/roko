@@ -14437,7 +14437,10 @@ fn timeout_runner_event(entry: &TimeoutLedgerEntry) -> Result<RunnerEvent> {
     })
 }
 
-fn load_timeout_terminal_replay(path: &std::path::Path) -> Result<TimeoutTerminalReplay> {
+fn load_timeout_terminal_replay(
+    path: &std::path::Path,
+    run_id: &str,
+) -> Result<TimeoutTerminalReplay> {
     let contents = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -14464,6 +14467,13 @@ fn load_timeout_terminal_replay(path: &std::path::Path) -> Result<TimeoutTermina
         {
             continue;
         }
+        // The run ledger is append-only across every historical invocation,
+        // but timeout idempotency is scoped to one run. Do not let malformed
+        // or legacy-conflicting entries from an unrelated run prevent the
+        // current run from resuming or recording its own terminal.
+        if value.get("run_id").and_then(serde_json::Value::as_str) != Some(run_id) {
+            continue;
+        }
         let entry: TimeoutLedgerEntry = serde_json::from_value(value).with_context(|| {
             format!(
                 "decoding typed timeout at {} line {}",
@@ -14477,7 +14487,7 @@ fn load_timeout_terminal_replay(path: &std::path::Path) -> Result<TimeoutTermina
 }
 
 fn persist_timeout_terminal(path: &std::path::Path, entry: &TimeoutLedgerEntry) -> Result<bool> {
-    let mut replay = load_timeout_terminal_replay(path)?;
+    let mut replay = load_timeout_terminal_replay(path, entry.run_id())?;
     if !replay.record(entry.clone())? {
         return Ok(false);
     }
@@ -14486,8 +14496,8 @@ fn persist_timeout_terminal(path: &std::path::Path, entry: &TimeoutLedgerEntry) 
 }
 
 fn replay_timeout_terminals(path: &std::path::Path, state: &mut RunState) -> Result<usize> {
-    let replay = load_timeout_terminal_replay(path)?;
     let run_id = state.run_id().to_string();
+    let replay = load_timeout_terminal_replay(path, &run_id)?;
     let mut applied = 0;
     for entry in replay
         .entries()
@@ -18376,6 +18386,40 @@ mod tests {
             .acceptance
             .push("implement the feature first".to_string());
         assert!(!explicit_command_only_task(&exact, &action));
+    }
+
+    #[test]
+    fn timeout_replay_ignores_conflicts_from_unrelated_historical_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run-ledger.jsonl");
+        let entry = |run_id: &str, kind: TimeoutKind, limit_ms: u64| {
+            timeout_ledger_entry(
+                run_id,
+                &TimeoutEvent {
+                    kind,
+                    attempt: Some(TaskAttemptRef::new("plan", "task", 1)),
+                    effect: None,
+                    owner_effect: Some(OwnerEffectRef(1)),
+                    limit_ms,
+                    monotonic_elapsed_ms: limit_ms,
+                    observed_at_ms: limit_ms,
+                },
+            )
+            .unwrap()
+        };
+        let historical_first = entry("historical", TimeoutKind::TaskAttempt, 1_000);
+        let historical_conflict = entry("historical", TimeoutKind::LostEffect, 2_000);
+        let current = entry("current", TimeoutKind::AgentSilence, 3_000);
+        let contents = [historical_first, historical_conflict, current.clone()]
+            .into_iter()
+            .map(|entry| serde_json::to_string(&entry).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, format!("{contents}\n")).unwrap();
+
+        let replay = load_timeout_terminal_replay(&path, "current").unwrap();
+
+        assert_eq!(replay.entries(), &[current]);
     }
 
     #[test]

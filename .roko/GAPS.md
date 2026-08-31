@@ -4,7 +4,7 @@
 > and outstanding work. For agent execution protocols and task-level checklists, see
 > `tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md`.
 >
-> Last updated: 2026-08-17
+> Last updated: 2026-08-31
 
 ---
 
@@ -45,7 +45,10 @@ several older, canonically accepted manifests retain stale task counters or aggr
 There are no ready executable-plan tasks, but the wider release/product backlog is not empty:
 the master checklist has **22 non-complete markers** (8 unchecked, 14 partial) after the
 2026-08-17 comprehensive 25-agent verification sweep that verified and resolved 12 previously
-unchecked items (moving 9 to done and 3 to partial). A practical delivery estimate is about
+unchecked items (moving 9 to done and 3 to partial). The 2026-08-31 UX/TUI/Workflow Mori
+Parity batch (PR #73) added 53 tracked items: **37 are done**, with 14 partial and 2 not
+started; those 16 remaining items are tracked in `tmp/tui-parity/`
+and do not reopen the epic-manifest queue. A practical delivery estimate is about
 **four substantial tranches**, with scope varying by whether the large architecture items are
 accepted as follow-up debt:
 
@@ -133,6 +136,53 @@ has no live source, autonomy config has no live store, Canvas uses dashboard pla
 Minimap uses an explicitly labelled deterministic layout rather than HDC coordinates. The
 five OpenAPI paths still use generic JSON response schemas, and replaying an unresolved
 Inbox receive event recomputes its receipt timestamp because the durable event has none.
+
+---
+
+## UX/TUI/Workflow Mori Parity (PR #73, 2026-08-31)
+
+53 items across 10 batches; **37 DONE, 14 PARTIAL, 2 NOT STARTED**.
+107 files changed (+10,186/-1,094). Full audit: `tmp/tui-parity/` (consolidated from `ux-audit/`, `ux-mori-parity-audit/`, now in `archive/`).
+
+### Done (37)
+
+CLI: aliases (#77), default-run, CARGO_BUILD_JOBS (#206), JSON output (#113), verb
+consolidation (#65), error quality improvements, doctor diagnostics (#79), lock scope
+reduction (#226), --from-backlog generation (#227), preflight checks (#120), TOML reliability
+(#85), plan run UX friction (#107), CLI control commands (#146), runner-v2 migration (#131),
+backlog import (#147), provider config UX (#222).
+
+TUI: ROSEDUST v2 palette (#123, #71), header bar (#124), keybind hints (#157), notification
+toasts (#201), error digest (#126), agent status grid (#189), cost-by-model table (#156),
+wave hierarchy widget (#125), plan DAG (#117), queue manifest (#116), push-mode panel data
+(#41), F7 inspect view (#127), daimon view (#10), screenshots (#112), overlap analysis
+(#195), validate --dag (#200), merge proof (#140), live feedback (#108).
+
+### Partial (14)
+
+| Item | Gap |
+|------|-----|
+| #122 Legacy page removal | PageId/PageScaffold still active for text-mode compat |
+| #196 Critical path ETA | Computation+field+display exist; field never written |
+| #57 Crash retry/escalation | Only on prd plan path, not plan generate |
+| #119 Recovery keybindings | Keys+modal wired; runner doesn't act on signals |
+| #179 Batch controller | Flag+events exist; event loop stub never triggers |
+| #217 Log search/filter | Input/state done; render doesn't use log_search |
+| #219 Plan tree filter | Input/state done; widget uses old filter fields |
+| #109 TUI streaming RC-7 | No live gate-rung-in-progress indicator |
+| #121 Data model unification | Phase A done; Phases B/C (migration) not started |
+| #100 CLI error quality | Recovery hints on key paths; 285 eprintln! remain |
+| #178 Conductor supervisor | Tick+thresholds wired; actions only log |
+| #134 Replan escalation | 4 strategies defined; not wired to retry-count ladder |
+| #223 Setup wizard | stdin wizard, not ratatui-based per spec |
+| Progressive formality | 4/5 verbs (do/think/show/tune); undo absent |
+
+### Not Started (2)
+
+| Item | What's needed |
+|------|---------------|
+| #130 Tab content badges | Dynamic count API + runtime state plumbing |
+| #139 Agent-handle map | HashMap<TaskId, AgentHandle> for targeted cancellation |
 
 ---
 

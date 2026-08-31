@@ -985,7 +985,6 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
                 // Optionally spawn the approval TUI.
                 let mut approval_tui_handle = None;
-                let mut approval_tui_shutdown = None;
                 if approval {
                     if !std::io::stdout().is_terminal() {
                         anyhow::bail!("approval mode requires an interactive terminal");
@@ -1006,7 +1005,6 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
                     let state_hub_for_tui = state_hub.clone();
                     let workdir_for_tui = wd.clone();
-                    let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
                     let handle = std::thread::Builder::new()
                         .name("roko-plan-approval-tui".to_string())
                         .spawn(move || {
@@ -1015,13 +1013,10 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                                 None,
                                 &state_hub_for_tui,
                             )
-                            .with_shutdown_receiver(shutdown_rx)
-                            .with_exit_on_plan_completion()
                             .without_mouse_capture();
                             app.run()
                         })
                         .context("spawn approval TUI thread")?;
-                    approval_tui_shutdown = Some(shutdown_tx);
                     approval_tui_handle = Some(handle);
                 }
 
@@ -1066,9 +1061,15 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 );
                 let v2_result =
                     roko_cli::runner::event_loop::run(plans, &run_config, &state_hub, cancel).await;
-                if let Some(shutdown_tx) = approval_tui_shutdown.take() {
-                    let _ = shutdown_tx.send(());
+                if let Err(error) = &v2_result {
+                    state_hub
+                        .sender()
+                        .publish(roko_core::DashboardEvent::Error {
+                            message: format!("Runner stopped: {error:#}"),
+                        });
                 }
+                // The inline TUI is operator-owned: keep the final state (or
+                // runner error) visible until the operator explicitly quits.
                 join_approval_tui_thread(approval_tui_handle.take());
                 let v2_report = v2_result?;
 

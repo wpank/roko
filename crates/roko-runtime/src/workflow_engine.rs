@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cancel::CancelToken;
 use crate::effect_driver::{EffectDriver, EffectServices, Result, WorkflowFeedbackTotals};
-use crate::event_bus::emit_runtime_event;
+use crate::event_bus::emit_runtime_event_with_cursor;
 pub use crate::pipeline_state::WorkflowOutcome;
 use crate::pipeline_state::{
     Phase, PipelineInput, PipelineOutput, PipelineStateV2, WorkflowConfig,
@@ -177,7 +177,8 @@ impl WorkflowEngine {
             run_id.clone(),
             config.workdir.clone(),
         )
-        .with_input_messages(config.input_messages.clone());
+        .with_input_messages(config.input_messages.clone())
+        .with_event_consumers(self.consumers.clone());
 
         self.emit(RuntimeEvent::WorkflowStarted {
             run_id: run_id.clone(),
@@ -431,7 +432,8 @@ impl WorkflowEngine {
             run_id.clone(),
             config.workdir.clone(),
         )
-        .with_input_messages(config.input_messages.clone());
+        .with_input_messages(config.input_messages.clone())
+        .with_event_consumers(self.consumers.clone());
 
         self.emit(RuntimeEvent::WorkflowStarted {
             run_id: run_id.clone(),
@@ -540,11 +542,15 @@ impl WorkflowEngine {
     }
 
     fn emit(&self, event: RuntimeEvent) -> u64 {
+        let mut cursor = None;
         for consumer in &self.consumers {
-            consumer.consume(&event);
+            let consumed_cursor = consumer.consume_with_cursor(&event);
+            if cursor.is_none() {
+                cursor = consumed_cursor;
+            }
         }
 
-        emit_runtime_event(event)
+        emit_runtime_event_with_cursor(event, cursor)
     }
 
     fn emit_phase_transition(&self, run_id: &str, from: &str, to: &str) {
@@ -1319,6 +1325,8 @@ mod tests {
         let roko_dir = workdir.join(".roko");
         let event_log = roko_dir.join("runtime-events.jsonl");
         let feedback_log = roko_dir.join("learn").join("efficiency.jsonl");
+        let event_start_seq =
+            crate::event_bus::runtime_event_bus::<RuntimeEvent>().total_emitted();
 
         let services = EffectServices {
             default_model: "mock".to_string(),
@@ -1390,6 +1398,38 @@ mod tests {
             envelopes
                 .iter()
                 .any(|event| { matches!(event.payload, RuntimeEvent::WorkflowCompleted { .. }) })
+        );
+        let persisted_payloads = envelopes
+            .iter()
+            .filter(|event| event.run_id == report.run_id.as_str())
+            .map(|event| event.payload.clone())
+            .collect::<Vec<_>>();
+        let reported_payloads = report
+            .events
+            .iter()
+            .map(|event| event.payload.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            persisted_payloads, reported_payloads,
+            "every engine and effect event must reach the durable consumer exactly once"
+        );
+        assert!(persisted_payloads.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::AgentCompleted { run_id, .. } if run_id == &report.run_id
+        )));
+        assert!(persisted_payloads.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::GatePassed { run_id, .. } if run_id == &report.run_id
+        )));
+        let live_envelopes = crate::event_bus::runtime_event_bus::<RuntimeEvent>()
+            .replay_from(event_start_seq)
+            .into_iter()
+            .filter(|event| event.payload.run_id() == report.run_id.as_str())
+            .collect::<Vec<_>>();
+        assert!(!live_envelopes.is_empty());
+        assert!(
+            live_envelopes.iter().all(|event| event.cursor.is_some()),
+            "durable workflow consumers must attach replay-safe live cursors"
         );
 
         let feedback_lines =

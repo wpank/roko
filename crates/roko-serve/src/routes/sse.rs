@@ -352,6 +352,7 @@ mod tests {
         let envelope = Envelope {
             seq: 1,
             ts_millis: 0,
+            cursor: None,
             payload: roko_core::DashboardEvent::Error {
                 message: "key sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAA leaked".into(),
             },

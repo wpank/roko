@@ -66,6 +66,8 @@ pub struct Envelope<E> {
     pub seq: u64,
     /// Unix timestamp in milliseconds when the event was emitted.
     pub ts_millis: u64,
+    /// Exact durable per-run byte cursor established before live publication.
+    pub cursor: Option<u64>,
     /// The wrapped event payload.
     pub payload: E,
 }
@@ -204,10 +206,11 @@ struct Shared<E> {
 }
 
 impl<E: Clone + Send + Sync + 'static> Shared<E> {
-    fn emit_inner(&self, event: E) -> u64 {
+    fn emit_inner(&self, event: E, cursor: Option<u64>) -> u64 {
         let envelope = Envelope {
             seq: self.seq.fetch_add(1, Ordering::Relaxed),
             ts_millis: current_ts_millis(),
+            cursor,
             payload: event,
         };
 
@@ -266,7 +269,12 @@ impl<E: Clone + Send + Sync + 'static> EventBus<E> {
     /// If all subscribers have dropped, the event is still recorded in the ring.
     /// Returns the sequence number assigned to the emitted event.
     pub fn emit(&self, event: E) -> u64 {
-        self.shared.emit_inner(event)
+        self.shared.emit_inner(event, None)
+    }
+
+    /// Emit an event that has already crossed a durable persistence boundary.
+    pub fn emit_with_cursor(&self, event: E, cursor: Option<u64>) -> u64 {
+        self.shared.emit_inner(event, cursor)
     }
 
     /// Subscribes to live events. Returns a broadcast receiver.
@@ -305,7 +313,7 @@ impl<E: Clone + Send + Sync + 'static> EventBus<E> {
 
     /// Returns a sender handle that can be shared across tasks/threads.
     ///
-    /// The `BusSender` only supports `emit()` — it cannot subscribe or replay.
+    /// The `BusSender` only supports emission — it cannot subscribe or replay.
     /// This is useful for passing to subsystems that only produce events.
     pub fn sender(&self) -> BusSender<E> {
         BusSender {
@@ -327,7 +335,12 @@ impl<E: Clone + Send + Sync + 'static> BusSender<E> {
     /// Emit an event. Same semantics as [`EventBus::emit`].
     /// Returns the sequence number assigned to the emitted event.
     pub fn emit(&self, event: E) -> u64 {
-        self.shared.emit_inner(event)
+        self.shared.emit_inner(event, None)
+    }
+
+    /// Emit an event with an exact durable per-run byte cursor.
+    pub fn emit_with_cursor(&self, event: E, cursor: Option<u64>) -> u64 {
+        self.shared.emit_inner(event, cursor)
     }
 }
 
@@ -380,6 +393,18 @@ where
     bus.emit(event)
 }
 
+/// Emit a RuntimeEvent after its durable consumer returns a per-run cursor.
+pub fn emit_runtime_event_with_cursor<RuntimeEvent>(
+    event: RuntimeEvent,
+    cursor: Option<u64>,
+) -> u64
+where
+    RuntimeEvent: Clone + Send + Sync + 'static,
+{
+    let bus = runtime_event_bus::<RuntimeEvent>();
+    bus.emit_with_cursor(event, cursor)
+}
+
 #[allow(clippy::cast_possible_truncation)]
 fn current_ts_millis() -> u64 {
     SystemTime::now()
@@ -409,6 +434,7 @@ mod tests {
         assert_eq!(all[0].seq, 0);
         assert_eq!(all[1].seq, 1);
         assert_eq!(all[2].seq, 2);
+        assert!(all.iter().all(|envelope| envelope.cursor.is_none()));
 
         // Replay from midpoint.
         let partial = bus.replay_from(2);
@@ -447,6 +473,21 @@ mod tests {
         assert_eq!(env.payload, TestEvent::Ping(42));
         assert_eq!(env.seq, 0);
         assert!(env.ts_millis > 0);
+    }
+
+    #[tokio::test]
+    async fn durable_cursor_survives_live_and_replay_delivery() {
+        let bus = EventBus::new(16);
+        let mut rx = bus.subscribe();
+
+        bus.emit_with_cursor(TestEvent::Ping(42), Some(128));
+
+        let live = rx
+            .recv()
+            .await
+            .expect("subscriber should receive cursor-bearing event");
+        assert_eq!(live.cursor, Some(128));
+        assert_eq!(bus.replay_from(0)[0].cursor, Some(128));
     }
 
     #[test]

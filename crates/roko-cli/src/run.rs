@@ -678,6 +678,10 @@ async fn run_workflow_engine_with_services(
         fn consume(&self, event: &RuntimeEvent) {
             self.logger.consume(event);
         }
+
+        fn consume_with_cursor(&self, event: &RuntimeEvent) -> Option<u64> {
+            self.logger.consume_with_run_cursor(event)
+        }
     }
 
     let config = WorkflowRunConfig {

@@ -664,6 +664,17 @@ pub trait GateRunner: Send + Sync {
 pub trait EventConsumer: Send + Sync {
     /// Called for each event emitted by the workflow engine.
     fn consume(&self, event: &RuntimeEvent);
+
+    /// Consume an event and return its exact durable per-run byte cursor when
+    /// the consumer owns that persistence boundary.
+    ///
+    /// Non-durable consumers keep the default behavior. Workflow publishers
+    /// carry the first returned cursor on the live bus envelope so reconnecting
+    /// clients can suppress replay/live overlap without persisting twice.
+    fn consume_with_cursor(&self, event: &RuntimeEvent) -> Option<u64> {
+        self.consume(event);
+        None
+    }
 }
 
 // -- EffectExecutor --

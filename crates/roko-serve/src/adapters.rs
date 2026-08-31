@@ -90,7 +90,9 @@ impl SseAdapter {
         handle.spawn(async move {
             loop {
                 match rx.recv().await {
-                    Ok(envelope) => adapter.consume(&envelope.payload),
+                    Ok(envelope) => {
+                        adapter.consume_with_cursor(&envelope.payload, envelope.cursor);
+                    }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(n, "workflow SSE runtime event bridge lagged");
                         continue;
@@ -575,6 +577,24 @@ mod tests {
 
         let event = rx.try_recv().unwrap();
         assert_eq!(event.kind, "workflow_started");
+    }
+
+    #[test]
+    fn durable_cursor_is_forwarded_to_sse_clients() {
+        let adapter = SseAdapter::new(16);
+        let mut rx = adapter.subscribe();
+
+        adapter.consume_with_cursor(
+            &RuntimeEvent::WorkflowStarted {
+                run_id: "r1".into(),
+                template: "express".into(),
+                prompt: "fix bug".into(),
+            },
+            Some(128),
+        );
+
+        let event = rx.try_recv().expect("cursor-bearing SSE event");
+        assert_eq!(event.cursor, Some(128));
     }
 
     #[test]

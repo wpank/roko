@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use crate::event_bus::emit_runtime_event;
+use crate::event_bus::emit_runtime_event_with_cursor;
 use crate::pipeline_state::{CommitOutcome, PipelineInput};
 pub use roko_core::RuntimeEvent;
 pub use roko_core::foundation::{
@@ -17,8 +17,8 @@ pub use roko_core::foundation::{
     ModelCallResponse, ModelInputBlock, ModelInputMessage, TokenUsage,
 };
 use roko_core::foundation::{
-    CachePolicy, FeedbackEvent, FeedbackSink, GateConfig, GateRunner, GateVerdict, ModelCaller,
-    PromptAssembler, PromptSpec, ShellGateCommand, TokenBudget,
+    CachePolicy, EventConsumer, FeedbackEvent, FeedbackSink, GateConfig, GateRunner, GateVerdict,
+    ModelCaller, PromptAssembler, PromptSpec, ShellGateCommand, TokenBudget,
 };
 
 /// Fallible result type used by the effect driver.
@@ -70,6 +70,7 @@ pub struct EffectDriver {
     workdir: PathBuf,
     feedback_totals: tokio::sync::Mutex<WorkflowFeedbackTotals>,
     input_messages: Vec<ModelInputMessage>,
+    event_consumers: Vec<Arc<dyn EventConsumer>>,
 }
 
 impl EffectDriver {
@@ -81,6 +82,7 @@ impl EffectDriver {
             workdir,
             feedback_totals: tokio::sync::Mutex::new(WorkflowFeedbackTotals::default()),
             input_messages: Vec::new(),
+            event_consumers: Vec::new(),
         }
     }
 
@@ -88,6 +90,16 @@ impl EffectDriver {
     #[must_use]
     pub fn with_input_messages(mut self, input_messages: Vec<ModelInputMessage>) -> Self {
         self.input_messages = input_messages;
+        self
+    }
+
+    /// Route effect lifecycle events through the workflow's durable consumers.
+    #[must_use]
+    pub(crate) fn with_event_consumers(
+        mut self,
+        event_consumers: Vec<Arc<dyn EventConsumer>>,
+    ) -> Self {
+        self.event_consumers = event_consumers;
         self
     }
 
@@ -188,7 +200,7 @@ impl EffectDriver {
             "applied affect dispatch modulation"
         );
 
-        emit_runtime_event(RuntimeEvent::AgentSpawned {
+        self.emit(RuntimeEvent::AgentSpawned {
             run_id: self.run_id.clone(),
             agent_id: agent_id.clone(),
             role: role.to_string(),
@@ -251,7 +263,7 @@ impl EffectDriver {
                     })
                     .await;
 
-                emit_runtime_event(RuntimeEvent::AgentCompleted {
+                self.emit(RuntimeEvent::AgentCompleted {
                     run_id: self.run_id.clone(),
                     agent_id,
                     output: response.content.clone(),
@@ -293,7 +305,7 @@ impl EffectDriver {
                     })
                     .await;
 
-                emit_runtime_event(RuntimeEvent::AgentFailed {
+                self.emit(RuntimeEvent::AgentFailed {
                     run_id: self.run_id.clone(),
                     agent_id,
                     error: error.clone(),
@@ -529,7 +541,14 @@ impl EffectDriver {
 
     /// Emit a runtime event directly.
     pub fn emit(&self, event: RuntimeEvent) {
-        emit_runtime_event(event);
+        let mut cursor = None;
+        for consumer in &self.event_consumers {
+            let consumed_cursor = consumer.consume_with_cursor(&event);
+            if cursor.is_none() {
+                cursor = consumed_cursor;
+            }
+        }
+        emit_runtime_event_with_cursor(event, cursor);
     }
 
     async fn record_gate_verdict(&self, verdict: &GateVerdict) {
@@ -547,7 +566,7 @@ impl EffectDriver {
                 duration_ms: verdict.duration_ms,
             }
         };
-        emit_runtime_event(event);
+        self.emit(event);
 
         let _record_result = self
             .services

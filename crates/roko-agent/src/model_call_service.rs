@@ -516,28 +516,74 @@ impl ModelCallService {
     }
 
     fn emit(&self, event: RuntimeEvent) {
-        for consumer in &self.event_consumers {
-            consumer.consume(&event);
+        let cursor = self.emit_with_cursor(&event);
+        if let Some(observer) = &self.inference_observer {
+            observer.on_runtime_event_with_cursor(&event, cursor);
         }
     }
 
-    fn inference_started(&self, request_id: &str, model: &str, agent_id: &str, auto_routed: bool) {
+    fn emit_with_cursor(&self, event: &RuntimeEvent) -> Option<u64> {
+        let mut cursor = None;
+        for consumer in &self.event_consumers {
+            let consumed_cursor = consumer.consume_with_cursor(event);
+            if cursor.is_none() {
+                cursor = consumed_cursor;
+            }
+        }
+        cursor
+    }
+
+    fn inference_started(
+        &self,
+        run_id: &str,
+        request_id: &str,
+        model: &str,
+        agent_id: &str,
+        auto_routed: bool,
+    ) {
+        let event = RuntimeEvent::InferenceStarted {
+            run_id: run_id.to_string(),
+            request_id: request_id.to_string(),
+            model: model.to_string(),
+            agent_id: agent_id.to_string(),
+            auto_routed,
+        };
+        let cursor = self.emit_with_cursor(&event);
         if let Some(observer) = &self.inference_observer {
-            observer.on_start(&self.run_id, request_id, model, agent_id, auto_routed);
+            observer.on_start_with_cursor(
+                run_id,
+                request_id,
+                model,
+                agent_id,
+                auto_routed,
+                cursor,
+            );
         }
     }
 
     fn inference_completed(
         &self,
+        run_id: &str,
         request_id: &str,
         model: &str,
         agent_id: &str,
         usage: &TokenUsage,
         duration_ms: u64,
     ) {
+        let event = RuntimeEvent::InferenceCompleted {
+            run_id: run_id.to_string(),
+            request_id: request_id.to_string(),
+            model: model.to_string(),
+            agent_id: agent_id.to_string(),
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cost_usd: usage.cost_usd,
+            duration_ms,
+        };
+        let cursor = self.emit_with_cursor(&event);
         if let Some(observer) = &self.inference_observer {
-            observer.on_complete(
-                &self.run_id,
+            observer.on_complete_with_cursor(
+                run_id,
                 request_id,
                 model,
                 agent_id,
@@ -545,25 +591,44 @@ impl ModelCallService {
                 usage.output_tokens,
                 usage.cost_usd,
                 duration_ms,
+                cursor,
             );
         }
     }
 
-    fn inference_failed(&self, request_id: &str, model: &str, agent_id: &str, error: &str) {
+    fn inference_failed(
+        &self,
+        run_id: &str,
+        request_id: &str,
+        model: &str,
+        agent_id: &str,
+        error: &str,
+    ) {
+        let event = RuntimeEvent::InferenceFailed {
+            run_id: run_id.to_string(),
+            request_id: request_id.to_string(),
+            model: model.to_string(),
+            agent_id: agent_id.to_string(),
+            error: error.to_string(),
+        };
+        let cursor = self.emit_with_cursor(&event);
         if let Some(observer) = &self.inference_observer {
-            observer.on_error(&self.run_id, request_id, model, agent_id, error);
+            observer.on_error_with_cursor(
+                run_id, request_id, model, agent_id, error, cursor,
+            );
         }
     }
 
     fn emit_agent_trace_events(
         &self,
+        run_id: &str,
         agent_id: &str,
         traces: &[AgentTracePayload],
         fallback_usage: &TokenUsage,
     ) {
         if traces.is_empty() {
             self.emit(RuntimeEvent::AgentTrace {
-                run_id: self.run_id.clone(),
+                run_id: run_id.to_string(),
                 agent_id: agent_id.to_string(),
                 turn: 1,
                 tool_calls: Vec::new(),
@@ -575,7 +640,7 @@ impl ModelCallService {
 
         for trace in traces {
             self.emit(RuntimeEvent::AgentTrace {
-                run_id: self.run_id.clone(),
+                run_id: run_id.to_string(),
                 agent_id: agent_id.to_string(),
                 turn: trace.turn,
                 tool_calls: trace.tool_calls.clone(),
@@ -601,7 +666,7 @@ impl ModelCallService {
         };
 
         sink.record(FeedbackEvent::ModelCall {
-            run_id: req.run_id.clone().or_else(|| Some(self.run_id.clone())),
+            run_id: Some(self.request_run_id(req)?.to_string()),
             request_id: Some(request_id.to_string()),
             prompt_section_ids: req.prompt_section_ids.clone(),
             knowledge_ids: req.knowledge_ids.clone(),
@@ -619,9 +684,33 @@ impl ModelCallService {
         .await
     }
 
-    fn next_request_id(&self, cache_key: u64) -> String {
+    fn request_run_id<'a>(&'a self, req: &'a ModelCallRequest) -> Result<&'a str> {
+        if let Some(run_id) = req
+            .run_id
+            .as_deref()
+            .filter(|run_id| !run_id.trim().is_empty())
+        {
+            return canonical_run_id(run_id).then_some(run_id).ok_or_else(|| {
+                RokoError::invalid(
+                    "model call run_id must be 1..=128 ASCII alphanumeric/._:- bytes without '..'",
+                )
+            });
+        }
+        canonical_run_id(&self.run_id)
+            .then_some(self.run_id.as_str())
+            .ok_or_else(|| RokoError::invalid("model call service run_id is invalid"))
+    }
+
+    fn emits_agent_terminal(req: &ModelCallRequest) -> bool {
+        // EffectDriver owns the role-scoped terminal event. Emitting the
+        // provider wrapper's generic terminal too would double-count the same
+        // model usage in run projections.
+        req.caller.as_deref() != Some("effect_driver")
+    }
+
+    fn next_request_id(&self, run_id: &str, cache_key: u64) -> String {
         let seq = self.request_seq.fetch_add(1, Ordering::Relaxed);
-        format!("{}:{seq}:{cache_key:016x}", self.run_id)
+        format!("{run_id}:{seq}:{cache_key:016x}")
     }
 
     /// Look up the context window (in tokens) for `model` from configuration,
@@ -2071,10 +2160,21 @@ fn is_retryable_provider_message(message: &str) -> bool {
         || normalized.contains("temporarily unavailable")
 }
 
+fn canonical_run_id(run_id: &str) -> bool {
+    !run_id.is_empty()
+        && run_id.len() <= 128
+        && run_id != "."
+        && !run_id.contains("..")
+        && run_id.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
+        })
+}
+
 #[async_trait]
 impl ModelCaller for ModelCallService {
     async fn call(&self, mut req: ModelCallRequest) -> Result<ModelCallResponse> {
         validate_model_input_messages(&req.input_messages).map_err(RokoError::invalid)?;
+        let run_id = self.request_run_id(&req)?.to_string();
         let model = self.resolve_model(&req);
         let has_images = contains_images(&req.input_messages);
         if has_images && !self.model_supports_input_images(&model) {
@@ -2129,7 +2229,7 @@ impl ModelCaller for ModelCallService {
             req.temperature,
             req.max_tokens,
         );
-        let request_id = self.next_request_id(cache_key);
+        let request_id = self.next_request_id(&run_id, cache_key);
         let provider = self.provider_for_model(&model);
 
         match req.cache_policy {
@@ -2163,6 +2263,15 @@ impl ModelCaller for ModelCallService {
                         &cached.usage,
                         latency_ms as f64 / 1000.0,
                     );
+                    if Self::emits_agent_terminal(&req) {
+                        self.emit(RuntimeEvent::AgentCompleted {
+                            run_id: run_id.clone(),
+                            agent_id: format!("model-call:{}", cached.model),
+                            output: cached.content.clone(),
+                            tokens_used: cached.usage.total_tokens,
+                            cost_usd: cached.usage.cost_usd,
+                        });
+                    }
                     return Ok(ModelCallResponse {
                         content: cached.content,
                         model: cached.model,
@@ -2300,7 +2409,7 @@ impl ModelCaller for ModelCallService {
             self.rate_limiter.clone(),
             self.provider_outcome_recorder.clone(),
         );
-        self.inference_started(&request_id, &model, &agent_id, auto_routed);
+        self.inference_started(&run_id, &request_id, &model, &agent_id, auto_routed);
         let inference_start = Instant::now();
         let output = match cell
             .execute(
@@ -2317,12 +2426,14 @@ impl ModelCaller for ModelCallService {
                 let latency_ms = start.elapsed().as_millis() as u64;
                 let usage = token_usage(&Usage::zero(), 0.0);
                 let message = error.to_string();
-                self.inference_failed(&request_id, &model, &agent_id, &message);
-                self.emit(RuntimeEvent::AgentFailed {
-                    run_id: self.run_id.clone(),
-                    agent_id,
-                    error: message.clone(),
-                });
+                self.inference_failed(&run_id, &request_id, &model, &agent_id, &message);
+                if Self::emits_agent_terminal(&req) {
+                    self.emit(RuntimeEvent::AgentFailed {
+                        run_id: run_id.clone(),
+                        agent_id,
+                        error: message.clone(),
+                    });
+                }
                 self.write_gateway_event(
                     &req,
                     &request_id,
@@ -2359,6 +2470,7 @@ impl ModelCaller for ModelCallService {
 
         let usage = token_usage(&output.usage, output.cost_usd);
         self.inference_completed(
+            &run_id,
             &request_id,
             &output.model_used,
             &agent_id,
@@ -2366,14 +2478,16 @@ impl ModelCaller for ModelCallService {
             inference_start.elapsed().as_millis() as u64,
         );
         let role = req.role.as_deref().unwrap_or("default");
-        let convergence_key = format!("{}:{role}", self.run_id);
+        let convergence_key = format!("{run_id}:{role}");
         if let Err(error) = self.convergence.check(&convergence_key, &output.content) {
             let latency_ms = start.elapsed().as_millis() as u64;
-            self.emit(RuntimeEvent::AgentFailed {
-                run_id: self.run_id.clone(),
-                agent_id: format!("model-call:{}", output.model_used),
-                error: error.to_string(),
-            });
+            if Self::emits_agent_terminal(&req) {
+                self.emit(RuntimeEvent::AgentFailed {
+                    run_id: run_id.clone(),
+                    agent_id: format!("model-call:{}", output.model_used),
+                    error: error.to_string(),
+                });
+            }
             self.record_force_backend_override(&req.model, &output.model_used, false);
             let output_provider = self.provider_for_model(&output.model_used);
             self.write_gateway_event(
@@ -2424,14 +2538,16 @@ impl ModelCaller for ModelCallService {
         let agent_id = format!("model-call:{}", output.model_used);
         // ToolLoopAgent attaches per-turn state as trace metadata; emit it
         // separately from AgentOutput before the completion event.
-        self.emit_agent_trace_events(&agent_id, &output.agent_traces, &usage);
-        self.emit(RuntimeEvent::AgentCompleted {
-            run_id: self.run_id.clone(),
-            agent_id,
-            output: output.content.clone(),
-            tokens_used: usage.total_tokens,
-            cost_usd: usage.cost_usd,
-        });
+        self.emit_agent_trace_events(&run_id, &agent_id, &output.agent_traces, &usage);
+        if Self::emits_agent_terminal(&req) {
+            self.emit(RuntimeEvent::AgentCompleted {
+                run_id,
+                agent_id,
+                output: output.content.clone(),
+                tokens_used: usage.total_tokens,
+                cost_usd: usage.cost_usd,
+            });
+        }
         self.record_force_backend_override(&req.model, &output.model_used, true);
         let output_provider = self.provider_for_model(&output.model_used);
         self.write_gateway_event(
@@ -2501,6 +2617,16 @@ mod tests {
         }
     }
 
+    struct RecordingEventConsumer {
+        events: Arc<Mutex<Vec<RuntimeEvent>>>,
+    }
+
+    impl EventConsumer for RecordingEventConsumer {
+        fn consume(&self, event: &RuntimeEvent) {
+            self.events.lock().push(event.clone());
+        }
+    }
+
     fn user_request(model: impl Into<String>, content: impl Into<String>) -> ModelCallRequest {
         ModelCallRequest {
             model: model.into(),
@@ -2523,6 +2649,92 @@ mod tests {
             cache_policy: roko_core::foundation::CachePolicy::Default,
             tools: Vec::new(),
         }
+    }
+
+    #[test]
+    fn request_run_id_owns_observability_identity() {
+        let service = ModelCallService::new("test-model".to_string()).with_run_id("service-run");
+        let mut request = user_request("test-model", "hello");
+
+        assert_eq!(service.request_run_id(&request).unwrap(), "service-run");
+
+        request.run_id = Some("workflow-run".to_string());
+        assert_eq!(service.request_run_id(&request).unwrap(), "workflow-run");
+        assert!(
+            service
+                .next_request_id(service.request_run_id(&request).unwrap(), 0xabc)
+                .starts_with("workflow-run:")
+        );
+
+        request.run_id = Some("  ".to_string());
+        assert_eq!(service.request_run_id(&request).unwrap(), "service-run");
+
+        request.run_id = Some(".".to_string());
+        assert!(service.request_run_id(&request).is_err());
+        request.run_id = Some("../escape".to_string());
+        assert!(service.request_run_id(&request).is_err());
+
+        request.caller = Some("effect_driver".to_string());
+        assert!(!ModelCallService::emits_agent_terminal(&request));
+        request.caller = Some("serve".to_string());
+        assert!(ModelCallService::emits_agent_terminal(&request));
+    }
+
+    #[tokio::test]
+    async fn explicit_invalid_request_run_id_fails_before_dispatch() {
+        let service = ModelCallService::new("test-model".to_string());
+        let mut request = user_request("test-model", "hello");
+        request.run_id = Some("../escape".to_string());
+
+        let error = service
+            .call(request)
+            .await
+            .expect_err("invalid run id must fail closed");
+
+        assert!(error.to_string().contains("run_id"));
+    }
+
+    #[test]
+    fn inference_lifecycle_reaches_durable_consumers_with_request_run_id() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let service = ModelCallService::new("test-model".to_string()).with_event_consumer(
+            Arc::new(RecordingEventConsumer {
+                events: Arc::clone(&events),
+            }),
+        );
+        let usage = TokenUsage {
+            input_tokens: 4,
+            output_tokens: 2,
+            total_tokens: 6,
+            cost_usd: 0.01,
+        };
+
+        service.inference_started("workflow-run", "request-1", "test-model", "agent-1", false);
+        service.inference_completed(
+            "workflow-run",
+            "request-1",
+            "test-model",
+            "agent-1",
+            &usage,
+            12,
+        );
+        service.inference_failed(
+            "workflow-run",
+            "request-2",
+            "test-model",
+            "agent-1",
+            "failed",
+        );
+
+        let events = events.lock();
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().all(|event| event.run_id() == "workflow-run"));
+        assert!(matches!(&events[0], RuntimeEvent::InferenceStarted { .. }));
+        assert!(matches!(
+            &events[1],
+            RuntimeEvent::InferenceCompleted { .. }
+        ));
+        assert!(matches!(&events[2], RuntimeEvent::InferenceFailed { .. }));
     }
 
     #[test]

@@ -13,7 +13,7 @@ use roko_core::config::schema::{RokoConfig, ToolsConfig};
 use roko_core::foundation::{
     AffectPolicy, FeedbackEvent, FeedbackSink, GateRunner, ModelCaller, PromptAssembler,
 };
-use roko_core::{AgentRole, Result, RokoError};
+use roko_core::{AgentRole, Result, RokoError, RuntimeEvent};
 use roko_daimon::policy::DaimonPolicy;
 use roko_gate::gate_service::GateService;
 use roko_learn::cascade_router::CascadeRouter;
@@ -24,6 +24,123 @@ use roko_learn::provider_health::ProviderHealthRegistry;
 use roko_learn::section_effect::SectionEffectivenessRegistry;
 use roko_neuro::knowledge_store::KnowledgeStore;
 use roko_runtime::{JsonlLogger, effect_driver::EffectServices};
+
+#[derive(Debug, Default)]
+struct RuntimeBusInferenceObserver;
+
+impl InferenceObserver for RuntimeBusInferenceObserver {
+    fn on_runtime_event_with_cursor(&self, event: &RuntimeEvent, cursor: Option<u64>) {
+        roko_runtime::event_bus::emit_runtime_event_with_cursor(event.clone(), cursor);
+    }
+
+    fn on_start(
+        &self,
+        run_id: &str,
+        request_id: &str,
+        model: &str,
+        agent_id: &str,
+        auto_routed: bool,
+    ) {
+        self.on_start_with_cursor(run_id, request_id, model, agent_id, auto_routed, None);
+    }
+
+    fn on_start_with_cursor(
+        &self,
+        run_id: &str,
+        request_id: &str,
+        model: &str,
+        agent_id: &str,
+        auto_routed: bool,
+        cursor: Option<u64>,
+    ) {
+        roko_runtime::event_bus::emit_runtime_event_with_cursor(
+            RuntimeEvent::InferenceStarted {
+                run_id: run_id.to_string(),
+                request_id: request_id.to_string(),
+                model: model.to_string(),
+                agent_id: agent_id.to_string(),
+                auto_routed,
+            },
+            cursor,
+        );
+    }
+
+    fn on_complete(
+        &self,
+        run_id: &str,
+        request_id: &str,
+        model: &str,
+        agent_id: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+        cost_usd: f64,
+        duration_ms: u64,
+    ) {
+        self.on_complete_with_cursor(
+            run_id,
+            request_id,
+            model,
+            agent_id,
+            input_tokens,
+            output_tokens,
+            cost_usd,
+            duration_ms,
+            None,
+        );
+    }
+
+    fn on_complete_with_cursor(
+        &self,
+        run_id: &str,
+        request_id: &str,
+        model: &str,
+        agent_id: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+        cost_usd: f64,
+        duration_ms: u64,
+        cursor: Option<u64>,
+    ) {
+        roko_runtime::event_bus::emit_runtime_event_with_cursor(
+            RuntimeEvent::InferenceCompleted {
+                run_id: run_id.to_string(),
+                request_id: request_id.to_string(),
+                model: model.to_string(),
+                agent_id: agent_id.to_string(),
+                input_tokens,
+                output_tokens,
+                cost_usd,
+                duration_ms,
+            },
+            cursor,
+        );
+    }
+
+    fn on_error(&self, run_id: &str, request_id: &str, model: &str, agent_id: &str, error: &str) {
+        self.on_error_with_cursor(run_id, request_id, model, agent_id, error, None);
+    }
+
+    fn on_error_with_cursor(
+        &self,
+        run_id: &str,
+        request_id: &str,
+        model: &str,
+        agent_id: &str,
+        error: &str,
+        cursor: Option<u64>,
+    ) {
+        roko_runtime::event_bus::emit_runtime_event_with_cursor(
+            RuntimeEvent::InferenceFailed {
+                run_id: run_id.to_string(),
+                request_id: request_id.to_string(),
+                model: model.to_string(),
+                agent_id: agent_id.to_string(),
+                error: error.to_string(),
+            },
+            cursor,
+        );
+    }
+}
 
 /// Input settings for constructing shared workflow services.
 #[derive(Clone)]
@@ -67,7 +184,7 @@ impl ServiceConfig {
             affect_enabled: true,
             cascade_enabled: true,
             run_id: None,
-            inference_observer: None,
+            inference_observer: Some(Arc::new(RuntimeBusInferenceObserver)),
             metrics: None,
         }
     }
@@ -508,6 +625,14 @@ mod tests {
         config.cascade_enabled = false;
         config.feedback_enabled = false;
         config
+    }
+
+    #[test]
+    fn production_services_publish_inference_lifecycle() {
+        let tmp = TempDir::new().expect("tempdir");
+        let config = ServiceConfig::production(tmp.path(), RokoConfig::default());
+
+        assert!(config.inference_observer.is_some());
     }
 
     fn request() -> ModelCallRequest {
